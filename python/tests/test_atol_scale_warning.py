@@ -243,10 +243,7 @@ def test_a_column_with_no_finite_value_adds_no_warning():
     assert caught == []
 
 
-def test_the_steps_of_a_loop_are_warned_once(tmp_path):
-    """The text carries nothing that moves from run to run, so the default
-    filter shows it once at the caller's line; peaks in the text made 20
-    run_until steps print it 11 times, from a line of bngsim's own."""
+def _steps_of_a_loop_warn_once_here(tmp_path):
     sim = _from_zero(tmp_path)
     with warnings.catch_warnings(record=True) as caught:
         warnings.resetwarnings()
@@ -256,6 +253,36 @@ def test_the_steps_of_a_loop_are_warned_once(tmp_path):
     hits = [w for w in caught if issubclass(w.category, bngsim.AtolScaleWarning)]
     assert len(hits) == 1
     assert hits[0].filename == __file__
+
+
+def test_the_steps_of_a_loop_are_warned_once(tmp_path):
+    """The text carries nothing that moves from run to run, so the default
+    filter shows it once at the caller's line; peaks in the text made 20
+    run_until steps print it 11 times, from a line of bngsim's own."""
+    _steps_of_a_loop_warn_once_here(tmp_path)
+
+
+def test_the_sanitizer_jobs_timeout_wrapper_does_not_take_the_warning(
+    tmp_path, monkeypatch, request
+):
+    """sanitizers.yml sets BNGSIM_TEST_TIMEOUT_SCALE, and conftest.py then
+    wraps Simulator.run to stretch hang-guard timeouts. run_until calls
+    self.run, so the wrapper stood between two of bngsim's frames, and the
+    warning above named conftest.py in that job alone, red from 2026-10-31.
+    Run here under the wrapper, so every job sees it, not only the nightly
+    one."""
+    conftest = next(
+        plugin
+        for plugin in request.config.pluginmanager.get_plugins()
+        if Path(getattr(plugin, "__file__", None) or "/").resolve()
+        == Path(__file__).with_name("conftest.py").resolve()
+    )
+    run = bngsim.Simulator.run
+    monkeypatch.setattr(bngsim.Simulator, "run", run)
+    monkeypatch.setenv(conftest._TIMEOUT_SCALE_ENV, "4")
+    conftest._scale_run_timeouts()
+    assert bngsim.Simulator.run.__wrapped__ is run
+    _steps_of_a_loop_warn_once_here(tmp_path)
 
 
 def test_a_kernel_observables_probe_is_not_warned():

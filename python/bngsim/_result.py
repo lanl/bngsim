@@ -504,14 +504,15 @@ class Result:
         self._varvol_live_vol: dict[int, int] | None = None
 
         # GH #131: species_idx → per-sample concentration factor V_static/V_live(t)
-        # for a variable-volume species whose raw column is LEFT as the conserved
-        # count amount/V_static (the stochastic convention) rather than rescaled
-        # in place. as_roadrunner() multiplies it into the ``[S]`` (concentration)
-        # selector so [S] reports amount/V_live, while the bare ``S`` (amount)
-        # selector recovers the amount as raw·V_static via the volume factor.
-        # Also carries the hOSU=true event-resize concentration correction, which
-        # applies under ODE too (raw stays amount/V_static there as well). None ⇒
-        # no such species.
+        # for a variable-volume species whose raw column was LEFT as the conserved
+        # count amount/V_static rather than rescaled in place. as_roadrunner()
+        # multiplies it into the ``[S]`` (concentration) selector so [S] reports
+        # amount/V_live, while the bare ``S`` (amount) selector recovers the
+        # amount as raw·V_static via the volume factor. bngsim recorded it under
+        # SSA, and for an hOSU=true event-resized species under ODE too, until
+        # issue #1368, which rescales those columns in place under every method:
+        # only a result loaded from a file an older bngsim saved carries one.
+        # None ⇒ no such species.
         self._varvol_conc_factor: dict[int, np.ndarray] | None = None
 
         # GH #131: species_idx → per-sample live-volume V_live(t) for a species
@@ -551,7 +552,8 @@ class Result:
         self._ar_sens_map: dict[str, tuple[str, str, float, str]] = {}
 
         # GH #205: AR-species names whose reported value also carries a
-        # time-varying volume rescale (variable-volume compartment, #85/#87). The
+        # time-varying volume rescale (variable-volume compartment, #85/#87; an
+        # event-resized one since issue #1368). The
         # redirect above accounts only for the constant vdiv, so a selector for
         # one of them reads its own row of the species tensor, which is put
         # through the quotient rule with the size's row (issue #787).
@@ -1633,11 +1635,90 @@ class Result:
                 sens = np.where(drop[:, :, None], 0.0, sens)
         return np.einsum("tsi,ts->i", sens, dL_dY)
 
+    def _fit_target(
+        self,
+        target: str,
+        species_indices: list[int] | None,
+        observable_indices: list[int] | None,
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.bool_] | None]:
+        """``(Y, dY/dp, refused rows)`` of what a fit compares data with.
+
+        ``target`` names it, so the shape of the data never decides it: data
+        with as many observables as there are species was scored against the
+        species, with their sensitivities, and sse_gradient returned a
+        gradient of the wrong sign with no warning (issue #1363).
+        """
+        if not self.has_sensitivities:
+            raise ValueError(
+                "No sensitivity data. Run with sensitivity_params or compute_all_sensitivities()."
+            )
+        if target == "species":
+            if observable_indices is not None:
+                raise ValueError(
+                    "observable_indices selects observables; pass target='observables'"
+                )
+            Y = self._species
+            sens = self._sensitivities  # (nt, ns, np)
+            # The rows of the block are the columns of the values (GH #202). An
+            # .h5 written before that carries rows species_names dropped, and
+            # species_indices would pick rows from a block they do not address.
+            if Y.shape[1] != sens.shape[1]:
+                raise ValueError(
+                    f"{Y.shape[1]} species but {sens.shape[1]} species sensitivity rows "
+                    "(GH #202); re-run the simulation"
+                )
+            refused = self._refused_row_mask()
+            if species_indices is not None:
+                Y = Y[:, species_indices]
+                sens = sens[:, species_indices, :]
+                if refused is not None:
+                    refused = refused[species_indices]
+            return Y, sens, refused
+        if target == "observables":
+            if species_indices is not None:
+                raise ValueError("species_indices selects species; pass target='species'")
+            if not self.has_sensitivities_observables:
+                raise ValueError(
+                    "No observable sensitivities in this result, so a fit to observable "
+                    "data has no gradient. Run with sensitivity_params on a model with "
+                    "observables."
+                )
+            Y = self._observables
+            sens = self._observable_sensitivities  # (nt, n_obs, np)
+            if Y.shape[1] != sens.shape[1]:
+                raise ValueError(
+                    f"{Y.shape[1]} observables but {sens.shape[1]} observable sensitivity rows"
+                )
+            if observable_indices is not None:
+                Y = Y[:, observable_indices]
+                sens = sens[:, observable_indices, :]
+            # A run writes no NaN observable row, a refused species (GH #221)
+            # included: an observable reads the integrated state, not the value
+            # an assignment rule writes over a species, and its row is the chain
+            # rule through that state's rows, which the core refuses when they
+            # are not finite (GH #384). A row made NaN by hand is carried as
+            # _contract_dL_dY carries a refused species row.
+            unknown = np.isnan(sens).any(axis=(0, 2))
+            return Y, sens, unknown if unknown.any() else None
+        raise ValueError(f"target must be 'species' or 'observables', got {target!r}")
+
+    def _check_data_shape(
+        self, data: NDArray[np.float64], Y: NDArray[np.float64], target: str
+    ) -> None:
+        if data.shape == Y.shape:
+            return
+        hint = ""
+        if target == "species" and data.shape == self._observables.shape:
+            hint = "; it is the shape of the observables: pass target='observables'"
+        raise ValueError(f"data shape {data.shape} != {target} shape {Y.shape}{hint}")
+
     def sse_gradient(
         self,
         data: NDArray[np.float64],
         *,
+        target: str = "species",
         species_indices: list[int] | None = None,
+        observable_indices: list[int] | None = None,
     ) -> tuple[float, NDArray[np.float64]]:
         r"""Compute SSE loss and parameter gradient in one call.
 
@@ -1650,12 +1731,20 @@ class Result:
         Parameters
         ----------
         data : ndarray, shape ``(n_times, n_species)`` or ``(n_times, n_obs)``
-            Observed data to compare against species trajectories.
-            Must match the shape of ``self.species`` (or the selected
-            subset if ``species_indices`` is given).
+            Observed data, of the shape of what ``target`` names (or of the
+            columns ``species_indices`` / ``observable_indices`` select).
+        target : {"species", "observables"}
+            What the data is compared with: :attr:`species`, through
+            :attr:`sensitivities`, or :attr:`observables`, through
+            :attr:`sensitivities_observables` (issue #1363). Named, not read
+            from the data's shape, which is the same for both when a model
+            has as many observables as species.
         species_indices : list[int], optional
-            If given, only these species columns are used for the loss.
-            Sensitivities for all parameters are still included.
+            If given, only these species columns are used for the loss
+            (``target="species"``). Sensitivities for all parameters are
+            still included.
+        observable_indices : list[int], optional
+            The same, over observables (``target="observables"``).
 
         Returns
         -------
@@ -1666,32 +1755,20 @@ class Result:
         Raises
         ------
         ValueError
-            If sensitivity data is missing or shapes don't match.
+            If sensitivity data is missing, ``target`` is neither, or shapes
+            don't match.
 
         Examples
         --------
         >>> result = sim.compute_all_sensitivities(...)
         >>> loss, grad = result.sse_gradient(observed_data)
+        >>> loss, grad = result.sse_gradient(observed_obs, target="observables")
         >>> # Use with scipy L-BFGS-B:
         >>> minimize(objective, x0, method='L-BFGS-B', jac=True)
         """
-        if not self.has_sensitivities:
-            raise ValueError(
-                "No sensitivity data. Run with sensitivity_params or compute_all_sensitivities()."
-            )
         data = np.asarray(data, dtype=np.float64)
-        Y = self._species
-        sens = self._sensitivities  # (nt, ns, np)
-
-        refused = self._refused_row_mask()
-        if species_indices is not None:
-            Y = Y[:, species_indices]
-            sens = sens[:, species_indices, :]
-            if refused is not None:
-                refused = refused[species_indices]
-
-        if data.shape != Y.shape:
-            raise ValueError(f"data shape {data.shape} != species shape {Y.shape}")
+        Y, sens, refused = self._fit_target(target, species_indices, observable_indices)
+        self._check_data_shape(data, Y, target)
 
         residual = Y - data
         loss = float(np.sum(residual**2))
@@ -1708,7 +1785,9 @@ class Result:
         data: NDArray[np.float64],
         sigma: float | NDArray[np.float64],
         *,
+        target: str = "species",
         species_indices: list[int] | None = None,
+        observable_indices: list[int] | None = None,
     ) -> tuple[float, NDArray[np.float64]]:
         r"""Compute chi-squared loss and parameter gradient.
 
@@ -1719,17 +1798,21 @@ class Result:
 
         Parameters
         ----------
-        data : ndarray, shape ``(n_times, n_species)``
-            Observed data.
+        data : ndarray, shape ``(n_times, n_species)`` or ``(n_times, n_obs)``
+            Observed data, of the shape of what ``target`` names.
         sigma : float or ndarray
             Measurement noise standard deviation.
 
-            - **scalar** — same σ for all species.
-            - **1-D array, shape ``(n_species,)``** — per-species σ.
-            - **2-D array, shape ``(n_times, n_species)``** — per-point σ.
+            - **scalar** — same σ for all columns.
+            - **1-D array, shape ``(n_columns,)``** — per-column σ.
+            - **2-D array, shape ``(n_times, n_columns)``** — per-point σ.
 
+        target : {"species", "observables"}
+            What the data is compared with, as in :meth:`sse_gradient`.
         species_indices : list[int], optional
             Subset of species columns to include.
+        observable_indices : list[int], optional
+            Subset of observable columns to include.
 
         Returns
         -------
@@ -1742,24 +1825,10 @@ class Result:
         >>> loss, grad = result.chi2_gradient(data, sigma=0.1)
         >>> loss, grad = result.chi2_gradient(data, sigma=per_species_sigma)
         """
-        if not self.has_sensitivities:
-            raise ValueError(
-                "No sensitivity data. Run with sensitivity_params or compute_all_sensitivities()."
-            )
         data = np.asarray(data, dtype=np.float64)
         sigma_arr = np.asarray(sigma, dtype=np.float64)
-        Y = self._species
-        sens = self._sensitivities
-
-        refused = self._refused_row_mask()
-        if species_indices is not None:
-            Y = Y[:, species_indices]
-            sens = sens[:, species_indices, :]
-            if refused is not None:
-                refused = refused[species_indices]
-
-        if data.shape != Y.shape:
-            raise ValueError(f"data shape {data.shape} != species shape {Y.shape}")
+        Y, sens, refused = self._fit_target(target, species_indices, observable_indices)
+        self._check_data_shape(data, Y, target)
 
         # Build 1/sigma^2 array broadcastable to (nt, ns)
         inv_var: float | NDArray[np.float64]
@@ -1787,7 +1856,9 @@ class Result:
         data: NDArray[np.float64],
         sigma: float | NDArray[np.float64],
         *,
+        target: str = "species",
         species_indices: list[int] | None = None,
+        observable_indices: list[int] | None = None,
     ) -> tuple[float, NDArray[np.float64]]:
         r"""Compute negative Gaussian log-likelihood and gradient.
 
@@ -1800,13 +1871,17 @@ class Result:
 
         Parameters
         ----------
-        data : ndarray, shape ``(n_times, n_species)``
-            Observed data.
+        data : ndarray, shape ``(n_times, n_species)`` or ``(n_times, n_obs)``
+            Observed data, of the shape of what ``target`` names.
         sigma : float or ndarray
-            Measurement noise standard deviation (scalar, per-species,
+            Measurement noise standard deviation (scalar, per-column,
             or per-point).
+        target : {"species", "observables"}
+            What the data is compared with, as in :meth:`sse_gradient`.
         species_indices : list[int], optional
             Subset of species columns.
+        observable_indices : list[int], optional
+            Subset of observable columns.
 
         Returns
         -------
@@ -1817,24 +1892,10 @@ class Result:
         --------
         >>> nll, grad = result.neg_log_likelihood_gradient(data, sigma=0.1)
         """
-        if not self.has_sensitivities:
-            raise ValueError(
-                "No sensitivity data. Run with sensitivity_params or compute_all_sensitivities()."
-            )
         data = np.asarray(data, dtype=np.float64)
         sigma_arr = np.asarray(sigma, dtype=np.float64)
-        Y = self._species
-        sens = self._sensitivities
-
-        refused = self._refused_row_mask()
-        if species_indices is not None:
-            Y = Y[:, species_indices]
-            sens = sens[:, species_indices, :]
-            if refused is not None:
-                refused = refused[species_indices]
-
-        if data.shape != Y.shape:
-            raise ValueError(f"data shape {data.shape} != species shape {Y.shape}")
+        Y, sens, refused = self._fit_target(target, species_indices, observable_indices)
+        self._check_data_shape(data, Y, target)
 
         # Build sigma^2 and inv_var
         var: float | NDArray[np.float64]
@@ -1856,7 +1917,10 @@ class Result:
         if sigma_arr.ndim == 0:
             const_sum = nt_d * ns_d * np.log(2 * np.pi * var)
         else:
-            const_sum = np.sum(np.log(2 * np.pi * var))
+            # Once per data point, as the sum over t and i says: a per-column
+            # sigma counted it once per column, and the loss came out short by
+            # (n_times - 1) of those terms (found with issue #1363).
+            const_sum = np.sum(np.broadcast_to(np.log(2 * np.pi * var), Y.shape))
         nll = float(0.5 * (chi2_sum + const_sum))
 
         # d(NLL)/dY = (Y - D) / sigma^2  (the 0.5 * 2 cancel)
@@ -2532,10 +2596,10 @@ class Result:
                 cf = self._varvol_conc_factor
                 if cf is not None and idx in cf:
                     # GH #131: the raw column is the conserved count amount/V_static
-                    # (the stochastic convention, and the ODE convention for an
-                    # hOSU=true event-resized species), so the live concentration
-                    # amount/V_live = raw · (V_static/V_live) is reported by
-                    # multiplying the stored per-sample factor.
+                    # (what an older bngsim left under SSA, and under ODE for an
+                    # hOSU=true event-resized species, before issue #1368), so the
+                    # live concentration amount/V_live = raw · (V_static/V_live) is
+                    # reported by multiplying the stored per-sample factor.
                     col = col * cf[idx]
                 cols.append(col)
                 continue

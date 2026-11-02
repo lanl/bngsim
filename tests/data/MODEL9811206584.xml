@@ -1,0 +1,643 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level2/version3" metaid="_532393" level="2" version="3">
+  <model metaid="metaid_0000002" id="MacGregor2005_HypothalamicSystems" name="MacGregor2005_HypothalamicSystems">
+    <notes>
+      <body xmlns="http://www.w3.org/1999/xhtml">
+        <p>This a model from the article:      <br/>
+        <strong>Modelling the hypothalamic control of growth hormone secretion.</strong>
+        <br/>
+          MacGregor DJ, Leng G.      <em>J Neuroendocrinol</em>
+          2005;17(12):788-803      <a href="http://www.ncbi.nlm.nih.gov/pubmed/16280026">16280026</a>
+          ,      <br/>
+        <strong>Abstract:</strong>
+        <br/>
+          Here, we construct a mathematical model of the hypothalamic systems that control the secretion of growth hormone (GH). The work extends a recent model of the pituitary GH system, adding representations of the hypothalamic GH-releasing hormone (GHRH) and somatostatin neurones, each modelled as a single synchronised unit. An unpatterned stochastic input drives the GHRH neurones generating pulses of GHRH release that trigger GH pulses. Delayed feedback from GH results in increased somatostatin release, which inhibits both GH secretion and GHRH release, producing an overall pattern of 3-h pulses of GH secretion that is very similar to the secretory profile observed in male rats. Rather than directly stimulating somatostatin release, GH feedback triggers a priming effect, increasing releasable stores of somatostatin. Varying this priming effect to reduce the effect of GH can reproduce the less pulsatile form of GH release observed in the female rat. The model behaviour is tested by comparison with experimental observations with a range of different experimental protocols involving GHRH injections and somatostatin and GH infusion.      </p>
+      <p>This model was taken from the      <a href="http://www.cellml.org/models">CellML repository</a>
+          and automatically converted to SBML.      <br/>
+          The original model was:      <a href="http://www.cellml.org/models/macgregor_leng_2005_version02">
+        <strong>MacGregor DJ, Leng G. (2005) - version02</strong>
+      </a>
+      <br/>
+          The original CellML model was created by:      <br/>
+      <strong>Lloyd, Catherine, May</strong>
+      <br/>
+          c.lloyd@aukland.ac.nz      <br/>
+          The University of Auckland      <br/>
+          The Bioengineering Institute      <br/></p>
+    <p>This model originates from BioModels Database: A Database of Annotated Published Models (http://www.ebi.ac.uk/biomodels/). It is copyright (c) 2005-2011 The BioModels.net Team.      <br/>
+          To the extent possible under law, all copyright and related or neighbouring rights to this encoded model have been dedicated to the public domain worldwide. Please refer to      <a href="http://creativecommons.org/publicdomain/zero/1.0/" title="Creative Commons CC0">CC0 Public Domain Dedication</a>
+          for more information.      </p>
+  <p>In summary, you are entitled to use this encoded model in absolutely any manner you deem suitable, verbatim, or with modification, alone or embedded it in a larger context, redistribute it, commercially or not, in a restricted way or not..      <br/>
+  <br/>
+          To cite BioModels Database, please use:      <a href="http://www.ncbi.nlm.nih.gov/pubmed/20587024" target="_blank">Li C, Donizelli M, Rodriguez N, Dharuri H, Endler L, Chelliah V, Li L, He E, Henry A, Stefan MI, Snoep JL, Hucka M, Le Novère N, Laibe C (2010) BioModels Database: An enhanced, curated and annotated resource for published quantitative kinetic models. BMC Syst Biol., 4:92.</a>
+</p>
+</body>
+</notes><annotation>
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:vCard="http://www.w3.org/2001/vcard-rdf/3.0#" xmlns:bqbiol="http://biomodels.net/biology-qualifiers/" xmlns:bqmodel="http://biomodels.net/model-qualifiers/">
+    <rdf:Description rdf:about="#metaid_0000002">
+      <bqmodel:is>
+        <rdf:Bag>
+          <rdf:li rdf:resource="http://identifiers.org/biomodels.db/MODEL9811206584"/>
+        </rdf:Bag>
+      </bqmodel:is>
+      <bqmodel:isDescribedBy>
+        <rdf:Bag>
+          <rdf:li rdf:resource="http://identifiers.org/pubmed/16280026"/>
+        </rdf:Bag>
+      </bqmodel:isDescribedBy>
+      <bqbiol:hasTaxon>
+        <rdf:Bag>
+          <rdf:li rdf:resource="http://identifiers.org/taxonomy/40674"/>
+        </rdf:Bag>
+      </bqbiol:hasTaxon>
+      <bqbiol:isVersionOf>
+        <rdf:Bag>
+          <rdf:li rdf:resource="http://identifiers.org/go/GO:0060123"/>
+        </rdf:Bag>
+      </bqbiol:isVersionOf>
+    </rdf:Description>
+  </rdf:RDF>
+</annotation><listOfUnitDefinitions>
+  <unitDefinition metaid="_532405" id="nanomolar" name="nanomolar">
+    <listOfUnits>
+      <unit metaid="_532417" kind="mole" scale="-9"/>
+      <unit metaid="_532429" kind="litre" exponent="-1"/>
+    </listOfUnits>
+  </unitDefinition>
+  <unitDefinition metaid="_532441" id="minute" name="minute">
+    <listOfUnits>
+      <unit metaid="_532453" kind="second" multiplier="60"/>
+    </listOfUnits>
+  </unitDefinition>
+  <unitDefinition metaid="_532465" id="first_order_rate_constant" name="first_order_rate_constant">
+    <listOfUnits>
+      <unit metaid="_532477" kind="second" exponent="-1" multiplier="60"/>
+    </listOfUnits>
+  </unitDefinition>
+  <unitDefinition metaid="_532489" id="second_order_rate_constant" name="second_order_rate_constant">
+    <listOfUnits>
+      <unit metaid="_532502" kind="mole" exponent="-1" scale="-9"/>
+      <unit metaid="_532514" kind="litre"/>
+      <unit metaid="_532526" kind="second" exponent="-1" multiplier="60"/>
+    </listOfUnits>
+  </unitDefinition>
+  <unitDefinition metaid="_532538" id="flux" name="flux">
+    <listOfUnits>
+      <unit metaid="_532551" kind="mole" scale="-9"/>
+      <unit metaid="_532563" kind="litre" exponent="-1"/>
+      <unit metaid="_532575" kind="second" exponent="-1" multiplier="60"/>
+    </listOfUnits>
+  </unitDefinition>
+  <unitDefinition metaid="_532587" id="per_nanomolar" name="per_nanomolar">
+    <listOfUnits>
+      <unit metaid="_532599" kind="mole" exponent="-1" scale="-9"/>
+      <unit metaid="_532612" kind="litre"/>
+    </listOfUnits>
+  </unitDefinition>
+  <unitDefinition metaid="_532624" id="time" name="time">
+    <listOfUnits>
+      <unit metaid="_532637" kind="second" multiplier="60"/>
+    </listOfUnits>
+  </unitDefinition>
+</listOfUnitDefinitions><listOfCompartments>
+  <compartment metaid="_985747" id="Compartment" size="1" units="litre"/>
+</listOfCompartments><listOfParameters>
+  <parameter metaid="_985771" id="r" name="r" value="0" units="nanomolar" constant="false"/>
+  <parameter metaid="_985772" id="Ir" name="Ir" units="flux" constant="false"/>
+  <parameter metaid="_985775" id="k6" name="k6" value="5" units="first_order_rate_constant"/>
+  <parameter metaid="_985778" id="s" name="s" value="0" units="nanomolar" constant="false"/>
+  <parameter metaid="_985781" id="f" name="f" value="0.3" units="dimensionless" constant="false"/>
+  <parameter metaid="_985784" id="k1" name="k1" value="0.1" units="second_order_rate_constant"/>
+  <parameter metaid="_985787" id="k2" name="k2" value="0.002" units="first_order_rate_constant"/>
+  <parameter metaid="_985790" id="k3" name="k3" value="0.018" units="first_order_rate_constant"/>
+  <parameter metaid="_985793" id="phi_b_s" name="phi_b_s" units="dimensionless" constant="false"/>
+  <parameter metaid="_985796" id="sb" name="sb" value="0.029" units="dimensionless"/>
+  <parameter metaid="_985799" id="delta_b" name="delta_b" value="0.3" units="dimensionless"/>
+  <parameter metaid="_985802" id="h" name="h" value="0" units="nanomolar" constant="false"/>
+  <parameter metaid="_985805" id="k4" name="k4" value="9" units="first_order_rate_constant"/>
+  <parameter metaid="_985808" id="k5" name="k5" value="71" units="first_order_rate_constant"/>
+  <parameter metaid="_985811" id="phi_r_s" name="phi_r_s" units="dimensionless" constant="false"/>
+  <parameter metaid="_985814" id="sr" name="sr" value="-0.56" units="dimensionless"/>
+  <parameter metaid="_985817" id="delta_r" name="delta_r" value="0.3" units="dimensionless"/>
+  <parameter metaid="_985820" id="j1" name="j1" value="10" units="dimensionless"/>
+  <parameter metaid="_985823" id="k7" name="k7" value="5" units="first_order_rate_constant"/>
+  <parameter metaid="_985826" id="Is" name="Is" units="flux" constant="false"/>
+  <parameter metaid="_985829" id="k8" name="k8" value="0.07" units="first_order_rate_constant"/>
+  <parameter metaid="_985832" id="c" name="c" value="0.01" units="nanomolar"/>
+</listOfParameters><listOfRules>
+  <rateRule metaid="_985749" variable="r">
+    <math xmlns="http://www.w3.org/1998/Math/MathML">
+      <apply>
+        <minus/>
+        <ci> Ir </ci>
+        <apply>
+          <times/>
+          <ci> k6 </ci>
+          <ci> r </ci>
+        </apply>
+      </apply>
+    </math>
+  </rateRule>
+  <rateRule metaid="_985752" variable="s">
+    <math xmlns="http://www.w3.org/1998/Math/MathML">
+      <apply>
+        <minus/>
+        <ci> Is </ci>
+        <apply>
+          <times/>
+          <ci> k7 </ci>
+          <ci> s </ci>
+        </apply>
+      </apply>
+    </math>
+  </rateRule>
+  <rateRule metaid="_985755" variable="f">
+    <math xmlns="http://www.w3.org/1998/Math/MathML">
+      <apply>
+        <plus/>
+        <apply>
+          <minus/>
+          <apply>
+            <times/>
+            <ci> k1 </ci>
+            <apply>
+              <plus/>
+              <ci> r </ci>
+              <ci> c </ci>
+            </apply>
+            <ci> f </ci>
+          </apply>
+        </apply>
+        <apply>
+          <times/>
+          <apply>
+            <plus/>
+            <ci> k2 </ci>
+            <apply>
+              <times/>
+              <ci> k3 </ci>
+              <ci> phi_b_s </ci>
+            </apply>
+          </apply>
+          <apply>
+            <minus/>
+            <cn> 1 </cn>
+            <ci> f </ci>
+          </apply>
+        </apply>
+      </apply>
+    </math>
+  </rateRule>
+  <rateRule metaid="_985758" variable="h">
+    <math xmlns="http://www.w3.org/1998/Math/MathML">
+      <apply>
+        <times/>
+        <ci> j1 </ci>
+        <apply>
+          <minus/>
+          <apply>
+            <times/>
+            <apply>
+              <plus/>
+              <ci> k4 </ci>
+              <apply>
+                <times/>
+                <ci> k5 </ci>
+                <apply>
+                  <minus/>
+                  <cn> 1 </cn>
+                  <ci> phi_r_s </ci>
+                </apply>
+              </apply>
+            </apply>
+            <apply>
+              <plus/>
+              <ci> r </ci>
+              <ci> c </ci>
+            </apply>
+            <ci> f </ci>
+          </apply>
+          <apply>
+            <times/>
+            <ci> k8 </ci>
+            <ci> h </ci>
+          </apply>
+        </apply>
+      </apply>
+    </math>
+  </rateRule>
+  <assignmentRule metaid="_985761" variable="Ir">
+    <math xmlns="http://www.w3.org/1998/Math/MathML">
+      <piecewise>
+        <piece>
+          <cn> 0 </cn>
+          <apply>
+            <and/>
+            <apply>
+              <geq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 0 </cn>
+            </apply>
+            <apply>
+              <leq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 90 </cn>
+            </apply>
+          </apply>
+        </piece>
+        <piece>
+          <cn> 10 </cn>
+          <apply>
+            <and/>
+            <apply>
+              <geq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 91 </cn>
+            </apply>
+            <apply>
+              <leq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 92 </cn>
+            </apply>
+          </apply>
+        </piece>
+        <piece>
+          <cn> 0 </cn>
+          <apply>
+            <and/>
+            <apply>
+              <geq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 93 </cn>
+            </apply>
+            <apply>
+              <leq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 113 </cn>
+            </apply>
+          </apply>
+        </piece>
+        <piece>
+          <cn> 10 </cn>
+          <apply>
+            <and/>
+            <apply>
+              <geq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 114 </cn>
+            </apply>
+            <apply>
+              <leq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 115 </cn>
+            </apply>
+          </apply>
+        </piece>
+        <piece>
+          <cn> 0 </cn>
+          <apply>
+            <and/>
+            <apply>
+              <geq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 116 </cn>
+            </apply>
+            <apply>
+              <leq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 136 </cn>
+            </apply>
+          </apply>
+        </piece>
+        <piece>
+          <cn> 10 </cn>
+          <apply>
+            <and/>
+            <apply>
+              <geq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 137 </cn>
+            </apply>
+            <apply>
+              <leq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 138 </cn>
+            </apply>
+          </apply>
+        </piece>
+        <piece>
+          <cn> 0 </cn>
+          <apply>
+            <and/>
+            <apply>
+              <geq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 139 </cn>
+            </apply>
+            <apply>
+              <leq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 159 </cn>
+            </apply>
+          </apply>
+        </piece>
+        <piece>
+          <cn> 10 </cn>
+          <apply>
+            <and/>
+            <apply>
+              <geq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 160 </cn>
+            </apply>
+            <apply>
+              <leq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 161 </cn>
+            </apply>
+          </apply>
+        </piece>
+        <piece>
+          <cn> 0 </cn>
+          <apply>
+            <and/>
+            <apply>
+              <geq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 162 </cn>
+            </apply>
+            <apply>
+              <leq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 252 </cn>
+            </apply>
+          </apply>
+        </piece>
+        <piece>
+          <cn> 10 </cn>
+          <apply>
+            <and/>
+            <apply>
+              <geq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 253 </cn>
+            </apply>
+            <apply>
+              <leq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 254 </cn>
+            </apply>
+          </apply>
+        </piece>
+        <piece>
+          <cn> 0 </cn>
+          <apply>
+            <and/>
+            <apply>
+              <geq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 255 </cn>
+            </apply>
+            <apply>
+              <leq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 275 </cn>
+            </apply>
+          </apply>
+        </piece>
+        <piece>
+          <cn> 10 </cn>
+          <apply>
+            <and/>
+            <apply>
+              <geq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 276 </cn>
+            </apply>
+            <apply>
+              <leq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 277 </cn>
+            </apply>
+          </apply>
+        </piece>
+        <piece>
+          <cn> 0 </cn>
+          <apply>
+            <and/>
+            <apply>
+              <geq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 278 </cn>
+            </apply>
+            <apply>
+              <leq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 298 </cn>
+            </apply>
+          </apply>
+        </piece>
+        <piece>
+          <cn> 10 </cn>
+          <apply>
+            <and/>
+            <apply>
+              <geq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 299 </cn>
+            </apply>
+            <apply>
+              <leq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 300 </cn>
+            </apply>
+          </apply>
+        </piece>
+        <piece>
+          <cn> 0 </cn>
+          <apply>
+            <and/>
+            <apply>
+              <geq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 301 </cn>
+            </apply>
+            <apply>
+              <leq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 321 </cn>
+            </apply>
+          </apply>
+        </piece>
+        <piece>
+          <cn> 10 </cn>
+          <apply>
+            <and/>
+            <apply>
+              <geq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 322 </cn>
+            </apply>
+            <apply>
+              <leq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 323 </cn>
+            </apply>
+          </apply>
+        </piece>
+        <otherwise>
+          <cn> 0 </cn>
+        </otherwise>
+      </piecewise>
+    </math>
+  </assignmentRule>
+  <assignmentRule metaid="_985764" variable="phi_b_s">
+    <math xmlns="http://www.w3.org/1998/Math/MathML">
+      <apply>
+        <divide/>
+        <cn> 1 </cn>
+        <apply>
+          <plus/>
+          <cn> 1 </cn>
+          <apply>
+            <exp/>
+            <apply>
+              <divide/>
+              <apply>
+                <minus/>
+                <apply>
+                  <minus/>
+                  <apply>
+                    <log/>
+                    <logbase>
+                      <cn type="integer"> 10 </cn>
+                    </logbase>
+                    <apply>
+                      <times/>
+                      <cn> 1 </cn>
+                      <ci> s </ci>
+                    </apply>
+                  </apply>
+                  <ci> sb </ci>
+                </apply>
+              </apply>
+              <ci> delta_b </ci>
+            </apply>
+          </apply>
+        </apply>
+      </apply>
+    </math>
+  </assignmentRule>
+  <assignmentRule metaid="_985767" variable="phi_r_s">
+    <math xmlns="http://www.w3.org/1998/Math/MathML">
+      <apply>
+        <divide/>
+        <cn> 1 </cn>
+        <apply>
+          <plus/>
+          <cn> 1 </cn>
+          <apply>
+            <exp/>
+            <apply>
+              <divide/>
+              <apply>
+                <minus/>
+                <apply>
+                  <minus/>
+                  <apply>
+                    <log/>
+                    <logbase>
+                      <cn type="integer"> 10 </cn>
+                    </logbase>
+                    <apply>
+                      <times/>
+                      <cn> 1 </cn>
+                      <ci> s </ci>
+                    </apply>
+                  </apply>
+                  <ci> sr </ci>
+                </apply>
+              </apply>
+              <ci> delta_r </ci>
+            </apply>
+          </apply>
+        </apply>
+      </apply>
+    </math>
+  </assignmentRule>
+  <assignmentRule metaid="_985770" variable="Is">
+    <math xmlns="http://www.w3.org/1998/Math/MathML">
+      <piecewise>
+        <piece>
+          <cn> 10 </cn>
+          <apply>
+            <and/>
+            <apply>
+              <gt/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 0 </cn>
+            </apply>
+            <apply>
+              <leq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 90 </cn>
+            </apply>
+          </apply>
+        </piece>
+        <piece>
+          <cn> 0 </cn>
+          <apply>
+            <and/>
+            <apply>
+              <gt/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 90 </cn>
+            </apply>
+            <apply>
+              <leq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 180 </cn>
+            </apply>
+          </apply>
+        </piece>
+        <piece>
+          <cn> 10 </cn>
+          <apply>
+            <and/>
+            <apply>
+              <gt/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 180 </cn>
+            </apply>
+            <apply>
+              <leq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 270 </cn>
+            </apply>
+          </apply>
+        </piece>
+        <piece>
+          <cn> 0 </cn>
+          <apply>
+            <and/>
+            <apply>
+              <gt/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 270 </cn>
+            </apply>
+            <apply>
+              <leq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 360 </cn>
+            </apply>
+          </apply>
+        </piece>
+        <otherwise>
+          <cn> 0 </cn>
+        </otherwise>
+      </piecewise>
+    </math>
+  </assignmentRule>
+</listOfRules>
+</model>
+</sbml>

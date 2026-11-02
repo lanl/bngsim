@@ -158,6 +158,34 @@ def test_a_job_can_set_its_own_atol():
     assert atols == {"a": 1e-12, "b": 1e-21}
 
 
+def test_each_later_method_waits_on_its_own_models_first(monkeypatch, tmp_path):
+    """Issue #1386: specs go out model by model, so a model's two methods ran
+    side by side and each compiled the code both load (106 compiles for the
+    manifest's 53 libraries). main() hands schedule a ``depends_on`` that makes
+    every later method wait on its own model's first, a spec of the run."""
+    seen = {}
+
+    class _Stop(Exception):
+        pass
+
+    def schedule(specs, target, **kw):
+        seen.update(specs=specs, kw=kw)
+        raise _Stop
+
+    monkeypatch.setattr(F.asens, "schedule", schedule)
+    with pytest.raises(_Stop):
+        F.main(["--models", "blbr,mwc", "--out", str(tmp_path / "report.json")])
+    keys = {s["key"] for s in seen["specs"]}
+    waits = {s["key"]: seen["kw"]["depends_on"](s) for s in seen["specs"]}
+    assert waits == {
+        "blbr|sens/staggered": None,
+        "blbr|sens/simultaneous": "blbr|sens/staggered",
+        "mwc|sens/staggered": None,
+        "mwc|sens/simultaneous": "mwc|sens/staggered",
+    }
+    assert {w for w in waits.values() if w} <= keys
+
+
 def _ramp(peak, n_t=21, n_sp=2):
     """A column that rises to ``peak``, a little differently per species."""
     t = np.linspace(0.0, 1.0, n_t)

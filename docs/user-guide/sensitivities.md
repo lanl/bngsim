@@ -90,17 +90,19 @@ honest answer.
 
 ### An amount in a compartment whose size changes
 
-A species with `hasOnlySubstanceUnits` in a compartment that a rate rule or an
-assignment rule resizes is held as an amount and **reported by `run()` as
-`amount/V_live(t)`**. Its sensitivity row is the derivative of that reported
-column: the quotient rule, with the compartment's own derivative in it, so a
-parameter that only moves the volume has its column (issue #742). The row used
+A species with `hasOnlySubstanceUnits` in a compartment that a rate rule, an
+assignment rule or an event resizes is held as an amount and **reported by
+`run()` as `amount/V_live(t)`** (after an event, since issue #1368; it read the
+amount over the starting size). Its sensitivity row is the derivative of that
+reported column: the quotient rule, with the compartment's own derivative in
+it, so a parameter that only moves the volume has its column (issue #742). The row used
 to be the derivative of the stored amount: too large by `V_live/V_static`, and
 an exact 0 for such a parameter. With `V' = g` and `X ->` at `k*X`, dX/dg at
 t = 4 is -0.5958, and was 0.
 
 The compartment's derivative is the row of its own state where a rate rule
-moves it, and of its rule's expression where an assignment rule sets it. Where
+moves it, of its rule's expression where an assignment rule sets it, and of its
+observable where an event resizes it. Where
 that expression's row is not available (a `piecewise` in the rule, which #198
 refuses), the species' row is `NaN`, the run warns naming it, and it is in
 `result.ar_sensitivity_refused` beside the assignment-rule species above.
@@ -108,7 +110,8 @@ refuses), the species' row is `NaN`, the run warns naming it, and it is in
 A species that an assignment rule sets *and* that sits in such a compartment
 gets the same quotient rule, through its rule's row (issue #787): `T := 2*P` in
 `C := 1 + P` reports `2P/(1 + P)`, and d[T]/dkp at t = 1 is 0.4988. Its row was
-`NaN`. `output_sensitivities("species:T")` returns the same row.
+`NaN`. `output_sensitivities("species:T")` returns the same row, in a
+compartment an event resizes too.
 
 A function that reads `rateOf` has no expression output sensitivity: there is
 no live derivative to read at an output point. That holds for that function and
@@ -1019,6 +1022,12 @@ loss, grad = result.sse_gradient(
     data_subset, species_indices=[0, 2]
 )
 
+# Data measured on observables rather than species
+loss, grad = result.sse_gradient(obs_data, target="observables")
+loss, grad = result.chi2_gradient(
+    obs_data[:, [1]], sigma=0.1, target="observables", observable_indices=[1]
+)
+
 # Direct use with scipy L-BFGS-B
 from scipy.optimize import minimize
 def objective(p_vec):
@@ -1028,6 +1037,13 @@ def objective(p_vec):
     return result.sse_gradient(data)  # returns (loss, grad)
 opt = minimize(objective, x0, method='L-BFGS-B', jac=True)
 ```
+
+`target` names what the data is compared with: `"species"` (the default)
+through `result.sensitivities`, or `"observables"` through
+`result.sensitivities_observables`. The shape of the data does not decide it.
+On a model with as many observables as species the two shapes are the same,
+and observable data passed without `target="observables"` is scored against
+the species, with no error (issue #1363).
 
 All methods return `(loss_value, gradient_vector)` — the format expected by
 `scipy.optimize.minimize(..., jac=True)`. For custom objectives not covered
