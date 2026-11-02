@@ -5,13 +5,14 @@ one simulator and ``reset()``-ing state between replicates, instead of cloning +
 reconstructing a simulator per replicate (the old ensemble pattern). The
 contract under test:
 
-- It is **answer-invariant**: replicate *i* (seed ``base+i``) is byte-identical
-  to the clone-per-replicate reference run with the same seed, because reusing
-  the simulator only reuses topology (the cached dependency graph) and reset
-  restores initial state. Verified on a mass-action model and a functional /
+- It is **answer-invariant**: replicate *i* (seed ``derived_seeds(base, n)[i]``)
+  is byte-identical to the clone-per-replicate reference run with the same seed,
+  because reusing the simulator only reuses topology (the cached dependency
+  graph) and reset restores initial state. Verified on a mass-action model and a functional /
   time-dependent model (the latter exercises the per-step ExprTk path).
 - The parallel path (clone once per worker thread) matches the sequential path.
-- Seeds are ``base_seed + i`` and exposed via ``Result.seed``.
+- Seeds are ``derived_seeds(base_seed, n)`` (issue #1365) and exposed via
+  ``Result.seed``.
 - It is stochastic-only and validates its arguments.
 """
 

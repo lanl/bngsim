@@ -14,7 +14,8 @@ The contract:
 - ``Result.seed`` exposes the integer that was passed down to the
   backend (``None`` for ODE).
 - ``Simulator.run_batch`` resolves a single ``base_seed`` per call;
-  per-sim seeds are ``base_seed + i`` and stamped onto each ``Result``.
+  per-sim seeds are ``derived_seeds(base_seed, n)``, row 0's the base itself
+  (issue #1365), and stamped onto each ``Result``.
 - Sessions: ``initialize(seed=...)`` follows the same contract; the
   session's ``seed`` property and every ``Result.seed`` from
   ``simulate()`` carry the resolved integer.

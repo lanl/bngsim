@@ -5852,15 +5852,15 @@ class Simulator:
         params : sequence of dict[str, float]
             Parameter sets. Each dict maps parameter names to values.
         seed : int, optional
-            Base random seed for stochastic methods. Simulation *i*
-            uses a seed derived from ``(base_seed, i)`` by numpy's
-            ``SeedSequence``, so batches from nearby bases share nothing
-            (issue #1365); the seeds of one batch are distinct. When omitted
-            (or ``None``),
-            ``base_seed`` is drawn fresh from system entropy on each
-            call so consecutive batches produce independent
-            trajectories. The actual per-sim seed is exposed via
-            ``Result.seed`` on each result.
+            Base random seed for stochastic methods. Simulation 0 uses
+            ``base_seed`` itself and simulation *i* > 0 a seed derived from
+            ``(base_seed, i)`` by numpy's ``SeedSequence``, so batches from
+            nearby bases share nothing (issue #1365); the seeds of one batch
+            are distinct. When omitted (or ``None``), ``base_seed`` is drawn
+            fresh from system entropy on each call so consecutive batches
+            produce independent trajectories. The actual per-sim seed is
+            exposed via ``Result.seed`` on each result; simulation 0's is the
+            base, so ``seed=results[0].seed`` reruns the whole batch.
         rtol : float, optional
             Relative tolerance for ODE solver.
         atol : float or array_like or ``"auto"``, optional
@@ -6069,7 +6069,8 @@ class Simulator:
 
         # Each row's seed, derived from the base (issue #1365), before any row
         # runs, so a thread draws the same seed for a row as the sequential path.
-        row_seeds = derived_seeds(base_seed, n_sims)
+        # An ODE row reads none.
+        row_seeds = derived_seeds(base_seed, n_sims) if self._method != "ode" else [0] * n_sims
 
         def _run_one(i: int) -> Result:
             """Run simulation i (thread-safe, GIL released)."""
@@ -6149,12 +6150,14 @@ class Simulator:
         :meth:`Model.reset` first to start each from the initial conditions.
         The model is left in the state it was in at the call.
 
-        Replicate *i* uses a seed derived from ``(seed_base, i)`` by numpy's
-        ``SeedSequence`` (``seed_base`` resolved once from ``seed``, or from
-        system entropy when ``seed is None``; each value is exposed via the
-        corresponding ``Result.seed``, and :meth:`run` from it repeats that
-        replicate), matching the seed schedule :meth:`run_batch` uses across
-        parameter points. It was ``seed_base + i``, so an ensemble from seed 1
+        Replicate 0 uses ``seed_base`` itself and replicate *i* > 0 a seed
+        derived from ``(seed_base, i)`` by numpy's ``SeedSequence``
+        (``seed_base`` resolved once from ``seed``, or from system entropy when
+        ``seed is None``; each value is exposed via the corresponding
+        ``Result.seed``, and :meth:`run` from it repeats that replicate),
+        matching the seed schedule :meth:`run_batch` uses across parameter
+        points. Replicate 0's seed is the base, so ``seed=reps[0].seed`` reruns
+        the whole ensemble. It was ``seed_base + i``, so an ensemble from seed 1
         was the one from seed 0 shifted by one replicate, 49 of 50 trajectories
         the same (issue #1365); the derived seeds of nearby bases are
         unrelated, and the seeds of one ensemble are distinct.
@@ -6879,10 +6882,11 @@ class Simulator:
             ``value * NA * Vecf``) — the model-specific bookkeeping the primitive
             cannot infer on its own.
         seed : int, optional
-            Base seed for stochastic methods; point *i* uses a seed derived
-            from ``(seed_base, i)`` by numpy's ``SeedSequence``, as
-            :meth:`run_batch` does (issue #1365; drawn fresh from entropy when
-            ``None``). Ignored for ODE.
+            Base seed for stochastic methods; point 0 uses ``seed_base``
+            itself and point *i* > 0 a seed derived from ``(seed_base, i)`` by
+            numpy's ``SeedSequence``, as :meth:`run_batch` does (issue #1365;
+            drawn fresh from entropy when ``None``, and point 0's
+            ``Result.seed`` reruns the whole scan). Ignored for ODE.
         rtol, atol, max_steps, max_step, timeout, steady_state, steady_state_tol
             Per-simulation solver options, forwarded to :meth:`run`. ``atol``
             may be a per-species vector or ``"auto"`` (issue #196); it is
@@ -7037,8 +7041,8 @@ class Simulator:
             self._model._core.set_event_carry_state(invocation_sens[3])
 
         base_seed = _resolve_seed(seed) if self._method != "ode" else 0
-        # Point i's seed, derived from the base (issue #1365).
-        scan_seeds = derived_seeds(base_seed, len(values))
+        # Point i's seed, derived from the base (issue #1365). An ODE point reads none.
+        scan_seeds = derived_seeds(base_seed, len(values)) if self._method != "ode" else []
 
         results: list[Result] = []
         try:

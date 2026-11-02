@@ -4,15 +4,15 @@ Row *i* was seeded ``base + i``, so an ensemble from seed 1 was the one from
 seed 0 shifted by a row: 49 of 50 trajectories bit-identical, and error bars or
 between-ensemble comparisons built from consecutive bases looked far tighter
 than they are. Each row's seed is now derived from ``(base, i)`` by numpy's
-``SeedSequence``: nearby bases are unrelated, one call's seeds are distinct, and
-``Result.seed`` still reruns its row alone.
+``SeedSequence``, row 0's excepted: it keeps the base, so a call made with
+``seed=None`` still reruns whole from ``rows[0].seed``. Nearby bases are
+unrelated, one call's seeds are distinct, and ``Result.seed`` still reruns its
+row alone.
 
 A birth-death network, 0 -> A at k1 = 20, A -> 0 at k2 = 1, from A = 0.
 """
 
 from __future__ import annotations
-
-import warnings
 
 import bngsim
 import numpy as np
@@ -57,10 +57,8 @@ def test_batches_from_neighbouring_bases_share_no_trajectory(net):
 
 
 def test_scans_from_neighbouring_bases_share_no_trajectory(net):
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        s0 = _sim(net).parameter_scan("k1", par_scan_vals=[20.0] * 8, seed=0, **RUN)
-        s1 = _sim(net).parameter_scan("k1", par_scan_vals=[20.0] * 8, seed=1, **RUN)
+    s0 = _sim(net).parameter_scan("k1", par_scan_vals=[20.0] * 8, seed=0, **RUN)
+    s1 = _sim(net).parameter_scan("k1", par_scan_vals=[20.0] * 8, seed=1, **RUN)
     assert _paths(s0).isdisjoint(_paths(s1))
 
 
@@ -89,8 +87,35 @@ def test_the_seeds_of_one_call_are_distinct_and_fit_the_backends():
 
 def test_a_rows_seed_does_not_depend_on_how_many_rows_there_are():
     assert derived_seeds(3, 10) == derived_seeds(3, 1000)[:10]
+    assert derived_seeds(3, 1) == [3]
     assert derived_seeds(3, 0) == []
 
 
 def test_bases_next_to_each_other_share_no_seed():
     assert set(derived_seeds(0, 1000)).isdisjoint(derived_seeds(1, 1000))
+
+
+def test_row_0_runs_at_the_base_so_an_unseeded_call_reruns_whole(net):
+    """seed=None draws the base from entropy and reports it nowhere but row 0's
+    Result.seed, so seed=rows[0].seed reruns the whole call, as it did under
+    base + i. With every row derived, that rerun came back with other seeds
+    and other trajectories, and nothing said so."""
+    reps = _sim(net).run_replicates(6, **RUN)
+    again = _sim(net).run_replicates(6, seed=reps[0].seed, **RUN)
+    assert [r.seed for r in again] == [r.seed for r in reps]
+    assert _paths(again) == _paths(reps)
+
+    rows = _sim(net).run_batch(params=[{}] * 4, **RUN)
+    rerun = _sim(net).run_batch(params=[{}] * 4, seed=rows[0].seed, **RUN)
+    assert [r.seed for r in rerun] == [r.seed for r in rows]
+
+    pts = _sim(net).parameter_scan("k1", par_scan_vals=[20.0] * 4, **RUN)
+    pts_again = _sim(net).parameter_scan("k1", par_scan_vals=[20.0] * 4, seed=pts[0].seed, **RUN)
+    assert [r.seed for r in pts_again] == [r.seed for r in pts]
+
+
+def test_a_one_row_batch_is_a_run_at_the_base(net):
+    row = _sim(net).run_batch(params=[{}], seed=11, **RUN)[0]
+    one = _sim(net).run(seed=11, **RUN)
+    assert row.seed == 11
+    np.testing.assert_array_equal(np.asarray(row.species), np.asarray(one.species))
