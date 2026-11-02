@@ -5853,12 +5853,12 @@ class Simulator:
             Parameter sets. Each dict maps parameter names to values.
         seed : int, optional
             Base random seed for stochastic methods. Simulation 0 uses
-            ``base_seed`` itself and simulation *i* > 0 a seed derived from
-            ``(base_seed, i)`` by numpy's ``SeedSequence``, so batches from
-            nearby bases share nothing (issue #1365); the seeds of one batch
-            are distinct. When omitted (or ``None``), ``base_seed`` is drawn
-            fresh from system entropy on each call so consecutive batches
-            produce independent trajectories. The actual per-sim seed is
+            ``base_seed`` itself and simulation *i* > 0 a seed drawn from
+            numpy's ``SeedSequence(base_seed)``, so batches from nearby bases
+            share nothing (issue #1365); the seeds of one batch are distinct.
+            When omitted (or ``None``), ``base_seed`` is drawn fresh from
+            system entropy on each call so consecutive batches produce
+            independent trajectories. The actual per-sim seed is
             exposed via ``Result.seed`` on each result; simulation 0's is the
             base, so ``seed=results[0].seed`` reruns the whole batch.
         rtol : float, optional
@@ -6151,16 +6151,16 @@ class Simulator:
         The model is left in the state it was in at the call.
 
         Replicate 0 uses ``seed_base`` itself and replicate *i* > 0 a seed
-        derived from ``(seed_base, i)`` by numpy's ``SeedSequence``
-        (``seed_base`` resolved once from ``seed``, or from system entropy when
-        ``seed is None``; each value is exposed via the corresponding
-        ``Result.seed``, and :meth:`run` from it repeats that replicate),
-        matching the seed schedule :meth:`run_batch` uses across parameter
-        points. Replicate 0's seed is the base, so ``seed=reps[0].seed`` reruns
-        the whole ensemble. It was ``seed_base + i``, so an ensemble from seed 1
-        was the one from seed 0 shifted by one replicate, 49 of 50 trajectories
-        the same (issue #1365); the derived seeds of nearby bases are
-        unrelated, and the seeds of one ensemble are distinct.
+        drawn from numpy's ``SeedSequence(seed_base)`` (``seed_base`` resolved
+        once from ``seed``, or from system entropy when ``seed is None``; each
+        value is exposed via the corresponding ``Result.seed``, and :meth:`run`
+        from it repeats that replicate), matching the seed schedule
+        :meth:`run_batch` uses across parameter points. Replicate 0's seed is
+        the base, so ``seed=reps[0].seed`` reruns the whole ensemble. It was
+        ``seed_base + i``, so an ensemble from seed 1 was the one from seed 0
+        shifted by one replicate, 49 of 50 trajectories the same (issue #1365);
+        the derived seeds of nearby bases are unrelated, and the seeds of one
+        ensemble are distinct.
 
         Sequential execution (``num_processors`` ``None`` or ``1``) reuses this
         simulator directly. Parallel execution clones the model **once per worker
@@ -6883,8 +6883,8 @@ class Simulator:
             cannot infer on its own.
         seed : int, optional
             Base seed for stochastic methods; point 0 uses ``seed_base``
-            itself and point *i* > 0 a seed derived from ``(seed_base, i)`` by
-            numpy's ``SeedSequence``, as :meth:`run_batch` does (issue #1365;
+            itself and point *i* > 0 a seed drawn from numpy's
+            ``SeedSequence(seed_base)``, as :meth:`run_batch` does (issue #1365;
             drawn fresh from entropy when ``None``, and point 0's
             ``Result.seed`` reruns the whole scan). Ignored for ODE.
         rtol, atol, max_steps, max_step, timeout, steady_state, steady_state_tol

@@ -5,7 +5,7 @@ seed from system entropy so that consecutive calls produce independent
 trajectories. When the caller passes an explicit integer, use it verbatim
 for reproducibility.
 
-The contract is described in `bngsim/README.md` under "Seed semantics for
+The contract is described in `docs/quickstart.md` under "Seed semantics for
 stochastic methods" and is exercised by `python/tests/test_seed_semantics.py`.
 """
 
@@ -32,16 +32,16 @@ def _resolve_seed(seed: int | None) -> int:
     An integer → returned as-is via ``int(...)``.
 
     The fresh draw is 31 bits so the result always fits in a signed
-    32-bit C int (the underlying NFsim/RuleMonkey/SSA backends accept
-    ``int32`` seeds).
+    32-bit C int. The bindings take ``uint64_t``, but NFsim narrows a seed
+    to ``unsigned long``, which is 32 bits on Windows.
     """
     if seed is None:
         return secrets.randbits(31)
     return int(seed)
 
 
-# The width _resolve_seed draws to, and every seed derived_seeds draws keeps:
-# the NFsim/RuleMonkey/SSA backends take a signed 32-bit seed.
+# The width _resolve_seed draws to, and every seed derived_seeds draws keeps, so
+# a seed bngsim draws itself is the same number on every backend and platform.
 _SEED_MASK = 0x7FFFFFFF
 
 

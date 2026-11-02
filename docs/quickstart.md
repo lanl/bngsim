@@ -126,12 +126,13 @@ The same contract applies to `Simulator.run_batch`,
 `NfsimSession.initialize`, and `RuleMonkeySession.initialize`. For
 `run_batch`, `run_replicates` and `parameter_scan`, the resolved value is the
 **base** seed. Row 0 runs at the base itself, so `seed=rows[0].seed` reruns the
-whole call, a drawn base included. Each later row's seed is derived from
-`(base_seed, i)` by numpy's `SeedSequence`. Every row's seed is stamped onto its
-`Result.seed`, so `run(seed=r.seed)` repeats that row. Bases next to each other
-give unrelated seeds, and the seeds of one call are distinct. They were
-`base_seed + i`, which made an ensemble from seed 1 the one from seed 0 shifted
-by a row (issue #1365).
+whole call, a drawn base included. Rows 1, 2, … take, in order, the distinct
+values other than the base among the 32-bit words of numpy's
+`SeedSequence(base_seed).generate_state(...)`, each masked to 31 bits. Every
+row's seed is stamped onto its `Result.seed`, so `run(seed=r.seed)` repeats that
+row. Bases next to each other give unrelated seeds, and the seeds of one call are
+distinct. They were `base_seed + i`, which made an ensemble from seed 1 the one
+from seed 0 shifted by a row (issue #1365).
 
 `Result.seed` is `None` for ODE results and round-trips through HDF5
 `Result.save()` / `Result.load()`. For sessions, the seed used by
