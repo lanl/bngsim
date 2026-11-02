@@ -90,8 +90,11 @@ def test_the_model_still_reaches_the_upstream_defect(monkeypatch):
     Were it not refused, the tests below could pass on a model that no longer
     reaches the defect, so this one fails instead and asks for another model.
     Its message is also the refusal a system SUNDIALS, which lacks the carry,
-    gives."""
+    gives. The sensitivity RHS's reading at the value RHS's own state (#1298) is
+    off too: with it, the run is never refused on the way, so it never comes to
+    the stretch the carry restores."""
     monkeypatch.setenv("BNGSIM_SUNDIALS_STAGGERED_RESTORE", "0")
+    monkeypatch.setenv("BNGSIM_SENS_AT_VALUE_STATE", "0")
     with pytest.raises(bngsim.SimulationError, match="does not span it"):
         _sens_run()
 

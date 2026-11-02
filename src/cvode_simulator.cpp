@@ -789,6 +789,20 @@ struct CvodeUserData {
     // is what turns the retry off.
     std::vector<double> sens_zero_atol;
     std::vector<double> sens_zero_scratch;
+
+    // Issue #1298: where the value RHS's last call at (off_y_t, off_y_from)
+    // read f at another state than that y (the GH #135 clamp, or the #1340
+    // reading near 0 after it), that state, off_y_state. CVODES calls the
+    // sensitivity RHS at the same (t, y) next, with the f it was handed, and
+    // reads its columns there too. A later call at that (t, y) that reads f at
+    // y itself clears it, and so does a new run. Kept only where note_off_y is
+    // set: a run with the compiled sensitivity RHS, unless
+    // BNGSIM_SENS_AT_VALUE_STATE=0.
+    bool note_off_y = false;
+    bool off_y_valid = false;
+    double off_y_t = 0.0;
+    std::vector<double> off_y_from;
+    std::vector<double> off_y_state;
 };
 
 // CVODE's error-weight callback for the tracking absolute tolerance (issue
@@ -863,6 +877,7 @@ static void record_clamp_tolerances(CvodeUserData &data, void *cvode_mem, double
     data.clamp_cvode_mem = cvode_mem;
     data.clamp_far_any = false;
     data.below_zero_refusal.clear();
+    data.off_y_valid = false;
     if (!atol_v.empty()) {
         data.clamp_atol = atol_v;
     } else {
@@ -976,6 +991,35 @@ static double *clamp_state_near_zero(CvodeUserData *data, N_Vector y, const char
                              data->rhs_nonneg_scratch))
         return nullptr;
     return data->rhs_nonneg_scratch.data();
+}
+
+// The state the value RHS's last call at (t, y) read f at, where that was not y
+// itself (CvodeUserData::off_y_state, issue #1298); null where it was y, or
+// where no call at this (t, y) has been recorded.
+static double *value_rhs_state_off_y(CvodeUserData *data, sunrealtype t, const double *y_ptr) {
+    if (!data->off_y_valid || data->off_y_t != static_cast<double>(t) ||
+        !std::equal(data->off_y_from.begin(), data->off_y_from.end(), y_ptr))
+        return nullptr;
+    return data->off_y_state.data();
+}
+
+// What the value RHS's callbacks record, on their way out with a finite f, of
+// where they read it: `state` (the retry's) for (t, y), or y itself where
+// `state` is null.
+static void note_value_rhs_state(CvodeUserData *data, sunrealtype t, const double *y_ptr,
+                                 const double *state) {
+    if (state == nullptr) {
+        if (value_rhs_state_off_y(data, t, y_ptr) != nullptr)
+            data->off_y_valid = false;
+        return;
+    }
+    if (!data->note_off_y)
+        return;
+    const auto n = static_cast<std::size_t>(data->model->n_species());
+    data->off_y_from.assign(y_ptr, y_ptr + n);
+    data->off_y_state.assign(state, state + n);
+    data->off_y_t = static_cast<double>(t);
+    data->off_y_valid = true;
 }
 
 // The slots the clamp leaves alone at `y`: where `values` (the right-hand side
@@ -1193,7 +1237,11 @@ static bool drained_through_band(CvodeUserData *data, N_Vector y, double t, cons
 // claim entirely — `BIOMD0000000374` carries a species `V_membrane = -61` — and
 // `∂/∂n base^n` does not exist there at all, so that component is left alone and
 // its NaN survives to the GH #384/#386 refusal rather than being answered with a
-// confident `0`.
+// confident `0`. (That case is now also the clamp mask's to keep (#706): a slot
+// negative by design is read at its value by the value RHS too, by its clamp
+// and, past its atol, by the reading near 0 after it (#1340), so the
+// sensitivity RHS's second retry, at the state the value RHS read f at (issue
+// #1298), leaves it to the same refusal.)
 //
 // This is not the clamp GH #93 removed. That one was unconditional and lived on
 // one side of a pair: the interpreted Michaelis-Menten RHS clamped `sFree` where
@@ -1813,7 +1861,12 @@ static int cvode_rhs_body(sunrealtype t, N_Vector y, N_Vector ydot, void *user_d
                 return -1;
             return 1; // still non-finite (e.g. inf from 1/conc) -> recoverable
         }
+        // The run integrates f at the retry's state here, and the sensitivity
+        // RHS reads its columns there too (issue #1298).
+        note_value_rhs_state(data, t, y_ptr, data->rhs_nonneg_scratch.data());
+        return 0;
     }
+    note_value_rhs_state(data, t, y_ptr, nullptr);
     return 0; // success
 }
 
@@ -1946,7 +1999,12 @@ static int cvode_codegen_rhs_body(sunrealtype t, N_Vector y, N_Vector ydot, void
                 return -1;
             return 1; // still non-finite -> recoverable
         }
+        // The run integrates f at the retry's state here, and the sensitivity
+        // RHS reads its columns there too (issue #1298).
+        note_value_rhs_state(data, t, y_ptr, data->rhs_nonneg_scratch.data());
+        return 0;
     }
+    note_value_rhs_state(data, t, y_ptr, nullptr);
     return 0;
 }
 
@@ -2111,6 +2169,33 @@ static int cvode_codegen_sens_rhs_body(int Ns, sunrealtype t, N_Vector y, N_Vect
         // result falls through to exactly the disposition below.
         if (double *clamped = clamp_state_numerically_zero(data, y_ptr)) {
             rc = sens_fn(Ns, static_cast<double>(t), clamped, N_VGetArrayPointer(ydot), iS,
+                         N_VGetArrayPointer(yS), ySdot_ptr, &so_data, N_VGetArrayPointer(tmp1),
+                         N_VGetArrayPointer(tmp2));
+            if (rc != 0) {
+                return rc;
+            }
+            if (!rhs_has_nonfinite(data, ySdot_ptr)) {
+                return 0;
+            }
+        }
+        // Issue #1298: then at the state the value RHS read f at, where that
+        // was not y. CVODES hands this RHS the f its last call at (t, y)
+        // returned, and where that call's reading at y was non-finite it is f
+        // at the GH #135 clamp's state, or at the #1340 reading near 0 after
+        // it, which the run integrates; its columns are J·s + f_p at that same
+        // state. Read anywhere else, MODEL2001200002's simultaneous run, with
+        // a species a hair below 0 where (L/T)^1.36 is NaN, refused the states
+        // its value RHS took on from: on the closed-form Jacobian it failed at
+        // t = 22, and the GH #176 retry took it again on the difference
+        // quotient, at 4.9 times its plain run's steps. The value RHS records
+        // that state (note_value_rhs_state), so this reads exactly what it
+        // read. Where it read f at y itself, finite at a negative base,
+        // nothing is recorded, and a column NaN there still goes to the
+        // refusal (#392's `pow(x, 4.0)` beside `log(x)`), as does a slot the
+        // clamp leaves alone past its atol (#706). Off with
+        // BNGSIM_SENS_AT_VALUE_STATE=0.
+        if (double *at = value_rhs_state_off_y(data, t, y_ptr)) {
+            rc = sens_fn(Ns, static_cast<double>(t), at, N_VGetArrayPointer(ydot), iS,
                          N_VGetArrayPointer(yS), ySdot_ptr, &so_data, N_VGetArrayPointer(tmp1),
                          N_VGetArrayPointer(tmp2));
             if (rc != 0) {
@@ -5546,6 +5631,13 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(
     {
         const char *recover_env = std::getenv("BNGSIM_SENS_NONFINITE_RECOVER");
         user_data.sens_recover_nonfinite = !(recover_env && std::string(recover_env) == "0");
+        // Issue #1298: the value RHS records where it read f, for the retry
+        // in cvode_codegen_sens_rhs_body. BNGSIM_SENS_AT_VALUE_STATE=0 turns
+        // that retry off, for an A/B of it and for the #1301 guard, whose
+        // model it keeps out of the stretch that reaches the defect.
+        const char *at_value_env = std::getenv("BNGSIM_SENS_AT_VALUE_STATE");
+        user_data.note_off_y =
+            sens_rhs_fn != nullptr && !(at_value_env && std::string(at_value_env) == "0");
     }
 
     // GH #392: the width of the band below zero the sensitivity RHS is allowed
