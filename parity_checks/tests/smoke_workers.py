@@ -29,3 +29,41 @@ def branch_worker(spec: dict, q) -> None:
         hang_worker(spec, q)
     else:
         echo_worker(spec, q)
+
+
+def screen_worker(
+    spec: dict, n, seed_base, mean_z_tol, max_failures, min_mean_count, self_z_tol, q
+):
+    """Stands in for ``ssa_screen._worker`` (same signature), by ``spec["name"]``:
+
+    - ``fast``: a pass at once;
+    - ``slow_rr``: bngsim for 0.2 s, then RoadRunner until 2.5 s, which leaves a
+      marker in ``spec["rr_done"]`` (and, on a recording, its archive) before the
+      final pass;
+    - ``prelim``: a red row at once (as ``_worker`` puts before judging a refused
+      propensity), then, at 3 s, a different final row;
+    - ``late``: a red row at 2.5 s, past the cap, then never finishes;
+    - ``hang``: never finishes.
+    """
+    from pathlib import Path
+
+    t0 = time.monotonic()
+    name = spec["name"]
+    if name == "fast":
+        q.put({"name": name, "status": "pass"})
+    elif name == "slow_rr":
+        time.sleep(2.5 - (time.monotonic() - t0))
+        Path(spec["rr_done"], name).write_text("rr")
+        if spec.get("write_reference_archive"):
+            Path(spec["write_reference_archive"], f"{name}.saved").write_text("rr")
+        q.put({"name": name, "status": "pass"})
+    elif name == "prelim":
+        q.put({"name": name, "status": "error", "error": "the red row first"})
+        time.sleep(3.0 - (time.monotonic() - t0))
+        q.put({"name": name, "status": "nonfinite_rate"})
+    elif name == "late":
+        time.sleep(2.5 - (time.monotonic() - t0))
+        q.put({"name": name, "status": "error", "error": "a red row past the cap"})
+        time.sleep(30)
+    else:
+        time.sleep(30)

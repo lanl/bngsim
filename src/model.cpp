@@ -1074,10 +1074,20 @@ bool is_itself_a_comparison(const std::string &operand) {
     return false;
 }
 
+// The comparison a single-comparison trigger makes (issue #947): the residual
+// oriented to rise where the trigger turns true, with whitespace dropped, and
+// whether the comparison is strict.
+struct TriggerComparison {
+    std::string rising;
+    bool strict = false;
+};
+
 // Build `(<lhs>)-(<rhs>)` from a preprocessed trigger, or return nullopt with
-// `why` describing what defeated the split.
+// `why` describing what defeated the split. Where `cmp` is given and the
+// comparison is an ordering (< <= > >=), it receives that comparison.
 std::optional<std::string> trigger_residual_source(const std::string &trigger, std::string &why,
-                                                   ResidualUse use) {
+                                                   ResidualUse use,
+                                                   TriggerComparison *cmp = nullptr) {
     const std::string s = strip_enclosing_parens(trigger);
     if (s.empty()) {
         why = "it is empty";
@@ -1179,6 +1189,19 @@ std::optional<std::string> trigger_residual_source(const std::string &trigger, s
               "with one";
         return std::nullopt;
     }
+    if (cmp != nullptr && (s[op_pos] == '<' || s[op_pos] == '>')) {
+        auto squeeze = [](const std::string &side) {
+            std::string out = strip_enclosing_parens(side);
+            out.erase(std::remove_if(out.begin(), out.end(),
+                                     [](unsigned char c) { return std::isspace(c) != 0; }),
+                      out.end());
+            return out;
+        };
+        // `tau <= time` and `time >= tau` rise on one residual.
+        cmp->rising = s[op_pos] == '>' ? "(" + squeeze(lhs) + ")-(" + squeeze(rhs) + ")"
+                                       : "(" + squeeze(rhs) + ")-(" + squeeze(lhs) + ")";
+        cmp->strict = op_len == 1;
+    }
     // Orientation is not imposed: dt*/dp is a ratio of two derivatives of g, so
     // negating g leaves it unchanged.
     return "(" + lhs + ")-(" + rhs + ")";
@@ -1199,17 +1222,20 @@ int NetworkModel::event_trigger_residual_expr(int event_idx0, std::string *why) 
         cache.assign(events.size(), -2);
         impl_->event_trigger_residual_species.assign(events.size(), {});
         impl_->event_trigger_residual_reason.assign(events.size(), std::string());
+        impl_->event_trigger_comparison.assign(events.size(), std::string());
+        impl_->event_trigger_strict.assign(events.size(), 0);
     }
     if (cache[event_idx0] == -2) {
         cache[event_idx0] = -1;
         const Event &ev = events[event_idx0];
         std::string reason;
+        TriggerComparison cmp;
         if (ev.trigger_expr_idx < 0) {
             reason = "it has no trigger expression";
         } else {
             const std::string &pre = impl_->evaluator->preprocessed_expr(ev.trigger_expr_idx);
             const std::optional<std::string> src =
-                trigger_residual_source(pre, reason, ResidualUse::EventRisingEdge);
+                trigger_residual_source(pre, reason, ResidualUse::EventRisingEdge, &cmp);
             if (src) {
                 try {
                     // Compiling the *preprocessed* halves keeps every identifier
@@ -1226,6 +1252,8 @@ int NetworkModel::event_trigger_residual_expr(int event_idx0, std::string *why) 
         if (cache[event_idx0] >= 0) {
             expression_support(cache[event_idx0],
                                &impl_->event_trigger_residual_species[event_idx0], nullptr);
+            impl_->event_trigger_comparison[event_idx0] = std::move(cmp.rising);
+            impl_->event_trigger_strict[event_idx0] = cmp.strict ? 1 : 0;
         } else {
             impl_->event_trigger_residual_reason[event_idx0] = reason;
         }
@@ -1342,6 +1370,43 @@ const std::vector<int> &NetworkModel::event_trigger_residual_species(int event_i
         return kEmpty;
     }
     return impl_->event_trigger_residual_species[event_idx0];
+}
+
+const std::string &NetworkModel::event_trigger_comparison(int event_idx0, bool *strict) const {
+    static const std::string kNone;
+    if (strict != nullptr) {
+        *strict = false;
+    }
+    if (event_trigger_residual_expr(event_idx0) < 0) {
+        return kNone;
+    }
+    if (strict != nullptr) {
+        *strict = impl_->event_trigger_strict[event_idx0] != 0;
+    }
+    return impl_->event_trigger_comparison[event_idx0];
+}
+
+std::vector<std::pair<int, int>>
+NetworkModel::strict_beside_non_strict(const std::vector<int> &rising) const {
+    std::vector<std::pair<int, int>> out;
+    if (rising.size() < 2) {
+        return out;
+    }
+    for (int ei : rising) {
+        bool strict = false;
+        const std::string &cmp = event_trigger_comparison(ei, &strict);
+        if (!strict || cmp.empty()) {
+            continue;
+        }
+        const auto twin = std::find_if(rising.begin(), rising.end(), [&](int ej) {
+            bool ej_strict = true;
+            return event_trigger_comparison(ej, &ej_strict) == cmp && !ej_strict;
+        });
+        if (twin != rising.end()) {
+            out.emplace_back(ei, *twin);
+        }
+    }
+    return out;
 }
 
 // ─── What a compiled expression can be differentiated with respect to ────────

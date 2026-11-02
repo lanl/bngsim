@@ -13,6 +13,7 @@
 #include "bngsim/wallclock.hpp"
 #include "param_override_xml.hpp" // shared <Parameter> table + override baking
 #include "seed_count_rounding.hpp"
+#include "tfun_paths.hpp"
 
 // NFsim headers (from vendored libnfsim)
 #include "NFcore/NFcore.hh"
@@ -751,6 +752,10 @@ struct NfsimSimulator::Impl {
     // Parameter overrides: applied via setParameter() before each run
     std::unordered_map<std::string, double> param_overrides;
 
+    // Seed amounts by <Species id=>, written into the XML NFsim parses in
+    // place of each one's concentration= (issue #1373).
+    std::unordered_map<std::string, double> species_amounts;
+
     // BNG XML parameter table — lazily loaded the first time we need to
     // propagate an override to dependents. Populated from the same XML the
     // NFsim System is built from, but kept separate so it remains accessible
@@ -822,29 +827,36 @@ struct NfsimSimulator::Impl {
         // values for parameter-id concentrations; an empty overlay falls back to
         // the XML's own value= attrs. No-op (and no temp file) when every seed
         // concentration is already integer.
-        if (auto rounded = bngsim::seedround::write_seed_rounded_xml(xml_to_load.string(),
-                                                                     resolved_param_values)) {
+        // The same pass writes the caller's seed amounts (issue #1373). Its
+        // fail-safe would load the XML's amounts instead, which is the silent
+        // wrong start this exists to end: every id must come back written.
+        std::vector<std::string> applied;
+        if (auto rounded = bngsim::seedround::write_seed_rounded_xml(
+                xml_to_load.string(), resolved_param_values, species_amounts, &applied)) {
             seed_round_guard.emplace(*rounded);
             xml_to_load = seed_round_guard->path();
         }
-
-        // Resolve relative TFUN/file dependencies against the XML directory.
-        // NFsim opens external files using process CWD, not XML-relative paths.
-        // We chdir to the *original* XML's directory even when loading a
-        // rewritten copy from /tmp, so any TFUN-by-relative-path references
-        // continue to resolve.
-        std::filesystem::path previous_cwd;
-        bool changed_cwd = false;
-        try {
-            std::filesystem::path xml_dir = xml_file.parent_path();
-            if (!xml_dir.empty()) {
-                previous_cwd = std::filesystem::current_path();
-                std::filesystem::current_path(xml_dir);
-                changed_cwd = true;
+        if (applied.size() != species_amounts.size()) {
+            std::string missing;
+            for (const auto &[id, amount] : species_amounts) {
+                if (std::find(applied.begin(), applied.end(), id) == applied.end()) {
+                    missing += (missing.empty() ? "" : ", ") + id;
+                }
             }
-        } catch (...) {
-            // Best effort: if cwd switching fails, keep original cwd behavior.
-            changed_cwd = false;
+            throw std::runtime_error("NfsimSimulator: could not seed species " + missing +
+                                     " with the amounts set for them in " + xml_path);
+        }
+
+        // A TFUN's relative `file=` resolves against the XML the user gave, and
+        // NFsim opens it by the path as written: the copy it reads has each one
+        // absolute (#1314). Changing into the XML's directory instead was
+        // process-wide (every other thread saw it) and an exception out of the
+        // load skipped the change back, leaving the host in that directory.
+        std::optional<TempXmlGuard> tfun_guard;
+        if (auto absolute = bngsim::tfunpath::write_tfun_absolute_xml(xml_to_load.string(),
+                                                                      xml_file.parent_path())) {
+            tfun_guard.emplace(*absolute);
+            xml_to_load = tfun_guard->path();
         }
 
         // Pass through the same-complex-binding-block flag (NFsim ``-bscb``).
@@ -854,7 +866,21 @@ struct NfsimSimulator::Impl {
         // In "C" (#1235): NFsim reads an inline TFUN's values with strtod, so
         // under a decimal-comma LC_NUMERIC a table with a 0.5 in it was refused.
         ::NFcore::System *system = nullptr;
-        {
+        // Most loader stages catch their own throws and return NULL; one that
+        // does not (initCompartments' convertToDouble, a bad_alloc) is reported
+        // the same way, naming the file and relaying NFsim's log (#1314).
+        const auto failed = [&](const std::string &why) {
+            std::string msg = "NfsimSimulator: Failed to load XML file: " + xml_path;
+            if (!why.empty()) {
+                msg += " | " + why;
+            }
+            std::string details = summarize_nfsim_log(suppress.captured_output());
+            if (!details.empty()) {
+                msg += " | NFsim log: " + details;
+            }
+            return std::runtime_error(msg);
+        };
+        try {
             const ScopedCNumericLocale c_numbers;
             system = NFinput::initializeFromXML(
                 xml_to_load.string(),
@@ -867,23 +893,14 @@ struct NfsimSimulator::Impl {
                 // on). Without this NFsim drops such rules at parse and the write is
                 // silently a no-op (GH #44).
                 /*keepZeroRateReactions=*/true);
-        }
-
-        if (changed_cwd) {
-            try {
-                std::filesystem::current_path(previous_cwd);
-            } catch (...) {
-                // Ignore restoration failure; caller will still receive load result.
-            }
+        } catch (const std::exception &e) {
+            throw failed(e.what());
+        } catch (...) {
+            throw failed("unknown exception");
         }
 
         if (!system) {
-            std::string msg = "NfsimSimulator: Failed to load XML file: " + xml_path;
-            std::string details = summarize_nfsim_log(suppress.captured_output());
-            if (!details.empty()) {
-                msg += " | NFsim log: " + details;
-            }
-            throw std::runtime_error(msg);
+            throw failed("");
         }
         // -utl semantics: explicit user value overrides NFsim's auto-suggested
         // limit. Negative traversal_limit means "use the auto-suggested limit".
@@ -1002,6 +1019,10 @@ void NfsimSimulator::set_param(const std::string &name, double value) {
         // the next simulate() call re-samples next-firing times.
         impl_->session_system->invalidateStepToCache();
     }
+}
+
+void NfsimSimulator::set_species_amounts(const std::unordered_map<std::string, double> &amounts) {
+    impl_->species_amounts = amounts;
 }
 
 void NfsimSimulator::clear_param_overrides() {

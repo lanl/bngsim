@@ -14,7 +14,7 @@ PyPI on a `v*` tag. The matrix is:
 | Runner OS      | Architecture | Deployment target  | Python versions       |
 |----------------|--------------|--------------------|-----------------------|
 | ubuntu-latest  | x86_64       | manylinux_2_28     | 3.10, 3.11, 3.12, 3.13|
-| macos-14       | arm64        | macOS 11           | 3.10, 3.11, 3.12, 3.13|
+| macos-15       | arm64        | macOS 11           | 3.10, 3.11, 3.12, 3.13|
 | macos-15-intel | x86_64       | macOS 10.15        | 3.10, 3.11, 3.12, 3.13|
 | windows-latest | AMD64        | Windows Server 2022| 3.10, 3.11, 3.12, 3.13|
 
@@ -116,7 +116,7 @@ environment. `lint.yml`, `native-tests.yml`, `mir.yml`, `windows-nfsim.yml` and
 backend, and the Windows NFsim/RuleMonkey paths respectively.
 
 `python-tests.yml` is the Python suite's own gate: the whole of `python/tests`,
-on `ubuntu-latest` and `macos-14`, in the **default** build configuration — no
+on `ubuntu-latest` and `macos-15`, in the **default** build configuration — no
 `-D` overrides, so KLU, NFsim and RuleMonkey are all on and the MIR backend is
 off, which is what a wheel ships. It has no `paths:` filter and names no test
 files, so it fires on every change and picks up new tests without a workflow

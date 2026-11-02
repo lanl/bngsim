@@ -36,8 +36,9 @@ a made-up horizon (issue #509). Every row records the ``run`` block it was integ
 on. Trajectory states are ``Result.state``, the full integrator state (issue #508); a
 sample whose RHS or Jacobian is non-finite is skipped and counted rather than voiding
 the model (issue #510); and the Jacobian is ``Model.jacobian``'s — closed-form when it
-covers every reaction, the difference quotient of ``Model.rhs`` otherwise — with
-``jacobian_method`` saying which (issue #512).
+covers every reaction, exact by dual numbers otherwise (issue #1330), the difference
+quotient of ``Model.rhs`` for a model with neither — with ``jacobian_method`` saying
+which (issue #512).
 
 Environment: run with the bngsim editable checkout venv, e.g.
     BNGPATH=/path/to/BioNetGen-2.9.3 \
@@ -286,14 +287,23 @@ def _classify_eigs(eigs: np.ndarray) -> dict:
 
 
 # ``jacobian_method`` spellings per ``JacobianMatrix.source``.
-JACOBIAN_METHOD = {"analytical": "native_analytical", "finite-difference": "finite_difference"}
+JACOBIAN_METHOD = {
+    "analytical": "native_analytical",
+    "automatic-differentiation": "automatic_differentiation",
+    "finite-difference": "finite_difference",
+}
+
+# The methods a row whose closed form declined is computed by: dual numbers
+# (issue #1330), or, for a model they cannot follow, the difference quotient.
+OFF_THE_CLOSED_FORM = ("automatic_differentiation", "finite_difference")
 
 
 def jacobian_evaluators(m):
     """``(jac_at, rhs_at, fields)`` for a loaded model (issue #512).
 
     ``jac_at(y, t)`` is ``Model.jacobian``: the closed form when it covers every reaction,
-    the difference quotient of ``Model.rhs`` otherwise — never the partial assembly the
+    exact by dual numbers otherwise, the difference quotient of ``Model.rhs`` for a model
+    the dual evaluation cannot follow (issue #1330) — never the partial assembly the
     private ``_dense_analytical_jacobian`` hook returns when ``analytical_jacobian_complete``
     is False, which characterized a Lorenz attractor as a zero Jacobian. ``fields`` carries
     the flag and, next to it, ``jacobian_method``: which source the rows were computed from;
@@ -322,8 +332,9 @@ def jacobian_evaluators(m):
 
 def density_pattern(jac_at, n: int, samples: int = DENSITY_SAMPLES, seed: int = RNG_SEED):
     """Structural pattern: the union of |J| > 0 over ``samples`` random strictly-positive
-    states. Both the closed form and the difference quotient return EXACT zeros where a
-    derivative is structurally zero, so |J| > 0 is the pattern from either source."""
+    states. The closed form, dual numbers and the difference quotient all return EXACT
+    zeros where a derivative is structurally zero, so |J| > 0 is the pattern from any
+    source."""
     rng = np.random.default_rng(seed)
     pat = np.zeros((n, n), bool)
     for _ in range(samples):
@@ -718,12 +729,14 @@ def analyze(
     methods: dict[str, int] = {}
     for p in pts:
         methods[str(p["jacobian_method"])] = methods.get(str(p["jacobian_method"]), 0) + 1
-    # Issue #538: the finite-difference rows by why they are on it. A report from
-    # before the field existed files them under "not_in_report", apart from the
-    # model's own "unrecorded" (a decline that recorded no reason, a bngsim bug).
+    # Issue #538: the rows off the closed form by why they are off it, whether
+    # dual numbers or the difference quotient took the matrix (issue #1330). A
+    # report from before the field existed files them under "not_in_report", apart
+    # from the model's own "unrecorded" (a decline that recorded no reason, a
+    # bngsim bug).
     declines: dict[str, list[str]] = {}
     for p in pts:
-        if p["jacobian_method"] == "finite_difference":
+        if p["jacobian_method"] in OFF_THE_CLOSED_FORM:
             kind = str(p.get("jacobian_decline_kind") or "not_in_report")
             declines.setdefault(kind, []).append(p["model_id"])
     declines = {
@@ -799,7 +812,7 @@ def analyze(
         f"| jacobian_method {methods} | incomplete analytical Jacobian (excluded) {len(incomplete)}"
     )
     if declines:
-        print("finite-difference rows by decline kind:")
+        print("rows off the closed form by decline kind:")
         for kind, ids in declines.items():
             print(
                 f"  {kind:22s} {len(ids):4d}  {', '.join(i.split('/')[-1] for i in ids[:6])}"

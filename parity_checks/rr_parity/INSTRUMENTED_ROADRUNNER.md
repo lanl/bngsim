@@ -24,7 +24,13 @@ is the full reference.
 > `build_instrumented_roadrunner.sh` next to this doc (3-stage automation;
 > override `RR_BUILD_ROOT` / `BNGSIM_VENV`) and the three arm64-specific fixes
 > below. On a host without the instrumented build the sweep
-> falls back to stock 2.9.2 (RoadRunner load lumped).
+> falls back to stock libroadrunner (RoadRunner load lumped).
+>
+> **Base version.** The fork is built on stock 2.9.2. Since issue #1288,
+> `uv.lock` pins the stock oracle at 2.11.0, so the per-phase load timings
+> come from an older RoadRunner than the trajectories `rr_parity` compares
+> against. The timings are only a load-phase breakdown and do not enter a
+> verdict. Rebase the branch on 2.11.0 if the two must match.
 >
 > **arm64 gotchas (not needed on Intel):**
 > 1. **LLVM artifact:** use `llvm-13.x-macos-14-arm64-Release.zip`. The zip has

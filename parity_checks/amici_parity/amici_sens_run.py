@@ -11,6 +11,7 @@ verdict taxonomy, same report shape — only the quantity under test changes.
     both ran, metric over tolerance / non-finite  DIFF
     both ran, species/time grids disjoint ....... DIFF (loud, value=inf)
     no shared differentiable parameter ........... BAD_TEST (nothing to compare)
+    no column 20x over its floor, tensor agrees .. BAD_TEST (nothing resolved)
     bngsim DECLARED it cannot differentiate ..... UNSUPPORTED (clean refusal; non-scoring)
     bngsim raised, AMICI ran .................... EXCEPTION (actionable bngsim bug)
     bngsim ran, AMICI raised .................... REFERENCE_FAILED (no oracle; non-scoring)
@@ -120,7 +121,7 @@ DEFAULT_RTOL = asens.DEFAULT_RTOL
 DEFAULT_ATOL = asens.DEFAULT_ATOL
 
 
-def _compare(bn, am, param_values=None, atol=None) -> dict:
+def _compare(bn, am, param_values=None, atol=None, param_ids=None) -> dict:
     """Compare one (state, sensitivity) pair. Returns a result-fragment dict.
 
     ``bn``/``am`` are ``(t, x, sx, species_names)``. The parameter axis needs no
@@ -131,7 +132,10 @@ def _compare(bn, am, param_values=None, atol=None) -> dict:
     ``param_values`` / ``atol`` enable the solver-resolution noise floor (see
     ``_amici_sens.sensitivity_noise_mask``): a sensitivity that is identically
     zero makes the relative metric saturate at 1.0 against the other engine's
-    integration noise, which nothing scale-relative can forgive.
+    integration noise, which nothing scale-relative can forgive. With them,
+    each parameter column is judged on its own scale (issue #1261), the tensor
+    as a whole is judged as before, and the row passes only if both do.
+    ``param_ids`` names the columns the row reports as not judged or failing.
     """
     bn_t, bn_x, bn_sx, bn_names = bn
     am_t, am_x, am_sx, am_names = am
@@ -154,12 +158,81 @@ def _compare(bn, am, param_values=None, atol=None) -> dict:
     # State parity first — it qualifies the sensitivity verdict below.
     sv = differ.deterministic_verdict(bn_x[:, bn_idx], am_x[:, am_idx])
 
-    # Sensitivity parity: the headline.
-    v = asens.sens_verdict(
-        bn_sx[:, bn_idx, :], am_sx[:, am_idx, :], param_values=param_values, atol=atol
-    )
-
+    # Sensitivity parity: the headline, judged a parameter column at a time
+    # (issue #1261). On the tensor as a whole, differ counted a column only past
+    # 1e-3 of the largest one's peak: 2,702 of 4,272 columns here could be
+    # zeroed, negated or multiplied by 1000 and still read PASS.
     n_p = bn_sx.shape[2]
+    bn_used, am_used = bn_sx[:, bn_idx, :], am_sx[:, am_idx, :]
+    # None where no column was assessed alone, as n_columns_judged.
+    not_judged = columns_diff = None
+    whole = None
+    if param_values is None or atol is None:
+        # No floor to judge a column against: the tensor-wide verdict, as
+        # sens_verdict itself does without them.
+        v = asens.sens_verdict(bn_used, am_used)
+        verdicts = {None: v}
+    else:
+        judged = asens.judged_columns(bn_used, am_used, param_values, atol)
+        verdicts = asens.column_verdicts(bn_used, am_used, param_values, atol, judged)
+        # The tensor-wide verdict too, the one before #1261, and the row needs
+        # both. A column under JUDGE_FACTOR of its floor is not judged alone,
+        # since a PASS on it would establish little, but zeroed or negated it is
+        # still past the floor, and the tensor's verdict sees that wherever the
+        # column is past 1e-3 of the tensor's peak. Without it such a column
+        # read PASS (and a model whose every column is that small, BAD_TEST)
+        # where it had read DIFF.
+        whole = asens.sens_verdict(bn_used, am_used, param_values=param_values, atol=atol)
+        names = list(param_ids) if param_ids is not None else list(range(n_p))
+        not_judged = [names[j] for j in range(n_p) if j not in verdicts]
+        columns_diff = [names[j] for j, cv in verdicts.items() if not cv["passed"]]
+        if not whole["passed"]:
+            # The columns left out that the tensor's DIFF lies in: each one past
+            # its floor somewhere that is still a DIFF with every other column
+            # of bngsim's set to AMICI's. Set, not forgiven: differ never
+            # forgives a one-sided NaN, so one in another column would name
+            # every column here. Under differ's present gates every DIFF the
+            # tensor finds is in a column named here or above (a left-out
+            # column's error past its floor is past 5% of its peak, so hard),
+            # but the row requires the tensor's verdict itself, not that.
+            past = ~asens.sensitivity_noise_mask(bn_used, am_used, param_values, atol)
+            for j in range(n_p):
+                if j in verdicts or not past[..., j].any():
+                    continue
+                only_j = am_used.copy()
+                only_j[..., j] = bn_used[..., j]
+                # AMICI's inf, copied, is inf - inf = NaN on both sides: a match.
+                with np.errstate(invalid="ignore"):
+                    alone = asens.sens_verdict(
+                        only_j, am_used, param_values=param_values, atol=atol
+                    )
+                if not alone["passed"]:
+                    columns_diff.append(names[j])
+        passed = bool(verdicts) and whole["passed"] and not columns_diff
+        v = {
+            "passed": passed,
+            "max_rel": max([whole["max_rel"], *(cv["max_rel"] for cv in verdicts.values())]),
+            # Whether the floor made this row a PASS: in either verdict.
+            "noise_decisive": passed
+            and (whole["noise_decisive"] or any(cv["noise_decisive"] for cv in verdicts.values())),
+            # How much of the tensor is under solver resolution is a statement
+            # about the data (#316), so it is the whole tensor's, as before.
+            "n_below_noise_floor": int(whole["n_below_noise_floor"]),
+        }
+        # The tallies are the judged columns'; the comment gives the whole
+        # tensor's beside them where they decide anything.
+        for k in (
+            "n_fail",
+            "n_cells",
+            "n_hard_fail",
+            "n_soft_fail",
+            "budget_forgiven",
+            "n_noise_rescued",
+        ):
+            v[k] = sum(int(cv[k]) for cv in verdicts.values())
+        # The whole tensor's own, so a PASS the floor decided there alone
+        # (noise_decisive with n_noise_rescued 0) shows in the fields too.
+        v["n_noise_rescued_whole"] = int(whole["n_noise_rescued"])
 
     # Degeneracy witnesses (issue #328). A job can be reported PASS when the
     # WHOLE sensitivity tensor lies below the magnitude either solver can
@@ -175,29 +248,60 @@ def _compare(bn, am, param_values=None, atol=None) -> dict:
     # max|sx| = 0.6. Magnitude has to be recorded directly, and PER COLUMN: a
     # single tiny-valued parameter would otherwise inflate a global floor and
     # mark a live model degenerate (see sens_resolution_floors).
-    sx_used = bn_sx[:, bn_idx, :]
-    sx_peak = float(np.nanmax(np.abs(sx_used))) if sx_used.size else 0.0
+    sx_peak = float(np.nanmax(np.abs(bn_used))) if bn_used.size else 0.0
     x_used = bn_x[:, bn_idx]
     state_span = float(np.nanmax(np.nanmax(x_used, axis=0) - np.nanmin(x_used, axis=0)))
-    n_resolvable = asens.resolvable_param_columns(sx_used, param_values, atol)
+    n_resolvable = asens.resolvable_param_columns(bn_used, param_values, atol)
 
     # Issue #316 — the comment reports what the floor RESCUED, not how much of
     # the tensor sits inside it. The old "noise N" was the latter under a name
     # that read as the former, so a row could say "noise 4820" while the floor
     # had changed nothing about the verdict.
+    if whole is None:
+        judged_txt, decisive = "", v["noise_decisive"]
+    else:
+        judged_txt = f"{len(verdicts)}/{n_p} columns judged: "
+        decisive = passed and any(cv["noise_decisive"] for cv in verdicts.values())
     comment = (
-        f"{len(common)} sp x {n_p} par; fail {v['n_fail']}/{v['n_cells']} "
+        f"{len(common)} sp x {n_p} par; {judged_txt}fail {v['n_fail']}/{v['n_cells']} "
         f"(hard {v['n_hard_fail']}, soft {v['n_soft_fail']}, "
         f"forgiven {v['budget_forgiven']}, noise-rescued {v['n_noise_rescued']}"
-        f"{' DECISIVE' if v['noise_decisive'] else ''}); "
+        f"{' DECISIVE' if decisive else ''}); "
         f"state {'ok' if sv['passed'] else 'DIFF'}"
     )
+    if whole is not None and (not whole["passed"] or (passed and whole["noise_decisive"])):
+        comment += (
+            f"; whole tensor {'ok' if whole['passed'] else 'DIFF'}: "
+            f"fail {whole['n_fail']}/{whole['n_cells']} (hard {whole['n_hard_fail']}, "
+            f"noise-rescued {whole['n_noise_rescued']}"
+            f"{' DECISIVE' if passed and whole['noise_decisive'] else ''})"
+        )
     if n_resolvable == 0:
         comment += "; DEGENERATE: no parameter column resolvable"
+    if columns_diff:
+        comment += f"; DIFF in {columns_diff[:6]}"
+    status = "pass" if v["passed"] else "diff"
+    extra = {}
+    if whole is not None and whole["passed"] and not verdicts:
+        status = "bad_test"
+        why = (
+            "no parameter column carries a sensitivity "
+            f"{asens.JUDGE_FACTOR:g}x over its atol/|p| floor: the comparison would "
+            "establish nothing"
+        )
+        comment = f"{why}; {comment}"
+        # A key of its own, as the no-shared-parameter BAD_TEST has (#324).
+        extra = {"exception": why, "exception_class": "columns:none-judged"}
     return {
-        "status": "pass" if v["passed"] else "diff",
+        "status": status,
         "value": v["max_rel"],
         "comment": comment,
+        **extra,
+        # issue #1261 — the columns the verdict could not judge, by name, and
+        # the ones it failed.
+        "n_columns_judged": None if None in verdicts else len(verdicts),
+        "columns_not_judged": not_judged,
+        "columns_diff": columns_diff,
         "state_passed": bool(sv["passed"]),
         "state_max_rel": float(sv["max_rel"]),
         "n_common_species": len(common),
@@ -208,6 +312,9 @@ def _compare(bn, am, param_values=None, atol=None) -> dict:
         # what made this row a PASS (decision).
         "n_below_noise_floor": int(v["n_below_noise_floor"]),
         "n_noise_rescued": int(v["n_noise_rescued"]),
+        # issue #1261 — with the columns judged alone, n_noise_rescued is
+        # theirs and this the whole tensor's; noise_decisive is either's.
+        "n_noise_rescued_whole": v.get("n_noise_rescued_whole"),
         "noise_decisive": bool(v["noise_decisive"]),
         # issue #328 — the two numbers a vacuous-pass census needs.
         "max_abs_sx": sx_peak,
@@ -706,7 +813,9 @@ def _worker(spec: dict, q) -> None:
         return
 
     try:
-        res.update(_compare(bn, am, param_values=param_values, atol=p["atol"]))
+        res.update(
+            _compare(bn, am, param_values=param_values, atol=p["atol"], param_ids=shared_ids)
+        )
     except Exception as exc:
         cap = capture_exception("compare", exc)
         res["status"] = "exception"
@@ -1022,6 +1131,7 @@ def main() -> int:
                         # verdict it rescued, and whether it decided the row.
                         "n_below_noise_floor",
                         "n_noise_rescued",
+                        "n_noise_rescued_whole",
                         "noise_decisive",
                         # issue #328 — degeneracy witnesses, so a vacuous-pass
                         # census is a query over the report rather than a re-run.
@@ -1033,6 +1143,11 @@ def main() -> int:
                         "max_abs_sx",
                         "n_resolvable_params",
                         "state_span",
+                        # issue #1261 — which columns the per-column verdict
+                        # judged, left out (too small to resolve), and failed.
+                        "n_columns_judged",
+                        "columns_not_judged",
+                        "columns_diff",
                     )
                     if k in r
                 },

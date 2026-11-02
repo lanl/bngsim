@@ -168,7 +168,13 @@ def _max_rhs_delta(a_model: Model, b_model: Model) -> float:
     return worst
 
 
-def _ar_report_delta(model: Model, back_model: Model | None = None) -> float:
+def _ar_report_delta(
+    model: Model,
+    back_model: Model | None = None,
+    *,
+    back_names: dict[str, str] | None = None,
+    back_perm: list[int] | None = None,
+) -> float:
     """Largest scale-relative difference in what the two models *report* for an
     AssignmentRule-target species.
 
@@ -188,6 +194,10 @@ def _ar_report_delta(model: Model, back_model: Model | None = None) -> float:
 
     Without ``back_model`` the reload is taken to report every AR-target frozen at
     its initial value — the source-only question this probe used to ask (GH #18).
+    ``back_names`` maps a source species' name to the reload's, where they differ
+    (a BNG2.pl ``.net`` names a species as a pattern; issue #1400), and
+    ``back_perm`` the source's species index to the reload's, where BNG2.pl
+    reordered them: the reload is read at the same state, in its own order.
     Returns ``0.0`` when the source has no AR-target species, ``inf`` when a rule
     cannot be evaluated (conservatively unfaithful).
     """
@@ -249,7 +259,14 @@ def _ar_report_delta(model: Model, back_model: Model | None = None) -> float:
         frozen = source.reported(name, states[0][0], 0, states[0][1])
         for k, (t, y) in enumerate(states):
             a = source.reported(name, t, k, y)
-            b = back.reported(name, t, k, y) if back is not None else frozen
+            if back is not None:
+                yb = y
+                if back_perm is not None:
+                    yb = np.empty_like(y)
+                    yb[back_perm] = y
+                b = back.reported((back_names or {}).get(name, name), t, k, yb)
+            else:
+                b = frozen
             if a is None or b is None:
                 return float("inf")  # can't establish the reported value → unfaithful
             scale = max(abs(a), 1.0)
@@ -770,6 +787,9 @@ class ConversionValidationReport:
     levels: list[LevelResult] = field(default_factory=list)
     dropped: list[str] = field(default_factory=list)
     lossy: list[str] = field(default_factory=list)
+    # What only bngsim's own reader reproduces of the target (sbml2net, issue
+    # #1274): never a failed level.
+    bngsim_only: list[str] = field(default_factory=list)
 
     def level(self, name: str) -> LevelResult | None:
         for lv in self.levels:
@@ -794,6 +814,7 @@ class ConversionValidationReport:
             "ok": self.ok,
             "dropped": list(self.dropped),
             "lossy": list(self.lossy),
+            "bngsim_only": list(self.bngsim_only),
             "levels": [
                 {
                     "level": lv.level,
@@ -818,6 +839,8 @@ class ConversionValidationReport:
             lines.append(f"  dropped: {note}")
         for note in self.lossy:
             lines.append(f"  lossy:   {note}")
+        for note in self.bngsim_only:
+            lines.append(f"  bngsim-only: {note}")
         for lv in self.levels:
             lines.append("  " + lv.summary())
         return "\n".join(lines)
@@ -851,7 +874,7 @@ class _Plan:
     load_target: Callable[..., Model]  # (path) -> Model
     write_back: Callable[..., str]  # (model, path, strict) -> str  (target → source format)
     load_back: Callable[..., Model]  # (path) -> Model
-    capability: Callable[..., dict]  # (model) -> {"dropped": [...], "lossy": [...]}
+    capability: Callable[..., dict]  # (model) -> {"dropped": [...], "lossy": [...], ...}
     target_suffix: str
     back_suffix: str
     target_is_sbml: bool
@@ -1235,6 +1258,7 @@ def _grade_target(
         target_path=report_target_path,
         dropped=list(caps.get("dropped", [])),
         lossy=list(caps.get("lossy", [])),
+        bngsim_only=list(caps.get("bngsim_only", [])),
     )
 
     # ── L0 ───────────────────────────────────────────────────────────
@@ -1510,6 +1534,7 @@ def validate_conversion(
                 target_path=None,
                 dropped=list(caps.get("dropped", [])),
                 lossy=list(caps.get("lossy", [])),
+                bngsim_only=list(caps.get("bngsim_only", [])),
             )
             for lv in want:
                 gating = lv != "L4"

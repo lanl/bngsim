@@ -28,9 +28,17 @@ on:
     # Measured on this workflow's own pull request, which needs the label.
     types: [opened, synchronize, reopened, labeled, unlabeled]
 
-concurrency:
-  group: changelog-${{ github.ref }}
-  cancel-in-progress: true
+# No `concurrency` block, on purpose. `gh pr create --label` fires `opened` and
+# `labeled` together, and with `cancel-in-progress` one of the two runs was
+# cancelled. A cancelled run is not neutral: it stays in the commit's status
+# rollup beside the one that finished, as a second `fragment staged`, and the
+# rollup reads FAILURE. Measured on the first commits of #1407 and #1408, where
+# every check that ran passed and the cancelled duplicate was the only red.
+# Dropping only `cancel-in-progress` does not close it, because a group still
+# cancels a pending run when another queues behind it, and `opened` plus two
+# labels is three runs. The job is read-only and takes seconds, so overlapping
+# runs cost nothing — they only have to agree, which is why the label below is
+# read from the API and not from the payload.
 
 permissions:
   contents: read
@@ -53,8 +61,15 @@ jobs:
       # Label escape for a change that is genuinely invisible to users — a
       # refactor, a test, a CI fix — and for the release commit, which is the one
       # thing that legitimately writes CHANGELOG.md.
+      #
+      # The label is read from the pull request as it stands when this step
+      # runs, not from `github.event.pull_request.labels`. The payload is a
+      # snapshot of the moment the event fired, so the `opened` run of a pull
+      # request created with the label and the `labeled` run that follows it
+      # need not see the same list. Without cancellation both runs finish and
+      # the commit's rollup counts them both (see the note above `on:`), so they
+      # must give the same answer, and only a read made at run time does.
       - name: This branch stages its own entry, and edits no shared file
-        if: ${{ !contains(github.event.pull_request.labels.*.name, 'changelog exempt') }}
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
@@ -64,8 +79,20 @@ jobs:
         # object to, and this job would go green having read nothing. The script
         # refuses an empty list for the same reason — two independent guards,
         # because #664 is what one that can silently pass looks like.
+        #
+        # The label read is a plain assignment, not `gh api … | grep -q` inside
+        # an `if`. There a failed call would read as "no label" and the step
+        # would blame a missing fragment on a pull request that carries the
+        # label, and under `pipefail` a `grep -q` that exits on its first match
+        # can turn that match into a failure. A failed command substitution in a
+        # plain assignment ends the step under the runner's `bash -e` instead.
         run: |
           set -o pipefail
+          labels=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}" --jq '.labels[].name')
+          if grep -Fqx 'changelog exempt' <<<"$labels"; then
+            echo "changelog: labelled 'changelog exempt', so no entry is required"
+            exit 0
+          fi
           gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/files" \
             --paginate --jq '.[].filename' \
             | python3 ci/changelog.py required --files -

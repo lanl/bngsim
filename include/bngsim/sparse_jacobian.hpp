@@ -144,6 +144,15 @@ inline bool fill_routes_to_dense(const JacobianSparsity &sp, int ns, double lu_f
 //
 // `lu_fill` is routing_lu_fill(model, ns, jacobian_strategy): a model the size
 // and density test sends to KLU goes dense when fill_routes_to_dense says so.
+//
+// A structurally empty Jacobian (nnz == 0: species no reaction moves, an event's
+// targets) has a density of 0, which the density test reads as sparse, but it
+// gives KLU nothing to factor and, under jacobian="fd", nothing to color, and the
+// run was refused for force_sparse_linear_solver, a flag the caller never set
+// (SBML Test Suite 01530). So the size and density test sends it to the dense
+// solver, as codegen's own reading of this rule already did (_codegen.py's
+// fallback for a core that does not report routes_sparse). force_sparse still
+// asks for KLU, and is refused by name where nothing can fill the matrix.
 inline bool route_to_sparse_linear_solver(const JacobianSparsity &sp, int ns,
                                           const std::string &jacobian_strategy, bool force_dense,
                                           bool force_sparse, double lu_fill) {
@@ -151,7 +160,7 @@ inline bool route_to_sparse_linear_solver(const JacobianSparsity &sp, int ns,
     const bool sparse_ok = (jacobian_strategy != "jax") && !sp.empty();
     return sparse_ok && !force_dense &&
            (force_sparse ||
-            ((ns >= SPARSE_THRESHOLD) && (sp.density < SPARSE_DENSITY_MAX) &&
+            ((ns >= SPARSE_THRESHOLD) && (sp.nnz > 0) && (sp.density < SPARSE_DENSITY_MAX) &&
              !fill_routes_to_dense(sp, ns, lu_fill, jacobian_strategy, force_dense, force_sparse)));
 #else
     (void)sp;

@@ -56,7 +56,6 @@ Optional dependency
 from __future__ import annotations
 
 from pathlib import Path
-from time import perf_counter as _now
 
 import numpy as np
 
@@ -175,6 +174,97 @@ def _observable_id_map(sbml_text: str) -> dict[str, str]:
     return out
 
 
+def _gillespie_ensemble(sbml_text, ids, t0, t_end, n_time, n_rep, seed_base):
+    """The RoadRunner-Gillespie replicates themselves, on the uniform grid: values
+    shaped (n_rep, n_time, len(ids)), or ``None`` where RoadRunner refuses. Run in
+    a child process by :func:`net_roadrunner_ensemble`, so its wall budget can stop
+    a run that never returns (issue #1288)."""
+    import roadrunner
+
+    try:
+        rr = roadrunner.RoadRunner(sbml_text)
+        rr.integrator = "gillespie"
+        rr.integrator.variable_step_size = False
+        # Report the observable parameters (not the default floating-species set) so the
+        # columns align by name with bngsim's observable ensemble.
+        rr.timeCourseSelections = ["time"] + ids
+    except Exception:
+        return None
+    vals = np.empty((n_rep, n_time, len(ids)), dtype=np.float64)
+    try:
+        for rep in range(n_rep):
+            rr.reset()
+            rr.integrator.seed = int(seed_base + rep)
+            res = np.asarray(rr.simulate(t0, t_end, n_time), dtype=np.float64)
+            if res.shape[0] != n_time or res.shape[1] != len(ids) + 1:
+                return None
+            vals[rep] = res[:, 1:]  # drop the leading time column
+    except Exception:
+        return None
+    return vals
+
+
+# How long past its parent's budget a child outlives a parent that is gone.
+_ORPHAN_GRACE_SEC = 30.0
+
+
+def _child(fn, args, conn, alarm_sec: float) -> None:
+    import signal
+
+    # The parent's kill is the budget; this alarm is the backstop for when there is
+    # no parent left to kill. A scheduler that terminates the parent at its per-job
+    # cap skips the daemon cleanup, and a replicate that never returns would spin
+    # on as an orphan. SIGALRM's default action ends the process even inside
+    # RoadRunner's C++ loop, where a Python handler would never run. POSIX only.
+    if hasattr(signal, "setitimer"):
+        signal.signal(signal.SIGALRM, signal.SIG_DFL)
+        signal.setitimer(signal.ITIMER_REAL, alarm_sec)
+    try:
+        result = fn(*args)
+    except Exception:  # noqa: BLE001 - the parent reads a missing result as a refusal
+        result = None
+    conn.send(result)
+
+
+def _within_wall_budget(fn, args, wall_budget_sec: float):
+    """``fn(*args)`` in a child process, or ``None`` if it has not returned within
+    ``wall_budget_sec`` (the child is then killed) or the child died without a
+    result.
+
+    Since libRoadRunner 2.9.3 a Gillespie run no longer stops when a species goes
+    negative (RoadRunner #1322): ``0.5*k1*A*A`` on a homodimer fires infinitely many
+    events before a finite time, and the replicate never returns. The budget was
+    read only between replicates, so nothing stopped one (issue #1288). A child
+    keeps the fixed-step run, and with it the draws every recorded reference holds:
+    RoadRunner's own cap, ``max_output_rows``, applies only in variable-step mode,
+    whose draws differ for the same seed."""
+    import multiprocessing as mp
+
+    budget = max(wall_budget_sec, 0.0)
+    ctx = mp.get_context("spawn")
+    recv_end, send_end = ctx.Pipe(duplex=False)
+    proc = ctx.Process(
+        target=_child, args=(fn, args, send_end, budget + _ORPHAN_GRACE_SEC), daemon=True
+    )
+    proc.start()
+    # The child now holds the only write end, so its death reads as EOF at once
+    # rather than as silence until the budget runs out.
+    send_end.close()
+    try:
+        # Read before joining: a large result fills the pipe, and the child cannot
+        # exit until it is read.
+        if not recv_end.poll(budget):
+            return None
+        return recv_end.recv()
+    except EOFError:  # died without a result: a segfault, or its own alarm
+        return None
+    finally:
+        if proc.is_alive():
+            proc.kill()
+        proc.join(timeout=5)
+        recv_end.close()
+
+
 def net_roadrunner_ensemble(
     net_path: str | Path,
     t_grid,
@@ -192,7 +282,8 @@ def net_roadrunner_ensemble(
     is not installed; the ``.net`` is not faithfully representable as SBML
     (:func:`_faithful_sbml_text`); the sample grid is non-uniform (RoadRunner's uniform
     ``simulate`` grid would misalign row-for-row); RoadRunner raises; or the ensemble
-    exceeds ``wall_budget_sec``. On ``None`` the caller keeps the honest REFERENCE_FAILED.
+    has not returned within ``wall_budget_sec``, which now holds inside a replicate
+    too (issue #1288). On ``None`` the caller keeps the honest REFERENCE_FAILED.
 
     Replicates use seeds ``seed_base, seed_base+1, …`` — the SAME schedule as bngsim and
     ``net_gillespie`` — so a comparison is like-for-like. ``obs_names`` (bngsim's own
@@ -200,9 +291,7 @@ def net_roadrunner_ensemble(
     observables and in that order; ``None`` reports every SBML observable/function and
     lets the caller's name-alignment take the intersection.
     """
-    try:
-        import roadrunner
-    except Exception:
+    if not roadrunner_available():
         return None
 
     t_grid = np.asarray(t_grid, dtype=np.float64)
@@ -232,32 +321,11 @@ def net_roadrunner_ensemble(
     names = [nm for nm, _ in pairs]
     ids = [pid for _, pid in pairs]
 
-    try:
-        rr = roadrunner.RoadRunner(sbml_text)
-        rr.integrator = "gillespie"
-        rr.integrator.variable_step_size = False
-        # Report the observable parameters (not the default floating-species set) so the
-        # columns align by name with bngsim's observable ensemble.
-        rr.timeCourseSelections = ["time"] + ids
-    except Exception:
-        return None
-
     t0, t_end = float(t_grid[0]), float(t_grid[-1])
-    vals = np.empty((n_rep, n_time, len(ids)), dtype=np.float64)
-    deadline = _now() + wall_budget_sec
-    try:
-        for rep in range(n_rep):
-            if _now() > deadline:
-                return None
-            rr.reset()
-            rr.integrator.seed = int(seed_base + rep)
-            res = np.asarray(rr.simulate(t0, t_end, n_time), dtype=np.float64)
-            if res.shape[0] != n_time or res.shape[1] != len(ids) + 1:
-                return None
-            vals[rep] = res[:, 1:]  # drop the leading time column
-    except Exception:
-        return None
-    if not np.isfinite(vals).all():
+    vals = _within_wall_budget(
+        _gillespie_ensemble, (sbml_text, ids, t0, t_end, n_time, n_rep, seed_base), wall_budget_sec
+    )
+    if vals is None or not np.isfinite(vals).all():
         return None
     return t_grid, vals, names
 

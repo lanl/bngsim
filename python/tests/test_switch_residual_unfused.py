@@ -15,7 +15,7 @@ could otherwise keep), and codegen compiles its C the same way. Unfused, the
 difference of two doubles is 0 exactly when they are equal.
 
 The evaluator test can fail only on a build that fuses, which is arm64 (CI's
-macos-14). The codegen tests compile the C themselves, under whatever flags let
+macos-15). The codegen tests compile the C themselves, under whatever flags let
 this machine's compiler fuse (found by asking it), so they fail on x86-64
 runners too.
 """

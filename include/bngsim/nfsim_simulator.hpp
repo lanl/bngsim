@@ -39,6 +39,16 @@ namespace bngsim {
 //
 // Error handling: NFsim errors throw std::runtime_error instead of calling
 // exit(). The Python wrapper catches these as RuntimeError/SimulationError.
+// A failed load names the XML, whether the loader returned NULL or threw.
+//
+// Process-wide state (#1314): the working directory is never changed (a TFUN's
+// relative file= is made absolute against the XML's directory in the copy
+// NFsim reads); std::cout/std::cerr are redirected for the duration of each
+// NFsim call and restored on every exit path, which also captures C++ output
+// from other threads in that window (C stdio is not redirected); and which
+// molecule a rule fires on is drawn from NFutil's process-wide Mersenne
+// Twister, reseeded by every prepare, so interleaved sessions do not each
+// reproduce their seed where those molecules differ (aggregation models).
 //
 // Usage:
 //   NfsimSimulator sim("model.xml");
@@ -218,6 +228,15 @@ class NfsimSimulator {
 
     /// Clear all parameter overrides.
     void clear_param_overrides();
+
+    /// Seed amounts for the next run(), keyed by `<Species id=>`, replacing
+    /// any set before (issue #1373). Each one replaces that species'
+    /// `concentration=` in the XML NFsim parses, rounded half-up like every
+    /// seed (GH #51), and outranks a parameter override that species reads.
+    /// An empty map seeds every species from the XML again. A run whose XML
+    /// has no seed species with one of these ids throws. Not applied to a
+    /// live session, whose molecules already exist.
+    void set_species_amounts(const std::unordered_map<std::string, double> &amounts);
 
     /// Evaluate an arbitrary BNG expression with the current overrides applied.
     /// Useful for re-rendering BNG functions or rate laws against the
