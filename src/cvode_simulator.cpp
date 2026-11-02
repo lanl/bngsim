@@ -124,6 +124,16 @@ static void select_spent_batch_handler(SUNContext ctx) {
     }
 }
 
+// How many of CVODE's step attempts have failed, on its error test or in its
+// corrector: after either it does not let the next step grow (etamax 1).
+static long look_failures(void *cvode_mem) {
+    long error_test = 0;
+    long corrector = 0;
+    CVodeGetNumErrTestFails(cvode_mem, &error_test);
+    CVodeGetNumStepSolveFails(cvode_mem, &corrector);
+    return error_test + corrector;
+}
+
 // Whether CVODE's last step spans `t`: CVodeGetDky's own test, fuzz and all,
 // so true exactly where CVODE can interpolate to it (issue #1301).
 static bool inside_last_step(void *cvode_mem, sunrealtype t) {
@@ -3043,7 +3053,7 @@ constexpr double kOrderConfirmMargin = 2.0;
 // longer walks the stretch; a pulse inside a stretch of a law that jumps on
 // every stop was then stepped over where main kept it.
 constexpr double kStopLossShare = 0.1;
-// What `Impl::changes_inside` and `Impl::measured_nothing` work in: CVODE's
+// What `Impl::changes_inside` and `Impl::settled_next_step` work in: CVODE's
 // history at tn, its error weights and error estimates, and the predicted
 // state, the predicted rate and the rate at a place.
 struct LookScratch {
@@ -3051,6 +3061,12 @@ struct LookScratch {
     std::vector<NVectorGuard> dky;
     NVectorGuard weights, errors;
     std::vector<double> y_at, f_pred, f_at;
+    // I - dt*J from CVODE's last Jacobian, and a solver of the look's own for
+    // it (CVODE's holds its factors for its own step), with the change in rate
+    // and what the corrector makes of it.
+    SUNMatrixGuard step_matrix;
+    SUNLinSolGuard step_solver;
+    NVectorGuard moved, corrected;
 };
 
 // ─── Looking inside a stretch before it is taken in one step (issue #998) ────
@@ -3067,58 +3083,78 @@ struct LookScratch {
 // sized from the row and it is the third or fourth step that takes the rest.
 //
 // So, until a stretch has been looked at, the run watches CVODE's steps
-// (`kLookWindow`), and before a step that grew with nothing measured (the step
-// before it had so small an error that CVODE grows the next as far as it lets
-// a step grow, `kStepGrowth`) and would take half or more of what is left to
-// the next stop or to the end of the run, it reads the right-hand side where
-// that step ends, on the state CVODE's history predicts there, against the
-// rate it predicts there. Where the step's error there is well past what its
-// error test lets pass (`kLookFails`), nothing is done: CVODE fails it and
-// walks the stretch, as on main. Only where the step would pass, as on a stop
-// where a law that repeats reads what it read at the restart, is the step read
-// at three places inside; the first where a step would fail becomes a stop
-// that restarts the run, so the step ends there, fails, and the stretch after
-// it is a new one. Where no place would, the step is taken as it would have
-// been.
+// (`kLookWindow`), and before any step that would take a quarter or more of
+// what is left to the next stop or to the end of the run (`kSpansAStretch`),
+// it reads the right-hand side where that step ends, on the state CVODE's
+// history predicts there, against the rate it predicts there. Where the
+// step's error there is well past what its error test lets pass
+// (`kLookFails`), nothing is done: CVODE fails it and walks the stretch, as on
+// main. Only where the step would pass, as on a stop where a law that repeats
+// reads what it read at the restart, is the step read at three places
+// inside; the first where a step would fail becomes a stop that restarts the
+// run, so the step ends there, fails, and the stretch after it is a new one.
+// Where no place would, the step is taken as it would have been.
 //
-// What it does not see (issue #1192): the steps CVODE takes inside a call that
-// runs to an output time (a step that could cross the row is taken in
-// CV_NORMAL, and where it fails, its retries and the steps after them are taken
-// inside that call); a stretch while an event's time is the call's target; the
-// step after a stop that restarts nothing, and the rest of that stretch; and,
-// with a stiff species in the model, a step's end, where the explicitly
-// predicted state overstates the change and a step CVODE passes is read as one
-// it fails.
+// Issue #1192 widened what is watched and read. The steps CVODE takes on its
+// way to an output row or an event's time are taken a call each, as are the
+// stretch after a stop that restarts nothing and a stretch while an event
+// waits to be executed; the step after a stop or a root, which CVODE does not
+// report, is read where the step before it settles it (settled_next_step); a
+// step is read whatever its predecessor measured, and from a quarter of what
+// is left, not half; and where a step's end reads as one CVODE fails, it is
+// read again through CVODE's corrector (kLookFails).
+//
+// What it still does not see: a pulse that is nothing at both ends of a step
+// and at the three places inside it, or inside a step that takes less than a
+// quarter of what is left; the step after a stop or a root where the step
+// before it does not settle it; and, at CVODE's higher orders, a step CVODE
+// passes that the order-one estimate takes for one it fails (kLookFails).
 //
 // A stop placed anywhere else changes where CVODE's steps end, and a step cut
 // to end on it can pass over a pulse that a step of CVODE's own would have
 // ended in: that is why the look acts only where CVODE's own step would pass.
 //
 // How far CVODE lets a step grow: the step after the first, and every later
-// one (ETA_MAX_FS; ETA_MAX_ES and ETA_MAX_GS). A step that grew by that much,
-// or whose error estimate buys the next one that much growth
-// (1/(6*err)^(1/(q+1)), BIAS2), measured nothing.
+// one (ETA_MAX_FS; ETA_MAX_ES and ETA_MAX_GS), unless the step before it failed
+// first (etamax 1).
 constexpr double kFirstStepGrowth = 10000.0;
 constexpr double kStepGrowth = 10.0;
-// How much of what is left to the stop the step must be about to take.
-constexpr double kSpansAStretch = 0.5;
+// How much of what is left to the stop the step must be about to take. A
+// half, as #998 had it, left a step of a third of a day over a pulse an hour
+// wide. Chosen on 2,000 random pulse trains: a quarter put 46 more of them
+// right than a half (372 for 326), and a tenth 20 more again, for twice the
+// time a quarter adds (with kLookWindow, a quarter costs up to 14% on a run of
+// a thousand stops whose stretches it reads and finds nothing in).
+constexpr double kSpansAStretch = 0.25;
 // Until a stretch has been looked at, CVODE is let to step on unwatched only
 // over this much of what is left: a step that starts inside it is at most ten
-// times one that ended inside it (kStepGrowth), 0.4 of what is left, under
-// half of what is left from where it starts. So no step that could take half
-// or more is taken unwatched in such a call, and a stretch is not stepped a
-// call a step. (A call to an output time is not watched so: issue #1192.)
-constexpr double kLookWindow = 0.04;
+// times one that ended inside it (kStepGrowth), 0.2 of what is left, under a
+// quarter of what is left from where it starts (kSpansAStretch). So no step
+// that could take a quarter or more is taken unwatched in such a call, and a
+// stretch is not stepped a call a step.
+constexpr double kLookWindow = 0.02;
 // What counts as a change, at a step's end or at a place inside it: the
 // order-one estimate of the error of a step from where the look stands to
 // there (half of what the change in rate adds over that step, in CVODE's own
-// weighted norm) is this many times what CVODE's test lets pass. Ten times,
+// weighted norm, through I - dt*J where it is past this: corrected_at in
+// changes_inside) is this many times what CVODE's test lets pass. Ten times,
 // so that CVODE's own test fails such a step despite the estimate's
 // approximations (one of 1.04 was seen passed), and so that the slow changes
 // CVODE steps over correctly by itself (a sinusoid, a trend) are no change.
 // A step whose end reads between one and ten times is read inside although
-// CVODE would fail it, which costs a few steps; with a stiff species in the
-// model the estimate can pass ten where CVODE passes the step (issue #1192).
+// CVODE would fail it, which costs a few steps.
+//
+// At order one the estimate is CVODE's own, but at CVODE's orders 2 to 5 it is
+// 3.4, 6.7, 10.9 and 15.6 times it (the medians over 600,000 steps of random
+// pulse trains; CVODE's fixed-step BDF coefficients, 0.5/(tq[2]*rl1), give the
+// same to three digits), so at a high order a step CVODE passes can be left to
+// it unread (2% of the steps it passed). Read on CVODE's own scale instead,
+// the places inside a step lost the sensitivity that caught the tail of a
+// narrow pulse, and 2 of 800 random trains beside a stiff species that main
+// gets right lost a period; with the threshold lowered to 5, 3 or 2 there as
+// well, 1, 3 and 4 of 2,000 trains did, where a small trend read as a change
+// put a stop past a narrow pulse and CVODE's step cut to it passed over the
+// pulse. So the estimate stays at order one (issue #1192).
 constexpr double kLookFails = 10.0;
 // How far from an output time the first step after a (re)start may be taken
 // alone, in doubles of the time: cvHin keeps that step within a tenth of the
@@ -3552,10 +3588,17 @@ struct CvodeSimulator::Impl {
     // The right-hand side CVODE was given, compiled or interpreted
     // (create_cvode_core), for what reads it outside CVODE (stop_would_lose).
     CVRhsFn run_rhs_fn = nullptr;
-    // Issue #998: whether the step just taken measured nothing: its own error
-    // estimate, in CVODE's weighted norm, is small enough that CVODE grows the
-    // next step by as much as it lets a step grow (kStepGrowth).
-    bool measured_nothing(void *cvode_mem, N_Vector y, LookScratch &scratch);
+    // Issue #1192: the step CVODE takes next, where the step it has just taken
+    // settles it, read where CVODE does not report it (after a stop or a root
+    // it returned on, it reports the step just taken). After a step that
+    // failed first (*failed*), the step just taken: CVODE does not let the one
+    // after a failure grow. Else, where that step's own error estimate buys
+    // as much growth as CVODE lets a step have (kFirstStepGrowth after the
+    // first step of a stretch, kStepGrowth after any other), that much, and
+    // no more than *hmax* (0: none). NaN where the estimate buys less: what
+    // CVODE takes then turns on an order change it does not report.
+    double settled_next_step(void *cvode_mem, N_Vector y, LookScratch &scratch, bool failed,
+                             double hmax);
     // Issue #998: for a step from *tn* to *end*, whether CVODE's error test
     // would fail it at its end (kLookFails: *end_fails*, then NaN); else the
     // first of kLooksInsideAt, as parts of the step, where a step from *tn*
@@ -6836,26 +6879,44 @@ bool CvodeSimulator::Impl::stop_would_lose(void *cvode_mem, double t, N_Vector y
     return false;
 }
 
-bool CvodeSimulator::Impl::measured_nothing(void *cvode_mem, N_Vector y, LookScratch &scratch) {
+double CvodeSimulator::Impl::settled_next_step(void *cvode_mem, N_Vector y, LookScratch &scratch,
+                                               bool failed, double hmax) {
+    const double unknown = std::numeric_limits<double>::quiet_NaN();
+    sunrealtype h = 0.0;
+    long steps = 0;
+    if (CVodeGetLastStep(cvode_mem, &h) != CV_SUCCESS ||
+        CVodeGetNumSteps(cvode_mem, &steps) != CV_SUCCESS || steps < 1 || !(h != 0.0)) {
+        return unknown;
+    }
+    if (failed) {
+        // cvPrepareNextStep with etamax 1: hprime = h.
+        return std::fabs(static_cast<double>(h));
+    }
     if (!scratch.errors) {
         scratch.errors = NVectorGuard(N_VClone(y));
     }
     if (!scratch.weights) {
         scratch.weights = NVectorGuard(N_VClone(y));
     }
-    if (!scratch.errors || !scratch.weights) {
-        return false;
-    }
     int order = 0;
-    if (CVodeGetEstLocalErrors(cvode_mem, scratch.errors) != CV_SUCCESS ||
+    if (!scratch.errors || !scratch.weights ||
+        CVodeGetEstLocalErrors(cvode_mem, scratch.errors) != CV_SUCCESS ||
         CVodeGetErrWeights(cvode_mem, scratch.weights) != CV_SUCCESS ||
         CVodeGetLastOrder(cvode_mem, &order) != CV_SUCCESS || order < 1) {
-        return false;
+        return unknown;
     }
-    // CVODE's own test quantity, and the size of step it lets that buy:
-    // 1/(6*dsm)^(1/(q+1)) (BIAS2), cut to kStepGrowth.
+    // CVODE's own test quantity and the growth it buys at the order it is at,
+    // 1/((6*dsm)^(1/(q+1)) + 1e-6) (BIAS2, ADDON). Where that reaches etamax,
+    // a change of order is chosen only for buying more, and every choice is
+    // cut to etamax (cvChooseEta, cvSetEta), then to hmax.
+    const double most = steps == 1 ? kFirstStepGrowth : kStepGrowth;
     const double dsm = N_VWrmsNorm(scratch.errors, scratch.weights);
-    return 6.0 * dsm <= std::pow(1.0 / kStepGrowth, order + 1);
+    const double buys = 1.0 / (std::pow(6.0 * dsm, 1.0 / (order + 1)) + 1e-6);
+    if (!(buys >= most)) {
+        return unknown;
+    }
+    const double grown = most * std::fabs(static_cast<double>(h));
+    return hmax > 0.0 ? std::min(grown, hmax) : grown;
 }
 
 double CvodeSimulator::Impl::changes_inside(void *cvode_mem, N_Vector y, int ns, double tn,
@@ -6888,6 +6949,61 @@ double CvodeSimulator::Impl::changes_inside(void *cvode_mem, N_Vector y, int ns,
     const double *weights = scratch.weights.data();
     scratch.y_at.resize(static_cast<size_t>(ns));
     scratch.f_pred.resize(static_cast<size_t>(ns));
+    // Issue #1192: the estimate on the state CVODE's corrector reaches, where
+    // the one on the predicted state fails: the change in rate over the step
+    // (in scratch.f_at and f_pred) taken through I - dt*J, as an implicit step
+    // from tn at order one takes it. On the predicted state a stiff species'
+    // rate is off by |lambda|*dt times what the corrector leaves of it, so a
+    // step CVODE passed was read as one it fails, left to it, and taken over a
+    // pulse. From CVODE's last Jacobian; NaN where there is none or I - dt*J is
+    // singular.
+    const auto corrected_at = [&](double dt) {
+        const double none = std::numeric_limits<double>::quiet_NaN();
+        SUNMatrix jac = nullptr;
+        if (CVodeGetJac(cvode_mem, &jac) != CV_SUCCESS || jac == nullptr) {
+            return none;
+        }
+        if (!scratch.step_solver) {
+            const SUNMatrix_ID kind = SUNMatGetID(jac);
+            scratch.step_matrix = SUNMatrixGuard(SUNMatClone(jac));
+            if (!scratch.step_matrix) {
+                return none;
+            }
+#ifdef BNGSIM_HAS_KLU
+            if (kind == SUNMATRIX_SPARSE) {
+                scratch.step_solver =
+                    SUNLinSolGuard(SUNLinSol_KLU(y, scratch.step_matrix, y->sunctx));
+            }
+#endif
+            if (kind == SUNMATRIX_DENSE) {
+                scratch.step_solver =
+                    SUNLinSolGuard(SUNLinSol_Dense(y, scratch.step_matrix, y->sunctx));
+            }
+            scratch.moved = NVectorGuard(N_VClone(y));
+            scratch.corrected = NVectorGuard(N_VClone(y));
+            if (!scratch.step_solver || !scratch.moved || !scratch.corrected ||
+                SUNLinSolInitialize(scratch.step_solver) != SUN_SUCCESS) {
+                scratch.step_solver = SUNLinSolGuard();
+                return none;
+            }
+        }
+        if (SUNMatCopy(jac, scratch.step_matrix) != SUN_SUCCESS ||
+            SUNMatScaleAddI(-dt, scratch.step_matrix) != SUN_SUCCESS ||
+            SUNLinSolSetup(scratch.step_solver, scratch.step_matrix) != SUN_SUCCESS) {
+            return none;
+        }
+        double *moved = scratch.moved.data();
+        for (int i = 0; i < ns; ++i) {
+            moved[i] =
+                (scratch.f_at[static_cast<size_t>(i)] - scratch.f_pred[static_cast<size_t>(i)]) *
+                dt;
+        }
+        if (SUNLinSolSolve(scratch.step_solver, scratch.step_matrix, scratch.corrected,
+                           scratch.moved, 0.0) != SUN_SUCCESS) {
+            return none;
+        }
+        return 0.5 * N_VWrmsNorm(scratch.corrected, scratch.weights);
+    };
     // Whether a step from tn that ends at `at` fails its error test: the rate
     // there, on the state the step's predictor puts there (the history
     // polynomial carried to `at`), against the rate it predicts, over the
@@ -6922,7 +7038,12 @@ double CvodeSimulator::Impl::changes_inside(void *cvode_mem, N_Vector y, int ns,
                 dt * weights[i];
             sum += moved * moved;
         }
-        return 0.5 * std::sqrt(sum / std::max(ns, 1));
+        const double estimate = 0.5 * std::sqrt(sum / std::max(ns, 1));
+        if (!(estimate > kLookFails)) {
+            return estimate;
+        }
+        const double settled = corrected_at(dt);
+        return std::isfinite(settled) ? settled : estimate;
     };
     double found = none;
     if (end > tn) {
@@ -16424,12 +16545,15 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // stretch before a step takes most of it at once. Per stretch: whether it
     // has yet to be seen (and its steps are watched), the time a step must end
     // past to be looked at (a stop the look placed, or the end of a step it
-    // left to CVODE to fail), and whether the step CVODE reports as its next
-    // is stale (see where it is set).
+    // left to CVODE to fail), whether the step CVODE reports as its next is
+    // stale (see where it is set), and, where it is, the step CVODE does take
+    // next where the step it took settles that (settled_next_step; NaN where
+    // it does not).
     const bool looks_inside = !wants_sensitivity && !crossing_stops.empty();
     bool look_open = false;
     double look_from = -std::numeric_limits<double>::infinity();
     bool look_h_stale = false;
+    double look_h_next = std::numeric_limits<double>::quiet_NaN();
     // Issue #891: which stop the run last asked about (kStopLossShare), and
     // whether it is taken from the double before it.
     size_t shift_asked_for = std::numeric_limits<size_t>::max();
@@ -17359,12 +17483,12 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 ++next_crossing;
             }
             // Issue #998: until a stretch has been looked at, a step about to
-            // take half or more of what is left of it, that grew with nothing
-            // measured (see kStepGrowth), is read at its own end first. Where
-            // CVODE's error test would fail it there, CVODE is left to fail it
-            // and walk the stretch, as on main. Where it would pass, it is read
-            // inside, and a place where a step would fail becomes a stop that
-            // restarts the run, so the step ends there and fails.
+            // take a quarter or more of what is left of it (kSpansAStretch)
+            // is read at its own end first. Where CVODE's error test would
+            // fail it there, CVODE is left to fail it and walk the stretch, as
+            // on main. Where it would pass, it is read inside, and a place
+            // where a step would fail becomes a stop that restarts the run, so
+            // the step ends there and fails.
             // Issue #891: whether the next stop is taken from the double
             // before it (kStopLossShare), asked once a stop.
             auto shifts_before_stop = [&]() {
@@ -17399,31 +17523,21 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     look_open = false; // left to CVODE (kLookWatchMost)
                 }
                 const double left = to - tn;
-                // Grown with nothing measured: as far as CVODE lets a step grow
-                // from the last (or as far as the stop ahead, where it cuts the
-                // step to end), or from an error estimate that buys that much.
-                // Not where the step CVODE reports as its next is stale (after
-                // a root or a stop it returned on without a restart): that step
-                // is left to it.
-                bool unmeasured = false;
-                if (look_open && look_steps > 0 && !look_h_stale &&
-                    tn + static_cast<double>(look_h) > look_from && left > 0.0 &&
-                    static_cast<double>(look_h) >= kSpansAStretch * left) {
-                    sunrealtype h_last = 0.0;
-                    CVodeGetLastStep(cvode_mem, &h_last);
-                    const double most = look_steps == 1 ? kFirstStepGrowth : kStepGrowth;
-                    const double reach = std::min(most * static_cast<double>(h_last), left);
-                    unmeasured = static_cast<double>(look_h) >= 0.999 * reach ||
-                                 impl_->measured_nothing(cvode_mem, y, look_scratch);
-                }
-                if (unmeasured) {
+                // The step CVODE takes next. Where what it reports is stale
+                // (after a root or a stop it returned on without a restart),
+                // the step its last one settles, and none where that is not
+                // settled: that step is left to it.
+                const double h_next =
+                    look_h_stale ? look_h_next : std::fabs(static_cast<double>(look_h));
+                if (look_open && look_steps > 0 && std::isfinite(h_next) &&
+                    tn + h_next > look_from && left > 0.0 && h_next >= kSpansAStretch * left) {
                     // The step's own end. One that reaches the stop ahead is
                     // read where CVODE ends it: on the stop, the side where it
                     // would pass, or, where CVODE is stopped on the double
                     // before the stop (issue #891, kStopLossShare), there: read
                     // on the stop, the look left a step to CVODE that CVODE,
                     // reading the branch that ends, then passed.
-                    const double step_end = tn + static_cast<double>(look_h);
+                    const double step_end = tn + h_next;
                     const bool reaches_stop = step_end >= to - 1e-9 * left;
                     const double end =
                         !reaches_stop ? step_end
@@ -17463,8 +17577,9 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                         }
                         look_from = at;
                     } else if (reaches_stop) {
-                        // Seen to the stop and unchanged: CVODE's own stepping,
-                        // past a stop that restarts nothing too (issue #1192).
+                        // Seen to the stop and unchanged: CVODE's own stepping.
+                        // Past a stop that restarts nothing the stretch after
+                        // it is opened where the stop is reached.
                         look_open = false;
                     }
                 }
@@ -17559,13 +17674,12 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // the row out of it and searches for roots only up to it. Before
             // the first step of a stretch its size is cvHin's, within a tenth
             // of the distance to t_target where that is more than about a
-            // hundred doubles of the time. Where a call may take more than one
-            // step unseen (to an event's time), the stretch is left to CVODE.
-            // A call to t_target can too: where the step that crosses it
-            // fails, its retries and the steps after them are taken inside the
-            // call, unseen (issue #1192).
+            // hundred doubles of the time. t_target is a row or an event's
+            // time alike: a stretch while an execution waits was left to
+            // CVODE, and a pulse inside it was stepped over (issue #1192).
             bool first_alone = false;
             double look_tout = t_target;
+            bool one_normal_step = false;
             // Nor while a state switch's residual is held off the root search
             // (issue #908), which is searched at every return: there the
             // calls are main's.
@@ -17584,9 +17698,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     h = std::max(h, (look_steps == 1 ? kFirstStepGrowth : kStepGrowth) *
                                         std::abs(static_cast<double>(h_last)));
                 }
-                if (target_is_event) {
-                    look_open = false;
-                } else if (look_steps == 0) {
+                if (look_steps == 0) {
                     first_alone = t_target - tn > kFirstStepRoom *
                                                       std::numeric_limits<double>::epsilon() *
                                                       std::max(std::fabs(tn), std::fabs(t_target));
@@ -17596,12 +17708,31 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     // steps it would have taken to t_target. Not where roots are
                     // searched for, which a tout inside a step splits there.
                     look_tout = std::min(t_target, tn + window);
+                } else if (tn + h < t_target) {
+                    first_alone = true;
+                } else if (n_roots == 0) {
+                    // A step that could cross t_target, in CV_NORMAL to a tout
+                    // just past tn: CVODE takes the one step it would have
+                    // taken to t_target (its retries included), returns
+                    // there, and reads the row out of it on a later call.
+                    // Taken to t_target, a step that crossed it and failed was
+                    // retried inside the call, and the steps after it were
+                    // taken unseen, one of them over a pulse (issue #1192).
+                    look_tout = std::min(
+                        t_target, std::nextafter(tn, std::numeric_limits<double>::infinity()));
                 } else {
-                    first_alone = tn + h < t_target;
+                    // Where roots are searched, the call to t_target itself,
+                    // cut off after one step (CVodeSetMaxNumSteps): its roots
+                    // are searched over the brackets that call searches, and
+                    // where the step ends short of t_target, CVODE returns
+                    // there (CV_TOO_MUCH_WORK) and reports the step it took as
+                    // its next (see look_h_next).
+                    one_normal_step = true;
                 }
             }
             sunrealtype t_ret;
             long steps_at_call = 0;
+            const long look_failed_at_call = looks_inside ? look_failures(cvode_mem) : 0;
             if (watch) {
                 CVodeGetNumSteps(cvode_mem, &steps_at_call);
             }
@@ -17619,6 +17750,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             if (stop_where_it_stands) {
                 t_ret = static_cast<sunrealtype>(t_crossing);
                 flag = CV_TSTOP_RETURN;
+                one_normal_step = false;
                 const int cf = CVodeClearStopTime(cvode_mem);
                 if (cf != CV_SUCCESS) {
                     throw std::runtime_error(
@@ -17626,8 +17758,20 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                         std::to_string(cf));
                 }
             } else {
+                if (one_normal_step) {
+                    CVodeSetMaxNumSteps(cvode_mem, 1);
+                }
                 flag = CVode(cvode_mem, look_tout, y, &t_ret,
                              (one_step || first_alone) ? CV_ONE_STEP : CV_NORMAL);
+                if (one_normal_step) {
+                    CVodeSetMaxNumSteps(cvode_mem, max_steps);
+                    // One step taken, short of t_target: a step alone.
+                    if (flag == CV_TOO_MUCH_WORK) {
+                        flag = CV_SUCCESS;
+                    } else {
+                        one_normal_step = false;
+                    }
+                }
                 // The double before the stop reached: the stop is taken from
                 // there, with that one double integrated on the branch that
                 // ends (t_crossing_cvode above). Left out, it was half a double
@@ -17739,11 +17883,24 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // takes none. A step taken alone on that report (a bend root CVODE
             // steps on through) crossed the output time, and the row was read
             // where the step ended.
+            // A call that takes no step leaves what CVODE reports as it was.
+            // Where the stale step's successor is settled (settled_next_step),
+            // the look reads that one: the step after a stop that restarts
+            // nothing was left to CVODE, and took the rest of the stretch
+            // over a pulse (issue #1192).
             if (looks_inside) {
                 long steps_now = 0;
                 CVodeGetNumSteps(cvode_mem, &steps_now);
-                look_h_stale = flag == CV_ROOT_RETURN || flag == CV_TSTOP_RETURN ||
-                               (look_h_stale && steps_now == look_steps);
+                if (steps_now != look_steps) {
+                    look_h_stale =
+                        flag == CV_ROOT_RETURN || flag == CV_TSTOP_RETURN || one_normal_step;
+                    look_h_next = std::numeric_limits<double>::quiet_NaN();
+                    const long failed = look_failures(cvode_mem) - look_failed_at_call;
+                    if (look_h_stale && (steps_now == look_steps + 1 || failed == 0)) {
+                        look_h_next = impl_->settled_next_step(cvode_mem, y, look_scratch,
+                                                               failed > 0, opts.max_step_size);
+                    }
+                }
             }
             if (carried) {
                 std::fill(state_switch_zero_hold.begin(), state_switch_zero_hold.end(), 0.0);
@@ -17973,10 +18130,10 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // branch: the next pass sees t_now ≥ t_target, drops back to
             // CV_NORMAL, and CVODES interpolates y(t_target) out of the step
             // just taken — the same value, from the same step.
-            if (first_alone || look_tout < t_target) {
+            if (first_alone || one_normal_step || look_tout < t_target) {
                 ++look_watched;
             }
-            if ((first_alone || look_tout < t_target) && flag == CV_SUCCESS) {
+            if ((first_alone || one_normal_step || look_tout < t_target) && flag == CV_SUCCESS) {
                 // A step alone, or a few, of a stretch not yet looked at (issue
                 // #998): short of t_target, so nothing is recorded, and the
                 // next pass looks before it steps on.
@@ -18802,6 +18959,15 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                                                 root_watch);
                     }
                     ++next_crossing;
+                }
+                // Issue #1192: the stretch after a stop that restarts nothing
+                // is one not yet looked at too. Closed with the one before it,
+                // its first step, sized from CVODE's history, took the rest of
+                // it over a pulse.
+                if (looks_inside && !restart_here) {
+                    look_open = true;
+                    look_from = -std::numeric_limits<double>::infinity();
+                    look_watched = 0;
                 }
                 // A trigger that has risen on this stop fires here (issue
                 // #950), with the counters on their thresholds. Before the
