@@ -120,7 +120,8 @@ Current carry topics:
   that reads one cannot be built, which the earlier conversion left out
 - every table function indexed by the time read at each of its breakpoints in
   `stepTo()`, whether or not a reaction has fired, so a rate that is 0 until a
-  later breakpoint turns on (GH #892)
+  later breakpoint turns on (GH #892); where a linear one ramps, the next firing
+  placed where the integrated propensity reaches an Exp(1) draw (GH #1179)
 - an expression with a bracket right after a call refused in NFsim's
   mu::Parser shim, as the host evaluator refuses it, through
   `bngsim::expr_compat::call_before_bracket` (GH #1415; it landed in GH #1419
@@ -242,7 +243,7 @@ Expected carry order:
 19. `exit(1)` → `throw std::runtime_error` where a BNG-written function or a
     rule that reads one cannot be built
 20. time-indexed table functions read at their breakpoints in `stepTo()`
-    (GH #892)
+    (GH #892), and a linear one's ramp integrated between them (GH #1179)
 21. a bracket right after a call refused in NFsim's mu::Parser shim, as the
     host refuses it (GH #1415)
 

@@ -13,6 +13,8 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <sstream>
+#include <iomanip>
 #include "../NFscheduler/NFstream.h"
 #include "../NFscheduler/Scheduler.h"
 
@@ -1157,20 +1159,28 @@ double System::sim(double duration, long int sampleTimes, bool verbose)
 	return current_time;
 }
 
-void System::addTimeBreakpoints(const vector<double> &xs)
+void System::addTimeBreakpoints(const vector<double> &xs, bool linear)
 {
 	// tfun_interpolate_value() reads a table listed in decreasing order from
 	// the other side: at one of its x values a step gives the value from before
 	// that time, not after. Read there, the run would keep the old rate for a
 	// whole segment, so such a table is read one ulp past each x instead.
 	const bool decreasing = xs.size() > 1 && xs[1] < xs[0];
+	double first = std::numeric_limits<double>::infinity();
+	double last = -first;
 	for(unsigned int i=0; i<xs.size(); i++) {
-		timeBreakpoints.push_back(decreasing
-			? std::nextafter(xs[i], std::numeric_limits<double>::infinity()) : xs[i]);
+		const double x = decreasing
+			? std::nextafter(xs[i], std::numeric_limits<double>::infinity()) : xs[i];
+		timeBreakpoints.push_back(x);
+		first = std::min(first, x);
+		last = std::max(last, x);
 	}
 	std::sort(timeBreakpoints.begin(), timeBreakpoints.end());
 	timeBreakpoints.erase(std::unique(timeBreakpoints.begin(), timeBreakpoints.end()),
 		timeBreakpoints.end());
+	// A linear table moves between its first and last x and holds its end
+	// values outside them.
+	if(linear && first < last) linearTimeRamps.push_back(std::make_pair(first, last));
 }
 
 double System::nextTimeBreakpoint(double t) const
@@ -1188,6 +1198,221 @@ void System::refreshTimeDependentPropensities()
 	recompute_A_tot();
 }
 
+namespace {
+
+// One panel of the integral of a propensity that moves with the clock (bngsim
+// GH #1179), the scheme bngsim's network SSA and RuleMonkey use for the same
+// job: the propensity is read at the five Gauss-Lobatto nodes below and the
+// quartic through them is integrated, which is exact to degree 7. Its
+// difference from Simpson's rule on nodes 0, 1/2, 1 is Simpson's error, and a
+// sixteenth of that, the error of Simpson on the halves, is what the panel's
+// length is controlled to.
+struct TimeTablePanel {
+	static const int nodes = 5;
+	double node[nodes];   // on [0, 1]: 0, 1/2 -+ sqrt(3/7)/2, 1/2, 1
+	double vinv[nodes][nodes];   // the quartic's monomial coefficients are vinv . (its node values)
+
+	static const TimeTablePanel &get() {
+		static const TimeTablePanel panel;
+		return panel;
+	}
+
+	void fit(const double *v, double *c) const {
+		for(int k=0; k<nodes; k++) {
+			c[k] = 0.0;
+			for(int j=0; j<nodes; j++) c[k] += vinv[k][j] * v[j];
+		}
+	}
+	static double value(const double *c, double th) {
+		double acc = 0.0;
+		for(int k=nodes-1; k>=0; k--) acc = acc * th + c[k];
+		return acc;
+	}
+	// The integral of the quartic from 0 to th, in units of the panel's length.
+	static double integral(const double *c, double th) {
+		double acc = 0.0;
+		for(int k=nodes-1; k>=0; k--) acc = acc * th + c[k] / (k + 1);
+		return th * acc;
+	}
+	static double lobatto(const double *v, double hh) {
+		return hh * ((v[0] + v[4]) / 20.0 + (v[1] + v[3]) * 49.0 / 180.0 + v[2] * 16.0 / 45.0);
+	}
+	static double simpson(const double *v, double hh) {
+		return hh / 6.0 * (v[0] + 4.0 * v[2] + v[4]);
+	}
+
+private:
+	TimeTablePanel() {
+		const double off = 0.5 * std::sqrt(3.0 / 7.0);
+		node[0] = 0.0; node[1] = 0.5 - off; node[2] = 0.5; node[3] = 0.5 + off; node[4] = 1.0;
+		// Gauss-Jordan on [V | I] with partial pivoting; V[i][k] = node_i^k.
+		double m[nodes][2 * nodes];
+		for(int i=0; i<nodes; i++) {
+			for(int k=0; k<nodes; k++) m[i][k] = std::pow(node[i], k);
+			for(int k=0; k<nodes; k++) m[i][nodes + k] = (i == k) ? 1.0 : 0.0;
+		}
+		for(int c=0; c<nodes; c++) {
+			int p = c;
+			for(int r=c+1; r<nodes; r++) if(std::fabs(m[r][c]) > std::fabs(m[p][c])) p = r;
+			for(int k=0; k<2*nodes; k++) std::swap(m[c][k], m[p][k]);
+			const double d = m[c][c];
+			for(int k=0; k<2*nodes; k++) m[c][k] /= d;
+			for(int r=0; r<nodes; r++) {
+				if(r == c) continue;
+				const double f = m[r][c];
+				for(int k=0; k<2*nodes; k++) m[r][k] -= f * m[c][k];
+			}
+		}
+		for(int i=0; i<nodes; i++)
+			for(int j=0; j<nodes; j++) vinv[i][j] = m[i][nodes + j];
+	}
+};
+
+}
+
+double System::timeTablePanelCap(double t, double nextBreak) const
+{
+	// The span from t to the next breakpoint lies inside or outside each linear
+	// table's ramp, since the ramp's ends are breakpoints too. Where none ramps,
+	// every table holds its value and the propensity is constant between
+	// firings. Where one does, no panel is longer than a thousandth of the
+	// shortest ramp across it, as bngsim's SSA and RuleMonkey cap theirs at a
+	// thousandth of the run: a rate law can read 0 at every node of a longer
+	// panel and still not be 0 between them.
+	double cap = std::numeric_limits<double>::infinity();
+	for(unsigned int i=0; i<linearTimeRamps.size(); i++) {
+		if(linearTimeRamps[i].first <= t && nextBreak <= linearTimeRamps[i].second)
+			cap = std::min(cap, (linearTimeRamps[i].second - linearTimeRamps[i].first) / 1000.0);
+	}
+	return cap;
+}
+
+double System::timeTablePropensityAt(double t)
+{
+	current_time = t;
+	refreshTimeDependentPropensities();
+	return a_tot;
+}
+
+double System::nextTimeTableEvent(double &hazardLeft, double tLim, double readEnd, double hmax)
+{
+	// The time in (current_time, tLim] at which the propensity integrated from
+	// current_time reaches hazardLeft, or +inf, with hazardLeft reduced by the
+	// integral to tLim, if it does not get there. Leaves the clock there, or at
+	// tLim, with every propensity read there, but never later than readEnd: a
+	// step table that jumps on the breakpoint ending the span is read on the
+	// side the span integrates. The step control, its tolerances and its two
+	// give-ups are bngsim's SSA's and RuleMonkey's.
+	const TimeTablePanel &tp = TimeTablePanel::get();
+	const int n = TimeTablePanel::nodes;
+	// A firing time is then off by far less than the spread of the draw that
+	// places it.
+	const double rtol = 1e-6;
+	const double atol = 1e-7;
+	// A panel at the floor that still fails the error test is a jump in a rate
+	// law that reads a table (if(tfun > 5, k, 0) where the ramp passes 5): no
+	// panel resolves it, and one of a few ulps of t crosses it with an error of
+	// that order. Accepted a bounded number of times in a row; past that the rate
+	// is singular, not discontinuous, and the run is refused. So is one that
+	// makes no headway, a panel of an ulp or two after another.
+	const int maxFloorSteps = 100;
+	const long maxTinyPanels = 1000000;
+
+	double t = current_time;
+	double hazard = 0.0;
+	double h = timeTableHazardStep > 0.0 ? std::min(timeTableHazardStep, hmax) : hmax;
+	int floorSteps = 0;
+	long tinyPanels = 0;
+	double av[n];
+	double c[n];
+	av[0] = a_tot;
+	while(t < tLim) {
+		// A few dozen ulps of t, so t + h always moves t, and a jump in a rate
+		// is crossed by a panel this long.
+		const double hmin = 64.0 * std::numeric_limits<double>::epsilon() * std::max(1.0, std::fabs(t));
+		h = std::max(h, hmin);
+		double hh, s1, hNext;
+		while(true) {
+			const bool toStop = h >= tLim - t;
+			s1 = toStop ? tLim : t + h;
+			hh = s1 - t;
+			for(int q=1; q<n-1; q++) av[q] = timeTablePropensityAt(std::min(t + tp.node[q] * hh, readEnd));
+			av[n-1] = timeTablePropensityAt(std::min(s1, readEnd));
+			const double lob = TimeTablePanel::lobatto(av, hh);
+			double err = std::fabs(lob - TimeTablePanel::simpson(av, hh)) / 16.0 / (atol + rtol * std::fabs(lob));
+			const bool finite = err <= 1e10; // false for NaN too
+			if(!finite) err = 1e10;
+			const double fac = err > 0.0 ? std::min(5.0, std::max(0.2, 0.9 * std::pow(err, -0.2))) : 5.0;
+			const bool atFloor = hh <= hmin && finite;
+			if(err <= 1.0 || (atFloor && floorSteps < maxFloorSteps)) {
+				floorSteps = err <= 1.0 ? 0 : floorSteps + 1;
+				hNext = std::min(hmax, toStop ? std::max(h, hh * fac) : hh * fac);
+				break;
+			}
+			if(hh <= hmin) {
+				std::ostringstream msg;
+				msg << std::setprecision(17) << "a rate law that reads a table function of the time cannot be integrated past t=" << t << ": ";
+				if(finite) msg << maxFloorSteps << " steps of " << std::setprecision(3) << hmin << " in a row failed the error test";
+				else msg << "its propensity is not finite within " << std::setprecision(3) << hmin << " of there";
+				msg << ", so the rate is singular there";
+				throw std::runtime_error(msg.str());
+			}
+			h = std::max(hh * fac, hmin);
+		}
+		if(hh <= 2.0 * hmin && hh < tLim - t) {
+			if(++tinyPanels > maxTinyPanels) {
+				std::ostringstream msg;
+				msg << std::setprecision(17) << "a rate law that reads a table function of the time makes no headway at t=" << t << ": "
+					<< maxTinyPanels << " integration steps in a row shorter than " << std::setprecision(3) << 2.0 * hmin
+					<< ", so the rate is singular there";
+				throw std::runtime_error(msg.str());
+			}
+		} else {
+			tinyPanels = 0;
+		}
+
+		tp.fit(av, c);
+		const double span = hh * TimeTablePanel::integral(c, 1.0);
+		if(hazard + span >= hazardLeft) {
+			// The hazard reaches the draw inside this panel: solve for theta by
+			// Newton, kept inside a shrinking bracket (bisecting when a step
+			// leaves it).
+			const double need = hazardLeft - hazard;
+			double lo = 0.0, hi = 1.0;
+			double th = need / span;
+			if(!(th > lo && th < hi)) th = 0.5; // NaN too
+			double thFire = hi;
+			for(int it=0; it<100; it++) {
+				const double g = hh * TimeTablePanel::integral(c, th) - need;
+				if(std::fabs(g) <= 1e-15 * std::max(1.0, hazardLeft)) { thFire = th; break; }
+				if(g > 0.0) hi = th; else lo = th;
+				thFire = hi;
+				if(hi - lo <= 1e-15) break;
+				const double dg = hh * TimeTablePanel::value(c, th);
+				// The next Newton step is below theta's resolution.
+				if(dg > 0.0 && std::fabs(g) <= 1e-14 * dg) { thFire = th; break; }
+				double nt = dg > 0.0 ? th - g / dg : 0.5 * (lo + hi);
+				if(!(nt > lo && nt < hi)) nt = 0.5 * (lo + hi); // NaN too
+				th = nt;
+			}
+			const double tau = thFire >= 1.0 ? s1 : t + thFire * hh;
+			timeTablePropensityAt(std::min(tau, readEnd));
+			current_time = tau;
+			hazardLeft = 0.0;
+			timeTableHazardStep = hNext;
+			return tau;
+		}
+		hazard += span;
+		t = s1;
+		av[0] = av[n-1];
+		h = hNext;
+	}
+	current_time = tLim;
+	hazardLeft -= hazard;
+	timeTableHazardStep = h;
+	return std::numeric_limits<double>::infinity();
+}
+
 double System::stepTo(double stoppingTime)
 {
 	while(current_time < stoppingTime)
@@ -1198,11 +1423,50 @@ double System::stepTo(double stoppingTime)
 		// breakpoint never turned on, and one that was tiny turned on late. A
 		// draw that passes the next breakpoint is dropped there, the tables are
 		// read again and the waiting time is drawn anew, which is exact for a
-		// step table because the waiting time is memoryless. A linear table is
-		// read at its breakpoints too; between them it holds the value it was
-		// last read at, as it did before. A breakpoint on the stopping time is
-		// read there: the next call starts on it and looks past it.
+		// step table because the waiting time is memoryless. A breakpoint on
+		// the stopping time is read there: the next call starts on it and looks
+		// past it.
 		const double nextBreak = nextTimeBreakpoint(current_time);
+
+		// A linear table also moves between its breakpoints, and a propensity
+		// held at its last reading lagged the ramp wherever little fired: 100
+		// X(p~1) leaving at a rate that ramps from 0 stayed at 100 through t =
+		// 1, where the exact mean is 1.75 (bngsim GH #1179). Where one ramps,
+		// the state is fixed between firings, so the propensity moves with the
+		// clock alone and the next firing is where its integral reaches an
+		// Exp(1) draw, by the time-change theorem. The reaction is picked from
+		// the propensities read there. A call that stops inside a ramp leaves
+		// the rest of its draw to the next call; a breakpoint drops it, as it
+		// drops a waiting time, so a span only ever holds its own kind of draw.
+		const double panelCap = timeTablePanelCap(current_time, nextBreak);
+		if(panelCap < std::numeric_limits<double>::infinity()) {
+			if(!pendingStepEventValid) {
+				pendingStepHazard = -log(rng_.random_open());
+				pendingStepEventValid = true;
+			}
+			const double segEnd = std::min(nextBreak, stoppingTime);
+			const double readEnd = segEnd == nextBreak
+				? std::nextafter(segEnd, -std::numeric_limits<double>::infinity()) : segEnd;
+			const double tau = nextTimeTableEvent(pendingStepHazard, segEnd, readEnd, panelCap);
+			if(tau > segEnd) {
+				if(segEnd == nextBreak) {
+					invalidateStepToCache();
+					timeTableHazardStep = 0.0;
+					refreshTimeDependentPropensities();
+				}
+				continue;
+			}
+			invalidateStepToCache();
+			if(!(a_tot > 0.0)) continue;   // within rounding of a rate that reads 0
+			double randElement = getNextRxn();
+			if(nextReaction == NULL) break;
+			globalEventCounter++;
+			nextReaction->fire(randElement);
+			replenishFixedSpecies();
+			refreshTimeDependentPropensities();
+			continue;
+		}
+
 		if(!pendingStepEventValid) {
 			// Preserve the pending waiting-time draw across output boundaries so
 			// repeated stepTo() calls consume the same RNG stream as sim().

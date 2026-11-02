@@ -394,14 +394,16 @@ CARRY_QUEUE = (
             "stepTo(), whether or not a reaction has fired: a waiting-time draw that passes "
             "the next breakpoint is dropped there and drawn again, and a total propensity of "
             "0 advances to the next breakpoint rather than the stopping time. A rate that is "
-            "0 until a later breakpoint never turned on. Exact for a step table; a linear "
-            "table holds its last value between breakpoints, as before. A table listed in "
-            "decreasing time is read one ulp past each x, where its new value holds. See "
-            "bngsim GH #892."
+            "0 until a later breakpoint never turned on. Exact for a step table. A table "
+            "listed in decreasing time is read one ulp past each x, where its new value "
+            "holds. Where a linear table ramps between its breakpoints, the next firing is "
+            "where the propensity integrated over error-controlled Gauss-Lobatto panels "
+            "reaches an Exp(1) draw, the scheme bngsim's SSA and RuleMonkey use; a held "
+            "value had lagged the ramp. See bngsim GH #892 and #1179."
         ),
         "commits": [
             {
-                "commit": "9eb11325e05e81fda324553934edd92351d0e6fb",
+                "commit": "7533c060fd0340d2768803bc324c8aabe5260495",
                 "summary": "bngsim: read time-indexed tables at their breakpoints in stepTo",
             },
         ],
@@ -421,7 +423,7 @@ CARRY_QUEUE = (
         ),
         "commits": [
             {
-                "commit": "fc421c5db49848b8ecec35f1d8c2da8753700c81",
+                "commit": "58d50ccf3dcce58fdcac560079bc99d4e5e641a7",
                 "summary": "bngsim: refuse a bracket after a call in mu::Parser as the host does",
             },
         ],

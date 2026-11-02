@@ -1,8 +1,8 @@
-From fc421c5db49848b8ecec35f1d8c2da8753700c81 Mon Sep 17 00:00:00 2001
+From 58d50ccf3dcce58fdcac560079bc99d4e5e641a7 Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <bill.hlavacek@gmail.com>
 Date: Sun, 1 Nov 2026 16:14:27 -0700
-Subject: [PATCH] bngsim: refuse a bracket after a call in mu::Parser as the
- host does
+Subject: [PATCH 21/21] bngsim: refuse a bracket after a call in mu::Parser as
+ the host does
 
 ExprTk reads a bracket right after a call, as in k*exp(0)(2), as a
 second statement and keeps only its value, so a hand-written XML
