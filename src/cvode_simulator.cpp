@@ -3722,6 +3722,13 @@ struct CvodeSimulator::Impl {
         const std::vector<const NetworkModel::StateSwitch *> &switches, std::vector<double> &since,
         bool refuse, std::vector<long> *since_steps = nullptr,
         const std::vector<char> *ask = nullptr, SensitivityState *sens = nullptr);
+    // The columns across a carry over one continuous surface (issue #1285):
+    // the carry's move of the state taken as the jump it is, at the crossing.
+    // See the definition.
+    void carry_columns(double t, int ns, const std::vector<double> &x,
+                       const std::vector<double> &f_at_x, const std::vector<double> &f_carried,
+                       const NetworkModel::StateSwitch &sw, std::size_t n_stalled,
+                       std::vector<std::vector<double>> &s, const SensitivityState &sens);
 
     // dg/dt along the flow at (t, x) — the denominator of dt*/dθ.
     // Fills `gx_out` (∂g/∂x, sized ns, zero off `support`) and `scale_out`
@@ -3795,11 +3802,29 @@ struct CvodeSimulator::Impl {
     // than one way (issue #153); the caller re-seeds CVODES from `s` afterwards.
     // Throws on a tangential crossing, when the two branches cannot be told
     // apart at x(t*), or when a batch does not resolve to a single crossing.
+    // The end of the step CVODE found a root in, read before the restart that
+    // rewinds it (issue #1285).
+    struct RootStepEnd {
+        double t = 0.0;
+        std::vector<double> x;
+    };
+    // `root_step_end` is that step's end, or null.
     void
     apply_state_switch_sensitivity_jump(void *cvode_mem, N_Vector y, int ns, double t_evt,
                                         const std::vector<const NetworkModel::StateSwitch *> &batch,
-                                        std::vector<std::vector<double>> &s,
-                                        SensitivityState &sens);
+                                        std::vector<std::vector<double>> &s, SensitivityState &sens,
+                                        const RootStepEnd *root_step_end = nullptr);
+    // Move `s` with the state where a continuous crossing restarts past its
+    // surface, from x(t*) `past` along the flow beyond it (issue #1285). See
+    // the definition.
+    void columns_past_surface(void *cvode_mem, int ns, double t_evt, const std::vector<double> &x,
+                              const std::vector<double> &f0, double dt, double past,
+                              std::vector<std::vector<double>> &s, const SensitivityState &sens);
+    // Whether the step CVODE found a root of `batch` in ran on across another
+    // switch's surface too (issue #1285). See the definition.
+    bool root_step_ran_past(const RootStepEnd *root_step_end, int ns, double t_evt,
+                            const std::vector<double> &x,
+                            const std::vector<const NetworkModel::StateSwitch *> &batch);
     // The reactions whose rate law reads each registered switch, for this run
     // (SensitivityOptions::state_switch_reactions, issue #763). A switch with
     // no entry is judged over the whole right-hand side, as before; an empty
@@ -11568,6 +11593,7 @@ bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
     std::vector<std::vector<double>> s_here;
     if (refuse && sens != nullptr) {
         s_here = capture_event_sens(cvode_mem, ns, t, *sens);
+        carry_columns(t, ns, x, f0, f1, *stalled.front().sw, stalled.size(), s_here, *sens);
     }
     std::copy(xc.begin(), xc.end(), y_data);
     sync_model_at(t, y_data, ns);
@@ -11580,6 +11606,58 @@ bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
         resume_sens_after_reinit(cvode_mem, ns, s_here, *sens);
     }
     return true;
+}
+
+// Issue #1285: the columns across a carry over a continuous surface.
+//
+// The carry moves the species the residual reads from a few ulp short of the
+// surface to a few ulp past it, and leaves the time: a jump of the state at
+// the instant the trajectory reaches the surface, an instant that moves with
+// every column. So the columns take that jump's saltation term,
+//     s⁺ = s⁻ + (f(x) − f(x_carried))·dt*/dθ,
+// with no ∂/∂x of the move, which is a few ulp of each species whatever the
+// state. Across a bend, f(x) − f(x_carried) is the slope over the move, and
+// the term is what the columns would have gathered over the time the steps
+// could not pass. Left out, the far corner of a triangle of width 0.003 kept
+// dY/dk_clock 1.1e-6 short.
+//
+// Asked only of a carry over one surface, whose dt*/dθ is that surface's, and
+// not where the flow is too small against its own terms to divide by (the
+// tangency residual_dtstar refuses). A column in its comoving frame (issue
+// #545) is left, as the crossing's jump leaves it.
+void CvodeSimulator::Impl::carry_columns(double t, int ns, const std::vector<double> &x,
+                                         const std::vector<double> &f_at_x,
+                                         const std::vector<double> &f_carried,
+                                         const NetworkModel::StateSwitch &sw, std::size_t n_stalled,
+                                         std::vector<std::vector<double>> &s,
+                                         const SensitivityState &sens) {
+    const int n_sens = sens.n_total;
+    if (n_stalled != 1 || n_sens == 0 || s.size() != static_cast<std::size_t>(n_sens)) {
+        return;
+    }
+    std::vector<double> shift;
+    std::vector<double> size;
+    double scale = 0.0;
+    const double flow = residual_shift(sw.residual_expr_idx, sw.species, t, ns, x, f_at_x, s, sens,
+                                       shift, size, scale);
+    if (!std::isfinite(flow) || !(scale > 0.0) ||
+        std::fabs(flow) <= kTransversalityRelFloor * scale) {
+        return;
+    }
+    for (int c = 0; c < n_sens; ++c) {
+        const auto uc = static_cast<std::size_t>(c);
+        if (c < sens.n_p && sens.comoving.enabled && sens.comoving.plist[uc] >= 0) {
+            continue;
+        }
+        const double tau = -shift[uc] / flow;
+        if (!std::isfinite(tau) || tau == 0.0) {
+            continue;
+        }
+        for (int i = 0; i < ns; ++i) {
+            const auto ui = static_cast<std::size_t>(i);
+            s[uc][ui] += (f_at_x[ui] - f_carried[ui]) * tau;
+        }
+    }
 }
 
 bool CvodeSimulator::Impl::jumps_across_surface(const std::vector<int> &own,
@@ -11900,10 +11978,149 @@ void CvodeSimulator::Impl::refuse_a_switch_on_its_surface_here(
     sync_model_at(t_evt, after.data(), ns);
 }
 
+// ─── The step a root was found in (issue #1285) ──────────────────────────────
+//
+// What the columns at x(t*) are depends on that step. One that went over a
+// whole pulse unseen, 47 units long across a triangle 0.0015 wide, read the
+// right-hand side at its ends only, on the flat either side, and x(t*) and its
+// columns are the branch before carried on to the root. A step that ended at
+// or just past the surface read the branch beyond it there, and they are its
+// own values, part of the way along that branch already. The first ran on
+// across the pulse's other surfaces as well; the second did not. True where
+// some other registered switch reads its far side at the step's end and not
+// at x(t*).
+bool CvodeSimulator::Impl::root_step_ran_past(
+    const RootStepEnd *root_step_end, int ns, double t_evt, const std::vector<double> &x,
+    const std::vector<const NetworkModel::StateSwitch *> &batch) {
+    if (root_step_end == nullptr || !(root_step_end->t > t_evt) ||
+        root_step_end->x.size() != static_cast<std::size_t>(ns)) {
+        return false;
+    }
+    auto &eval = model.evaluator();
+    std::vector<double> at_root;
+    at_root.reserve(state_switch_all.size());
+    sync_model_at(t_evt, x.data(), ns);
+    for (const NetworkModel::StateSwitch *one : state_switch_all) {
+        at_root.push_back(eval.evaluate(one->residual_expr_idx));
+    }
+    sync_model_at(root_step_end->t, root_step_end->x.data(), ns);
+    bool across = false;
+    for (std::size_t k = 0; k < state_switch_all.size() && !across; ++k) {
+        if (std::find(batch.begin(), batch.end(), state_switch_all[k]) != batch.end()) {
+            continue;
+        }
+        const double g = eval.evaluate(state_switch_all[k]->residual_expr_idx);
+        const double g0 = at_root[k];
+        across = std::isfinite(g) && std::isfinite(g0) && g != 0.0 && g0 != 0.0 &&
+                 (g < 0.0) != (g0 < 0.0);
+    }
+    sync_model_at(t_evt, x.data(), ns);
+    return across;
+}
+
+// ─── The columns where a continuous crossing restarts (issue #1285) ─────────
+//
+// A crossing restarts at x(t*) + δt·f, past the surface, and keeps the time
+// (restart_past_surface). A continuous one takes no saltation term, and its
+// columns were put back as they stood at x(t*). But the state is then δt on
+// along the flow, and the columns are not: they are behind it by δt·ṡ. Just
+// past a corner that is large, as J there carries the corner's slope and the
+// clock's column is t. On a triangle pulse of width 0.003 in a counter at rate
+// 2, at t = 25, a column moves at 5.5e7 past the foot and 6e7 past the peak,
+// and a δt of 1.4e-12 (the ladder's first, 256·ε·t; it is longer where that
+// does not straddle the surface) put dY/dk_clock 8e-5 off at every tolerance
+// from 1e-10 on. And x(t*) is where CVODE placed the root, to
+// 100·ε·(|t| + |h|): after a step that went over the whole pulse unseen,
+// 1e-12 past the surface, with the columns there still on the branch before
+// it. So each column takes
+//     s += past·(ṡ⁺ − ṡ⁻) + δt·ṡ⁺,
+// ṡ⁻ and ṡ⁺ the column's right-hand side on either branch, read at the probe
+// points ∓δt the ladder verified straddle the surface, and `past` the time
+// from the surface to x(t*) along the flow (negative short of it) where the
+// columns there are the branch before's (root_step_ran_past), and 0 where they
+// are not. Left out at the foot, that term cost 2e-4. Given to a step that
+// had ended just past the surface, whose columns already held part of it, it
+// put dY/dk_clock 1e-5 to 5e-5 high on every grid at rtol 1e-10.
+//
+// Read with the analytic sensitivity right-hand side, as J·s + ∂f/∂θ: a
+// column that the crossing does not move takes exactly nothing. A saltation
+// term read from f at the probe points took the rounding of a rate law that
+// cancels between two 1e8 pools, times dt*/dθ, into a species the crossing
+// never touches. CVODES' difference quotient is not to be had here, so
+// without the analytic right-hand side the columns are left as they were (on
+// it a run on the triangle above stalls at the pulse's foot regardless). A
+// column in its comoving frame (issue #545) is left too.
+void CvodeSimulator::Impl::columns_past_surface(void *cvode_mem, int ns, double t_evt,
+                                                const std::vector<double> &x,
+                                                const std::vector<double> &f0, double dt,
+                                                double past, std::vector<std::vector<double>> &s,
+                                                const SensitivityState &sens) {
+    const int n_sens = sens.n_total;
+    void *raw = nullptr;
+    if (n_sens == 0 || s.size() != static_cast<std::size_t>(n_sens) || !(dt > 0.0) ||
+        !std::isfinite(past) || CVodeGetUserData(cvode_mem, &raw) != CV_SUCCESS || raw == nullptr) {
+        return;
+    }
+    const auto *data = static_cast<const CvodeUserData *>(raw);
+    if (data->codegen_sens_fn == nullptr || data->codegen_plist == nullptr ||
+        data->codegen_param_values == nullptr || data->codegen_n_sens != n_sens) {
+        return;
+    }
+    CodegenSensUserDataForSO so_data;
+    so_data.param_values = data->codegen_param_values;
+    so_data.plist = data->codegen_plist;
+    so_data.n_sens = data->codegen_n_sens;
+    auto plain = [&](int c) {
+        return data->comoving_plist == nullptr || data->comoving_plist[c] < 0;
+    };
+    const auto n = static_cast<std::size_t>(ns);
+    std::vector<double> xs(n, 0.0);
+    std::vector<double> fs(n, 0.0);
+    std::vector<double> scratch_a(n, 0.0);
+    std::vector<double> scratch_b(n, 0.0);
+    // rate[0] before the surface, rate[1] past it, a column each.
+    std::vector<std::vector<double>> rate[2];
+    for (int side = 0; side < 2; ++side) {
+        const double at = side == 0 ? -dt : dt;
+        for (std::size_t i = 0; i < n; ++i) {
+            xs[i] = x[i] + at * f0[i];
+        }
+        sync_model_at(t_evt + at, xs.data(), ns);
+        model.compute_derivs(t_evt + at, xs.data(), fs.data());
+        rate[side].assign(static_cast<std::size_t>(n_sens), std::vector<double>(n, 0.0));
+        for (int c = 0; c < n_sens; ++c) {
+            if (!plain(c)) {
+                continue;
+            }
+            auto &out = rate[side][static_cast<std::size_t>(c)];
+            const int rc = data->codegen_sens_fn(n_sens, t_evt + at, xs.data(), fs.data(), c,
+                                                 s[static_cast<std::size_t>(c)].data(), out.data(),
+                                                 &so_data, scratch_a.data(), scratch_b.data());
+            // A column CVODES could not read here either: it asks again on its
+            // first step and refuses there with its own account.
+            if (rc != 0 ||
+                !std::all_of(out.begin(), out.end(), [](double v) { return std::isfinite(v); })) {
+                sync_model_at(t_evt, x.data(), ns);
+                return;
+            }
+        }
+    }
+    sync_model_at(t_evt, x.data(), ns);
+    for (int c = 0; c < n_sens; ++c) {
+        if (!plain(c)) {
+            continue;
+        }
+        const auto uc = static_cast<std::size_t>(c);
+        for (std::size_t i = 0; i < n; ++i) {
+            s[uc][i] += past * (rate[1][uc][i] - rate[0][uc][i]) + dt * rate[1][uc][i];
+        }
+    }
+}
+
 void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
     void *cvode_mem, N_Vector y, int ns, double t_evt,
     const std::vector<const NetworkModel::StateSwitch *> &batch,
-    std::vector<std::vector<double>> &s, SensitivityState &sens) {
+    std::vector<std::vector<double>> &s, SensitivityState &sens, const RootStepEnd *root_step_end) {
     const int n_sens = sens.n_total;
     if (n_sens == 0 || s.empty() || batch.empty()) {
         return;
@@ -12337,7 +12554,8 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                 // are not one crossing" test counts the batch it is handed, and
                 // a plateau can never be straddled, so leaving one in the batch
                 // refuses a set of real crossings for the company it keeps.
-                apply_state_switch_sensitivity_jump(cvode_mem, y, ns, t_evt, crossing, s, sens);
+                apply_state_switch_sensitivity_jump(cvode_mem, y, ns, t_evt, crossing, s, sens,
+                                                    root_step_end);
             }
             return;
         }
@@ -12782,6 +13000,10 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
     probe(+dt, g_after);
     model.compute_derivs(t_evt + dt, xw.data(), f_plus.data());
     read_flux(2, +dt);
+    // Where along the flow from x(t*) the reported residual vanishes, within
+    // the pair: negative where x(t*) is already past it (issue #1285).
+    const double surface_at =
+        std::clamp(dt * (g_before[0] + g_after[0]) / (g_before[0] - g_after[0]), -dt, dt);
     for (std::size_t r = 0; r < reader_batch_idx.size(); ++r) {
         readers[r].g_lo = g_before[reader_batch_idx[r]];
         readers[r].g_hi = g_after[reader_batch_idx[r]];
@@ -12898,6 +13120,89 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         reader_batch_idx.clear();
         far_ok = false;
         far_whole = false;
+    };
+    // Issue #1285: a smooth term is not the only thing the readers can leave.
+    // A bend is listed with no rate law (state_switch_reactions), so the rate
+    // law that holds `max(0, 1 - abs(T-c)/(w/2))` is all left over at its own
+    // corner. Neither difference above tells that from a jump: across a
+    // corner a hair from x(t*) both read its change of slope times δt. At a
+    // width of 0.003 that is 1e-5 of X's rate, past the tolerance on T's 2,
+    // and the corner took a saltation term from the probes' drift. So before
+    // either verdict stands, the rest is read as the readers' is (issue #917):
+    // each side carried to the root along its own slope, from the pair at ±δt
+    // and the one at ±2δt. A corner is then gone to rounding, and a jump is
+    // still the jump. True where that shows none. The far pair has to cross
+    // what the near pair does and no more, or a step between the two is in
+    // one side's slope.
+    auto unlisted_bend = [&]() {
+        static constexpr double kPoint[4] = {-2.0, -1.0, 1.0, 2.0};
+        std::vector<double> rest[4];
+        std::vector<double> listed(n_sp, 0.0);
+        std::vector<double> gross(n_sp, 0.0);
+        std::vector<double> gross_max(n_sp, 0.0);
+        std::vector<double> g_far[2] = {std::vector<double>(nb, 0.0), std::vector<double>(nb, 0.0)};
+        std::vector<double> other_far[2] = {std::vector<double>(others.size(), 0.0),
+                                            std::vector<double>(others.size(), 0.0)};
+        for (int k = 0; k < 4; ++k) {
+            const double at = kPoint[k] * dt;
+            for (int i = 0; i < ns; ++i) {
+                xw[static_cast<std::size_t>(i)] =
+                    x[static_cast<std::size_t>(i)] + at * f0[static_cast<std::size_t>(i)];
+            }
+            sync(xw, t_evt + at);
+            if (k == 0 || k == 3) {
+                const int side = k == 0 ? 0 : 1;
+                for (std::size_t j = 0; j < nb; ++j) {
+                    g_far[side][j] = eval.evaluate(batch[j]->residual_expr_idx);
+                }
+                for (std::size_t o = 0; o < others.size(); ++o) {
+                    other_far[side][o] = eval.evaluate(others[o]->residual_expr_idx);
+                }
+            }
+            rest[k].assign(n_sp, 0.0);
+            model.compute_flux_split(t_evt + at, xw.data(), nullptr, rest[k].data(), gross.data());
+            for (std::size_t u = 0; u < n_sp; ++u) {
+                gross_max[u] = std::max(gross_max[u], gross[u]);
+            }
+            if (!readers.empty()) {
+                model.compute_flux_split(t_evt + at, xw.data(), &batch_rxns, listed.data(),
+                                         nullptr);
+                for (std::size_t u = 0; u < n_sp; ++u) {
+                    rest[k][u] -= listed[u];
+                }
+            }
+        }
+        sync(x, t_evt);
+        for (std::size_t j = 0; j < nb; ++j) {
+            if (!straddles(g_far[0][j], g_far[1][j])) {
+                return false;
+            }
+        }
+        for (std::size_t o = 0; o < others.size(); ++o) {
+            if (straddles(other_far[0][o], other_far[1][o]) != (other_near[o] != 0)) {
+                return false;
+            }
+        }
+        if (!std::isfinite(surface_at)) {
+            return false;
+        }
+        const double w_lo = (surface_at + dt) / dt;
+        const double w_hi = (dt - surface_at) / dt;
+        double f_scale = 0.0;
+        for (std::size_t u = 0; u < n_sp; ++u) {
+            f_scale = std::max({f_scale, std::fabs(f_minus[u]), std::fabs(f_plus[u])});
+        }
+        const double eps = std::numeric_limits<double>::epsilon();
+        for (std::size_t u = 0; u < n_sp; ++u) {
+            const double before = rest[1][u] + w_lo * (rest[1][u] - rest[0][u]);
+            const double after = rest[2][u] + w_hi * (rest[2][u] - rest[3][u]);
+            const double rounding = kStateSwitchExtendedRoundoff * eps * gross_max[u];
+            if (!(std::fabs(before - after) <=
+                  std::max(kStateSwitchContinuousRelTol * f_scale, rounding))) {
+                return false;
+            }
+        }
+        return true;
     };
 
     bool continuous = true;
@@ -13248,7 +13553,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             }
             if (whole > kStateSwitchContinuousRelTol * f_scale) {
                 const Unlisted found = unlisted_jump();
-                if (found != Unlisted::None) {
+                if (found != Unlisted::None && !unlisted_bend()) {
                     judge_as_before(found == Unlisted::Jump);
                     continuous = false;
                 }
@@ -14063,6 +14368,9 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                 comoving_ask(sens, t_evt);
             }
         }
+        const double past =
+            root_step_ran_past(root_step_end, ns, t_evt, x, batch) ? -surface_at : 0.0;
+        columns_past_surface(cvode_mem, ns, t_evt, x, f0, dt, past, s, sens);
         restart_past_surface();
         return;
     }
@@ -18312,6 +18620,25 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     evt_s_minus =
                         impl_->capture_event_sens(cvode_mem, ns, static_cast<double>(t_ret), sens);
                 }
+                // And where the step the root was found in ended, which the
+                // restart below rewinds: a state-switch crossing reads from it
+                // what its columns at t_ret are (issue #1285).
+                Impl::RootStepEnd root_step_end;
+                if (!evt_s_minus.empty() && n_state_switch > 0) {
+                    sunrealtype t_step = 0.0;
+                    if (CVodeGetCurrentTime(cvode_mem, &t_step) == CV_SUCCESS &&
+                        static_cast<double>(t_step) > static_cast<double>(t_ret)) {
+                        N_Vector end = N_VClone(y);
+                        if (end != nullptr) {
+                            if (CVodeGetDky(cvode_mem, t_step, 0, end) == CV_SUCCESS) {
+                                const double *e = N_VGetArrayPointer(end);
+                                root_step_end.t = static_cast<double>(t_step);
+                                root_step_end.x.assign(e, e + ns);
+                            }
+                            N_VDestroy(end);
+                        }
+                    }
+                }
                 // Issue #545: a comoving column leaves at every restart, and this is
                 // one. A state-switch root does it inside its own jump, against the
                 // probe pair its ladder verifies; any other root here is a GH #72
@@ -18798,7 +19125,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                             batch.push_back(state_switches[j]);
                         }
                         impl_->apply_state_switch_sensitivity_jump(
-                            cvode_mem, y, ns, static_cast<double>(t_ret), batch, evt_s_minus, sens);
+                            cvode_mem, y, ns, static_cast<double>(t_ret), batch, evt_s_minus, sens,
+                            &root_step_end);
                         // The jump restarts a probe step PAST the surface, and
                         // an event whose trigger sits within that step is carried
                         // across with it. CVODE then starts with that root
