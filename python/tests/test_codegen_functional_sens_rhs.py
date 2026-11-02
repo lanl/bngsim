@@ -737,7 +737,10 @@ class TestEndToEnd:
             before = bngsim.Simulator(_antimony(src), method="ode").steady_state(
                 sensitivity_params=names
             )
-        assert before.sens_dfdp_source == "finite-difference"  # what #67 replaced
+        # What #67 replaced was a difference quotient; without the emitted
+        # column the factor is now exact by dual numbers (issue #1330).
+        assert before.sens_dfdp_source == "automatic-differentiation"
+        np.testing.assert_allclose(before.sensitivity, ss.sensitivity, rtol=1e-12, atol=1e-15)
 
         def y_ss(p, v):
             m = _antimony(src)

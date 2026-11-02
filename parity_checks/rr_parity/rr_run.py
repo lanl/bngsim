@@ -105,6 +105,15 @@ from _core.versions import git_rev  # noqa: E402
 
 ODE_JOBS = HERE / "ode_jobs.json"
 DEFAULT_ODE_TIMEOUT = 120.0  # ODE jobs carry no max_wall_sec; this is their cap.
+# libRoadRunner 2.11.0 takes 545-566 s to load each of these three CellML models on a
+# CI runner (2.9.2 took about 220 s; every other reference in reference-data-v4 loaded
+# in under 25 s), so the light pass's 300 s cap timed them out on every live night.
+# Each runs to at least this cap, whatever --timeout says (#1288).
+SLOW_LOAD_CAP = {
+    "MODEL1006230049": 1200.0,
+    "MODEL1006230053": 1200.0,
+    "MODEL1006230077": 1200.0,
+}
 
 
 def _job_overrides(
@@ -673,16 +682,9 @@ def _worker(spec: dict, q) -> None:
     q.put(res)
 
 
-# A recording's kill is never put off past this: the nightly giant pass's own
-# cap. RoadRunner alone took 1331 s and 14 GB on MODEL1504130000, so a later kill
-# records no giant that times out at 600 s, and it keeps two such processes alive
-# on a 16 GB runner.
-RECORD_KILL_CEILING = 600.0
-
-
 def _kill_after(spec: dict) -> float:
     """When the scheduler kills a job: at its cap, or on a recording at twice it,
-    up to ``RECORD_KILL_CEILING``.
+    up to ``rc.RECORD_KILL_CEILING`` (``rc.recording_kill_after``).
 
     Issue #1290: three jobs that sit at the 300 s cap (about 280 s for both
     engines on the fastest runner, RoadRunner's load most of it, and about 1.7x
@@ -691,9 +693,7 @@ def _kill_after(spec: dict) -> float:
     the worker still judges the row against the cap itself.
     """
     cap = spec["cap"]
-    if not spec.get("write_reference_archive"):
-        return cap
-    return max(cap, min(2 * cap, RECORD_KILL_CEILING))
+    return rc.recording_kill_after(cap) if spec.get("write_reference_archive") else cap
 
 
 # Worker status -> _core Outcome. (timeout/dead are synthesized by the scheduler,
@@ -838,7 +838,7 @@ def main() -> int:
         default=None,
         help=f"Per-job wall-clock cap (s); defaults to {DEFAULT_ODE_TIMEOUT}s when unset. "
         "A recording (--write-reference-archive) kills a job only at twice the cap, up to "
-        f"{RECORD_KILL_CEILING:g}s, to give RoadRunner time to save its reference, and "
+        f"{rc.RECORD_KILL_CEILING:g}s, to give RoadRunner time to save its reference, and "
         "still reports TIMEOUT past the cap.",
     )
     ap.add_argument(
@@ -924,6 +924,7 @@ def main() -> int:
             if args.timeout is not None
             else params.get("max_wall_sec") or DEFAULT_ODE_TIMEOUT
         )
+        cap = max(cap, SLOW_LOAD_CAP.get(j.model_id, 0.0))
         key = f"{j.model_id}:{j.method}"
         if artifact:
             artifacts[key] = artifact

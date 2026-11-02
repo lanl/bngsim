@@ -20,12 +20,18 @@ and ``steady_state()``, which routes its march by the same rule.
 from __future__ import annotations
 
 import ctypes
+import os
 import shutil
+import sys
 from pathlib import Path
 
 import bngsim
 import numpy as np
 import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _codegen_backend import selected_codegen_backend  # noqa: E402
 
 _NETS_DIR = Path(__file__).resolve().parents[2] / "benchmarks" / "models" / "net" / "ode"
 
@@ -190,10 +196,17 @@ class TestCodegenAgreesWithTheSolver:
     @needs_cc
     def test_fill_routed_model_compiles_a_dense_jacobian(self):
         sim = _sim(_FILL_MODEL, codegen=True)
-        assert sim.codegen_backend == "cc"
-        lib = ctypes.CDLL(sim._codegen_so_path)
-        assert hasattr(lib, "bngsim_codegen_jac")
-        assert not hasattr(lib, "bngsim_codegen_jac_sparse")
+        assert sim.codegen_backend == selected_codegen_backend()
+        if sim._codegen_c_source:
+            # The codegen JIT compiles this source in process (issue #1217); it
+            # names each Jacobian entry point only where it defines it.
+            src = sim._codegen_c_source
+            assert "bngsim_codegen_jac(" in src
+            assert "bngsim_codegen_jac_sparse(" not in src
+        else:
+            lib = ctypes.CDLL(sim._codegen_so_path)
+            assert hasattr(lib, "bngsim_codegen_jac")
+            assert not hasattr(lib, "bngsim_codegen_jac_sparse")
         r = _run(sim)
         assert r.solver_stats["linear_solver"] == LS_LAPACK
         _assert_same_trajectory(r.species, _run(_sim(_FILL_MODEL, codegen=False)).species)

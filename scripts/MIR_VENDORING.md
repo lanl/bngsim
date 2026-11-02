@@ -181,7 +181,8 @@ mirrored in `VENDOR.json` → `pruning`. Every upstream file is vendored except:
 `c2mir/<arch>/`), so the same tree builds on every host arch without per-arch
 pruning. The denylist is validated to reproduce the checked-in tree exactly: a
 no-op re-vendor of the pinned commit changes no source file (only the dynamic
-`VENDOR.json` fields).
+`VENDOR.json` fields) other than those with a local carry, which it reverts to
+upstream's and then exits nonzero (see "Local Carries").
 
 Change the prune in `vendor_mir.py` first if the vendor surface ever changes.
 
@@ -212,10 +213,12 @@ These behaviors are required by `mir_jit.hpp` and recorded under
   `MIR_get_global_item`, the scan still works — but verify before relying on it.
 - **Single-maintainer upstream.** MIR is effectively single-maintainer and pinned
   to an immutable commit. Refresh deliberately.
-- **Local carries: none.** The tree is stock upstream at the pinned commit.
-  `VENDOR.json` → `local_carries` records each deliberate BNGsim edit,
-  and both `vendor_mir.py --check` and `test_mir_vendoring.py` verify every
-  recorded carry is *still applied* — see "Local Carries" below.
+- **Local carries: three** (see "Current carries" below): two for issue
+  #1215, in `mir.c` and `c2mir/c2mir.c`, and one for issue #1216,
+  `mir-gen-x86_64.c`'s 3- and 4-byte loop-padding NOPs. `VENDOR.json` →
+  `local_carries` records each deliberate BNGsim edit, and both
+  `vendor_mir.py --check` and `test_mir_vendoring.py` verify every recorded
+  carry is *still applied* — see "Local Carries" below.
 
 ## Local Carries
 
@@ -249,7 +252,50 @@ would not survive — carry-adjacent facts belong in the carry entry.
 
 ### Current carries
 
-None. The tree is stock upstream at the pinned commit.
+Two are issue #1215, which made running out of memory or address space a
+`RuntimeError` from `MirJit` instead of the end of the process, and both are
+marked `BNGsim local carry (lanl/bngsim#1215)`. Both were reported upstream on
+2026-10-29, the `mir.c` one as
+[vnmakarov/mir#493](https://github.com/vnmakarov/mir/issues/493) and the
+`c2mir.c` one as [vnmakarov/mir#494](https://github.com/vnmakarov/mir/issues/494).
+Both are open as of 2026-10-30, and upstream master `dc2c763f` (2026-10-23)
+still has the code they replace.
+
+- **`mir.c` — `_MIR_get_default_code_alloc`.** MirJit hands each context a code
+  allocator that wraps MIR's default one, so that a failed mapping is reported
+  instead of coming back as a NULL code address MIR writes through. The default
+  is static in `mir.c`; the carry adds a one-line accessor for it, so MirJit
+  wraps it rather than copying its platform code. A refresh that drops it fails
+  to link.
+- **`c2mir/c2mir.c` — `new_macro`, `new_macro_call`, `new_ifstate`.** c2mir's
+  preprocessor allocates these records with plain `malloc` and writes through
+  the result unchecked, out of reach of the allocator MirJit hands MIR. The
+  carry checks each and reports a null through MIR's error function as an
+  allocation error, as `c2mir_calloc` already does. `test_mir_vendoring.py`
+  checks every plain `malloc` of a struct in `c2mir.c`, so a refresh that adds
+  another fails it too.
+
+The third is issue #1216's, marked `BNGsim local carry (lanl/bngsim#1216)`.
+
+- **`mir-gen-x86_64.c` — the 3- and 4-byte loop-padding NOPs (issue #1216),
+  carried from 2026-10-27.** From -O2, `target_translate` aligns the head of
+  each innermost loop to an 8-byte boundary with 0 to 7 bytes of NOPs from
+  `nop_pats`. Upstream's 3- and 4-byte entries are the register forms
+  `0F 1F C0` (`nopl %eax`) and `48 0F 1F C0` (`nopq %rax`). An x86-64 CPU runs
+  them, but Rosetta 2 raises SIGILL on both, so an x86_64 Python on Apple
+  Silicon died the first time it ran a 3- or 4-byte pad (one reached by falling
+  into the loop; a jump to the label skips it). -O0 and -O1 pad nothing, which
+  is why only -O2 failed. The carry uses the memory forms Intel recommends,
+  `0F 1F 00` and `0F 1F 40 00`, as upstream's 5- to 7-byte entries already are.
+  They are the same length, so no offset moves, and a NOP reads no memory
+  whatever its operand. It is carried rather than waited for because it changes
+  nothing a CPU does, and without it a MIR build is unusable at -O2 in an x86_64
+  Python on Apple Silicon. Reported upstream on 2026-10-30 as a pull request
+  with the same two entries,
+  [vnmakarov/mir#497](https://github.com/vnmakarov/mir/pull/497), open as of
+  2026-10-30; upstream master (`dc2c763f`) still has the register forms.
+  `test_mir_vendoring.py::test_mir_x86_64_loop_padding_is_intels_recommended_nops`
+  holds the table to Intel's list, and stays when upstream takes the fix.
 
 ### Past carries
 

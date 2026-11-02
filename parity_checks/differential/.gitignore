@@ -1,0 +1,3 @@
+# Per-run reports and generated reproducers (regenerated every run).
+# differential_run.py and differential_generate.py write here by default.
+runs/
