@@ -701,25 +701,31 @@ takes most of the stretch to the next stop at once. That step reads the law at
 its end alone, and on the stop a law that repeats reads there what it read at
 the restart, so the step passes with nothing added for the stretch. So, until
 a stretch has been looked at, a run watches its steps, and before one that
-grew with nothing measured and would take half or more of what is left, it
-reads the right-hand side where that step ends, against what the integrator's
-own history predicts there. Where the step's error there is well past what the
-integrator's error test allows, nothing is done: it fails the step and walks
-the stretch itself. Otherwise the step is read at a quarter, a half and three
-quarters of its length, and where a step would fail at one of them the run
-restarts there, so the step ends on it (issue #998). Before, a dose train that
-begins each period flat lost every period from about the 72nd stop on, and
-with output rows inside the periods from the first, with no error. A run with
-sensitivity columns steps as before.
+would take a quarter or more of what is left, it reads the right-hand side
+where that step ends, against what the integrator's own history predicts
+there. Where the step's error there is well past what the integrator's error
+test allows, nothing is done: it fails the step and walks the stretch itself.
+Otherwise the step is read at a quarter, a half and three quarters of its
+length, and where a step would fail at one of them the run restarts there, so
+the step ends on it (issue #998). Before, a dose train that begins each period
+flat lost every period from about the 72nd stop on, and with output rows
+inside the periods from the first, with no error. A run with sensitivity
+columns steps as before.
 
-What this does not see, and can still step over (issue #1192): a pulse that
-is nothing at both ends of a step and at the three places inside it; steps
-the integrator takes on its way to an output row, where a step that would
-cross the row fails and is retried; a stretch while a delayed event is
-waiting to fire; the stretch after a stop that restarts nothing (a table
-function's breakpoint); and, in a model with a stiff species, a step the look
-takes for one that fails. For these, as for a narrow pulse in a run with no
-stops, pass `max_step` no larger than the pulse.
+The steps watched include those the integrator takes on its way to an output
+row or to the time a delayed event is executed, and those of the stretch after
+a stop that restarts nothing (a table function's breakpoint), and where the
+error read at a step's end says the step fails, it is read again through the
+integrator's corrector, so a stiff species elsewhere in the model does not make
+a step that passes read as one that fails (issue #1192). Before, a
+daily dose with rows every 12 hours kept 0.28 of its integral, a pulse while a
+delayed event waited 0.08, a late pulse beside a table's breakpoints 0.78, and
+the same pulse beside a fast reversible binding 0.04.
+
+What this does not see, and can still step over: a pulse that is nothing at
+both ends of a step and at the three places inside it, or inside a step that
+takes less than a quarter of what is left of its stretch. For these, as for a
+narrow pulse in a run with no stops, pass `max_step` no larger than the pulse.
 
 In a run with sensitivity columns the same stops are placed for a condition
 that reads none of the requested parameters, and for a pulse that only bends.
