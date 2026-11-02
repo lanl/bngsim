@@ -1657,6 +1657,14 @@ class Result:
                 )
             Y = self._species
             sens = self._sensitivities  # (nt, ns, np)
+            # The rows of the block are the columns of the values (GH #202). An
+            # .h5 written before that carries rows species_names dropped, and
+            # species_indices would pick rows from a block they do not address.
+            if Y.shape[1] != sens.shape[1]:
+                raise ValueError(
+                    f"{Y.shape[1]} species but {sens.shape[1]} species sensitivity rows "
+                    "(GH #202); re-run the simulation"
+                )
             refused = self._refused_row_mask()
             if species_indices is not None:
                 Y = Y[:, species_indices]
@@ -1682,8 +1690,12 @@ class Result:
             if observable_indices is not None:
                 Y = Y[:, observable_indices]
                 sens = sens[:, observable_indices, :]
-            # A row that reads a refused species (GH #221) is NaN, and is carried
-            # as _contract_dL_dY carries a refused species row.
+            # A run writes no NaN observable row, a refused species (GH #221)
+            # included: an observable reads the integrated state, not the value
+            # an assignment rule writes over a species, and its row is the chain
+            # rule through that state's rows, which the core refuses when they
+            # are not finite (GH #384). A row made NaN by hand is carried as
+            # _contract_dL_dY carries a refused species row.
             unknown = np.isnan(sens).any(axis=(0, 2))
             return Y, sens, unknown if unknown.any() else None
         raise ValueError(f"target must be 'species' or 'observables', got {target!r}")

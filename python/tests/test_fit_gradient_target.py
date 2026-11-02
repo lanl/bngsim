@@ -14,9 +14,13 @@ Btot = B + AB, Cplx = AB, as many as there are species.
 
 from __future__ import annotations
 
+import warnings
+
 import bngsim
 import numpy as np
 import pytest
+
+from .test_ar_species_output_sensitivities import DECLINED_PIECEWISE
 
 NET = """begin parameters
  1 kon 0.5
@@ -181,10 +185,10 @@ def test_a_per_column_sigma_counts_its_constant_at_every_time(net):
 
 
 def test_an_unknown_observable_row_the_loss_does_not_weight_is_left_out(net):
-    """An observable that reads a refused species (GH #221) has a NaN row. A
-    row the data matches exactly weighs nothing, and is left out, as a refused
-    species row is; one the loss weighs keeps its NaN. The row is made NaN by
-    hand here: the model refuses nothing."""
+    """A NaN observable row is carried as a refused species row is (GH #221): a
+    row the data matches exactly weighs nothing, and is left out; one the loss
+    weighs keeps its NaN. No run writes such a row (the next test), so it is
+    made NaN by hand here."""
     r = _run(net)
     obs = np.asarray(r.observables)
     data = 1.1 * obs
@@ -194,3 +198,53 @@ def test_an_unknown_observable_row_the_loss_does_not_weight_is_left_out(net):
     r._observable_sensitivities[:, 0, :] = np.nan
     np.testing.assert_allclose(r.sse_gradient(data, target="observables")[1], want, rtol=1e-14)
     assert np.isnan(r.sse_gradient(1.1 * obs, target="observables")[1]).all()
+
+
+def test_a_refused_species_leaves_the_observable_rows_known(monkeypatch):
+    """F is set by a piecewise rule whose derivative codegen declines (GH #198),
+    so its species row is NaN (GH #221), and a species fit that weighs F gets
+    NaN. No observable row is NaN: an observable reads the integrated state,
+    not the value the rule writes over F, so the observable fit gets the
+    gradient a central difference over re-runs gives."""
+    monkeypatch.setenv("BNGSIM_CODEGEN_THRESHOLD", "1")
+    monkeypatch.delenv("BNGSIM_NO_CODEGEN", raising=False)
+
+    def run(kd, sens=True):
+        m = bngsim.Model.from_sbml_string(DECLINED_PIECEWISE)
+        m.set_param("kd", kd)
+        kw = {"sensitivity_params": ["kd"]} if sens else {}
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            sim = bngsim.Simulator(m, method="ode", **kw)
+            return sim.run(t_span=(0, 10), n_points=6, rtol=1e-11, atol=1e-13)
+
+    r = run(0.5)
+    assert r.ar_sensitivity_refused == frozenset({"F"})
+    assert np.isnan(r.sse_gradient(np.asarray(r.species) + 1.0)[1]).all()
+    assert not np.isnan(r.sensitivities_observables).any()
+    obs = np.asarray(r.observables)
+    data = 1.1 * obs + 0.5
+    _, grad = r.sse_gradient(data, target="observables")
+    h = 1e-4 * 0.5
+
+    def loss(kd):
+        return float(np.sum((np.asarray(run(kd, sens=False).observables) - data) ** 2))
+
+    np.testing.assert_allclose(grad, [(loss(0.5 + h) - loss(0.5 - h)) / (2 * h)], rtol=1e-6)
+
+
+def test_a_block_whose_rows_are_not_the_columns_is_refused():
+    """The rows of a sensitivity block are the columns of the values (GH #202).
+    A file written before that carries species rows its names dropped; read
+    through species_indices, a row came back from a block those indices do not
+    address. Refused, as the observable target refuses it."""
+    r = bngsim.Result(
+        core=None,
+        _time=np.linspace(0.0, 1.0, 3),
+        _species=np.ones((3, 2)),
+        _species_names=["A", "B"],
+        _sensitivities=np.ones((3, 3, 1)),
+        _sensitivity_params=["k"],
+    )
+    with pytest.raises(ValueError, match=r"2 species but 3 species sensitivity rows"):
+        r.sse_gradient(np.zeros((3, 1)), species_indices=[0])
