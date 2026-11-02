@@ -1,7 +1,8 @@
 name: lint
 
-# Two jobs, each at PINNED tool versions: `pre-commit`, described here, and `docs`,
-# the Sphinx build of issue #586, described where it is defined.
+# Three jobs: `pre-commit`, described here, `nfsim-vendor`, the vendored-NFsim
+# tripwire, and `docs`, the Sphinx build of issue #586; the last two are described
+# where they are defined. `pre-commit` and `docs` run at PINNED tool versions.
 #
 # `pre-commit` replays the project's pre-commit hooks at their PINNED versions, so
 # CI and a developer's local `pre-commit run` can never disagree — a version mismatch
@@ -54,6 +55,39 @@ jobs:
       # .pre-commit-config.yaml. --show-diff-on-failure prints exactly what to reformat.
       - name: pre-commit run --all-files
         run: pre-commit run --all-files --show-diff-on-failure
+
+  # The vendored NFsim tripwire (scripts/NFSIM_VENDORING.md). third_party/nfsim/
+  # is generated from upstream NFsim plus the patch series under
+  # scripts/nfsim_vendor_patches/, and a refresh replaces it wholesale, so a
+  # direct edit to it is lost at the next refresh without a word: twice before
+  # this job existed, and #1419's shim check landed that way too. Nothing ran
+  # the check outside a manual pre-commit stage. This rebuilds the candidate
+  # from the base VENDOR.json records and the patch series, then byte-compares
+  # its export with the tree and checks CARRY_QUEUE against the patches. It
+  # takes seconds, so it has no paths filter, for the reason the pre-commit job
+  # has none.
+  nfsim-vendor:
+    name: vendored NFsim matches its patch series
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Replay the patch series onto the recorded base
+        run: |
+          set -euo pipefail
+          base="$(python3 -c 'import json; print(json.load(open("third_party/nfsim/VENDOR.json"))["source"]["base_commit"])')"
+          git clone --quiet --filter=blob:none https://github.com/RuleWorld/nfsim.git /tmp/nfsim-vendor-candidate
+          git -C /tmp/nfsim-vendor-candidate checkout --quiet -B bngsim/vendor "$base"
+          git -C /tmp/nfsim-vendor-candidate -c user.name=ci -c user.email=ci@invalid \
+            am --quiet "$GITHUB_WORKSPACE"/scripts/nfsim_vendor_patches/*.patch
+
+      - name: vendor_nfsim.py --verify-clean
+        run: python3 scripts/vendor_nfsim.py --nfsim-repo /tmp/nfsim-vendor-candidate --verify-clean
 
   # The docs build (issue #586): no other gate builds docs/, so a broken
   # cross-reference, an autodoc directive naming a renamed API, or a malformed

@@ -406,6 +406,26 @@ CARRY_QUEUE = (
             },
         ],
     },
+    {
+        "topic": "bngsim/carry-shim-bracket-after-call",
+        "kind": "local",
+        "status": (
+            "Refuse, in the NFsim ExprTk mu::Parser shim (nfsim_funcparser.h), an "
+            "expression with a bracket right after a call, as the host evaluator refuses "
+            "it: ExprTk reads k*exp(0)(2) as two statements and keeps the last, so a "
+            "hand-written XML function 3*exp(0)(2) gave 2 for 6. The check and its message "
+            "are the host single source's, bngsim::expr_compat::call_before_bracket and "
+            "bracket_after_call_error. It landed in bngsim GH #1419 as a direct edit to "
+            "the vendored tree, which the next refresh would have reverted. See bngsim GH "
+            "#1415."
+        ),
+        "commits": [
+            {
+                "commit": "fc421c5db49848b8ecec35f1d8c2da8753700c81",
+                "summary": "bngsim: refuse a bracket after a call in mu::Parser as the host does",
+            },
+        ],
+    },
 )
 
 SUMMARY_PREVIEW_LIMIT = 12

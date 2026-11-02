@@ -1,0 +1,54 @@
+From fc421c5db49848b8ecec35f1d8c2da8753700c81 Mon Sep 17 00:00:00 2001
+From: Bill Hlavacek <bill.hlavacek@gmail.com>
+Date: Sun, 1 Nov 2026 16:14:27 -0700
+Subject: [PATCH] bngsim: refuse a bracket after a call in mu::Parser as the
+ host does
+
+ExprTk reads a bracket right after a call, as in k*exp(0)(2), as a
+second statement and keeps only its value, so a hand-written XML
+function 3*exp(0)(2) gave 2 for 6. The host evaluator refuses such an
+expression, naming the call (bngsim issue #1415). The shim now runs the
+host single source's check, bngsim::expr_compat::call_before_bracket,
+on the expression as written, with a call being what ExprTk's
+parse_symbol calls: a built-in, if, not, or a function in the shim's
+symbol table. It throws the host's message, from
+bracket_after_call_error, before the literals are respelled.
+---
+ src/NFfunction/nfsim_funcparser.h | 21 +++++++++++++++++----
+ 1 file changed, 17 insertions(+), 4 deletions(-)
+
+diff --git a/src/NFfunction/nfsim_funcparser.h b/src/NFfunction/nfsim_funcparser.h
+index be019fb..a58c382 100644
+--- a/src/NFfunction/nfsim_funcparser.h
++++ b/src/NFfunction/nfsim_funcparser.h
+@@ -294,10 +294,23 @@ private:
+ 
+     void compile() {
+         // Recompute the remapped expression from the original each time so that
+-        // any symbol registered before this (re)compile is reflected. Then
+-        // respell any literal ExprTk's own number parser would misread, so it
+-        // reads as strtod (and the host evaluator) reads it.
+-        expr_string_ = bngsim::expr_compat::exact_literals(remapExpression(original_expr_string_));
++        // any symbol registered before this (re)compile is reflected.
++        const std::string remapped = remapExpression(original_expr_string_);
++
++        // Issue #1415: refused, as the host evaluator refuses it, where ExprTk
++        // would keep only the bracket after the call.
++        const std::string call = bngsim::expr_compat::call_before_bracket(
++            original_expr_string_, [this](const std::string& name) {
++                return symbol_table_.get_function(name) != nullptr;
++            });
++        if (!call.empty()) {
++            throw exception_type(
++                bngsim::expr_compat::bracket_after_call_error(original_expr_string_, call));
++        }
++
++        // Then respell any literal ExprTk's own number parser would misread, so
++        // it reads as strtod (and the host evaluator) reads it.
++        expr_string_ = bngsim::expr_compat::exact_literals(remapped);
+ 
+         expression_ = exprtk::expression<double>();  // reset
+         expression_.register_symbol_table(symbol_table_);
+-- 
+2.53.0
+
