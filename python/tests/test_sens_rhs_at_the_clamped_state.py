@@ -172,6 +172,33 @@ def test_a_restart_that_leaves_l_where_it_is_keeps_the_reading():
     assert np.abs(sens - ref).max() <= 1e-6 * np.abs(ref).max()
 
 
+@pytest.mark.parametrize("method", ["staggered", "simultaneous"])
+def test_a_carried_second_leg_reads_as_one_run_does(method):
+    """Run to t = 50, then on to 100 with carry_sensitivities. The second run
+    starts where the first left L, a hair below 0 by its own error, so L is no
+    slot an assignment put there, and the second leg follows one run's path:
+    3.4e-9 and 7.9e-9 of the state's peak off it, and the judged columns 2.1e-8
+    and 6.1e-8 of theirs. Marked at its start, L was refused at t = 51."""
+    sim = bngsim.Simulator(
+        bngsim.Model.from_antimony_string(MPEKRIS),
+        method="ode",
+        sensitivity_params=list(PARAMS),
+        sensitivity_method=method,
+    )
+    sim.run(t_span=(0.0, 50.0), n_points=51, rtol=RTOL, atol=ATOL)
+    leg = sim.run(
+        t_span=(50.0, 100.0), n_points=51, rtol=RTOL, atol=ATOL, carry_sensitivities=True
+    )
+    one = _sens(method)
+    x, x1 = np.asarray(leg.species), np.asarray(one.species)[50:]
+    assert np.abs(x - x1).max() <= 1e-6 * np.abs(x1).max()
+    rows = [list(one.species_names).index(s) for s in JUDGED]
+    s, s1 = np.asarray(leg.sensitivities)[:, rows, :], np.asarray(one.sensitivities)[50:, rows, :]
+    peak = np.abs(s1).max(axis=0)
+    judged = peak > 1e-6 * peak.max()
+    assert (np.abs(s - s1).max(axis=0)[judged] <= 1e-5 * peak[judged]).all()
+
+
 def test_with_the_reading_off_the_run_fails_as_it_did(monkeypatch):
     """BNGSIM_SENS_AT_VALUE_STATE=0 turns the reading at the value RHS's state
     off (the #1301 tests set it), and the simultaneous run fails at t = 22

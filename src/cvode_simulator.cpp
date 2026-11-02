@@ -1044,7 +1044,11 @@ static void note_value_rhs_state(CvodeUserData *data, sunrealtype t, const doubl
 // a state CVODE is about to start from at `t`: every slot below 0 at the run's
 // start (`fresh`), and at a restart each slot the restart changed, read against
 // the state CVODE's own history has at `t`. A slot a restart does not change
-// keeps its mark, so one the run's own error took below 0 stays unmarked.
+// keeps its mark, so one the run's own error took below 0 stays unmarked. A
+// restart CVODE cannot interpolate to (outside its last step) marks every slot
+// by its value, as at a start, and a carry_sensitivities run then gives each
+// slot it starts where the last run left it that run's mark instead
+// (setup_forward_sensitivities).
 static void mark_put_below(CvodeUserData *data, void *cvode_mem, sunrealtype t, N_Vector y,
                            bool fresh) {
     const auto n = static_cast<std::size_t>(data->model->n_species());
@@ -1074,10 +1078,16 @@ static void mark_put_below(CvodeUserData *data, void *cvode_mem, sunrealtype t, 
     data->put_below_h = std::numeric_limits<double>::quiet_NaN();
 }
 
-// Unmark the slots the step being taken started at or above 0 from: an
-// accepted state (step_start_state), so each has been back since the
-// assignment that put it below. Read once per step, and only while a slot is
-// marked.
+// Unmark the slots that have been back at or above 0 at an accepted state
+// since the assignment that put them below. Read once per step, and only while
+// a slot is marked, at two states: the one the step started from as
+// step_start_state reads it from CVODE's predicted history, and CVODE's own
+// zn[0]. One of the two is the state CVODE last accepted, and the other may
+// not be one it accepted: in an ordinary step zn[0] is the prediction; in the
+// order-1 restart after repeated error-test failures (cvDoErrorTest) the
+// sensitivity RHS is called at zn[0], the accepted state, with a history that
+// step_start_state reads as y_n - h*f(y_n). So a slot is unmarked only where
+// it is at or above 0 at both.
 static void clear_put_below(CvodeUserData *data, N_Vector like) {
     void *cvode_mem = data->clamp_cvode_mem;
     sunrealtype tn = 0.0;
@@ -1092,18 +1102,22 @@ static void clear_put_below(CvodeUserData *data, N_Vector like) {
     data->put_below_tn = static_cast<double>(tn);
     data->put_below_h = static_cast<double>(h);
     N_Vector start = N_VClone(like);
-    if (start == nullptr)
-        return;
-    if (step_start_state(cvode_mem, like, start)) {
+    N_Vector now = N_VClone(like);
+    if (start != nullptr && now != nullptr && step_start_state(cvode_mem, like, start) &&
+        CVodeGetDky(cvode_mem, tn, 0, now) == CV_SUCCESS) {
         const double *y0 = N_VGetArrayPointer(start);
+        const double *z0 = N_VGetArrayPointer(now);
         data->any_put_below = false;
         for (std::size_t i = 0; i < data->put_below.size(); ++i) {
-            if (data->put_below[i] && y0[i] >= 0.0)
+            if (data->put_below[i] && y0[i] >= 0.0 && z0[i] >= 0.0)
                 data->put_below[i] = 0;
             data->any_put_below = data->any_put_below || data->put_below[i] != 0;
         }
     }
-    N_VDestroy(start);
+    if (start != nullptr)
+        N_VDestroy(start);
+    if (now != nullptr)
+        N_VDestroy(now);
 }
 
 // Whether the sensitivity RHS may read its columns at `at`, the state the value
@@ -1115,9 +1129,10 @@ static void clear_put_below(CvodeUserData *data, N_Vector like) {
 // columns are right (MODEL2001200002's L, MODEL5952308332's BPG). Where it is
 // below 0 in earnest they are wrong, with no error. On an accepted path a
 // moved slot is below 0 one of three ways, and two are refused here:
-// - an assignment put it there (the run's start, an event, a carry: any
-//   restart that changed it) and it has not been back at or above 0 at an
-//   accepted step since (put_below);
+// - an assignment put it there (the run's start, unless it continues the last
+//   run from where that run left the slot; an event, a carry: any restart that
+//   changed it) and it has not been back at or above 0 at an accepted step
+//   since (put_below);
 // - the flow there drives it further below 0 (`f`), so no step through such
 //   a state is accepted;
 // - the run's own step error took it there, which is the one read.
@@ -3791,6 +3806,11 @@ struct CvodeSimulator::Impl {
     // The right-hand side CVODE was given, compiled or interpreted
     // (create_cvode_core), for what reads it outside CVODE (stop_would_lose).
     CVRhsFn run_rhs_fn = nullptr;
+    // Issue #1298: the state the last sensitivity run ended at, and which of
+    // its slots an assignment had put below 0 (CvodeUserData::put_below), for
+    // a carry_sensitivities run that continues it (setup_forward_sensitivities).
+    std::vector<double> carried_state;
+    std::vector<char> carried_put_below;
     // Issue #1192: the step CVODE takes next, where the step it has just taken
     // settles it, read where CVODE does not report it (after a stop or a root
     // it returned on, it reports the step just taken). After a step that
@@ -5628,6 +5648,23 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(
                     "(pre-equilibration output sensitivities, GH #210)");
             }
             use_carry_seed = true;
+            // Issue #1298: this run continues the last one, so a slot it starts
+            // from where that run left it keeps that run's mark rather than
+            // one for an assignment (mark_put_below marked every slot below 0
+            // at this run's start). A slot set between the runs keeps the start
+            // mark. Unmarked, a species the last run's own error left below 0
+            // was refused from the second run's first step.
+            if (carried_state.size() == static_cast<std::size_t>(ns) &&
+                carried_put_below.size() == static_cast<std::size_t>(ns) &&
+                user_data.put_below.size() == static_cast<std::size_t>(ns)) {
+                user_data.any_put_below = false;
+                for (std::size_t i = 0; i < static_cast<std::size_t>(ns); ++i) {
+                    if (y_data[i] == carried_state[i])
+                        user_data.put_below[i] = carried_put_below[i];
+                    user_data.any_put_below =
+                        user_data.any_put_below || user_data.put_below[i] != 0;
+                }
+            }
         } else if (state_dirty) {
             // Sensitivities on a carried-over / manually-advanced state
             // without opt-in would seed yS(0) as if starting from the ICs —
@@ -20100,6 +20137,15 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         // Issue #545: the carry-over seed is S.
         impl_->comoving_finish(sens, ns, final_t, y_data);
         impl_->write_final_state_back(opts, ns, y_data, final_t, sens);
+        // Issue #1298: and which of its slots an assignment had put below 0,
+        // for a carry_sensitivities run that continues from this state.
+        if (sens.n_p > 0 && user_data.put_below.size() == static_cast<std::size_t>(ns)) {
+            impl_->carried_state.assign(y_data, y_data + ns);
+            impl_->carried_put_below = user_data.put_below;
+        } else {
+            impl_->carried_state.clear();
+            impl_->carried_put_below.clear();
+        }
         // ...and the event state that goes with it, for a run that continues
         // this one (issue #693).
         NetworkModel::EventCarry carry;
