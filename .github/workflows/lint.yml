@@ -63,9 +63,9 @@ jobs:
   # this job existed, and #1419's shim check landed that way too. Nothing ran
   # the check outside a manual pre-commit stage. This rebuilds the candidate
   # from the base VENDOR.json records and the patch series, then byte-compares
-  # its export with the tree and checks CARRY_QUEUE against the patches. About a
-  # minute, most of it the clone; no paths filter, for the reason the pre-commit
-  # job has none.
+  # its export with the tree and checks CARRY_QUEUE against the patches. It
+  # takes seconds, so it has no paths filter, for the reason the pre-commit job
+  # has none.
   nfsim-vendor:
     name: vendored NFsim matches its patch series
     runs-on: ubuntu-latest
