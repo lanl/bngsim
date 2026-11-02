@@ -3852,6 +3852,13 @@ struct CvodeSimulator::Impl {
     // only where the event's time is fixed: its jump reads f⁺ on the surface.
     double last_event_t = std::numeric_limits<double>::quiet_NaN();
     bool last_event_moved = false;
+    // The same for a stop on a clock (issue #1445): the last restart at a
+    // crossing stop or a switch time no requested column moves, and the last
+    // switch time one does. A state left on a surface it leaves at once after a
+    // fixed stop held it for no time, unless a moving stop shares the instant:
+    // the #48 jump there reads the flow after it with the state still on.
+    double last_fixed_stop_t = std::numeric_limits<double>::quiet_NaN();
+    double last_moving_stop_t = std::numeric_limits<double>::quiet_NaN();
     // Issue #1279: refuse, at a root of held equality `k` at `t_x`, a leaving
     // that changes the rate laws reading it where no jump at that instant does.
     void judge_held_equality_exit(int ns, std::size_t k, double t_x, const double *x_after,
@@ -7608,7 +7615,9 @@ void CvodeSimulator::Impl::judge_held_equality_exit(
         const auto held_since = [&](double t_r) { return std::fabs(t_b - t_r) <= at_once; };
         bool covered =
             !changed || held_since(t_start) ||
-            (std::isfinite(last_event_t) && !last_event_moved && held_since(last_event_t));
+            (std::isfinite(last_event_t) && !last_event_moved && held_since(last_event_t)) ||
+            (std::isfinite(last_fixed_stop_t) && held_since(last_fixed_stop_t) &&
+             !(std::isfinite(last_moving_stop_t) && held_since(last_moving_stop_t)));
         // A state switch written inside the equality, crossed at this instant,
         // in this return or at the restart just before: its jump reads the
         // equality's readers either side of its own surface. Whether that
@@ -10424,6 +10433,10 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
     // Issue #760: the run takes its stops for the comoving columns on the
     // stretch this crossing begins.
     comoving_ask(sens, t_evt);
+    // Issue #1445: whether a requested column moves this switch's time.
+    const bool moved =
+        std::any_of(dtstar_all.begin(), dtstar_all.end(), [](double d) { return d != 0.0; });
+    (moved ? last_moving_stop_t : last_fixed_stop_t) = t_evt;
 
     // Restart the state stepper AT the kink (order drops to 1, history
     // discarded) — the same reason the GH #72 discontinuity root reinits —
@@ -15268,6 +15281,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     impl_->held_equalities.clear();
     impl_->last_event_t = std::numeric_limits<double>::quiet_NaN();
     impl_->last_event_moved = false;
+    impl_->last_fixed_stop_t = std::numeric_limits<double>::quiet_NaN();
+    impl_->last_moving_stop_t = std::numeric_limits<double>::quiet_NaN();
     std::vector<int> held_equality_roots;
     if (sens.n_total > 0 && !opts.sensitivity.held_equality_conditions.empty()) {
         const auto &conds = opts.sensitivity.held_equality_conditions;
@@ -19356,6 +19371,10 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                                                  std::to_string(t_crossing) +
                                                  " failed: " + std::to_string(rf));
                     }
+                    // Issue #1445: a crossing stop is at a time no requested
+                    // column moves; a switch time one moves is recorded by
+                    // its own jump.
+                    impl_->last_fixed_stop_t = static_cast<double>(t_ret);
                     if (!cross_s_minus.empty()) {
                         impl_->resume_sens_after_reinit(cvode_mem, ns, cross_s_minus, sens);
                     }

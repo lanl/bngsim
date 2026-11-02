@@ -212,3 +212,52 @@ def test_a_carried_sensitivity_seed_survives_the_check(tmp_path):
     np.testing.assert_allclose(
         np.asarray(result.sensitivities)[:, 0, :], [[2.0, -8.0]] * 5, rtol=1e-6
     )
+
+
+# B is made at kp only once the clock passes t3, so `Bobs==0` holds from the
+# start until t3 and B leaves at once there: Y = kb·t3 at t = 8.
+_CLOCKED = """begin parameters
+    1 kp 1.0
+    2 kb 1.0
+    3 t3 5.0
+end parameters
+begin functions
+    1 fB() if(time()>t3,kp,0)
+    2 fY() if(Bobs==0,kb,0)
+end functions
+begin species
+    1 B() 0
+    2 Y() 0
+end species
+begin reactions
+    1 0 1 fB
+    2 0 2 fY
+end reactions
+begin groups
+    1 Bobs 1
+end groups
+"""
+
+
+def _clocked(tmp_path, params):
+    path = tmp_path / "clocked.net"
+    path.write_text(_CLOCKED)
+    sim = bngsim.Simulator(
+        bngsim.Model.from_net(str(path)), method="ode", sensitivity_params=params
+    )
+    result = sim.run(t_span=(0, 8), n_points=9, rtol=1e-10, atol=1e-12)
+    return np.asarray(result.sensitivities)[-1, 1, :]
+
+
+def test_a_leaving_at_once_after_a_clock_stop_no_column_moves_runs(tmp_path):
+    """The stop at t3 is a time no requested column moves, and B leaves the
+    surface at once after it: dY/d[kp, kb] = [0, t3]. Refused at t = 5 before
+    (issue #1445), where only the run's start and a fixed event were known."""
+    np.testing.assert_allclose(_clocked(tmp_path, ["kp", "kb"]), [0.0, 5.0], atol=1e-9)
+
+
+def test_a_leaving_at_once_after_a_clock_stop_a_column_moves_is_refused(tmp_path):
+    """With t3 requested, the #48 jump at t3 reads Y's flow after the stop with
+    B still on the surface: dY/dt3 would be 0 for 1. It stays refused."""
+    with pytest.raises(SensitivityUnsupportedError, match=r"'Bobs==0'.*leaves it at t=5"):
+        _clocked(tmp_path, ["kp", "kb", "t3"])
