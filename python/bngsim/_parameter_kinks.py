@@ -19,6 +19,11 @@ function the engine computes, and is left alone. Whether the law has a
 derivative there is asked of the whole law, read with each side of the bend put
 in for it, and not of the bend alone: ``10*abs(q)*q`` at q = 0 is smooth, and so
 is a law whose ``abs`` sits in a branch the present values do not take.
+
+An ``if()`` on its switch is judged for a steady state only, whose policy is to
+refuse where the two sides differ (issue #1330). There the compiled ``∂f/∂p`` is
+the derivative of the branch taken, one side's, and a time course returns it,
+as AMICI does (issue #382).
 """
 
 from __future__ import annotations
@@ -122,9 +127,17 @@ def _values(exprs, subs, sp) -> list[float]:
     return [float(v) for v in f(*subs.values())]
 
 
-def parameters_on_a_kink(core, param_names: Sequence[str]) -> list[str]:
+def parameters_on_a_kink(
+    core, param_names: Sequence[str], *, conditions: bool = True
+) -> list[str]:
     """Each of *param_names* that a rate law bends at, at the model's present
-    values: one line per (parameter, bend), for the refusal to list."""
+    values: one line per (parameter, bend), for the refusal to list.
+
+    ``conditions=False`` leaves out the comparisons of ``if()``. There the
+    compiled ``∂f/∂p`` is the derivative of the branch taken, one side's, and a
+    time course returns it, as AMICI does (issue #382: ``ANPKNS = 0`` under
+    ``ANPKNS > 0``); ``abs``, ``min``, ``max`` and ``clamp`` give neither side's.
+    A steady state is refused on either (issue #1330)."""
     names = list(dict.fromkeys(param_names))
     if not names:
         return []
@@ -180,12 +193,12 @@ def parameters_on_a_kink(core, param_names: Sequence[str]) -> list[str]:
             law = _parsed(_inline_derived_param_refs(text, exprs) or text)
             if law is None:
                 continue
-            for p, bend in _kinks(law, group, spelled, values, sp):
+            for p, bend in _kinks(law, group, spelled, values, sp, conditions):
                 out.append(f"{p!r} in {where}: {bend}")
     return out
 
 
-def _kinks(law, asked, spelled, values, sp) -> list[tuple[str, str]]:
+def _kinks(law, asked, spelled, values, sp, conditions) -> list[tuple[str, str]]:
     """``(parameter, description)`` for each bend of *law* that the present
     values sit on, that a parameter of *asked* moves, and where the law's two
     sides differ in that parameter. A bend that reads anything but parameters
@@ -195,6 +208,8 @@ def _kinks(law, asked, spelled, values, sp) -> list[tuple[str, str]]:
         return []
     out: list[tuple[str, str]] = []
     for construct, at, node, sides in _bend_points(law, sp):
+        if not conditions and isinstance(node, sp.core.relational.Relational):
+            continue
         pool = sides if at is None else [at]
         free = set().union(*(e.free_symbols for e in pool))
         movers = sorted((s for s in free if params.get(s) in asked), key=str)

@@ -1728,7 +1728,12 @@ class Simulator:
             )
 
     def _raise_if_param_on_a_kink(
-        self, param_names: Sequence[str], core=None, *, row: int | None = None
+        self,
+        param_names: Sequence[str],
+        core=None,
+        *,
+        row: int | None = None,
+        conditions: bool = False,
     ) -> None:
         """Refuse a forward-sensitivity column for a parameter that sits on a
         kink of a rate law (issue #1332).
@@ -1742,10 +1747,16 @@ class Simulator:
         with no error. Asked at the values the run or row has, since a write
         can put a parameter on its kink after the Simulator is built; ``row``
         names the batch row whose clone *core* is.
+
+        An ``if()`` condition on its switch is asked only with ``conditions``,
+        as a steady state asks it (issue #1330). In a time course the column is
+        the derivative of the branch taken, which issue #382 returns.
         """
         from bngsim._parameter_kinks import parameters_on_a_kink
 
-        lines = parameters_on_a_kink(self._model._core if core is None else core, param_names)
+        lines = parameters_on_a_kink(
+            self._model._core if core is None else core, param_names, conditions=conditions
+        )
         if lines:
             raise SensitivityUnsupportedError(
                 ("" if row is None else f"run_batch row {row}: ")
@@ -8392,7 +8403,6 @@ class Simulator:
             # #704; the ∂f/∂V half is the one in play here, and it is complete.)
             self._raise_if_compartment_size_params(list(sensitivity_params))
             self._raise_if_folded_at_load_params(list(sensitivity_params))
-            self._raise_if_param_on_a_kink(list(sensitivity_params))
             # Issue #329 — a function's backing slot is refused here for the
             # same reason the constructor refuses it: ∂f/∂p is read out of that
             # same emitted sensitivity RHS, where the slot is a value the engine
@@ -8511,6 +8521,12 @@ class Simulator:
         self._raise_if_not_an_isolated_root(result, max_time, mask is not None)
         self._raise_if_the_step_decides(result)
         self._raise_if_the_side_decides(result)
+        if sensitivity_params and result.sens_dfdp_source != "automatic-differentiation":
+            # Issue #1332 — a dual-number ∂f/∂p takes a parameter on a kink
+            # from each side, and the solve refuses it above with both columns
+            # (issue #1330). A compiled one took sign(0) = 0 and the half at a
+            # tie, and a difference quotient their average: only this finds it.
+            self._raise_if_param_on_a_kink(list(sensitivity_params), conditions=True)
         return result
 
     @staticmethod

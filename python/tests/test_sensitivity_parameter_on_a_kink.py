@@ -67,7 +67,6 @@ KINKS = [
     pytest.param("10*abs(q) + s", 0.0, r"abs\(q\), on its switch at q = 0", id="abs"),
     pytest.param("10*min(q, 1) + s", 1.0, r"min\(1, q\), whose arguments \[1, q\] tie", id="min"),
     pytest.param("10*max(q, 1) + s", 1.0, r"max\(1, q\)", id="max"),
-    pytest.param("if(q > 0, 10*q, 0) + s", 0.0, r"if\(q > 0, \.\.\.\)", id="if"),
     pytest.param(
         "10*clamp(0, q, 2) + s", 0.0, r"clamp\(0, q, 2\), on its switch at q = 0", id="clamp"
     ),
@@ -89,12 +88,10 @@ KINKS = [
     # 15-digit printing of 1/3.0 read -1e-15 and let it through.
     pytest.param("10*abs(q/3.0 - 1) + s", 3.0, r"on its switch at q = 3", id="q over 3.0"),
 ]
-# A run of this one is refused before it is asked, for the comparison of the
-# state-free condition the analytic path declines (issue #938).
+# A steady state on an if() switch is refused (issue #1330); a run returns the
+# derivative of the branch taken (issue #382), below.
 STEADY_ONLY = [
-    pytest.param(
-        "if(abs(q) > 1, 10*q, 0) + s", 1.0, r"if\(abs\(q\) > 1, \.\.\.\)", id="if on abs"
-    ),
+    pytest.param("if(q > 0, 10*q, 0) + s", 0.0, r"if\(q > 0, \.\.\.\)", id="if"),
 ]
 
 
@@ -111,6 +108,33 @@ def test_a_steady_state_sensitivity_on_a_kink_is_refused(model, law, q, names):
 def test_a_run_sensitivity_on_a_kink_is_refused(model, law, q, names):
     with pytest.raises(bngsim.SensitivityUnsupportedError, match=REFUSED):
         _run(model(law, q), ["s", "q"])
+
+
+def test_a_run_on_an_if_switch_returns_the_branch_taken(model):
+    """Issue #382: at ``if(q > 0, ...)`` with q = 0 the compiled column is the
+    derivative of the branch the engine takes, one side's, and a time course
+    returns it, as AMICI does. Here that is the else branch, 0, so dX/dq = 0."""
+    from bngsim._parameter_kinks import parameters_on_a_kink
+
+    m = model("if(q > 0, 10*q, 0) + s", 0.0)
+    assert parameters_on_a_kink(m._core, ["q"], conditions=False) == []
+    s = np.asarray(_run(m, ["s", "q"]).sensitivities)[-1, 0]
+    np.testing.assert_allclose(s, [(1 - np.exp(-21)) / 0.21, 0.0], rtol=1e-6, atol=1e-9)
+
+
+def test_a_condition_over_a_bend_is_judged_and_refused(model):
+    """``if(abs(q) > 1, ...)`` at q = 1. Differentiated over the parser's plain
+    symbols, d|q| raised from sympy's printer instead. The compiled ∂f/∂p
+    declines this law, so the steady state's dual numbers take it from each
+    side and refuse it themselves (issue #1330)."""
+    from bngsim._parameter_kinks import parameters_on_a_kink
+
+    m = model("if(abs(q) > 1, 10*q, 0) + s", 1.0)
+    assert parameters_on_a_kink(m._core, ["q"]) == [
+        "'q' in reaction 1 (r): if(abs(q) > 1, ...), on its switch at q = 1"
+    ]
+    with pytest.raises(bngsim.SimulationError, match=r"issue #1330"):
+        _steady(m, ["q"])
 
 
 def test_a_write_onto_the_kink_after_the_simulator_is_built_is_refused(model):
