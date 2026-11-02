@@ -79,28 +79,15 @@ KNOWN_ARTIFACT: dict[str, dict] = {
     # ── ODE artifacts attributed during the 2026-05-29 rr_parity DIFF triage ──
     # (28-REAL ledger, dev/notes/rr_parity_diff_resolution.md §🅰). Each was
     # third-oracle attributed to a non-bngsim cause; none masks a bngsim defect.
-    "BIOMD0000000342:ode": {
-        "issue": None,
-        "reason": (
-            "RoadRunner bug (bngsim correct). RR loads init([TGF_beta_ex])=0 "
-            "despite the SBML carrying initialConcentration=0.05, and no "
-            "initialAssignment / rule / firing event overrides it (the only "
-            "event's trigger needs stimulation_type==2, but type=1). bngsim "
-            "honors the literal 0.05, so the whole TGF-beta receptor cascade "
-            "activates (worst LRC_endo, relmax 1.0); RR leaves it frozen. "
-            "bngsim matches the literal SBML and the biological intent."
-        ),
-    },
-    "MODEL2012040002:ode": {
-        "issue": None,
-        "reason": (
-            "Invalid SBML (bngsim spec-compliant). Species mw8449...0055ce is "
-            "constant=true yet appears as a reactant — libsbml validation error "
-            "20611. Per spec a constant species cannot change, so bngsim freezes "
-            "it at 1000 (correct); RR ignores constant= and depletes it to ~155 "
-            "(relmax 0.845). Corpus-quality defect, not a bngsim bug."
-        ),
-    },
+    #
+    # BIOMD0000000342:ode and MODEL2012040002:ode — RETIRED 2026-11-02 (GH #1288),
+    # stale since libRoadRunner 2.11.0 (#1349) and the reference-data-v4 record
+    # (#1443): RoadRunner now gets both right on its own (max_rel_err 1.0 -> 0 and
+    # 0.85 -> 0), and the nightly flags both "STALE known-artifact entry: passes
+    # on its own now" (run 41499451003). What they recorded: on 2.9.2 RR loaded
+    # init([TGF_beta_ex]) = 0 in BIOMD342 despite initialConcentration=0.05 (bngsim
+    # honored the literal SBML), and ignored constant=true on MODEL2012040002's
+    # species mw8449...0055ce, depleting it to ~155 where bngsim held it at 1000.
     "BIOMD0000000373:ode": {
         "issue": None,
         "reason": (
@@ -532,15 +519,14 @@ NO_ORACLE_ADJUDICATED: dict[str, dict] = {
     # COPASI failed; pure rate-rule ODE system on 7 parameters; independent scipy
     # LSODA/BDF reproduce to max_rel=0 (peak-rel ~4e-9); verdict confirm — bngsim
     # confirmed.
-    "MODEL9811206584:ode": {
-        "verdict": "confirm",
-        "issue": "GH #117",
-        "reason": (
-            "RR CVODE CV_TOO_MUCH_WORK + COPASI failed. Pure rate-rule ODE system "
-            "on 4 parameters. Independent scipy BDF reproduces to max_rel=0 "
-            "(peak-rel ~1e-9). bngsim confirmed."
-        ),
-    },
+    # MODEL9811206584:ode — RETIRED 2026-11-02 (GH #1288). libRoadRunner 2.11.0
+    # (#1349) integrates the model, so the row is no longer REFERENCE_FAILED: it
+    # PASSes against RR itself, and the nightly flags the entry "STALE
+    # no-oracle-adjudication: natural=PASS" (run 41499451003, replaying
+    # reference-data-v4, #1443). The GH #117 adjudication it carried: RR CVODE
+    # CV_TOO_MUCH_WORK + COPASI failed on 2.9.2; pure rate-rule ODE system on 4
+    # parameters; independent scipy BDF reproduces to max_rel=0 (peak-rel ~1e-9);
+    # verdict confirm — bngsim confirmed.
     # MODEL2205030001:ode — RETIRED 2026-06-09 when GH #119 landed. The model is
     # malformed (all 23 initial assignments reference undefined symbols; 16 Kd_*
     # constants dropped on export). It was adjudicated UNCOVERABLE while bngsim
