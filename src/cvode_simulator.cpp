@@ -813,6 +813,13 @@ struct CvodeUserData {
     double off_y_t = 0.0;
     std::vector<double> off_y_from;
     std::vector<double> off_y_state;
+    // What sens_may_read_at weighs such a state against, where note_off_y is
+    // set: the largest |y_i| the value RHS has read f at this run, the run's
+    // rtol, and each sensitivity column's absolute tolerance per slot
+    // (SensitivityState::abstolS, one N_Vector per column).
+    std::vector<double> off_y_scale;
+    double sens_read_rtol = 0.0;
+    N_Vector *sens_atolS = nullptr;
 };
 
 // CVODE's error-weight callback for the tracking absolute tolerance (issue
@@ -888,6 +895,7 @@ static void record_clamp_tolerances(CvodeUserData &data, void *cvode_mem, double
     data.clamp_far_any = false;
     data.below_zero_refusal.clear();
     data.off_y_valid = false;
+    data.off_y_scale.clear();
     if (!atol_v.empty()) {
         data.clamp_atol = atol_v;
     } else {
@@ -1018,6 +1026,13 @@ static double *value_rhs_state_off_y(CvodeUserData *data, sunrealtype t, const d
 // `state` is null.
 static void note_value_rhs_state(CvodeUserData *data, sunrealtype t, const double *y_ptr,
                                  const double *state) {
+    if (data->note_off_y) {
+        const auto n = static_cast<std::size_t>(data->model->n_species());
+        if (data->off_y_scale.size() != n)
+            data->off_y_scale.assign(n, 0.0);
+        for (std::size_t i = 0; i < n; ++i)
+            data->off_y_scale[i] = std::max(data->off_y_scale[i], std::fabs(y_ptr[i]));
+    }
     if (state == nullptr) {
         if (value_rhs_state_off_y(data, t, y_ptr) != nullptr)
             data->off_y_valid = false;
@@ -1032,28 +1047,59 @@ static void note_value_rhs_state(CvodeUserData *data, sunrealtype t, const doubl
     data->off_y_valid = true;
 }
 
-// Whether the sensitivity RHS may read its columns at `at`, the state the value
-// RHS read f at for y (value_rhs_state_off_y), `f` being the f it read there.
-// Not where a slot `at` moved off y is driven further below 0 by that f, or sits
-// more than kClampNoiseAtols of its atol below 0. There the slot is below 0 in
-// the run, which reads it at 0 under any small change of y, while J at `at`
-// keeps its slope at 0 and carries the slot's column into the rest: S drained
-// at a constant rate cs, beside S^1.5 and a mass-action S -> P at k4*S, came
-// back with dS/dcs = -3.17 and dP/dcs = -6.83 at t = 10, for -9.89 and -0.105,
-// with no error. Holding those rows of s at 0 instead got that right, and
-// MODEL5952308332's BPG, a hair below 0 for most of its run, 6 times its own
-// column's peak off a central difference: such a slot is 0 to within the run's
-// error, and J at 0 is the flow just above it, as read here.
+// How far below 0 a slot the value RHS read at 0 may sit for the sensitivity
+// RHS to read its columns there (sens_may_read_at), in what the run's error
+// weight holds that slot to at its largest value this run (tolerance_unit at
+// off_y_scale). A run's own error leaves a species it empties up to 8.2 rtols
+// of X0 below 0 (see kClampNoiseAtols); MODEL2001200002's L sits at up to 9.2
+// of these at its corpus job's tolerance, and MODEL5952308332's BPG at 0.13.
+constexpr double kSensReadDepthUnits = 100.0;
+// How large that slot's own entry of the column being read may be, in that
+// entry's absolute tolerance (SensitivityState::abstolS). L's entries reach 214
+// of these at the job's tolerance (0.006 at the 99th percentile), BPG's 20; a
+// species an event leaves at -1e-5 there has its whole column entry, 1e4.
+constexpr double kSensReadColumnAtols = 1000.0;
+
+// Whether the sensitivity RHS may read column iS, `s`, at `at`, the state the
+// value RHS read f at for y (value_rhs_state_off_y), `f` being the f it read
+// there. J at `at` keeps its slope at 0 in each slot `at` moved off y, which
+// the flow the run integrates there does not have: that flow reads the slot at
+// 0 under any small change of y. Where the slot is below 0 only by the run's
+// own error, it is 0 to within that error, J at 0 is the flow just above it,
+// and the columns are right (MODEL2001200002's L, MODEL5952308332's BPG). Where
+// it is below 0 in earnest they are not, with no error, so every moved slot
+// must pass all three:
+// - not driven further below 0 by `f`;
+// - no deeper than kSensReadDepthUnits;
+// - its own entry of `s` within kSensReadColumnAtols of its tolerance, so that
+//   J's slope there moves the rest of the column by no more than the run's own
+//   error in that entry would.
+// No one of them is enough. The run cannot see from here whether a slot is
+// below 0 by its error or in earnest: depth measured in atols alone let a
+// species an event leaves at -0.005 through at default tolerances, and a
+// source lifting it back passes the first. Where any fails, main's refusal
+// stands. Holding the moved slots' rows of s at 0 instead, the derivative of
+// f(clamp(y)), is right for a slot below 0 in earnest but put BPG 6 times its
+// column's peak off a central difference: it drops the slope that keeps such a
+// slot's column at 0.
 static bool sens_may_read_at(const CvodeUserData *data, const double *y_ptr, const double *at,
-                             const double *f) {
+                             const double *f, int iS, const double *s) {
     const auto n = static_cast<std::size_t>(data->model->n_species());
     const std::vector<double> &atol = data->clamp_atol;
+    const std::vector<double> &scale = data->off_y_scale;
+    if (data->sens_atolS == nullptr || atol.size() != n || scale.size() != n)
+        return false;
+    const double *atol_s = N_VGetArrayPointer(data->sens_atolS[iS]);
     for (std::size_t i = 0; i < n; ++i) {
         if (at[i] == y_ptr[i])
             continue;
         if (f[i] < 0.0)
             return false;
-        if (atol.size() == n && y_ptr[i] < -kClampNoiseAtols * atol[i])
+        const double unit =
+            tolerance_unit(data->atol_tracking, data->sens_read_rtol, atol[i], i, scale[i]);
+        if (!(-y_ptr[i] <= kSensReadDepthUnits * unit))
+            return false;
+        if (!(std::fabs(s[i]) <= kSensReadColumnAtols * atol_s[i]))
             return false;
     }
     return true;
@@ -2230,10 +2276,11 @@ static int cvode_codegen_sens_rhs_body(int Ns, sunrealtype t, N_Vector y, N_Vect
         // nothing is recorded, and a column NaN there still goes to the
         // refusal (#392's `pow(x, 4.0)` beside `log(x)`), as does a slot the
         // clamp leaves alone past its atol (#706), and so does a state with a
-        // slot that state moved driven further below 0, or far below it
-        // (sens_may_read_at). Off with BNGSIM_SENS_AT_VALUE_STATE=0.
+        // slot that state moved below 0 in earnest rather than by the run's
+        // own error (sens_may_read_at). Off with BNGSIM_SENS_AT_VALUE_STATE=0.
         double *at = value_rhs_state_off_y(data, t, y_ptr);
-        if (at != nullptr && sens_may_read_at(data, y_ptr, at, N_VGetArrayPointer(ydot))) {
+        if (at != nullptr && sens_may_read_at(data, y_ptr, at, N_VGetArrayPointer(ydot), iS,
+                                              N_VGetArrayPointer(yS))) {
             rc = sens_fn(Ns, static_cast<double>(t), at, N_VGetArrayPointer(ydot), iS,
                          N_VGetArrayPointer(yS), ySdot_ptr, &so_data, N_VGetArrayPointer(tmp1),
                          N_VGetArrayPointer(tmp2));
@@ -5826,6 +5873,10 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(
     if (!sens.abstolS) {
         throw std::runtime_error("N_VCloneVectorArray failed for sensitivity tolerances");
     }
+    // What sens_may_read_at reads (issue #1298): the columns' tolerances as the
+    // run refreshes them, and the run's rtol.
+    user_data.sens_atolS = sens.abstolS.arr;
+    user_data.sens_read_rtol = rtol;
     // The floor under the quotient. Zero is not a tolerance CVODES accepts on
     // the sensitivity axis — a fresh parameter column seeds s(0) = 0, so
     // rtol·|s| + atolS is exactly 0 there and the initial error weight is a

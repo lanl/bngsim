@@ -158,10 +158,11 @@ def test_with_the_reading_off_the_run_fails_as_it_did(monkeypatch):
         _sens("simultaneous", jacobian="analytical")
 
 
-# S is masked, left 1e-6 below 0 by an event (a thousand atols: past #392's
-# band, inside the clamp's noise band) and read by S^1.5; P is a rate-rule
-# target held at -1e-30, inside its atol, read by P^1.5 in B's law. Nothing
-# drives either further. From t = 1 the value RHS's clamp reads S at 0, its
+# S is masked, left 1e-7 below 0 by an event (a hundred atols, past #392's band;
+# 9 of the run's error units, rtol*1 + atol, inside the guard's 100) and read by
+# S^1.5; P is a rate-rule target held at -1e-30, inside its atol, read by P^1.5
+# in B's law. Nothing drives either further, and neither column depends on kb.
+# From t = 1 the value RHS's clamp reads S at 0, its
 # reading is still NaN for P^1.5, and the reading near 0 after it (#1340) reads
 # P at 0 too: the run integrates B' = -kb*B, so B = exp(-kb*t) and
 # dB/dkb = -t*B exactly. #392's retry reads P at 0 but S where it is, and a
@@ -174,7 +175,7 @@ model near
   k = 0.1; kb = 0.2;
   J2: A -> ; k*A*S^1.5;
   J3: B -> ; kb*B*P^1.5 + kb*B;
-  E1: at (time >= 1): S = -1e-6;
+  E1: at (time >= 1): S = -1e-7;
 end
 """
 
@@ -198,15 +199,17 @@ def test_the_columns_are_read_where_the_reading_near_zero_reads_too(method):
     np.testing.assert_allclose(s, -t * b, rtol=1e-5, atol=1e-12)
 
 
-# Where the flow the run integrates drives a slot it reads at 0 further below 0,
-# or the slot sits far below 0, J at the clamped state keeps its slope at 0 and
-# carries the slot's column into the rest, which the flow does not: main's
-# refusal stands there. S is drained at a constant rate cs beside S^1.5 and a
-# mass-action S -> P at k4*S; past t_c = ln(1 + k4/cs)/k4 = 49.7 the run reads S
-# at 0, so P stops and S falls at cs. It stays within the clamp's noise band
-# (5e5 atols at t = 55), so only its being driven decides. Read there, the
-# columns came back with dS/dcs = -3.33 and dP/dcs = -51.7 at t = 55, for -8.62
-# and -46.4, with no error.
+# Where a slot the clamp reads at 0 is below 0 in earnest, J at the clamped
+# state keeps its slope at 0 and carries the slot's column into the rest, which
+# the flow the run integrates does not; main's refusal stands there. The guard
+# (sens_may_read_at) asks three things of each such slot, and each case below
+# was answered wrong with no error without the one it names, where main refuses.
+#
+# S drained at a constant rate cs beside S^1.5 and a mass-action S -> P at k4*S:
+# past t_c = ln(1 + k4/cs)/k4 = 49.7 the run reads S at 0, so P stops and S
+# falls at cs. Read at the clamped state, the columns came back with
+# dS/dcs = -3.33 and dP/dcs = -51.7 at t = 55, for -8.62 and -46.4. Driven, and
+# S's own entry of the column is large.
 SLOW = """
 model slow
   species S = 1, A = 1, P = 0;
@@ -217,27 +220,56 @@ model slow
 end
 """
 
-# An event leaves S at -e0, five hundred million atols below 0, where nothing
-# moves it: P stops, and dP/de0 is 0 and dS/de0 is -1 from t = 1. Read at the
-# clamped state, they came back -0.93 and -0.07 at t = 10, with no error.
-FAR = """
-model far
+# The same with k4 = 1e6: S crosses 0 at once and falls at cs, shallow (60
+# error units at t = 3), and the stiff k4 holds S's own entry of the column near
+# 0, so only its being driven tells. dS/dcs = -1e-6 and dP/dcs = -3 at t = 3
+# came back, for -3.0 and 0.0 (S falls at cs, P stops).
+FAST = SLOW.replace("k4 = 0.3;", "k4 = 1e6;")
+
+# An event leaves S at -e0 with nothing moving it: from t = 1, dS/de0 is -1 and
+# dP/de0 is 0. Far below 0 (e0 = 0.5), the columns came back -0.07 and -0.93;
+# at e0 = 0.005, at default tolerances, the same came back through a guard that
+# measured depth in atols alone; at e0 = 1e-5, at the corpus job's tolerance (10
+# error units: shallow), only S's own entry of the column, -1, tells.
+EVENT = """
+model left_below
   species S = 1, A = 1, P = 0;
-  k = 0.1; k4 = 0.3; e0 = 0.5;
+  k = 0.1; k4 = 0.3; e0 = E0;
   J2: A -> ; k*A*S^1.5;
   J4: S -> P; k4*S;
   E1: at (time >= 1): S = -e0;
 end
 """
 
+# An event leaves S at -0.5 and a source q lifts it back: S's rate is positive,
+# and the stiff k4 holds S's own entry of the column at 1/k4, so only its depth
+# tells. dS/dq = 1e-6 and dP/dq = 10 at t = 10 came back, for 9 and 1.
+RETURN = """
+model return
+  species S = 1, A = 1, P = 0;
+  k = 0.1; k4 = 1e6; q = 0.01;
+  J0: -> S; q;
+  J2: A -> ; k*A*S^1.5;
+  J4: S -> P; k4*S;
+  E1: at (time >= 1): S = -0.5;
+end
+"""
+
 
 @pytest.mark.parametrize("method", ["staggered", "simultaneous"])
 @pytest.mark.parametrize(
-    "src, param, t_end, atol",
-    [(SLOW, "cs", 55.0, 1e-12), (FAR, "e0", 10.0, 1e-9)],
-    ids=["driven", "far"],
+    "src, param, run",
+    [
+        (SLOW, "cs", dict(t_span=(0.0, 55.0), rtol=1e-8, atol=1e-12)),
+        (FAST, "cs", dict(t_span=(0.0, 3.0), rtol=1e-8, atol=1e-12)),
+        (EVENT.replace("E0", "0.5"), "e0", dict(t_span=(0.0, 10.0), rtol=1e-8, atol=1e-9)),
+        (EVENT.replace("E0", "0.005"), "e0", dict(t_span=(0.0, 10.0))),
+        (EVENT.replace("E0", "1e-5"), "e0", dict(t_span=(0.0, 10.0), rtol=1e-6, atol=1e-9)),
+        (RETURN, "q", dict(t_span=(0.0, 10.0), rtol=1e-8, atol=1e-9)),
+    ],
+    ids=["driven", "driven-stiff", "far", "far-default-tolerances", "shallow", "returning"],
 )
-def test_a_slot_below_zero_the_flow_does_not_read_is_refused(method, src, param, t_end, atol):
+def test_a_slot_below_zero_in_earnest_is_refused(method, src, param, run):
     sim = bngsim.Simulator(
         bngsim.Model.from_antimony_string(src),
         method="ode",
@@ -245,7 +277,7 @@ def test_a_slot_below_zero_the_flow_does_not_read_is_refused(method, src, param,
         sensitivity_method=method,
     )
     with pytest.raises(SimulationError, match="sensitivity RHS returned a non-finite"):
-        sim.run(t_span=(0.0, t_end), n_points=12, rtol=1e-8, atol=atol)
+        sim.run(n_points=12, **run)
 
 
 # A drained to -1 at a constant rate. Its rate law in B, vmax*A^4/(Kd + A^4),
