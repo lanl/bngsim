@@ -1081,7 +1081,10 @@ static int cvode_ss_colored_jac_body(sunrealtype t, N_Vector y, N_Vector fy, SUN
         sp, ns, static_cast<double>(t), N_VGetArrayPointer(y), N_VGetArrayPointer(fy),
         SUNSparseMatrix_Data(J), data->fd_y_pert.data(), data->fd_fy_pert.data(),
         data->fd_h_vals.data(),
-        [data](double tt, const double *yy, double *ydot) { ss_eval_rhs(data, tt, yy, ydot); },
+        [data](double tt, const double *yy, double *ydot) {
+            ss_eval_rhs(data, tt, yy, ydot);
+            return 0; // cvode_ss_rhs's code
+        },
         nullptr, nullptr, ewt, min_inc);
     return 0;
 }
