@@ -1738,6 +1738,10 @@ class Simulator:
         # steady states form a line, and the isolated-root check refuses its
         # columns.)
         ruled = sorted(set(model.compartment_size_params) & set(model.function_names))
+        # A rule whose value cannot move, `c2 := 2*p` with p not asked for, gives
+        # the size the model loaded at, and the right-hand side reads it right:
+        # such a compartment was refused with the rest (issue #961).
+        ruled = self._rule_sizes_that_move(model, ruled, params)
         if ruled:
             names = model.species_names
             for members in self._laws_across_sizes(model):
@@ -8065,6 +8069,50 @@ class Simulator:
         self._raise_if_not_an_isolated_root(result, max_time, mask is not None)
         self._raise_if_the_step_decides(result)
         return result
+
+    @staticmethod
+    def _rule_sizes_that_move(model: Model, ruled: list[str], params: Sequence[str]) -> list[str]:
+        """The compartments of *ruled* whose assignment rule can move (issue #961).
+
+        The right-hand side divides by the size the model loaded at, not the one
+        the rule gives (issue #745). That is the size all along where the rule
+        reads nothing that moves: no species or observable, not the time, and
+        no parameter in *params*, whose column moves the size with it. Each of
+        those is followed through the functions and derived parameters the rule
+        reads; a name that is none of them, a parameter, a function or a call,
+        is taken to move.
+        """
+        import re
+
+        data = model._core.codegen_data()
+        bodies = {f["name"]: f["expression"] for f in data["functions"]}
+        derived = {p["name"]: p["expression"] for p in data["parameters"] if p["expression"]}
+        constants = {p["name"] for p in data["parameters"]}
+        asked = set(params)
+        token = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\s*\()?")
+
+        def moves(name: str, seen: set[str]) -> bool:
+            if name in seen:
+                return False
+            seen.add(name)
+            text = bodies.get(name, derived.get(name, ""))
+            for match in token.finditer(text):
+                word = match.group(0)
+                if word.endswith("("):
+                    called = word[:-1].rstrip()
+                    if called in bodies and moves(called, seen):
+                        return True
+                    continue  # a built-in call; its arguments are read on their own
+                if word == "time" or word in asked:
+                    return True
+                if word in bodies or word in derived:
+                    if moves(word, seen):
+                        return True
+                elif word not in constants:
+                    return True  # a species, an observable, or a name not known here
+            return False
+
+        return [c for c in ruled if c in asked or moves(c, set())]
 
     @staticmethod
     def _laws_across_sizes(model: Model) -> list[list[int]]:
