@@ -3806,11 +3806,6 @@ struct CvodeSimulator::Impl {
     // The right-hand side CVODE was given, compiled or interpreted
     // (create_cvode_core), for what reads it outside CVODE (stop_would_lose).
     CVRhsFn run_rhs_fn = nullptr;
-    // Issue #1298: the state the last sensitivity run ended at, and which of
-    // its slots an assignment had put below 0 (CvodeUserData::put_below), for
-    // a carry_sensitivities run that continues it (setup_forward_sensitivities).
-    std::vector<double> carried_state;
-    std::vector<char> carried_put_below;
     // Issue #1192: the step CVODE takes next, where the step it has just taken
     // settles it, read where CVODE does not report it (after a stop or a root
     // it returned on, it reports the step just taken). After a step that
@@ -5648,19 +5643,22 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(
                     "(pre-equilibration output sensitivities, GH #210)");
             }
             use_carry_seed = true;
-            // Issue #1298: this run continues the last one, so a slot it starts
-            // from where that run left it keeps that run's mark rather than
-            // one for an assignment (mark_put_below marked every slot below 0
-            // at this run's start). A slot set between the runs keeps the start
-            // mark. Unmarked, a species the last run's own error left below 0
-            // was refused from the second run's first step.
-            if (carried_state.size() == static_cast<std::size_t>(ns) &&
-                carried_put_below.size() == static_cast<std::size_t>(ns) &&
+            // Issue #1298: this run continues the run that left the seed, so a
+            // slot it starts from where that run left it keeps that run's mark
+            // rather than one for an assignment (mark_put_below marked every
+            // slot below 0 at this run's start). A slot set between the runs
+            // keeps the start mark. The marks are kept on the model
+            // (carried_marks_for), past a rebuild of this simulator (intervene,
+            // restore, a scan point) and back to a state a scan returns to.
+            // Unmarked, a species the last run's own error left below 0 was
+            // refused from the second run's first step.
+            const auto *carried = model.carried_marks_for(y_data, static_cast<std::size_t>(ns));
+            if (carried != nullptr && carried->marks.size() == static_cast<std::size_t>(ns) &&
                 user_data.put_below.size() == static_cast<std::size_t>(ns)) {
                 user_data.any_put_below = false;
                 for (std::size_t i = 0; i < static_cast<std::size_t>(ns); ++i) {
-                    if (y_data[i] == carried_state[i])
-                        user_data.put_below[i] = carried_put_below[i];
+                    if (y_data[i] == carried->state[i])
+                        user_data.put_below[i] = carried->marks[i];
                     user_data.any_put_below =
                         user_data.any_put_below || user_data.put_below[i] != 0;
                 }
@@ -20137,14 +20135,15 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         // Issue #545: the carry-over seed is S.
         impl_->comoving_finish(sens, ns, final_t, y_data);
         impl_->write_final_state_back(opts, ns, y_data, final_t, sens);
-        // Issue #1298: and which of its slots an assignment had put below 0,
-        // for a carry_sensitivities run that continues from this state.
-        if (sens.n_p > 0 && user_data.put_below.size() == static_cast<std::size_t>(ns)) {
-            impl_->carried_state.assign(y_data, y_data + ns);
-            impl_->carried_put_below = user_data.put_below;
-        } else {
-            impl_->carried_state.clear();
-            impl_->carried_put_below.clear();
+        // Issue #1298: with the seed, which of its slots an assignment had put
+        // below 0, for a carry_sensitivities run that continues from this
+        // state; none from a run that did not keep them (note_off_y off), so
+        // that no older run's marks reach the next.
+        if (sens.n_p > 0) {
+            const bool kept =
+                user_data.note_off_y && user_data.put_below.size() == static_cast<std::size_t>(ns);
+            model.add_carried_marks(std::vector<double>(y_data, y_data + ns),
+                                    kept ? user_data.put_below : std::vector<char>{});
         }
         // ...and the event state that goes with it, for a run that continues
         // this one (issue #693).

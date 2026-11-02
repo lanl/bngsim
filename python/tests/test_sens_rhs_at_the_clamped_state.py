@@ -172,31 +172,56 @@ def test_a_restart_that_leaves_l_where_it_is_keeps_the_reading():
     assert np.abs(sens - ref).max() <= 1e-6 * np.abs(ref).max()
 
 
+def _second_legs(sim, protocol):
+    """The second legs a carried protocol runs from t = 50 to 100."""
+    run = dict(t_span=(50.0, 100.0), n_points=51, rtol=RTOL, atol=ATOL)
+    if protocol == "run":
+        return [sim.run(carry_sensitivities=True, **run)]
+    if protocol == "intervene":
+        # m_reg at its own value: the simulator is rebuilt, the dynamics are not.
+        sim.intervene({"m_reg": 0.02})
+        return [sim.run(carry_sensitivities=True, **run)]
+    # Two scans in a row: each rebuilds the simulator per point and returns to
+    # the state it started from, after its point has run on from there.
+    legs = []
+    for reset_conc in (True, False):
+        out = sim.parameter_scan("m_reg", [0.02], reset_conc=reset_conc, **run)
+        legs.append(out[0] if isinstance(out, list) else out)
+    return legs
+
+
+@pytest.mark.parametrize("protocol", ["run", "intervene", "scan"])
 @pytest.mark.parametrize("method", ["staggered", "simultaneous"])
-def test_a_carried_second_leg_reads_as_one_run_does(method):
-    """Run to t = 50, then on to 100 with carry_sensitivities. The second run
+def test_a_carried_second_leg_reads_as_one_run_does(method, protocol):
+    """Run to t = 50, then on to 100 carrying the sensitivities: by a second
+    run(), after an intervene(), and by parameter_scan, twice. Each second leg
     starts where the first left L, a hair below 0 by its own error, so L is no
-    slot an assignment put there, and the second leg follows one run's path:
-    3.4e-9 and 7.9e-9 of the state's peak off it, and the judged columns 2.1e-8
-    and 6.1e-8 of theirs. Marked at its start, L was refused at t = 51."""
+    slot an assignment put there, and follows one run's path: 3.4e-9 and 7.9e-9
+    of the state's peak off it, and the judged columns 2.1e-8 and 6.1e-8 of
+    theirs. Marked at its start, L was refused at t = 51; with the marks kept on
+    the simulator, refused after intervene() and in a scan, which rebuild it;
+    with the newest marks only, refused in the second scan."""
     sim = bngsim.Simulator(
         bngsim.Model.from_antimony_string(MPEKRIS),
         method="ode",
         sensitivity_params=list(PARAMS),
         sensitivity_method=method,
     )
-    sim.run(t_span=(0.0, 50.0), n_points=51, rtol=RTOL, atol=ATOL)
-    leg = sim.run(
-        t_span=(50.0, 100.0), n_points=51, rtol=RTOL, atol=ATOL, carry_sensitivities=True
-    )
+    first = sim.run(t_span=(0.0, 50.0), n_points=51, rtol=RTOL, atol=ATOL)
+    # The case is L carried below 0; a platform that ends the first leg with L
+    # at or above 0 would test nothing (-3.3e-9 and -2.3e-10 measured).
+    assert np.asarray(first.species)[-1, list(first.species_names).index("L")] < 0.0
     one = _sens(method)
-    x, x1 = np.asarray(leg.species), np.asarray(one.species)[50:]
-    assert np.abs(x - x1).max() <= 1e-6 * np.abs(x1).max()
+    x1 = np.asarray(one.species)[50:]
     rows = [list(one.species_names).index(s) for s in JUDGED]
-    s, s1 = np.asarray(leg.sensitivities)[:, rows, :], np.asarray(one.sensitivities)[50:, rows, :]
+    s1 = np.asarray(one.sensitivities)[50:, rows, :]
     peak = np.abs(s1).max(axis=0)
     judged = peak > 1e-6 * peak.max()
-    assert (np.abs(s - s1).max(axis=0)[judged] <= 1e-5 * peak[judged]).all()
+    for leg in _second_legs(sim, protocol):
+        x = np.asarray(leg.species)
+        assert np.abs(x - x1).max() <= 1e-6 * np.abs(x1).max()
+        s = np.asarray(leg.sensitivities)[:, rows, :]
+        assert (np.abs(s - s1).max(axis=0)[judged] <= 1e-5 * peak[judged]).all()
 
 
 def test_with_the_reading_off_the_run_fails_as_it_did(monkeypatch):
