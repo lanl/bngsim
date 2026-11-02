@@ -1266,12 +1266,14 @@ def schedule(
     ``depends_on(spec)``, when given, is the key of a spec that must finish
     (with any result) before this one starts, or ``None``. A free worker takes
     the first pending spec that is ready, so a wait idles no worker while
-    another spec can run. ``amici_sens_run`` uses it to start a model's second
-    corrector method only once the first has built the code both load (issue
-    #1386): ordering alone let a long compile still be in flight when the
-    short jobs ahead of the second one ran out. A dependency on a key that no
-    spec has does not hold a spec back, and where nothing runs and nothing is
-    ready the first pending spec starts, so a dependency only orders the work.
+    another spec can run. ``amici_sens_run`` and ``fd_sens_run`` use it to
+    start a model's second corrector method only once the first has built the
+    code both load (issue #1386): ordering alone let a long compile still be in
+    flight when the short jobs ahead of the second one ran out, and fd_sens,
+    which dispatches the two side by side, compiled every model twice. A
+    dependency on a key that no spec has does not hold a spec back, and where
+    nothing runs and nothing is ready the first pending spec starts, so a
+    dependency only orders the work.
 
     Uses the 'spawn' start method so the C extensions (bngsim, RoadRunner) are
     confined to the disposable child — the only safe way to survive an engine
@@ -1313,9 +1315,9 @@ def schedule(
             if at is None:
                 if running:
                     break
-                # Nothing running and nothing ready (a cycle, or a dependency
-                # that can no longer finish): start the first, so an order
-                # asked for never wedges the sweep.
+                # Nothing running and nothing ready: every pending spec waits on
+                # another pending one, which only a cycle does. Start the
+                # first, so an order asked for never wedges the sweep.
                 at = 0
             spec = pending.pop(at)
             q = ctx.Queue()

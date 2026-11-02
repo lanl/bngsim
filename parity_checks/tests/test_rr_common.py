@@ -97,18 +97,23 @@ def test_schedule_kills_overrunning_job_and_completes_the_rest():
     assert by_key["fast1"]["status"] == "ok" and by_key["fast2"]["status"] == "ok"
 
 
+# A long first job, then short ones: once "a" and "b" end, "second" is next in
+# line while "first" still runs. The shape of #1386's night (and of the control).
+_DEPENDENT_SPECS = [
+    {"key": "first", "sleep": 1.5},
+    {"key": "a", "sleep": 0.1},
+    {"key": "b", "sleep": 0.1},
+    {"key": "second", "sleep": 0.1},
+    {"key": "c", "sleep": 0.1},
+]
+
+
 def test_schedule_starts_a_dependent_spec_only_after_the_one_it_waits_on():
     """Issue #1386: a model's second corrector method started while its first
     was still compiling the code both load, and compiled it again. With
     ``depends_on``, "second" waits for "first"; the short jobs after it do not
     wait, so no worker idles meanwhile."""
-    specs = [
-        {"key": "first", "sleep": 1.5},
-        {"key": "a", "sleep": 0.1},
-        {"key": "b", "sleep": 0.1},
-        {"key": "second", "sleep": 0.1},
-        {"key": "c", "sleep": 0.1},
-    ]
+    specs = _DEPENDENT_SPECS
     out = rc.schedule(
         specs,
         sw.timed_worker,
@@ -124,16 +129,12 @@ def test_schedule_starts_a_dependent_spec_only_after_the_one_it_waits_on():
 
 
 def test_schedule_without_depends_on_starts_the_second_spec_alongside():
-    """Control: the race the dependency closes. Ordered behind short jobs only,
-    "second" starts before "first" ends."""
-    specs = [
-        {"key": "first", "sleep": 1.5},
-        {"key": "a", "sleep": 0.1},
-        {"key": "second", "sleep": 0.1},
-    ]
-    out = rc.schedule(specs, sw.timed_worker, workers=3, timeout_of=lambda s: 30.0)
+    """Control: the race the dependency closes. The same specs and workers as
+    the test above, with no ``depends_on``: ordered behind short jobs only,
+    "second" starts as soon as one of them ends, before "first" does."""
+    out = rc.schedule(_DEPENDENT_SPECS, sw.timed_worker, workers=3, timeout_of=lambda s: 30.0)
     by = {r["key"]: r for r in out}
-    assert by["second"]["start"] < by["first"]["end"]
+    assert min(by["a"]["end"], by["b"]["end"]) <= by["second"]["start"] < by["first"]["end"]
 
 
 def test_schedule_runs_a_spec_whose_dependency_times_out():

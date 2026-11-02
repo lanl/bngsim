@@ -317,13 +317,32 @@ class TestMakeSpecs:
             else:
                 assert first == f"{s['model_id']}:sens:staggered" and first in keys
 
-    def test_the_sweep_hands_schedule_the_dependency(self, monkeypatch):
-        """main() passes ``depends_on``: the dependency is not left to order."""
-        import inspect
-
+    def test_the_sweep_hands_schedule_the_dependency(self, monkeypatch, tmp_path):
+        """main() passes ``depends_on``: the dependency is not left to order.
+        Run on the committed smoke manifest up to the schedule call, the
+        callable it hands over maps every spec main() built."""
         import amici_sens_run as run
 
-        assert "depends_on=lambda s: first_method_key(s, methods)" in inspect.getsource(run.main)
+        smoke = run.RR_PARITY / "smoke" / "ode_jobs_smoke.json"
+        seen = {}
+
+        class _Stop(Exception):
+            pass
+
+        def schedule(specs, target, **kw):
+            seen.update(specs=specs, kw=kw)
+            raise _Stop
+
+        monkeypatch.setattr(run.asens, "schedule", schedule)
+        argv = ["amici_sens_run.py", "--manifest", str(smoke), "--models", "BIOMD0000000001"]
+        monkeypatch.setattr(sys, "argv", [*argv, "--out", str(tmp_path / "report.json")])
+        with pytest.raises(_Stop):
+            run.main()
+        waits = {s["key"]: seen["kw"]["depends_on"](s) for s in seen["specs"]}
+        assert waits == {
+            "BIOMD0000000001:sens:staggered": None,
+            "BIOMD0000000001:sens:simultaneous": "BIOMD0000000001:sens:staggered",
+        }
 
     def test_one_method_is_unaffected(self):
         specs, _ = self._specs(["A", "B"], ["staggered"])
