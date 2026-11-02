@@ -229,6 +229,7 @@ class Result:
     """
 
     __slots__ = (
+        "_stop_condition",
         "_time",
         "_species",
         "_observables",
@@ -380,6 +381,12 @@ class Result:
                 "n_steps": stats.n_steps,
                 "n_rhs_evals": stats.n_rhs_evals,
                 "n_jac_evals": stats.n_jac_evals,
+                # RHS evaluations spent forming difference-quotient Jacobians,
+                # which n_rhs_evals does not count (issue #1333).
+                "n_jac_rhs_evals": stats.n_jac_rhs_evals,
+                # Jacobians the solver asked for; n_jac_evals counts the
+                # setups, which may reuse one (issue #1333).
+                "n_jac_formations": stats.n_jac_formations,
                 "n_err_test_fails": stats.n_err_test_fails,
                 "n_nonlin_iters": stats.n_nonlin_iters,
                 "n_nonlin_conv_fails": stats.n_nonlin_conv_fails,
@@ -453,6 +460,8 @@ class Result:
                 "n_steps": 0,
                 "n_rhs_evals": 0,
                 "n_jac_evals": 0,
+                "n_jac_rhs_evals": 0,
+                "n_jac_formations": 0,
                 "n_err_test_fails": 0,
                 "n_nonlin_iters": 0,
                 "n_nonlin_conv_fails": 0,
@@ -572,6 +581,10 @@ class Result:
         # initial-condition chain rule reads this to know what not to add again.
         self._ic_sensitivity_seed: dict[str, dict[str, float]] | None = _ic_sensitivity_seed
 
+        # The label of the stop condition this run ended at, which the result
+        # was cut at; None where none was met (issue #1369).
+        self._stop_condition: str | None = None
+
         self.custom_attrs: dict[str, Any] = custom_attrs or {}
 
     # ─── Core data ──────────────────────────────────────────────────
@@ -593,6 +606,24 @@ class Result:
         objects from ``Simulator.run_batch(..., squeeze=False)``.
         """
         return self._seed
+
+    @property
+    def stop_condition(self) -> str | None:
+        """The stop condition this run met, by its label, or ``None``.
+
+        A condition registered with :meth:`Simulator.add_stop_condition` cuts
+        the result at the first sample it holds at: :meth:`Simulator.run`
+        raises :class:`StopConditionMet` with that result, and
+        :meth:`Simulator.run_batch` and :meth:`Simulator.run_replicates`
+        return it in their list, with this set, beside the rows that ran to
+        the end (issue #1369). A condition registered without a label reads
+        as its expression, or a callable as its ``repr()``. :meth:`save` and
+        :meth:`to_xarray` carry it.
+
+        A cut result holds the reported blocks only, so :attr:`state` refuses
+        on it, as it does on the result :meth:`Simulator.run` raises with.
+        """
+        return self._stop_condition
 
     @property
     def ic_sensitivity_seed(self) -> dict[str, dict[str, float]] | None:
@@ -706,10 +737,16 @@ class Result:
 
     def _state_core(self, what: str) -> ResultCore:
         if self._core is None:
+            # A row of a batch that a stop condition cut is a solve's too, so
+            # the generic reason would misname it (issue #1369).
+            how = (
+                f"this one was cut at stop condition {self._stop_condition!r}, and a cut Result"
+                if self._stop_condition is not None
+                else "a loaded or stacked Result"
+            )
             raise ValueError(
-                f"Result.{what} is only available on a Result returned by a solve; a "
-                "loaded or stacked Result carries only the reported species block "
-                "(issue #508)."
+                f"Result.{what} is only available on a Result returned by a solve; "
+                f"{how} carries only the reported species block (issue #508)."
             )
         return self._core
 
@@ -1596,11 +1633,90 @@ class Result:
                 sens = np.where(drop[:, :, None], 0.0, sens)
         return np.einsum("tsi,ts->i", sens, dL_dY)
 
+    def _fit_target(
+        self,
+        target: str,
+        species_indices: list[int] | None,
+        observable_indices: list[int] | None,
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.bool_] | None]:
+        """``(Y, dY/dp, refused rows)`` of what a fit compares data with.
+
+        ``target`` names it, so the shape of the data never decides it: data
+        with as many observables as there are species was scored against the
+        species, with their sensitivities, and sse_gradient returned a
+        gradient of the wrong sign with no warning (issue #1363).
+        """
+        if not self.has_sensitivities:
+            raise ValueError(
+                "No sensitivity data. Run with sensitivity_params or compute_all_sensitivities()."
+            )
+        if target == "species":
+            if observable_indices is not None:
+                raise ValueError(
+                    "observable_indices selects observables; pass target='observables'"
+                )
+            Y = self._species
+            sens = self._sensitivities  # (nt, ns, np)
+            # The rows of the block are the columns of the values (GH #202). An
+            # .h5 written before that carries rows species_names dropped, and
+            # species_indices would pick rows from a block they do not address.
+            if Y.shape[1] != sens.shape[1]:
+                raise ValueError(
+                    f"{Y.shape[1]} species but {sens.shape[1]} species sensitivity rows "
+                    "(GH #202); re-run the simulation"
+                )
+            refused = self._refused_row_mask()
+            if species_indices is not None:
+                Y = Y[:, species_indices]
+                sens = sens[:, species_indices, :]
+                if refused is not None:
+                    refused = refused[species_indices]
+            return Y, sens, refused
+        if target == "observables":
+            if species_indices is not None:
+                raise ValueError("species_indices selects species; pass target='species'")
+            if not self.has_sensitivities_observables:
+                raise ValueError(
+                    "No observable sensitivities in this result, so a fit to observable "
+                    "data has no gradient. Run with sensitivity_params on a model with "
+                    "observables."
+                )
+            Y = self._observables
+            sens = self._observable_sensitivities  # (nt, n_obs, np)
+            if Y.shape[1] != sens.shape[1]:
+                raise ValueError(
+                    f"{Y.shape[1]} observables but {sens.shape[1]} observable sensitivity rows"
+                )
+            if observable_indices is not None:
+                Y = Y[:, observable_indices]
+                sens = sens[:, observable_indices, :]
+            # A run writes no NaN observable row, a refused species (GH #221)
+            # included: an observable reads the integrated state, not the value
+            # an assignment rule writes over a species, and its row is the chain
+            # rule through that state's rows, which the core refuses when they
+            # are not finite (GH #384). A row made NaN by hand is carried as
+            # _contract_dL_dY carries a refused species row.
+            unknown = np.isnan(sens).any(axis=(0, 2))
+            return Y, sens, unknown if unknown.any() else None
+        raise ValueError(f"target must be 'species' or 'observables', got {target!r}")
+
+    def _check_data_shape(
+        self, data: NDArray[np.float64], Y: NDArray[np.float64], target: str
+    ) -> None:
+        if data.shape == Y.shape:
+            return
+        hint = ""
+        if target == "species" and data.shape == self._observables.shape:
+            hint = "; it is the shape of the observables: pass target='observables'"
+        raise ValueError(f"data shape {data.shape} != {target} shape {Y.shape}{hint}")
+
     def sse_gradient(
         self,
         data: NDArray[np.float64],
         *,
+        target: str = "species",
         species_indices: list[int] | None = None,
+        observable_indices: list[int] | None = None,
     ) -> tuple[float, NDArray[np.float64]]:
         r"""Compute SSE loss and parameter gradient in one call.
 
@@ -1613,12 +1729,20 @@ class Result:
         Parameters
         ----------
         data : ndarray, shape ``(n_times, n_species)`` or ``(n_times, n_obs)``
-            Observed data to compare against species trajectories.
-            Must match the shape of ``self.species`` (or the selected
-            subset if ``species_indices`` is given).
+            Observed data, of the shape of what ``target`` names (or of the
+            columns ``species_indices`` / ``observable_indices`` select).
+        target : {"species", "observables"}
+            What the data is compared with: :attr:`species`, through
+            :attr:`sensitivities`, or :attr:`observables`, through
+            :attr:`sensitivities_observables` (issue #1363). Named, not read
+            from the data's shape, which is the same for both when a model
+            has as many observables as species.
         species_indices : list[int], optional
-            If given, only these species columns are used for the loss.
-            Sensitivities for all parameters are still included.
+            If given, only these species columns are used for the loss
+            (``target="species"``). Sensitivities for all parameters are
+            still included.
+        observable_indices : list[int], optional
+            The same, over observables (``target="observables"``).
 
         Returns
         -------
@@ -1629,32 +1753,20 @@ class Result:
         Raises
         ------
         ValueError
-            If sensitivity data is missing or shapes don't match.
+            If sensitivity data is missing, ``target`` is neither, or shapes
+            don't match.
 
         Examples
         --------
         >>> result = sim.compute_all_sensitivities(...)
         >>> loss, grad = result.sse_gradient(observed_data)
+        >>> loss, grad = result.sse_gradient(observed_obs, target="observables")
         >>> # Use with scipy L-BFGS-B:
         >>> minimize(objective, x0, method='L-BFGS-B', jac=True)
         """
-        if not self.has_sensitivities:
-            raise ValueError(
-                "No sensitivity data. Run with sensitivity_params or compute_all_sensitivities()."
-            )
         data = np.asarray(data, dtype=np.float64)
-        Y = self._species
-        sens = self._sensitivities  # (nt, ns, np)
-
-        refused = self._refused_row_mask()
-        if species_indices is not None:
-            Y = Y[:, species_indices]
-            sens = sens[:, species_indices, :]
-            if refused is not None:
-                refused = refused[species_indices]
-
-        if data.shape != Y.shape:
-            raise ValueError(f"data shape {data.shape} != species shape {Y.shape}")
+        Y, sens, refused = self._fit_target(target, species_indices, observable_indices)
+        self._check_data_shape(data, Y, target)
 
         residual = Y - data
         loss = float(np.sum(residual**2))
@@ -1671,7 +1783,9 @@ class Result:
         data: NDArray[np.float64],
         sigma: float | NDArray[np.float64],
         *,
+        target: str = "species",
         species_indices: list[int] | None = None,
+        observable_indices: list[int] | None = None,
     ) -> tuple[float, NDArray[np.float64]]:
         r"""Compute chi-squared loss and parameter gradient.
 
@@ -1682,17 +1796,21 @@ class Result:
 
         Parameters
         ----------
-        data : ndarray, shape ``(n_times, n_species)``
-            Observed data.
+        data : ndarray, shape ``(n_times, n_species)`` or ``(n_times, n_obs)``
+            Observed data, of the shape of what ``target`` names.
         sigma : float or ndarray
             Measurement noise standard deviation.
 
-            - **scalar** — same σ for all species.
-            - **1-D array, shape ``(n_species,)``** — per-species σ.
-            - **2-D array, shape ``(n_times, n_species)``** — per-point σ.
+            - **scalar** — same σ for all columns.
+            - **1-D array, shape ``(n_columns,)``** — per-column σ.
+            - **2-D array, shape ``(n_times, n_columns)``** — per-point σ.
 
+        target : {"species", "observables"}
+            What the data is compared with, as in :meth:`sse_gradient`.
         species_indices : list[int], optional
             Subset of species columns to include.
+        observable_indices : list[int], optional
+            Subset of observable columns to include.
 
         Returns
         -------
@@ -1705,24 +1823,10 @@ class Result:
         >>> loss, grad = result.chi2_gradient(data, sigma=0.1)
         >>> loss, grad = result.chi2_gradient(data, sigma=per_species_sigma)
         """
-        if not self.has_sensitivities:
-            raise ValueError(
-                "No sensitivity data. Run with sensitivity_params or compute_all_sensitivities()."
-            )
         data = np.asarray(data, dtype=np.float64)
         sigma_arr = np.asarray(sigma, dtype=np.float64)
-        Y = self._species
-        sens = self._sensitivities
-
-        refused = self._refused_row_mask()
-        if species_indices is not None:
-            Y = Y[:, species_indices]
-            sens = sens[:, species_indices, :]
-            if refused is not None:
-                refused = refused[species_indices]
-
-        if data.shape != Y.shape:
-            raise ValueError(f"data shape {data.shape} != species shape {Y.shape}")
+        Y, sens, refused = self._fit_target(target, species_indices, observable_indices)
+        self._check_data_shape(data, Y, target)
 
         # Build 1/sigma^2 array broadcastable to (nt, ns)
         inv_var: float | NDArray[np.float64]
@@ -1750,7 +1854,9 @@ class Result:
         data: NDArray[np.float64],
         sigma: float | NDArray[np.float64],
         *,
+        target: str = "species",
         species_indices: list[int] | None = None,
+        observable_indices: list[int] | None = None,
     ) -> tuple[float, NDArray[np.float64]]:
         r"""Compute negative Gaussian log-likelihood and gradient.
 
@@ -1763,13 +1869,17 @@ class Result:
 
         Parameters
         ----------
-        data : ndarray, shape ``(n_times, n_species)``
-            Observed data.
+        data : ndarray, shape ``(n_times, n_species)`` or ``(n_times, n_obs)``
+            Observed data, of the shape of what ``target`` names.
         sigma : float or ndarray
-            Measurement noise standard deviation (scalar, per-species,
+            Measurement noise standard deviation (scalar, per-column,
             or per-point).
+        target : {"species", "observables"}
+            What the data is compared with, as in :meth:`sse_gradient`.
         species_indices : list[int], optional
             Subset of species columns.
+        observable_indices : list[int], optional
+            Subset of observable columns.
 
         Returns
         -------
@@ -1780,24 +1890,10 @@ class Result:
         --------
         >>> nll, grad = result.neg_log_likelihood_gradient(data, sigma=0.1)
         """
-        if not self.has_sensitivities:
-            raise ValueError(
-                "No sensitivity data. Run with sensitivity_params or compute_all_sensitivities()."
-            )
         data = np.asarray(data, dtype=np.float64)
         sigma_arr = np.asarray(sigma, dtype=np.float64)
-        Y = self._species
-        sens = self._sensitivities
-
-        refused = self._refused_row_mask()
-        if species_indices is not None:
-            Y = Y[:, species_indices]
-            sens = sens[:, species_indices, :]
-            if refused is not None:
-                refused = refused[species_indices]
-
-        if data.shape != Y.shape:
-            raise ValueError(f"data shape {data.shape} != species shape {Y.shape}")
+        Y, sens, refused = self._fit_target(target, species_indices, observable_indices)
+        self._check_data_shape(data, Y, target)
 
         # Build sigma^2 and inv_var
         var: float | NDArray[np.float64]
@@ -1819,7 +1915,10 @@ class Result:
         if sigma_arr.ndim == 0:
             const_sum = nt_d * ns_d * np.log(2 * np.pi * var)
         else:
-            const_sum = np.sum(np.log(2 * np.pi * var))
+            # Once per data point, as the sum over t and i says: a per-column
+            # sigma counted it once per column, and the loss came out short by
+            # (n_times - 1) of those terms (found with issue #1363).
+            const_sum = np.sum(np.broadcast_to(np.log(2 * np.pi * var), Y.shape))
         nll = float(0.5 * (chi2_sum + const_sum))
 
         # d(NLL)/dY = (Y - D) / sigma^2  (the 0.5 * 2 cancel)
@@ -2075,8 +2174,16 @@ class Result:
         """Solver diagnostics dict.
 
         Keys: ``n_steps``, ``n_rhs_evals``, ``n_jac_evals``,
-        ``n_err_test_fails``, ``n_nonlin_iters``, ``n_nonlin_conv_fails``,
-        ``n_sens_err_test_fails``, ``n_sens_nonlin_conv_fails``.
+        ``n_jac_rhs_evals``, ``n_jac_formations``, ``n_err_test_fails``, ``n_nonlin_iters``,
+        ``n_nonlin_conv_fails``, ``n_sens_err_test_fails``,
+        ``n_sens_nonlin_conv_fails``.
+
+        ``n_rhs_evals`` is CVODE's count of the integration's own evaluations.
+        ``n_jac_rhs_evals`` counts those spent forming Jacobians by difference
+        quotients (issue #1333); it is 0 where every Jacobian is closed-form.
+        ``n_jac_evals`` counts the linear solver's setups, which can reuse a
+        Jacobian; ``n_jac_formations`` counts the Jacobians the solver asked
+        for, one that a failed right-hand-side call cut short included.
         """
         return self._solver_stats
 
@@ -2258,7 +2365,9 @@ class Result:
         labeled coords as the per-field DataArrays on :attr:`xr`.
 
         ``custom_attrs`` is mirrored onto ``ds.attrs``; the stochastic
-        ``seed`` (when present) is stored as ``ds.attrs["seed"]``.
+        ``seed`` (when present) is stored as ``ds.attrs["seed"]``, and the
+        :attr:`stop_condition` the result was cut at as
+        ``ds.attrs["stop_condition"]``.
 
         Returns
         -------
@@ -2369,6 +2478,8 @@ class Result:
         attrs: dict[str, Any] = dict(self.custom_attrs)
         if self._seed is not None:
             attrs["seed"] = int(self._seed)
+        if self._stop_condition is not None:
+            attrs["stop_condition"] = self._stop_condition
 
         return xr.Dataset(data_vars=data_vars, coords=coords, attrs=attrs)
 
@@ -2671,6 +2782,11 @@ class Result:
             # Stochastic seed actually used (omitted for ODE results).
             if self._seed is not None:
                 f.attrs["seed"] = int(self._seed)
+            # The stop condition the result was cut at (issue #1369), written
+            # only when one was met. Absent loads as None, as any older file
+            # does, so the format version stands.
+            if self._stop_condition is not None:
+                f.attrs["stop_condition"] = self._stop_condition
 
             # Core data
             f.create_dataset("time", data=self._time)
@@ -2997,6 +3113,9 @@ class Result:
                 )
             elif "volume_record_missing" in f.attrs:
                 volume_record_missing = _text(f.attrs["volume_record_missing"])
+            stop_condition = (
+                _text(f.attrs["stop_condition"]) if "stop_condition" in f.attrs else None
+            )
 
             # GH #155: absent ⇒ None, not recorded, as in a file that predates
             # saving the seed.
@@ -3078,6 +3197,7 @@ class Result:
         result._varvol_conc_factor = conc_factor
         result._varvol_amount_factor = amount_factor
         result._volume_record_missing = volume_record_missing
+        result._stop_condition = stop_condition
         logger.info(
             "Loaded result: %d time points, %d species, %d observables",
             result.n_times,
@@ -3294,9 +3414,27 @@ class Result:
         -------
         Result
             A batch result with 3D arrays.
+
+        Raises
+        ------
+        ValueError
+            If ``results`` is empty, or any of them met a stop condition
+            (:attr:`stop_condition`, issue #1369).
         """
         if not results:
             raise ValueError("Cannot squeeze empty result list")
+        stopped = [i for i, r in enumerate(results) if r._stop_condition is not None]
+        if stopped:
+            # A stack has one time axis and says of no row that it stopped
+            # (issue #1369). A callable's row keeps every sample, so this is
+            # not "cut short" of every row it names.
+            rows = ", ".join(map(str, stopped[:10])) + (", ..." if len(stopped) > 10 else "")
+            raise ValueError(
+                f"Cannot squeeze results that met a stop condition ({len(stopped)} of "
+                f"{len(results)}: rows {rows}): a stack holds rows of one length and "
+                "does not say which stopped. Read them from the list, where "
+                "Result.stop_condition names the condition."
+            )
         if len(results) == 1:
             return results[0]
 

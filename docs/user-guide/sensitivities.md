@@ -514,17 +514,21 @@ step to cross (issue #952): `if(A > thr, kb, 0)` with `A` rising at 1e-10 a unit
 of time. The step that moves `A` by one ulp fails its error test on the jump,
 so no crossing is located and there is no crossing time for the sensitivities
 to move with. A run without sensitivities is carried across.
-So is a run that starts on an equality's surface and stays on it (issue #1228):
-`if(Bobs == 0, kb, 0)` with B held at 0 until A falls to q holds the branch
-for a stretch. An equality is not rooted, since one the state crosses holds
-for an instant, and either side of its surface reads false, so leaving it is
-a switch nothing locates. Write the switch as the crossing that ends the stretch,
-`if(Aobs > q, kb, 0)` there. `Bobs <= 0` names the same surface and is refused
-at its tangency. The start is read at the run's start time. A state that an
-event puts on the surface mid-run is not yet seen. A stretch is refused all
-the same where nothing in the run ends it, where only an event ends it (the
-event's own jump would have been right), or where the rest of a conjunction
-never holds (issue #1279).
+So is a state that leaves an equality's surface it sat on, where that changes a
+rate law (issues #1228, #1279): `if(Bobs == 0, kb, 0)` with B held at 0 until A
+falls to q holds the branch for a stretch. An equality is not rooted as a
+crossing, since one the state crosses holds for an instant, and the state leaves
+this surface with no first-order motion, so there is no crossing time to
+differentiate. The solver roots where the state leaves, whether the run started
+on the surface or an event put it there, and refuses there. Write the switch as
+the crossing that ends the stretch, `if(Aobs > q, kb, 0)` there. `Bobs <= 0`
+names the same surface and is refused at its tangency. A stretch that outlasts
+the run, or that only an event ends, runs, and so does a leaving that changes no
+rate law (the rest of a conjunction does not hold there), one a state switch
+written inside the equality jumps at that instant, and one at the run's start or
+at an event whose time no column moves, where the state held the surface for no
+time. A state an event at a moving time leaves on the surface for no time is
+refused: the event's jump would read the flow on the surface.
 A conjunction or a negation is split into its comparisons first. What the
 analytic path declines is a crossing nothing can locate: a comparison outside any
 `if()`, such as `k*(X > 1)`, and one whose sides
@@ -1015,6 +1019,12 @@ loss, grad = result.sse_gradient(
     data_subset, species_indices=[0, 2]
 )
 
+# Data measured on observables rather than species
+loss, grad = result.sse_gradient(obs_data, target="observables")
+loss, grad = result.chi2_gradient(
+    obs_data[:, [1]], sigma=0.1, target="observables", observable_indices=[1]
+)
+
 # Direct use with scipy L-BFGS-B
 from scipy.optimize import minimize
 def objective(p_vec):
@@ -1024,6 +1034,13 @@ def objective(p_vec):
     return result.sse_gradient(data)  # returns (loss, grad)
 opt = minimize(objective, x0, method='L-BFGS-B', jac=True)
 ```
+
+`target` names what the data is compared with: `"species"` (the default)
+through `result.sensitivities`, or `"observables"` through
+`result.sensitivities_observables`. The shape of the data does not decide it.
+On a model with as many observables as species the two shapes are the same,
+and observable data passed without `target="observables"` is scored against
+the species, with no error (issue #1363).
 
 All methods return `(loss_value, gradient_vector)` — the format expected by
 `scipy.optimize.minimize(..., jac=True)`. For custom objectives not covered

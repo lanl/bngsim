@@ -16,16 +16,21 @@
 
 #pragma once
 
+#include <memory>
 #include <stdexcept>
 #include <string>
 
 #if defined(BNGSIM_HAS_MIR)
 #include "bngsim/c_locale_numbers.hpp" // c2mir reads literals with strtod (#1235)
 
-#include <cmath> // libm addresses for the prelude's import table (GH #3)
+#include <cerrno>
+#include <cmath>   // libm addresses for the prelude's import table (GH #3)
+#include <csetjmp> // MIR's failures return to compile() by longjmp (issue #1215)
+#include <cstdarg>
 #include <cstddef>
+#include <cstdint> // intptr_t
 #include <cstdio>  // open_memstream/tmpfile, FILE, fflush, fclose, stderr
-#include <cstdlib> // free
+#include <cstdlib> // free, malloc, calloc, realloc, exit
 #include <cstring> // std::memset, std::memcpy, std::strcmp
 #ifndef _WIN32
 #include <dlfcn.h> // dlsym(RTLD_DEFAULT) — POSIX import resolver
@@ -34,7 +39,12 @@ extern "C" {
 #include "c2mir.h"
 #include "mir-gen.h"
 #include "mir.h"
+// MIR's default code allocator, from the local carry in mir.c (issue #1215).
+MIR_code_alloc_t _MIR_get_default_code_alloc(void);
 }
+#ifndef MIR_CODE_RESERVE_SIZE
+#error "CMake defines MIR_CODE_RESERVE_SIZE for bngsim_mir and what links it (issue #1215)"
+#endif
 #endif
 
 namespace bngsim {
@@ -192,6 +202,223 @@ class DiagStream {
 #endif
 };
 
+// Issue #1215: MIR's answer to running out of memory or address space was to
+// end the process. Its default error function calls exit(1), its growable
+// arrays call exit(1) themselves when an allocation fails, and a failed code
+// mapping comes back as a NULL code address that most callers write through.
+// Under a cap on the address space (`ulimit -v`) that is where enough live
+// MIR-compiled models end up.
+//
+// So every MIR context MirJit makes allocates through mir_alloc, maps its code
+// through a MirCodeMaps, and reports through mir_error, and all three, while
+// MirJit::compile has a call into MIR under way, longjmp back to it with the
+// message. (MIR.md asks only that an error function never return.) compile()
+// then throws (see MirJit::throw_mir_failure for what becomes of the context).
+// Nothing between the setjmp and the longjmp may own a destructor: the frames
+// in between are MIR's C and the steps compile() hands to mir_guarded, which
+// keep only trivially destructible locals.
+struct MirFailure {
+    std::jmp_buf env;
+    MirFailure *outer;
+    bool out_of_memory;
+    char message[256];
+};
+
+// The failure that compile()'s call into MIR under way on this thread returns
+// to, or nullptr when none is.
+inline thread_local MirFailure *mir_failure_target = nullptr;
+
+// True while MIR_init2 runs on this thread: its first mapping is the reservation.
+inline thread_local bool mir_initializing = false;
+
+// Test hooks, which _bngsim_core._mir_jit_compile sets: whether this thread's
+// compiles are counted at all (allocations through the counting table mir_alloc
+// picks, so that a compile outside the test pays nothing for it); the
+// allocations MIR has asked for, and the index of one to fail as if the C heap
+// were out; the code mappings it has made besides its reservation, the index of
+// one to refuse, which also refuses the reservation so that there are such
+// mappings, and the errno to refuse it with (ENOMEM: as if the address space
+// were out). -1 fails none.
+inline thread_local bool mir_test_hooks = false;
+inline thread_local long long mir_allocation_count = 0;
+inline thread_local long long mir_failing_allocation = -1;
+inline thread_local long long mir_mapping_count = 0;
+inline thread_local long long mir_failing_mapping = -1;
+inline thread_local int mir_failing_mapping_errno = ENOMEM;
+
+// MIR's error function. With no call under way it does what MIR's default does.
+// MIR_NO_RETURN rather than [[noreturn]]: GCC and clang make the attribute part
+// of the type MIR_error_func_t names.
+inline void MIR_NO_RETURN mir_error(MIR_error_type_t type, const char *format, ...) {
+    MirFailure *failure = mir_failure_target;
+    va_list ap;
+    va_start(ap, format);
+    if (failure == nullptr) {
+        std::vfprintf(stderr, format, ap);
+        va_end(ap);
+        std::fputc('\n', stderr);
+        std::exit(1);
+    }
+    failure->out_of_memory = type == MIR_alloc_error;
+    std::vsnprintf(failure->message, sizeof failure->message, format, ap);
+    va_end(ap);
+    std::longjmp(failure->env, 1);
+}
+
+[[noreturn]] inline void mir_report(MirFailure *failure, bool out_of_memory, const char *message) {
+    failure->out_of_memory = out_of_memory;
+    std::snprintf(failure->message, sizeof failure->message, "%s", message);
+    std::longjmp(failure->env, 1);
+}
+
+// What mir_alloc hands MIR. An allocation that came back empty while a call is
+// under way is reported, so MIR never sees the null; with none under way MIR
+// gets it, as it would from its default allocator.
+inline void *mir_allocated(void *mem, size_t size) {
+    if (mem != nullptr || size == 0)
+        return mem;
+    MirFailure *failure = mir_failure_target;
+    if (failure == nullptr)
+        return mem;
+    mir_report(failure, true, "out of memory");
+}
+
+inline bool mir_allocation_injected_to_fail() {
+    return mir_allocation_count++ == mir_failing_allocation;
+}
+
+inline void *mir_malloc(size_t size, void *) { return mir_allocated(std::malloc(size), size); }
+inline void *mir_calloc(size_t num, size_t size, void *) {
+    return mir_allocated(std::calloc(num, size), num * size);
+}
+inline void *mir_realloc(void *ptr, size_t, size_t new_size, void *) {
+    return mir_allocated(std::realloc(ptr, new_size), new_size);
+}
+inline void mir_free(void *ptr, void *) { std::free(ptr); }
+
+inline void *mir_malloc_counted(size_t size, void *) {
+    return mir_allocated(mir_allocation_injected_to_fail() ? nullptr : std::malloc(size), size);
+}
+inline void *mir_calloc_counted(size_t num, size_t size, void *) {
+    return mir_allocated(mir_allocation_injected_to_fail() ? nullptr : std::calloc(num, size),
+                         num * size);
+}
+// A failed realloc leaves ptr allocated and the caller still holding it, so an
+// injected failure skips the call rather than undoing it.
+inline void *mir_realloc_counted(void *ptr, size_t, size_t new_size, void *) {
+    return mir_allocated(mir_allocation_injected_to_fail() ? nullptr : std::realloc(ptr, new_size),
+                         new_size);
+}
+
+// c2mir frees some of what it allocates through the context's allocator with
+// plain free(), so mir_alloc must stay on the C heap.
+inline MIR_alloc_t mir_alloc() {
+    static struct MIR_alloc plain = {mir_malloc, mir_calloc, mir_realloc, mir_free, nullptr};
+    static struct MIR_alloc counted = {mir_malloc_counted, mir_calloc_counted, mir_realloc_counted,
+                                       mir_free, nullptr};
+    return mir_test_hooks ? &counted : &plain;
+}
+
+// One context's code mappings. MIR is handed `alloc`, whose user_data points
+// here; MIR's default code allocator does the mapping. A failed mapping while a
+// call is under way is reported, as mir_alloc reports a failed allocation. The
+// one exception is the reservation MIR_init2 asks for first: when that is
+// refused MIR maps its code page by page instead, so it gets the refusal.
+//
+// The mappings are recorded so that a context abandoned after a failure can
+// give its address space back (MirJit::throw_mir_failure). MIR unmaps code only
+// in MIR_finish, which an abandoned context never reaches, so the record needs
+// no removals.
+struct MirCodeMaps {
+    struct Map {
+        void *addr;
+        size_t len;
+    };
+    struct MIR_code_alloc alloc;
+    Map *maps = nullptr;
+    size_t n = 0;
+    size_t cap = 0;
+
+    MirCodeMaps();
+    MirCodeMaps(const MirCodeMaps &) = delete;
+    MirCodeMaps &operator=(const MirCodeMaps &) = delete;
+    ~MirCodeMaps() { std::free(maps); }
+
+    // A mapping the record has no room for stays mapped if its context is
+    // abandoned; nothing else goes wrong.
+    void record(void *addr, size_t len) {
+        if (n == cap) {
+            size_t grown = cap == 0 ? 16 : 2 * cap;
+            auto *more = static_cast<Map *>(std::realloc(maps, grown * sizeof(Map)));
+            if (more == nullptr)
+                return;
+            maps = more;
+            cap = grown;
+        }
+        maps[n++] = {addr, len};
+    }
+
+    void unmap_all() {
+        MIR_code_alloc_t base = _MIR_get_default_code_alloc();
+        for (size_t i = 0; i < n; ++i)
+            base->mem_unmap(maps[i].addr, maps[i].len, base->user_data);
+        n = 0;
+    }
+};
+
+// What MIR's default code allocator returns for a refused mapping: mmap's
+// MAP_FAILED, or VirtualAlloc's NULL.
+inline void *mir_map_failed() {
+#ifdef _WIN32
+    return nullptr;
+#else
+    return reinterpret_cast<void *>(static_cast<std::intptr_t>(-1));
+#endif
+}
+
+inline void *mir_mem_map(size_t len, void *user_data) {
+    auto *code = static_cast<MirCodeMaps *>(user_data);
+    MIR_code_alloc_t base = _MIR_get_default_code_alloc();
+    const bool reservation = mir_initializing && len == MIR_CODE_RESERVE_SIZE;
+    bool refused = false;
+    if (mir_test_hooks)
+        refused =
+            reservation ? mir_failing_mapping >= 0 : mir_mapping_count++ == mir_failing_mapping;
+    void *mem = refused ? mir_map_failed() : base->mem_map(len, base->user_data);
+    if (mem != nullptr && mem != mir_map_failed()) {
+        code->record(mem, len);
+        return mem;
+    }
+    // mmap says why; a refusal other than ENOMEM is a policy against
+    // executable memory (SELinux deny_execmem, a hardened runtime without the
+    // JIT entitlement), which no cap explains. VirtualAlloc reports through
+    // GetLastError, and is taken to have run out.
+#ifdef _WIN32
+    const int why = refused ? mir_failing_mapping_errno : ENOMEM;
+#else
+    const int why = refused ? mir_failing_mapping_errno : errno;
+#endif
+    MirFailure *failure = mir_failure_target;
+    if (reservation || failure == nullptr)
+        return mem;
+    if (why == ENOMEM)
+        mir_report(failure, true, "no address space to map code");
+    char message[sizeof failure->message];
+    std::snprintf(message, sizeof message, "cannot map executable memory for code: %s",
+                  std::strerror(why));
+    mir_report(failure, false, message);
+}
+inline int mir_mem_unmap(void *addr, size_t len, void *) {
+    MIR_code_alloc_t base = _MIR_get_default_code_alloc();
+    return base->mem_unmap(addr, len, base->user_data);
+}
+inline int mir_mem_protect(void *addr, size_t len, MIR_mem_protect_t prot, void *) {
+    MIR_code_alloc_t base = _MIR_get_default_code_alloc();
+    return base->mem_protect(addr, len, prot, base->user_data);
+}
+
+inline MirCodeMaps::MirCodeMaps() : alloc{mir_mem_map, mir_mem_unmap, mir_mem_protect, this} {}
+
 // getc callback for c2mir_compile: streams a NUL-terminated C source string.
 struct MirSourceReader {
     const char *p;
@@ -262,6 +489,7 @@ class MirJit {
     MirJit(MirJit &&other) noexcept {
 #if defined(BNGSIM_HAS_MIR)
         ctx_ = other.ctx_;
+        code_maps_ = std::move(other.code_maps_);
         gen_inited_ = other.gen_inited_;
         other.ctx_ = nullptr;
         other.gen_inited_ = false;
@@ -274,6 +502,7 @@ class MirJit {
             close();
 #if defined(BNGSIM_HAS_MIR)
             ctx_ = other.ctx_;
+            code_maps_ = std::move(other.code_maps_);
             gen_inited_ = other.gen_inited_;
             other.ctx_ = nullptr;
             other.gen_inited_ = false;
@@ -308,6 +537,9 @@ class MirJit {
   private:
 #if defined(BNGSIM_HAS_MIR)
     MIR_context_t ctx_ = nullptr;
+    // ctx_'s code allocator. MIR keeps a pointer to it, so it lives on the heap,
+    // where a move leaves it, and outlives ctx_.
+    std::unique_ptr<detail::MirCodeMaps> code_maps_;
 
     // MIR_gen_init() runs only AFTER c2mir succeeds (see compile()); a c2mir
     // failure calls close() before gen_init was ever reached. Calling
@@ -467,11 +699,56 @@ class MirJit {
         return 0;
     }
 
+    // Runs step() with a failure MIR reports returning here (see
+    // detail::MirFailure): false, with failure filled in, if one did. step must
+    // keep only trivially destructible locals of its own.
+    template <typename Step> static bool mir_guarded(detail::MirFailure &failure, Step &&step) {
+        failure.outer = detail::mir_failure_target;
+        if (setjmp(failure.env) != 0) {
+            detail::mir_failure_target = failure.outer;
+            return false;
+        }
+        detail::mir_failure_target = &failure;
+        step();
+        detail::mir_failure_target = failure.outer;
+        return true;
+    }
+
+    // A context MIR reported a failure in is abandoned, not finished. MIR does
+    // not keep its state whole through an error that returns: a function it had
+    // begun has no name yet, the inliner's flags are still set where MIR_finish
+    // frees data, and MIR_finish crashes on them. So its heap memory stays
+    // allocated; its code mappings, the address space a cap counts, are given
+    // back, since nothing can reach the code in them.
+    [[noreturn]] void throw_mir_failure(const detail::MirFailure &failure) {
+        code_maps_->unmap_all();
+        code_maps_.reset();
+        ctx_ = nullptr;
+        gen_inited_ = false;
+        if (failure.out_of_memory) {
+            throw std::runtime_error(
+                std::string("MirJit: MIR ran out of memory or address space compiling the "
+                            "generated source (") +
+                failure.message +
+                "). Under a cap on the address space (ulimit -v), every live MIR-compiled "
+                "model counts against it; free some or raise the cap (issue #1215).");
+        }
+        throw std::runtime_error(
+            std::string("MirJit: MIR failed compiling the generated source: ") + failure.message);
+    }
+
     void compile(const std::string &jit_source, int opt_level) {
-        ctx_ = MIR_init();
-        if (ctx_ == nullptr)
-            throw std::runtime_error("MirJit: MIR_init failed");
-        c2mir_init(ctx_);
+        code_maps_ = std::make_unique<detail::MirCodeMaps>();
+        detail::MirFailure failure;
+        detail::mir_initializing = true;
+        const bool inited = mir_guarded(
+            failure, [this] { ctx_ = MIR_init2(detail::mir_alloc(), &code_maps_->alloc); });
+        detail::mir_initializing = false;
+        if (!inited)
+            throw_mir_failure(failure);
+        MIR_set_error_func(ctx_, detail::mir_error);
+        if (!mir_guarded(failure, [this] { c2mir_init(ctx_); }))
+            throw_mir_failure(failure);
 
         // Capture c2mir diagnostics for error reporting (portable in-memory
         // stream on POSIX, tmpfile on Windows — see detail::DiagStream).
@@ -483,15 +760,25 @@ class MirJit {
 
         detail::MirSourceReader reader{jit_source.c_str()};
         int ok = 0;
+        bool reported = false;
         {
             // c2mir converts a float literal with strtod and refuses whatever
             // strtod leaves, so under a decimal-comma LC_NUMERIC every `0.5` in
             // the source was a "wrong number" and the compile failed (#1235).
             const ScopedCNumericLocale c_numbers;
-            ok = c2mir_compile(ctx_, &opts, detail::mir_source_getc, &reader, "bngsim_rhs_module",
-                               nullptr);
+            reported = !mir_guarded(failure, [&] {
+                ok = c2mir_compile(ctx_, &opts, detail::mir_source_getc, &reader,
+                                   "bngsim_rhs_module", nullptr);
+            });
         }
+        if (reported)
+            throw_mir_failure(failure);
         std::string diagnostics = diag.str();
+
+        // c2mir's parse of the source is spent once it has made the MIR module,
+        // and for a large model it is most of the context: fceri_fyn's live
+        // context held 852 MB of heap with it, 388 MB without (issue #1215).
+        c2mir_finish(ctx_);
 
         if (!ok) {
             close();
@@ -499,15 +786,18 @@ class MirJit {
                                      diagnostics);
         }
 
-        for (MIR_module_t m = DLIST_HEAD(MIR_module_t, *MIR_get_module_list(ctx_)); m != nullptr;
-             m = DLIST_NEXT(MIR_module_t, m)) {
-            MIR_load_module(ctx_, m);
-        }
+        if (!mir_guarded(failure, [this] {
+                for (MIR_module_t m = DLIST_HEAD(MIR_module_t, *MIR_get_module_list(ctx_));
+                     m != nullptr; m = DLIST_NEXT(MIR_module_t, m)) {
+                    MIR_load_module(ctx_, m);
+                }
+            }))
+            throw_mir_failure(failure);
 
         // An import the resolver cannot answer is a call c2mir declared
-        // implicitly (see detail::mir_prelude_address). MIR_link reports it
-        // through MIR's default error function, which exit()s the process, so
-        // refuse it here, while it is still an exception, as cc refuses it.
+        // implicitly (see detail::mir_prelude_address). MIR_link would report it
+        // through MIR's error function, as a failure of MIR's rather than of the
+        // source, so refuse it here, as cc refuses it.
         std::string unresolved = first_unresolved_import(ctx_);
         if (!unresolved.empty()) {
             close();
@@ -518,14 +808,17 @@ class MirJit {
                 "the cc backend refuses it)");
         }
 
-        MIR_gen_init(ctx_);
-        gen_inited_ = true;
         if (opt_level < 0)
             opt_level = 0;
         if (opt_level > 3)
             opt_level = 3;
-        MIR_gen_set_optimize_level(ctx_, static_cast<unsigned>(opt_level));
-        MIR_link(ctx_, MIR_set_gen_interface, detail::mir_import_resolver);
+        if (!mir_guarded(failure, [this, opt_level] {
+                MIR_gen_init(ctx_);
+                gen_inited_ = true;
+                MIR_gen_set_optimize_level(ctx_, static_cast<unsigned>(opt_level));
+                MIR_link(ctx_, MIR_set_gen_interface, detail::mir_import_resolver);
+            }))
+            throw_mir_failure(failure);
     }
 
     // The first import across the loaded modules that the import resolver has no
@@ -566,15 +859,15 @@ class MirJit {
     void close() {
         if (ctx_ != nullptr) {
             // Only finish the generator if it was started — see gen_inited_.
-            // c2mir_init + MIR_init always ran by the time ctx_ is non-null, so
-            // their finishers are unconditional.
+            // compile() finished c2mir before anything closes, and MIR_init2
+            // always returned by the time ctx_ is non-null.
             if (gen_inited_) {
                 MIR_gen_finish(ctx_);
                 gen_inited_ = false;
             }
-            c2mir_finish(ctx_);
             MIR_finish(ctx_);
             ctx_ = nullptr;
+            code_maps_.reset();
         }
     }
 #else // !BNGSIM_HAS_MIR — stub so the codegen dispatch compiles unconditionally.

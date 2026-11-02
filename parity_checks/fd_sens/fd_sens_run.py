@@ -270,13 +270,9 @@ FD_NOISE_FACTOR = 10.0
 # parameter) column's largest step gap |D(h) - D(h/2)| is inside the error that
 # gap estimates for the reference, and is not the analytic side's to fail.
 FD_UNCERTAINTY_FACTOR = 3.0
-# How far a column's peak must clear each floor to be judged: 1 / differ's
-# HARD_REL_CEILING (5%). The verdict forgives every cell inside a floor, so a
-# column only just over one would have all of its disagreement forgiven, and a
-# PASS on it would say nothing; at 20x, what a floor forgives stays under what
-# the verdict calls real. wofsy_goldstein's K11 (peak 2.2x its difference's
-# floor) passed a 30% error, and nanomolar_dimer (2.5x the atol/|p| floor) 40%.
-JUDGE_FACTOR = 20.0
+# How far a column's peak must clear each floor to be judged. amici_sens judges
+# its columns by the same rule (#1261), so the factor lives in _amici_sens.
+JUDGE_FACTOR = asens.JUDGE_FACTOR
 
 
 def fd_noise_floor(x_max: float, value: float) -> float:
@@ -285,15 +281,6 @@ def fd_noise_floor(x_max: float, value: float) -> float:
     a quotient over the smaller step ``h/2`` resolves ``FD_NOISE_FACTOR`` times
     that over ``h/2``."""
     return FD_NOISE_FACTOR * (FD_RTOL * x_max + FD_ATOL) / (fd_step(value) / 2.0)
-
-
-def _column_peaks(tensor: np.ndarray) -> np.ndarray:
-    """Per parameter, the peak ``|value|`` over (time, species); a column holding
-    a non-finite cell peaks at ``inf``."""
-    t = np.asarray(tensor, dtype=float)
-    if t.size == 0:
-        return np.zeros(t.shape[-1] if t.ndim else 0)
-    return np.where(np.isfinite(t), np.abs(t), np.inf).max(axis=(0, 1))
 
 
 def judgeable_columns(
@@ -322,14 +309,13 @@ def judgeable_columns(
     signal. A column with a non-finite cell on either side peaks at ``inf`` and
     is always judged: the verdict fails a non-finite analytic cell, and the gate
     refuses a non-finite reference.
+
+    The rule is :func:`_amici_sens.judged_columns`, shared with amici_sens; the
+    difference's floor is the one this suite adds to it.
     """
-    floors = asens.sens_resolution_floors(values, atol)
-    peaks = np.maximum(_column_peaks(analytic), _column_peaks(reference))
-    return [
-        j
-        for j, v in enumerate(values)
-        if peaks[j] > JUDGE_FACTOR * max(floors[j], fd_noise_floor(x_max, v))
-    ]
+    return asens.judged_columns(
+        analytic, reference, values, atol, extra_floors=[fd_noise_floor(x_max, v) for v in values]
+    )
 
 
 def reference_settled(analytic, reference, x_max: float, values) -> np.ndarray:
@@ -354,30 +340,18 @@ def column_verdicts(analytic, reference, gap, x_max: float, values, atol: float,
     significance gate counts a (species, parameter) column only past 1e-3 of the
     tensor's peak, and in 18 of 44 manifest models 49 of 159 judged
     parameters sat under that, where zeroing or negating an analytic column still
-    read PASS.
-    Each column is therefore judged alone, scaled to a peak of 1 (so ``differ``'s
-    absolute 1e-12 underflow floor is relative too: nanomolar_dimer's tensor
-    peaks at 6e-20), with ``atol`` scaled alike for the ``atol/|p|`` floor.
+    read PASS. The per-column verdict is :func:`_amici_sens.column_verdicts`,
+    which amici_sens uses too (#1261).
 
-    On top of that floor, the cells the difference cannot adjudicate are
-    forgiven: inside its noise (:func:`reference_settled`) or its step error
-    (:func:`reference_uncertain`). A DIFF therefore rests only on cells where the
-    reference is sure of itself.
+    On top of the ``atol/|p|`` floor, the cells the difference cannot
+    adjudicate are forgiven: inside its noise (:func:`reference_settled`) or its
+    step error (:func:`reference_uncertain`). A DIFF therefore rests only on
+    cells where the reference is sure of itself.
     """
     unsure = reference_settled(analytic, reference, x_max, values) | reference_uncertain(
         analytic, reference, gap
     )
-    out = {}
-    for j in judged:
-        a, r = analytic[..., [j]], reference[..., [j]]
-        mags = np.abs(np.concatenate([a.ravel(), r.ravel()]))
-        mags = mags[np.isfinite(mags)]
-        peak = float(mags.max()) if mags.size else 0.0
-        c = 1.0 / peak if peak > 0.0 else 1.0
-        out[j] = asens.sens_verdict(
-            a * c, r * c, param_values=[values[j]], atol=atol * c, forgive_mask=unsure[..., [j]]
-        )
-    return out
+    return asens.column_verdicts(analytic, reference, values, atol, judged, forgive_mask=unsure)
 
 
 def tolerance_sweep(runs, params, judged=None, values=None) -> dict:

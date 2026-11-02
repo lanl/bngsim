@@ -28,6 +28,13 @@ void Result::allocate(int n_times, int n_species, int n_observables) {
     observables_.resize(n_times * n_observables, 0.0);
 }
 
+void Result::set_time(int time_index, double t) {
+    if (time_index < 0 || time_index >= n_times_) {
+        throw std::out_of_range("time_index out of range in Result::set_time");
+    }
+    time_[time_index] = t;
+}
+
 void Result::record(int time_index, double t, const double *species_conc,
                     const double *observable_vals) {
     if (time_index < 0 || time_index >= n_times_) {

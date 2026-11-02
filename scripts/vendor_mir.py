@@ -280,7 +280,9 @@ def local_carry_drift(metadata: dict) -> list[str]:
             drift.append(f"local_carries[{i}]: expected an object, found {carry!r}")
             continue
         missing = [
-            k for k in ("file", "marker", "issue", "summary", "reapply") if not carry.get(k)
+            k
+            for k in ("file", "marker", "issue", "upstream_status", "summary", "reapply")
+            if not carry.get(k)
         ]
         if missing:
             drift.append(f"local_carries[{i}]: missing field(s) {', '.join(missing)}")

@@ -273,3 +273,90 @@ def test_the_same_pair_runs_when_nothing_requested_pulls_it_apart(T, params):
     decay = np.exp(-0.4 * 1.4)
     want = {"p": 2 * 2 * decay, "b": 2 * decay, "T": 0.0}
     np.testing.assert_allclose(s, [want[q] for q in params], rtol=1e-6, atol=1e-9)
+
+
+# ── The same pair in two batches (issue #1277) ──────────────────────────────
+#
+# E0 fires at t = 2.5 whatever k is; E1 when q = k·t reaches its trigger, so at
+# trigger/k. With the trigger on 2.5 they cross on one instant but fire as two
+# batches, a root's slack apart, and the refusal above, asked of one batch,
+# saw neither with the other. S(3) is 3.75 with E0 first and 4.25 with E1
+# first, and k picks which: the run returned dS/dk = 1.25, one side's slope.
+# No row at 2.5: a row there gathers a fire just short of it into its own batch
+# (issue #1276), where the refusal above answers instead.
+
+TWO_BATCHES = (
+    "species S; S = 3; q = 0; k = 1; a = 1\n"
+    "q' = k; S' = a\n"
+    "E0: at (time >= 2.5): S = S + 1\n"
+    "E1: at (q >= {trigger!r}): S = S/2\n"
+)
+TWO_BATCH_TIMES = [0.0, 1.0, 2.0, 3.0]
+
+
+def _two_batches(trigger, params, text=TWO_BATCHES):
+    model = bngsim.Model.from_antimony_string(text.format(trigger=trigger))
+    return bngsim.Simulator(model, method="ode", sensitivity_params=params).run(
+        sample_times=TWO_BATCH_TIMES, rtol=1e-10, atol=1e-12
+    )
+
+
+@pytest.mark.parametrize("offset", [-1e-13, 0.0, 1e-13], ids=["E1 first", "on", "E0 first"])
+def test_a_fixed_fire_and_a_moving_one_in_two_batches_are_refused(offset):
+    """Either way round: the fire that moves comes first just below 2.5, and
+    last just above it."""
+    with pytest.raises(Exception, match=r"move differently.*issues #49, #1277") as err:
+        _two_batches(2.5 + offset, ["k"])
+    assert "'E0' does not move and 'E1' does" in str(err.value)
+
+
+@pytest.mark.parametrize("trigger", [2.5 - 1e-6, 2.5 + 1e-6], ids=["E1 first", "E0 first"])
+def test_the_pair_a_millionth_apart_runs(trigger):
+    """Apart, the order holds across k and S(3) has a slope: t* = trigger/k,
+    and S(3) = 5.5 - t*/2 or 5 - t*/2 by the order, so dS/dk = trigger/2."""
+    s = np.asarray(_two_batches(trigger, ["k"]).sensitivities)[-1, 0, 0]
+    assert s == pytest.approx(trigger / 2.0, rel=1e-6)
+
+
+def test_the_pair_on_one_instant_runs_where_no_column_moves_either():
+    """Requested a, which moves neither fire: dS(3)/da = 2.5/2 + 0.5 in either
+    order, and the run gives it."""
+    s = np.asarray(_two_batches(2.5, ["a"]).sensitivities)[-1, 0, 0]
+    assert s == pytest.approx(1.75, rel=1e-6)
+
+
+# E0 on the clock at T, which moves it by dt/dT = 1. With T requested beside k
+# both fires move, E1 by dt/dk = -2.5, and not together: the order flips as
+# before, and the run gave dS/dk = 1.25 again where k alone was refused.
+MOVING_CLOCK = TWO_BATCHES.replace("a = 1", "a = 1; T = 2.5").replace("time >= 2.5", "time >= T")
+
+
+@pytest.mark.parametrize("offset", [-1e-13, 0.0, 1e-13], ids=["E1 first", "on", "E0 first"])
+def test_two_fires_that_move_apart_in_two_batches_are_refused(offset):
+    with pytest.raises(Exception, match=r"move differently.*issues #49, #1277") as err:
+        _two_batches(2.5 + offset, ["T", "k"], text=MOVING_CLOCK)
+    assert "'E0'" in str(err.value) and "'E1'" in str(err.value)
+    assert "both move, and not together" in str(err.value)
+
+
+def test_the_fire_that_moves_is_named_when_it_came_first():
+    """With T alone, E0 at the clock moves and E1 after it does not."""
+    with pytest.raises(Exception, match=r"move differently.*issues #49, #1277") as err:
+        _two_batches(2.5, ["T"], text=MOVING_CLOCK)
+    assert "'E1' does not move and 'E0' does" in str(err.value)
+
+
+def test_two_fires_that_move_together_in_two_batches_run():
+    """E1's q = t reaches T as the clock does, so both fires move by dt/dT = 1
+    and the order never flips. S(3) = 5 - T/2 with E0 first, which is the order
+    the run takes, and 5.5 - T/2 the other way: dS/dT = -1/2 either way. E1's
+    shift is a difference and E0's exact, so the two are one to a tolerance."""
+    text = (
+        "species S; S = 3; q = 0; T = {trigger!r}\n"
+        "q' = 1; S' = 1\n"
+        "E0: at (time >= T): S = S + 1\n"
+        "E1: at (q >= T): S = S/2\n"
+    )
+    run = _two_batches(2.5, ["T"], text=text)
+    assert np.asarray(run.species)[-1, 0] == pytest.approx(3.75, rel=1e-9)
+    assert np.asarray(run.sensitivities)[-1, 0, 0] == pytest.approx(-0.5, rel=1e-6)

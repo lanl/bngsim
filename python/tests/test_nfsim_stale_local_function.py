@@ -135,8 +135,8 @@ def test_a_read_through_the_argument_is_not_an_outside_read(tmp_path):
 @pytest.mark.parametrize("ctr", ["Time", " time", "TIME()"])
 def test_a_table_read_as_the_clock_however_it_is_spelled_is_refused(tmp_path, ctr):
     # NFsim trims and lowercases a table's counter and takes time or t as the
-    # clock before any symbol. A step table, which the linear-table refusal
-    # (#1179) lets through, read in fB(x)*tfun(..., Time) goes stale the same way:
+    # clock before any symbol. A step table, which NFsim reads exactly at its
+    # breakpoints (#892), read in fB(x)*tfun(..., Time) goes stale the same way:
     # AX at t = 12 was 19.1 on nf against 69.1 on rm.
     src = (DATA / "rate_law_time_table.xml").read_text()
     old = 'ctrName="time" xData="0,10" yData="0.1,5" method="linear"'

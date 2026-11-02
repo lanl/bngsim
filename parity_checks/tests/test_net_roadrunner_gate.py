@@ -17,6 +17,7 @@ really would diverge from the exact answer — is skipped when libroadrunner is 
 
 from __future__ import annotations
 
+import signal
 import sys
 from pathlib import Path
 
@@ -120,3 +121,87 @@ def test_ungated_roadrunner_would_diverge_on_homodimer() -> None:
         rr_final.append(res[-1, 1])
     # Ungated RoadRunner diverges from the exact 0: it fires 2A -> C at A = 1.
     assert sum(c > 0 for c in rr_final) > n_rep // 2
+
+
+# ── A wall budget that holds inside a replicate (issue #1288) ────────────────
+
+
+@pytest.mark.skipif(not nrr.roadrunner_available(), reason="libroadrunner not installed")
+def test_the_ensemble_in_its_child_is_the_ensemble_in_process() -> None:
+    """The budget runs the replicates in a child process, fixed-step as before, so
+    the draws, and every reference recorded from them, are unchanged."""
+    import numpy as np
+
+    grid = np.linspace(0.0, 5.0, 11)
+    got = nrr.net_roadrunner_ensemble(_CLEAN, grid, n_rep=8, seed_base=3)
+    assert got is not None
+    text = nrr._faithful_sbml_text(_CLEAN)
+    ids = [nrr._observable_id_map(text)[n] for n in got[2]]
+    direct = nrr._gillespie_ensemble(text, ids, 0.0, 5.0, 11, 8, 3)
+    np.testing.assert_array_equal(got[1], direct)
+
+
+def test_a_child_past_the_budget_is_stopped() -> None:
+    import time
+
+    t0 = time.perf_counter()
+    assert nrr._within_wall_budget(time.sleep, (60,), 1.0) is None
+    assert time.perf_counter() - t0 < 30
+
+
+def test_a_child_that_dies_is_a_refusal_at_once() -> None:
+    """A child that dies without a result (a segfault in RoadRunner) is read as a
+    refusal when it dies, not when the budget runs out."""
+    import os
+    import time
+
+    t0 = time.perf_counter()
+    assert nrr._within_wall_budget(os._exit, (3,), 60.0) is None
+    assert time.perf_counter() - t0 < 30
+
+
+@pytest.mark.skipif(not hasattr(signal, "setitimer"), reason="no SIGALRM on this platform")
+def test_a_child_whose_parent_is_gone_ends_itself() -> None:
+    """A scheduler that terminates the parent at its per-job cap skips the daemon
+    cleanup, so nothing would kill a replicate that never returns. The child ends
+    itself at its own alarm; here no parent reads or kills it."""
+    import multiprocessing as mp
+    import time
+
+    ctx = mp.get_context("spawn")
+    _, send_end = ctx.Pipe(duplex=False)
+    proc = ctx.Process(target=nrr._child, args=(time.sleep, (60,), send_end, 1.0))
+    proc.start()
+    proc.join(timeout=30)
+    assert not proc.is_alive()
+    assert proc.exitcode == -signal.SIGALRM
+
+
+def _roadrunner_stops_at_a_negative_count() -> bool:
+    if not nrr.roadrunner_available():
+        return True
+    import roadrunner
+    from packaging.version import Version
+
+    return Version(roadrunner.__version__) < Version("2.9.3")
+
+
+@pytest.mark.skipif(
+    _roadrunner_stops_at_a_negative_count(),
+    reason="libroadrunner before 2.9.3 stops a Gillespie run at a negative count",
+)
+def test_a_replicate_that_never_returns_is_stopped_by_the_budget() -> None:
+    """The homodimer, ungated: on libRoadRunner >= 2.9.3, ``0.5*k1*A*A`` fires
+    infinitely many events before t = 10, and 64 replicates never return. The
+    budget now stops them inside a replicate, where it used to be read only
+    between replicates."""
+    import time
+
+    from bngsim.convert import net_to_sbml
+
+    text = net_to_sbml(_HOMODIMER, out_path=None, validate="L1", strict=True).output_text
+    ids = [nrr._observable_id_map(text)["C_tot"]]
+    t0 = time.perf_counter()
+    vals = nrr._within_wall_budget(nrr._gillespie_ensemble, (text, ids, 0.0, 10.0, 11, 64, 0), 5.0)
+    assert vals is None
+    assert time.perf_counter() - t0 < 60

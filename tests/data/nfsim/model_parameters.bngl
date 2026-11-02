@@ -1,0 +1,33 @@
+begin model
+begin parameters
+kp 0.01
+km 0.1
+kph 0.5
+kdeph 0.3
+L0 300
+R0 200
+NA 6.02214076e23
+V 1.3e-15
+kv 1/(NA*V)
+kph2 kph*kv*NA*V/3
+end parameters
+begin molecule types
+L(r)
+R(l,Y~0~P)
+end molecule types
+begin seed species
+L(r) L0
+R(l,Y~0) R0
+end seed species
+begin observables
+Molecules RP R(Y~P)
+Molecules Lfree L(r)
+end observables
+begin reaction rules
+L(r) + R(l) <-> L(r!1).R(l!1) kp, km
+R(l!+,Y~0) -> R(l!+,Y~P) kph2
+R(Y~P) -> R(Y~0) kdeph
+end reaction rules
+end model
+generate_network({overwrite=>1})
+writeXML()

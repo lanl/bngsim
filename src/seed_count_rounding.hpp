@@ -179,13 +179,22 @@ class TempXmlFile {
 // in `param_value_overlay` (override-resolved values, e.g. NFsim's pre-init
 // setParameter propagation) or the XML's own `<Parameter value="...">` attrs.
 //
+// `species_amount_overlay` maps a `<Species id=>` to the amount the caller wants
+// it seeded with instead of its `concentration=` (issue #1373: the model's own
+// amount, set since load). Its amount is rounded half-up the same way and
+// written whatever TOK was. Each id written, or already holding that count, is
+// added to `*applied` when given: the fail-safe above must not drop one of these
+// silently, so a caller that passes an overlay checks that every id came back.
+//
 // Returns the temp path if any concentration was rewritten; std::nullopt if the
 // copy would be byte-identical to the source (caller then loads the original and
 // pays no temp-file cost) or on any error (fail-safe: legacy truncation stands).
 // The caller owns the returned temp file and must remove it when done.
 inline std::optional<std::filesystem::path>
 write_seed_rounded_xml(const std::string &src_xml_path,
-                       const std::unordered_map<std::string, double> &param_value_overlay = {}) {
+                       const std::unordered_map<std::string, double> &param_value_overlay = {},
+                       const std::unordered_map<std::string, double> &species_amount_overlay = {},
+                       std::vector<std::string> *applied = nullptr) {
     namespace fs = std::filesystem;
     try {
         std::ifstream in(src_xml_path);
@@ -201,6 +210,8 @@ write_seed_rounded_xml(const std::string &src_xml_path,
         bool in_param_list = false;
         bool in_species_list = false;
         bool changed = false;
+        // Published to *applied only on a return that loads what was written.
+        std::vector<std::string> hit;
 
         while (std::getline(in, line)) {
             const std::string trimmed = detail::trim(line);
@@ -227,7 +238,22 @@ write_seed_rounded_xml(const std::string &src_xml_path,
                 in_species_list = false;
             } else if (in_species_list && trimmed.rfind("<Species", 0) == 0) {
                 std::size_t vb = 0, ve = 0;
-                if (auto tok = detail::extract_attr(line, "concentration", &vb, &ve)) {
+                auto pinned = species_amount_overlay.end();
+                if (auto id = detail::extract_attr(trimmed, "id")) {
+                    pinned = species_amount_overlay.find(*id);
+                }
+                if (pinned != species_amount_overlay.end() && std::isfinite(pinned->second) &&
+                    pinned->second >= 0.0) {
+                    if (auto tok = detail::extract_attr(line, "concentration", &vb, &ve)) {
+                        const std::string count =
+                            std::to_string(round_half_up_count(pinned->second));
+                        if (*tok != count) {
+                            line = line.substr(0, vb) + count + line.substr(ve);
+                            changed = true;
+                        }
+                        hit.push_back(pinned->first);
+                    }
+                } else if (auto tok = detail::extract_attr(line, "concentration", &vb, &ve)) {
                     if (auto value = detail::resolve_token(*tok, param_value_overlay, xml_values)) {
                         if (std::floor(*value) != *value) {
                             const long long rounded = round_half_up_count(*value);
@@ -242,6 +268,9 @@ write_seed_rounded_xml(const std::string &src_xml_path,
         }
 
         if (!changed) {
+            if (applied) {
+                *applied = std::move(hit);
+            }
             return std::nullopt;
         }
 
@@ -258,6 +287,9 @@ write_seed_rounded_xml(const std::string &src_xml_path,
             std::error_code ec;
             fs::remove(tmp, ec);
             return std::nullopt;
+        }
+        if (applied) {
+            *applied = std::move(hit);
         }
         return tmp;
     } catch (const std::exception &) {

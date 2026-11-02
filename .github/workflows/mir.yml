@@ -151,7 +151,7 @@ jobs:
         include:
           - os: ubuntu-latest    # manylinux-class x86_64
           - os: macos-15-intel   # macOS x86_64 (Intel)
-          - os: macos-14         # macOS arm64 (Apple Silicon)
+          - os: macos-15         # macOS arm64 (Apple Silicon); macos-14 retires 2026-11-02
           - os: windows-latest   # Windows x86_64 (issue #3)
     steps:
       - uses: actions/checkout@v4
@@ -163,12 +163,16 @@ jobs:
       # ccache keeps the build's objects between runs on the Ninja legs, whose
       # build step is most of the job (7.8 of macos-15-intel's 11 minutes). The
       # Windows leg builds with the Visual Studio generator, which takes no
-      # compiler launcher, so it is left out here and in the export below.
+      # compiler launcher, so it is left out here and in the export below. The
+      # key ends in -build because the action restores by prefix: without it,
+      # the macos-15 (arm64) leg's key is a prefix of the macos-15-intel leg's,
+      # and it would restore whichever of the two was saved last: usually the
+      # slower Intel leg's x86_64 objects. python-tests.yml's keys end the same way.
       - name: Set up ccache
         if: runner.os != 'Windows'
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: mir-${{ matrix.os }}
+          key: mir-${{ matrix.os }}-build
           max-size: 500M
 
       - name: Build & install bngsim (MIR on, KLU off)
@@ -281,6 +285,7 @@ jobs:
             python/tests/test_codegen_mratio.py \
             python/tests/test_codegen_determinism.py \
             python/tests/test_codegen_jit_prelude.py \
+            python/tests/test_codegen_exprtk_functions.py \
             python/tests/test_codegen_jit_self_multiply.py \
             python/tests/test_codegen_steady_state_mask.py \
             python/tests/test_codegen_steady_state_fd_step.py \
@@ -291,8 +296,12 @@ jobs:
             -rA --tb=short ${{ github.event.inputs.pytest_args }} \
             2>&1 | tee mir-${{ matrix.os }}.log
 
+      # The log is a copy of what the step above printed, which the job's own log
+      # holds too. On 2026-10-31 GitHub's artifact service timed out five times on
+      # macos-15-intel and failed a run whose suite had passed.
       - name: Upload pytest log
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: mir-log-${{ matrix.os }}
