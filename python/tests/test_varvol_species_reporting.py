@@ -11,7 +11,11 @@ the eight cases (event or rate rule, hOSU or not, ODE or SSA), five were stale.
 
 ``Result.species`` is now the live concentration in all eight, equal to
 ``[X]``; ``Result.state`` keeps the stored value, whose ``V_static`` multiple is
-the molecule count; and the bare ``X`` selector is still the amount.
+the molecule count; and the bare ``X`` selector is still the amount. So is it
+under SSA for a concentration species in a compartment an assignment rule
+sizes, the one other place the stored value was left in the column; and the
+``species:<name>`` selector of an assignment-rule amount follows its column
+across an event, as its row of ``Result.sensitivities`` does.
 """
 
 from __future__ import annotations
@@ -124,3 +128,47 @@ def test_an_event_resized_amount_species_differentiates_its_reported_value():
         fd.append((lu - ld) / (2 * h))
     np.testing.assert_allclose(analytic, np.array(fd).T, rtol=1e-6, atol=1e-9)
     assert analytic[2, 1] < 0.0  # a larger cnew dilutes [X]
+
+
+@pytest.mark.parametrize("method", ["ode", "ssa"])
+def test_a_concentration_species_in_a_rule_sized_compartment_is_live(method):
+    """``c := 2 + time`` and S = 10 in it, read by outputs only, so [S] =
+    20/(2 + t). Under SSA the dilution term is ODE-only and the stored value
+    stays 10; Result.species kept it, 10 throughout, and only [S] was live."""
+    text = (
+        "compartment c; c := 2 + time;\ncompartment d = 1;\nspecies S in c; S = 10;\n"
+        "species Y in d; Y = 100;\nk = 0.1;\nR1: Y -> ; k*Y;\n"
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        sim = bngsim.Simulator(bngsim.Model.from_antimony_string(text), method=method)
+        r = sim.run(t_span=(0, 3), n_points=4, seed=1)
+    species = np.asarray(r.species)[:, list(r.species_names).index("S")]
+    np.testing.assert_allclose(species, 20.0 / (2.0 + T), rtol=1e-6)
+    np.testing.assert_allclose(species, r.as_roadrunner(["[S]"])[:, 0], rtol=1e-12)
+    np.testing.assert_allclose(r.as_roadrunner(["S"])[:, 0], 20.0, rtol=1e-6)
+
+
+def test_the_selector_of_an_assignment_rule_amount_follows_an_event_resize():
+    """``T := 3*X``, amounts, in a compartment an event takes to cnew = 4.
+    Result.species reports T over the live size, and the ``species:T``
+    selector is the row of that, as Result.sensitivities holds it. It
+    divided the rule's row by the starting size, as for a fixed one: dT/dk2
+    at t = 2 read -110.36 for -55.18, and dT/dcnew 0 for -6.90."""
+    text = (
+        "compartment c = 2;\nsubstanceOnly species X in c; X = 100;\n"
+        "substanceOnly species T in c; T := 3*X;\n"
+        "k2 = 0.5; cnew = 4;\nR2: X -> ; k2*X;\nE1: at time > 1.05: c = cnew;\n"
+    )
+    sim = bngsim.Simulator(
+        bngsim.Model.from_antimony_string(text), method="ode", sensitivity_params=["k2", "cnew"]
+    )
+    sim.set_tolerances(rtol=1e-11, atol=1e-13)
+    r = sim.run(t_span=(0, 3), n_points=4)
+    j = list(r.species_names).index("T")
+    row = np.asarray(r.sensitivities)[:, j, :]
+    reported = np.asarray(r.species)[:, j]
+    # [T] = 3·100·e^(-k2·t)/V: d/dk2 is -t·[T], and after the event d/dcnew is -[T]/cnew.
+    np.testing.assert_allclose(row[:, 0], -T * reported, rtol=1e-6)
+    np.testing.assert_allclose(row[2:, 1], -reported[2:] / 4.0, rtol=1e-6)
+    np.testing.assert_allclose(np.asarray(r.output_sensitivities("species:T"))[:, 0, :], row)
