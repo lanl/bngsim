@@ -23,6 +23,7 @@
 // the NFsim shim need to include the 1.6 MB ExprTk header to call these.
 #pragma once
 
+#include <functional>
 #include <string>
 
 namespace bngsim {
@@ -56,6 +57,27 @@ double rint(double x);
 // codegen's 7.77e-05 and 0.49999999999999994. A literal ExprTk reads right is
 // left as written, and so is anything that is not a literal.
 std::string exact_literals(const std::string &expr);
+
+// Issue #1415: the first call in `expr` that a bracket follows, as the call's
+// text, or "" where there is none. ExprTk multiplies a variable, or a
+// bracketed group, against a bracket after it: `A(B)` and `(A)(B)` are A·B.
+// After a call it does not. The bracket opens a second statement, and the
+// expression's value is the last statement's: `k*exp(-A)(B)` came back B, and
+// a rate law written so ran as its last factor. BNG2.pl rejects the same text
+// as a syntax error.
+//
+// A call is what ExprTk's parser calls: one of its built-in functions
+// (`mand` and `mor` among them), `if`, `not`, or a name `is_function` says the
+// caller's symbol table holds as a function. Any other name before a bracket
+// is left to ExprTk: a variable is multiplied, a word operator joins, and an
+// unknown name is ExprTk's error to report. Names and numbers are read as
+// ExprTk's lexer reads them, so `k.g(B)(C)` is the variable `k.g`, and
+// `1e1(B)` is a number.
+std::string call_before_bracket(const std::string &expr,
+                                const std::function<bool(const std::string &)> &is_function);
+
+// The refusal for `call`, found by call_before_bracket() in `expr`.
+std::string bracket_after_call_error(const std::string &expr, const std::string &call);
 
 // Unconditional leading-underscore remap: "_X" → "u_X" (ExprTk rejects an
 // identifier starting with '_'). Identity for any name not starting with '_'.

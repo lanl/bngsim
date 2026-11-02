@@ -486,13 +486,25 @@ std::size_t number_token_end(const std::string &expr, std::size_t i) {
     return i;
 }
 
+// End of the symbol token ExprTk's lexer would scan from `i`, a letter or an
+// underscore (scan_symbol): word characters, and a '.' that another word
+// character follows.
+std::size_t symbol_token_end(const std::string &expr, std::size_t i) {
+    const auto word = [](char c) {
+        return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
+    };
+    std::size_t j = i + 1;
+    while (j < expr.size() &&
+           (word(expr[j]) || (expr[j] == '.' && j + 1 < expr.size() && word(expr[j + 1])))) {
+        ++j;
+    }
+    return j;
+}
+
 } // namespace
 
 std::string expr_compat::exact_literals(const std::string &expr) {
     const auto letter = [](char c) { return std::isalpha(static_cast<unsigned char>(c)) != 0; };
-    const auto word = [](char c) {
-        return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
-    };
     const auto digit = [](char c) { return std::isdigit(static_cast<unsigned char>(c)) != 0; };
     std::string out;
     out.reserve(expr.size());
@@ -501,13 +513,7 @@ std::string expr_compat::exact_literals(const std::string &expr) {
         const char c = expr[i];
         if (letter(c) || c == '_') {
             // A symbol, copied whole so its digits are never read as a number.
-            // ExprTk's scan_symbol: word characters, and a '.' that another
-            // word character follows.
-            std::size_t j = i + 1;
-            while (j < expr.size() && (word(expr[j]) || (expr[j] == '.' && j + 1 < expr.size() &&
-                                                         word(expr[j + 1])))) {
-                ++j;
-            }
+            const std::size_t j = symbol_token_end(expr, i);
             out.append(expr, i, j - i);
             i = j;
             continue;
@@ -526,7 +532,17 @@ std::string expr_compat::exact_literals(const std::string &expr) {
             // the exponent), where strtod and the C compiler give the subnormal.
             if (end == token.c_str() + token.size() && std::isfinite(v) &&
                 !(exprtk_reads(token, read) && read == v)) {
-                out += exact_spelling(v);
+                const std::string spelled = exact_spelling(v);
+                // ExprTk's lexer multiplies a closing bracket against the number
+                // after it, but not against a bracket: after a call that opens a
+                // second statement (issue #1415). `abs(B)0.49999999999999997`
+                // came back the literal alone, so the product is written out.
+                const std::size_t last = out.find_last_not_of(" \t\n\v\f\r");
+                if (spelled[0] == '(' && last != std::string::npos &&
+                    (out[last] == ')' || out[last] == ']' || out[last] == '}')) {
+                    out += '*';
+                }
+                out += spelled;
             } else {
                 out += token;
             }
@@ -537,6 +553,73 @@ std::string expr_compat::exact_literals(const std::string &expr) {
         ++i;
     }
     return out;
+}
+
+std::string
+expr_compat::call_before_bracket(const std::string &expr,
+                                 const std::function<bool(const std::string &)> &is_function) {
+    const auto digit = [](char c) { return std::isdigit(static_cast<unsigned char>(c)) != 0; };
+    const auto space = [](char c) { return std::isspace(static_cast<unsigned char>(c)) != 0; };
+    // The names ExprTk's parse_symbol calls before it looks in a symbol table:
+    // its built-ins (the vararg functions among them), `not` and `if`.
+    const auto calls = [&](const std::string &name) {
+        return exprtk::details::is_base_function(name) || name == "if" || name == "not" ||
+               is_function(name);
+    };
+    constexpr std::size_t kNone = std::string::npos;
+    // Where the call named last starts, while a '(' may yet open it.
+    std::size_t pending = kNone;
+    // For each '(' still open, where the call it opened starts, or kNone.
+    std::vector<std::size_t> opened;
+    std::size_t i = 0;
+    while (i < expr.size()) {
+        const char c = expr[i];
+        if (std::isalpha(static_cast<unsigned char>(c)) != 0 || c == '_') {
+            const std::size_t j = symbol_token_end(expr, i);
+            pending = calls(expr.substr(i, j - i)) ? i : kNone;
+            i = j;
+            continue;
+        }
+        if (digit(c) || (c == '.' && i + 1 < expr.size() && digit(expr[i + 1]))) {
+            i = number_token_end(expr, i);
+            if (i == std::string::npos) {
+                return ""; // ExprTk reports the malformed number
+            }
+            pending = kNone;
+            continue;
+        }
+        if (space(c)) { // `sin (A)` is a call
+            ++i;
+            continue;
+        }
+        if (c == '(') {
+            opened.push_back(pending);
+        } else if (c == ')' && !opened.empty()) {
+            const std::size_t start = opened.back();
+            opened.pop_back();
+            std::size_t next = i + 1;
+            while (next < expr.size() && space(expr[next])) {
+                ++next;
+            }
+            if (start != kNone && next < expr.size() &&
+                (expr[next] == '(' || expr[next] == '[' || expr[next] == '{')) {
+                return expr.substr(start, i + 1 - start);
+            }
+        }
+        pending = kNone;
+        ++i;
+    }
+    return "";
+}
+
+std::string expr_compat::bracket_after_call_error(const std::string &expr,
+                                                  const std::string &call) {
+    return "Expression '" + expr + "': the bracket after the call '" + call +
+           "' is not multiplied by it. ExprTk reads it as a second statement, and the "
+           "expression's value would be that statement's alone, which drops the call and "
+           "everything before it (issue #1415). BioNetGen rejects it as a syntax error. Write "
+           "the product with '*': '" +
+           call + "*(...)'.";
 }
 
 // a == 0 has a closed form (issue #768): M(0, b, z) = 1, so the ratio is
@@ -1604,6 +1687,18 @@ int ExprTkEvaluator::compile(const std::string &expr) {
     // Then respell any literal ExprTk would read off by an ulp, so the
     // interpreter computes with the same numbers codegen does.
     preprocessed = expr_compat::exact_literals(preprocessed);
+
+    // Issue #1415: refused, where ExprTk would keep only the bracket after it.
+    // Read from the text as written, so the refusal quotes it: no rewrite above
+    // turns a call into anything else or anything else into a call, and none
+    // puts a bracket after a call (exact_literals writes the `*` before one).
+    const std::string call =
+        expr_compat::call_before_bracket(expr, [this](const std::string &name) {
+            return impl_->symbol_table.get_function(name) != nullptr;
+        });
+    if (!call.empty()) {
+        throw std::runtime_error(expr_compat::bracket_after_call_error(expr, call));
+    }
 
     // Delegate to compile_preprocessed (which also caches the string)
     return compile_preprocessed(preprocessed);

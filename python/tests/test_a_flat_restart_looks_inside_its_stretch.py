@@ -268,8 +268,8 @@ def test_rows_inside_each_period_do_not_hide_the_stretch(tmp_path, rows_a_period
     """With rows inside each period the first step after a restart is sized
     from the next row, and it is the third or fourth step that takes the rest
     of the stretch, not the second. On main 0.020 of the integral with either.
-    (Rows can still hide a stretch where a step that crosses one fails inside
-    the call to it: issue #1192.)"""
+    (Where a step that crosses a row fails inside the call to it: issue
+    #1192's tests.)"""
     x, _ = _gain(tmp_path, _LATE, 0.0, 200.0, n_points=200 * rows_a_period + 1)
     assert x == pytest.approx(200 * _LATE_A_PERIOD, rel=2e-4)
 

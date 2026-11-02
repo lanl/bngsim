@@ -35,8 +35,10 @@ What this locks:
      exactly 0.0 is not read as a second root; and a real crossing on a curved
      residual, whose window opens and closes inside one step, still restarts;
   7. the band a crossing has to clear is what CVODE's error weights hold each
-     species to, added in quadrature (issue #907): a window on an observable
-     over a thousand species, and one under a tracking atol, are integrated;
+     species to, added in quadrature, and the bar is 4*sqrt(N) of it (issue
+     #907): a window on an observable over a thousand species, one under a
+     tracking atol, one beside a thousand species that never move, and one a
+     few bands wide are integrated;
   8. a residual too deep for ``ast.unparse`` keeps every root, and one that
      starts at exactly zero does not print a SUNDIALS warning.
 """
@@ -614,16 +616,17 @@ def test_a_curved_residual_restarts_whatever_the_run_length(tmp_path, t_end, n_p
     assert float(result.species[-1][1]) == pytest.approx(0.025, rel=1000 * rtol)
 
 
-@pytest.mark.parametrize("rtol", [4.9e-4, 5e-4])
+@pytest.mark.parametrize("rtol", [1.2e-3, 1.24e-3])
 @pytest.mark.parametrize("t_end", [4.0, 5.0, 8.0, 10.0, 12.0, 15.0, 20.0])
 def test_a_hump_that_only_just_clears_its_band_restarts(tmp_path, t_end, rtol):
-    """At rtol 5e-4 the cubic's hump, 0.029 at its top, clears the 10*sqrt(2)
-    bands the restart test asks of it (0.0283 there) only over a core from
-    0.042 to 0.058 time units past the root. The halvings toward the root, a
-    factor of two apart, and the even samples fell either side of that core
-    on 25 runs of 242 near this tolerance, eleven of these fourteen among them,
-    and Y came out 0. The best sample is now refined between its two
-    neighbours."""
+    """Near rtol 1.24e-3 the cubic's hump, 0.029 at its top, clears the
+    4*sqrt(2) bands the restart test asks of it (0.028 there) only close to its
+    top, and is lost from rtol 1.3e-3. The halvings toward the root, a factor
+    of two apart, and the even samples can fall either side of that core: with
+    the best sample left unrefined, Y came out 0 on 8 of these 14 runs. The
+    best sample is refined between its two neighbours. (Under the 10*sqrt(2)
+    bands asked before issue #907's case 4, the same core sat at rtol 5e-4,
+    and 25 runs of 242 near it were lost there.)"""
     model = _write(tmp_path, _CUBIC_NET)
     result = bngsim.Simulator(model).run(
         t_span=(0.0, t_end), n_points=3, rtol=rtol, atol=rtol * 1e-2
@@ -631,22 +634,25 @@ def test_a_hump_that_only_just_clears_its_band_restarts(tmp_path, t_end, rtol):
     assert float(result.species[-1][1]) == pytest.approx(0.025, rel=1e-2)
 
 
-def _clock_closed_window(n, x0_each, rate_each, thr, t_close, k=10.0):
+def _clock_closed_window(n, x0_each, rate_each, thr, t_close, k=10.0, n_idle=0):
     """`if((Obs > thr) && (Tobs < 1), k, 0)`: open from where Obs, the sum of n
     species each growing at rate_each, passes thr until a clock T (T' = 1)
-    reaches 1 at t_close. Y integrates k over it."""
+    reaches 1 at t_close. Y integrates k over it, and is the last species.
+    n_idle species at 1 that nothing produces or consumes sit beside them."""
     species = [f"    {i + 1} X{i}() {x0_each!r}" for i in range(n)]
+    species += [f"    {n + i + 1} Z{i}() 1.0" for i in range(n_idle)]
     reactions = [f"    {i + 1} 0 {i + 1} ri" for i in range(n)]
     members = ",".join(str(i + 1) for i in range(n))
+    t_idx = n + n_idle + 1
     return (
         f"begin parameters\n    1 k {k}\n    2 ri {rate_each!r}\n    3 thr {thr!r}\n"
         "    4 one 1.0\nend parameters\n"
         "begin functions\n    1 r() if((Obs>thr)&&(Tobs<1),k,0)\nend functions\n"
-        "begin species\n" + "\n".join(species) + f"\n    {n + 1} T() {1.0 - t_close!r}\n"
-        f"    {n + 2} Y() 0\nend species\n"
-        "begin reactions\n" + "\n".join(reactions) + f"\n    {n + 1} 0 {n + 1} one\n"
-        f"    {n + 2} 0 {n + 2} r\nend reactions\n"
-        f"begin groups\n    1 Obs {members}\n    2 Tobs {n + 1}\nend groups\n"
+        "begin species\n" + "\n".join(species) + f"\n    {t_idx} T() {1.0 - t_close!r}\n"
+        f"    {t_idx + 1} Y() 0\nend species\n"
+        "begin reactions\n" + "\n".join(reactions) + f"\n    {n + 1} 0 {t_idx} one\n"
+        f"    {n + 2} 0 {t_idx + 1} r\nend reactions\n"
+        f"begin groups\n    1 Obs {members}\n    2 Tobs {t_idx}\nend groups\n"
     )
 
 
@@ -670,9 +676,9 @@ def test_a_window_on_an_observable_over_many_species_is_integrated(tmp_path, n, 
     band the restart test asked the crossing to clear was rtol*Obs + 1000*atol
     times 10*sqrt(N), 3.2e-3, past the whole excursion: the crossing read as
     unresolved, the run stepped on, and Y came out 0 on three phases of five.
-    The WRMS norm bounds the residual's error by its terms in quadrature,
-    sqrt(1000)*atol, so the bar is 1e-4. One species is the control, and two
-    run lengths give the step after the root two geometries."""
+    The band adds the terms in quadrature, sqrt(1000)*atol, and the bar is
+    4*sqrt(N) of that, 4e-5. One species is the control, and two run lengths give the step
+    after the root two geometries."""
     rate = 1e-3 / 0.5
     text = _clock_closed_window(n, (1.0 - rate * t_open) / n, rate / n, 1.0, t_open + 0.5)
     model = _write(tmp_path, text)
@@ -698,6 +704,84 @@ def test_a_window_under_a_tracking_atol_is_integrated(tmp_path, t_open, t_end):
         atol=bngsim.TrackingAtol(decades=6, ceiling=1e-8),
     )
     assert float(result.species[-1][-1]) == pytest.approx(_WINDOW_Y, rel=_WINDOW_REL)
+
+
+# What rtol = atol = 1e-8 holds S to where it crosses thr = 1: rtol*1 + atol.
+_S_BAND = 2e-8
+
+
+@pytest.mark.parametrize("t_end", [20.0, 50.0])
+@pytest.mark.parametrize("bands", [150, 250])
+@pytest.mark.parametrize("n_idle", [0, 1000])
+@pytest.mark.parametrize("t_open", _PHASES)
+def test_a_window_beside_idle_species_is_integrated(tmp_path, n_idle, bands, t_open, t_end):
+    """Issue #907, case 2: S moves 250 of its tolerance bands, 5e-6, across a
+    window of 0.5 that a clock closes. The restart test asked a crossing to
+    clear 10*sqrt(N) bands, N counting every species in the model, so a
+    thousand species that never move took the bar from 17 bands to 317: the
+    crossing read as unresolved, the run stepped on, and Y came out 0 on six
+    runs of ten. The bar still counts them, since the WRMS test lends their
+    share of the tolerance to S, but is now 4*sqrt(N), 127 bands. A window of
+    150 bands bounds it from above: a margin of 5 (158 bands) loses that one
+    on six runs of ten. No idle species is the control."""
+    rate = bands * _S_BAND / 0.5
+    text = _clock_closed_window(1, 1.0 - rate * t_open, rate, 1.0, t_open + 0.5, n_idle=n_idle)
+    model = _write(tmp_path, text)
+    result = bngsim.Simulator(model).run(t_span=(0.0, t_end), n_points=3, rtol=1e-8, atol=1e-8)
+    assert float(result.species[-1][-1]) == pytest.approx(_WINDOW_Y, rel=_WINDOW_REL)
+
+
+@pytest.mark.parametrize("t_end", [20.0, 50.0])
+@pytest.mark.parametrize("bands", [8, 10])
+@pytest.mark.parametrize("t_open", _PHASES)
+def test_a_window_a_few_bands_wide_is_integrated(tmp_path, bands, t_open, t_end):
+    """Issue #907, case 4: S moves 10 of its tolerance bands, 2e-7, across a
+    window of 0.5 that a clock closes, and the bar was 10*sqrt(3) = 17 of them:
+    Y came out 0 on six runs of ten. Where a run loses the window, the step
+    the root is found in spans all of it, so S ends that step at least
+    `bands` bands past thr, and a bar under that restarts. It is now
+    4*sqrt(3) = 6.9 bands. Eight bands bounds the bar from above: a margin of 5
+    (8.7 bands) loses that window on six runs of ten."""
+    rate = bands * _S_BAND / 0.5
+    text = _clock_closed_window(1, 1.0 - rate * t_open, rate, 1.0, t_open + 0.5)
+    model = _write(tmp_path, text)
+    result = bngsim.Simulator(model).run(t_span=(0.0, t_end), n_points=3, rtol=1e-8, atol=1e-8)
+    assert float(result.species[-1][-1]) == pytest.approx(_WINDOW_Y, rel=_WINDOW_REL)
+
+
+_HAWSE = "hawse_reduced_boolean.net"
+
+
+def _with_idle_species(text, n_idle):
+    """The network with n_idle species at 1 that nothing produces or consumes."""
+    lines = text.split("\n")
+    first, end = lines.index("begin species"), lines.index("end species")
+    last = max(int(line.split()[0]) for line in lines[first + 1 : end])
+    lines[end:end] = [f"    {last + k + 1} Zidle{k}() 1.0" for k in range(n_idle)]
+    return "\n".join(lines)
+
+
+@pytest.mark.parametrize("n_idle", [0, 100])
+def test_a_slide_beside_idle_species_is_still_stepped_on(data_dir, tmp_path, n_idle):
+    """Issue #907: Hawse_reduced, a Boolean network of 22 species, chatters on
+    several of its 0.5 thresholds, and each of those crossings overshoots by
+    what its step's error leaves. The WRMS test lends the share of the
+    tolerance of species that never move to the species that do, so with 100
+    idle species added the overshoot grows with sqrt(N). A bar that counted
+    only the species each residual reads, 8 bands, restarted those crossings
+    instead of leaving them to the #908 hold: 189,442 steps to t = 8, where the
+    run without the roots takes 7,693. The bar keeps sqrt(N): 4*sqrt(N) takes
+    9,482 steps, and a margin of 1 took 179,125. Without idle species a margin
+    of 0.5 took 578,256 steps against 9,899. A chattering run's step count
+    moves with the output grid and the platform, and with the span: past t = 8
+    main's own grows to millions. So the bound is three times the run without
+    the roots, well above the 1.07 and 1.23 here and well below the 23 to 58
+    times of those bars."""
+    text = _with_idle_species((data_dir / _HAWSE).read_text(), n_idle)
+    run = dict(t_span=(0.0, 8.0), n_points=33, rtol=1e-6, atol=1e-6)
+    rooted = bngsim.Simulator(_write(tmp_path, text)).run(**run)
+    unrooted = bngsim.Simulator(_unrooted(tmp_path, text, "unrooted.net")).run(**run)
+    assert rooted.solver_stats["n_steps"] <= 3 * unrooted.solver_stats["n_steps"]
 
 
 def test_a_residual_too_deep_to_print_keeps_every_root(tmp_path):

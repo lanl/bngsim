@@ -1095,7 +1095,6 @@ class Simulator:
             from bngsim._bngsim_core import NfsimSimulator
             from bngsim._network_free_checks import (
                 refuse_nfsim_compartments,
-                refuse_nfsim_linear_time_tables,
                 refuse_nfsim_rate_laws,
                 refuse_nfsim_stale_local_functions,
                 refuse_time_dependent_rate_laws,
@@ -1106,7 +1105,6 @@ class Simulator:
             refuse_nfsim_rate_laws(xml_path)
             refuse_nfsim_stale_local_functions(xml_path)
             refuse_nfsim_compartments(xml_path)
-            refuse_nfsim_linear_time_tables(xml_path)
             self._sim = NfsimSimulator(xml_path)
             # The parameters the backend has, which each run hands it the model's
             # values of where the model has changed them (issue #1360).
@@ -1727,6 +1725,47 @@ class Simulator:
                 "nothing else reads it (issues #313, #695, #696, #711; Model.frozen_params "
                 "lists every such parameter). Difference models loaded from the source at "
                 "p +/- h."
+            )
+
+    def _raise_if_param_on_a_kink(
+        self,
+        param_names: Sequence[str],
+        core=None,
+        *,
+        row: int | None = None,
+        conditions: bool = False,
+    ) -> None:
+        """Refuse a forward-sensitivity column for a parameter that sits on a
+        kink of a rate law (issue #1332).
+
+        ``abs``, ``min``, ``max``, ``clamp`` and ``if()`` over parameters alone,
+        at values that put them exactly on their switch, have no derivative in a
+        parameter that moves the switch. The compiled ``∂f/∂p`` took
+        ``sign(0) = 0`` and the average at a tie: ``10*abs(q) + s`` at q = 0
+        gave dX*/dq = 0 for one-sided slopes of +-47.62, and ``10*min(q, 1) + s``
+        at q = 1 gave 23.81 for 47.62 or 0, in a run and at a steady state,
+        with no error. Asked at the values the run or row has, since a write
+        can put a parameter on its kink after the Simulator is built; ``row``
+        names the batch row whose clone *core* is.
+
+        An ``if()`` condition on its switch is asked only with ``conditions``,
+        as a steady state asks it (issue #1330). In a time course the column is
+        the derivative of the branch taken, which issue #382 returns.
+        """
+        from bngsim._parameter_kinks import parameters_on_a_kink
+
+        lines = parameters_on_a_kink(
+            self._model._core if core is None else core, param_names, conditions=conditions
+        )
+        if lines:
+            raise SensitivityUnsupportedError(
+                ("" if row is None else f"run_batch row {row}: ")
+                + "Forward sensitivity is not supported where a parameter sits on a kink of "
+                "a rate law, where the law has no derivative in it: "
+                + "; ".join(lines)
+                + ". The law differs on the two sides, in slope or in value, and the column "
+                "would be one side's, or neither (issue #1332). Move the parameter off the "
+                "switch, or difference the run at p +/- h on each side."
             )
 
     def _raise_if_conserved_total_sensitivity_unknown(self, params: Sequence[str]) -> None:
@@ -5369,6 +5408,7 @@ class Simulator:
             # CVODES' difference quotient, which drops the saltation jump. Refuse
             # rather than return the flagged-wrong gradient.
             self._raise_if_uncompensated_crossing_sensitivities()
+            self._raise_if_param_on_a_kink(self._sensitivity_params)
 
         # GH #210 — pre-equilibration / carry-over output sensitivities. Only
         # meaningful for the ODE forward-sensitivity path; validate early.
@@ -7193,6 +7233,9 @@ class Simulator:
                     # is kept by what it reads, so a row that changes none of
                     # that costs a lookup.
                     self._raise_if_uncompensated_crossing_sensitivities(core=clone._core)
+                    self._raise_if_param_on_a_kink(
+                        self._sensitivity_params, core=clone._core, row=index
+                    )
                     opts.set_sensitivity_method(self._sensitivity_method)
                     # Likewise the switch times: this row's t0/sigma set where the
                     # crossings are, so they must be detected on the clone. Outside
@@ -7593,6 +7636,10 @@ class Simulator:
         # known (fixed-time; issue #49 thresholds; issue #144 state-dependent
         # triggers). Classified against this call's actual target parameters.
         self._raise_if_event_sensitivities(target_params)
+        # Issue #1332 — of the columns this call computes, named or not: the
+        # chunks run CVODES directly, not through run(), so the default
+        # `params=None` set was asked nothing and returned the kink's 0.
+        self._raise_if_param_on_a_kink(target_params)
 
         # Split into chunks
         n_chunks = math.ceil(n_params / chunk_size)
@@ -8474,6 +8521,12 @@ class Simulator:
         self._raise_if_not_an_isolated_root(result, max_time, mask is not None)
         self._raise_if_the_step_decides(result)
         self._raise_if_the_side_decides(result)
+        if sensitivity_params and result.sens_dfdp_source != "automatic-differentiation":
+            # Issue #1332 — a dual-number ∂f/∂p takes a parameter on a kink
+            # from each side, and the solve refuses it above with both columns
+            # (issue #1330). A compiled one took sign(0) = 0 and the half at a
+            # tie, and a difference quotient their average: only this finds it.
+            self._raise_if_param_on_a_kink(list(sensitivity_params), conditions=True)
         return result
 
     @staticmethod
