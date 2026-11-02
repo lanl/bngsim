@@ -13,13 +13,9 @@ model time (issue #1022). So does a table function indexed by time
 attribute while its ``<Expression>`` reads a placeholder. NFsim runs one on
 elapsed time, BNG2.pl's simulate_nf semantics, and reads it again at each of
 its x values whether or not a reaction fires, which is exact for a step table
-(issue #892). A linear one changes between those reads, and NFsim holds the
-value it last read, after a reaction or at an x value: from a start where
-nothing can fire, 100 molecules leaving at a rate that ramps from 0 stayed at
-100 through t = 1, where the exact mean is 1.75. NFsim refuses a model whose
-rate laws read one, directly or through the functions they call, until it
-integrates such a rate (issue #1179). A table no rate law reads is read
-correctly at the output times and is let through.
+(issue #892). Where a linear one ramps between them, NFsim places each firing
+where the propensity integrated from the last one reaches an exponential draw
+(issue #1179), so neither kind is refused.
 
 A RuleMonkey session uses :func:`clock_readers` to refuse a segment whose labels
 are not the clock the model reads.
@@ -622,57 +618,3 @@ def _nfsim_clock(ctr: str) -> bool:
     lowercases the name and checks it before any model symbol of that name
     (tfun_is_time_name in third_party/nfsim/src/NFinput/parseFuncXML.cpp)."""
     return ctr.strip().lower() in _RULEMONKEY_CLOCK_COUNTERS
-
-
-def _nfsim_table_method(f: ET.Element) -> str:
-    """The interpolation NFsim gives a table function: its ``method``, trimmed
-    and lowercased, or with none, ``step`` when the expression has the legacy
-    ``__TFUN__VAL__`` placeholder (as BNG2.pl 2.9.3 writes ``TFUN(t, "file")``)
-    and ``linear`` otherwise (processTfunFunction in parseFuncXML.cpp)."""
-    method = (f.get("method") or "").strip().lower()
-    if method:
-        return method
-    expr = " ".join(e.text or "" for e in _children(f, "Expression"))
-    return "step" if "__TFUN__VAL__" in expr and "__TFUN_VAL__" not in expr else "linear"
-
-
-def nfsim_linear_time_tables(xml_path: str | Path) -> list[str]:
-    """The ids of the linear table functions indexed by time that a rule's rate
-    law in *xml_path* reads, directly or through the functions it calls, as
-    NFsim reads them: a function is a table only when its ``type`` is exactly
-    ``TFUN``. Empty when the file cannot be parsed."""
-    try:
-        root = ET.parse(str(xml_path)).getroot()
-    except (ET.ParseError, OSError):
-        return []
-    funcs = {f.get("id", ""): f for f in _functions(xml_path) or []}
-    used = _rate_law_reach(root, funcs)
-    return [
-        name
-        for name, f in funcs.items()
-        if name in used
-        and f.get("type") == "TFUN"
-        and _nfsim_clock(f.get("ctrName") or "")
-        and _nfsim_table_method(f) == "linear"
-    ]
-
-
-def refuse_nfsim_linear_time_tables(xml_path: str | Path) -> None:
-    """Raise :class:`ModelError` if a rate law in *xml_path* reads a linear table
-    function indexed by time, which NFsim holds between its x values (issue
-    #1179)."""
-    tables = nfsim_linear_time_tables(xml_path)
-    if not tables:
-        return
-    label, _ = _BACKENDS["nfsim"]
-    raise ModelError(
-        f"{label} cannot run a model whose rate laws read a linear table function "
-        "indexed by time: "
-        + ", ".join(f"'{n}'" for n in tables)
-        + ". NFsim reads such a table only at its x values and after each reaction, "
-        "and holds that value in between, so where little fires the run lags the "
-        "ramp with no error (issue #1179). Simulate it with method='rm', or with "
-        "method='ssa' on the generated network, which integrate a rate that changes "
-        'between events; or make the table a step (method=>"step") on a grid fine '
-        "enough for the ramp, which method='nf' reads exactly."
-    )

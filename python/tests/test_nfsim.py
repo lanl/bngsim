@@ -82,7 +82,9 @@ class TestNfsimMethod:
     @pytest.mark.parametrize(
         "fixture_name",
         [
+            "valid_file_linear_time.xml",
             "valid_file_step_time.xml",
+            "valid_inline_linear_time.xml",
             "valid_inline_step_time.xml",
             "valid_inline_parameter.xml",
             "valid_inline_observable.xml",
@@ -104,38 +106,23 @@ class TestNfsimMethod:
         assert result.n_observables == 3
         assert result.observable_names == ["X_unphos", "X_phos", "X_total"]
 
-    @pytest.mark.parametrize(
-        "fixture_name", ["valid_file_linear_time.xml", "valid_inline_linear_time.xml"]
-    )
-    def test_tfun_new_format_linear_time_fixtures_are_refused(
-        self,
-        dummy_model,
-        nfsim_tfun_new_format_dir: Path,
-        fixture_name: str,
-    ):
-        """A linear table indexed by time is held between its x values (#1179)."""
-        xml_path = nfsim_tfun_new_format_dir / fixture_name
-        with pytest.raises(bngsim.ModelError, match=r"linear table .*'tfun_rate'.*#1179"):
-            bngsim.Simulator(dummy_model, method="nfsim", xml_path=str(xml_path))
-
     def test_tfun_new_format_file_mode_reads_the_method(
         self,
         dummy_model,
         nfsim_tfun_new_format_dir: Path,
     ):
-        """The same file table is refused as a linear table and runs as a step."""
-        with pytest.raises(bngsim.ModelError, match="#1179"):
-            bngsim.Simulator(
+        """The same file table reads as a ramp when linear and holds when a step."""
+        times = [0.0, 0.5, 1.5, 2.5]
+        cols = {}
+        for method in ("linear", "step"):
+            sim = bngsim.Simulator(
                 dummy_model,
                 method="nfsim",
-                xml_path=str(nfsim_tfun_new_format_dir / "valid_file_linear_time.xml"),
+                xml_path=str(nfsim_tfun_new_format_dir / f"valid_file_{method}_time.xml"),
             )
-        step = bngsim.Simulator(
-            dummy_model,
-            method="nfsim",
-            xml_path=str(nfsim_tfun_new_format_dir / "valid_file_step_time.xml"),
-        )
-        assert step.run(t_span=(0, 2), n_points=11, seed=123).n_times == 11
+            cols[method] = list(sim.run(sample_times=times, seed=123).expressions["tfun_rate"])
+        assert cols["linear"] == pytest.approx([0.0, 5.0, 15.0, 20.0])
+        assert cols["step"] == pytest.approx([0.0, 0.0, 10.0, 20.0])
 
     def test_observables_nonnegative(self, dummy_model, nfsim_xml):
         """All observable values should be non-negative."""

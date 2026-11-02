@@ -1095,7 +1095,6 @@ class Simulator:
             from bngsim._bngsim_core import NfsimSimulator
             from bngsim._network_free_checks import (
                 refuse_nfsim_compartments,
-                refuse_nfsim_linear_time_tables,
                 refuse_nfsim_rate_laws,
                 refuse_nfsim_stale_local_functions,
                 refuse_time_dependent_rate_laws,
@@ -1106,7 +1105,6 @@ class Simulator:
             refuse_nfsim_rate_laws(xml_path)
             refuse_nfsim_stale_local_functions(xml_path)
             refuse_nfsim_compartments(xml_path)
-            refuse_nfsim_linear_time_tables(xml_path)
             self._sim = NfsimSimulator(xml_path)
             # The parameters the backend has, which each run hands it the model's
             # values of where the model has changed them (issue #1360).
