@@ -261,7 +261,7 @@ class TestScanStochastic:
         sim = bngsim.Simulator(m, method="ssa")
         results = sim.parameter_scan("kf", [0.001, 0.002], t_span=(0, 10), n_points=11, seed=123)
         assert len(results) == 2
-        assert results[0].seed != results[1].seed  # base_seed + i
+        assert results[0].seed != results[1].seed  # derived_seeds(123, 2)
 
     def test_ssa_scan_reproducible(self, reversible_net: Path):
         m = bngsim.Model.from_net(str(reversible_net))

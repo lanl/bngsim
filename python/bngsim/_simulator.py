@@ -70,7 +70,7 @@ from bngsim._exceptions import (
 from bngsim._extension_handle import raise_cannot_pickle, raise_cannot_shallow_copy
 from bngsim._model import _STEP_DECIDES_WHY, Model
 from bngsim._result import Result, _as_selector_list, _resolve_output_selector
-from bngsim._seed import _DEFAULT_EVENT_SEED, _resolve_seed
+from bngsim._seed import _DEFAULT_EVENT_SEED, _resolve_seed, derived_seeds
 from bngsim._ssa_validation import validate_for_ssa
 
 logger = logging.getLogger("bngsim")
@@ -5852,12 +5852,15 @@ class Simulator:
         params : sequence of dict[str, float]
             Parameter sets. Each dict maps parameter names to values.
         seed : int, optional
-            Base random seed for stochastic methods. Simulation *i*
-            uses ``base_seed + i``. When omitted (or ``None``),
-            ``base_seed`` is drawn fresh from system entropy on each
-            call so consecutive batches produce independent
-            trajectories. The actual per-sim seed is exposed via
-            ``Result.seed`` on each result.
+            Base random seed for stochastic methods. Simulation 0 uses
+            ``base_seed`` itself and simulation *i* > 0 a seed drawn from
+            numpy's ``SeedSequence(base_seed)``, so batches from nearby bases
+            share nothing (issue #1365); the seeds of one batch are distinct.
+            When omitted (or ``None``), ``base_seed`` is drawn fresh from
+            system entropy on each call so consecutive batches produce
+            independent trajectories. The actual per-sim seed is
+            exposed via ``Result.seed`` on each result; simulation 0's is the
+            base, so ``seed=results[0].seed`` reruns the whole batch.
         rtol : float, optional
             Relative tolerance for ODE solver.
         atol : float or array_like or ``"auto"``, optional
@@ -6064,6 +6067,11 @@ class Simulator:
         if self._method == "ode" and (self._sensitivity_params or self._sensitivity_ic):
             runner_of = self._runners_for_attachments(params, t_span)
 
+        # Each row's seed, derived from the base (issue #1365), before any row
+        # runs, so a thread draws the same seed for a row as the sequential path.
+        # An ODE row reads none.
+        row_seeds = derived_seeds(base_seed, n_sims) if self._method != "ode" else [0] * n_sims
+
         def _run_one(i: int) -> Result:
             """Run simulation i (thread-safe, GIL released)."""
             return runner_of.get(i, self)._run_single_batch(
@@ -6071,7 +6079,7 @@ class Simulator:
                 params[i],
                 t_span,
                 n_points,
-                base_seed,
+                row_seeds[i],
                 effective_rtol,
                 effective_atol_spec,
                 effective_max_steps,
@@ -6142,10 +6150,17 @@ class Simulator:
         :meth:`Model.reset` first to start each from the initial conditions.
         The model is left in the state it was in at the call.
 
-        Replicate *i* uses ``seed_base + i`` (``seed_base`` resolved once from
-        ``seed``, or from system entropy when ``seed is None``; each value is
-        exposed via the corresponding ``Result.seed``), matching the seed
-        schedule :meth:`run_batch` uses across parameter points.
+        Replicate 0 uses ``seed_base`` itself and replicate *i* > 0 a seed
+        drawn from numpy's ``SeedSequence(seed_base)`` (``seed_base`` resolved
+        once from ``seed``, or from system entropy when ``seed is None``; each
+        value is exposed via the corresponding ``Result.seed``, and :meth:`run`
+        from it repeats that replicate), matching the seed schedule
+        :meth:`run_batch` uses across parameter points. Replicate 0's seed is
+        the base, so ``seed=reps[0].seed`` reruns the whole ensemble. It was
+        ``seed_base + i``, so an ensemble from seed 1 was the one from seed 0
+        shifted by one replicate, 49 of 50 trajectories the same (issue #1365);
+        the derived seeds of nearby bases are unrelated, and the seeds of one
+        ensemble are distinct.
 
         Sequential execution (``num_processors`` ``None`` or ``1``) reuses this
         simulator directly. Parallel execution clones the model **once per worker
@@ -6210,6 +6225,10 @@ class Simulator:
             ts.n_points = n_points
             return ts
 
+        # Replicate i's seed, derived from the base (issue #1365); computed once,
+        # so the threaded path draws what the sequential one does.
+        rep_seeds = derived_seeds(base_seed, n_replicates)
+
         # Every replicate starts where the model is at this call, as run() and
         # parameter_scan start (issue #1362): reset() alone took each one back
         # to the seed, and a set_concentration made first was lost, A(0) = 0 for
@@ -6228,7 +6247,7 @@ class Simulator:
             model.reset()
             model.set_state(start_state)
             self._restore_carryover_state(start_carry, model._core)
-            used = base_seed + i
+            used = rep_seeds[i]
             # Translated as run() translates them, so `except SimulationError`
             # sees a refusal on the sequential path as it does on the threaded one.
             try:
@@ -6863,8 +6882,11 @@ class Simulator:
             ``value * NA * Vecf``) — the model-specific bookkeeping the primitive
             cannot infer on its own.
         seed : int, optional
-            Base seed for stochastic methods; point *i* uses ``seed_base + i``
-            (drawn fresh from entropy when ``None``). Ignored for ODE.
+            Base seed for stochastic methods; point 0 uses ``seed_base``
+            itself and point *i* > 0 a seed drawn from numpy's
+            ``SeedSequence(seed_base)``, as :meth:`run_batch` does (issue #1365;
+            drawn fresh from entropy when ``None``, and point 0's
+            ``Result.seed`` reruns the whole scan). Ignored for ODE.
         rtol, atol, max_steps, max_step, timeout, steady_state, steady_state_tol
             Per-simulation solver options, forwarded to :meth:`run`. ``atol``
             may be a per-species vector or ``"auto"`` (issue #196); it is
@@ -7019,6 +7041,8 @@ class Simulator:
             self._model._core.set_event_carry_state(invocation_sens[3])
 
         base_seed = _resolve_seed(seed) if self._method != "ode" else 0
+        # Point i's seed, derived from the base (issue #1365). An ODE point reads none.
+        scan_seeds = derived_seeds(base_seed, len(values)) if self._method != "ode" else []
 
         results: list[Result] = []
         try:
@@ -7053,7 +7077,7 @@ class Simulator:
                 # rate-constant change) is picked up; run() then seeds from the
                 # model's current live concentrations.
                 self._recreate_interactive_sim()
-                point_seed = None if self._method == "ode" else base_seed + i
+                point_seed = None if self._method == "ode" else scan_seeds[i]
                 try:
                     result = self.run(
                         t_span=t_span,
@@ -7165,7 +7189,7 @@ class Simulator:
         pset: dict[str, float],
         t_span: tuple[float, float],
         n_points: int,
-        base_seed: int,
+        row_seed: int,
         rtol: float,
         atol_spec: _ResolvedAtol,
         max_steps: int,
@@ -7291,11 +7315,9 @@ class Simulator:
                 # This row's parameters place its crossings, so resolve on the clone.
                 self._apply_ssa_breakpoints([sim], clone, t_span[0], t_span[1])
                 if self._method == "psa":
-                    core_result = sim.run_psa(
-                        times, base_seed + index, self._poplevel, timeout_seconds
-                    )
+                    core_result = sim.run_psa(times, row_seed, self._poplevel, timeout_seconds)
                 else:
-                    core_result = sim.run(times, base_seed + index, timeout_seconds)
+                    core_result = sim.run(times, row_seed, timeout_seconds)
             else:
                 raise ValueError(f"Unknown method: {self._method}")
         except _ConditionReadOtherwise as e:
@@ -7325,7 +7347,7 @@ class Simulator:
 
         result = Result(core_result)
         if self._method != "ode":
-            result._seed = base_seed + index
+            result._seed = row_seed
         if self._method in ("ssa", "psa"):
             # run() and run_replicates warn per result; a batch row rounded or
             # drove a count negative without a word (issue #718 review).
