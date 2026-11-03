@@ -514,6 +514,12 @@ struct NetworkModel::Impl {
     // success. Plain data: clone() copies it right after functional_jac.
     FunctionalJacobianDecline functional_jac_decline;
 
+    // The right-hand side and functions on dual numbers (issue #1330;
+    // model_dual.cpp). Built on first use and again when the expressions it
+    // compiled change; it holds addresses into this instance (its parameters,
+    // its tables), so clone() leaves it empty and the clone builds its own.
+    std::shared_ptr<NetworkModel::DualShadow> dual_shadow;
+
     Impl()
         : shared(std::make_shared<SharedModelData>()),
           evaluator(std::make_unique<ExprTkEvaluator>()) {}

@@ -79,9 +79,17 @@ def _clock_column(tmp_path, law: str, w: float, rtol: float) -> float:
 @pytest.mark.parametrize("name", list(LAWS))
 def test_the_clock_rate_column_is_the_if_spellings(tmp_path, name, w, rtol):
     """The same triangle written with if(), which was already on the analytic
-    path. At w = 0.01 and rtol 1e-6 the bends gave -5.97 beside its -1.04."""
+    path. At w = 0.01 and rtol 1e-6 the bends gave -5.97 beside its -1.04.
+
+    At rtol 1e-6 and w = 0.01 the column's own error is several percent, 2%
+    to 8% across output grids, and a step sequence moved by anything, kx by
+    1e-10 or a correction of 7e-6 at a corner (issue #1285), moves it by a
+    percent. Two spellings take different steps, so there they agree to a
+    tenth and no closer. They agreed to 1e-3 at four output points only while
+    they took the same 130 steps, both 7% off."""
     bend = _clock_column(tmp_path, LAWS[name], w, rtol)
-    assert bend == pytest.approx(_clock_column(tmp_path, IF_SPELLING, w, rtol), rel=2e-3)
+    rel = 0.1 if rtol > 1e-7 else 2e-3
+    assert bend == pytest.approx(_clock_column(tmp_path, IF_SPELLING, w, rtol), rel=rel)
 
 
 @pytest.mark.parametrize("w", [0.1, 1.0])

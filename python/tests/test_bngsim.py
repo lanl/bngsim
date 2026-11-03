@@ -588,6 +588,57 @@ class TestSaveConcentrations:
         with pytest.raises(ModelError):
             model.set_concentration("nonexistent", 42.0)
 
+    @pytest.mark.parametrize("name", ["$A()", "A()"])
+    def test_a_fixed_species_is_named_with_or_without_its_dollar(
+        self, fixed_species_net: Path, name: str
+    ):
+        """The .net's ``$A()`` is the model's ``A()``, and BNG2.pl's
+        setConcentration ignores the ``$``. ``"$A()"`` was "not found"."""
+        model = Model.from_net(fixed_species_net)
+        model.set_concentration(name, 7.0)
+        assert model.get_concentration(name) == 7.0
+        assert model.get_state()[0] == 7.0
+
+    def test_a_dollar_on_a_species_that_is_not_fixed_is_ignored_too(self, fixed_species_net: Path):
+        """As BNG2.pl's setConcentration("$B()") sets B()."""
+        model = Model.from_net(fixed_species_net)
+        model.set_concentration("$B()", 3.0)
+        assert model.get_concentration("B()") == 3.0
+
+    def test_a_dollar_name_is_written_under_the_model_name(self, fixed_species_net: Path):
+        """The write supersedes a declared IC row, which is keyed by the model's
+        name: a ``$`` name has to clear ``A()``'s, not look for ``$A()``'s."""
+        model = Model.from_net(fixed_species_net)
+        model.declare_ic_sensitivity({"A()": {"k1": 1.0}})
+        model.set_concentration("$A()", 5.0)
+        assert "A()" not in model._declared_ic_sens
+
+    @pytest.mark.parametrize("name", ["@CP::$Sink()", "@CP::Sink()"])
+    def test_a_fixed_species_in_a_compartment_takes_its_dollar_after_the_prefix(
+        self, data_dir: Path, name: str
+    ):
+        """cBNGL writes the `$` after ``@CP::`` (issue #41)."""
+        model = Model.from_net(data_dir / "sink_compart.net")
+        model.set_concentration(name, 4.0)
+        assert model.get_concentration(name) == 4.0
+        assert model.get_concentration("@CP::Sink()") == 4.0
+
+    def test_a_declared_ic_row_takes_the_dollar_name_too(self, fixed_species_net: Path):
+        """The docstring of set_concentration sends a caller here with the same
+        name, so it is read the same way."""
+        model = Model.from_net(fixed_species_net)
+        model.declare_ic_sensitivity({"$A()": {"k1": 1.0}})
+        assert model._declared_ic_sens == {"A()": {"k1": 1.0}}
+        with pytest.raises(ModelError, match=r"species '\$C\(\)' not found"):
+            model.declare_ic_sensitivity({"$C()": {"k1": 1.0}})
+
+    def test_a_dollar_name_for_no_species_is_still_refused(self, fixed_species_net: Path):
+        model = Model.from_net(fixed_species_net)
+        with pytest.raises(ModelError, match=r"Species '\$C\(\)' not found"):
+            model.set_concentration("$C()", 1.0)
+        with pytest.raises(ModelError, match=r"Species '\$C\(\)' not found"):
+            model.get_concentration("$C()")
+
     def test_save_concentrations_and_set(self, simple_decay_net: Path):
         """Combined: set_concentration + save_concentrations + reset."""
         model = Model.from_net(simple_decay_net)

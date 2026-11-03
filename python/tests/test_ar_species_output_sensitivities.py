@@ -290,7 +290,9 @@ class TestComputeAllSensitivitiesRedirect:
         # comes back empty.
         m = bngsim.Model.from_sbml_string(NONLINEAR)
         sim = bngsim.Simulator(m, method="ode", codegen=True)
-        assert sim._codegen_so_path  # plain-RHS codegen pinned at construction
+        # Plain-RHS codegen pinned at construction: cc's .so, or the C source
+        # the codegen JIT compiles in process (issue #1217).
+        assert sim._codegen_so_path or sim._codegen_c_source
         r = sim.compute_all_sensitivities(
             t_span=T_SPAN, n_points=N, params=["k", "kd"], chunk_size=1, **_RUN
         )

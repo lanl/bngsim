@@ -337,6 +337,30 @@ class NetworkModel {
     // A trigger that does not can change only when the state does.
     bool event_trigger_reads_time(int event_idx0) const;
 
+    // Does any reaction's rate read the clock (issue #961)? The same walk as
+    // reaction_rate_reads_time, without a rate accessor, which reads the running
+    // derivatives and not the time: at a steady state they are 0 whatever the
+    // time. A model whose rates read no clock has an f(y) = 0 to solve even
+    // where a function that only reports reads it. False without a walk where
+    // functions_use_time() is: no definition can reach the clock then.
+    bool rate_laws_read_clock() const;
+
+    // The 0-based indices of the functions whose value moves with the clock,
+    // through `time`, a time-indexed table, or a function or derived parameter
+    // that does (issue #961). A steady state has no value for one. Empty
+    // without a walk where functions_use_time() is.
+    std::vector<int> functions_reading_clock() const;
+
+    // Does the clock reach what a steady state solves for or reports as the
+    // state (issues #710, #961)? A rate that reads it (rate_laws_read_clock), a
+    // species an assignment rule reports through a function that reads it (a
+    // fixed species named for the function, as a time course copies it back),
+    // or a compartment size such a function writes. Each still moves where
+    // f(y) has settled, so find_steady_state refuses the model and a time
+    // course's early stop is held off. A function that only reports is none of
+    // these.
+    bool state_reads_clock() const;
+
     // ─── Rate-law switch conditions that read model state (issue #150) ───────
     //
     // The rate-law twin of the state-dependent event trigger issue #144 covers.
@@ -531,6 +555,56 @@ class NetworkModel {
     // columns were taken.
     std::vector<int> fill_dense_fd_jacobian_half_step(double t, const double *conc,
                                                       const double *floored, double *jac);
+
+    // ─── Exact derivatives by dual numbers (issue #1330) ─────────────────────
+    // The right-hand side and the functions, evaluated on dual numbers
+    // (bngsim/dual.hpp) through an evaluator that compiles the text the
+    // interpreter compiled (ExprTkDualEvaluator): their derivatives along a
+    // direction, to rounding and with no step, branch by branch. Where the
+    // closed form is declined, or not asked for (jacobian="fd"), these give the
+    // matrix it would have given, for any law the interpreter evaluates.
+    // model_dual.cpp.
+    //
+    // Each fill evaluates the right-hand side at (t, conc) as compute_derivs()
+    // would and refuses — returns false, writing nothing — where the duals'
+    // values are not its values (a part of the model the dual evaluation does
+    // not follow), or where the model has none (dual_unsupported_reason()).
+    // `tie` decides a state that sits where a law changes branch, and `*tied`
+    // (where given) is set where one was met; see bngsim/dual.hpp.
+    //
+    // Empty where the model has a dual evaluation; else what it lacks: a ring
+    // of functions that read each other, rateOf, an expression the dual
+    // evaluator does not compile.
+    std::string dual_unsupported_reason();
+
+    // Dense column-major n×n J (jac[j*n + i] = ∂f_i/∂x_j) at (t, conc). From a
+    // side (`tie` Above or Below), `*jumped` (where given) says whether a law's
+    // value jumps there, along some species, and `*jumped_columns` (where
+    // given, one per species) along which: such a column is that side's branch.
+    bool fill_dense_dual_jacobian(double t, const double *conc, double *jac,
+                                  DualTie tie = DualTie::Value, bool *tied = nullptr,
+                                  bool *jumped = nullptr,
+                                  std::vector<char> *jumped_columns = nullptr);
+
+    // The branches the laws take at (t, conc), in the order they take them
+    // (bngsim/dual.hpp, dual_note_branch), into `out`: two states whose records
+    // dual_branches_differ() are on different branches of some law. False
+    // where the model has no dual evaluation.
+    bool dual_branches(double t, const double *conc, std::vector<DualBranch> &out);
+
+    // ∂f/∂p for the parameter at `param_idx0`, into `out` (n_species): the
+    // total derivative, through the parameters derived from it, as a step of it
+    // held against its own expression gives (SteadyStateRhs::sync_params).
+    bool fill_dual_dfdp(double t, const double *conc, int param_idx0, double *out,
+                        DualTie tie = DualTie::Value, bool *tied = nullptr);
+
+    // Each function's derivative (n_functions, deferred ones included) along
+    // the species direction `dconc` (n_species; null for none) and the
+    // parameter at `param_idx0` (-1 for none), into `out`. A function whose
+    // value has no derivative there gets NaN.
+    bool dual_function_derivatives(double t, const double *conc, const double *dconc,
+                                   int param_idx0, double *out, DualTie tie = DualTie::Value,
+                                   bool *tied = nullptr);
 
     // (species_idx0, param_idx0) pairs for species whose initial
     // concentration is set directly by a parameter (.net "begin species"
@@ -938,9 +1012,18 @@ class NetworkModel {
   private:
     std::unique_ptr<Impl> impl_;
 
+    // The dual evaluation (model_dual.cpp): built on first use, and again when
+    // the model's expressions change; `seed_param` is a parameter index or -1.
+    struct DualShadow;
+    DualShadow *dual_shadow_();
+    bool dual_evaluate_(DualShadow &shadow, double t, const double *conc, const double *dconc,
+                        int seed_param, bool functions_only, bool with_deferred);
+    bool dual_matches_rhs_(DualShadow &shadow, double t, const double *conc);
+
     // What a rate or a trigger reads through the model's definitions (#719).
     struct RateDeps {
         bool time = false;    // the clock, directly or through a definition
+        bool clock = false;   // the same, without a rate accessor (issue #961)
         bool unknown = false; // something whose reads cannot be named
         std::set<int> species;
     };

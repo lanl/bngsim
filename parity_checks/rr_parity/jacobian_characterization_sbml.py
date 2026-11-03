@@ -18,8 +18,9 @@ provenance only. Every row records the ``run`` block it used and, when the gate'
 are ``Result.state``, the full integrator state, wider than ``Result.species`` on a model
 with an event-promoted parameter or compartment (issue #508); a sample whose RHS or
 Jacobian is non-finite is skipped and counted rather than voiding the model (issue #510);
-and the Jacobian is ``Model.jacobian``'s, differenced when the analytical one is
-incomplete, with ``jacobian_method`` saying which (issue #512).
+and the Jacobian is ``Model.jacobian``'s, exact by dual numbers when the analytical one
+is incomplete (issue #1330) and differenced where neither applies, with
+``jacobian_method`` saying which (issue #512).
 
 Environment: the bngsim editable checkout venv, e.g.
     ~/Code/bngsim/.venv/bin/python jacobian_characterization_sbml.py --limit 5

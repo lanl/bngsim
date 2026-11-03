@@ -29,6 +29,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import sys
 import time
 from pathlib import Path
 
@@ -36,6 +37,10 @@ import bngsim
 import bngsim._codegen as cg
 import pytest
 from bngsim import cache as cache_mod
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _codegen_backend import under_jit_no_cc_artifact  # noqa: E402
 
 pytest.importorskip("sympy")
 
@@ -188,6 +193,7 @@ class TestTheReasonSurvivesTheCache:
     **nothing logged**. Same model, same fallback, and the second says nothing.
     """
 
+    @under_jit_no_cc_artifact
     def test_the_second_construction_gives_the_same_reason(self, tmp_path, isolated_cache):
         first = _sim(tmp_path, UNDERIVABLE)
         assert first.codegen_cache_hit is False, "the first build must be the cold one"
@@ -216,6 +222,7 @@ class TestTheReasonSurvivesTheCache:
         assert len(cold) == 1
         assert warm == cold
 
+    @under_jit_no_cc_artifact
     def test_without_the_note_the_warm_build_has_no_opinion(self, tmp_path, isolated_cache):
         """The control for the two tests above: it is the note doing the work.
 
@@ -234,6 +241,7 @@ class TestTheReasonSurvivesTheCache:
         assert warm.has_analytic_sens_rhs is False
         assert warm.sens_rhs_decline_reason is None
 
+    @under_jit_no_cc_artifact
     def test_a_budget_decline_survives_it_too(self, tmp_path, isolated_cache, monkeypatch):
         """The other producer of a decline, and the one the issue singles out.
 
@@ -299,6 +307,7 @@ class TestTheModelPathAsWell:
             sensitivity_params=["k"],
         )
 
+    @under_jit_no_cc_artifact
     def test_the_warm_construction_still_says_why(self, isolated_cache, caplog):
         cold = self._sim()
         assert cold.codegen_cache_hit is False
@@ -326,6 +335,7 @@ class TestTheFallbackIsNotAlwaysCorrect:
     ``(f⁻−f⁺)·dt*/dθ``, so every column is wrong at and after the crossing.
     """
 
+    @under_jit_no_cc_artifact
     def test_the_reason_class_round_trips_through_the_note(self, tmp_path, isolated_cache):
         from bngsim._switch_sensitivity import UncompensatedCrossingReason
 

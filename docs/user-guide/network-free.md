@@ -24,6 +24,28 @@ rm = bngsim.Simulator(model, method="nf_exact", xml_path="model.xml")
 result = rm.run(t_span=(0, 100), n_points=101, seed=42)
 ```
 
+Each run uses the model's parameters. NFsim and RuleMonkey read the XML, so a
+run passes them every parameter set on the model with `Model.set_param` since it
+was loaded, before or after the `Simulator` was built. Parameters that depend on
+it, and seed amounts that read it, follow, except a derived parameter written on
+the model, which keeps the value written there as it does on the model. A model
+whose parameters are all back at their loaded values runs as the XML has it.
+`run_batch` does not run a network-free method: scan point by point with
+`Model.set_param` and `Simulator.run`.
+
+It starts from the model's species amounts the same way. A run passes the
+backend every species amount changed since the model was loaded, whether by
+`Model.set_concentration` or by an SSA or ODE run on the model (a network-free
+run leaves the model as it was). So a network-free run after an SSA run on the
+same model starts where that run ended, as a second SSA run would: call
+`Model.reset()` first, or give the SSA run `model.clone()`, to start both from
+the initial amounts. Where a run passes any parameter, it passes every seed
+species' amount too. Each amount is rounded half-up to a count, as every seed
+is. It takes precedence over the parameter that species' seed amount reads. The
+XML has to list the species as a seed species, under the name the `.net` gives
+it. If it doesn't, a nonzero amount is refused, because the backend would start
+that species at 0.
+
 ### NFsim connectivity option
 
 BNGsim's in-process NFsim wrapper defaults to `connectivity=False`.
@@ -160,17 +182,14 @@ NFsim runs a table function indexed by time, on **time elapsed since
 of the table's x values, whether or not a reaction has fired, and draws the next
 waiting time from there. That is exact for a step table (`method=>"step"`): a
 rate that is 0 at the start turns on at the step that turns it on (issue #892).
-A linear table changes between those reads, and NFsim would hold the value it
-last read, so where little fires the run would lag the ramp: with 100 `X(p~1)`
-leaving at a rate that rises from 0 at t = 0 to 10 at t = 1, none would have
-left by t = 1, where about 70 have left by t = 0.5. So `method="nf"` refuses a
-model whose rate laws read a linear table indexed by time, directly or through
-the functions they call, and names the tables (issue #1179). Use `method="rm"`,
-which integrates the ramp, or `method="ssa"` on the generated network. To stay
-on NFsim, make the table a step on a grid fine enough for the ramp, each step
-holding the ramp's value at its middle: steps of a tenth of the ramp matched the
-exact mean within sampling noise. A linear table that no rate law reads is
-not refused; NFsim reads it correctly at each output time.
+A linear table also changes between its x values. Where one ramps, NFsim places
+each firing where the propensity integrated since the last one reaches an
+exponential draw, reading the tables along the way, as `method="rm"` and
+`method="ssa"` do (issue #1179). Held at the value it last read, the run had
+lagged the ramp wherever little fired: with 100 `X(p~1)` leaving at a rate that
+rises from 0 at t = 0 to 10 at t = 1, none had left by t = 1, where about 70
+have left by t = 0.5. While a linear table ramps, each firing costs a few
+readings of every propensity instead of one.
 
 A model that reads neither `time()` nor a time-indexed table cannot tell the
 two clocks apart, and runs on elapsed time on both backends, which keeps event
@@ -332,3 +351,11 @@ RuleWorld/bionetgen#347 and RuleWorld/nfsim#105).
 **PyBNF integration**: When `bngsim` is installed, `method=>"nf"` / `"nfsim"`
 routes through the in-process NFsim backend, and `method=>"rm"` / `"rulemonkey"`
 / `"nf_exact"` routes through RuleMonkey when RuleMonkey support is compiled in.
+
+### What an NFsim run changes in your process
+
+NFsim is a library that bngsim runs inside your own process, so its effects on process-wide state are yours to know about (issue #1314):
+
+- **The working directory is not changed.** NFsim opens a TFUN's `file=` table by the path as written. bngsim makes each relative `file=` absolute against the directory of the XML you gave, in the copy NFsim reads, so a table beside the XML loads whatever your working directory is. A failed load leaves the directory as it was, and its error names the file.
+- **C++ `std::cout` and `std::cerr` are redirected during an NFsim call.** NFsim prints freely. bngsim captures that output, for the error messages it raises, and restores both streams when the call ends, however it ends. While the call runs, C++ output written to those streams from another thread in your process is captured too. C `stdio` (`printf`) is not redirected, and Python's `print` is not affected.
+- **One random-number stream is shared.** Which molecule a rule fires on, among those it could, is drawn from NFsim's process-wide generator, which every `initialize()` and `run()` reseeds; the rest of a run draws from its own session's. A session stepped over several `simulate()` calls therefore draws differently if another session is prepared between them. Where the molecules a rule can fire on are interchangeable this does not show, but in an aggregation model (BLBR, TLBR) it does. For same-seed reproducibility, run sessions one after another or in separate processes.

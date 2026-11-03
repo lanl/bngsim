@@ -242,15 +242,27 @@ class TestJacobian:
             fd = model._core.fill_dense_fd_jacobian(0.0, np.asarray(y))
             np.testing.assert_allclose(fd, analytical, rtol=1e-6, atol=1e-9)
 
-    def test_incomplete_analytical_jacobian_is_differenced_and_says_so(self, observable_table):
+    def test_incomplete_analytical_jacobian_is_exact_and_says_so(self, observable_table):
         """A table indexed by the state has no symbolic derivative here. The
         partial closed form is never returned as if it were whole: the matrix is
-        the difference quotient, and `source` reports it — the same label
-        SteadyStateResult.solver_jacobian_source uses for the same fallback."""
+        exact by dual numbers through the interpreter (issue #1330), the table's
+        slope where its index is, and `source` reports it — the same label
+        SteadyStateResult.sens_jacobian_source uses."""
+        assert not observable_table.prepare_analytical_jacobian()
+        J = observable_table.jacobian([1.0, 3.0])
+        assert J.source == "automatic-differentiation"
+        # dB/dt = F(B)·A = 2·B·A: ∂/∂A = F(3) = 6, ∂/∂B = 2·A = 2.
+        np.testing.assert_allclose(J, [[0.0, 0.0], [6.0, 2.0]], rtol=1e-14, atol=0)
+
+    def test_incomplete_analytical_jacobian_is_differenced_and_says_so(
+        self, observable_table, monkeypatch
+    ):
+        """With no dual evaluation the matrix is the difference quotient, and
+        `source` reports it."""
+        monkeypatch.setenv("BNGSIM_NO_DUAL_NUMBERS", "1")
         assert not observable_table.prepare_analytical_jacobian()
         J = observable_table.jacobian([1.0, 3.0])
         assert J.source == "finite-difference"
-        # dB/dt = F(B)·A = 2·B·A: ∂/∂A = F(3) = 6, ∂/∂B = 2·A = 2.
         np.testing.assert_allclose(J, [[0.0, 0.0], [6.0, 2.0]], rtol=1e-6, atol=1e-9)
 
     def test_time_indexed_table_is_analytical(self, table_function):
@@ -267,7 +279,7 @@ class TestJacobian:
         for model, y, t, source in (
             (reversible, [100.0, 50.0, 3.0], 0.0, "analytical"),
             (table_function, [1.0, 0.0], 7.0, "analytical"),
-            (observable_table, [1.0, 3.0], 0.0, "finite-difference"),
+            (observable_table, [1.0, 3.0], 0.0, "automatic-differentiation"),
         ):
             dense = model.jacobian(y, t=t)
             M = model.jacobian(y, t=t, sparse=True)

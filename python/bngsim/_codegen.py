@@ -13334,9 +13334,11 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
     ValueError
         When the model has no species or no reactions -- what an SBML file
         passed as ``net_path`` loads as (GH #101) -- as the old path did.
+    CodegenDeclinedError
+        When codegen declines the model. A ``RuntimeError``, as the old path
+        raised.
     RuntimeError
-        When the build fails or codegen declines the model, where the old path
-        raised too.
+        When the build fails, where the old path raised too.
     """
     import warnings
 
@@ -13366,7 +13368,11 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
         cause = last_codegen_error()
         if cause is not None:
             raise RuntimeError(f"codegen build failed for {net_path}: {cause}") from cause
-        raise RuntimeError(
-            f"codegen declined {net_path}: {last_codegen_decline() or 'no reason was recorded'}"
-        )
+        decline = last_codegen_decline()
+        if decline is not None:
+            from bngsim._exceptions import CodegenDeclinedError
+
+            # a statement about the model, typed as codegen=True's is (#1313)
+            raise CodegenDeclinedError(f"codegen declined {net_path}: {decline}")
+        raise RuntimeError(f"codegen declined {net_path}: no reason was recorded")
     return so_path

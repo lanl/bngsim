@@ -10,7 +10,9 @@
 #   2. diff it against the committed baseline, parity_checks/nightly/baselines/SUITE.json.
 #   3. diff it against the previous nightly's verdicts for SUITE (the last scheduled or
 #      manual run on main), when one can be downloaded. This catches a fix that
-#      regresses before anyone re-baselined it.
+#      regresses before anyone re-baselined it. A row the committed baseline
+#      re-recorded since that night's commit, which tonight matches, is reported there
+#      and not alerted: it was reviewed when it was recorded.
 #
 # Both Markdown reports go to $GITHUB_STEP_SUMMARY. Exit 1 on any alert or on a
 # missing report; a missing baseline is an alert unless ALLOW_MISSING_BASELINE is set
@@ -70,24 +72,32 @@ fi
 # The previous nightly's verdicts for this suite (scheduled or manual, on main), if any
 # is still downloadable. Pull-request runs are not nightlies and are never compared to.
 if [ -n "${GH_TOKEN:-}" ] && [ -n "${GITHUB_REPOSITORY:-}" ]; then
-  ids=$(gh run list -R "$GITHUB_REPOSITORY" --workflow nightly-parity.yml --branch main \
-    --limit 10 --json databaseId,status,event \
-    --jq '.[] | select(.status == "completed" and (.event == "schedule" or .event == "workflow_dispatch")) | .databaseId' \
+  runs=$(gh run list -R "$GITHUB_REPOSITORY" --workflow nightly-parity.yml --branch main \
+    --limit 10 --json databaseId,status,event,headSha \
+    --jq '.[] | select(.status == "completed" and (.event == "schedule" or .event == "workflow_dispatch")) | "\(.databaseId) \(.headSha)"' \
     2>/dev/null || true)
-  for id in $ids; do
+  while read -r id sha <&3; do
+    [ -n "$id" ] || continue
     [ "$id" = "${GITHUB_RUN_ID:-}" ] && continue
     prev=$(mktemp -d)
     if gh run download "$id" -R "$GITHUB_REPOSITORY" -n "nightly-$suite" -D "$prev" >/dev/null 2>&1 &&
       [ -f "$prev/verdicts.json" ]; then
+      # The committed baseline as of that night's commit (a shallow checkout fetches
+      # it); without it every change between the two nights is judged as before.
+      then_args=()
+      if git -C "$here" fetch -q --depth=1 origin "$sha" 2>/dev/null &&
+        git -C "$here" show "$sha:./baselines/$suite.json" >"$prev/baseline-then.json" 2>/dev/null; then
+        then_args=(--baseline-then "$prev/baseline-then.json" --baseline-now "$here/baselines/$suite.json")
+      fi
       python3 "$here/verdicts.py" diff \
         --baseline "$prev/verdicts.json" --fresh "$out/verdicts.json" \
         --label "vs previous night (run $id)" --flaky "$here/flaky.json" \
-        --timeout-flips-info --phases-may-differ \
+        --timeout-flips-info --phases-may-differ ${then_args[@]+"${then_args[@]}"} \
         --json-out "$out/diff-prev.json" --md-out "$out/diff-prev.md" "$@" >/dev/null || rc=1
       [ -f "$out/diff-prev.md" ] && cat "$out/diff-prev.md" >>"$summary"
       break
     fi
-  done
+  done 3<<<"$runs"
 fi
 
 exit $rc

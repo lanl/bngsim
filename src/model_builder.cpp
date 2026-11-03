@@ -1711,7 +1711,9 @@ ConservationLaws detect_conservation_laws(const std::vector<Reaction> &reactions
         }
     }
 
-    // Build independent species list (all non-dependent, non-fixed)
+    // Build independent species list: every species no law is solved for, a
+    // fixed one included (its consumers drop it where they need to, see
+    // ss_unknown_species)
     std::vector<bool> is_dep(ns, false);
     for (int d : cl.dependent)
         is_dep[d] = true;
