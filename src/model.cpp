@@ -2098,6 +2098,123 @@ void NetworkModel::expression_support(int expr_idx, std::vector<int> *species_ou
                                             std::make_pair(std::move(sp_out), std::move(pa_out)));
 }
 
+NetworkModel::ReadPlan NetworkModel::read_plan(const std::vector<int> &expr_ids) const {
+    ReadPlan plan;
+    if (!impl_->table_functions.empty()) {
+        plan.full = true;
+        return plan;
+    }
+    std::unordered_set<const double *> species_addr;
+    for (const Species &sp : impl_->species) {
+        species_addr.insert(&sp.concentration);
+    }
+    std::unordered_map<const double *, int> obs_of;
+    for (int i = 0; i < static_cast<int>(impl_->observables.size()); ++i) {
+        obs_of.emplace(&impl_->observables[static_cast<size_t>(i)].total, i);
+    }
+    std::unordered_map<const double *, int> param_of;
+    for (int i = 0; i < static_cast<int>(impl_->parameters.size()); ++i) {
+        param_of.emplace(&impl_->parameters[static_cast<size_t>(i)].value, i);
+    }
+    // param index -> the function group that writes it.
+    const auto &bindings = impl_->shared->var_param_bindings;
+    const auto &starts = impl_->shared->function_scc_starts;
+    std::unordered_map<int, int> group_of_param;
+    for (size_t g = 0; g + 1 < starts.size(); ++g) {
+        for (size_t bi = static_cast<size_t>(starts[g]); bi < static_cast<size_t>(starts[g + 1]);
+             ++bi) {
+            group_of_param.emplace(bindings[bi].second, static_cast<int>(g));
+        }
+    }
+
+    // A worklist, not recursion: a trigger read through a chain of a few
+    // thousand functions would take a stack frame per link.
+    std::set<int> observables;
+    std::set<int> groups;
+    std::unordered_set<int> visited;
+    std::vector<int> todo(expr_ids.begin(), expr_ids.end());
+    while (!todo.empty()) {
+        const int eid = todo.back();
+        todo.pop_back();
+        if (eid < 0 || !visited.insert(eid).second) {
+            continue;
+        }
+        // (The clock is time(), a function, so it is no address here.)
+        for (const double *addr : impl_->evaluator->referenced_variable_addresses(eid)) {
+            if (species_addr.count(addr) != 0) {
+                continue;
+            }
+            if (auto ob = obs_of.find(addr); ob != obs_of.end()) {
+                observables.insert(ob->second);
+                continue;
+            }
+            auto pa = param_of.find(addr);
+            if (pa == param_of.end()) {
+                plan.full = true; // a rateOf accessor, or something unmodelled
+                return plan;
+            }
+            auto fg = group_of_param.find(pa->second);
+            if (fg == group_of_param.end()) {
+                // A plain or derived parameter: evaluate_functions() does not
+                // write it, so it reads the same either way.
+                continue;
+            }
+            const int g = fg->second;
+            if (groups.insert(g).second) {
+                for (size_t bi = static_cast<size_t>(starts[static_cast<size_t>(g)]);
+                     bi < static_cast<size_t>(starts[static_cast<size_t>(g) + 1]); ++bi) {
+                    todo.push_back(
+                        impl_->functions[static_cast<size_t>(bindings[bi].first)].evaluator_id);
+                }
+            }
+        }
+    }
+    plan.observables.assign(observables.begin(), observables.end());
+    plan.groups.assign(groups.begin(), groups.end());
+    std::set<int> functions;
+    for (int g : plan.groups) {
+        for (size_t bi = static_cast<size_t>(starts[static_cast<size_t>(g)]);
+             bi < static_cast<size_t>(starts[static_cast<size_t>(g) + 1]); ++bi) {
+            functions.insert(bindings[bi].first);
+        }
+    }
+    plan.functions.assign(functions.begin(), functions.end());
+    return plan;
+}
+
+// Found once and kept: re-parsing every trigger and every function they reach
+// took 3.7 ms of a 7.7 ms two-row run of BIOMD0000000153 (21 events) when each
+// run found it again.
+const NetworkModel::ReadPlan &NetworkModel::trigger_read_plan() const {
+    if (!impl_->trigger_read_plan_memo) {
+        std::vector<int> ids;
+        ids.reserve(impl_->events.size());
+        for (const Event &ev : impl_->events) {
+            ids.push_back(ev.trigger_expr_idx);
+        }
+        impl_->trigger_read_plan_memo = read_plan(ids);
+    }
+    return *impl_->trigger_read_plan_memo;
+}
+
+void NetworkModel::evaluate_read_plan(double t, const double *conc, const ReadPlan &plan) {
+    impl_->current_time = t;
+    for (int oi : plan.observables) {
+        update_observable_(static_cast<size_t>(oi), conc);
+    }
+    if (plan.groups.empty()) {
+        return;
+    }
+    // As evaluate_functions(t) evaluates each group, in the same order.
+    auto &cache = impl_->function_value_cache;
+    if (cache.size() != impl_->functions.size()) {
+        cache.assign(impl_->functions.size(), 0.0);
+    }
+    for (int g : plan.groups) {
+        evaluate_function_group_(static_cast<size_t>(g), /*with_deferred=*/true);
+    }
+}
+
 // The end of the number starting at e[i]: digits and a point, then an exponent
 // only when one is well formed (`1e-5`), so the `e` of `2exp(x)` is a name.
 static size_t skip_number(const std::string &e, size_t i) {
@@ -4125,8 +4242,10 @@ bool NetworkModel::set_function_eval_expression(const std::string &name,
         }
         // The support walk follows a function-written parameter into its
         // function's body, so a new body can change the support of anything
-        // that reads it (issue #773).
+        // that reads it (issue #773). So does the triggers' read plan, which
+        // follows the same references (issue #1278).
         impl_->expression_support_cache.clear();
+        impl_->trigger_read_plan_memo.reset();
         return true;
     }
     return false;
@@ -4150,34 +4269,42 @@ std::vector<double> NetworkModel::function_values() const {
 // ─── RHS evaluation ──────────────────────────────────────────────────────────
 
 void NetworkModel::update_observables(const double *conc) {
-    const auto &species_list = impl_->species;
-    for (auto &obs : impl_->observables) {
-        double total = 0.0;
-        for (const auto &entry : obs.entries) {
-            // species_index is 1-based, conc array is 0-based
-            int idx0 = entry.species_index - 1;
-            if (idx0 >= 0 && idx0 < static_cast<int>(species_list.size())) {
-                // Amount-valued species (GH #75): a hOSU symbol denotes the
-                // species's *amount* (stored × volume_factor), not the stored
-                // concentration. The per-species observable IS the ExprTk
-                // symbol an SBML rate law / observable-expression resolves to
-                // (the loader registers a same-named observable that shadows
-                // the species variable), so restoring the amount here is the
-                // single read site that makes Functional laws and
-                // observable-sums read amounts — replacing the loader's
-                // per-emission `_wrap_hosu_amounts` / `_hosu_amount_factor`
-                // rewrites. Default false / volume_factor 1.0 ⇒ stored value
-                // unchanged (byte-identical for .net, V=1 SBML, hOSU=false).
-                double v = conc[idx0];
-                const auto &sp = species_list[idx0];
-                if (sp.amount_valued) {
-                    v *= sp.volume_factor;
-                }
-                total += entry.factor * v;
-            }
-        }
-        obs.total = total;
+    for (size_t oi = 0; oi < impl_->observables.size(); ++oi) {
+        update_observable_(oi, conc);
     }
+}
+
+// One observable's total, as update_observables() and evaluate_read_plan()
+// both take it (issue #1278): a read-ahead that summed it its own way would
+// read a trigger at a value the row's refresh never gives.
+void NetworkModel::update_observable_(size_t oi, const double *conc) {
+    const auto &species_list = impl_->species;
+    auto &obs = impl_->observables[oi];
+    double total = 0.0;
+    for (const auto &entry : obs.entries) {
+        // species_index is 1-based, conc array is 0-based
+        int idx0 = entry.species_index - 1;
+        if (idx0 >= 0 && idx0 < static_cast<int>(species_list.size())) {
+            // Amount-valued species (GH #75): a hOSU symbol denotes the
+            // species's *amount* (stored × volume_factor), not the stored
+            // concentration. The per-species observable IS the ExprTk
+            // symbol an SBML rate law / observable-expression resolves to
+            // (the loader registers a same-named observable that shadows
+            // the species variable), so restoring the amount here is the
+            // single read site that makes Functional laws and
+            // observable-sums read amounts — replacing the loader's
+            // per-emission `_wrap_hosu_amounts` / `_hosu_amount_factor`
+            // rewrites. Default false / volume_factor 1.0 ⇒ stored value
+            // unchanged (byte-identical for .net, V=1 SBML, hOSU=false).
+            double v = conc[idx0];
+            const auto &sp = species_list[idx0];
+            if (sp.amount_valued) {
+                v *= sp.volume_factor;
+            }
+            total += entry.factor * v;
+        }
+    }
+    obs.total = total;
 }
 
 void NetworkModel::evaluate_functions(double t, bool with_deferred) {
@@ -4199,25 +4326,27 @@ void NetworkModel::evaluate_functions(double t, bool with_deferred) {
     // (GH #76). A group of one — every function in every corpus model but one —
     // is a single evaluation, so this is the same walk it has always been.
     const auto &starts = impl_->shared->function_scc_starts;
-    const auto &bindings = impl_->shared->var_param_bindings;
-    const auto eval_one = [&](size_t bi) {
-        const auto &[func_idx, param_idx] = bindings[bi];
-        const auto &func = impl_->functions[func_idx];
-        if (func.evaluator_id < 0 || (func.deferred && !with_deferred))
-            return;
-        const double val = impl_->evaluator->evaluate(func.evaluator_id);
-        impl_->parameters[param_idx].value = val;
-        cache[func_idx] = val;
-    };
+    for (size_t g = 0; g + 1 < starts.size(); ++g)
+        evaluate_function_group_(g, with_deferred);
+}
 
-    for (size_t g = 0; g + 1 < starts.size(); ++g) {
-        const size_t lo = static_cast<size_t>(starts[g]), hi = static_cast<size_t>(starts[g + 1]);
-        if (hi - lo == 1) {
-            eval_one(lo);
-            continue;
-        }
+// Function group `g`, as evaluate_functions() and evaluate_read_plan() both
+// evaluate it (issue #1278). The function value cache is already sized.
+void NetworkModel::evaluate_function_group_(size_t g, bool with_deferred) {
+    const auto &starts = impl_->shared->function_scc_starts;
+    const auto &bindings = impl_->shared->var_param_bindings;
+    const size_t lo = static_cast<size_t>(starts[g]), hi = static_cast<size_t>(starts[g + 1]);
+    if (hi - lo != 1) {
         solve_function_cycle(lo, hi);
+        return;
     }
+    const auto &[func_idx, param_idx] = bindings[lo];
+    const auto &func = impl_->functions[func_idx];
+    if (func.evaluator_id < 0 || (func.deferred && !with_deferred))
+        return;
+    const double val = impl_->evaluator->evaluate(func.evaluator_id);
+    impl_->parameters[param_idx].value = val;
+    impl_->function_value_cache[func_idx] = val;
 }
 
 void NetworkModel::evaluate_deferred_functions() {
@@ -5241,6 +5370,9 @@ void NetworkModel::keep_table_function_(std::unique_ptr<TableFunction> tf, bool 
     if (backs_a_function && is_time_index(tf->index_name()))
         impl_->functions_use_time = true;
     impl_->table_functions.push_back(std::move(tf));
+    // A table reads its index out of sight of the references, so the triggers'
+    // read plan, found without one, no longer holds (issue #1278).
+    impl_->trigger_read_plan_memo.reset();
 }
 
 void NetworkModel::add_table_function(const std::string &name, const std::string &filepath,
