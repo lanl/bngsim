@@ -84,6 +84,51 @@ model, spec = bngsim.Model.from_bngl("egfr.bngl", protocol=True)
 
 See [Interchange](interchange.md) for what a `ProtocolSpec` carries.
 
+### Running the file's own experiment
+
+`bngsim.run_bngl` loads a file and runs its actions in order, as BNG2.pl runs
+the file. `bngsim.run_protocol(model, spec)` runs a spec you already hold on a
+copy of the model:
+
+```python
+out = bngsim.run_bngl("egfr_path.bngl")   # equilibrate without EGF, then add it
+out[1].result.observables["Sos_act"]      # the 120 s stimulation, as BNG2.pl runs it
+out.model                                 # the model in the state the file leaves it
+```
+
+There is one entry per `simulate`, `parameter_scan` or `bifurcate`. You can
+index the result by position, or by a run's `suffix`. A scan's points are in
+`scan_results`, one `Result` per value. A bifurcation's sweep back down is in
+`backward_results`. The steps follow BNG2.pl:
+
+- **State between runs.** Each run starts from the state the last one left.
+  `continue=>1` also starts at the time it left; any other run starts at its
+  `t_start`, 0 by default.
+- **Values.** A species whose amount is a parameter or an expression follows it
+  until a run makes it a number. `setParameter`, `setConcentration` and
+  `addConcentration` change the live model.
+- **Saved states.** `saveConcentrations`/`resetConcentrations` and
+  `saveParameters`/`resetParameters` keep one saved state per label.
+- **Scans.** `parameter_scan` resets to its starting state before each point when
+  `reset_conc` is on (the default), and again at the end. The scanned parameter
+  keeps its last value. `bifurcate` never resets.
+- **Tolerances.** ODE runs use `run_network`'s tolerances, 1e-8 absolute and
+  relative, unless the action or the call gives others. `seed=` seeds the
+  stochastic runs.
+
+What bngsim cannot run as written is refused before anything runs:
+
+- a network-free (NFsim) step, which needs a live NFsim session (issue #1482);
+- PLA, which bngsim does not have;
+- a run argument such as `stop_if` or `max_sim_steps`;
+- an action that changes results but has no step to run, such as `setVolume`;
+- an argument the protocol holds only approximately.
+
+`allow_lossy=True` runs the last two as nearly as the protocol holds them, with
+a warning. Two things BNG2.pl refuses run here instead: a run that names no
+`method` runs as ODE, and a `steady_state=>1` run that does not reach a steady
+state is warned about while the protocol goes on, where BNG2.pl stops it.
+
 ### Generated networks are cached
 
 Network generation is the expensive step, so the emitted `.net` is kept under

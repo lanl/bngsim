@@ -295,27 +295,50 @@ def _value(model, text: str) -> float | None:
         return None
 
 
-def _molecule_key(pattern: str) -> tuple[str, tuple[str, ...]] | None:
-    """A one-molecule pattern's name and sorted components: the network names a
-    species with its components in canonical order, ``LPS(CD14,LPS,MD2,TLR4)``
-    for an action's ``LPS(MD2,TLR4,CD14,LPS)``."""
-    m = re.fullmatch(r"\s*([A-Za-z_]\w*)\s*(?:\((.*)\))?\s*", pattern)
-    if m is None or "." in pattern:
+def _network_spelling(pattern: str) -> str:
+    """A one-compartment species pattern as the network spells it. BNGL actions
+    write ``@c:A()`` or ``A()@c``; BNG2.pl's network, and the names a model loads
+    from it, write ``@c::A()``."""
+    m = re.fullmatch(r"\s*@(\w+)::?(.*)", pattern, re.S)
+    if m is not None:
+        return f"@{m.group(1)}::{m.group(2).strip()}"
+    # A()@c, or a complex whose molecules all carry the one suffix: A(b!1)@c.B(a!1)@c
+    parts = [re.fullmatch(r"\s*([^@]*?)\s*@(\w+)\s*", part, re.S) for part in pattern.split(".")]
+    if all(parts) and len({m.group(2) for m in parts if m}) == 1:
+        compartment = parts[0].group(2) if parts[0] else ""
+        return f"@{compartment}::" + ".".join(m.group(1) for m in parts if m)
+    return pattern.strip()
+
+
+def _molecule_key(pattern: str) -> tuple[str | None, str, tuple[str, ...]] | None:
+    """A one-molecule pattern's compartment, name and sorted components: the
+    network names a species with its components in canonical order,
+    ``LPS(CD14,LPS,MD2,TLR4)`` for an action's ``LPS(MD2,TLR4,CD14,LPS)``. A
+    fixed species' ``$`` is not part of it."""
+    text = _network_spelling(pattern)
+    compartment = None
+    m = re.fullmatch(r"@(\w+)::(.*)", text, re.S)
+    if m is not None:
+        compartment, text = m.group(1), m.group(2)
+    m = re.fullmatch(r"\s*\$?\s*([A-Za-z_]\w*)\s*(?:\((.*)\))?\s*", text, re.S)
+    if m is None or "." in text:
         return None
     parts = [c.strip() for c in (m.group(2) or "").split(",") if c.strip()]
-    return m.group(1), tuple(sorted(parts))
+    return compartment, m.group(1), tuple(sorted(parts))
 
 
 def _species_name(model, pattern: str) -> str | None:
     """The network's name for the species *pattern* names, or ``None`` if the
-    network has no such species: the pattern itself, or without a fixed
-    species' ``$``, as :meth:`~bngsim.Model.get_concentration` reads it, or a
-    one-molecule species with its components in another order."""
-    try:
-        return model._species_call(pattern, model._core.get_concentration)[0]
-    except ModelError:
-        pass
-    key = _molecule_key(pattern.lstrip("$"))
+    network has no such species: the pattern itself, or spelled as the network
+    spells a compartment (``@c::A()`` for ``@c:A()`` or ``A()@c``), either one
+    with or without a fixed species' ``$`` as :meth:`~bngsim.Model.get_concentration`
+    reads it, or a one-molecule species with its components in another order."""
+    for candidate in dict.fromkeys((pattern, _network_spelling(pattern))):
+        try:
+            return model._species_call(candidate, model._core.get_concentration)[0]
+        except ModelError:
+            pass
+    key = _molecule_key(pattern)
     if key is not None:
         for name in model.species_names:
             if _molecule_key(name) == key:

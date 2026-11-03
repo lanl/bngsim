@@ -829,7 +829,9 @@ class Model:
         ``generate_network`` before its first run stops at that run, the state
         the run starts from. Pass
         ``protocol=True`` to get the actions back as a
-        :class:`~bngsim.convert.ProtocolSpec` rather than lose them.
+        :class:`~bngsim.convert.ProtocolSpec` rather than lose them, and
+        :func:`bngsim.run_protocol` to run them as BNG2.pl does
+        (:func:`bngsim.run_bngl` loads and runs in one call).
 
         A :class:`~bngsim.ConversionWarning` names the dropped actions that set
         a parameter or a concentration the first ``simulate``,
@@ -3329,7 +3331,7 @@ def _warn_dropped_state_changes(model: Model, path: str | Path) -> None:
         f"{Path(path).name}: its first run starts after {shown}, which from_bngl "
         "does not apply (actions after generate_network are the author's experiment). "
         "The model is loaded without them. Pass protocol=True to get the actions as a "
-        "ProtocolSpec.",
+        "ProtocolSpec, or run the file with bngsim.run_bngl.",
         ConversionWarning,
         stacklevel=_stacklevel_outside_bngsim(),
     )

@@ -58,6 +58,7 @@ from bngsim._model import Model
 from bngsim._named_array import NamedArray
 from bngsim._net_reader import build_model_from_parsed, parse_net_file
 from bngsim._nfsim_session import NfsimSession
+from bngsim._protocol_run import ProtocolResult, ProtocolRun, run_bngl, run_protocol
 from bngsim._result import IdentifiabilityReport, Result
 from bngsim._rounding import round_half_up
 from bngsim._rulemonkey_session import RuleMonkeySession
@@ -383,6 +384,11 @@ __all__ = [
     "get_compartment_volume",
     "set_compartment_volume",
     "Result",
+    # Running a BNGL file's actions (issue #1366)
+    "run_bngl",
+    "run_protocol",
+    "ProtocolResult",
+    "ProtocolRun",
     "IdentifiabilityReport",
     "EvaluationSpec",
     "SteadyStateResult",

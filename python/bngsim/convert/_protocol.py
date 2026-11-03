@@ -19,9 +19,10 @@ This module is the shippable bridge:
 of four tiers, decided by its verb:
 
 * **execute** — the simulation-experiment actions (``simulate*``,
-  ``parameter_scan``, ``setParameter``, ``setConcentration``,
-  ``resetConcentrations``, ``saveConcentrations``) are recovered into the
-  :class:`ProtocolSpec` ``steps``.
+  ``parameter_scan``, ``bifurcate``, ``setParameter``, ``setConcentration``,
+  ``addConcentration``, and the ``save``/``reset`` of concentrations and of
+  parameters) are recovered into the :class:`ProtocolSpec` ``steps``, which
+  :func:`bngsim.run_protocol` runs (issue #1366).
 * **drop** — pure build/IO directives (``generate_network``, ``writeSBML``,
   ``writeBNGL``, ``setOutputDir``, ``readFile``, …) are tooling, not protocol:
   they materialize the network, write a file, name the model, or choose where
@@ -30,8 +31,8 @@ of four tiers, decided by its verb:
   in either mode.
 * **flag (lossy)** — actions BNGsim does not execute but whose omission *would
   change the results* (``setVolume``, ``substanceUnits``, a result-changing
-  ``setOption`` such as ``NumberPerQuantityUnit``) or that swap the model
-  entirely (``readModel``/``readNetwork``/``readSBML``). Dropping these silently
+  ``setOption`` such as ``NumberPerQuantityUnit``, ``simulate_protocol``) or that
+  swap the model entirely (``readModel``/``readNetwork``/``readSBML``). Dropping these silently
   would be a faithfulness lie, so they are recorded in
   :attr:`ProtocolSpec.lossy`; ``strict`` **refuses** (raises
   :class:`ConversionError`) and best-effort warns.
@@ -69,20 +70,34 @@ __all__ = [
 # ─── Action vocabulary ──────────────────────────────────────────────────────
 
 # Simulation-experiment verbs → (kind, default method). ``parameter_scan`` is a
-# sweep; the rest are single runs whose method the hash may override.
+# sweep and ``bifurcate`` two (up, then back down, each point from the last);
+# the rest are single runs whose method the hash may override.
 _SIMULATE_VERBS = {
     "simulate": ("simulate", None),
     "simulate_ode": ("simulate", "ode"),
     "simulate_ssa": ("simulate", "ssa"),
     "simulate_nf": ("simulate", "nf"),
+    "simulate_psa": ("simulate", "psa"),
+    "simulate_pla": ("simulate", "pla"),
     "parameter_scan": ("scan", None),
+    "bifurcate": ("bifurcate", None),
 }
 _STATE_VERBS = {
     "setparameter": "set_parameter",
     "setconcentration": "set_concentration",
+    "addconcentration": "add_concentration",
     "resetconcentrations": "reset_concentrations",
     "saveconcentrations": "save_concentrations",
+    "resetparameters": "reset_parameters",
+    "saveparameters": "save_parameters",
 }
+# The kinds that carry a saved-state label rather than a target and value.
+_LABEL_KINDS = frozenset(
+    {"reset_concentrations", "save_concentrations", "reset_parameters", "save_parameters"}
+)
+# Where BNG2.pl's network exists: its first generation call or, before one, its
+# first run, which generates the network itself (``BNGAction.pm``, ``simulate``).
+_GENERATE_VERBS = frozenset({"generate_network", "generate_hybrid_model"})
 # DROP — pure build/IO directives: they materialize the network, write a file,
 # name the model, or choose where output goes. None alters the trajectory a
 # consumer would compute, so each is recorded in ``dropped`` and otherwise
@@ -102,13 +117,26 @@ _BUILD_VERBS = frozenset(
         "writemdl",
         "writenetwork",
         "writebngl",
+        # BNG2.pl's other output-only writers (Perl2/BNGModel.pm, issue #1366).
+        "writecppfile",
+        "writecpyfile",
+        "writefile",
+        "writefunctions",
+        "writelatex",
+        "writelatexfile",
+        "writemfile_all",
+        "writemfile_parametersobservables",
+        "writemfile_querynames",
+        "writesbmlmulti",
+        "writesbmlparameters",
+        "writesbmlreactions",
+        "writessc",
+        "writessccfg",
         "savemodel",
         "setmodelname",
         "setoutputdir",
         "readfile",
         "version",
-        "saveparameters",
-        "resetparameters",
         "visualize",
     }
 )
@@ -140,6 +168,10 @@ _LOSSY_VERBS = {
         "readSBML loads a different model mid-protocol, which a single "
         "ProtocolSpec cannot represent"
     ),
+    "simulate_protocol": (
+        "simulate_protocol runs the model's begin protocol block, which the "
+        "protocol does not carry"
+    ),
 }
 
 # ``setOption`` option names that are purely cosmetic (no effect on dynamics or
@@ -158,14 +190,17 @@ _COSMETIC_SETOPTIONS = frozenset({"specieslabel"})
 class StateChange:
     """A model-state action between experiments (the BNG ``set*`` family)."""
 
-    # one of: set_parameter | set_concentration | reset_concentrations | save_concentrations
+    # one of: set_parameter | set_concentration | add_concentration
+    #       | save_concentrations | reset_concentrations
+    #       | save_parameters | reset_parameters
     kind: str
     target: str | None = None  # parameter/species name (None for reset/save)
     value: float | None = None  # numeric value, when the action carries one
     value_expr: str | None = None  # raw string value when it is not a plain number
     # BNG named saved-state label (issue #11): the positional argument of
-    # saveConcentrations("name") / resetConcentrations("name"). None for the
-    # default (unlabeled) slot. Only meaningful for the reset/save kinds.
+    # saveConcentrations("name") / resetConcentrations("name") and of their
+    # saveParameters / resetParameters twins. None for the default (unlabeled)
+    # slot, which BNG2.pl calls "DEFAULT". Only meaningful for the reset/save kinds.
     label: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -191,10 +226,12 @@ class StateChange:
 
 @dataclass(frozen=True)
 class Experiment:
-    """A single simulation run (``simulate``) or a sweep (``parameter_scan``)."""
+    """A single simulation run (``simulate``), a sweep (``parameter_scan``), or a
+    bifurcation sweep (``bifurcate``: the sweep up, then back down, each point
+    continuing from the one before)."""
 
-    kind: str  # "simulate" | "scan"
-    method: str  # "ode" | "ssa" | "nf"
+    kind: str  # "simulate" | "scan" | "bifurcate"
+    method: str  # "ode" | "ssa" | "psa" | "pla" | "nf"
     t_span: tuple[float, float]  # (t_start, t_end)
     n_points: int  # output points incl. t_start  (= n_steps + 1)
     # scan-only fields:
@@ -206,10 +243,27 @@ class Experiment:
     reset_between: bool = True  # BNG ``reset_conc`` for a scan
     label: str | None = None  # BNG ``suffix``, a per-experiment output tag
     extra: Mapping[str, Any] = field(default_factory=dict)  # other hash keys, for provenance
+    # The scan's values, in the order BNG2.pl runs them, when ``par_scan_vals``
+    # gave them; ``scan_min``/``scan_max``/``scan_points``/``scan_log`` then hold
+    # the nearest range. None for a scan given as a range, which BNG2.pl expands
+    # itself (issue #1366).
+    scan_values: tuple[float, ...] | None = None
+    # The output times BNG2.pl writes for ``sample_times`` (``t_start`` first),
+    # when they are not the even grid ``(t_span, n_points)`` holds (issue #1366).
+    sample_times: tuple[float, ...] | None = None
+    # Why this run is not exactly the action as written, if it is not: each an
+    # argument the protocol holds only approximately (issue #1364). A run that
+    # starts at a model time an earlier run leaves unknown is not one of them:
+    # ``extra["continue"]`` says where it starts, and a replay knows that time.
+    approximations: tuple[str, ...] = ()
 
     @property
     def is_scan(self) -> bool:
-        return self.kind == "scan"
+        return self.kind in ("scan", "bifurcate")
+
+    @property
+    def is_bifurcation(self) -> bool:
+        return self.kind == "bifurcate"
 
     @property
     def is_deterministic(self) -> bool:
@@ -230,10 +284,15 @@ class Experiment:
             "reset_between": self.reset_between,
             "label": self.label,
             "extra": dict(self.extra),
+            "scan_values": None if self.scan_values is None else list(self.scan_values),
+            "sample_times": None if self.sample_times is None else list(self.sample_times),
+            "approximations": list(self.approximations),
         }
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> Experiment:
+        scan_values = d.get("scan_values")
+        sample_times = d.get("sample_times")
         return cls(
             kind=d["kind"],
             method=d["method"],
@@ -247,6 +306,9 @@ class Experiment:
             reset_between=bool(d.get("reset_between", True)),
             label=d.get("label"),
             extra=dict(d.get("extra", {})),
+            scan_values=None if scan_values is None else tuple(float(v) for v in scan_values),
+            sample_times=None if sample_times is None else tuple(float(t) for t in sample_times),
+            approximations=tuple(d.get("approximations", ())),
         )
 
 
@@ -276,6 +338,17 @@ class ProtocolSpec:
     so a model that is finite only under its cap stays finite (lanl/PyBNF #485).
     ``None`` when the source had no ``generate_network`` (e.g. a protocol composed
     from SBML/SED-ML events), in which case the bare default is used.
+
+    ``generation_step`` is where in ``steps`` the source's network was generated:
+    at its first ``generate_network`` or, before one, at its first run, where
+    BNG2.pl generates it. ``steps[:generation_step]`` came before, so a network
+    :meth:`~bngsim.Model.from_bngl` loads already holds what they set, and a
+    replay starts at ``steps[generation_step]`` (issue #1366). ``None`` for a
+    protocol with no source file to have generated anything from (SED-ML, SBML
+    events), whose steps all run on the model they are given.
+    ``lossy_before_generation`` and ``dropped_before_generation`` count the
+    leading ``lossy`` and ``dropped`` entries that came before that point: the
+    network holds what those did, as it holds what the steps before it set.
     """
 
     steps: tuple[object, ...] = ()  # tuple[Experiment | StateChange, ...]
@@ -283,6 +356,9 @@ class ProtocolSpec:
     dropped: tuple[str, ...] = ()
     lossy: tuple[str, ...] = ()
     network_gen: str | None = None
+    generation_step: int | None = None
+    lossy_before_generation: int = 0
+    dropped_before_generation: int = 0
 
     @property
     def experiments(self) -> list[Experiment]:
@@ -303,19 +379,31 @@ class ProtocolSpec:
         return exps[0] if exps else None
 
     def state_changes_before(self, experiment: Experiment) -> list[StateChange]:
-        """The :class:`StateChange`\\ s that precede ``experiment`` in order, since
-        the last ``resetConcentrations`` — the accumulated operating point at
-        which that experiment runs (what the L3 gate must apply to both sides)."""
-        acc: list[StateChange] = []
-        for s in self.steps:
+        """The :class:`StateChange`\\ s that precede ``experiment`` in order: the
+        ``setConcentration``\\ s since the last ``resetConcentrations`` and the
+        ``setParameter``\\ s since the last ``resetParameters``, as absolute
+        overrides of the operating point that experiment runs at. A reset of one
+        kind leaves the other's changes standing, as BNG2.pl does; an
+        ``addConcentration`` is relative and is not one of them. Of two sets of
+        one target, the later is the one that holds."""
+        conc: dict[str | None, tuple[int, StateChange]] = {}
+        params: dict[str | None, tuple[int, StateChange]] = {}
+        for i, s in enumerate(self.steps):
             if s is experiment:
                 break
             if isinstance(s, StateChange):
                 if s.kind == "reset_concentrations":
-                    acc = []
-                elif s.kind in ("set_parameter", "set_concentration"):
-                    acc.append(s)
-        return acc
+                    conc = {}
+                elif s.kind == "reset_parameters":
+                    params = {}
+                elif s.kind == "set_concentration":
+                    conc.pop(s.target, None)
+                    conc[s.target] = (i, s)
+                elif s.kind == "set_parameter":
+                    params.pop(s.target, None)
+                    params[s.target] = (i, s)
+        held = sorted([*conc.values(), *params.values()], key=lambda pair: pair[0])
+        return [s for _, s in held]
 
     # ── serialization ──────────────────────────────────────────────────
     def to_dict(self) -> dict[str, Any]:
@@ -327,6 +415,9 @@ class ProtocolSpec:
             "dropped": list(self.dropped),
             "lossy": list(self.lossy),
             "network_gen": self.network_gen,
+            "generation_step": self.generation_step,
+            "lossy_before_generation": self.lossy_before_generation,
+            "dropped_before_generation": self.dropped_before_generation,
             "steps": out,
         }
 
@@ -344,6 +435,9 @@ class ProtocolSpec:
             dropped=tuple(d.get("dropped", [])),
             lossy=tuple(d.get("lossy", [])),
             network_gen=d.get("network_gen"),
+            generation_step=d.get("generation_step"),
+            lossy_before_generation=int(d.get("lossy_before_generation", 0)),
+            dropped_before_generation=int(d.get("dropped_before_generation", 0)),
         )
 
     def to_json(self, *, indent: int | None = None) -> str:
@@ -402,6 +496,9 @@ def combine_protocols(
     dropped: list[str] = []
     lossy: list[str] = []
     network_gen: str | None = None
+    # Only the first spec's steps can come before a network is generated: the
+    # rest run on the network it leaves, after the reset that separates them.
+    generation_step = non_empty[0].generation_step
     for spec in non_empty:
         if (
             reset_between
@@ -427,6 +524,10 @@ def combine_protocols(
         dropped=tuple(dropped),
         lossy=tuple(lossy),
         network_gen=network_gen,
+        generation_step=generation_step,
+        # The first spec's entries lead the merged lists.
+        lossy_before_generation=non_empty[0].lossy_before_generation,
+        dropped_before_generation=non_empty[0].dropped_before_generation,
     )
 
 
@@ -437,8 +538,9 @@ def parse_bngl_protocol(source: str | Path, *, strict: bool = True) -> ProtocolS
     """Parse a ``.bngl``'s action block into a :class:`ProtocolSpec`.
 
     Recovers the ordered simulation-experiment actions (``simulate*``,
-    ``parameter_scan``, ``set*``, ``resetConcentrations``,
-    ``saveConcentrations``). Other actions are dispositioned per the four-tier
+    ``parameter_scan``, ``bifurcate``, ``setParameter``, ``setConcentration``,
+    ``addConcentration``, and the ``save``/``reset`` of concentrations and of
+    parameters). Other actions are dispositioned per the four-tier
     contract documented at the top of this module: pure build/IO directives
     (``generate_network``, ``writeSBML``, ``writeBNGL``, ``setOutputDir``, …) are
     dropped and recorded in ``ProtocolSpec.dropped``; fidelity-affecting actions
@@ -468,6 +570,9 @@ def parse_bngl_protocol(source: str | Path, *, strict: bool = True) -> ProtocolS
     dropped: list[str] = []
     lossy: list[str] = []
     network_gen: str | None = None
+    generation_step: int | None = None
+    lossy_before: int | None = None  # entries before the generation point
+    dropped_before: int | None = None
     # BNG2.pl's model time, which a ``continue=>1`` or nf run starts from: 0 at
     # load, and the end of each simulate after it (``BNGAction.pm``:
     # ``$model->Time``), or NaN after an nf run, which leaves it undefined. None
@@ -482,6 +587,11 @@ def parse_bngl_protocol(source: str | Path, *, strict: bool = True) -> ProtocolS
             # handling, not a loss: record it and stop.
             dropped.append(verb)
             break
+        if generation_step is None and (
+            low in _GENERATE_VERBS or low in _SIMULATE_VERBS or low == "simulate_protocol"
+        ):
+            generation_step = len(steps)
+            lossy_before, dropped_before = len(lossy), len(dropped)
         if low in _SIMULATE_VERBS:
             exp, reasons, model_time = _build_experiment(verb, argstr, model_time)
             steps.append(exp)
@@ -529,6 +639,9 @@ def parse_bngl_protocol(source: str | Path, *, strict: bool = True) -> ProtocolS
         dropped=tuple(dropped),
         lossy=tuple(lossy),
         network_gen=network_gen,
+        generation_step=len(steps) if generation_step is None else generation_step,
+        lossy_before_generation=len(lossy) if lossy_before is None else lossy_before,
+        dropped_before_generation=len(dropped) if dropped_before is None else dropped_before,
     )
 
 
@@ -599,40 +712,58 @@ def _experiment_action(e: Experiment) -> str:
     """
     pairs: list[tuple[str, str]] = [("method", f'"{e.method}"')]
     pairs.append(("t_start", _action_num(e.t_span[0])))
-    pairs.append(("t_end", _action_num(e.t_span[1])))
-    pairs.append(("n_steps", _action_num(max(e.n_points - 1, 0))))
+    if e.sample_times is not None:
+        # The written times: BNG2.pl outputs t_start first and ends at the last.
+        times = ",".join(_action_num(t) for t in e.sample_times[1:])
+        pairs.append(("sample_times", f"[{times}]"))
+    else:
+        pairs.append(("t_end", _action_num(e.t_span[1])))
+        pairs.append(("n_steps", _action_num(max(e.n_points - 1, 0))))
     if e.is_scan:
         if e.scan_parameter is not None:
             pairs.append(("parameter", f'"{e.scan_parameter}"'))
-        if e.scan_min is not None:
-            pairs.append(("par_min", _action_num(e.scan_min)))
-        if e.scan_max is not None:
-            pairs.append(("par_max", _action_num(e.scan_max)))
-        if e.scan_points is not None:
-            pairs.append(("n_scan_pts", _action_num(e.scan_points)))
-        pairs.append(("log_scale", "1" if e.scan_log else "0"))
-        pairs.append(("reset_conc", "1" if e.reset_between else "0"))
+        if e.scan_values is not None:
+            vals = ",".join(_action_num(v) for v in e.scan_values)
+            pairs.append(("par_scan_vals", f"[{vals}]"))
+        else:
+            if e.scan_min is not None:
+                pairs.append(("par_min", _action_num(e.scan_min)))
+            if e.scan_max is not None:
+                pairs.append(("par_max", _action_num(e.scan_max)))
+            if e.scan_points is not None:
+                pairs.append(("n_scan_pts", _action_num(e.scan_points)))
+            pairs.append(("log_scale", "1" if e.scan_log else "0"))
+        if not e.is_bifurcation:
+            pairs.append(("reset_conc", "1" if e.reset_between else "0"))
     if e.label is not None:
         pairs.append(("suffix", f'"{e.label}"'))
+    written = {k for k, _ in pairs}
     for k, v in e.extra.items():
-        pairs.append((str(k), _action_value(v)))
+        if str(k) not in written:
+            pairs.append((str(k), _action_value(v)))
 
-    verb = "parameter_scan" if e.is_scan else "simulate"
+    verb = "bifurcate" if e.is_bifurcation else "parameter_scan" if e.is_scan else "simulate"
     body = ",".join(f"{k}=>{v}" for k, v in pairs)
     return f"{verb}({{{body}}})"
 
 
+# StateChange kind → its BNG action verb, the inverse of ``_STATE_VERBS``.
+_STATE_ACTIONS = {
+    "set_parameter": "setParameter",
+    "set_concentration": "setConcentration",
+    "add_concentration": "addConcentration",
+    "reset_concentrations": "resetConcentrations",
+    "save_concentrations": "saveConcentrations",
+    "reset_parameters": "resetParameters",
+    "save_parameters": "saveParameters",
+}
+
+
 def _state_change_action(s: StateChange) -> str:
     """Serialize a :class:`StateChange` to its BNG ``set*`` call."""
-    if s.kind == "reset_concentrations":
-        if s.label is not None:
-            return f'resetConcentrations("{s.label}")'
-        return "resetConcentrations()"
-    if s.kind == "save_concentrations":
-        if s.label is not None:
-            return f'saveConcentrations("{s.label}")'
-        return "saveConcentrations()"
-    verb = "setParameter" if s.kind == "set_parameter" else "setConcentration"
+    verb = _STATE_ACTIONS[s.kind]
+    if s.kind in _LABEL_KINDS:
+        return f'{verb}("{s.label}")' if s.label is not None else f"{verb}()"
     val = (
         _action_num(s.value)
         if s.value is not None
@@ -747,14 +878,30 @@ def _build_experiment(
     or else the last sample; fewer than three is an error. A run that can stop
     early (``steady_state``, ``stop_if``, ``max_sim_steps``) leaves the model
     time unknown. A scan reads ``par_scan_vals``, in their order, unless
-    ``par_min``, ``par_max`` and ``n_scan_pts`` are all given. A grid the IR's
-    uniform ``(t_span, n_points)`` and a scan its ``(min, max, points, log)``
-    cannot hold are recorded as lossy, with the nearest they can.
+    ``par_min``, ``par_max`` and ``n_scan_pts`` are all given; ``bifurcate`` is
+    a scan that never resets. ``poplevel`` makes any run but an nf one PSA.
+    Uneven output times and scan values are held exactly (``sample_times``,
+    ``scan_values``) beside the nearest uniform grid and range (issue #1366); an
+    argument the parse cannot read without the model is recorded as lossy, and
+    on the run's ``approximations``, with what it was taken as.
+
+    The reasons are the lossy entry's: a run's ``approximations``, and first
+    any start at a model time an earlier run leaves unknown, which only a
+    replay can know.
     """
     kind, forced_method = _SIMULATE_VERBS[verb.lower()]
     args = _parse_hash(argstr)
     method = forced_method or str(args.get("method", "ode")).lower()
+    if "poplevel" in args and method != "nf":
+        # BNG2.pl's simulate runs PSA whenever a poplevel is given (BNGAction.pm).
+        method = "psa"
     reasons: list[str] = []
+    time_reasons: list[str] = []  # starts only a replay can place; see the docstring
+    if method == "protocol":
+        reasons.append(
+            'method=>"protocol" runs the model\'s begin protocol block, which the '
+            "protocol does not carry"
+        )
 
     nf = method == "nf"
     continued = _as_bool(args.get("continue", 0))
@@ -764,6 +911,8 @@ def _build_experiment(
     # 0, and a continuation that names its t_start is refused.
     undefined = model_time is not None and math.isnan(model_time)
     t_start = _num_or(args.get("t_start"), None)
+    if "t_start" in args and t_start is None and not continued:
+        reasons.append(f"t_start={args['t_start']} cannot be read without the model; carried as 0")
     if (
         continued
         and "t_start" in args
@@ -787,7 +936,7 @@ def _build_experiment(
         # refuses any other.
         if model_time is None:
             starter = "continue=>1" if continued else "an nf run"
-            reasons.append(
+            time_reasons.append(
                 f"{starter} starts at the model time, which an earlier action leaves "
                 "unknown; taken as 0"
             )
@@ -828,6 +977,7 @@ def _build_experiment(
     # simulate_nf has no output_step_interval; run_network writes extra rows for it.
     if "output_step_interval" in args and not nf:
         reasons.append("output_step_interval writes rows between the grid's times")
+    sample_times: tuple[float, ...] | None = None
     if steps_arg is None and "sample_times" in args:
         samples = _num_list(args.get("sample_times"))
         if samples is not None and len(samples) < 3:
@@ -850,13 +1000,23 @@ def _build_experiment(
                 reasons.append(
                     f"sample_times end at a t_end that cannot be read without the model; {carried}"
                 )
-            elif not _evenly_spaced(grid):
-                reasons.append(f"sample_times give the uneven output times {grid}; {carried}")
+            else:
+                # Held exactly, beside the even grid over the same span: a replay
+                # starting where an earlier run stopped early takes the samples
+                # after that time (issue #1366).
+                sample_times = tuple(grid)
     else:
         # BNG2.pl's default is one step. One the parse cannot read without the
         # model keeps the blanket 100 it has always had here.
+        read_steps = None if steps_arg is None else _num_or(steps_arg, None)
+        if steps_arg is not None and read_steps is None:
+            reasons.append(f"n_steps={steps_arg} cannot be read without the model; carried as 100")
         n_steps = 1 if steps_arg is None else int(_num_or(steps_arg, 100.0))
         n_points = max(n_steps + 1, 1)
+        if t_end_unread:
+            reasons.append(
+                f"t_end={args['t_end']} cannot be read without the model; carried as t_start"
+            )
     if t_end is None:
         t_end = t_start
     # BNG2.pl's model time is the last time the run wrote: unknown for a t_end
@@ -899,16 +1059,27 @@ def _build_experiment(
     # refuse it beside that t_start, so it is not kept.
     if continued and undefined:
         consumed.add("continue")
+    if continued and model_time is None and t_start is not None:
+        # A continuation's own t_start, which the parse cannot check against a
+        # model time an earlier run leaves unknown: kept for a replay to check.
+        consumed.discard("t_start")
     extra = {k: v for k, v in args.items() if k not in consumed}
 
-    if kind == "scan":
-        reset_between = _as_bool(args.get("reset_conc", 1))
+    if kind in ("scan", "bifurcate"):
+        # bifurcate sets reset_conc=>0 over whatever the call says (BNGAction.pm).
+        reset_between = kind == "scan" and _as_bool(args.get("reset_conc", 1))
         scan_log = _as_bool(args.get("log_scale", 0))
         scan_min = _num_or(args.get("par_min"), None)
         scan_max = _num_or(args.get("par_max"), None)
         scan_points = (
             int(_num_or(args.get("n_scan_pts"), 0)) or None if "n_scan_pts" in args else None
         )
+        for key, read in (("par_min", scan_min), ("par_max", scan_max)):
+            if key in args and read is None:
+                reasons.append(f"{key}={args[key]} cannot be read without the model")
+        if "n_scan_pts" in args and _num_or(args.get("n_scan_pts"), None) is None:
+            reasons.append(f"n_scan_pts={args['n_scan_pts']} cannot be read without the model")
+        scan_values: tuple[float, ...] | None = None
         # BNG2.pl takes par_min/par_max over par_scan_vals only with n_scan_pts too.
         ranged = all(k in args for k in ("par_min", "par_max", "n_scan_pts"))
         if not ranged and "par_scan_vals" in args:
@@ -916,6 +1087,9 @@ def _build_experiment(
             if not values:
                 reasons.append("par_scan_vals is not a list of numbers")
             else:
+                # The values exactly, in the order BNG2.pl runs them; the range
+                # below is their nearest, for a consumer that reads only that.
+                scan_values = tuple(values)
                 # BNG2.pl runs the values in the order given. With reset_conc=>1 each
                 # point starts afresh, so the order changes only the rows of the .scan
                 # file; without it each continues from the last, so the order is kept,
@@ -927,23 +1101,18 @@ def _build_experiment(
                     scan_log = True
                 else:
                     run = sorted(values)
-                    order = "" if reset_between else ", in the order reset_conc=>0 runs them"
-                    reasons.append(
-                        f"par_scan_vals {values} is not evenly spaced, linearly or in log"
-                        f"{order}; carried as {len(run)} points over ({run[0]:g}, {run[-1]:g})"
-                    )
                 scan_min, scan_max, scan_points = run[0], run[-1], len(run)
         # Each point is a run from the model time, which the first point moves.
         later = 0.0 if nf else after
         if from_model_time and (scan_points or 0) > 1 and later != t_start:
             moved = "an unknown time" if later is None else f"{later:g}"
-            reasons.append(
+            time_reasons.append(
                 f"its first point starts at the model time, {t_start:g}, and the others "
                 f"at {moved}, where that point leaves it; carried as starting at {t_start:g}"
             )
         return (
             Experiment(
-                kind="scan",
+                kind=kind,
                 method=method,
                 t_span=(t_start, t_end),
                 n_points=n_points,
@@ -955,8 +1124,11 @@ def _build_experiment(
                 reset_between=reset_between,
                 label=str(args["suffix"]) if "suffix" in args else None,
                 extra=extra,
+                scan_values=scan_values,
+                sample_times=sample_times,
+                approximations=tuple(reasons),
             ),
-            reasons,
+            time_reasons + reasons,
             after,
         )
     return (
@@ -967,17 +1139,20 @@ def _build_experiment(
             n_points=n_points,
             label=str(args["suffix"]) if "suffix" in args else None,
             extra=extra,
+            sample_times=sample_times,
+            approximations=tuple(reasons),
         ),
-        reasons,
+        time_reasons + reasons,
         after,
     )
 
 
 def _build_state_change(kind: str, argstr: str) -> StateChange:
-    if kind in ("reset_concentrations", "save_concentrations"):
-        # BNG saveConcentrations("name") / resetConcentrations("name") carry an
-        # optional positional label naming the saved state (issue #11). Preserve
-        # it so a multi-state protocol round-trips; the unlabeled form → None.
+    if kind in _LABEL_KINDS:
+        # BNG saveConcentrations("name") / resetConcentrations("name"), and their
+        # saveParameters / resetParameters twins, carry an optional positional label
+        # naming the saved state (issue #11). Preserve it so a multi-state protocol
+        # round-trips; the unlabeled form → None.
         pos = _parse_positional(argstr)
         label = str(pos[0]) if pos else None
         return StateChange(kind=kind, label=label)

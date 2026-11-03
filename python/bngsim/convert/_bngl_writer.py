@@ -822,7 +822,10 @@ def _actions_block(
     name_to_idx = {s["name"]: i for i, s in enumerate(species)}
 
     def _retarget(step: object) -> object:
-        if isinstance(step, StateChange) and step.kind == "set_concentration":
+        if isinstance(step, StateChange) and step.kind in (
+            "set_concentration",
+            "add_concentration",
+        ):
             idx = name_to_idx.get(step.target or "")
             if idx is not None:
                 pattern = f"@{species_comp[idx]}:{mol_names[idx]}()"
@@ -840,6 +843,9 @@ def _actions_block(
         dropped=protocol.dropped,
         lossy=protocol.lossy,
         network_gen=protocol.network_gen,
+        generation_step=protocol.generation_step,
+        lossy_before_generation=protocol.lossy_before_generation,
+        dropped_before_generation=protocol.dropped_before_generation,
     )
     block = write_bngl_protocol(translated)
     # Materialize the network before simulating (generate_network is a build

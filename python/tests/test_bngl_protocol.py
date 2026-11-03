@@ -23,6 +23,7 @@ from bngsim.convert._protocol import (
     StateChange,
     combine_protocols,
     parse_bngl_protocol,
+    write_bngl_protocol,
 )
 
 _BNGSIM = Path(__file__).resolve().parents[2]
@@ -101,10 +102,13 @@ def test_multistage_scan() -> None:
     assert s0.scan_parameter == "log_P_ox"
     assert (s0.scan_min, s0.scan_max, s0.scan_points) == (0.0, 1.0, 20)
     assert s0.reset_between is True and s0.label == "00"
-    # The reset clears accumulated overrides: before scan[1] only coopRT=1 holds
-    # (the pre-reset coopRT=0/coopB=0 are gone).
+    # resetConcentrations resets concentrations only, as in BNG2.pl: before
+    # scan[1] coopB=0 still holds, and coopRT=1 replaces coopRT=0 (issue #1366).
     before = p.state_changes_before(scans[1])
-    assert before == [StateChange("set_parameter", "coopRT", 1.0)]
+    assert before == [
+        StateChange("set_parameter", "coopB", 0.0),
+        StateChange("set_parameter", "coopRT", 1.0),
+    ]
 
 
 # ─── Argument parsing edge cases ────────────────────────────────────────────
@@ -525,3 +529,84 @@ def test_combine_protocols_no_double_reset() -> None:
         s for s in merged.steps if isinstance(s, StateChange) and s.kind == "reset_concentrations"
     ]
     assert len(resets) == 1
+
+
+# ─── Issue #1366: every state action, bifurcate, and where generation is ────
+
+
+_REPLAYED = """\
+begin model
+end model
+setParameter("k",2)
+saveParameters("p")
+generate_network({overwrite=>1})
+addConcentration("A()","2*k")
+saveConcentrations("eq")
+simulate_psa({t_end=>1,n_steps=>2,poplevel=>50})
+resetConcentrations("eq")
+resetParameters("p")
+bifurcate({method=>"ode",parameter=>"k",par_min=>1,par_max=>2,n_scan_pts=>3,t_end=>5})
+"""
+
+
+def test_every_state_action_is_a_step() -> None:
+    """saveParameters/resetParameters were dropped as build directives (#1478),
+    and addConcentration and bifurcate were unrecognized; none was run."""
+    p = parse_bngl_protocol(_REPLAYED)
+    assert p.dropped == ("generate_network",) and p.lossy == ()
+    kinds = [s.kind for s in p.steps]
+    assert kinds == [
+        "set_parameter",
+        "save_parameters",
+        "add_concentration",
+        "save_concentrations",
+        "simulate",
+        "reset_concentrations",
+        "reset_parameters",
+        "bifurcate",
+    ]
+    assert p.steps[1].label == "p" and p.steps[6].label == "p"
+    assert p.steps[2] == StateChange("add_concentration", "A()", value_expr="2*k")
+    bif = p.steps[7]
+    assert bif.is_scan and bif.is_bifurcation and bif.reset_between is False
+
+
+def test_the_generation_step_is_where_the_network_is_made() -> None:
+    """Steps before it are in the network from_bngl loads (issue #1366)."""
+    assert parse_bngl_protocol(_REPLAYED).generation_step == 2
+    no_generate = 'begin model\nend model\nsetParameter("k",2)\nsimulate({t_end=>1})\n'
+    assert parse_bngl_protocol(no_generate).generation_step == 1
+
+
+def test_poplevel_makes_a_run_psa() -> None:
+    """BNG2.pl's simulate runs PSA whenever a poplevel is given."""
+    p = parse_bngl_protocol(
+        'begin model\nend model\nsimulate({method=>"ssa",t_end=>1,poplevel=>100})\n'
+    )
+    assert p.steps[0].method == "psa"
+    assert parse_bngl_protocol(_REPLAYED).steps[4].method == "psa"
+
+
+def test_the_new_steps_round_trip_through_bngl_and_json() -> None:
+    p = parse_bngl_protocol(_REPLAYED)
+    again = parse_bngl_protocol(write_bngl_protocol(p))
+    assert again.steps == p.steps
+    assert ProtocolSpec.from_json(p.to_json()) == p
+
+
+def test_uneven_scan_values_round_trip_through_sedml_without_the_annotation() -> None:
+    """A vectorRange carries par_scan_vals exactly, for a reader of the standard
+    elements alone."""
+    import re
+
+    from bngsim.convert import read_sedml_protocol, write_sedml_protocol
+
+    p = parse_bngl_protocol(
+        'begin model\nend model\nparameter_scan({parameter=>"k",par_scan_vals=>[1,2,7],'
+        'method=>"ode",t_end=>1,n_steps=>2})\n'
+    )
+    x = write_sedml_protocol(p)
+    assert "vectorRange" in x and "uniformRange" not in x
+    bare = re.sub(r"<annotation>.*?</annotation>", "", x, flags=re.DOTALL)
+    (exp,) = read_sedml_protocol(bare).experiments
+    assert exp.scan_values == (1.0, 2.0, 7.0)
