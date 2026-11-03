@@ -2,7 +2,7 @@
 //
 // BDF method with Newton iteration for stiff biochemical systems.
 // Auto-selects dense or sparse (KLU) direct solver based on model size.
-//   - Dense: SUNDenseMatrix + SUNLinSol_Dense — best for N < 50
+//   - Dense: SUNDenseMatrix + bngsim's dense LU (lapack_dense_linsol.hpp) — best for N < 50
 //   - Sparse: SUNSparseMatrix (CSC) + SUNLinSol_KLU — best for N >= 50
 //
 // The sparse solver uses the Jacobian sparsity pattern computed at model
@@ -5093,9 +5093,9 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
     // this a long prior run would leave factor_count > K and push this (possibly
     // short) run straight onto the BLAS factor on its first factorization. The
     // cold run() path rebuilds its solver each call and so resets naturally;
-    // only the warm reuse needs this. No-op for the sparse/KLU and built-in
-    // dense solvers (they carry a different setup op). Harmless on the fresh-
-    // build branch above, where the counter is already 0.
+    // only the warm reuse needs this. No-op for the sparse/KLU solver (another
+    // setup op) and the dense solver on the built-in factor only (not adaptive).
+    // Harmless on the fresh-build branch above, where the counter is already 0.
     //
     // Not for a run that continues the previous one (run_until, and so every
     // ReactionKernel.advance): that is one integration cut into steps, and
@@ -7327,8 +7327,8 @@ double CvodeSimulator::Impl::changes_inside(void *cvode_mem, N_Vector y, int ns,
             }
 #endif
             if (kind == SUNMATRIX_DENSE) {
-                scratch.step_solver =
-                    SUNLinSolGuard(SUNLinSol_Dense(y, scratch.step_matrix, y->sunctx));
+                scratch.step_solver = SUNLinSolGuard(
+                    make_dense_linear_solver(y, scratch.step_matrix, y->sunctx, false));
             }
             scratch.moved = NVectorGuard(N_VClone(y));
             scratch.corrected = NVectorGuard(N_VClone(y));

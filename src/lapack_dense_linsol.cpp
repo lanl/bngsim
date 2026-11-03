@@ -3,7 +3,9 @@
 // Custom direct SUNLinearSolver with an adaptive factorization backend: it
 // factors with either SUNDIALS' built-in denseGETRF or the BLAS dgetrf (chosen
 // per-factorization by the GH #132 count gate) and always back-solves with the
-// built-in denseGETRS. See lapack_dense_linsol.hpp for the rationale.
+// built-in denseGETRS. See lapack_dense_linsol.hpp for the rationale. Every
+// dense solve is this solver, the BLAS factor only where it is asked for and
+// linked: each reads a row the matrix holds alone as its own equation (below).
 //
 // Correctness contract (verified by tests/test_lapack_dense_linsol.cpp):
 //   LAPACK dgetrf and SUNDIALS denseGETRF produce the SAME in-place L/U storage
@@ -77,8 +79,11 @@ using lapack_int = int;
 extern "C" void dgetrf_(const lapack_int *m, const lapack_int *n, double *a, const lapack_int *lda,
                         lapack_int *ipiv, lapack_int *info);
 
+#endif // BNGSIM_HAS_LAPACK_DENSE
+
 namespace {
 
+#ifdef BNGSIM_HAS_LAPACK_DENSE
 // ── Adaptive factorization-count gate (GH #132) ─────────────────────────────
 // The custom solver delegates its first `kDefaultSwitchAfter` factorizations to
 // the built-in dense GETRF and only switches to the BLAS dgetrf once a run has
@@ -106,20 +111,93 @@ long env_long(const char *name, long fallback) {
         return fallback;
     return parsed;
 }
+#endif // BNGSIM_HAS_LAPACK_DENSE
 
 // Solver content: SUNDIALS 0-based pivots consumed by denseGETRS, plus a scratch
 // LAPACK 1-based pivot array filled by dgetrf, plus the GH #132 adaptive-gate
-// state (how many factorizations have run, and the switch thresholds).
+// state (how many factorizations have run, and the switch thresholds), plus the
+// rows the factored matrix holds alone. `adaptive` is false for a solver that
+// was not asked for the BLAS factor, or whose build links none: it factors with
+// the built-in GETRF only, as SUNLinSol_Dense does, and the GH #132 accessors
+// treat it as not the adaptive solver (-1, no reset).
 struct LapackDenseContent {
     sunindextype N;
-    sunindextype *pivots;   // 0-based (denseGETRS convention), size N
-    lapack_int *ipiv;       // 1-based LAPACK scratch, size N
+    sunindextype *pivots; // 0-based (denseGETRS convention), size N
+#ifdef BNGSIM_HAS_LAPACK_DENSE
+    lapack_int *ipiv; // 1-based LAPACK scratch, size N
+#endif
+    bool adaptive;          // the GH #132 gate may take the BLAS dgetrf
     long factor_count;      // # ls_setup calls so far (GH #132)
     long blas_factor_count; // # of those that actually took the BLAS dgetrf path
     long switch_after;      // K: built-in for the first K factorizations, then dgetrf
     long min_n;             // never use the BLAS factor below this N
     sunindextype last_flag;
+    sunindextype n_alone;    // rows of the factored matrix held alone
+    sunindextype *alone;     // their indices, size N
+    sunrealtype *alone_diag; // their diagonal entries, read before the factor
+    sunrealtype *alone_x;    // a solve's answer for each, size N
+    unsigned char *seen;     // per row: a nonzero off the diagonal, size N
 };
+
+// ── A row the matrix holds alone ────────────────────────────────────────────
+// Where row i of the Newton matrix has no nonzero off its diagonal, x_i is fixed
+// by that row alone: a_ii·x_i = b_i. Partial pivoting does not see that. When
+// column i has a larger entry in another row, GETRF takes that row as the
+// pivot, and the back-solve then computes x_i from it, as the remainder of
+// sums that cancel in exact arithmetic. Their rounding is left in x_i.
+//
+// That residue matters where the answer is an exact, unstable state. In
+// MODEL1812040005, P = 0 is a rate-rule target whose law is P·g, so P stays
+// at exactly 0, but g > 0 for a while, and an e-fold every 0.1 time units
+// grows any departure by 4e26 there. Its row of the matrix is the diagonal alone
+// while P = 0, and V's row reads √P with a huge slope at 0. With the species
+// in the file's order, P's column comes last, and its row is never a pivot
+// elsewhere: x_P = 0 exactly. Reversed, P's column comes first, V's row is the
+// pivot, and the 1e-16 left in x_P grew to P = 2.6e8, 25.6x the trajectory's
+// peak, on x86-64. On arm64 the residue came out negative, and the band of
+// #1340 held it there. BIOMD0000000908's S = 0 went the same way. KLU does
+// not, since its block-triangular form takes such a row as a block of its own.
+//
+// So the solve reads each such component as its row gives it, b_i / a_ii,
+// in place of what the back-solve left there. That is the exact answer of the
+// factored system, in any species order. It leaves every other component as
+// the back-solve gave it. Finding the rows is one pass over the matrix per
+// factorization, against GETRF's N^3/3; reading them is one division each per
+// solve. A NaN entry is not a zero, so a row with one is not held alone.
+//
+// Only a row with nothing off its diagonal is read so. Species at 0 that
+// feed each other, a chain (Q' = kQ + P) or a cycle (P' = k(P + Q), Q' = the
+// same), are still solved by the pivoted LU, in which rounding can reach them;
+// KLU's block-triangular form isolates those too.
+void note_rows_held_alone(LapackDenseContent *c, SUNMatrix A) {
+    const sunindextype n = SUNDenseMatrix_Rows(A);
+    sunrealtype **cols = SUNDenseMatrix_Cols(A);
+    // seen[i] records a nonzero off row i's diagonal, column by column as the
+    // matrix is stored, in loops with no branch either side of the diagonal:
+    // the compiler vectorizes them. A branch per entry made the scan a tenth
+    // of a fill-routed model's run (egfr_net, N = 356).
+    unsigned char *seen = c->seen;
+    for (sunindextype i = 0; i < n; ++i)
+        seen[i] = 0;
+    for (sunindextype j = 0; j < n; ++j) {
+        const sunrealtype *col = cols[j];
+        for (sunindextype i = 0; i < j; ++i)
+            seen[i] |= static_cast<unsigned char>(col[i] != SUN_RCONST(0.0));
+        for (sunindextype i = j + 1; i < n; ++i)
+            seen[i] |= static_cast<unsigned char>(col[i] != SUN_RCONST(0.0));
+    }
+    sunindextype k = 0;
+    for (sunindextype i = 0; i < n; ++i) {
+        // A zero diagonal on a row held alone is a singular matrix, which the
+        // factorization reports; there is nothing for the solve to read.
+        if (seen[i] == 0 && cols[i][i] != SUN_RCONST(0.0)) {
+            c->alone[k] = i;
+            c->alone_diag[k] = cols[i][i];
+            ++k;
+        }
+    }
+    c->n_alone = k;
+}
 
 SUNLinearSolver_Type ls_get_type(SUNLinearSolver) { return SUNLINEARSOLVER_DIRECT; }
 SUNLinearSolver_ID ls_get_id(SUNLinearSolver) { return SUNLINEARSOLVER_CUSTOM; }
@@ -142,9 +220,10 @@ int ls_setup(SUNLinearSolver S, SUNMatrix A) {
     auto *c = static_cast<LapackDenseContent *>(S->content);
     const sunindextype rows = SUNDenseMatrix_Rows(A);
     ++c->factor_count;
+    note_rows_held_alone(c, A);
 
     // Adaptive backend choice (GH #132). The first `switch_after` factorizations
-    // run the built-in dense GETRF — byte-identical to SUNLinSol_Dense — so a
+    // run the built-in dense GETRF — SUNLinSol_Dense's factor, to the byte — so a
     // few-step model pays no BLAS overhead and cannot regress. Only once the run
     // has refactored more than that (a stiff / long-horizon, factorization-bound
     // integration) does it switch to the blocked BLAS dgetrf, where the O(N^3)
@@ -152,7 +231,7 @@ int ls_setup(SUNLinearSolver S, SUNMatrix A) {
     // built-in factor no matter how often they refactor (dgetrf there is pure
     // call overhead). The back-solve is the built-in denseGETRS either way, so
     // the in-place L/U storage and 0-based pivots are consumed identically.
-    const bool use_blas = c->factor_count > c->switch_after && rows >= c->min_n;
+    const bool use_blas = c->adaptive && c->factor_count > c->switch_after && rows >= c->min_n;
     if (use_blas)
         ++c->blas_factor_count;
 
@@ -164,6 +243,7 @@ int ls_setup(SUNLinearSolver S, SUNMatrix A) {
         return c->last_flag != 0 ? SUNLS_LUFACT_FAIL : SUN_SUCCESS;
     }
 
+#ifdef BNGSIM_HAS_LAPACK_DENSE
     if constexpr (sizeof(lapack_int) < sizeof(sunindextype)) {
         if (rows > static_cast<sunindextype>(std::numeric_limits<lapack_int>::max())) {
             c->last_flag = SUNLS_PACKAGE_FAIL_REC;
@@ -186,13 +266,24 @@ int ls_setup(SUNLinearSolver S, SUNMatrix A) {
     if (info != 0)
         return SUNLS_LUFACT_FAIL;
     return SUN_SUCCESS;
+#else
+    return SUNLS_LUFACT_FAIL; // unreachable: `adaptive` is never set without a backend
+#endif
 }
 
 int ls_solve(SUNLinearSolver S, SUNMatrix A, N_Vector x, N_Vector b, sunrealtype /*tol*/) {
     auto *c = static_cast<LapackDenseContent *>(S->content);
+    // Each row held alone gives its component outright. Read b before x is
+    // written, in case the caller passes one vector as both.
+    const sunrealtype *bd = N_VGetArrayPointer(b);
+    for (sunindextype k = 0; k < c->n_alone; ++k)
+        c->alone_x[k] = bd[c->alone[k]] / c->alone_diag[k];
     N_VScale(SUN_RCONST(1.0), b, x); // copy b into x, exactly as SUNLinSol_Dense does
     SUNDlsMat_denseGETRS(SUNDenseMatrix_Cols(A), SUNDenseMatrix_Rows(A), c->pivots,
                          N_VGetArrayPointer(x));
+    sunrealtype *xd = N_VGetArrayPointer(x);
+    for (sunindextype k = 0; k < c->n_alone; ++k)
+        xd[c->alone[k]] = c->alone_x[k];
     c->last_flag = SUN_SUCCESS;
     return SUN_SUCCESS;
 }
@@ -203,19 +294,34 @@ sunindextype ls_last_flag(SUNLinearSolver S) {
 
 SUNErrCode ls_space(SUNLinearSolver S, long int *lenrwLS, long int *leniwLS) {
     auto *c = static_cast<LapackDenseContent *>(S->content);
-    *leniwLS = 2 + 2 * static_cast<long int>(c->N); // pivots + ipiv
-    *lenrwLS = 0;
+    // pivots and the rows held alone, plus ipiv where a BLAS factor is linked
+    // (seen[], N bytes, is left out of both counts)
+#ifdef BNGSIM_HAS_LAPACK_DENSE
+    *leniwLS = 2 + 3 * static_cast<long int>(c->N);
+#else
+    *leniwLS = 2 + 2 * static_cast<long int>(c->N);
+#endif
+    *lenrwLS = 2 * static_cast<long int>(c->N); // alone_diag, alone_x
     return SUN_SUCCESS;
+}
+
+void free_content(LapackDenseContent *c) {
+    std::free(c->pivots);
+#ifdef BNGSIM_HAS_LAPACK_DENSE
+    std::free(c->ipiv);
+#endif
+    std::free(c->alone);
+    std::free(c->alone_diag);
+    std::free(c->alone_x);
+    std::free(c->seen);
+    std::free(c);
 }
 
 SUNErrCode ls_free(SUNLinearSolver S) {
     if (S == nullptr)
         return SUN_SUCCESS;
     if (S->content) {
-        auto *c = static_cast<LapackDenseContent *>(S->content);
-        std::free(c->pivots);
-        std::free(c->ipiv);
-        std::free(c);
+        free_content(static_cast<LapackDenseContent *>(S->content));
         S->content = nullptr;
     }
     if (S->ops) {
@@ -226,7 +332,9 @@ SUNErrCode ls_free(SUNLinearSolver S) {
     return SUN_SUCCESS;
 }
 
-SUNLinearSolver make_lapack_dense(SUNMatrix A, SUNContext ctx) {
+// `adaptive` asks for the GH #132 gate onto the BLAS factor; it is honoured only
+// where a backend is linked.
+SUNLinearSolver make_lapack_dense(SUNMatrix A, SUNContext ctx, bool adaptive) {
     SUNLinearSolver S = SUNLinSolNewEmpty(ctx);
     if (S == nullptr)
         return nullptr;
@@ -240,25 +348,39 @@ SUNLinearSolver make_lapack_dense(SUNMatrix A, SUNContext ctx) {
     S->ops->space = ls_space;
     S->ops->free = ls_free;
 
-    auto *c = static_cast<LapackDenseContent *>(std::malloc(sizeof(LapackDenseContent)));
+    auto *c = static_cast<LapackDenseContent *>(std::calloc(1, sizeof(LapackDenseContent)));
     if (c == nullptr) {
         SUNLinSolFreeEmpty(S);
         return nullptr;
     }
     const sunindextype n = SUNDenseMatrix_Rows(A);
+    const auto count = static_cast<size_t>(n);
     c->N = n;
     c->factor_count = 0;
     c->blas_factor_count = 0;
+#ifdef BNGSIM_HAS_LAPACK_DENSE
+    c->adaptive = adaptive;
     c->switch_after = env_long("BNGSIM_LAPACK_DENSE_K", kDefaultSwitchAfter);
     c->min_n = env_long("BNGSIM_LAPACK_DENSE_MIN_N", kDefaultMinN);
+    c->ipiv = static_cast<lapack_int *>(std::malloc(count * sizeof(lapack_int)));
+#else
+    (void)adaptive;
+    c->adaptive = false;
+#endif
     c->last_flag = 0;
-    c->pivots =
-        static_cast<sunindextype *>(std::malloc(static_cast<size_t>(n) * sizeof(sunindextype)));
-    c->ipiv = static_cast<lapack_int *>(std::malloc(static_cast<size_t>(n) * sizeof(lapack_int)));
-    if (c->pivots == nullptr || c->ipiv == nullptr) {
-        std::free(c->pivots);
-        std::free(c->ipiv);
-        std::free(c);
+    c->n_alone = 0;
+    c->pivots = static_cast<sunindextype *>(std::malloc(count * sizeof(sunindextype)));
+    c->alone = static_cast<sunindextype *>(std::malloc(count * sizeof(sunindextype)));
+    c->alone_diag = static_cast<sunrealtype *>(std::malloc(count * sizeof(sunrealtype)));
+    c->alone_x = static_cast<sunrealtype *>(std::malloc(count * sizeof(sunrealtype)));
+    c->seen = static_cast<unsigned char *>(std::malloc(count));
+    bool ok = c->pivots != nullptr && c->alone != nullptr && c->alone_diag != nullptr &&
+              c->alone_x != nullptr && c->seen != nullptr;
+#ifdef BNGSIM_HAS_LAPACK_DENSE
+    ok = ok && c->ipiv != nullptr;
+#endif
+    if (!ok) {
+        free_content(c);
         SUNLinSolFreeEmpty(S);
         return nullptr;
     }
@@ -266,21 +388,30 @@ SUNLinearSolver make_lapack_dense(SUNMatrix A, SUNContext ctx) {
     return S;
 }
 
+// The adaptive solver's content, or nullptr for any other solver: the built-in
+// SUNLinSol_Dense and KLU carry a different setup op (ls_setup has internal
+// linkage but is visible here in the same TU), and this solver built without
+// the gate is not the adaptive one either.
+LapackDenseContent *adaptive_content(SUNLinearSolver S) {
+    if (S == nullptr || S->ops == nullptr || S->ops->setup != ls_setup || S->content == nullptr)
+        return nullptr;
+    auto *c = static_cast<LapackDenseContent *>(S->content);
+    return c->adaptive ? c : nullptr;
+}
+
 } // namespace
 
 SUNLinearSolver make_dense_linear_solver(N_Vector y, SUNMatrix A, SUNContext ctx,
                                          bool prefer_lapack) {
-    if (prefer_lapack) {
-        SUNLinearSolver S = make_lapack_dense(A, ctx);
-        if (S != nullptr)
-            return S;
-        // Allocation failure → fall back to the built-in solver.
-    }
+    SUNLinearSolver S = make_lapack_dense(A, ctx, prefer_lapack && lapack_dense_available());
+    if (S != nullptr)
+        return S;
+    // Allocation failure → fall back to the built-in solver.
     return SUNLinSol_Dense(y, A, ctx);
 }
 
 SUNLinearSolver make_fill_routed_dense_linear_solver(N_Vector y, SUNMatrix A, SUNContext ctx) {
-    SUNLinearSolver S = make_lapack_dense(A, ctx);
+    SUNLinearSolver S = make_lapack_dense(A, ctx, lapack_dense_available());
     if (S == nullptr)
         return SUNLinSol_Dense(y, A, ctx); // allocation failure → built-in solver
     auto *c = static_cast<LapackDenseContent *>(S->content);
@@ -289,47 +420,21 @@ SUNLinearSolver make_fill_routed_dense_linear_solver(N_Vector y, SUNMatrix A, SU
     return S;
 }
 
-// Identify the custom adaptive solver by its setup op (ls_setup has internal
-// linkage but is visible here in the same TU). The built-in SUNLinSol_Dense and
-// KLU solvers carry a different setup function, so these guards correctly skip
-// them and never reinterpret a foreign solver's content.
 void lapack_dense_reset_factor_count(SUNLinearSolver S) {
-    if (S == nullptr || S->ops == nullptr || S->ops->setup != ls_setup || S->content == nullptr)
-        return;
-    auto *c = static_cast<LapackDenseContent *>(S->content);
-    c->factor_count = 0;
-    c->blas_factor_count = 0;
+    if (LapackDenseContent *c = adaptive_content(S)) {
+        c->factor_count = 0;
+        c->blas_factor_count = 0;
+    }
 }
 
 long lapack_dense_factor_count(SUNLinearSolver S) {
-    if (S == nullptr || S->ops == nullptr || S->ops->setup != ls_setup || S->content == nullptr)
-        return -1;
-    return static_cast<LapackDenseContent *>(S->content)->factor_count;
+    const LapackDenseContent *c = adaptive_content(S);
+    return c != nullptr ? c->factor_count : -1;
 }
 
 long lapack_dense_blas_factor_count(SUNLinearSolver S) {
-    if (S == nullptr || S->ops == nullptr || S->ops->setup != ls_setup || S->content == nullptr)
-        return -1;
-    return static_cast<LapackDenseContent *>(S->content)->blas_factor_count;
+    const LapackDenseContent *c = adaptive_content(S);
+    return c != nullptr ? c->blas_factor_count : -1;
 }
-
-#else // !BNGSIM_HAS_LAPACK_DENSE
-
-SUNLinearSolver make_dense_linear_solver(N_Vector y, SUNMatrix A, SUNContext ctx,
-                                         bool /*prefer_lapack*/) {
-    return SUNLinSol_Dense(y, A, ctx);
-}
-
-SUNLinearSolver make_fill_routed_dense_linear_solver(N_Vector y, SUNMatrix A, SUNContext ctx) {
-    return SUNLinSol_Dense(y, A, ctx);
-}
-
-// No custom adaptive solver is built without a BLAS backend, so there is no
-// counter to reset or report.
-void lapack_dense_reset_factor_count(SUNLinearSolver /*S*/) {}
-long lapack_dense_factor_count(SUNLinearSolver /*S*/) { return -1; }
-long lapack_dense_blas_factor_count(SUNLinearSolver /*S*/) { return -1; }
-
-#endif // BNGSIM_HAS_LAPACK_DENSE
 
 } // namespace bngsim

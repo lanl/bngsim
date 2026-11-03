@@ -1238,8 +1238,10 @@ JITTER_RTOL = (0.5, 2.0)
 #: solution by its rounding alone, which no jittered grid or tolerance shows
 #: where the rounding keeps it exactly. BIOMD0000000908's S = 0 is one: its
 #: clearance law is -n·S on a reaction that consumes S, so S' = +0.277·S. The
-#: file's species order keeps S at 0; reversed, the rounding leaves 3.6e-19 at
-#: t = 10, which grows to 1.09e+134 of the peak by t = 300.
+#: file's species order kept S at 0; reversed, the dense solve's rounding left
+#: 3.6e-19 at t = 10, which grew to 1.09e+134 of the peak by t = 300. The dense
+#: solve now reads S's row, which holds S alone while S = 0, on its own, so both
+#: orders keep it; a start moved off 0 still grows.
 START_NUDGE = 1e-3
 
 

@@ -15,7 +15,8 @@ and h) and ran on dense to t = 100: the nightly's path agreement
 
 The oracle is a closed form where there is one: A held at exactly 1 where its
 law reads P at 0, and A's decay through sqrt(1 - t) where S is drained by a
-zero-order sink. Otherwise, the dense run of the same model.
+zero-order sink. Otherwise, the dense run of the same model, or for
+MODEL9811206584 the model at a millionfold tighter rtol.
 """
 
 from __future__ import annotations
@@ -137,12 +138,17 @@ def test_both_routes_still_fail_where_no_reading_is_finite():
 def test_model9811206584_runs_on_klu_as_on_dense(data_dir: Path):
     """The nightly's finding: s decays to 0 from t = 90, the solver takes it a
     hair below, and ``log(s)/log(10)`` there is NaN, read at 0 by the band.
-    Each species within 1e-5 of its own peak plus the run's atol, which is
-    what the two routes leave apart (5e-8 relative where they agree)."""
+    Both routes run to t = 100 and land within 1e-4 of each species' peak,
+    plus the run's atol, of the model at a millionfold tighter rtol, where the
+    two routes agree to 3e-12. At the run's rtol of 1e-6 each is up to 3.1e-5
+    off that run in r, and how far apart the two land turns on rounding:
+    3.1e-6 on arm64, 1.8e-5 on x86-64."""
     run = {"t_span": (0, 100), "n_points": 101, "rtol": 1e-6, "atol": 1e-9}
+    tight = {**run, "rtol": 1e-12, "atol": 1e-15}
     path = str(data_dir / "MODEL9811206584.xml")
-    _, klu = _species(bngsim.Model.from_sbml(path), run, "sparse")
-    _, dense = _species(bngsim.Model.from_sbml(path), run, "dense")
-    for name, x in dense.items():
-        bound = 1e-5 * float(np.abs(x).max()) + run["atol"]
-        assert np.abs(klu[name] - x).max() <= bound, name
+    _, ref = _species(bngsim.Model.from_sbml(path), tight, "dense")
+    for solver in ("sparse", "dense"):
+        _, x = _species(bngsim.Model.from_sbml(path), run, solver)
+        for name, want in ref.items():
+            bound = 1e-4 * float(np.abs(want).max()) + run["atol"]
+            assert np.abs(x[name] - want).max() <= bound, (solver, name)
