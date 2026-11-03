@@ -14,18 +14,19 @@ These tests pin the fix:
   * Unit (cheap, always run): the track classifier maps each method to the right
     engine — ode/ssa/psa run on bngsim, network-free ``nf`` is rerouted to
     RuleMonkey (``rm``), and an unsupported ``pla`` is refused (no silent fallback).
-  * Engine (needs bngsim + BNG2.pl + perl): the DECISIVE proof — with the bundled
-    ``run_network`` moved aside, ``run_bngsim_job`` still produces numeric output
-    (it never needs run_network), while the old ``bionetgen.run(simulator='bngsim')``
-    BNGL route crashes (proving it was BNG2.pl all along). The move-aside is wrapped
-    in a fixture that ALWAYS restores run_network, even on a hard assertion failure.
+  * Engine (needs bngsim + BNG2.pl + perl): the DECISIVE proof — on a copy of the
+    BNG install with ``run_network`` deleted, ``run_bngsim_job`` still produces
+    numeric output (it never needs run_network), while the old
+    ``bionetgen.run(simulator='bngsim')`` BNGL route crashes (proving it was BNG2.pl
+    all along). Each test removes the run_network of the install its route runs,
+    from a copy: the installs themselves are never touched.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import shutil
 import sys
-import tempfile
 from pathlib import Path
 
 import _core
@@ -111,8 +112,9 @@ _BNG = _core.resolve_bng()
 def _bng_paths():
     """(bngpath, bng2_pl, run_network), or None when any piece is unavailable.
 
-    This suite needs the legacy binary too — the decisive GH #175 lever moves
-    ``run_network`` aside — so a resolution without it does not count.
+    This suite needs the legacy binary too — the decisive GH #175 lever deletes
+    ``run_network`` from a copy of the install — so a resolution without it does
+    not count.
     """
     if not _BNG.ok:
         return None
@@ -135,35 +137,41 @@ engine = pytest.mark.skipif(
 
 
 @pytest.fixture
-def run_network_moved_aside():
-    """Move the bundled run_network aside, yield, then ALWAYS restore it.
+def bng_without_run_network(tmp_path, monkeypatch):
+    """``make(root) -> copy``: a copy of the BNG install at ``root`` with
+    ``bin/run_network`` deleted, and ``$BNGPATH`` pointed at the copy.
 
     Decisive GH #175 lever: with run_network gone, only an engine that does NOT
-    depend on it can still produce output. The finally clause restores the binary
-    even if the test body raises, so the user's BNG install is left untouched.
+    depend on it can still produce output. A copy, because renaming the binary in
+    place left the user's install broken whenever the test was killed before it
+    could restore it. ``$BNGPATH`` too, because BNG2.pl takes its root from
+    ``$BNGPATH`` before its own location: a copy run under the original's
+    ``$BNGPATH`` finds the original's run_network.
     """
-    paths = _bng_paths()
-    assert paths is not None
-    _, _, run_network = paths
-    disabled = run_network.with_suffix(run_network.suffix + ".disabled_by_test")
-    run_network.rename(disabled)
-    try:
-        # Yield the paths captured BEFORE the move — _bng_paths() would now return
-        # None (it checks run_network.exists(), which is false while moved aside).
-        yield paths
-    finally:
-        if disabled.exists():
-            disabled.rename(run_network)
+
+    def make(root) -> Path:
+        root = Path(root)
+        if root.name.lower() == "bng2.pl":
+            root = root.parent
+        if not (root / "bin" / "run_network").is_file():
+            pytest.skip(f"{root} has no bin/run_network to remove")
+        copy = tmp_path / "bng_without_run_network"
+        shutil.copytree(root, copy, symlinks=True)
+        (copy / "bin" / "run_network").unlink()
+        monkeypatch.setenv("BNGPATH", str(copy))
+        return copy
+
+    return make
 
 
 @engine
-def test_run_bngsim_job_is_genuine_bngsim_without_run_network(run_network_moved_aside):
+def test_run_bngsim_job_is_genuine_bngsim_without_run_network(bng_without_run_network, tmp_path):
     """run_bngsim_job produces numeric output with run_network GONE => genuine bngsim."""
-    _, bng2, _ = run_network_moved_aside
+    bng = bng_without_run_network(_BNG.root)
     model = MODELS / "fast/rulehub/Examples/biology/aktsignaling/akt-signaling.bngl"
     assert model.exists()
-    out = Path(tempfile.mkdtemp(prefix="genuine_bngsim_")) / "out"
-    info = C.run_bngsim_job(model, out, bng2, timeout=180)
+    out = tmp_path / "out"
+    info = C.run_bngsim_job(model, out, str(bng / "BNG2.pl"), timeout=180)
     assert info["engine"] == "bngsim"
     assert info["track"] == "ode"
     gdat = list(out.glob("*.gdat"))
@@ -174,14 +182,35 @@ def test_run_bngsim_job_is_genuine_bngsim_without_run_network(run_network_moved_
 
 
 @engine
-def test_legacy_bngl_route_is_bng2pl_not_bngsim(run_network_moved_aside):
+def test_legacy_bngl_route_is_bng2pl_not_bngsim(bng_without_run_network, tmp_path, monkeypatch):
     """Contrast: bionetgen.run(<bngl>, simulator='bngsim') CRASHES with run_network
-    gone — proving that path is BNG2.pl/run_network, not bngsim (the GH #175 bug)."""
+    gone — proving that path is BNG2.pl/run_network, not bngsim (the GH #175 bug).
+
+    The run_network removed is the one that route runs. ``bionetgen.run`` takes
+    BNG2.pl from PyBioNetGen's own config (``get_conf()["bngpath"]``, its bundled
+    copy) and ignores ``$BNGPATH``. Removing ``$BNGPATH``'s run_network instead left
+    the route its own, and the test failed with DID NOT RAISE on any machine whose
+    ``$BNGPATH`` names another install, which the resolver has preferred since
+    1f216d4d. So the route is pointed at a copy of its own install without one.
+    """
     import bionetgen
+    import bionetgen.modelapi.runner as runner
+    from bionetgen.main import get_conf
+
+    conf = get_conf()
+    bng = bng_without_run_network(conf["bngpath"])
+    patched = {key: conf[key] for key in conf}
+    patched["bngpath"] = str(bng)
+    monkeypatch.setattr(runner, "get_conf", lambda: patched)
 
     model = MODELS / "fast/rulehub/Examples/biology/aktsignaling/akt-signaling.bngl"
-    out = tempfile.mkdtemp(prefix="bridge_bngl_route_")
     # Broad on purpose: the point is that the route CRASHES with run_network gone;
     # the exact error (missing-binary / subprocess / bionetgen) is not what we pin.
-    with pytest.raises(Exception):  # noqa: B017
-        bionetgen.run(str(model), out=out, simulator="bngsim")
+    with pytest.raises(Exception) as raised:  # noqa: B017
+        bionetgen.run(str(model), out=str(tmp_path / "out"), simulator="bngsim")
+    # ... but it must be run_network's absence that stopped it, not a broken copy.
+    err = raised.value
+    said = " ".join(
+        str(part) for part in (err, getattr(err, "stdout", ""), getattr(err, "stderr", ""))
+    )
+    assert "run_network" in said, said[-2000:]

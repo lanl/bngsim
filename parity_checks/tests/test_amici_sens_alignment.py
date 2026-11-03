@@ -301,6 +301,49 @@ class TestMakeSpecs:
         methods_in_order = [s["sens_method"] for s in specs]
         assert methods_in_order == ["staggered"] * 3 + ["simultaneous"] * 3
 
+    def test_each_later_method_waits_on_its_own_models_first(self):
+        """Issue #1386: method-major order alone let BIOMD0000000457's second
+        method start while its first was still compiling. Every later-method
+        spec waits on its own model's first-method spec, which is in the run."""
+        import amici_sens_run as run
+
+        methods = ["staggered", "simultaneous"]
+        specs, _ = self._specs(["A", "B", "C"], methods)
+        keys = {s["key"] for s in specs}
+        for s in specs:
+            first = run.first_method_key(s, methods)
+            if s["sens_method"] == "staggered":
+                assert first is None
+            else:
+                assert first == f"{s['model_id']}:sens:staggered" and first in keys
+
+    def test_the_sweep_hands_schedule_the_dependency(self, monkeypatch, tmp_path):
+        """main() passes ``depends_on``: the dependency is not left to order.
+        Run on the committed smoke manifest up to the schedule call, the
+        callable it hands over maps every spec main() built."""
+        import amici_sens_run as run
+
+        smoke = run.RR_PARITY / "smoke" / "ode_jobs_smoke.json"
+        seen = {}
+
+        class _Stop(Exception):
+            pass
+
+        def schedule(specs, target, **kw):
+            seen.update(specs=specs, kw=kw)
+            raise _Stop
+
+        monkeypatch.setattr(run.asens, "schedule", schedule)
+        argv = ["amici_sens_run.py", "--manifest", str(smoke), "--models", "BIOMD0000000001"]
+        monkeypatch.setattr(sys, "argv", [*argv, "--out", str(tmp_path / "report.json")])
+        with pytest.raises(_Stop):
+            run.main()
+        waits = {s["key"]: seen["kw"]["depends_on"](s) for s in seen["specs"]}
+        assert waits == {
+            "BIOMD0000000001:sens:staggered": None,
+            "BIOMD0000000001:sens:simultaneous": "BIOMD0000000001:sens:staggered",
+        }
+
     def test_one_method_is_unaffected(self):
         specs, _ = self._specs(["A", "B"], ["staggered"])
         assert [s["model_id"] for s in specs] == ["A", "B"]

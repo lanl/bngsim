@@ -143,6 +143,71 @@ def test_flaky_case_changes_never_alert():
     assert r["changed"][0]["case"] == "A|ode" and "flaky" in r["changed"][0]["note"]
 
 
+def test_a_row_re_baselined_since_that_night_is_reported_not_alerted():
+    # #1427: a stricter check moves A from PASS to DIFF and re-records it. Against
+    # the night before, that row is the reviewed change, on the pull request's own
+    # run and on the first night after it merges.
+    then = BASE
+    now = fresh_with(A_ode=rec("DIFF"))
+    r = V.diff(BASE, now, rebaselined=V.rebaselined(then, now))
+    assert r["n_alerts"] == 0
+    assert r["changed"][0]["case"] == "A|ode"
+    assert "re-baselined since that night" in r["changed"][0]["note"]
+    # Only into the verdict recorded: a run where A crashes instead still alerts.
+    r = V.diff(BASE, fresh_with(A_ode=rec("EXCEPTION")), rebaselined=V.rebaselined(then, now))
+    assert r["alerts"]["regressed"] == 1
+
+
+def test_a_fix_that_regresses_into_a_stale_baseline_still_alerts():
+    # The baseline still says DIFF from before C was fixed; last night C passed and
+    # tonight it is back to DIFF. Nobody recorded that, so it is the regression the
+    # night-to-night comparison exists for.
+    stale = BASE
+    last_night = fresh_with(C_ode=rec("PASS"))
+    r = V.diff(last_night, BASE, rebaselined=V.rebaselined(stale, stale))
+    assert [x["case"] for x in r["regressed"]] == ["C|ode"]
+
+
+def test_rebaselined_lists_new_and_moved_rows_only():
+    more = {**W, "n_steps": 300}
+    now = fresh_with(
+        A_ode=rec("DIFF"),
+        B_ode=rec("PASS", work=more, sec=1.0),
+        C_ode=rec("DIFF", "rr_known"),
+        F_ode=rec("PASS"),
+    )
+    assert sorted(V.rebaselined(BASE, now)) == ["A|ode", "B|ode", "C|ode", "F|ode"]
+    assert V.rebaselined(BASE, BASE) == {}
+
+
+def test_work_re_baselined_since_that_night_is_not_compared():
+    # #1434: a tolerance change re-records A's work at 3x; against the night
+    # before, that is the reviewed work, per case and in the totals.
+    more = {"n_steps": 300, "n_rhs_evals": 600, "n_jac_evals": 60}
+    now = fresh_with(A_ode=rec("PASS", work=more, sec=1.0))
+    r = V.diff(BASE, now, rebaselined=V.rebaselined(BASE, now))
+    assert r["n_alerts"] == 0
+    assert r["efficiency"] == [] and r["rebaselined_work"] == ["A|ode"]
+    assert r["work_totals"]["n_steps"]["before"] == W["n_steps"]  # B only
+    assert "Work on 1 case(s) the committed baseline re-recorded" in V.render_md(r, "x")
+    # Past the work it was re-recorded at, it alerts again.
+    worse = fresh_with(A_ode=rec("PASS", work={**more, "n_steps": 900}, sec=1.0))
+    r = V.diff(BASE, worse, rebaselined=V.rebaselined(BASE, now))
+    assert r["alerts"]["efficiency_cases"] == 3 and r["rebaselined_work"] == []  # 3 counters
+
+
+def test_cli_reads_the_baseline_then_and_now(tmp_path):
+    last_night = _write(tmp_path, "prev.json", BASE)
+    tonight = _write(tmp_path, "tonight.json", fresh_with(A_ode=rec("DIFF")))
+    then = _write(tmp_path, "then.json", BASE)
+    assert V.main(["diff", "--baseline", last_night, "--fresh", tonight]) == 1
+    args = ["diff", "--baseline", last_night, "--fresh", tonight, "--baseline-then", then]
+    assert V.main([*args, "--baseline-now", tonight]) == 0
+    # Without a baseline of that night's commit, nothing is excused.
+    missing = str(tmp_path / "absent.json")
+    assert V.main([*args[:5], "--baseline-then", missing, "--baseline-now", tonight]) == 1
+
+
 def test_cli_reads_the_flaky_file_for_its_suite(tmp_path):
     base = _write(tmp_path, "base.json", BASE)
     worse = _write(tmp_path, "worse.json", fresh_with(A_ode=rec("TIMEOUT")))
@@ -192,18 +257,23 @@ def test_work_jump_on_a_flaky_case_is_reported_not_alerted():
     assert r["efficiency"][0]["note"].startswith("flaky: ")
     assert r["efficiency"][0]["flaky"] is True
     assert r["alerts"]["efficiency_cases"] == 0
-    # It still counts in the totals: 350 steps against 200 is past x1.05, and
-    # that is the one alert.
-    assert r["work_totals"]["n_steps"]["after"] == 350
-    assert r["work_totals"]["n_steps"]["alert"] is True
-    assert r["n_alerts"] == r["alerts"]["efficiency_totals"] == 1
+    # Nor does it alert through the totals, which leave it out: counted, 350
+    # steps against 200 was past x1.05, the alert the listing exists to stop.
+    assert r["work_totals"]["n_steps"] == {
+        "before": 100,
+        "after": 100,
+        "ratio": 1.0,
+        "alert": False,
+    }
+    assert r["n_alerts"] == 0
     md = V.render_md(r)
     assert "flaky: steps follow" in md
     # The header counts it apart, not in bold among the alerting increases.
     assert "Efficiency: 0 counter increase(s) above x1.25, and 1 on flaky cases" in md
     assert "**Efficiency" not in md
-    # The same jump on a case not listed alerts as before.
-    assert V.diff(BASE, fresh, flaky={"B|ode": "x"})["alerts"]["efficiency_cases"] == 1
+    # The same jump on a case not listed alerts as before, per case and in total.
+    alerts = V.diff(BASE, fresh, flaky={"B|ode": "x"})["alerts"]
+    assert alerts["efficiency_cases"] == alerts["efficiency_totals"] == 1
 
 
 def test_small_absolute_work_change_does_not_alert():

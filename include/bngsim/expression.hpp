@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "bngsim/dual.hpp"
+
 #include <functional>
 #include <memory>
 #include <string>
@@ -180,6 +182,46 @@ class ExprTkEvaluator : public ExpressionEvaluator {
     // is what makes it testable instead of merely documented. Not for
     // dereferencing: the value is an identity, and the type says so.
     const void *parser_identity() const;
+
+  private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+// ─── The same expressions on dual numbers (issue #1330) ──────────────────────
+//
+// ExprTk compiled on bngsim::Dual (bngsim/dual.hpp), so that an expression the
+// model evaluates gives its derivative along a seeded direction as well as its
+// value. It compiles the text an ExprTkEvaluator compiled, as that evaluator
+// cached it (preprocessed_expr), against a symbol table registered under the
+// same keys, with the same built-ins: what it differentiates is what the
+// interpreter computes. NetworkModel builds one on demand (model_dual.cpp).
+//
+// Nothing is shared with any other evaluator, as for ExprTkEvaluator, and one
+// thread uses it at a time.
+class ExprTkDualEvaluator {
+  public:
+    ExprTkDualEvaluator();
+    ~ExprTkDualEvaluator();
+    ExprTkDualEvaluator(const ExprTkDualEvaluator &) = delete;
+    ExprTkDualEvaluator &operator=(const ExprTkDualEvaluator &) = delete;
+
+    // Bind `name` to `addr`, under the key ExprTkEvaluator::try_define_variable
+    // registers it with. False where that key is taken or no symbol, as there.
+    bool try_define_variable(const std::string &name, Dual *addr);
+
+    // A zero-argument function, as ExprTkEvaluator::define_function registers
+    // a table's `tfun_<name>`. False where the name is taken.
+    bool define_function(const std::string &name, std::function<Dual()> fn);
+
+    // Compile text an ExprTkEvaluator preprocessed. Throws std::runtime_error
+    // where it does not compile here (a name this evaluator was not given).
+    int compile_preprocessed(const std::string &preprocessed_expr);
+
+    Dual evaluate(int expr_id);
+
+    // time() reads this, with the derivative it holds.
+    void set_time_ptr(Dual *time_addr);
 
   private:
     struct Impl;

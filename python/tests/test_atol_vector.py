@@ -73,17 +73,20 @@ def _rel_err(sim, model, **run_kwargs) -> tuple[float, float, int]:
 
 
 def test_scalar_atol_cannot_resolve_the_small_species(wide_sim):
-    """The premise: no scalar atol is a tolerance for both ends of this model."""
+    """The premise: no scalar atol held for every species is a tolerance for
+    both ends of this model. (A float is read as a per-species ceiling since
+    issue #1420; ExactAtol is the scalar held exactly.)"""
     sim, model = wide_sim
+    loose, tight = bngsim.ExactAtol(1e-8), bngsim.ExactAtol(1e-17)
 
     # Loose enough to integrate cheaply — and S is unresolved, by a wide margin.
-    err_s_loose, err_b_loose, _ = _rel_err(sim, model, atol=1e-8)
+    err_s_loose, err_b_loose, _ = _rel_err(sim, model, atol=loose)
     assert err_s_loose > 0.1, "expected the small species to be badly wrong at atol=1e-8"
     assert err_b_loose < 1e-6, "the large species is fine at atol=1e-8 — that is the conflict"
 
     # Tight enough for S — and now every species pays for it.
-    _, _, n_steps_loose = _rel_err(sim, model, atol=1e-8)
-    err_s_tight, _, n_steps_tight = _rel_err(sim, model, atol=1e-17)
+    _, _, n_steps_loose = _rel_err(sim, model, atol=loose)
+    err_s_tight, _, n_steps_tight = _rel_err(sim, model, atol=tight)
     assert err_s_tight < 1e-3
     assert n_steps_tight > n_steps_loose
 
@@ -105,7 +108,7 @@ def test_small_species_goes_negative_under_a_scalar_atol(wide_sim):
     idx = model.species_names.index("S()")
 
     model.reset()
-    scalar = sim.run(t_span=(0.0, _T_END), n_points=_N_POINTS, atol=1e-8)
+    scalar = sim.run(t_span=(0.0, _T_END), n_points=_N_POINTS, atol=bngsim.ExactAtol(1e-8))
     assert scalar.species[-1, idx] < 0.0
 
     model.reset()
@@ -239,7 +242,8 @@ def test_numpy_array_is_accepted(wide_sim):
 
 
 def test_auto_atol_follows_the_documented_rule(wide_sim):
-    """``rtol * max(|y_i|, floor)``, floor = the smallest positive magnitude."""
+    """``rtol * max(|y_i|, floor)``, floor = the smallest positive magnitude,
+    here 1e-9, under the cap of 1."""
     sim, model = wide_sim
     model.reset()
     got = sim.auto_atol()
@@ -306,14 +310,14 @@ def test_a_scalar_clears_a_previously_set_vector(wide_sim):
     sim.set_tolerances(1e-8, [1e-17] * model.n_species)
     assert _rel_err(sim, model)[0] < 1e-3
 
-    sim.set_tolerances(1e-8, 1e-8)
+    sim.set_tolerances(1e-8, bngsim.ExactAtol(1e-8))
     assert _rel_err(sim, model)[0] > 0.1
 
 
 def test_run_argument_overrides_the_configured_vector(wide_sim):
     sim, model = wide_sim
     sim.set_tolerances(1e-8, [1e-17] * model.n_species)
-    assert _rel_err(sim, model, atol=1e-8)[0] > 0.1
+    assert _rel_err(sim, model, atol=bngsim.ExactAtol(1e-8))[0] > 0.1
 
 
 def test_set_tolerances_rejects_a_wrong_length_vector(wide_sim):
@@ -520,9 +524,39 @@ def test_sedml_export_refuses_a_non_scalar_atol(wide_net, atol):
 
 
 def test_derive_atol_rule():
-    got = derive_atol([2.0, 0.0, 4.0], 1e-6)
-    # floor = 2.0 (smallest positive), so the zero entry rides at 2.0's scale.
-    assert got == pytest.approx([2e-6, 2e-6, 4e-6])
+    got = derive_atol([0.5, 0.0, 4.0], 1e-6)
+    # floor = 0.5 (smallest positive), so the zero entry rides at 0.5's scale.
+    assert got == pytest.approx([5e-7, 5e-7, 4e-6])
+
+
+def test_derive_atol_floor_is_never_above_one():
+    """A species at 0 rode at the smallest start, which in a model whose every
+    start is large is no scale for it: MODEL2009230001's species at 0 beside one
+    at 1.1e10 were held to 110, and came out 100% off. In a model of counts the
+    cap is one molecule."""
+    assert derive_atol([2.0, 0.0, 4.0], 1e-6) == pytest.approx([2e-6, 1e-6, 4e-6])
+    assert derive_atol([1.1e10, 0.0], 1e-8) == pytest.approx([110.0, 1e-8])
+
+
+def test_auto_resolves_a_species_grown_from_0_beside_a_large_one():
+    """Y is made from nothing and grows at 0.5 per unit time beside X at 1e10.
+    At X's scale its tolerance was 100, its growth from 0 went unresolved, and
+    the run was 99.99% off; at the cap it is held to 1e-8."""
+    pytest.importorskip("antimony")
+    src = "X = 1e10; Y = 0; P: -> Y; 1e-3; G: -> Y; 0.5*Y; D: X -> ; 1e-3*X;"
+
+    def run(**kw):
+        sim = bngsim.Simulator(bngsim.Model.from_antimony_string(src), method="ode")
+        return np.asarray(sim.run(t_span=(0, 40), n_points=41, **kw).species)
+
+    reference = run(rtol=1e-12, atol=1e-20)
+    peak = np.abs(reference).max(axis=0)
+
+    def off(x):
+        return float((np.abs(x - reference).max(axis=0) / peak).max())
+
+    assert off(run(atol="auto")) < 1e-3
+    assert off(run(atol=[100.0, 100.0])) > 0.5  # the old floor's vector
 
 
 def test_derive_atol_uses_magnitude_not_sign():
@@ -579,7 +613,7 @@ def test_normalize_atol_vector_names_the_species_it_can():
 # a consumer would feature-detect on. These tests pin the names, because the
 # cost of losing one is a downstream ``from bngsim._atol import ...``.
 
-_PUBLIC_NAMES = ["AUTO", "derive_atol", "normalize_atol_vector"]
+_PUBLIC_NAMES = ["AUTO", "ExactAtol", "derive_atol", "normalize_atol_vector"]
 
 
 @pytest.mark.parametrize("name", _PUBLIC_NAMES)

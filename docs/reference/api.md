@@ -32,8 +32,8 @@ Methods:
 - **`restore_concentrations(label=None)`** — Restore a snapshot; no label restores the default slot, a `label` restores that named state (BNG `resetConcentrations("name")`)
 - **`has_saved_concentrations(label=None)`** — Whether a named snapshot (or, with no label, any) exists
 - `saved_concentration_labels` — Sorted names of saved named snapshots
-- **`set_concentration(name, value)`** — Set a single species concentration
-- **`get_concentration(name)`** — Get a single species concentration
+- **`set_concentration(name, value)`** — Set a single species concentration. A fixed species can be named with its `$` or without it (`"$X(a)"` or `"X(a)"`, `"@c::$X()"` or `"@c::X()"`), as BNG2.pl's `setConcentration` takes either: the model's `species_names` drop the `$` the `.net` writes
+- **`get_concentration(name)`** — Get a single species concentration, named the same way
 - **`pure_sink_species()`** → `list[str]` — write-only accumulator species: a product of ≥1 reaction, a reactant of none, read by no other species' derivative, and not `$`-fixed. These put a structural floor under `||f(y)||_2/n` (issue #74)
 - **`is_pure_sink()`** → `ndarray (n_species,) of bool` — the array form, so `mask=~model.is_pure_sink()`
 - **`declare_ic_sensitivity({species: {param: d_ic_d_param}})`** — Declare `∂x_k(0)/∂θ` for an initial condition your own code assigns (issue #111). A declared species' row is taken as **fully specified**: parameters not named get `0.0`, so it *replaces* the model's parameter-graph row rather than adding to it
@@ -101,7 +101,7 @@ Interactive:
 - **`set_time(t)`** — Set `current_time` (finite, else `ValueError`); the next `run_until` integrates from there
 
 Stop conditions:
-- **`add_stop_condition(condition, *, label)`** — `str` expression or `callable`
+- **`add_stop_condition(condition, *, label)`** — `str` expression or `callable`. `run` raises `StopConditionMet` with the result cut at the first sample a condition holds at; `run_batch`, `run_replicates` and `parameter_scan` return each row that meets one cut there, with `Result.stop_condition` set, and refuse `squeeze=True` while one is registered (issue #1369)
 - **`clear_stop_conditions()`**
 
 Steady-state (`method` ∈ `"integration"` (default), `"newton"`, `"kinsol"` alias):
@@ -244,6 +244,7 @@ Properties:
 - **`dataframe`** — `pandas.DataFrame` (requires pandas)
 - **`xr`** — AMICI-style xarray accessor; `result.xr.species`, `.observables`, `.expressions`, `.sensitivities`, `.sensitivities_ic` return labeled `xarray.DataArray`s with `time`/`state`/`observable`/`expression`/`parameter`/`ic_state` coords (requires xarray)
 - **`solver_stats`** — `dict` with solver diagnostics
+- **`stop_condition`** — `str | None`: the label (else the expression) of the stop condition the result was cut at, `None` where none was met (issue #1369)
 - **`custom_attrs`** — `dict` for user metadata
 - `n_times`, `n_species`, `n_observables`, `n_expressions`
 - `species_names`, `observable_names`, `expression_names`
@@ -259,7 +260,7 @@ Methods:
 - **`to_xarray()`** → `xarray.Dataset` bundling species/observables/expressions/sensitivities/sensitivities_ic with shared `time` coord (requires xarray); `custom_attrs` + `seed` propagate to `ds.attrs`
 - **`save(path)`** — Save to HDF5 (requires h5py)
 - **`Result.load(path)`** — Load from HDF5 (class method)
-- **`Result.squeeze(results)`** — Stack list into 3D batch result
+- **`Result.squeeze(results)`** — Stack list into 3D batch result; refuses a list holding a row that met a stop condition
 
 ## `bngsim.SteadyStateResult`
 
@@ -295,9 +296,11 @@ All inherit from `bngsim.BngsimError` (which inherits `RuntimeError`):
 
 - **`ModelError`** — `.net` parse failures, invalid model state
 - **`SimulationError`** — Solver failures (convergence, NaN)
+  - **`SparseJacobianUnavailableError`** — `force_sparse_linear_solver=True` on a model that cannot supply a sparse Jacobian for KLU: its analytical Jacobian is unavailable (or suppressed by `jacobian="fd"`) and its sparsity pattern has no structural nonzero to colour. A refusal by name, not a solver failure: drop the flag to use the dense solver. A `SimulationError`, as it was raised before it had a type, from `run()` and `run_batch()` alike.
 - **`SimulationTimeout`** — Wall-clock budget exceeded; `.timeout` and `.elapsed` attributes
 - **`ParameterError`** — Unknown parameter name, invalid value
 - **`SensitivityUnsupportedError`** — Forward sensitivity declined for this model: an event whose crossing time moves in a way `dt*/dp` cannot be computed for, or a rate law that does not differentiate to closed form. A declared capability gap, not a failure — catch it to fall back on a derivative-free optimizer. Also inherits `ValueError` (what both sites raised before the class existed), so `except ValueError` still catches it. A missing compiler/JIT is *not* this exception; that stays a plain `RuntimeError`.
+- **`CodegenDeclinedError`** — `codegen=True` on a model codegen declines, such as one whose functions read each other: a statement about the model, which runs on the interpreted RHS with `codegen=None` or `codegen=False`. A codegen *build* failure (a compiler error, a timeout) says nothing about the model and stays a plain `RuntimeError`. The deprecated `bngsim.prepare_codegen` raises it for a decline too.
 - **`StopConditionMet`** — Stop condition triggered; `.result` has partial data
 
 Warnings (`UserWarning` subclasses; filter or escalate them with `warnings`):
@@ -312,14 +315,15 @@ Warnings (`UserWarning` subclasses; filter or escalate them with `warnings`):
 - **`bngsim.parse_net_file(path)`** → `dict` — The components of a `.net` file as a plain Python dict with keys `parameters`, `species`, `species_ic_params`, `observables`, `functions`, `reactions` and `net_file_dir`. It is the C++ loader's own reading of the file, the one `Model.from_net` builds, with the values the built model holds, so it needs the compiled extension, raises `ValueError` where `Model.from_net` refuses the file (`FileNotFoundError` or `IsADirectoryError` for a path that is not a file), and reports the numbers `Model.from_net` puts in the same slots. Deprecated `Sat`/`Hill` rate laws come back rewritten as explicit functions, with the loader's warning.
 - **`bngsim.build_model_from_parsed(parsed)`** → `Model` — Build a BNGsim `Model` from the dict returned by `parse_net_file()`, or one of the same shape. It makes the `ModelBuilder` calls the loader makes, so an unmodified dict builds the model `Model.from_net` loads.
 
-## Absolute tolerance (issues #196, #212, #213)
+## Absolute tolerance (issues #196, #212, #213, #1420)
 
 - **`bngsim.AUTO`** → `"auto"` — the token every `atol=` accepts. Also the capability probe for the whole per-species feature: `hasattr(bngsim, "AUTO")`. The version string is not one — the checkout that first carried #196 still declared `0.12.2`.
-- **`bngsim.derive_atol(state, rtol, *, floor=None)`** → `ndarray` — `rtol * max(|y_i|, floor)` over **a state you supply**, ordered like `model.species_names`. `floor` defaults to the smallest strictly positive entry of `state` (`1.0` if every entry is zero).
+- **`bngsim.derive_atol(state, rtol, *, floor=None)`** → `ndarray` — `rtol * max(|y_i|, floor)` over **a state you supply**, ordered like `model.species_names`. `floor` defaults to the smallest strictly positive entry of `state`, but not above `1.0` (also the floor if every entry is zero).
 - **`bngsim.normalize_atol_vector(atol, n_species, species_names=None, *, where="atol")`** → `list[float]` — the length/position/finiteness check `run()` applies, callable at the point a vector is built rather than at the first run.
 
 - **`bngsim.TRACKING`** → `"tracking"` — the token for the over-time mode of issue #213; sugar for `TrackingAtol()`.
 - **`bngsim.TrackingAtol(decades=12.0, ceiling="auto")`** — an `atol=` value that re-evaluates the vector against the state being integrated (`CVodeWFtolerances`): `atol_i(y) = clamp(rtol*|y_i|, ceiling_i * 10**-decades, ceiling_i)`. A vector fixes the tolerance per species; this fixes it per instant, which is what a species that starts at order one and **decays** to something tiny needs. At `decades=0` it is the ceiling vector exactly, and it is never looser than that vector. `hasattr(bngsim, "TrackingAtol")` is the probe. Costs steps and can make a stiff model unintegrable — see the [solver guide](../user-guide/solvers.md#tracking-absolute-tolerance) for the corpus numbers.
+- **`bngsim.ExactAtol(value)`** — an `atol=` value that holds every species to `value` exactly (`CVodeSStolerances`). A float `atol`, the default `1e-8` or one you pass, is read as a ceiling, `min(atol, rtol * max(|x_i|, floor))` per species (issue #1420); this is the opt-out, and how a scalar was read before. Accepted by `set_tolerances` and `steady_state` too, and carried by an `EvaluationSpec` as `{"exact": value}`; `bngsim.convert.read_sedml(..., exact_atol=True)` reads a SED-ML file's absolute tolerance this way. See the [solver guide](../user-guide/solvers.md#a-scalar-atol-you-pass-and-holding-it-exactly).
 
 `derive_atol` and `Simulator.auto_atol` run the same rule; they differ only in
 which state they read. `auto_atol` (and `atol="auto"`) reads the model's **live**

@@ -1074,10 +1074,20 @@ bool is_itself_a_comparison(const std::string &operand) {
     return false;
 }
 
+// The comparison a single-comparison trigger makes (issue #947): the residual
+// oriented to rise where the trigger turns true, with whitespace dropped, and
+// whether the comparison is strict.
+struct TriggerComparison {
+    std::string rising;
+    bool strict = false;
+};
+
 // Build `(<lhs>)-(<rhs>)` from a preprocessed trigger, or return nullopt with
-// `why` describing what defeated the split.
+// `why` describing what defeated the split. Where `cmp` is given and the
+// comparison is an ordering (< <= > >=), it receives that comparison.
 std::optional<std::string> trigger_residual_source(const std::string &trigger, std::string &why,
-                                                   ResidualUse use) {
+                                                   ResidualUse use,
+                                                   TriggerComparison *cmp = nullptr) {
     const std::string s = strip_enclosing_parens(trigger);
     if (s.empty()) {
         why = "it is empty";
@@ -1179,6 +1189,19 @@ std::optional<std::string> trigger_residual_source(const std::string &trigger, s
               "with one";
         return std::nullopt;
     }
+    if (cmp != nullptr && (s[op_pos] == '<' || s[op_pos] == '>')) {
+        auto squeeze = [](const std::string &side) {
+            std::string out = strip_enclosing_parens(side);
+            out.erase(std::remove_if(out.begin(), out.end(),
+                                     [](unsigned char c) { return std::isspace(c) != 0; }),
+                      out.end());
+            return out;
+        };
+        // `tau <= time` and `time >= tau` rise on one residual.
+        cmp->rising = s[op_pos] == '>' ? "(" + squeeze(lhs) + ")-(" + squeeze(rhs) + ")"
+                                       : "(" + squeeze(rhs) + ")-(" + squeeze(lhs) + ")";
+        cmp->strict = op_len == 1;
+    }
     // Orientation is not imposed: dt*/dp is a ratio of two derivatives of g, so
     // negating g leaves it unchanged.
     return "(" + lhs + ")-(" + rhs + ")";
@@ -1199,17 +1222,20 @@ int NetworkModel::event_trigger_residual_expr(int event_idx0, std::string *why) 
         cache.assign(events.size(), -2);
         impl_->event_trigger_residual_species.assign(events.size(), {});
         impl_->event_trigger_residual_reason.assign(events.size(), std::string());
+        impl_->event_trigger_comparison.assign(events.size(), std::string());
+        impl_->event_trigger_strict.assign(events.size(), 0);
     }
     if (cache[event_idx0] == -2) {
         cache[event_idx0] = -1;
         const Event &ev = events[event_idx0];
         std::string reason;
+        TriggerComparison cmp;
         if (ev.trigger_expr_idx < 0) {
             reason = "it has no trigger expression";
         } else {
             const std::string &pre = impl_->evaluator->preprocessed_expr(ev.trigger_expr_idx);
             const std::optional<std::string> src =
-                trigger_residual_source(pre, reason, ResidualUse::EventRisingEdge);
+                trigger_residual_source(pre, reason, ResidualUse::EventRisingEdge, &cmp);
             if (src) {
                 try {
                     // Compiling the *preprocessed* halves keeps every identifier
@@ -1226,6 +1252,8 @@ int NetworkModel::event_trigger_residual_expr(int event_idx0, std::string *why) 
         if (cache[event_idx0] >= 0) {
             expression_support(cache[event_idx0],
                                &impl_->event_trigger_residual_species[event_idx0], nullptr);
+            impl_->event_trigger_comparison[event_idx0] = std::move(cmp.rising);
+            impl_->event_trigger_strict[event_idx0] = cmp.strict ? 1 : 0;
         } else {
             impl_->event_trigger_residual_reason[event_idx0] = reason;
         }
@@ -1342,6 +1370,43 @@ const std::vector<int> &NetworkModel::event_trigger_residual_species(int event_i
         return kEmpty;
     }
     return impl_->event_trigger_residual_species[event_idx0];
+}
+
+const std::string &NetworkModel::event_trigger_comparison(int event_idx0, bool *strict) const {
+    static const std::string kNone;
+    if (strict != nullptr) {
+        *strict = false;
+    }
+    if (event_trigger_residual_expr(event_idx0) < 0) {
+        return kNone;
+    }
+    if (strict != nullptr) {
+        *strict = impl_->event_trigger_strict[event_idx0] != 0;
+    }
+    return impl_->event_trigger_comparison[event_idx0];
+}
+
+std::vector<std::pair<int, int>>
+NetworkModel::strict_beside_non_strict(const std::vector<int> &rising) const {
+    std::vector<std::pair<int, int>> out;
+    if (rising.size() < 2) {
+        return out;
+    }
+    for (int ei : rising) {
+        bool strict = false;
+        const std::string &cmp = event_trigger_comparison(ei, &strict);
+        if (!strict || cmp.empty()) {
+            continue;
+        }
+        const auto twin = std::find_if(rising.begin(), rising.end(), [&](int ej) {
+            bool ej_strict = true;
+            return event_trigger_comparison(ej, &ej_strict) == cmp && !ej_strict;
+        });
+        if (twin != rising.end()) {
+            out.emplace_back(ei, *twin);
+        }
+    }
+    return out;
 }
 
 // ─── What a compiled expression can be differentiated with respect to ────────
@@ -2122,14 +2187,17 @@ NetworkModel::rate_dependencies_(std::vector<int> params, const std::vector<std:
             while (k < e.size() && std::isspace(static_cast<unsigned char>(e[k])))
                 ++k;
             const bool call = k < e.size() && e[k] == '(';
-            if (clock && id == "time" && (call || !time_declared))
+            if (clock && id == "time" && (call || !time_declared)) {
                 deps.time = true;
+                deps.clock = true;
+            }
             auto tit = tables.find(id);
             if (tit != tables.end()) {
                 const std::string &idx = tit->second->index_name();
                 const std::string key = strip_paren_suffix(idx);
                 if (is_time_index(idx)) {
                     deps.time = true;
+                    deps.clock = true;
                 } else if (auto pit = sd.param_name_to_idx.find(key);
                            pit != sd.param_name_to_idx.end()) {
                     params.push_back(pit->second);
@@ -2175,6 +2243,15 @@ NetworkModel::rate_dependencies_(std::vector<int> params, const std::vector<std:
     return deps;
 }
 
+// The parameters a reaction's propensity reads: its rate constant, its SSA
+// volume and its rate law's.
+static void append_rate_params(const Reaction &rxn, std::vector<int> &params) {
+    params.push_back(rxn.rate_param_idx0);
+    params.push_back(rxn.ssa_volume_param_idx0);
+    for (int pi : rxn.rate_law_param_indices)
+        params.push_back(pi - 1);
+}
+
 // A reaction's propensity, as compute_rxn_rate reads it: its reactants, the
 // species of its SSA falling factorial, a live compartment volume, and its
 // rate parameters' definitions.
@@ -2182,9 +2259,8 @@ NetworkModel::RateDeps
 NetworkModel::reaction_rate_dependencies_(int rxn_idx0,
                                           const std::vector<char> *pc_functions) const {
     const Reaction &rxn = impl_->shared->reactions[rxn_idx0];
-    std::vector<int> params{rxn.rate_param_idx0, rxn.ssa_volume_param_idx0};
-    for (int pi : rxn.rate_law_param_indices)
-        params.push_back(pi - 1);
+    std::vector<int> params;
+    append_rate_params(rxn, params);
     RateDeps deps = rate_dependencies_(std::move(params), {}, pc_functions);
     const int ns = static_cast<int>(impl_->species.size());
     const auto add = [&](int si) {
@@ -2244,6 +2320,73 @@ bool NetworkModel::reaction_rate_reads_time(int rxn_idx0,
     if (rxn_idx0 < 0 || rxn_idx0 >= static_cast<int>(impl_->shared->reactions.size()))
         return false;
     return reaction_rate_dependencies_(rxn_idx0, pc_functions).time;
+}
+
+// functions_use_time is decided from the same texts and over-reports: a derived
+// parameter that reads time() is refused at build, and the only tables an
+// expression can call on the clock are the ones a function is built around,
+// which set it. So a model it clears reads no clock anywhere, and the two walks
+// below are not taken for it. They fill expression_support for every
+// definition they reach, which cost a model of 3,073 reactions and 15,824
+// parameters (MODEL1602080000, reading no time) 18 s on its first
+// run(steady_state=True), and every batch row as much again on its clone.
+bool NetworkModel::rate_laws_read_clock() const {
+    if (!impl_->functions_use_time)
+        return false;
+    // One walk from every reaction's parameters: the clock is reached from one
+    // of them or from none, and a walk per reaction was O(reactions ×
+    // parameters).
+    std::vector<int> params;
+    for (const Reaction &rxn : impl_->shared->reactions)
+        append_rate_params(rxn, params);
+    return rate_dependencies_(std::move(params), {}).clock;
+}
+
+std::vector<int> NetworkModel::functions_reading_clock() const {
+    std::vector<int> out;
+    if (!impl_->functions_use_time)
+        return out;
+    for (int f = 0; f < static_cast<int>(impl_->functions.size()); ++f) {
+        const Function &fn = impl_->functions[f];
+        std::vector<int> params;
+        if (fn.evaluator_id >= 0)
+            expression_support(fn.evaluator_id, nullptr, &params);
+        if (rate_dependencies_(std::move(params), {fn.expression, fn.eval_expression}).clock)
+            out.push_back(f);
+    }
+    return out;
+}
+
+bool NetworkModel::state_reads_clock() const {
+    if (rate_laws_read_clock())
+        return true;
+    const std::vector<int> clocked = functions_reading_clock();
+    if (clocked.empty())
+        return false;
+    const auto &funcs = impl_->functions;
+    std::vector<char> on_clock(funcs.size(), 0);
+    for (const int f : clocked)
+        on_clock[static_cast<std::size_t>(f)] = 1;
+    // A species an assignment rule reports: the fixed species named for the
+    // rule's function, which a time course copies the function's value into
+    // (build_assignment_rule_copyback). `S := B*(1 - exp(-time))` came back 0,
+    // its value at t = 0, for 2/3 (issue #710).
+    std::unordered_set<std::string> fixed;
+    for (const Species &s : impl_->species)
+        if (s.fixed)
+            fixed.insert(s.name);
+    for (std::size_t f = 0; f < funcs.size(); ++f)
+        if (on_clock[f] && fixed.count(funcs[f].name) != 0)
+            return true;
+    // A compartment size the function writes: the concentrations in it move
+    // with it.
+    const int nf = static_cast<int>(funcs.size());
+    const int np = static_cast<int>(impl_->parameters.size());
+    for (const auto &[func_idx, param_idx] : impl_->shared->var_param_bindings)
+        if (func_idx >= 0 && func_idx < nf && on_clock[static_cast<std::size_t>(func_idx)] &&
+            param_idx >= 0 && param_idx < np && impl_->parameters[param_idx].is_compartment_size)
+            return true;
+    return false;
 }
 
 bool NetworkModel::event_trigger_reads_time(int event_idx0) const {

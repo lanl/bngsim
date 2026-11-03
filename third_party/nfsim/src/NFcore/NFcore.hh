@@ -262,8 +262,10 @@ namespace NFcore
 			// The breakpoints of every table indexed by the time (bngsim GH #892).
 			// stepTo() reads the tables again at each one, whether or not a
 			// reaction has fired since: a table refreshed only when something
-			// fires never turned on a rate that was 0 at the start.
-			void addTimeBreakpoints(const vector<double> &xs);
+			// fires never turned on a rate that was 0 at the start. A linear
+			// table moves between them too, so where one ramps stepTo()
+			// integrates the propensity across the ramp (bngsim GH #1179).
+			void addTimeBreakpoints(const vector<double> &xs, bool linear);
 			double nextTimeBreakpoint(double t) const;
 			void refreshTimeDependentPropensities();
 
@@ -442,6 +444,7 @@ namespace NFcore
 			void invalidateStepToCache() {
 				pendingStepEventValid = false;
 				pendingStepEventTime = 0.0;
+				pendingStepHazard = 0.0;
 			}
 
 			void singleStep();
@@ -592,6 +595,10 @@ namespace NFcore
 
 			bool hasTimeDependentFunctions;
 			vector<double> timeBreakpoints; /*< sorted, distinct; see addTimeBreakpoints() */
+			vector< pair<double,double> > linearTimeRamps; /*< first and last breakpoint of each linear table indexed by the time */
+			double timeTablePanelCap(double t, double nextBreak) const;
+			double timeTablePropensityAt(double t);
+			double nextTimeTableEvent(double &hazardLeft, double tLim, double readEnd, double hmax);
 		    bool anyRxnTagged; /*< sets whether any reaction is tagged for output when it fires */
 		    bool connectivityFlag; /* Whether to infer and use reaction connectivity  for updating molecule rxn membership*/
 		    bool nfsimV1143Compatibility = false; /* Preserve NFsim v1.14.3 selector double-draw behavior */
@@ -654,6 +661,8 @@ namespace NFcore
 			ReactionClass * nextReaction;  /*< keeps track of the next reaction to fire */
 			bool pendingStepEventValid = false; /*< cached waiting-time draw for stepTo() */
 			double pendingStepEventTime = 0.0; /*< absolute event time for cached stepTo() draw */
+			double pendingStepHazard = 0.0; /*< where a linear time table ramps, the cached draw's hazard still to spend */
+			double timeTableHazardStep = 0.0; /*< the last integration panel's length there; 0 starts at the cap */
 			// max CPU time for simulation
 			double max_cpu_time;
 

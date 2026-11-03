@@ -282,3 +282,90 @@ def test_a_fire_after_one_on_the_row_is_named_with_it_counted(gap):
         truth = 0.7 * (3 - t_s) * (0.625 + t2 / 2)
     got = np.asarray(run.sensitivities)[-1, names.index("W"), 0]
     assert got == pytest.approx(truth, rel=1e-8)
+
+
+# ── A row reached from short of the sample (issue #1276) ─────────────────────
+#
+# A sensitivity run takes a row as reached from up to 1e-12 short of it after a
+# step. Where another root stops it that close before the sample (E2, on q a
+# hair below 2.5), it never read ahead, and the row held the state from before
+# E1, which crosses at the sample: [S] 5.5 at t = 2.4999999999999, where the run
+# without columns held 2.75 at 2.5.
+#
+# The bounds: q and S are linear in t, so the run integrates them to rounding
+# (4.9e-15 from the closed form, measured), and the run without columns reaches
+# the same state at the row (2.2e-16). The columns carry CVODES' own error
+# (7.4e-11, measured).
+
+_SHORT = (
+    "species S, R; S = 3; R = 0; q = 0; k = 1; q' = k; S' = 1;"
+    "E1: at (q >= 2.5): S = S/2; E2: at (q >= {e2!r}): R = 1;"
+)
+_SHORT_TIMES = [0.0, 1.0, 2.0, 2.5, 3.0]
+
+
+@pytest.mark.parametrize("off", [1e-13, 5e-13, 2e-12])
+def test_a_row_reached_from_short_of_the_sample_holds_the_event(off):
+    """2e-12 is outside the 1e-12 the row is taken from, and agreed before."""
+    text = _SHORT.format(e2=2.5 - off)
+    r, j, s = _sens_run(text, _SHORT_TIMES, sensitivity_params=["k"], sensitivity_ic=["S"])
+    assert float(np.asarray(r.time)[3]) == 2.5
+    np.testing.assert_allclose(s, _column(text, _SHORT_TIMES, "S"), rtol=1e-12)
+    np.testing.assert_allclose(s, [3, 4, 5, 2.75, 3.25], rtol=1e-12)
+    names = list(r.species_names)
+    assert float(np.asarray(r.species)[3, names.index("R")]) == 1.0
+
+
+@pytest.mark.parametrize("off", [1e-13, 5e-13])
+def test_its_columns_jump_at_the_row(off):
+    """t* = 2.5/k: S = (3 + t*)/2 + (t − t*) after it, so dS/dk = 1.25 and
+    dS/dS0 = 0.5 from the row on; before it, 0 and 1."""
+    r, j, _ = _sens_run(
+        _SHORT.format(e2=2.5 - off), _SHORT_TIMES, sensitivity_params=["k"], sensitivity_ic=["S"]
+    )
+    after = np.array(_SHORT_TIMES) >= 2.5
+    np.testing.assert_allclose(
+        np.asarray(r.sensitivities)[:, j, 0], np.where(after, 1.25, 0.0), atol=1e-9
+    )
+    np.testing.assert_allclose(
+        np.asarray(r.sensitivities_ic)[:, j, 0], np.where(after, 0.5, 1.0), atol=1e-9
+    )
+
+
+# A clock trigger at a row reached short: E1 on the clock at the sample, E2 a
+# hair before it on q. With q' = 1 neither fire's time moves with k (k reaches S
+# only), so the two are one instant, and fire at the row as the run without
+# columns fires them. S = 3 + k·t, halved by E1 at 2.5 under ``>=`` (before the
+# row) or a double after it under ``>``.
+
+_CLOCK_SHORT = (
+    "species S, R; S = 3; R = 0; q = 0; k = 1; q' = {q_rate}; S' = {s_rate};"
+    "E1: at (time {op} 2.5): S = S/2; E2: at (q >= {e2!r}): R = 1;"
+)
+
+
+@pytest.mark.parametrize("off", [1e-13, 5e-13])
+@pytest.mark.parametrize(("op", "s_row", "dk_row"), [(">=", 2.75, 1.25), (">", 5.5, 2.5)])
+def test_a_clock_trigger_at_a_row_reached_short(op, s_row, dk_row, off):
+    """dS/dk = t until E1, halved there: 1.25 or 2.5 at the row, 1.75 at 3."""
+    text = _CLOCK_SHORT.format(q_rate="1", s_rate="k", op=op, e2=2.5 - off)
+    r, j, s = _sens_run(text, _SHORT_TIMES, sensitivity_params=["k"])
+    assert float(np.asarray(r.time)[3]) == 2.5
+    np.testing.assert_allclose(s, _column(text, _SHORT_TIMES, "S"), rtol=1e-12)
+    np.testing.assert_allclose(s, [3, 4, 5, s_row, 3.25], rtol=1e-12)
+    names = list(r.species_names)
+    assert float(np.asarray(r.species)[3, names.index("R")]) == 1.0
+    np.testing.assert_allclose(
+        np.asarray(r.sensitivities)[:, j, 0], [0, 1, 2, dk_row, 1.75], atol=1e-9
+    )
+
+
+@pytest.mark.parametrize("off", [1e-13, 5e-13])
+def test_a_clock_fire_beside_a_moving_one_at_a_row_reached_short_is_refused(off):
+    """With q' = k, E2's crossing moves with k and E1's on the clock does not.
+    Fired together at the row, they are refused by name (issue #49), where main
+    recorded the row short of both (the #1276 defect)."""
+    text = _CLOCK_SHORT.format(q_rate="k", s_rate="1", op=">=", e2=2.5 - off)
+    refusal = r"(?s)'E1' and 'E2' fire at the same instant.*move differently"
+    with pytest.raises(bngsim.SimulationError, match=refusal):
+        _sens_run(text, _SHORT_TIMES, sensitivity_params=["k"])

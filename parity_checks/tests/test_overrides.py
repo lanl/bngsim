@@ -212,3 +212,23 @@ def test_committed_overrides_have_no_stale_keys(method, manifest):
     """
     _, jobs = read_manifest(RR_PARITY / manifest)
     assert ov.stale_keys({j.model_id for j in jobs}, method) == []
+
+
+@pytest.mark.parametrize("method,manifest", [("ode", "ode_jobs.json"), ("ssa", "ssa_jobs.json")])
+def test_committed_manifests_carry_what_overrides_py_authors(method, manifest):
+    """Every committed job's baked ``overrides`` equal ``overrides_for`` on it.
+
+    The runner reads a job's overrides from the manifest, not from this module,
+    so an entry retired or edited in overrides.py and not re-baked keeps acting on
+    its row. Re-baking is build_ode_jobs.py / build_ssa_jobs.py's job, and they
+    cannot run without ``$BIOMODELS_SEDML_DIR``; GH #1288 retired three ODE
+    entries and re-baked ode_jobs.json by hand, which nothing checked.
+    """
+    _, jobs = read_manifest(RR_PARITY / manifest)
+    out_of_sync = {}
+    for j in jobs:
+        baked = [{"field": o.field, "value": o.value, "reason": o.reason} for o in j.overrides]
+        authored = ov.overrides_for(j.model_id, method)
+        if baked != authored:
+            out_of_sync[j.model_id] = {"baked": baked, "authored": authored}
+    assert out_of_sync == {}

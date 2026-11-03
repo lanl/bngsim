@@ -2944,8 +2944,9 @@ def _into_a_fast_exchange(tmp_path, fast, **simulator):
 
 
 @pytest.mark.parametrize("fast", [2e6, 1e7, 1e8, 1e9])
-def test_a_differenced_jacobian_is_held_to_what_a_difference_knows(tmp_path, fast):
-    """With ``jacobian="fd"`` the entry dA'/dX = 0.28 is under what a
+def test_a_differenced_jacobian_is_held_to_what_a_difference_knows(tmp_path, monkeypatch, fast):
+    """With ``jacobian="fd"`` (and no dual numbers, issue #1330, which take the
+    entry exactly: below) the entry dA'/dX = 0.28 is under what a
     difference quotient resolves beside the fluxes of A's row, F·A, and reads
     as nothing: the columns are those of a model in which X does not make A,
     dB*/dkx = 0 for -0.033 at F = 1e9 and 20% off at 1e8, with every measure
@@ -2954,12 +2955,26 @@ def test_a_differenced_jacobian_is_held_to_what_a_difference_knows(tmp_path, fas
     does, and that is the limit such a Jacobian is held to. At F = 1e7 the
     column is 4.6% off with a share of 6e-8, and at 2e6 the share is 3e-7:
     the limit is 1e-6 and not a tenth or a hundredth of it."""
+    monkeypatch.setenv("BNGSIM_NO_DUAL_NUMBERS", "1")
     sim, _, _ = _into_a_fast_exchange(tmp_path, fast, jacobian="fd")
     with pytest.raises(
         bngsim.SimulationError,
         match=r"#995.*cannot be computed.*the difference quotient this Jacobian is",
     ):
         sim.steady_state(sensitivity_params=["kx"], tol=1e-6)
+
+
+@pytest.mark.parametrize("fast", [1e8, 1e9, 1e11])
+def test_jacobian_fd_takes_the_entry_exactly(tmp_path, fast):
+    """Issue #1330: with ``jacobian="fd"`` the Jacobian is no difference
+    quotient now but exact, by dual numbers, and has the entry dA'/dX = 0.28
+    beside fluxes of 1e11 as the closed form does: the columns are right to a
+    ten-thousandth, where the quotient's were refused."""
+    sim, relative, _ = _into_a_fast_exchange(tmp_path, fast, jacobian="fd")
+    out = sim.steady_state(sensitivity_params=["kx"], tol=1e-6)
+    assert out.sens_jacobian_source == "automatic-differentiation"
+    got = np.asarray(out.sensitivity)[:, 0] / np.asarray(out.concentrations)
+    np.testing.assert_allclose(got, relative, rtol=1e-4)
 
 
 @pytest.mark.parametrize("fast", [1e8, 1e9, 1e11])
@@ -3290,6 +3305,7 @@ def test_each_limit_of_a_differenced_jacobian_refuses_alone(tmp_path, monkeypatc
     """The pivot share and the condition number go together in a stiff model
     (one is about twice the reciprocal of the other), and either limit refuses
     the fast exchange at F = 1e8 with the other out of the way."""
+    monkeypatch.setenv("BNGSIM_NO_DUAL_NUMBERS", "1")  # a difference quotient (issue #1330)
     other = {
         "_SS_ROOT_PIVOT_SHARE_MIN_DIFFERENCED": ("_SS_ROOT_CONDITION_MAX_DIFFERENCED", math.inf),
         "_SS_ROOT_CONDITION_MAX_DIFFERENCED": ("_SS_ROOT_PIVOT_SHARE_MIN_DIFFERENCED", 0.0),
@@ -3301,10 +3317,12 @@ def test_each_limit_of_a_differenced_jacobian_refuses_alone(tmp_path, monkeypatc
         sim.steady_state(sensitivity_params=["kx"], tol=1e-6)
 
 
-def test_a_differenced_jacobian_just_inside_its_limits_is_right(tmp_path):
+def test_a_differenced_jacobian_just_inside_its_limits_is_right(tmp_path, monkeypatch):
     """At F = 2e5 the pivot share is 3e-6 and the condition number 5e5, just
     inside 1e-6 and 1e6, and the columns of the difference quotient are 0.13%
-    off: within the 1% that is asked, which is where the limits are put."""
+    off: within the 1% that is asked, which is where the limits are put. (A
+    difference quotient: dual numbers take the matrix exactly, issue #1330.)"""
+    monkeypatch.setenv("BNGSIM_NO_DUAL_NUMBERS", "1")
     sim, relative, _ = _into_a_fast_exchange(tmp_path, 2e5, jacobian="fd")
     out = sim.steady_state(sensitivity_params=["kx"], tol=1e-9)
     assert out.sens_jacobian_source == "finite-difference"

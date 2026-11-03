@@ -335,9 +335,10 @@ def _build_sbml2bngl_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "additionally prove faithfulness by round-tripping the emitted .bngl "
-            "through BNG2.pl generate_network and comparing the ODE right-hand side "
-            "to the source (validate='bng2'); needs BNG2.pl on $BNGPATH or PATH. "
-            "Fails (exit 1) if the round-trip is not RHS-faithful"
+            "through BNG2.pl generate_network and comparing the ODE right-hand side, "
+            "and what each species an assignment rule sets reports, to the source "
+            "(validate='bng2'); needs BNG2.pl on $BNGPATH or PATH. Fails (exit 1) if "
+            "the round-trip is not faithful"
         ),
     )
     p.add_argument(

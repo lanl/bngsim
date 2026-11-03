@@ -332,7 +332,12 @@ def metadata_defaults(
     }
 
 
-def build_metadata(archive_info: dict, source_info: dict[str, str]) -> dict:
+def build_metadata(
+    archive_info: dict, source_info: dict[str, str], local_carries: list | None = None
+) -> dict:
+    # The carries are hand-written (what each patches, and why), so a refresh
+    # keeps them; carry_cvodes_staggered_restore.cmake fails the build if one no
+    # longer applies.
     return {
         "name": "SUNDIALS",
         "vendored_path": "bngsim/third_party/sundials",
@@ -362,7 +367,7 @@ def build_metadata(archive_info: dict, source_info: dict[str, str]) -> dict:
             "required_component_paths": list(REQUIRED_COMPONENT_PATHS),
             "required_text_tokens": REQUIRED_TEXT_TOKENS,
         },
-        "local_carries": [],
+        "local_carries": copy.deepcopy(local_carries or []),
         "notes": [
             "BNGsim does not check SUNDIALS source into the repository.",
             "Managed builds fetch the official SUNDIALS release tarball pinned here via CMake FetchContent URL + URL_HASH.",
@@ -476,7 +481,11 @@ def main() -> int:
         return 1
 
     source_info = metadata_defaults(args, current_metadata, archive_info)
-    candidate_metadata = build_metadata(archive_info, source_info)
+    candidate_metadata = build_metadata(
+        archive_info,
+        source_info,
+        current_metadata.get("local_carries") if current_metadata else None,
+    )
     mismatches = metadata_mismatches(current_metadata, candidate_metadata)
 
     if args.summary:
