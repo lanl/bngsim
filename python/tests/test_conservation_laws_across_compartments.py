@@ -932,20 +932,18 @@ RULED = (
 )
 
 
-def test_a_law_across_a_rule_sized_compartment_is_still_refused():
+def test_a_law_across_a_size_a_rule_holds_constant_is_solved():
     """An assignment rule sizes ``c2``, and the right-hand side divides B's
-    share by the size the model loaded at (issue #745). Such a model was
-    refused for its law and stays refused, also where the rule is a constant
-    and the columns would be right."""
+    share by the size the model loaded at (issue #745). A rule that reads
+    nothing that moves gives that size all along: ``c2 := 2*p`` = 4, with the
+    amount c1·A + c2·B = 1.8 held and k1·A·c1 = k2·B·c2, so A* = 0.6 and
+    dA*/dk1 = -0.4, dB*/dk1 = 0.1. It was refused with the rest (issue #961)."""
     sim = bngsim.Simulator(
         bngsim.Model.from_antimony_string(RULED.format(size="p = 2; c2 := 2*p")), "ode"
     )
-    with pytest.raises(
-        bngsim.SensitivityUnsupportedError,
-        match=r"assignment rule\s+sets the size of c2.*#745",
-    ):
-        sim.steady_state(sensitivity_params=["k1"])
-    assert sim.steady_state().converged  # the state is solved for, as it was
+    out = sim.steady_state(sensitivity_params=["k1"])
+    np.testing.assert_allclose(out.concentrations, [0.6, 0.3], rtol=1e-7)
+    np.testing.assert_allclose(np.asarray(out.sensitivity).ravel(), [-0.4, 0.1], rtol=1e-6)
 
 
 def test_a_rule_sized_compartment_reading_a_species_has_no_isolated_steady_state():

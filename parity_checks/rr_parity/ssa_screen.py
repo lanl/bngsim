@@ -360,19 +360,13 @@ EXPLAINED_NOT_BNGSIM = ("rr_known", "diff_not_bngsim")
 # (negative-population / sign-indefinite, sys-bio/roadrunner#1320) are dropped
 # upstream by build_ssa_candidates.py's structural gates, so they never reach
 # the screen and are not listed here. See dev/notes/SBML_VS_ROADRUNNER.md, GH #30.
-KNOWN_RR_ISSUES = {
-    "BIOMD0000001026": {
-        "issue": "sys-bio/roadrunner#1318",
-        "note": "Mrbc: RR gillespie does not re-evaluate the time-dependent assignmentRule "
-        "feeding the synthesis rate; bngsim SSA tracks its own ODE (affine system: SSA "
-        "mean must equal ODE).",
-    },
-    "BIOMD0000001040": {
-        "issue": "sys-bio/roadrunner#1318",
-        "note": "Mrbc: same time-dependent assignmentRule lag as BIOMD0000001026 "
-        "(the minimal reproducer on #1318).",
-    },
-}
+#
+# Empty since 2026-11-02 (GH #1288). BIOMD0000001026 and BIOMD0000001040 were
+# here for sys-bio/roadrunner#1318: RR's Gillespie did not re-evaluate the
+# time-dependent assignmentRule feeding Mrbc's synthesis rate, while bngsim's SSA
+# tracked its own ODE. RoadRunner fixed it in 2.9.3, and on the 2.11.0 lock
+# (#1349) and reference-data-v4 (#1443) both models PASS the screen outright.
+KNOWN_RR_ISSUES: dict[str, dict[str, str]] = {}
 
 
 def _annotate_known_rr_issues(cases: list[dict]) -> int:

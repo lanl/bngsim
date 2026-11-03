@@ -657,6 +657,16 @@ def make_specs(jobs: list[dict], args) -> list[dict]:
     return specs
 
 
+def first_method_key(spec: dict) -> str | None:
+    """The key of the spec a later method's spec waits on: its model's first
+    method, whose run compiles the code both load. Dispatched side by side, a
+    model's two methods each compiled it (106 compiles for 53 libraries; issue
+    #1386). ``None`` for a first-method spec."""
+    if spec["sens_method"] == SENS_METHODS[0]:
+        return None
+    return f"{spec['model_id']}|sens/{SENS_METHODS[0]}"
+
+
 def _note(r: dict) -> str:
     """What a row's note says. The scheduler's own results carry no ``why``: a
     timeout says its cap, a child that died without a result its exit code."""
@@ -743,7 +753,12 @@ def main(argv=None) -> int:
         print(f"  [{finished}/{total}] {res.get('status', '?'):11} {res['key']}", flush=True)
 
     raw = asens.schedule(
-        specs, _worker, workers=args.workers, timeout_of=lambda s: s["timeout"], on_done=on_done
+        specs,
+        _worker,
+        workers=args.workers,
+        timeout_of=lambda s: s["timeout"],
+        on_done=on_done,
+        depends_on=first_method_key,
     )
     stamp = versions.stamp(REFERENCE_ENGINE)
     results = [to_result(spec, r, stamp) for spec, r in zip(specs, raw, strict=False)]

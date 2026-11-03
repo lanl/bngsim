@@ -10,11 +10,14 @@ Hierarchy::
     ├── ModelError            — .net parse failures, invalid model state
     │   └── UnderSpecifiedModelError — reads a symbol it never defines
     ├── SimulationError       — solver failures (convergence, NaN, etc.)
+    │   └── SparseJacobianUnavailableError — force_sparse_linear_solver on a
+    │                           model with no sparse Jacobian for KLU
     ├── SimulationTimeout     — wall-clock budget exceeded during run()
     ├── ParameterError        — unknown parameter name, type mismatch
     ├── SsaValidationError    — SBML construct incompatible with SSA
     ├── SensitivityUnsupportedError — construct forward sensitivity can't
     │                           differentiate (also a ValueError)
+    ├── CodegenDeclinedError  — codegen=True on a model codegen declines
     └── StopConditionMet      — stop condition triggered (carries partial result)
 """
 
@@ -185,6 +188,35 @@ class SensitivityUnsupportedError(BngsimError, ValueError):
     """
 
 
+class SparseJacobianUnavailableError(SimulationError):
+    """``force_sparse_linear_solver=True`` on a model that cannot supply a sparse
+    Jacobian for KLU to factorize: its analytical Jacobian is unavailable (or
+    suppressed by ``jacobian="fd"``) and its sparsity pattern has no structural
+    nonzero to colour for finite differences (issue #1313).
+
+    A refusal by name, not a solver failure: drop the flag to use the dense
+    solver. A :class:`SimulationError`, as it was raised before it had a type,
+    so an existing ``except SimulationError`` still catches it.
+    """
+
+
+class CodegenDeclinedError(BngsimError):
+    """``codegen=True`` on a model codegen declines, such as one whose functions
+    read each other (issue #621): a statement about the model, which runs on the
+    interpreted RHS with ``codegen=None`` or ``codegen=False`` (issue #1313). The
+    deprecated :func:`bngsim.prepare_codegen` raises it for a decline too.
+
+    Distinct from a codegen *build* failure (a compiler error, a timeout), which
+    says nothing about the model and stays a plain ``RuntimeError``. A
+    ``RuntimeError`` (through :class:`BngsimError`), as it was raised before it
+    had a type, so an existing ``except RuntimeError`` still catches it.
+
+    Unrelated to ``bngsim._codegen.CodegenDeclined``, the emitter's private
+    signal to decline, which the prepare calls turn into a ``None`` return; this
+    is what a caller who asked for compiled code is told.
+    """
+
+
 class SimulationTimeout(BngsimError):
     """Raised when a simulation exceeds its wall-clock budget.
 
@@ -334,6 +366,36 @@ class RuleMonkeyWarning(UserWarning):
         import warnings, bngsim
         warnings.simplefilter("error", bngsim.RuleMonkeyWarning)  # promote
         warnings.simplefilter("ignore", bngsim.RuleMonkeyWarning)  # silence
+    """
+
+
+class AtolScaleWarning(UserWarning):
+    """An ODE run's default absolute tolerance is above species that matter (issue #1361).
+
+    BNG2.pl's scalar ``atol`` of ``1e-8`` was chosen for species held as
+    molecule counts. A model in molar units (an SBML model of species at 1e-12
+    to 1e-6 M, say) holds species below it, and CVODE then controls none of
+    their error: the binding example of the issue returned a negative
+    concentration, and BIOMD0000000002, whose ligand is above it and whose
+    complexes are below it, errors of 1e-2 against its reference. The default
+    now takes each species' scale from the state the run starts from (issue
+    #1420, see :meth:`Simulator.run`), which fixes both. What it cannot scale
+    is a species that starts at 0, or below every scale the start gives, in a
+    model where no species starts small: one whose species all start at 0
+    runs at the scalar.
+
+    Emitted by :meth:`Simulator.run` (and so ``run_until``), ``run_batch``,
+    ``parameter_scan`` and ``compute_all_sensitivities`` when the caller gave
+    no ``atol`` and a species the solver integrates stays below its tolerance
+    all run while reaching at least 1e-6 of the run's largest such species. A
+    ``$``-fixed species or an assignment-rule target is not integrated and is
+    never named. ``atol="tracking"`` (a tolerance that follows each species'
+    magnitude, issue #213) is the remedy it names. Filter or escalate it like
+    any ``UserWarning``::
+
+        import warnings, bngsim
+        warnings.simplefilter("ignore", bngsim.AtolScaleWarning)  # silence
+        warnings.simplefilter("error", bngsim.AtolScaleWarning)  # promote
     """
 
 

@@ -154,8 +154,8 @@ jobs:
             # The one leg that measures line coverage (#585). The python-coverage job
             # reads the source from a checkout at this leg's path, so keep it on ubuntu.
             coverage: "true"
-          - os: macos-14 # macOS arm64 — covered only by one developer's pre-push hook
-            label: macos-14
+          - os: macos-15 # macOS arm64; macos-14 retires 2026-11-02 (runner-images #13518)
+            label: macos-15
             apt: ""
             expect_lapack: "true" # Accelerate, no install needed
             coverage: "false"
@@ -574,7 +574,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        label: [ubuntu-latest, macos-14, ubuntu-latest-lapack]
+        label: [ubuntu-latest, macos-15, ubuntu-latest-lapack]
     steps:
       - uses: actions/checkout@v4
 

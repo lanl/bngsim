@@ -22,11 +22,16 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 from pathlib import Path
 
 import bngsim._codegen as cg
 import numpy as np
 import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _codegen_backend import under_jit_no_cc_artifact  # noqa: E402
 
 _CC = shutil.which("cc") or shutil.which("clang") or shutil.which("gcc")
 needs_cc = pytest.mark.skipif(_CC is None, reason="no C compiler on PATH")
@@ -289,6 +294,7 @@ class TestStaleArtifactIsNotServed:
 
         return (traj(0.3303) - traj(0.3297)) / 0.0006
 
+    @under_jit_no_cc_artifact
     def test_artifact_keyed_under_an_older_key_is_ignored(self, tmp_path, monkeypatch):
         """Pre-populate the cache with a deliberately corrupt artifact at the hash
         the *previous* cache key produced, then run for real.

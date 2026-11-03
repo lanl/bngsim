@@ -587,6 +587,30 @@ template <class Run> static Result restoring_on_raise(NetworkModel &model, Run &
     }
 }
 
+// Issue #1059: where a run's clock starts. At the end of the run nearer 0,
+// t_start or (for a run at negative times) t_end: counted from there the run's
+// own time is nowhere coarser than the absolute one. Counted from a far negative
+// t_start, the half of a run toward 0 was, and lost its waiting times as a far
+// start had (z = -289 at -2 to 0 from -1e12). That end is rounded toward 0 to a
+// multiple of an ulp at the run's far end, so every time x in the run is on the
+// run's clock exactly, x - origin, and origin + (x - origin) is x: from t_start
+// itself, a row past 2*t_start was read an ulp from the time it reported. A run
+// across 0 keeps 0, as does one whose near end is within 2^20, where the doubles
+// are 1.2e-10 apart: every such run is the one it always was.
+static double ssa_clock_origin(const TimeSpec &times) {
+    constexpr double kElapsedFrom = 1048576.0; // 2^20
+    // (Not `near` and `far`: <windows.h> defines both as empty macros.)
+    const double t_near = times.t_start >= 0.0 ? times.t_start
+                          : times.t_end <= 0.0 ? times.t_end
+                                               : 0.0;
+    if (!(std::fabs(t_near) >= kElapsedFrom) || !std::isfinite(times.t_start) ||
+        !std::isfinite(times.t_end))
+        return 0.0;
+    const double t_far = std::max(std::fabs(times.t_start), std::fabs(times.t_end));
+    const double ulp = std::nextafter(t_far, std::numeric_limits<double>::infinity()) - t_far;
+    return t_near - std::fmod(t_near, ulp);
+}
+
 Result SsaSimulator::run(const TimeSpec &times, uint64_t seed, double timeout_seconds) {
     // poplevel = 0.0 means no scaling (exact SSA)
     return restoring_on_raise(impl_->model,
@@ -624,9 +648,35 @@ Result SsaSimulator::run_psa(const TimeSpec &times, uint64_t seed, double poplev
 //   - Dependency graph: only recompute propensities for affected reactions
 //   - Sum tree: O(log N) reaction selection + O(log N) propensity updates
 
-Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double poplevel,
+Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, double poplevel,
                                   double timeout_seconds) {
     auto &model = impl_->model;
+    // Issue #1059: the run keeps its own clock as time elapsed since an origin
+    // (t_start, see ssa_clock_origin), and hands the model origin + elapsed
+    // wherever the model reads the clock
+    // (evaluate_functions, set_current_time). Far from the origin the doubles
+    // are coarse, 1.2e-4 apart at t = 1e12, and the continuous loop placed its
+    // firings on panels in absolute time, where a waiting time below that
+    // spacing was lost: z = -289 at t + 2 from t_start = 1e12 for a decay whose
+    // rate reads time(). Counted from the origin, the panels and the firings are
+    // as fine as at 0. Only a start far enough out for the spacing to matter
+    // moves the origin, so every other run is the one it was, to the bit
+    // (origin + x == x at origin 0). The rows report the times asked for, and
+    // the state and the events carried to the next run their absolute times.
+    const double origin = ssa_clock_origin(times_in);
+    TimeSpec shifted = times_in;
+    if (origin != 0.0) {
+        shifted.t_start = times_in.t_start - origin;
+        shifted.t_end = times_in.t_end - origin;
+        // The rows asked for, each moved onto the run's clock. A grid drawn
+        // again there (t_start + i*dt) rounds apart from the one the rows
+        // report, by an ulp of t0: a row reported past an event's time was
+        // taken before it.
+        shifted.sample_times = times_in.output_times();
+        for (double &x : shifted.sample_times)
+            x -= origin;
+    }
+    const TimeSpec &times = shifted;
     WallClockBudget budget(timeout_seconds);
     const int ns = model.n_species();
     const int nr = model.n_reactions();
@@ -957,7 +1007,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     // initial state as a trajectory. Refuse it where it is computed, naming the
     // reaction and the time, as the ODE path refuses a non-finite RHS.
     auto refuse_nonfinite_propensity = [&](int r, double value, double t_at) {
-        throw_nonfinite_propensity(model, r, value, t_at, use_psa,
+        throw_nonfinite_propensity(model, r, value, origin + t_at, use_psa,
                                    law_state_at_refusal(model, r, conc, is_count));
     };
 
@@ -1107,7 +1157,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             sp_vec_ref[si].concentration = conc[si];
         }
         model.update_observables(conc.data());
-        model.evaluate_functions(t_eval);
+        model.evaluate_functions(origin + t_eval);
     };
 
     // Issues #719/#751/#753 — the continuous path (see the loop for models with
@@ -1270,6 +1320,33 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         sel_set(r, effective_prop);
     };
 
+    // The rates held constant between breakpoints (pc_rxns, classified below;
+    // is_pc by reaction), and where pc_refresh_at last read them: inside the
+    // interval they are constant on (NaN before the first read).
+    std::vector<int> pc_rxns;
+    std::vector<char> is_pc;
+    double pc_clock = std::numeric_limits<double>::quiet_NaN();
+    // Issue #1059: a held rate that a firing or an event has set at the current
+    // time is set again where pc_refresh_at read it. From a far t_start, origin
+    // + t, a time just past a breakpoint, rounds back onto it, where `time() >
+    // t0 + 1` is still false: read there, the rate the breakpoint had switched
+    // on went back to 0 for the rest of its interval (99999 of 100000 left where
+    // e^-1 of them should be). Only the held rates among `rxns` are set; the
+    // model is left at the time it was at, where the rates that read the clock
+    // continuously (the continuous loop's) and the triggers read it.
+    auto reread_held_rates = [&](const std::vector<int> &rxns) {
+        if (origin == 0.0 || !std::isfinite(pc_clock))
+            return;
+        if (std::none_of(rxns.begin(), rxns.end(), [&](int r) { return is_pc[r] != 0; }))
+            return;
+        const double now = model.current_time();
+        model.evaluate_functions(origin + pc_clock);
+        for (int r : rxns)
+            if (is_pc[r])
+                set_propensity(r);
+        model.evaluate_functions(now);
+    };
+
     // Helper: recompute ALL propensities + sum-tree entries. Called after
     // an event fires (assignments can touch any species, so the dep-graph
     // narrow-update is unsafe).
@@ -1279,6 +1356,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         refresh_jit_propensities(); // GH #149: refill a_jit[] from current conc[]
         for (int r = 0; r < nr; ++r)
             set_propensity(r);
+        reread_held_rates(pc_rxns);
     };
 
     // ─── GH #81: rate-rule ODE targets (deterministic sub-step integration) ──
@@ -1354,6 +1432,11 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     //     them; a non-persistent one whose trigger has lapsed since does not
     //     execute. Wherever a non-persistent event's trigger is read false, its
     //     pending executions are dropped (SBML L3v2 §4.11.3).
+    //  7. A strict comparison seeded beside the non-strict one on the same
+    //     residual (`time/3 > tau` beside `time/3 >= tau`) is held back, as in
+    //     the ODE drain (issue #947): it is triggered once everything else has
+    //     settled, at the state that left. `on_crossing` is false at the run's
+    //     start, where the seeds were read true rather than seen turning true.
     // Returns true if any event modified conc[].
     struct ExecInstance {
         int event_idx;
@@ -1395,7 +1478,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     };
     // Far above any legitimate cascade depth (00978 fires ~11; 01533 ~106).
     constexpr int CASCADE_LIMIT = 100000;
-    auto process_firing_batch = [&](double t_now, const std::vector<int> &firing_in) -> bool {
+    auto process_firing_batch = [&](double t_now, const std::vector<int> &firing_in,
+                                    bool on_crossing = true) -> bool {
         if (firing_in.empty() && !(earliest_pending() <= t_now))
             return false;
 
@@ -1417,7 +1501,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             const double tol = 1e-9 * std::max(1.0, std::fabs(t_now));
             if (!std::isfinite(d) || d < -tol) {
                 char buf[160];
-                std::snprintf(buf, sizeof buf, "' fired at t=%g with delay %g", t_now, d);
+                std::snprintf(buf, sizeof buf, "' fired at t=%g with delay %g", origin + t_now, d);
                 throw std::runtime_error(std::string(use_psa ? "PSA" : "SSA") + ": event '" +
                                          ev.id + buf +
                                          "; an event delay must be a finite, non-negative number");
@@ -1451,8 +1535,72 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         std::vector<bool> prev = trigger_was_true;
         std::vector<ExecInstance> queue;
         queue.reserve(firing_in.size());
+        // (strict, its non-strict twin), on a crossing of their residual: a
+        // step back in time the twin is false, and the residual moves over
+        // that step as it moves over the step before it. The step starts past
+        // the bisection's tolerance (BISECT_EPS, 1e-12) and the rounding of the
+        // time the model reads, origin + t_now (issue #1059: from a far t_start a
+        // step sized on the run's own clock is lost in it, and the pair was one
+        // batch), and doubles, as in the ODE drain, where the residual moves
+        // by less than its rounding. The probe moves only the time, so a pair
+        // a firing turned true (a species jumping past the threshold) is one
+        // batch, as is a residual that jumps. (A rate-rule species, which
+        // moves between firings, is held fixed too, so its pairs stay one
+        // batch, as before.) So a trigger that does not read the clock is
+        // never on a crossing here, and is not probed.
+        std::vector<std::pair<int, int>> held_strict;
+        if (on_crossing && firing_in.size() > 1) {
+            constexpr int kHeldProbeDoublings = 20;
+            std::vector<int> pairable;
+            for (int ei : firing_in)
+                if (events[ei].size_jump_compartment.empty())
+                    pairable.push_back(ei);
+            for (const auto &[ei, twin] : model.strict_beside_non_strict(pairable)) {
+                if (!model.event_trigger_reads_time(ei))
+                    continue;
+                const int gidx = model.event_trigger_residual_expr(ei);
+                const double g0 = eval_ref.evaluate(gidx);
+                bool on_it = false;
+                double d = 2.0 * std::max(4e-12, 64.0 * std::numeric_limits<double>::epsilon() *
+                                                     std::max(std::fabs(origin + t_now), 1.0));
+                for (int k = 0; k <= kHeldProbeDoublings && !on_it; ++k, d *= 2.0) {
+                    model.evaluate_functions(origin + (t_now - d));
+                    const bool twin_before = eval_ref.evaluate(events[twin].trigger_expr_idx) > 0.5;
+                    const double g1 = eval_ref.evaluate(gidx);
+                    model.evaluate_functions(origin + (t_now - 2.0 * d));
+                    const double g2 = eval_ref.evaluate(gidx);
+                    const double d1 = g0 - g1;
+                    const double d2 = g1 - g2;
+                    on_it = !twin_before && d1 * d2 > 0.0 &&
+                            std::fabs(d1 - d2) <= 0.5 * std::max(std::fabs(d1), std::fabs(d2));
+                }
+                sync_state(t_now);
+                if (on_it)
+                    held_strict.emplace_back(ei, twin);
+            }
+        }
+        // Still held: cleared where the trigger changes before the rest has
+        // settled, which then triggers it as any other event. Also where an
+        // event of the instant moves its residual, which it reads true and is
+        // held at: on the crossing the residual is 0 and the strict trigger
+        // false, so that write raises it there, a cascade, as in the ODE drain.
+        std::vector<char> held;
+        std::vector<double> held_at;
+        auto residual_of = [&](int ei) {
+            return eval_ref.evaluate(model.event_trigger_residual_expr(ei));
+        };
+        if (!held_strict.empty()) {
+            held.assign(static_cast<std::size_t>(n_events), 0);
+            held_at.assign(static_cast<std::size_t>(n_events), 0.0);
+            for (const auto &pair : held_strict) {
+                held[static_cast<std::size_t>(pair.first)] = 1;
+                held_at[static_cast<std::size_t>(pair.first)] = residual_of(pair.first);
+            }
+        }
         for (int ei : firing_in) {
             prev[ei] = true;
+            if (!held.empty() && held[static_cast<std::size_t>(ei)] != 0)
+                continue;
             queue.push_back(make_instance(ei));
         }
         take_due(queue);
@@ -1465,7 +1613,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             // back to declaration order. Refuse it.
             if (std::isnan(p))
                 throw std::runtime_error("event '" + ev.id + "' has a priority that is NaN at t=" +
-                                         std::to_string(t_now) +
+                                         std::to_string(origin + t_now) +
                                          "; an event priority must be a number");
             return p;
         };
@@ -1502,6 +1650,21 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             if (ties.empty()) {
                 if (take_due(queue))
                     continue;
+                // The strict comparisons held back, at the state the rest
+                // left (issue #947).
+                bool queued_held = false;
+                for (const auto &pair : held_strict) {
+                    const int ei = pair.first;
+                    const auto hi = static_cast<std::size_t>(ei);
+                    if (held[hi] == 0 || !prev[hi])
+                        continue;
+                    held[hi] = 0;
+                    queue.push_back(make_instance(ei));
+                    queued_held = true;
+                }
+                held_strict.clear();
+                if (queued_held)
+                    continue;
                 break;
             }
             // As in the ODE drain: delayed executions at one priority keep the
@@ -1537,7 +1700,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
 
             if (++fires > CASCADE_LIMIT) {
                 throw std::runtime_error(
-                    "Event cascade exceeded CASCADE_LIMIT at t=" + std::to_string(t_now) +
+                    "Event cascade exceeded CASCADE_LIMIT at t=" + std::to_string(origin + t_now) +
                     " (same-instant events appear to arm each other in an algebraic loop).");
             }
 
@@ -1630,7 +1793,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                             std::string(use_psa ? "PSA" : "SSA") + ": event '" + ev.id +
                             "' assigns " +
                             (std::isnan(nv[a]) ? "nan" : (nv[a] > 0 ? "inf" : "-inf")) + " to " +
-                            model.species()[sp_idx0].name + " at t=" + std::to_string(t_now) +
+                            model.species()[sp_idx0].name +
+                            " at t=" + std::to_string(origin + t_now) +
                             "; an event assignment must be a finite number");
                     store_value(sp_idx0, nv[a]);
                     sp_vec_ref[sp_idx0].concentration = conc[sp_idx0];
@@ -1638,7 +1802,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             }
             if (!rescales.empty()) {
                 model.update_observables(conc.data());
-                model.evaluate_functions(t_now);
+                model.evaluate_functions(origin + t_now);
                 for (const auto &[a, num] : rescales) {
                     const double size = eval_ref.evaluate(ev.assignment_rescale_size_expr[a]);
                     // An amount in no volume has no concentration: refuse it by
@@ -1647,7 +1811,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                     if (num != 0.0 && !(std::isfinite(size) && size != 0.0)) {
                         char buf[160];
                         std::snprintf(buf, sizeof buf, "' at t=%g resizes a compartment to %g",
-                                      t_now, size);
+                                      origin + t_now, size);
                         throw std::runtime_error(
                             std::string(use_psa ? "PSA" : "SSA") + ": event '" + ev.id + buf +
                             " while a species in it holds a nonzero amount, whose concentration "
@@ -1661,7 +1825,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             any_fired = true;
 
             model.update_observables(conc.data());
-            model.evaluate_functions(t_now);
+            model.evaluate_functions(origin + t_now);
 
             for (int ei = 0; ei < n_events; ++ei) {
                 const bool now_true = eval_ref.evaluate(events[ei].trigger_expr_idx) > 0.5;
@@ -1672,6 +1836,15 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                         if (!inst.done && inst.event_idx == ei)
                             inst.done = true;
                     drop_pending_of(ei);
+                }
+                const auto hi = static_cast<std::size_t>(ei);
+                if (!held.empty() && held[hi] != 0) {
+                    if (now_true != prev[ei]) {
+                        held[hi] = 0;
+                    } else if (now_true && residual_of(ei) != held_at[hi]) {
+                        held[hi] = 0; // raised by this write (see held_at)
+                        queue.push_back(make_instance(ei));
+                    }
                 }
                 prev[ei] = now_true;
             }
@@ -1724,7 +1897,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             double mid = 0.5 * (lo + hi);
             if (mid <= lo || mid >= hi)
                 break; // lo and hi are adjacent doubles: nothing left to split
-            model.evaluate_functions(mid);
+            model.evaluate_functions(origin + mid);
             const bool v = eval_ref.evaluate(events[ei].trigger_expr_idx) > 0.5;
             if (v != at_lo) {
                 hi = mid;
@@ -1748,10 +1921,11 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     if (n_events > 0) {
         sync_state(times.t_start);
 
-        const NetworkModel::EventCarry *carry = model.event_carry_for(times.t_start, n_events);
+        const NetworkModel::EventCarry *carry = model.event_carry_for(times_in.t_start, n_events);
         if (carry != nullptr)
             for (const auto &pe : carry->pending)
-                pending.push_back(PendingExec{pe.event_idx, pe.apply_time, pe.frozen_values});
+                pending.push_back(
+                    PendingExec{pe.event_idx, pe.apply_time - origin, pe.frozen_values});
         pending_changed = true;
         std::vector<int> t0_firing;
         t0_firing.reserve(n_events);
@@ -1774,7 +1948,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
 
         // The drain leaves trigger_was_true settled, so an event that
         // falsified its own trigger can re-arm on the next rise.
-        process_firing_batch(times.t_start, t0_firing);
+        process_firing_batch(times.t_start, t0_firing, /*on_crossing=*/false);
     }
 
     // ─── Time-inhomogeneous propensity detection ─────────────────────────────
@@ -1826,7 +2000,6 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             pc_fn[fi] = names.count(fns[fi].name) ? 1 : 0;
     }
     std::vector<char> rate_reads_time(nr, 0);
-    std::vector<int> pc_rxns;
     bool time_dependent_rates = false;
     if (model.functions_use_time())
         for (int r = 0; r < nr; ++r) {
@@ -1845,7 +2018,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     // evaluated them (the t=0 event batch does, but only when there are events),
     // and the propensity-backend setup below snapshots the live rate parameters.
     if (model.n_functions() > 0)
-        model.evaluate_functions(times.t_start);
+        model.evaluate_functions(origin + times.t_start);
 
     // GH #81 — a rate-rule ODE makes every propensity that reads its target a
     // continuously-varying function of time (the target moves between fires),
@@ -1893,6 +2066,9 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             pc_rxns.end());
     }
     const bool pc_refresh = !pc_rxns.empty();
+    is_pc.assign(static_cast<std::size_t>(nr), 0);
+    for (int r : pc_rxns)
+        is_pc[r] = 1;
 
     // ─── Decide the propensity backend + recompute-all fast loop ──────────────
     // Now that the event / rate-rule / time-dependent gates are known, choose how
@@ -1997,7 +2173,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
 
     // ─── Record initial state (post-t=0-events) ──────────────────────────────
     model.update_observables(conc.data());
-    model.evaluate_functions(times.t_start);
+    model.evaluate_functions(origin + times.t_start);
     for (int j = 0; j < n_obs; ++j) {
         obs_buf[j] = model.observables()[j].total;
     }
@@ -2039,6 +2215,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     std::vector<double> bps = impl_->breakpoints;
     for (double x : model.time_table_knots())
         bps.push_back(x);
+    for (double &x : bps)
+        x -= origin; // on the run's clock (issue #1059)
     std::sort(bps.begin(), bps.end());
     bps.erase(std::unique(bps.begin(), bps.end()), bps.end());
 
@@ -2087,7 +2265,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             if (first)
                 sync_state(ts);
             else
-                model.evaluate_functions(ts);
+                model.evaluate_functions(origin + ts);
             first = false;
             bool changed = false;
             for (int ei : time_triggers) {
@@ -2096,7 +2274,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                     continue;
                 changed = true;
                 t_event = std::min(t_event, bisect_trigger(ei, t_prev, ts, was));
-                model.evaluate_functions(ts); // the bisection moved the functions' time
+                model.evaluate_functions(origin + ts); // the bisection moved the functions' time
             }
             t_prev = ts;
             return changed;
@@ -2139,7 +2317,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     // where it does not yet: `time > 2.5` is false at 2.5, and ODE and
     // libRoadRunner record that row before the event.
     auto row_before_time_change = [&](double ts) -> bool {
-        model.evaluate_functions(ts);
+        model.evaluate_functions(origin + ts);
         for (int ei : time_triggers)
             if ((eval_ref.evaluate(events[ei].trigger_expr_idx) > 0.5) != trigger_was_true[ei])
                 return false;
@@ -2239,15 +2417,17 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
 
         if (dep_graph.has_functional_rates) {
             model.update_observables(conc.data());
-            model.evaluate_functions(t);
+            model.evaluate_functions(origin + t);
         }
 
         // GH #149: refill the JIT'd propensity buffer from the post-fire conc[]
         // before the affected reactions read it (no-op when the fast path is off).
         refresh_jit_propensities();
 
-        for (int r : dep_graph.affected_reactions(selected))
+        const auto &affected = dep_graph.affected_reactions(selected);
+        for (int r : affected)
             set_propensity(r);
+        reread_held_rates(affected);
     };
 
     // A rate that reads the clock only through piecewise-constant functions
@@ -2269,11 +2449,12 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             ++pc_seen;
         const double t_hi = std::min(pc_next(), times.t_end);
         const double t_in = t_hi > t_now ? 0.5 * (t_now + t_hi) : t_now;
+        pc_clock = t_in;
         sync_state(t_in);
         refresh_jit_propensities();
         for (int r : pc_rxns)
             set_propensity(r);
-        model.evaluate_functions(t_now);
+        model.evaluate_functions(origin + t_now);
     };
     // A guard at every output row that such a rate has not moved since it was
     // set: a classification that let a moving rate through would otherwise
@@ -2282,12 +2463,14 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     // or t_end, where a condition may read its boundary value (`time() >= 5` at
     // 5) or the crossing Python placed may sit an ulp from the one the model
     // evaluates; and to a relative 1e-10, the compiled and interpreted rate
-    // laws rounding differently.
+    // laws rounding differently. The ulps are those of the time the model reads,
+    // origin + t_row: from a far t_start a row half of one past a breakpoint
+    // reads the breakpoint itself (issue #1059).
     auto pc_guard = [&](double t_row) {
         if (!pc_refresh)
             return;
-        const double tol =
-            64.0 * std::numeric_limits<double>::epsilon() * std::max(1.0, std::fabs(t_row));
+        const double tol = 64.0 * std::numeric_limits<double>::epsilon() *
+                           std::max(1.0, std::fabs(origin + t_row));
         if (std::fabs(t_row - times.t_start) <= tol || std::fabs(times.t_end - t_row) <= tol)
             return;
         const auto it = std::lower_bound(bps.begin(), bps.end(), t_row - tol);
@@ -2299,7 +2482,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             if (std::fabs(v - p) <= 1e-10 * std::max(v, p))
                 continue;
             char buf[96];
-            std::snprintf(buf, sizeof buf, " at t = %.17g (%.17g, set as %.17g)", t_row, v, p);
+            std::snprintf(buf, sizeof buf, " at t = %.17g (%.17g, set as %.17g)", origin + t_row, v,
+                          p);
             throw std::runtime_error(
                 std::string(use_psa ? "PSA" : "SSA") + ": the rate of reaction " +
                 reaction_label(model, reactions[r]) + " moved between breakpoints" + buf +
@@ -2376,7 +2560,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                     // set_expression_names zero-fills expressions_, so they read
                     // back as a perfectly plausible 0.0 with no sentinel.
                     if (n_func > 0) {
-                        model.evaluate_functions(t_out[next_output]);
+                        model.evaluate_functions(origin + t_out[next_output]);
                         auto fvals = model.function_values();
                         result.record_expressions(next_output, fvals.data());
                     }
@@ -2415,7 +2599,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                 if (rec_stats)
                     rs_record(next_output, t_out[next_output]);
                 if (n_func > 0) {
-                    model.evaluate_functions(t_out[next_output]);
+                    model.evaluate_functions(origin + t_out[next_output]);
                     auto fvals = model.function_values();
                     result.record_expressions(next_output, fvals.data());
                 }
@@ -2553,6 +2737,12 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                     fire_keeps_panel[r] = keeps;
                 }
         }
+        // The reactions a firing of which restarts the panel (issue #1059, at
+        // the panel's start below).
+        std::vector<int> restart_rxns;
+        for (int r = 0; r < nr; ++r)
+            if (!fire_keeps_panel[r] && !reactions[r].is_rate_rule_ode && !reactions[r].ode_only)
+                restart_rxns.push_back(r);
         // ...and whether that firing's refresh can skip the observables and
         // functions: only when no static propensity it moves reads a function
         // (a Functional rate that reads no time is static, and reads them).
@@ -2611,7 +2801,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                     // No rate rule: across a panel only time moves, so the
                     // observables already hold this state; only the functions
                     // of time need evaluating.
-                    model.evaluate_functions(s);
+                    model.evaluate_functions(origin + s);
                 }
             }
             if (fout) {
@@ -2623,7 +2813,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                             std::string(use_psa ? "PSA" : "SSA") + ": the rate rule for " +
                             model.species()[rr.target0].name + " evaluates to " +
                             (std::isnan(f) ? "nan" : (f > 0 ? "inf" : "-inf")) +
-                            " at t=" + std::to_string(s));
+                            " at t=" + std::to_string(origin + s));
                     fout[i] = rr.per_species ? f / rr.vf : f;
                 }
             }
@@ -2842,6 +3032,9 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         // step the panel's error test proposed for the next one.
         double tp = t, th0 = 0.0, s1p = t, h_next_p = h;
         bool carry = false;
+        // A firing that did not keep its panel: the next panel starts at its
+        // time, rounded onto the run's clock (issue #1059, below).
+        bool restarted_at_firing = false;
         constexpr int MAX_FLOOR_STEPS = 100;
         int floor_steps = 0; // panels accepted at hmin in a row
         constexpr long MAX_TINY_PANELS = 1000000;
@@ -2891,10 +3084,20 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                         for (int i = 0; i < m; ++i)
                             J[static_cast<std::size_t>(i) * m + j] = (F1[i] - F0[i]) / dj;
                     }
-                    const double dt = sq * std::max(std::fabs(t), std::max(h, 1e-8));
+                    double dt = sq * std::max(std::fabs(t), std::max(h, 1e-8));
+                    // The model reads origin + t. From a far t_start a step below
+                    // its rounding reads no change in the clock, or a whole ulp of
+                    // it, and ∂f/∂t came out 0 or a spike (issue #1059). Step at
+                    // least two of those ulps, or the panel where it is shorter
+                    // (whose stages see no more of the clock than that), and
+                    // divide by the step the clock read: none is no change in f.
+                    if (origin != 0.0)
+                        dt = std::max(dt, std::min(h, 2.0 * std::numeric_limits<double>::epsilon() *
+                                                          std::fabs(origin + t)));
                     eval_cont(t + dt, y.data(), Tt.data(), nullptr, false);
+                    const double dt_read = origin != 0.0 ? (origin + (t + dt)) - (origin + t) : dt;
                     for (int i = 0; i < m; ++i)
-                        Tt[i] = (Tt[i] - F0[i]) / dt;
+                        Tt[i] = dt_read > 0.0 ? (Tt[i] - F0[i]) / dt_read : 0.0;
                     jac_ok = true;
                 }
 
@@ -3030,8 +3233,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                     }
                     if (hh <= hmin) {
                         char buf[96];
-                        std::snprintf(buf, sizeof buf, "t = %.17g: %d steps of %.3g in a row", t,
-                                      MAX_FLOOR_STEPS, hmin);
+                        std::snprintf(buf, sizeof buf, "t = %.17g: %d steps of %.3g in a row",
+                                      origin + t, MAX_FLOOR_STEPS, hmin);
                         throw std::runtime_error(
                             std::string(use_psa ? "PSA" : "SSA") +
                             ": the continuous part of the model (time-dependent rates or rate "
@@ -3051,7 +3254,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                         char buf[160];
                         std::snprintf(buf, sizeof buf,
                                       "%ld panels in a row shorter than %.3g at t = %.17g",
-                                      MAX_TINY_PANELS, 2.0 * hmin, t);
+                                      MAX_TINY_PANELS, 2.0 * hmin, origin + t);
                         throw std::runtime_error(
                             std::string(use_psa ? "PSA" : "SSA") +
                             ": the continuous part of the model makes no headway: " + buf +
@@ -3074,6 +3277,54 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             const double A_s = sel_total();
             if (!std::isfinite(A_s))
                 refuse_nonfinite_propensity(-1, A_s, t);
+            // Issue #1059: a panel a firing restarted starts at the firing's time
+            // rounded onto the run's clock, whose doubles near t are `spacing`
+            // apart, and the next waiting time is counted from there. Restarts
+            // at a steady rate a are short by a fraction sinh(p/2)/(p/2) - 1 ~
+            // p^2/24 of the time between them, p = a*spacing, and the run fires
+            // that much too fast, with no error: a decay in one run from 0 that
+            // turned busy at 1e12 (p = 6) kept 22831 of an exact 36788 (over 40
+            // seeds), at a steady rate 3.45 times the rate. A firing that keeps
+            // its panel goes on inside it exactly, so a is the rate of the
+            // reactions that restart it: fast firings that keep it, between rare
+            // restarts, leave each restart's rounding unbiased. The discrete
+            // loops carry what rounds away (#1075); this one is refused past p =
+            // 0.1, a bias of 4e-4. A leg with the busy stretch near its end
+            // nearer 0 counts its clock from there. (An event's restart rounds
+            // too, and loses part of a spacing each: issue #1436.)
+            if (restarted_at_firing) {
+                restarted_at_firing = false;
+                constexpr double kMaxFiringsPerSpacing = 0.1;
+                const double at = std::fabs(t);
+                const double spacing =
+                    std::nextafter(at, std::numeric_limits<double>::infinity()) - at;
+                // The total rate first: it bounds the restarting one, and passes
+                // wherever the doubles are fine.
+                if ((A_s + A0) * spacing > kMaxFiringsPerSpacing) {
+                    double a_next = 0.0;
+                    for (int r : restart_rxns) {
+                        const double a = is_dyn[r]
+                                             ? std::fabs(model.compute_propensity(r, conc.data()))
+                                             : propensities[r];
+                        a_next += use_psa ? scaling_factors[r] * a : a;
+                    }
+                    if (a_next * spacing > kMaxFiringsPerSpacing) {
+                        char buf[200];
+                        std::snprintf(buf, sizeof buf,
+                                      " at t = %.17g: a rate of %.3g restarting its panels is "
+                                      "%.3g firings per spacing of the doubles there (%.3g)",
+                                      origin + t, a_next, a_next * spacing, spacing);
+                        throw std::runtime_error(
+                            std::string(use_psa ? "PSA" : "SSA") +
+                            ": the run fires faster than its clock can place the firings" + buf +
+                            ". Each waiting time rounds onto them, and the run would fire too "
+                            "fast with no error (issue #1059). Run it in legs (run_until): a "
+                            "leg counts its clock from its end nearer 0, so one that starts "
+                            "just before this stretch (at negative times, ends just after it) "
+                            "places these firings exactly.");
+                    }
+                }
+            }
             double th_fire = 2.0;
             const double L0 = L_at(th0);
             const double span = A_s * hh * (1.0 - th0) + (L_at(1.0) - L0);
@@ -3210,7 +3461,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                 jac_ok = false;
                 h = h_next_p;
                 psa_now = t;
-                model.set_current_time(t);
+                model.set_current_time(origin + t);
                 if (s1 == t_stop && t_stop < times.t_end)
                     fresh = true; // a breakpoint: a rate may jump here
                 if (stop_at_pending && s1 == t_stop) {
@@ -3235,7 +3486,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             }
             t = s_cut;
             psa_now = t;
-            model.set_current_time(t);
+            model.set_current_time(origin + t);
             sync_state(t);
             h = std::max(h_next_p, 64.0 * hmin);
             fresh = true;
@@ -3333,6 +3584,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             // above (and any event drain) left the observables and functions at
             // this state: the next panel's start needs no second evaluation.
             synced = dep_graph.has_functional_rates;
+            restarted_at_firing = true;
         }
         // Rows at t_end not yet written (a row at exactly t_end whose panel
         // ended in an event).
@@ -3390,7 +3642,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                             if (rec_stats)
                                 rs_record(next_output, t_out[next_output]);
                             if (n_func > 0) {
-                                model.evaluate_functions(t_out[next_output]);
+                                model.evaluate_functions(origin + t_out[next_output]);
                                 auto fvals = model.function_values();
                                 result.record_expressions(next_output, fvals.data());
                                 pc_guard(t_out[next_output]);
@@ -3407,7 +3659,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                         if (fired) {
                             recompute_all_propensities();
                         }
-                        model.set_current_time(t);
+                        model.set_current_time(origin + t);
                         continue;
                     }
                 }
@@ -3421,7 +3673,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                         result.record(next_output, t_out[next_output], conc.data(), obs_buf.data());
                         if (rec_stats)
                             rs_record(next_output, t_out[next_output]);
-                        model.evaluate_functions(t_out[next_output]);
+                        model.evaluate_functions(origin + t_out[next_output]);
                         auto fvals = model.function_values();
                         result.record_expressions(next_output, fvals.data());
                         pc_guard(t_out[next_output]);
@@ -3432,7 +3684,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                     t = t_lim;
                     t_carry = 0.0;
                     psa_now = t;
-                    model.set_current_time(t);
+                    model.set_current_time(origin + t);
                     continue;
                 }
                 // Truly stuck — fast-forward.
@@ -3453,7 +3705,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                     // recorded column must keep tracking t across the frozen tail; a
                     // single pre-loop evaluation would flatline it at one value.
                     if (n_func > 0) {
-                        model.evaluate_functions(t_out[next_output]);
+                        model.evaluate_functions(origin + t_out[next_output]);
                         auto fvals = model.function_values();
                         result.record_expressions(next_output, fvals.data());
                         pc_guard(t_out[next_output]);
@@ -3522,7 +3774,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                 if (rec_stats)
                     rs_record(next_output, t_out[next_output]);
                 if (n_func > 0) {
-                    model.evaluate_functions(t_out[next_output]);
+                    model.evaluate_functions(origin + t_out[next_output]);
                     auto fvals = model.function_values();
                     result.record_expressions(next_output, fvals.data());
                     pc_guard(t_out[next_output]);
@@ -3539,7 +3791,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                 t = t_proposed;
                 t_carry = 0.0;
                 psa_now = t;
-                model.set_current_time(t);
+                model.set_current_time(origin + t);
                 continue;
             }
 
@@ -3555,7 +3807,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                 if (fired) {
                     recompute_all_propensities();
                 }
-                model.set_current_time(t);
+                model.set_current_time(origin + t);
                 continue;
             }
 
@@ -3573,7 +3825,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             t = t_proposed;
             t_carry = carry_next;
             psa_now = t; // GH #15 — keep the PSA dwell clock on t
-            model.set_current_time(t);
+            model.set_current_time(origin + t);
             ++total_steps;
 
             refresh_after_firing(selected);
@@ -3598,17 +3850,19 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         for (int i = 0; i < ns; ++i) {
             species[i].concentration = conc[i];
         }
-        model.set_current_time(t);
+        // t_end itself: the next run continues from the time the last row
+        // reports (issue #693).
+        model.set_current_time(t == times.t_end ? times_in.t_end : origin + t);
         // ...and the event state that goes with it (issue #693), with the
         // executions still waiting (issue #526).
         NetworkModel::EventCarry carry;
         carry.valid = true;
-        carry.t = t;
+        carry.t = t == times.t_end ? times_in.t_end : origin + t;
         carry.trigger.assign(trigger_was_true.begin(), trigger_was_true.end());
         for (auto &pe : pending)
             carry.pending.push_back(NetworkModel::CarriedEventExecution{
-                pe.event_idx, pe.apply_time, std::move(pe.frozen_values)});
-        const bool continued = model.event_carry_for(times.t_start, n_events) != nullptr;
+                pe.event_idx, origin + pe.apply_time, std::move(pe.frozen_values)});
+        const bool continued = model.event_carry_for(times_in.t_start, n_events) != nullptr;
         model.publish_event_carry(std::move(carry), continued);
     }
 
@@ -3661,6 +3915,13 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         }
     }
 
+    // The rows were recorded on the run's clock; they report the times asked
+    // for, origin + elapsed exactly (issue #1059, ssa_clock_origin).
+    if (origin != 0.0) {
+        const std::vector<double> t_abs = times_in.output_times();
+        for (int k = 0; k < static_cast<int>(t_abs.size()) && k < result.n_times(); ++k)
+            result.set_time(k, t_abs[k]);
+    }
     return result;
 }
 

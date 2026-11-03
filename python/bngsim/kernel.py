@@ -303,7 +303,10 @@ class ReactionKernel:
         probe_model = self._sim.model.clone()
         probe = Simulator(probe_model, method="ode")
         # Any positive span works: row 0 is the pre-integration initial state.
-        row0 = probe.run(t_span=(0.0, 1.0), n_points=2).observables[0]
+        # The default atol, named: no integrated row is read, so the
+        # AtolScaleWarning a default run raises about those rows (issue #1361)
+        # has no place here, on an SSA kernel least of all.
+        row0 = probe.run(t_span=(0.0, 1.0), n_points=2, atol=1e-8).observables[0]
         self._state_observables = np.asarray(row0, dtype=np.float64)
         return self._state_observables
 

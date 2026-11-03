@@ -1,5 +1,6 @@
 """A rate law that branches on an equality the state sits on is refused in a
-sensitivity run, not differentiated to 0 (issue #1228).
+sensitivity run where leaving it is a switch nothing jumps, not differentiated
+to 0 (issues #1228, #1279).
 
 ``fY = if(Bobs==0, kb, 0)``, where B is made only once A = 10·e^(-a·t) falls to
 q, at t* = ln(10/q)/a. The equality holds from the start until t*, so Y =
@@ -11,7 +12,14 @@ holds for an instant. The core admits the equality's surface (#381) and reads
 its branch gap either side of it, where both sides are false. So leaving a
 surface the state sat on was a switch nothing saw: the run came back with
 dY/da = dY/dq = 0 and no warning. ``Bobs<=0``, the same switch, is located at
-t* and refused as a tangency. The equality now gets a refusal too, by name.
+t* and refused as a tangency.
+
+#1240 refused every run that starts on such a surface and stays, which also
+refused runs main got right (#1279). The solver now roots where the state
+leaves, and refuses there only where the rate laws reading the equality change
+and no jump at that instant covers it. A stretch that outlasts the run, or that
+a rooted condition inside the equality ends, or over which the rest of the
+condition never holds, runs.
 
 An equality the state only starts on and leaves at once, or crosses, or that
 no rate law reads, runs as before.
@@ -25,11 +33,13 @@ import bngsim
 import numpy as np
 import pytest
 from bngsim._exceptions import SensitivityUnsupportedError
-from bngsim._switch_sensitivity import _evaluate_over, equalities_held_at_start
 
 A, Q, KB = 0.5, 2.0, 1.0
 T_STAR = math.log(10 / Q) / A
 EXACT = [-KB * math.log(10 / Q) / A**2, -KB / (A * Q), T_STAR]  # dY/d[a, q, kb]
+# Of kb·∫A over (0, 8), for Y' = kb·A beside a branch that adds nothing.
+_INT_A = 10 * (1 - math.exp(-8 * A)) / A
+EXACT_INT_A = [KB * 10 * (8 * math.exp(-8 * A) / A - (1 - math.exp(-8 * A)) / A**2), 0.0, _INT_A]
 
 
 def _model(tmp_path, f_y, b0=0.0, extra="", f_b="kp*if(q-Aobs>0,q-Aobs,0)"):
@@ -100,25 +110,61 @@ def test_a_plain_run_is_unaffected(tmp_path):
     assert float(np.asarray(result.species)[-1, 2]) == pytest.approx(KB * T_STAR, rel=1e-6)
 
 
-def test_the_check_leaves_the_state_as_it_found_it(tmp_path):
-    core = _model(tmp_path, "if(Bobs==0,kb,0)")._core
-    before = core.get_state().tolist()
-    seed = np.arange(6.0).reshape(3, 2)
-    core.set_pending_sensitivity_seed(seed, ["a", "q"])
-    assert equalities_held_at_start(core) == ["Bobs==0"]
-    assert core.get_state().tolist() == before
-    # set_state drops a pending carry-over seed (GH #210); the check puts it back.
-    np.testing.assert_array_equal(core.pending_sensitivity_seed(), seed)
-    assert list(core.pending_sensitivity_seed_param_names) == ["a", "q"]
-    # The observables are left refreshed from that state.
-    assert [float(_evaluate_over(core, o, [0.0])[0]) for o in ("Aobs", "Bobs")] == [10.0, 0.0]
+@pytest.mark.parametrize(
+    ("f_y", "f_b", "t_span", "want"),
+    [
+        ("if(Bobs==0,kb,0)", "0", (0, 8), [0.0, 0.0, 8.0]),
+        ("if(Bobs==0,kb,0)", None, (0, 2), [0.0, 0.0, 2.0]),
+        ("if(fB()==0,kb,0)", None, (0, 8), EXACT),
+        ("if(Bobs==0&&Aobs<1,kb,0)", None, (0, 8), [0.0, 0.0, 0.0]),
+        ("if(Bobs==0&&Aobs<1,kb,0)+kb*Aobs", "if(time()>3,kp,0)", (0, 8), EXACT_INT_A),
+    ],
+    ids=[
+        "B never leaves",
+        "the run ends before t*",
+        "a rooted condition inside the equality ends it",
+        "the rest of the condition never holds as B leaves",
+        "only a reaction that does not read the equality jumps as B leaves",
+    ],
+)
+def test_a_stretch_whose_leaving_needs_no_jump_runs(tmp_path, f_y, f_b, t_span, want):
+    """#1240 refused all five, where main's columns are exact (issue #1279).
+    With A above 1 when B leaves, `Bobs==0&&Aobs<1` reads false either side.
+    In the last, B's own production jumps on at t = 3 as B leaves: the leaving
+    is judged by the laws that read the equality alone."""
+    kw = {} if f_b is None else {"f_b": f_b}
+    np.testing.assert_allclose(
+        _columns(_model(tmp_path, f_y, **kw), t_span=t_span), want, rtol=1e-6, atol=1e-9
+    )
+
+
+@pytest.mark.parametrize(("q", "a"), [(1.5, 0.5), (1.5, 0.37), (1.6, 0.5), (2.0, 0.5)])
+def test_a_leaving_a_switch_inside_the_equality_jumps_at_runs(tmp_path, q, a):
+    """`if(fB()==0, kb, 0)` with fB gated by `q-Aobs>0`: that switch's jump at
+    t* reads fY either side of its surface. Whether its restart lands on the
+    equality's surface, so that the leaving is rooted just after and judged,
+    or past it, is rounding: of these, (2.0, 0.5) lands past it on macOS and on
+    it on Linux, which refused it there. dY/d[a, q, kb] = [-ln(10/q)/a²,
+    -1/(a·q), ln(10/q)/a]·kb."""
+    path = tmp_path / "m.net"
+    path.write_text(
+        f"begin parameters\n 1 a {a!r}\n 2 q {q!r}\n 3 kb {KB}\n 4 kp 1.0\nend parameters\n"
+        "begin functions\n 1 fB() kp*if(q-Aobs>0,q-Aobs,0)\n 2 fY() if(fB()==0,kb,0)\n"
+        "end functions\n"
+        "begin species\n 1 A() 10\n 2 B() 0\n 3 Y() 0\nend species\n"
+        "begin reactions\n 1 1 0 a\n 2 0 2 fB\n 3 0 3 fY\nend reactions\n"
+        "begin groups\n 1 Aobs 1\n 2 Bobs 2\nend groups\n"
+    )
+    t_star = math.log(10 / q) / a
+    want = [-KB * t_star / a, -KB / (a * q), t_star]
+    np.testing.assert_allclose(_columns(bngsim.Model.from_net(str(path))), want, rtol=1e-6)
 
 
 def test_a_held_equality_is_read_at_the_run_start_time(tmp_path):
     """B is made at once before t = 1, so a run from 0 leaves `Bobs==0` at once
     and runs, while a run from 5 holds B at 0 until A falls to q and is
-    refused. The check read the flow at t = 0 for both, and the second came
-    back [0, 0, 3.218876] for [-6.4378, -1, 3.2189] by difference."""
+    refused there. The flow read at t = 0 for both gave the second
+    [0, 0, 3.218876] for [-6.4378, -1, 3.2189] by difference."""
     f_b = "if(time()<1,1,0)+kp*if(q-Aobs>0,q-Aobs,0)"
     np.testing.assert_allclose(
         _columns(_model(tmp_path, "if(Bobs==0,kb,0)", f_b=f_b), t_span=(0, 20)),
@@ -166,3 +212,52 @@ def test_a_carried_sensitivity_seed_survives_the_check(tmp_path):
     np.testing.assert_allclose(
         np.asarray(result.sensitivities)[:, 0, :], [[2.0, -8.0]] * 5, rtol=1e-6
     )
+
+
+# B is made at kp only once the clock passes t3, so `Bobs==0` holds from the
+# start until t3 and B leaves at once there: Y = kb·t3 at t = 8.
+_CLOCKED = """begin parameters
+    1 kp 1.0
+    2 kb 1.0
+    3 t3 5.0
+end parameters
+begin functions
+    1 fB() if(time()>t3,kp,0)
+    2 fY() if(Bobs==0,kb,0)
+end functions
+begin species
+    1 B() 0
+    2 Y() 0
+end species
+begin reactions
+    1 0 1 fB
+    2 0 2 fY
+end reactions
+begin groups
+    1 Bobs 1
+end groups
+"""
+
+
+def _clocked(tmp_path, params):
+    path = tmp_path / "clocked.net"
+    path.write_text(_CLOCKED)
+    sim = bngsim.Simulator(
+        bngsim.Model.from_net(str(path)), method="ode", sensitivity_params=params
+    )
+    result = sim.run(t_span=(0, 8), n_points=9, rtol=1e-10, atol=1e-12)
+    return np.asarray(result.sensitivities)[-1, 1, :]
+
+
+def test_a_leaving_at_once_after_a_clock_stop_no_column_moves_runs(tmp_path):
+    """The stop at t3 is a time no requested column moves, and B leaves the
+    surface at once after it: dY/d[kp, kb] = [0, t3]. Refused at t = 5 before
+    (issue #1445), where only the run's start and a fixed event were known."""
+    np.testing.assert_allclose(_clocked(tmp_path, ["kp", "kb"]), [0.0, 5.0], atol=1e-9)
+
+
+def test_a_leaving_at_once_after_a_clock_stop_a_column_moves_is_refused(tmp_path):
+    """With t3 requested, the #48 jump at t3 reads Y's flow after the stop with
+    B still on the surface: dY/dt3 would be 0 for 1. It stays refused."""
+    with pytest.raises(SensitivityUnsupportedError, match=r"'Bobs==0'.*leaves it at t=5"):
+        _clocked(tmp_path, ["kp", "kb", "t3"])

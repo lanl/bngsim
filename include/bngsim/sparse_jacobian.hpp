@@ -144,6 +144,15 @@ inline bool fill_routes_to_dense(const JacobianSparsity &sp, int ns, double lu_f
 //
 // `lu_fill` is routing_lu_fill(model, ns, jacobian_strategy): a model the size
 // and density test sends to KLU goes dense when fill_routes_to_dense says so.
+//
+// A structurally empty Jacobian (nnz == 0: species no reaction moves, an event's
+// targets) has a density of 0, which the density test reads as sparse, but it
+// gives KLU nothing to factor and, under jacobian="fd", nothing to color, and the
+// run was refused for force_sparse_linear_solver, a flag the caller never set
+// (SBML Test Suite 01530). So the size and density test sends it to the dense
+// solver, as codegen's own reading of this rule already did (_codegen.py's
+// fallback for a core that does not report routes_sparse). force_sparse still
+// asks for KLU, and is refused by name where nothing can fill the matrix.
 inline bool route_to_sparse_linear_solver(const JacobianSparsity &sp, int ns,
                                           const std::string &jacobian_strategy, bool force_dense,
                                           bool force_sparse, double lu_fill) {
@@ -151,7 +160,7 @@ inline bool route_to_sparse_linear_solver(const JacobianSparsity &sp, int ns,
     const bool sparse_ok = (jacobian_strategy != "jax") && !sp.empty();
     return sparse_ok && !force_dense &&
            (force_sparse ||
-            ((ns >= SPARSE_THRESHOLD) && (sp.density < SPARSE_DENSITY_MAX) &&
+            ((ns >= SPARSE_THRESHOLD) && (sp.nnz > 0) && (sp.density < SPARSE_DENSITY_MAX) &&
              !fill_routes_to_dense(sp, ns, lu_fill, jacobian_strategy, force_dense, force_sparse)));
 #else
     (void)sp;
@@ -208,7 +217,11 @@ inline void install_csc_structure(IndexT *col_ptrs, IndexT *row_indices,
 // not the bare accessor), `fy` is f at the unperturbed `y`, and the three
 // scratch buffers are ns long — the caller owns them so a per-step Jacobian
 // allocates nothing. `eval_rhs(t, y_pert, fy_pert)` evaluates the SAME right-
-// hand side the session is integrating.
+// hand side the session is integrating and returns its callback's code: a
+// nonzero one ends the quotient there and is returned, as CVODE's dense
+// quotient returns a failed call's (the time course's GH #135 retry gives one
+// where no reading of a column is finite), and a point of the jump test with
+// one is not used. Returns 0 where every column was read.
 //
 // `jump_rows`, 4·ns long, turns on the jump test of fd_jacobian.hpp (issue
 // #1002), over the matrix the loop above left (which gives each row's terms):
@@ -229,11 +242,11 @@ inline void install_csc_structure(IndexT *col_ptrs, IndexT *row_indices,
 // failed to converge or reached a state with no finite rate where dense
 // differences, on the weights, ran (#1254).
 template <typename EvalRhs>
-inline void colored_fd_jacobian(const JacobianSparsity &sp, int ns, double t, const double *y,
-                                const double *fy, double *jac_data, double *y_pert, double *fy_pert,
-                                double *h_vals, EvalRhs &&eval_rhs, double *jump_rows = nullptr,
-                                int *n_mended = nullptr, const double *ewt = nullptr,
-                                double min_inc = 1.0) {
+inline int colored_fd_jacobian(const JacobianSparsity &sp, int ns, double t, const double *y,
+                               const double *fy, double *jac_data, double *y_pert, double *fy_pert,
+                               double *h_vals, EvalRhs &&eval_rhs, double *jump_rows = nullptr,
+                               int *n_mended = nullptr, const double *ewt = nullptr,
+                               double min_inc = 1.0) {
     // Finite difference perturbation scale
     const double sqrt_uround = 1.4901161193847656e-8; // sqrt(machine epsilon)
 
@@ -252,7 +265,9 @@ inline void colored_fd_jacobian(const JacobianSparsity &sp, int ns, double t, co
         }
 
         // 2. Single RHS evaluation for all columns in this color group
-        eval_rhs(t, y_pert, fy_pert);
+        if (const int rc = eval_rhs(t, y_pert, fy_pert); rc != 0) {
+            return rc;
+        }
 
         // 3. Extract Jacobian entries for each column in the group
         for (int j : group) {
@@ -267,7 +282,7 @@ inline void colored_fd_jacobian(const JacobianSparsity &sp, int ns, double t, co
         }
     }
     if (jump_rows == nullptr) {
-        return;
+        return 0;
     }
 
     double *f2 = jump_rows;
@@ -290,11 +305,10 @@ inline void colored_fd_jacobian(const JacobianSparsity &sp, int ns, double t, co
             y_pert[j] = y[j] + m * h_vals[j];
         }
         try {
-            eval_rhs(t, y_pert, out);
+            return eval_rhs(t, y_pert, out) == 0;
         } catch (...) {
             return false;
         }
-        return true;
     };
     std::vector<FdJumpMend> mends;
     for (int c = 0; c < sp.n_colors; ++c) {
@@ -339,7 +353,7 @@ inline void colored_fd_jacobian(const JacobianSparsity &sp, int ns, double t, co
         }
     }
     if (mends.empty()) {
-        return;
+        return 0;
     }
     for (int i = 0; i < ns; ++i) {
         terms[i] = std::abs(fy[i]);
@@ -363,7 +377,9 @@ inline void colored_fd_jacobian(const JacobianSparsity &sp, int ns, double t, co
             y_pert[k] = y[k] - tau * fy[k];
         }
         try {
-            eval_rhs(t, y_pert, fm2);
+            if (eval_rhs(t, y_pert, fm2) != 0) {
+                return false;
+            }
         } catch (...) {
             return false;
         }
@@ -396,6 +412,7 @@ inline void colored_fd_jacobian(const JacobianSparsity &sp, int ns, double t, co
         }
         a = b;
     }
+    return 0;
 }
 
 } // namespace bngsim
