@@ -302,9 +302,11 @@ def _network_spelling(pattern: str) -> str:
     m = re.fullmatch(r"\s*@(\w+)::?(.*)", pattern, re.S)
     if m is not None:
         return f"@{m.group(1)}::{m.group(2).strip()}"
-    m = re.fullmatch(r"\s*([^@]*?)\s*@(\w+)\s*", pattern, re.S)
-    if m is not None and "." not in m.group(1):
-        return f"@{m.group(2)}::{m.group(1)}"
+    # A()@c, or a complex whose molecules all carry the one suffix: A(b!1)@c.B(a!1)@c
+    parts = [re.fullmatch(r"\s*([^@]*?)\s*@(\w+)\s*", part, re.S) for part in pattern.split(".")]
+    if all(parts) and len({m.group(2) for m in parts if m}) == 1:
+        compartment = parts[0].group(2) if parts[0] else ""
+        return f"@{compartment}::" + ".".join(m.group(1) for m in parts if m)
     return pattern.strip()
 
 

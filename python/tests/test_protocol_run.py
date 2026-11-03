@@ -425,6 +425,20 @@ def test_add_concentration_to_an_expression_amount_adds_to_the_declared_one(tmp_
     assert out[0].result.observables["Btot"][0] == 5.0
 
 
+def test_set_parameter_to_an_observable_is_refused(tmp_path):
+    """BNG2.pl makes kp a function of Atot, read through every later run (ran:
+    A(1) = 50 for A' = -kp A, kp = Atot/100); bngsim cannot make a parameter one."""
+    with pytest.raises(ConversionError, match=r"reads Atot, which makes the parameter"):
+        _run(tmp_path, _sim(1), 'setParameter("k","Atot/100")', _sim(1))
+
+
+def test_an_amount_still_an_expression_counts_as_0_in_an_observable(tmp_path):
+    """Before any run, A is the string A0 in BNG2.pl's concentrations, which its
+    Observable::evaluate reads as 0 (ran: 'Set concentration ... to value 0')."""
+    out = _run(tmp_path, 'setConcentration("B()","Atot")', _sim(1))
+    assert out[0].result.observables["Btot"][0] == 0.0
+
+
 def test_an_observable_in_a_value_is_read_from_the_amounts_now(tmp_path):
     """BNG2.pl's Observable::evaluate sums the amounts of the moment; bngsim's
     observable slot still holds the last run's value."""
@@ -516,3 +530,11 @@ def test_a_compartment_species_is_found_however_it_is_written(tmp_path, pattern)
     """BNGL actions write @c:A() or A()@c; the network writes @c::A()."""
     out = _run(tmp_path, f'setConcentration("{pattern}",50)', _sim(1), net=CNET)
     assert _a(out[0].result)[0] == 50.0
+
+
+def test_a_complex_with_a_compartment_on_each_molecule_is_found():
+    """BNG2.pl reads A(b!1)@c.B(a!1)@c as @c::A(b!1).B(a!1) (ran)."""
+    from bngsim._bngl_loader import _network_spelling
+
+    assert _network_spelling("A(b!1)@c.B(a!1)@c") == "@c::A(b!1).B(a!1)"
+    assert _network_spelling("A(b!1)@c.B(a!1)@m") == "A(b!1)@c.B(a!1)@m"

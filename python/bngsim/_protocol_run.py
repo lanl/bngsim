@@ -512,16 +512,25 @@ class _Runner:
         functions = dict(self.model._core._eval_functions(self.now, [float(x) for x in state]))
         return observables, {str(k): float(v) for k, v in functions.items()}
 
+    def _state_reads(self, text: str) -> list[str]:
+        """The observables and functions *text* names."""
+        names = [*self.model.observable_names, *self.model.function_names]
+        return [n for n in names if re.search(rf"(?<![\w.]){re.escape(n)}(?!\w)", text)]
+
     def _freeze(self, text: str) -> str:
         """*text* with each observable and function it reads replaced by its value
         now. BNG2.pl substitutes them when the action runs, from the amounts of
         the moment (BNGModel.pm, setConcentration; Observable.pm, evaluate), and
-        keeps only the parameters as names."""
-        names = [*self.model.observable_names, *self.model.function_names]
-        found = [n for n in names if re.search(rf"(?<![\w.]){re.escape(n)}(?!\w)", text)]
+        keeps only the parameters as names. An amount that is still an
+        expression is a string there, which Perl reads as 0, so it counts as 0
+        here too."""
+        found = self._state_reads(text)
         if not found:
             return text
-        observables, functions = self._reads_now(self._state())
+        state = self._state()
+        for i in self.symbolic:
+            state[i] = 0.0  # as BNG2.pl's numification reads it; see the docstring
+        observables, functions = self._reads_now(state)
         values = dict(zip(self.model.observable_names, observables, strict=True))
         values.update(functions)
         for name in sorted(found, key=len, reverse=True):
@@ -600,6 +609,15 @@ class _Runner:
         kind = change.kind
         label = change.label or _DEFAULT_LABEL
         if kind == "set_parameter":
+            if change.value_expr is not None and self._state_reads(change.value_expr):
+                # BNG2.pl makes such a parameter a function of the state, read
+                # anew through every later run (BNGModel.pm, setParameter
+                # substitutes nothing); bngsim cannot turn a parameter into one.
+                raise ConversionError(
+                    f"{_action(change)}: the value reads "
+                    f"{', '.join(self._state_reads(change.value_expr))}, which makes the "
+                    "parameter a function of the state in BNG2.pl; bngsim cannot do that"
+                )
             self._set_params({change.target or "": self._value(change)})
         elif kind == "set_concentration":
             i = self._species(change)
