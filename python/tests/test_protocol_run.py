@@ -114,6 +114,14 @@ def test_add_concentration_adds_to_what_the_last_run_left(tmp_path):
     assert _a(out[1].result)[0] == pytest.approx(100 * math.exp(-1) + 10, rel=RTOL)
 
 
+def test_add_concentration_adds_to_an_amount_still_its_expression(tmp_path):
+    """BNG2.pl evaluates the species' expression first (BNGModel.pm,
+    addConcentration: ``$plist->evaluate($spec->Concentration)``): A0 is 10
+    here, so the amount is 15, not the 105 the network's last number makes."""
+    out = _run(tmp_path, 'setParameter("A0",10)', 'addConcentration("A()",5)', _sim(1))
+    assert _a(out[0].result)[0] == 15.0
+
+
 def test_a_seed_amount_follows_its_parameter_until_a_run(tmp_path):
     """The network writes ``A() A0``, an expression BNG2.pl writes again into
     each run's network until a run makes it a number."""
