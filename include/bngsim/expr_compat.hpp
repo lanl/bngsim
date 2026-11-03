@@ -23,6 +23,7 @@
 // the NFsim shim need to include the 1.6 MB ExprTk header to call these.
 #pragma once
 
+#include <functional>
 #include <string>
 
 namespace bngsim {
@@ -32,6 +33,12 @@ namespace expr_compat {
 // M(a+1, b+1, z) / M(a, b, z), evaluated by Gauss's continued fraction with the
 // modified-Lentz method so it stays finite on BNG's large-|z| range (issue #42).
 double mratio(double a, double b, double z);
+
+// d/dz mratio(a, b, z), as the compiled code's bngsim_mratio_dz computes it
+// (python/bngsim/_codegen.py; issue #457): R·((a+1)/(b+1)·R(a+1,b+1,z) − (a/b)·R),
+// and where mratio refuses the shifted call, Kummer's contiguous relation
+// (b − (b−z)·R)/z − (a/b)·R². Neither a nor b has a derivative of this kind.
+double mratio_dz(double a, double b, double z);
 
 // rint(x): BNG's round-to-nearest, floor(x + 0.5) — the definition BNG2.pl's
 // run_network evaluates (muParser's Rint). A half rounds up, toward +inf, so
@@ -50,6 +57,27 @@ double rint(double x);
 // codegen's 7.77e-05 and 0.49999999999999994. A literal ExprTk reads right is
 // left as written, and so is anything that is not a literal.
 std::string exact_literals(const std::string &expr);
+
+// Issue #1415: the first call in `expr` that a bracket follows, as the call's
+// text, or "" where there is none. ExprTk multiplies a variable, or a
+// bracketed group, against a bracket after it: `A(B)` and `(A)(B)` are A·B.
+// After a call it does not. The bracket opens a second statement, and the
+// expression's value is the last statement's: `k*exp(-A)(B)` came back B, and
+// a rate law written so ran as its last factor. BNG2.pl rejects the same text
+// as a syntax error.
+//
+// A call is what ExprTk's parser calls: one of its built-in functions
+// (`mand` and `mor` among them), `if`, `not`, or a name `is_function` says the
+// caller's symbol table holds as a function. Any other name before a bracket
+// is left to ExprTk: a variable is multiplied, a word operator joins, and an
+// unknown name is ExprTk's error to report. Names and numbers are read as
+// ExprTk's lexer reads them, so `k.g(B)(C)` is the variable `k.g`, and
+// `1e1(B)` is a number.
+std::string call_before_bracket(const std::string &expr,
+                                const std::function<bool(const std::string &)> &is_function);
+
+// The refusal for `call`, found by call_before_bracket() in `expr`.
+std::string bracket_after_call_error(const std::string &expr, const std::string &call);
 
 // Unconditional leading-underscore remap: "_X" → "u_X" (ExprTk rejects an
 // identifier starting with '_'). Identity for any name not starting with '_'.

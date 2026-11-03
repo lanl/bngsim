@@ -8,9 +8,14 @@ already knows; none instruments the per-step RHS/Jacobian hot path.
 """
 
 import os
+import sys
 
 import bngsim
 import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _codegen_backend import threshold_forced, under_jit_engine_name  # noqa: E402
 
 # Honor BNGSIM_TEST_DATA so this module works under run_tests.sh, which copies
 # tests to a temp dir (breaking __file__-relative resolution).
@@ -26,6 +31,7 @@ def _net(name: str) -> str:
 class TestCodegenBackend:
     """T0.1 — ``Simulator.codegen_backend`` reports ``exprtk``/``cc``/``mir``."""
 
+    @threshold_forced
     def test_small_model_uses_exprtk(self):
         # A 2-species model is far below the 256-species codegen threshold and
         # was not asked to codegen, so the engine runs the ExprTk interpreter.
@@ -33,6 +39,7 @@ class TestCodegenBackend:
         sim = bngsim.Simulator(m, method="ode")
         assert sim.codegen_backend == "exprtk"
 
+    @under_jit_engine_name
     def test_explicit_codegen_uses_cc(self):
         # codegen=True compiles native C via cc + dlopen — the "cc" backend —
         # even on a tiny model (this is exactly how to reach the state a
@@ -41,6 +48,7 @@ class TestCodegenBackend:
         sim = bngsim.Simulator(m, method="ode", codegen=True)
         assert sim.codegen_backend == "cc"
 
+    @under_jit_engine_name
     def test_threshold_env_forces_cc(self):
         # The documented threshold override (BNGSIM_CODEGEN_THRESHOLD) is the
         # production path to "cc": drop it to 0 and even a 2-species model
@@ -125,6 +133,7 @@ class TestJacobianStrategy:
 class TestCodegenSetupTime:
     """T0.3 — ``Simulator.last_codegen_sec`` reports codegen wall time."""
 
+    @threshold_forced
     def test_exprtk_model_reports_zero_setup(self):
         # An ExprTk model never codegens, so its setup time is exactly 0.0
         # (the recorder is never invoked for it).
@@ -133,6 +142,7 @@ class TestCodegenSetupTime:
         assert sim.codegen_backend == "exprtk"
         assert sim.last_codegen_sec == 0.0
 
+    @under_jit_engine_name
     def test_cc_codegen_records_cold_compile_then_cache_hit(self, monkeypatch, tmp_path):
         # The cc backend compiles native C; a cold compile costs real wall time,
         # a subsequent cache hit costs ~nothing. Both must be reported from a
@@ -187,12 +197,14 @@ class TestCodegenCacheHit:
     True (reused), False (compiled fresh), None (no .so) — recorded by the
     codegen pipeline at the get_cached_so branch, not inferred from wall time."""
 
+    @threshold_forced
     def test_exprtk_model_has_no_so(self):
         m = bngsim.Model.from_net(_net("simple_decay"))
         sim = bngsim.Simulator(m, method="ode")
         assert sim.codegen_backend == "exprtk"
         assert sim.codegen_cache_hit is None  # no .so involved at all
 
+    @under_jit_engine_name
     def test_cold_compile_then_cache_hit(self, monkeypatch, tmp_path):
         import bngsim._codegen as cg
 

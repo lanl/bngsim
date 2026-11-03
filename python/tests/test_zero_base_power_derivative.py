@@ -397,7 +397,10 @@ _SIR_V4_BNGL = (
 
 
 @pytest.mark.skipif(not _SIR_V5, reason="benchmark ode_fullnet corpus not present")
-def test_sir_v5_keeps_both_derivatives():
+def test_sir_v5_keeps_both_derivatives(monkeypatch):
+    """Unbudgeted, as SIR_v4's below and for the same reason (issue #1416)."""
+    monkeypatch.setenv("BNGSIM_JAC_DERIV_BUDGET_S", "inf")
+    monkeypatch.setenv("BNGSIM_SENS_DERIV_BUDGET_S", "inf")
     m = bngsim.Model.from_net(_SIR_V5[0])
     assert m.prepare_analytical_jacobian() is True, m.analytical_jacobian_status
     sim = bngsim.Simulator(m, method="ode", sensitivity_params=["a_2021", "dt_2021"])

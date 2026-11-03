@@ -139,10 +139,15 @@ Current local carries inside the fetched SUNDIALS source: one, listed in
   failure at the converged state in the staggered sensitivity corrector is
   restored and the step cut, through `cvHandleNFlag`, instead of being retried
   from the advanced time. `third_party/sundials/carry_cvodes_staggered_restore.cmake`
-  applies it as the FetchContent `PATCH_COMMAND`, and the configure fails if
-  the fetched source lacks its marker. On a refresh, that script fails if the
-  upstream block has moved: re-derive the carry against the new `cvStep`, or
-  drop it once upstream fixes the defect.
+  applies it as the FetchContent `PATCH_COMMAND`. Any change to the carried
+  code bumps the marker revision (`r3` now), which `CMakeLists.txt` names, so
+  every build tree reconfigures; one whose fetched source lacks the current
+  marker discards that fetch and fetches again
+  (`third_party/sundials/discard_stale_fetch.cmake`). A
+  `FETCHCONTENT_SOURCE_DIR_SUNDIALS` copy without the marker fails the
+  configure instead. On a refresh, the carry script fails if the upstream
+  block has moved: re-derive the carry against the new `cvStep`, or drop it
+  once upstream fixes the defect (lanl/bngsim#1410).
 
 ### 3. Validate Inside BNGsim
 

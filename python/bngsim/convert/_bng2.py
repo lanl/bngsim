@@ -69,17 +69,22 @@ def _name_aligned_perm(src: Model, reloaded: Model) -> list[int]:
 
     BNG2.pl may reorder/rename species, so alignment is by the writer's sanitized
     molecule name rather than position. Raises :class:`ConversionError` if a source
-    species has no counterpart in the reloaded network.
+    species has no counterpart in the reloaded network, or the reloaded network
+    has species the source does not: both probes read the reload at a source
+    state, which says nothing of an extra species' value (``_eval_rhs`` refused
+    the length with a ValueError, and the report probe an IndexError).
     """
-    from bngsim.convert._bngl_writer import _molecule_names
+    from bngsim.convert._bngl_writer import _molecule_names, _rule_species_carriers
 
     sd = src._core.codegen_data()
     rl_names = [_strip_pattern(s["name"]) for s in reloaded._core.codegen_data()["species"]]
+    # The writer's own names, the marked rule species' included (issue #1400).
     _, src_mol = _molecule_names(
         sd["species"],
         sd["parameters"],
         sd["functions"],
         {f["name"] for f in sd["functions"]} | {o["name"] for o in sd["observables"]},
+        _rule_species_carriers(src, sd["species"]),
     )
     pos = {n: i for i, n in enumerate(rl_names)}
     missing = [n for n in src_mol if n not in pos]
@@ -87,13 +92,24 @@ def _name_aligned_perm(src: Model, reloaded: Model) -> list[int]:
         raise ConversionError(
             f"cannot align {len(missing)} species after BNG2.pl round-trip (e.g. {missing[:5]})"
         )
+    if len(rl_names) != len(src_mol):
+        raise ConversionError(
+            f"cannot align the species after BNG2.pl round-trip: its network has "
+            f"{len(rl_names)}, the source {len(src_mol)}"
+        )
     return [pos[n] for n in src_mol]
 
 
 def _rhs_delta(src: Model, reloaded: Model, perm: list[int], times=_PROBE_TIMES) -> float:
     """Largest scale-relative ``|Δ dy/dt|`` over the shared initial state and a few
     aligned probe states, evaluated at each of ``times``. Non-finite cells
-    (out-of-domain probes) are skipped."""
+    (out-of-domain probes) are skipped.
+
+    ``perm[i]`` is the reload's index of source species ``i``
+    (:func:`_name_aligned_perm`): the reload's state puts ``y[i]`` at
+    ``perm[i]``, and its derivative is read back in source order as ``b[perm]``,
+    as ``_validate._ar_report_delta`` reads ``back_perm``. ``y[perm]`` is the
+    inverse, the same only when BNG2.pl's reorder is its own inverse."""
     import numpy as np
 
     y0 = np.asarray(src.get_state(), dtype=float)
@@ -103,9 +119,10 @@ def _rhs_delta(src: Model, reloaded: Model, perm: list[int], times=_PROBE_TIMES)
     for t in times:
         for y in states:
             a = np.asarray(src._core._eval_rhs(t, y.tolist()), dtype=np.float64)
-            b = np.asarray(reloaded._core._eval_rhs(t, y[perm].tolist()), dtype=np.float64)
-            bb = np.empty_like(b)
-            bb[perm] = b
+            yr = np.empty_like(y)
+            yr[perm] = y
+            b = np.asarray(reloaded._core._eval_rhs(t, yr.tolist()), dtype=np.float64)
+            bb = b[perm]
             finite = np.isfinite(a) & np.isfinite(bb)
             if not finite.any():
                 continue
@@ -122,11 +139,29 @@ def roundtrip_rhs_delta(
     timeout: int = 300,
     bng2: Path | None = None,
 ) -> tuple[float, int]:
+    """:func:`roundtrip_deltas` without the assignment-rule report check:
+    ``(max_rhs_delta, reloaded_n_species)``."""
+    rhs, _ar, n = roundtrip_deltas(model, bngl_text, stem=stem, timeout=timeout, bng2=bng2)
+    return rhs, n
+
+
+def roundtrip_deltas(
+    model: Model,
+    bngl_text: str,
+    *,
+    stem: str = "model",
+    timeout: int = 300,
+    bng2: Path | None = None,
+) -> tuple[float, float, int]:
     """Run ``bngl_text`` through ``BNG2.pl generate_network`` → ``.net`` →
-    :meth:`Model.from_net`, and return ``(max_rhs_delta, reloaded_n_species)``.
+    :meth:`Model.from_net`, and return ``(max_rhs_delta, max_ar_report_delta,
+    reloaded_n_species)``.
 
     ``max_rhs_delta`` is the scale-relative RHS difference vs ``model`` (see
-    :func:`_rhs_delta`). Raises :class:`ConversionError` when ``BNG2.pl`` is
+    :func:`_rhs_delta`). ``max_ar_report_delta`` is what each species an
+    assignment rule sets reports on the two sides (``_validate._ar_report_delta``):
+    the right-hand side cannot see it, as such a species has dy/dt = 0 on both
+    (issue #1400). Raises :class:`ConversionError` when ``BNG2.pl`` is
     unavailable, times out, produces no network, or the reloaded network's species
     cannot be name-aligned — i.e. whenever faithfulness cannot be established.
     """
@@ -160,8 +195,14 @@ def roundtrip_rhs_delta(
             raise ConversionError(
                 f"BNG2.pl produced no network — the generated .bngl did not build:\n{tail}"
             )
+        from bngsim.convert._validate import _ar_report_delta
+
         reloaded = Model.from_net(net)
         perm = _name_aligned_perm(model, reloaded)
-        return _rhs_delta(model, reloaded, perm), reloaded.n_species
+        src_names = list(model.species_names)
+        back_names = list(reloaded.species_names)
+        names = {src_names[i]: back_names[j] for i, j in enumerate(perm)}
+        ar = _ar_report_delta(model, reloaded, back_names=names, back_perm=perm)
+        return _rhs_delta(model, reloaded, perm), ar, reloaded.n_species
     finally:
         shutil.rmtree(d, ignore_errors=True)

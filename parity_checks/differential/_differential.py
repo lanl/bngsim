@@ -71,6 +71,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -233,12 +234,76 @@ def _left() -> float | None:
     return left
 
 
-def run(job: Job, **kw):
+def _trigger_reads(model) -> set[str] | None:
+    """The species an event trigger reads, through the functions it calls by
+    name: None where one reads an observable that is not a species of its
+    name (a ``.net`` group), whose species are not to be had here."""
+    core = model._core
+    todo = list(core.event_trigger_sources())
+    if not todo:
+        return set()
+    bodies = dict(zip(core.function_names, core.function_expressions, strict=True))
+    species, observables = set(model.species_names), set(core.observable_names)
+    seen: set[str] = set()
+    reads: set[str] = set()
+    while todo:
+        for name in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", todo.pop()):
+            if name in seen:
+                continue
+            seen.add(name)
+            if name in bodies:
+                todo.append(bodies[name])
+            elif name in species:
+                reads.add(name)
+            elif name in observables:
+                return None
+    return reads
+
+
+def held_at_start(model, t: float) -> np.ndarray:
+    """The species the model's equations hold still at its start: a derivative
+    of exactly 0 there, on a species something in the equations can move (a
+    row of the Jacobian's pattern with an entry, and not fixed), and that no
+    event trigger reads. A value held exactly is what rounding alone can
+    break, as BIOMD0000000908's S = 0 is broken. The rest are not a rounding's
+    to move:
+
+    * a species already moving, which the nudge only shifts in time;
+    * a species nothing moves, an input: BIOMD0000000265's switches, which
+      only its events write;
+    * a species a trigger reads, which the nudge can carry across the
+      trigger's threshold at the start, where no rounding reaches: in
+      BIOMD0000000285, ``PIdeath > 0`` and ``p38death > 0`` both true at
+      t = 0 fire neither (initialValue true, as a Level 2 trigger is), and
+      the cell they kill at once lives. A model whose triggers read
+      observables that are not plain species is not nudged at all.
+    """
+    x0 = model.get_state()
+    held = (np.asarray(model.rhs(x0, t)) == 0.0) & ~np.asarray(model._core.species_is_fixed, bool)
+    pattern = model._core.jacobian_sparsity
+    moved = np.zeros(len(x0), dtype=bool)
+    moved[np.asarray(pattern["row_indices"], dtype=int)] = True
+    reads = _trigger_reads(model)
+    if reads is None:
+        return np.zeros(len(x0), dtype=bool)
+    read = np.array([name in reads for name in model.species_names], dtype=bool)
+    return held & moved & ~read
+
+
+def run(job: Job, nudge: float = 0.0, **kw):
     """A run of a fresh model (a run leaves its state on the Model it was given):
-    the Result and the Simulator. It has until :data:`_DEADLINE`."""
+    the Result and the Simulator. It has until :data:`_DEADLINE`. ``nudge``
+    moves the start of each species :func:`held_at_start` up by that share of
+    what a step may err by in it, ``rtol·|x| + atol`` (:data:`START_NUDGE`),
+    its atol the one the run holds it to (:func:`step_atol`)."""
     import bngsim
 
-    sim = bngsim.Simulator(load(job.path), method="ode", **{**job.sim, **kw})
+    model = load(job.path)
+    sim = bngsim.Simulator(model, method="ode", **{**job.sim, **kw})
+    if nudge:
+        x0 = model.get_state()
+        held = held_at_start(model, job.t_start)
+        model.set_state(x0 + held * nudge * (job.rtol * np.abs(x0) + step_atol(sim, job)))
     result = sim.run(
         t_span=(job.t_start, job.t_end),
         n_points=job.n_points,
@@ -248,6 +313,16 @@ def run(job: Job, **kw):
         timeout=_left(),
     )
     return result, sim
+
+
+def step_atol(sim, job: Job) -> float | np.ndarray:
+    """The atol ``sim`` holds each species to under ``job.atol``: a scalar is a
+    ceiling, each species taking at most ``rtol`` of its own scale (#1420). A
+    nudge read from the scalar is no rounding there: BIOMD0000000951's thrombin
+    at 0, held to 5e-18, took 1e-12 M, and the answer moved by 11% of its peak."""
+    own = sim._run_atol(job.atol, job.rtol)
+    vector = getattr(own, "vector", None)
+    return job.atol if vector is None else np.asarray(vector, dtype=float)
 
 
 def own_drift(job: Job, base: np.ndarray) -> float:
@@ -434,9 +509,10 @@ def check_ajac(base: Base) -> Verdict:
 
 def _sparse_declined(e: Exception) -> bool:
     # bngsim's own refusal of the option, by name: a model with no sparse
-    # Jacobian to hand KLU under the asked strategy (a SimulationError, not a
-    # type of its own).
-    return "force_sparse_linear_solver" in str(e) and "cannot supply a sparse Jacobian" in str(e)
+    # Jacobian to hand KLU under the asked strategy, its own type (#1313).
+    import bngsim
+
+    return isinstance(e, bngsim.SparseJacobianUnavailableError)
 
 
 def check_klu(base: Base) -> Verdict:
@@ -482,11 +558,13 @@ def _compiled(job: Job):
     the caller's to judge: ``codegen=True`` builds compiled code or raises, so
     one that ran the interpreter is ``backend_as_asked``'s finding, not a
     machine without a compiler."""
+    import bngsim
+
     try:
         return run(job, codegen=True)
+    except bngsim.CodegenDeclinedError as e:  # its own type (#1313)
+        raise _Declined(_first_line(e)) from e
     except RuntimeError as e:
-        if "codegen declined this model" in str(e):
-            raise _Declined(_first_line(e)) from e
         if any(s in str(e) for s in _NO_COMPILER):  # a machine without cc: no cc path here
             raise _NoCompiler("codegen=True found no C compiler") from e
         raise
@@ -1154,6 +1232,15 @@ BATCH_THREADS = 4
 
 ATTRIBUTION_TIGHTEN = 100.0
 JITTER_RTOL = (0.5, 2.0)
+#: The share of what a step may err by, ``rtol·|x| + atol``, that the stable
+#: check moves each species' start up by: a start the solver cannot tell from
+#: the base's. An answer that moves past its bound from it holds an unstable
+#: solution by its rounding alone, which no jittered grid or tolerance shows
+#: where the rounding keeps it exactly. BIOMD0000000908's S = 0 is one: its
+#: clearance law is -n·S on a reaction that consumes S, so S' = +0.277·S. The
+#: file's species order keeps S at 0; reversed, the rounding leaves 3.6e-19 at
+#: t = 10, which grows to 1.09e+134 of the peak by t = 300.
+START_NUDGE = 1e-3
 
 
 def _arm_runs(base: Base) -> dict[str, np.ndarray]:
@@ -1367,10 +1454,10 @@ def check_batch(base: Base) -> Verdict:
 
 def contested(rows: dict[str, dict]) -> bool:
     """Whether a model's rows mark it contested: its ``stable`` row reads DIFF
-    (the answer jumps under a jittered grid or tolerance), or a DIFF's third
-    arms split between its two sides (#1304's BIOMD0000000338: KLU at a
-    hundredfold tighter tolerance sides with KLU, the dense solver and
-    libRoadRunner with dense). Its DIFFs are real but unattributed, its PASSes
+    (the answer jumps under a jittered grid, tolerance or start), or a DIFF's third
+    arms split between its two sides (#1304's BIOMD0000000339: KLU at a
+    hundredfold tighter tolerance sides with KLU, the dense solver with
+    dense). Its DIFFs are real but unattributed, its PASSes
     luck. ``rows`` maps a check to ``{"status", "extra"}``, as a report holds
     them."""
     for check, row in rows.items():
@@ -1406,12 +1493,17 @@ def attribute(base: Base, v: Verdict, arms: dict[str, np.ndarray] | None = None)
 
 def check_stable(base: Base) -> Verdict:
     """The base's answer under a jittered grid (one point fewer, one more,
-    twice as many) and tolerance (rtol x0.5, x2): a jump past the bound marks
+    twice as many) and tolerance (rtol x0.5, x2), and from a start moved by
+    :data:`START_NUDGE` of what a step may err by: a jump past the bound marks
     the model contested, its DIFFs real but unattributed and its PASSes luck.
+    So does a run from the nudged start that fails where the base ran. The
+    nudged start's jump counts only where its first row after the start is
+    still within the bound: the perturbation grew.
     A grid of another length is read at its last point, which every grid
     shares; twice as many at every other point, which are the base's. Each
     rerun has what is left of the model's cap: one it stops makes the check
     TIMEOUT, its own row only."""
+    import bngsim
 
     def go():
         # Where nothing could jump past the bound, SKIP, said why, as
@@ -1441,15 +1533,30 @@ def check_stable(base: Base) -> Verdict:
             g = gap(x, base.x, atol)
             if g > max(base.limit, f * base.limit):
                 jumps[f"rtol x{f:g}"] = g
+        nudged = f"a start nudged by {START_NUDGE:g} of a step's allowance"
+        try:
+            x = _species(run(job, nudge=START_NUDGE)[0], base)
+        except Exception as e:
+            if _timed_out(e) or not isinstance(e, bngsim.SimulationError):
+                raise
+            jumps[f"{nudged}, from which the run fails ({_first_line(e)[:160]})"] = float("inf")
+        else:
+            # Only a departure the nudge grew into counts. One already past the
+            # bound at the first row after the start is the model's own laws
+            # telling the two starts apart, `if(Bobs==0, kb, 0)` on a B its law
+            # holds at exactly 0 (#1228), which no rounding breaks.
+            g = gap(x, base.x, atol)
+            if g > base.limit and gap(x[1:2], base.x[1:2], atol) <= base.limit:
+                jumps[nudged] = g
         if jumps:
-            shown = ", ".join(f"{k} {g:.1e}" for k, g in jumps.items())
+            shown = ", ".join(f"{k} {g:.1e}" if np.isfinite(g) else k for k, g in jumps.items())
             return Verdict(
                 "diff",
                 max(jumps.values()),
                 f"contested: the answer jumps past its bound {base.limit:.1e} under {shown}",
                 {"contested": True, "jumps": jumps},
             )
-        return Verdict("pass", 0.0, "the answer holds under a jittered grid and tolerance")
+        return Verdict("pass", 0.0, "the answer holds under a jittered grid, tolerance and start")
 
     return _guard(go)
 

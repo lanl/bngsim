@@ -132,7 +132,7 @@ def test_ssa_mean_matches_analytical():
     t_end = 10.0
 
     # run_batch with no parameter changes: pass identity dicts so each
-    # replicate uses base_seed + i.
+    # replicate runs at its own seed from derived_seeds(base_seed, n).
     model = _load_model()
     sim = bngsim.Simulator(model, method="ssa")
     param_sets = [{} for _ in range(n_reps)]

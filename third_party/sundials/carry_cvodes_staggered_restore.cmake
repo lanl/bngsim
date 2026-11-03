@@ -15,11 +15,16 @@
 # unread. The carry sends the failure through cvHandleNFlag, as every other
 # recoverable failure in cvStep goes. Present in SUNDIALS 7.2.1 through 7.9.0.
 #
-# It is counted with the sensitivity corrector's failures (ncfS), which a step
-# keeps across its attempts. The state's count (ncf) is reset to 0 just above
-# the call on every attempt, so a refusal that a smaller step does not cure
-# never reached maxncf with it: the step shrank to ~1e-16 forever
-# (MODEL2001140002, which upstream hangs on as well).
+# The step's limit is checked against the sensitivity corrector's count (ncfS),
+# which a step keeps across its attempts. The state's count (ncf) is reset to 0
+# just above the call on every attempt, so a refusal that a smaller step does
+# not cure never reached maxncf with it: the step shrank to ~1e-16 forever
+# (MODEL2001140002, which upstream hangs on as well). As f is the state RHS, the
+# failure is counted in cv_ncfn (CVodeGetNumStepSolveFails), as the upstream PR
+# counts it. r2 counted it in cv_ncfnS, which CV_STAGGERED1 (BNGsim uses
+# CV_STAGGERED) overwrites with the sum of its per-parameter counts at the end of
+# each CVode call. BNGsim reads neither count, and neither steers the step, so r2
+# and r3 give the same runs.
 #
 # Idempotent: a source that already carries this revision's marker is left as
 # it is. A source with an older revision, or with neither the marker nor the
@@ -36,7 +41,7 @@ if(NOT EXISTS "${_file}")
 endif()
 file(READ "${_file}" _text)
 
-set(_marker "BNGSIM LOCAL CARRY (lanl/bngsim#1301, r2)")
+set(_marker "BNGSIM LOCAL CARRY (lanl/bngsim#1301, r3)")
 string(FIND "${_text}" "${_marker}" _at)
 if(NOT _at EQUAL -1)
     return()
@@ -45,8 +50,10 @@ string(FIND "${_text}" "BNGSIM LOCAL CARRY (lanl/bngsim#1301" _older)
 if(NOT _older EQUAL -1)
     message(FATAL_ERROR
         "carry_cvodes_staggered_restore.cmake: ${_file} holds an older revision of the "
-        "lanl/bngsim#1301 carry. Delete the build tree's _deps/sundials-* directories "
-        "and configure again, so FetchContent fetches the source afresh.")
+        "lanl/bngsim#1301 carry. A build tree's fetch: delete its _deps/sundials-* "
+        "directories and configure again, so FetchContent fetches the source afresh. "
+        "A FETCHCONTENT_SOURCE_DIR_SUNDIALS copy: restore src/cvodes/cvodes.c from a "
+        "pristine SUNDIALS of the pinned version, then run this script again.")
 endif()
 
 set(_upstream [==[
@@ -62,20 +69,22 @@ set(_carried [==[
       if (retval < 0) { return (CV_RHSFUNC_FAIL); }
       if (retval > 0)
       {
-        /* BNGSIM LOCAL CARRY (lanl/bngsim#1301, r2): restore the prediction
+        /* BNGSIM LOCAL CARRY (lanl/bngsim#1301, r3): restore the prediction
          * and cut the step, as every other recoverable failure in cvStep does.
          * Upstream continues with neither, so the next attempt predicts again
-         * from the advanced tn. Counted in ncfS, which is not reset between
-         * attempts as ncf is above, so maxncf ends a refusal no smaller step
-         * cures. BNGSIM_SUNDIALS_STAGGERED_RESTORE=0 takes the upstream path,
-         * for an A/B only. */
+         * from the advanced tn. The limit is checked against ncfS, which is not
+         * reset between attempts as ncf is above, so maxncf ends a refusal no
+         * smaller step cures. As f is the state RHS, the failure is counted in
+         * ncfn, as LLNL/sundials#1073 counts it.
+         * BNGSIM_SUNDIALS_STAGGERED_RESTORE=0 takes the upstream path, for an
+         * A/B only. */
         const char* bngsim_restore = getenv("BNGSIM_SUNDIALS_STAGGERED_RESTORE");
         if (bngsim_restore == NULL || bngsim_restore[0] != '0' ||
             bngsim_restore[1] != 0)
         {
           nflag = RHSFUNC_RECVR;
           kflag = cvHandleNFlag(cv_mem, &nflag, saved_t, &ncfS,
-                                &(cv_mem->cv_ncfnS));
+                                &(cv_mem->cv_ncfn));
           if (kflag == PREDICT_AGAIN) { continue; }
           return (kflag);
         }

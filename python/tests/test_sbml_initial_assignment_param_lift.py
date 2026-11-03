@@ -40,6 +40,7 @@ same document loaded with the new number in it.
 from __future__ import annotations
 
 import logging
+import math
 
 import bngsim
 import numpy as np
@@ -362,3 +363,55 @@ def test_a_write_after_a_run_does_not_move_it_to_the_rules_current_value():
     assert m.get_param("q") != pytest.approx(K0_AT_LOAD / 2), "precondition: the rule moved"
     m.set_param("base", m.get_param("base"))
     assert m.get_param("k0") == K0_AT_LOAD
+
+
+# ── What a run leaves in a rule-set parameter (issue #1358) ─────────────────
+#
+# q := base·A. The interpreter writes q's slot at every right-hand-side call;
+# the compiled right-hand side computes the rule in its own C and wrote nothing
+# back, so after a compiled run get_param("q") read its value at load, 1.0,
+# where the interpreted run read 0.0183. Every run now leaves the slot at the
+# rule's value on the state it ends on: base·A(2) = 0.5·2·e^-4 = e^-4.
+
+# The cold path (run()) takes a run with an event or sensitivities; the warm
+# fast path (run_warm) one with neither. Both publish the final state.
+_EVENT_FAR_AWAY = AR_DEPENDENT.replace(
+    "</listOfReactions>",
+    "</listOfReactions>"
+    '<listOfEvents><event id="late" useValuesFromTriggerTime="true">'
+    '<trigger initialValue="false" persistent="true"><math '
+    'xmlns="http://www.w3.org/1998/Math/MathML"><apply><gt/>'
+    '<csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time">t</csymbol>'
+    "<cn>100</cn></apply></math></trigger>"
+    '<listOfEventAssignments><eventAssignment variable="B"><math '
+    'xmlns="http://www.w3.org/1998/Math/MathML"><cn>0</cn></math></eventAssignment>'
+    "</listOfEventAssignments></event></listOfEvents>",
+)
+# Without the event the "cold" cases below would run the warm path and pass.
+assert "<listOfEvents>" in _EVENT_FAR_AWAY, "fixture text drifted"
+
+
+@pytest.mark.parametrize(
+    ("xml", "kw"),
+    [
+        (AR_DEPENDENT, {}),
+        (AR_DEPENDENT, {"codegen": True}),
+        (_EVENT_FAR_AWAY, {}),
+        (_EVENT_FAR_AWAY, {"codegen": True}),
+        (AR_DEPENDENT, {"sensitivity_ic": ["A"]}),
+        (AR_DEPENDENT, {"codegen": True, "sensitivity_ic": ["A"]}),
+    ],
+    ids=["warm", "warm compiled", "cold", "cold compiled", "sensitivity", "sensitivity compiled"],
+)
+def test_a_run_leaves_the_rules_value_in_the_parameter(xml, kw):
+    m = bngsim.Model.from_sbml_string(xml)
+    r = bngsim.Simulator(m, method="ode", **kw).run(t_span=T_SPAN, n_points=N_POINTS)
+    a_end = float(np.asarray(r.species)[-1, list(r.species_names).index("A")])
+    assert m.get_param("q") == pytest.approx(0.5 * a_end, rel=1e-12)
+    assert m.get_param("q") == pytest.approx(math.exp(-4.0), rel=1e-5)
+
+
+# The same check under the MIR JIT is
+# test_codegen_outputs.py::test_a_compiled_run_leaves_the_rule_set_parameters_at_its_end:
+# the mir-jit leg runs that file under BNGSIM_CODEGEN_JIT=mir, and runs this
+# one nowhere.

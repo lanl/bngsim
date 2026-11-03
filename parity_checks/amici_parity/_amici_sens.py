@@ -344,6 +344,10 @@ def bn_sens(
     )
     sens_setup_sec = time.perf_counter() - t1
 
+    # AMICI holds its scalar atol exactly for every species (CVodeSStolerances);
+    # bngsim reads a float as a per-species ceiling (issue #1420), so parity
+    # holds it exactly too, and the two integrate at the same tolerance.
+    atol = bngsim.ExactAtol(atol)
     t1 = time.perf_counter()
     r = sim.run(
         t_span=(t_start, t_end), n_points=n_points, rtol=rtol, atol=atol, max_steps=max_steps
