@@ -266,6 +266,13 @@ class TestTheLengthLimit:
         boundary. The entry count is read from the file rather than pinned, so
         a future release that carries more entries than any so far re-runs the
         sum instead of inheriting a stale one.
+
+        A release whose notes publish truncated is left out of the count. No
+        per-entry cap bounds one: 0.17.0 carried 468 entries from six weeks of
+        work, which would need entries under 180 characters, so it was
+        assembled with ``build --allow-truncation``, the choice the build asks
+        for by name. The cap is sized for releases meant to fit, and one of
+        those carrying more entries than this allows still fails here.
         """
         sys.path.insert(0, str(SCRIPT.parent))
         release_notes = importlib.import_module("release_notes")
@@ -275,6 +282,8 @@ class TestTheLengthLimit:
         busiest = max(
             sum(1 for line in lines[a + 1 : b] if line.startswith("- "))
             for a, b in zip(starts, starts[1:], strict=False)
+            if "are truncated here"
+            not in release_notes.build(text, lines[a][len("## [") :].split("]")[0])
         )
         assert busiest >= 50, "the corpus of releases shrank; re-derive the limit"
         assert busiest * changelog.MAX_FRAGMENT_CHARS < release_notes.LIMIT / 1.5
