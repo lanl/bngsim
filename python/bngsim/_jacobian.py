@@ -87,6 +87,7 @@ DECLINE_KINDS: dict[str, str] = {
     "disabled": "BNGSIM_ANALYTICAL_FUNCTIONAL_JAC=0 turned the derivation off",
     "no_context": "the model could not provide its functional-Jacobian context",
     "function_cycle": "a rate law's functions refer to each other in a cycle, or nest too deep",
+    "written_out": "a rate law written out with its functions is too long, and does not collect",
     "unparsed": "a rate law could not be parsed into sympy",
     "unresolved_symbol": "a symbol survived inlining that is no observable, constant or time",
     # _NONDIFFERENTIABLE_EMITTER_FUNCS is empty today, so nothing records this one.
@@ -1077,6 +1078,24 @@ def _species_divisor_text(
             return None
         return params[k]["name"]
     return repr(size)
+
+
+def _written_out_length(expr: str, func_map: dict[str, str]) -> int:
+    """How many characters ``expr`` would be written out with its functions, where
+    that is past :data:`_INLINE_TEXT_LIMIT` and does not collect shorter; else 0
+    (issue #1255). Nothing is written out to find it.
+
+    A rate law whose functions share nodes (a diamond of rules) writes out
+    exponentially in the depth, and where sympy cannot collect it (``sin(r_{i-1})
+    + cos(r_{i-2})``) its derivative is as long again: deriving, checking and
+    printing it took 3 s at 12 rules and 57 s at 18, for an analytical Jacobian
+    that costs every Newton setup more to evaluate than differences of the
+    right-hand side do. :func:`attach_functional_jacobian` declines from this.
+    """
+    predicted = _inlined_length(expr, func_map)
+    if predicted is None or predicted <= _INLINE_TEXT_LIMIT:
+        return 0
+    return predicted if _compact_inlined(expr, func_map) is None else 0
 
 
 def _inline_functions(
@@ -4556,6 +4575,38 @@ def attach_functional_jacobian(core) -> bool:
     budget = _derivation_budget_s(n_species=n_species)
     start = time.perf_counter()
     deadline = (start + budget) if budget is not None else None
+
+    # Issue #1255: a rate law that writes out past the inlining limit and does not
+    # collect has a derivative as long, and the budget above cannot stop it in
+    # time: it is asked only before each sp.diff, and most of the cost is writing
+    # the text out and walking and printing the derivative. The length costs
+    # nothing to predict, so the bet is declined from it before any law is derived
+    # or written out. Only under a finite budget: an unbounded one (GH #187's
+    # genome scale, or BNGSIM_JAC_DERIV_BUDGET_S=inf) asks for the analytical
+    # Jacobian at any cost. And only here, not in differentiate_rate_law: the
+    # sensitivity RHS derives J*yS through the same primitives, and there the
+    # derivative is what keeps the gradient right, not a cost to weigh against FD.
+    if deadline is not None:
+        for rate_expr in dict.fromkeys(rxn["rate_expr"] for rxn in rxns):
+            written_out = _written_out_length(rate_expr, func_map)
+            if not written_out:
+                continue
+            reason = (
+                f"rate law {_short(rate_expr)} is {written_out:,} characters written out "
+                f"with its functions (past {_INLINE_TEXT_LIMIT:,}), which do not collect "
+                "shorter: its derivative would be as long (issue #1255; set "
+                "BNGSIM_JAC_DERIV_BUDGET_S=inf to derive it anyway)"
+            )
+            if n_species >= _FD_COSTLY_SPECIES:
+                # GH #187 option 3, as for the budget below: FD is costly at this size.
+                logger.warning(
+                    "GH#76 analytical Jacobian: %s; the model runs on the finite-difference "
+                    "Jacobian, which needs ~%d RHS evaluations per Newton step.",
+                    reason,
+                    n_species,
+                )
+            _declined(reason, kind="written_out", log=n_species < _FD_COSTLY_SPECIES)
+            return False
 
     all_terms = []
     processed = 0
