@@ -1898,8 +1898,7 @@ static int kinsol_jac(N_Vector y, N_Vector fval, SUNMatrix J, void *ud, N_Vector
 
 // Which species a restricted steady-state system treats as UNKNOWNS.
 //
-// Three callers have to agree on this set or they are answering questions about
-// different systems: the KINSOL polish (solve_by_newton), the dY_ss/dp linear
+// Three callers ask it: the KINSOL polish (solve_by_newton), the dY_ss/dp linear
 // solve (compute_ss_sensitivity), and the stability certificate at the accepted
 // root (issue #78).
 //
@@ -1912,8 +1911,11 @@ static int kinsol_jac(N_Vector y, N_Vector fval, SUNMatrix J, void *ud, N_Vector
 //     with the model.
 //
 // Unmasked WITH laws returns cl.independent verbatim (fixed species included),
-// exactly as before #74. A caller with neither laws nor a mask builds no
-// restricted system at all and does not come here.
+// exactly as before #74, and the polish and the certificate take it so. The
+// dY_ss/dp solve drops the fixed species from it, and comes here with neither
+// laws nor a mask where the model has one (issue #961): solved for, its zero row
+// made the columns singular. The polish and the certificate build no restricted
+// system without laws or a mask, and do not come here then.
 static std::vector<int> ss_unknown_species(const NetworkModel &model, const ConservationLaws &cl,
                                            const ResidualSubspace &sub) {
     if (!cl.empty() && !sub.masked) {
@@ -5530,29 +5532,39 @@ compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs, SteadyStateResu
         column_system.param_values.push_back(params[static_cast<size_t>(pidx[p])].value);
     }
 
-    if (!all_laws.empty() || sub.masked) {
+    // A `$`-fixed species is no unknown of the columns (issue #961): its row of J
+    // is 0, and solved for as one it made the solve singular, in a model with no
+    // law and no mask (the full solve below) as beside a law, among whose
+    // independents ss_unknown_species keeps it. The columns were refused as
+    // "dY_ss/dp does not exist".
+    const bool any_fixed = std::any_of(model.species().begin(), model.species().end(),
+                                       [](const Species &s) { return s.fixed; });
+    if (!all_laws.empty() || sub.masked || any_fixed) {
         // Reduced-space sensitivity solve.
         //
-        // `solve_idx` is the unknown set (ss_unknown_species): the
-        // conservation-law independents, narrowed to the species the mask kept
-        // (issue #74), minus the `fixed` ones. A mask with no conservation laws
-        // lands here too, with every law loop below a no-op — one code path for
-        // "some species are not unknowns", mirroring solve_by_newton.
-        // A fixed species' dY_ss/dp is genuinely 0 — a boundary condition does not
-        // move with a rate constant — so its row stays 0 rather than NaN: it is
-        // the mask, not fixedness, that means "no answer".
+        // `solve_idx` is the unknown set: ss_unknown_species' (the
+        // conservation-law independents, narrowed to the species the mask kept,
+        // issue #74) without the `fixed` ones. A model with no law lands here
+        // too, masked or with a fixed species, with every law loop below a
+        // no-op — one code path for "some species are not unknowns", mirroring
+        // solve_by_newton. A fixed species' row is the seed of a parameter that
+        // sets it (set_by_a_parameter, below) and 0 for any other, not NaN: it
+        // is the mask, not fixedness, that means "no answer".
         //
         // Issue #995: a law that holds a masked-out species is not an equation
         // of the species the mask kept. Such a species is taken out of the
         // laws by one of them, which is dropped, and the species that law was
         // solved for is an unknown, with its own equation. See
         // ss_kept_species_system. Without a mask, or where no law holds a
-        // masked species, `cl` and `solve_idx` are the model's laws and
-        // ss_unknown_species' set, as they were.
+        // masked species, `cl` is the model's laws and `solve_idx` the unknowns
+        // as they come here.
         ConservationLaws cl;
         std::vector<int> solve_idx;
-        ss_kept_species_system(model, all_laws, sub, ss_unknown_species(model, all_laws, sub), cl,
-                               solve_idx);
+        std::vector<int> unknowns = ss_unknown_species(model, all_laws, sub);
+        unknowns.erase(std::remove_if(unknowns.begin(), unknowns.end(),
+                                      [&](int i) { return model.species()[i].fixed; }),
+                       unknowns.end());
+        ss_kept_species_system(model, all_laws, sub, unknowns, cl, solve_idx);
         // Issue #995: a species the mask left out, that no law gives, is held
         // where the solve left it. That is its part in the derivative only
         // where no equation the columns are solved on reads it: `A <-> M` with
@@ -5585,14 +5597,11 @@ compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs, SteadyStateResu
                 }
             }
         }
-        if (solve_idx.empty()) {
-            // Nothing left to differentiate (every included species is pinned by
-            // a law). Report NaN rather than a zero matrix a fitter would read as
-            // "this parameter does not matter".
-            std::fill(result.sensitivity.begin(), result.sensitivity.end(),
-                      std::numeric_limits<double>::quiet_NaN());
-            return;
-        }
+        // No unknown may be left: every species fixed, left out by the mask, or
+        // given by a law of its own (X in `$S + X -> $S + X`). Then nothing the
+        // columns are solved for moves, and each row is a seed or follows from
+        // a total, with no system to solve (solve_columns). They were NaN, and
+        // refused as singular where dS/dS0 = 1 (issue #961).
         const int n_ind = static_cast<int>(solve_idx.size());
 
         // Issue #704: a conserved total is set by the state the solve starts
@@ -5653,11 +5662,49 @@ compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs, SteadyStateResu
             }
         }
 
+        // The rows of column p that are given once the unknowns' are in `sens`:
+        // a fixed species a parameter sets is its seed, and each law's dependent
+        // follows from its law.
+        const auto fill_given_rows = [&](std::vector<double> &sens, int p) {
+            for (const int i : set_by_a_parameter) {
+                sens[static_cast<size_t>(i) * np + p] = dx0[static_cast<size_t>(i) * np + p];
+            }
+
+            // Reconstruct dependent species sensitivity from conservation:
+            // Σ L[k,i] * dy_i/dp = dT_k/dp →
+            // dy_dep/dp = (dT_k/dp - Σ_{i≠dep} L[k,i] * dy_i/dp) / L[k,dep]
+            // (issue #704: the total's own derivative used to be taken as 0).
+            for (int k = 0; k < cl.n_laws; ++k) {
+                int dep = cl.dependent[k];
+                double cd = cl.coefficients[k][dep];
+                if (std::abs(cd) < 1e-15)
+                    continue;
+                double s = 0.0;
+                for (int i = 0; i < ns; ++i)
+                    if (i != dep)
+                        s += cl.coefficients[k][i] * sens[i * np + p];
+                // Written as it was where the total does not move, so that such
+                // a column is the same to the last bit, the sign of a 0 included.
+                const double moved_total = dT[static_cast<size_t>(k) * np + p];
+                sens[dep * np + p] = moved_total != 0.0 ? (moved_total - s) / cd : -s / cd;
+            }
+        };
+
         // The columns from a Jacobian `Jm`, into `sens` (species-major, ns×np),
         // and the pivot ratio of its factorization into `rcond` where that is
         // not null. A function of the matrix so that issue #1002's check can
         // solve them again with another (ss_confirm_differenced_columns).
         const auto solve_columns = [&](const double *Jm, std::vector<double> &sens, double *rcond) {
+            if (n_ind == 0) {
+                // No system: every row is given (see n_ind above).
+                if (rcond != nullptr) {
+                    *rcond = 1.0;
+                }
+                for (int p = 0; p < np; ++p) {
+                    fill_given_rows(sens, p);
+                }
+                return;
+            }
             // The reduced Jacobian (n_ind × n_ind), projected through the
             // conservation-law reconstruction — see ss_reduce_jacobian, which the
             // stability certificate shares.
@@ -5737,28 +5784,7 @@ compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs, SteadyStateResu
                 // Fill the solved species' sensitivity
                 for (int i = 0; i < n_ind; ++i)
                     sens[solve_idx[i] * np + p] = x_data[i];
-                for (const int i : set_by_a_parameter) {
-                    sens[static_cast<size_t>(i) * np + p] = dx0[static_cast<size_t>(i) * np + p];
-                }
-
-                // Reconstruct dependent species sensitivity from conservation:
-                // Σ L[k,i] * dy_i/dp = dT_k/dp →
-                // dy_dep/dp = (dT_k/dp - Σ_{i≠dep} L[k,i] * dy_i/dp) / L[k,dep]
-                // (issue #704: the total's own derivative used to be taken as 0).
-                for (int k = 0; k < cl.n_laws; ++k) {
-                    int dep = cl.dependent[k];
-                    double cd = cl.coefficients[k][dep];
-                    if (std::abs(cd) < 1e-15)
-                        continue;
-                    double s = 0.0;
-                    for (int i = 0; i < ns; ++i)
-                        if (i != dep)
-                            s += cl.coefficients[k][i] * sens[i * np + p];
-                    // Written as it was where the total does not move, so that such
-                    // a column is the same to the last bit, the sign of a 0 included.
-                    const double moved_total = dT[static_cast<size_t>(k) * np + p];
-                    sens[dep * np + p] = moved_total != 0.0 ? (moved_total - s) / cd : -s / cd;
-                }
+                fill_given_rows(sens, p);
             }
         };
         solve_columns(J.data(), result.sensitivity, &result.sens_jacobian_rcond);
