@@ -53,12 +53,46 @@ end reactions
 """
 
 
-def _columns(tmp_path, text, params):
+# Nothing is solved for once the fixed species is out: S alone, and S beside an X
+# that S + X -> S + X leaves where it is, a law of its own.
+ONLY_FIXED = """begin parameters
+    1 S0 3.0
+    2 k 1.0
+end parameters
+begin species
+    1 $S() S0
+end species
+begin reactions
+    1 1 1 k
+end reactions
+"""
+
+NO_UNKNOWN_LEFT = """begin parameters
+    1 S0 3.0
+    2 X0 2.0
+    3 k 1.0
+end parameters
+begin species
+    1 $S() S0
+    2 X() X0
+end species
+begin reactions
+    1 1,2 1,2 k
+end reactions
+"""
+
+
+def _model(tmp_path, text):
     path = tmp_path / "m.net"
     path.write_text(text)
-    out = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode").steady_state(
-        sensitivity_params=params
-    )
+    return bngsim.Model.from_net(str(path))
+
+
+def _columns(tmp_path, text, params, set_to=None):
+    model = _model(tmp_path, text)
+    for name, value in (set_to or {}).items():
+        model.set_concentration(name, value)
+    out = bngsim.Simulator(model, method="ode").steady_state(sensitivity_params=params)
     assert out.converged
     return np.asarray(out.sensitivity)
 
@@ -94,12 +128,46 @@ def test_a_model_with_no_fixed_species_is_solved_as_before(tmp_path):
     np.testing.assert_allclose(_columns(tmp_path, text, ["k1", "k2"]), [[2.0, -8.0]], rtol=1e-6)
 
 
+def test_a_fixed_species_set_by_hand_is_set_by_no_parameter(tmp_path):
+    """Moved off its initial condition, S is where it was put whatever S0 is
+    (issue #113), with no law and no mask too: at S = 5, dX = [S/k2, -k1·S/k2², 0]."""
+    k1, k2, s = 2.0, 0.5, 5.0
+    want = [[0.0, 0.0, 0.0], [s / k2, -k1 * s / k2**2, 0.0]]
+    got = _columns(tmp_path, NO_LAW, ["k1", "k2", "S0"], set_to={"S()": s})
+    np.testing.assert_allclose(got, want, rtol=1e-6, atol=1e-12)
+
+
+@pytest.mark.parametrize(
+    ("text", "params", "want"),
+    [
+        (ONLY_FIXED, ["S0", "k"], [[1.0, 0.0]]),
+        (NO_UNKNOWN_LEFT, ["S0", "X0", "k"], [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
+    ],
+    ids=["only_fixed", "the_rest_in_a_law_of_its_own"],
+)
+def test_a_model_with_no_unknown_left_is_solved(tmp_path, text, params, want):
+    """Each row is a seed or a total, with nothing to solve for. Every column
+    was NaN and refused as singular."""
+    np.testing.assert_allclose(_columns(tmp_path, text, params), want, atol=1e-12)
+
+
 @pytest.mark.parametrize("method", ["integration", "newton"])
-def test_the_state_itself_is_what_it_was(tmp_path, method):
-    """The unknowns of the solve for the state are not changed: X* = 12."""
-    path = tmp_path / "m.net"
-    path.write_text(NO_LAW)
-    out = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode").steady_state(
-        method=method
-    )
-    np.testing.assert_allclose(out.concentrations, [3.0, 12.0], rtol=1e-7)
+@pytest.mark.parametrize(
+    ("text", "params", "state"),
+    [
+        (NO_LAW, ["k1", "k2", "S0"], [3.0, 12.0]),
+        (BESIDE_A_LAW, ["k1", "kf", "kr", "S0"], [3.0, 0.25 / 7.25, 7.0 / 7.25]),
+    ],
+    ids=["no_law", "beside_a_law"],
+)
+def test_the_state_is_the_one_found_without_the_columns(tmp_path, method, text, params, state):
+    """Control. The columns are solved at the state, and leave it where it was
+    found without them: X* = 12, and B* = a/(a + kr) beside the law."""
+
+    def solve(**kw):
+        sim = bngsim.Simulator(_model(tmp_path, text), method="ode")
+        return np.asarray(sim.steady_state(method=method, **kw).concentrations)
+
+    alone = solve()
+    np.testing.assert_allclose(alone, state, rtol=1e-7)
+    np.testing.assert_array_equal(solve(sensitivity_params=params), alone)
