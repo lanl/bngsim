@@ -125,7 +125,9 @@ What bngsim cannot run as written is refused before anything runs:
 - an argument the protocol holds only approximately.
 
 `allow_lossy=True` runs the last two as nearly as the protocol holds them, with
-a warning.
+a warning. Two things BNG2.pl refuses run here instead: a run that names no
+`method` runs as ODE, and a `steady_state=>1` run that does not reach a steady
+state is warned about while the protocol goes on, where BNG2.pl stops it.
 
 ### Generated networks are cached
 

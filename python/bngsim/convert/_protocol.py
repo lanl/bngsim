@@ -737,8 +737,10 @@ def _experiment_action(e: Experiment) -> str:
             pairs.append(("reset_conc", "1" if e.reset_between else "0"))
     if e.label is not None:
         pairs.append(("suffix", f'"{e.label}"'))
+    written = {k for k, _ in pairs}
     for k, v in e.extra.items():
-        pairs.append((str(k), _action_value(v)))
+        if str(k) not in written:
+            pairs.append((str(k), _action_value(v)))
 
     verb = "bifurcate" if e.is_bifurcation else "parameter_scan" if e.is_scan else "simulate"
     body = ",".join(f"{k}=>{v}" for k, v in pairs)
@@ -998,8 +1000,10 @@ def _build_experiment(
                 reasons.append(
                     f"sample_times end at a t_end that cannot be read without the model; {carried}"
                 )
-            elif not _evenly_spaced(grid):
-                # Held exactly, beside the even grid that is their nearest.
+            else:
+                # Held exactly, beside the even grid over the same span: a replay
+                # starting where an earlier run stopped early takes the samples
+                # after that time (issue #1366).
                 sample_times = tuple(grid)
     else:
         # BNG2.pl's default is one step. One the parse cannot read without the
@@ -1055,6 +1059,10 @@ def _build_experiment(
     # refuse it beside that t_start, so it is not kept.
     if continued and undefined:
         consumed.add("continue")
+    if continued and model_time is None and t_start is not None:
+        # A continuation's own t_start, which the parse cannot check against a
+        # model time an earlier run leaves unknown: kept for a replay to check.
+        consumed.discard("t_start")
     extra = {k: v for k, v in args.items() if k not in consumed}
 
     if kind in ("scan", "bifurcate"):

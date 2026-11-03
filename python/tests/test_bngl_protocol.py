@@ -545,7 +545,7 @@ saveConcentrations("eq")
 simulate_psa({t_end=>1,n_steps=>2,poplevel=>50})
 resetConcentrations("eq")
 resetParameters("p")
-bifurcate({parameter=>"k",par_min=>1,par_max=>2,n_scan_pts=>3,t_end=>5})
+bifurcate({method=>"ode",parameter=>"k",par_min=>1,par_max=>2,n_scan_pts=>3,t_end=>5})
 """
 
 

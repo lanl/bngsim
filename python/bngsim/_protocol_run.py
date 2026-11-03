@@ -31,11 +31,18 @@ does not have; an action that changes results but has no step to run
 (``setVolume``, a result-changing ``setOption``, ``simulate_protocol``); and a run
 argument the protocol holds only approximately. ``allow_lossy=True`` runs the
 last two as nearly as the protocol holds them, with a warning.
+
+Two things BNG2.pl refuses run here instead. A run that names no ``method`` runs
+as ODE, the parser's default. A ``steady_state=>1`` run that does not reach a
+steady state is warned about and the protocol goes on, where BNG2.pl stops it:
+bngsim never calls a model that reads the time steady (issue #710), so stopping
+would refuse protocols BNG2.pl finishes.
 """
 
 from __future__ import annotations
 
 import math
+import re
 import warnings
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
@@ -74,7 +81,7 @@ _REFUSED_METHODS = {
     "pla": "bngsim has no PLA (partitioned-leaping) method",
 }
 # Hash keys a run reads here.
-_RUN_KEYS = frozenset({"continue", "atol", "rtol", "seed", "steady_state", "poplevel"})
+_RUN_KEYS = frozenset({"continue", "t_start", "atol", "rtol", "seed", "steady_state", "poplevel"})
 # Hash keys that only shape the files BNG2.pl writes, or the solver it uses.
 _OUTPUT_KEYS = frozenset(
     {
@@ -103,7 +110,10 @@ _REFUSED_KEYS = {
     "netfile": "netfile runs a different network file",
     "argfile": "argfile reads the run's arguments from a file",
     "check_product_scale": "check_product_scale changes how PSA scales products",
-    "parallel": "parallel runs a scan's points in separate processes",
+    "parallel": (
+        "parallel runs a scan's points in forked processes, which leave the parameter "
+        "and the clock as they were before the scan"
+    ),
 }
 # The verbs a ProtocolSpec carries as an Experiment, and the build/IO verbs it
 # drops cleanly: anything else in ``dropped`` was an unrecognized action.
@@ -307,9 +317,8 @@ def _check_runnable(protocol: ProtocolSpec, *, allow_lossy: bool) -> None:
         if verb.lower() not in clean:
             lossy_problems.append(f"{verb} is not an action the protocol recognizes")
     steps = protocol.steps[protocol.generation_step or 0 :]
-    for i, step in enumerate(steps):
-        if not isinstance(step, Experiment):
-            continue
+    runs = [step for step in steps if isinstance(step, Experiment)]
+    for i, step in enumerate(runs):
         where = f"run {i + 1} ({_describe(step)})"
         method = _method_of(step)
         if method in _REFUSED_METHODS:
@@ -322,6 +331,8 @@ def _check_runnable(protocol: ProtocolSpec, *, allow_lossy: bool) -> None:
                 problems.append(f"{where}: {_REFUSED_KEYS[low]}, which a replay does not do")
         if step.is_scan and not step.scan_parameter:
             problems.append(f"{where}: a scan needs a parameter; BNG2.pl refuses one without")
+        if step.sample_times is None and step.n_points < 2:
+            problems.append(f"{where}: n_steps must be 1 or more; BNG2.pl cannot run 0")
         for note in step.approximations:
             lossy_problems.append(f"{where}: {note}")
     if problems:
@@ -371,6 +382,11 @@ def _scan_values(exp: Experiment, *, backward: bool = False) -> list[float]:
             f"{_describe(exp)}: a scan needs par_min, par_max and n_scan_pts, or "
             "par_scan_vals; BNG2.pl refuses one without"
         )
+    if n < 1 or (n == 1 and lo != hi):
+        raise ConversionError(
+            f"{_describe(exp)}: n_scan_pts={n} over par_min={lo:g}, par_max={hi:g}; BNG2.pl "
+            "needs more than one point between two values, and at least one"
+        )
     if backward:
         lo, hi = hi, lo
     if exp.scan_log:
@@ -413,6 +429,7 @@ class _Runner:
         # The model as declared, for a resetConcentrations() with nothing saved:
         # what the network holds, unless an action before generation changed it.
         self.declared: tuple[np.ndarray, dict] | None = (self._state(), dict(self.symbolic))
+        self._weights: dict[str, list[tuple[int, float]]] | None = None
         self.saved_conc: dict[str, tuple[np.ndarray, dict] | None] = {}
         self.saved_params: dict[str, tuple[dict[str, float], set[str]] | None] = {}
         self._before_generation(protocol.steps[: protocol.generation_step or 0])
@@ -461,19 +478,56 @@ class _Runner:
             self.saved_params[label] = self._param_state() if held == params else None
 
     def _value(self, change: StateChange) -> float:
-        """A step's value: its number, or its expression in the live model."""
+        """A step's value: its number, or its expression in the live model, with
+        its observables and functions as they are now (:meth:`_freeze`)."""
         from bngsim._bngl_loader import _value
 
         if change.value is not None:
             return float(change.value)
         if change.value_expr is None:
             raise ConversionError(f"{_action(change)}: no value to set")
-        v = _value(self.model, change.value_expr)
+        v = _value(self.model, self._freeze(change.value_expr))
         if v is None:
             raise ConversionError(
                 f"{_action(change)}: {change.value_expr!r} does not evaluate in the model"
             )
         return v
+
+    def _observable_weights(self) -> dict[str, list[tuple[int, float]]]:
+        if self._weights is None:
+            data = self.model._core.codegen_data()
+            self._weights = {
+                o["name"]: [(int(i), float(f)) for i, f in o["entries"]]
+                for o in data["observables"]
+            }
+        return self._weights
+
+    def _reads_now(self, state: np.ndarray) -> tuple[list[float], dict[str, float]]:
+        """The observables, in order, and the functions, at *state* now."""
+        weights = self._observable_weights()
+        observables = [
+            float(sum(f * float(state[i]) for i, f in weights.get(name, [])))
+            for name in self.model.observable_names
+        ]
+        functions = dict(self.model._core._eval_functions(self.now, [float(x) for x in state]))
+        return observables, {str(k): float(v) for k, v in functions.items()}
+
+    def _freeze(self, text: str) -> str:
+        """*text* with each observable and function it reads replaced by its value
+        now. BNG2.pl substitutes them when the action runs, from the amounts of
+        the moment (BNGModel.pm, setConcentration; Observable.pm, evaluate), and
+        keeps only the parameters as names."""
+        names = [*self.model.observable_names, *self.model.function_names]
+        found = [n for n in names if re.search(rf"(?<![\w.]){re.escape(n)}(?!\w)", text)]
+        if not found:
+            return text
+        observables, functions = self._reads_now(self._state())
+        values = dict(zip(self.model.observable_names, observables, strict=True))
+        values.update(functions)
+        for name in sorted(found, key=len, reverse=True):
+            pattern = rf"(?<![\w.]){re.escape(name)}(?:\(\s*\))?(?!\w)"
+            text = re.sub(pattern, f"({float(values[name])!r})", text)
+        return text
 
     def _species(self, change: StateChange) -> int:
         from bngsim._bngl_loader import _species_name
@@ -551,8 +605,9 @@ class _Runner:
             i = self._species(change)
             if change.value is None and change.value_expr is not None:
                 # BNG2.pl keeps an expression amount as one: it follows its
-                # parameters until a run (BNGModel.pm, setConcentration's NewConc).
-                self.symbolic[i] = ("expr", change.value_expr)
+                # parameters until a run (BNGModel.pm, setConcentration's NewConc),
+                # with its observables and functions read now.
+                self.symbolic[i] = ("expr", self._freeze(change.value_expr))
                 value = self._value(change)
             else:
                 self.symbolic.pop(i, None)
@@ -563,8 +618,24 @@ class _Runner:
         elif kind == "add_concentration":
             i = self._species(change)
             state = self._state()
-            entry = self.symbolic.pop(i, None)
-            base = self._symbolic_value(entry) if entry is not None else state[i]
+            if self.symbolic.pop(i, None) is None:
+                base = state[i]
+            else:
+                # Not a number yet: BNG2.pl adds to the species' own declared
+                # amount (BNGModel.pm, addConcentration: evaluate
+                # $spec->Concentration), not to what a setConcentration left.
+                if self.declared is None:
+                    raise ConversionError(
+                        f"{_action(change)}: BNG2.pl adds to the species' declared amount, "
+                        "which an action before generation changed, and the loaded network "
+                        "holds only the changed one"
+                    )
+                declared = self.declared[1].get(i)
+                base = (
+                    self._symbolic_value(declared)
+                    if declared is not None
+                    else float(self.declared[0][i])
+                )
             state[i] = base + self._value(change)
             self.model.set_state(state)
         elif kind == "save_concentrations":
@@ -656,10 +727,9 @@ class _Runner:
             if reset:
                 self._reset_concentrations("SCAN")
             result = self._run(exp)
-            if result is not None:
-                result.custom_attrs["scan_parameter"] = parameter
-                result.custom_attrs["scan_value"] = float(value)
-                results.append(result)
+            result.custom_attrs["scan_parameter"] = parameter
+            result.custom_attrs["scan_value"] = float(value)
+            results.append(result)
         if reset:
             self._reset_concentrations("SCAN")
         return tuple(results)
@@ -700,7 +770,7 @@ class _Runner:
             self._sims[key] = Simulator(self.model, method=method, poplevel=poplevel)
         return method, self._sims[key]
 
-    def _run(self, exp: Experiment) -> Result | None:
+    def _run(self, exp: Experiment) -> Result:
         """One BNG2.pl ``simulate``: from the state the last run left, from the
         model time for ``continue=>1``, else from ``t_start``."""
         from bngsim._atol import ExactAtol
@@ -715,7 +785,18 @@ class _Runner:
                     stacklevel=5,
                 )
         method, sim = self._simulator(exp)
-        t0 = self.now if _as_bool(exp.extra.get("continue", 0)) else float(exp.t_span[0])
+        continued = _as_bool(exp.extra.get("continue", 0))
+        named_start = self._number(exp, "t_start") if continued else None
+        if named_start is not None and not math.isclose(
+            named_start, self.now, rel_tol=1e-9, abs_tol=1e-12
+        ):
+            # The parse checks this where it knows the model time; after a run
+            # that can stop early only the replay does (BNGAction.pm, simulate).
+            raise ConversionError(
+                f"{_describe(exp)}: continue=>1 with t_start={named_start:g}, but the model "
+                f"time is {self.now:g}; BNG2.pl refuses a continuation that does not start there"
+            )
+        t0 = self.now if continued else float(exp.t_span[0])
         if exp.sample_times is not None:
             times = [t0, *(t for t in exp.sample_times[1:] if t > t0)]
             t_end = times[-1]
@@ -724,13 +805,12 @@ class _Runner:
             times = None
         if t_end <= t0:
             warnings.warn(
-                f"{_describe(exp)}: t_end ({t_end:g}) is not past t_start ({t0:g}), "
-                "so the run does not run, as in BNG2.pl",
+                f"{_describe(exp)}: t_end ({t_end:g}) is not past t_start ({t0:g}); "
+                "BNG2.pl warns too, and writes the one row at t_start",
                 ConversionWarning,
                 stacklevel=5,
             )
-            self.now = t0
-            return None
+            return self._one_row(t0)
         kwargs: dict[str, Any] = {}
         steady = method == "ode" and _as_bool(exp.extra.get("steady_state", 0))
         if method == "ode":
@@ -764,6 +844,27 @@ class _Runner:
         self.symbolic.clear()
         self.now = float(result.time[-1])
         return result
+
+    def _one_row(self, t0: float) -> Result:
+        """A run that runs no time, as BNG2.pl's does: one row, the state at *t0*,
+        whose amounts it then reads back as numbers."""
+        from bngsim._result import Result
+
+        self.now = t0
+        self._resolve_symbolic()
+        self.symbolic.clear()
+        state = self._state()
+        observables, functions = self._reads_now(state)
+        names = [n for n in functions if not n.startswith("_rateLaw")]
+        return Result(
+            _time=np.array([t0]),
+            _species=state[None, :],
+            _observables=np.array([observables]),
+            _expressions=np.array([[functions[n] for n in names]]) if names else None,
+            _species_names=list(self.model.species_names),
+            _observable_names=list(self.model.observable_names),
+            _expression_names=names,
+        )
 
 
 def _action(change: StateChange | None) -> str:

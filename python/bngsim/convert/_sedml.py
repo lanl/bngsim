@@ -613,6 +613,8 @@ def write_sedml_protocol(
     str
         The SED-ML document text.
     """
+    from bngsim.convert._protocol import _evenly_spaced
+
     experiments = protocol.experiments
     if not experiments:
         raise ConversionError(
@@ -647,7 +649,7 @@ def write_sedml_protocol(
                 ConversionWarning,
                 stacklevel=2,
             )
-        if exp.sample_times is not None:
+        if exp.sample_times is not None and not _evenly_spaced(list(exp.sample_times)):
             warnings.warn(
                 f"SED-ML holds experiment {i}'s uneven output times {list(exp.sample_times)} "
                 f"as {exp.n_points} even points; the exact times are in the bngsim annotation",
