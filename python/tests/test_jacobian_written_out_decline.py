@@ -13,10 +13,14 @@ the text out, and the budget is asked only before each ``sp.diff``.
 Past the inlining limit, a law that does not collect now declines (``kind
 "written_out"``) from its predicted length, before the text is written, and the
 model runs on the finite-difference Jacobian it would otherwise have paid for.
+The decline is the attach's bet under a finite budget, and nothing else's: an
+unbounded budget keeps the analytical Jacobian, and the sensitivity RHS keeps
+its analytic J·yS (both lost in the first version of the fix).
 """
 
 from __future__ import annotations
 
+import shutil
 import time
 
 import bngsim
@@ -121,20 +125,21 @@ def _context(n: int):
 
 
 def test_the_length_is_asked_before_the_text_is_written(monkeypatch):
-    """Neither derivation path writes the law out: at 30 rules it would be tens
-    of millions of characters."""
-    _model, funcs = _context(30)
+    """The attach declines without writing the law out on either derivation
+    path: at 30 rules it would be tens of millions of characters."""
+    monkeypatch.delenv("BNGSIM_JAC_DERIV_BUDGET_S", raising=False)
+    model, funcs = _context(30)
     law = funcs["cv"]
     assert J._inlined_length(law, funcs) > 100 * J._INLINE_TEXT_LIMIT
+    assert J._written_out_length(law, funcs) == J._inlined_length(law, funcs)
 
     def refuse(*_a, **_k):
         raise AssertionError("the law was written out")
 
     monkeypatch.setattr(J, "_inline_functions", refuse)
-    text, written_out = J._inlined_for_derivation(law, funcs)
-    assert text is None and written_out == J._inlined_length(law, funcs)
-    assert S.differentiate_rate_law_native(law, funcs, {"S"}, {"k"}) is None
-    assert J.differentiate_rate_law(law, funcs, {"S"}, {"k"}) is None
+    monkeypatch.setattr(S, "_inline_functions", refuse)
+    assert J.attach_functional_jacobian(model._core) is False
+    assert J.last_decline()["kind"] == "written_out"
 
 
 def test_a_law_that_collects_past_the_limit_is_not_declined():
@@ -144,8 +149,94 @@ def test_a_law_that_collects_past_the_limit_is_not_declined():
     rules.update({f"r{i}": f"r{i - 1} + r{i - 2}" for i in range(2, 26)})
     law = "k*r25"
     assert J._inlined_length(law, rules) > J._INLINE_TEXT_LIMIT
-    text, written_out = J._inlined_for_derivation(law, rules)
-    assert written_out == 0 and text is not None and len(text) < J._INLINE_TEXT_LIMIT
+    assert J._written_out_length(law, rules) == 0
+    assert len(J._inline_functions(law, rules)) < J._INLINE_TEXT_LIMIT
+
+
+@pytest.mark.parametrize("unbounded", ["env", "genome_scale"])
+def test_an_unbounded_budget_keeps_the_analytical_jacobian(monkeypatch, unbounded):
+    """The decline is GH #95's bet decided early, so it is placed only where that
+    bet is: with no budget, by BNGSIM_JAC_DERIV_BUDGET_S=inf or because the model
+    is too large for FD to be a fallback (GH #187), the law is derived as on main.
+    11 rules write out to 31 thousand characters."""
+    if unbounded == "env":
+        monkeypatch.setenv("BNGSIM_JAC_DERIV_BUDGET_S", "inf")
+    else:
+        monkeypatch.delenv("BNGSIM_JAC_DERIV_BUDGET_S", raising=False)
+        monkeypatch.setattr(J, "_FD_NONVIABLE_SPECIES", 1)
+    model, _sim, _ = _built(11)
+    assert model.analytical_jacobian_status == "complete"
+
+
+def _switched_diamond(n: int) -> str:
+    """S -> P at k·S·(3 + r_{n-1}), r_i := sin(r_{i-1}) + cos(r_{i-2}) from S, and
+    P -> Q at k2·P once P > 2: a law past the limit beside a crossing that moves
+    with k and k2."""
+    rules = [("r0", _ci("S")), ("r1", _ap("plus", _ci("S"), _cn(1)))]
+    rules += [
+        (f"r{i}", _ap("plus", _ap("sin", _ci(f"r{i - 1}")), _ap("cos", _ci(f"r{i - 2}"))))
+        for i in range(2, n)
+    ]
+    rx = "".join(
+        f'<assignmentRule variable="{v}"><math {_M}>{b}</math></assignmentRule>' for v, b in rules
+    )
+    ps = "".join(f'<parameter id="r{i}" constant="false"/>' for i in range(n))
+    sp = "".join(
+        f'<species id="{s}" compartment="c" initialConcentration="{x0}" '
+        'hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>'
+        for s, x0 in (("S", 10), ("P", 0), ("Q", 0))
+    )
+    law = _ap("times", _ci("k"), _ci("S"), _ci("c"), _ap("plus", _cn(3), _ci(f"r{n - 1}")))
+    switched = (
+        f"<piecewise><piece>{_ap('times', _ci('k2'), _ci('P'))}{_ap('gt', _ci('P'), _cn(2))}"
+        f"</piece><otherwise>{_cn(0)}</otherwise></piecewise>"
+    )
+    rxns = "".join(
+        f'<reaction id="{rid}" reversible="false"><listOfReactants><speciesReference '
+        f'species="{a}" stoichiometry="1" constant="true"/></listOfReactants><listOfProducts>'
+        f'<speciesReference species="{b}" stoichiometry="1" constant="true"/></listOfProducts>'
+        f"<kineticLaw><math {_M}>{kl}</math></kineticLaw></reaction>"
+        for rid, a, b, kl in (
+            ("mk", "S", "P", law),
+            ("sw", "P", "Q", _ap("times", _ci("c"), switched)),
+        )
+    )
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version2/core" level="3" version="2"><model id="m">
+<listOfCompartments><compartment id="c" size="1" constant="true"/></listOfCompartments>
+<listOfSpecies>{sp}</listOfSpecies>
+<listOfParameters><parameter id="k" value="0.5" constant="true"/>
+<parameter id="k2" value="0.3" constant="true"/>{ps}</listOfParameters>
+<listOfRules>{rx}</listOfRules>
+<listOfReactions>{rxns}</listOfReactions></model></sbml>"""
+
+
+@pytest.mark.skipif(shutil.which("cc") is None, reason="no C compiler on PATH")
+def test_the_sensitivity_rhs_keeps_its_analytic_jacobian_vector_product(monkeypatch):
+    """The sensitivity RHS derives J·yS through the same primitives, and there the
+    derivative keeps the gradient right. Declined there, this model's crossing
+    made the run refuse (SensitivityUnsupportedError) where main's analytic
+    gradient matches a finite difference of the trajectory; a model with no
+    crossing went onto CVODES' difference quotient."""
+    monkeypatch.delenv("BNGSIM_JAC_DERIV_BUDGET_S", raising=False)
+    doc = _switched_diamond(16)
+    model = bngsim.Model.from_sbml_string(doc)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k", "k2"])
+    assert model.analytical_jacobian_decline["kind"] == "written_out"
+    assert sim.has_analytic_sens_rhs
+    span = {"t_span": (0.0, 4.0), "n_points": 9}
+    sens = np.asarray(sim.run(**span, rtol=1e-10, atol=1e-12).sensitivities)
+
+    def species(name: str, value: float) -> np.ndarray:
+        m = bngsim.Model.from_sbml_string(doc)
+        m.set_param(name, value)
+        run = bngsim.Simulator(m, method="ode", jacobian="fd").run(**span, rtol=1e-12, atol=1e-14)
+        return np.asarray(run.species)
+
+    for col, (name, value) in enumerate((("k", 0.5), ("k2", 0.3))):
+        h = 1e-3 * value
+        fd = (species(name, value + h) - species(name, value - h)) / (2 * h)
+        np.testing.assert_allclose(sens[:, :, col], fd, rtol=1e-4, atol=1e-6)
 
 
 def test_the_decline_has_a_kind_a_census_can_group_by():
