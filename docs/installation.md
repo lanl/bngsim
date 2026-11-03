@@ -79,11 +79,12 @@ hours — e.g. a 74,795-species network has a Jacobian that is 99.997% zeros
 KLU is **discovered automatically at build time** from any standard install
 location, conda prefix, HPC module, or `CMAKE_PREFIX_PATH` (GH #209). If none is
 found, the build compiles a pinned KLU subset from source and bundles it
-(macOS/Linux; needs `bash` and `git` on `PATH`). Every `pip` build sets
-`BNGSIM_REQUIRE_KLU=ON`, so if that also fails, or on Windows (no from-source
-fallback), the build stops with an error. Only a direct CMake build without
-`-DBNGSIM_REQUIRE_KLU=ON` can fall back to dense-only, so verify (below) after
-installing that way on a new machine.
+(macOS/Linux; needs `bash` and `git` on `PATH` and network access to GitHub).
+Every `pip` build sets `BNGSIM_REQUIRE_KLU=ON`, so if that also fails, or on
+Windows (no from-source fallback), the build stops with an error. Only a build
+that turns that off (a direct CMake build, or `pip` with
+`--config-settings=cmake.define.BNGSIM_REQUIRE_KLU=OFF`) can fall back to
+dense-only, so verify (below) after installing that way on a new machine.
 
 **macOS** — found from Homebrew:
 

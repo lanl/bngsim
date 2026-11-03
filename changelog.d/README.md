@@ -53,8 +53,8 @@ carried 64 entries; at 1,200 each that is 76,800, comfortably inside. At the rat
 entries were actually being written — 2,650 characters each — that same release
 came to 169,635, and `ci/release_notes.py` truncated it with a footer pointing
 back at the file. 0.13.0 and 0.12.0 both shipped incomplete release notes that
-way. 0.17.0 carried 468 entries from six weeks of work, more than any per-entry
-limit can fit, and was published truncated on purpose.
+way. 0.17.0 carried 468 entries from six weeks of work, more than any workable
+per-entry limit can fit, and was published truncated on purpose.
 
 An entry says **what changed and what it affects**. The evidence, the
 measurements and the reasoning belong in the issue and the commit message, which

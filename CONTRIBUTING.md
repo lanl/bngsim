@@ -47,8 +47,8 @@ uv sync --extra test
 Requires CMake ≥ 3.20, a C++17 compiler, and Python ≥ 3.10 (uv can provision the
 interpreter). The build needs SuiteSparse/KLU: install it (`brew install suite-sparse` /
 `apt-get install libsuitesparse-dev` / `conda install -c conda-forge suitesparse`), or
-on macOS/Linux let the build compile a pinned KLU subset from source (needs `bash` and
-`git` on `PATH`).
+on macOS/Linux let the build compile a pinned KLU subset from source (needs `bash`,
+`git` and network access to GitHub).
 
 The editable install does **not** auto-rebuild the C++ extension
 (`editable.rebuild = false`). After changing C++, refresh it:

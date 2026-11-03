@@ -181,7 +181,8 @@ assert r.n_times == 11
    `changelog.d/` into a new `## [<x.y.z>]` section, deletes the fragments, and
    refuses if the result would exceed GitHub's release-body limit — shorten the
    longest entries and re-run, or pass `--allow-truncation` to accept notes that
-   end in a pointer back at `CHANGELOG.md`. The pull request carrying steps 1–2
+   end in a pointer back at `CHANGELOG.md`, and name the version in
+   `TRUNCATED_ON_PURPOSE` in `python/tests/test_changelog_fragments.py`. The pull request carrying steps 1–2
    is the one thing that may edit `CHANGELOG.md`, so label it `changelog exempt`.
 3. Merge the release pull request into `main`; verify all four wheel legs are
    green on cp310–cp313.

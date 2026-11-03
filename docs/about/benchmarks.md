@@ -71,8 +71,8 @@ are compared cell-by-cell. Released results are meant to be committed as gzipped
 reports under
 [`parity_checks/rr_parity/snapshots/`](https://github.com/lanl/bngsim/tree/HEAD/parity_checks/rr_parity/snapshots/)
 (none is committed yet; see that directory's README for the convention), and the
-nightly's current verdicts are in
-[`parity_checks/nightly/baselines/rr_ode.json`](https://github.com/lanl/bngsim/tree/HEAD/parity_checks/nightly/baselines/rr_ode.json). Regenerate the interactive HTML matrix
+nightly's recorded baseline is
+[`parity_checks/nightly/baselines/rr_ode.json`](https://github.com/lanl/bngsim/blob/HEAD/parity_checks/nightly/baselines/rr_ode.json). Regenerate the interactive HTML matrix
 (per-model verdicts, three-tier timing breakdown, BNGsim-vs-RoadRunner cost scatter,
 and win-by-species tables) from a snapshot with:
 
@@ -82,7 +82,8 @@ gunzip -c snapshots/report_ode_<version>.json.gz > runs/report_ode.json
 python generate_matrix.py            # writes runs/parity_matrix.html
 ```
 
-As of the latest snapshot: **1,237/1,323 models agree** to ~1e-4 relative error; on
+As of the initial public release (July 2026): **1,237/1,323 models agree** to
+~1e-4 relative error; on
 warm per-integration cost BNGsim is **~1.65× faster by geometric mean** and wins the
 majority of models, with RoadRunner pulling ahead on the high-species tail (the
 crossover is around 20–35 species).
