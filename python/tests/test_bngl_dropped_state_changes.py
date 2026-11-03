@@ -196,31 +196,10 @@ def test_the_changes_come_in_source_order():
 # --------------------------------------------------------------------------- #
 # against the network
 # --------------------------------------------------------------------------- #
-def _load(tmp_path: Path, actions: str, *, protocol: bool = False):
-    path = tmp_path / "m.bngl"
-    path.write_text(MODEL + actions)
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        out = bngsim.Model.from_bngl(str(path), protocol=protocol, cache=False)
-    return out, [w for w in caught if issubclass(w.category, bngsim.ConversionWarning)]
-
-
-@needs_bng2
-def test_a_change_the_loaded_model_does_not_hold_is_warned(tmp_path):
-    actions = (
-        'generate_network({overwrite=>1})\nsetParameter("k",2)\nsetConcentration("A(b)",0)\n'
-        "simulate({t_end=>1})\n"
-    )
-    _model, caught = _load(tmp_path, actions)
-    assert len(caught) == 1
-    text = str(caught[0].message)
-    assert "setParameter('k', '2')" in text and "setConcentration('A(b)', '0')" in text
-    assert "protocol=True" in text
-
-
-# The network BNG2.pl generates from MODEL, written by hand, so the judging of
-# each action against a network needs no BioNetGen (only the three tests that
-# go through from_bngl itself do).
+# The network BNG2.pl generates from MODEL, written by hand, so neither the
+# judging of each action against a network nor from_bngl's wiring of the warning
+# needs BioNetGen. Only the corpus test at the end, on networks BNG2.pl generates,
+# does.
 NET = """\
 begin parameters
     1 k   1
@@ -240,6 +219,34 @@ begin groups
     1 Atot 1
 end groups
 """
+
+
+def _load(tmp_path: Path, monkeypatch, actions: str, *, protocol: bool = False):
+    """``from_bngl`` on MODEL and *actions*, with NET standing in for the network
+    BNG2.pl would generate from them."""
+    import bngsim._bngl_loader as loader
+
+    net = tmp_path / "m.net"
+    net.write_text(NET)
+    monkeypatch.setattr(loader, "load_bngl", lambda *a, **k: bngsim.Model.from_net(str(net)))
+    path = tmp_path / "m.bngl"
+    path.write_text(MODEL + actions)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        out = bngsim.Model.from_bngl(str(path), protocol=protocol, cache=False)
+    return out, [w for w in caught if issubclass(w.category, bngsim.ConversionWarning)]
+
+
+def test_a_change_the_loaded_model_does_not_hold_is_warned(tmp_path, monkeypatch):
+    actions = (
+        'generate_network({overwrite=>1})\nsetParameter("k",2)\nsetConcentration("A(b)",0)\n'
+        "simulate({t_end=>1})\n"
+    )
+    _model, caught = _load(tmp_path, monkeypatch, actions)
+    assert len(caught) == 1
+    text = str(caught[0].message)
+    assert "setParameter('k', '2')" in text and "setConcentration('A(b)', '0')" in text
+    assert "protocol=True" in text
 
 
 def _changes(tmp_path: Path, actions: str) -> list[str]:
@@ -339,10 +346,9 @@ def test_a_species_the_network_does_not_name_counts_as_a_change(tmp_path):
     ]
 
 
-@needs_bng2
-def test_protocol_true_returns_the_actions_instead_of_warning(tmp_path):
+def test_protocol_true_returns_the_actions_instead_of_warning(tmp_path, monkeypatch):
     actions = 'generate_network({overwrite=>1})\nsetParameter("k",2)\nsimulate({t_end=>1})\n'
-    (_model, _spec), caught = _load(tmp_path, actions, protocol=True)
+    (_model, _spec), caught = _load(tmp_path, monkeypatch, actions, protocol=True)
     assert caught == []
 
 
