@@ -16,6 +16,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -461,6 +462,16 @@ struct NetworkModel::Impl {
     // Recomputable, so clone() leaves it empty (same exemption as
     // function_value_cache).
     std::unordered_map<int, std::pair<std::vector<int>, std::vector<int>>> expression_support_cache;
+
+    // Memo for NetworkModel::trigger_read_plan() (issue #1278): read_plan()
+    // over every event's trigger, found once rather than once a run. It follows
+    // the references expression_support() follows, from expressions build()
+    // fixes, so it is reset where a function body is replaced
+    // (set_function_eval_expression) and where a table function is kept, which
+    // makes the plan whole. Any new post-build mutation of a function body,
+    // var_param_bindings or the events must reset it too. Indices only, but
+    // recomputable, so clone() leaves it empty like expression_support_cache.
+    std::optional<NetworkModel::ReadPlan> trigger_read_plan_memo;
 
     // ── Rate-law state-switch residuals (issue #150) ─────────────────────
     // Memo for NetworkModel::state_switch(), keyed by the condition's SOURCE

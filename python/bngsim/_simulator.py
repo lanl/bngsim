@@ -1790,9 +1790,11 @@ class Simulator:
           law, and with the total differentiated it was right in 13 of them and
           as much as 1e7 for −6e4 in another;
         - **any parameter**, where a law spans compartments of different size
-          and an assignment rule sets a compartment's size. The right-hand
-          side divides by the size the model loaded at (issue #745), so the
-          steady state itself is that of another system;
+          and an assignment rule that can move sets a compartment's size (one
+          that reads a species, the time, or a parameter asked for). The
+          right-hand side divides by the size the model loaded at (issue #745),
+          so the steady state itself is that of another system. A rule that
+          reads constants alone gives that size all along (issue #961);
         - **a parameter that sets the initial amount of a conserved species**,
           on a state a run has advanced. The total is still what the parameter
           made it, and the state no longer says so: its seed is retired with
@@ -1820,12 +1822,16 @@ class Simulator:
         # species' share of a reaction across compartments by the size the
         # model loaded at, not the one the rule gives (issue #745), so a law
         # across sizes there is a law of that right-hand side, not of the
-        # amounts. Such a model was refused while its law was found without
-        # the sizes, and stays so. (`c2 := 1 + A`, the example this was
-        # written for, dilutes B since #1052, which leaves no such law: its
-        # steady states form a line, and the isolated-root check refuses its
-        # columns.)
+        # amounts, where the rule can move. Such a model was refused while its
+        # law was found without the sizes, and stays so. (`c2 := 1 + A`, the
+        # example this was written for, dilutes B since #1052, which leaves no
+        # such law: its steady states form a line, and the isolated-root check
+        # refuses its columns.)
         ruled = sorted(set(model.compartment_size_params) & set(model.function_names))
+        # A rule whose value cannot move, `c2 := 2*p` with p not asked for, gives
+        # the size the model loaded at, and the right-hand side reads it right:
+        # such a compartment was refused with the rest (issue #961).
+        ruled = self._rule_sizes_that_move(model, ruled, params)
         if ruled:
             names = model.species_names
             for members in self._laws_across_sizes(model):
@@ -8548,6 +8554,7 @@ class Simulator:
             raise SimulationError(f"Steady-state computation failed: {e}") from e
 
         result = SteadyStateResult(core_result)
+        result._expressions_reading_clock = frozenset(self._model._core.functions_reading_clock)
         self._note_ss_unsupported(result)
         self._apply_ss_ar_report_map(result)
         self._apply_ss_ar_sensitivity_map(result)
@@ -8575,6 +8582,57 @@ class Simulator:
             # tie, and a difference quotient their average: only this finds it.
             self._raise_if_param_on_a_kink(list(sensitivity_params), conditions=True)
         return result
+
+    @staticmethod
+    def _rule_sizes_that_move(model: Model, ruled: list[str], params: Sequence[str]) -> list[str]:
+        """The compartments of *ruled* whose assignment rule can move (issue #961).
+
+        The right-hand side divides by the size the model loaded at, not the one
+        the rule gives (issue #745). That is the size all along where the rule
+        reads nothing that moves: no species or observable, not the time, and
+        no parameter in *params*, whose column moves the size with it. Each of
+        those is followed through the functions and derived parameters the rule
+        reads; a name that is none of them, a parameter, a built-in constant, a
+        function or a call, is taken to move. The clock is the core's own walk
+        (``functions_reading_clock``), which also sees a table function indexed
+        by it: the engine spells it ``time()``, which reads as a call.
+        """
+        if not ruled:
+            return []
+        from bngsim._codegen import _BUILTIN_CONSTANT_VALUES
+        from bngsim._model import _NUMBER_OR_NAME
+
+        core = model._core
+        data = core.codegen_data()
+        bodies = {f["name"]: f["expression"] for f in data["functions"]}
+        derived = {p["name"]: p["expression"] for p in data["parameters"] if p["expression"]}
+        constants = {p["name"] for p in data["parameters"]} | set(_BUILTIN_CONSTANT_VALUES)
+        clocked = set(core.functions_reading_clock)
+        asked = set(params)
+
+        def moves(name: str, seen: set[str]) -> bool:
+            if name in seen:
+                return False
+            seen.add(name)
+            if name in clocked:
+                return True
+            text = bodies.get(name, derived.get(name, ""))
+            for match in _NUMBER_OR_NAME.finditer(text):
+                word = match.group(1)
+                if not word:
+                    continue  # a number, with its exponent (`1e-15`)
+                if word == "time" or word in asked:
+                    return True
+                if word in bodies or word in derived:
+                    if moves(word, seen):
+                        return True
+                elif text[match.end() :].lstrip().startswith("("):
+                    continue  # a built-in call; its arguments are read on their own
+                elif word not in constants:
+                    return True  # a species, an observable, or a name not known here
+            return False
+
+        return [c for c in ruled if c in asked or moves(c, set())]
 
     @staticmethod
     def _laws_across_sizes(model: Model) -> list[list[int]]:
@@ -9291,8 +9349,8 @@ class Simulator:
         )
 
     def _raise_if_no_steady_state_to_solve_for(self, where: str) -> None:
-        """Refuse a steady-state solve of a model with an event, or with a
-        function that reads the time (issue #710).
+        """Refuse a steady-state solve of a model with an event, or whose state
+        the time reaches (issues #710, #961).
 
         Both solvers look for a root of ``f(y)``, and evaluate the right-hand
         side at ``t = 0`` for the residual, the Newton step, the Jacobian and
@@ -9305,14 +9363,15 @@ class Simulator:
         ``f(y) = 0`` to solve without a time being chosen, and an event needs a
         trajectory.
 
-        What is asked is whether any function of the model reads the time
-        (``NetworkModel.functions_use_time``, decided from the functions' text
-        when the model is built), and not only whether a rate does. A reported
-        quantity that reads it has no steady value either, and came back at
-        ``t = 0`` beside a state marked converged: an assignment-rule species
-        ``S := B*(1 - exp(-time))`` as 0 for 2/3, a species in a compartment
-        sized by a rule on the time at 0.5 for 0.25. A function that reads the
-        time and that nothing reads is refused with the rest.
+        What is asked is whether the time reaches the state
+        (``NetworkModel.state_reads_clock``), and not only whether a rate reads
+        it. A quantity the state is reported through that reads it has no steady
+        value either, and came back at ``t = 0`` beside a state marked
+        converged: an assignment-rule species ``S := B*(1 - exp(-time))`` as 0
+        for 2/3, a species in a compartment sized by a rule on the time at 0.5
+        for 0.25. A function that reads the time and that only reports is not
+        refused: the state does not depend on it, and its own value is NaN
+        (issue #961).
 
         A ``rateOf`` accessor is not a read of the time: it reads the state's own
         derivatives, which are 0 at a steady state.
@@ -9348,16 +9407,17 @@ class Simulator:
                 "jump (issue #710). Integrate the model with run() over a span long enough for "
                 "the trajectory to settle, and read the state where it ends."
             )
-        if core.functions_use_time:
+        if core.state_reads_clock:
             raise SimulationError(
                 f"{where} is not supported for this model: it reads the time, through time() "
-                "or a table function indexed by time, in a rate law, a rule or a reported "
-                "function. The steady-state solvers look for a root of f(y) with everything "
-                "read at t = 0, which is the model's steady state only where nothing changes "
-                "with the time after that: a rate that is 0 at t = 0 returned the initial "
-                "state as converged, and a reported function its value at t = 0 (issue #710). "
-                "Integrate the model with run() over a span long enough for the trajectory to "
-                "settle, and read the state where it ends."
+                "or a table function indexed by time, in a rate law, a rule a species or a "
+                "compartment size is reported through, or what one of those reads. The "
+                "steady-state solvers look for a root of f(y) with everything read at t = 0, "
+                "which is the model's steady state only where nothing changes with the time "
+                "after that: a rate that is 0 at t = 0 returned the initial state as "
+                "converged, and a species set by a rule on the time its value at t = 0 "
+                "(issue #710). Integrate the model with run() over a span long enough for the "
+                "trajectory to settle, and read the state where it ends."
             )
 
     def _ss_mask_excluding_ar_species(self, mask_selector: list[int] | None) -> list[int] | None:
@@ -10007,6 +10067,7 @@ class Simulator:
             except RuntimeError as e:
                 raise SimulationError(f"Batch {i} failed: {e}") from e
             result = SteadyStateResult(core_result)
+            result._expressions_reading_clock = frozenset(clone._core.functions_reading_clock)
             # GH #247 — the same two passes steady_state() runs, against the
             # CLONE: a scan that moves a compartment volume moves the divisor with
             # it, so resolving vdiv off self._model would report every entry
@@ -12191,6 +12252,7 @@ class SteadyStateResult:
         "_expression_values",
         "_rule_target_species",
         "_rule_target_expressions",
+        "_expressions_reading_clock",
     )
 
     def __init__(self, core) -> None:
@@ -12358,6 +12420,9 @@ class SteadyStateResult:
         self._expression_values = np.asarray(
             getattr(core, "expression_values", []), dtype=np.float64
         )
+        # Issue #961: the functions that read the time, reported as NaN, which
+        # the solve fills in from the model.
+        self._expressions_reading_clock: frozenset[str] = frozenset()
 
     @property
     def concentrations(self):
@@ -12551,6 +12616,12 @@ class SteadyStateResult:
             return None
         kind = meta["kind"]
         values = self._expression_values if kind == "expression" else self._observable_values
+        if kind == "expression" and meta["name"] in self._expressions_reading_clock:
+            return (
+                f"output_sensitivities: {meta['selector']!r} has no steady-state "
+                "derivative: it reads the time, so it has no steady value, and it is "
+                "reported as NaN (issue #961)."
+            )
         if kind != "species" and meta["index"] < values.size:
             value = float(values[meta["index"]])
             if not np.isfinite(value):

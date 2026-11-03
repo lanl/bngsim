@@ -1848,6 +1848,29 @@ PYBIND11_MODULE(_bngsim_core, m) {
                                "Whether any function's value can move with simulation time alone "
                                "(issue #654). Gates the SSA's time-dependent sub-stepping.")
         .def_property_readonly(
+            "rate_laws_read_clock", &bngsim::NetworkModel::rate_laws_read_clock,
+            "Whether a reaction's rate reads the clock, through time, a time-indexed table, or a "
+            "function or derived parameter that does; a rate accessor is not the clock (issue "
+            "#961). A model whose rates read none has a steady state to solve for.")
+        .def_property_readonly(
+            "functions_reading_clock",
+            [](const bngsim::NetworkModel &self) {
+                std::vector<std::string> names;
+                const auto &funcs = self.functions();
+                for (const int f : self.functions_reading_clock()) {
+                    names.push_back(funcs[static_cast<std::size_t>(f)].name);
+                }
+                return names;
+            },
+            "The functions whose value moves with the clock (issue #961), by name: a steady "
+            "state reports each as NaN.")
+        .def_property_readonly(
+            "state_reads_clock", &bngsim::NetworkModel::state_reads_clock,
+            "Whether the clock reaches what a steady state solves for or reports as the state "
+            "(issues #710, #961): a rate law, a species an assignment rule reports, or a "
+            "compartment size. find_steady_state refuses such a model, and a time course's "
+            "early stop is held off for it; a function that only reports is none of these.")
+        .def_property_readonly(
             "ssa_reads_clock",
             [](const bngsim::NetworkModel &self) {
                 // A rate rule's target may be a clock (`T' = 1`) whose crossings
@@ -2408,6 +2431,62 @@ PYBIND11_MODULE(_bngsim_core, m) {
             py::arg("t"), py::arg("conc"),
             "Assemble the dense analytical Jacobian at (t, conc), flat "
             "column-major. Test/diagnostic hook for the FD cross-check. GH #76.")
+
+        // Test hooks (issue #1278): what the read-ahead refreshes to read the
+        // event triggers, and its values against a whole evaluation at a state.
+        .def(
+            "_trigger_read_plan",
+            [](const bngsim::NetworkModel &self) {
+                const auto &plan = self.trigger_read_plan();
+                const auto obs = self.observable_names();
+                const auto fns = self.function_names();
+                py::list o, f;
+                for (int i : plan.observables)
+                    o.append(obs[static_cast<size_t>(i)]);
+                for (int i : plan.functions)
+                    f.append(fns[static_cast<size_t>(i)]);
+                py::dict d;
+                d["full"] = plan.full;
+                d["observables"] = o;
+                d["functions"] = f;
+                return d;
+            },
+            "The observables and functions the read-ahead refreshes to read the event "
+            "triggers, or full=True where it syncs the model whole (issue #1278).")
+        .def(
+            "_trigger_read_plan_values",
+            [](bngsim::NetworkModel &self, double t, const std::vector<double> &conc) {
+                const int ns = self.n_species();
+                if (static_cast<int>(conc.size()) != ns)
+                    throw py::value_error("_trigger_read_plan_values: expected " +
+                                          std::to_string(ns) + " species values, got " +
+                                          std::to_string(conc.size()));
+                // The species are written as the read-ahead writes them, not
+                // through set_state_from, which drops a pending carry-over
+                // sensitivity seed (GH #210). The values are the slots the
+                // refresh wrote, which a trigger reads, not a re-evaluation.
+                auto &sp = const_cast<std::vector<bngsim::Species> &>(self.species());
+                std::vector<double> saved(sp.size());
+                for (std::size_t i = 0; i < sp.size(); ++i) {
+                    saved[i] = sp[i].concentration;
+                    sp[i].concentration = conc[i];
+                }
+                const double t_model = self.current_time();
+                const bngsim::NetworkModel::ReadPlan plan = self.trigger_read_plan();
+                self.evaluate_read_plan(t, conc.data(), plan);
+                const std::vector<double> planned = self.function_value_cache();
+                self.update_observables(conc.data());
+                self.evaluate_functions(t);
+                const std::vector<double> whole = self.function_value_cache();
+                for (std::size_t i = 0; i < sp.size(); ++i)
+                    sp[i].concentration = saved[i];
+                self.update_observables(saved.data());
+                self.evaluate_functions(t_model);
+                return py::make_tuple(planned, whole);
+            },
+            py::arg("t"), py::arg("conc"),
+            "Function values after the read-ahead's refresh at (t, conc), and after a "
+            "whole evaluation there; the model is left as it was (issue #1278).")
 
         // ── Public evaluators (issue #523) ──────────────────────────────────
         // The C++ names, bound one-to-one, so a reader of model.hpp finds the

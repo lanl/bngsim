@@ -304,6 +304,32 @@ class NetworkModel {
     void expression_support(int expr_idx, std::vector<int> *species_out,
                             std::vector<int> *params_out) const;
 
+    // What reading `expr_ids` at a state needs refreshed after the species are
+    // written (issue #1278): the observables they read and, in evaluation
+    // order, the function groups whose values they read, directly or through
+    // one another. `full` where they read anything else that moves with the
+    // state (a rateOf accessor, a slot nothing here models) or the model has a
+    // table function, whose index is read out of sight: then only
+    // update_observables() and evaluate_functions() put every slot right.
+    struct ReadPlan {
+        bool full = false;
+        std::vector<int> observables;
+        std::vector<int> groups;    // indices into the function groups, ascending
+        std::vector<int> functions; // the functions in those groups, as declared
+    };
+    ReadPlan read_plan(const std::vector<int> &expr_ids) const;
+
+    // read_plan() over every event's trigger, found once and kept on the model
+    // until a function body or a table function changes what it reads. A
+    // set_function_eval_expression() or a new table drops it, so a caller that
+    // holds it across either takes a copy.
+    const ReadPlan &trigger_read_plan() const;
+
+    // At time `t`, with the species as the caller wrote them (`conc`): the
+    // observables and function groups of `plan`, as update_observables(conc)
+    // and evaluate_functions(t) leave them. Every other slot keeps its value.
+    void evaluate_read_plan(double t, const double *conc, const ReadPlan &plan);
+
     // The species reaction `rxn_idx0`'s SSA propensity reads (issue #719): its
     // reactants, the species its SSA falling factorial is taken over, a live
     // compartment volume it divides by, and whatever
@@ -336,6 +362,30 @@ class NetworkModel {
     // Does event `event_idx0`'s trigger read the clock, through the same walk?
     // A trigger that does not can change only when the state does.
     bool event_trigger_reads_time(int event_idx0) const;
+
+    // Does any reaction's rate read the clock (issue #961)? The same walk as
+    // reaction_rate_reads_time, without a rate accessor, which reads the running
+    // derivatives and not the time: at a steady state they are 0 whatever the
+    // time. A model whose rates read no clock has an f(y) = 0 to solve even
+    // where a function that only reports reads it. False without a walk where
+    // functions_use_time() is: no definition can reach the clock then.
+    bool rate_laws_read_clock() const;
+
+    // The 0-based indices of the functions whose value moves with the clock,
+    // through `time`, a time-indexed table, or a function or derived parameter
+    // that does (issue #961). A steady state has no value for one. Empty
+    // without a walk where functions_use_time() is.
+    std::vector<int> functions_reading_clock() const;
+
+    // Does the clock reach what a steady state solves for or reports as the
+    // state (issues #710, #961)? A rate that reads it (rate_laws_read_clock), a
+    // species an assignment rule reports through a function that reads it (a
+    // fixed species named for the function, as a time course copies it back),
+    // or a compartment size such a function writes. Each still moves where
+    // f(y) has settled, so find_steady_state refuses the model and a time
+    // course's early stop is held off. A function that only reports is none of
+    // these.
+    bool state_reads_clock() const;
 
     // ─── Rate-law switch conditions that read model state (issue #150) ───────
     //
@@ -999,6 +1049,7 @@ class NetworkModel {
     // What a rate or a trigger reads through the model's definitions (#719).
     struct RateDeps {
         bool time = false;    // the clock, directly or through a definition
+        bool clock = false;   // the same, without a rate accessor (issue #961)
         bool unknown = false; // something whose reads cannot be named
         std::set<int> species;
     };
@@ -1045,6 +1096,12 @@ class NetworkModel {
     /// of F. Called only for a group of two or more, so an acyclic model never
     /// reaches it.
     void solve_function_cycle(size_t lo, size_t hi);
+
+    /// One observable's total, and one function group's values: what
+    /// update_observables() and evaluate_functions() do for each, and what
+    /// evaluate_read_plan() does for the ones a plan names (issue #1278).
+    void update_observable_(size_t oi, const double *conc);
+    void evaluate_function_group_(size_t g, bool with_deferred);
 
     /// Internal helper: register a TableFunction with the expression evaluator
     /// and bind its index pointer to the appropriate model variable.

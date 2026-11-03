@@ -2098,6 +2098,123 @@ void NetworkModel::expression_support(int expr_idx, std::vector<int> *species_ou
                                             std::make_pair(std::move(sp_out), std::move(pa_out)));
 }
 
+NetworkModel::ReadPlan NetworkModel::read_plan(const std::vector<int> &expr_ids) const {
+    ReadPlan plan;
+    if (!impl_->table_functions.empty()) {
+        plan.full = true;
+        return plan;
+    }
+    std::unordered_set<const double *> species_addr;
+    for (const Species &sp : impl_->species) {
+        species_addr.insert(&sp.concentration);
+    }
+    std::unordered_map<const double *, int> obs_of;
+    for (int i = 0; i < static_cast<int>(impl_->observables.size()); ++i) {
+        obs_of.emplace(&impl_->observables[static_cast<size_t>(i)].total, i);
+    }
+    std::unordered_map<const double *, int> param_of;
+    for (int i = 0; i < static_cast<int>(impl_->parameters.size()); ++i) {
+        param_of.emplace(&impl_->parameters[static_cast<size_t>(i)].value, i);
+    }
+    // param index -> the function group that writes it.
+    const auto &bindings = impl_->shared->var_param_bindings;
+    const auto &starts = impl_->shared->function_scc_starts;
+    std::unordered_map<int, int> group_of_param;
+    for (size_t g = 0; g + 1 < starts.size(); ++g) {
+        for (size_t bi = static_cast<size_t>(starts[g]); bi < static_cast<size_t>(starts[g + 1]);
+             ++bi) {
+            group_of_param.emplace(bindings[bi].second, static_cast<int>(g));
+        }
+    }
+
+    // A worklist, not recursion: a trigger read through a chain of a few
+    // thousand functions would take a stack frame per link.
+    std::set<int> observables;
+    std::set<int> groups;
+    std::unordered_set<int> visited;
+    std::vector<int> todo(expr_ids.begin(), expr_ids.end());
+    while (!todo.empty()) {
+        const int eid = todo.back();
+        todo.pop_back();
+        if (eid < 0 || !visited.insert(eid).second) {
+            continue;
+        }
+        // (The clock is time(), a function, so it is no address here.)
+        for (const double *addr : impl_->evaluator->referenced_variable_addresses(eid)) {
+            if (species_addr.count(addr) != 0) {
+                continue;
+            }
+            if (auto ob = obs_of.find(addr); ob != obs_of.end()) {
+                observables.insert(ob->second);
+                continue;
+            }
+            auto pa = param_of.find(addr);
+            if (pa == param_of.end()) {
+                plan.full = true; // a rateOf accessor, or something unmodelled
+                return plan;
+            }
+            auto fg = group_of_param.find(pa->second);
+            if (fg == group_of_param.end()) {
+                // A plain or derived parameter: evaluate_functions() does not
+                // write it, so it reads the same either way.
+                continue;
+            }
+            const int g = fg->second;
+            if (groups.insert(g).second) {
+                for (size_t bi = static_cast<size_t>(starts[static_cast<size_t>(g)]);
+                     bi < static_cast<size_t>(starts[static_cast<size_t>(g) + 1]); ++bi) {
+                    todo.push_back(
+                        impl_->functions[static_cast<size_t>(bindings[bi].first)].evaluator_id);
+                }
+            }
+        }
+    }
+    plan.observables.assign(observables.begin(), observables.end());
+    plan.groups.assign(groups.begin(), groups.end());
+    std::set<int> functions;
+    for (int g : plan.groups) {
+        for (size_t bi = static_cast<size_t>(starts[static_cast<size_t>(g)]);
+             bi < static_cast<size_t>(starts[static_cast<size_t>(g) + 1]); ++bi) {
+            functions.insert(bindings[bi].first);
+        }
+    }
+    plan.functions.assign(functions.begin(), functions.end());
+    return plan;
+}
+
+// Found once and kept: re-parsing every trigger and every function they reach
+// took 3.7 ms of a 7.7 ms two-row run of BIOMD0000000153 (21 events) when each
+// run found it again.
+const NetworkModel::ReadPlan &NetworkModel::trigger_read_plan() const {
+    if (!impl_->trigger_read_plan_memo) {
+        std::vector<int> ids;
+        ids.reserve(impl_->events.size());
+        for (const Event &ev : impl_->events) {
+            ids.push_back(ev.trigger_expr_idx);
+        }
+        impl_->trigger_read_plan_memo = read_plan(ids);
+    }
+    return *impl_->trigger_read_plan_memo;
+}
+
+void NetworkModel::evaluate_read_plan(double t, const double *conc, const ReadPlan &plan) {
+    impl_->current_time = t;
+    for (int oi : plan.observables) {
+        update_observable_(static_cast<size_t>(oi), conc);
+    }
+    if (plan.groups.empty()) {
+        return;
+    }
+    // As evaluate_functions(t) evaluates each group, in the same order.
+    auto &cache = impl_->function_value_cache;
+    if (cache.size() != impl_->functions.size()) {
+        cache.assign(impl_->functions.size(), 0.0);
+    }
+    for (int g : plan.groups) {
+        evaluate_function_group_(static_cast<size_t>(g), /*with_deferred=*/true);
+    }
+}
+
 // The end of the number starting at e[i]: digits and a point, then an exponent
 // only when one is well formed (`1e-5`), so the `e` of `2exp(x)` is a name.
 static size_t skip_number(const std::string &e, size_t i) {
@@ -2187,14 +2304,17 @@ NetworkModel::rate_dependencies_(std::vector<int> params, const std::vector<std:
             while (k < e.size() && std::isspace(static_cast<unsigned char>(e[k])))
                 ++k;
             const bool call = k < e.size() && e[k] == '(';
-            if (clock && id == "time" && (call || !time_declared))
+            if (clock && id == "time" && (call || !time_declared)) {
                 deps.time = true;
+                deps.clock = true;
+            }
             auto tit = tables.find(id);
             if (tit != tables.end()) {
                 const std::string &idx = tit->second->index_name();
                 const std::string key = strip_paren_suffix(idx);
                 if (is_time_index(idx)) {
                     deps.time = true;
+                    deps.clock = true;
                 } else if (auto pit = sd.param_name_to_idx.find(key);
                            pit != sd.param_name_to_idx.end()) {
                     params.push_back(pit->second);
@@ -2240,6 +2360,15 @@ NetworkModel::rate_dependencies_(std::vector<int> params, const std::vector<std:
     return deps;
 }
 
+// The parameters a reaction's propensity reads: its rate constant, its SSA
+// volume and its rate law's.
+static void append_rate_params(const Reaction &rxn, std::vector<int> &params) {
+    params.push_back(rxn.rate_param_idx0);
+    params.push_back(rxn.ssa_volume_param_idx0);
+    for (int pi : rxn.rate_law_param_indices)
+        params.push_back(pi - 1);
+}
+
 // A reaction's propensity, as compute_rxn_rate reads it: its reactants, the
 // species of its SSA falling factorial, a live compartment volume, and its
 // rate parameters' definitions.
@@ -2247,9 +2376,8 @@ NetworkModel::RateDeps
 NetworkModel::reaction_rate_dependencies_(int rxn_idx0,
                                           const std::vector<char> *pc_functions) const {
     const Reaction &rxn = impl_->shared->reactions[rxn_idx0];
-    std::vector<int> params{rxn.rate_param_idx0, rxn.ssa_volume_param_idx0};
-    for (int pi : rxn.rate_law_param_indices)
-        params.push_back(pi - 1);
+    std::vector<int> params;
+    append_rate_params(rxn, params);
     RateDeps deps = rate_dependencies_(std::move(params), {}, pc_functions);
     const int ns = static_cast<int>(impl_->species.size());
     const auto add = [&](int si) {
@@ -2309,6 +2437,73 @@ bool NetworkModel::reaction_rate_reads_time(int rxn_idx0,
     if (rxn_idx0 < 0 || rxn_idx0 >= static_cast<int>(impl_->shared->reactions.size()))
         return false;
     return reaction_rate_dependencies_(rxn_idx0, pc_functions).time;
+}
+
+// functions_use_time is decided from the same texts and over-reports: a derived
+// parameter that reads time() is refused at build, and the only tables an
+// expression can call on the clock are the ones a function is built around,
+// which set it. So a model it clears reads no clock anywhere, and the two walks
+// below are not taken for it. They fill expression_support for every
+// definition they reach, which cost a model of 3,073 reactions and 15,824
+// parameters (MODEL1602080000, reading no time) 18 s on its first
+// run(steady_state=True), and every batch row as much again on its clone.
+bool NetworkModel::rate_laws_read_clock() const {
+    if (!impl_->functions_use_time)
+        return false;
+    // One walk from every reaction's parameters: the clock is reached from one
+    // of them or from none, and a walk per reaction was O(reactions ×
+    // parameters).
+    std::vector<int> params;
+    for (const Reaction &rxn : impl_->shared->reactions)
+        append_rate_params(rxn, params);
+    return rate_dependencies_(std::move(params), {}).clock;
+}
+
+std::vector<int> NetworkModel::functions_reading_clock() const {
+    std::vector<int> out;
+    if (!impl_->functions_use_time)
+        return out;
+    for (int f = 0; f < static_cast<int>(impl_->functions.size()); ++f) {
+        const Function &fn = impl_->functions[f];
+        std::vector<int> params;
+        if (fn.evaluator_id >= 0)
+            expression_support(fn.evaluator_id, nullptr, &params);
+        if (rate_dependencies_(std::move(params), {fn.expression, fn.eval_expression}).clock)
+            out.push_back(f);
+    }
+    return out;
+}
+
+bool NetworkModel::state_reads_clock() const {
+    if (rate_laws_read_clock())
+        return true;
+    const std::vector<int> clocked = functions_reading_clock();
+    if (clocked.empty())
+        return false;
+    const auto &funcs = impl_->functions;
+    std::vector<char> on_clock(funcs.size(), 0);
+    for (const int f : clocked)
+        on_clock[static_cast<std::size_t>(f)] = 1;
+    // A species an assignment rule reports: the fixed species named for the
+    // rule's function, which a time course copies the function's value into
+    // (build_assignment_rule_copyback). `S := B*(1 - exp(-time))` came back 0,
+    // its value at t = 0, for 2/3 (issue #710).
+    std::unordered_set<std::string> fixed;
+    for (const Species &s : impl_->species)
+        if (s.fixed)
+            fixed.insert(s.name);
+    for (std::size_t f = 0; f < funcs.size(); ++f)
+        if (on_clock[f] && fixed.count(funcs[f].name) != 0)
+            return true;
+    // A compartment size the function writes: the concentrations in it move
+    // with it.
+    const int nf = static_cast<int>(funcs.size());
+    const int np = static_cast<int>(impl_->parameters.size());
+    for (const auto &[func_idx, param_idx] : impl_->shared->var_param_bindings)
+        if (func_idx >= 0 && func_idx < nf && on_clock[static_cast<std::size_t>(func_idx)] &&
+            param_idx >= 0 && param_idx < np && impl_->parameters[param_idx].is_compartment_size)
+            return true;
+    return false;
 }
 
 bool NetworkModel::event_trigger_reads_time(int event_idx0) const {
@@ -4047,8 +4242,10 @@ bool NetworkModel::set_function_eval_expression(const std::string &name,
         }
         // The support walk follows a function-written parameter into its
         // function's body, so a new body can change the support of anything
-        // that reads it (issue #773).
+        // that reads it (issue #773). So does the triggers' read plan, which
+        // follows the same references (issue #1278).
         impl_->expression_support_cache.clear();
+        impl_->trigger_read_plan_memo.reset();
         return true;
     }
     return false;
@@ -4072,34 +4269,42 @@ std::vector<double> NetworkModel::function_values() const {
 // ─── RHS evaluation ──────────────────────────────────────────────────────────
 
 void NetworkModel::update_observables(const double *conc) {
-    const auto &species_list = impl_->species;
-    for (auto &obs : impl_->observables) {
-        double total = 0.0;
-        for (const auto &entry : obs.entries) {
-            // species_index is 1-based, conc array is 0-based
-            int idx0 = entry.species_index - 1;
-            if (idx0 >= 0 && idx0 < static_cast<int>(species_list.size())) {
-                // Amount-valued species (GH #75): a hOSU symbol denotes the
-                // species's *amount* (stored × volume_factor), not the stored
-                // concentration. The per-species observable IS the ExprTk
-                // symbol an SBML rate law / observable-expression resolves to
-                // (the loader registers a same-named observable that shadows
-                // the species variable), so restoring the amount here is the
-                // single read site that makes Functional laws and
-                // observable-sums read amounts — replacing the loader's
-                // per-emission `_wrap_hosu_amounts` / `_hosu_amount_factor`
-                // rewrites. Default false / volume_factor 1.0 ⇒ stored value
-                // unchanged (byte-identical for .net, V=1 SBML, hOSU=false).
-                double v = conc[idx0];
-                const auto &sp = species_list[idx0];
-                if (sp.amount_valued) {
-                    v *= sp.volume_factor;
-                }
-                total += entry.factor * v;
-            }
-        }
-        obs.total = total;
+    for (size_t oi = 0; oi < impl_->observables.size(); ++oi) {
+        update_observable_(oi, conc);
     }
+}
+
+// One observable's total, as update_observables() and evaluate_read_plan()
+// both take it (issue #1278): a read-ahead that summed it its own way would
+// read a trigger at a value the row's refresh never gives.
+void NetworkModel::update_observable_(size_t oi, const double *conc) {
+    const auto &species_list = impl_->species;
+    auto &obs = impl_->observables[oi];
+    double total = 0.0;
+    for (const auto &entry : obs.entries) {
+        // species_index is 1-based, conc array is 0-based
+        int idx0 = entry.species_index - 1;
+        if (idx0 >= 0 && idx0 < static_cast<int>(species_list.size())) {
+            // Amount-valued species (GH #75): a hOSU symbol denotes the
+            // species's *amount* (stored × volume_factor), not the stored
+            // concentration. The per-species observable IS the ExprTk
+            // symbol an SBML rate law / observable-expression resolves to
+            // (the loader registers a same-named observable that shadows
+            // the species variable), so restoring the amount here is the
+            // single read site that makes Functional laws and
+            // observable-sums read amounts — replacing the loader's
+            // per-emission `_wrap_hosu_amounts` / `_hosu_amount_factor`
+            // rewrites. Default false / volume_factor 1.0 ⇒ stored value
+            // unchanged (byte-identical for .net, V=1 SBML, hOSU=false).
+            double v = conc[idx0];
+            const auto &sp = species_list[idx0];
+            if (sp.amount_valued) {
+                v *= sp.volume_factor;
+            }
+            total += entry.factor * v;
+        }
+    }
+    obs.total = total;
 }
 
 void NetworkModel::evaluate_functions(double t, bool with_deferred) {
@@ -4121,25 +4326,27 @@ void NetworkModel::evaluate_functions(double t, bool with_deferred) {
     // (GH #76). A group of one — every function in every corpus model but one —
     // is a single evaluation, so this is the same walk it has always been.
     const auto &starts = impl_->shared->function_scc_starts;
-    const auto &bindings = impl_->shared->var_param_bindings;
-    const auto eval_one = [&](size_t bi) {
-        const auto &[func_idx, param_idx] = bindings[bi];
-        const auto &func = impl_->functions[func_idx];
-        if (func.evaluator_id < 0 || (func.deferred && !with_deferred))
-            return;
-        const double val = impl_->evaluator->evaluate(func.evaluator_id);
-        impl_->parameters[param_idx].value = val;
-        cache[func_idx] = val;
-    };
+    for (size_t g = 0; g + 1 < starts.size(); ++g)
+        evaluate_function_group_(g, with_deferred);
+}
 
-    for (size_t g = 0; g + 1 < starts.size(); ++g) {
-        const size_t lo = static_cast<size_t>(starts[g]), hi = static_cast<size_t>(starts[g + 1]);
-        if (hi - lo == 1) {
-            eval_one(lo);
-            continue;
-        }
+// Function group `g`, as evaluate_functions() and evaluate_read_plan() both
+// evaluate it (issue #1278). The function value cache is already sized.
+void NetworkModel::evaluate_function_group_(size_t g, bool with_deferred) {
+    const auto &starts = impl_->shared->function_scc_starts;
+    const auto &bindings = impl_->shared->var_param_bindings;
+    const size_t lo = static_cast<size_t>(starts[g]), hi = static_cast<size_t>(starts[g + 1]);
+    if (hi - lo != 1) {
         solve_function_cycle(lo, hi);
+        return;
     }
+    const auto &[func_idx, param_idx] = bindings[lo];
+    const auto &func = impl_->functions[func_idx];
+    if (func.evaluator_id < 0 || (func.deferred && !with_deferred))
+        return;
+    const double val = impl_->evaluator->evaluate(func.evaluator_id);
+    impl_->parameters[param_idx].value = val;
+    impl_->function_value_cache[func_idx] = val;
 }
 
 void NetworkModel::evaluate_deferred_functions() {
@@ -5163,6 +5370,9 @@ void NetworkModel::keep_table_function_(std::unique_ptr<TableFunction> tf, bool 
     if (backs_a_function && is_time_index(tf->index_name()))
         impl_->functions_use_time = true;
     impl_->table_functions.push_back(std::move(tf));
+    // A table reads its index out of sight of the references, so the triggers'
+    // read plan, found without one, no longer holds (issue #1278).
+    impl_->trigger_read_plan_memo.reset();
 }
 
 void NetworkModel::add_table_function(const std::string &name, const std::string &filepath,
