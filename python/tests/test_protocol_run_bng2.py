@@ -2,7 +2,7 @@
 
 Each case replays a corpus file's actions on the network ``benchmarks`` ships for
 it (the seed state the file generates) and compares with what BNG2.pl 2.9.3
-wrote running the file whole, kept in ``data/bng2_protocol`` (see its README).
+wrote running the file whole, kept in ``tests/data/bng2_protocol`` (see its README).
 So the comparison needs no BioNetGen here, and runs on every leg.
 
 The controls are the closed-form tests in ``test_protocol_run.py``; these hold
@@ -22,7 +22,9 @@ import pytest
 from bngsim.convert import parse_bngl_protocol
 
 _REPO = Path(__file__).resolve().parents[2]
-_DATA = Path(__file__).with_name("data") / "bng2_protocol"
+# Beside the suite's other data under tests/data, which run_tests.sh's stand-in
+# links; python/tests holds only the modules it copies.
+_DATA = _REPO / "tests" / "data" / "bng2_protocol"
 # Both engines run CVODE at run_network's 1e-8 tolerances; a difference below
 # 100x the absolute one is inside both.
 _RTOL = 1e-5
