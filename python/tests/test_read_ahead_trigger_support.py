@@ -4,7 +4,7 @@
 #1133's read-ahead reads the event triggers half a root tolerance past every
 output row, and synced the whole model there to do it: every observable and
 every function, for a handful of triggers. On a 20001-row grid that was
-1.15-1.34x the run, and almost no row's read-ahead fires. It now refreshes the
+1.06-1.42x the run, and almost no row's read-ahead fires. It now refreshes the
 observables and functions the triggers read, directly or through one another,
 and syncs the model whole only where a trigger rises, before anything fires.
 
@@ -91,6 +91,24 @@ def test_an_assignment_reads_a_function_the_rates_read_too():
     assert _at_row(text, "S") == pytest.approx(25.0, rel=1e-12)
 
 
+def test_a_sensitivity_run_reads_an_assignment_at_the_crossing():
+    """A run with sensitivity columns fires at the row itself (#1182), and the
+    whole sync where a trigger rises is what puts w at the crossing there (a
+    run without them syncs again as it fires). Left as the row's root check
+    had it (q = 2.4999999999999996), w := 10 + 1e16*(q - 2.5) reads 5.56; at
+    the state ahead, where the trigger reads true, q >= 2.5 and w >= 10. Read
+    by ``w := 10*q`` the two differ by rounding alone (24.999999999999996
+    against 25), which a test of 25 cannot tell apart."""
+    text = (
+        "species S = 3; species X = 0; q = 0; q' = k; k = 1; w := 10 + 1e16*(q - 2.5);"
+        " J1: -> X; 1e-40*w; E1: at (q >= 2.5): S = w;"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    r = bngsim.Simulator(model, method="ode", sensitivity_params=["k"]).run(sample_times=_GRID)
+    s = float(np.asarray(r.species)[_GRID.index(2.5), list(r.species_names).index("S")])
+    assert s >= 10.0
+
+
 def test_no_row_fires_where_no_trigger_crosses():
     """Control: the triggers read false at every row ahead, as before."""
     text = "species S = 3; q = 0; q' = 1; h := q; g := 2*h; E1: at (g >= 50): S = 1;"
@@ -149,7 +167,24 @@ def test_a_rateof_read_takes_the_whole_sync():
 
 
 def test_a_table_function_takes_the_whole_sync():
-    """A table function reads its index out of sight of the references."""
+    """A table function reads its index out of sight of the references. The
+    plan is kept on the model, so one found before the table is dropped."""
     core = _core(_CHAIN)
+    assert core._trigger_read_plan()["full"] is False
     core.add_table_function_arrays("tab", [0.0, 10.0], [0.0, 1.0])
     assert core._trigger_read_plan()["full"] is True
+
+
+def test_a_new_function_body_is_planned_again():
+    """g pointed at the state itself no longer reads h: the kept plan follows
+    the body the triggers read now."""
+    core = _core(_CHAIN)
+    assert sorted(core._trigger_read_plan()["functions"]) == ["g", "h"]
+    assert core.set_function_eval_expression("g", "2*q")
+    assert core._trigger_read_plan()["functions"] == ["g"]
+
+
+def test_a_clone_plans_what_its_original_does():
+    core = _core(_CHAIN)
+    plan = core._trigger_read_plan()
+    assert core.clone()._trigger_read_plan() == plan

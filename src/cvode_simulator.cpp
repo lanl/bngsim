@@ -15704,15 +15704,11 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // What a read of the triggers needs refreshed at a state (issue #1278):
     // the read-ahead on each row reads them half a root tolerance on, and a
     // full sync there evaluated every function and observable for a handful of
-    // triggers, 1.15-1.34x a 20001-row run. Built once, over every event.
+    // triggers, 1.06-1.42x a 20001-row run. Over every event, and kept on the
+    // model; a copy, since a function body set mid-run drops the model's.
     NetworkModel::ReadPlan trigger_plan;
     if (n_events > 0) {
-        std::vector<int> trigger_ids;
-        trigger_ids.reserve(static_cast<size_t>(n_events));
-        for (int ei = 0; ei < n_events; ++ei) {
-            trigger_ids.push_back(events_outer[ei].trigger_expr_idx);
-        }
-        trigger_plan = model.read_plan(trigger_ids);
+        trigger_plan = model.trigger_read_plan();
     }
     auto residual_now = [&](int ei) -> double {
         const int gidx = model.event_trigger_residual_expr(ei);

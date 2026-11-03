@@ -155,7 +155,7 @@ class NetworkModel:
         """
         The observables and functions the read-ahead refreshes to read the event triggers, or full=True where it syncs the model whole (issue #1278).
         """
-    def _trigger_read_plan_values(self, t: typing.SupportsFloat | typing.SupportsIndex, conc: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex]) -> tuple:
+    def _trigger_read_plan_values(self, t: typing.SupportsFloat | typing.SupportsIndex, conc: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex]) -> tuple[list[float], list[float]]:
         """
         Function values after the read-ahead's refresh at (t, conc), and after a whole evaluation there; the model is left as it was (issue #1278).
         """

@@ -2385,57 +2385,6 @@ PYBIND11_MODULE(_bngsim_core, m) {
         // evaluators read exactly n_species() entries, so a shorter vector —
         // a Result.species row on a model with event-promoted state — used to
         // be read past its end, and the answer depended on what lay there.
-        // Test hooks (issue #1278): what the read-ahead refreshes to read the
-        // event triggers, and its values against a whole evaluation at a state.
-        .def(
-            "_trigger_read_plan",
-            [](const bngsim::NetworkModel &self) {
-                std::vector<int> ids;
-                for (const auto &ev : self.events())
-                    ids.push_back(ev.trigger_expr_idx);
-                const auto plan = self.read_plan(ids);
-                const auto obs = self.observable_names();
-                const auto fns = self.function_names();
-                py::list o, f;
-                for (int i : plan.observables)
-                    o.append(obs[static_cast<size_t>(i)]);
-                for (int i : plan.functions)
-                    f.append(fns[static_cast<size_t>(i)]);
-                py::dict d;
-                d["full"] = plan.full;
-                d["observables"] = o;
-                d["functions"] = f;
-                return d;
-            },
-            "The observables and functions the read-ahead refreshes to read the event "
-            "triggers, or full=True where it syncs the model whole (issue #1278).")
-        .def(
-            "_trigger_read_plan_values",
-            [](bngsim::NetworkModel &self, double t, const std::vector<double> &conc) {
-                const int ns = self.n_species();
-                if (static_cast<int>(conc.size()) != ns)
-                    throw py::value_error("_trigger_read_plan_values: expected " +
-                                          std::to_string(ns) + " species values");
-                std::vector<double> saved(static_cast<size_t>(ns));
-                self.get_state_into(saved.data());
-                const double t_model = self.current_time();
-                std::vector<int> ids;
-                for (const auto &ev : self.events())
-                    ids.push_back(ev.trigger_expr_idx);
-                const auto plan = self.read_plan(ids);
-                self.set_state_from(conc.data());
-                self.evaluate_read_plan(t, conc.data(), plan);
-                const std::vector<double> planned = self.function_values();
-                self.update_observables(conc.data());
-                self.evaluate_functions(t);
-                const std::vector<double> whole = self.function_values();
-                self.set_state_from(saved.data());
-                self.update_observables(saved.data());
-                self.evaluate_functions(t_model);
-                return py::make_tuple(planned, whole);
-            },
-            "Function values after the read-ahead's refresh at (t, conc), and after a "
-            "whole evaluation there; the model is left as it was (issue #1278).")
         .def(
             "_eval_rhs",
             [](bngsim::NetworkModel &self, double t, const std::vector<double> &conc) {
@@ -2482,6 +2431,62 @@ PYBIND11_MODULE(_bngsim_core, m) {
             py::arg("t"), py::arg("conc"),
             "Assemble the dense analytical Jacobian at (t, conc), flat "
             "column-major. Test/diagnostic hook for the FD cross-check. GH #76.")
+
+        // Test hooks (issue #1278): what the read-ahead refreshes to read the
+        // event triggers, and its values against a whole evaluation at a state.
+        .def(
+            "_trigger_read_plan",
+            [](const bngsim::NetworkModel &self) {
+                const auto &plan = self.trigger_read_plan();
+                const auto obs = self.observable_names();
+                const auto fns = self.function_names();
+                py::list o, f;
+                for (int i : plan.observables)
+                    o.append(obs[static_cast<size_t>(i)]);
+                for (int i : plan.functions)
+                    f.append(fns[static_cast<size_t>(i)]);
+                py::dict d;
+                d["full"] = plan.full;
+                d["observables"] = o;
+                d["functions"] = f;
+                return d;
+            },
+            "The observables and functions the read-ahead refreshes to read the event "
+            "triggers, or full=True where it syncs the model whole (issue #1278).")
+        .def(
+            "_trigger_read_plan_values",
+            [](bngsim::NetworkModel &self, double t, const std::vector<double> &conc) {
+                const int ns = self.n_species();
+                if (static_cast<int>(conc.size()) != ns)
+                    throw py::value_error("_trigger_read_plan_values: expected " +
+                                          std::to_string(ns) + " species values, got " +
+                                          std::to_string(conc.size()));
+                // The species are written as the read-ahead writes them, not
+                // through set_state_from, which drops a pending carry-over
+                // sensitivity seed (GH #210). The values are the slots the
+                // refresh wrote, which a trigger reads, not a re-evaluation.
+                auto &sp = const_cast<std::vector<bngsim::Species> &>(self.species());
+                std::vector<double> saved(sp.size());
+                for (std::size_t i = 0; i < sp.size(); ++i) {
+                    saved[i] = sp[i].concentration;
+                    sp[i].concentration = conc[i];
+                }
+                const double t_model = self.current_time();
+                const bngsim::NetworkModel::ReadPlan plan = self.trigger_read_plan();
+                self.evaluate_read_plan(t, conc.data(), plan);
+                const std::vector<double> planned = self.function_value_cache();
+                self.update_observables(conc.data());
+                self.evaluate_functions(t);
+                const std::vector<double> whole = self.function_value_cache();
+                for (std::size_t i = 0; i < sp.size(); ++i)
+                    sp[i].concentration = saved[i];
+                self.update_observables(saved.data());
+                self.evaluate_functions(t_model);
+                return py::make_tuple(planned, whole);
+            },
+            py::arg("t"), py::arg("conc"),
+            "Function values after the read-ahead's refresh at (t, conc), and after a "
+            "whole evaluation there; the model is left as it was (issue #1278).")
 
         // ── Public evaluators (issue #523) ──────────────────────────────────
         // The C++ names, bound one-to-one, so a reader of model.hpp finds the

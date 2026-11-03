@@ -319,6 +319,12 @@ class NetworkModel {
     };
     ReadPlan read_plan(const std::vector<int> &expr_ids) const;
 
+    // read_plan() over every event's trigger, found once and kept on the model
+    // until a function body or a table function changes what it reads. A
+    // set_function_eval_expression() or a new table drops it, so a caller that
+    // holds it across either takes a copy.
+    const ReadPlan &trigger_read_plan() const;
+
     // At time `t`, with the species as the caller wrote them (`conc`): the
     // observables and function groups of `plan`, as update_observables(conc)
     // and evaluate_functions(t) leave them. Every other slot keeps its value.
@@ -1090,6 +1096,12 @@ class NetworkModel {
     /// of F. Called only for a group of two or more, so an acyclic model never
     /// reaches it.
     void solve_function_cycle(size_t lo, size_t hi);
+
+    /// One observable's total, and one function group's values: what
+    /// update_observables() and evaluate_functions() do for each, and what
+    /// evaluate_read_plan() does for the ones a plan names (issue #1278).
+    void update_observable_(size_t oi, const double *conc);
+    void evaluate_function_group_(size_t g, bool with_deferred);
 
     /// Internal helper: register a TableFunction with the expression evaluator
     /// and bind its index pointer to the appropriate model variable.
