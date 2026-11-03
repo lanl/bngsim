@@ -16,7 +16,7 @@ PyPI on a `v*` tag. The matrix is:
 | ubuntu-latest  | x86_64       | manylinux_2_28     | 3.10, 3.11, 3.12, 3.13|
 | macos-15       | arm64        | macOS 11           | 3.10, 3.11, 3.12, 3.13|
 | macos-15-intel | x86_64       | macOS 10.15        | 3.10, 3.11, 3.12, 3.13|
-| windows-latest | AMD64        | Windows Server 2022| 3.10, 3.11, 3.12, 3.13|
+| windows-latest | AMD64        | Windows Server 2025| 3.10, 3.11, 3.12, 3.13|
 
 Source distributions (sdist) are published alongside; sdist users will
 build from source and need a C++17 compiler, CMake ≥ 3.20, and Ninja.
@@ -59,10 +59,12 @@ per build, so it is read off the Simulator — `has_analytic_sens_rhs` and
 Every wheel is smoke-tested for the sparse solver before it can be published:
 
 ```
-test-command = 'python -c "import bngsim; print(bngsim.__version__); assert bngsim.HAS_KLU"'
+test-command = "python {project}/ci/wheel_smoke_klu.py"
 ```
 
-so a wheel that fell back to the dense solver would fail its own build. Linux
+The script routes a model to KLU and checks the result against the dense LU, so
+a wheel that fell back to the dense solver, or whose bundled KLU cannot run,
+would fail its own build. Linux
 takes SuiteSparse from EPEL inside the manylinux image; macOS and Windows build
 the KLU subset from source (`ci/build_suitesparse.sh`, `ci/build_suitesparse.ps1`)
 — on macOS at the wheel's own deployment target, which is what makes vendoring
@@ -150,8 +152,9 @@ distro with glibc ≥ 2.28, `pip install bngsim[antimony]` resolves cleanly.
 
 ## Verifying an installed wheel
 
-Each wheel leg runs the `cibuildwheel` `test-command` — an import plus the
-`HAS_KLU` assertion — against the repaired wheel in a clean environment. The full
+Each wheel leg runs the `cibuildwheel` `test-command`, `ci/wheel_smoke_klu.py`
+(a model run on KLU and checked against the dense LU), against the repaired
+wheel in a clean environment. The full
 `pytest` suite runs against the source tree, not against every wheel. To
 self-verify after installing:
 
@@ -178,9 +181,11 @@ assert r.n_times == 11
    `changelog.d/` into a new `## [<x.y.z>]` section, deletes the fragments, and
    refuses if the result would exceed GitHub's release-body limit — shorten the
    longest entries and re-run, or pass `--allow-truncation` to accept notes that
-   end in a pointer back at `CHANGELOG.md`. The pull request carrying steps 1–2
+   end in a pointer back at `CHANGELOG.md`, and name the version in
+   `TRUNCATED_ON_PURPOSE` in `python/tests/test_changelog_fragments.py`. The pull request carrying steps 1–2
    is the one thing that may edit `CHANGELOG.md`, so label it `changelog exempt`.
-3. Push to `main`; verify all four wheel legs are green on cp310–cp313.
+3. Merge the release pull request into `main`; verify all four wheel legs are
+   green on cp310–cp313.
 4. Tag `git tag v<x.y.z> && git push origin v<x.y.z>` — `release.yml` builds and
    publishes to PyPI via Trusted Publishing. Rehearse first with a manual
    `workflow_dispatch` run targeting `testpypi`.

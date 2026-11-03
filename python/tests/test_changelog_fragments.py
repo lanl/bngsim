@@ -226,6 +226,11 @@ class TestBuildLosesNothing:
         assert "- **The first release.**" not in section
 
 
+#: Releases assembled with ``changelog.py build --allow-truncation``, whose GitHub
+#: notes end in the pointer back at CHANGELOG.md by choice.
+TRUNCATED_ON_PURPOSE = frozenset({"0.17.0"})
+
+
 class TestTheLengthLimit:
     def test_it_is_enforced(self, tmp_path):
         _fragment(tmp_path, "1.fixed.md", "- " + "x" * changelog.MAX_FRAGMENT_CHARS + "\n")
@@ -266,18 +271,39 @@ class TestTheLengthLimit:
         boundary. The entry count is read from the file rather than pinned, so
         a future release that carries more entries than any so far re-runs the
         sum instead of inheriting a stale one.
+
+        A release assembled with ``build --allow-truncation`` is left out of the
+        count, by name in ``TRUNCATED_ON_PURPOSE``: no workable per-entry cap
+        bounds one. 0.17.0 carried 468 entries from six weeks of work, which
+        would need entries under 180 characters. 0.13.0 and 0.12.0 stay in:
+        they were meant to fit, and 64 entries at the cap would have.
         """
         sys.path.insert(0, str(SCRIPT.parent))
         release_notes = importlib.import_module("release_notes")
         text = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
         lines = text.split("\n")
         starts = [i for i, line in enumerate(lines) if line.startswith("## [")] + [len(lines)]
-        busiest = max(
-            sum(1 for line in lines[a + 1 : b] if line.startswith("- "))
+        sections = {
+            lines[a][len("## [") :].split("]")[0]: sum(
+                1 for line in lines[a + 1 : b] if line.startswith("- ")
+            )
             for a, b in zip(starts, starts[1:], strict=False)
+        }
+        for version in TRUNCATED_ON_PURPOSE:
+            assert "are truncated here" in release_notes.build(text, version), (
+                f"{version} is listed as truncated on purpose but its notes fit"
+            )
+        busiest_version, busiest = max(
+            ((v, n) for v, n in sections.items() if v not in TRUNCATED_ON_PURPOSE),
+            key=lambda vn: vn[1],
         )
         assert busiest >= 50, "the corpus of releases shrank; re-derive the limit"
-        assert busiest * changelog.MAX_FRAGMENT_CHARS < release_notes.LIMIT / 1.5
+        assert busiest * changelog.MAX_FRAGMENT_CHARS < release_notes.LIMIT / 1.5, (
+            f"{busiest_version} carries {busiest} entries, more than the "
+            f"{changelog.MAX_FRAGMENT_CHARS:,}-character cap keeps inside GitHub's "
+            f"release body. If it was assembled with --allow-truncation, add it to "
+            f"TRUNCATED_ON_PURPOSE; otherwise lower the cap."
+        )
 
 
 class TestTheCheckFailsOnTheShapeItDescribes:

@@ -32,7 +32,15 @@ match exactly the extras passed, so omitting them strips the rest.
 
 ```bash
 python -m pytest python/tests/ -q     # Python suite
-./build/<wheel-tag>/tests/test_bngsim # C++ unit tests
+```
+
+The C++ unit tests need their own build tree, because `pip` builds pass
+`-DBNGSIM_BUILD_TESTS=OFF`:
+
+```bash
+cmake -S . -B build/tests -DBNGSIM_BUILD_TESTS=ON
+cmake --build build/tests -j
+ctest --test-dir build/tests --output-on-failure
 ```
 
 Test counts are deliberately not quoted here. They moved by more than an order of

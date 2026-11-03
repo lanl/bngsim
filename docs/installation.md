@@ -52,7 +52,8 @@ CMAKE_BUILD_PARALLEL_LEVEL=2 pip install .
 ```
 
 Managed builds fetch the pinned SUNDIALS release archive recorded in
-`third_party/sundials/VENDOR.json`. ExprTk is vendored directly.
+`third_party/sundials/VENDOR.json` and apply the one local carry it lists
+(lanl/bngsim#1301). ExprTk is vendored directly.
 Set `-DBNGSIM_USE_SYSTEM_SUNDIALS=ON` to use an environment-managed SUNDIALS
 install instead. See `scripts/SUNDIALS_VENDORING.md` for the supported
 refresh/check workflow.
@@ -62,6 +63,9 @@ for a model whose closed-form Jacobian is declined) still reproduces the vendore
 CVODE's, not that release's. Results stay valid, but can differ from that CVODE's
 own in the last digits, and the configure step warns. A patch release of the
 vendored one does not warn: 7.2.0 to 7.2.1 left CVODE's quotient as it was.
+A system SUNDIALS also lacks the #1301 carry to CVODES's staggered sensitivity
+corrector: configure warns, and a forward-sensitivity run whose RHS refuses a
+state can come back wrong. Use the fetched SUNDIALS for sensitivity work.
 
 ## Sparse solver (SuiteSparse / KLU) — required for large / genome-scale models
 
@@ -73,10 +77,14 @@ hours — e.g. a 74,795-species network has a Jacobian that is 99.997% zeros
 (dense storage ≈ 45 GB), so the dense path is catastrophic.
 
 KLU is **discovered automatically at build time** from any standard install
-location, conda prefix, HPC module, or `CMAKE_PREFIX_PATH` (GH #209). If
-SuiteSparse is not found, the build still succeeds — dense-only — so verify
-(below) after installing on a new machine, or pass `-DBNGSIM_REQUIRE_KLU=ON` to
-turn a miss into a hard build failure (recommended for HPC/CI deployments).
+location, conda prefix, HPC module, or `CMAKE_PREFIX_PATH` (GH #209). If none is
+found, the build compiles a pinned KLU subset from source and bundles it
+(macOS/Linux; needs `bash` and `git` on `PATH` and network access to GitHub).
+Every `pip` build sets `BNGSIM_REQUIRE_KLU=ON`, so if that also fails, or on
+Windows (no from-source fallback), the build stops with an error. Only a build
+that turns that off (a direct CMake build, or `pip` with
+`--config-settings=cmake.define.BNGSIM_REQUIRE_KLU=OFF`) can fall back to
+dense-only, so verify (below) after installing that way on a new machine.
 
 **macOS** — found from Homebrew:
 
@@ -122,29 +130,29 @@ If it prints `False`, the install is dense-only — large models will be orders 
 magnitude slower, and `bngsim.capabilities()['missing']['klu']` carries the
 rebuild recipe. A large model run on a dense-only install also emits a one-time
 `bngsim.DenseSolverFallbackWarning` at `run()`. See
-internal#209 for details.
+GH #209 for details.
 
 ## Editable rebuilds for local development
 
 `pip install -e` for `bngsim` is only partially in-place:
 
-- Python modules are imported from `bngsim/python/bngsim/` via `_bngsim_editable.pth`.
+- Python modules are imported from `python/bngsim/` via `_editable_skbc_bngsim.pth`.
 - The compiled runtime extension is imported from your environment's
   `site-packages/bngsim/_bngsim_core...so`.
 
-That means rebuilding `bngsim/build/{wheel_tag}/_bngsim_core...so` is not enough on its
+That means rebuilding `build/{wheel_tag}/_bngsim_core...so` is not enough on its
 own. Python will keep importing the copy in `site-packages/` until you reinstall or run
 `cmake --install` against the live environment. The current editable hook is the default
 scikit-build-core redirect mode with `editable.rebuild = false`, so imports do not
 automatically refresh the copied extension.
 
-Use the helper below from the `bngsim/` project directory (or via `uv run --directory bngsim`)
+Use the helper below from the checkout's root directory
 to rebuild and reinstall the extension for the current interpreter. On macOS it also
 reconfigures stale editable caches to the current interpreter architecture and rebuilds only
 the `_bngsim_core` extension target:
 
 ```bash
-uv run --no-sync --directory bngsim python scripts/rebuild_editable.py
+uv run --no-sync python scripts/rebuild_editable.py
 ```
 
 This drives cmake against the environment you are in, so `find_package(pybind11)`
@@ -157,7 +165,7 @@ prints, and names the fix if cmake then comes up empty (GH #229).
 Then run a quick regression check against the installed runtime:
 
 ```bash
-uv run --directory bngsim python -m pytest python/tests/test_method_normalization.py -q
+uv run python -m pytest python/tests/test_method_normalization.py -q
 ```
 
 ## Optional dependencies
@@ -184,7 +192,8 @@ pip install bngsim[dev]      # all of the above except bngl, + pytest + ruff
 - The extra is deliberately **not** a base dependency and is **not** folded into
   `dev`. `bionetgen` is a 12.8 MB wheel that requires `libroadrunner`, `seaborn`
   and `networkx`, so promoting it would put RoadRunner into every install —
-  contradicting the policy stated for the `roadrunner` extra below — and add a
+  contradicting the `roadrunner` extra's developer-only policy (see
+  `pyproject.toml`) — and add a
   Perl runtime requirement to a package that runs fine without one. It also
   inverts the layering: PyBioNetGen *consumes* BNGsim through its in-Python
   bridge.

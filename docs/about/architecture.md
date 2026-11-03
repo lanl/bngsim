@@ -19,7 +19,7 @@
 │  ExprTk         (vendored)   rate laws      │  header-only, bytecode
 │  NFsim          (vendored)   network-free   │  rejection / null-event
 │  RuleMonkey     (vendored)   network-free   │  exact non-local
-│  MIR            (vendored)   JIT            │  generated-C fast path
+│  MIR            (vendored, opt-in) JIT      │  -DBNGSIM_ENABLE_MIR=ON; not in wheels
 └─────────────────────────────────────────────┘
 ```
 

@@ -1,9 +1,8 @@
 # Local CI for bngsim
 
-This is the local-validation harness we use while GitHub Actions is paused
-(through 2026-06-01 — see `dev/plans/CI_LOCAL_FIX_AND_ACTIONS_PAUSE_PLAN_2026-05-12.md`).
-Anyone with a target platform can run it; the recipe is identical and the
-report is comparable.
+This is a local-validation harness for reproducing a leg of the wheel matrix
+on your own machine. Anyone with a target platform can run it; the recipe is
+identical and the report is comparable.
 
 ## Required tools
 
@@ -16,7 +15,7 @@ report is comparable.
 Everything else (Python 3.10–3.13, build deps, test deps) is provisioned by
 uv from inside the script.
 
-## Coverage map (current pause)
+## Coverage map
 
 | Platform | Where | Reporter | Command |
 |---|---|---|---|
@@ -40,7 +39,7 @@ uv run python scripts/local_ci.py matrix
 # Smoke-test an already-built wheel.
 uv run python scripts/local_ci.py smoke --wheel path/to/wheel.whl --python 3.12
 
-# Linux leg: build cp312 manylinux2014 wheel + host-side smoke.
+# Linux leg: build cp312 manylinux_2_28 wheel + host-side smoke.
 scripts/local_ci_linux_docker.sh
 
 # Linux leg with full matrix:
@@ -56,7 +55,7 @@ The matrix subcommand on a single platform takes roughly:
 | Wheel install + smoke, per Python | ~30 sec |
 | Total per matrix run | ~25–35 min |
 
-The Linux Docker leg adds another ~10–15 min for the manylinux2014 image
+The Linux Docker leg adds another ~10–15 min for the manylinux_2_28 image
 pull (~600 MB) and pinned SUNDIALS rebuild inside the container.
 
 ## Pre-commit integration
@@ -105,14 +104,3 @@ are useful when a particular Python version fails and we need detail.
 4. `uv run python scripts/local_ci.py matrix`
 5. Send back the `local_ci_report-<sys>-<arch>-matrix.md` file (or paste its
    contents into the relevant GitHub issue / DM).
-
-## On 2026-06-01
-
-When the GitHub Actions quota resets:
-
-1. Revert `.github/workflows/build.yml` to restore the `push` /
-   `pull_request` triggers (commented-out at the top of the `on:` block).
-2. Push a no-op commit on `feature/bngsim` to trigger one confirmation run.
-3. Compare the CI matrix output against the most recent local matrix reports.
-4. If they agree, the local-CI harness can keep running as a pre-merge gate
-   on every contributor's box without needing GHA to be the source of truth.

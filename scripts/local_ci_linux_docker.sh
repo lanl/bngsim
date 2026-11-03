@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Linux x86_64 wheel build + smoke locally via Docker (manylinux2014).
+# Linux x86_64 wheel build + smoke locally via Docker (manylinux_2_28).
 #
-# cibuildwheel itself runs on the host and spawns its own manylinux2014_x86_64
+# cibuildwheel itself runs on the host and spawns its own manylinux_2_28_x86_64
 # container via the host's Docker CLI. CIBW_TEST_COMMAND then runs pytest +
 # our local_ci_smoke.py *inside* that container against the freshly built
 # wheel — mirroring exactly what the GHA `Wheels • ubuntu-latest` job does
@@ -45,7 +45,7 @@ if ! docker info >/dev/null 2>&1; then
 fi
 
 # Provision a host-side Python + cibuildwheel via uv. cibuildwheel will then
-# pull the manylinux2014_x86_64 image itself and build inside it.
+# pull the manylinux_2_28_x86_64 image itself and build inside it.
 echo "==> setting up host-side cibuildwheel environment"
 uv python install 3.12
 VENV="${REPO_ROOT}/.venv-cibuildwheel-linux"
@@ -100,11 +100,11 @@ import json, pathlib, platform
 data = json.loads(pathlib.Path("$REPORT_JSON").read_text())
 out = pathlib.Path("$REPORT_MD")
 lines = [
-    "# local_ci report: linux-x86_64 / Python 3.12 (manylinux2014 via Docker)",
+    "# local_ci report: linux-x86_64 / Python 3.12 (manylinux_2_28 via Docker)",
     "",
     "- bngsim source: \`$REPO_ROOT/bngsim\`",
     f"- host: \`{platform.platform()}\`",
-    "- container: \`quay.io/pypa/manylinux2014_x86_64\`",
+    "- container: \`quay.io/pypa/manylinux_2_28_x86_64\`",
     "- python (target): \`3.12\`",
     "- wheel: \`$(basename "$WHEEL")\`",
     "- build: **PASS**",

@@ -45,8 +45,10 @@ uv sync --extra test
 > declared in `pyproject.toml` — if you need it, declare it.
 
 Requires CMake ≥ 3.20, a C++17 compiler, and Python ≥ 3.10 (uv can provision the
-interpreter). The build requires SuiteSparse/KLU (`brew install suite-sparse` /
-`apt-get install libsuitesparse-dev` / `conda install -c conda-forge suitesparse`).
+interpreter). The build needs SuiteSparse/KLU: install it (`brew install suite-sparse` /
+`apt-get install libsuitesparse-dev` / `conda install -c conda-forge suitesparse`), or
+on macOS/Linux let the build compile a pinned KLU subset from source (needs `bash`,
+`git` and network access to GitHub).
 
 The editable install does **not** auto-rebuild the C++ extension
 (`editable.rebuild = false`). After changing C++, refresh it:
@@ -558,8 +560,9 @@ at all — say so on your pull request or open an issue, and it will be changed.
 - Stage a changelog fragment (below) and, where user-facing, update the relevant
   page under [`docs/`](docs/).
 
-See the [development docs](docs/development/) for building wheels locally
-(`cibuildwheel`) and for guides on adding built-in functions and objectives.
+See the [development docs](docs/development/) for building and testing, and for the
+guide to adding built-in functions. `scripts/LOCAL_CI.md` covers building the wheel
+matrix locally.
 
 ## Changelog entries
 

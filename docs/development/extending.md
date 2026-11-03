@@ -25,12 +25,15 @@ struct MyFunction : public exprtk::ifunction<T> {
 };
 ```
 
-**Step 3: Register in the `Impl` constructor.** In `ExprTkEvaluator::Impl::Impl()`:
+**Step 3: Register it in both evaluators.** In `ExprTkEvaluator::Impl::init_builtins()`:
 ```cpp
 // Add as member:  MyFunction<double> my_func;
-// Then in constructor:
+// Then in init_builtins():
 symbol_table.add_function("myfunc", my_func);
 ```
+Then register a `Dual` adapter under the same key in
+`ExprTkDualEvaluator::Impl::Impl()`, which mirrors `init_builtins()` key for key
+(#1330).
 
 **Step 4: Add to `reserved_names()`.** In the `reserved_names()` function at the
 bottom of `expression.cpp`, add `"myfunc"` to the `names.functions` vector.
@@ -44,8 +47,8 @@ add `"myfunc"` to the `is_exprtk_reserved()` set under the
 mangling path so a user parameter with the same name registers under
 the key `r_myfunc` instead of failing with a confusing "name already
 registered" error. (Skipping this step is what caused the original
-`sign`-collision bug — see the corresponding CHANGELOG entry under
-[Unreleased] / Fixed.)
+`sign`-collision bug; `python/tests/test_sign_as_parameter.py` is its
+regression test.)
 
 **Step 6: Test.** Create a `.net` test file that uses `myfunc(x, y)` in a function
 expression, verify it compiles and evaluates correctly. If you added the
