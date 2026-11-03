@@ -101,10 +101,13 @@ def test_multistage_scan() -> None:
     assert s0.scan_parameter == "log_P_ox"
     assert (s0.scan_min, s0.scan_max, s0.scan_points) == (0.0, 1.0, 20)
     assert s0.reset_between is True and s0.label == "00"
-    # The reset clears accumulated overrides: before scan[1] only coopRT=1 holds
-    # (the pre-reset coopRT=0/coopB=0 are gone).
+    # resetConcentrations resets concentrations only, as in BNG2.pl: before
+    # scan[1] coopB=0 still holds, and coopRT=1 replaces coopRT=0 (issue #1366).
     before = p.state_changes_before(scans[1])
-    assert before == [StateChange("set_parameter", "coopRT", 1.0)]
+    assert before == [
+        StateChange("set_parameter", "coopB", 0.0),
+        StateChange("set_parameter", "coopRT", 1.0),
+    ]
 
 
 # ─── Argument parsing edge cases ────────────────────────────────────────────

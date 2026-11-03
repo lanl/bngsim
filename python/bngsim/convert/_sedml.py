@@ -639,6 +639,21 @@ def write_sedml_protocol(
     tasks = ET.SubElement(sed, _q(_SEDML_NS, "listOfTasks"))
 
     for i, exp in enumerate(experiments):
+        # What the standard elements below cannot hold; the annotation holds it.
+        if exp.is_bifurcation:
+            warnings.warn(
+                f"SED-ML holds experiment {i}, a bifurcate, as its upward sweep only; "
+                "the sweep back down is in the bngsim annotation",
+                ConversionWarning,
+                stacklevel=2,
+            )
+        if exp.sample_times is not None:
+            warnings.warn(
+                f"SED-ML holds experiment {i}'s uneven output times {list(exp.sample_times)} "
+                f"as {exp.n_points} even points; the exact times are in the bngsim annotation",
+                ConversionWarning,
+                stacklevel=2,
+            )
         # Per-experiment derived model carrying the accumulated operating point.
         overrides = protocol.state_changes_before(exp)
         model_ref = "model0"
@@ -699,27 +714,33 @@ def write_sedml_protocol(
                 {"id": f"rtask_{i}", "resetModel": _xsd_bool(exp.reset_between), "range": rng_id},
             )
             lor = ET.SubElement(rt, _q(_SEDML_NS, "listOfRanges"))
-            ET.SubElement(
-                lor,
-                _q(_SEDML_NS, "uniformRange"),
-                {
-                    "id": rng_id,
-                    "start": _num(exp.scan_min or 0.0),
-                    "end": _num(exp.scan_max if exp.scan_max is not None else 1.0),
-                    # GH #575 — numberOfPoints counts the INTERVALS, as it does
-                    # on the uniformTimeCourse above: a consumer expands a
-                    # uniformRange to numberOfPoints+1 values. bngsim's
-                    # scan_points is the inclusive point count (the linspace /
-                    # BNG2.pl n_scan_pts convention, delta = (max-min)/(n-1)),
-                    # so writing it verbatim handed every standards-compliant
-                    # reader one point more than the scan bngsim ran — 6 values
-                    # over [1,2] where bngsim used 5, each at a different
-                    # parameter value. Nothing downstream could notice: the
-                    # document is well-formed and the sweep looks reasonable.
-                    "numberOfPoints": str(max(int(exp.scan_points) - 1, 0)),
-                    "type": "log" if exp.scan_log else "linear",
-                },
-            )
+            if exp.scan_values is not None:
+                # par_scan_vals, exactly and in their order (issue #1366).
+                vr = ET.SubElement(lor, _q(_SEDML_NS, "vectorRange"), {"id": rng_id})
+                for v in exp.scan_values:
+                    ET.SubElement(vr, _q(_SEDML_NS, "value")).text = _num(v)
+            else:
+                ET.SubElement(
+                    lor,
+                    _q(_SEDML_NS, "uniformRange"),
+                    {
+                        "id": rng_id,
+                        "start": _num(exp.scan_min or 0.0),
+                        "end": _num(exp.scan_max if exp.scan_max is not None else 1.0),
+                        # GH #575 — numberOfPoints counts the INTERVALS, as it does
+                        # on the uniformTimeCourse above: a consumer expands a
+                        # uniformRange to numberOfPoints+1 values. bngsim's
+                        # scan_points is the inclusive point count (the linspace /
+                        # BNG2.pl n_scan_pts convention, delta = (max-min)/(n-1)),
+                        # so writing it verbatim handed every standards-compliant
+                        # reader one point more than the scan bngsim ran — 6 values
+                        # over [1,2] where bngsim used 5, each at a different
+                        # parameter value. Nothing downstream could notice: the
+                        # document is well-formed and the sweep looks reasonable.
+                        "numberOfPoints": str(max(int(exp.scan_points) - 1, 0)),
+                        "type": "log" if exp.scan_log else "linear",
+                    },
+                )
             loc = ET.SubElement(rt, _q(_SEDML_NS, "listOfChanges"))
             sv = ET.SubElement(
                 loc,
@@ -817,6 +838,7 @@ def read_sedml_protocol(source: str | Path):
                     scan_points=scan.get("points"),
                     scan_log=scan.get("log", False),
                     reset_between=scan.get("reset", True),
+                    scan_values=scan.get("values"),
                 )
             )
         else:
@@ -861,18 +883,35 @@ def _scan_targets(root: ET.Element) -> dict[str, dict]:
     out: dict[str, dict] = {}
     for rt in _findall_local(root, "repeatedTask"):
         rng = _find(rt, "uniformRange")
-        if rng is None:
+        vec = _find(rt, "vectorRange")
+        if rng is not None:
+            info: dict[str, object] = {
+                "min": _float_attr(rng, "start", 0.0),
+                "max": _float_attr(rng, "end", 1.0),
+                # GH #575 — the mirror of the write side: numberOfPoints intervals
+                # are numberOfPoints+1 inclusive points. An absent attribute is
+                # unknown rather than zero, and stays None.
+                "points": _uniform_range_points(rng),
+                "log": (rng.get("type") or "linear").lower() == "log",
+            }
+        elif vec is not None:
+            try:
+                values = tuple(float(v.text or "") for v in vec if _local(v.tag) == "value")
+            except ValueError:
+                continue
+            if not values:
+                continue
+            # The values exactly (issue #1366), and their range for a reader of that.
+            info = {
+                "values": values,
+                "min": min(values),
+                "max": max(values),
+                "points": len(values),
+                "log": False,
+            }
+        else:
             continue
-        info: dict[str, object] = {
-            "min": _float_attr(rng, "start", 0.0),
-            "max": _float_attr(rng, "end", 1.0),
-            # GH #575 — the mirror of the write side: numberOfPoints intervals
-            # are numberOfPoints+1 inclusive points. An absent attribute is
-            # unknown rather than zero, and stays None.
-            "points": _uniform_range_points(rng),
-            "log": (rng.get("type") or "linear").lower() == "log",
-            "reset": (rt.get("resetModel") or "true").lower() == "true",
-        }
+        info["reset"] = (rt.get("resetModel") or "true").lower() == "true"
         sv = _find(rt, "setValue")
         if sv is not None:
             tgt = sv.get("target") or ""

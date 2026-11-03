@@ -68,11 +68,19 @@ def test_a_continued_run_with_its_t_start_keeps_it():
 
 
 def test_a_continuation_from_an_unknown_time_is_lossy():
+    """A run that can stop at its steady state leaves the model time unknown. The
+    continuation's start is lossy in the spec, but not an approximation of the
+    run: ``continue`` says where it starts, which a replay knows (issue #1366)."""
+    actions = (
+        'simulate({method=>"ode",t_end=>10,n_steps=>10,steady_state=>1})',
+        'simulate({method=>"ode",continue=>1,t_end=>20,n_steps=>10})',
+    )
     with pytest.raises(ConversionError, match=r"continue=>1 starts at the model time"):
-        _parse(
-            'simulate({method=>"ode",t_end=>tf,n_steps=>10})',
-            'simulate({method=>"ode",continue=>1,t_end=>20,n_steps=>10})',
-        )
+        _parse(*actions)
+    with pytest.warns(ConversionWarning):
+        spec = _parse(*actions, strict=False)
+    assert spec.lossy == ("simulate",)
+    assert [e.approximations for e in spec.experiments] == [(), ()]
 
 
 def test_n_output_steps_is_n_steps():
@@ -93,9 +101,15 @@ def test_no_n_steps_is_one_step():
 
 def test_an_n_steps_the_parse_cannot_read_keeps_its_fallback():
     """Control: a parameter reference is not BNG2's default; the 100 the parse
-    has always taken for it is kept."""
-    (exp,) = _only('simulate({method=>"ode",t_end=>10,n_steps=>nsteps})')
+    has always taken for it is kept, and now said (issue #1366)."""
+    with pytest.raises(ConversionError, match=r"n_steps=nsteps cannot be read"):
+        _parse('simulate({method=>"ode",t_end=>10,n_steps=>nsteps})')
+    with pytest.warns(ConversionWarning):
+        (exp,) = _parse('simulate({method=>"ode",t_end=>10,n_steps=>nsteps})', strict=False).steps
     assert exp.n_points == 101
+    assert exp.approximations == (
+        "n_steps=nsteps cannot be read without the model; carried as 100",
+    )
 
 
 def test_an_even_sample_grid_from_t_start_is_the_time_course():
@@ -110,15 +124,12 @@ def test_n_steps_takes_precedence_over_sample_times():
     assert (exp.t_span, exp.n_points) == ((0.0, 10.0), 6)
 
 
-def test_an_uneven_sample_grid_is_lossy():
-    with pytest.raises(
-        ConversionError, match=r"sample_times give the uneven output times \[0.0, 1.0, 5.0, 10.0\]"
-    ):
-        _parse('simulate({method=>"ode",sample_times=>[0,1,5,10]})')
-    with pytest.warns(ConversionWarning):
-        spec = _parse('simulate({method=>"ode",sample_times=>[0,1,5,10]})', strict=False)
-    assert spec.lossy == ("simulate",)
-    assert spec.steps[0].t_span == (0.0, 10.0)
+def test_an_uneven_sample_grid_is_held_exactly():
+    """Uneven output times are carried as they are (issue #1366), beside the even
+    grid over the same span that a reader of ``(t_span, n_points)`` gets."""
+    (exp,) = _only('simulate({method=>"ode",sample_times=>[0,1,5,10]})')
+    assert exp.sample_times == (0.0, 1.0, 5.0, 10.0)
+    assert (exp.t_span, exp.n_points) == ((0.0, 10.0), 4)
 
 
 @pytest.mark.parametrize(
@@ -146,11 +157,12 @@ def test_par_min_and_par_max_take_precedence_over_par_scan_vals():
     assert (exp.scan_min, exp.scan_max, exp.scan_points) == (1.0, 9.0, 5)
 
 
-def test_uneven_par_scan_vals_are_lossy():
-    with pytest.raises(
-        ConversionError, match=r"par_scan_vals \[1.0, 2.0, 7.0\] is not evenly spaced"
-    ):
-        _parse('parameter_scan({parameter=>"k",par_scan_vals=>[1,2,7],t_end=>1})')
+def test_uneven_par_scan_vals_are_held_exactly():
+    """60 corpus scans give their values; uneven ones were carried as the nearest
+    range, and are now carried exactly, beside it (issue #1366)."""
+    (exp,) = _only('parameter_scan({parameter=>"k",par_scan_vals=>[1,2,7],t_end=>1})')
+    assert exp.scan_values == (1.0, 2.0, 7.0)
+    assert (exp.scan_min, exp.scan_max, exp.scan_points) == (1.0, 7.0, 3)
 
 
 def test_the_sedml_export_carries_the_grid_and_the_scan():
@@ -171,7 +183,7 @@ def test_the_sedml_export_carries_the_grid_and_the_scan():
 def test_the_bngl_writer_round_trips_what_bng2_accepts():
     """Re-emitted, a continuation names the t_start it implies beside
     continue=>1 (BNG2.pl checks they agree), n_output_steps is one n_steps, and
-    a scan is par_min/par_max/n_scan_pts; parsed again, the spec is the same.
+    a scan keeps its par_scan_vals; parsed again, the spec is the same.
     That BNG2.pl writes identical .gdat and .scan files from both is in the PR."""
     spec = _parse(
         'simulate({method=>"ode",t_end=>10,n_steps=>10})',
@@ -181,7 +193,7 @@ def test_the_bngl_writer_round_trips_what_bng2_accepts():
     )
     text = write_bngl_protocol(spec)
     assert "t_start=>10,t_end=>20,n_steps=>10,continue=>1" in text
-    assert "n_output_steps" not in text and "par_scan_vals" not in text
+    assert "n_output_steps" not in text and "par_scan_vals=>[0.1,1,10]" in text
     assert parse_bngl_protocol(text, strict=True).steps == spec.steps
 
 
@@ -384,15 +396,17 @@ def test_a_scan_without_reset_keeps_its_order(values, expected):
     assert parse_bngl_protocol(write_bngl_protocol(spec)).steps == spec.steps
 
 
-def test_an_unordered_scan_without_reset_is_lossy():
-    with pytest.raises(ConversionError, match=r"in the order reset_conc=>0 runs them"):
-        _parse('parameter_scan({parameter=>"k",par_scan_vals=>[3,1,2],reset_conc=>0,t_end=>10})')
+def test_an_unordered_scan_without_reset_keeps_its_order():
+    """Without reset_conc each point continues from the last, so the order is
+    the experiment; it is held exactly (issue #1366)."""
+    (exp,) = _only(
+        'parameter_scan({parameter=>"k",par_scan_vals=>[3,1,2],reset_conc=>0,t_end=>10})'
+    )
+    assert exp.scan_values == (3.0, 1.0, 2.0)
 
 
 def test_an_action_with_two_lossy_arguments_is_one_lossy_entry():
-    with pytest.warns(ConversionWarning, match=r"sample_times give .*; par_scan_vals"):
-        spec = _parse(
-            'parameter_scan({parameter=>"k",par_scan_vals=>[1,2,7],sample_times=>[0,1,5]})',
-            strict=False,
-        )
-    assert spec.lossy == ("parameter_scan",)
+    with pytest.warns(ConversionWarning, match=r"n_steps=nsteps .*; t_end=tf"):
+        spec = _parse('simulate({method=>"ode",t_end=>tf,n_steps=>nsteps})', strict=False)
+    assert spec.lossy == ("simulate",)
+    assert len(spec.steps[0].approximations) == 2
