@@ -360,3 +360,36 @@ def test_reset_parameters_leaves_function_values_alone(tmp_path):
     )
     out = _run(tmp_path, "saveParameters()", _sim(1), "resetParameters()", _sim(1), net=net)
     assert len(out) == 2
+
+
+def test_a_reset_before_generation_that_changes_nothing_is_no_change(tmp_path):
+    """``resetConcentrations()`` with nothing saved, before generation, is the seed
+    as declared (prion2_YTLedits.bngl opens with one); a reset after it can still
+    go back there."""
+    spec = _spec(
+        "resetConcentrations()", "generate_network()", _sim(1), "resetConcentrations()", _sim(1)
+    )
+    out = bngsim.run_protocol(_model(tmp_path), spec)
+    assert _a(out[1].result)[0] == 100.0
+
+
+def test_a_save_before_generation_holds_the_loaded_state_until_changed(tmp_path):
+    model = _model(tmp_path, NET.replace("1 A() A0", "1 A() 110"))
+    held = _spec(
+        'setConcentration("A()",110)',
+        'saveConcentrations("s")',
+        "generate_network()",
+        _sim(1),
+        'resetConcentrations("s")',
+        _sim(1),
+    )
+    out = bngsim.run_protocol(model, held)
+    assert _a(out[1].result)[0] == 110.0
+    changed = _spec(
+        'saveConcentrations("s")',
+        'setConcentration("A()",110)',
+        "generate_network()",
+        'resetConcentrations("s")',
+    )
+    with pytest.raises(ConversionError, match=r"saved under 's' before the network"):
+        bngsim.run_protocol(model, changed)

@@ -422,27 +422,43 @@ class _Runner:
         return np.asarray(self.model.get_state(), dtype=float).copy()
 
     def _before_generation(self, steps: Sequence[Any]) -> None:
-        """What the actions before generation left saved. The network holds what
-        they set, so a save among them holds the loaded state, unless a later one
-        changed it: that save, and the model as declared, are then unknown, and a
-        reset to them is refused rather than guessed."""
+        """What the actions before generation left saved. The network holds the
+        state they left, so a save among them holds the loaded state when that
+        is the state it saved, and the model as declared is the loaded one when
+        they left the seed as declared. Each state they pass through is followed
+        by name ("declared", or the step that made it), so a reset that undoes a
+        change counts as none; a save or a declared seed the loaded network does
+        not hold is unknown, and a reset to it is refused rather than guessed."""
         from bngsim.convert._protocol import StateChange
 
-        conc_changes = ("set_concentration", "add_concentration", "reset_concentrations")
-        param_changes = ("set_parameter", "reset_parameters")
+        conc: object = "declared"
+        params: object = "declared"
+        conc_saves: dict[str, object] = {}
+        param_saves: dict[str, object] = {}
         for i, step in enumerate(steps):
             if not isinstance(step, StateChange):
                 continue
-            later = [s.kind for s in steps[i + 1 :] if isinstance(s, StateChange)]
             label = step.label or _DEFAULT_LABEL
-            if step.kind in conc_changes:
-                self.declared = None
+            if step.kind in ("set_concentration", "add_concentration"):
+                conc = i
             elif step.kind == "save_concentrations":
-                held = not any(k in conc_changes for k in later)
-                self.saved_conc[label] = (self._state(), dict(self.symbolic)) if held else None
+                conc_saves[label] = conc
+            elif step.kind == "reset_concentrations":
+                # An unsaved default reset is the seed as declared; an unsaved
+                # labeled one is a BNG2.pl error, which leaves nothing to follow.
+                conc = conc_saves.get(label, "declared" if label == _DEFAULT_LABEL else i)
+            elif step.kind == "set_parameter":
+                params = i
             elif step.kind == "save_parameters":
-                held = not any(k in param_changes for k in later)
-                self.saved_params[label] = self._param_state() if held else None
+                param_saves[label] = params
+            elif step.kind == "reset_parameters":
+                params = param_saves.get(label, i)
+        if conc != "declared":
+            self.declared = None
+        for label, held in conc_saves.items():
+            self.saved_conc[label] = (self._state(), dict(self.symbolic)) if held == conc else None
+        for label, held in param_saves.items():
+            self.saved_params[label] = self._param_state() if held == params else None
 
     def _value(self, change: StateChange) -> float:
         """A step's value: its number, or its expression in the live model."""
