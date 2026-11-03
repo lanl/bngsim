@@ -392,6 +392,11 @@ class NetworkModel:
         Names of the model's functions, in declaration order. Each also names a parameter slot holding its evaluated value, which ``param_is_internal`` flags and ``primary_param_names`` omits (issue #227).
         """
     @property
+    def functions_reading_clock(self) -> list[str]:
+        """
+        The functions whose value moves with the clock (issue #961), by name: a steady state reports each as NaN.
+        """
+    @property
     def functions_use_time(self) -> bool:
         """
         Whether any function's value can move with simulation time alone (issue #654). Gates the SSA's time-dependent sub-stepping.
@@ -490,6 +495,11 @@ class NetworkModel:
         Parameter names labeling the columns of pending_sensitivity_seed() (GH #210).
         """
     @property
+    def rate_laws_read_clock(self) -> bool:
+        """
+        Whether a reaction's rate reads the clock, through time, a time-indexed table, or a function or derived parameter that does; a rate accessor is not the clock (issue #961). A model whose rates read none has a steady state to solve for.
+        """
+    @property
     def rhs_eval_count(self) -> int:
         """
         Number of RHS (compute_derivs_core) evaluations so far.
@@ -526,6 +536,11 @@ class NetworkModel:
     def ssa_reads_clock(self) -> bool:
         """
         Whether a reaction rate or an event trigger reads the clock, or the model has a rate rule (whose target may be a clock): the SSA then needs the model's breakpoints (issue #719). Decided from the model's text.
+        """
+    @property
+    def state_reads_clock(self) -> bool:
+        """
+        Whether the clock reaches what a steady state solves for or reports as the state (issues #710, #961): a rate law, a species an assignment rule reports, or a compartment size. find_steady_state refuses such a model, and a time course's early stop is held off for it; a function that only reports is none of these.
         """
     @property
     def table_function_names(self) -> list[str]:

@@ -1848,6 +1848,29 @@ PYBIND11_MODULE(_bngsim_core, m) {
                                "Whether any function's value can move with simulation time alone "
                                "(issue #654). Gates the SSA's time-dependent sub-stepping.")
         .def_property_readonly(
+            "rate_laws_read_clock", &bngsim::NetworkModel::rate_laws_read_clock,
+            "Whether a reaction's rate reads the clock, through time, a time-indexed table, or a "
+            "function or derived parameter that does; a rate accessor is not the clock (issue "
+            "#961). A model whose rates read none has a steady state to solve for.")
+        .def_property_readonly(
+            "functions_reading_clock",
+            [](const bngsim::NetworkModel &self) {
+                std::vector<std::string> names;
+                const auto &funcs = self.functions();
+                for (const int f : self.functions_reading_clock()) {
+                    names.push_back(funcs[static_cast<std::size_t>(f)].name);
+                }
+                return names;
+            },
+            "The functions whose value moves with the clock (issue #961), by name: a steady "
+            "state reports each as NaN.")
+        .def_property_readonly(
+            "state_reads_clock", &bngsim::NetworkModel::state_reads_clock,
+            "Whether the clock reaches what a steady state solves for or reports as the state "
+            "(issues #710, #961): a rate law, a species an assignment rule reports, or a "
+            "compartment size. find_steady_state refuses such a model, and a time course's "
+            "early stop is held off for it; a function that only reports is none of these.")
+        .def_property_readonly(
             "ssa_reads_clock",
             [](const bngsim::NetworkModel &self) {
                 // A rate rule's target may be a clock (`T' = 1`) whose crossings
