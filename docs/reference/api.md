@@ -8,7 +8,7 @@ Factory methods:
 - **`Model.load(path)`** — Load any supported file, dispatching on its suffix
   (`.ant`, `.xml`/`.sbml`, `.net`, `.bngl`); raises `ModelError` for anything else
 - **`Model.from_net(path)`** — Load from BNG `.net` file
-- **`Model.from_bngl(path, *, protocol=False, bng2_pl=None, net_out=None, timeout=600, cache=True)`** — Load from BNGL `.bngl` by running `BNG2.pl generate_network` (requires `bngsim[bngl]`, or `$BNGPATH`/`$BNG2_PL`, plus `perl`). The file's actions block is **not** executed — only `generate_network`, carrying the source's own `max_iter`/`max_agg`/`max_stoich`; `protocol=True` returns `(model, ProtocolSpec)` so the actions are recovered rather than discarded. Generated networks are cached under `~/.cache/bngsim/networks` (`$BNGSIM_BNGL_CACHE_DIR`), keyed on the flattened model text and the BNG2.pl that produced it
+- **`Model.from_bngl(path, *, protocol=False, bng2_pl=None, net_out=None, timeout=600, cache=True)`** — Load from BNGL `.bngl` by running `BNG2.pl generate_network` (requires `bngsim[bngl]`, or `$BNGPATH`/`$BNG2_PL`, plus `perl`). The file's experiment is **not** run: its actions before the first `generate_network` (or, without one, its first run) are applied, except file writes, and `generate_network` carries the source's own `max_iter`/`max_agg`/`max_stoich`. `protocol=True` returns `(model, ProtocolSpec)` so the actions are recovered rather than discarded, and `bngsim.run_protocol` runs them. Generated networks are cached under `~/.cache/bngsim/networks` (`$BNGSIM_BNGL_CACHE_DIR`), keyed on the flattened model text and the BNG2.pl that produced it
 - **`Model.from_antimony(path)`** — Load from Antimony `.ant` file (requires `antimony`, `python-libsbml`)
 - **`Model.from_antimony_string(text)`** — Load from Antimony string
 - **`Model.from_sbml(path)`** — Load from SBML `.xml` file (requires `python-libsbml`)
@@ -289,6 +289,13 @@ Methods:
 - **`output_sensitivities(selectors, *, axis="parameter")`** → `ndarray (n_selectors, n_params)` — steady-state `∂(named output)/∂p` for `species:`/`observable:`/`expression:` selectors, mirroring `Result.output_sensitivities` (no time axis). `axis="ic"` raises: the initial-condition axis is not computed (a parameter that sets an initial amount carries its share of a conserved total in its own column, issue #704)
 - **`__getitem__(name)`** → `float` — steady-state concentration by species name
 - **`to_dict()`** → `dict[str, float]`
+
+## Running a BNGL protocol (issue #1366)
+
+- **`bngsim.run_bngl(path, *, seed=None, rtol=None, atol=None, allow_lossy=False, bng2_pl=None, net_out=None, timeout=600, cache=True)`** → `ProtocolResult` — load a `.bngl` with `Model.from_bngl`, parse its actions, and run them, as BNG2.pl runs the file
+- **`bngsim.run_protocol(model, protocol, *, seed=None, rtol=None, atol=None, allow_lossy=False)`** → `ProtocolResult` — run a `ProtocolSpec`'s steps on a clone of `model`, from the spec's `generation_step`. ODE, SSA and PSA runs; NFsim and PLA runs, `stop_if`/`max_sim_steps`, and an action the protocol cannot hold are refused before anything runs (`ConversionError`)
+- **`ProtocolResult`** — a sequence of `ProtocolRun`, one per experiment, indexed by position or by `suffix`; `.labels`, `.model` (the model as the protocol left it), `.protocol`
+- **`ProtocolRun`** — `.experiment`, `.kind` (`"simulate"`, `"scan"` or `"bifurcate"`), `.label`, `.method`; `.result` for a `simulate`; `.scan_values`/`.scan_results` for a scan or a bifurcation's upward sweep, and `.backward_values`/`.backward_results` for its sweep back down
 
 ## Exceptions
 

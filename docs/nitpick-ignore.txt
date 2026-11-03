@@ -53,6 +53,7 @@ py:func _stamp
 py:class ProtocolSpec
 py:class bngsim.convert.ProtocolSpec
 py:class bngsim.convert._protocol.ProtocolSpec
+py:class bngsim.convert._protocol.Experiment
 py:class bngsim.convert.ConversionReport
 py:attr ConversionReport.max_ar_report_delta
 py:attr ConversionReport.max_rhs_delta

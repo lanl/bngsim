@@ -158,8 +158,8 @@ class ProtocolRun:
 class ProtocolResult(Sequence[ProtocolRun]):
     """What :func:`run_protocol` ran: one :class:`ProtocolRun` per experiment.
 
-    Index it by position, or by a run's ``suffix``. :attr:`model` is the model
-    in the state the protocol left it; :attr:`protocol` is the spec that ran.
+    Index it by position, or by a run's ``suffix``. ``model`` is the model in
+    the state the protocol left it; ``protocol`` is the spec that ran.
     """
 
     def __init__(self, runs: Sequence[ProtocolRun], model: Model, protocol: ProtocolSpec):
