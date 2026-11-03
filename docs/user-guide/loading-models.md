@@ -60,8 +60,8 @@ Running the file as written would run the author's entire experiment just to
 obtain a network. So the actions stop at the source's first `generate_network`,
 which runs with the source's own `max_iter` / `max_agg` / `max_stoich`, since
 those are what make an unbounded rule set finite. A file with no
-`generate_network` before its first run stops at that run, where BNG2.pl
-generates the network itself.
+`generate_network` before its first run stops at that run, the state the run
+starts from.
 
 - **Before that point:** actions are applied, as BNG2.pl applies them. A
   `setParameter` or `setConcentration` there seeds the network. Only file writes,

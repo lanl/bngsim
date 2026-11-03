@@ -149,8 +149,8 @@ def test_state_changes_after_generate_network_are_experiment_setup():
 
 
 def test_a_file_without_generate_network_is_cut_at_its_first_run():
-    """BNG2.pl generates the network at the first run of a file that never calls
-    ``generate_network`` (issue #1366), so a change between its runs is a later
+    """The first run of a file that never calls ``generate_network`` starts from
+    the actions before it (issue #1366), so a change between its runs is a later
     phase. Keeping it loaded ``kinetics_mb1n.bngl`` with its last phase's
     ``Agconc`` 604.8 and ``const`` 0, where its first run has 7.46 and 1."""
     out = generation_source(

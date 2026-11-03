@@ -125,9 +125,8 @@ def test_no_run_or_no_generation_is_nothing_to_say():
 
 
 def test_a_run_before_any_generation_call_is_where_the_network_is_made():
-    """BNG2.pl generates the network at that run, and ``generation_source`` cuts
-    there: a change after it is a later phase, whatever ``generate_network``
-    comes later."""
+    """``generation_source`` cuts at that run, the state it starts from: a change
+    after it is a later phase, whatever ``generate_network`` comes later."""
     actions = (
         'simulate({t_end=>1})\ngenerate_network({overwrite=>1})\nsetParameter("k",2)\n'
         "simulate({t_end=>1})\n"

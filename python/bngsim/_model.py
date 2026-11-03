@@ -826,8 +826,8 @@ class Model:
         except file writes. ``generate_network`` itself runs with the source's own
         ``max_iter``/``max_agg``/``max_stoich``, since those are what make an
         unbounded rule set finite. Everything after it is dropped. A file with no
-        ``generate_network`` before its first run stops at that run, where
-        BNG2.pl generates the network itself. Pass
+        ``generate_network`` before its first run stops at that run, the state
+        the run starts from. Pass
         ``protocol=True`` to get the actions back as a
         :class:`~bngsim.convert.ProtocolSpec` rather than lose them.
 

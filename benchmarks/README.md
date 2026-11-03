@@ -337,18 +337,22 @@ result_psa = sim_psa.run(t_end=300, n_steps=1000, seed=42)
 ## Benchmarking
 
 **What a suite simulates is a network over the horizon the suite sets, not the
-source's published protocol.** The curated nets above, which the SSA and PSA
-suites read, and the NF suite's XML are generated with the source's actions
-stripped, as `Model.from_bngl` loads a file. They start from the model's seed
-state, so pre-equilibration, doses, washouts and the parameter settings before
-a scan do not run. The ODE suite instead runs BNG2.pl over the
-whole file and integrates the `.net` it leaves behind, which BNG2.pl rewrites
-before each `simulate` that follows a state change. For a multi-phase file,
-that is the state a later phase starts from. Either way both engines run the
-same network the same way, so parity verdicts and timing ratios compare like
-with like. But the dynamics, stiffness and event counts can differ from the
-authors' experiment. For example, `egfr_path` declares `EGF 0` and adds
-`EGF_tot` only after equilibrating. From its seed state
+source's published protocol.** The curated nets above (which the PSA suite reads,
+and the SSA suite for its curated models) and the NF suite's XML are generated
+with the source's actions stripped, and `Model.from_bngl` drops every action
+from the source's first `generate_network` or run on. These start from the
+model's seed state, so pre-equilibration, doses, washouts and the parameter
+settings before a scan do not run. The ODE suite instead runs BNG2.pl over the
+whole file and integrates the `<name>.net` it leaves behind. BNG2.pl rewrites
+that file, with the state of the moment, at each `simulate` after a state
+change or an earlier run, unless the `simulate` names a `suffix` or `prefix`
+(it then writes a file of that name). So for a multi-phase file the suite's
+network can be the state a later phase starts from, and for one whose runs all
+name a `suffix` (`gene_expr_3stage`) it is the seed state. Either way both
+engines run the same network the same way, so parity verdicts and timing ratios
+compare like with like. But the dynamics, stiffness and event counts can differ
+from the authors' experiment. For example, `egfr_path` declares `EGF 0` and
+adds `EGF_tot` only after equilibrating. From its seed state
 (`models/net/ode/egfr_path.net`), 3 of its 18 species move in 120 s (Grb2 and
 Sos settle). The ODE suite's network is the equilibrated one with `EGF_tot`
 added, where all 18 move (issue #1366). `Model.from_bngl` warns when the first

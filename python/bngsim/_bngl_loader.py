@@ -162,9 +162,10 @@ def generation_source(text: str) -> str:
     defines it — statements are kept only if they precede the source's own
     ``generate_network`` and are not in :data:`_DROPPED_VERBS`. Anything at or
     after that call is the author's experiment and goes. A file with no
-    ``generate_network`` before its first run is cut at that run, where BNG2.pl
-    generates the network itself: a ``setParameter`` between two of its runs is
-    a later phase, not part of the model.
+    ``generate_network`` before its first run is cut at that run, the state it
+    starts from (BNG2.pl generates the network there for a network method): a
+    ``setParameter`` between two of its runs is a later phase, not part of the
+    model.
 
     Statements are classified whole, so a backslash-continued or multi-line
     action is kept or dropped in one piece rather than leaving a dangling
@@ -235,8 +236,8 @@ def state_changes_before_first_run(text: str) -> list[tuple[str, list[str]]]:
     from, as ``(verb, arguments)`` in source order, each argument unquoted.
 
     Empty when that run starts from the model as loaded: no generation call
-    before it (BNG2.pl generates the network at the run, and
-    :func:`generation_source` cuts there), no run after it, no change before the
+    before it (:func:`generation_source` cuts at the run), no run after it, no
+    change before the
     run, or only changes undone by a
     ``resetConcentrations``/``resetParameters`` to a state saved before them.
     A reset that undoes a change made *before* the generation call, which the
