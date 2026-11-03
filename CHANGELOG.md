@@ -20,7 +20,528 @@ release commit, so no two branches ever edit this file (issue #668). Add a
 fragment — see [`changelog.d/README.md`](changelog.d/README.md) — rather than
 an entry here.
 
+## [0.17.0] - 2026-11-03
+
+### Added
+
+- **`bngsim.ExactAtol(value)`** holds every species to one absolute tolerance
+  exactly, as a scalar `atol` was read before it became a per-species ceiling.
+  It is accepted wherever `atol` is, `set_tolerances` and `steady_state`
+  included, and an `EvaluationSpec` carries it through its JSON as
+  `{"exact": value}`. `bngsim.convert.read_sedml` takes `exact_atol=True` to read
+  a SED-ML file's absolute tolerance this way; SED-ML itself has no way to say
+  "exactly", so `write_sedml` writes the number.
+
+- **`bngsim.run_bngl` and `bngsim.run_protocol` run a BNGL file's own experiment** ([#1366](https://github.com/lanl/bngsim/issues/1366)). `Model.from_bngl(protocol=True)` handed back a file's actions, but nothing in bngsim ran them. `run_bngl(path)` loads the file and runs its actions in order, as BNG2.pl runs the file; `run_protocol(model, spec)` runs a spec you hold on a copy of the model. Each run starts from the state the last one left, `continue=>1` also from its time, and `setParameter`, `setConcentration`, `addConcentration`, the labeled `save`/`reset` of concentrations and of parameters, `parameter_scan` and `bifurcate` do what they do in BNG2.pl. ODE runs use `run_network`'s tolerances, and the result is one entry per run, found by position or `suffix`. On `egfr_path.bngl`, the 120 s stimulation after its 100,000 s equilibration matches BNG2.pl's own output to 8e-13. NFsim and PLA steps, `stop_if` and `max_sim_steps` are refused before anything runs.
+
+- **`solver_stats` counts what a difference-quotient Jacobian costs** ([#1333](https://github.com/lanl/bngsim/issues/1333)). `n_rhs_evals` is CVODE's count of the integration's own right-hand-side evaluations, so the ones spent forming a Jacobian by difference quotients, including #1302's jump test, showed in no counter. They are now `n_jac_rhs_evals`, for bngsim's dense and colored quotients. `n_jac_formations` is the number of Jacobians the solver asked for, beside `n_jac_evals`, which counts the linear solver's setups and can reuse one. On `jacobian="fd"` runs of the ODE perf suite they come to 0.5-12x `n_rhs_evals`, about two per species per Jacobian formed. The nightly's work counters carry and compare `n_jac_rhs_evals`, from the next re-recorded baseline on.
+
+- **Two refusals bngsim makes by name now have types of their own: `SparseJacobianUnavailableError` and `CodegenDeclinedError`.** `force_sparse_linear_solver=True` on a model with no sparse Jacobian for KLU, and `codegen=True` (or the deprecated `bngsim.prepare_codegen`) on a model codegen declines, were a `SimulationError` and a `RuntimeError` that a caller could tell from a crash only by their text, so a reworded message turned a refusal into a failure. Each subclasses what was raised before, so an existing `except` still catches it, and a codegen *build* failure stays a plain `RuntimeError`. The path-agreement harness now reads both by type (issue #1313).
+
+- **`steady_state(criterion=...)`** ([#1001](https://github.com/lanl/bngsim/issues/1001)). `"scaled"` asks, besides BNG2.pl's `||f(y)||_2/n < tol`, that a run taken on from the state for `max_time` (at most 1e6) move no species by more than `rtol·|y_i| + atol_i` (the march's own tolerances, rtol at least 1e-10, atol_i at most rtol times the largest species). The Newton step from the state to the root, `δ = −J⁻¹f` on the reduced system, in the same tolerances, decides where the solve stops, and the state it stops at is polished. `"residual"` is BNG2.pl's test alone. `steady_state_batch` takes the option too; results carry `criterion`, `newton_distance` and `continued_run_distance`.
+
+- **A parity harness for bngsim's two codegen paths (issue #803).**
+  `parity_checks/codegen_paths/` runs every BNGL corpus model through the
+  interpreter, the `.net` codegen path that `Model.from_net`/`from_bngl` models
+  take today, and the model-based path SBML models take, with and without
+  forward sensitivities, and checks sensitivities against Richardson-extrapolated
+  finite differences. On the 818 models with a network, the model path matches
+  the interpreter wherever the `.net` path does; it is right on 10 that the
+  `.net` path gets wrong (#689) and refuses loudly on one more that the `.net`
+  path gets silently wrong. `defects_784.py` replays each #784 reproduction on
+  both paths. No change to bngsim itself.
+
+- **bngsim now ships a PEP 561 `py.typed` marker (issue #587).** mypy, pyright
+  and IDEs now read the package's annotations and the generated
+  `_bngsim_core.pyi` stub, where they previously treated bngsim as untyped.
+  From @Montana.
+
+- **`Model.param_expressions` lists each parameter's defining text, parallel to
+  `param_names` (issue #586).** It tells an overridden derived parameter from a
+  primary: one whose `param_is_expression` entry is `False` while its text names
+  another of the model's symbols. The `set_param` and `param_is_expression`
+  docstrings already pointed readers at it, but only the private core had it. A
+  `.net` primary's text is its value as written (`2e7`, `1/7`), so non-empty
+  text alone does not mean derived.
+
+- **A differential test over the expression backends (issue #579).**
+  `python/tests/test_expression_backend_equivalence.py` drives ~100 expressions —
+  every form `reserved_names()` advertises, plus the shapes #554, #555, #556,
+  #564, #565 and #573 came in through — through the ExprTk evaluator, the
+  compiled C the codegen backend emits, and the JAX the `jacobian="jax"` path
+  emits, at the same state and the same time, and asserts they agree. Each
+  expression is the rate law of a synthetic `0 -> PROBE` reaction, so what is
+  compared is a derivative rather than a string. A form a backend cannot
+  express must refuse by name while the expression is in hand, which is also
+  asserted. The JAX leg evaluates under `jax.jit`, as the Jacobian does. The C
+  and JAX legs are gated separately, so either runs without the other.
+
+- **`Model.analytical_jacobian_decline`: why a model is on the finite-difference Jacobian, as a category** ([#538](https://github.com/lanl/bngsim/issues/538)). `analytical_jacobian_status` gives the reason in words, which embed the rate law and values and whose wording has changed, so a census could not group by it. The new property is `None` while the status is `"complete"` or `"pending"`. Otherwise it is a dict with a stable `kind` (one of `bngsim._jacobian.DECLINE_KINDS`: each Python decline site, such as `budget` or `unresolved_symbol`, and each of the C++ attach gate's verdicts, such as `fd_mismatch`) and the `reason` text. For the gate's kinds it also carries the fields that kind's verdict sets (a field it does not set is absent, not a -1 or NaN placeholder) and the species they index. A clone carries it. The Jacobian characterization harnesses record `analytical_jacobian_status` and `jacobian_decline_kind` on each row, and `analyze()` counts the finite-difference rows by kind and lists the models under each (a report from before the field files them under `not_in_report`).
+
+- **Delayed events run under `method="ssa"` and `method="psa"`** ([#526](https://github.com/lanl/bngsim/issues/526)). Both used to refuse any event with a delay at run entry. A triggered event with a delay now waits in a queue and executes at its time, with the ODE engine's semantics:
+  - the delay (a constant or an expression) is read at the trigger, as are the assigned values when `useValuesFromTriggerTime` holds;
+  - the execution joins the batch of its time by priority; with none set, an event rising there goes first, and executions keep the order they were queued in;
+  - a non-persistent event whose trigger lapses first does not execute;
+  - a NaN or negative delay is refused by name;
+  - a row at the execution time reads its effect;
+  - executions still waiting at the end of a `run_until` leg carry into the next.
+
+  The reaction step that would pass an execution stops at it (exact by memorylessness), in the discrete loop and in the loop for time-dependent rates. The SSA mean through a delayed bolus matches the ODE trajectory.
+
+- **`Simulator.steady_states()`: every steady state of a parameter set, by multistart Newton** ([#524](https://github.com/lanl/bngsim/issues/524)). It samples starting states on the conservation manifold, runs KINSOL from each with no integration burst, and clusters the roots, each with the stability certificate's verdict. The saddles a run of the dynamics never rests on are reported too. On the Gardner toggle at `alpha_2 = 53.53`, 200 starts find both attractors and the saddle between them. The result, `SteadyStates`, holds `states`, `stability`, `eigenvalues`, `multiplicity`, `basins`, `residuals` and `n_failed`. Two building blocks come with it:
+  - `steady_state_batch(states=...)` starts each entry from a state of its own, paired row by row with `params=`.
+  - `newton_burst=False` solves from that state with no burst, reporting an unstable root rather than rejecting it.
+
+  `steady_state_batch()` now logs a failure an accumulator causes once for the batch, naming how many entries it stopped, rather than once per entry. A search, not a proof: a root with a small basin can be missed, and a continuum of steady states comes back as one root per start.
+
+- **`Simulator.set_time(t)` and `set_state(state, time=t)` roll a stepped
+  simulation back to a saved point.** A predictor-corrector coupling loop has to
+  redo a step from its saved state *and* time. There was no public way to move
+  the clock, so the corrector ran over the next interval, and on a model that
+  reads the clock (a time-indexed table, `time()`) it saw the forcing a step
+  late. `ReactionKernel.set_state` takes the same `time=`. Unlike `restore`,
+  neither call rebuilds the backend, so the warm ODE solver is kept.
+
 ### Changed
+
+- **The default ODE `atol` is per species, and never looser than `1e-8`.**
+  Where no `atol` is given, each species now takes
+  `min(1e-8, rtol * max(|x_i(0)|, floor))` from the state the call starts from,
+  and a `run_until` step keeps the one its trajectory started with.
+  `floor` is the smallest start of a species the solver integrates, but not
+  under 1e-6 of the largest. Under the scalar `1e-8`, a species of a model in
+  molar units had no error control: 62 of 1,251 BioModels ran over 1% of a
+  species' peak off their reference, 21 of them with no warning, and
+  BIOMD0000000609 by 5.7e5. Under the new default 14 do, and none got worse.
+  The corpus took 17% longer, nearly all of it on models that had been wrong.
+  A model of molecule counts takes the scalar on its own code path, so 162 of
+  175 `.net` models take the same steps. An `atol` given to a call or to
+  `set_tolerances` is used as given. `AtolScaleWarning` now names only species
+  the start gives no scale, as in a model whose species all start at 0, and
+  points to `atol="tracking"`.
+
+- **A scalar `atol` you pass is now read as a ceiling, per species, like the
+  default.** To hold every species to exactly the number given, pass
+  `atol=bngsim.ExactAtol(value)`, or read a SED-ML file with
+  `read_sedml(..., exact_atol=True)`. Each species takes
+  `min(atol, rtol * max(|x_i(0)|, floor))`, so none is held looser than the
+  number and one far below it is still resolved. This covers an `atol` given to
+  `run`, `run_until`, `run_batch`, `parameter_scan`, `compute_all_sensitivities`
+  or `set_tolerances`, and a SED-ML file's `KISAO:0000211`. At the SED-ML files'
+  own tolerances, BioModels runs over 1% off their reference go from 56 to 23,
+  none worse past 1% and none newly failing, at 4.5% more run time. At rtol 1e-9
+  and atol 1e-12 they go from 16 to 5, in 10% fewer steps. A vector is used as
+  given, and so is a scalar in `steady_state` or in a run whose sensitivities come
+  from CVODES' difference quotient, where tightening only adds roundoff. That last
+  case holds for the default `atol` too.
+
+- **A pull request runs only the nightly-parity legs its files feed** ([#1387](https://github.com/lanl/bngsim/issues/1387)). Every PR that touched one of the workflow's PR paths ran all of it, about 1.5 hours on ~10 runners, whatever it changed: a change to `parity_checks/differential/` alone also ran the stochastic, RoadRunner, BNG, AMICI, fd_sens and SBML legs. The plan job now maps the PR's changed files to the legs whose runners import or read them (`parity_checks/nightly/pr_legs.py`), and runs those, plus the corpus job where one of them needs it. The workflow and the nightly's own scripts still run every leg, and so do scheduled and dispatched runs; documentation runs none. The PR paths now include each leg's own directories: a change to `parity_checks/amici_parity/` alone ran no leg before.
+
+- **`Model.from_bngl` warns when the source's first run starts somewhere else** ([#1366](https://github.com/lanl/bngsim/issues/1366)). The actions after a BNGL file's `generate_network` are dropped as the author's experiment, as before. When some of them set a parameter or a concentration that the first run (`simulate`, `parameter_scan` or `bifurcate`) starts from, a `ConversionWarning` now names them. It names only those that change what the loaded model holds: a `setConcentration` to the species' own amount, a value set and then set back, or a `saveConcentrations()` / `resetConcentrations()` pair, is not named. `protocol=True` returns the actions instead, without the warning. The loading docs now say which actions before `generate_network` are applied, and the benchmark README says that suites run the network from its seed state, not the published protocol.
+
+- **The rows of `run_batch`, `run_replicates` and `parameter_scan` get seeds derived from the base seed, not `base + i`** ([#1365](https://github.com/lanl/bngsim/issues/1365)). Under `base + i`, an ensemble from `seed=1` was the one from `seed=0` shifted by a row. 49 of 50 trajectories were bit-identical, so ensembles from consecutive bases looked independent and were not. Row 0 still runs at the base, so `seed=rows[0].seed` reruns a whole call made with `seed=None`. Every later row's seed is now drawn from numpy's `SeedSequence(base)`. Each row's seed is stamped on its `Result.seed` as before, so `run(seed=r.seed)` still repeats that row. Nearby bases give unrelated seeds, and the seeds of one call are distinct. **A seeded batch, ensemble or scan gives different trajectories than before from its second row on.**
+
+- **After a `run()`, `run_replicates` starts every replicate where that run ended, not from the initial conditions** ([#1362](https://github.com/lanl/bngsim/issues/1362)). A replicate starts from the model's state at the call, as a second `run()` does, with the events' pending executions and trigger values carried along. Call `Model.reset()` first to start every replicate from the initial conditions, as before.
+
+- **Configuring against a system SUNDIALS of another major.minor release than the vendored one now warns** ([#1335](https://github.com/lanl/bngsim/issues/1335)). bngsim's dense difference quotient reproduces the vendored CVODE's bit for bit. Against another release it is still a valid quotient, but can differ from that CVODE's own in the last digits, and no CI leg tests the combination. A patch release of the vendored one does not warn: 7.2.0 to 7.2.1 left `cvode_ls.c` and `cvodes_ls.c` as they were. `docs/installation.md` says the same. New tests pin the steady state that KINSOL's difference quotient and the march's colored sparse one reach from a start on or beside a jump in a rate law, and from beside a species held at 0, against closed forms, and bound the march's work there, which is where a wrong colored quotient shows.
+
+- **CI and the nightly's live runs now test antimony 3.2.1 and libroadrunner 2.11.0, the versions `pip install` gives today** ([#1288](https://github.com/lanl/bngsim/issues/1288)). `uv.lock` moves from antimony 3.1.3 and libroadrunner 2.9.2. On Python 3.11 and 3.10, which 2.11.0 has no wheels for, the lock resolves libroadrunner 2.10.0 and 2.8.0. The nightly's replayed runs keep RoadRunner verdicts recorded on 2.9.2 until its reference archive is recorded again. The `pyproject.toml` floors stay where they are: bngsim does not depend on anything only the newer versions do. On the 2,448 Antimony texts the tests load, the benchmarks' `.ant` files and the docs' inline model, the SBML 3.2.1 writes differs from 3.1.3's only in ways that leave bngsim's runs bit-identical.
+
+- **The read-ahead at each output row of an ODE run with events evaluates only what the triggers read** ([#1278](https://github.com/lanl/bngsim/issues/1278)). #1133's read-ahead reads the event triggers half a root tolerance past every output row, and synced the whole model there to do it: every observable and every function, for a handful of triggers. On a 20001-row grid that cost 1.06-1.42x a run with the read-ahead switched off, though almost no row's read-ahead fires. It now refreshes only the observables and functions the triggers read, directly or through one another, and syncs the model whole where a trigger rises (before anything fires), where a trigger reads rateOf, and in a model with a table function. On the issue's nine cases the read-ahead now costs 0.99-1.04x the run without it, and every trajectory and sensitivity column is bit-identical to before.
+
+- The functions that only a size jump's or an event resize's assignments read (`_szj_*` from #1145, `_rsz_*` from #1135) are no longer evaluated at every right-hand side (interpreted or compiled) and every event-root evaluation; they are evaluated where the event executes (issue #1186). Through a diamond of 22 rules, one right-hand side took 3.3 µs on main and takes 1.9 µs, and a run 0.87 ms and 0.65 ms (0.78 and 0.61 compiled). A helper a jump's trigger reads is evaluated at every root, as before. Results are unchanged.
+
+- **An ODE run with events evaluates the model once less per output row
+  (issue #1183).** #1133's read-ahead, which reads the event triggers half a
+  root tolerance past each row of a run with events, with sensitivity columns
+  or without them since #1182, synced the model at the state ahead and then
+  fully again at the row's own state, before the row's recording evaluated it
+  once more. It now puts back only the row's species, and the recording's own
+  refresh does the rest. Runs are bit-identical; on 20001-row grids
+  BIOMD0000000613, MODEL1710030000 and BIOMD0000000480 run 1.13-1.26x faster.
+
+- **A bend root whose `if()` branch is off where it is crossed no longer
+  restarts the run.** #1089 roots every `min`/`max`/`abs` call over state a
+  rate law reads, and the rulehub corpus's division guard
+  `if(c, -ds/max(S, 0.001), 0)` is a common one. Where `c` was off at the
+  crossing, the rate law is 0 on both sides, yet the run restarted there:
+  sp_kalman_filter and cs_pid_controller took ×1.5 and ×1.27 the Jacobians
+  with accuracy unchanged. Each call root now carries the branches it stands
+  in, and a plain run steps on through a crossing whose every branch is off.
+  Both models are back to their pre-#1089 counters; mt_music_sequencer and
+  sp_fourier_synthesizer keep their accuracy and shed 66–86% of the
+  Jacobians #1089 added. (#1147)
+
+- **An event's resize of a compartment read through a diamond of assignment
+  rules loads in linear time.** With `r_i := r_{i-1} + r_{i-2}` between the
+  event's variable and the size, the new size was written out through its
+  rules once per path: 278 KB of text at 22 rules and 1.9 MB at 26, where
+  loading took 0.6 s and a piecewise size's jump followed through the same
+  rules 1.9 s (4.9 s at 28). Past 20,000 characters, counting the values the
+  event puts in, each rule that more than one path reaches is now a function
+  of its own, `_rsz_<event>_<compartment>_<rule>`, which the new size reads by
+  name; such a model now loads in 0.01–0.03 s at 26 to 60 rules. Shorter
+  sizes are written out as before. A function is added only where a rescale
+  reads it, and one text is one function. The functions are evaluated at
+  every step, as the size jump's are (#1186). (#1124, item 4)
+
+- **`SteadyStateResult.output_sensitivities` refuses, by name, an output that
+  reads a species `mask=` left out of the solve.** Such a species has no
+  steady value, so neither has anything that reads it, and its row was NaN
+  (issue #74), handed to the caller as a row with only the solve-time warning
+  to say why. A `species:`, `observable:` or `expression:` selector whose row
+  is NaN for that reason now raises `ValueError` naming the selector and the
+  masked species. An assignment-rule species, which the solve leaves out by
+  itself, is not named as masked, and a row that is not finite for another
+  reason (an expression such as `log10(L)` at L = 0) is refused without naming
+  the mask. Outputs with a finite row are returned as before, and the
+  `sensitivity` tensor and the `sensitivities_observables` and
+  `sensitivities_expressions` blocks keep their NaN rows. (#1124, item 10)
+
+- **A run that spends a CVODE step batch no longer logs "mxstep steps taken
+  before reaching tout".** `max_steps` is a batch per output point, and the
+  run resumes from a CV_TOO_MUCH_WORK return (raising by name only where a
+  batch makes no progress), but SUNDIALS logged the message for every batch:
+  about 110 lines from a sensitivity run at rtol 1e-11 that succeeded. The
+  integrator's SUNDIALS context now drops that one message and passes every
+  other error to the logger as before; `BNGSIM_LOG_SPENT_BATCHES=1` keeps
+  the message. (#1124, item 13)
+
+- **A rate law read through a diamond of assignment rules no longer makes the
+  analytic Jacobian's preparation exponential.** With `r_i := r_{i-1} +
+  r_{i-2}` under a rate law, each rule was written into the law once per
+  path to it: the first ODE run took 1.2 s at 26 rules and a codegen run
+  2.8 s, ×2.6 for every two more. Where the written-out law would pass 20,000
+  characters, its rules are now put in through sympy, each parsed once, and
+  the sum collects (`k*(121393*S + 75025.0)` at 26 rules): the first run
+  takes 0.01 s at 26 to 60 rules. A shorter law is written out as before, and
+  so is one whose terms do not collect (`sin(r_{i-1}) + cos(r_{i-2})`).
+  (#1124, item 5)
+
+- **A size's jump read through a diamond of rules loads in linear time.** A
+  piecewise size jumps by events written from the size through its rules
+  (#1054), and four shapes were still exponential in the depth of a diamond of
+  rules `r_i := sin(r_{i-1}) + cos(r_{i-2})`: a condition over one (`cv :=
+  piecewise(1, r21 > 0.5, 2)`, 1.76 s to load at 22 rules), a piecewise at the
+  bottom of one (0.45 s at 18), and two relations over one, as in `r17 > 1.4`
+  beside `r17 < 1.1` or `r17 > 1.2 && S > 3` (1.1 s and 0.55 s at 18). The
+  condition now reads its rules by name, the sides read what they share
+  through functions of their own (`_szj_<compartment>_<root>_<n>`) past 5,000
+  nodes, a piecewise, And or Or is put together without sympy reading its
+  conditions through, and two long relations are compared term by term and
+  read at two points before `cancel` is asked whether they share a root: all
+  four load in 0.01–0.04 s up to 30 rules. (#1124, item 6)
+
+- **`BNGSIM_LOG_SPENT_BATCHES` is honoured on a reused Simulator.** The
+  handler that drops the spent-batch message (#1142) was chosen only where the
+  warm path's persistent objects were built, so a Simulator that had already
+  run kept its filter whatever the variable said afterwards. It is chosen on
+  every run. (#1124, item 13)
+
+- **`sensitivity_ic` is refused by name after a codegen rebuild too.** The
+  check #1136 added ran at construction only; a rebuild of the sensitivity
+  code (issue #708) that declined the analytic RHS reached the C++ backstop,
+  whose message blamed a missing codegen build. The check runs after every
+  rebuild, and the backstop now says the loaded codegen has no sensitivity RHS.
+  Since #1136 that refusal is a `SensitivityUnsupportedError` at construction,
+  where it was a `SimulationError` from `run()`. (#1124, item 7)
+
+- **`SteadyStateResult.output_sensitivities` names every selector it refuses
+  in one error.** It raised for the first selector with no steady-state
+  derivative, so a caller met the next one only after fixing the first. The
+  record of which row-less species an expression's derivative read
+  (`_expression_sens_missing`) no longer names one for an expression whose own
+  value is not finite, where every partial is NaN whatever it reads. (#1124,
+  item 10)
+
+- Every `min()`, `max()`, `abs()`, `clamp()` and step call over state in a
+  functional rate law now gets a root, a guard such as `max(A, 0)` included.
+  On the BioModels and BNG corpora 28 of 1,929 models gain roots: 22 give
+  bit-identical results, 4 move by less than their own error against a
+  tight-tolerance run, and 2 come out closer to it. The roots are derived
+  once per model, which costs a long inlined `min()` (BIOMD0000000385) about
+  0.1 to 0.2 s. `run_diffrax`, which cannot root, now refuses these models as
+  it does a comparison over state. (#1068)
+
+- **NFsim (`method='nf'` / `'nf_reject'`, `NfsimSession`) refuses a model
+  with compartments, naming them.** NFsim ran compartment models wrong without
+  an error: it ignored `@EC:A()` on a pattern (an observable counted 300 A
+  against 200), applied no volume factor to a bimolecular rule (AB 133.6
+  against 100 at size 2), misplaced seed complexes and created molecules, bound
+  across compartments that do not touch, and moved whole complexes on
+  `MoveConnected` (RuleWorld/nfsim#106, #108, #109, #110;
+  RuleWorld/bionetgen#348; lifted under #1067). Simulate the generated network
+  with `method='ode'` or `'ssa'`.
+
+- **NFsim (`method='nf'` / `'nf_reject'`, `NfsimSession`) refuses a function
+  with an argument that reads a changing observable outside it, naming the
+  function and the observable.** NFsim re-evaluated such a function only on the
+  complexes a reaction produced, so in `fA(x) = k*(1+AC(x))*(1+0.01*MAB)`, a
+  rate law `fB(x)*g()` whose `g()` reads `MAB`, or `fB(x)*tfun(..., time)`,
+  that term went stale on every other molecule and the bound count came out
+  about 10 % low, without an error (RuleWorld/nfsim#104; lifted under #1062).
+  Reads through the argument, reads of an observable no rule can change, and
+  global rate laws still run; an `NfsimSession` then refuses a count edit of a
+  type such a read counts. The network-free guide and `NfsimSession.set_param`
+  also say that a write to a compartment-size parameter does not reach NFsim
+  (#1061).
+
+- **`SteadyStateResult.sens_output_source` reports `"codegen"`, `"partial"` or `"none"`** ([#1002](https://github.com/lanl/bngsim/issues/1002)): how many of the functions a result returns the compiled output-sensitivity chain rule answered, all, some or none. It was `"codegen"`, `"mixed"` or `"finite-difference"`, the last two meaning that the rest were differenced, which they no longer are: a row the chain rule does not answer is NaN and `output_sensitivities` refuses it by name. A model whose functions are all auto-generated `_rateLawN` reports `""`, as one with no functions does.
+
+- `steady_state()` and `steady_state_batch()` default to `criterion="scaled"` (issue #1001). BNG2.pl's `||f||/n < tol`, the old default, is a rate in the model's units and passed states a run leaves: the issue's cubic at a scale of 1e-9 at 0.894 of its root after one step, BIOMD0000000407 where it starts (a run is still moving at 1e6), BIOMD0000000002 6% from its steady state in a species. No state that test refuses is converged under the default. The cubic is taken on to its root, BIOMD0000000002 to a state a run moves by 1e-10, and a state a run leaves (BIOMD0000000407 at `max_time=1e6`) is returned with `converged=False`. An unstable root that a run from it does not leave is converged, as before. Where no `atol` is given, the march takes for each species the smaller of what `atol="auto"` derives and 1e-8. A species the `mask` leaves out that overflows within the run fails it, and the solve is refused; a shorter `max_time` avoids that.
+
+- **A forward-sensitivity run is refused where a rate law reads a table through
+  an index function that crosses on the state (issue #965).** In
+  `g() tfun([0,1],[0,3], h)` with `h() = if(Aobs<thr,1,0)`, the table jumps
+  where `h` does, and CVODES' difference quotient reads across that jump. The
+  run now raises `SensitivityUnsupportedError` naming `Aobs<thr`, as it does
+  for a condition written in the rate law itself (issue #938), where before it
+  returned columns that ignored the jump or stalled at the crossing. That
+  includes an index function reached through another table. A smooth index,
+  `h() = c*Atot`, runs as before.
+
+- **A table function indexed by a model function reports index kind
+  `"function"` (issue #965).** `Model.table_function_breaks()` and the core's
+  table listings gave such a table as `"parameter"`, naming the slot the
+  function's value is written to, which only the interpreter writes; every
+  reader had to tell that slot from a parameter for itself. The listings now
+  carry the function's position as `index_func_idx`, and a `"parameter"` index
+  is always a slot no function owns. What runs, and the generated code, are
+  unchanged.
+
+- **`steady_state()` solves a model whose only read of the time is a function nothing in the dynamics reads** ([#961](https://github.com/lanl/bngsim/issues/961)). `minutes := time/60` in BIOMD0000000739 and 951, and `parameter_1`'s pulse in BIOMD0000000498, made #710 refuse the whole model, though the state does not depend on them. The refusal now asks what the time reaches (`NetworkModel.state_reads_clock`): a rate law (`rate_laws_read_clock`, which does not count a `rateOf`), or a rule a species or compartment size is reported through. Where it reaches neither, the state is solved for, and each function that reads the clock (`functions_reading_clock`) is reported as NaN with a NaN sensitivity row, which `output_sensitivities` refuses by name. The early stop of `run(steady_state=True)` and `run_batch(steady_state=True)` is lifted for the same models, on the same test, and stops where the model without that function would. BIOMD0000000739's steady state matches a run to t = 1e9 at rtol 1e-12 to 3e-7; 498 and 951 report `converged=False`, as their runs still drift.
+
+- **`differentiable_solve` does less work per call.** Each call solves on a fresh
+  clone of the model. Before, each clone derived the analytical Jacobian again
+  with SymPy. Now the first call derives it on the model, as a first
+  `Simulator(model).run()` would, and each clone inherits it. A clone of a
+  `.net` model no longer throws and catches a C++ exception for each species
+  name, such as `A()`, that is not an ExprTk symbol: a 300-species clone takes
+  0.15 ms instead of 2.1 ms. Per call on a 30-species functional model, a solve
+  takes 0.96 ms instead of 2.06 ms, and a gradient 10.4 ms instead of 11.8 ms.
+  Results are unchanged, bit for bit, with calls from several threads at once
+  too (#919).
+  A model name the evaluator refuses because it is not an identifier, such as
+  a `.net` parameter `k-1`, is now told so; it used to be told it was already
+  registered and to look for a duplicate that was not there.
+
+- **NFsim (`method='nf'` / `'nf_reject'`, `NfsimSession`) refuses a model with
+  Arrhenius (energy-based) rate laws, or with a rate-law type NFsim does not
+  implement, naming the rules.** NFsim's expansion of energy rules divides
+  every energy by an `RT` that BioNetGen does not apply (2.478 unless the model
+  defines a parameter `RT`), gives a one-way binding rule a reverse reaction,
+  and drops one-way unbinding and state-change rules, all silently
+  (RuleWorld/nfsim#102; lifted under #1057). A `Hill` rule, which BNG2.pl writes into the XML, was
+  dropped with no error. Simulate such a model with `method='ode'` or `'ssa'`
+  on the generated network. Energy patterns with no Arrhenius rule still run.
+
+- **An event-sensitivity refusal now names the identifier that blocks the
+  threshold (issue #822).** When the core refused an event that the
+  ahead-of-run detector had also blocked, the error showed only the core's
+  generic reason ("could not resolve the trigger to a threshold") and dropped
+  the detector's, which names the symbol (e.g. `t_rule`) the user has to
+  change. Both are now reported. From @Montana.
+
+- **The compiled-code cache key is made in C++, about 17x faster.** Every
+  `Simulator` that compiles a model keys its `.so` on the model's structure.
+  That key walked `codegen_data()`, `codegen_jacobian_plan()` and
+  `functional_jacobian_context()` in Python, about 40 values per reaction. The
+  core now writes the same bytes from the walk that builds those three
+  accessors, so a field of theirs the code generator reads cannot be missing
+  from the key. On fceri_gamma (58k reactions) the key takes 0.12 s instead of
+  2.0 s, and on fceri_fyn (15k) 0.03 s instead of 0.53 s. The key hashes the
+  same bytes as before. (A `.so` cached by an earlier release is still built
+  again once, as after any change to the code generator, whose source is part
+  of the key.) `differentiable_solve` on a 300-species chain takes 4.4 ms a
+  call instead of 14 ms (#919).
+
+- **`.net` and BNGL models now compile from the model bngsim built, like every
+  other model (issue #803).** `Simulator(codegen=True)` and sensitivity runs
+  used to re-read a `.net` model's file with a parser of codegen's own and
+  compile that second reading. A `.net` or BNGL model now also auto-compiles at
+  or above `BNGSIM_CODEGEN_THRESHOLD` species (256), which it was previously
+  excluded from.
+
+- **`jacobian="jax"` no longer needs `net_path`, and refuses by name a model it
+  does not implement (issue #803).** Its JAX RHS is built from the model, so it
+  needs no file. Its supported subset is what a `.net` model contains; a
+  compartment size that is a parameter (every SBML model), amount-valued
+  species, rate rules, `rateOf`, a table function, the `%` operator or a
+  Michaelis-Menten rate constant that a function also defines raises
+  `ValueError` naming it. It is also checked against the engine's RHS before
+  use, species by species at three states and several times, and a mismatch is
+  refused rather than solved.
+
+- **`run_diffrax` takes the model, and its `param_dict` is now a set of
+  overrides (issue #803).** It accepts a `Model` or a `.net` path. `param_dict`
+  is applied with `set_param` to a clone, primary parameters first and derived
+  ones after, so derived parameters and parameter-valued initial conditions
+  follow an override, a derived parameter named in it is pinned at that value,
+  and a dict naming every parameter, which the old signature required, runs on
+  exactly those values. A model with events is refused.
+
+- **`parse_net_file` returns the C++ loader's reading of a `.net` file, and
+  `build_model_from_parsed` makes the loader's `ModelBuilder` calls (issue
+  #803).** The dict used to come from a second parser, in Python (#554, #597,
+  #600, #606). Its values are now those of the model `Model.from_net` builds, a
+  file `Model.from_net` refuses is refused, and an unmodified dict builds exactly
+  that model, which a test checks over every `.net` file in the repository. Over
+  952 corpus networks the dict changed on 261, all in reactions: a stat-factor
+  prefix is split off (`0.5*kf2` is `rate_law` `kf2` with `stat_factor` 0.5,
+  where it was the string `0.5*kf2`, which named no parameter); a rate column
+  naming a function is `"functional"`; and `Sat`/`Hill` come back rewritten into
+  an explicit function, so they build instead of being refused.
+  `build_model_from_parsed` reads a rate law by what it names, no longer wraps
+  one that names nothing in a function of its own, and refuses an IC reference
+  to an undeclared parameter. `net_file_dir` is absolute.
+
+- **`Model.add_table_function` under a table's name gives that table new data
+  (issue #772).** Every engine reads the new data from then on: the interpreter,
+  compiled code, the SSA, the steady-state solvers, and a `Simulator` made before
+  the call, which also stops on the new breakpoints. It has to be read over the
+  table's own index, which is compiled into the model's code. It keeps the
+  table's interpolation unless `method` names another, since a `.tfun` file
+  carries none. A table written inside a function is given data by its own name,
+  `<function>__tfun<k>`. Bad data, or another index, raises `ModelError` and
+  leaves the table as it was. A clone keeps the data it was cloned with. Under a
+  new name the table is still added, but no expression of a loaded model can
+  call it, so `add_table_function` now warns. Such a table also no longer marks
+  the model as reading the time, which had refused `steady_state()`, and no
+  longer adds its breakpoints to a run's stops.
+
+- **PSA diagnostics cover the whole simulated horizon (issue #718).** The SSA
+  loop now leaves its clock at `t_end` rather than at the last firing, so
+  `psa_diagnostics` integrates up to `t_end`, as its docstring says: a run that
+  went quiet at t = 1.63 of 100 used to report `time` 1.63. `run_batch` rows
+  now raise the SSA boundary warnings, as `run()` and `run_replicates` do.
+
+- **A changelog entry is now one file under `changelog.d/`, not a line in
+  `CHANGELOG.md` (issue #668).** Every entry used to land at the same anchor, so
+  any two open branches edited the same region and git stopped on a conflict: 17
+  of the 30 merges before this touched the file, and hand-resolving it is where
+  #662's committed conflict markers and #656's duplicated entry came from.
+  `merge=union` (#669) fixes local merges only — GitHub's merge machinery does
+  not read `.gitattributes`. A fragment has no shared anchor, so neither path
+  has anything to conflict over.
+
+  `ci/changelog.py build --version X.Y.Z` assembles the fragments at release
+  time; `check` validates names, shape and a 1,200-character limit as a
+  pre-commit hook; and a `changelog` CI job asks that a branch changing
+  `python/bngsim/`, `src/` or `include/` staged one — replacing an honour system
+  that #649, #656 and #667 each slipped past. See `changelog.d/README.md`.
+
+- **The C++ core is built with `-Wall -Wextra`, and CI runs the native suite under AddressSanitizer and UndefinedBehaviorSanitizer** ([#583](https://github.com/lanl/bngsim/issues/583)). The warnings are informational (not `-Werror`) and leave out `-Wmissing-field-initializers`, which flags the deliberate `T x{a, b}` initializations in `src/`. The vendored NFsim headers are included as system headers, so their warnings stay out of the log. The sanitizer job builds with reference LAPACK and NFsim, so the BLAS factorization path and the NFsim tests run under it too, and it starts non-blocking. No behavior changes.
+
+- **Coupling loops keep their linear-solver state across steps.** Each
+  `ReactionKernel.advance` / `Simulator.run_until` step restarted the GH #132
+  factorization count, so a loop whose steps each factor a few times never
+  reached the BLAS factor that `BNGSIM_LAPACK_DENSE=1` enables. A 361-species
+  loop ran 2.5x slower than necessary. A `run_until` step now continues the
+  count, while an independent `run()` still restarts it, and
+  `n_dense_blas_factorizations` counts only the run's own factorizations. The
+  warm path also keeps KLU's symbolic analysis across steps instead of redoing
+  the ordering at every re-entry. Results are unchanged.
+
+- **A step call whose argument is within its own rounding of a level it crosses
+  is refused by name.** `sign`, `floor`, `round` and the other step calls of an
+  argument that is a small difference of large terms (a polynomial of the clock
+  written out term by term, near a root or a turn) read both of their values by
+  turns around the crossing, for millions of doubles or billions. There is no
+  time at which such a call changes, and a stop placed for it anyway left runs
+  that stepped over the window it bounds. The run now stops with an error
+  naming the call and the stretch, where before it ran with no stop for the
+  call. Write the argument in a form that does not cancel (`(time() - 5)^3`);
+  no `max_step` stands in. A flicker shorter than a billionth of the run is one
+  instant and has its stop, as before. An argument that does not flicker but
+  stays within a few of its last places of a level for more of the run than can
+  be read (`floor(1e9 + 3e-7*sin(time()))`, a `tanh` creeping onto 1) is
+  refused the same way, and so is a `mod` or `frac` of a quotient beyond 2^48. See "Rate laws that switch on time" in the solver guide.
+
+- **Large rule-derived networks now factor with the BLAS dense solver instead of
+  KLU.** The linear-solver rule tested the Jacobian's density, but KLU factors
+  `I - gamma*J`, which on these networks fills 20-35% of `n²` while the
+  Jacobian is 1-7% dense. KLU has no BLAS, so it spent most of a run
+  refactoring. A model of 256-5,000 species whose estimated LU fill is at least
+  10% now takes the BLAS dense factor, if the build has one
+  (`bngsim.HAS_LAPACK_DENSE`) and the analytical Jacobian is in use. That is
+  3.6-10x faster end to end on the suite's rule-derived networks (fceri_gamma
+  47.4 s to 4.7 s); trajectories agree to solver tolerance. Sparse networks
+  (metapop_sir_100) stay on KLU, and `force_sparse_linear_solver=True` keeps
+  any model there. `jacobian_sparsity` reports the estimate as
+  `lu_fill_estimate`.
+
+- **The vendored MIR JIT moves to upstream master `439a90a2`, and BNGsim drops
+  its issue #413 patch.** Upstream merged the `try_spilled_reg_mem` bounds
+  check that BNGsim carried in `mir-gen.c` for issue #413 (vnmakarov/mir#468).
+  The move brings about 50 upstream fixes, among them two optimizer bugs that
+  produced wrong code in loops at -O2/-O3, the level bngsim uses for generated
+  sources up to 512 KB: a loop whose condition tests its own counter ran one
+  iteration short (vnmakarov/mir#454), and an address could be folded through
+  a loop header (vnmakarov/mir#467). Only builds configured with
+  `-DBNGSIM_ENABLE_MIR=ON` are affected.
+
+- **A network-free run refused after an SSA, PSA or ODE run on the same model now says why and what to do.** That run writes its end state into the model, so the next `method="nf"` or `"rm"` run starts there (#1373), and a complex the XML does not seed is refused. The message said only to rewrite the XML or run SSA. It now names the earlier run, `model.reset()` to start from the initial amounts, and `model.clone()` for the other run.
+
+- **The pre-push hook now runs the test suite in parallel, in about five
+  minutes instead of about 45.** It still runs all of `python/tests`, now
+  under pytest-xdist with one test file per worker (`ci/pre_push_pytest.py`);
+  on a 16-core Mac that took the run from 44m29s to 4m42s with the same
+  result. From a worktree it uses the main checkout's test cache, because
+  macOS checks every new compiled library on first load, one at a time. That
+  made a worktree's first push take 19m15s. pytest-xdist joins the `test`
+  extra: without it the push stops and says to run `uv sync --extra dev`.
+  `BNGSIM_PREPUSH_WORKERS` sets the worker count, and `0` runs serially.
+
+- **A push that changes only files the test suite never reads no longer runs
+  it.** The pre-push hook passes at once when every file the push changes,
+  deleted ones included, is under `changelog.d/` or is one of `LICENSE`,
+  `NOTICE`, `ACKNOWLEDGMENTS.md`, `CONTRIBUTORS.md`, `REPRODUCING.md`,
+  `.readthedocs.yaml` or `.clang-format`; the `changelog-fragments` hook still
+  checks the fragments. Docs still run it, because the suite runs their
+  examples. A push that changes only `third_party/`, or only deletes files,
+  now runs it too, where it used to skip.
+
+- **A model whose rates of change are written in terms of each other's `rateOf`
+  is refused by name.** `X' = rateOf(Y); Y' = rateOf(X)`, or `X' = k*rateOf(X)`,
+  is an algebraic loop: each rate is defined by the others at the same instant.
+  bngsim integrated such a model with the rates read a pass late (1.75 for 2 in
+  one example, 1.5 with `codegen=True`). An ODE `Simulator` of it, and
+  `Model.rhs`, now raise `ModelError` naming the species (lanl/bngsim#991), as
+  libRoadRunner, Antimony and libSBML refuse it. A species that stands on both
+  sides of a reaction (a catalyst) is in no such loop, whatever its reaction's
+  rate law reads: its derivative holds nothing of that rate.
+
+- **Forward sensitivities no longer re-derive every derived parameter on every
+  RHS call.** Each call of a sensitivity run synced the model's parameters from
+  CVODES and re-evaluated all derived parameters, although every call but a
+  difference-quotient probe lands on the same nominal point. The sync now copies
+  a snapshot of that point, and a probe re-derives only the derived parameters
+  that read the probed one, directly or through another derived parameter. The
+  results are bit-identical. On the committed ODE suite with five sensitivity
+  parameters, runs are up to 2.1x faster (egfr_net_red, tcr_signaling,
+  oscillatory_system); a difference-quotient run on a model with 400 derived
+  parameters went from 13.8 ms to 6.3 ms, and its analytic-path twin from
+  4.3 ms to 3.65 ms. A model whose derived parameters read `time()` or call
+  anything but a stateless math built-in keeps the full re-derivation.
+
+- **SSA and PSA run a rate that is a step in time as a constant between
+  breakpoints.** A rate that reads the clock only inside comparisons of the bare
+  clock with a fixed threshold (`if((time() > 10) && (time() < 150), 2.6, 0)`)
+  stays in the selection tree, and the loop re-reads it once it reaches each
+  crossing, instead of integrating it panel by panel. BIOMD0000000558 runs 1.6×
+  faster than with #933 and 1.7× faster than before it. A rate that reads the
+  clock anywhere else (arithmetic, a step call such as `mod` or `floor`, a
+  schedule) is integrated as before. At every output row a guard checks that
+  such a rate has not moved since it was set, and refuses the run if it has.
+
+- **Rate laws that read a time- or parameter-indexed table function get the
+  analytical Jacobian.** Such a table does not depend on the state, but the
+  symbolic core did not recognize it, so any model using one fell back to a
+  finite-difference Jacobian. On a 1,319-species network driven by a time
+  table, a 12 h run went from 23.4 s to 2.5 s. The compiled Jacobian covers a
+  table used as a whole function body (`f() tfun(...)`); a table embedded in
+  arithmetic uses the interpreted analytical Jacobian. Tables indexed by an
+  observable still use finite differences. Sensitivities are unchanged.
 
 - **`CHANGELOG.md` is merged with git's `union` driver, so a local merge no
   longer stops on it. GitHub's merge still does.** Every entry is inserted at the same
@@ -47,7 +568,3265 @@ an entry here.
   conflict markers, #656 duplicated its entry). The fix that clears the GitHub
   path is one fragment file per change — issue #668.
 
+### Deprecated
+
+- **`bngsim.prepare_codegen(net_path, model=None, emit_jac=True)` is deprecated
+  (issue #803).** It keeps its signature and now warns. It compiles the model
+  `Simulator(codegen=True)` would compile: `model`, or the file loaded with
+  `Model.from_net` when `model` is not given. Pass `codegen=True` to
+  `Simulator` instead.
+
+- **`Simulator(net_path=...)` is deprecated and ignored (issue #803).** Every
+  backend reads the model it is given: codegen since #803 step 3, and
+  `jacobian="jax"` since step 4, its last reader. Passing it warns
+  `DeprecationWarning` and changes nothing.
+
+### Removed
+
+- **`parse_net_file` no longer works without bngsim's compiled extension (issue
+  #803).** Its pure-Python parser, and the plain-arithmetic parameter evaluator
+  it fell back on when the extension was missing, are removed with the second
+  reading of the format they were. Without the extension it raises `ImportError`
+  saying so.
+
 ### Fixed
+
+- **`parse_bngl_protocol` carries every BNGL state action, and says when it cannot read an argument** ([#1478](https://github.com/lanl/bngsim/issues/1478)). `saveParameters`/`resetParameters` were dropped silently as build directives, so a `protocol=True` spec kept a `setParameter` that BNG2.pl reset; `addConcentration`, `bifurcate`, `simulate_psa` and `simulate_pla` were unrecognized. All are steps now (with labels), and a `poplevel` makes a run PSA, as in BNG2.pl. Uneven `par_scan_vals` and `sample_times` are held exactly (`Experiment.scan_values`, `Experiment.sample_times`), not as the nearest range or grid. A `t_start`, `t_end`, `n_steps` or scan bound the parse cannot read without the model, which it took silently as 0, `t_start`, 100 or nothing, is lossy now and listed in `Experiment.approximations`. `ProtocolSpec.state_changes_before` no longer drops `setParameter`s at a `resetConcentrations`, which resets concentrations only.
+
+- **A sensitivity run no longer refuses a state that leaves a rate-law equality at once after a clock stop no requested column moves** ([#1445](https://github.com/lanl/bngsim/issues/1445)). Since #1411 a leaving right after a restart was let through only at the run's start or after an event at a fixed time: `if(Bobs==0, kb, 0)` with B made from `time() > t3` was refused at t3, where dY/d[kp, kb] = [0, t3] exactly. A crossing stop, and a switch time no requested column moves, now count as fixed restarts too. With t3 requested the run is still refused, since the #48 jump at t3 reads Y's flow with B still on the surface (dY/dt3 would be 0 for 1). A fixed restart no longer covers a leaving on the instant of one a column moves: a fixed event beside a moving clock switch returned that dY/dt3 = 0 for 1.
+
+- **A species that starts below the scalar `atol`'s floor keeps a scale of its
+  own.** A scalar `atol`, the default or one you pass, holds each species to
+  `rtol` of its start, with a floor of 1e-6 of the largest species for one that
+  has no scale. The floor also overrode species that had one. BIOMD0000000857's
+  Ephe, at 1e-5 beside a nitrate pool at 500, was held to 5e-10 instead of its
+  own 1e-11 at SED-ML's `rtol=1e-6, atol=1e-9`. CVODE then stopped with
+  `CV_ERR_FAILURE` on 14 of 381 output grids. A species below the floor now keeps
+  `rtol * |x_i(0)|` wherever that is more than double precision resolves beside
+  the largest species. 857 now runs on every grid. The tolerances of 100
+  BioModels change at bngsim's defaults, 87 at their SED-ML files' own and 36
+  at `rtol=1e-9, atol=1e-12`. None of those runs newly fails, none moves past 1%
+  of its reference, and they take the same time as before.
+
+- **`bngsim.jax.differentiable_solve` takes `atol` as `Simulator.run` does,
+  and its default warns as `run`'s does**
+  ([#1420](https://github.com/lanl/bngsim/issues/1420)). It declared
+  `atol=1e-8` and passed that on, so `run` read it as the caller's choice and
+  never raised `AtolScaleWarning`. That missed two cases. A model whose species
+  all start at 0 and settle near 1e-9 came back 12% off, and so did its gradient.
+  The run a gradient takes on a model whose sensitivities fall back to CVODES'
+  difference quotient keeps the scalar: on a binding model in molar units it
+  returned A(5000) = -8.4e-10 for 4.1e-10. The default is `None` now, which is
+  `Simulator`'s default, and the trajectories and gradients are the same bits
+  as before. Every other form `run` takes was refused: `"auto"`, `ExactAtol`,
+  `TrackingAtol`, a per-species vector, and `"tracking"`, the remedy the warning
+  names. Each is now passed on as given. The warning names the caller's line,
+  not one inside JAX.
+
+- **A bracket after a function call dropped everything before it, with no error** ([#1415](https://github.com/lanl/bngsim/issues/1415)). ExprTk multiplies a variable or a bracketed group against a bracket after it, but after a call the bracket opened a second statement, and the expression's value was that statement's: `k*exp(-A)(B)` with A = 3, B = 5 gave 5 for 0.124, and a `.net` rate law written so ran as its last factor. Inside a bracket it was refused with ExprTk's bare `ERR244`. Such an expression is now refused at load, in a `.net` and in an NFsim XML function alike, naming the call as written (`exp(-A)`), as BNG2.pl rejects it as a syntax error; `mand(...)` and `mor(...)` are calls too. A literal the engine respells exactly after a call, as in `abs(B)0.49999999999999997`, had opened the same second statement and is now multiplied, as written. `A(B)`, `(A)(B)` and `2(B)` are read as products, as before; no model in the 1,323-model BioModels corpus or the repository's 177 `.net` files is written this way.
+
+- **SBML→cBNGL carries a species an assignment rule sets, instead of refusing the model** ([#1400](https://github.com/lanl/bngsim/issues/1400)). `write_bngl` refused every such model, saying the round trip "cannot carry the rule". The rule was carried, as the function its rate laws read; only the species' own column was lost. Written `$`-fixed, it was held at its initial value by BNG2.pl and by bngsim reloading BNG2.pl's `.net`, whose pattern name (`@comp1::$B()`) never matched the rule's. The writer now names the molecule after its rule (`__ar_B`), bngsim's reader pairs the two, and `validate="bng2"` checks that column as well as the right-hand side (`max_ar_report_delta`). The species is a `bngsim_only` warning, as on the `.net` path, because BNG2.pl's own run still holds it. Of the corpus's 289 models with such species, 175 are no longer refused for it, and 174 of those pass the `bng2` gate. The gate refuses the one that does not, BIOMD0000000664: BNG2.pl rewrites its pulse `time()>=0.0` to `time()>0.0`, so its rule species `g2_0` reports 0 instead of 1 at t = 0. A model with no reactions, which BNG2.pl's `generate_network` aborts on, is now refused by name.
+
+- **The nightly AMICI sensitivity leg compiled BIOMD0000000457 twice on some nights** ([#1386](https://github.com/lanl/bngsim/issues/1386)). Jobs ran method-major so that a model's second corrector method would load the code its first had built. But a compile of 150-220 s outlasted the short jobs dispatched after it, so the second started early and compiled again alongside, and the doubled codegen time tripped the wall alert (x2.17 on PR #1303's run). The parity scheduler takes a `depends_on`, and the AMICI runner uses it to start a model's later methods only once its first has finished. Other workers keep taking ready jobs meanwhile. The finite-difference sensitivity leg, which dispatched a model's two methods side by side, compiled every model twice (106 compiles for 53 libraries); it now waits the same way, and its local run fell from 33 s to 29 s.
+
+- **`method="nf"` and `method="rm"` ignored `Model.set_concentration`** ([#1373](https://github.com/lanl/bngsim/issues/1373)). NFsim and RuleMonkey are seeded from the BNG XML's `<Species>` list, so with `L(r)` set to 0, SSA started from no free ligand and nf and rm from the XML's 300, with no warning. Each run now passes the backend every species amount the model has changed since it was loaded, by the XML seed species of the same name (a fixed species' `$` aside), and every seed species' amount wherever it passes a parameter. Amounts are rounded half-up like every seed, and outrank a parameter the seed reads. A nonzero amount for a species the XML does not seed is refused, since the backend would start it at 0.
+
+- **`run_batch` and `run_replicates` ignored `add_stop_condition`** ([#1369](https://github.com/lanl/bngsim/issues/1369)). `run()` stops at a registered condition and raises `StopConditionMet` with the result cut there. The batch and ensemble paths returned every row to `t_end`, past the condition, with no warning. Each row is now checked the same way. A row that meets a condition is returned cut at that point, alongside the rows that ran to the end, and the new `Result.stop_condition` names the condition (`None` where none was met). Nothing is raised, so one row's stop does not cost the others. `parameter_scan` and `bifurcate`, which raised `StopConditionMet` out of the scan at the first point that met a condition and lost the rest, now report per point the same way. `squeeze=True` is refused while a condition is registered, before any row runs, since a stack cannot show which rows stopped; `Result.squeeze` refuses a list with a cut row. The result `run()` raises with now carries `stop_condition` too, and `Result.save`/`load` and `to_xarray` keep it.
+
+- **`Result.species` reported the stored `amount/V_static` of a species whose compartment a run resizes** ([#1368](https://github.com/lanl/bngsim/issues/1368)). For a concentration species in a compartment an event doubles, the SSA mean read twice the ODE value from the event on; so did ODE for an amount species (`hasOnlySubstanceUnits`) after an event. Five of the eight combinations (event or rate rule, amount or concentration species, ODE or SSA) were stale, and so was SSA for a concentration species in a compartment an assignment rule sizes. `as_roadrunner(["[X]"])` was right throughout. `Result.species` now reports `amount/V_live(t)` in all of them, with the sensitivity rows of that value in `Result.sensitivities` and `output_sensitivities("species:X")`. **Under SSA this changes the column:** for these species it no longer holds the molecule count over `V_static`, and a string stop condition that names one reads the reported value, as ODE now does for an amount species after an event. `Result.state` keeps the stored value, and the bare `X` selector of `as_roadrunner` is the amount, as before.
+
+- **`Model.from_bngl` no longer loads a later phase's state from a file without `generate_network`** ([#1366](https://github.com/lanl/bngsim/issues/1366)). Such a file's first run starts from the actions before it, but the loader kept every `setParameter` and `setConcentration` in it, those between later runs included, so the model held the state of none of the runs. `kinetics_mb1n.bngl` loaded with its last phase's `Agconc` 604.8 and `const` 0, where its first run has 7.46 and 1. The actions now stop at the first run, as they stop at a `generate_network`.
+
+- **`parse_bngl_protocol` misread five common `simulate`/`parameter_scan` arguments** ([#1364](https://github.com/lanl/bngsim/issues/1364)), with no lossy flag even under `strict=True`. They are now read as BNG2.pl's `BNGAction.pm` and `run_network` define them:
+  - `continue=>1` starts at the model time: (10, 20), not (0, 20). Another `t_start` is refused. `simulate_nf` starts there too, and leaves it at 0.
+  - `n_output_steps` is `n_steps`, and defining both is refused.
+  - With neither, the default is one step: 2 points, not 101.
+  - `sample_times` sets the output times: `t_start`, the samples after it, and a given `t_end` or else the last sample. Fewer than three is refused.
+  - `par_scan_vals` is the scan, not one run. With `reset_conc=>0` the values keep their order.
+
+  What the protocol cannot hold exactly is recorded as lossy, and `strict=True` refuses it: uneven times or scan values, a continuation after a run that can stop early (`steady_state`, `stop_if`), and `sample_times` for NFsim.
+
+- **`Result.sse_gradient` documented observable data but scored it against the species** ([#1363](https://github.com/lanl/bngsim/issues/1363)). With as many observables as species, the shapes agreed, and observable data came back with an SSE of 277 for 8.5 and a gradient of the wrong sign, with no warning. `sse_gradient`, `chi2_gradient` and `neg_log_likelihood_gradient` now take `target="species"` (the default, unchanged) or `target="observables"`, which compares with `Result.observables` through `Result.sensitivities_observables`, and `observable_indices=` to select columns. Data shaped as the observables, where that is not the species' shape, is refused with that hint; where the shapes are the same, only `target` can say which is meant. The species target now also refuses a sensitivity block whose rows are not its columns (GH #202), as the observable target does. Also fixed, found along the way: with a per-column `sigma`, `neg_log_likelihood_gradient` counted the constant ln(2πσ²) once per column rather than once per data point, so its loss came out short (8.05 for 21.84). Its gradient was not affected.
+
+- **`run_replicates` dropped a `Model.set_concentration`, and `run_batch` said nothing when it did** ([#1362](https://github.com/lanl/bngsim/issues/1362)). Every replicate was reset to the seed. After `set_concentration("A()", 500)`, each started at A = 0, though `run()` starts at 500. Every replicate now starts from the model's state at the call, as `run()` and `parameter_scan` do. `run_batch` still starts every point from the initial conditions, as documented. It now warns when the model is elsewhere, names `parameter_scan` and `save_concentrations` as the ways to start from the current state, and `Model.reset()` as the way to keep the initial conditions without the warning.
+
+- **An ODE run at the default `atol` gave no word when it controlled no error of species below it** ([#1361](https://github.com/lanl/bngsim/issues/1361)). The default scalar `atol=1e-8` is BNG2.pl's, for molecule counts. A model in molar units holds species below it, and their trajectories can be wrong by their own size: a binding model ended at a negative concentration, and BIOMD0000000002's complexes were off by 1e-2. `run()`, `run_until()`, `run_batch()`, `parameter_scan()` and `compute_all_sensitivities()` now raise `bngsim.AtolScaleWarning`, once per call and naming the species, when the caller gave no `atol` and a species the solver integrates stays below it while reaching at least 1e-6 of the run's largest. A `$`-fixed species or an assignment-rule target is never named. It names `atol="auto"` as the remedy. The default is unchanged, and the user guide (`solvers.md`) describes the hazard.
+
+- **`method="nf"` and `method="rm"` ignored `Model.set_param`** ([#1360](https://github.com/lanl/bngsim/issues/1360)). NFsim and RuleMonkey are built from the BNG XML, and a run used the XML's parameters. With the only phosphorylation rule switched off (`kph=0`), SSA gave no phosphorylation, while nf and rm gave as much as an unchanged model. With `L0=0`, both still started from 300 free ligand. Each run now passes the backend every parameter the model has changed since it was loaded, whether it was set before or after the `Simulator` was built. Parameters derived from it, and seed amounts that read it, follow. `run_batch` with nf or rm failed as `Unknown method: nfsim`. It now refuses up front and names the way to scan.
+
+- **After a compiled ODE run, `get_param` on a parameter an assignment rule sets returned its value at load** ([#1358](https://github.com/lanl/bngsim/issues/1358)). This was on the warm path, a run with no events and no sensitivities. The interpreter writes such a parameter at every right-hand-side call, but the compiled right-hand side (cc or MIR) computes the rule in its own C and wrote nothing back: `q := base*A` read 1.0 after the run, where an interpreted run read 0.0183. That path now leaves the model's functions, and what they set, at the state the run ends on, as the general path already did. The trajectory was never affected.
+
+- **A steady state at a fractional power of a species at 0 was refused at residual 2e-40** ([#1357](https://github.com/lanl/bngsim/issues/1357)). glioblastoma_egfrviii raises AKT(s~P) to 3.5. The compiled march came to it at 0, or within 1e-52 of it. A corrector iterate an ulp below 0 makes the power NaN, so the scaled criterion's run test could not be taken to its time, and the state was refused with a run measure of inf. A time course from the same state moves nothing. The run test now integrates as the time course does (GH #135): where f or the closed-form Jacobian is NaN, it is taken again at the state with its concentrations clamped at 0, and only then. The march is unchanged.
+
+- **An ODE run no longer depends on the order a model's species are written in where a slot sits a hair below 0.** The right-hand side's retry on a nonnegative-clamped state left alone every slot that may be negative by design (a rate-rule target, a fixed or promoted slot, or a species declared negative, #706). MODEL1812040005's P is a rate-rule target at an exact equilibrium of 0, read by `a*P^z` (z fractional): summed in the order its species are written, its derivative is exactly 0, and reversed the same sums leave -3.6e-27, where `P^z` is NaN, and the run failed with `CV_REPTD_RHSFUNC_ERR`. Where the clamp alone leaves the right-hand side or the Jacobian non-finite, the retry now reads it once more with such a slot at 0 where it is negative by less than its own absolute tolerance, as the sensitivity right-hand side already reads one (GH #392). A slot negative by more is left alone, and a run whose laws take one on down through that band is refused with the slot named, rather than stepped on until its timeout. The steady-state run test reads the band the same way. A model whose right-hand side stays finite, or that the clamp alone makes finite, is unchanged (issue #1340).
+
+- **A forward sensitivity to a parameter sitting on a kink of a rate law returned one side's slope, or neither** ([#1332](https://github.com/lanl/bngsim/issues/1332)). `0 -> X` at `10*abs(q) + s` with q = 0 has slopes of −47.62 and +47.62 in q at its steady state, and no derivative; bngsim returned dX*/dq = 0. `10*min(q, 1) + s` at q = 1 (slopes 47.62 and 0) returned 23.81. Both happened at a steady state and in a run, with no error. Such a column is now refused with `SensitivityUnsupportedError`, naming the parameter, the reaction and the bend (`abs`, `min`, `max`, `clamp`, and at a steady state `if()`; a run keeps the `if()` branch taken, #382). It is asked at the values of each run, steady state, batch row and `compute_all_sensitivities` call, its default parameter set included, so a `set_param` onto a kink is refused too. It is asked of the whole law: a tie of arguments with one slope, or a law with a derivative there all the same (`abs(q)*q` at q = 0, an `abs` in a branch not taken), is not refused.
+
+- **Where there is no closed-form Jacobian, steady-state sensitivities and `Model.jacobian()` are exact now, not difference quotients** ([#1330](https://github.com/lanl/bngsim/issues/1330)). With `jacobian="fd"`, or one rate law the closed form declines, a law could be written whose secants agreed at every step the checks took: dG\*/ds came back 2.13 and 4.76 for 0, and dX\*/dp 2.02e-4 for 3.62e-4, with no error. The Jacobian, ∂f/∂p and a function's row of `output_sensitivities` are now taken by dual numbers through the interpreter, each law differentiated along the branch it takes. Many #1002 refusals are lifted, including function rows the compiled chain rule declines. At a state exactly where a law changes branch, both sides are taken and the answer is refused where they differ or the state crosses a jump. A state held on a jump in a law's value is refused whatever the Jacobian's source. The sources read `"automatic-differentiation"`. Models with `rateOf` or a ring of functions keep the checked difference quotients.
+
+- **A failed NFsim load no longer leaves your process in the XML's directory, and its error names the file.** bngsim changed into the XML's directory around an NFsim load, so NFsim could open a TFUN's `file=` table by relative path, and changed back as plain code after it. A load that threw (a malformed compartment `size`, which `initCompartments` does not catch) skipped the change back, and every later relative path in the host resolved against the XML's directory. The error was also NFsim's bare message, with no file name. The directory is now never changed: each relative `file=` is made absolute against the XML's directory, in the copy NFsim reads, which also closes the window in which every other thread saw that directory. A load that throws is reported like one that fails, with the file and NFsim's log. The stream redirection and the shared random-number stream are now documented in the network-free guide; that interleaved sessions do not each reproduce their seed in an aggregation model is pinned by a strict xfail, for the fix of the three vendored draws (issue #1314).
+
+- **`run_batch` now runs each row on the linear solver the Simulator was asked for.** A batch row dropped `force_dense_linear_solver` and `force_sparse_linear_solver` and ran whatever the auto rule picked: on a 60-species chain, KLU, under a Simulator asked for the dense solver. `run()` always honoured both (found while typing the sparse refusal, issue #1313).
+
+- **A threaded `run_batch` now raises a timeout as `SimulationTimeout`, as `run()` and a sequential batch do.** With `num_processors` above 1, a row that ran out of its `timeout` came back as `SimulationError("Batch simulation 0 failed: ...")`, the timeout only its cause, so a caller that tells a wall-clock termination by its type missed it. The thread pool now passes up what `run()` and a batch row pass up, from one list (found in the review of issue #1313).
+
+- **A forward-sensitivity run whose RHS refuses the corrected state of a step is no longer silently wrong.** In its staggered corrector, CVODES evaluates f at the converged state, and SUNDIALS 7.2.1 (unchanged in its current main) retried a recoverable failure there without restoring the step, so the next attempt predicted again from the advanced time: half the step crossed by the uncorrected predictor, unseen by the error test and the root search. On MODEL2001200002 (Mpekris 2017) the state came back 9e-3 off and the sensitivities 1.4e-2 off. An output time falling in such a stretch took the previous row's state and zero sensitivities, with no error. BNGsim now carries the fix in its fetched SUNDIALS (`third_party/sundials/carry_cvodes_staggered_restore.cmake`), and the run refuses an output time CVODES's last step does not span, as it does a row whose sensitivities cannot be read. A row recorded before the first step, such as a start time named twice, now records the seed: it had read dA/dA0 = 0 instead of 1 (issue #1301).
+
+- **A sensitivity run reads its columns at the state its value RHS reads f at** ([#1298](https://github.com/lanl/bngsim/issues/1298)). Where the value RHS is non-finite at a state with a species a hair below 0, it reads f at the clamped state (#135), or at the reading near 0 after it (#1340), and the run integrates that. The sensitivity RHS refused those states: on MODEL2001200002 at the job's tolerance a simultaneous run failed at t = 15, and on the test's fixture under `jacobian="auto"` it was taken again on the difference quotient (GH #176), at 4.9 times the plain run's steps. The sensitivity RHS now reads its columns where the value RHS read f, and those runs follow the plain run's path. It does so only where each species read at 0 got below 0 by the run's own error. Where an assignment put one there (a run's start, unless it continues the last with `carry_sensitivities`; an event) and it has not been back at or above 0, or the flow there drives it further down, the columns read there were wrong, with no error, and the state is refused as before. `BNGSIM_SENS_AT_VALUE_STATE=0` turns the reading off.
+
+- **`jacobian="fd"` was refused on a model whose Jacobian has no structural nonzero** ([#1296](https://github.com/lanl/bngsim/issues/1296)), with an error telling the caller to drop `force_sparse_linear_solver`, a flag they never set. A model of 50 or more species that no reaction moves (an event assigns them) has a sparsity pattern of density 0, which the automatic solver routing read as sparse. It sent the model to KLU, which then had nothing to factor and, under the FD Jacobian, nothing to color. The routing now sends such a model to the dense solver, as codegen's reading of the same rule already did. The SBML Test Suite's cases 01466, 01530 to 01533 and 01564 now run under `jacobian="fd"` and match their expected results, as they did under the default Jacobian. Forcing the sparse solver on such a model is still refused by name. Found by #1257's `ajac_vs_fdjac` check.
+
+- **A nightly reference recording keeps the RoadRunner side of a job that runs past the cap (issue #1290).** `rr_run.py --write-reference-archive` saved a job's entry only after both engines finished, so a job killed at the per-job cap left none. Three BioModels sit at the 300 s cap (MODEL1006230049, -0053, -0077: about 280 s on the fastest runner, more on others), and the 2026-10-24 recording timed them out with no entry. Every replay refused them as `archive_stale`, and the night after a live night that passed them alerted on all three. A recording now runs RoadRunner first and saves its entry before bngsim starts. It kills a job only at twice the cap (up to 600 s), and a row past the cap itself is still TIMEOUT, as on a live night. `reference_archive.py pack` lists every TIMEOUT row the recording left without an entry, and the publish summary names them.
+
+- **The SSA screen's reference recording keeps RoadRunner's result for a model that runs past the cap (issue #1290).** `ssa_screen.py --write-reference-archive` runs RoadRunner after bngsim's ensemble, so a model killed at the 120 s per-model cap before RoadRunner returned left no entry, and every replay refused it as `archive_stale`. MODEL1102210001 sits at the cap (RoadRunner about 86 s, bngsim about 20 s): it passed in reference-data-v1's recording and timed out in v2's, which has no entry for it, so a replay after a live night that passes it would alert. BIOMD0000000530 was killed before its last rung's RoadRunner run and replays as `archive_unreplayable` for the same reason. A recording now takes each row at the cap exactly as a live run does, and kills the worker only at twice the cap (up to 600 s, shared with `rr_run.py`), so the entry gets saved and a replay, running bngsim alone, compares the model.
+
+- **A smooth narrow bump of the clock in a rate law was stepped over** ([#1286](https://github.com/lanl/bngsim/issues/1286)). Examples are a Gaussian `exp(-((T - c)/s)^2)` or a sech² `1/cosh((T - c)/s)^2`. Away from itself such a rate is exactly 0 in doubles, so CVODE's error estimate was 0 and one step spanned the bump. X → Y at a Gaussian of area 0.5 gave Y = 0 for 2.212 at every tolerance, with dense output points and in sensitivity runs, with no warning. The run now stops at the centre of each bump in a clock: literal `time()`, or a counter fed at a constant rate (one an event resets is stopped on where it first reaches the bump, with a warning). The step then ends on the peak, and the bump is integrated to the tolerance. Recognized: `exp` (or `_e^`) of a quadratic in the clock with a negative leading term, and `cosh` or `tanh` of an affine function of it, which covers sech² spelled `1/cosh(u)^2` or `1 - tanh(u)^2`. A call whose argument reads anything besides the clock, such as a Boltzmann factor or a rate of a voltage, is passed over unparsed, so a model with no such bump pays milliseconds a run.
+
+- **The clock-rate column of a sensitivity run on a narrow kinked pulse stopped converging, 2e-5 to 9e-5 off from rtol 1e-10 on** ([#1285](https://github.com/lanl/bngsim/issues/1285)). At a corner of a pulse written with `max()`, `min()`, `abs()`, `clamp()` or a continuous `if()` over the state, a run restarts δt along the flow past the corner and keeps the time, and the columns were left δt behind the state. Inside a pulse of width w, a column that moves the pulse runs at 1/w² times the clock's column, so at w = 0.003 that cost dY/dk_clock 8e-5 at every tolerance, and up to 7e-4 in the `if()` spelling. On the analytic sensitivity path the columns now move with the state at a corner the run roots on. A run carried over a corner it stalls at (issue #1229) gives them that move's saltation term, and a corner's change of slope is no longer read as a jump. Where the clock does not round across the pulse, the column converges, to a median of 2e-7 over output grids at rtol 1e-12. At the issue's T = 50 it stays near 1e-5, as a Gaussian pulse's does, from the clock's own rounding. The same lag at a jump is issue #1454.
+
+- **A stall whose step had fallen under half an ulp of the time was never carried or refused** ([#1283](https://github.com/lanl/bngsim/issues/1283)). The hold check takes a residual held a few ulp short of a state-switch surface as pinned once the flow would have carried it across in the time it has been seen there. With t + h == t no time passes, so it never did, and the batch ran out on the no-progress guard: beside an unrelated decaying species, a sensitivity run on a narrow pulse's foot spent 20,000 steps at h = 1.1e-15 and a GH#176 retry on the difference quotient before returning, and with `jacobian="fd"` it failed. A step that cannot move the time now counts as the wait being over: the foot is carried, as #1229 does, and a stall at a jump is refused, as #952 does.
+
+- **A size that moves through `rateOf`, or through a cycle of rules that hold, was refused where bngsim can follow its rate** ([#1281](https://github.com/lanl/bngsim/issues/1281)). Since #1193, `cv := 2 + rateOf(S3)` and `cv := 2 + rateOf(P)` were refused because the rate of a rate was not derived. It now is:
+  - for a rate-rule variable, the rate of its right-hand side;
+  - for a species in a compartment whose size holds, the rate of its reactions' laws, each times its stoichiometry as the engine reads it, over the size.
+
+  A rule on a cycle of rules that hold (#621) has rate 0, and the size's jumps read it by name. A stoichiometry an initialAssignment sets now moves its species where the attribute's would cancel. Each case keeps X's amount at A(0)·e^(-t/4). Still refused by name: a rate an event or a piecewise can jump (directly, through a rule, or through a concentration's size), a conversion factor, a stoichiometry that moves, `rateOf` of a species whose own size moves, and a cycle of rules or rates that move.
+
+- **A sensitivity run returned 0 for the columns of a stretch an event started on a rate-law equality, with no error, and refused stretches it got right** ([#1279](https://github.com/lanl/bngsim/issues/1279)). An SBML washout that set B = 0 under `piecewise(kb, B == 0, 0)` gave dY/da and dY/dq as 0 for -6.44 and -1: #1228's refusal read the equality at the run's start alone. An event at a moving time that left B on the surface for an instant gave dY/dte = -1 for 0. The solver now roots where the state leaves each rate-law equality over state, wherever it got on, and refuses there only where a rate law that reads it changes and no jump at that instant covers it. A stretch that outlasts the run, that only an event ends, that a state switch written inside the equality ends, or whose leaving changes no rate law now runs, with the columns a central difference gives; #1228's refusal at the start is gone. A model whose equality the state never sits on steps as before, bit for bit.
+
+- **A sensitivity run with a fixed-time event and a moving one crossing on one instant, in two batches, returned one side's slope with no error** ([#1277](https://github.com/lanl/bngsim/issues/1277)). An event at `time >= 2.5` beside one on a state that a requested parameter moves to 2.5 fire a root's slack apart, as two batches. #49's refusal of two events on one instant whose times move differently was asked of one batch, so it never saw them together. Their order flips with the parameter and the result jumps there: S(3) goes from 3.75 to 4.25 across k = 1, and the run gave dS/dk = 1.25. Such a pair is now refused from either batch, as within one, and so is a pair that both move but not together: with the clock's time requested beside k, the run gave that 1.25 again. A pair whose fires no requested column moves, or that move together, still runs.
+
+- **A sensitivity run stopped by another root just short of a sample recorded that row from before an event crossing at the sample** ([#1276](https://github.com/lanl/bngsim/issues/1276)). A sensitivity run takes a row as reached from up to 1e-12 short of it, and from there it never read ahead to fire what crosses at the sample, as #1182 had it do at the sample itself. With a second event a hair before, the row held [S] = 5.5 at t = 2.4999999999999 where the run without columns held 2.75 at 2.5. The row is now read ahead from where the run stands. What rises fires there with its jump in the columns, and the row is taken at the sample time. A clock event at the sample then fires at the row with the event before it, as in the run without columns; where only one of the two moves with a requested parameter, the run is refused by name, as such a pair at one instant is (#49).
+
+- **Writing a `.net` now warns when a species an assignment rule sets is written so that only bngsim reads it as meant.** The writer emits such a species `$`-fixed, beside the observable or function that holds its rule under the species' own name. bngsim's reader takes the pair as the rule, but BioNetGen's `run_network` holds the species at its initial value for the whole run, and says nothing of the rule: `B := 2*A` read B = 20 at t = 5 in `run_network` against 1.64 in bngsim. Its rate laws read the rule through that observable or function, so only the species' own column can be wrong there: on BIOMD0000000144 every other species agrees to 5e-8. `write_net` (and `sbml_to_net`) now raise a `ConversionWarning` naming those species, and `capability_report` and the reports of `sbml_to_net` and `validate_conversion` list them under a new `bngsim_only` key. The file is unchanged and still exact for bngsim, so the warning is never a refusal, `strict=True` included (issue #1274).
+
+- The `.net` writer spells the natural logarithm `ln` (issue #1273). It copied bngsim's `log`, which BioNetGen's `run_network` does not have, so `run_network` refused the file, `Could not find variable 'log'`; 10 of the 214 SBML event models in `benchmarks/sbml_events` were written with one. `ln` is the name BNGL and `run_network` give it, and bngsim's reader computes the same values from it, bit for bit: trajectory, analytic Jacobian, sensitivities, compiled or interpreted. bngsim's `ln` also reports a logarithm of a value that is not positive, which its `log` does not. `log10` and `log2`, which `run_network` has, are left as they are.
+
+- A rate law that reads `rateOf` of a species a cross-compartment reaction changes keeps an analytic Jacobian and an analytic sensitivity right-hand side (issue #1266). `rateOf` is written out as the species' dX/dt so it can be differentiated (#1143), but a cross-compartment reaction's rate was left out, so the law kept the `rate_of__` token, both declined, and a sensitivity run fell back to CVODES' difference quotient: 59,927 steps at rtol 1e-10 for the 389 of the same model with the rate written out by hand. The rate is now divided by each species' own divisor, as the engine divides it: the live volume where the compartment is promoted, else the size, by name where it is a parameter, so a write to it and a sensitivity with respect to it see the division. The model now takes 389 steps, with the hand-written model's sensitivities, and its d/dC2 matches central differences.
+
+- `steady_states()` keeps a small conservation pool's total beside a large one (issue #1265). The projection that places every start, and the seed from `steady_state()`'s root, judged each law on the largest law's scale: beside a pool of 1e8 it pinned a pool of 1e-5 to 0, so every root came back with that total at 0, and it met a pool of 1e-3 only to 1e-7, so each start kept a total of its own and one root came back as four (totals 1.0000006e-3 to 1.0000693e-3). Each law is judged on its own scale now: a law of non-negative coefficients is pinned only where its total is 0 to the round-off of its own members, and each law is met to its own total. On the two-pool model every root holds both totals to 1e-9, and a switch in the small pool keeps its three roots; the 32 corpus models with laws give the same roots as before.
+
+- **Building a sensitivity simulator no longer slows as the product of a rate
+  law's comparisons and its `if()` conditions (issue #1256).** Four scans in
+  the switch analysis asked of every match whether some condition span holds
+  it, against every span: on #1145's size jump read through a diamond of rules
+  that was 74 million checks at 16 rules, and the build took 298 s at 20 rules
+  and did not finish in 13 minutes at 22. The spans are now indexed, sorted by
+  start with the furthest end kept, and each question is answered by
+  bisection with the same answer. The build takes 35 s at 20 rules and 101 s
+  at 22; what is left grows with the size of the written-out rate laws
+  themselves (issue #1255). The roots a run without sensitivities reads list
+  each comparison's text once, where a comparison written N times was found
+  N times for each copy: 2,000 copies of one took 4 s, and 0.1 s now. Results
+  are unchanged.
+
+- **Building a Simulator took exponential time where a rate law reads a diamond of rules** ([#1255](https://github.com/lanl/bngsim/issues/1255)). With `r_i := sin(r_{i-1}) + cos(r_{i-2})` under a compartment size, the dilution term's rate law written out does not collect, and the analytical Jacobian derived, checked and printed a derivative as long: 3.1 s at 12 rules, 57 s at 18, 110 s at 22, against under 10 ms with `jacobian="fd"`. Under a finite derivation budget, a rate law past 20,000 characters written out that does not collect now declines the analytical Jacobian from its predicted length (kind `"written_out"`), and the model runs on the finite-difference Jacobian: 0.02-0.03 s at any depth. `BNGSIM_JAC_DERIV_BUDGET_S=inf` derives it anyway, and the sensitivity RHS still derives J·yS. Five BioModels that spent their whole 20 s budget before declining now decline at once, with identical results; BIOMD0000000385 and BIOMD0000000628 move to the finite-difference Jacobian (builds of 9.6 s and 18.1 s become 0.3 s and 0.05 s), with results within the integration error.
+
+- **KLU with the FD Jacobian took each column's difference step on an absolute scale** ([#1254](https://github.com/lanl/bngsim/issues/1254)). On the sparse route, CVODE has no difference quotient of its own, so the Jacobian is filled by colored differences. Their step was `sqrt(eps)*max(|y_j|, 1)`, with a floor of 1 in absolute terms, so a species of 1e-9 was moved by fifteen times itself. The matrix KLU factored was then the Jacobian somewhere else. On #1254's equality, `if(Bobs==0, kb, 0)`, Y(10) was 7.7e-5 to 1.5e-2 off, 145 to 598 times dense's error with the same Jacobian. BIOMD0000000827, MODEL1006230034 and MODEL2002030001 failed (CV_CONV_FAILURE, CV_REPTD_RHSFUNC_ERR, CV_ERR_FAILURE), and MODEL1912090001 read 3% off dense. The step is now CVODE's own dense rule, `max(sqrt(eps)*|y_j|, min_inc/ewt_j)`, on the error weights' scale. Those models now agree with dense with the FD Jacobian to 2e-4 or better. Of the 163 models the automatic routing sends to KLU, 100 come closer to dense under `jacobian="fd"` by more than twice, at 1.3% more steps in all.
+
+- **`steady_state()` on KLU with the FD Jacobian marched on the same absolute step, and a compiled run's colored Jacobian mixed two right-hand sides** ([#1254](https://github.com/lanl/bngsim/issues/1254)). The march's colored quotient now takes the step its dense quotient takes: a nanomolar reversible chain marched 3574 steps on KLU without converging, where dense converged in 197, and now converges in dense's 197. Where codegen compiles the right-hand side (256+ species), CVODE's f(y) came from the compiled RHS while the columns were differenced on the interpreted one, so on the new, smaller steps their last bits read as slope: fceri_ji took 241 steps where the interpreted run took 251. The quotient's base is now the interpreted f(y) too, and KLU with the compiled RHS takes dense's steps on fceri_ji, Barua_2013, before_bunching and fceri_fyn.
+
+- The Table S4 agreement check (`benchmarks/suites/ode_engines_s4_sbml/check_sbml_engine_agreement.py`) judges agreement against a converged reference, not against bngsim at the timing tolerance, where Koo2013's final state swings by up to 7% with the output grid in every engine (issue #1250). Each engine at rtol 1e-12 is compared with libRoadRunner (bngsim where it fails) species by species, by SBML id, over every output row (COPASI: final state), above 1e3 times the reference's atol. `agree` is True only when all are within 1e-4; False for one off it, or holding a non-finite value at either tolerance; None, with the reason, when species cannot be matched one to one, nothing the reference resolves was compared, or an engine timed at the figure's tolerances failed at the reference's. Each engine's error at the figure's tolerances, above its atol, is reported, not judged. The old sorted comparison, which passed a NaN species and could not tell two species apart, is kept only as `bngsim_vs_*_sorted_mre`.
+
+- The `.net` writer (`sbml_to_net`, `write_net`) writes every parameter and function expression as one whitespace-free field, as BioNetGen's `run_network` reads it (issue #1249). A derived parameter written as sympy printed it, `k / (c1 / _V0_c1)`, made `run_network` refuse the parameters block, and a spaced function ran as its first word with no message (`k * Aobs / (1 + Aobs)` as `k`); the writer's own flux helpers and wrappers were spaced too. `and` and `or` are written `&&` and `||`, which both readers take with the same meaning and precedence; an operator with no one-field spelling (`xor`) is listed as lossy by `capability_report`, so it is refused under `strict`, with a warning otherwise. The parameters that hold a function's value are no longer written: in `run_network` they shadowed the function, whose rate then read 0. Of 89 corpus and SBML event models written, `run_network` now runs 69 to bngsim's trajectory, against 8 before; bngsim reads the written files back exactly as before.
+
+- A rate law's condition that reads a species only events write, such as a daily pulse whose width `w` an event sets, now gets its stops (issue #1244). Before, it got no stop at all, and X(240) was 1 for 17 at every tolerance, plain or with sensitivities. Where the events that write the species fire at fixed times (`time >= c`, after a constant delay) and set values known before the run, the condition is stopped at stretch by stretch between them, with the species as its value there. A run that continues the last one reads its events as the engine does: a trigger true where the last run ended does not fire again, and an execution delayed into the run sets the value it froze. Where they do not, a condition a rate law reads that changes more than once over the run, as the run starts or with the species at any value an event is known to set it to, is refused by name; one that changes once, which its root sees, runs as before, and so does one that only an output reads. SSA takes the same stops: a narrow pulse such an event widens, stepped over there too (1.2 for 15), is right now, and an unknown schedule is refused.
+
+- **The Jacobian sparsity pattern had no entry for what a `rateOf` read depends on** ([#1239](https://github.com/lanl/bngsim/issues/1239)). A law that reads `rate_of__X`, X's live dX/dt, depends on every species X's rate depends on, and the pattern gave it none of them: `S' = g*rateOf(P)` beside `2P -> ` had no slot for ∂f[S]/∂[P]. The sparse (KLU) route colors its finite-difference Jacobian from the pattern, so it dropped those entries; its runs stayed within the tolerance but stepped differently from the dense route's. With #1143, which writes `rate_of__X` out, the analytic Jacobian declined its attach for the same missing slots. A read of `rate_of__X` now adds row X's entries, to a fixed point for a rate that reads another rate. A model with no `rateOf` keeps its pattern byte for byte.
+
+- **Under a decimal-comma `LC_NUMERIC` (`de_DE`, `fr_FR`), the C++ side read `0.5` as `0`** ([#1235](https://github.com/lanl/bngsim/issues/1235)). In a process that had called `setlocale` on a German or French machine, a homodimer's stat factor `0.5*kf1` was refused; a group factor `0.5*1,2`, an inline table's values and a RuleMonkey TFUN's values were cut at the decimal point (0.5 read 0, 2.5 read 2) with no error; literals ExprTk misreads went one ulp off again (#1014); the SSA propensity source wrote `0,5` into its C; NFsim refused a TFUN with a 0.5 in it and MIR every decimal literal; and libantimony wrote `k = 0.1` into its SBML as 0. bngsim's own reads and writes are now in "C", and the RuleMonkey and NFsim loaders, MIR's compile and Antimony run under a "C" `LC_NUMERIC` on the calling thread only, leaving the process's setting alone. A group factor or table value that is only partly a number (`1/2` read 1) is now refused.
+
+- **A `.net` reaction line with anything after its rate law loaded without it, with no error** ([#1231](https://github.com/lanl/bngsim/issues/1231)). `1 1 2 k delay=tau` loaded as an undelayed reaction, `MM kcat Km delay=tau` as plain MM, and, with two reactants, `Sat k Km 2` with a literal saturation constant; run_network refuses all three. The loader now refuses such a line and quotes what it will not read, and refuses `MM kcat` too. Two forms build() refused as an unknown parameter `MM` or `Ele` now say what they are: a stat factor on an MM, Sat or Hill rate law (`2*MM kcat Km`, which BNG2.pl writes and #1230 will read), and the `Ele` keyword. None of 5,131 `.net` files on hand has such a line.
+
+- **A `.net` MM, Sat or Hill reaction with a statistical factor (`2*MM kcat Km`)
+  loads, where it was refused, as an unknown parameter `MM` and then by name
+  (issue #1230).** BNG2.pl writes a reaction's factor ahead of the type keyword
+  for every type, which a symmetric substrate is enough to produce, and
+  run_network multiplies the whole rate by it. The loader now reads the factor
+  off the token before matching the type, as run_network does, and holds it to
+  the rule an elementary factor already follows: a positive decimal number. On
+  the files BNG2.pl 2.9.3 writes for each type, the trajectories match
+  run_network's to 1e-8.
+
+- **A sensitivity run on a narrow continuous pulse was refused at tight tolerances, for a jump that does not exist** ([#1229](https://github.com/lanl/bngsim/issues/1229)). The #952 hold check ends a run whose state is held within a few ulp of a state-switch surface, because at a jump there is a saltation term to apply and no crossing time to take it from. It asked that of every surface, a bend included: where a triangle `max(0, 1 - abs(T-c)/(w/2))` returns to 0 the rate law is continuous and only its slope changes, which at rtol 1e-10 failed the error test as a jump would. The same pulse written with `if()` was refused the same way. A stalled surface is now read a step either side along the flow, and one the right-hand side is continuous across, or that no rate law reads, is carried over as a plain run's is, its columns unchanged. A stalled surface it jumps across is refused as before, and so is a carry that would take a jump or an event across with it: a rate law spelled apart from the pulse that jumps on the same surface, or an event triggered there, has no crossing time for the columns to move with.
+
+- **A sensitivity run whose rate law branched on an equality the state sat on returned 0 for the columns of whatever ended it, with no error** ([#1228](https://github.com/lanl/bngsim/issues/1228)). `if(Bobs==0, kb, 0)` with B held at 0 until A falls to q gave dY/da and dY/dq as 0 for -6.44 and -1. An equality is not rooted, since one the state crosses holds for an instant, and either side of its surface reads false, so leaving a surface the state sat on was a switch nothing saw; `Bobs<=0`, the same switch, is located and refused at its tangency. A rate-law equality (or `!=`) over state that the run starts on, at its own start time, and stays on is now refused by name, from `run`, `run_batch` and `compute_all_sensitivities` alike, pointing to the crossing that ends the stretch. An equality the state starts on and leaves at once, or only crosses, or that no rate law reads, runs as before. Only the start is read: an event that puts the state on the surface mid-run is not seen, and a stretch is refused all the same where nothing in the run ends it, or only an event does ([#1279](https://github.com/lanl/bngsim/issues/1279)).
+
+- **A sensitivity run on a `clamp()` pulse over the state ran on the difference quotient, its clock-rate column up to five-fold off and not converging** ([#1227](https://github.com/lanl/bngsim/issues/1227)). Since #1131 a pulse of `min`, `max` or `abs` has an analytic sensitivity right-hand side; `clamp` had no sympy counterpart and was declined. It is now a bend twin with ExprTk's ordered semantics, so `clamp(0, (Tobs-c+w/2)/(w/2), 1)` beside its shifted copy gives dY/dk_clock to 3e-5 at rtol 1e-9 where the difference quotient gave it to 7%. Only a clamp whose bounds are numbers with lo <= hi is a bend: crossed bounds make it a step, which still declines, and so do bounds over parameters or state. A sensitivity time course on a crossed clamp over the state is now refused, as a step call is (#938): it ran on the difference quotient, which reads across the step, and returned dY/dk_clock 45% off with a warning that called it correct. The analytic state Jacobian differentiates a clamp too, as it does `min` and `max`.
+
+- **A pulse schedule at a loose tolerance follows it** (#1226; ODE runs). At
+  an `rtol` looser than 1e-4 a stop now sits on the last double before each
+  change of a rate law on the clock, where the resolvers put it on the change
+  or a double either side. The step that ends on a stop reads the rate at its
+  end, and on the change, at a tolerance loose enough for it to span the
+  stretch, it was taken at the next stretch's rate:
+  `if(mod(time(), 24) < 1, 1, 0)` over 1,000 days came to 14,627 for 1,000 at
+  `rtol` 1e-2, each day's 23 hours off taken at the rate on, and other
+  schedules were 18% to 630% over or 21% under at 1e-2 to 1e-3. They are now
+  exact to rounding. A rate law that changes between its stops (a sawtooth, a
+  ramp, a pulse times the clock) keeps them where they were, as does a
+  schedule loaded from SBML or Antimony, whose conditions come in
+  parentheses. Event triggers,
+  sensitivity runs, counter clocks and the SSA are unchanged at every
+  tolerance, and every run at 1e-4 and tighter.
+
+- **MIR-compiled code no longer dies with an illegal instruction in an x86_64
+  Python on Apple Silicon (issue #1216).** At -O2, the level bngsim uses for
+  generated sources up to 512 KB, MIR aligns the head of each inner loop to an
+  8-byte boundary with up to 7 bytes of NOPs. Its 3- and 4-byte NOPs were
+  register forms (`0F 1F C0`, `48 0F 1F C0`), and Rosetta 2 raises SIGILL on
+  both, so the process ended the first time it ran one (140 tests of the MIR CI
+  leg's list under Rosetta). The vendored MIR now pads with the memory forms
+  Intel recommends, `0F 1F 00` and `0F 1F 40 00`. On an x86-64 CPU the code is
+  the same length and does the same thing. Only builds configured with
+  `-DBNGSIM_ENABLE_MIR=ON` and run with `BNGSIM_CODEGEN_JIT=mir` are affected.
+
+- **A MIR build reserves 32 MB of address space for each JIT'd model's code, not 128 MB (issue #1215).** Each live MIR-JIT'd model (a `Simulator`, a steady-state solve, SSA propensities) held 128 MB of address space, so under a cap on it (`ulimit -v`) about 60 of them filled 8 GB. The new CMake option `BNGSIM_MIR_CODE_RESERVE_MB` (default 32, at most 2048) sets the size; code that outgrows it is mapped on its own and runs the same. `scripts/rebuild_editable.py` passes it on every rebuild. Builds without MIR, and Windows, are unchanged.
+
+- **Running out of memory or address space while MIR compiles a model raises a `RuntimeError` instead of ending the process (issue #1215).** MIR answered a failed allocation with `exit(1)` and a failed code mapping with a segfault, so under a cap on the address space (`ulimit -v`) the model that did not fit ended the process. `MirJit` now raises: ODE and steady-state runs pass the error on, and SSA falls back to its interpreted propensities. A failed compile gives its code's address space back, though not its heap. A live MIR-compiled model also holds less: fceri_fyn's compiled form fell from 852 MB of heap to 388 MB. Only builds configured with `-DBNGSIM_ENABLE_MIR=ON` are affected.
+
+- **A derived rate constant over `log10`, `log2` or another ExprTk call sympy has no name for declined the analytic sensitivity right-hand side for the whole model, or was refused** ([#1214](https://github.com/lanl/bngsim/issues/1214)). `k = log10(p)` fell back to CVODES' difference quotient as if it stepped like `floor()`, for a derivative of 1/(p ln 10); so did `log2`, `log1p`, `expm1`, `hypot`, `avg`, `sum`, `mul` and `clamp`. `logn`, `ncdf`, `deg2rad` and `rad2deg` were refused outright, and so was a clock threshold such as `time() > log10(p)`. Each is now written out as ExprTk defines it, and differentiated. The calls that step (`floor`, `ceil`, `round`, `trunc`, `frac`, `sgn`, `sign`) still decline. sympy no longer rewrites a derived parameter's `erfc(-x)` as `2 - erfc(x)`, which cancelled where `erfc(-x)` is small: `k = -log(erfc(-p))/40` had a sensitivity 0.4% off at p = -5.5 and a non-finite one at p = -6.
+
+- **On a MIR build, `Simulator(method="ssa", codegen=False)` still compiled the propensities, with the in-process MIR JIT** ([#1213](https://github.com/lanl/bngsim/issues/1213)). `codegen=False` only kept Python from building the cc library; with none to load, the C++ selector's fallback for installs with no compiler JIT'd them, and `ssa_diagnostics["propensity_backend"]` read `"mir"`. The caller's choice now reaches the engine (`SsaSimulator.set_codegen`) and acts as `BNGSIM_SSA_NO_CODEGEN` does, for a plain run, the engine rebuilt after `intervene`, `run_replicates`' per-thread engines and `run_batch`'s rows. With codegen left on, a MIR build with no compiler still JITs.
+
+- **Codegen copied parts of a rate law into the C it compiles that C has no meaning for** ([#1212](https://github.com/lanl/bngsim/issues/1212)). These were ExprTk's `frac`, `inrange`, `iclamp`, `roundn`, `root`, `logn`, `sinc`, `equal`, `cot`, `sec`, `csc`, `ncdf`, `deg2rad`, `rad2deg` and the rest; a table read as `tfun_kf` or `tfun_kf ()`; a name with a dot; an implicit product such as `2tfun_kf()`, `k(x + 1)` or `(a)(b)`; square and curly brackets; `2e-3` beside a parameter named `e`; and `_R`, `_NA`, `_kB`, `_h`, `_F`. cc refused the source after automatic codegen had paid for the compile, and the MIR JIT refused it outright. Each is now C written from ExprTk's own arithmetic. That includes `hypot` and `log2`, whose C versions differ from ExprTk's (`hypot(1e200, 1e200)` is `inf` to the engine). Anything still untranslated declines before a compiler sees it, as does a bracket after a call, which the engine reads as a second statement (`k*exp(-x)(y)` is `y`).
+
+- **The SSA screen reports a rate law that is undefined where the SSA goes as the
+  model's, not as a bngsim EXCEPTION (issue #1211).** bngsim refuses a NaN or
+  infinite propensity (#809), and the screen stopped there. Four BioModels do
+  this once a count reaches 0: BIOMD0000000912 (`p1*I/(g1*I)`), BIOMD0000001025
+  (`log10(U)`), MODEL2001200002 (`(L/T)^λ`) and MODEL2012040002 (a Michaelis-Menten
+  law with `Km = 0`). RoadRunner evaluates the same laws to NaN at those states,
+  and its gillespie then fires nothing more and holds the state to the end of
+  the run, with no error. On that refusal the screen now runs it on the same
+  seeds and reads its rates. Where the same reaction's rate is non-finite, or
+  where RoadRunner's gillespie declines the model (BIOMD0000001025 has rate
+  rules), the row is `nonfinite_rate`, a BAD_TEST. Anything else stays a red
+  EXCEPTION: every rate finite, another reaction's rate non-finite, or any other
+  RoadRunner error. A reference archive records the check; replaying an entry
+  recorded without it leaves the row red.
+
+- **A NaN or infinite propensity is refused with the state the rate law was read
+  at (issues #809, #1211).** The refusal named the reaction and the time. It now
+  names the species the law reads and their values at the refusal, from the
+  reaction's rate-read set: on BIOMD0000000912, `... is nan at t = 0.0713, with
+  I = 0, T = 1, E = 1`, the `I = 0` under `p1*I/(g1*I)`. Zero and non-finite
+  values come first, at most eight are named and the rest are counted, so the
+  telling one is not buried on a large network. A law that is undefined at a
+  count of 0 is told apart from a bngsim fault without a rerun. Nothing is named
+  for the total propensity, or where the law's reads cannot be decided (a rateOf
+  read, or a table function indexed by something that is neither the time, a
+  parameter nor an observable).
+
+- **A concentration species in a compartment whose size moves with the run, and whose rate bngsim could not derive, was not diluted, with no error** ([#1193](https://github.com/lanl/bngsim/issues/1193)). `cv := 2 + rateOf(S3)` with S3 decaying read the `rateOf` token as a constant, so [X] came back as 4·e^(-t/4), the trajectory of a size that holds; so did `rateOf` of a rate-rule variable. A size reading `rateOf` through a rule, a cycle of sizes that moves (#1185's included) and a size whose rate the engine cannot evaluate (`floor`, `ceil`) were left out of the dilution. Each is now refused at load, naming the compartment, its rule and why. A size over `abs`, `min` or `max` is now diluted. A `rateOf` that a size reads only in a jump condition still loads, and over a rate-rule variable its jump is now rescaled, where [X] came back twice too high. A `rateOf` of a species that moves is refused even where it is constant.
+
+- **An ODE run with stops still stepped over a pulse where #998's look did not reach, with no error** ([#1192](https://github.com/lanl/bngsim/issues/1192)). A daily dose with output rows every 12 hours kept 0.28 of its integral (every 8 hours 0.40, and the same beside an event that never fires 0.27), a pulse while a delayed event waited to be executed 0.08, a late pulse beside a linear table's breakpoints 0.78, and the same pulse beside an unrelated fast reversible binding (`S + B <-> C` at 1e4) 0.04. The run now watches the steps the integrator takes on its way to an output row or an event's time and those after a stop that restarts nothing, reads a step's end through the integrator's corrector, and reads any step that would take a quarter or more of what is left of a stretch. Runs with sensitivity columns, and runs with no crossing stop in their window, step exactly as before.
+
+- **`steady_states()` certifies each distinct root once, not every start that
+  reached it (issue #1191).** Each converged start paid the stability
+  certificate, a dense eigendecomposition of the reduced Jacobian, for a root
+  the clustering then kept one verdict of: on egfr_net (351 unknowns) 91 of 200
+  starts reached one root and most of the call was the same spectrum. The
+  starts are now solved without it, and each root's representative is
+  certified where it is, with no Newton step: egfr_net's call drops from 7.2 s
+  to 2.7 s, with the same roots, verdicts and eigenvalues.
+  `steady_state_batch(newton_burst=False)` takes `certify=False` to skip it and
+  `certify="start"` to certify each starting state as given, and keeps it by
+  default.
+
+- **A root under a large conservation total converges in `steady_states()`
+  (issue #1190).** The burst-free Newton solve rebuilt one species per law as
+  `T − Σ L·y_others`, and on an all-ones law that was the first member, however
+  small: under a pool of `1e8` the Gardner toggle's R1 (~28) carried ~`1e-16·T`
+  of round-off, every root's residual exceeded `tol=1e-9`, and the call returned
+  nothing. That solve now rebuilds each law's member that carries the most of
+  its total where the solve is, and settles a start that ended on a root with a
+  few more Newton steps pivoted there. The toggle's three roots are found at
+  `1e8`, and its saddle converges to a residual of `1e-15` at totals of `1e3` to
+  `1e9`. Newton's longest step is still sized by the law's largest member, and a
+  law whose own pivot `mask=` leaves out keeps it, as before. The two-tier
+  solver, `dY_ss/dp` and the stability certificate keep the model's pivots.
+
+- **`steady_states()` now returns the root `steady_state()` reaches as well
+  (issue #1189).** On Motivating_example, its cBNGL twin and fceri_ji_red every
+  sampled start failed and the call returned no root, though `steady_state()`
+  converges and Newton converges from its root at once. The root of one ordinary
+  `steady_state()` solve (with the call's `mask=`) is now solved as an extra
+  start. It is no draw, so it adds nothing to `multiplicity` or `basins`; a root
+  only it found is reported with multiplicity 0. Where Newton cannot hold that
+  root at `tol`, it is still missed. The seed is put on the conservation laws at the model's totals first, as the
+  draws are, so a masked sink at the end of a chain cannot carry it to a root
+  of another problem.
+
+- **Two size conditions that flip at one root are one root when one is written
+  with a power (issue #1187).** SBML writes a power's exponent as a real, which
+  reaches sympy as `Float(2.0)`, and `cancel` reads `(S + 1)**2.0` as no
+  polynomial: `(S + 1)^2 > 25` beside `S^2 + 2*S + 1 < 25` were two roots, the
+  size's two jumps fired on one instant, and [Sn] came back 3.333 for 1.667 on
+  three seeds of four, with no error. The grouping now reads a whole Float
+  exponent (up to 32) as its Integer, for the root a constant puts on one
+  instant as well. Over a diamond of rules the size's three values were wrong on
+  every seed and are now right, at one run constant too: past 5,000 tree nodes
+  that pair is read at three points before it is expanded. The triggers keep the
+  condition as written.
+
+- **A ring of compartment sizes through a value and a jump condition ran, keeping one of two consistent states with no warning** ([#1185](https://github.com/lanl/bngsim/issues/1185)). An example is `cv := 1 + [Sw]` with `cw := piecewise(5, time >= 2 && [Sn] > 8, 1)`, where cw is consistent at 1 and at 5 after t = 2. It is now refused at load, naming each link, as rings through values alone or conditions alone already were; libRoadRunner refuses it too. A ring of this kind with a single consistent state is refused with the rest. A ring of one, a size whose condition reads its own concentration, still runs, and keeps the state it is in where two are consistent. That includes a condition that reads it through another size's rule, as `cw := piecewise(5, time >= 2 && cv < 2, 1)` beside `cv := 1 + [Sw]` does.
+
+- **A run with sensitivity columns recorded an event's row before the event, where the same run without them recorded it after** ([#1182](https://github.com/lanl/bngsim/issues/1182)). Since #1133 a plain run fires an event whose trigger on the state crosses within CVODE's root tolerance after an output, and records that row after it. `species S = 3; q = 0; k = 1; q' = k; at (q >= 2.5): S = 1` on [0, 1, 2, 2.5, 3] gave [S] = 1 at 2.5 without sensitivities and 3 with `sensitivity_params=["k"]`. A sensitivity run now fires there too, takes the row as the crossing, and jumps its columns with ∂t*/∂θ read from the trigger's flow, as at a located crossing. With `S' = 1` and `S = S/2`, dS/dk at the row is 1.25, the closed form. A fire on a row or at a stop is now also counted for #1025's confirmation, as one at a root is. Uncounted, a run whose order beside a switch was being confirmed was refused with "does not fire it there" where its order was plain.
+
+- **Two jumps of one compartment's size that the integrator put on one instant rescaled its concentrations by one jump's share, with no error** ([#1181](https://github.com/lanl/bngsim/issues/1181)). `cv := 1 + piecewise(0, time < t1, 1) + piecewise(0, time < t2, 1)` with t1 = 2 and t2 a few ulp past it (2 + 4e-16 to 2 + 1e-14, or 0.1 + 0.2 beside 0.3) left [Sn] at 3.333 for 1.667, and so did `time/s < tm` beside `time < t1`. The first jump of a compartment at an instant now rescales by the whole of it, the size read just before the instant over the size after, and the rest stand down; a compartment whose size reads the concentrations takes the whole instant too. An equality beside a step on one instant, `piecewise(1, time == t1, 0) + piecewise(0, time < t2, 1)` with t1 = t2, kept [Sn] at 5 for 2.5; it is now right. A sensitivity run where such an instant changes the rescale is refused by name; where a run constant puts the jumps on one root the columns are as before.
+
+- **`method="nf"` follows a rate that a linear table function indexed by time
+  ramps (issue #1179).** NFsim read such a table only at its x values and after
+  each reaction, and held that value in between, so where little fired the run
+  lagged the ramp with no error: 100 `X(p~1)` leaving at a rate that ramps from
+  0 at t = 0 to 10 at t = 1 stayed at 100 through t = 1, where the exact mean
+  is 1.75. Where a linear table indexed by time ramps, the vendored NFsim now
+  places each firing where the propensity integrated since the last one
+  reaches an exponential draw, as `method="rm"` and `method="ssa"` do.
+
+- **A run no longer hangs on events that re-arm their own trigger as they fire
+  (issue #1158).** `at (B > 0): B = 0, F = F + 1` with `B' = 1` puts B back on
+  its threshold, the flow makes the trigger true again at once, and the event
+  fires infinitely often at one instant (Zeno behaviour), as does a ring of
+  events each re-arming the next: no trajectory continues past it. bngsim fired
+  at every root CVODE reported, a root tolerance apart, and `run` never
+  returned. Root batches within CVODE's root tolerance of the batch before are
+  now counted as one instant, and past the same-instant event-loop limit
+  (100000) the run is refused, naming the events. Pulse trains spaced by more
+  than the root tolerance are unaffected.
+
+- **A run that starts on a step of `ceil()`, `floor()` or `sign()` over the
+  state is no longer several percent off with no error.** `X -> Y` at
+  `0.01*ceil(0.4*X)*X` from X = 10 came back 5 % off mid-run at rtol 1e-4 and
+  1e-6, as `.net` and as SBML: the analytical Jacobian declined these calls
+  over the state, and CVODE's difference quotient read across the step. The
+  calls now differentiate to 0, which they are between their rooted steps, so
+  such a model runs on the analytical Jacobian. `sgn()` is read as `sign()`. A
+  run with sensitivities on `sign()` over the state is no longer refused, and
+  the stop where `sign()` jumps lists the rate law that holds it: unlisted, its
+  jump was dropped beside a large flux and dX/dk came back 96 % off. An
+  explicit `jacobian="fd"` still differences across a step it starts on.
+  (#1128)
+
+- **A pulse written with the `%` operator is no longer stepped over.** The
+  stop and root scanners read named calls only, so
+  `((Tobs+49.99)%100)-((Tobs+50)%100)+0.01` got no stop on a clock and no
+  root on a counter, and one step spanned it: Y = 0 for 3.9347, with no error,
+  where the `mod()` spelling was right. The scanners now read `a % b` as
+  `mod(a, b)`, which is what ExprTk's operator is (`std::fmod`), with `%`
+  binding like `*` and `/`. The generated C does the same: a `%` rate law no
+  longer fails to compile, which made every run with sensitivities on such a
+  model raise. SBML's `<rem/>` was not affected. (#1127)
+
+- **A run with sensitivities on a `min()`, `max()` or `abs()` pulse over the
+  state now has an analytic sensitivity right-hand side.** These calls were an
+  "unsupported construct" for `∂f/∂p`, so the run used CVODES' difference
+  quotient. Its trajectory and dY/dkx were right, but the column of a
+  parameter that moves the pulse was off by up to six-fold and did not
+  converge with the tolerance (-5.97 for -0.97 at a triangle of width 0.01,
+  rtol 1e-6). A bend's derivative has no delta in it, so nothing is left to
+  make up at the bend, and `∂f/∂p` is now taken through the kink rewrite the
+  state Jacobian uses (#507). The columns match the `if()` spelling of the
+  same pulse, and a difference of runs for parameters inside the bends. This
+  holds in a model whose rate laws have no condition, for a bend no division
+  or fractional power of the state or the clock is written over; anywhere
+  else the model declines as before. `clamp()` is still on the difference
+  quotient. (#1126)
+
+- **A `min()` or `max()` whose arguments are tied along the run now counts
+  the tie once in the state Jacobian.** Where two reactions hold A == B,
+  `kc*min(A, B)` gave both arguments the weight 1 at the tie, so J·s counted
+  dA/dp twice: the steady-state dX*/dkp was −3 for −1.5 (−4.5 for three
+  arguments), with no warning, and with the analytic sensitivity RHS above a
+  run's dY/dkp was 5.77 for 2.88. A tie now splits the weight, as `abs()`'s
+  `sign(0) = 0` does, which is what a central difference reads there. (#1126)
+
+- **Two size jumps of one compartment that land on the same instant are now
+  one rescale.** `cv := 1 + piecewise(0, t < t1, 1) + piecewise(0, t < t2, 1)`
+  with t1 = t2 = 2 took a concentration in `cv` to 2/3 of itself at t = 2 for
+  1/3 (libRoadRunner gives 1/3), with no error, and so did two species
+  thresholds that are equal. The two jump events read the state from their
+  trigger time, so the last one's rescale stayed, and each read the other
+  jump's condition as already flipped. Conditions whose roots differ by a run
+  constant are now read together where that constant is 0, so each event
+  rescales by the whole instant; a `set_param` that moves one onto the other,
+  or off it, is followed. (#1124, item 1)
+
+- **An event whose trigger on the state crosses on an output sample now fires
+  in that sample's row.** `q' = 1; at (q >= 2.5): S = 1`, sampled at t = 2.5,
+  reported the state from before the event there ([S] = 3 for 1; libRoadRunner
+  and SSA give 1), with no error: CVODE reaches q(2.5) = 2.4999999999999996,
+  and found the root a few doubles after the row. A root that close is not
+  after the row by anything the root search can tell, so the triggers at an
+  output are now also read with the state half CVODE's root tolerance ahead.
+  A trigger on the clock is exact, and an event a double after a sample still
+  leaves that row before it. (#1124, item 2)
+
+- **Two compartment sizes whose jump conditions each read the other's
+  concentration are now refused by name.** `cv := piecewise(1, t < 2 || [Sw] > 2, 5)`
+  beside `cw := piecewise(1, t < 2 || [Sn] > 2, 5)`, with Sn in cv and Sw in
+  cw, has two consistent states after t = 2 (both sizes at 1, or both at 5),
+  and nothing in the model says which. bngsim kept the sizes from before the
+  instant with no error; libRoadRunner refuses the model as a recursive
+  assignment rule. A ring of any length through such conditions alone is now
+  refused at load, naming each compartment and what it reads. A ring with a
+  link through a size's value as well runs, as before. (#1124, item 3)
+
+- **`sensitivity_ic` on a model whose analytic sensitivity RHS was declined
+  is now refused with the reason.** With `C := 1 + P` and a concentration in
+  C, the dilution term reads P's rate, which codegen does not differentiate;
+  a parameter column runs on CVODES' difference quotient, but an
+  initial-value column has no parameter to perturb, and the run failed with
+  "no codegen .so is loaded. Build the model with codegen enabled", though
+  codegen was enabled and had built the model. The `Simulator` now raises
+  `SensitivityUnsupportedError` naming the declined rate law. (#1124, item 7)
+
+- **A call to a functionDefinition whose body reads `rateOf` now takes the
+  rate of what is passed, where it was refused at load.** `h(y) = rateOf(y)`
+  (COPASI's rateOf idiom), called as `h(S)` in a rule, a kinetic law, an
+  initialAssignment, an event or a Level 2 stoichiometryMath, is written out
+  at the call as `rateOf(S)` before the load checks it, so the initial-value
+  fold, the rules and codegen read S's rate, through any number of such
+  functions. A call whose argument is not a single symbol, `h(2*S)`, is
+  refused as `rateOf(2 * S)` is (rule 10223); one with the wrong number of
+  arguments, or to a function that calls itself (rule 20512), is refused by
+  name. COPASI's idiom now works in an event delay or priority, and `rateOf`
+  of a name the model declares nowhere is refused by name. (#1124, item 8)
+
+- **A conversion factor written over `rateOf` of a species nothing changes
+  loads, where it was refused as moving.** `cf := 1 + rateOf(S3)`, with S3 in
+  no reaction, holds cf at 1 for the whole run (libRoadRunner runs it so),
+  but every `rateOf` counted as reading the clock, and the factor was refused
+  under rule 20705. A `rateOf(x)` now moves where `x` does. With the model's
+  factor on S3 too, S3's rate at load read the factor being worked out; a
+  species the reactions do nothing to has rate 0 at any factor. A factor over
+  the rate of a species that moves is still refused. (#1124, item 9)
+
+- **A dilution term that reads a species' rate keeps the analytic sensitivity
+  RHS.** With `C1 := 2 + r*P` and S in C1, S's dilution term reads
+  `rate_of__P`, the engine's live dP/dt, which no derivation could
+  differentiate: the analytic Jacobian and sensitivity RHS were declined, a
+  sensitivity run at rtol 1e-11 took 291,511 steps on CVODES' difference
+  quotient, and `sensitivity_ic` could not run. The derivations now read P's
+  rate as the sum of the rates of the reactions that change P, the same
+  value, for mass-action and rate-law reactions and for an amount; the run
+  takes 284 steps and agrees with finite differences. A rate stays unread
+  where a reaction that changes P divides by each species' volume or is
+  Michaelis–Menten. The analytic Jacobian is kept where the reading law
+  already reads what P's reactions read (#1239). The compiled Jacobian of a
+  model that reads a rate, even only in an output, no longer fails to build
+  beside a cross-compartment reaction into a rate-ruled compartment.
+  (#1124, item 7)
+
+- **A conversion factor over `rateOf` of a species a reaction lists but does
+  not change loads.** `S3 -> S3` at `0.1*S3` lists S3 with a net stoichiometry
+  of 0, so nothing moves it and its rate is 0, but any listed species counted
+  as changed by the reaction and `cf := 1 + rateOf(S3)` was refused as a factor
+  that changes during the run; libRoadRunner runs it with cf = 1. A species
+  now moves by a reaction only where its net stoichiometry there is not 0 (one
+  set by math or by a rule, or not constant, still counts as moving).
+  (#1124, item 9)
+
+- **The sensitivity through an event's resize read through more than 65
+  levels of assignment rules is no longer refused.** The new size was written
+  out 65 rules deep and read the rest by name, at their value before the
+  event, so `r0 := k*p`, `r_i := r_{i-1} + 1` up to r69 and `cv := 1 +
+  1e-3*r69`, with an event setting p, refused its sensitivity as a second
+  fire of the instant (#936). The trajectory was right. (#1124)
+
+- **A parameter, species or reaction named as one of a size jump's functions
+  keeps its value.** The functions a size's jump read through a diamond of
+  rules (`_szj_*`, #1145) took their names without looking at the model's: a
+  parameter of the same name was bound to the function (#266), which wrote
+  its own value over the parameter's at every step, a reaction's rate law was
+  replaced by it, and a species of that name failed the load. They now take a
+  name nothing in the model has, as the event resize's `_rsz_*` do. (#1124)
+
+- **An SBML condition reached through a function definition and the same one written directly are one root** ([#1082](https://github.com/lanl/bngsim/issues/1082)). A formal bound to a call is spliced into the body as `(time())`, so `near(time, 2.5, 0.005)` with `near := abs(x - c) < w` beside `abs(time - 2.5) < 0.005` registered each edge twice, and `Model.time_discontinuity_conditions()` listed four conditions for two. Results were right; the roots were redundant. Conditions are now de-duplicated with the parentheses around a lone name or call dropped, and the first spelling met is the one registered, so a model with no such pair registers what it did.
+
+- **A trigger equality reached through a function definition beside the same
+  one written directly is one stop.** The roots were de-duplicated on a key
+  with the parentheses around a call dropped since #1106, but the equalities,
+  which are stops alone, were not: `at2(time)` with `at2 := x == 2` beside
+  `time == 2` registered two. They are keyed the same way, in the first
+  spelling met. The key and its helpers now live beside the recovery's own
+  in `_switch_sensitivity`, so `Model.time_discontinuity_conditions` compares
+  on it without importing the SBML loader. ([#1082](https://github.com/lanl/bngsim/issues/1082))
+
+- **`mratio` no longer loses up to 6e-7 of its value inside `|z| <= 20` when
+  `a` is tiny next to `b`, or `b` itself is tiny (issue #1080).** The continued
+  fraction lost digits there in proportion to the size of the ratio:
+  `mratio(-1e-12, 0.0267, 19.31)` returned 2.235481406e8 for 2.235481880e8.
+  For `b > 0`, `0 < |z| <= 20` and `|alpha| < 1` (`alpha = a` for `z > 0`,
+  `b - a` for `z < 0`) both Kummer series are now summed directly; they cancel
+  only near a pole of the ratio, where the error stays within what an ulp of
+  `a` does to the answer. Both engines. BNG's own arguments are unaffected.
+
+- **`mratio` no longer loses up to 1.2e-2 of its value past `z = -20` when `a`
+  and `b` are both tiny, nor a factor of two further out (issue #1080).** The
+  `a <= 0, z <= 0` clause trusted the continued fraction at any `z`, and with
+  `b - a < 1` it loses about `10*eps*sqrt(-z)/(b - a)` of the ratio:
+  `mratio(-1e-12, 1e-9, -25)` returned 5.56205069e-11 for 5.56205472e-11. That
+  corner is now summed as two series of positive terms out to `z = -700` and
+  left to the asymptotic expansion beyond. That expansion now takes `a = 0`
+  with `z < 0` as the exact `M(0, b, z) = 1` it is, so it answers there, and
+  also at some `b <= 0` it used to refuse. Over `b` in `[1e-12, 10]`, `|a|` in
+  `[1e-15, 10]` and `z` in `[-2000, 0]` the worst error is 4.2e-14. Only a
+  `b - a` below about 1e-290, where the fraction returned garbage, can now be
+  refused. Both engines. BNG's own arguments are unaffected, bit for bit.
+
+- **`mratio` no longer returns 1e-32 or another meaningless value when `b` is
+  below about 1e-22 (issue #1080).** The continued fraction starts from
+  `tiny = 1e-32` in place of zero, and its second step added
+  `z*(a-b)/(b*(b+1)) * 1e-32` where it should add nothing, which a tiny `b`
+  makes anything at all: `mratio(-4.12, 2.4e-279, -1.45)` returned 1e-32 for
+  8.5e-280, and even a negative-integer `a` was 1.2e-6 off at `b = 1e-25`.
+  That step is now exactly 1. Nothing else changes by a bit until that term
+  passes 5.5e15, which for BNG's arguments (`b >= 1`) takes an equilibrium
+  constant below 1e-16 times the larger copy number (1e-13 at a thousand
+  copies). Both engines.
+
+- **A pulse written with `floor()`, `max()` or another step or bend call over
+  model state is no longer stepped over.** On a counter that is not a
+  unit-rate clock, such a call got no stop and no root, and the rate law is
+  flat on both sides of a narrow pulse, so one step spanned it with no error
+  (`100*(floor((Tobs-50)/100)-floor((Tobs-50.01)/100))` gave Y = 0 for
+  3.9347). Each call is now rooted where it jumps or bends, and a triangle
+  written with `max()` over `abs()` or `min()` at both of its feet. A run with
+  sensitivities roots the bends too, as stops it jumps nothing at: the
+  `max()` triangle gave Y = 0 and every column 0 there. Its trajectory and
+  dY/dkx are now right, but a column whose parameter moves the pulse is on
+  the difference quotient and can still be wrong (#1126). As with the `if()`
+  spelling, a step that spans two jumps of one call still misses them.
+  (#1068)
+
+- **A state-switch condition over large numbers no longer steps differently or
+  logs CVODE errors.** While a run stepped on past a state-switch root, a
+  residual that read exactly zero was reported as `DBL_MIN` on the side it was
+  held to. CVODE's root search divides by that value, and against a residual
+  above about 9e15 the quotient underflowed to zero. The search then misplaced
+  its bracket and asked for times outside the step. `if(Sobs*H<H,1,-1)` at
+  H = 5.18e21 took 51,990 steps and logged 105 `CVodeGetDky ... Illegal value
+  for t` errors, where H = 1 takes 55,002 steps and logs none, and at H = 1e30
+  and 1e100 the run did not finish in five minutes. That stand-in is now 2^-49,
+  and every H from 1e-300 to 1e100 takes the same steps to the same bits
+  (#1064).
+
+- **`method="rm"` keeps the waiting times of a model that reads the clock from a large `t_start`** ([#1063](https://github.com/lanl/bngsim/issues/1063)). Since #1022 such a model ran on absolute model time, and RuleMonkey places each event at `t + tau` in doubles, so once the total propensity times |t| neared 1e15 the waiting times rounded away and the run was biased with no error: from t = 1e12 the survival of 20000 molecules at 0.5 came back 10.8 standard errors low. A run, and a `RuleMonkeySession`, now integrate on elapsed time from a copy of the XML whose functions read `time() + t_start`, so rates and output functions still read model time, as do a session's `current_time`, `step_to`, `evaluate` and `save_state` snapshots. A model with a table function indexed by time runs on model time, where RuleMonkey 3.12.0 places its events on elapsed time (richardposner/RuleMonkey#110), so `rm` no longer refuses a span too short for the doubles near it.
+
+- **An SSA or PSA run that starts far from t = 0 no longer loses its waiting
+  times to rounding.** Each firing was placed at `t + tau` in doubles. Near
+  `t = 1e12` those are 1.2e-4 apart, so a shorter waiting time was lost whole.
+  A decay of 1e5 copies at k = 0.5 from `t_start = 1e12` read 22,928 at
+  `t_start + 2`, against the exact mean of 36,788 (z = -287). From 1e15 it
+  was worse (z = -762). The part each firing rounds away is now carried into
+  the next one, and samples, events and breakpoints are weighed against each
+  firing's exact time. A run whose rates do not read the clock, or read it only
+  through a step held between breakpoints, now gives, seed for seed, exactly
+  the run it gives from `t_start = 0`. A rate that reads `time()` otherwise, or
+  a rate rule, goes through the continuous loop, which still has this limit;
+  so does an event trigger that reads the clock, within half a spacing of the
+  time it fires at (#1059).
+
+- **An SSA run from a large `t_start` lost waiting times in a model whose rates read the clock** ([#1059](https://github.com/lanl/bngsim/issues/1059)). The doubles near t = 1e12 are 1.2e-4 apart. The continuous loop placed its firings on panels in absolute time, where a waiting time below that spacing rounded away. A decay `k*A*(1 + 1e-30*time())` came back at 22829 for an exact 36788 from `t_start = 1e12` (z = −289); #1075 had fixed the discrete loops only. A rate held between breakpoints went back to 0 after its first firing (or an event), because the clock just past the breakpoint rounded onto it. An SSA or PSA run whose end nearer 0 is past `2^20` now counts its clock from that end and gives the model the absolute time wherever it reads the clock, which keeps its time as fine as its length: a run from 0 to 1e12 is as coarse at its end as before. Rows report the times asked for, and the state and the events carried to the next run keep their absolute times. Runs nearer the origin are unchanged, to the bit.
+
+- **A single SSA or PSA run too long for its clock is refused, where it fired too fast with no error** ([#1059](https://github.com/lanl/bngsim/issues/1059)). A run whose rates read the clock, or that has rate rules, counts its clock from its start, and late in a long run the doubles are coarse. After a firing that restarts the integration panel, the next waiting time is counted from the firing's time rounded onto them, and at a steady rate `a` with doubles `d` apart the run fires too fast by `sinh(p/2)/(p/2) - 1`, about `p²/24`, with `p = a·d`. One run from 0 whose decay turned busy at 1e12 (`p` = 6) kept 22831 of an exact 36788. Such a restart is now refused past `p` = 0.1 (a bias of 4e-4), naming the time and the rate, and the message says to run in legs (`run_until`): a leg counts its clock from its end nearer 0. Firings that keep their panel are placed inside it exactly, so the rate judged is that of the reactions that restart it; the discrete loops already carried what rounds away (#1075). An event's restart rounds too (#1436).
+
+- **`method="rm"` runs Arrhenius rules whose energy patterns carry context
+  (issue #1058).** RuleMonkey 3.12.0 gives them BNG2's rate, expanding a rule at
+  load where that is exact and counting `dG` at each firing elsewhere
+  (richardposner/RuleMonkey#109), so `rm` and `RuleMonkeySession` no longer
+  refuse an energy pattern with a state, a free or wildcard site, a site named
+  twice or context beyond one bond, context in the rule's own reactant pattern,
+  a ring-opening unbinding, or a unidirectional rule named `_reverse_...`.
+  Shapes RuleMonkey cannot run (a state change, a ring closure, a homodimer,
+  two bonds, constraints) are still refused, by RuleMonkey, naming the rule.
+
+- **An SBML event now keeps species amounts in an assignment-rule compartment
+  it resizes indirectly.** When an event changes a compartment's size, each
+  concentration species in that compartment is rescaled by V_old/V_new so that
+  its amount is kept. That was done only when the size rule named one of the
+  event's variables directly. With `cv := 1 + q`, `q := 0.5*p` and an event
+  setting `p`, [Sn] stayed at 5 where it is 2.5. With `cv := 1 + 0.1*Kw`, where
+  Kw is in a compartment the event resizes, [Sn] stayed at 5 where it is 6.667.
+  Size rules are now followed through other assignment rules, other rule
+  compartments and the species a resize rescales, in whatever order the rules
+  are written. Each compartment's new size is read after the rescales it
+  depends on. Forward sensitivities carry the same rescale. A piecewise size
+  whose condition reads a species such a resize moves is rescaled once there,
+  not again by its jump (#1054). (#1055)
+
+- **SBML: a compartment sized by a piecewise assignment rule keeps its species'
+  amounts where the size jumps.** A concentration in it was held across the
+  jump, high or low by V_after/V_before from then on, with no warning
+  (`cv := piecewise(1 + t, t < 2, 5)` left [S] at 1.667 for 1). It is now
+  rescaled at the condition's root, either way, as an event's resize is,
+  including when the size reads the piecewise through another rule or a
+  function definition, and once where conditions that change at one root
+  meet (`piecewise(1, t < 2, 5, t >= 2)`, with no otherwise). The rescale
+  executes before any of the model's own events at that instant, so a
+  concentration such an event sets stands. A condition that also reads an
+  event target is refused by name. (#1054)
+
+- **An SBML concentration species in a compartment whose assignment rule reads a
+  species, or an event-assigned parameter beside something that moves, now changes
+  with the compartment's size (issue #1052).** SBML keeps such a species' amount,
+  so its concentration is amount/V(t). With `cv := 1 + 0.1*S`, bngsim kept every
+  concentration in `cv` instead, constant, boundary, ordinary or reacting, with
+  nothing said: `[Sk]` stayed 5 where it reaches 7.31 by t = 2, as libRoadRunner and
+  the closed form give. The size's rate now reads each species at its live rate.
+  - Such a model runs the rateOf machinery: an explicit `jacobian="analytical"` is
+    declined, as for any rateOf model, and sensitivities use CVODES' difference
+    quotient.
+  - A size that reads a concentration in its own compartment, directly or through
+    a ring of such compartments, is refused by name, as libRoadRunner refuses it.
+  - So is one that reads an amount in a rule-sized compartment, whose rate is
+    still wrong there (#736).
+
+- **A folded SBML initial value that reads `rateOf(x)` no longer freezes `x`, and
+  the load warning about what such a value froze now names what `set_param`
+  refuses (issue #1048).** `rateOf(x)` does not read `x`'s value: in SBML Test
+  Suite 01249, `p2 = rateOf(p1)` is 0 whatever `p1` is, yet `set_param("p1", ...)`
+  and a sensitivity with respect to `p1` were refused. They are allowed now, for
+  the csymbol and for a call to COPASI's rateOf functionDefinition alike; `x` is
+  still frozen where the initial value also reads it outside the `rateOf`. The
+  warning about an initialAssignment bngsim could not keep symbolic read the
+  expression's names alone, so it named `p1` there and printed nothing for
+  `p2 = rateOf(B)` under `J0: A -> B; k1*A`, whose `k1` and compartment size were
+  refused. It is now built from the same list as the refusal, and gives the names
+  `set_param` takes.
+
+- **An SBML model that reads `rateOf` of a variable an assignmentRule sets is now
+  refused at load, by name (issue #1046).** SBML defines no rate of change for
+  such a variable (L3V2 §3.4.6, validation rule 10224); libsbml's consistency
+  check reports it and RoadRunner refuses the model. In an initialAssignment,
+  `p2 = rateOf(q)` with `q := 2*time` loaded with `p2 = 0`, a value the model does
+  not have. In a rule, kinetic law or event it failed with an ExprTk error about
+  an undefined `rate_of__q`, or, where the variable is a species, ran with the
+  rate taken as 0. The error now names `rateOf(q)`, where it is read, and the rule
+  that sets `q`, for the csymbol and for COPASI's rateOf functionDefinition alike.
+  A kinetic law's own local parameter of the same id still reads as a constant,
+  with rate 0.
+
+- **An SBML initialAssignment that reads `rateOf` of a parameter no rule changes
+  now loads, with value 0 (issue #1045).** `p2 = rateOf(p1)` was refused at load
+  (SBML Test Suite 01248 and 01249), and so was a species initial value such as
+  `S = rateOf(p1) + k`. Both now keep the value folded at load, and `set_param`
+  refuses the parameters the folded value read, as it does for any other
+  initial value folded at load.
+
+- **A forward-sensitivity run is refused where a state-dependent switch and
+  an event, or a gate on a clock in the same rate law, are closer than the
+  run's own error lets their order be known, not only within one step's
+  tolerances.** A species carries what every step added to its error:
+  `V = e^(2t)` was 39 to 185 times one step's tolerance out at t = 3. Its
+  switch, 1.99e-5 after an event, was found first, and at rtol 2e-6 to 5e-7
+  the run returned dW/dtau = −1.05 for −3.15 with no error. `V = sin(t)`
+  crossing −5e-7 just after π, where an event fires, returned 0 for −2.199:
+  its error was made where V was 1. A pair further apart than one step's
+  tolerances and within a generous window is now checked against a plain run
+  at a hundredth of the tolerances from the same start. The run is refused
+  where the two runs put the state on different sides of the switch, or the
+  switch's residual there is not more than twice what it moved between them.
+  A switch 0.7 before an event after 10⁴ steps still runs. (#1025)
+
+- **`method="rm"` runs on RuleMonkey 3.11.0, on absolute model time.** A rate
+  that reads `time()`, or a table function indexed by time, now runs on `rm`
+  instead of being refused (issues #862, #892), and reads model time as `ode`
+  and `ssa` do. Arrhenius rules get BNG2's rate, with no RT divisor: `rm` gave
+  AB = 87 where BNG2 gives 74.7 on any energy model without `RT = 1`. Energy
+  patterns RuleMonkey still expands wrongly (a state, a free or wildcard site,
+  context beyond one bond) are refused by name until issue #1058, and so are
+  compartments, which it ran with the wrong rates. A session advanced in short
+  calls no longer stops firing, and a rule whose products can never form no
+  longer fires. `RuleMonkeySession.initialize` takes `t_start`. RuleMonkey's
+  warnings are now `bngsim.RuleMonkeyWarning`s.
+
+- **A rate law on a line far from zero is read tread by tread** (#1018; ODE
+  runs). The value of `1e12 + time()` holds each double for 1.2e-4 of time,
+  and a law that reads the clock once, inside such a line, is a staircase.
+  Where the clock scan refused it or left it without stops, it is now read
+  once on each tread and stopped on the last double before each change.
+  `floor(mod(1e12 + time(), 0.3)/0.3 + 0.0005)` over 240, a `mod` with a dozen
+  doubles of its argument to the period, and SBML's `quotient` of such a line
+  were refused and are exact to rounding; `100*mod(1.1e12 + time(), P)` had no
+  stops, was 21% over in legs, and now follows the tolerance. A `mod` beyond
+  2^48 runs with a warning. A law that was refused and needs more than
+  1,000,000 stops is refused by name, with a leg that fits. As before: a sawtooth with more than 1,024 doubles to its period
+  or stops that do not fit; stops closer than CVODE can stop apart; a law that
+  reads the line outside its condition too (SBML's `rem`); two such laws in a
+  run, or one beside a condition past the budget; counter clocks, sensitivity
+  runs, event triggers and the SSA.
+
+- **A numeric literal in an expression reads as the same double whether or not
+  codegen runs (issue #1013).** ExprTk's own number parser is not correctly
+  rounded, so about a quarter of literals with a negative exponent, ordinary
+  rate constants such as `4.82e-06` among them, read one ulp off in the
+  interpreter, SSA, RuleMonkey and NFsim, while generated C read them exactly.
+  At a threshold that is a whole step: `round(0.49999999999999997)` was 1
+  interpreted and 0 compiled. A subnormal literal such as `5e-324` no longer
+  stops the model loading.
+
+- **The output-sensitivity support map is kept with the cached artifact** (#1004). A sensitivity run attaches `{function: why its output sensitivity is not available}` to its result, and the map was worked out again in every process by an analysis that runs under a wall-clock budget. Where the build that wrote the artifact was cut by the budget and a later process's analysis was not, the later process called a function supported that the artifact holds NaN for, and `output_sensitivities([...])` returned NaN with no reason. The map is now written beside the artifact when it is built (`rhs_<key>_<hash>.outputs.json`) and read back on a cache hit, so the later process raises the build's reason, and a warm process no longer pays for the analysis (3 s for a model of 301 functions, 21 s for one of 501). An artifact with no note is analysed as before, and so is a model given a table function after it ran, which keeps its artifact: what the build has no derivative for still holds for it. `bngsim-cache info` counts both kinds of note under `note` (it said `decline note`).
+
+- **A forward-sensitivity column that has no frame for a singular edge its parameter moves is refused** (#1003). A window that closes or opens as a power, `(1 - s)^(a-1)` with `1 < a < 2`, has its columns carried in a frame that moves with the edge, at a shift read off the power's base. For a parameter in the denominator or the scale of the edge's time (`wb` in an onset `on/(wc + wb - wa)`, `dw` in a width `dd/dw`), or under a base that is not linear in the time, that shift is not a number, there was no case, and the column was integrated plain: dX/d(wb) 12% off at `a = 1.1`, or a run that ended in "CVODE made no progress". Such a run now raises, naming the parameter. So does a column that needed a case in a model whose cases were not worked out (the derivation budget ran out, or the model is given none): those were plain too. Where a power of the time or of a counter has a base that reads a species too, the column of any parameter or initial value that moves the crossing is refused. A parameter in the base that does not move its zero keeps its column.
+
+- **`steady_state(sensitivity_params=...)` refuses columns that a differenced Jacobian's step decides** ([#1002](https://github.com/lanl/bngsim/issues/1002)). A difference quotient steps every species by 1.5e-8 of the state's largest concentration, which reads a term of second order in a much smaller species as a secant: with `jacobian="fd"`, dX*/ds came back 7% off beside an unrelated species at 1e7 and 44% at 1e8, with no error. The columns are now solved again with those species stepped by 1.5e-8 of themselves. Where the two answers agree, the first is returned as before; where they are more than 1e-4 of a column's largest entry apart, `SimulationError` names the entry and both values. New on the result: `sens_fd_own_step_species`, `sens_fd_disagree_species` and `sens_fd_disagree_param` with `sens_fd_floored` and `sens_fd_own_step`.
+
+- **`steady_state(sensitivity_params=...)` refuses columns a differenced Jacobian's curvature decides where a species' own step cannot check them** ([#1002](https://github.com/lanl/bngsim/issues/1002)). The own step reads nothing of a row a much larger species is in, and a species at 0 has none, so there the floored answer was compared with nothing: with `jacobian="fd"`, `X + X -> X + X + G` beside G at 1e8 gave dG*/ds 66.05 for 58.96, and a species at 0 that the parameter moves gave dX*/ds 0.42 for 4.76, with no error. The columns are now also solved with those species, and species at 0, stepped by half the floored step, whole columns, and refused where that answer is more than 1e-4 of a column's largest entry from the first: a secant moves with its step and a slope does not. New on the result: `sens_fd_half_step_species` and `sens_fd_half_step`.
+
+- **A run or steady-state march on a differenced Jacobian is no longer wrong where the difference steps across a jump in a rate law** ([#1002](https://github.com/lanl/bngsim/issues/1002)). With `jacobian="fd"`, or one law the closed form declines, CVODE differenced the right-hand side, and from a state within one step of a threshold of `if`, a comparison or `ceil` the step crossed it: `if(X > 5, 0.04, 0.02)·X` read −1.3e6 for −0.02. A run starting at X = 5 followed its predictor to 166% off (2.1% with a declined law); a species held at 0 under `if(I > 0, …)` took 1e-36 from rounding and switched the law, 490% off in a run and a steady state 5× off with `converged=True`. bngsim now forms CVODE's dense quotient itself, bit for bit, and where a species' step crosses a jump in its own rate law as it leaves it, or a species nothing moves sits on one, takes the slope of the branch the state is on; a run's colored sparse quotient does the same. A species parked just short of a jump in another species' law keeps the large slope that holds it (#176). A tested column costs one more evaluation of f per Jacobian.
+
+- **A function's steady-state sensitivity is no longer differenced where the compiled chain rule has none** ([#1002](https://github.com/lanl/bngsim/issues/1002)). For an `if()`, `abs()`, `min()`/`max()` or table function, `steady_state(sensitivity_params=...)` took the state partials as difference quotients at a step of 1.5e-8 of the largest concentration, which can be wrong with no error at every step a check takes: `abs(X)*abs(X)/(K^2 + X^2) + G` at X* = 0 beside G = 1e8 returned 2.13 for 0, a kink 1e-5 of a step from the state 4.76 for 0, an `if()` on a parameter at 0 6.7e8 (Chitnis2008: 1.1e7 for 0). Such a row is now NaN, and `output_sensitivities` refuses it by name with the construct, as after a run; `dY_ss/dp` is returned. A rule-target species whose rule is one has a NaN row, and a compartment sized by one refuses the solve.
+
+- **A differenced steady-state sensitivity is checked entry by entry, and `Model.jacobian()` refuses what it warned about** ([#1002](https://github.com/lanl/bngsim/issues/1002)). Where a difference quotient's columns are solved again at a species' own step or at half the first, an entry was confirmed if it moved by no more than 1e-4 of its column's largest entry, so a small entry could be far off and pass: with `jacobian="fd"`, `X + X -> X + X + G` at k = 1e-6 beside G at 1e8 returned dG\*/ds 6.6e-5 for 5.9e-5 (12% off), with no error. An entry is now held to 1e-4 of itself (1e-10 of its column's largest, at least). On the corpus with `jacobian="fd"`, 63 more of 621 steady states are refused: against the closed form, 5 have an entry at least 1e-6 of its column that is more than 1e-3 off itself, 34 are right to 1e-3 in every such entry, and the rest differ only in columns the closed form puts at about 0 or have none to compare. `Model.jacobian()` raises `SimulationError` by the same rule where it returned the matrix beside a warning.
+
+- **An ODE run with stops stopped adding to a rate law that is flat where it restarts, with no error** ([#998](https://github.com/lanl/bngsim/issues/998)). `mod(time(), 24)^10/(12^10 + mod(time(), 24)^10)` gave 0.72 of its integral over 100 periods and 0.365 over 200, a leg of ten periods from t = 24,000 a tenth, `100*mod(1e12 + time(), 0.125)` 0.72, and a late pulse with output rows inside each period 0.02. After a flat restart the steps grow until one takes the stretch to the next stop, where a law that repeats reads what it read at the restart, and the step passes. Before a step like that a run now reads the right-hand side where it ends and, unless the integrator's error test would fail it there, at three places inside; where a step would fail at one of them, the run restarts there. Runs with sensitivity columns step as before. Where it did not reach is #1192.
+
+- **`steady_state(sensitivity_params=...)` refuses `dY_ss/dp` where the steady state is not an isolated root** ([#995](https://github.com/lanl/bngsim/issues/995)). Where the steady states form a continuum, the one a run ends at depends on the path it took, and `-J⁻¹·∂f/∂p` is not its derivative: `S + I -> 2 I`, `I -> R` returned dS*/dg = 26.25 for 66.05, beside one logged warning. The solve now takes one Newton step from the state it returned and factors its system again there. It raises `SimulationError` where the determinant keeps less than 0.6 of itself (singular at the steady state), a pivot is under 1e-13 of the terms it was computed from, or the componentwise condition number is above 1e13 (singular whatever the state, or rates too far apart for 1%; 1e-6 and 1e6 for a differenced Jacobian). All read the same in any units, which `min|U|/max|U|` did not: the warning it gated is gone, and so is the refusal it gated for a law across compartments of different size (a `SensitivityUnsupportedError`), which stopped isolated roots with sizes 1e5 apart. New on the result: `sens_root_determinant_ratio`, `sens_root_pivot_share`, `sens_root_condition`.
+
+- **`steady_state(sensitivity_params=...)` returns `dY_ss/dp` at the root, where the solver stopped short of it** ([#995](https://github.com/lanl/bngsim/issues/995)). `tol` bounds the residual `||f(y)||/n`, not the distance to the root: BIOMD0000000002 was accepted 0.02% from its steady state with every column 5.9% off, and a species at 1e-7 beside another at 1 where it starts, for dA*/dkd = -5.8e-9 against -2e-5. The columns are solved again one Newton step on, each species taken over its own concentration (`sens_species_scale`), and where one moves by more than 1% of itself, or the state does, the state is stepped on: `concentrations`, `residual` and the columns are then those of the stepped state, and `sens_root_newton_steps` counts the steps (ten at most). `SimulationError` is raised where they have not settled, and where a run of `max_time` would leave more than 1% of a column unestablished (12,500 in MODEL1607210000 for a species no run moves). Without `sensitivity_params` the state is what it was. New on the result: `sens_root_column_shift`, `sens_root_state_shift`, `sens_root_newton_steps`, `sens_root_relaxation`, `sens_species_scale`.
+
+- **With `mask=`, `dY_ss/dp` is solved on the equations of the species the mask kept** ([#995](https://github.com/lanl/bngsim/issues/995)). A conservation law that holds a masked-out species was kept with its total, the masked species a constant: `S + I -> 2 I`, `I -> R` with R masked out returned dS*/dg = 0 that way, at a conditioning ratio of exactly 1 and with no warning. The masked species is now taken out of the laws by one that holds it: that law is given up, the species it was solved for becomes an unknown with its own equation, and the other laws are kept as the combinations that leave the masked species out. A root of those equations that is not isolated is refused. So is a mask that leaves out a species an equation of the kept ones reads (`sens_mask_held_species`): held where the solve left it, it gave dA/ds = 1 for 3 in `0 -> A <-> M -> 0` with M left out. Where a masked sink drains the law, the columns are what they were.
+
+- **`steady_state(sensitivity_params=...)` refuses `dY_ss/dp` at a state a run does not stay at** ([#995](https://github.com/lanl/bngsim/issues/995)). An integration stops at the first state under `tol`, which a run may be passing (BIOMD0000000407 is returned as it starts), and a root can be one the system leaves: the middle root of a bistable switch, the fixed point inside a limit cycle, which `method="newton"` finds. `-J⁻¹·∂f/∂p` there is how the root moves: dX*/da = 1 came back for `X' = -k·X·(X - a)·(X - 1)` started at a. A run is now taken on for `max_time` from up to a millionth beside the state the solver stopped at, with `max_steps` steps, and `SimulationError` is raised where a column solved again at its end moves by more than 1%, or the run fails or stops short of `max_time`. It is raised too where an eigenvalue of the system has a real part above `0.01/max_time` (up to 512 unknowns), for a state a run of that length is too short to be seen leaving. That refuses a state a species at nothing would grow from, also where nothing makes that species. New on the result: the `sens_root_hold_*` fields, `sens_root_growth_rate`, `sens_root_spectral_radius`.
+
+- **An SBML compartment sized by an assignment rule that reads another rule's
+  target loads at its size (issue #994).** Where the compartment's rule came
+  first and the model had no `initialAssignment`, it loaded with volume factor
+  1, so every reaction across compartments moved its species by the rate over 1,
+  not over the size: `run()` and `steady_state()` ended at `[0.8, 0.4]` for
+  `[0.6, 0.3]`, with nothing raised. Rules now settle at load in every model,
+  however long the chain, reaction ids included; a size rule that reads a rule
+  that reads the time loads at its size at the start. At its right size the
+  issue's model falls under #745/#992, so `steady_state(sensitivity_params=...)`
+  now refuses it where it returned wrong columns. Found in review: a species
+  declared by amount in a compartment an `initialAssignment` or rule sizes was
+  converted at load with the declared size, so `q = B` read 0.8 for 0.2.
+
+- **An event on the rateOf of a species whose own rate is a rateOf fires where
+  it should (issue #991).** The trigger root function took the rateOf buffer
+  from the right-hand side, which probes only as deep as the derivatives read
+  rateOf, and a trigger can read deeper. `at (rateOf(X0) > 0.3)` with
+  `X0' = rateOf(X3)` never fired at a smooth crossing (t = 0.45) on the
+  interpreted right-hand side and fired late on the compiled one, and so did a
+  trigger three deep. The read at the start was one probe short too:
+  `at (rateOf(S) > 0.5)` with `S' = rateOf(A)` and `rateOf(S)` identically zero
+  fired at t = 0 on a rate left in the buffer by an evaluation at another state.
+  Every trigger now reads the buffer at the model's full depth.
+
+- **A sensitivity run on a clone no longer repeats the sympy analysis of the model's functions** ([#979](https://github.com/lanl/bngsim/issues/979)). The analysis behind the output sensitivities of global functions is memoized on each `Model`, and a clone took a copy of the memo: a clone of a model that had never been analyzed started with nothing, and so did the next. A fitting loop that clones one base model for every evaluation paid it each time, 2.2 s a run for 300 functions over 32 parameters where the integration takes milliseconds. A model and its clones now also hold one memo together, which any of them fills. `Model.clone()` parsed every function with a logarithm and no conditional to see whether it needed the zero-base guard, 0.25 s a clone for the same model; a clone now takes its parent's answer, and a model loaded again finds it memoized by the function's text. A model that is loaded, not cloned, still makes its analysis once.
+
+- **A table function indexed by a function follows that function under codegen
+  (issue #965).** In `g() tfun([...], [...], h)` with `h()` a model function,
+  compiled code read `h` at its load-time value, so the trajectory froze at its
+  initial state, with nothing raised, under `codegen=True`, on the default
+  path for a model with 256 or more species, and in every forward-sensitivity
+  run, which compiles whatever the model's size. The compiled right-hand side
+  and the recorded function values now read `h` as they evaluate it, matching
+  the interpreter. A table indexed by its own function, or by a function that
+  reads the table, has no order to compute in: codegen declines it, so the
+  default path runs it interpreted and `codegen=True` raises.
+
+- **A plain run pinned on a state switch is put across it on arm64 too (issue
+  #963).** Where the compiler fuses a multiply and a subtract into one rounding
+  (every arm64 machine), `(Aobs^2)-(thr^2)` read +5.75e-17 with the threshold
+  species held on `thr` while `Aobs^2 > thr^2` read false, so the #928 handler
+  took the state as across and leaving. The run stayed pinned, returned with the
+  switch not taken (Y = 0 for 0.09), or ended in its timeout. ExprTk is now
+  compiled without that fusion in each target that compiles it (bngsim's
+  evaluator and NFsim, whose copy the linker could keep), and so is the C
+  codegen builds: a residual is 0 on its surface and positive only past it, as
+  on x86-64. Results on arm64 can move in the last bits, toward x86-64's, and
+  codegen's cached libraries are rebuilt once.
+
+- **A `run_batch` row that pins or re-attaches a derived parameter runs, with
+  the columns its own model has.** Every row of a batch ran on the one
+  sensitivity artifact the Simulator held, so a row `{"k2": 5.0}` over
+  `k2 = 2*k1` with a column of `k1` was refused (#708), where `run()` of the
+  same model answers. Rows are now grouped by which parameters their writes
+  leave attached, and each group that needs other code runs on a Simulator
+  built for it before the rows are dispatched. The invariant tests' last two
+  quarantines (#701) go. (#961)
+
+- **A `run_batch` row at whose values a rate-law condition's switch time no longer resolves is refused as `run()` refuses the model there** (#961). For `piecewise(k, time >= sqrt(E), 0)` at `E = 0`, or a repeating schedule's duty at 0, dA/dE is unbounded. The row was refused for running on the batch's one build (#708) and told to make the write on the model before the batch, or to run the row with `run()`. Both of those are refused too: code built at the row's values has no analytic right-hand side for the condition, and #414 refuses the run. The row's refusal is now that one, prefixed with the row.
+
+- **`steady_state(sensitivity_params=...)` refused a model with a `$`-fixed species as singular** ([#961](https://github.com/lanl/bngsim/issues/961)). A fixed species has no equation, and its row of J is 0. With no conservation law and no mask, the columns were solved on every species; beside a law, the fixed species was among the law's independents. Either way the solve was singular, and the columns were refused as "dY_ss/dp does not exist". The fixed species is taken out of the columns' unknowns now, and its own row is what a parameter sets it to. A model left with nothing to solve for, every species fixed, left out by a mask, or given by a law of its own (X in `$S + X -> $S + X`), was refused too, every column NaN: each row is a seed or follows from a total, and is returned. On the BioModels corpus and the repository's `.net` files, 44 models solve where they were refused, each agreeing with central differences of its steady state, and the 566 that solved before are bit-identical. The solve for the state itself is unchanged.
+
+- **A compartment an assignment rule sizes to a constant no longer refuses a steady state's columns** ([#961](https://github.com/lanl/bngsim/issues/961)). Where a conservation law spans compartments of different size, a rule-sized compartment refused `steady_state(sensitivity_params=...)` model-wide, because the right-hand side divides by the size the model loaded at (#745). A rule that reads nothing that moves (no species, not the time, no parameter asked for, followed through rules and derived parameters), `c2 := 2*p`, gives the loaded size all along, and its columns are computed: A* = kr/(kr + c2·kf) and its derivatives, exactly. A rule that reads a requested parameter or the state is still refused.
+
+- **A plain run of an SBML model no longer stalls at a threshold its species
+  approaches slowly.** `piecewise(kb, A > thr, 0)` with A rising at 1e-6 a
+  unit of time or slower could neither cross nor pass the threshold, and ran
+  until its wall-clock timeout. The `.net` form was put across in #928, but an
+  SBML threshold is rooted by the loader and was not watched; it now is, and
+  the run ends with Y = 15 to what the tolerance on A allows, as the `.net`
+  form does. An event whose trigger reads a threshold the run is put across
+  fires there: no root sees a state moved with no step, and an event on
+  `A > thr` beside that rate law never fired, while one true until then was
+  not armed again. (#959)
+
+- **A sensitivity column that moves a window edge that is a singular power is refused in a model with an event** ([#958](https://github.com/lanl/bngsim/issues/958)). A window `k1*s*(1-s)^(a-1)` closes as a power, and for 1 < a < 2 the column of a parameter that moves its edge is integrated in a frame that moves with the edge. A model with any event keeps every column plain, so the same column integrated a forcing that is unbounded at the edge: dX/dD came back 1.0789 for 1.0830 beside an event that assigns a parameter nothing reads, at any tolerance, and a window that opens as a power ended in `CV_FIRST_SRHSFUNC_ERR`. Such a run is now refused before it starts, for the switch times it has, with a message that names the parameter and the crossing; an edge found as a root of the state is asked at the crossing, which a run with a sharp one may still end short of in a solver error. Whether a power is singular is asked at the run's own values: at a = 3 nothing is unbounded and the run goes through as before, as does a column that does not move the window.
+
+- **A sensitivity run pinned on a state-switch surface is refused.** With
+  `if(Aobs > thr, kb, 0)` and A rising toward `thr` at 1e-10 a unit of time, no
+  step carries A across: one long enough to move it by an ulp fails its error
+  test on the rate law's jump. No root was reported, and the run returned with
+  the switch not taken: Y = 0 for 15 and dY/dthr = 0, with no warning. At 1e-8
+  it ended in the wall-clock timeout. A plain run is carried across such a
+  surface (#928). A run that carries sensitivities has a jump to apply there,
+  taken from a trajectory that crosses it, so it now stops with an error that
+  names the switch.
+
+- **A fitted switch time on the instant of a condition it is composed with is refused** ([#951](https://github.com/lanl/bngsim/issues/951)). Two rate-law conditions that share an instant were read apart (#375) by taking each one's jump with the other already switched. Where the two are composed, as a product of two gates, the later of two times (`time >= tau && time >= t2`) or a window of no width, the jump with the other still to switch is a different one, and a parameter that moves one crossing alone has a kink there. The run returned one side of it: dY/dtau = −0.75 where the derivative is −0.75 from above and −0.375 from below, with no warning. What the other conditions do is now read with this switch still to come and with it made, and the run ends with an error naming the switch where the two differ. A condition on the time and one on a counter clock are compared too, and so is one a few ulp from the instant. Conditions that add (two rate laws switching together, two gates summed in one) run as before, and so does a rate law that reads its own switch time.
+
+- **A switch time's jump is read past its whole instant** ([#951](https://github.com/lanl/bngsim/issues/951)). Where several rate-law conditions share an instant, each one's jump was read a few ulp past its own time, with its threshold raised a hair. A neighbour a few ulp further on was then still to come: `gate(tau)*(g1 - g2)` with two fixed gates 40 and 100 ulp past tau returned dY/dtau = −1 for 0. And a parameter that both sets the threshold and scales a rate law carried the hair into the reading, a part in a million of the column. Where a rate law reads the switch together with others on its instant, the jump is now read past the latest of them, on every clock; and it is read at half the hair as well and taken to none.
+
+- **A switch time whose rate law opens as a power, beside a condition on a counter on the same instant, no longer gives the counter's gate to the wrong column** ([#951](https://github.com/lanl/bngsim/issues/951)). With `if(time() >= tau, r*(time() - tau)^0.2, 0)` and, in another reaction, `if(t >= 3, 2, 0.5)` on a counter `t`, the column for `tau` enters a comoving frame at the switch against the whole right-hand side. It was read with the counter's gate still to come and left with it made, and dZ/dtau came back −1.5 for 0. Every other clock on the instant is now put past it where a crossing is read. A rate law that reads `rateOf(X)` is also taken as reading every law that changes X, so a gate on the rate of a gated species is refused as the kink it is.
+
+- **An event a few doubles after an output sample fires (issue #950).** An
+  event `at (time >= tau)` with `tau` 1 to 256 ulps after a sample never fired:
+  X(6) was 2 for 5, with no warning. A dose time written `0.1 + 0.2` on a grid
+  that has 0.3 was lost this way. The run stops on `tau`, and where a sample
+  lies within the stop's roundoff before it CVODE returns the stop without
+  searching the stretch between for the trigger's root, then restarts with the
+  trigger already true. Every trigger is now read at a stop the run restarts
+  on, and one that has risen fires. The sample before the event keeps the state
+  before it. CVODE's "tout too close" error no longer ends a run where a
+  delayed event executes a double before a sample at t = 3e6, where samples a
+  double apart surround an event, where a `run_until` leg is one double long, or
+  where a run starts a double before an event. An output counts as reached
+  within the distance CVODE does not integrate over, not within 1e-12, and its
+  row carries the time that was asked for.
+
+- **A sensitivity to a counter clock's own initial value or rate is refused under a window that opens or closes as a singular power of the counter** ([#948](https://github.com/lanl/bngsim/issues/948)). The frames that carry a column across such an edge are of the parameters the power is written in, `on` and `D`. A column that moves the counter species itself, its seed parameter, its rate constant or its initial-condition axis, moves the edge too and has no frame: dX/dT0 came back -0.6817 for -0.6843 under a closing power, and the run ended in `CVODE made no progress` under an opening one. Such a run is now refused where it starts, with `compute_all_sensitivities()` and its default columns included, which ask for the counter's rate constant. That is asked of the powers themselves, so a window written in numbers, `(t-4)/4`, is refused as well. An exponent counts between 0 and 1 at the run's values, and under 0 where the power's base is 0 at the rate law's own condition (a pole on the window's edge) or that is not worked out. With a window that opens and closes as a step, or a second counter that no such power reads, the counter's own column is not refused.
+
+- **A strict trigger and its non-strict twin on one threshold execute in sequence where the run crosses it, whatever the threshold's rounding (issue #947).** `E1: at (time/3 > tau)` beside `E2: at (time/3 >= tau)` turn true at one read wherever it lands past the crossing, and executed there as one batch by priority, but in sequence where it landed on it: X ended at 0.50 or 0.15 as tau rounded (95 of 307 values of tau batched with `time/3` and 103 with `time - 1` on aedadd85, and the SSA drain did the same). The non-strict trigger is true on the crossing and the strict one only past it, so the strict one is now held back until the rest of the instant has executed, and then triggered (its values and delay read) at the state that left; an event of the instant that moves its comparison raises it there instead, by its priority. A pair that a jump turns true (a reaction in SSA, a `piecewise` that switches) is still one batch. A forward-sensitivity run refuses a held pair by name where the strict event reads or writes what the first ones wrote: that second jump has no sensitivity jump to compose with the first (issue #144).
+
+- **A state-dependent rate-law switch on the instant of a switch on a clock is refused** ([#946](https://github.com/lanl/bngsim/issues/946)). The jump of a switch on the state is read as the whole right-hand side a probe step before the crossing less the same a step after it. A condition on a clock that switches between the two probes was in that difference, and its jump was given the state switch's shift: `piecewise(k, time >= thr, 0)` beside `piecewise(k, S >= 0.5*thr, 0)` with S = 0.5·t returned dX/dthr = −1 for −0.5, and a fixed gate on the instant gave −0.5 to a column that is 0. With the two in one rate law the result has a kink there, and the run returned one side of it. A run with forward sensitivities now ends in an error where a switch on the state crosses within what the run's tolerances know its time to of a clock switch, fixed or fitted, and a requested parameter moves either; and where a moved clock switch starts a state off a surface it sat on. A switch that only bends there, with no jump hidden by a closed gate, runs as before, as does a pair no column moves and a pair that is apart.
+
+- **A state-dependent rate-law switch on the instant of an event is refused** ([#945](https://github.com/lanl/bngsim/issues/945)). With `piecewise(q*X, V >= 6, 0)` crossing at t = 3 and an event at `time >= tau`, tau = 3, that halves X, dW/dtau is −1.05 with the switch first and −3.15 with the event first. The crossing's time is known to the tolerances of the run and not to the last bit, so the two came as two stops, each handled as if the other were not there, and the run returned −3.15. A run with forward sensitivities now ends in an error where such a switch and an event's fire are within that of each other and a requested parameter moves either, whether the law jumps at the crossing or the event has emptied or filled what it reads. So does one where a moved event starts a state off a surface it sat on. An event whose trigger reads the one species the switch reads, and nothing else, is taken in order with it, as before.
+
+- **A fitted switch time that lands on a step of `floor(time/P)` no longer takes the step's jump** ([#944](https://github.com/lanl/bngsim/issues/944)). A step call on a clock outside every condition was placed as a solver stop and not counted among the conditions on its instant, so a fitted switch on the same instant was read with the step inside its bracket: `q*X*floor(time/3)` beside `piecewise(k*X, time >= tau, 0)` at tau = 3 returned dW/dtau = −4.2 for 0. A step that sits on a fitted switch's instant is now counted, and the switch is read apart from it. The step is found in the list of the call's edges, or, for a call whose edges are not listed (`floor(time*time/9)`, one of 12,000 steps), by evaluating it a nudge either side of the switch; past 2,048 such evaluations the run is refused. An event on a time step's instant whose assignment the step does not commute with is refused by the check of #767, which now sees the step.
+
+- **A sensitivity time course on the difference-quotient fallback is refused for a model with a crossing on the state** ([#938](https://github.com/lanl/bngsim/issues/938)). One rate law the analytic sensitivity right-hand side declines (`max`, `floor`, `rateOf`) puts every column on CVODES' internal difference quotient, which reads the rate law at the state moved along each column. Just short of a threshold the state crosses, that is on the other branch, so a column took part of the jump before the crossing and all of it again at the crossing: `if(Aobs>thr,kb,0)` beside `kc*max(Aobs,0.5)` returned dY/dk = 14.52 for 10.2. Such a model is now refused before the run, from `run`, each row of `run_batch`, and `compute_all_sensitivities`: one with a rate-law condition on the state; a sign written as a quotient, `(X-thr)/abs(X-thr)`; a step call that reads the state; a counter's threshold that a requested column moves; a step table function indexed by the state; or `floor(time()/P)` with `P` requested. A bend written with `max` or `min`, or as `if(v>0,v,0)` with every division by what is known nonzero, a condition on literal time and a steady-state solve still run.
+
+- **An equality that holds a step call is no longer read as holding nowhere** ([#938](https://github.com/lanl/bngsim/issues/938)). `if(floor(Aobs/thr)==0,kb,0)` is `kb` while `Aobs` is under `thr`. An equality over the state was admitted to the analytic sensitivity right-hand side as true on no interval, which with a step call in it is wrong: the columns came back `[0, 0]` for `[2.46, 0.68]`, with nothing logged. Such a condition is now one no machinery compensates, and a sensitivity run on it is refused.
+
+- **A sensitivity time course on the difference-quotient fallback is refused where a requested parameter sits near a threshold of its own** ([#938](https://github.com/lanl/bngsim/issues/938)). `if(n > 1, kb, 0)` holds one way for a whole run, and is still a surface in `n`. CVODES' difference quotient reads the rate law at `n` moved by up to its size times the root of the relative tolerance, and with `n` that close to 1 one of the two readings is on the other branch: dY/dn came back 901 at n = 1 + 1e-6, 1.8e10 at n = 1 and 0.9 at n = 1.001, for 0. A time course with no analytic sensitivity right-hand side is now refused where a requested parameter is within a quarter of itself of flipping such a comparison, where an equality on one holds, and for a step call, a step table or a sign written as a quotient on one, in a rate law or in a derived parameter. With the parameter not requested, or further off, it runs as before.
+
+- **More that the difference-quotient fallback read across is refused** ([#938](https://github.com/lanl/bngsim/issues/938)). A power under 1, a root or a logarithm of what holds an `abs`, `max` or `min` and may be 0, `kb*max(thr-A,0)^0.1`, is continuous and leaves 0 with a slope that has no bound: the column came back 15% off at a relative tolerance of 1e-4 at a power of 0.1, and at a half the threshold's column was 2.6e-4 off at 1e-6. A comparison outside any `if()`, `kb*(max(A-thr,0)=0)` or a derived `kd = 3*(n>1)`, is a step the scan of conditions did not read: 4.41 for 2.46, and 9.35 for 0. A call the scan does not know, `atan2`, can be anything: its branch cut gave -1.17 for 1.30. A time course with no analytic sensitivity right-hand side is refused for each, where a column moves what it reads.
+
+- **A batch row is asked what a run is** ([#938](https://github.com/lanl/bngsim/issues/938), [#414](https://github.com/lanl/bngsim/issues/414)). `run_batch` with sensitivities and no analytic sensitivity right-hand side asked about rate-law crossings once, of the model's own parameters. A row whose parameters put two crossings of one condition on one instant, `if((time()-tau)*(time()-g) > 0, kb, 0)` at `g = tau`, returned dY/dtau = 0 where `run()` refuses, and 1e-9 apart it did not finish. Each row is asked now, of its own parameters, for the branch crossings of #414 and the state crossings of #938; a law's answer is kept by what the law reads, so a row that changes none of that costs a lookup.
+
+- **A counter that `declare_ic_sensitivity` moves has its crossing's jump** ([#938](https://github.com/lanl/bngsim/issues/938), [#725](https://github.com/lanl/bngsim/issues/725)). A counter species started by hand, with `∂C(0)/∂n` declared, moves the time at which `if(C > tau, kb, 0)` switches. The run is seeded with the declared row, but the clocks a column moves were read off the model's own initial conditions alone, so the crossing's jump was not applied to that column: dY/dn came back 0 for `kb` with the analytic sensitivity right-hand side, and 5.39 for 3 on the difference-quotient fallback. The declared rows are counted now: the analytic path returns `kb`, and the fallback refuses the run with the rest of #938.
+
+- **A compartment resize and an event assignment to a species in it now
+  compose (issues #936, #740, #766, #741).**
+  - **ODE.** The rescale that conserves a contained species' amount was
+    evaluated whole at one moment. So an earlier event of the same instant
+    could see its assignment undone ([Y] = 0.5 where 1 is right), and a cell
+    dividing after a delay lost amount. It is now base·(size before)/(size
+    after the event's other assignments), as in libRoadRunner. 400 random event
+    models agree with libRoadRunner, 61 of which main got wrong.
+  - **Sensitivities.** Forward sensitivity follows the new value; a batch whose
+    derivative this cannot form is refused.
+  - **SSA/PSA.** An event assigning a concentration to a species in a moving
+    compartment stored c·V_static molecules instead of c·V_live, and a species
+    only an output reads in a rule-sized compartment was reported at the
+    load-time volume.
+
+- **An event whose trigger starts exactly on its threshold now fires when the
+  trajectory leaves into the trigger's true side, at any order (issue #934).**
+  `at (B > 0)` with B(0) = 0 and B = t²/2 never fired: a rule from #340 refused
+  every departure without first-order motion, with no warning. bngsim now
+  follows SBML and libRoadRunner: the event fires at the start, and a trigger
+  that stays on its threshold or leaves into its false side never fires. Such a
+  trigger, unless it leaves into its true side at first order, is not read in
+  the first 1e4·eps·|t_start| of a run that does not start at 0, where rounding
+  decided its sign: it had fired when leaving into its false side, or fired
+  twice. A forward-sensitivity run refuses by name a start fire whose trigger
+  leaves with no first-order motion, whose time has no derivative.
+  BIOMD0000000285's death events now fire at the start and stop the cell, as in
+  libRoadRunner; AMICI, which keeps the old behaviour, now disagrees there.
+
+- **A sensitivity run that stalled short of a state crossing on the difference-quotient fallback is refused before it starts** ([#932](https://github.com/lanl/bngsim/issues/932)). With `piecewise(1, A < q, 0)` beside a rate law the analytic sensitivity right-hand side declines (`max(A, 0.1)`, or anything reading `rateOf`), the run ended in `CVODE made no progress` 2e-5 to 2e-8 before the crossing, or in the wall clock: the difference quotient reads the jump there, and every step fails on it. That is now a `SensitivityUnsupportedError` raised before the run, naming the crossing and the rate law that was declined.
+
+- **A Michaelis-Menten reaction whose `kcat` or `Km` a function writes is refused at load** ([#931](https://github.com/lanl/bngsim/issues/931)). A Michaelis-Menten rate law reads its two constants as parameters, and only the interpreted ODE right-hand side followed a function of the same name into the parameter. With `kcat() = kb` over a `kcat` of 0, `MM kcat Km` never ran in the compiled right-hand side: P(6) came back 0 for 18 under `codegen=True` and in every forward-sensitivity run, with dP/dkb = 0 for 6. The compiled SSA propensities held the constant at its first value (502 for 99 with `kcat() = kb*Aobs`), the interpreted SSA did not know the reaction reads what the function reads (272 or 104, by how often the run was sampled), and the Jacobian took it for a constant. Nothing was logged. `Model.from_net` now raises `ModelError`, naming the parameter. Give the constant as a parameter, which may be an expression of others, or write the reaction with a functional rate law. BNG2.pl writes no such model.
+
+- **A run pinned on a state-switch surface gets across it.** A run without
+  sensitivities restarts at a state-switch root only where the solver's own
+  trajectory resolves the crossing (#897). Where it does not, a step long
+  enough to move the threshold species by an ulp can fail the error test on
+  the rate law's jump while a shorter one leaves the species where it is. With
+  one surface spelled twice, `if(Aobs < thr, …)` and `if(Bobs > thrB, …)` for
+  a conserved `A + B`, the run sat with `A` on `thr` and crept 1e-4 of time per
+  batch of steps until the wall clock ended it. One switch did the same under
+  a slow approach: `if(A > thr, …)` with `A` rising at 1e-8 a unit of time.
+  Where a batch of steps ends with a residual within a few ulp of zero, a step
+  too short for the flow to move it, and a flow that reaches the surface and
+  would have crossed in the time the residual has been seen there, the residual
+  is now put those few ulp across, each species it reads that the flow moves
+  by a few ulp of its own, and the integrator restarts. For `.net` models. A
+  slide along a surface, where both branches point into it, is left as it was.
+
+- **A state that slides along a rate law's switching surface is refused for
+  sensitivities.** With `f() = if(Sobs < 1, amp, -amp)` on `0 -> S`, S rises
+  to 1 and stays there: both branches point into the surface, and the state is
+  on neither. dS/damp is 0 from then on. At a loose tolerance no root was
+  reported, the state crept along just short of the surface, and the column
+  integrated the near branch all the way: dS/damp = 1.5 for 0 at t = 1.5, with
+  no warning. At a tight one the run ended in the wall-clock timeout. The run
+  now stops with an error: at the root, or, where no root is reported, where
+  it is next asked with the state on the surface. A run that carries
+  sensitivities through a state switch is taken in batches of 8 steps and
+  asked after each, which changes no step. A slide is two flows that each
+  carry the state to the surface and are still doing so at the surface. The
+  trajectory without sensitivities is unchanged.
+
+- **A small jump at a state switch is read under a threshold species that
+  moves fast.** A crossing was judged continuous where the switched flux
+  changed by under 1e-6 of the rate that drives the crossing. With
+  `if(Bobs < thr, kb, 0)` on a pool decaying from 1e8, that rate is 5e6, so a
+  jump of 3 was dropped and every sensitivity column that moves the crossing
+  time came back 0, with no warning: dY/dkdeg = 0 for 207.9. Under that
+  tolerance the two branches are now read at one state: the state on the
+  surface, with only the species the condition reads moved a few ulp to either
+  side. Every term that does not switch is the same in both readings, so what
+  is left is the step.
+
+- **A term beside a state switch that rounds as a staircase is no longer read
+  as part of the switch's jump.** `kbig*(sP() + off - Q)` with `sP() = P - off`
+  moves in steps of an ulp of `off`, and steps between the two points the
+  crossing is read from. Beside a continuous switch its tread went into the
+  column as a jump (dY/dkdeg = -2029.6 for 4.42), and beside a jump of 3 it was
+  added to the jump (-1826 for 207.9), each with no warning. The switch's two
+  branches are now read at one state, where such a term is the same on both
+  sides.
+
+- **A forward-sensitivity run is refused where an event assigns a value that is
+  not smooth at the point the event reads it.** `u := piecewise(5, time >= T0 + 1, 0)`
+  assigned by an event at `time >= T0 + 1` is 5 whatever `T0` is. The jump
+  takes the value's derivative in the parameter and in the fire time by central
+  differences, each of them here a difference across the step, and they
+  cancelled only when the two steps happened to be the same size: dB/dT0 came
+  back as -3.3e6 for 0, with no warning. A bend at the fire instant came back
+  as the mean of its two slopes, and a value that turns inside the difference
+  1.7% to 16% off. Each is now refused, with an error that names the event, the
+  species, and what the value is not smooth in: the time, a parameter, or a
+  species a column moves. A value that is not finite where it is read is
+  refused with them. No column that is returned has changed.
+
+- **A derived parameter that reaches a rate through another derived parameter
+  gets its rate term in its own sensitivity column.** With `Q = 3*R0`,
+  `Rt = 2*Q` and a rate that reads `Rt`, a requested `Q` is a coordinate of its
+  own: held where it is set, with `Rt` following. The compiled sensitivity
+  right-hand side chained a derived rate constant to its primaries only, so
+  `Rt` had its direct term and `R0` the full chain, but `Q` had neither. Its
+  column came back 0, or held only its initial-condition part, with no
+  warning. BNG2.pl makes this shape from every compound rate law
+  (`_rateLaw1 = kp*Rt`), and the Antimony and SBML loaders from every kinetic
+  law that names a derived parameter. Mass-action, functional and
+  Michaelis-Menten rate laws and output expressions are all covered, where the
+  analytic sensitivity right-hand side is used. Under the difference-quotient
+  fallback a derived parameter's column is still 0 (#707). Compiled sensitivity
+  libraries from earlier versions are rebuilt.
+
+- **An event trigger that reads `rateOf` through an assignment rule gets its
+  forward sensitivities whatever columns are requested.** With `r := rateOf(A)`
+  and `at (r > -thr)`, the pass that confirms the rising edge evaluated the
+  rule before it refreshed the `rateOf` buffer, so it could miss the rise. The
+  event was then fired a moment later with no sensitivity jump, and every
+  column came back 0 unless both `a` and `A0` were requested. The trajectory
+  was right. An event found triggered that way in a sensitivity run is now
+  refused instead of fired.
+
+- **An event on the threshold of a rate-law switch is no longer skipped in a
+  sensitivity run.** `at (A < thr)` beside `piecewise(kb, A < thr, 0)` lost its
+  event: the solver restarts just past the switch's crossing, which carried the
+  state across the event's trigger unseen. The trajectory itself was wrong,
+  with no warning, where the run without sensitivities is right. That is now
+  refused, like an event and a switch at exactly one instant. A trigger that
+  falls across that restart is recorded, so its next rise fires.
+
+- **An event that another event's assignment triggers through a rule over
+  `rateOf` fires in priority order.** After each fire the triggers are read
+  again to find the events that assignment raised. A trigger reading
+  `r := rateOf(A)` was read against the rates from before the assignment, so
+  its rise was found only once the whole batch was done, and the event fired
+  last whatever its priority. With the trigger written as `rateOf(A)` itself
+  the order was already right.
+
+- **An event whose trigger starts on its threshold fires the same way however
+  the comparison is written.** Such a trigger fires only if the trajectory
+  leaves the threshold into its true side. That was read off the sign of the
+  rate of change of `lhs - rhs`, taking positive for true, which is right for
+  `>` and wrong for `<`. With A(0) = 10 and A decaying, `at (A < 10)` never
+  fired, where `at (10 > A)` fired at once. The trigger itself is now read a
+  small step along the trajectory, which also settles a trigger whose two
+  sides move only one way (`floor(A) < 10`) and one whose own scale is far
+  below 1 (`L/(Kd + L) > 0` from L = 0 with Kd = 1e-10).
+
+- **A `.net` rate law whose state slides along its switch no longer pays for a root on every step (#908).** Since #903 each crossing of such a surface was located, returned and given the restart test, which declined it: the issue's model took 29 s where it takes 2.4 s with no state-switch roots. A residual whose crossings are declined as unresolved on consecutive steps is now held off CVODE's root search while the state stays within half the band that test asks a crossing to clear, and is rooted again where it leaves it. Every crossing of a held residual is still found on the interpolant at the next return and given the same test. A residual that reads the time is never held. The issue's model now takes 2.8 s, with every step and every bit of the answer unchanged. `BNGSIM_STATE_SWITCH_HOLD=0` turns holding off.
+
+- **A state window whose crossing a restart catches is no longer stepped over
+  for the length of the run (issue #907, case 1).** The restart test sampled
+  the step after a root at sixteen even points, and CVODE grows that step about
+  tenfold over a smooth stretch, so the samples straddled a hump just past the
+  root: a curved residual's window, caught over (0, 5), was lost over (0, 4),
+  (0, 10) and most other spans, with Y = 0. The test now also samples halving
+  toward the root, down to where no species it reads can move a tolerance band,
+  and refines its best sample where a hump only just clears the band. Runs
+  whose crossing is inside the band, the #176 fixture and its twins among them,
+  step exactly as before.
+
+- **A state window under a tracking atol, or on an observable over many species, is no longer stepped over (issue #907, cases 5 and 3).** A plain run restarts at a state-switch root only where the solver's trajectory passes the surface by more than a bar, 10·√N times the band the tolerance leaves the residual. The band read each species' static atol and summed the species one by one. Under `TrackingAtol(decades=6, ceiling=1e-8)` CVODE holds S (about 1e-6) to 2e-14, but the bar read the 1e-8 ceiling, so a 5e-9 window in S was lost. Over an observable of 1,000 species of 1e-3, the bar was 3.2e-3, past the window's whole excursion of 1e-3. Y came out 0 on three of five phases. Each species now counts for what CVODE's error-weight rule holds it to (under tracking, no tighter than the step was tested with), and the species add in quadrature, as the WRMS test bounds them. A residual of two or more terms gets a bar up to √n narrower, and #908's holds, which read the same band, engage a little less on it. A residual of one term reads the same bar to the bit: GH #176's fixture and its five twins take main's steps exactly.
+
+- **A state window a few tolerance bands wide, or beside many species that
+  never move, is no longer stepped over (issue #907, cases 2, 4 and 6).** A
+  plain run restarts at a state-switch root only where the solver's trajectory
+  passes the surface by more than a bar, which was 10·√N times the band the
+  tolerance leaves the residual. A window 10 bands wide was lost at N = 3, and
+  one 250 bands wide beside a thousand idle species (N = 1003), with Y = 0 on
+  six runs of ten. The bar is now 4·√N: 6.9 bands at N = 3, 127 at N = 1003.
+  It keeps √N, because the WRMS test lends idle species' share of the
+  tolerance to the species that move, and a slide's overshoot grows with it.
+  Each unit is also no tighter than the error weights CVODE tested the step
+  with, under any atol. A crossing between the two bars now restarts, as in a
+  sensitivity run, and #908's holds, which read the same bar, are narrower.
+  GH #176's fixture and its five twins step as before at rtol 1e-6, 1e-8 and
+  1e-10; the moving twin restarts once more at 1e-9, on its way back.
+
+- **An SBML state window whose closing threshold moves slowly closes on
+  time.** With the threshold rooted by the loader, a run could neither cross
+  the closing edge nor pass it, and held the gate open for millions of steps:
+  a window whose exact integral is 0.1 came back 1.48 and 15.7 times that, or
+  ran into the wall-clock timeout. The fix for #959 puts it across, as #928
+  does for the `.net` form. (#905)
+
+- **A window written as a number, or in a shape no stop resolver reads, is no
+  longer stepped over (issue #904, part 1).** A comparison used outside
+  `if()`, `k*((time()>=100)*(time()<=140))`, was never scanned: A was 0 for 4,
+  and the state-gated spelling gave Y = 0 for 0.054. The same happened, with no
+  warning, to `trunc`, `round`, `frac` and `sign` of the clock, a step of
+  `time()^2`, a window written with `abs`, `min` or `exp`, an equality of
+  `floor`s, and a pulse written with `max` and `abs` alone. A comparison is now
+  read wherever it stands (a stop on time, a root on state), and a clock
+  condition of no known shape is evaluated over the run with the model's own
+  evaluator, on finer grids until its changes are counted, and stopped at each.
+  A condition that cannot be counted is refused by name. A sensitivity run gets
+  the stops of conditions that read no requested parameter, and refuses a step
+  call outside `if()` whose step times a requested parameter moves (it hung or
+  returned zeros). Part 3 of the issue is open. A smooth pulse with no
+  switch in it still needs `max_step`; see "Rate laws that switch on time" in
+  the solver guide.
+
+- **A rate-law window spelled as one comparison of `abs()` or a square is no
+  longer stepped over (issue #904, part 2).** `if(abs(A-5) < 0.01, k, 0)` and
+  `if((A-5)^2 < 0.0001, k, 0)` have a residual that falls to zero and comes back
+  within one step, so a root on it saw one sign at both ends and the window was
+  lost: Y = 0 for 0.1 at every tolerance, in `.net` and SBML models alike, and
+  with sensitivities the square gave dY/dk = 0. Such a comparison is now rooted
+  at each of its two edges, and a sensitivity run jumps a square there. An
+  `abs()` is differenced, and refused where the state or a requested parameter
+  moves the run across an edge. Still stepped over: the window written any
+  other way, such as `pow(A-5, 2)` in a `.net` model or a square against a bound
+  that is not a number, and an SBML event trigger written either way.
+
+- **An SBML event whose trigger is one comparison of `abs()` or a square now
+  fires (issue #904).** With A = 2t, an event on `abs(A - 5) < 0.01`,
+  `(A - 5)^2 < 0.0001` or `pow(A - 5, 2) < 0.0001` never fired, at any
+  tolerance, where `(A > 4.99) && (A < 5.01)` fired at t = 2.495; one on
+  `abs(A - 5) > 0.01` missed its return at t = 2.505. The loader rooted the
+  comparison, which is false at both ends of the step that passes A = 5. It
+  now registers the comparison's two edges, for triggers and for the
+  conditions of rate laws and rules. A counter's `abs(T - 5) < 0.01`, which
+  the run already stops on at both edges, is no longer rooted there as well.
+
+- **An SBML event whose trigger calls a function definition holding a narrow
+  window now fires (issue #904).** With A = 2t, an event on `near(A, 5, 0.01)`
+  with `near := abs(x - c) < w`, on `band(A, 4.99, 5.01)` with
+  `band := (x > lo) && (x < hi)`, or on `near(time, 2.5, 0.005)` never fired,
+  at any tolerance, where the same window written in the trigger fired at
+  t = 2.495. Nor did `hit(time, 2.5)` with `hit := x == c`, or `peak(time)`
+  with `peak := sin(s) >= 1`. The loader scanned only the trigger's own math
+  for comparisons to root, so the whole trigger was rooted and the window was
+  stepped over. It now reads the bodies of the function definitions a trigger
+  calls, with each formal bound to what the call passes, as it already did for
+  rate laws and rules. A run whose trigger calls an equality that never holds
+  in doubles, `hit(time - 1, 1.3)`, is now refused, as `time - 1 == 1.3`
+  written in the trigger already was; it ran on with an event that never
+  fired.
+
+- **`steady_state()` no longer steps over a rate-law window on the way to its steady state** ([#904](https://github.com/lanl/bngsim/issues/904), part 3). A rate law switched by a comparison over model state is constant on each side of the switch, so a step across a narrow window reads it as off at both ends. `run()` roots each such condition since #897, but the steady-state march built its own integrator and rooted nothing: with Y made at k while `0.5 < S < 0.505` and S decaying from 1, `steady_state()` returned Y = 0 with `converged=True`, where a run gives 0.199. The march, and each entry of `steady_state_batch()`, now roots the same conditions and restarts on each crossing, and so roots an SBML model's piecewise conditions, which reach `run()` as the loader's discontinuity triggers. A state that slides along its threshold is rooted for 1000 crossings and then marched over the switch as before, returning the state where rooting stopped if that march ends further from a steady state. New on the result: `n_state_switch_roots` and `state_switch_roots_dropped`.
+
+- **`differentiable_solve` gets the same discontinuity handling and
+  sensitivity terms as `Simulator.run`.** The JAX bridge built its own solver
+  options and called the bare integrator. Its value and gradient therefore had
+  no crossing stops or state-switch roots, no switch-time or saltation jumps,
+  and no initial-condition seed for a primary reaching a species through a
+  derived parameter. A window inside one step came back as if it never opened,
+  and `dB/dR0` through `Rt = 3*R0` came back 0, with no warning. Both paths now
+  run through `Simulator`, with its refusals and its log records. Some values
+  change because they were wrong before. A call costs more: 1.2 to 1.9x on small
+  models, and up to 6x for the value of a 300-species model.
+
+- **The nightly wall-time check times the simulation on the stochastic legs (issue #901).** `bngsim_sec` summed load and parse phases only, so on bng_nf it was the session's construction, 0.012 s beside 4004.5 s of NFsim, and on bng_ssa the parse and load: a 2x slower ensemble could not alert, and a millisecond fixed cost read as x56. Each row's `ensemble_sec` is now counted, and on bng_nf each replicate's `NfsimSession.initialize` too (452 s of the leg's 4126 s). The bng_nf and bng_ssa baselines are re-extracted from nightly run 39128129181 with them (4126.1 s and 842.6 s, every case otherwise as that run's own verdicts). A verdict file now records the phases it sums, and two that sum different ones are not compared on wall time: night to night that is only reported, so the first night after this does not read a load phase against an ensemble, and against the committed baseline it alerts, so a baseline left behind by a later change to the phases cannot switch the check off unseen.
+
+- **A `.net` rate law whose schedule reads a `mod()` of constants is no longer
+  stepped over (issue #899).** `if(mod(time(), P) < mod(P,7), 1, 0)` and a floor
+  step shifted by `mod(P,7)` got no crossing stops: the constant `mod` was left
+  as a symbolic call, the condition was declined, and CVODE stepped over every
+  pulse but the first. X(252) was 3 for 33 and 1 for 11, with no warning. The
+  `mod` of constants is now folded with C's `fmod`, which is what the evaluator
+  computes, and both spellings get the stops the literal `3` gets.
+
+- **A `.net`/BNGL rate law switched on model state is no longer stepped over in
+  a run without sensitivities (issue #897).** A window such as
+  `if((time()>=4*S)&&(time()<4*S+w),k,0)` opens at a time the state decides, so
+  no crossing stop can be placed at it, and a step could span the whole window:
+  Y = 0 where the answer is 0.0540, at every tolerance. Each comparison over the
+  state in a rate law's `if()` condition is now a CVODE root, as in a
+  sensitivity run (#150) and in SBML (#194). No jump is applied, and the run
+  restarts only at a genuine crossing, one resolved past the tolerance whose
+  arriving flow stays finite and carries the state across; a trajectory that
+  only approaches the threshold steps as before. SBML models are unchanged. A
+  comparison used as a number, one that turns back within a step, and
+  `steady_state()` are not yet covered (#904). On the 24 affected corpus models
+  the restarts cost +45% steps.
+
+- **`method="nf"` turns on a rate that a table function indexed by time turns
+  on later.** NFsim read its propensities again only after a reaction fired,
+  so with nothing able to fire the run jumped to the end with the table's
+  starting value: 100 `X(p~1)` with a step table at 0 until t = 1 stayed at
+  100 on every row. The vendored NFsim now reads every time-indexed table at
+  each of its breakpoints, whether or not anything fires, and draws the
+  waiting time again there, which is exact for a step table, whichever order
+  a table file lists its times in. A linear one is integrated between them
+  (#1179). (#892)
+
+- **A stop for a rate law that changes on the clock sits on the double at which the model's own arithmetic changes it** ([#891](https://github.com/lanl/bngsim/issues/891)). Stops worked out from folded constants could sit a double off the change, or, with `1e12 + time()` in the argument, 1.2e-4 of time off it, and the error did not follow the tolerance: `if(time() - 0.3*floor(time()/0.3) < 0.1, 1, 0)` was 320 times `rtol` off at 1e-8, and each spelling of one schedule had an error of its own. Now every spelling is 11 times, and a far clock's pulse that was 8e-3 off is within 25 times `rtol`. Each stop costs what one on an exact edge did: up to 3.5 times the steps on a near clock (7 for a `ceil` spelling placed a double early), 6 on a far one. Conditions an event trigger reads, runs where two conditions change a double apart, runs at `rtol` 1e-3 or looser and runs with sensitivity columns keep their stops. Where the integrator's stop tolerance (100*uround*t) would lose a tenth of the tolerance of a rate's jump, a plain run stops it a double before the stop and integrates that double: a run at t = 1e6 lost 2e-8 a switch, 180 times `rtol` at 1e-9.
+
+- **A clock schedule with more than 8,192 edges in a run is no longer stepped
+  over (issue #890).** Past that count no crossing stop was placed, the log
+  carried a warning, and the run stepped over the pulses: X = 0.1 for 6000 with
+  120,000 edges. A run now has one budget of 1,000,000 stops over all its
+  conditions (800,000 edges take about 10 s). Past it, a repeating schedule or
+  a sinusoid that is the only thing in the model that switches is integrated
+  under a step bound of half its shorter stretch. Anything else is refused with
+  an error naming the condition, unless `max_step` is passed, which then stands
+  for the stops and is tightened to half the shortest stretch that is known. A
+  bound that would take more than 1e8 steps is refused. A condition in a
+  function no rate law reads is never a reason to refuse. A stochastic run past
+  the budget is refused. Run longer protocols in legs with `run_until`. With
+  tens of thousands of stops, tighten `atol`: each restart spends about one
+  unit of it.
+
+- **`Simulator(codegen=False)` now runs the interpreter even when the model
+  already carries compiled code (issue #877).** An auto-compiling or
+  `codegen=True` Simulator leaves its artifact on the Model, and
+  `Model.clone()` copies it. A later `codegen=False` Simulator on that model
+  inherited it and ran `cc` or the MIR JIT without a word. Since #825 this
+  covers every `.net` model with at least 256 species. It now ignores the
+  artifact. A `codegen=False` sensitivity run on such a model also stopped
+  running compiled and now raises, as documented, instead of skipping that
+  refusal.
+
+- **A compiled model keeps the finite-difference Jacobian retry (issue #874).**
+  Under the default `jacobian="auto"`, an ODE run that fails with the analytical
+  Jacobian is retried once with finite differences (GH #176), which rescues a
+  rate law discontinuous in a state variable. The retry skipped a compiled RHS,
+  and since #825 a `.net` model with at least `BNGSIM_CODEGEN_THRESHOLD` (256)
+  species compiles by default, so such a model failed with `CV_ERR_FAILURE`
+  where the interpreter succeeded. The compiled Jacobian is chosen per run, so a
+  compiled run, auto-selected or `codegen=True`, now retries on the same
+  compiled RHS with finite differences. An explicit `jacobian="analytical"` is
+  still not retried. The retry now also runs only after a CVODE failure: any
+  other error is bngsim refusing the model or the run (a sensitivity jump it
+  cannot compose, an invalid event delay), and is raised as it is rather than
+  retried. From @Montana.
+
+- **The parity verdict no longer passes an engine that never moves (issue #873).**
+  `deterministic_verdict` judged each species against the largest value in the
+  file and against its own peak, so a clamped reservoir, a nearly constant
+  species or a large baseline let a frozen trajectory through: 17 of 592 BNG
+  ODE models passed frozen, `catalysis.bngl` among them. Every species that
+  moves, in either engine, is now also held to 1e-2 of its range over time,
+  except where the two engines are within 10 atol of each other (solver noise),
+  so a frozen engine fails, and so does one that moves a species the reference
+  holds still. The verdict reports `max_err_over_movement`, and `no_signal`
+  where nothing moves, which the bng, rr and amici rows say. The converter's
+  L3 check (`validate_conversion`) carries the same gate, and the #316 mask
+  audit now counts the cells it rescues from it.
+
+- **An SBML initialAssignment the load-time fold cannot evaluate no longer leaks
+  a declared value (issue #871).** Issue #732 covered parameter and species
+  targets. A compartment or speciesReference target still kept its declared
+  value, and anything else folded over a failed target read that target's
+  declared value: an initialAssignment (`Q = S + 1` loaded as 6 where
+  `S = 1/0`), one reading a reaction id or a `rateOf`, a compartment an
+  assignment rule sizes, a constant L2 `stoichiometryMath`. A failing
+  assignment rule leaked the same way, and a failing `stoichiometryMath` fell
+  back to the stoichiometry attribute. Each is now refused, naming what it
+  depends on; a target the engine evaluates still loads with its IEEE value. A
+  `piecewise` the fold could not decide chose a later branch; the engine now
+  evaluates it (`piecewise(1, 1/0 > 0, 2)` is 1). An initialAssignment reading
+  a reaction id also took the rate at the declared values even when nothing
+  failed (`p1 = J0`, law `k*S`, `S = 10` over a declared 5, loaded as 5); it
+  reads the resolved ones. From @Montana.
+
+- **A periodic dose written with `floor()` or `mod()` of `time()` is no longer
+  stepped over (issue #869).** On the `.net`/BNGL path, a pulse train spelled as
+  a difference of floors (`floor((time()-t0)/P) - floor((time()-t0-w)/P)`, bare
+  or compared with a threshold) or with `mod()` has a zero rate between pulses,
+  and CVODE's step grew past every pulse: X = 0 where 11 pulses were given.
+  Only the `(time()-t0) - P*floor((time()-t0)/P) < w` spelling was stopped at.
+  Every jump of a `floor`, `ceil`, `rint` or `mod` whose argument is affine in
+  time, and every crossing of a condition built from them, is now a crossing
+  stop, so each pulse is integrated. A model calling `mod()` also failed to
+  compile under codegen, since C has no `mod`; it is now emitted as `fmod`,
+  which is what ExprTk's `mod` computes. From @Montana.
+
+- **Placing thousands of crossing stops no longer costs seconds per run, and
+  two stop-placement slips are fixed (follow-up to issue #869).** Stops landing
+  on one instant were merged by comparing each against every stop kept, so a
+  pulse train with 12,000 edges spent 8.7 s of every `run()` there; it takes
+  milliseconds now. The cache of resolved stop times is keyed on the condition
+  with its derived parameters inlined, so two models writing one condition over
+  a derived name defined differently in each no longer share stop times. A
+  comparison that fails only at the instant of a jump, such as
+  `mod(time(), 24) < 24`, no longer gets a stop there.
+
+- **A step inside a step of time no longer turns every inner jump into a
+  crossing stop, and a comparison over one is now stopped at (follow-up to issue
+  #869).** In `floor(floor(time()+phase)/24)`, the day count of a light-cycle
+  model, the inner hour count was read as a step of its own, so each hour
+  restarted CVODE on a rate law continuous there. BIOMD0000000412, 445 and 476
+  took 1.5x the steps and 4x the Jacobian evaluations for the same trajectory;
+  they are back to their earlier counts. Only the outer step's jumps are stops
+  now. A comparison over nested steps, such as
+  `if(floor(floor(time())/24) - floor((floor(time())-3)/24) > 0.5, 1, 0)`,
+  placed no stop at all, and CVODE stepped over its pulses; each is integrated
+  now.
+
+- **Nested steps of time are stopped at exactly where they jump, at any depth,
+  and none is left without a stop (follow-up to issue #869).** A value read off
+  sympy's expanded form is an ulp or two off the model's arithmetic
+  (`floor(time())/24` is `0.041666666666666664*m` there, and `x/49` is
+  `(1/49)*x`), and deciding each piece to the exact bit took the rounding's
+  side. A pulse on a plateau, such as `if(floor(time())/24 -
+  floor(floor(time())/24) <= 0, 1, 0)`, got one stop and integrated 1 where 3
+  were given; `floor(floor(time())/49)` stopped an hour late. Pieces are now
+  read within a few ulps of their terms' size. Deeper nesting, an outer step
+  whose argument also reads time, and `mod(mod(time(), 24), 12) < 1` are
+  resolved rather than left with no stop. An outer step with no known jumps
+  (`round()`), or one that reads state, keeps its inner steps' stops, which the
+  outermost-call scan had dropped. Dropping the hourly stops also dropped an
+  hourly step cap: a model whose rate is a sharp light function itself, with no
+  state to bound the step, can step over its dusk, and needs `max_step`.
+
+- **An ODE run whose closed-form Jacobian stays non-finite no longer returns a
+  trajectory that drifted off (issue #867).** Where no clamp could make the
+  Jacobian finite, as for `sqrt(S)` with S pinned at 0, the matrix went to the
+  linear solver anyway, the species' Newton correction was zero on every step,
+  and the run returned S = -2.27 or -2.1e6 for 0 with no error. Such a step is
+  now a CVODE failure: `jacobian="auto"` retries with difference quotients, and
+  `jacobian="analytical"` raises, naming the infinite slope at 0 rather than
+  advising a constraint on the species. `run_batch` rows now take the same
+  retry as `run()` (GH #176), so a batch returns what a loop of `run()` returns
+  instead of raising.
+
+- **The experimental diffrax solver stops at a switch on the clock (issue
+  #865).** `bngsim._diffrax_solver.run_diffrax` integrated straight across a
+  rate law such as `if(time() > 1.37, 5, 0.1)`. On the issue's model its error
+  was 3.4e-3 at `rtol=1e-6`, against CVODE's 7.5e-4, and at `rtol=1e-8` and
+  tighter it ran out of steps. The run is now split at the switch times, the
+  crossings CVODE stops on, so that no step is taken across a jump. The same
+  model now has an error of 1.1e-3 in 40 steps at `rtol=1e-6`, and completes at
+  `1e-8` and `1e-10` with errors of 2.3e-5 and 1.1e-6, within diffrax's own on
+  the model with no switch. A switch costs the split a dozen steps or so, and
+  fewer than main took where main stepped across a real jump. A model whose rate
+  laws switch on no clock runs as before. A rate law that switches on the
+  model's state is refused, as events are. So are a condition with more
+  crossings than a run may stop at, one no resolver can place (on two counters),
+  and a run backward in time across a switch, or on a counter clock.
+
+- **`ModelBuilder` no longer drops a species IC reference it cannot resolve
+  (issue #863).** A reference (`add_species_param_ref`) to an undeclared
+  parameter was skipped at build, leaving the species at its `add_species`
+  number with no reference recorded and no error. It is now refused, naming
+  the species and the parameter, as is a species index out of range. The SBML
+  loader, which relied on the drop for a parameter it promotes to a species,
+  now leaves that reference out itself. A functional reaction whose rate names
+  a parameter and no function, which the build refused, now resolves as
+  elementary at that parameter, the mirror of the existing
+  elementary-to-functional reclassification. A rate that names a parameter
+  with `apply_species_factor=False` is refused, elementary or functional: the
+  interpreted kernel left the reactant factor off it, while the generated RHS
+  and the analytical Jacobian applied it. From @Montana.
+
+- **A network-free run no longer returns a silent wrong answer for a rate law
+  that reads `time()` (issue #862).** RuleMonkey (`method="rm"`) treats a total
+  propensity of 0 as final, so `if(time()>=6, k, 0)` never fired and every row
+  was the initial state, with no warning (richardposner/RuleMonkey#86). NFsim
+  (`method="nf"`) failed at setup with `Error preparing function f in class
+  GlobalFunction`. Both backends, through `Simulator` and through
+  `NfsimSession`/`RuleMonkeySession`, now raise `ModelError` naming each
+  function that reads `time()` (or a bare `time`) and pointing at `method="ode"`
+  or `"ssa"`. RuleMonkey also refuses a table function indexed by time, which
+  fell into the same trap. NFsim still runs one (see issue #892). From @Montana.
+
+- **A post-init `NfsimSession.set_param` changes the rate of a zero-order rule
+  (issue #854).** NFsim dropped the parameter name of a synthesis rule such as
+  `0 -> A() kp` when it folded the rule's volume conversion into its rate at
+  load, so the post-init refresh skipped it: `get_parameter('kp')` returned the
+  new value while the rule kept producing at the old one, with no warning. A
+  rate changed after `initialize()` now runs the same trajectory, for the same
+  seed, as that rate set before it, compartment volume included (vendored NFsim
+  carry 0016).
+
+- **A post-init `NfsimSession.set_param` reaches a Michaelis-Menten rule's kcat
+  and Km (issue #854).** NFsim held both as numbers fixed at load, so
+  `set_param('kcat', ...)` after `initialize()` changed `get_parameter('kcat')`
+  while the rule kept running at its old kcat, with no warning. A zero-order
+  rule's volume conversion is also folded in without applying its symmetry
+  factor a second time: a rule written with `symmetry_factor` other than 1
+  (BNG writes 1 for every zero-order rule) loaded at the factor squared and
+  moved to the factor once at the first parameter write of any kind. Vendored
+  NFsim carries 0017 and 0018.
+
+- **NFsim fails the load instead of killing the Python process on functions it
+  cannot build.** The vendored NFsim called `exit(1)`, so
+  `NfsimSession.initialize()` ended the interpreter with no message, on a
+  local-function rate law that reads both reactants (`A(b)%x + B(a)%y ->
+  A(b!1).B(a!1) fA(x)*fB(y)`, or one `fAB(x,y)`), a local function that reads
+  a Species observable through its argument (`SA(x)`), and a function that
+  calls another function and reads an observable (`g() = f() + k*SB`). Each
+  now raises `SimulationError` with NFsim's reason (vendored NFsim carry 0019).
+
+- **A `.net` parameter whose expression reads an observable or a function is
+  now refused at load (issue #844).** A parameter is a constant, and BNG2.pl
+  refuses such a model. bngsim compiled the expression, evaluated it once at
+  build before any observable or function had a value, and loaded the
+  parameter as 0.0, so a reaction whose rate it was never fired. The loader
+  now raises, naming the parameter and the symbol, and points at a function as
+  the way to write a state-dependent rate. A parameter row shadowed by a
+  same-named function (the SBML assignment-rule shape, #266) still loads.
+  From @Montana.
+
+- **JAX now differentiates saturated Hill terms without producing a NaN Jacobian (issue #838).** For a reciprocal power-sum denominator such as `k/(1 + (A/K)^n)`, the JAX translator uses a stable sigmoid form for positive bases before automatic differentiation. Non-positive bases keep the direct real-valued power expression. This lets CVODE use the JAX Jacobian when the Hill term has saturated.
+
+- **The JAX translator now treats integer literals as floating-point values
+  (issue #837).** A literal-only power such as `1500^6` was evaluated as a
+  Python integer before reaching JAX and could overflow its int64 conversion.
+  Integer tokens are now emitted as floats, matching the engine's double
+  arithmetic while preserving decimal/scientific literals and quoted strings.
+  From @Montana.
+
+- **Forward sensitivities accept a zero event delay that reads fixed parameters
+  (issue #835).** Now that SBML event delays and priorities that read a
+  parameter are evaluated at the fire (#558 follow-up), a delay such as `d`
+  with `d = 0` reached the sensitivity gate as an expression and was refused.
+  A delay expression that reads only fixed (non-expression) parameters and
+  evaluates to zero for the run is now treated as vacuous; genuinely delayed or
+  run-varying events are still refused. Two cases stay refused because they
+  would otherwise be silently wrong: a zero delay that reads a *requested*
+  sensitivity parameter (its execution time moves with that parameter, so
+  `dx/dd` is not 0), and a `run_batch` row that sets such a delay nonzero after
+  the pre-run check saw 0 (the runtime now refuses a delayed fire during any
+  forward-sensitivity run instead of returning columns that miss the jump).
+  SSA and PSA, which refuse delayed events, again run a zero parameter delay
+  (it folded to a literal 0 before #833 and ran; as an expression it was
+  refused). Adds `set_param` / `parameter_scan` coverage for live delays and
+  priorities. From @Montana.
+
+- **A failed automatic codegen build is no longer retried on every
+  `Simulator()` (issue #826).** At or above `BNGSIM_CODEGEN_THRESHOLD` species,
+  a build that failed (for example by exceeding `BNGSIM_CODEGEN_TIMEOUT`, 600 s
+  by default) fell back to the interpreted RHS and was forgotten, so every
+  later construction on the same model, or on a freshly loaded copy, paid the
+  full timeout again. The failure is now remembered for the process, keyed on
+  the model's structural codegen key, the compile timeout, the job count and
+  the backend, and the skip is logged once. Raising the timeout or job count
+  starts a fresh attempt, and `codegen=True` always builds. From @Montana.
+
+- **A comparison used as a number no longer costs a model its analytic
+  sensitivity RHS (issue #824).** ExprTk reads a comparison as 1 or 0, so a
+  condition may do arithmetic or ordering on it: `(a==b)<1` (BNG2.pl's own
+  parenthesization of `a==b<1`), `(a<b)*2>1`, `(a<b)+(b<a)>0`, or a rate law
+  such as `k*(A>1)`. sympy has no such coercion, so these could not be parsed
+  for differentiation and the analytic sensitivity RHS (and the analytical
+  Jacobian) was declined for the whole model, with a warning that wrongly
+  claimed a moving crossing. A truth value used as a number is now
+  `Piecewise((1, cond), (0, True))`, ExprTk's own 1/0. From @Montana.
+
+- **The sensitivity decline warning no longer calls a run-constant condition a
+  moving crossing (issue #824).** A comparison over parameters alone, such as
+  `a<b` or `(a==b)<1`, picks its branch before the first step and holds it,
+  so it has no crossing time. When something else declined the analytic
+  sensitivity RHS, the warning still named such a condition as one "whose
+  crossing time(s) move" and said the difference-quotient fallback was not
+  correct. It now reports the fallback as correct, but slower, unless a real
+  moving crossing is present. From @Montana.
+
+- **The ExprTk operator normalizer now rewrites relational chains in
+  expressions that contain a quoted string (issue #823).** It normalized the
+  unquoted pieces one at a time, which split the parentheses at every quote,
+  so the relational-chain rewrite declined any expression carrying a quoted
+  `tfun` file name. Quoted spans are now masked with placeholders while the
+  whole expression is normalized. Latent: no quoted text reaches the
+  normalizer on any current path. From @Montana.
+
+- **Built-in constants in event time thresholds are now handled as constants (issue #821).** A trigger such as `time() >= _pi*T0 && time() < 100` was mistaken for a state-dependent event because the expression dependency collector reported ExprTk's registered constants as model variables, and the Python threshold analyzer rejected `_pi` as an unknown identifier. Constant symbols are now excluded from model-variable dependencies and accepted during threshold reduction, so the event receives its correct time sensitivity.
+
+- **SSA and PSA refuse a NaN or infinite propensity (issue #809).** SSA used to
+  hang at full CPU on one, and PSA returned the initial state as the whole
+  trajectory. Both now raise `SimulationError` naming the reaction and the
+  time, as the ODE path refuses a non-finite RHS, and a total that overflows
+  is refused the same way. A Michaelis–Menten reaction with a NaN or infinite
+  `Km`, `kcat` or reactant used to read as a rate of exactly 0, so it stopped
+  without a word; it now carries the non-finite value to the refusal, in
+  every engine and code generator.
+
+- **A reaction whose rate carries an integer factor of 2^64 or more now compiles
+  (issue #803).** Codegen printed the factor with `str(int(...))`, so `1e24`
+  became a 25-digit integer literal that no C integer type holds, and every
+  `codegen=True` and forward-sensitivity run of the model failed to compile. An
+  Antimony or SBML kinetic law such as `1e24*k*A` folds its literal into that
+  factor, and BNG2.pl writes one for a small cBNGL compartment. Such factors are
+  now written as floating-point literals; every factor below 2^53 keeps its
+  exact integer spelling.
+
+- **A `.net` rate column's stat-factor prefix must be a whole, finite number
+  (issue #803).** `0.5*`, a factor with no rate constant, loaded under
+  `Model.from_net` as a reaction that never fires, since `ModelBuilder` passes
+  an empty rate name over; `2k*kf` and `nan*kf` read as 2 and NaN times `kf`,
+  because the parse stopped at the first character it could not use. The first
+  is now refused with the line named, and the others are read as one rate name,
+  which the build refuses unless the model declares it.
+
+- **The `.net` loader refuses a directory and a repeated block, and keeps an
+  expression initial concentration read before the parameters block (issue
+  #803).** A directory loaded as an empty model. A second block of a kind
+  replaced the first; for parameters that also dropped any `_InitialConc<N>` a
+  species block before it had lifted, so `2*A0` started at 0, and left a
+  species naming a parameter reading another parameter's value. BNG2.pl writes
+  each block once, so a repeat is now an error, and the parameters block is
+  appended to the lifted parameters rather than replacing them.
+
+- **A large stoichiometric coefficient no longer expands into one right-hand-side
+  update per unit (issue #801).** A reaction's reactants and products are one
+  index entry per unit of stoichiometry, and the C code generator wrote one
+  `ydot` update per entry: BIOMD0000000608's three coefficients of 1,000,000
+  became 66.7 MB of C that could not compile within the codegen budget, so the
+  model could not run forward sensitivities or `codegen=True`. The interpreter
+  and the JAX right-hand side looped the same way, a million updates per
+  evaluation whose rounding drifted (1e6 additions of 0.1 gave
+  100000.00000133). All three now apply `multiplicity * rate` once per species.
+  A unit coefficient is unchanged. From @Montana.
+
+- **Codegen and forward-sensitivity runs of `.net` and BNGL models are no longer
+  wrong on the #784 family (issues #608, #689, #694, #699, #721, #730, #731).**
+  Each was a place codegen's own `.net` reader parsed the file differently from
+  the loader: unindexed blocks (#608), stat factors with a leading dot or an
+  exponent and the legacy `Sat`/`Hill` laws (#689), a `set_param` override of a
+  derived parameter (#694), a function reading one declared after it (#699), a
+  `tfun` indexed by `T` (#721), and a file rewritten under a loaded model (#730,
+  #731). That reader is gone. A `Simulator` built *before* a derived-parameter
+  override still keeps the old chain rule, as SBML models already did (#708).
+
+- **A cyclic function group whose values were all at or below ~1e-12 was
+  "solved" at its x = 0 seed, silently (issue #782).** `solve_function_cycle`
+  tested convergence against `1e-12*(1 + max|x|)`, which is absolute at the
+  seed, so it accepted F(0) without a Newton step, marked the group converged,
+  and bypassed the NaN guard. A scale-invariant model then gave different
+  answers depending on its scale: a cyclic decay with A0 <= 1e-12 never moved,
+  larger ones froze once they reached 1e-12, and MODEL1006230117 at
+  R_Total = 1e-13 reported R/R_Total = 1 and RG = 0. Convergence is now relative
+  to max(|x|, |F(x)|), the seed is accepted only when its residual is exactly
+  zero, and the finite-difference Jacobian step scales with the group. From
+  @Montana.
+
+- **A table function's observable or function index was invisible to the
+  builder's dependency scans (issue #781).** The builder rewrites a tfun-bodied
+  function to `tfun_<name>()` (the .net loader rewrites an embedded call to
+  `tfun_<f>__tfun<k>()`), so the index was no longer in the text the scans read.
+  The Jacobian sparsity pattern dropped every species behind it:
+  `Model.jacobian(sparse=True)` returned 0 where the dense Jacobian is nonzero,
+  `pure_sink_species()` reported the indexed species as an inert accumulator, and
+  the steady-state masking recipe built on that list froze it and reported a
+  steady state the dynamics never reach. And an embedded call whose index is a
+  function declared after it read that function's previous value, so the RHS
+  depended on the call before it. Both scans now resolve each call to its index;
+  time- and parameter-indexed tables read no species, and their pattern is
+  unchanged. From @Montana.
+
+- **Forward sensitivities could be wrong or fail when one parameter moved multiple pulse onsets at different rates and the pulses shared an exponent (issue #780).** Comoving eligibility now distinguishes singular powers by both base and exponent, allowing each onset to receive its required shift.
+
+- **Forward sensitivities silently dropped an event's dependence on the model
+  when its trigger or assignment was deeply nested (issue #779).**
+  `referenced_variable_addresses()` re-parsed the expression with ExprTk's
+  `collect_variables()`, whose default parser allows a tenth of the stack depth
+  the evaluator compiles with, and turned the failed re-parse into an empty list,
+  which every caller reads as "depends on nothing". Past about 197 nested
+  `piecewise`/`if` levels a state-dependent trigger was treated as fixed-time
+  and lost its dt*/dp term; deep arithmetic in an event assignment zeroed its
+  jump sensitivity. Trajectories were unaffected and nothing warned. The
+  variables are now collected by a parser configured exactly like the
+  evaluator's (one shared setup function), and a re-parse that still fails raises
+  instead of reporting no dependencies. From @Montana.
+
+- **A NaN table-function index gave the table's last value, or read past the
+  end of the table (issue #778).** `TableFunction::evaluate_at` had no NaN
+  test: every comparison with NaN is false, so the index fell through both
+  endpoint checks and the binary search landed one past the last interval. A
+  `method=>"step"` table then returned its last y value, and the run finished
+  with finite, wrong numbers and no warning (with `d = sqrt(-1)` indexing
+  `tfun([0,1,2],[5,6,7],d)`, `A` decayed as `10*exp(-7t)`). A linear table read
+  `xs[n]` and `ys[n]`, one element past the end. A NaN index now returns NaN, so
+  the non-finite RHS guard refuses the run on both the interpreted and compiled
+  paths, and the interval index is clamped so the linear branch cannot read out
+  of bounds. A NaN in a table's x values, which slipped past the monotonicity
+  check the same way, is now refused when the table is built. From @Montana.
+
+- **In a model with a scalar named `time`, `time()` read that scalar instead of
+  the clock (issue #776).** BNG2.pl accepts an observable named `time`, and a
+  `.net` can also declare a parameter named `time`. The interpreter's
+  `strip_empty_parens` rewrote `time()` to the bare scalar before the ambiguity
+  guard ran, and both codegen identifier tables let the model name override the
+  built-in, so ODE (interpreted and compiled) and SSA runs silently used the
+  scalar's value: a rate `k*time()` beside an observable `time` = 5 gave
+  B(2) = 10 instead of 2. Forward sensitivities read `time()` as the clock
+  throughout, so they disagreed with their own trajectory. The call form
+  `time()` is now the clock in all of these paths and the bare word `time` is
+  the model's scalar, as the expression reference now states. NFsim still
+  refuses such a model with an error naming `time`. From @Montana.
+
+- **An event trigger that read state only through an assignment rule was
+  classed as time-only, so forward sensitivities dropped its dt*/dp crossing
+  term (issue #775).** `event_trigger_is_state_dependent` and a second copy of
+  its loop in `event_sensitivity_unsupported_reason` accepted only a species,
+  an observable or a rateOf slot named directly in the trigger. An SBML
+  assignment rule compiles to a parameter slot, so `x < 1` with `x := 2*S` fired
+  at a fixed time: `S(1)` was right but `dS/dk` came back `-0.2258` instead of
+  `-0.7358`, and `dS/dS0` an exact `0` instead of `+0.7358`, with no warning. An
+  `and`/`or` trigger through such a variable got those numbers instead of the
+  refusal it gets when it reads `S` directly. State dependence is now decided by
+  `expression_support()`, which follows assignment rules, observables and
+  derived parameters to the species behind them, and both sites call the one
+  function. The refusal for a state-free trigger the detector cannot resolve
+  now also checks the parameters the trigger reaches, not only the ones it
+  names, so a primary behind a derived parameter is caught. From @Montana.
+
+- **The expression reference said an `if()` condition is true when > 0.5; every
+  bngsim backend treats any nonzero condition as true (issue #774).** The ODE
+  interpreter, compiled models, SSA, PSA, NFsim and RuleMonkey all use
+  `condition != 0`, and `test_if_semantics.py` pins it; only the documentation
+  said otherwise.
+  `docs/reference/expressions.md` now states the nonzero rule and the one place
+  it differs from BNG2.pl's `run_network` (which tests `> 0.5`): a bare numeric
+  condition in `(0, 0.5]` or below 0. Relational and logical conditions evaluate
+  to exactly 0 or 1 and agree under both rules. To match `run_network` for a bare
+  number, write the comparison explicitly, e.g. `if(c > 0.5, a, b)`. The test
+  module's docstring no longer cites a design record that is not in the
+  repository. No behaviour change. From @Montana.
+
+- **An override that was re-attached left the event-jump sensitivity for its
+  primaries at exactly 0 on that Model (issue #773).**
+  `expression_support()` memoizes each expression's species and parameter
+  support and was never cleared, on the argument that `set_param`'s detach can
+  only shrink a support. Since #188 an override is reversible, and a re-attach
+  grows the support back, but a memo entry filled while the parameter was
+  detached kept its primaries out. With `d = 2*k` feeding an event assignment
+  `S := d`, override → sensitivity run → re-attach gave the right `S(1) = 2`
+  but `dS(1)/dk = 0` instead of `2`, and it stayed 0 for every later run on that
+  object. Clones and fresh models were unaffected. `set_param` now clears the
+  memo whenever it flips a parameter's `is_expression` or drops its evaluator,
+  and `set_function_eval_expression` clears it when it replaces a function
+  body. From @Montana.
+
+- **`Model.add_table_function` no longer gives one name two answers (issue
+  #772).** Under a `.net` tfun's name the second table was appended but never
+  bound, so the dynamics used the old data while codegen reported the new; under
+  a plain function's name the interpreter kept the function's body and compiled
+  code read the table, so the answer changed with `codegen`. A plain function's
+  name now raises `ModelError` and leaves the model unchanged, as does a name the
+  expression evaluator cannot register, which it used to drop silently. The C++
+  `NetworkModel::add_table_function` refuses the same names. A table's own name
+  gives that table new data (see the next entry).
+
+- **`rint(x)` rounded a negative half away from zero, one below BioNetGen's
+  answer, in every backend (issue #771).** BNG defines `rint` as
+  `floor(x + 0.5)`, which is what BNG2.pl's `run_network` evaluates, but bngsim
+  used C's `std::round`: `rint(-2.5)` was -3 instead of -2 and `rint(-0.5)` was
+  -1 instead of 0, with no warning, in the ODE interpreter, SSA and PSA,
+  compiled models, the JAX Jacobian, NFsim and RuleMonkey. Non-negative
+  arguments were unaffected. `rint` now
+  has one definition, `bngsim::expr_compat::rint`, which the interpreter and the
+  NFsim shim both call (a new vendor carry, like `mratio`'s); codegen emits
+  `floor((x) + 0.5)` and the JAX helper computes the same. `_CODEGEN_VERSION` is
+  bumped to 31 so a compiled model cached with the old `rint` is rebuilt. The
+  expression reference no longer calls `rint` an alias of `round`: `round` rounds
+  a negative half away from zero, and the two differ there. From @Montana.
+
+- **In a model with a parameter or observable named `or` or `and`, `||` and
+  `&&` compiled as that symbol instead of the operator (issue #770).** The
+  expression compiler turned `||` / `&&` into the ExprTk keywords `or` / `and`
+  before remapping model symbols, and a symbol named `or` / `and` is remapped to
+  `r_or` / `r_and`, so it captured the operator just inserted. `(x>2) || on`
+  became the implicit product `(x>2)*r_or*on`, silently: a rate
+  `if(((k>0.5)&&on),k,0)` beside `and = 0` never fired. BNG2.pl's parenthesized
+  form `(a)||(b)` refused to load instead, on every engine. The sympy printer that
+  writes the derived Jacobian emitted the same keywords, so such a model also
+  fell back to the finite-difference Jacobian. The operators are now converted
+  after the remap and the printer writes `&&` / `||`; expressions in models
+  without such a symbol compile exactly as before. From @Montana.
+
+- **`set_param(force_override=True)` did not pin a derived parameter that an
+  earlier ordinary write had overridden (issue #769).** The forced write only
+  dropped the parameter's evaluator inside `else if (param.is_expression)`. An
+  ordinary override leaves `is_expression` false but keeps the evaluator, which
+  is what makes that override reversible, so for exactly that parameter the
+  forced write changed only the value. A later write equal to the expression's
+  value then re-attached the "pinned" parameter, and the next primary write
+  moved it: with `d = 2*k`, override → force pin → identity write → `k = 4`
+  gave `d = 8` and `A(10) = 80` instead of `30`, and `reset()` and `clone()`
+  kept the lifted state. A forced write now detaches whenever an evaluator
+  exists, as the documented contract ("neither reset, clone, nor a later write
+  lifts it") says. From @Montana.
+
+- **`mratio` no longer returns false-limit values at `a = 0` or a negative `b`
+  (issue #768).** Its trust rule took every non-positive integer `a` as
+  terminating the continued fraction, but at `a = 0` no numerator vanishes:
+  `mratio(0, 1, 100)` returned 1.28e15 for 2.69e41. An `a = 0` with `z > 0` is
+  now summed directly as M(1, b+1, z), a series of positive terms, to within
+  3e-13 of the ratio where measured. The rule's other clauses were only
+  measured with `b > 0`, and with `b` negative they were wrong up to the sign;
+  those arguments are now refused unless the asymptotic route can vouch for
+  them. Both engines. BNG's own arguments (`b = |AT-BT| + 1`) are unaffected.
+
+- **An event and a rate-law switch on one fitted time give the right
+  sensitivity to that time.** A dose or reset at `tau` beside a rate law gated
+  on `time >= tau` is two jumps at one instant. The event's jump read the flow
+  before and after the event at the instant itself, where `time >= tau` is
+  already true, so both came from the switch's after-branch, and the switch's
+  jump was then added at the post-event state. The column for `tau` was wrong
+  by O(1), 0 for −3 on a reset beside `piecewise(k*X, time >= tau, 0)`, with
+  no warning and the trajectory right. The event's flows are now read on the
+  branch the switch is on when the event fires, for a switch on `time` or on a
+  counter.
+
+- **An event and a rate-law switch that a parameter pulls apart are refused
+  where the order matters.** With an event at `tau = 3` and a rate law
+  switching at the literal 3 (or the reverse), the two come apart under `tau`.
+  If the event changes what the switched rate law contributes, a reset of `X`
+  beside `piecewise(k*X, time >= 3, 0)`, the result depends on which comes
+  first and the sensitivity to `tau` does not exist. bngsim returned the
+  derivative from one side, with no warning. It now measures whether the two
+  commute and refuses where they do not. A pair that does commute, a bolus
+  beside an infusion that starts then, runs as before. Where switches share an
+  instant and not all of them move with the event, the instant is asked as a
+  whole and each fitted switch for its own jump: back-to-back infusions with a
+  bolus on the boundary run. Not detected: a `floor` step on a fitted switch
+  (#944), a state-dependent switch beside an event (#945), and a parameter
+  that moves the event by under 1e-9 of its time per unit relative change.
+
+- **An event assignment that reads `rateOf(species)` now carries its forward
+  sensitivity.** The event jump differentiates each assignment by finite
+  differences, and `rateOf` is bound to a buffer that only a derivative probe
+  refreshes. The difference never ran that probe, and the assignment's support
+  listed no parameters for a `rateOf` read, so the assigned row came back 0 in
+  every column, and so did every species that consumes it after the event, with
+  no warning. Read through an assignment rule (`r := rateOf(A)`), the column
+  came out −½× the truth, and a trigger reading `rateOf` that way got a
+  crossing-time derivative −2× off. The difference now refreshes the buffer at
+  each perturbation and re-evaluates the functions after it, and a `rateOf`
+  read counts every parameter as support. The trajectory was never affected.
+
+- **A large flux elsewhere in a model no longer hides a state switch's jump from
+  forward sensitivities.** Whether a state-dependent rate-law switch jumps was
+  decided by comparing the largest `|f⁻ − f⁺|` with the largest `|dx/dt|` over
+  all species. One fast species the switch never touches, such as a
+  1e8-molecule pool turning over at 0.1/s, made a real jump of 3 read as
+  roundoff. The saltation term was dropped, and every switch-time sensitivity
+  column came back exactly 0 with no warning. The trajectory was unaffected.
+  The jump is now read from the reactions whose rate law reads the switch, with
+  each branch extended to the crossing from two points on its own side. It
+  counts as continuous only below 1e-6 of the rate that drives the crossing, so
+  a steep smooth term in the same rate law no longer hides it either. A switch
+  no rate law reads cannot jump at all. Two independent thresholds crossed
+  within one probe step of each other are refused when the requested columns
+  move them apart, instead of one being credited with the other's jump.
+
+- **An ODE event delay that was NaN, infinite or negative fired at trigger
+  time instead of being refused (issue #762).** SBML L3 requires a delay to be
+  a non-negative number. The ODE event loop clamped a negative delay
+  expression to 0, never checked a constant delay, and let NaN fail its
+  `delay > 0` test, so `delay=-1`, `delay=nan`, `0/0` and `sqrt(-1)` all fired
+  at t = 1 exactly as a zero delay would, with no error. A constant delay is
+  now refused when the model is built (`ModelBuilder`, and so every loader),
+  and a delay expression is refused when it is evaluated at the fire, naming
+  the event, the time and the value. A negative within rounding of zero is
+  still read as 0. The refusal is not retried under `jacobian="auto"`, since it
+  has nothing to do with the Jacobian. From @Montana.
+
+- **SSA and PSA fire an event that another event's assignment triggers
+  (issue #761).** Such an event was recorded as already true and never fired,
+  at that instant or later, with no warning (SBML suite 00978 gave 0, 0, 0
+  against 5, 1, 3). Same-instant batches now run the ODE engine's SBML L3v2
+  §4.11.6 drain: a rising edge caused by an assignment joins the batch, and a
+  falling edge cancels a non-persistent event that has not run yet.
+  An event whose trigger rose while the SSA jumped to another event's time,
+  such as a trigger on a rate-rule variable, is no longer marked as already
+  true: it fires, though at that event's time (issue #751 tracks the
+  timing). An event assignment that is NaN or infinite is refused.
+
+- **The column that moves a window's closing edge is right when the window
+  closes as a power.** A window `k1*s*(1-s)^(a-1)` closes at `on + D` as a
+  power, and the forcing of the `D` column goes as `(1-s)^(a-2)` before the
+  crossing. The comoving column, which has no such term (#545), was entered at
+  the crossing, after the approach had been integrated: dX/dD came back 0.37%
+  low at `a = 1.1`, the same at every tolerance, and the run failed at
+  `a = 1.05`. Such a column now enters its frame before the crossing, at a
+  stop the solver takes a sixteenth short of it on the last stretch that leads
+  there. The onset column was right already. It enters at the opening edge,
+  and both edges move with it at the same rate. Not in a model that has an
+  event, which keeps every column plain (#958).
+
+- **An SBML window that closes as a power gives the right onset sensitivity.**
+  An SBML condition `time <= on + D` is a switch record and a registered root
+  as well, and the root is reported a few ulp after the record's stop. A
+  comoving column left its frame there against the right-hand side read 1e-9
+  earlier, which is before the switch. For a window closing as `(1-s)^0.1`
+  that reading is still 13% of the window's height from its limit, and dX/d(on)
+  came back 32% off past the close, with no warning. A root that close after
+  the stop the column entered at now uses the right-hand side kept from that
+  stop, and any other root reads it from two points just before the root,
+  extended to it.
+
+- **A column that moves one window's edge is right when another window
+  closes as a power.** A comoving column (#545) kept its frame from the
+  crossing it entered at to the next restart. With two such windows open at
+  once that restart is the other window's closing edge, and on the way there
+  the frame carries that window's unbounded forcing, in a column that never
+  had it. For windows over [2, 5] and [4, 10], dX/dD of the first came back
+  0.6% off, with no warning, and its onset column failed the run. A frame is
+  now left a sixteenth short of the next crossing, unless that crossing is the
+  column's own. A restart within about 7e-10 of the time (relative) of a
+  window edge a requested parameter moves, where no stop can stand off from
+  the edge, is refused.
+
+- **A crossing on the edge of a window that closes as a singular power is
+  refused for sensitivities.** Two rate-law conditions that cross on
+  one instant are told apart by raising one threshold a hair with the clock
+  past the instant (#375). For a window `k1*s*(1-s)^(a-1)` that reads the
+  closing power a hair from its zero, and `(1e-14)^0.1` is 0.04: a jump of a
+  few percent of the window's height where there is none. With a zero-order
+  step on the close, or a second window closing with it, dX/dD came back 27%
+  to 41% off, with no warning (#949). Where the power is singular at the run's
+  parameter values, such a run now stops with an error that says to separate
+  the two times. Not in a model that has an event: its columns are not in a
+  frame at all (#958), and #949 stands there.
+
+- **A parameter named twice in `sensitivity_params` got its initial-condition
+  seed only in its first column (issue #759).** `setup_forward_sensitivities`
+  mapped each parameter to the first column that named it, and both seeding
+  paths looked columns up through that map. The RHS forcing df/dp reached every
+  column, but `yS(0) = dx(0)/dp` landed only in the first. With
+  `sensitivity_params=['A0', 'k1', 'A0']`, the repeated `A0` column came back
+  all zeros for a pure initial-condition parameter, and off by up to 1.0 for
+  one that also appears in a rate law, with observable sensitivities and
+  gradients inheriting the error. The event-time and switch-time jumps, and a
+  `parameter_scan` hook's declared initial-condition rows, had the same fault
+  the other way round: only the last column got them, so the first column of a
+  repeated event or switch time was all zeros. Every column a parameter is
+  requested in now gets all of it, so a repeat is identical to the first. From
+  @Montana.
+
+- **Conservation laws across compartments of different size carry the sizes** ([#758](https://github.com/lanl/bngsim/issues/758)). A reaction between two compartments conserves a total of amounts, and the laws were row-reduced from the plain stoichiometry: `A` (size 1) `<->` `B` (size 2) reported `A + B`, which a run takes from 1 to 0.75, where `A + 2*B` stays at 1. `steady_state(method="newton")` held the wrong total and reported the eigenvalue -1.5 for -2, and `steady_state(sensitivity_params=...)` was 33% to 90% off (refused since #704). The laws are found for the amounts now and follow a compartment size written with `set_param` (per model, so each `steady_state_batch` entry holds its own). The steady-state sensitivities of such a model are computed again, except where the reduced Jacobian is badly conditioned (`sens_jacobian_rcond` below 1e-8) or an assignment rule sizes a compartment; those are refused. Before a solve, `steady_state` checks that the rates keep every reported total, and raises `SimulationError` where they do not.
+
+- **`steady_state(sensitivity_params=...)` no longer solves through a failed factorization** ([#758](https://github.com/lanl/bngsim/issues/758)). Where the Jacobian at the steady state is singular, the LU factorization of the sensitivity system stops at a zero pivot and leaves the rest of its pivot array unset. The result of the factorization was not checked, and the solve that followed read and wrote wherever those entries pointed. It usually returned non-finite columns, which are refused as "dY_ss/dp does not exist", and it could fault instead: two corpus models of 1,700 and 2,047 species did. The solve is skipped now and the columns are NaN, so the refusal is the same and no memory outside the system is touched.
+
+- **A parameter named `E`, `S`, `N`, `Q`, `O`, `beta`, `gamma` or `zeta` in a
+  time condition was read as sympy's built-in of that name (issue #757).** The
+  five clock-threshold solvers (affine, monomial, quadratic, clock guard and
+  periodic schedule) parsed with no `local_dict`, so sympy's namespace resolved
+  the name before the model could. A periodic schedule over such a name was
+  declined, and a plain run lost every pulse CVODE could step over (`X(240) = 0`
+  instead of `10`, no warning). `time()-E*E >= 0` solved to `exp(2)`, so the
+  crossing looked fixed and `dX/dE` came back an exact `0` instead of `-12`. A
+  pulse over `gamma`, `N`, `beta` or `S` raised `SensitivityUnsupportedError`
+  on a valid model. The five sites now share one parser that binds every bare
+  model name as a plain symbol, as `_prepare_derived_expr` already did, and
+  aliases Python keywords so they parse and come back under the model's own
+  name. From @Montana.
+
+- **A threshold on an observable or species named `E` or `pi` is no longer read
+  as a sympy constant (issue #756).** The derived-expression parser bound only
+  parameter names, so any other identifier resolved through sympy's namespace:
+  `time() > k*E` with an observable `E` was filed as a clock switch at the
+  phantom time `t = e*k`, the real crossing's sensitivity jump was dropped, and
+  `dX/dk` came back as exactly zero with no warning. Every other bare name is
+  now bound as a plain symbol, so it is refused as a non-parameter and the
+  crossing is handled as a state switch. From @Montana.
+
+- **SSA and PSA break ties between simultaneous events of equal priority at
+  random (issue #755).** The lowest-numbered event always ran first, so the
+  last-declared writer won every replicate and an ensemble collapsed onto one
+  branch. The pick now follows SBML L3v2 §4.11.6, as the ODE engine's does,
+  from a stream seeded by the run seed. A model without such a tie runs exactly
+  as before.
+  An event priority that evaluates to NaN is now refused, under ODE as well:
+  it compared false with everything, so the order fell back to declaration
+  order.
+
+- **A condition compared to 1, `(cond)==1` or `(cond)!=1`, no longer folds to
+  a constant in sympy (issue #754).** ExprTk reads `(a>1)==1` as `a>1`, but the
+  sympy rewrite built `Eq(a>1, 1)`, which sympy folds to `False` because a
+  Boolean never equals the integer 1. Forward and steady-state sensitivities
+  and the analytic Jacobian then used the wrong `if()` branch while the
+  trajectory stayed right, so a sensitivity landed in the other parameter's
+  column. BNG2.pl writes this shape verbatim. A boolean compared with the
+  literal 1 now becomes the condition itself (or its negation for `!=`).
+  From @Montana.
+
+- **Delayed events execute by priority (issue #752).** SBML orders what
+  executes at one instant by priority, read as each event executes. bngsim read
+  a priority only when an event was triggered and ran due delayed events in the
+  order they were queued, after everything triggered on that instant. So two
+  delayed events triggered at different times and due together ignored their
+  priorities, a priority that changed during the delay was never read again,
+  and an immediate event always ran before a delayed one due on the same
+  instant. In each the last writer, and the state from there on, was the wrong
+  one, with no warning. Due delayed executions now join the batch of their
+  instant. A non-persistent event waiting on a delay is cancelled when its
+  trigger falls inside such a batch, even where a later event of the batch
+  raises it again (it executed twice). libRoadRunner gives the same order on
+  all ten cases tested.
+
+- **A derived onset parameter gets its own comoving column.** With
+  `on = lam*1.0` and a pulse `k1*s^(a-1)*(1-s)` opening at `on`, a requested
+  `on` is a coordinate of its own, and its crossing moves at 1 per unit of it.
+  The generator read each crossing's shift off the primaries only, so the
+  column for `on` was left on the plain path that #545 replaced: 13% low at
+  rtol 1e-4 with no warning, and a solver failure at the default tolerance,
+  where the `lam` column was right. A requested derived parameter is now given
+  the shift of every crossing it moves, with what is defined from it following.
+  A primary whose name is a Python keyword (`lambda`) had the same plain column
+  when the onset was defined from it, and is fixed with it.
+
+- **A comoving onset column carries every rate that reads the clock.** The
+  onset column of a pulse `k1*s^(a-1)*(1-s)` is integrated as `V = S + c*f`
+  (#545), with the counter clock's own rows held at zero. Its forcing therefore
+  has to supply `c*df/dclock`, and it did so only for a rate law that names the
+  clock. A second rate that read the clock species lost the term: mass action
+  with the clock as a reactant, a rate law multiplied by it, a rate law reading
+  an observable that sums it with another species, a Michaelis-Menten rate with
+  the clock as its enzyme. With `Tc() -> Tc() + X() k2` beside the pulse,
+  dX/d(on) came back -1.28 for 0.18, at every tolerance and with no warning.
+  All of these now contribute. A model without such a rate emits the code it
+  did. Where a rate law reads a sum whose weight on the clock is a compartment
+  size a caller can write, the model gets no comoving column, and the plain one
+  answers: for an exponent under about 1.5 that run now ends in the solver's
+  error at a tight tolerance, where it returned a right number before.
+
+- **A species in substance units is a unit-rate clock only in a compartment of
+  size 1.** What a rate law reads under such a species' name is its amount, the
+  stored value times the compartment's size. Made at `C` per unit time in a
+  compartment of size 2 it reads `2*t`, but its stored value moves at 1 and
+  that was taken for the clock: an onset `T >= 3` was jumped at t = 3, where it
+  is crossed at 1.5, and the sensitivity to the onset was wrong by several
+  times its size with no warning. Such a species is no longer read as a clock,
+  and its threshold is located as the state condition it is.
+
+- **Sequential `run_replicates` left the Simulator's model at the last
+  replicate's end state while its clock stayed put (issue #748).** With
+  `num_processors` unset or 1, replicates run on the live model and simulator,
+  and each one resets the model and runs it to `t_end`. Nothing put the model
+  back afterwards, and the interactive clock, which only `run()` advances, was
+  never touched. After `run_until(2)` and `run_replicates(3, t_span=(0, 10))`,
+  the model held the t = 10 state `[2, 41]` while `current_time` still said
+  `2`, and the next `run_until(3)` integrated from that state and labelled it
+  t = 2, with no warning. Each `reset()` also cleared the carry-over
+  sensitivity state of a model shared with an ODE Simulator mid
+  pre-equilibration, so that Simulator's next run seeded a carried state as a
+  fresh start instead of refusing. The sequential path now restores the model
+  state and the carry-over state in a `finally`, as `parameter_scan` does, so it
+  agrees with the parallel path, which runs on per-thread clones. The
+  replicates themselves are unchanged. From @Montana.
+
+- **SBML: a mass-action law in a compartment an assignment rule sizes reads the
+  compartment's live size.** A bare law over concentrations whose compartment
+  power does not cancel (`k*A`, a zero-order `ks`, `k*A*B`, a reversible
+  `kf*A - kr*B`) kept the load-time size baked into its rate: `k*A` in
+  `C := 2 + time` ran 36% off at t = 4, and the zero-order synthesis 100%, with
+  no warning. A law across compartments divided a concentration in such a
+  compartment by its load-time size as well; BIOMD0000000342's `TGF_beta_ex`
+  was 37% off the same model with the size written as a rate rule, and now
+  matches it. A law that changes an amount beside such a concentration, or
+  species in two such compartments of one size at load, gave all its rows one
+  divide; each row now takes its own, and one across compartments whose species
+  carry different conversion factors loads where it was refused. A size over
+  constants alone (`C := 2`) keeps its Elementary rate, so a reversible law
+  there still runs under SSA. (#745)
+
+- **SBML negative numeric literals keep their meaning in translated expressions (issue #744).**
+  The MathML translator spliced a negative literal into operator templates
+  without parentheses, so `(-3)^2` evaluated to -9 and `a - (-2)` became
+  `a--2.0`, which codegen and forward sensitivities could not compile. Negative
+  literals are now parenthesised, as is any multi-token text substituted for a
+  function-definition argument or a lifted initial-assignment or
+  assignment-rule value. From @Montana.
+
+- **A result is reported through the model it ran on (issues #697, #698,
+  #743).** Reporting remaps read compartment sizes for:
+  - an assignment-rule species' column and sensitivity row;
+  - a variable-volume species' live concentration;
+  - the volumes behind `as_roadrunner` amounts.
+
+  Those sizes came from the Simulator's own model, with the volumes cached from
+  its first run. So:
+  - a `run_batch` row that wrote a compartment size reported through the
+    parent's size (an AR species and its sensitivity off by C_row/C_parent,
+    amounts by the inverse);
+  - `run_batch(squeeze=True)` came back with no remaps at all (AR species
+    frozen, their sensitivity rows zero, variable-volume species at
+    amount/V_static);
+  - after a compartment write, a reused Simulator, every `parameter_scan`
+    point and every batch row reported amounts at the first run's size;
+  - a squeezed `parameter_scan` over a compartment size gave output
+    sensitivities off by C_row/C_parent.
+
+  Each batch row is now stamped against its own clone before it is stacked,
+  the volumes are read at every stamp, and a stacked result keeps its rows'
+  report metadata.
+
+- **The sensitivity row of an amount reported as a concentration in a compartment whose size changes is the derivative of what is reported** ([#742](https://github.com/lanl/bngsim/issues/742)). A species with `hasOnlySubstanceUnits` in a compartment that a rate rule or an assignment rule resizes is reported as `amount/V_live(t)`, and its row in `Result.sensitivities` was left as the derivative of the stored `amount/V_static`: too large by `V_live/V_static`, and an exact 0 for a parameter that only moves the volume, with nothing raised or logged. With `V' = g` and `X ->` at `k*X`, dX/dk at t = 4 came back -5.3626 for -1.7875 and dX/dg 0 for -0.5958; `compute_all_sensitivities`, `output_sensitivities("species:X")`, `Result.gradient` and the initial-condition axis read the same rows. The row is now the quotient rule, with the compartment's own derivative in it. Where an assignment rule sets the size and its own output sensitivity is not available (a `piecewise` in the rule), the row is `NaN`, the species is named in a warning and listed in `Result.ar_sensitivity_refused`.
+
+- **What sized a rule compartment when a species' initial value was converted is refused where it is written or differentiated** ([#742](https://github.com/lanl/bngsim/issues/742)). In a compartment that an assignment rule sizes from the time or a state, `V := v0 + g*time`, a species declared in the unit it is not held in (a concentration with `hasOnlySubstanceUnits`, or an amount without) has its initial value made at load with the size the rule had there. The parameters the rule reads did not reach it afterwards: `set_param("v0", 3)` left the amount where it was (X(0) = 1.0 for 2.0), and dX/dv0 came back 0 for 0.2262. They are in `Model.frozen_params` now, with the reason, as the parameters of a constant rule and of an `initialAssignment` onto a size already are (#696): the write raises `ParameterError` and the column `SensitivityUnsupportedError`. Every name the rule reads is listed, `g` with `v0`.
+
+- **SBML: `rateOf(S)` in an initialAssignment is the rate the run reads at the
+  start.** Folded at load, it left out the species' conversion factor (or the
+  model's), so SBML suite case 01405 with its rule an initialAssignment folded
+  -0.5 for -1, and for a concentration species in a compartment a rate rule
+  sizes it left out the -[S]·V'/V dilution (01822: 1 for 0.675). A boundary or
+  constant species there, which only the dilution moves, folded 0. The wrong
+  number was baked into the target with no warning. (#738)
+
+- **A fitted switch time's sensitivity jump is taken at the switch's own
+  instant.** Whether a run had reached a switch time was decided with a window
+  of 1e-9 of the run's length. An output time, an event or another switch
+  falling inside that window just before the switch was taken for it. The jump
+  was then read from two points that were both before the switch, so it came
+  out 0, or as a neighbouring switch's jump in the wrong parameter's column,
+  and the real crossing passed with none. A switch that close after the start
+  of the run was dropped. The trajectory was right and nothing was logged. A
+  switch is now reached only within the 64 ulp its branches are read across.
+  The detector groups switch times by that same reach, which also separates
+  two that straddle one of its 12-digit buckets or sit under t = 1.
+
+- **SBML: `rateOf` of a `hasOnlySubstanceUnits` species in a compartment an
+  assignment rule sizes is the amount rate.** It was divided by the
+  compartment's load-time size, a third of the answer in a compartment of size
+  3, and a rate rule or kinetic law reading it integrated that, with no
+  warning. The species is stored as amount/V_static there as in every other
+  compartment, so its `rateOf` is now scaled back as theirs is, interpreted
+  and compiled. (#736)
+
+- **An event assignment that reads `time` now carries its full forward
+  sensitivity.** When an event's fire time moves with a parameter, the assigned
+  value moves with it through every argument of the assignment, including the
+  clock. The jump differentiated the assignment only at the fixed fire time, so
+  `Tlast = time` or `END_M = time + 1000` (as on BIOMD0000000675) came back
+  short by exactly `∂h/∂t·∂t*/∂p`: 0 for `B = time`, where the right answer is
+  1. Everything downstream inherited the error, with no warning. The term is
+  now added, from a central difference of the assignment in time.
+
+- **Codegen now reads a lone `=`, `<>`, `--` and an unparenthesised relational
+  chain the way ExprTk does (issue #734).** The codegen translators and the
+  sympy parsers copied operators through as text. In a hand-written `.net` or a
+  builder expression, C read `if(k=2,…)` as an assignment that overwrote the
+  live parameter, `--k` as a decrement, and `a==b<1` as `a==(b<1)`; sympy read
+  the chain as a Python chained comparison. `codegen=True` and every
+  forward-sensitivity run returned wrong trajectories with no warning. One
+  normaliser now makes ExprTk's reading explicit before any emitter sees the
+  text, including the `jacobian="jax"` translator, which had refused `=` and
+  `<>`. BNG2.pl, SBML and Antimony text passes through byte-identical.
+
+- **A species is treated as a unit-rate clock only when it is one by
+  construction.** Forward sensitivities treat a species whose rate is 1 for the
+  whole run as a clock, so a threshold on it is a threshold on time, jumped once
+  at a crossing time known in advance. bngsim decided that from two samples of
+  the right-hand side. It also accepted a rate gated in time that happened to be
+  1 at both samples, an SBML timer that an event resets, and a species such as
+  B in A ⇄ B with equal rate constants. Their thresholds were jumped once, at
+  the wrong time and with the wrong slope, and their real crossings were never
+  located. A clock must now be made only by zeroth-order reactions with a
+  constant rate, never consumed and never reset by an event.
+
+- **An SBML initialAssignment that cannot be evaluated at load is no longer
+  silently dropped (issue #732).** When the load-time fold could not evaluate
+  one -- an IEEE special such as `1/0`, `ln(0)`, `0/0`, `10^400` or
+  `sqrt(-1)`, the same thing reading `time`, or a `distrib` draw -- its target
+  kept its declared value with no warning. Such an initialAssignment is now
+  evaluated by the engine at the initial time, giving the IEEE value (`inf`,
+  `-inf`, `nan`) SBML Test Suite case 00950 expects, and one the translator
+  cannot express, such as a `distrib` draw, raises `ModelError` as it does in
+  any other rule. From @Montana.
+
+- **A second model in the same process no longer inherits the first one's
+  crossing stop (issue #729).** Resolved crossing times were cached on the
+  condition as written, so two models spelling `time()>=onset` over an `onset`
+  defined as `2*a` in one and `3*a` in the other shared a stop. The second model's
+  window was stepped over with no warning: a 0.01-wide pulse contributed nothing.
+  The cache is now keyed on the condition with derived parameters and time aliases
+  inlined, as the schedule cache has been since #869.
+
+- **`Result.as_roadrunner(["X"])` reports the amount at the compartment's live
+  size for three more kinds of species in a compartment whose size changes.**
+  They were reported at the size the model loaded with, off by V_live/V_static
+  with `[X]` right: an amount species in a compartment an assignment rule sizes
+  (under ODE and SSA: a conserved 5 read 0.83), and a concentration species a
+  rule sets, in a compartment a rate rule or an assignment rule sizes (SBML
+  suite 01198: S1 = 0.2 for 0.28). The 20 SBML suite cases the issue names
+  (01000, 01121, 01198, 01208, 01223, 01462, 01478, 01498, 01504 to 01514 and
+  01823) now match their results in every amount column. (#728)
+
+- **A clock-gated window is no longer stepped over after a counter's rate moves
+  (issue #726).** A BNGL counter is a clock only at rate 1, and the model cached
+  its time-condition scan, and the state roots it left out as covered, on first
+  ask. A model first run with the counter at 1 and then at 0.5 (by `set_param`,
+  `parameter_scan`, `clone` or `run_batch`) got neither a stop nor a root at
+  `Tobs >= on`, and a narrow window gave Y = 0 for 8.65 with no error. Both
+  caches now follow the clock probe, and an SBML substance-only counter's
+  compartment size, at two RHS evaluations per run. Each verdict is scanned
+  once per model and its clones.
+
+- **A switch on a counter clock now moves with the clock's own sensitivity.**
+  A threshold on a unit-rate counter (`0 -> counter() 1`, read as time) is
+  crossed at t* = t_start + threshold − c(t_start), so its crossing moves with
+  the threshold's parameters and also with anything that moves the counter.
+  The switch-time jump used only the threshold, so the columns for the
+  counter's seed value, its rate constant (including the `_rateLaw1` column
+  `compute_all_sensitivities` requests by default) and its initial-condition
+  axis came back exactly 0, with no warning. The jump now subtracts the
+  counter's own sensitivity at the crossing, for every column.
+
+- **An assignment-rule species' sensitivity to the size of its own compartment** ([#724](https://github.com/lanl/bngsim/issues/724)). A `hasOnlySubstanceUnits` species that an assignment rule sets is reported as `rule/V`, with `V` read live from the compartment's size. Its sensitivity row was the rule's own row over `V`, without the term `−(rule/V)/V` that the size's own column has. For `T := 3·A` with A decaying from 100, dT/dC came back 0 at every time for `−300·e^(−kt)/C²`, at any size, a size of 1 included; a rule that reads the size, `T := 3·A·C`, came back `3·A/C` for 0. The term is now in `Result.sensitivities`, `output_sensitivities("species:T")`, `compute_all_sensitivities()` (whose default columns hold the size), each row of a batch, and `steady_state()` (0 for −15). Other columns, concentration-valued rule species and the initial-condition axis are unchanged.
+
+- **A compartment write now reaches an SSA Simulator built before it
+  (issue #723).** The compiled propensity kernel baked a
+  `hasOnlySubstanceUnits` reactant's compartment size in as a number. After
+  `set_param` on that compartment, the existing Simulator fired its reactions
+  at `(V_old/V_new)^n` times the right rate, with no warning. The kernel now
+  reads the size from the live parameter, as the interpreted path does.
+
+- **Forward sensitivities follow the order in which same-instant events
+  execute.** Events that fire at one instant run one at a time: highest
+  priority first, a tie drawn at random, a `useValuesFromTriggerTime="false"`
+  assignment reading what the earlier ones wrote, and a non-persistent event
+  cancelled when an earlier one makes its trigger false. The state always
+  followed that. The sensitivity jump did not: it took the events in
+  declaration order and differentiated every assignment at the state from
+  before the batch. So two events that assign one species gave it the
+  derivative of the one declared last, a value read at execution was
+  differentiated at a state it never read, and a cancelled event still wrote
+  its row. The trajectory was right, the gradient was wrong by O(1) with no
+  warning, and reordering the event declarations changed it. The jump now
+  composes the batch in the order it executed.
+
+- **An event at a fixed time beside one whose time moves is refused in a
+  forward-sensitivity run.** `at (time >= 2)` and `at (time >= T)` with T = 2
+  fire together, and with T requested the pair comes apart under it. One shift
+  of the event time was applied to both events' rows, so a species only the
+  fixed event writes got a nonzero dY/dT, with no error. Two event times that
+  move differently were already refused; one that does not move beside one that
+  does now is too.
+
+- **A derived parameter with a power of a zero-valued parameter no longer
+  gives NaN sensitivities (issue #720).** The derived-parameter chain rule
+  printed its partials with bare `sp.ccode`, skipping the zero-base guards the
+  rate-law emitters apply, so `d(E^n)/dn` and `d(E^n)/dE` were NaN at `E = 0`.
+  Every forward-sensitivity run on such a model was refused with
+  `CV_FIRST_SRHSFUNC_ERR`, and output sensitivities through the numeric path
+  came back NaN with no warning. Both paths now apply the same guards. A partial
+  that is still non-finite (a genuinely infinite derivative) is kept, so the
+  run still refuses it rather than reading it as zero.
+  From @Montana.
+
+- **SSA and PSA round only molecule counts (issue #718).** Event-assigned
+  parameters and compartments, and assignment- and rate-rule targets, hold
+  continuous values, but each run and `run_until` leg rounded them: a rate
+  constant of 0.5 ran as 1 and 0.4 as 0, a volume of 0.4 as 0, and a rate-rule
+  variable restarted every leg from a whole number, silently. They keep their
+  values now, and a leg hands the next the rate-rule values it reported at its
+  end, firing any event they carried past a threshold on the way (a dose on a
+  rate-rule timer was lost at every leg boundary). A fractional molecule count
+  is still rounded, as `run_network` does, and every run, leg or batch row that
+  rounds one raises the new `SsaRoundingWarning`, down to 5e-10 of a molecule.
+
+- **Forward sensitivities run through an SBML event that fires at t_start.**
+  With `initialValue=false` and a trigger already true at the first instant,
+  SBML fires the event there, and the sensitivity jump needs the sensitivities
+  just before it. bngsim read them by interpolating in CVODES before CVODES had
+  taken a step. At t_start = 0 that computed 0/0, so every value was NaN and the
+  run failed with a convergence error blaming the model's rate laws. At any
+  other t_start it failed with CV_BAD_T. The values at run start are the
+  initial seed itself, and are now read from it.
+
+- **An SSA or PSA event crossing at t ≥ 8192 hung forever, ignoring `timeout`
+  (issue #716).** The event bisection stopped when `hi - lo <= 1e-12`, an
+  absolute tolerance. From t = 8192 one ulp of a double is 2^-39 ≈ 1.8e-12, so
+  the interval could never shrink that far and the loop spun at 100% CPU. The
+  wall-clock budget is only checked in the outer loops, so `timeout=` never
+  fired. An event at t = 10000 hung SSA, PSA and the no-reaction idle path,
+  while the ODE backend returned in 0.2 s. The bisection tolerance is now
+  floored at one ulp of the time it is applied at, the loop exits when the
+  midpoint no longer moves and is capped at 1100 halvings, and the
+  simultaneous-event and sample-deferral tolerances use the same floor. Below
+  t = 8192 the tolerances are unchanged, and from there on an event fires on
+  the first representable time at which its trigger holds. From @Montana.
+
+- **A derived parameter that sets a species' initial condition now gets its own
+  sensitivity column.** For `B() Rt` with `Rt = 3*R0`, requesting `Rt` returned
+  a column that started at 0 instead of 1: all zeros when `Rt` only set the
+  initial condition, and only the rate-law part when it also drove a reaction.
+  There was no warning. Since issue #43 the initial-condition seed went only to
+  the primaries a derived expression reaches. It now also seeds the derived
+  parameter itself, and the initial-condition term of every derived parameter
+  on its chain. Primary columns are unchanged. The synthetic `_ic_<species>`
+  carrier of an SBML initial assignment gets its column when named, and is
+  still never reported by `Model.effective_ic_sensitivity`.
+
+- **SSA and PSA no longer lose a slow reaction after a much faster one dies
+  away (issue #713).** Reactions were selected from a Fenwick tree whose nodes
+  kept every update's rounding. Once a large propensity decayed, a small one
+  that shared its node read as that residue: 1e-6 became 1.1e-16 and the
+  reaction stopped firing, or the total went negative and the run stopped as
+  "stuck", with no warning. Selection now uses a 4-ary sum tree whose nodes
+  are recomputed from their children, so nothing of a decayed propensity is
+  left behind. It is within 5% of the old speed on small networks and up to
+  1.5x faster on large ones. A reaction with zero propensity can no longer be
+  picked when the random draw is exactly 0.
+
+- **The periodic dosing step bound now covers schedules slower than 128 time
+  units (issue #712).** The scan that sizes `max_step` for floor/rem pulse
+  trains looked at most at t in [0, 128]. Weekly dosing in hours, daily dosing
+  in minutes, or a first pulse after t = 127 left too few edges in view, the
+  bound came back `None` (or far wider than the pulse), and CVODE stepped over
+  every pulse after the first with no warning: a weekly 1-h pulse train over
+  ten weeks integrated one pulse instead of eleven. The window cap now scales
+  with the schedule's fastest period, so it holds several complete cycles;
+  models with any period under 32 are unchanged. From @Montana.
+
+- **A compartment volume of a cBNGL model is refused where it is written** ([#711](https://github.com/lanl/bngsim/issues/711)). For a compartmental BNGL model BNG2.pl writes each reaction's volume factor into its rate constant as a number, `0.1*kb` for `1/Ve` at `Ve = 10`, and leaves the expression in a comment, `unit_conversion=1/Ve`. The loader read the number, and `Ve` stayed a parameter that no rate read: `set_param("Ve", 20)` took the value and moved nothing (Lf(5) = 14.90 where a network generated at `Ve = 20` gives 16.76), and dLf/dVe was an exact 0, with nothing raised or logged. Every parameter such a comment names, and what a derived parameter or a function among them reads, is now in `Model.frozen_params`, for `Model.from_bngl`, a `.net` BNG2.pl wrote with its expressions kept, and `build_model_from_parsed`: `set_param` raises `ParameterError` for a write that changes one, a sensitivity request raises `SensitivityUnsupportedError`, and `compute_all_sensitivities()` leaves the column out with a warning, as for an SBML parameter folded at load (#695, #696). To move a volume, change it in the BNGL source and generate the network again.
+
+- **`steady_state()` and `steady_state_batch()` refuse a model with an event, or one that reads the time** ([#710](https://github.com/lanl/bngsim/issues/710)). Both solvers look for a root of `f(y)` and read the right-hand side at `t = 0` for the residual, the Newton step, the Jacobian and `∂f/∂p`; the march integrates at the true time, tests convergence at `t = 0`, and fires no event. `A -> B` at `k*(1-exp(-time()))` came back `[1, 0]` with `converged=True` after one step, where A goes to 0. A model whose event sets a production rate at `t = 2` came back at `A = 0` for `1/kd`, with `dA/dkd = 0` for `-1/kd²`. A reported quantity that reads the time came back at `t = 0`: `S := B*(1-exp(-time))` as 0 for 2/3. Nothing was logged. Both now raise `SimulationError`, for any function that reads the time, in a rate or not. A `rateOf` is not a read of the time.
+
+- **`run(steady_state=True)` does not stop early for a model that reads the time or has an event** ([#710](https://github.com/lanl/bngsim/issues/710)). The early stop tests `‖f(t, y)‖` at each output point, which says the trajectory has settled only where the right-hand side does not read the time and no event is still to fire. `A -> B` at `if(time() > 5, k, 0)` stopped at `t = 1` with `[1, 0]` marked steady, for `[0, 1]`; a model with an event at `t = 50` stopped at `t = 19`. Such a run, and each row of a `run_batch`, now goes to the end of its span, and `steady_state_reached` stays 0. A model that does neither stops as before.
+
+- **A table function over time is no longer stepped over (issue #709).** The
+  breakpoints of a time-indexed `tfun` were never integrator stop times, so on
+  a model at rest the step grew past a whole dosing pulse and the input was
+  dropped: with `tfun([0,10,12,50],[0,5,0,0], time, method=>"step")` A + B
+  stayed 3 where mass balance gives 13, while the same Result reported F = 5 on
+  [10, 12). Pulses 0.1 and 0.5 wide were lost on a model still relaxing, and a
+  run that ended inside a ramp returned the state before it. The ODE run now
+  stops on each breakpoint whose break its neighbours do not account for (a
+  pulse is a jump up and a jump down), whatever its size, for inline and
+  file-backed tables, with either right-hand side, and for a table indexed by a
+  unit-rate counter. A dense table of a smooth signal is stopped at its ends
+  and a few times between, and runs as fast as before. A rate law that gates on
+  such a table (`if(abs(G-2) < 0.01, k, 0)`) is stopped where it changes. A
+  table indexed by anything else that moves with the state gets no stops.
+
+- **Forward sensitivities after a derived parameter is overridden or re-attached** (#708). The compiled sensitivity code carries the chain rule through a derived parameter while it follows its expression and not while `set_param` has pinned it, and code built for one case was kept across the write: by the Simulator that held it, by a new Simulator on the same model, by a clone, and by `run_batch` rows. For `k2 = 2*k1` and a rate `k2*A*A`, pinning `k2` at 5 returned dA/dk1 = -0.0769 for 0, and attaching it again returned 0 for -0.4535, with a correct trajectory and no warning; `compute_all_sensitivities`, `steady_state(sensitivity_params=...)` and reported expressions likewise. The artifact now records what it was built for, and a sensitivity run builds it again when that has changed. A `run_batch` row whose own writes pin or re-attach a derived parameter is refused with `SensitivityUnsupportedError` where a requested column is of a parameter that one is derived from, since every row runs on the one artifact; make the write on the model before the batch, or run the row with `set_params` and `run()`.
+
+- **The same for a write that changes how a rate-law condition is read, and for three things kept beside the artifact** (#708). Whether the sensitivity code has an analytic right-hand side also goes by the parameter values: for `piecewise(k, time >= sqrt(E), 0)`, built at `E = 0.25` and run after `set_param("E", 0)`, dA/dE came back 0 where it is unbounded and a model loaded at 0 is refused (a repeating schedule's duty likewise). The run's own pass over the conditions finds that now, the code is built again for those values, and a batch row in that position is refused. What was decided about a run on the difference quotient was kept by the parameter values alone, so a pin made and undone with no value moved ran where it is refused (#938): dA/dk1 = -0.378 for 0. Which reported expressions can be differentiated was kept across one of the two rebuilds: `[nan, nan]` where a new Simulator refuses by name. And a plain compiled Simulator asked for columns kept its plain artifact, on the difference quotient with nothing said, whenever a sensitivity Simulator had been built on the same model in between; what an artifact was built for is now recorded beside it.
+
+- **A derived parameter's sensitivity column is no longer exactly zero on the difference-quotient path** ([#707](https://github.com/lanl/bngsim/issues/707)). With `kd = 2*k0` and a rate law the analytic sensitivity right-hand side declines (`kd*abs(Atot)`), CVODES takes each column by moving one parameter and reading the right-hand side. bngsim mirrored the moved value into the model and then re-derived every derived parameter, so a moved `kd` went back to `2*k0` before the right-hand side was read: the column for `kd` came back all zeros, with no warning, from `Simulator.run` and from `compute_all_sensitivities(params=["kd"])`, on `.net`, BNGL and SBML input. The moved parameter is held now, and what reads it is re-derived from it. Every column on the analytic path is unchanged, and so is a primary parameter's column asked for without a derived one; beside one it moves inside the tolerance, since that column is no longer zero in the error test.
+
+- **The non-finite-RHS retry no longer zeroes quantities that are negative by
+  design (issue #706).** When a sqrt or fractional-power law went non-finite at
+  a concentration the solver had pushed a hair below zero, the GH #135 retry
+  re-evaluated the RHS with every negative state component set to 0. That
+  included SBML rate-rule parameters, species declared with a negative initial
+  value and negative boundary species, which then followed the wrong ODE for
+  the rest of the run with no warning: a membrane potential relaxing from -61
+  toward -70 ran away past -287. The retry now clamps only slots that are
+  concentrations by construction. From @Montana.
+
+- **`steady_state(sensitivity_params=...)` left the model at the steady state,
+  so the next `run()` started there (issue #705).** The sensitivity solve is
+  taken at x_ss, so `find_steady_state` moved the model's species there for it
+  and never moved them back, with `ic_state_dirty` still false. The next
+  `run()` integrated from x_ss with a fresh zero seed (A flat at its steady
+  value instead of relaxing from A0, and dA/dkf off by 0.1 at t = 1), and a
+  second sensitivity solve on the same Simulator started from the first one's
+  answer, so an accumulator species drifted upward on every call. The plain
+  solve already put the state back; the sensitivity solve now saves and
+  restores the species around its block, on every exit, so the model is
+  untouched either way. The steady state and its sensitivities are unchanged.
+  From @Montana.
+
+- **`steady_state(sensitivity_params=...)` carries a parameter that sets the initial amount of a conserved species** ([#704](https://github.com/lanl/bngsim/issues/704)). With a conservation law a steady state keeps the conserved total of where it started, `A <-> B` settling at `A* = kr·T/(kf + kr)` with `T = A(0) + B(0)`, so a parameter that sets an initial amount moves it. The reduced sensitivity solve held the total fixed: the `A0` column came back `[0, 0]` for `[1/3, 2/3]`, a catalyst's amount came back 0 for `kp/kd`, and where the parameter is in a rate law too the column was the fixed-total partial, `[0.1875, -0.1875]` for `[0.9375, 0.0625]`, with nothing logged. The solve now takes `dT/dp` from the same initial-condition seeding a time course starts with (`Model.effective_ic_sensitivity`), read from the state the solve starts at. Observable and expression rows follow. Rate-constant columns, and a model with no conservation law, are unchanged.
+
+- **`steady_state(sensitivity_params=...)` refuses a compartment size in a model with a conservation law** ([#704](https://github.com/lanl/bngsim/issues/704)). What is conserved is an amount, which a compartment's size does not move, while the solve holds totals of concentrations. The size's column came back 0 where the steady state moves with it (0 for -5 on a species that is conserved alone), in 21 of the 23 corpus models with such a column, and with the totals differentiated it was right in 13 and as far off as 1e7 for -6e4 in another. It now raises `SensitivityUnsupportedError`. A size in a model with no conservation law, and every other column, is as before.
+
+- **The initial-condition seeding follows `save_concentrations()`, and three steady-state columns are refused** ([#704](https://github.com/lanl/bngsim/issues/704)). Once `save_concentrations()` has made the state its own baseline, no parameter sets it, but a forward-sensitivity run was still seeded from the model file: dY/dA0 came back `[1/3, 2/3]` at the steady state of `A <-> B` for an `A(0)` that `A0` does not set. The seed is retired, for `run()`, `steady_state()` and `Model.effective_ic_sensitivity`. A fixed species that a parameter sets, `$A() A0`, now moves what reads it in a masked steady-state solve (`[0, 0]` for `[1, 2]`). `steady_state(sensitivity_params=...)` refuses a parameter that sets a conserved amount on a state a `run()` advanced (0 for 1/3), and every column of a model whose conservation law spans compartments of different size (#758: -0.286 for -0.367).
+
+- **`method="nf"` and `method="rm"` now start from the initial state at
+  `t_start` (issue #703).** Both network-free backends ignored a nonzero start:
+  NFsim stepped to absolute times and labelled the t = 0 state as `t_start`, and
+  RuleMonkey simulated [0, `t_start`] before its first row, so
+  `run(t_span=(5, 7))` or `sample_times=[5, 6, 7]` returned a decay that had
+  already run for five time units. Both now advance by the time elapsed since
+  `t_start` and label rows with absolute times, as `ode` and `ssa` do and as
+  BNG2.pl's `simulate_nf` does. From @Montana.
+
+- **A parameter that only sets a compartment's size at load is refused where it is written** ([#696](https://github.com/lanl/bngsim/issues/696)). An SBML compartment whose size an `initialAssignment` sets over parameters, `c = 2*p` or COPASI's `cell = vcyto`, is loaded at a number. `set_param("p", v)` took the value and left the size, the initial amounts and the whole trajectory where they were ([S](1) = 0.6065 where a model rebuilt at the new value gives 0.7788), and the sensitivity column of `p` was 0 at every species and time (0 for 0.3033), with nothing raised or logged. `set_param` now raises `ParameterError` for a write that changes such a parameter, naming the compartment, and a sensitivity request for it raises `SensitivityUnsupportedError`. `Model.frozen_params` lists them, `compute_all_sensitivities()` leaves their columns out with a warning, and a write of the value already held is still accepted. The size itself is written and differentiated as before.
+
+- **What a number the model was built with was read from is followed all the way down** ([#696](https://github.com/lanl/bngsim/issues/696), [#695](https://github.com/lanl/bngsim/issues/695)). A compartment size, a stoichiometry, a `conversionFactor` or an initial value that the SBML loader evaluates once reads more than the parameters its expression names: `c = J0` reads the kinetic law of `J0` and that law's own parameters, `c = q` under `q := 3*p` reads `p`, `c = S0` under `S0 = 2*p` reads `p`, and a species declared by amount and read as a concentration reads its compartment's size. Each of those parameters stayed writable with nothing following it (a write moved [S](1) by 0 where a rebuild moves it by 0.13 to 0.60), and so did the parameters read by a species' `initialAssignment` that is not kept as an expression (`S = p*J0`), by a constant assignment rule that sizes a compartment (`c := 2*p`), and the id of a `speciesReference` whose `<stoichiometryMath>` moves in time. All are in `Model.frozen_params` and refused now. `bngsim.jax.differentiable_solve` and `coupling.make_subset_model` reached past the refusal, and returned the trajectory of the old value; they refuse too.
+
+- **Three more ways a parameter reaches a number an SBML model was built with are followed** ([#696](https://github.com/lanl/bngsim/issues/696)). A species declared in the unit it is not held in (an amount, or a concentration with `hasOnlySubstanceUnits`), in a compartment that a rate rule or an event resizes and an `initialAssignment` sizes at the start (`c = 2*p; c' = 0.1`), was converted by the size at load: a write to `p` moved the size's initial value and left the species where it was ([S] 0.5 off). An initial value set to a bare assignment-rule target whose rule reads a state or the time (`S = q` under `q := p*(1 + A)`) is a number at load, and was taken for one kept as an expression. And `rateOf(B)` in such an expression reads the kinetic law of every reaction that changes `B`, its rate rule, and for a concentration its compartment's size (`c = rateOf(B)` left `k1` writable, 0.17 off). All are in `Model.frozen_params` and refused. A compartment that a constant assignment rule sizes and that holds no species folds nothing, and its parameters are written as before.
+
+- **A parameter that only sets a stoichiometry or a conversion factor at load is refused where it is written** ([#695](https://github.com/lanl/bngsim/issues/695)). An SBML `conversionFactor`, an L2 `<stoichiometryMath>` over parameters, an `initialAssignment` onto a `speciesReference` id and the id itself are folded into the reaction's coefficients when the model is built. The source parameter stayed writable and nothing read it: `set_param` was a silent no-op in ODE and SSA runs (with a stoichiometry of `2*f`, P(1) = 12.64 where a rebuild at `f = 3` gives 37.93; BIOMD0000000040's `f`), and its sensitivity column was an exact 0. Both are refused now, as for a parameter folded into a compartment's size (#696), and so is a parameter that an `initialAssignment` bngsim could not keep symbolic reads, which was named in a warning at load and nowhere else. 27 of the 1,291 BioModels that load have such a parameter.
+
+- **A run that continues the previous one restarted its events (issue #693).**
+  `run_until` legs, and a `run` whose span starts where the last one ended,
+  reseeded every trigger from its `initialValue`, which describes a trigger
+  before the simulation starts. An `initialValue=false` event still true at a
+  leg boundary fired again at every leg (two legs past a dose gave two doses,
+  ODE and SSA alike), and a delayed execution pending across the boundary was
+  dropped. The model now carries each trigger's truth and the pending
+  executions beside the species and the clock, so N legs give the one-run
+  answer. `snapshot()`/`restore()` rewind the events with the state, and each
+  point of a scan starts from the events' state at invocation. A run from
+  another start time, or after `reset()`, is a fresh start as before.
+
+- **SSA and PSA take a repeated reactant's falling factorial on its molecule
+  count, not its stored concentration (issue #692).** For an SBML or Antimony
+  species in a compartment of size `V != 1`, `2A -> B` fired at `k·n(n−V)/V`
+  instead of `k·n(n−1)/V`. It stalled at `V` molecules, ran in reverse below
+  that, and never returned when `V < 1`. Both propensity backends are fixed.
+  Such counts also stay whole numbers now: each firing's inexact `±1/V` used to
+  round, so an extinct species could end at −1.9e-7 molecules and trip a false
+  negative-count warning. `.net` models are unchanged.
+
+- **Difference-quotient forward sensitivities left the last sensitivity
+  parameter at p − Δ outside the RHS (issue #690).** When the analytic
+  sensitivity RHS is declined (an `abs()`, `floor()` or other construct it
+  cannot differentiate), CVODES differences the RHS itself: it perturbs
+  `sens_p[which]`, calls the RHS, and restores `sens_p`. The RHS callbacks
+  mirrored `sens_p` into the model's parameters and the codegen buffer, but
+  nothing mirrored the restore back, so between probes the model held the
+  probed value of the last sensitivity parameter. Recorded functions reading it
+  were off by about √rtol, `get_param` returned the probed value after the run,
+  repeated runs compounded it (`scale` 2.0 → 1.998 → … → 1.992011992002 after
+  four), and an event assignment reading it landed 1e-3 off. The callbacks now
+  put the nominal values back after any call whose sync moved a parameter, by
+  copying a snapshot of them where that is exact, so nothing outside the RHS
+  sees a probe. The decline notice's "correct, but slower" is now true for
+  these readers. From @Montana.
+
+- **`round(x)` gives the same answer with and without codegen (issue #684).**
+  The interpreter used ExprTk's `round`, `floor(x + 0.5)` (or `ceil(x - 0.5)`
+  below zero), and that addition can itself round, so `round(0.49999999999999994)`
+  was 1 interpreted and 0 compiled, and an odd integer in [2^52, 2^53) moved by
+  one. The interpreter now calls C's `round`, as codegen and the JAX RHS do.
+  Only those edge inputs change; `rint` is unaffected.
+
+- **Compiled `max`/`min` now match the interpreter when an argument is NaN
+  (issue #660).** Codegen emitted ExprTk's `max`/`min` as C's `fmax`/`fmin`,
+  which return the non-NaN argument, where ExprTk (`std::max`/`std::min`)
+  returns the first. A rate law such as `k*max(ln(A-10),1)` that the
+  interpreter refuses as a NaN right-hand side then ran to completion under
+  `codegen=True` and forward sensitivities, with plausible numbers. The
+  generated source now carries `bngsim_max`/`bngsim_min`, which transcribe the
+  engine's form; the codegen cache version moves to 32. From @Montana.
+
+- **Function-call exponents now compile in C codegen (issue #657).** Rate laws such
+  as `A^sqrt(n)` retain the whole call as the exponent, so compiled ODE runs and
+  forward sensitivities accept expressions already supported by the interpreter.
+
+- **A `required="true"` namespace outside the standard SBML L3 hierarchy was
+  silently dropped (issue #613).** The guard added in #592 asked libSBML for
+  its plugin list and unknown-package list. A namespace URI outside
+  `http://www.sbml.org/sbml/level3/…` appears in neither — libSBML discards
+  it without a plugin entry, without an unknown-package entry, and without an
+  error — so the guard saw nothing and the document loaded as if the namespace
+  were not there. The loader now also parses the root `<sbml>` element
+  directly with `ElementTree` (root element only, O(1) in document size) and
+  refuses any `required="true"` attribute on a namespace that the libSBML
+  query did not already account for.
+
+- **`jacobian="jax"` and the diffrax solver now read the built model, not a
+  second parse of the `.net` file (issues #608, #803).** Over 772 corpus
+  networks, the JAX RHS built from that parse disagreed with the engine's on
+  249 of the 767 it built, and 5 more crashed: a synthesis reaction's rate was
+  multiplied by the last species, the #784 misreadings (zero rates for
+  `.5*k`/`5e-01*k`, forward function references, unindexed blocks) applied, a
+  model without observables crashed, and `run_diffrax` started an initial
+  condition written as an expression at 0. Under `jacobian="jax"` these
+  corrupted only the Jacobian; in `run_diffrax` they were wrong trajectories.
+  The JAX RHS now matches the engine's on all 772. Codegen's private `.net`
+  parser is removed.
+
+- **A reaction whose rate parameter never resolved now raises instead of running
+  with a rate of zero (issue #589).** The rate kernel answered an unresolved
+  rate-parameter index (Elementary/Functional) or kcat/Km index
+  (Michaelis-Menten) with a propensity of 0.0, so such a reaction was dead for
+  the whole run with nothing reporting it. `ModelBuilder.build()` now refuses
+  such a model, naming the reaction, and the kernel itself throws as a
+  backstop. To make that safe, every CVODE and KINSOL callback that evaluates
+  the model now catches an exception, returns SUNDIALS' failure code and has
+  the solve rethrow it afterwards, rather than letting it unwind through
+  SUNDIALS' C frames. That also covers the existing in-RHS refusals such as
+  `mratio`'s, which now surface the same way on the ODE and steady-state
+  paths. From @Montana.
+
+- **The API reference links its cross-references, and pull requests now check
+  the documentation build (issue #586).** The generated reference was not
+  indexed, so some 570 `:meth:`, `:attr:` and `:class:` references to bngsim's
+  own API rendered as plain text; they are now links. The
+  `restore_concentrations` docstring rendered a paragraph as stray parameters.
+  A `docs` job in `lint.yml` builds the documentation with
+  `sphinx-build -W`, a reference that resolves to nothing counting as a
+  warning.
+
+- **An SBML kinetic law's local parameter with no `value` is refused, like a global one** ([#580](https://github.com/lanl/bngsim/issues/580)). Level 2 loaded it as 0.0, so its reaction was silently switched off; Level 3 read it as NaN and failed in CVODE with a message about negative states. A local parameter its law reads, directly or in a function it calls, now raises `UnderSpecifiedModelError` naming it and its reaction. `BNGSIM_ALLOW_UNSET_PARAMS=1` loads it at 0.0 with a warning, on both levels. A valueless global that the law's local shadows is no longer refused as read by that law. One its law does not read still loads and is no longer registered as a parameter: Level 2 listed it as 0.0 and Level 3 as NaN, which stopped `sbml_to_bngl`.
+
+- **An SBML species with no initial value now says it starts at 0.0** ([#580](https://github.com/lanl/bngsim/issues/580)). A species with no initialAmount, initialConcentration, initialAssignment or assignmentRule has an undefined initial value in SBML. bngsim still starts it at 0.0, as RoadRunner does, but the load now logs one warning that names them (the first ten, with a count) instead of passing the zero off as a value the model wrote.
+
+- **A network-free `<Parameter>` with no `expr=` and an unreadable `value=` is refused when overrides apply** ([#580](https://github.com/lanl/bngsim/issues/580)). `NfsimSession.set_param` and `evaluate` re-evaluate the XML's parameters, and such a parameter read as 0.0 there, as did an overflowing `value="1e400"`. It now raises naming the parameter, and `1e400` reads as `inf`. A parameter with an `expr=` (BNG2.pl 2.9 writes one on each) or a readable `value=` is unaffected.
+
+- **A kinetic law's local parameters now shadow globals wherever bngsim evaluates the law at load** ([#580](https://github.com/lanl/bngsim/issues/580)). The folds of a reaction id an initialAssignment or rule reads, and of `rateOf`, saw no Level 2 local (libsbml lists them elsewhere there), and the floor/ceiling root scan and the periodic step bound (GH #88) saw none on either level. A same-id global stood in, or nothing did. `p = R1` with a local `k = 0.5` and a global `k = 5` gave 50 where RoadRunner gives 5, and BIOMD0000000063's `VratioVmax` loaded as 0.0 for RoadRunner's 0.23323. Without the global, the load refused `p`; a local `period` lost its step bound or got one 10x too wide. In a called function, the root scan also no longer carries an outer formal's time dependence onto a rebound name, or starts a formal it cannot evaluate from a same-named global.
+
+- **An SBML compartment with no size now says it uses 1.0** ([#580](https://github.com/lanl/bngsim/issues/580)). In Levels 2 and 3, a compartment with no `size`, initialAssignment or rule has an undefined size. bngsim still uses 1.0, as RoadRunner does, but the load now logs one warning naming those compartments (the first ten, with a count) wherever the size can reach a number: a species in it (bngsim reports every species as amount over its compartment's size), a rate rule or event that sets it, or math that names it. Level 1, where 1.0 is the default, and a size nothing reads stay silent.
+
+- **`jacobian="jax"` misread a rate law gated on `&&` or `||`, silently taking
+  the wrong branch (issue #579).** The translator rewrote `&&` to `&` as text.
+  ExprTk and C give `&&` *lower* precedence than the comparisons it joins;
+  Python gives `&` *higher*, so `if(A>2 && 4<B, ...)` became
+  `A > (2 & 4) < B` — an expression that evaluates happily and answers wrong,
+  or, on float operands, raises `TypeError: and does not accept dtype float64`
+  from inside the solve. A comparison run (`a < b < c`) was inverted the same
+  way. And the word spellings `and`/`or`, `not(...)` and a bare number as an
+  operand failed outright under the `jax.jit` the Jacobian is built with.
+  Conjunctions are now `jnp.logical_and`/`logical_or` calls with ExprTk's
+  precedence, `not` is `jnp.logical_not`, and a comparison run is left-folded;
+  an expression with no conjunction and at most one comparison is unchanged.
+
+- **`NfsimSimulator::run()` leaked the whole parsed `NFcore::System` whenever
+  anything threw before the stepping loop (issue #577).** The System was held in
+  a bare pointer and freed in two places: a `catch` around the loop, and a
+  `delete` before the return. Everything between its creation and that try block
+  was unguarded — `prepare_system()` ("NFsim setup failed" on a model NFsim
+  rejects after parsing, or a failed override bake), `times.output_times()`,
+  `result.allocate()`, `resolve_output_functions()` — so a throw from any of
+  them walked out of the function and left the System behind. That is the parsed
+  model, and the leak scales with it: ~3 KB per call at `molecule_limit` 1,000
+  and ~5 MB at 100,000, repeated per scan point when a parameter scan trips
+  `prepare_system`. Measured here at 6.2 MB per throwing call against a 70 KB
+  baseline for a successful one.
+
+  A `unique_ptr` now owns it for the whole function, so every path out frees it,
+  and the catch-and-rethrow that existed only to run one of the two deletes is
+  gone with it. The successful path is unchanged: the System is still built per
+  call and freed after it.
+
+- **The state array handed to the JAX Jacobian callback owned nothing, so a
+  callback that kept it read freed memory (issue #576).** `set_jax_jac_fn`
+  wrapped CVODE's `N_Vector` storage as a zero-copy numpy view whose base was
+  `py::cast(0)` — an integer, which keeps nothing alive. A callback that
+  retained the array (a trace, a debug log, a closure over it) held a view into
+  memory CVODE frees at teardown; reading it afterwards returned whatever had
+  since been allocated there. For a model seeded `[100.0, 0.0]` that was
+  `[8.5e-316, 8.7e-316]` — plausible-looking floats rather than an error, and
+  nothing documented the array as unsafe to keep. The view was also writeable
+  over a `const double *`; writing into it did not move the trajectory in the
+  cases probed, since CVODE does not read that vector again after the Jacobian
+  call, but the binding was casting away a const it had no business casting.
+
+  The callback now receives a copy: `ns` doubles, against the `ns²` work it is
+  about to do, and less than a JAX-traced callback allocates on its own. It
+  survives teardown, each call gets its own, and writing into it is the
+  caller's business.
+
+- **A scan's `uniformRange` was written with the point count where SED-ML wants
+  the interval count, so every standards-compliant reader swept one point too
+  many (issue #575).** `numberOfPoints` counts the steps between endpoints — a
+  range expands to `numberOfPoints + 1` values — and `write_sedml_protocol`
+  applies that to the `uniformTimeCourse` but wrote `scan_points` verbatim.
+  bngsim's `scan_points` is the inclusive count (`np.linspace`; BNG2.pl's
+  `delta = (max - min) / (n_scan_pts - 1)`), so a 5-point scan over [1, 2] was
+  written as `numberOfPoints="5"` and read elsewhere as six values — 1, 1.2,
+  1.4, 1.6, 1.8, 2 — where bngsim ran five: 1, 1.25, 1.5, 1.75, 2. Not one
+  extra sample at the end, but a different parameter value at every step but
+  the first.
+
+  The range is now written as `scan_points - 1` (floored at 0) and read back as
+  `numberOfPoints + 1`, matching the time course on both sides. bngsim's own
+  round trip is unchanged: it goes through the `<annotation>` carrying the
+  verbatim `ProtocolSpec`, which is why this could drift unnoticed in-house.
+
+- **The native Jacobian synthesized `log` of a state variable for `A^B`,
+  emitting NaN at `A = 0` (issue #574).** `_diff_pow`'s constant-base branch
+  writes `base^exp · ln(base) · d(exp)` whenever the base does not move with the
+  differentiation target — which is not the same as the base being constant, so
+  differentiating `k*A^B` by `B` wrote `ln(A)`. The #336 guard did not stop it:
+  that guard reads the law as written, and `k*A^B` mentions no logarithm. At
+  `A = 0` — an ordinary initial condition — `pow(A, B) * log(A)` is `0 · -inf`,
+  NaN where the limit is a finite `0`. Seeded there, the #183 probe refused the
+  analytic Jacobian and the model ran on finite differences; seeded elsewhere it
+  attached and went NaN once the trajectory reached `A = 0`, in the Jacobian and
+  in the `J·yS` half of the sensitivity RHS built from it.
+
+  A power with a state variable in both base and exponent now defers to the
+  SymPy emitters, whose zero-base guard (#310/#317) is finite there. A constant
+  base (`2^B`) keeps its native `ln(base)`, and a constant exponent (`A^n`)
+  never had a logarithm to guard.
+
+- **An exponent carrying an explicit unary plus, a doubled sign or a sign
+  before a parenthesis emitted C that does not compile (issue #573).**
+  `_extract_exp_right` handled exactly one spelling — a single `-` immediately
+  followed by a bare token. Every other sign the engine accepts fell through to
+  the unsigned scan, which stops on a sign because `+`/`-` are not in its
+  character class, so the sign was left behind as loose text and the exponent
+  came back empty: `x^+2` emitted `pow(x, )+2`, `x^--2` emitted `pow(x, -)-2`,
+  and `x^-(y+2)` emitted `pow(x, -)(y+2)`. A model carrying one lost codegen and
+  forward sensitivities while the interpreter evaluated it without complaint.
+
+  The scan now collects the whole run of leading signs, spaces between them
+  included, folds it the way ExprTk does (`--n` is `n`, `+-n` is `-n`), and
+  takes the operand after it — a parenthesised group or a bare token, the two
+  forms the unsigned path already handled. An unsigned exponent, a
+  scientific-notation literal's own sign (#240) and the `^` chain (#555) are
+  unchanged. The sibling gap where the operand is a function call
+  (`A^sqrt(n)`) is #657.
+
+- **`NfsimSession.simulate()` and the stateless NFsim `run()` segfaulted on
+  `n_points <= 0` (issue #570).** Both size a `Result` by the output-point count
+  and then record the initial row unconditionally — reading `t_out[0]` and
+  writing `record(0, ...)` before the loop over the remaining points. With no
+  output points there is no `t_out[0]` and no row 0, so both walked off a
+  zero-row buffer and took the interpreter down: exit 139, not an exception a
+  caller could catch, and through the public `bngsim.NfsimSession` API rather
+  than the internal bindings alone. The sibling RuleMonkey backend has refused
+  this since it was written (`rulemonkey_interval_count`); both NFsim entry
+  points now say the same thing and name the count they were given. `run()`
+  checks before building the NFsim `System`, so nothing is constructed or leaked
+  on the way out, and a one-point schedule — the initial row and nothing else —
+  still runs.
+
+- **A cold `run()` recorded every `rateOf` column's t=0 row from a stale
+  derivative buffer (issue #567).** A `rate_of__<species>` accessor reads
+  `model.current_derivs`, which is refreshed only as a side effect of an RHS
+  evaluation, so at t=0 it holds whatever the last run left there. The warm
+  path probes `dx/dt` at every row it records, the initial one included; only
+  the cold path's initial row was left out. `r := rateOf(A)` over `A' = -k·A`
+  recorded `r(0) = 0` where the warm path and the closed form both say `-7`,
+  with the rest of the trajectory correct — which reads as a transient rather
+  than a bug.
+
+  On a fresh model that buffer is zero, a recognisable wrong answer; on a model
+  already run it carries a real derivative from the previous run, a plausible
+  one. Forward sensitivities, `jacobian="jax"`, a non-empty `crossing_stops`
+  and `BNGSIM_NO_WARM_CVODE` all take the cold path. The initial-state block now
+  refreshes the buffer before recording, behind the same `uses_rateof()` guard
+  the other sites use. From @Montana.
+
+- **The JAX Jacobian callback's array was copied into CVODE's Newton matrix
+  without checking its size (issue #566).** `set_jax_jac_fn`'s bridge memcpy'd
+  `ns * ns` doubles out of the callback's return with nothing checking it held
+  that many, so a shorter array — a stub, a half-built matrix, a model whose
+  species count moved — read foreign heap straight into the Newton matrix. The
+  corruption does not announce itself: a convergence failure, or non-finite
+  concentrations out of an integration that looked ordinary, with nothing
+  naming the callback. Beside it, a non-contiguous array was read at the wrong
+  strides, and `ns * ns` was computed as `int * int`, which overflows above
+  ns = 46340.
+
+  The bridge now takes a Fortran-ordered float64 array (`f_style|forcecast`),
+  so a strided one is copied rather than misread and an `(ns, ns)` matrix is
+  read as `J[i, j] = df_i/dy_j` rather than handed to CVODE transposed. It
+  checks the length against `ns * ns` in `size_t` and raises `ValueError`
+  naming both counts. An exception from the callback is parked on the user data
+  and rethrown by `run()` rather than unwinding through SUNDIALS' C frames.
+  From @Montana.
+
+- **`jacobian="jax"` died with `NameError` on `log10()`, and on every other
+  engine name the translator's table had never been given (issue #565).** The
+  table stopped at seventeen functions, and `\blog\b` cannot cover `log10`, so
+  it reached the generated source untranslated and failed mid-solve as
+  `NameError: name 'log10' is not defined` — on a model the ODE backend and
+  `jacobian="auto"` both run, with nothing documenting it as unsupported.
+
+  Now mapped: `log10`, `log2`, the hyperbolics and their inverses, `trunc`,
+  `sign`/`sgn`, all seven reserved constants, the bare `time`, and `round`. It
+  and `rint` now round a half away from zero as the engine does (`rint` had been
+  `jnp.round`, which rounds 2.5 to 2), and an n-ary or unary `max`/`min`, a
+  `TypeError` mid-solve, is folded into binary calls. Still unmapped — `erf`,
+  `erfc`, `tgamma`, `clamp`, `avg`, `sum`, `mratio` and the table functions,
+  none of which worked before either — and now refused at translation time,
+  naming the function and pointing at `jacobian="auto"`. From @Montana.
+
+- **`jacobian="jax"` emitted `jnp.jnp.log` for any model using `ln()` (issue
+  #564).** `_translate_expr_jax` mapped the engine's math functions with one
+  `re.sub` per function, in sequence, so each rule read what the rules before it
+  had written: `ln` became `jnp.log`, and the next rule's `\blog\b` matched the
+  `log` inside that. Every model with an `ln()` in a function block then failed
+  under `jacobian="jax"` (and `run_diffrax`) with "module 'jax.numpy' has no
+  attribute 'jnp'", while the identical model integrated on the default
+  Jacobian — an AD-backend error message for a text substitution.
+
+  The seventeen substitutions are now one pass over the source from a name →
+  `jnp.<name>` table, so no rule can re-read another's replacement. That ends
+  the class of collision rather than the one instance: longest name first, and
+  no match straight after a word character or a `.`, so `asin` still beats
+  `sin` and an already-emitted `jnp.log` cannot be read as `log`. From @Montana.
+
+- **`read_sedml` discarded a third-party document's `@target` whenever the
+  dataGenerator carried a display `@name` (issue #563).** bngsim writes its own
+  verbatim selector into `@name`, so the reader preferred it and consulted
+  `@target` only in its absence. Every other writer uses the pair as the
+  standard describes — `@target` the machine-readable SBML XPath, `@name` a
+  label for a human — so reading such a document threw the XPath away in favour
+  of prose like `Free receptor (nM)` and returned that as the output selector.
+  Nothing complained at read time; it surfaced later, out of
+  `read_omex(...).load_protocol().evaluate()`, as an unresolved output selector
+  naming a label the caller never wrote.
+
+  `@name` now wins only when it already reads as a typed bngsim selector
+  (`species:`, `observable:`, `expression:` and the `state:`/`function:`
+  aliases), so bngsim's own round trip is byte-for-byte what it was; anything
+  else yields to `@target`, and a generator with neither still falls back to the
+  name. The target scan also accepts either quoting and whatever namespace
+  prefix the document bound. From @Montana.
+
+- **`batch.observables["X"]` indexed the time axis on a squeezed batch and
+  returned plausible wrong numbers (issue #560).** `_ObservableAccessor` resolved
+  a name to `self._data[:, idx]`, which is the right axis only for a single
+  run's `(n_times, n_cols)` block. A squeezed batch carries a leading replicate
+  axis, so the subscript took the TIME axis and returned each replicate's values
+  at row `idx` where the caller asked for trajectories — real numbers, of the
+  rank expected, and for the usual first column a believable start to one.
+  `result.expressions` and `raw_expressions` were wrong the same way, while
+  `Result.outputs("observable:X")` indexed the last axis and was right: the two
+  APIs disagreed and only the named one was quiet about it.
+
+  The named column sits on the last axis in both layouts, so the lookup now
+  indexes there. A single run is unaffected, and integer and slice keys still
+  index the leading axis. From @Montana.
+
+- **A run truncated by a stop condition lost every `Result` field the rebuild
+  did not name (issue #559).** `Simulator._truncate_result` rebuilt the partial
+  result from nine fields and dropped the rest: all six sensitivity blocks and
+  their parameter lists, `_seed` and `_ic_sensitivity_seed`, the #616 reaction
+  statistics, the SSA and PSA diagnostics, `custom_attrs`, and the metadata the
+  `Simulator` stamps on afterwards. The truncated result is built with
+  `core=None`, where `Result.__init__` fills the SSA diagnostics with the
+  defaults of a result that ran nothing, so a run on the `cc` propensity backend
+  came back reporting `propensity_backend == "unknown"` (`"interpreted"` before
+  #616). And a sensitivity run that stopped early raised out of the empty block,
+  telling the caller to enable the thing they had enabled.
+
+  Everything is forwarded now: per-time blocks sliced at the stop index, scalars
+  and metadata carried whole, and a block whose leading axis is not the time
+  axis carried rather than cut in the wrong place. From @Montana.
+
+- **An SBML event delay or priority that read a parameter the model never
+  writes was folded to its load-time value, so `set_param` did not reach it
+  (follow-up to issue #558).** #558 stopped the loader folding a `<delay>` or
+  `<priority>` that reads a parameter a rule or event writes, but it still
+  folded every other parameter to its value in the file, and those are the
+  parameters a caller changes with `set_param`. So `d = 1; at d after (…)`
+  fired at `t_trigger + 1` whatever `d` was set to, and swapping two priority
+  parameters left the old execution order, with no warning, while reloading
+  the edited file gave the right answer. Only a literal delay or priority is
+  folded now; one that reads any parameter is evaluated when the trigger fires,
+  against the parameter's live value. From @Montana.
+
+- **The order a model's emitted source prints sums, products, `min`, `max`, `and` and `or` in does not follow `PYTHONHASHSEED`** ([#550](https://github.com/lanl/bngsim/issues/550)). sympy sorts a sum's terms by their monomials over the sum's generators, which it collects in a set; two that differ only in the type of a number (`F` and the `F**1.0` that differentiating `F**2.0` leaves) tie in that sort and stay in the order of their hashes. MODEL0847869198 had two sensitivity sources that way, 8 lines of 2,099 apart, the same sums added up in a different order, and which one a process compiled followed its seed. A sum's sort key is made of its ordered terms, so a product's factors and the arguments of `min`, `max`, `and` and `or` followed the seed too where they held such a sum. `bngsim._term_order` computes the keys and takes each order from them; an expression with no tie is printed as it was. Still the seed's: the form sympy gives an expression as it builds one, where a condition, or the argument of an odd or even function (`sin`, `cos`, `tanh`, `abs`), is a tied sum in the model's own text (`cos(u)` or `cos(-u)`). Cached artifacts are rebuilt once (`_CODEGEN_VERSION` 39).
+
+- **A comoving sensitivity case is found for an onset over a difference, a product, a power or a derived parameter** ([#550](https://github.com/lanl/bngsim/issues/550), [#760](https://github.com/lanl/bngsim/issues/760)). The shift `∂t*/∂p` of a crossing at `on/(w - v)` is `1/(w - v)`, which `cancel` can return as `-1/(v - w)`. Under that spelling sympy did not come back from the law's conditional, and the plan was dropped: an onset `on/(wb - wa)` had no comoving case in any process, and dX/dD of a window closing as a power was the plain column, 0.37% off at an exponent of 0.1 and `rtol=1e-8` (dX/d(on) 0.45%). For two names sympy's order of generators ties on, `w01` and `w1`, it was one spelling or the other by the hash seed: the same model with its cases under seeds 6 and 7 and without them under 0 to 5. Both spellings are tried, and the one that leaves the least is taken. A singular power is also asked, through `cancel`, whether its base moves along the shift, where sympy's own sum does not clear it: `on/(kk*(wb - wa))`, `on/(wb - wa)^2` and `on/wd` with `wd = wb - wa` had dX/d(on) 0.45% off.
+
+- **A saturating ratio is matched whichever symbol its exponents are compared against** ([#550](https://github.com/lanl/bngsim/issues/550)). `f^m/(rest + f)^m` is rewritten where the numerator's exponent is a count times the term's, and the count came from the slopes of the two against the first symbol of a set: MODEL1006230049 was rewritten in one process and not in the next, 10 lines of 1,571 apart. The symbols are asked in the order of their names, and the next one where a conditional leaves no count. A ratio that floats leave within a billionth of a count, 3.0000000000000004, is that count where nothing is left over: it was no count against one symbol and 3 against another, in 52 of 2,800 pairs of exponents.
+
+- **A rate law whose `if()` condition holds other `if()`s is derived in a fraction of the time** ([#540](https://github.com/lanl/bngsim/issues/540)). sympy rewrote such a condition through set theory (`as_set()` of every inner condition) at about 2 s per law. On `mt_music_sequencer` that cost the whole 20 s derivation budget after 8 of 14 reactions. The parse now builds the same chain of conditions directly: `mt_music_sequencer` builds its Simulator in 1.6 s instead of 21 s and reaches the self-check's verdict instead of the budget's. No model's values change. Cached generated code is rebuilt once (codegen v42).
+
+- **`atol="auto"` no longer holds a species at 0 to the scale of the large
+  ones.** A species with no magnitude of its own (one that starts at 0) was
+  given the smallest positive start as its scale. In a model whose every start
+  is large, that is no scale for it. MODEL2009230001's species at 0 beside one
+  at 1.1e10 were held to an absolute 110 and came out 100% off, and
+  BIOMD0000000661 and BIOMD0000000845 were 2.2e2 and 1.3 off. The default floor
+  of `auto_atol`, `derive_atol` and a `TrackingAtol` ceiling is now the smallest
+  positive start, but not above 1: one molecule, in a model of counts. Those
+  three models are now 8.5e-6, 1.9e-4 and 6.5e-8 off. A model whose smallest
+  start is at most 1 gets the same tolerances as before.
+
+- **Loading a model whose rate laws make many step or bend calls inside `if()` branches no longer slows as the square of their size.** Reading which branches each call stands in read the text afresh for each call, so the roots a plain run places took 10.7 s for one `if()` holding 2,000 `max()` calls. The text is now read once, and that model takes 0.17 s. The roots and their guards are unchanged.
+
+- **A bare `time` is the clock unless the model declares a scalar of that
+  name.** ExprTk calls `time` without its parentheses, so `if(time > 5, k, 0)`
+  in a `.net` function reads the clock. The SSA took such a rate as constant,
+  and the builder let a parameter `2*time` through. It held 0 for the whole run.
+
+- **A parameter with no value, set by an initialAssignment that cannot be
+  folded at load, now loads instead of being refused as having "no
+  initialAssignment".** `k = 0.5 + S3`, with S3 given no initial value, was
+  refused as under-specified, though it has an initialAssignment and
+  libRoadRunner runs the model with k = 0.5. bngsim now evaluates the
+  assignment at the start, with S3 at 0 and a warning that names it, as it
+  already did when k declared a value: `S1 -> S2` at `k*S1` gives
+  S1(1) = 0.607, as libRoadRunner does. A parameter the assignment reads that
+  has no value is still refused, and is now named alone. A conversionFactor
+  whose initialAssignment has no math was read as 0 without a word; it is now
+  refused like any factor with no value.
+
+- **A run that carries a concentration to a pole of a rate law is refused instead of returned parked there.** Where the right-hand side is non-finite, GH #135 reads it again with negative concentrations set to 0: right for `sqrt` or a fractional power read a hair below 0, whose value at 0 is their limit, and wrong at a pole. BIOMD0000000338's dense run, its XIIa tipped below 0 by rounding, was read at 0 at the pole of `v·S·XIIa/(1 + XIIa)` and returned XIIa = −1, K = −0.997 with no error. Where the value read is infinite at a pole (not an overflow such as `exp(−1/S)`), a concentration the solver's step started more than 10⁶ of its atol below 0 is no longer read at 0, and where that keeps the value non-finite the run raises, naming it. BIOMD0000000810 with `jacobian="fd"`, which returned a cell of 3·10²⁶ where the default run has 3.4, is refused the same way. A NaN is clamped as before, and a step that crosses a pole without landing on it is not caught (#1339).
+
+- **A cloned model rescaled a resized compartment's species wrongly.**
+  `Model.clone()` recompiled each event's expressions into the clone's own
+  evaluator except the compartment size a resize rescale reads (added for
+  #936), so every clone read some other expression as the size: `run_batch`
+  rows (sequential and parallel) and `Model.clone()` gave a wrong
+  concentration after an event resized a compartment (12.33 where 7.89 is
+  right), and a clone could refuse a forward-sensitivity run the original
+  accepts.
+
+- **KLU with no closed-form Jacobian now runs where the dense solver does when a species sits a hair below 0.** The colored difference quotient the sparse route factors (`jacobian="fd"`, or a law the closed form declines) evaluated the right-hand side raw, without the retry the right-hand side itself takes where it is not finite: a species read at 0 by the nonnegative clamp (GH #135), or a rate-rule target below 0 by less than its atol (#1340). At such a state every column beside it was NaN, and the run failed (`CV_CONV_FAILURE`, `CV_REPTD_RHSFUNC_ERR`) where the dense quotient, which calls the right-hand side callback for each column, ran on. MODEL9811206584 failed on KLU at t = 99.3 under `log(s)` and ran on dense to t = 100. The colored quotient now reads every point through the same retry, its jump test's points too, and a column with no finite reading fails the matrix as it fails a dense one. A model whose right-hand side is finite at every point the quotient reads is unchanged.
+
+- **The type stub for two `NetworkModel` bindings matches the bindings again.**
+  `evaluate_over_times(shift=...)` is typed to accept an int as well as a float,
+  as every other float argument in the stub is, and `table_function_tables` is
+  typed `list` (of dicts), which is what the binding declares. The two lines had
+  been written by hand, so `scripts/rebuild_editable.py` rewrote them and left
+  the stub modified after every rebuild.
+
+- **A time threshold computed by an SBML assignment rule that reads state no
+  longer gets a stop at a time nothing crosses.** `time >= g` with `g := 4*S` read
+  the rule's parameter slot as a constant (4 at load) and clamped a step at t=4,
+  while the crossing is at 1.705. The registered root still found the real
+  crossing, so results were right, but the stop was spurious. The crossing
+  resolver now inlines every assignment rule's body, as it already did for
+  aliases of `time`: a body that reads state leaves the condition to its root,
+  and one that reads parameters resolves on their live values.
+
+- **A dense ODE run no longer depends on the order a model's species are written in where a species whose rate is a multiple of itself sits at an exact, unstable 0.** Where a row of the Newton matrix has no nonzero off its diagonal, the dense solve now reads that component as its row gives it, b/a, as KLU does. Partial pivoting had computed it from another row, as the remainder of sums that cancel, and left their rounding there. MODEL1812040005's P, whose law is P·g, starts at 0 and stays there, with g > 0 on t in [1.7, 9.5]. With its species reversed, the residue grew to 2.6e8 on x86-64, 25.6x the trajectory's peak; arm64 held it at -8e-12. BIOMD0000000908's reversed S grew to 1.09e134 of the peak on Linux x86-64 and failed the run near t = 150 on macOS. Both now keep the 0 in either order. Every other component is the one the factorization gave before. Species at 0 that feed each other, a chain or a cycle, are still solved by the pivoted LU on dense, and KLU's block-triangular form remains the route that isolates them.
+
+- **`Model.set_concentration` and `get_concentration` take a fixed species by the name its `.net` gives it.** The `.net` loader names `$A()` `A()`, so `set_concentration("$A()", 7)` raised "not found", while BNG2.pl's `setConcentration` ignores the `$`. A name that is not a species is now tried without its `$`, at the start or after `@c::`, as BNG2.pl does. The parity harness's protocol replay reads `setConcentration("$X()")` the same way, where it fell back to a single segment.
+
+- **An event assignment far larger than what it reads keeps its
+  sensitivity.** The event jump differenced the assigned value over a
+  millionth of each state and parameter. `X = X + D` with `D = 100` moves by
+  2e-15 over that step at `X = 1e-9`, under one ulp of 100, so the derivative
+  came back 0 and the sensitivity X carried into the event was dropped: a dose
+  into a species a zero-order process had run down gave −3 for −6. A parameter
+  whose term is a small part of the value (`D + q*Y`, `q = 1e-9`) gave 0 for
+  `Y`. Where the narrow difference keeps fewer than nine digits it is now taken
+  again over wider steps, up to a millionth of the value, for as long as the
+  value is straight across each, the difference over half of it is the same,
+  and it agrees with the one before. The step kept is the last a wider one
+  agreed with. A value that bends inside every wider step
+  (`D + max(0, X - K)` near `K`, a saturating law) keeps the narrow
+  difference, as before, and so does a staircase with a tread over about 16
+  ulp of the value. A finer staircase is read as its slope.
+
+- **An SBML event that reads a reaction's rate now loads.** A reaction's id in
+  math is its rate, and bngsim registers it as one for rules and kinetic laws
+  that read it, but not for events: `at J0 < 15: B = 50`, or an assignment
+  `B = J0`, failed to load with `J0` an undefined symbol. Both load now and
+  match libRoadRunner (B = 50 from t = 1.438 for J0 = 20·e^(-0.2t); B = 16.375
+  from t = 1). Under SSA, a trigger that reads a rate whose law reads a
+  concentration in a resized compartment is refused by name
+  (`variable_compartment_read`), as one that reads the concentration is.
+
+- **A failed ODE run now leaves the model where it found it, and the GH #176
+  retry starts where the failed attempt did.** A run continues from the model's
+  live state, and every event or switch stop writes that state back. So a run
+  that failed part-way left the model at the failure, and the next run on it
+  started there, labelled `t_start`, with no warning. The finite-difference
+  retry did the same within one call: on a derived pulse onset under
+  sensitivities it reported `X(0) = X(3)` and a sensitivity of -641 before the
+  pulse, where explicit `jacobian="fd"` raised. Both now restore the starting
+  state and any carried-over sensitivity seed.
+
+- **`ReactionKernel.observables()` no longer returns the previous step's values
+  after the state changes.** Once `advance()` had run, `observables()` read the
+  step result even after `set_state()` replaced the state, contrary to its
+  docstring. For example, a model with A = 100 reported the old step's 6.07.
+  The same happened after an `advance()` that raised `StopConditionMet`, which
+  moves the state without storing a new result. Both now recompute from the
+  live state. The case matters for the predictor-corrector rollback,
+  `set_state(saved, time=t0)`. `last_result` is unchanged and still describes
+  the step it came from.
+
+- **A source install no longer fails to import after a second configure of
+  the same build tree.** With no system SuiteSparse, the first configure
+  builds KLU from source and caches where it put it. A second configure, such
+  as a `pip install` after a failed one, found KLU through that cache and
+  skipped bundling it beside the extension, which then failed to import
+  (`Library not loaded: @rpath/libklu.2.dylib`). A KLU found under the
+  autobuild prefix is now bundled on every configure, decided by a path-prefix
+  test (a build path holding `+` or `(` is fine), and a cached libklu that no
+  longer exists is searched for again, so a deleted autobuild is rebuilt.
+
+- **Forward sensitivity of a log-parameterised rate constant (`k = 10^logk`)
+  now runs on the MIR JIT.** sympy writes dk/dlogk as `pow(10, logk)*M_LN10`
+  (`M_LN2` for base 2, and so on), and the generated sources defined only
+  `M_PI` and `M_E`. The JIT strips `<math.h>`, so with `BNGSIM_CODEGEN_JIT=mir`
+  such a run stopped with "undeclared identifier M_LN10" (the benchmark models
+  `nfkb` and `RasRaf_stdBNGL_v3` among them). Each standalone generated source
+  now defines every `<math.h>` constant sympy's C printer can write, with
+  `<math.h>`'s own digits and `#ifndef`-guarded, which also covers MSVC, where
+  `<math.h>` defines none of them without `_USE_MATH_DEFINES`.
+
+- **The MIR JIT no longer binds a rate-law function it has no C for to an
+  unrelated symbol, or exits the process over one.** The emitter writes some
+  ExprTk functions through as bare calls (`equal`, `frac`, `inrange`,
+  `iclamp`, `roundn`, `root`, `logn`, `sinc`, a table function's name). `cc`
+  refuses such a source, but c2mir declares the call implicitly as `int
+  name()`, so with `BNGSIM_CODEGEN_JIT=mir` the name went to the import
+  resolver. When nothing exported it, MIR called `exit(1)` and the Python
+  process ended mid-run. When something did, the run used it: a framework
+  macOS loads into Python exports an `equal`, and `k*(1 + equal(k, 0.5))` gave
+  B(1) = 0.787 where the answer is 1.264, with no warning. `MirJit` now
+  refuses any import outside its prelude by name, as a `SimulationError` from
+  `run()`. Only builds configured with `-DBNGSIM_ENABLE_MIR=ON` are affected.
+
+- **An SBML rule that reads a reaction's rate now counts as changing when that
+  rate does.** A reaction's id in math is its rate, but bngsim took it for a
+  constant. A conversionFactor `cf := J0`, J0 at `0.5*S1`, was frozen at its
+  load value: S1(1) = 0.779 for libRoadRunner's 0.800. It is now refused by
+  name, as any factor the run changes is. A compartment `cv := 1 + 0.5*J0`, J0
+  at `k*A`, was given no rate of change, so its concentrations were not
+  diluted ([Sn](2) = 19.67 for 25.80) and SSA ran its reactions at the
+  load-time size (mean 19.82) without a word. The ODE now follows the rate
+  through the law, including its jumps and events, and matches libRoadRunner;
+  SSA refuses the reaction (`assignment_rule_compartment`), and a rule or law
+  that reads a rate whose law reads a concentration in a resized compartment
+  (`x' = J0` ran to 72.3 for 45.1). A species that no reaction, rule or event
+  changes now holds its value, so a rule over it no longer refuses:
+  `cf := 2*S3` loads, and SSA runs a compartment sized by `1 + 0.1*S`.
+
+- **A rate that reads a nested `rateOf` is integrated.** In
+  `S' = rateOf(A); T' = k*rateOf(S)` the right-hand side read `rateOf(S)` a
+  probe behind: T(1) came out 0.44 for 0.216 at the default tolerances, and was
+  right only from `atol=1e-10` down. With `codegen=True`, and in any run with
+  sensitivity columns, it was read as zero: T stayed 0 and every dT/dp was 0.
+  The right-hand side, interpreted and generated, now makes one probe more for
+  each level a derivative reads a nested `rateOf` at. A rate rule on a `rateOf`
+  that nothing takes the `rateOf` of (`Y' = rateOf(X)`) costs what it did
+  (lanl/bngsim#991).
+
+- **A species on both sides of a reaction has nothing of the rate in its derivative.** The ODE right-hand side took a reaction's rate off each reactant and then put it on each product, so a species written on both sides (a catalyst, `E + S -> E + P`) had `(x - rate) + rate` in its derivative, which is the rounding of the rate and not nothing: `0 -> E` at 0.01 beside a mass-action rate of 1e15 gave dE/dt = 0 and E did not move. The interpreted right-hand side, the generated one and the JAX translator now add each species' net change times the rate, once, which is how the Jacobian and the conservation laws were built all along. A net change of zero is zero times the rate, so a rate law that is NaN or infinite still fails the run. For a species on one side of a reaction nothing changes, to the bit. A model with a species on both sides of a reaction returns trajectories that differ from before in their last places, and its compiled right-hand side is rebuilt (codegen version 38). Stochastic runs fire by the two sides, as before.
+
+- **A parameter defined in terms of something a run moves is refused.** A
+  derived parameter is evaluated only when a parameter is set, so one that read
+  `time()`, a function, an observable or a rate accessor held its build-time
+  value for the whole run: with `kf = c + time()` a function and `k2 = 0.5*kf`
+  a parameter, `0 -> A` at `k2` ran at 0 under ODE and SSA alike, where A(4) is
+  6. `ModelBuilder.build()` now refuses it, naming the symbol, and says to
+  define the quantity as a function. No model in the SBML test suite, the
+  BioModels corpus or the `.net` files in the tree is affected.
+
+- **A narrow window of a sinusoid or a polynomial in time is no longer
+  stepped over** (#714; ODE, sensitivity, SSA and PSA runs). `sin(10*time) >
+  0.99` or `(time - 3)^2 < 4e-4` is true on windows a few hundredths wide. No
+  resolver placed their crossings, so an ODE step, an SSA panel or the SSA's
+  event probe could lie across a window unseen. An event fired 0–63 times where
+  159 is right, a pulse ran 0 or 1.27 where 4.5 is right, and SBML suite 00936
+  gave 0, 2 or 1 for 3, depending on the output grid. The crossings are now
+  solved in closed form (a polynomial's exactly), on literal time, a BNGL
+  counter clock or an `if()` branch, and every engine stops just past each.
+
+- **SBML: an event priority that is an integer too large for a C int loads.**
+  The loader gave every integer-valued constant priority the engine's int
+  field, so `1e10`, `-3e9` or `1e308` failed the whole load with pybind11's
+  "incompatible function arguments". Such a priority takes the double path a
+  fractional one does, and orders as written.
+
+- **A PSA leap no longer takes more of a species than it holds.** With a
+  stoichiometry above `poplevel` (`3A ->` at `poplevel=2`), a leap of
+  floor(n/poplevel) fires consumed more than was present and drove the count
+  negative. The leap is now also capped by each such species' population over
+  its stoichiometry; where `poplevel` covers every stoichiometry, the usual
+  case, runs are unchanged. A firing that takes and gives back one species
+  (`3A -> A + B`) no longer reports a negative crossing it never made, and
+  `poplevel=nan` is refused instead of running exact SSA.
+
+- **An amount species in a rate-rule compartment keeps its amount where the
+  size is exactly 0.** `as_roadrunner(["H"])` for a conserved 5 in
+  `c' = -1` from 2 read [5, 5, 0, 5] at t = 0, 1, 2, 3. At t = 2 the
+  concentration is not divided by the zero size and stays amount/V_static, but
+  the amount was that times the live size, 0. It is that times V_static there
+  now, so it reads 5, as #728's review made it in an assignment-rule
+  compartment. An event that resizes a compartment to 0 was right already.
+
+- **An SBML initial value of `rateOf(x)` loads where x's rate itself reads
+  `rateOf`.** The load works `rateOf(x)` out as a number, from x's rate rule or
+  the kinetic laws that change it, and gave a `rateOf` inside those no value: in
+  `P0 = rateOf(p)` with `p' = 0.5*rateOf(S3)`, and S3 made at 0.4, the model was
+  refused at load where the run and libRoadRunner both read 0.2. A `rateOf` in a
+  rate rule or kinetic law is now worked out the same way, through a conversion
+  factor or a compartment's dilution as at the top, however deep the chain (1,500
+  rate rules, each on the `rateOf` of the one before, fold to 1). What the inner
+  rate reads is frozen with the fold, so `set_param` on it is refused rather than
+  leaving the value stale. Rates written in terms of each other in a ring are
+  still refused, as the run refuses them.
+
+- **An SBML model that reads a `rateOf` it has no value for is refused at load,
+  by name.** Beside the assignmentRule-variable case refused since #1046:
+  - `rateOf(S)` of a concentration in a compartment an assignmentRule sizes
+    (validation rule 10225), a constant or boundary species included, since SBML
+    holds its amount and its concentration moves with the size. An initial value
+    left out the size's change; a rule had it where the size reads only the time,
+    and left it out where the size reads a species. A species with a rate rule of
+    its own still loads with that rate.
+  - `rateOf` of anything but a single symbol (rule 10223). The csymbol was
+    already refused in an initial value; in a rule it, or a call to COPASI's
+    rateOf functionDefinition, read 0 with a warning, and the functionDefinition
+    in an initial value gave NaN without one.
+  - A call to a functionDefinition whose body reads `rateOf`, which took the rate
+    of the function's own parameter, 0, rather than of what the caller passed. A
+    functionDefinition nothing calls is left alone.
+
+  The error names each, where it is read, and why.
+
+- **SBML `rateOf` of a parameter, compartment or speciesReference id that no rule
+  sets is 0 wherever it is read.** An assignment or rate rule, a kinetic law or an
+  event that read `rateOf(p1)`, with `p1` a parameter no rule or event changes
+  (constant or not, or set only by an initialAssignment), failed to load with an
+  ExprTk error about an undefined `rate_of__p1`; so did `rateOf(c)` of a
+  compartment nothing resizes, and `rateOf` of a stoichiometry's id. The rate is
+  0 at every time, which an initialAssignment already gave it (#1045); now a rule,
+  law or event does too. (One an event assigns already loaded, with the same 0.)
+
+- **The stale-extension message now gives a rebuild command that uses the
+  project venv.** The import banner, the missing-feature note and the docs said
+  `python scripts/rebuild_editable.py`. That fails where no `python` is on
+  `PATH`, and otherwise rebuilds for whichever Python it finds. They now say
+  `uv run --no-sync python scripts/rebuild_editable.py`, where `--no-sync` keeps
+  uv from syncing the venv, and possibly reinstalling bngsim, before the rebuild
+  starts.
+
+- **How fast a crossing's residual moves is read correctly where it reads a
+  species far smaller than the others.** The gradient of an event trigger or a
+  state-switch residual is a central difference over a millionth of each
+  species. For `(LECs + Capillaries) - L` with LECs at 1e4 and Capillaries at
+  1e-10, just after its rate law turns on, that step is under an ulp of the
+  residual: the residual read as not moving with a species that carries it at
+  504 a unit of time, and its flow came out -90 for +414. A difference lost in
+  the rounding of the largest species the residual reads is now retaken over
+  wider steps.
+
+- **A loaded result reports the initial-condition seed and the SSA and PSA
+  diagnostics its run did.** `Result.save` wrote none of them. A run with
+  `sensitivity_params=["A0", "k"]` whose `ic_sensitivity_seed` was
+  `{'A': {'A0': 1.0}}` loaded back as `None`, "not recorded", and a recorded
+  `{}`, "nothing seeds", did too. An SSA run of `species A = 3.5` that rounded
+  1 population on the `cc` backend loaded back as 0 on `unknown`, and a PSA run
+  with a measured speedup of 32.7 as inactive. A file written before this loads
+  them as before. `Result.squeeze` also gave every row of a stack the first
+  row's compartment sizes, so a batch over a size of 2 and 5 held 2 for both,
+  and dropped the per-sample volume factors. `as_roadrunner` refuses a stack,
+  so no output read them, but the stack and its saved file now hold each
+  row's own.
+
+- **A result saved and loaded again reports the amounts and concentrations it
+  had.** `Result.save` kept the stored species values but not the compartment
+  sizes, nor the per-sample factors that `as_roadrunner` applies where a size
+  changes, so a loaded result read every compartment at size 1 and fixed. A
+  species of 4 in a compartment of size 2 had an amount of 4 for 8, and under
+  SSA, `[S]` in a compartment growing from 2 to 3.5 read 13.5 for 7.71. The
+  file (format 3) now holds both. A file written before this does not say what
+  the sizes were, so `as_roadrunner` on it refuses an amount selector, naming
+  the reason, and warns on a concentration one. A reloaded result also refuses
+  the output sensitivity of an assignment-rule species that a changing size
+  rescales, as the run does, where it returned the species' NaN row.
+
+- **`method="rm"` reads the clock where RuleMonkey reads it, and only there.** RuleMonkey's clock is `time()`, a bare `time`, and its alias `t` (or `t()`), but a bare `time` or `t` that names a parameter, observable or function is that symbol. bngsim looked only for `time`, so a model that read the clock through `t` alone ran, one-shot or as a `RuleMonkeySession`, as if it read no clock: from `t_start = 5`, `if(t>=6, k, 0)` turned on at model time 11. An observable named `time`, which BNG2.pl accepts, no longer makes a model that reads its count look like one that reads the clock.
+
+- **SBML: a compartment sized through a diamond of assignment rules loads in
+  linear time.** Where the rules a size reads share rules (`r_i := r_{i-1} +
+  r_{i-2}`, each read by the next two), the loader parsed and differentiated
+  each rule once per path to it, for the size's rate (the dilution term of a
+  concentration in the compartment) and for the jumps of a piecewise size: 22
+  such rules took 17.6 s to load, and each four more about 7 times as long.
+  Each rule is now parsed and differentiated once: 0.03 s at 22 rules, 0.11 s
+  at 80. With non-linear rules (`r_i := sin(r_{i-1}) + cos(r_{i-2})`) the term
+  and the jump's rescale were also written out once per path, 22,122 and
+  44,839 characters at 16 rules. A rate that several rules read is now a
+  function of its own, `_ddt_<rule>`, and the jump's sizes read the rules by
+  name, so the text grows with the rules: 542 and 81 characters. The results
+  are the same.
+
+- **`method="rm"` runs on RuleMonkey 3.12.0.** A function that reads one
+  listed after it in the XML no longer reads a stale value, a rate law that
+  reads `reactant_N()` through a helper function fires, and a table function
+  indexed by a function no longer crashes. A `RuleMonkeySession` that runs out
+  of events still reaches `t_end`.
+
+- **`run()` gives the sensitivity row of an amount an assignment rule sets in a
+  compartment whose size changes, and the expression sensitivities of a model
+  that reads a rate** (part of #787). `T := 2*P` in `C := 1 + P` reports
+  `2P/(1 + P)`, and its row was NaN, listed in `ar_sensitivity_refused`. It is
+  now the rule's row put through the quotient rule with the size's, as in
+  `steady_state()`: at t = 1, d[T]/dkp is 0.4988 and d[T]/dkd -0.2411, as
+  central differences of runs give. One function that read `rateOf` made
+  codegen decline the expression sensitivities of the whole model, and the
+  dilution term of a concentration in `C := 1 + P` reads the rate of `P`, so
+  no expression there had one, `C` included. Now only the functions that read
+  a rate, and those that depend on them, are declined: dC/dkp at t = 4 is
+  2.7534. A row is still refused by name where codegen declines the rule's or
+  the size's own sensitivity.
+
+- **An SBML `xor`, or `eq` / `neq` between two conditions, was read as one comparison of two conditions.** A compartment sized by `piecewise(1, xor(S < 1.5, S > 1), 2)` failed to load (`unsupported operand type(s) for -: 'StrictLessThan' and 'StrictGreaterThan'`), and a rate law that branches on an `xor` was refused forward sensitivities, as no single comparison bngsim can root on. The loader now writes each with `and` / `or` / `not`, also when its operands are calls to functionDefinitions that return conditions, so each comparison is rooted where it flips: the size's concentrations are rescaled at every flip, and the sensitivities are exact. Values the engine computes are unchanged.
+
+- **A derivative with an integer past 2^64 in it is right again under both
+  backends.** sympy printed the integers of a sensitivity derivative as bare C
+  integer literals, so `k = p*10^20` gave dk/dp as `100000000000000000000`.
+  `cc` refused to build that source (no forward sensitivity at all), and the
+  MIR JIT read it as the 64-bit maximum, so dA/dp came back 82% small with no
+  warning (99.99% for `p*6^30`). Integers are now printed as double literals,
+  as the analytical-Jacobian printer already did; every other generated
+  derivative computes the same doubles as before. An integer exponent that is
+  not exactly a double (`p^(2^53+2)`, whose parity rounding would flip at
+  p = -1) declines the derivative instead. The MIR JIT's prelude also defines
+  `INFINITY`, which sympy prints for `oo`; the JIT refused it as undeclared.
+
+- **SBML: an event at the instant a piecewise compartment size jumps reads the
+  concentrations after the jump.** Its trigger, its values and its delay were
+  read before the jump's rescale executed, from the concentration the size
+  before gave, with no warning. With `cv := piecewise(1, time < 2, 5)` and
+  [Sn] = 5, `at (time >= 2): Sn = Sn + 1` left Sn at 6 and `X = Sn` set X to
+  5, where [Sn] at t = 2 is 1 and libRoadRunner gives 2 and 1; a delay read
+  from Sn ran 5 times too long, and `time >= 2 && Sn > 3` fired though it is
+  false at t = 2. The loader marks its jump events and the ODE engine executes
+  them first. Forward sensitivities follow; values frozen between two events'
+  fires at that instant are refused. `steady_state()` named the jump's two
+  events as "it has 2 events" for a model with none; it names the compartment
+  now. (#1054)
+
+- **A stacked batch of PSA runs keeps each run's diagnostics, and no longer
+  reads as exact SSA.** `Result.squeeze` (and `squeeze=True`) dropped every
+  run's `psa_diagnostics`, so a batch whose rows all used partial scaling
+  reported `active: False`. Each run's report is now kept as it was, in
+  `Result.psa_diagnostics_per_run`, which a single run answers with its one
+  report, and it survives `save` and `load`. The stack's own report says only
+  what needs no choice of statistic: `active` if any run used partial
+  scaling, the largest `peak_population`, and whether any run crossed the
+  activation level; the per-reaction statistics and `speedup` are left empty
+  rather than averaged or summed.
+
+- **A steady-state expression sensitivity is no longer NaN because an
+  assignment rule's target sits beside it.** Where the compiled evaluator
+  declines a function (an `if()`, a `max()`), `steady_state()` differences
+  it, and the difference multiplied the NaN row of every species the solve
+  leaves out into the function's row, also where the function does not read
+  that species. `W := piecewise(P, P < 100, 2*P)` beside `T := 2*P` gave NaN
+  where d(W)/d(kp, kd) is (5, -25); a species `mask=` leaves out did the
+  same. Such a species now adds nothing to a function that does not read it,
+  and a function that does read one keeps its NaN. An amount in a
+  compartment whose size such a function sets was refused with a message
+  that blamed `mask=` when none was given. It now gets its row, and the
+  refusal that remains names the species the size reads and why the solve
+  has no row for it.
+
+- **SSA/PSA run an SBML monomial across compartments that mixes an amount with
+  a concentration in a resized compartment again.** `A => B; k*A`, A an amount
+  and B a concentration in a compartment of A's size at load that a rate rule
+  or an event resizes, ran under SSA while its ODE divided B's row by the
+  load-time size, and was refused once the ODE was right. Its propensity reads
+  the amount, and each concentration factor gets the live-volume term a
+  monomial over concentrations gets; it matches Extrande and the exact mean.
+  With different sizes at load it is still refused, as it was before. (#787)
+
+- **SSA refuses a model that reads a concentration in a compartment whose size
+  changes in a way it does not follow.** That covers:
+  * a reaction touching such a concentration in a compartment an assignment
+    rule resizes;
+  * a read of one in an event- or rate-rule-resized compartment from outside
+    it, through an assignment rule, or by a cross-compartment law the volume
+    correction does not fit (a modifier, `X*X`);
+  * a rate rule or an event reading one.
+
+  All ran at the load-time size: A(4) at 3× the ODE's, z = +16 to +50, and a
+  trigger that never fired. A rule over constants (`C := 2`), and amount-valued
+  species, still run.
+
+- **Two SSA/PSA defects from a correctness audit.**
+  - A run with a tiny total propensity beside a trigger that reads the clock
+    probed the trigger out to its next firing, far past `t_end`: it hung and
+    ignored `timeout=`. A `time > T` event just past a leg's end also fired in
+    both legs.
+  - An SBML conversionFactor other than 1 is refused under SSA/PSA (code
+    `conversion_factor`): folded into the rate it keeps the mean but not the
+    noise. The ODE dropped the factor when the stoichiometry came from an
+    initialAssignment (A(10) = 40 where 70 is right).
+
+- **SSA runs a cross-compartment reaction out of or into a compartment an
+  assignment rule holds constant.** `A => B; k*A` with A in `C := 2` and B in
+  a compartment a rate rule grows was refused (`varvol_non_mass_action`), where
+  the same model with `C = 2` declared constant ran. A rule over constants
+  never moves the size, as a write to what it reads is refused, so such a
+  reaction now runs as its static twin does, the same trajectory for the same
+  seed. Over 3,000 runs the mean count of A and the mean [B] are within 0.7
+  standard errors of the exact mean at every sample, and a bimolecular
+  `A + B => P` matches an Extrande sampler. A rule that reads the clock, a
+  species, or a rate-rule or event target is still refused.
+
+- **SSA ran, and got wrong, a reaction in a compartment sized by a rule that
+  reads a constant species in a compartment whose size changes.** A resize keeps
+  a species' amount, so the concentration of a constant or boundary species
+  moves with its compartment's size, though no rule or event names it. SSA took
+  `cv := 1 + 0.1*Kw`, with Kw constant in a compartment `ce` that an event
+  doubles, for a size that holds, and ran `J: Sn => ; k*Sn` at cv's size at
+  load: the mean [Sn](1.5) of 400 runs was 17.25 for libRoadRunner's 21.97.
+  SSA now refuses the reaction by name (`assignment_rule_compartment`), as it
+  refuses one in any assignment-rule compartment whose size moves; a rate rule
+  on `ce` is refused the same way. The ODE result for this model is also wrong
+  (17.18; issues #745 and #1055).
+
+- **`run_batch` dropped `reaction_stats`, and three SSA entry points lost the
+  compiled propensities.** With `reaction_stats=True`, every `run_batch` row
+  came back with no firing counts or propensity integrals. With codegen left on,
+  `run_replicates(num_processors > 1)`, `run_batch` and any run after
+  `intervene` or `restore` never got the propensity library the Simulator
+  built, so on a build with a C compiler they ran the slower interpreted loop
+  (MIR-JIT'd on a MIR build) while `run()` reported `"cc"`. Every SSA engine is
+  now built with the Simulator's settings, so all four report the same backend
+  and the parallel replicates match the sequential ones bit for bit. Also,
+  `BNGSIM_SSA_NO_CODEGEN`, `BNGSIM_SSA_PROP_CC` and `BNGSIM_SSA_PROP_JIT` set to
+  `0` are now off in Python too, as the C++ engine already read them; before,
+  `0` kept Python from building the library.
+
+- **SSA held the concentration of a species that a rule sets across an event's
+  resize, where SBML keeps its amount.** SSA leaves a molecule count alone when
+  an event resizes its compartment, and it treated a species that an assignment
+  rule or a rate rule sets the same way, though the rule makes it a
+  concentration, not a count. With `c` going from 1 to 3 at t = 2.5, `S := 3`
+  reported [S] = 1 and S = 3 for 3 and 9, and `S' = 0.4` gave [S](3) = 0.733
+  for 0.867. In `c := p` with `p` going from 2 to 4, [S](5) was 1.5 and S was
+  12, for 2 and 8. SSA and PSA now rescale such a species at the resize as ODE
+  does, and report it as a concentration: all three match ODE and
+  libRoadRunner exactly. As in ODE, the rescale is formed when the event
+  executes, so it keeps what an event of higher priority at the same instant
+  wrote to the species first: [S](3) = 1.867 there, for 1.733 before.
+
+- **SSA events no longer miss a trigger that is true only inside a time window,
+  or a periodic trigger's later rises.** Triggers were looked at only at the end
+  of each step: `time > 37.3 && time < 37.5` never fired, and `sin(time) > 0.9`
+  fired once in (0, 50) instead of 8 times when nothing fired between its rises.
+
+- **SSA and PSA are exact in time for rates that move between firings.** A rate
+  that reads time, or a rate-rule target, was held constant over sub-steps of
+  (t_end − t_start)/1000, so the answer depended on the horizon: synthesis at
+  `5*(1 + sin(time))` over (0, 5000) gave E[N(995)] = 2707 where the exact mean
+  is 5002 (#719). Rate rules were integrated by forward Euler on that grid, so
+  `x' = -30*x` over (0, 100) went to 1e33 (#753). With no firing reaction they
+  only moved at output times (#751). The loop now integrates each time-varying
+  propensity over adaptive panels and fires at the root of the integrated
+  hazard, with rate rules on an L-stable Rosenbrock method. It never steps
+  across a time at which a rate jumps (a resolved `if()` condition, a
+  time-indexed table's knot), so a pulse narrower than a step is no longer
+  skipped. A function of time that feeds no rate no longer moves a model off
+  the discrete loop.
+
+- **SSA/PSA no longer refuse three kinds of SBML reaction they run exactly.**
+  - A reaction flagged reversible whose law has no difference in it
+    (`Vm*A/(Km+A)*c`, as COPASI flags by default) runs as the same law
+    flagged irreversible does, trajectory for trajectory.
+  - In a variable-volume compartment, `0.3*A*c`, `3*c` and `k2*A*c` with `k2`
+    an assignment rule over time were refused where `k*A*c` ran.
+  - A zeroth-order synthesis of an amount-valued species (`=> H; k`).
+
+- **SSA and PSA take the falling factorial for SBML laws evaluated as written,
+  too.** A kinetic law the loader cannot read as mass action (a boundary
+  reactant, reactants in compartments of different sizes, an assignment-rule
+  compartment, a law divided by a volume) was evaluated literally, so a
+  species it reads m times contributed n^m: `2B -> P` at `k*B*B` kept firing
+  with one B left, where the same reaction from a `.net` fires at 0, and a
+  lone A in `2A + B -> P` across two compartments went to -9. Such a law now
+  takes n(n−1)…(n−m+1) when it is a product of its species: bare factors,
+  integer powers (`B^3`, `(B*C)^2`), or a `piecewise` whose non-zero branches
+  are the same product. A law that writes its own combinatorics
+  (`k*X*(X-1)/2`), and a species a rule sets, are left as written. ODE is
+  unchanged. An infinite, NaN or very large exponent in a kinetic law no
+  longer fails or hangs the load.
+
+- **An SSA or PSA run that raises leaves the model as it found it.** The
+  stochastic loop writes its running state into the model as it goes (the
+  species it syncs for observables, functions and event triggers, and the
+  clock), so a run stopped part way by a timeout or a refusal left a mid-run
+  state behind under a clock and events still at the run's start. The next run
+  continued from it with no error. The species and the clock are now put back
+  before the error propagates, as the ODE path already did.
+
+- **SSA/PSA record a sample at a time trigger's threshold on the side ODE
+  records it.** In `E1: at time > 2.5: c = 3` beside `species S in c = 3`, the
+  trigger is false at 2.5 itself, and ODE and libRoadRunner read [S] = 3 in a
+  row at 2.5. SSA and PSA read 1, the value after the event, at any seed, in a
+  model with no rate rule and no rate that reads the clock: the event is placed
+  to within 1e-12 above 2.5, and a row less than 1e-9 below an event was always
+  deferred to read the state after it. Such a row is now deferred only where a
+  trigger has already changed at the row's own time, as with `time >= 2.5`,
+  which fires at 2.5 and reads 1 there, as in ODE, libRoadRunner, the SBML
+  suite and DSMTS. A row 5e-10 before a `>=` event could read the value after
+  it with a rate rule or a rate on the clock too, where the step that found the
+  event held the row; it now reads the value before.
+
+- **`steady_state()` reports an amount in a compartment whose size changes
+  over the live size, as `run()` does** (part of #787). An amount-valued
+  species in a compartment a rate rule or an assignment rule sizes, one a rule
+  or a rate rule sets among them, came back over the size the model loaded
+  with: `H`, an amount of 2 in `C := 1 + P` with P settling at `kp/kd` = 5,
+  read 2.0 where `run()` to the same state and RoadRunner give 2/6 = 0.333.
+  Its `dY_ss/dp` row was the stored value's: d[H]/dks 2 for 1/3, and
+  d[H]/dkp, which moves only the size, 0 for -0.278. `steady_state()` and
+  `steady_state_batch()` now run the passes `run()` does. Where `mask=` leaves
+  the size out of the solve and keeps such a species, its row is refused by
+  name.
+
+- **The sensitivity decline warning no longer calls the fallback correct across
+  a step in the state.** `floor(Atot)` jumps each time `Atot` crosses an
+  integer, at a time the rate constants move. The analytic sensitivity RHS
+  declines it, and CVODES' difference quotient then drops those jumps: on
+  `k1*floor(Atot)` it is 59 % off a central difference by t = 0.5. The warning
+  now names such a call as a moving crossing. The same holds for `ceil`,
+  `round`, `sign`, `mod` and the other stepping builtins, unless the argument
+  reads only run-constants, or only the clock and literals.
+
+- **`compute_all_sensitivities` reports amounts and concentrations as `run()`
+  does in a compartment whose size changes.** The stitched result was rebuilt
+  from a list of fields that left out the live sizes `Result.as_roadrunner`
+  reads, so a conserved amount of 2 in a compartment growing at `c' = 0.2` read
+  2, 1, 0.667, a conserved 5 in `c := 2 + time` read 5, 3.33, 2.5, and after an
+  event doubled a compartment a concentration species' amount read half, with
+  nothing said. The columns and the sensitivity rows were right. The stitched
+  result is now the first chunk's with the parameter axis widened, so it
+  carries everything each chunk's stamp attached, `Result.state` included, and
+  matches a single `run(sensitivity_params=...)` in rate-rule, assignment-rule
+  and event-resized compartments and for rule-target species. (#787)
+
+- **`make_subset_model` keeps what a parameter write does to the model.** A
+  subset rebuilt its parameters without their compartment-size and
+  write-refused flags, and its species without their `initialAmount`, their
+  initial-value parameter or their ODE live-volume divide. After
+  `set_param("C", 10)` a subset kept a 10-molecule species at 10/5 = 2 where the
+  model re-divides it to 1. `A() A0` then `set_param("A0", 80)` left the
+  subset's A at 50. A compartment write the model refuses went through on the
+  subset. After `save_concentrations()` a subset re-derived its initial values
+  from their declarations rather than resetting to the saved state. It also
+  dropped the loader's refusals (a `fast="true"` reaction ran under ODE, a
+  reversible non-mass-action law under SSA), a rule-assigned species'
+  continuous flag, the SSA propensity's live compartment size and the SSA
+  falling factorial above. A model carrying a saved sensitivity baseline is now
+  refused rather than subset without it.
+
+- **`round()` of a number means C's round in the symbolic paths too, so a
+  derived parameter's sensitivity and a clock threshold through one are right.**
+  The sympy readers left `round` to Python's, which rounds a half to even:
+  `round(2.5)` became 2 where the engine computes 3 (issue #684). A derived
+  parameter `round(2.5)*k` got a forward sensitivity 2/3 of the true one, a
+  clock condition `floor(time()) >= round(2.5)` got its stop at t = 2 instead of
+  3, and a rate law with `round(2.5)` lost its analytic Jacobian to the
+  self-check. A `round` of a parameter is evaluated as C's round where its value
+  is needed and declines where it would have to be differentiated.
+
+- **A `.net` tfun whose index is written as a call, `tfun([0,10],[0,10], Atot())`,
+  loads.** BioNetGen keeps a tfun's index as written and puts it in the `.net`
+  as it is. The loader read the index up to its first parenthesis, as `Atot(`,
+  and the load failed with "index variable 'Atot(' not found". The bare name
+  loaded. Both `.net` readers share the parse and both failed, for inline,
+  file-based and embedded tables, and for an index over a parameter, an
+  observable, a function or the clock (`time()`). The index is now read with
+  its `()` and names what the bare name does. In a file-based tfun, an index
+  whose name begins with `method` (`tfun('d.tfun', method_k)`) was taken for
+  the `method=>` option, and the table was read over the clock; it is the
+  index now.
+
+- **An event on `time == c` fires on any output grid.** `at (time == 2)` is
+  true at one double, so it had no crossing stop and no root, and fired only
+  where an output sample landed on 2: with `n_points=6` over (0, 5) it fired,
+  with `n_points=2` it did not, and the run returned the state of a model with
+  no event. The run now stops on the instant, taken as the double at which the
+  model's evaluator reads the equality as true (so `time == tau/7`, `time ==
+  pi` and `time^2 == 4` fire too), for `==` and `!=`, alone or inside a
+  compound trigger. An equality that no double satisfies, such as
+  `time - 1 == 1.3`, is refused with an error naming the trigger where it is
+  the whole trigger. An equality on an integrated variable (`x == 2` under
+  `x' = 1`) is unchanged: use an ordering.
+
+- **SBML: a compartment size that reads a concentration a piecewise size jump
+  moves now jumps with it.** Its concentrations kept the values from before
+  the jump, with no warning. Beside `cv := piecewise(1, time < 2, 5)` and
+  [Sn] = 5, `cw := piecewise(1, time < 2, 1 + Sn)` took [Sw] from 3 to 0.5,
+  its new size read with [Sn] from before cv's jump, where libRoadRunner gives
+  1.5; `cw := 1 + Sn`, which has no jump of its own, left [Sw] at 3 for 9. The
+  same held in a chain of three, on a species threshold, at two equal
+  thresholds, and where [Sn] is read only in cw's condition, there with a
+  result that changed with the seed. Each jump now rescales the concentrations
+  of every compartment whose size reads what it moves, as an event's resize
+  does, after that compartment's own jump, interpreted and codegen alike.
+  Forward sensitivities follow; a concentration rescaled twice at one instant
+  is refused. (#1054)
+
+- **An SBML conversionFactor the model gives no constant value is refused at
+  load, by name.** A species' or the model's `conversionFactor` naming a
+  parameter with no value, initialAssignment or assignmentRule was read as 1, so
+  the model ran as if it had no factor: `S1 -> S2` at `0.5*S1` gave S1(1) = 0.607
+  and no warning. It now raises `UnderSpecifiedModelError` naming the parameter
+  and the species, as for a valueless parameter a rate law reads, and as
+  RoadRunner does (`BNGSIM_ALLOW_UNSET_PARAMS=1` loads it with the factor at 0).
+  A factor that names no parameter, or whose assignment cannot be evaluated at
+  load, is refused too: the first was read as 1, and a declared 5 whose
+  initialAssignment gave 2 scaled the rates by 5. So is one that a rate rule, an
+  event or a moving assignment rule changes during the run, which SBML forbids:
+  the rates kept its load value (S1(1) = 0.368 with `cf' = 1`, where RoadRunner
+  gives 0.287). A factor with a value, or one an initialAssignment or a rule
+  over constants gives, loads as before.
+
+- **An SBML reaction that changes an amount and a concentration in one
+  compartment whose size changes ran a wrong ODE.** The two are divided by the
+  size at load and the live size, and one divide served both: `H => B; k*H`
+  with H an amount in a growing compartment made B(6) 40.55 molecules out of 40,
+  where RoadRunner gives 33.39. A concentration beside an amount-valued catalyst
+  was divided by the size at load, and amounts beside a concentration catalyst
+  by the live size (off by up to 76%). Each row now takes its own divide.
+
+- **A transfer between compartments is divided by the size each compartment
+  has, for every rate law.** A species stored as a concentration in a
+  compartment whose size follows a rate rule or is reset by an event obeys
+  `d[S]/dt = stoich*law/V(t) - [S]*V'/V`. For any reaction but an irreversible
+  mass-action monomial, the transfer term was divided by the size at load, or
+  by one compartment's size for every species. A reaction flagged reversible
+  (the SBML Level 2 default, and Antimony's `->`), a reversible difference
+  `k*A - k2*B` and a saturating law were all wrong, with no warning: with
+  `A -> B; k*A` into a compartment growing from 2 at rate 1, [B](5) came back
+  0.284 for 0.196. Each changed species' row is now over its own compartment's
+  live size under ODE, also beside an assignment-rule compartment and with
+  mixed conversion factors. Under SSA these reactions are refused as before.
+  Still wrong: a transfer between assignment-rule and static compartments, and
+  the irreversible monomial beside an assignment-rule compartment (#745); some
+  arrangements of a substance-only species beside a concentration (#787).
+
+- **A reaction that makes a concentration and an amount in one changing
+  compartment divides each by its own size.** With a non-integer
+  stoichiometry, or mixed conversion factors, a reaction is written out one
+  species at a time. A concentration's row is divided by its compartment's
+  live size and a substance-only species' row by the size at load. For two
+  such species in one compartment the two divides were registered under one
+  name and the second was dropped, so both rows used the first: [B](5) = 0.615
+  for 0.562 on `A -> 1.5 B + H` into a compartment growing from 2 at rate 0.4.
+
+- **An irreversible reaction between an assignment-rule compartment and a
+  variable-volume one gave a wrong ODE** (part of #745): [A](5) = 0.077 for
+  0.143. With mixed conversion factors it failed to load. Flagged reversible,
+  the same reaction was right; now both are.
 
 - **`t` is an ordinary model identifier, not a spelling of the clock, and four
   expression translators read it as one (issue #659).** The evaluator binds

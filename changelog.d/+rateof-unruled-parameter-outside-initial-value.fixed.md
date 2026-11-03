@@ -1,8 +1,0 @@
-- **SBML `rateOf` of a parameter, compartment or speciesReference id that no rule
-  sets is 0 wherever it is read.** An assignment or rate rule, a kinetic law or an
-  event that read `rateOf(p1)`, with `p1` a parameter no rule or event changes
-  (constant or not, or set only by an initialAssignment), failed to load with an
-  ExprTk error about an undefined `rate_of__p1`; so did `rateOf(c)` of a
-  compartment nothing resizes, and `rateOf` of a stoichiometry's id. The rate is
-  0 at every time, which an initialAssignment already gave it (#1045); now a rule,
-  law or event does too. (One an event assigns already loaded, with the same 0.)
