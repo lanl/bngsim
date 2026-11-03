@@ -974,9 +974,12 @@ Three requests are refused, with `SensitivityUnsupportedError`:
   `reset()` first;
 - a compartment size, in a model with a conservation law;
 - any parameter, where a law spans compartments of different size and an
-  assignment rule sets the size of a compartment. The right-hand side divides
+  assignment rule that can move sets the size of a compartment: one that reads
+  a species, the time, or a parameter asked for. The right-hand side divides
   by the size the model loaded at where the rule gives another (issue #745),
-  so the steady state is that of another system.
+  so the steady state is that of another system. A rule over constants alone,
+  `c2 := 2*p`, gives that size all along, and its columns are returned
+  (issue #961).
 
 A law across compartments of different size is a total of amounts, and carries
 the sizes: `A + 2*B` for `A` in a compartment of size 1 exchanged with `B` in

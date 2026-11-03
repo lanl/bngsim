@@ -94,14 +94,17 @@ def test_steady_state_is_the_systems_own() -> None:
     np.testing.assert_allclose(np.asarray(result.concentrations).ravel(), STEADY, rtol=1e-6)
 
 
-def test_steady_state_sensitivities_are_refused_not_wrong() -> None:
+@pytest.mark.parametrize("spelling", sorted(SPELLINGS))
+def test_steady_state_sensitivities_are_right(spelling) -> None:
     # With both volume factors 1 the model looked like one with no law across
     # sizes, and steady_state returned columns [-0.2667, 0.2667] for
     # [-0.4, 0.1]. At the right sizes it is a rule-sized compartment under a law
-    # across sizes, which #745/#992 refuse.
-    model = bngsim.Model.from_antimony_string(TEXT.format(c2=SPELLINGS["rule over a rule"]))
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#745"):
-        bngsim.Simulator(model, "ode").steady_state(sensitivity_params=["k1"])
+    # across sizes, which #745/#992 refused; a rule that reads nothing that
+    # moves gives the size the right-hand side reads, and the columns are
+    # computed now, and right (issue #961).
+    model = bngsim.Model.from_antimony_string(TEXT.format(c2=SPELLINGS[spelling]))
+    out = bngsim.Simulator(model, "ode").steady_state(sensitivity_params=["k1"])
+    np.testing.assert_allclose(np.asarray(out.sensitivity).ravel(), [-0.4, 0.1], rtol=1e-6)
 
 
 def test_a_chain_through_reaction_ids_settles() -> None:
