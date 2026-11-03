@@ -3,10 +3,11 @@
 The actions after a source's ``generate_network`` are the author's experiment,
 and ``from_bngl`` loads the network without them (intended, documented). Most
 are harmless to drop, but one that sets a parameter or a concentration *before
-the first* ``simulate`` means the model loaded is not the model the author first
+the first* run means the model loaded is not the model the author first
 simulated, and nothing said so. ``ode/wofsy_goldstein.bngl`` sets ``alpha`` from
-0.01 to 0.1 before its first scan; ``egfr_net_red.bngl`` sets ``egf(r)`` to 0
-before equilibrating.
+10 to 0.1 before its first scan; ``egfr_net_red.bngl`` sets ``egf(r)`` to 0
+before equilibrating; the bistable ``toggle.bngl`` sets ``Y()`` from 0 to 50
+before its only run, a ``bifurcate``.
 
 Two tiers, as in ``test_bngl_loading.py``: the scan of the actions needs no
 BioNetGen; whether a change changes the loaded model needs the network.
@@ -36,10 +37,14 @@ end parameters
 begin molecule types
   A(b)
   B(x,y,z)
+  C()
+  D(a)
 end molecule types
 begin seed species
   A(b) A0
   B(x,y,z) 5
+  $C() 7
+  D(a!1).D(a!1) 3
 end seed species
 begin observables
   Molecules Atot A()
@@ -119,6 +124,62 @@ def test_no_run_or_no_generation_is_nothing_to_say():
     assert _verbs('setParameter("k",2)\nsimulate({t_end=>1})\n') == []
 
 
+_BIFURCATE = 'bifurcate({parameter=>"k",par_min=>1,par_max=>2,n_scan_pts=>2,t_end=>1})'
+
+
+def test_a_bifurcation_is_a_run():
+    """``toggle.bngl``'s only run is a ``bifurcate``, from the ``Y()`` its
+    ``setConcentration`` sets: a scan that saw no run there had nothing to say."""
+    actions = f'generate_network({{overwrite=>1}})\nsetConcentration("A(b)",0)\n{_BIFURCATE}\n'
+    assert _verbs(actions) == [("setConcentration", ["A(b)", "0"])]
+    later = f'generate_network({{overwrite=>1}})\n{_BIFURCATE}\nsetParameter("k",2)\n'
+    assert _verbs(later + "simulate({t_end=>1})\n") == []
+
+
+def test_a_reset_restores_the_state_saved_under_its_label():
+    """BNG2.pl keeps a saved state per label; an unlabeled reset with nothing
+    saved unlabeled puts back the model as declared."""
+    to_declared = (
+        'generate_network({overwrite=>1})\nsetConcentration("A(b)",0)\n'
+        'saveConcentrations("zero")\nresetConcentrations()\nsimulate({t_end=>1})\n'
+    )
+    assert _verbs(to_declared) == []
+    to_zero = (
+        'generate_network({overwrite=>1})\nsetConcentration("A(b)",0)\n'
+        'saveConcentrations("zero")\nresetConcentrations()\nsaveConcentrations("init")\n'
+        'resetConcentrations("zero")\nsimulate({t_end=>1})\n'
+    )
+    assert _verbs(to_zero) == [("setConcentration", ["A(b)", "0"])]
+    params = (
+        'generate_network({overwrite=>1})\nsaveParameters("p")\nsetParameter("k",2)\n'
+        'saveParameters()\nresetParameters("p")\nsimulate({t_end=>1})\n'
+    )
+    assert _verbs(params) == []
+
+
+def test_a_reset_that_undoes_a_change_made_before_generation_is_named():
+    """The network holds a change made before generation; a reset to the model
+    as declared undoes it, so the run starts from neither."""
+    undone = (
+        'setConcentration("A(b)",0)\ngenerate_network({overwrite=>1})\n'
+        "resetConcentrations()\nsimulate({t_end=>1})\n"
+    )
+    assert _verbs(undone) == [("resetConcentrations", [])]
+    kept = (
+        'setConcentration("A(b)",0)\nsaveConcentrations()\ngenerate_network({overwrite=>1})\n'
+        "resetConcentrations()\nsimulate({t_end=>1})\n"
+    )
+    assert _verbs(kept) == []
+
+
+def test_the_changes_come_in_source_order():
+    actions = (
+        'generate_network({overwrite=>1})\nsetParameter("k",2)\nsetConcentration("A(b)",0)\n'
+        "simulate({t_end=>1})\n"
+    )
+    assert _verbs(actions) == [("setParameter", ["k", "2"]), ("setConcentration", ["A(b)", "0"])]
+
+
 # --------------------------------------------------------------------------- #
 # against the network
 # --------------------------------------------------------------------------- #
@@ -156,6 +217,8 @@ end parameters
 begin species
     1 A(b) A0
     2 B(x,y,z) 5
+    3 $C() 7
+    4 D(a!1).D(a!1) 3
 end species
 begin reactions
     1 1 0 k
@@ -186,6 +249,11 @@ def _before_a_run(change: str) -> str:
         'setConcentration("A(b)","A0")',
         'setConcentration("B(z,x,y)",5)',
         'addConcentration("A(b)",0)',
+        'setConcentration("$C()",7)',
+        'setConcentration("D(a!1).D(a!1)",3)',
+        'setParameter("k",2)\nsetParameter("k",1)',
+        'setConcentration("A(b)",0)\naddConcentration("A(b)",100)',
+        'setConcentration("B(z,x,y)",0)\nsetConcentration("B(x,y,z)",5)',
     ],
     ids=[
         "a parameter to its value",
@@ -193,6 +261,11 @@ def _before_a_run(change: str) -> str:
         "to the expression it was seeded from",
         "components in another order",
         "adding 0",
+        "a fixed species to its amount",
+        "a complex by the network's name",
+        "a parameter set and set back",
+        "a species emptied and refilled",
+        "one species under two spellings, set back",
     ],
 )
 def test_a_change_to_what_the_model_already_holds_is_not_named(tmp_path, change):
@@ -213,10 +286,43 @@ def test_only_the_actions_that_change_something_are_named(tmp_path):
     assert _changes(tmp_path, actions) == ["setParameter('k', '3')"]
 
 
+def test_a_target_is_named_by_the_actions_its_run_starts_from(tmp_path):
+    """The last set of a target decides it, with the adds after it; an earlier
+    set is not what the run starts from."""
+    assert _changes(tmp_path, _before_a_run('setParameter("k",2)\nsetParameter("k",3)')) == [
+        "setParameter('k', '3')"
+    ]
+    refilled = _before_a_run('setConcentration("A(b)",0)\naddConcentration("A(b)",5)')
+    assert _changes(tmp_path, refilled) == [
+        "setConcentration('A(b)', '0')",
+        "addConcentration('A(b)', '5')",
+    ]
+
+
+def test_the_warning_names_the_callers_line(tmp_path):
+    """Not a line of bngsim's: ``Model.load`` reaches ``from_bngl`` a frame deeper
+    than a direct call, so a fixed ``stacklevel`` is right from one of them only."""
+    from bngsim._model import _warn_dropped_state_changes
+
+    net = tmp_path / "m.net"
+    net.write_text(NET)
+    bngl = tmp_path / "m.bngl"
+    bngl.write_text(MODEL + _before_a_run('setParameter("k",2)'))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _warn_dropped_state_changes(bngsim.Model.from_net(str(net)), bngl)
+    (w,) = [w for w in caught if issubclass(w.category, bngsim.ConversionWarning)]
+    assert w.filename == __file__
+
+
 def test_a_species_the_network_does_not_name_counts_as_a_change(tmp_path):
-    """Where the effect cannot be read, say so rather than stay quiet."""
+    """Where the effect cannot be read, say so rather than stay quiet: a species
+    the network does not name, or a value that does not evaluate."""
     assert _changes(tmp_path, _before_a_run('setConcentration("A(b!1).A(b!1)",3)')) == [
         "setConcentration('A(b!1).A(b!1)', '3')"
+    ]
+    assert _changes(tmp_path, _before_a_run('setParameter("k","no_such_name")')) == [
+        "setParameter('k', 'no_such_name')"
     ]
 
 
@@ -228,19 +334,28 @@ def test_protocol_true_returns_the_actions_instead_of_warning(tmp_path):
 
 
 @needs_bng2
-def test_wofsy_goldstein_from_the_corpus_is_warned_and_egfr_path_is_not():
-    """The corpus cases the issue lists: wofsy_goldstein's alpha (0.01 -> 0.1)
-    reaches its first scan; egfr_path's EGF -> 0 is its declared amount."""
+def test_wofsy_goldstein_and_toggle_from_the_corpus_are_warned_and_egfr_path_is_not():
+    """The corpus cases the issue lists: wofsy_goldstein's alpha (10 -> 0.1)
+    reaches its first scan; egfr_path's EGF -> 0 is its declared amount. And the
+    bistable toggle's Y() (0 -> 50) reaches its only run, a bifurcate, loaded
+    here through ``Model.load``, whose warning names this file's line."""
     wofsy = _REPO / "benchmarks" / "models" / "bngl" / "ode" / "wofsy_goldstein.bngl"
     egfr = _REPO / "benchmarks" / "models" / "bngl" / "ode" / "egfr_path.bngl"
+    tutorials = _REPO / "parity_checks/bng_parity/models/slow/rulehub/Tutorials/NativeTutorials"
+    toggle = tutorials / "toggle" / "toggle.bngl"
     messages = {}
-    for path in (wofsy, egfr):
+    for path in (wofsy, egfr, toggle):
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            bngsim.Model.from_bngl(str(path))
+            bngsim.Model.load(str(path))
         messages[path.name] = [
-            str(w.message) for w in caught if issubclass(w.category, bngsim.ConversionWarning)
+            w for w in caught if issubclass(w.category, bngsim.ConversionWarning)
         ]
     assert messages["egfr_path.bngl"] == []
-    (text,) = messages["wofsy_goldstein.bngl"]
+    (wofsy_warning,) = messages["wofsy_goldstein.bngl"]
+    text = str(wofsy_warning.message)
     assert "setParameter('alpha', '0.1')" in text and "'beta'" not in text
+    (toggle_warning,) = messages["toggle.bngl"]
+    text = str(toggle_warning.message)
+    assert "setConcentration('Y()', '50')" in text and "'X()'" not in text
+    assert toggle_warning.filename == __file__

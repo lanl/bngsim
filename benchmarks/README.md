@@ -346,8 +346,8 @@ dynamics, stiffness and event counts can differ from the authors' experiment.
 For example, `egfr_path` declares `EGF 0` and adds `EGF_tot` only after
 equilibrating, so the ODE suite's 120 s run has no ligand. 3 of its 18 species
 move (Grb2 and Sos settle), where all 18 move with `EGF_tot` added (issue
-#1366). `Model.from_bngl` warns when the first `simulate` of a file starts from
-a state the loaded model does not hold.
+#1366). `Model.from_bngl` warns when the first run of a file starts from a
+state the loaded model does not hold.
 
 The SSA and PSA models are exercised by `suites/ssa/` and `suites/psa/`
 — each runs a correctness gate (BNGsim vs `run_network` ensemble

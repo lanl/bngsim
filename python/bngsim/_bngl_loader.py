@@ -212,24 +212,28 @@ def generation_source(text: str) -> str:
     return "\n".join(kept) + "\n"
 
 
-# The actions after ``generate_network`` that change the state a ``simulate``
-# starts from, which :func:`generation_source` drops with the rest of the
-# experiment (issue #1366). Saved and reset as BNG2.pl does, so the no-op
+# The actions after ``generate_network`` that change the state a run starts
+# from, which :func:`generation_source` drops with the rest of the experiment
+# (issue #1366). Saved and reset as BNG2.pl does, so the no-op
 # ``saveConcentrations(); resetConcentrations()`` a file puts before its only
-# ``simulate`` changes nothing.
+# ``simulate`` changes nothing. Every experiment verb is a run, ``bifurcate``
+# too: ``toggle.bngl``'s only run is one.
 _SPECIES_SETS = frozenset({"setconcentration", "addconcentration"})
 _PARAMETER_SETS = frozenset({"setparameter"})
-_RUN_VERBS = _EXPERIMENT_VERBS - {"bifurcate"}
+_SAVES = {"saveconcentrations": "species", "saveparameters": "params"}
+_RESETS = {"resetconcentrations": "species", "resetparameters": "params"}
 
 
 def state_changes_before_first_run(text: str) -> list[tuple[str, list[str]]]:
     """The actions after the source's ``generate_network`` that set the state
-    its first ``simulate`` or ``parameter_scan`` starts from, as ``(verb,
-    arguments)`` in source order, each argument unquoted.
+    its first run (``simulate``, ``parameter_scan`` or ``bifurcate``) starts
+    from, as ``(verb, arguments)`` in source order, each argument unquoted.
 
-    Empty when that run starts from the model as declared: no generation call,
+    Empty when that run starts from the model as loaded: no generation call,
     no run after it, no change before the run, or only changes undone by a
     ``resetConcentrations``/``resetParameters`` to a state saved before them.
+    A reset that undoes a change made *before* the generation call, which the
+    loaded network holds, is one of the actions returned.
     """
     from bngsim.convert._protocol import _iter_action_calls, _split_top_level
 
@@ -237,31 +241,39 @@ def state_changes_before_first_run(text: str) -> list[tuple[str, list[str]]]:
         (verb, [a.strip().strip("\"'") for a in _split_top_level(args)])
         for verb, args in _iter_action_calls(text)
     ]
-    starts = [i for i, (verb, _) in enumerate(calls) if verb.lower() in _GENERATE_VERBS]
-    if not starts:
+    first = next((i for i, (verb, _) in enumerate(calls) if verb.lower() in _GENERATE_VERBS), None)
+    if first is None:
         return []
-    # Each kind of state: the changes in effect, and those in effect when saved.
-    species: list[tuple[str, list[str]]] = []
-    params: list[tuple[str, list[str]]] = []
-    saved_species: list[tuple[str, list[str]]] = []
-    saved_params: list[tuple[str, list[str]]] = []
-    # From the first, where generation_source cuts.
-    for verb, args in calls[starts[0] + 1 :]:
+    # Each kind of state: the changes in effect since the model as declared (by
+    # index into *calls*), and those saved under each label, as BNG2.pl keeps
+    # them. A reset to a label never saved puts back the model as declared: it
+    # does for the unlabeled default, and any other is an error that stops the
+    # file before its run.
+    state: dict[str, list[int]] = {"species": [], "params": []}
+    saved: dict[str, dict[str, list[int]]] = {"species": {}, "params": {}}
+    loaded: dict[str, list[int]] = {}  # what generation_source applies
+    last_reset: dict[str, int] = {}
+    for i, (verb, args) in enumerate(calls):
         low = verb.lower()
-        if low in _RUN_VERBS:
-            return species + params
-        if low in _SPECIES_SETS:
-            species.append((verb, args))
+        label = args[0] if args else "DEFAULT"
+        if i == first:
+            loaded = {kind: list(changes) for kind, changes in state.items()}
+        elif i > first and low in _EXPERIMENT_VERBS:
+            out: list[int] = []
+            for kind, changes in state.items():
+                out += [c for c in changes if c not in loaded[kind]]
+                if any(c not in changes for c in loaded[kind]):
+                    out.append(last_reset[kind])
+            return [calls[c] for c in sorted(out)]
+        elif low in _SPECIES_SETS:
+            state["species"].append(i)
         elif low in _PARAMETER_SETS:
-            params.append((verb, args))
-        elif low == "saveconcentrations":
-            saved_species = list(species)
-        elif low == "resetconcentrations":
-            species = list(saved_species)
-        elif low == "saveparameters":
-            saved_params = list(params)
-        elif low == "resetparameters":
-            params = list(saved_params)
+            state["params"].append(i)
+        elif low in _SAVES:
+            saved[_SAVES[low]][label] = list(state[_SAVES[low]])
+        elif low in _RESETS:
+            state[_RESETS[low]] = list(saved[_RESETS[low]].get(label, []))
+            last_reset[_RESETS[low]] = i
     return []
 
 
@@ -284,42 +296,77 @@ def _molecule_key(pattern: str) -> tuple[str, tuple[str, ...]] | None:
     return m.group(1), tuple(sorted(parts))
 
 
-def _species_amount(model, pattern: str) -> float | None:
-    """The loaded amount of the species *pattern* names, or ``None`` if the
-    network has no species of that name."""
-    key = _molecule_key(pattern)
-    for name in model.species_names:
-        if name == pattern or (key is not None and _molecule_key(name) == key):
-            return float(model.get_concentration(name))
+def _species_name(model, pattern: str) -> str | None:
+    """The network's name for the species *pattern* names, or ``None`` if the
+    network has no such species: the pattern itself, or without a fixed
+    species' ``$``, as :meth:`~bngsim.Model.get_concentration` reads it, or a
+    one-molecule species with its components in another order."""
+    try:
+        return model._species_call(pattern, model._core.get_concentration)[0]
+    except ModelError:
+        pass
+    key = _molecule_key(pattern.lstrip("$"))
+    if key is not None:
+        for name in model.species_names:
+            if _molecule_key(name) == key:
+                return name
     return None
+
+
+def _target(model, verb: str, args: list[str]) -> tuple[str, str] | None:
+    """What a ``set*``/``add*`` action writes in *model*, ``("param", name)`` or
+    ``("species", the network's name)``, or ``None`` if that cannot be read."""
+    if len(args) != 2:
+        return None
+    if verb.lower() in _PARAMETER_SETS:
+        return ("param", args[0]) if args[0] in model.param_names else None
+    name = _species_name(model, args[0])
+    return None if name is None else ("species", name)
+
+
+def _keeps_loaded_value(model, target: tuple[str, str], actions) -> bool:
+    """Whether *actions*, the last set of *target* and the adds after it, leave
+    it at the value *model* holds."""
+    kind, name = target
+    held = float(model.get_param(name) if kind == "param" else model.get_concentration(name))
+    value = held
+    for verb, (_, text) in actions:
+        new = _value(model, text)
+        if new is None:
+            return False
+        value = value + new if verb.lower() == "addconcentration" else new
+    return value == held
 
 
 def dropped_state_changes(model, text: str) -> list[str]:
     """The actions of :func:`state_changes_before_first_run` that would start the
     first run somewhere other than *model*, loaded without them, starts: each
-    written as in the source. One whose effect cannot be read (a pattern the
-    network does not name, a value that does not evaluate) counts as a change.
+    written as in the source, in source order. They are judged by target, as
+    the run meets them: a parameter's last ``setParameter``, and a species' last
+    ``setConcentration`` with the ``addConcentration`` calls after it, are named
+    only if they leave a value other than the loaded one. One whose effect
+    cannot be read (a pattern the network does not name, a value that does not
+    evaluate, a reset) counts as a change.
     """
-    out: list[str] = []
-    for verb, args in state_changes_before_first_run(text):
-        low = verb.lower()
-        if len(args) == 2:
-            target, value = args
-            new = _value(model, value)
-            if low == "addconcentration":
-                if new == 0.0:
-                    continue
-            elif low == "setconcentration":
-                if new is not None and new == _species_amount(model, target):
-                    continue
-            elif (
-                target in model.param_names
-                and new is not None
-                and new == float(model.get_param(target))
-            ):
-                continue
-        out.append(f"{verb}({', '.join(repr(a) for a in args)})")
-    return out
+    changes = state_changes_before_first_run(text)
+    # Each target's actions in effect at the run, by index into *changes*.
+    in_effect: dict[tuple[str, str], list[int]] = {}
+    named: list[int] = []
+    for i, (verb, args) in enumerate(changes):
+        target = _target(model, verb, args)
+        if target is None:
+            named.append(i)
+        elif verb.lower() == "addconcentration":
+            in_effect.setdefault(target, []).append(i)
+        else:
+            in_effect[target] = [i]
+    for target, indices in in_effect.items():
+        if not _keeps_loaded_value(model, target, [changes[i] for i in indices]):
+            named += indices
+    return [
+        f"{verb}({', '.join(repr(a) for a in args)})"
+        for verb, args in (changes[i] for i in sorted(named))
+    ]
 
 
 def generate_network_call(text: str) -> str:

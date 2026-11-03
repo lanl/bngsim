@@ -830,10 +830,10 @@ class Model:
         :class:`~bngsim.convert.ProtocolSpec` rather than lose them.
 
         A :class:`~bngsim.ConversionWarning` names the dropped actions that set
-        a parameter or a concentration the first ``simulate`` or
-        ``parameter_scan`` starts from, where the loaded model holds another
-        value (issue #1366). With ``protocol=True``, the spec carries them
-        instead.
+        a parameter or a concentration the first ``simulate``,
+        ``parameter_scan`` or ``bifurcate`` starts from, where the loaded model
+        holds another value (issue #1366). With ``protocol=True`` there is no
+        warning: the spec returns the actions themselves.
 
         Parameters
         ----------
@@ -3308,11 +3308,12 @@ def _ar_report_map_from_net(
 
 
 def _warn_dropped_state_changes(model: Model, path: str | Path) -> None:
-    """Warn, once, that the source's first ``simulate`` starts from a state this
-    model does not hold (issue #1366): the actions that set it come after the
-    source's ``generate_network``, and only the network is loaded."""
+    """Warn, once, that the source's first run starts from a state this model
+    does not hold (issue #1366): the actions that set it come after the source's
+    ``generate_network``, and only the network is loaded."""
     from bngsim._bngl_loader import dropped_state_changes
     from bngsim._exceptions import ConversionWarning
+    from bngsim._simulator import _stacklevel_outside_bngsim
 
     try:
         text = Path(path).read_text(errors="replace")
@@ -3323,10 +3324,10 @@ def _warn_dropped_state_changes(model: Model, path: str | Path) -> None:
         return
     shown = "; ".join(changes[:3]) + (f"; and {len(changes) - 3} more" if len(changes) > 3 else "")
     warnings.warn(
-        f"{Path(path).name}: its first simulate runs after {shown}, which from_bngl "
+        f"{Path(path).name}: its first run starts after {shown}, which from_bngl "
         "does not apply (actions after generate_network are the author's experiment). "
-        "The model is loaded as declared. Pass protocol=True to get the actions as a "
+        "The model is loaded without them. Pass protocol=True to get the actions as a "
         "ProtocolSpec.",
         ConversionWarning,
-        stacklevel=3,
+        stacklevel=_stacklevel_outside_bngsim(),
     )

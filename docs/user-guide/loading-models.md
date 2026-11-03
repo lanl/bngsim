@@ -66,13 +66,14 @@ those are what make an unbounded rule set finite.
   (`simulate`, `parameter_scan`, `bifurcate`) and file writes are left out.
 - **At and after it:** everything is dropped, as the author's experiment.
 
-If that experiment sets a parameter or a concentration before its first
-`simulate` or `parameter_scan`, the model you get is not the one the author
-first simulated. `from_bngl` warns with a `ConversionWarning` naming those
-actions. It names only the actions that change something: a `setConcentration`
-to the amount the species already holds is not one, and neither is a
-`saveConcentrations()` followed by `resetConcentrations()`. Pass
-`protocol=True` to recover the actions instead of losing them:
+If that experiment sets a parameter or a concentration before its first run
+(`simulate`, `parameter_scan` or `bifurcate`), the model you get is not the one
+the author first simulated. `from_bngl` warns with a `ConversionWarning` naming
+those actions. It names only the actions that change the state the run starts
+from: a `setConcentration` to the amount the species already holds is not one,
+and neither is a value set and then set back, or a `saveConcentrations()`
+followed by `resetConcentrations()`. Pass `protocol=True` to recover the actions
+instead of losing them:
 
 ```python
 model, spec = bngsim.Model.from_bngl("egfr.bngl", protocol=True)
