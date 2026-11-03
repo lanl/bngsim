@@ -57,10 +57,25 @@ if not bngsim.HAS_BNGL:
 
 A `.bngl` in the wild ends in `simulate({...})` or `parameter_scan({...})`.
 Running the file as written would run the author's entire experiment just to
-obtain a network, so only `generate_network` is run — carrying the source's own
-`max_iter` / `max_agg` / `max_stoich`, since those are what make an unbounded
-rule set finite. Pass `protocol=True` to recover the actions instead of losing
-them:
+obtain a network. So the actions stop at the source's first `generate_network`,
+which runs with the source's own `max_iter` / `max_agg` / `max_stoich`, since
+those are what make an unbounded rule set finite. A file with no
+`generate_network` before its first run stops at that run, the state the run
+starts from.
+
+- **Before that point:** actions are applied, as BNG2.pl applies them. A
+  `setParameter` or `setConcentration` there seeds the network. Only file writes,
+  `setOutputDir` and `quit` are left out.
+- **At and after it:** everything is dropped, as the author's experiment.
+
+If that experiment sets a parameter or a concentration before its first run
+(`simulate`, `parameter_scan` or `bifurcate`), the model you get is not the one
+the author first simulated. `from_bngl` warns with a `ConversionWarning` naming
+those actions. It names only the actions that change the state the run starts
+from: a `setConcentration` to the amount the species already holds is not one,
+and neither is a value set and then set back, or a `saveConcentrations()`
+followed by `resetConcentrations()`. Pass `protocol=True` to recover the actions
+instead of losing them:
 
 ```python
 model, spec = bngsim.Model.from_bngl("egfr.bngl", protocol=True)

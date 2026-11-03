@@ -148,6 +148,22 @@ def test_state_changes_after_generate_network_are_experiment_setup():
     assert "100" in out and '"A(b)",0' not in out
 
 
+def test_a_file_without_generate_network_is_cut_at_its_first_run():
+    """The first run of a file that never calls ``generate_network`` starts from
+    the actions before it (issue #1366), so a change between its runs is a later
+    phase. Keeping it loaded ``kinetics_mb1n.bngl`` with its last phase's
+    ``Agconc`` 604.8 and ``const`` 0, where its first run has 7.46 and 1."""
+    out = generation_source(
+        "begin model\nbegin parameters\n  k 1\nend parameters\nend model\n"
+        'setParameter("k",2)\n'
+        'simulate({method=>"ode",t_end=>10})\n'
+        'setParameter("k",3)\n'
+        'simulate({method=>"ode",t_end=>10})\n'
+    )
+    assert 'setParameter("k",2)' in out
+    assert 'setParameter("k",3)' not in out and "simulate" not in out
+
+
 def test_a_continued_action_is_dropped_whole():
     """A backslash-continued or multi-line action must not leave a fragment behind.
 
