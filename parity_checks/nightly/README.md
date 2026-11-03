@@ -81,15 +81,20 @@ run summary but never alert.
 
 Each suite is compared twice: against the committed baseline, and against the
 previous nightly's verdicts (the last scheduled or manual run on `main`). The second
-catches a fix that regresses before anyone re-baselined it. In that night-to-night
+catches a fix that regresses before anyone re-baselined it. A row the committed
+baseline re-recorded since that night's commit, which tonight matches, is reported
+there and not alerted: it was reviewed when it was recorded, as a pull request that
+makes a check stricter records the rows it moves. So is solver work the baseline
+re-recorded, where tonight does not exceed it: such a case is left out of that
+night's work comparison, per case and in the totals. In that night-to-night
 comparison a flip into or out of TIMEOUT is reported, not alerted: two single nights
 can land on runner CPUs of different speed, and a timeout verdict depends on the wall
 clock. Against the committed baseline PASS -> TIMEOUT still alerts.
 
 `flaky.json` lists cases whose verdict or solver work measurably changes on
 identical code (with the runs that show it); their changes are reported and never
-alert, in both comparisons. A flaky case's work still counts in the totals. Add one
-only with that evidence.
+alert, in both comparisons. A flaky case's work is left out of the totals too, which
+one such case can move on its own. Add one only with that evidence.
 
 ## When it alerts
 

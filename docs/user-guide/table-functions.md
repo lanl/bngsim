@@ -241,7 +241,7 @@ Validation rules:
 - `xData` and `yData` lengths must match.
 - `xData` must be strictly increasing.
 
-`method="nf"` refuses a model whose rate laws read a `linear` table indexed by
-time, since NFsim holds it between its x values; a `step` one is exact. See
+`method="nf"` reads a `step` table indexed by time at each of its x values, and
+integrates a rate law that reads a `linear` one between them. See
 [Rate laws that read `time()`](network-free.md#rate-laws-that-read-time)
-(issue #1179).
+(issues #892, #1179).

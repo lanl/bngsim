@@ -809,6 +809,7 @@ endif()
 # (declared above, before the RuleMonkey subdirectory) and linked in below.
 set(BNGSIM_SOURCES
     src/model.cpp
+    src/model_dual.cpp
     src/model_builder.cpp
     src/net_file_loader.cpp
     src/table_function.cpp

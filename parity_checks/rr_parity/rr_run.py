@@ -105,6 +105,15 @@ from _core.versions import git_rev  # noqa: E402
 
 ODE_JOBS = HERE / "ode_jobs.json"
 DEFAULT_ODE_TIMEOUT = 120.0  # ODE jobs carry no max_wall_sec; this is their cap.
+# libRoadRunner 2.11.0 takes 545-566 s to load each of these three CellML models on a
+# CI runner (2.9.2 took about 220 s; every other reference in reference-data-v4 loaded
+# in under 25 s), so the light pass's 300 s cap timed them out on every live night.
+# Each runs to at least this cap, whatever --timeout says (#1288).
+SLOW_LOAD_CAP = {
+    "MODEL1006230049": 1200.0,
+    "MODEL1006230053": 1200.0,
+    "MODEL1006230077": 1200.0,
+}
 
 
 def _job_overrides(
@@ -915,6 +924,7 @@ def main() -> int:
             if args.timeout is not None
             else params.get("max_wall_sec") or DEFAULT_ODE_TIMEOUT
         )
+        cap = max(cap, SLOW_LOAD_CAP.get(j.model_id, 0.0))
         key = f"{j.model_id}:{j.method}"
         if artifact:
             artifacts[key] = artifact

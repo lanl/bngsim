@@ -24,7 +24,10 @@ print(batch.species.shape)  # (100, 101, n_species)
 ```
 
 `run_batch` clones the model and resets every point to the `.net` seed initial
-conditions — correct for a dose–response from a fresh start.
+conditions — correct for a dose–response from a fresh start. Where the model is
+not at them (after a `set_concentration`, or a run), it warns that the points do
+not start where the model is. `run_replicates` starts every replicate where the
+model is, as `run` does.
 
 ## Parameter scans that carry a pre-equilibrated state
 

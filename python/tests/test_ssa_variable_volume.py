@@ -64,12 +64,18 @@ import _extrande_reference as ext  # noqa: E402
 
 
 def _ssa_counts(model, t_end, n_points, reps, seed):
-    """Return (names, array[reps, n_points, nsp]) of an SSA batch."""
+    """Return (names, array[reps, n_points, nsp]) of an SSA batch, as stored:
+    ``amount/V_static``, which times ``V_static`` is the molecule count.
+
+    Read from :attr:`Result.state`. :attr:`Result.species` reports a species in
+    a resized compartment at ``amount/V_live(t)``, under SSA as under ODE
+    (issue #1368), and so is no longer the count over ``V_static`` there."""
     res = bngsim.Simulator(model, method="ssa").run_batch(
         t_span=(0.0, t_end), n_points=n_points, params=[{} for _ in range(reps)], seed=seed
     )
     names = list(res[0].species_names)
-    arr = np.stack([np.asarray(r.species) for r in res], axis=0)
+    cols = [list(res[0].state_names).index(n) for n in names]
+    arr = np.stack([np.asarray(r.state)[:, cols] for r in res], axis=0)
     return names, arr
 
 

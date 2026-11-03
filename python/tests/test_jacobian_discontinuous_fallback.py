@@ -51,6 +51,7 @@ the failure is about, whichever entry point meets it.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -58,6 +59,10 @@ import bngsim
 import numpy as np
 import pytest
 from bngsim import SimulationError
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _codegen_backend import threshold_forced  # noqa: E402
 
 # This module, for the two tests that monkeypatch its own helper. pytest loads
 # the file by path, so it is not importable under its bare filename.
@@ -509,6 +514,7 @@ def test_steady_state_fallback_matches_explicit_fd(data_dir: Path) -> None:
     assert np.array_equal(np.asarray(auto.concentrations), np.asarray(fd.concentrations))
 
 
+@threshold_forced
 def test_steady_state_explicit_analytical_is_not_second_guessed(data_dir: Path) -> None:
     """``jacobian="analytical"`` surfaces the failure: the march does not retry,
     and reports the unconverged answer the closed form gave it."""

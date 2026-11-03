@@ -17,6 +17,7 @@ WORK_KEYS = (
     "n_steps",
     "n_rhs_evals",
     "n_jac_evals",
+    "n_jac_rhs_evals",
     "n_nonlin_iters",
     "n_err_test_fails",
     "n_nonlin_conv_fails",
