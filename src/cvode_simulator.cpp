@@ -816,8 +816,10 @@ struct CvodeUserData {
     // The slots an assignment put below 0, for sens_may_read_at: the run's
     // start, or a restart that changed the slot (mark_put_below), and not back
     // at or above 0 at an accepted step since (clear_put_below). any_put_below
-    // is whether any is; put_below_tn and put_below_h are the step last read.
+    // is whether any is; put_below_tn and put_below_h are the step last read;
+    // put_below_from is the state CVODE was last started from.
     std::vector<char> put_below;
+    std::vector<double> put_below_from;
     bool any_put_below = false;
     double put_below_tn = std::numeric_limits<double>::quiet_NaN();
     double put_below_h = std::numeric_limits<double>::quiet_NaN();
@@ -1045,10 +1047,12 @@ static void note_value_rhs_state(CvodeUserData *data, sunrealtype t, const doubl
 // start (`fresh`), and at a restart each slot the restart changed, read against
 // the state CVODE's own history has at `t`. A slot a restart does not change
 // keeps its mark, so one the run's own error took below 0 stays unmarked. A
-// restart CVODE cannot interpolate to (outside its last step) marks every slot
-// by its value, as at a start, and a carry_sensitivities run then gives each
-// slot it starts where the last run left it that run's mark instead
-// (setup_forward_sensitivities).
+// restart before CVODE's first step since it was last started reads that
+// state instead: CVODE has no history there yet (CVodeGetDky divides by an h
+// of 0, or reads a stale one). A restart CVODE cannot interpolate to (outside
+// its last step) marks every slot by its value, as at a start, and a
+// carry_sensitivities run then gives each slot it starts where the last run
+// left it that run's mark instead (setup_forward_sensitivities).
 static void mark_put_below(CvodeUserData *data, void *cvode_mem, sunrealtype t, N_Vector y,
                            bool fresh) {
     const auto n = static_cast<std::size_t>(data->model->n_species());
@@ -1057,15 +1061,20 @@ static void mark_put_below(CvodeUserData *data, void *cvode_mem, sunrealtype t, 
         data->put_below.assign(n, 0);
         fresh = true;
     }
+    long int steps = -1;
+    const bool unstepped = !fresh && CVodeGetNumSteps(cvode_mem, &steps) == CV_SUCCESS &&
+                           steps == 0 && data->put_below_from.size() == n;
     N_Vector before = nullptr;
-    if (!fresh && !inside_last_step(cvode_mem, t))
+    if (!fresh && !unstepped && !inside_last_step(cvode_mem, t))
         fresh = true;
-    if (!fresh) {
+    if (!fresh && !unstepped) {
         before = N_VClone(y);
         if (before == nullptr || CVodeGetDky(cvode_mem, t, 0, before) != CV_SUCCESS)
             fresh = true;
     }
-    const double *b = (!fresh && before != nullptr) ? N_VGetArrayPointer(before) : nullptr;
+    const double *b = fresh       ? nullptr
+                      : unstepped ? data->put_below_from.data()
+                                  : N_VGetArrayPointer(before);
     data->any_put_below = false;
     for (std::size_t i = 0; i < n; ++i) {
         if (b == nullptr || y_ptr[i] != b[i])
@@ -1074,6 +1083,7 @@ static void mark_put_below(CvodeUserData *data, void *cvode_mem, sunrealtype t, 
     }
     if (before != nullptr)
         N_VDestroy(before);
+    data->put_below_from.assign(y_ptr, y_ptr + n);
     data->put_below_tn = std::numeric_limits<double>::quiet_NaN();
     data->put_below_h = std::numeric_limits<double>::quiet_NaN();
 }

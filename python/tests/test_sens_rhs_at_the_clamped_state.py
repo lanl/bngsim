@@ -172,6 +172,14 @@ def test_a_restart_that_leaves_l_where_it_is_keeps_the_reading():
     assert np.abs(sens - ref).max() <= 1e-6 * np.abs(ref).max()
 
 
+# An event no law reads, held off until `thr` is lowered.
+T0_EVENT = MPEKRIS.replace(
+    "\nend\n", "\n  species Z = 0; thr = 1000;\n  E1: at (time >= thr): Z = 1;\nend\n"
+)
+# More points than the model keeps run-end states (kCarriedMarksHistory, 64).
+LONG_SCAN = 70
+
+
 def _second_legs(sim, protocol):
     """The second legs a carried protocol runs from t = 50 to 100."""
     run = dict(t_span=(50.0, 100.0), n_points=51, rtol=RTOL, atol=ATOL)
@@ -181,6 +189,16 @@ def _second_legs(sim, protocol):
         # m_reg at its own value: the simulator is rebuilt, the dynamics are not.
         sim.intervene({"m_reg": 0.02})
         return [sim.run(carry_sensitivities=True, **run)]
+    if protocol == "event at the start":
+        # The event fires at t = 50, a restart before CVODE's first step.
+        sim.intervene({"thr": 0.0})
+        leg = sim.run(carry_sensitivities=True, **run)
+        assert np.asarray(leg.species)[-1, list(leg.species_names).index("Z")] == 1.0
+        return [leg]
+    if protocol == "long scan":
+        # Each point adds its own end state to the model's history.
+        out = sim.parameter_scan("m_reg", [0.02] * LONG_SCAN, reset_conc=True, **run)
+        return [out[0], out[-1]]
     # Two scans in a row: each rebuilds the simulator per point and returns to
     # the state it started from, after its point has run on from there.
     legs = []
@@ -190,19 +208,26 @@ def _second_legs(sim, protocol):
     return legs
 
 
-@pytest.mark.parametrize("protocol", ["run", "intervene", "scan"])
+@pytest.mark.parametrize(
+    "protocol", ["run", "intervene", "scan", "event at the start", "long scan"]
+)
 @pytest.mark.parametrize("method", ["staggered", "simultaneous"])
 def test_a_carried_second_leg_reads_as_one_run_does(method, protocol):
     """Run to t = 50, then on to 100 carrying the sensitivities: by a second
-    run(), after an intervene(), and by parameter_scan, twice. Each second leg
-    starts where the first left L, a hair below 0 by its own error, so L is no
-    slot an assignment put there, and follows one run's path: 3.4e-9 and 7.9e-9
-    of the state's peak off it, and the judged columns 2.1e-8 and 6.1e-8 of
-    theirs. Marked at its start, L was refused at t = 51; with the marks kept on
-    the simulator, refused after intervene() and in a scan, which rebuild it;
-    with the newest marks only, refused in the second scan."""
+    run(), after an intervene(), by parameter_scan twice, with an event that
+    fires at the leg's start, and by a scan of more points than the model keeps
+    end states. Each second leg starts where the first left L, a hair below 0
+    by its own error, so L is no slot an assignment put there, and follows one
+    run's path: 3.4e-9 and 7.9e-9 of the state's peak off it, and the judged
+    columns 2.1e-8 and 6.1e-8 of theirs. Marked at its start, L was refused at
+    t = 51; with the marks kept on the simulator, refused after intervene() and
+    in a scan, which rebuild it; with the newest marks only, refused in the
+    second scan; read against CVODE's history before its first step, refused
+    with the event; with the scan's start state dropped from the history,
+    refused from its 65th point."""
+    src = T0_EVENT if protocol == "event at the start" else MPEKRIS
     sim = bngsim.Simulator(
-        bngsim.Model.from_antimony_string(MPEKRIS),
+        bngsim.Model.from_antimony_string(src),
         method="ode",
         sensitivity_params=list(PARAMS),
         sensitivity_method=method,
@@ -218,9 +243,10 @@ def test_a_carried_second_leg_reads_as_one_run_does(method, protocol):
     peak = np.abs(s1).max(axis=0)
     judged = peak > 1e-6 * peak.max()
     for leg in _second_legs(sim, protocol):
-        x = np.asarray(leg.species)
+        cols = [list(leg.species_names).index(s) for s in one.species_names]
+        x = np.asarray(leg.species)[:, cols]
         assert np.abs(x - x1).max() <= 1e-6 * np.abs(x1).max()
-        s = np.asarray(leg.sensitivities)[:, rows, :]
+        s = np.asarray(leg.sensitivities)[:, [cols[r] for r in rows], :]
         assert (np.abs(s - s1).max(axis=0)[judged] <= 1e-5 * peak[judged]).all()
 
 

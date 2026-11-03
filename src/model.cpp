@@ -18,6 +18,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <numeric>
 #include <set>
@@ -815,12 +816,14 @@ void NetworkModel::add_carried_marks(std::vector<double> state, std::vector<char
         h.pop_front();
 }
 
-const NetworkModel::CarriedMarks *NetworkModel::carried_marks_for(const double *y,
-                                                                  std::size_t n) const {
-    const auto &h = impl_->carried_marks;
+const NetworkModel::CarriedMarks *NetworkModel::carried_marks_for(const double *y, std::size_t n) {
+    auto &h = impl_->carried_marks;
     for (auto it = h.rbegin(); it != h.rend(); ++it) {
-        if (it->state.size() == n && std::equal(it->state.begin(), it->state.end(), y))
-            return &*it;
+        if (it->state.size() == n && std::equal(it->state.begin(), it->state.end(), y)) {
+            const auto at = std::prev(it.base());
+            std::rotate(at, std::next(at), h.end());
+            return &h.back();
+        }
     }
     return h.empty() ? nullptr : &h.back();
 }

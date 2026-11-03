@@ -857,8 +857,10 @@ class NetworkModel {
     static constexpr std::size_t kCarriedMarksHistory = 64;
     void add_carried_marks(std::vector<double> state, std::vector<char> marks);
     // The entry for a run starting at `y` (`n` slots): the newest whose state is
-    // `y` to the bit, else the newest; null where none is kept.
-    const CarriedMarks *carried_marks_for(const double *y, std::size_t n) const;
+    // `y` to the bit, else the newest; null where none is kept. A match is made
+    // the newest kept, so a state a scan returns to point after point outlasts
+    // the run-end states its points add.
+    const CarriedMarks *carried_marks_for(const double *y, std::size_t n);
 
     // True iff the IC baseline (``species[].initial_conc``, as redefined by
     // save_concentrations()) carries its own dx/dθ — i.e. reset() returns to a
