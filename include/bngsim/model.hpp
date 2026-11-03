@@ -341,13 +341,25 @@ class NetworkModel {
     // reaction_rate_reads_time, without a rate accessor, which reads the running
     // derivatives and not the time: at a steady state they are 0 whatever the
     // time. A model whose rates read no clock has an f(y) = 0 to solve even
-    // where a function that only reports reads it.
+    // where a function that only reports reads it. False without a walk where
+    // functions_use_time() is: no definition can reach the clock then.
     bool rate_laws_read_clock() const;
 
     // The 0-based indices of the functions whose value moves with the clock,
     // through `time`, a time-indexed table, or a function or derived parameter
-    // that does (issue #961). A steady state has no value for one.
+    // that does (issue #961). A steady state has no value for one. Empty
+    // without a walk where functions_use_time() is.
     std::vector<int> functions_reading_clock() const;
+
+    // Does the clock reach what a steady state solves for or reports as the
+    // state (issues #710, #961)? A rate that reads it (rate_laws_read_clock), a
+    // species an assignment rule reports through a function that reads it (a
+    // fixed species named for the function, as a time course copies it back),
+    // or a compartment size such a function writes. Each still moves where
+    // f(y) has settled, so find_steady_state refuses the model and a time
+    // course's early stop is held off. A function that only reports is none of
+    // these.
+    bool state_reads_clock() const;
 
     // ─── Rate-law switch conditions that read model state (issue #150) ───────
     //

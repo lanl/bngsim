@@ -5933,13 +5933,15 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
             "steady-state solvers never make (issue #1054, issue #710). Integrate it with "
             "run().");
     }
-    // A function that reads the time and that no rate reads, `minutes :=
+    // A function that reads the time and that only reports, `minutes :=
     // time/60`, leaves f(y) = 0 one to solve: it is reported as NaN below,
-    // having no steady value (issue #961).
-    if (model.n_events() > 0 || model.rate_laws_read_clock()) {
+    // having no steady value (issue #961). One that a rate reads, or that a
+    // species or a compartment size is reported through, is refused.
+    if (model.n_events() > 0 || model.state_reads_clock()) {
         throw std::runtime_error(
-            "Cannot find steady state: the model has an event or a rate that reads the time, "
-            "and the steady-state solvers read the right-hand side at t = 0 and fire no event "
+            "Cannot find steady state: the model has an event, or the time reaches its state "
+            "through a rate, a species an assignment rule reports or a compartment size, and "
+            "the steady-state solvers read the right-hand side at t = 0 and fire no event "
             "(issue #710). Integrate it with run().");
     }
 
@@ -6460,20 +6462,19 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
 
     // A function that moves with the clock has no steady value: what was read
     // is its value at t = 0 (issue #961). No rate reads one, or the model was
-    // refused above.
-    if (model.functions_use_time()) {
+    // refused above. The sensitivity block is n_func rows or empty.
+    {
         const double nan = std::numeric_limits<double>::quiet_NaN();
         const std::size_t n_func = result.function_values.size();
         const std::size_t np = n_func == 0 ? 0 : result.function_sensitivity.size() / n_func;
         for (const int f : model.functions_reading_clock()) {
             const auto fu = static_cast<std::size_t>(f);
-            if (fu < n_func) {
-                result.function_values[fu] = nan;
+            if (fu >= n_func) {
+                continue;
             }
-            for (std::size_t p = 0; p < np && (fu + 1) * np <= result.function_sensitivity.size();
-                 ++p) {
-                result.function_sensitivity[fu * np + p] = nan;
-            }
+            result.function_values[fu] = nan;
+            std::fill_n(result.function_sensitivity.begin() + static_cast<std::ptrdiff_t>(fu * np),
+                        np, nan);
         }
     }
 

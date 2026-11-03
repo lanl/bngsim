@@ -530,6 +530,11 @@ class NetworkModel:
         Whether a reaction rate or an event trigger reads the clock, or the model has a rate rule (whose target may be a clock): the SSA then needs the model's breakpoints (issue #719). Decided from the model's text.
         """
     @property
+    def state_reads_clock(self) -> bool:
+        """
+        Whether the clock reaches what a steady state solves for or reports as the state (issues #710, #961): a rate law, a species an assignment rule reports, or a compartment size. find_steady_state refuses such a model, and a time course's early stop is held off for it; a function that only reports is none of these.
+        """
+    @property
     def table_function_names(self) -> list[str]:
         ...
     @property

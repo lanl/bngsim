@@ -248,6 +248,7 @@ def test_the_core_solver_reports_such_a_function_as_nan(tmp_path):
 
     core = _ramped(tmp_path, law="k")._core
     assert core.functions_use_time and not core.rate_laws_read_clock
+    assert not core.state_reads_clock
     assert core.functions_reading_clock == ["seen"]
     out = find_steady_state(core, SteadyStateOptions())
     values = dict(zip(out.expression_names, out.expression_values, strict=False))
@@ -262,6 +263,11 @@ def test_the_time_written_bare_is_refused(tmp_path):
 RULE_ON_TIME = (
     "species A, B, S; A = 1; B = 0; kf = 1; kr = 0.5\n"
     "S := B*(1 - exp(-time)); J1: A -> B; kf*A; J2: B -> A; kr*B\n"
+)
+
+SIZE_ON_TIME = (
+    "compartment C; C := 1 + time/(1+time); substanceOnly species A in C, B in C;"
+    " A = 1; B = 0; k = 1\nJ: A -> B; k*A\nJ2: B -> A; k*B\n"
 )
 
 
@@ -284,11 +290,7 @@ def test_a_kinetic_law_that_reads_the_time_in_sbml_is_refused():
 def test_a_compartment_sized_by_a_rule_on_the_time_is_refused():
     """A and B are amounts in a compartment that grows from 1 to 2: their
     concentrations came back 0.5 each, for 0.25."""
-    text = (
-        "compartment C; C := 1 + time/(1+time); substanceOnly species A in C, B in C;"
-        " A = 1; B = 0; k = 1\nJ: A -> B; k*A\nJ2: B -> A; k*B\n"
-    )
-    sim = bngsim.Simulator(bngsim.Model.from_antimony_string(text), method="ode")
+    sim = bngsim.Simulator(bngsim.Model.from_antimony_string(SIZE_ON_TIME), method="ode")
     _refused(sim.steady_state, "it reads the time, through")
 
 
@@ -321,10 +323,14 @@ def test_a_function_given_a_body_that_reads_no_time_is_not_marked(tmp_path):
 
 
 def test_the_core_solver_refuses_too(tmp_path):
-    """The solver itself, under the Python layer."""
+    """The solver itself, under the Python layer. With the refusal of a
+    species or a compartment size on the time in the Python layer alone, the
+    solver returned S = 0 for 2/3, converged (issue #961)."""
     from bngsim._bngsim_core import SteadyStateOptions, find_steady_state
 
-    for model in (_ramped(tmp_path), bngsim.Model.from_antimony_string(EVENT)):
+    models = [_ramped(tmp_path), bngsim.Model.from_antimony_string(EVENT)]
+    models += [bngsim.Model.from_antimony_string(t) for t in (RULE_ON_TIME, SIZE_ON_TIME)]
+    for model in models:
         with pytest.raises(RuntimeError, match=r"issue #710"):
             find_steady_state(model._core, SteadyStateOptions())
 
@@ -413,16 +419,14 @@ def test_a_batch_row_stops_early_beside_a_function_that_only_reports(tmp_path):
         params=[{"k": 1.0}, {"k": 2.0}], t_span=(0.0, 200.0), n_points=201, steady_state=True
     )
     for row in rows:
-        assert len(np.asarray(row.species)) < 201
+        assert len(np.asarray(row.species)) < 201 and row.solver_stats["steady_state_reached"]
+        seen = np.asarray(row.expressions)[:, list(row.expression_names).index("seen")]
+        np.testing.assert_allclose(seen, 2 * np.asarray(row.time), rtol=1e-12)
 
 
 @pytest.mark.parametrize(
     "text",
-    [
-        RULE_ON_TIME,
-        "compartment C; C := 1 + time/(1+time); substanceOnly species A in C, B in C;"
-        " A = 1; B = 0; k = 1\nJ: A -> B; k*A\nJ2: B -> A; k*B\n",
-    ],
+    [RULE_ON_TIME, SIZE_ON_TIME],
     ids=["a species set by a rule on the time", "a compartment sized by one"],
 )
 def test_a_time_course_does_not_stop_while_a_reported_state_reads_the_time(text):
@@ -437,6 +441,23 @@ def test_a_time_course_does_not_stop_while_a_reported_state_reads_the_time(text)
         steady_state=True,
     )
     assert all(len(np.asarray(row.species)) == 201 for row in rows)
+
+
+@pytest.mark.parametrize("text", [RULE_ON_TIME, SIZE_ON_TIME], ids=["a species", "a compartment"])
+def test_the_core_holds_the_stop_off_too(text):
+    """The solver itself, under the Python layer. With the stop held off in
+    the Python layer alone, the solver stopped at t = 12 for S and t = 11 for
+    the compartment (issue #961)."""
+    from bngsim._bngsim_core import CvodeSimulator, SolverOptions, TimeSpec
+
+    core = bngsim.Model.from_antimony_string(text)._core
+    assert core.state_reads_clock and not core.rate_laws_read_clock
+    times = TimeSpec()
+    times.t_start, times.t_end, times.n_points = 0.0, 200.0, 201
+    opts = SolverOptions()
+    opts.steady_state = True
+    out = CvodeSimulator(core).run(times, opts)
+    assert out.n_times == 201 and not out.solver_stats.steady_state_reached
 
 
 def test_a_rate_that_reads_its_own_derivative_is_not_refused():

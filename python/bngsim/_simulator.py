@@ -5150,7 +5150,7 @@ class Simulator:
                 opts.force_sparse_linear_solver = self._force_sparse_linear_solver
                 opts.continues_trajectory = self._continues_trajectory
                 opts.timeout_seconds = timeout_seconds
-                opts.steady_state = bool(steady_state) and not self._early_stop_reads_time()
+                opts.steady_state = bool(steady_state)
                 opts.steady_state_tol = ss_tol_value
                 opts.carry_sensitivities = bool(carry_sensitivities)
                 # Seed for random equal-priority event tie-breaking (GH #242).
@@ -6615,7 +6615,7 @@ class Simulator:
                 opts.max_steps = max_steps
                 opts.jacobian = self._jacobian
                 opts.timeout_seconds = timeout_seconds
-                opts.steady_state = steady_state and not self._early_stop_reads_time()
+                opts.steady_state = steady_state
                 opts.steady_state_tol = steady_state_tol
                 if max_step is not None and max_step > 0.0:
                     opts.max_step_size = max_step
@@ -8569,8 +8569,8 @@ class Simulator:
         )
 
     def _raise_if_no_steady_state_to_solve_for(self, where: str) -> None:
-        """Refuse a steady-state solve of a model with an event, or with a
-        function that reads the time (issue #710).
+        """Refuse a steady-state solve of a model with an event, or whose state
+        the time reaches (issues #710, #961).
 
         Both solvers look for a root of ``f(y)``, and evaluate the right-hand
         side at ``t = 0`` for the residual, the Newton step, the Jacobian and
@@ -8583,15 +8583,15 @@ class Simulator:
         ``f(y) = 0`` to solve without a time being chosen, and an event needs a
         trajectory.
 
-        What is asked is whether any function of the model reads the time
-        (``NetworkModel.functions_use_time``, decided from the functions' text
-        when the model is built), and not only whether a rate does. A reported
-        quantity that reads it has no steady value either, and came back at
-        ``t = 0`` beside a state marked converged: an assignment-rule species
-        ``S := B*(1 - exp(-time))`` as 0 for 2/3, a species in a compartment
-        sized by a rule on the time at 0.5 for 0.25. A function that reads the
-        time and that only reports is not refused: the state does not depend on
-        it, and its own value is NaN (issue #961).
+        What is asked is whether the time reaches the state
+        (``NetworkModel.state_reads_clock``), and not only whether a rate reads
+        it. A quantity the state is reported through that reads it has no steady
+        value either, and came back at ``t = 0`` beside a state marked
+        converged: an assignment-rule species ``S := B*(1 - exp(-time))`` as 0
+        for 2/3, a species in a compartment sized by a rule on the time at 0.5
+        for 0.25. A function that reads the time and that only reports is not
+        refused: the state does not depend on it, and its own value is NaN
+        (issue #961).
 
         A ``rateOf`` accessor is not a read of the time: it reads the state's own
         derivatives, which are 0 at a steady state.
@@ -8627,7 +8627,7 @@ class Simulator:
                 "jump (issue #710). Integrate the model with run() over a span long enough for "
                 "the trajectory to settle, and read the state where it ends."
             )
-        if core.functions_use_time and self._ss_reads_the_time(core):
+        if core.state_reads_clock:
             raise SimulationError(
                 f"{where} is not supported for this model: it reads the time, through time() "
                 "or a table function indexed by time, in a rate law, a rule a species or a "
@@ -8639,39 +8639,6 @@ class Simulator:
                 "(issue #710). Integrate the model with run() over a span long enough for the "
                 "trajectory to settle, and read the state where it ends."
             )
-
-    def _early_stop_reads_time(self) -> bool:
-        """Whether a time course's early stop is held off for the time (issue #961).
-
-        The core holds it off where a rate reads the clock. A species reported
-        through a rule on the clock, or a compartment it sizes, still moves when
-        ``‖f(y)‖`` has settled, so the stop is held off here for those too. A
-        function that only reports leaves it on.
-        """
-        core = self._model._core
-        return bool(core.functions_use_time) and self._ss_reads_the_time(core)
-
-    def _ss_reads_the_time(self, core) -> bool:
-        """Whether the time reaches what a steady state solves for or reports as a
-        state (issues #710, #961).
-
-        A rate that reads the clock has no ``f(y) = 0`` without a time being chosen.
-        A rule on the clock that a species is reported through (``S := B*(1 -
-        exp(-time))``) or a compartment is sized by has no steady value, and the
-        state reported through it is not one. A function that reads the time and
-        that only reports, ``minutes := time/60`` in BIOMD0000000739 and 951, is
-        neither: the state is solved for as in a model without it, and the
-        function's value is NaN (``find_steady_state``).
-        """
-        if core.rate_laws_read_clock:
-            return True
-        clocked = set(core.functions_reading_clock)
-        if not clocked:
-            return False
-        amap = getattr(self._model, "_ar_report_map", None) or {}
-        if any(entry[1] in clocked for entry in amap.values()):
-            return True
-        return any(name in clocked for name in self._model.compartment_size_params)
 
     def _ss_mask_excluding_ar_species(self, mask_selector: list[int] | None) -> list[int] | None:
         """Drop AssignmentRule-target species from the steady-state subspace (#247).
