@@ -117,6 +117,21 @@ _BUILD_VERBS = frozenset(
         "writemdl",
         "writenetwork",
         "writebngl",
+        # BNG2.pl's other output-only writers (Perl2/BNGModel.pm, issue #1366).
+        "writecppfile",
+        "writecpyfile",
+        "writefile",
+        "writefunctions",
+        "writelatex",
+        "writelatexfile",
+        "writemfile_all",
+        "writemfile_parametersobservables",
+        "writemfile_querynames",
+        "writesbmlmulti",
+        "writesbmlparameters",
+        "writesbmlreactions",
+        "writessc",
+        "writessccfg",
         "savemodel",
         "setmodelname",
         "setoutputdir",
@@ -331,6 +346,9 @@ class ProtocolSpec:
     replay starts at ``steps[generation_step]`` (issue #1366). ``None`` for a
     protocol with no source file to have generated anything from (SED-ML, SBML
     events), whose steps all run on the model they are given.
+    ``lossy_before_generation`` and ``dropped_before_generation`` count the
+    leading ``lossy`` and ``dropped`` entries that came before that point: the
+    network holds what those did, as it holds what the steps before it set.
     """
 
     steps: tuple[object, ...] = ()  # tuple[Experiment | StateChange, ...]
@@ -339,6 +357,8 @@ class ProtocolSpec:
     lossy: tuple[str, ...] = ()
     network_gen: str | None = None
     generation_step: int | None = None
+    lossy_before_generation: int = 0
+    dropped_before_generation: int = 0
 
     @property
     def experiments(self) -> list[Experiment]:
@@ -396,6 +416,8 @@ class ProtocolSpec:
             "lossy": list(self.lossy),
             "network_gen": self.network_gen,
             "generation_step": self.generation_step,
+            "lossy_before_generation": self.lossy_before_generation,
+            "dropped_before_generation": self.dropped_before_generation,
             "steps": out,
         }
 
@@ -414,6 +436,8 @@ class ProtocolSpec:
             lossy=tuple(d.get("lossy", [])),
             network_gen=d.get("network_gen"),
             generation_step=d.get("generation_step"),
+            lossy_before_generation=int(d.get("lossy_before_generation", 0)),
+            dropped_before_generation=int(d.get("dropped_before_generation", 0)),
         )
 
     def to_json(self, *, indent: int | None = None) -> str:
@@ -501,6 +525,9 @@ def combine_protocols(
         lossy=tuple(lossy),
         network_gen=network_gen,
         generation_step=generation_step,
+        # The first spec's entries lead the merged lists.
+        lossy_before_generation=non_empty[0].lossy_before_generation,
+        dropped_before_generation=non_empty[0].dropped_before_generation,
     )
 
 
@@ -544,6 +571,8 @@ def parse_bngl_protocol(source: str | Path, *, strict: bool = True) -> ProtocolS
     lossy: list[str] = []
     network_gen: str | None = None
     generation_step: int | None = None
+    lossy_before: int | None = None  # entries before the generation point
+    dropped_before: int | None = None
     # BNG2.pl's model time, which a ``continue=>1`` or nf run starts from: 0 at
     # load, and the end of each simulate after it (``BNGAction.pm``:
     # ``$model->Time``), or NaN after an nf run, which leaves it undefined. None
@@ -562,6 +591,7 @@ def parse_bngl_protocol(source: str | Path, *, strict: bool = True) -> ProtocolS
             low in _GENERATE_VERBS or low in _SIMULATE_VERBS or low == "simulate_protocol"
         ):
             generation_step = len(steps)
+            lossy_before, dropped_before = len(lossy), len(dropped)
         if low in _SIMULATE_VERBS:
             exp, reasons, model_time = _build_experiment(verb, argstr, model_time)
             steps.append(exp)
@@ -610,6 +640,8 @@ def parse_bngl_protocol(source: str | Path, *, strict: bool = True) -> ProtocolS
         lossy=tuple(lossy),
         network_gen=network_gen,
         generation_step=len(steps) if generation_step is None else generation_step,
+        lossy_before_generation=len(lossy) if lossy_before is None else lossy_before,
+        dropped_before_generation=len(dropped) if dropped_before is None else dropped_before,
     )
 
 

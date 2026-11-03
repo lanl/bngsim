@@ -331,3 +331,32 @@ def test_runs_are_found_by_suffix(tmp_path):
     assert out.labels == ["eq", "dose"]
     with pytest.raises(KeyError, match=r"no run has the suffix 'x'"):
         out["x"]
+
+
+def test_an_action_before_generation_is_not_refused(tmp_path):
+    """A setOption before generate_network is in the network BNG2.pl generated;
+    after it, it is an action the replay cannot apply."""
+    opt = 'setOption("NumberPerQuantityUnit",6.0221e23)'
+    with pytest.warns(ConversionWarning):
+        before = _spec(opt, "generate_network()", _sim(1), strict=False)
+        after = _spec("generate_network()", opt, _sim(1), strict=False)
+    assert len(bngsim.run_protocol(_model(tmp_path), before)) == 1
+    with pytest.raises(ConversionError, match=r"setOption changes results"):
+        bngsim.run_protocol(_model(tmp_path), after)
+
+
+def test_a_file_writer_is_dropped_cleanly(tmp_path):
+    """BNG2.pl's writers (writeLatex, writeSSC, ...) only write files."""
+    spec = _spec("generate_network()", "writeLatex()", "writeSSC()", _sim(1))
+    assert spec.dropped == ("generate_network", "writeLatex", "writeSSC")
+    assert len(bngsim.run_protocol(_model(tmp_path), spec)) == 1
+
+
+def test_reset_parameters_leaves_function_values_alone(tmp_path):
+    """BNG2.pl saves constants only (copyConstant). bngsim keeps a function's
+    value in a parameter slot, which a run changes and which cannot be set."""
+    net = NET.replace(
+        "end groups\n", "end groups\nbegin functions\n    1 frac() Atot/A0\nend functions\n"
+    )
+    out = _run(tmp_path, "saveParameters()", _sim(1), "resetParameters()", _sim(1), net=net)
+    assert len(out) == 2

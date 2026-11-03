@@ -844,6 +844,8 @@ def _actions_block(
         lossy=protocol.lossy,
         network_gen=protocol.network_gen,
         generation_step=protocol.generation_step,
+        lossy_before_generation=protocol.lossy_before_generation,
+        dropped_before_generation=protocol.dropped_before_generation,
     )
     block = write_bngl_protocol(translated)
     # Materialize the network before simulating (generate_network is a build

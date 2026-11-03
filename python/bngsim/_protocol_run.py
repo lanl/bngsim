@@ -297,11 +297,13 @@ def _check_runnable(protocol: ProtocolSpec, *, allow_lossy: bool) -> None:
 
     problems: list[str] = []
     lossy_problems: list[str] = []
-    for verb in protocol.lossy:
+    # An action before the generation point is in the network the model holds
+    # (generation_source keeps it for BNG2.pl), so only those after it count.
+    for verb in protocol.lossy[protocol.lossy_before_generation :]:
         if verb.lower() not in _EXPERIMENT_VERBS:
             lossy_problems.append(f"{verb} changes results, and the protocol has no step for it")
     clean = _BUILD_VERBS | {"quit", "setoption"}
-    for verb in protocol.dropped:
+    for verb in protocol.dropped[protocol.dropped_before_generation :]:
         if verb.lower() not in clean:
             lossy_problems.append(f"{verb} is not an action the protocol recognizes")
     steps = protocol.steps[protocol.generation_step or 0 :]
@@ -503,9 +505,14 @@ class _Runner:
         self.model.set_state(state)
 
     def _param_state(self) -> tuple[dict[str, float], set[str]]:
+        """The parameters a ``saveParameters`` keeps: constants and constant
+        expressions (BNG2.pl's ``copyConstant``), not the slots bngsim keeps for
+        a function's or an observable's value."""
         names = list(self.model.param_names)
         derived = {n for n, e in zip(names, self.model.param_is_expression, strict=True) if e}
-        return {n: float(self.model.get_param(n)) for n in names}, derived
+        computed = set(self.model.function_names) | set(self.model.observable_names)
+        kept = [n for n in names if n not in computed]
+        return {n: float(self.model.get_param(n)) for n in kept}, derived
 
     # ── steps ─────────────────────────────────────────────────────────────
     def run(self) -> list[ProtocolRun]:
