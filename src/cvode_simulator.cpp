@@ -3897,19 +3897,18 @@ struct CvodeSimulator::Impl {
         std::vector<std::string> inner_residuals; // of the switches written inside it
     };
     std::vector<HeldEquality> held_equalities;
-    // The last event batch with sensitivity columns: when it fired, and whether
-    // its time moves with a column (issue #1279). A state an event leaves on a
-    // surface it leaves at once holds the branch for no time, which is nothing
-    // only where the event's time is fixed: its jump reads f⁺ on the surface.
-    double last_event_t = std::numeric_limits<double>::quiet_NaN();
-    bool last_event_moved = false;
-    // The same for a stop on a clock (issue #1445): the last restart at a
-    // crossing stop or a switch time no requested column moves, and the last
-    // switch time one does. A state left on a surface it leaves at once after a
-    // fixed stop held it for no time, unless a moving stop shares the instant:
-    // the #48 jump there reads the flow after it with the state still on.
-    double last_fixed_stop_t = std::numeric_limits<double>::quiet_NaN();
-    double last_moving_stop_t = std::numeric_limits<double>::quiet_NaN();
+    // The last restart with sensitivity columns at a time no requested column
+    // moves, and the last at one that one does (issues #1279, #1445): an event
+    // batch, a #48 switch time, or a crossing stop. A state left on a surface it
+    // leaves at once after a fixed restart held the branch for no time, unless
+    // a moving restart shares the instant: its jump reads the flow after it
+    // with the state still on the surface (an event's f⁺, a switch's f_jump).
+    // Events and stops share the pair. Kept apart, a fixed one of either kind
+    // covered a leaving a moving one on its instant had jumped wrong: a moving
+    // event fires on the stop placed at its trigger time, and a fixed event can
+    // share its instant with a moving clock switch.
+    double last_fixed_restart_t = std::numeric_limits<double>::quiet_NaN();
+    double last_moving_restart_t = std::numeric_limits<double>::quiet_NaN();
     // Issue #1279: refuse, at a root of held equality `k` at `t_x`, a leaving
     // that changes the rate laws reading it where no jump at that instant does.
     void judge_held_equality_exit(int ns, std::size_t k, double t_x, const double *x_after,
@@ -7608,15 +7607,17 @@ void CvodeSimulator::Impl::sync_model_at(double t, const double *x, int ns) {
 // the state leave, not from the residual, which leaves with no first-order
 // motion (`Bobs==0` with B made once A falls to q), so it has no dt*/dθ of its
 // own to jump with. The columns are right only where nothing that reads the
-// equality changes across the leaving, or where the state was put on the
-// surface at the run's start or at an event whose time no column moves and
-// leaves at once, holding the branch for no time (`Aobs==10` with A decaying
-// from 10), or where a state switch written inside the equality is crossed at
-// that instant (`if(fB()==0, kb, 0)` with fB gated by `if(q-Aobs>0, …)`): its
-// jump reads the equality's readers either side of its own surface. Anything
-// else the run is refused at. Two stretches never come here: one the run never
-// leaves, and one only an event ends, since an event's restart reads the root
-// afresh and that event's own jump is the leaving's.
+// equality changes across the leaving, or where the state leaves at once after
+// the run's start or after a restart whose time no column moves, with none on
+// its instant that one does (an event, a clock switch, a crossing stop): the
+// leaving is then at a time no column moves either (`Aobs==10` with A decaying
+// from 10, put there at the start or by an event; `Bobs==0` with B made once
+// the clock passes t3), or where a state switch written inside the equality is
+// crossed at that instant (`if(fB()==0, kb, 0)` with fB gated by
+// `if(q-Aobs>0, …)`): its jump reads the equality's readers either side of its
+// own surface. Anything else the run is refused at. Two stretches never come
+// here: one the run never leaves, and one only an event ends, since an event's
+// restart reads the root afresh and that event's own jump is the leaving's.
 void CvodeSimulator::Impl::judge_held_equality_exit(
     int ns, std::size_t k, double t_x, const double *x_after, const std::vector<double> *on_t,
     const std::vector<double> *on_y, double t_step_start, double t_tol, double t_start,
@@ -7668,11 +7669,9 @@ void CvodeSimulator::Impl::judge_held_equality_exit(
             }
         }
         const auto held_since = [&](double t_r) { return std::fabs(t_b - t_r) <= at_once; };
-        bool covered =
-            !changed || held_since(t_start) ||
-            (std::isfinite(last_event_t) && !last_event_moved && held_since(last_event_t)) ||
-            (std::isfinite(last_fixed_stop_t) && held_since(last_fixed_stop_t) &&
-             !(std::isfinite(last_moving_stop_t) && held_since(last_moving_stop_t)));
+        const auto restarted = [&](double t_r) { return std::isfinite(t_r) && held_since(t_r); };
+        bool covered = !changed || held_since(t_start) ||
+                       (restarted(last_fixed_restart_t) && !restarted(last_moving_restart_t));
         // A state switch written inside the equality, crossed at this instant,
         // in this return or at the restart just before: its jump reads the
         // equality's readers either side of its own surface. Whether that
@@ -9708,8 +9707,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
     // from a proxy on an intermediate. Checking the OUTPUT also covers every
     // route into the jump at once, including ones a guard on tau alone would
     // miss.
-    last_event_t = t_evt; // issue #1279
-    last_event_moved = tau_nonzero;
+    (tau_nonzero ? last_moving_restart_t : last_fixed_restart_t) = t_evt; // issue #1279
     if (tau_nonzero) {
         for (int c = 0; c < n_sens; ++c) {
             const double *col = N_VGetArrayPointer(yS_guard[c]);
@@ -10491,7 +10489,7 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
     // Issue #1445: whether a requested column moves this switch's time.
     const bool moved =
         std::any_of(dtstar_all.begin(), dtstar_all.end(), [](double d) { return d != 0.0; });
-    (moved ? last_moving_stop_t : last_fixed_stop_t) = t_evt;
+    (moved ? last_moving_restart_t : last_fixed_restart_t) = t_evt;
 
     // Restart the state stepper AT the kink (order drops to 1, history
     // discarded) — the same reason the GH #72 discontinuity root reinits —
@@ -15334,10 +15332,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         impl_->state_switch_all = state_switches;
     }
     impl_->held_equalities.clear();
-    impl_->last_event_t = std::numeric_limits<double>::quiet_NaN();
-    impl_->last_event_moved = false;
-    impl_->last_fixed_stop_t = std::numeric_limits<double>::quiet_NaN();
-    impl_->last_moving_stop_t = std::numeric_limits<double>::quiet_NaN();
+    impl_->last_fixed_restart_t = std::numeric_limits<double>::quiet_NaN();
+    impl_->last_moving_restart_t = std::numeric_limits<double>::quiet_NaN();
     std::vector<int> held_equality_roots;
     if (sens.n_total > 0 && !opts.sensitivity.held_equality_conditions.empty()) {
         const auto &conds = opts.sensitivity.held_equality_conditions;
@@ -19430,9 +19426,10 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                                                  " failed: " + std::to_string(rf));
                     }
                     // Issue #1445: a crossing stop is at a time no requested
-                    // column moves; a switch time one moves is recorded by
-                    // its own jump.
-                    impl_->last_fixed_stop_t = static_cast<double>(t_ret);
+                    // column moves, or at an event's trigger time, which the
+                    // event records as moving where it fires on this stop. A
+                    // switch time a column moves is recorded by its own jump.
+                    impl_->last_fixed_restart_t = static_cast<double>(t_ret);
                     if (!cross_s_minus.empty()) {
                         impl_->resume_sens_after_reinit(cvode_mem, ns, cross_s_minus, sens);
                     }
