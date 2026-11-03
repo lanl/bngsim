@@ -118,7 +118,7 @@ index the result by position, or by a run's `suffix`. A scan's points are in
 
 What bngsim cannot run as written is refused before anything runs:
 
-- a network-free (NFsim) step, which needs a live NFsim session;
+- a network-free (NFsim) step, which needs a live NFsim session (issue #1482);
 - PLA, which bngsim does not have;
 - a run argument such as `stop_if` or `max_sim_steps`;
 - an action that changes results but has no step to run, such as `setVolume`;
