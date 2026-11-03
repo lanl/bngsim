@@ -823,9 +823,11 @@ class Model:
         in ``simulate({...})`` or ``parameter_scan({...})``, and running the file
         as written would run the author's entire experiment just to obtain a
         network. Its actions before the first ``generate_network`` are applied,
-        except runs and file writes. ``generate_network`` itself runs with the
-        source's own ``max_iter``/``max_agg``/``max_stoich``, since those are what
-        make an unbounded rule set finite. Everything after it is dropped. Pass
+        except file writes. ``generate_network`` itself runs with the source's own
+        ``max_iter``/``max_agg``/``max_stoich``, since those are what make an
+        unbounded rule set finite. Everything after it is dropped. A file with no
+        ``generate_network`` before its first run stops at that run, where
+        BNG2.pl generates the network itself. Pass
         ``protocol=True`` to get the actions back as a
         :class:`~bngsim.convert.ProtocolSpec` rather than lose them.
 

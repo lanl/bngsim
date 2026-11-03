@@ -124,16 +124,30 @@ def test_no_run_or_no_generation_is_nothing_to_say():
     assert _verbs('setParameter("k",2)\nsimulate({t_end=>1})\n') == []
 
 
+def test_a_run_before_any_generation_call_is_where_the_network_is_made():
+    """BNG2.pl generates the network at that run, and ``generation_source`` cuts
+    there: a change after it is a later phase, whatever ``generate_network``
+    comes later."""
+    actions = (
+        'simulate({t_end=>1})\ngenerate_network({overwrite=>1})\nsetParameter("k",2)\n'
+        "simulate({t_end=>1})\n"
+    )
+    assert _verbs(actions) == []
+
+
 _BIFURCATE = 'bifurcate({parameter=>"k",par_min=>1,par_max=>2,n_scan_pts=>2,t_end=>1})'
 
 
 def test_a_bifurcation_is_a_run():
     """``toggle.bngl``'s only run is a ``bifurcate``, from the ``Y()`` its
-    ``setConcentration`` sets: a scan that saw no run there had nothing to say."""
+    ``setConcentration`` sets: a scan that saw no run there had nothing to say.
+    BNG 2.9.3's ``simulate_psa`` is a run too."""
     actions = f'generate_network({{overwrite=>1}})\nsetConcentration("A(b)",0)\n{_BIFURCATE}\n'
     assert _verbs(actions) == [("setConcentration", ["A(b)", "0"])]
     later = f'generate_network({{overwrite=>1}})\n{_BIFURCATE}\nsetParameter("k",2)\n'
     assert _verbs(later + "simulate({t_end=>1})\n") == []
+    psa = 'generate_network({overwrite=>1})\nsimulate_psa({t_end=>1})\nsetParameter("k",2)\n'
+    assert _verbs(psa + "simulate({t_end=>1})\n") == []
 
 
 def test_a_reset_restores_the_state_saved_under_its_label():

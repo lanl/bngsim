@@ -59,11 +59,13 @@ A `.bngl` in the wild ends in `simulate({...})` or `parameter_scan({...})`.
 Running the file as written would run the author's entire experiment just to
 obtain a network. So the actions stop at the source's first `generate_network`,
 which runs with the source's own `max_iter` / `max_agg` / `max_stoich`, since
-those are what make an unbounded rule set finite.
+those are what make an unbounded rule set finite. A file with no
+`generate_network` before its first run stops at that run, where BNG2.pl
+generates the network itself.
 
-- **Before `generate_network`:** actions are applied, as BNG2.pl applies them.
-  A `setParameter` or `setConcentration` there seeds the network. Only runs
-  (`simulate`, `parameter_scan`, `bifurcate`) and file writes are left out.
+- **Before that point:** actions are applied, as BNG2.pl applies them. A
+  `setParameter` or `setConcentration` there seeds the network. Only file writes,
+  `setOutputDir` and `quit` are left out.
 - **At and after it:** everything is dropped, as the author's experiment.
 
 If that experiment sets a parameter or a concentration before its first run

@@ -117,6 +117,8 @@ _EXPERIMENT_VERBS = frozenset(
         "simulate_ssa",
         "simulate_nf",
         "simulate_pla",
+        "simulate_psa",
+        "simulate_protocol",
         "parameter_scan",
         "bifurcate",
     }
@@ -159,7 +161,10 @@ def generation_source(text: str) -> str:
     actions``, which is how :func:`bngsim.convert._protocol._iter_action_calls`
     defines it — statements are kept only if they precede the source's own
     ``generate_network`` and are not in :data:`_DROPPED_VERBS`. Anything at or
-    after that call is the author's experiment and goes.
+    after that call is the author's experiment and goes. A file with no
+    ``generate_network`` before its first run is cut at that run, where BNG2.pl
+    generates the network itself: a ``setParameter`` between two of its runs is
+    a later phase, not part of the model.
 
     Statements are classified whole, so a backslash-continued or multi-line
     action is kept or dropped in one piece rather than leaving a dangling
@@ -174,7 +179,7 @@ def generation_source(text: str) -> str:
     def flush() -> None:
         nonlocal pending, buf, seen_generate
         verb = _verb_of(buf)
-        if verb in _GENERATE_VERBS:
+        if verb in _GENERATE_VERBS or verb in _EXPERIMENT_VERBS:
             seen_generate = True
         elif verb is not None and not seen_generate and verb not in _DROPPED_VERBS:
             kept.extend(pending)
@@ -229,8 +234,10 @@ def state_changes_before_first_run(text: str) -> list[tuple[str, list[str]]]:
     its first run (``simulate``, ``parameter_scan`` or ``bifurcate``) starts
     from, as ``(verb, arguments)`` in source order, each argument unquoted.
 
-    Empty when that run starts from the model as loaded: no generation call,
-    no run after it, no change before the run, or only changes undone by a
+    Empty when that run starts from the model as loaded: no generation call
+    before it (BNG2.pl generates the network at the run, and
+    :func:`generation_source` cuts there), no run after it, no change before the
+    run, or only changes undone by a
     ``resetConcentrations``/``resetParameters`` to a state saved before them.
     A reset that undoes a change made *before* the generation call, which the
     loaded network holds, is one of the actions returned.
@@ -241,8 +248,10 @@ def state_changes_before_first_run(text: str) -> list[tuple[str, list[str]]]:
         (verb, [a.strip().strip("\"'") for a in _split_top_level(args)])
         for verb, args in _iter_action_calls(text)
     ]
-    first = next((i for i, (verb, _) in enumerate(calls) if verb.lower() in _GENERATE_VERBS), None)
-    if first is None:
+    # Where generation_source cuts: the first generation call, or a run before one.
+    cut = _GENERATE_VERBS | _EXPERIMENT_VERBS
+    first = next((i for i, (verb, _) in enumerate(calls) if verb.lower() in cut), None)
+    if first is None or calls[first][0].lower() in _EXPERIMENT_VERBS:
         return []
     # Each kind of state: the changes in effect since the model as declared (by
     # index into *calls*), and those saved under each label, as BNG2.pl keeps
