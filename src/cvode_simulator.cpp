@@ -1773,6 +1773,45 @@ template <class Body> static int guard_cvode_callback(void *user_data, Body &&bo
     }
 }
 
+// The GH #135 retry of the interpreted right-hand side, for `ydot_ptr` holding f
+// at `y` with an entry that is not finite: f at the nonnegative-clamped state,
+// and where that is still not finite, with the slots the mask leaves alone that
+// are below 0 by less than their atol read at 0 besides (issue #1340). Returns
+// the RHS callback's code: 0 where a reading is finite (it is in `ydot_ptr`);
+// otherwise the state is kept as the witness, and CVODE gets the recoverable 1,
+// or -1 where the run has carried a slot to a pole or through the band. The
+// value RHS reads f this way, and so does the sparse route's colored difference
+// quotient (cvode_colored_jac_body), as the dense one does through the RHS.
+static int retry_interpreted_rhs(CvodeUserData *data, sunrealtype t, N_Vector y, double *ydot_ptr) {
+    const double *y_ptr = N_VGetArrayPointer(y);
+    auto read_at = [&](double *x) {
+        data->model->compute_derivs(static_cast<double>(t), x, ydot_ptr);
+        return read_values(ydot_ptr, static_cast<std::size_t>(data->model->n_species()));
+    };
+    const char *spare = spare_at_pole(data, y, ydot_ptr,
+                                      static_cast<std::size_t>(data->model->n_species()), read_at);
+    data->model->compute_derivs(static_cast<double>(t), clamp_state_nonneg(data, y, spare),
+                                ydot_ptr);
+    // Still non-finite: once more, with the slots the mask leaves alone that
+    // are below 0 by less than their atol read at 0 (issue #1340).
+    if (rhs_has_nonfinite(data, ydot_ptr)) {
+        if (const double *z = clamp_state_near_zero(data, y, spare))
+            data->model->compute_derivs(static_cast<double>(t), z, ydot_ptr);
+    }
+    if (rhs_has_nonfinite(data, ydot_ptr)) {
+        // Nothing left to clamp: keep the state as evidence in case the run
+        // does not survive this (GH #336), then hand CVODE the recoverable
+        // code it has always had.
+        data->nonfinite_witness.capture("The RHS", static_cast<double>(t), y_ptr,
+                                        data->model->n_species());
+        if (followed_below_zero(data, y, static_cast<double>(t), "The RHS", read_at) ||
+            drained_through_band(data, y, static_cast<double>(t), "The RHS", spare, read_at))
+            return -1;
+        return 1; // still non-finite (e.g. inf from 1/conc) -> recoverable
+    }
+    return 0;
+}
+
 static int cvode_rhs_body(sunrealtype t, N_Vector y, N_Vector ydot, void *user_data) {
     auto *data = static_cast<CvodeUserData *>(user_data);
     const double *y_ptr = N_VGetArrayPointer(y);
@@ -1791,39 +1830,14 @@ static int cvode_rhs_body(sunrealtype t, N_Vector y, N_Vector ydot, void *user_d
     }
 
     data->model->compute_derivs(static_cast<double>(t), y_ptr, ydot_ptr);
-    if (rhs_has_nonfinite(data, ydot_ptr)) {
-        // Only now (a non-finite RHS) do we retry on the nonnegative-clamped
-        // state. Conditional, so a model whose RHS is finite at a transiently-
-        // negative concentration — every mass-action / polynomial law, where
-        // e.g. -k·conc self-corrects back toward 0 — is byte-identical and keeps
-        // that restoring behavior; clamping unconditionally would freeze such a
-        // species at a small negative value and make the solve chatter.
-        auto read_at = [&](double *x) {
-            data->model->compute_derivs(static_cast<double>(t), x, ydot_ptr);
-            return read_values(ydot_ptr, static_cast<std::size_t>(data->model->n_species()));
-        };
-        const char *spare = spare_at_pole(
-            data, y, ydot_ptr, static_cast<std::size_t>(data->model->n_species()), read_at);
-        data->model->compute_derivs(static_cast<double>(t), clamp_state_nonneg(data, y, spare),
-                                    ydot_ptr);
-        // Still non-finite: once more, with the slots the mask leaves alone that
-        // are below 0 by less than their atol read at 0 (issue #1340).
-        if (rhs_has_nonfinite(data, ydot_ptr)) {
-            if (const double *z = clamp_state_near_zero(data, y, spare))
-                data->model->compute_derivs(static_cast<double>(t), z, ydot_ptr);
-        }
-        if (rhs_has_nonfinite(data, ydot_ptr)) {
-            // Nothing left to clamp: keep the state as evidence in case the run
-            // does not survive this (GH #336), then hand CVODE the recoverable
-            // code it has always had.
-            data->nonfinite_witness.capture("The RHS", static_cast<double>(t), y_ptr,
-                                            data->model->n_species());
-            if (followed_below_zero(data, y, static_cast<double>(t), "The RHS", read_at) ||
-                drained_through_band(data, y, static_cast<double>(t), "The RHS", spare, read_at))
-                return -1;
-            return 1; // still non-finite (e.g. inf from 1/conc) -> recoverable
-        }
-    }
+    // Only now (a non-finite RHS) do we retry on the nonnegative-clamped
+    // state. Conditional, so a model whose RHS is finite at a transiently-
+    // negative concentration — every mass-action / polynomial law, where
+    // e.g. -k·conc self-corrects back toward 0 — is byte-identical and keeps
+    // that restoring behavior; clamping unconditionally would freeze such a
+    // species at a small negative value and make the solve chatter.
+    if (rhs_has_nonfinite(data, ydot_ptr))
+        return retry_interpreted_rhs(data, t, y, ydot_ptr);
     return 0; // success
 }
 
@@ -2604,6 +2618,33 @@ static int cvode_colored_jac_body(sunrealtype t, N_Vector y, N_Vector fy, SUNMat
         ewt = N_VGetArrayPointer(tmp1);
     }
 
+    // f as the RHS callback reads it: where it is not finite at a state, with
+    // the GH #135 retry (retry_interpreted_rhs), and with its code. So the
+    // quotient is formed from the f that fy is, as the dense one's columns are
+    // (it calls the RHS callback itself), and a column with no finite reading
+    // fails the matrix as it fails a dense one. Read raw, a slot the retry
+    // reads at 0 made each column beside it NaN: MODEL9811206584's s, a
+    // rate-rule target decayed to -5e-12 under log(s), which the band reads
+    // at 0, ran on the dense quotient and failed on KLU at t = 99.3, the NaN
+    // entries carried through the Newton solve into f and h.
+    auto eval_rhs = [data, model, y](double tt, const double *yy, double *ydot) {
+        if (data->jac_rhs_evals != nullptr) {
+            ++*data->jac_rhs_evals;
+        }
+        model->compute_derivs(tt, yy, ydot);
+        if (!rhs_has_nonfinite(data, ydot)) {
+            return 0;
+        }
+        NVectorGuard at(N_VCloneEmpty(y));
+        if (!at) {
+            return -1;
+        }
+        N_VSetArrayPointer(const_cast<double *>(yy), at);
+        const int rc = retry_interpreted_rhs(data, tt, at, ydot);
+        N_VSetArrayPointer(nullptr, at);
+        return rc;
+    };
+
     // Both sides of each difference from one function. The columns are the
     // interpreted right-hand side; CVODE's fy is the compiled one where codegen
     // is attached (256+ species, which KLU's routing reaches). Over the step
@@ -2616,26 +2657,36 @@ static int cvode_colored_jac_body(sunrealtype t, N_Vector y, N_Vector fy, SUNMat
         if (static_cast<int>(data->colored_jac_f_base.size()) != ns) {
             data->colored_jac_f_base.resize(ns);
         }
-        model->compute_derivs(static_cast<double>(t), y_data, data->colored_jac_f_base.data());
-        f_base = data->colored_jac_f_base.data();
-        if (data->jac_rhs_evals != nullptr) {
-            ++*data->jac_rhs_evals;
+        if (const int rc =
+                eval_rhs(static_cast<double>(t), y_data, data->colored_jac_f_base.data());
+            rc != 0) {
+            return rc;
         }
+        f_base = data->colored_jac_f_base.data();
     }
 
     if (data->colored_jac_jump_rows.size() != 4 * static_cast<std::size_t>(ns)) {
         data->colored_jac_jump_rows.assign(4 * static_cast<std::size_t>(ns), 0.0);
     }
+    // The jump test's points are ones CVODE never asked about, so they leave
+    // nothing a run reads afterwards, as dq_side_point's do: a column whose
+    // reading failed ends the quotient before the test, so a witness or a
+    // below-zero refusal that is new once it returns 0 is one of theirs.
+    const bool had_witness = data->nonfinite_witness.captured;
+    const bool had_refusal = !data->below_zero_refusal.empty();
     int mended = 0;
-    colored_fd_jacobian(
-        sp, ns, static_cast<double>(t), y_data, f_base, jac_data, y_pert, fy_pert, h_vals,
-        [model, counter = data->jac_rhs_evals](double tt, const double *yy, double *ydot) {
-            if (counter != nullptr) {
-                ++*counter;
-            }
-            model->compute_derivs(tt, yy, ydot);
-        },
-        data->colored_jac_jump_rows.data(), &mended, ewt, min_inc);
+    const int rc = colored_fd_jacobian(sp, ns, static_cast<double>(t), y_data, f_base, jac_data,
+                                       y_pert, fy_pert, h_vals, eval_rhs,
+                                       data->colored_jac_jump_rows.data(), &mended, ewt, min_inc);
+    if (rc != 0) {
+        return rc;
+    }
+    if (!had_refusal) {
+        data->below_zero_refusal.clear();
+    }
+    if (!had_witness) {
+        data->nonfinite_witness = NonFiniteWitness{};
+    }
     if (mended > 0 && data->dq_debug) {
         std::fprintf(stderr, "[jac] colored DQ t=%.17g: %d entries step across a jump\n",
                      static_cast<double>(t), mended);
@@ -4922,7 +4973,11 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
     // and the run stopped there with the initial state marked steady. Such a
     // run is integrated to the end of its span, and never marked. (A model
     // with an event is not on this path.)
-    const bool check_ss = opts.steady_state && !model.functions_use_time();
+    // A function that reads the time and that only reports, `minutes :=
+    // time/60`, leaves the test as good as in a model without it, and the stop
+    // is kept (issue #961). One a species or a compartment size is reported
+    // through does not: what is reported still moves where ‖f(y)‖ has settled.
+    const bool check_ss = opts.steady_state && !model.state_reads_clock();
     const double ss_tol = (opts.steady_state_tol > 0.0) ? opts.steady_state_tol : atol;
     std::vector<double> ss_derivs;
     if (check_ss) {
@@ -17185,8 +17240,11 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // to fire: `if(time() > 5, k, 0)` is 0 at the first output point, and the
     // run stopped there with the initial state marked steady. Such a run is
     // integrated to the end of its span, and never marked.
-    const bool check_ss =
-        opts.steady_state && !(model.functions_use_time() || model.n_events() > 0);
+    // A function that reads the time and that only reports leaves the test as
+    // good as in a model without it, and the stop is kept (issue #961). One a
+    // species or a compartment size is reported through does not: what is
+    // reported still moves where ‖f(y)‖ has settled.
+    const bool check_ss = opts.steady_state && !(model.state_reads_clock() || model.n_events() > 0);
     const double ss_tol = (opts.steady_state_tol > 0.0) ? opts.steady_state_tol : atol;
     std::vector<double> ss_derivs;
     if (check_ss) {

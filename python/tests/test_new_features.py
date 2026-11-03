@@ -466,8 +466,9 @@ class TestHdf5VolumeRecord:
         It held row 0's sizes for every row and none of the factors: 2 for the
         size the second row set to 5. Nothing reads them on a stack today, since
         as_roadrunner refuses one, so each row is read here through a single-run
-        Result built from its slice. The mixed pair records the live size two ways,
-        the ODE row as a species column and the SSA row as a concentration factor.
+        Result built from its slice. Every row records the live size of S as an
+        amount factor; the SSA row recorded a concentration factor until issue
+        #1368, and only a file an older bngsim wrote still holds one (below).
         """
         model = Model.from_antimony_string(_BATCH_MODEL)
         rows = [
@@ -484,6 +485,41 @@ class TestHdf5VolumeRecord:
                 np.testing.assert_array_equal(
                     np.asarray(_row_of(held, i).as_roadrunner(cols)),
                     np.asarray(row.as_roadrunner(cols)),
+                )
+
+    def test_a_concentration_factor_from_an_older_file_stacks(self, tmp_path: Path):
+        """An SSA row as a bngsim before issue #1368 saved it, beside a current one.
+
+        It held the stored count over V_static in Result.species, and [S] read
+        the live concentration through a factor V_static/V_live. It reads the
+        same columns as the current row, alone, stacked beside it, and reloaded;
+        in the stack the current row reads a factor of 1.
+        """
+        model = Model.from_antimony_string(_BATCH_MODEL)
+        rows = Simulator(model, method="ssa").run_batch(
+            t_span=(0, 5), n_points=6, params=_BATCH_PARAMS, seed=1
+        )
+        old = rows[0]
+        current = _reloaded(old, tmp_path / "current.h5")
+        j = old.species_names.index("S")
+        v_static, v_live = old._species_volume_factors[j], old._varvol_amount_factor.pop(j)
+        stored = np.asarray(old.state)[:, list(old.state_names).index("S")]
+        old._species = np.array(old.species, copy=True)
+        old._species[:, j] = stored
+        old._varvol_conc_factor = {j: v_static / v_live}
+        cols = _every_column(old)
+        np.testing.assert_allclose(
+            np.asarray(old.as_roadrunner(cols)),
+            np.asarray(current.as_roadrunner(cols)),
+            rtol=1e-12,
+        )
+        stack = Result.squeeze([old, rows[1]])
+        for held in (stack, _reloaded(stack, tmp_path / "stack.h5")):
+            for i, row in enumerate((old, rows[1])):
+                np.testing.assert_allclose(
+                    np.asarray(_row_of(held, i).as_roadrunner(cols)),
+                    np.asarray(row.as_roadrunner(cols)),
+                    rtol=1e-12,
                 )
 
     def test_a_file_without_the_record_refuses_an_amount(self, tmp_path: Path):

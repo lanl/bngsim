@@ -1081,7 +1081,10 @@ static int cvode_ss_colored_jac_body(sunrealtype t, N_Vector y, N_Vector fy, SUN
         sp, ns, static_cast<double>(t), N_VGetArrayPointer(y), N_VGetArrayPointer(fy),
         SUNSparseMatrix_Data(J), data->fd_y_pert.data(), data->fd_fy_pert.data(),
         data->fd_h_vals.data(),
-        [data](double tt, const double *yy, double *ydot) { ss_eval_rhs(data, tt, yy, ydot); },
+        [data](double tt, const double *yy, double *ydot) {
+            ss_eval_rhs(data, tt, yy, ydot);
+            return 0; // cvode_ss_rhs's code
+        },
         nullptr, nullptr, ewt, min_inc);
     return 0;
 }
@@ -6394,10 +6397,15 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
             "steady-state solvers never make (issue #1054, issue #710). Integrate it with "
             "run().");
     }
-    if (model.n_events() > 0 || model.functions_use_time()) {
+    // A function that reads the time and that only reports, `minutes :=
+    // time/60`, leaves f(y) = 0 one to solve: it is reported as NaN below,
+    // having no steady value (issue #961). One that a rate reads, or that a
+    // species or a compartment size is reported through, is refused.
+    if (model.n_events() > 0 || model.state_reads_clock()) {
         throw std::runtime_error(
-            "Cannot find steady state: the model has an event or reads the time, and the "
-            "steady-state solvers read the right-hand side at t = 0 and fire no event "
+            "Cannot find steady state: the model has an event, or the time reaches its state "
+            "through a rate, a species an assignment rule reports or a compartment size, and "
+            "the steady-state solvers read the right-hand side at t = 0 and fire no event "
             "(issue #710). Integrate it with run().");
     }
 
@@ -6914,6 +6922,24 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
     if (opts.criterion_by_distance && static_cast<int>(result.concentrations.size()) == ns) {
         result.newton_distance =
             ss_newton_distance(model, rhs, *effective, sub, result.concentrations.data());
+    }
+
+    // A function that moves with the clock has no steady value: what was read
+    // is its value at t = 0 (issue #961). No rate reads one, or the model was
+    // refused above. The sensitivity block is n_func rows or empty.
+    {
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        const std::size_t n_func = result.function_values.size();
+        const std::size_t np = n_func == 0 ? 0 : result.function_sensitivity.size() / n_func;
+        for (const int f : model.functions_reading_clock()) {
+            const auto fu = static_cast<std::size_t>(f);
+            if (fu >= n_func) {
+                continue;
+            }
+            result.function_values[fu] = nan;
+            std::fill_n(result.function_sensitivity.begin() + static_cast<std::ptrdiff_t>(fu * np),
+                        np, nan);
+        }
     }
 
     return result;

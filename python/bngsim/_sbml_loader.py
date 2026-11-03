@@ -11868,7 +11868,9 @@ def _build_model_from_sbml_doc_in_context(doc):
     # the bare-id amount selector in Result.as_roadrunner needs the live volume:
     # ``amount = [S]·V_live(t)``, not the stale ``[S]·V_static``. Simulator's
     # _apply_varvol_conc_map records the live-volume column for these species
-    # without touching the concentration column. Same gate as the dilution
+    # without touching the concentration column under ODE; under SSA/PSA, where
+    # the dilution term is ODE-only, it rescales the column to amount/V_live
+    # (issue #1368). Same gate as the dilution
     # emission (hOSU=false, rate-rule compartment, not an AR/rate-rule target);
     # empty for every corpus / static / amount-valued-only model.
     varvol_amount_map: dict[str, str] = {}
@@ -11971,7 +11973,8 @@ def _build_model_from_sbml_doc_in_context(doc):
     # species under SSA only. Simulator._apply_varvol_event_resize_map reads the
     # live volume from the compartment's same-named OBSERVABLE column (the
     # event-promoted compartment is hidden from species output per GH #71 but is
-    # emitted as an observable) and applies the factor method-by-method. Maps
+    # emitted as an observable) and rescales the reported column by it, so
+    # Result.species is amount/V_live as [S] is (issue #1368). Maps
     # species_safe → (comp_obs_name, V_static, hOSU). Empty (no-op) for every
     # model with no event-resized compartment.
     #

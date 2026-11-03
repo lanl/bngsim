@@ -304,7 +304,9 @@ def _screen(tmp_path, *args, env=None):
 
 
 # A pass, a vacuous pass that walks the extended ladder, an extended-horizon
-# verdict, a partial-horizon verdict and an attributed fail.
+# verdict, a partial-horizon verdict, and BIOMD0000001026: an attributed fail
+# (rr_known, sys-bio/roadrunner#1318) on libRoadRunner 2.9.2, a pass on 2.11.0
+# (GH #1288).
 _E2E = "BIOMD0000000417,BIOMD0000000414,BIOMD0000000573,BIOMD0000000760,BIOMD0000001026"
 
 

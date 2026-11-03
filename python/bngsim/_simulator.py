@@ -70,7 +70,7 @@ from bngsim._exceptions import (
 from bngsim._extension_handle import raise_cannot_pickle, raise_cannot_shallow_copy
 from bngsim._model import _STEP_DECIDES_WHY, Model
 from bngsim._result import Result, _as_selector_list, _resolve_output_selector
-from bngsim._seed import _DEFAULT_EVENT_SEED, _resolve_seed
+from bngsim._seed import _DEFAULT_EVENT_SEED, _resolve_seed, derived_seeds
 from bngsim._ssa_validation import validate_for_ssa
 
 logger = logging.getLogger("bngsim")
@@ -3943,7 +3943,10 @@ class Simulator:
 
         The blocked set is AR species whose reported value *also* carries a
         time-varying volume rescale (``_varvol_conc_map`` / ``_varvol_ar_conc_map``,
-        GH #85/#87). The redirect scales only by the constant ``vdiv``, so a
+        GH #85/#87, and ``_varvol_event_resize_map``, whose amounts are reported
+        over the live size since issue #1368; left out, ``species:T`` for ``T :=
+        3*X`` read -110 for -55 after an event doubled the size). The redirect
+        scales only by the constant ``vdiv``, so a
         ``species:<ar>`` selector for one of them reads the species' own row of
         ``Result.sensitivities`` instead, which the variable-volume passes have
         put through the quotient rule (issue #787), and is refused by name where
@@ -3963,7 +3966,8 @@ class Simulator:
             return {}, frozenset()
         vc = getattr(model, "_varvol_conc_map", None) or {}
         vac = getattr(model, "_varvol_ar_conc_map", None) or {}
-        blocked = frozenset(name for name in amap if name in vc or name in vac)
+        ver = getattr(model, "_varvol_event_resize_map", None) or {}
+        blocked = frozenset(name for name in amap if name in vc or name in vac or name in ver)
         resolved = {
             name: (
                 entry[0],
@@ -4237,23 +4241,19 @@ class Simulator:
         # Copy once so we never mutate a buffer aliasing C++-owned memory.
         sp = np.array(result._species, dtype=np.float64, copy=True)
         live_vol: dict[int, int] = {}
-        conc_factor: dict[int, np.ndarray] = {}
         amount_factor: dict[int, np.ndarray] = {}
         changed = False
         rescaled: list[tuple[str, int, np.ndarray, np.ndarray, str, int]] = []
 
         # hOSU=true species in a rate-rule compartment (vmap). Stored as
-        # amount/V_static under BOTH methods, but the V_static→V_live correction
-        # is applied differently:
-        #   • ODE reports in concentration space, so rescale the raw column in
-        #     place (sp[:,j] *= V_static/V_live) and record V_live(t) as the
-        #     amount factor so as_roadrunner recovers the amount as conc·V_live.
-        #   • SSA keeps the raw column as the conserved molecule count
-        #     (amount/V_static) — every SSA test and the engine's own state read
-        #     it that way — so leave sp[:,j] untouched and record the per-sample
-        #     concentration factor V_static/V_live instead; as_roadrunner applies
-        #     it to the [S] selector only, while the bare amount selector recovers
-        #     amount as raw·V_static via the volume factor. GH #131.
+        # amount/V_static under BOTH methods, and reported at amount/V_live
+        # under both: rescale the column in place (sp[:,j] *= V_static/V_live)
+        # and record V_live(t) as the amount factor, so as_roadrunner recovers
+        # the amount as conc·V_live. SSA used to keep the stored
+        # count/V_static in Result.species and the factor for the [S] selector
+        # alone (GH #131), so Result.species was stale by V_static/V_live
+        # under SSA where ODE's was live (issue #1368). The stored value, whose
+        # V_static multiple is the molecule count, is Result.state.
         for s_name, c_name in (vmap or {}).items():
             j = sp_idx.get(s_name)
             k = sp_idx.get(c_name)
@@ -4266,21 +4266,10 @@ class Simulator:
             v_static = vf[j] if j < len(vf) else 1.0
             v_live = sp[:, k]
             # V_live(0) == V_static, so factor(0) == 1 and t0 reporting is
-            # unchanged. Guard the (physically impossible) zero-volume sample
-            # rather than emit inf/nan.
-            with np.errstate(divide="ignore", invalid="ignore"):
-                factor = np.where(v_live != 0.0, v_static / v_live, 1.0)
-            if stochastic:
-                conc_factor[j] = factor
-            else:
-                sp[:, j] = sp[:, j] * factor
-                # At a sample where the size is 0 the guard above left the column
-                # at amount/V_static, so the amount there is it times V_static,
-                # not 0: a conserved 5 in c' = -1 from 2 read [5, 5, 0, 5] at
-                # t = 0, 1, 2, 3, as it did in an assignment-rule compartment
-                # until #728's review.
-                amount_factor[j] = np.where(v_live != 0.0, v_live, v_static)
-                rescaled.append((s_name, j, factor, np.array(v_live, copy=True), "species", k))
+            # unchanged.
+            factor, amount_factor[j] = self._live_size_factors(v_live, v_static)
+            sp[:, j] = sp[:, j] * factor
+            rescaled.append((s_name, j, factor, np.array(v_live, copy=True), "species", k))
             changed = True
 
         # GH #86: hOSU=false species in a rate-rule compartment.
@@ -4294,8 +4283,9 @@ class Simulator:
         # molecule count is conserved by construction; the live volume's effect
         # on propensities is carried by the engine's ``(V_static/V_live)^…``
         # correction). The stored value therefore stays ``amount/V_static`` —
-        # exactly the hOSU=true (vmap) situation above — so the [S] selector
-        # needs the same V_static/V_live concentration factor. GH #131 finding 1.
+        # exactly the hOSU=true (vmap) situation above — so it is rescaled the
+        # same way, to the amount/V_live ODE stores (GH #131 finding 1; in
+        # Result.species too since issue #1368).
         for s_name, c_name in (amap or {}).items():
             j = sp_idx.get(s_name)
             k = sp_idx.get(c_name)
@@ -4303,9 +4293,8 @@ class Simulator:
                 continue
             if stochastic:
                 v_static = vf[j] if j < len(vf) else 1.0
-                v_live = sp[:, k]
-                with np.errstate(divide="ignore", invalid="ignore"):
-                    conc_factor[j] = np.where(v_live != 0.0, v_static / v_live, 1.0)
+                factor, amount_factor[j] = self._live_size_factors(sp[:, k], v_static)
+                sp[:, j] = sp[:, j] * factor
             else:
                 live_vol[j] = k
             changed = True
@@ -4314,11 +4303,27 @@ class Simulator:
             result._species = sp
             if live_vol:
                 result._varvol_live_vol = live_vol
-            if conc_factor:
-                result._varvol_conc_factor = conc_factor
             if amount_factor:
                 result._varvol_amount_factor = amount_factor
         self._rescale_varvol_sensitivity_rows(result, rescaled)
+
+    @staticmethod
+    def _live_size_factors(v_live: np.ndarray, v_static: float) -> tuple[np.ndarray, np.ndarray]:
+        """``(V_static/V_live, amount factor)`` for a column the variable-volume
+        passes rescale from the stored ``amount/V_static`` to ``amount/V_live``.
+
+        The column is multiplied by the first, and the bare-id amount of
+        :meth:`Result.as_roadrunner` is the column times the second. A sample
+        where the size is 0 (physically impossible) is guarded rather than
+        made inf/nan: the column stays ``amount/V_static`` there, so the amount
+        is it times ``V_static``, not 0. A conserved 5 in ``c' = -1`` from 2
+        read [5, 5, 0, 5] at t = 0, 1, 2, 3, as it did in an assignment-rule
+        compartment until #728's review. Every pass that rescales such a
+        column reads both from here, under every method since issue #1368.
+        """
+        with np.errstate(divide="ignore", invalid="ignore"):
+            factor = np.where(v_live != 0.0, v_static / v_live, 1.0)
+        return factor, np.where(v_live != 0.0, v_live, v_static)
 
     def _rescale_varvol_sensitivity_rows(
         self,
@@ -4347,8 +4352,9 @@ class Simulator:
         ``Result.ar_sensitivity_refused`` and in a warning.
 
         *rescaled* is ``(species, column, V_static/V_live, V_live, kind,
-        index)`` for each column a pass rescaled, with *kind* ``"species"`` or
-        ``"expression"`` for where the live volume is read. A species an
+        index)`` for each column a pass rescaled, with *kind* ``"species"``,
+        ``"expression"`` or ``"observable"`` (an event-promoted compartment,
+        issue #1368) for where the live volume is read. A species an
         assignment rule sets as well comes here with its rule's row, from
         :meth:`_apply_ar_sensitivity_map`, and the same quotient rule gives the
         row of its rule over the live size (issue #787); a row that pass has
@@ -4358,19 +4364,28 @@ class Simulator:
         if not rescaled:
             return
         refused: set[str] = set()
-        for sp_attr, expr_attr in (
-            ("_sensitivities", "_expression_sensitivities"),
-            ("_sensitivities_ic", "_expression_sensitivities_ic"),
+        for sp_attr, expr_attr, obs_attr in (
+            ("_sensitivities", "_expression_sensitivities", "_observable_sensitivities"),
+            ("_sensitivities_ic", "_expression_sensitivities_ic", "_observable_sensitivities_ic"),
         ):
             block = getattr(result, sp_attr)
             if block.size == 0 or block.ndim != 3:
                 continue
             expr_block = getattr(result, expr_attr)
+            obs_block = getattr(result, obs_attr)
             out = np.array(block, dtype=np.float64, copy=True)
             for name, j, factor, v_live, kind, k in rescaled:
                 if kind == "species":
                     dv = block[:, k, :]
-                elif (
+                elif kind == "observable" and (
+                    obs_block.ndim == 3
+                    and obs_block.shape[1] > k
+                    and obs_block.shape[2:] == block.shape[2:]
+                ):
+                    # An event-promoted compartment, read from its observable
+                    # (issue #1368).
+                    dv = obs_block[:, k, :]
+                elif kind != "observable" and (
                     expr_block.ndim == 3
                     and expr_block.shape[1] > k
                     and expr_block.shape[2:] == block.shape[2:]
@@ -4442,6 +4457,11 @@ class Simulator:
         sp = np.array(result._species, dtype=np.float64, copy=True)
         changed = False
         rescaled: list[tuple[str, int, np.ndarray, np.ndarray, str, int]] = []
+        # The column now holds amount/V_live, so the bare-id amount is it times
+        # V_live; left to the volume factor it was amount·V_static/V_live, and a
+        # conserved amount of 5 in c := 2 + time read 0.83 at t = 10 (issue
+        # #728), under SSA as under ODE, since this pass rescales both.
+        live_amount: dict[int, np.ndarray] = {}
         for s_name, (comp_name, v_static) in (amap or {}).items():
             j = sp_idx.get(s_name)
             k = expr_idx.get(comp_name)
@@ -4451,36 +4471,30 @@ class Simulator:
                 continue
             v_live = result._expressions[:, k]
             # V_live(0) == V_static ⇒ factor(0) == 1, so t0 reporting is
-            # unchanged. Guard the (physically impossible) zero-volume sample.
-            with np.errstate(divide="ignore", invalid="ignore"):
-                factor = np.where(v_live != 0.0, v_static / v_live, 1.0)
+            # unchanged.
+            factor, live_amount[j] = self._live_size_factors(v_live, v_static)
             sp[:, j] = sp[:, j] * factor
             changed = True
             rescaled.append((s_name, j, factor, np.array(v_live, copy=True), "expression", k))
         if changed:
             result._species = sp
-            # The column now holds amount/V_live, so the bare-id amount is it times
-            # V_live; left to the volume factor it was amount·V_static/V_live, and a
-            # conserved amount of 5 in c := 2 + time read 0.83 at t = 10 (issue
-            # #728), under SSA as under ODE, since this pass rescales both. At a
-            # sample where the size is 0 the guard above left the column at
-            # amount/V_static, so the amount there is it times V_static, not 0.
             amount_factor = result._varvol_amount_factor or {}
-            for name, j, _factor, v_live, _kind, _k in rescaled:
-                amount_factor[j] = np.where(v_live != 0.0, v_live, (amap or {})[name][1])
+            amount_factor.update(live_amount)
             result._varvol_amount_factor = amount_factor
         self._rescale_varvol_sensitivity_rows(result, rescaled)
 
         # (#234) Record V_live(t) per diluted hOSU=false species so as_roadrunner's
         # bare-id amount selector reports conc·V_live(t), not the stale conc·V_static
-        # the volume factor would give. The concentration column is left untouched.
+        # the volume factor would give. Under ODE the concentration column is left
+        # untouched: the dilution term made it live.
         if amount_map:
             amount_factor = result._varvol_amount_factor or {}
-            conc_factor = result._varvol_conc_factor or {}
             # Under SSA/PSA the dilution term is ODE-only, so the stored value stays
-            # the conserved amount/V_static: the [S] selector needs V_static/V_live,
-            # and the bare amount is the stored value times V_static, the volume
-            # factor (issue #741). (A species a reaction or rule touches is refused
+            # the conserved amount/V_static (issue #741). It is rescaled to
+            # amount/V_live as the rate-rule and event passes rescale theirs: it
+            # kept the stored value in Result.species and corrected [S] alone, so
+            # S = 10 in c := 2 + time read 10 throughout under SSA, for 10, 6.67,
+            # 5, 4 (issue #1368). (A species a reaction or rule touches is refused
             # under SSA; this is one only an output reads.)
             stochastic = self._method in ("ssa", "psa")
             vf = self._get_volume_factors(model) if stochastic else []
@@ -4493,16 +4507,15 @@ class Simulator:
                 v_live = result._expressions[:, k]
                 if stochastic:
                     v_static = vf[j] if j < len(vf) else 1.0
-                    with np.errstate(divide="ignore", invalid="ignore"):
-                        conc_factor[j] = np.where(v_live != 0.0, v_static / v_live, 1.0)
+                    factor, amount_factor[j] = self._live_size_factors(v_live, v_static)
+                    sp[:, j] = sp[:, j] * factor
                 else:
                     amount_factor[j] = v_live
                 recorded = True
             if recorded:
-                if amount_factor:
-                    result._varvol_amount_factor = amount_factor
-                if conc_factor:
-                    result._varvol_conc_factor = conc_factor
+                result._varvol_amount_factor = amount_factor
+                if stochastic:
+                    result._species = sp
 
     def _apply_varvol_target_amount_map(self, result: Result, model: Model | None = None) -> None:
         """Record V_live(t) for a rule-target concentration species (issue #728).
@@ -4557,12 +4570,13 @@ class Simulator:
 
           * hOSU=true, BOTH methods — raw is ``amount/V_static`` (the amount is
             conserved across the resize; the injected ``V_old/V_new`` rescale only
-            touches hOSU=false concentration columns). ``[X]`` is stale by
-            ``V_static/V_live`` → record a concentration factor; the bare ``X`` is
-            already correct as ``raw·V_static`` via the volume factor.
+            touches hOSU=false concentration columns). It is stale by
+            ``V_static/V_live`` → rescale the column to ``amount/V_live`` and
+            record ``V_live`` as the amount factor, as the rate-rule pass does,
+            with the sensitivity row by the quotient rule.
           * hOSU=false, SSA/PSA — that injected rescale is ``ode_only`` and skipped
-            to preserve counts, so raw is again ``amount/V_static``: same
-            concentration factor; bare ``X`` correct via the volume factor.
+            to preserve counts, so raw is again ``amount/V_static``: the same
+            rescale.
           * hOSU=false, ODE — the rescale ran, so raw is the live ``amount/V_live``
             and ``[X]`` is already correct, but the bare ``X`` amount must be
             ``raw·V_live`` (RoadRunner's amount), NOT the ``raw·V_static`` the
@@ -4574,7 +4588,11 @@ class Simulator:
 
         The event-promoted compartment is hidden from species output (GH #71) but
         is emitted as a same-named OBSERVABLE, so V_live(t) is read from there.
-        Neither path rescales the raw column. No-op for .net / static /
+        The first two rescale :attr:`Result.species` itself, which they used to
+        leave at the stored ``amount/V_static`` and correct only for ``[X]``:
+        under SSA a hOSU=false species read twice its ODE value after a resize
+        that doubled its compartment (issue #1368). :attr:`Result.state` keeps
+        the stored value. No-op for .net / static /
         event-resize-free models (empty map) and for a 3-D stack, whose rows were
         remapped before stacking. GH #131.
         """
@@ -4590,9 +4608,10 @@ class Simulator:
         stochastic = self._method in ("ssa", "psa")
         sp_idx = {n: i for i, n in enumerate(species_names)}
         obs_idx = {n: i for i, n in enumerate(obs_names)}
-        conc_factor = result._varvol_conc_factor or {}
         amount_factor = result._varvol_amount_factor or {}
         changed = False
+        sp: np.ndarray | None = None
+        rescaled: list[tuple[str, int, np.ndarray, np.ndarray, str, int]] = []
         for s_name, (comp_name, v_static, hosu) in emap.items():
             j = sp_idx.get(s_name)
             k = obs_idx.get(comp_name)
@@ -4603,16 +4622,22 @@ class Simulator:
             v_live = result._observables[:, k]
             # V_live(0) == V_static ⇒ factor(0) == 1, so t0 reporting is unchanged.
             if hosu or stochastic:
-                with np.errstate(divide="ignore", invalid="ignore"):
-                    conc_factor[j] = np.where(v_live != 0.0, v_static / v_live, 1.0)
+                if sp is None:
+                    # Copy once so we never mutate a buffer aliasing C++-owned memory.
+                    sp = np.array(result._species, dtype=np.float64, copy=True)
+                v_live = np.array(v_live, dtype=np.float64, copy=True)
+                factor, amount_factor[j] = self._live_size_factors(v_live, v_static)
+                sp[:, j] = sp[:, j] * factor
+                rescaled.append((s_name, j, factor, v_live, "observable", k))
             else:
                 amount_factor[j] = v_live
             changed = True
         if changed:
-            if conc_factor:
-                result._varvol_conc_factor = conc_factor
+            if sp is not None:
+                result._species = sp
             if amount_factor:
                 result._varvol_amount_factor = amount_factor
+        self._rescale_varvol_sensitivity_rows(result, rescaled)
 
     def _require_interactive_backend_support(self) -> None:
         """Reject high-level interactive flows for stateless XML backends."""
@@ -5827,12 +5852,15 @@ class Simulator:
         params : sequence of dict[str, float]
             Parameter sets. Each dict maps parameter names to values.
         seed : int, optional
-            Base random seed for stochastic methods. Simulation *i*
-            uses ``base_seed + i``. When omitted (or ``None``),
-            ``base_seed`` is drawn fresh from system entropy on each
-            call so consecutive batches produce independent
-            trajectories. The actual per-sim seed is exposed via
-            ``Result.seed`` on each result.
+            Base random seed for stochastic methods. Simulation 0 uses
+            ``base_seed`` itself and simulation *i* > 0 a seed drawn from
+            numpy's ``SeedSequence(base_seed)``, so batches from nearby bases
+            share nothing (issue #1365); the seeds of one batch are distinct.
+            When omitted (or ``None``), ``base_seed`` is drawn fresh from
+            system entropy on each call so consecutive batches produce
+            independent trajectories. The actual per-sim seed is
+            exposed via ``Result.seed`` on each result; simulation 0's is the
+            base, so ``seed=results[0].seed`` reruns the whole batch.
         rtol : float, optional
             Relative tolerance for ODE solver.
         atol : float or array_like or ``"auto"``, optional
@@ -6039,6 +6067,11 @@ class Simulator:
         if self._method == "ode" and (self._sensitivity_params or self._sensitivity_ic):
             runner_of = self._runners_for_attachments(params, t_span)
 
+        # Each row's seed, derived from the base (issue #1365), before any row
+        # runs, so a thread draws the same seed for a row as the sequential path.
+        # An ODE row reads none.
+        row_seeds = derived_seeds(base_seed, n_sims) if self._method != "ode" else [0] * n_sims
+
         def _run_one(i: int) -> Result:
             """Run simulation i (thread-safe, GIL released)."""
             return runner_of.get(i, self)._run_single_batch(
@@ -6046,7 +6079,7 @@ class Simulator:
                 params[i],
                 t_span,
                 n_points,
-                base_seed,
+                row_seeds[i],
                 effective_rtol,
                 effective_atol_spec,
                 effective_max_steps,
@@ -6117,10 +6150,17 @@ class Simulator:
         :meth:`Model.reset` first to start each from the initial conditions.
         The model is left in the state it was in at the call.
 
-        Replicate *i* uses ``seed_base + i`` (``seed_base`` resolved once from
-        ``seed``, or from system entropy when ``seed is None``; each value is
-        exposed via the corresponding ``Result.seed``), matching the seed
-        schedule :meth:`run_batch` uses across parameter points.
+        Replicate 0 uses ``seed_base`` itself and replicate *i* > 0 a seed
+        drawn from numpy's ``SeedSequence(seed_base)`` (``seed_base`` resolved
+        once from ``seed``, or from system entropy when ``seed is None``; each
+        value is exposed via the corresponding ``Result.seed``, and :meth:`run`
+        from it repeats that replicate), matching the seed schedule
+        :meth:`run_batch` uses across parameter points. Replicate 0's seed is
+        the base, so ``seed=reps[0].seed`` reruns the whole ensemble. It was
+        ``seed_base + i``, so an ensemble from seed 1 was the one from seed 0
+        shifted by one replicate, 49 of 50 trajectories the same (issue #1365);
+        the derived seeds of nearby bases are unrelated, and the seeds of one
+        ensemble are distinct.
 
         Sequential execution (``num_processors`` ``None`` or ``1``) reuses this
         simulator directly. Parallel execution clones the model **once per worker
@@ -6185,6 +6225,10 @@ class Simulator:
             ts.n_points = n_points
             return ts
 
+        # Replicate i's seed, derived from the base (issue #1365); computed once,
+        # so the threaded path draws what the sequential one does.
+        rep_seeds = derived_seeds(base_seed, n_replicates)
+
         # Every replicate starts where the model is at this call, as run() and
         # parameter_scan start (issue #1362): reset() alone took each one back
         # to the seed, and a set_concentration made first was lost, A(0) = 0 for
@@ -6203,7 +6247,7 @@ class Simulator:
             model.reset()
             model.set_state(start_state)
             self._restore_carryover_state(start_carry, model._core)
-            used = base_seed + i
+            used = rep_seeds[i]
             # Translated as run() translates them, so `except SimulationError`
             # sees a refusal on the sequential path as it does on the threaded one.
             try:
@@ -6838,8 +6882,11 @@ class Simulator:
             ``value * NA * Vecf``) — the model-specific bookkeeping the primitive
             cannot infer on its own.
         seed : int, optional
-            Base seed for stochastic methods; point *i* uses ``seed_base + i``
-            (drawn fresh from entropy when ``None``). Ignored for ODE.
+            Base seed for stochastic methods; point 0 uses ``seed_base``
+            itself and point *i* > 0 a seed drawn from numpy's
+            ``SeedSequence(seed_base)``, as :meth:`run_batch` does (issue #1365;
+            drawn fresh from entropy when ``None``, and point 0's
+            ``Result.seed`` reruns the whole scan). Ignored for ODE.
         rtol, atol, max_steps, max_step, timeout, steady_state, steady_state_tol
             Per-simulation solver options, forwarded to :meth:`run`. ``atol``
             may be a per-species vector or ``"auto"`` (issue #196); it is
@@ -6994,6 +7041,8 @@ class Simulator:
             self._model._core.set_event_carry_state(invocation_sens[3])
 
         base_seed = _resolve_seed(seed) if self._method != "ode" else 0
+        # Point i's seed, derived from the base (issue #1365). An ODE point reads none.
+        scan_seeds = derived_seeds(base_seed, len(values)) if self._method != "ode" else []
 
         results: list[Result] = []
         try:
@@ -7028,7 +7077,7 @@ class Simulator:
                 # rate-constant change) is picked up; run() then seeds from the
                 # model's current live concentrations.
                 self._recreate_interactive_sim()
-                point_seed = None if self._method == "ode" else base_seed + i
+                point_seed = None if self._method == "ode" else scan_seeds[i]
                 try:
                     result = self.run(
                         t_span=t_span,
@@ -7140,7 +7189,7 @@ class Simulator:
         pset: dict[str, float],
         t_span: tuple[float, float],
         n_points: int,
-        base_seed: int,
+        row_seed: int,
         rtol: float,
         atol_spec: _ResolvedAtol,
         max_steps: int,
@@ -7266,11 +7315,9 @@ class Simulator:
                 # This row's parameters place its crossings, so resolve on the clone.
                 self._apply_ssa_breakpoints([sim], clone, t_span[0], t_span[1])
                 if self._method == "psa":
-                    core_result = sim.run_psa(
-                        times, base_seed + index, self._poplevel, timeout_seconds
-                    )
+                    core_result = sim.run_psa(times, row_seed, self._poplevel, timeout_seconds)
                 else:
-                    core_result = sim.run(times, base_seed + index, timeout_seconds)
+                    core_result = sim.run(times, row_seed, timeout_seconds)
             else:
                 raise ValueError(f"Unknown method: {self._method}")
         except _ConditionReadOtherwise as e:
@@ -7300,7 +7347,7 @@ class Simulator:
 
         result = Result(core_result)
         if self._method != "ode":
-            result._seed = base_seed + index
+            result._seed = row_seed
         if self._method in ("ssa", "psa"):
             # run() and run_replicates warn per result; a batch row rounded or
             # drove a count negative without a word (issue #718 review).
@@ -8501,6 +8548,7 @@ class Simulator:
             raise SimulationError(f"Steady-state computation failed: {e}") from e
 
         result = SteadyStateResult(core_result)
+        result._expressions_reading_clock = frozenset(self._model._core.functions_reading_clock)
         self._note_ss_unsupported(result)
         self._apply_ss_ar_report_map(result)
         self._apply_ss_ar_sensitivity_map(result)
@@ -9244,8 +9292,8 @@ class Simulator:
         )
 
     def _raise_if_no_steady_state_to_solve_for(self, where: str) -> None:
-        """Refuse a steady-state solve of a model with an event, or with a
-        function that reads the time (issue #710).
+        """Refuse a steady-state solve of a model with an event, or whose state
+        the time reaches (issues #710, #961).
 
         Both solvers look for a root of ``f(y)``, and evaluate the right-hand
         side at ``t = 0`` for the residual, the Newton step, the Jacobian and
@@ -9258,14 +9306,15 @@ class Simulator:
         ``f(y) = 0`` to solve without a time being chosen, and an event needs a
         trajectory.
 
-        What is asked is whether any function of the model reads the time
-        (``NetworkModel.functions_use_time``, decided from the functions' text
-        when the model is built), and not only whether a rate does. A reported
-        quantity that reads it has no steady value either, and came back at
-        ``t = 0`` beside a state marked converged: an assignment-rule species
-        ``S := B*(1 - exp(-time))`` as 0 for 2/3, a species in a compartment
-        sized by a rule on the time at 0.5 for 0.25. A function that reads the
-        time and that nothing reads is refused with the rest.
+        What is asked is whether the time reaches the state
+        (``NetworkModel.state_reads_clock``), and not only whether a rate reads
+        it. A quantity the state is reported through that reads it has no steady
+        value either, and came back at ``t = 0`` beside a state marked
+        converged: an assignment-rule species ``S := B*(1 - exp(-time))`` as 0
+        for 2/3, a species in a compartment sized by a rule on the time at 0.5
+        for 0.25. A function that reads the time and that only reports is not
+        refused: the state does not depend on it, and its own value is NaN
+        (issue #961).
 
         A ``rateOf`` accessor is not a read of the time: it reads the state's own
         derivatives, which are 0 at a steady state.
@@ -9301,16 +9350,17 @@ class Simulator:
                 "jump (issue #710). Integrate the model with run() over a span long enough for "
                 "the trajectory to settle, and read the state where it ends."
             )
-        if core.functions_use_time:
+        if core.state_reads_clock:
             raise SimulationError(
                 f"{where} is not supported for this model: it reads the time, through time() "
-                "or a table function indexed by time, in a rate law, a rule or a reported "
-                "function. The steady-state solvers look for a root of f(y) with everything "
-                "read at t = 0, which is the model's steady state only where nothing changes "
-                "with the time after that: a rate that is 0 at t = 0 returned the initial "
-                "state as converged, and a reported function its value at t = 0 (issue #710). "
-                "Integrate the model with run() over a span long enough for the trajectory to "
-                "settle, and read the state where it ends."
+                "or a table function indexed by time, in a rate law, a rule a species or a "
+                "compartment size is reported through, or what one of those reads. The "
+                "steady-state solvers look for a root of f(y) with everything read at t = 0, "
+                "which is the model's steady state only where nothing changes with the time "
+                "after that: a rate that is 0 at t = 0 returned the initial state as "
+                "converged, and a species set by a rule on the time its value at t = 0 "
+                "(issue #710). Integrate the model with run() over a span long enough for the "
+                "trajectory to settle, and read the state where it ends."
             )
 
     def _ss_mask_excluding_ar_species(self, mask_selector: list[int] | None) -> list[int] | None:
@@ -9960,6 +10010,7 @@ class Simulator:
             except RuntimeError as e:
                 raise SimulationError(f"Batch {i} failed: {e}") from e
             result = SteadyStateResult(core_result)
+            result._expressions_reading_clock = frozenset(clone._core.functions_reading_clock)
             # GH #247 — the same two passes steady_state() runs, against the
             # CLONE: a scan that moves a compartment volume moves the divisor with
             # it, so resolving vdiv off self._model would report every entry
@@ -12144,6 +12195,7 @@ class SteadyStateResult:
         "_expression_values",
         "_rule_target_species",
         "_rule_target_expressions",
+        "_expressions_reading_clock",
     )
 
     def __init__(self, core) -> None:
@@ -12311,6 +12363,9 @@ class SteadyStateResult:
         self._expression_values = np.asarray(
             getattr(core, "expression_values", []), dtype=np.float64
         )
+        # Issue #961: the functions that read the time, reported as NaN, which
+        # the solve fills in from the model.
+        self._expressions_reading_clock: frozenset[str] = frozenset()
 
     @property
     def concentrations(self):
@@ -12504,6 +12559,12 @@ class SteadyStateResult:
             return None
         kind = meta["kind"]
         values = self._expression_values if kind == "expression" else self._observable_values
+        if kind == "expression" and meta["name"] in self._expressions_reading_clock:
+            return (
+                f"output_sensitivities: {meta['selector']!r} has no steady-state "
+                "derivative: it reads the time, so it has no steady value, and it is "
+                "reported as NaN (issue #961)."
+            )
         if kind != "species" and meta["index"] < values.size:
             value = float(values[meta["index"]])
             if not np.isfinite(value):
