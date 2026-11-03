@@ -110,7 +110,7 @@ rise fires. Runs without sensitivities are unaffected.
 | Multiple events | ✅ | Any number of events per model |
 | `persistent` attribute | ✅ | SBML L3: trigger must stay true through delay |
 | `initialValue` attribute | ✅ | Events that can fire at t=0; a `run_until` leg continues the previous leg's trigger state instead (issue #693) |
-| Delay | ✅ | Constant delay (queued with cancellation) |
+| Delay | ✅ | Constant or expression, read at trigger time (queued with cancellation) |
 | Parameter → species promotion | ✅ | Parameters targeted by events auto-promoted |
 | Priority ordering | ✅ | Real-valued priority, read when each event executes; equal-priority ties broken by seed-keyed RNG (§4.11.6) |
 | Same-instant cascade | ✅ | Delay-0 events an assignment triggers join the batch (§4.11.6) |

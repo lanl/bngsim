@@ -48,11 +48,13 @@ paragraph.
 
 That number is arithmetic, not taste. GitHub rejects a release body over 125,000
 characters, and `.github/workflows/release.yml` publishes the version's
-`CHANGELOG.md` section as exactly that body. The largest release so far carried
-64 entries; at 1,200 each that is 76,800, comfortably inside. At the rate entries
-were actually being written — 2,650 characters each — that same release came to
-169,635, and `ci/release_notes.py` truncated it with a footer pointing back at
-the file. 0.13.0 and 0.12.0 both shipped incomplete release notes that way.
+`CHANGELOG.md` section as exactly that body. The largest release meant to fit
+carried 64 entries; at 1,200 each that is 76,800, comfortably inside. At the rate
+entries were actually being written — 2,650 characters each — that same release
+came to 169,635, and `ci/release_notes.py` truncated it with a footer pointing
+back at the file. 0.13.0 and 0.12.0 both shipped incomplete release notes that
+way. 0.17.0 carried 468 entries from six weeks of work, more than any per-entry
+limit can fit, and was published truncated on purpose.
 
 An entry says **what changed and what it affects**. The evidence, the
 measurements and the reasoning belong in the issue and the commit message, which
@@ -73,11 +75,12 @@ a test, a CI fix — is exempt by labelling the pull request **`changelog exempt
 ## What happens at a release
 
 ```bash
-python3 ci/changelog.py build --version 0.17.0
+python3 ci/changelog.py build --version <x.y.z>
 ```
 
-folds every fragment into a new `## [0.17.0] - <date>` section, in Keep a
+folds every fragment into a new `## [<x.y.z>] - <date>` section, in Keep a
 Changelog order with the highest issue number first, deletes the fragment files,
-and refuses to proceed if the result would publish truncated. Commit that with
+and refuses to proceed if the result would publish truncated, unless
+`--allow-truncation` is passed. Commit that with
 the version bump; `ci/release_notes.py` reads the assembled section at tag time,
 unchanged.

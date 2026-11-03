@@ -26,9 +26,9 @@ no file I/O, no subprocess spawning, no Perl dependency.
 pip install bngsim
 ```
 
-Prebuilt wheels ship for common platforms; large models may benefit from the
-optional sparse (KLU) solver. See the [installation guide](docs/installation.md) for
-source builds, the KLU dependency, and optional extras.
+Prebuilt wheels ship for common platforms, with the sparse (KLU) solver bundled.
+See the [installation guide](docs/installation.md) for source builds, the KLU
+dependency, and optional extras.
 
 ## Quickstart
 
@@ -70,9 +70,11 @@ and lives in [`docs/`](docs/):
 - Reference — [API](docs/reference/api.md) · [expression language](docs/reference/expressions.md)
 - [Architecture](docs/about/architecture.md) · [benchmarks & validation](docs/about/benchmarks.md)
 
-The package ships one console script, `bngsim-cache` (equivalently
-`python -m bngsim.cache`): it reports on and prunes the compiled-artifact cache that
-codegen fills, which nothing empties on its own. See
+The package ships console scripts for model conversion (`bngsim-sbml2net`,
+`bngsim-net2sbml`, `bngsim-sbml2bngl`, `bngsim-validate-conversion`, `bngsim-omex`;
+see [interchange](docs/user-guide/interchange.md)) and `bngsim-cache` (equivalently
+`python -m bngsim.cache`), which reports on and prunes the compiled-artifact cache
+that codegen fills, which nothing empties on its own. See
 [managing the artifact cache](docs/user-guide/codegen.md#managing-the-artifact-cache).
 
 ## Benchmarks & validation

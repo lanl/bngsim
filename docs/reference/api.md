@@ -117,7 +117,9 @@ Configuration:
 - **`set_max_steps(max_steps)`** — Max internal solver steps
 - **`auto_atol(*, rtol=None, floor=None)`** → `ndarray` — derive a per-species absolute tolerance from the model's **current** state, `rtol * max(|y_i|, floor)` (issue #196). For a tolerance that is a constant of the model rather than of the point being integrated, use `bngsim.derive_atol` below.
 
-Every `atol` above takes a float (scalar, `CVodeSStolerances`), a sequence of
+Every `atol` above takes a float (a per-species ceiling,
+`min(atol, rtol * max(|x_i|, floor))`; issue #1420), `bngsim.ExactAtol(value)`
+(exact, `CVodeSStolerances`), a sequence of
 `n_species` values ordered like `model.species_names` (per-species,
 `CVodeSVtolerances`), or `"auto"` (derive one — see `auto_atol`). A wrong-length
 vector raises `ValueError` rather than broadcasting. Multi-point calls resolve it
@@ -158,8 +160,8 @@ Parameters:
 - **`get_parameter(name)`** — Evaluate a parameter in the live session
 
 Live counts:
-- **`get_molecule_count(molecule_type)`** — Count all live molecules of a type
-- **`add_molecules(molecule_type, count)`** — Add default unbound molecules
+- **`get_molecule_count(mol_type)`** — Count all live molecules of a type
+- **`add_molecules(mol_type, count)`** — Add default unbound molecules
 - **`get_species_count(pattern)`** — Count an exact single-molecule BNGL species
 - **`add_species(pattern, count)`** — Add exact single-molecule species instances
 - **`remove_species(pattern, count)`** — Remove exact single-molecule species instances
@@ -223,8 +225,8 @@ Parameters and counts:
 - **`set_param(name, value)`** — Set a parameter before initialization
 - **`clear_param_overrides()`** — Clear parameter overrides before initialization
 - **`get_parameter(name)`** — Evaluate a parameter from XML plus overrides
-- **`get_molecule_count(molecule_type)`** — Count all live molecules of a type
-- **`add_molecules(molecule_type, count)`** — Add default unbound molecules
+- **`get_molecule_count(mol_type)`** — Count all live molecules of a type
+- **`add_molecules(mol_type, count)`** — Add default unbound molecules
 - **`get_observable_names()`** — Return observable names from the XML
 - **`get_observable_values()`** — Return current observable values
 

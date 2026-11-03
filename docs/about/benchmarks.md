@@ -67,10 +67,12 @@ bngsim's SBML ODE engine is cross-checked against
 [libRoadRunner](https://github.com/sys-bio/roadrunner) over the **full BioModels ODE
 corpus (1,323 models)** by the [`parity_checks/rr_parity`](https://github.com/lanl/bngsim/tree/HEAD/parity_checks/rr_parity)
 suite: both engines integrate each model at a shared tolerance and their trajectories
-are compared cell-by-cell. The latest released result is committed **in this
-repository** (so it's there the moment you clone or install) as a gzipped report under
-[`parity_checks/rr_parity/snapshots/`](https://github.com/lanl/bngsim/tree/HEAD/parity_checks/rr_parity/snapshots/) — see that
-directory's README for the convention. Regenerate the interactive HTML matrix
+are compared cell-by-cell. Released results are meant to be committed as gzipped
+reports under
+[`parity_checks/rr_parity/snapshots/`](https://github.com/lanl/bngsim/tree/HEAD/parity_checks/rr_parity/snapshots/)
+(none is committed yet; see that directory's README for the convention), and the
+nightly's current verdicts are in
+[`parity_checks/nightly/baselines/rr_ode.json`](https://github.com/lanl/bngsim/tree/HEAD/parity_checks/nightly/baselines/rr_ode.json). Regenerate the interactive HTML matrix
 (per-model verdicts, three-tier timing breakdown, BNGsim-vs-RoadRunner cost scatter,
 and win-by-species tables) from a snapshot with:
 
