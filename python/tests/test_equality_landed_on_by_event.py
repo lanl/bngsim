@@ -87,6 +87,70 @@ def test_a_state_on_the_equality_for_an_instant_at_a_moving_time_is_refused():
         sim.run(t_span=(0, 8), n_points=9, rtol=1e-10, atol=1e-12)
 
 
+def _y_columns(model, params):
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=params)
+    result = sim.run(t_span=(0, 8), n_points=9, rtol=1e-10, atol=1e-12)
+    return np.asarray(result.sensitivities)[-1, list(result.species_names).index("Y"), :]
+
+
+def _set_on_its_stop():
+    """B is made throughout, and an event sets it to 0 for the instant the flow
+    takes it away: Y = kb·8/2 at t = 8, wherever the event is."""
+    return bngsim.Model.from_antimony_string(
+        """
+        model m
+          B = 1; Y = 0; kp = 1; kb = 1; te = 5
+          R1: -> B; kp
+          R2: -> Y; piecewise(kb, B == 0, 0) + kb*0.5
+          E1: at (time > te): B = 0
+        end
+        """
+    )
+
+
+def test_a_fixed_event_on_the_stop_at_its_trigger_time_runs():
+    np.testing.assert_allclose(_y_columns(_set_on_its_stop(), ["kb"]), [4.0], rtol=1e-6)
+
+
+def test_a_moving_event_on_the_stop_at_its_trigger_time_is_refused():
+    """`time > te` fires on the stop the run places at te. Taken for a fixed
+    restart, that stop covered the leaving, and dY/dte came back -1 for 0 by
+    difference (issue #1445's first fix; main refused it). The event's own
+    record says it moves."""
+    with pytest.raises(SensitivityUnsupportedError, match=r"'B==0.*leaves it at t=5"):
+        _y_columns(_set_on_its_stop(), ["kb", "te"])
+
+
+def _clock_switch_beside_an_event():
+    """B is made once the clock passes t3, so `B == 0` holds until t3 and B
+    leaves at once there, where a fixed event writes something else."""
+    return bngsim.Model.from_antimony_string(
+        """
+        model m
+          B = 0; Y = 0; Z = 0; kp = 1; kb = 1; t3 = 5
+          R1: -> B; piecewise(kp, time > t3, 0)
+          R2: -> Y; piecewise(kb, B == 0, 0)
+          E1: at (time >= 5): Z = 1
+        end
+        """
+    )
+
+
+def test_a_leaving_at_a_fixed_event_beside_a_fixed_clock_switch_runs():
+    """dY/d[kp, kb] = [0, t3]."""
+    np.testing.assert_allclose(
+        _y_columns(_clock_switch_beside_an_event(), ["kp", "kb"]), [0.0, 5.0], atol=1e-9
+    )
+
+
+def test_a_leaving_at_a_fixed_event_beside_a_moving_clock_switch_is_refused():
+    """With t3 requested, the #48 jump at t3 reads Y's flow with B still on the
+    surface. The fixed event's record covered the leaving, and dY/dt3 came
+    back 0 for 1 by difference (on main too, before issue #1445)."""
+    with pytest.raises(SensitivityUnsupportedError, match=r"'B==0.*leaves it at t=5"):
+        _y_columns(_clock_switch_beside_an_event(), ["kp", "kb", "t3"])
+
+
 def test_a_stretch_an_event_starts_that_outlasts_the_run_runs():
     """Over (0, 3), before t*: Y = kb·(3 - 1). Refused by the first fix for this
     issue, which judged at the event by the start's first-order test."""
