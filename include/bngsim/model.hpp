@@ -891,6 +891,27 @@ class NetworkModel {
     void set_pending_sens_seed(std::vector<double> seed, std::vector<std::string> param_names);
     void clear_pending_sens_seed();
 
+    // Beside the seed (issue #1298): the state a sensitivity run ended at, and
+    // which of its slots an assignment had put below 0 (`marks`, empty where
+    // the run kept none), so that the sensitivity RHS of a run carrying a seed
+    // on treats a slot it starts where that run left it as that run did. The
+    // last kCarriedMarksHistory are kept, and copied with the model, but not
+    // cleared with the seed: a slot takes a mark only where its value is the
+    // one that run left, to the bit, so an older entry reaches no slot that has
+    // changed since (a scan reinstalls its seed after clearing it, and returns
+    // to the state it started from).
+    struct CarriedMarks {
+        std::vector<double> state;
+        std::vector<char> marks;
+    };
+    static constexpr std::size_t kCarriedMarksHistory = 64;
+    void add_carried_marks(std::vector<double> state, std::vector<char> marks);
+    // The entry for a run starting at `y` (`n` slots): the newest whose state is
+    // `y` to the bit, else the newest; null where none is kept. A match is made
+    // the newest kept, so a state a scan returns to point after point outlasts
+    // the run-end states its points add.
+    const CarriedMarks *carried_marks_for(const double *y, std::size_t n);
+
     // True iff the IC baseline (``species[].initial_conc``, as redefined by
     // save_concentrations()) carries its own dx/dθ — i.e. reset() returns to a
     // θ-dependent initial condition and restores that derivative with it. False

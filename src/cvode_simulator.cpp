@@ -799,6 +799,30 @@ struct CvodeUserData {
     // is what turns the retry off.
     std::vector<double> sens_zero_atol;
     std::vector<double> sens_zero_scratch;
+
+    // Issue #1298: where the value RHS's last call at (off_y_t, off_y_from)
+    // read f at another state than that y (the GH #135 clamp, or the #1340
+    // reading near 0 after it), that state, off_y_state. CVODES calls the
+    // sensitivity RHS at the same (t, y) next, with the f it was handed, and
+    // reads its columns there too. A later call at that (t, y) that reads f at
+    // y itself clears it, and so does a new run. Kept only where note_off_y is
+    // set: a run with the compiled sensitivity RHS, unless
+    // BNGSIM_SENS_AT_VALUE_STATE=0.
+    bool note_off_y = false;
+    bool off_y_valid = false;
+    double off_y_t = 0.0;
+    std::vector<double> off_y_from;
+    std::vector<double> off_y_state;
+    // The slots an assignment put below 0, for sens_may_read_at: the run's
+    // start, or a restart that changed the slot (mark_put_below), and not back
+    // at or above 0 at an accepted step since (clear_put_below). any_put_below
+    // is whether any is; put_below_tn and put_below_h are the step last read;
+    // put_below_from is the state CVODE was last started from.
+    std::vector<char> put_below;
+    std::vector<double> put_below_from;
+    bool any_put_below = false;
+    double put_below_tn = std::numeric_limits<double>::quiet_NaN();
+    double put_below_h = std::numeric_limits<double>::quiet_NaN();
 };
 
 // CVODE's error-weight callback for the tracking absolute tolerance (issue
@@ -873,6 +897,7 @@ static void record_clamp_tolerances(CvodeUserData &data, void *cvode_mem, double
     data.clamp_cvode_mem = cvode_mem;
     data.clamp_far_any = false;
     data.below_zero_refusal.clear();
+    data.off_y_valid = false;
     if (!atol_v.empty()) {
         data.clamp_atol = atol_v;
     } else {
@@ -986,6 +1011,162 @@ static double *clamp_state_near_zero(CvodeUserData *data, N_Vector y, const char
                              data->rhs_nonneg_scratch))
         return nullptr;
     return data->rhs_nonneg_scratch.data();
+}
+
+// The state the value RHS's last call at (t, y) read f at, where that was not y
+// itself (CvodeUserData::off_y_state, issue #1298); null where it was y, or
+// where no call at this (t, y) has been recorded.
+static double *value_rhs_state_off_y(CvodeUserData *data, sunrealtype t, const double *y_ptr) {
+    if (!data->off_y_valid || data->off_y_t != static_cast<double>(t) ||
+        !std::equal(data->off_y_from.begin(), data->off_y_from.end(), y_ptr))
+        return nullptr;
+    return data->off_y_state.data();
+}
+
+// What the value RHS's callbacks record, on their way out with a finite f, of
+// where they read it: `state` (the retry's) for (t, y), or y itself where
+// `state` is null.
+static void note_value_rhs_state(CvodeUserData *data, sunrealtype t, const double *y_ptr,
+                                 const double *state) {
+    if (state == nullptr) {
+        if (value_rhs_state_off_y(data, t, y_ptr) != nullptr)
+            data->off_y_valid = false;
+        return;
+    }
+    if (!data->note_off_y)
+        return;
+    const auto n = static_cast<std::size_t>(data->model->n_species());
+    data->off_y_from.assign(y_ptr, y_ptr + n);
+    data->off_y_state.assign(state, state + n);
+    data->off_y_t = static_cast<double>(t);
+    data->off_y_valid = true;
+}
+
+// Mark the slots an assignment leaves below 0 (CvodeUserData::put_below), for
+// a state CVODE is about to start from at `t`: every slot below 0 at the run's
+// start (`fresh`), and at a restart each slot the restart changed, read against
+// the state CVODE's own history has at `t`. A slot a restart does not change
+// keeps its mark, so one the run's own error took below 0 stays unmarked. A
+// restart before CVODE's first step since it was last started reads that
+// state instead: CVODE has no history there yet (CVodeGetDky divides by an h
+// of 0, or reads a stale one). A restart CVODE cannot interpolate to (outside
+// its last step) marks every slot by its value, as at a start, and a
+// carry_sensitivities run then gives each slot it starts where the last run
+// left it that run's mark instead (setup_forward_sensitivities).
+static void mark_put_below(CvodeUserData *data, void *cvode_mem, sunrealtype t, N_Vector y,
+                           bool fresh) {
+    const auto n = static_cast<std::size_t>(data->model->n_species());
+    const double *y_ptr = N_VGetArrayPointer(y);
+    if (data->put_below.size() != n) {
+        data->put_below.assign(n, 0);
+        fresh = true;
+    }
+    long int steps = -1;
+    const bool unstepped = !fresh && CVodeGetNumSteps(cvode_mem, &steps) == CV_SUCCESS &&
+                           steps == 0 && data->put_below_from.size() == n;
+    N_Vector before = nullptr;
+    if (!fresh && !unstepped && !inside_last_step(cvode_mem, t))
+        fresh = true;
+    if (!fresh && !unstepped) {
+        before = N_VClone(y);
+        if (before == nullptr || CVodeGetDky(cvode_mem, t, 0, before) != CV_SUCCESS)
+            fresh = true;
+    }
+    const double *b = fresh       ? nullptr
+                      : unstepped ? data->put_below_from.data()
+                                  : N_VGetArrayPointer(before);
+    data->any_put_below = false;
+    for (std::size_t i = 0; i < n; ++i) {
+        if (b == nullptr || y_ptr[i] != b[i])
+            data->put_below[i] = y_ptr[i] < 0.0 ? 1 : 0;
+        data->any_put_below = data->any_put_below || data->put_below[i] != 0;
+    }
+    if (before != nullptr)
+        N_VDestroy(before);
+    data->put_below_from.assign(y_ptr, y_ptr + n);
+    data->put_below_tn = std::numeric_limits<double>::quiet_NaN();
+    data->put_below_h = std::numeric_limits<double>::quiet_NaN();
+}
+
+// Unmark the slots that have been back at or above 0 at an accepted state
+// since the assignment that put them below. Read once per step, and only while
+// a slot is marked, at two states: the one the step started from as
+// step_start_state reads it from CVODE's predicted history, and CVODE's own
+// zn[0]. One of the two is the state CVODE last accepted, and the other may
+// not be one it accepted: in an ordinary step zn[0] is the prediction; in the
+// order-1 restart after repeated error-test failures (cvDoErrorTest) the
+// sensitivity RHS is called at zn[0], the accepted state, with a history that
+// step_start_state reads as y_n - h*f(y_n). So a slot is unmarked only where
+// it is at or above 0 at both.
+static void clear_put_below(CvodeUserData *data, N_Vector like) {
+    void *cvode_mem = data->clamp_cvode_mem;
+    sunrealtype tn = 0.0;
+    sunrealtype h = 0.0;
+    if (!data->any_put_below || cvode_mem == nullptr ||
+        CVodeGetCurrentTime(cvode_mem, &tn) != CV_SUCCESS ||
+        CVodeGetCurrentStep(cvode_mem, &h) != CV_SUCCESS)
+        return;
+    if (static_cast<double>(tn) == data->put_below_tn &&
+        static_cast<double>(h) == data->put_below_h)
+        return;
+    data->put_below_tn = static_cast<double>(tn);
+    data->put_below_h = static_cast<double>(h);
+    N_Vector start = N_VClone(like);
+    N_Vector now = N_VClone(like);
+    if (start != nullptr && now != nullptr && step_start_state(cvode_mem, like, start) &&
+        CVodeGetDky(cvode_mem, tn, 0, now) == CV_SUCCESS) {
+        const double *y0 = N_VGetArrayPointer(start);
+        const double *z0 = N_VGetArrayPointer(now);
+        data->any_put_below = false;
+        for (std::size_t i = 0; i < data->put_below.size(); ++i) {
+            if (data->put_below[i] && y0[i] >= 0.0 && z0[i] >= 0.0)
+                data->put_below[i] = 0;
+            data->any_put_below = data->any_put_below || data->put_below[i] != 0;
+        }
+    }
+    if (start != nullptr)
+        N_VDestroy(start);
+    if (now != nullptr)
+        N_VDestroy(now);
+}
+
+// Whether the sensitivity RHS may read its columns at `at`, the state the value
+// RHS read f at for y (value_rhs_state_off_y), `f` being the f it read there.
+// J at `at` keeps its slope at 0 in each slot `at` moved off y, which the flow
+// the run integrates there does not have: that flow reads the slot at 0 under
+// any small change of y. Where the slot is below 0 only by the run's own error,
+// it is 0 to within that error, J at 0 is the flow just above it, and the
+// columns are right (MODEL2001200002's L, MODEL5952308332's BPG). Where it is
+// below 0 in earnest they are wrong, with no error. On an accepted path a
+// moved slot is below 0 one of three ways, and two are refused here:
+// - an assignment put it there (the run's start, unless it continues the last
+//   run from where that run left the slot; an event, a carry: any restart that
+//   changed it) and it has not been back at or above 0 at an accepted step
+//   since (put_below);
+// - the flow there drives it further below 0 (`f`), so no step through such
+//   a state is accepted;
+// - the run's own step error took it there, which is the one read.
+// Measuring the slot's depth, or the size of its own entry of the column,
+// against the run's tolerances did not tell the first two from the third: an
+// event's -0.005 at default tolerances passed a depth in atols, and one of
+// -0.5 at rtol 1e-2 a depth in error units; an event's -1e-6 beside a weak
+// source passed both and a column entry within 1e3 atols, and came back with
+// dP/dq = 6.0 for 0.136. Holding the moved slots' rows of s at 0 instead, the
+// derivative of f(clamp(y)), is right for a slot below 0 in earnest but put
+// BPG 6 times its column's peak off a central difference: it drops the slope
+// that keeps such a slot's column at 0.
+static bool sens_may_read_at(const CvodeUserData *data, const double *y_ptr, const double *at,
+                             const double *f) {
+    const auto n = static_cast<std::size_t>(data->model->n_species());
+    if (data->put_below.size() != n)
+        return false;
+    for (std::size_t i = 0; i < n; ++i) {
+        if (at[i] == y_ptr[i])
+            continue;
+        if (f[i] < 0.0 || data->put_below[i])
+            return false;
+    }
+    return true;
 }
 
 // The slots the clamp leaves alone at `y`: where `values` (the right-hand side
@@ -1203,7 +1384,11 @@ static bool drained_through_band(CvodeUserData *data, N_Vector y, double t, cons
 // claim entirely — `BIOMD0000000374` carries a species `V_membrane = -61` — and
 // `∂/∂n base^n` does not exist there at all, so that component is left alone and
 // its NaN survives to the GH #384/#386 refusal rather than being answered with a
-// confident `0`.
+// confident `0`. (That case is now also the clamp mask's to keep (#706): a slot
+// negative by design is read at its value by the value RHS too, by its clamp
+// and, past its atol, by the reading near 0 after it (#1340), so the
+// sensitivity RHS's second retry, at the state the value RHS read f at (issue
+// #1298), leaves it to the same refusal.)
 //
 // This is not the clamp GH #93 removed. That one was unconditional and lived on
 // one side of a pair: the interpreted Michaelis-Menten RHS clamped `sFree` where
@@ -1836,8 +2021,15 @@ static int cvode_rhs_body(sunrealtype t, N_Vector y, N_Vector ydot, void *user_d
     // e.g. -k·conc self-corrects back toward 0 — is byte-identical and keeps
     // that restoring behavior; clamping unconditionally would freeze such a
     // species at a small negative value and make the solve chatter.
-    if (rhs_has_nonfinite(data, ydot_ptr))
-        return retry_interpreted_rhs(data, t, y, ydot_ptr);
+    if (rhs_has_nonfinite(data, ydot_ptr)) {
+        const int rc = retry_interpreted_rhs(data, t, y, ydot_ptr);
+        // The run integrates f at the retry's state here, and the sensitivity
+        // RHS reads its columns there too (issue #1298).
+        if (rc == 0)
+            note_value_rhs_state(data, t, y_ptr, data->rhs_nonneg_scratch.data());
+        return rc;
+    }
+    note_value_rhs_state(data, t, y_ptr, nullptr);
     return 0; // success
 }
 
@@ -1970,7 +2162,12 @@ static int cvode_codegen_rhs_body(sunrealtype t, N_Vector y, N_Vector ydot, void
                 return -1;
             return 1; // still non-finite -> recoverable
         }
+        // The run integrates f at the retry's state here, and the sensitivity
+        // RHS reads its columns there too (issue #1298).
+        note_value_rhs_state(data, t, y_ptr, data->rhs_nonneg_scratch.data());
+        return 0;
     }
+    note_value_rhs_state(data, t, y_ptr, nullptr);
     return 0;
 }
 
@@ -2064,6 +2261,10 @@ static int cvode_codegen_sens_rhs_body(int Ns, sunrealtype t, N_Vector y, N_Vect
 
     double *y_ptr = N_VGetArrayPointer(y);
     double *ySdot_ptr = N_VGetArrayPointer(ySdot);
+    // Issue #1298: once per step, while an assignment has a slot below 0,
+    // unmark the slots this step started at or above 0 from (sens_may_read_at).
+    if (data->note_off_y)
+        clear_put_below(data, y);
     int rc = sens_fn(Ns, static_cast<double>(t), y_ptr, N_VGetArrayPointer(ydot), iS,
                      N_VGetArrayPointer(yS), ySdot_ptr, &so_data, N_VGetArrayPointer(tmp1),
                      N_VGetArrayPointer(tmp2));
@@ -2135,6 +2336,35 @@ static int cvode_codegen_sens_rhs_body(int Ns, sunrealtype t, N_Vector y, N_Vect
         // result falls through to exactly the disposition below.
         if (double *clamped = clamp_state_numerically_zero(data, y_ptr)) {
             rc = sens_fn(Ns, static_cast<double>(t), clamped, N_VGetArrayPointer(ydot), iS,
+                         N_VGetArrayPointer(yS), ySdot_ptr, &so_data, N_VGetArrayPointer(tmp1),
+                         N_VGetArrayPointer(tmp2));
+            if (rc != 0) {
+                return rc;
+            }
+            if (!rhs_has_nonfinite(data, ySdot_ptr)) {
+                return 0;
+            }
+        }
+        // Issue #1298: then at the state the value RHS read f at, where that
+        // was not y. CVODES hands this RHS the f its last call at (t, y)
+        // returned, and where that call's reading at y was non-finite it is f
+        // at the GH #135 clamp's state, or at the #1340 reading near 0 after
+        // it, which the run integrates; its columns are J·s + f_p at that same
+        // state. Read anywhere else, MODEL2001200002's simultaneous run, with
+        // a species a hair below 0 where (L/T)^1.36 is NaN, refused the states
+        // its value RHS took on from: on the closed-form Jacobian it failed at
+        // t = 22, and the GH #176 retry took it again on the difference
+        // quotient, at 4.9 times its plain run's steps. The value RHS records
+        // that state (note_value_rhs_state), so this reads exactly what it
+        // read. Where it read f at y itself, finite at a negative base,
+        // nothing is recorded, and a column NaN there still goes to the
+        // refusal (#392's `pow(x, 4.0)` beside `log(x)`), as does a slot the
+        // clamp leaves alone past its atol (#706), and so does a state with a
+        // slot that state moved below 0 in earnest rather than by the run's
+        // own error (sens_may_read_at). Off with BNGSIM_SENS_AT_VALUE_STATE=0.
+        double *at = value_rhs_state_off_y(data, t, y_ptr);
+        if (at != nullptr && sens_may_read_at(data, y_ptr, at, N_VGetArrayPointer(ydot))) {
+            rc = sens_fn(Ns, static_cast<double>(t), at, N_VGetArrayPointer(ydot), iS,
                          N_VGetArrayPointer(yS), ySdot_ptr, &so_data, N_VGetArrayPointer(tmp1),
                          N_VGetArrayPointer(tmp2));
             if (rc != 0) {
@@ -5219,6 +5449,9 @@ void CvodeSimulator::Impl::create_cvode_core(const TimeSpec &times, const Solver
     apply_cvode_tolerances(cvode_mem, ctx, rtol, atol, atol_v, ns,
                            user_data.atol_tracking.active() ? cvode_tracking_ewt : nullptr);
     record_clamp_tolerances(user_data, cvode_mem, atol, atol_v, ns);
+    // Issue #1298: every slot the run starts below 0 is one an assignment put
+    // there, for the sensitivity RHS (sens_may_read_at).
+    mark_put_below(&user_data, cvode_mem, times.t_start, y, true);
 
     flag = CVodeSetUserData(cvode_mem, &user_data);
     flag = CVodeSetMaxNumSteps(cvode_mem, max_steps);
@@ -5483,6 +5716,26 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(
                     "(pre-equilibration output sensitivities, GH #210)");
             }
             use_carry_seed = true;
+            // Issue #1298: this run continues the run that left the seed, so a
+            // slot it starts from where that run left it keeps that run's mark
+            // rather than one for an assignment (mark_put_below marked every
+            // slot below 0 at this run's start). A slot set between the runs
+            // keeps the start mark. The marks are kept on the model
+            // (carried_marks_for), past a rebuild of this simulator (intervene,
+            // restore, a scan point) and back to a state a scan returns to.
+            // Unmarked, a species the last run's own error left below 0 was
+            // refused from the second run's first step.
+            const auto *carried = model.carried_marks_for(y_data, static_cast<std::size_t>(ns));
+            if (carried != nullptr && carried->marks.size() == static_cast<std::size_t>(ns) &&
+                user_data.put_below.size() == static_cast<std::size_t>(ns)) {
+                user_data.any_put_below = false;
+                for (std::size_t i = 0; i < static_cast<std::size_t>(ns); ++i) {
+                    if (y_data[i] == carried->state[i])
+                        user_data.put_below[i] = carried->marks[i];
+                    user_data.any_put_below =
+                        user_data.any_put_below || user_data.put_below[i] != 0;
+                }
+            }
         } else if (state_dirty) {
             // Sensitivities on a carried-over / manually-advanced state
             // without opt-in would seed yS(0) as if starting from the ICs —
@@ -5675,6 +5928,13 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(
     {
         const char *recover_env = std::getenv("BNGSIM_SENS_NONFINITE_RECOVER");
         user_data.sens_recover_nonfinite = !(recover_env && std::string(recover_env) == "0");
+        // Issue #1298: the value RHS records where it read f, for the retry
+        // in cvode_codegen_sens_rhs_body. BNGSIM_SENS_AT_VALUE_STATE=0 turns
+        // that retry off, for an A/B of it and for the #1301 guard, whose
+        // model it keeps out of the stretch that reaches the defect.
+        const char *at_value_env = std::getenv("BNGSIM_SENS_AT_VALUE_STATE");
+        user_data.note_off_y =
+            sens_rhs_fn != nullptr && !(at_value_env && std::string(at_value_env) == "0");
     }
 
     // GH #392: the width of the band below zero the sensitivity RHS is allowed
@@ -6395,13 +6655,18 @@ int CvodeSimulator::Impl::reinit_cvode(void *cvode_mem, sunrealtype t, N_Vector 
     // (cvodes.c "Initialize all the counters"), so the run's totals survive the
     // restart — issue #182.
     closed_segments += read_segment_counters(cvode_mem);
-    const int flag = CVodeReInit(cvode_mem, t, y);
     // Every restart inside an integration comes through here, so this is where
-    // the time of the last one is kept for sensitivity_restart_hint (issue #545).
+    // the time of the last one is kept for sensitivity_restart_hint (issue #545),
+    // and where a slot the restart moves below 0 is marked for the sensitivity
+    // RHS, against the history CVodeReInit is about to drop (issue #1298).
     // Every CVodeSetUserData in this file registers a CvodeUserData.
     void *user_data = nullptr;
-    if (flag == CV_SUCCESS && CVodeGetUserData(cvode_mem, &user_data) == CV_SUCCESS &&
-        user_data != nullptr) {
+    if (CVodeGetUserData(cvode_mem, &user_data) == CV_SUCCESS && user_data != nullptr &&
+        static_cast<CvodeUserData *>(user_data)->note_off_y) {
+        mark_put_below(static_cast<CvodeUserData *>(user_data), cvode_mem, t, y, false);
+    }
+    const int flag = CVodeReInit(cvode_mem, t, y);
+    if (flag == CV_SUCCESS && user_data != nullptr) {
         auto *data = static_cast<CvodeUserData *>(user_data);
         data->last_restart_t = static_cast<double>(t);
         // Issue #908: CVODE reads every root afresh at a restart, so a held
@@ -19979,6 +20244,16 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         // Issue #545: the carry-over seed is S.
         impl_->comoving_finish(sens, ns, final_t, y_data);
         impl_->write_final_state_back(opts, ns, y_data, final_t, sens);
+        // Issue #1298: with the seed, which of its slots an assignment had put
+        // below 0, for a carry_sensitivities run that continues from this
+        // state; none from a run that did not keep them (note_off_y off), so
+        // that no older run's marks reach the next.
+        if (sens.n_p > 0) {
+            const bool kept =
+                user_data.note_off_y && user_data.put_below.size() == static_cast<std::size_t>(ns);
+            model.add_carried_marks(std::vector<double>(y_data, y_data + ns),
+                                    kept ? user_data.put_below : std::vector<char>{});
+        }
         // ...and the event state that goes with it, for a run that continues
         // this one (issue #693).
         NetworkModel::EventCarry carry;

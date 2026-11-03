@@ -329,6 +329,10 @@ struct NetworkModel::Impl {
     bool ic_state_dirty = false;
     std::vector<double> pending_sens_seed;
     std::vector<std::string> pending_sens_seed_param_names;
+    // The states recent sensitivity runs ended at and which of their slots an
+    // assignment had put below 0, oldest first, for the sensitivity RHS of a
+    // run that carries a seed on (issue #1298; NetworkModel::carried_marks_for).
+    std::deque<NetworkModel::CarriedMarks> carried_marks;
 
     // Event state carried between runs (issue #693; NetworkModel::event_carry).
     NetworkModel::EventCarry event_carry;

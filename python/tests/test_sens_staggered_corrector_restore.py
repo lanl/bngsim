@@ -70,8 +70,14 @@ def _model(name=None, value=None):
 
 
 def _sens_run(**overrides):
-    sim = bngsim.Simulator(_model(), method="ode", sensitivity_params=list(_PARAMS))
-    return sim.run(**{**_RUN, **overrides})
+    # With the sensitivity RHS reading its columns at the value RHS's own state
+    # (#1298), the run is never refused on the way and never comes to the stretch
+    # the carry restores: every test here then passes with the carry off too. So
+    # that reading is off for the whole file, not for the guard alone.
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("BNGSIM_SENS_AT_VALUE_STATE", "0")
+        sim = bngsim.Simulator(_model(), method="ode", sensitivity_params=list(_PARAMS))
+        return sim.run(**{**_RUN, **overrides})
 
 
 def _plain_species(name=None, value=None):
@@ -90,7 +96,7 @@ def test_the_model_still_reaches_the_upstream_defect(monkeypatch):
     Were it not refused, the tests below could pass on a model that no longer
     reaches the defect, so this one fails instead and asks for another model.
     Its message is also the refusal a system SUNDIALS, which lacks the carry,
-    gives."""
+    gives. Like every run here, it reads with #1298's reading off (_sens_run)."""
     monkeypatch.setenv("BNGSIM_SUNDIALS_STAGGERED_RESTORE", "0")
     with pytest.raises(bngsim.SimulationError, match="does not span it"):
         _sens_run()

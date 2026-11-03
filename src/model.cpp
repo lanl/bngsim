@@ -18,6 +18,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <numeric>
 #include <set>
@@ -139,6 +140,7 @@ NetworkModel NetworkModel::clone() const {
     copy.impl_->ic_state_dirty = impl_->ic_state_dirty;
     copy.impl_->pending_sens_seed = impl_->pending_sens_seed;
     copy.impl_->pending_sens_seed_param_names = impl_->pending_sens_seed_param_names;
+    copy.impl_->carried_marks = impl_->carried_marks;
     // Likewise the IC baseline's own dx/dθ (GH #81): the clone copies
     // `species[].initial_conc` above, so it must copy that baseline's derivative
     // too or the clone's reset() would forget it.
@@ -805,6 +807,25 @@ void NetworkModel::set_pending_sens_seed(std::vector<double> seed,
 void NetworkModel::clear_pending_sens_seed() {
     impl_->pending_sens_seed.clear();
     impl_->pending_sens_seed_param_names.clear();
+}
+
+void NetworkModel::add_carried_marks(std::vector<double> state, std::vector<char> marks) {
+    auto &h = impl_->carried_marks;
+    h.push_back(CarriedMarks{std::move(state), std::move(marks)});
+    if (h.size() > kCarriedMarksHistory)
+        h.pop_front();
+}
+
+const NetworkModel::CarriedMarks *NetworkModel::carried_marks_for(const double *y, std::size_t n) {
+    auto &h = impl_->carried_marks;
+    for (auto it = h.rbegin(); it != h.rend(); ++it) {
+        if (it->state.size() == n && std::equal(it->state.begin(), it->state.end(), y)) {
+            const auto at = std::prev(it.base());
+            std::rotate(at, std::next(at), h.end());
+            return &h.back();
+        }
+    }
+    return h.empty() ? nullptr : &h.back();
 }
 
 bool NetworkModel::has_baseline_sens_seed() const { return !impl_->baseline_sens_seed.empty(); }
