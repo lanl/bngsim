@@ -1790,9 +1790,11 @@ class Simulator:
           law, and with the total differentiated it was right in 13 of them and
           as much as 1e7 for −6e4 in another;
         - **any parameter**, where a law spans compartments of different size
-          and an assignment rule sets a compartment's size. The right-hand
-          side divides by the size the model loaded at (issue #745), so the
-          steady state itself is that of another system;
+          and an assignment rule that can move sets a compartment's size (one
+          that reads a species, the time, or a parameter asked for). The
+          right-hand side divides by the size the model loaded at (issue #745),
+          so the steady state itself is that of another system. A rule that
+          reads constants alone gives that size all along (issue #961);
         - **a parameter that sets the initial amount of a conserved species**,
           on a state a run has advanced. The total is still what the parameter
           made it, and the state no longer says so: its seed is retired with
@@ -1820,11 +1822,11 @@ class Simulator:
         # species' share of a reaction across compartments by the size the
         # model loaded at, not the one the rule gives (issue #745), so a law
         # across sizes there is a law of that right-hand side, not of the
-        # amounts. Such a model was refused while its law was found without
-        # the sizes, and stays so. (`c2 := 1 + A`, the example this was
-        # written for, dilutes B since #1052, which leaves no such law: its
-        # steady states form a line, and the isolated-root check refuses its
-        # columns.)
+        # amounts, where the rule can move. Such a model was refused while its
+        # law was found without the sizes, and stays so. (`c2 := 1 + A`, the
+        # example this was written for, dilutes B since #1052, which leaves no
+        # such law: its steady states form a line, and the isolated-root check
+        # refuses its columns.)
         ruled = sorted(set(model.compartment_size_params) & set(model.function_names))
         # A rule whose value cannot move, `c2 := 2*p` with p not asked for, gives
         # the size the model loaded at, and the right-hand side reads it right:
@@ -8590,35 +8592,42 @@ class Simulator:
         reads nothing that moves: no species or observable, not the time, and
         no parameter in *params*, whose column moves the size with it. Each of
         those is followed through the functions and derived parameters the rule
-        reads; a name that is none of them, a parameter, a function or a call,
-        is taken to move.
+        reads; a name that is none of them, a parameter, a built-in constant, a
+        function or a call, is taken to move. The clock is the core's own walk
+        (``functions_reading_clock``), which also sees a table function indexed
+        by it: the engine spells it ``time()``, which reads as a call.
         """
-        import re
+        if not ruled:
+            return []
+        from bngsim._codegen import _BUILTIN_CONSTANT_VALUES
+        from bngsim._model import _NUMBER_OR_NAME
 
-        data = model._core.codegen_data()
+        core = model._core
+        data = core.codegen_data()
         bodies = {f["name"]: f["expression"] for f in data["functions"]}
         derived = {p["name"]: p["expression"] for p in data["parameters"] if p["expression"]}
-        constants = {p["name"] for p in data["parameters"]}
+        constants = {p["name"] for p in data["parameters"]} | set(_BUILTIN_CONSTANT_VALUES)
+        clocked = set(core.functions_reading_clock)
         asked = set(params)
-        token = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\s*\()?")
 
         def moves(name: str, seen: set[str]) -> bool:
             if name in seen:
                 return False
             seen.add(name)
+            if name in clocked:
+                return True
             text = bodies.get(name, derived.get(name, ""))
-            for match in token.finditer(text):
-                word = match.group(0)
-                if word.endswith("("):
-                    called = word[:-1].rstrip()
-                    if called in bodies and moves(called, seen):
-                        return True
-                    continue  # a built-in call; its arguments are read on their own
+            for match in _NUMBER_OR_NAME.finditer(text):
+                word = match.group(1)
+                if not word:
+                    continue  # a number, with its exponent (`1e-15`)
                 if word == "time" or word in asked:
                     return True
                 if word in bodies or word in derived:
                     if moves(word, seen):
                         return True
+                elif text[match.end() :].lstrip().startswith("("):
+                    continue  # a built-in call; its arguments are read on their own
                 elif word not in constants:
                     return True  # a species, an observable, or a name not known here
             return False

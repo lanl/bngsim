@@ -56,3 +56,51 @@ def test_a_parameter_the_size_is_read_from_is_still_refused(rule, extra):
 def test_a_size_a_rule_moves_with_the_state_is_still_refused():
     with pytest.raises(bngsim.SimulationError):
         bngsim.Simulator(_model("2*p + 0*A"), method="ode").steady_state(sensitivity_params=["kf"])
+
+
+@pytest.mark.parametrize(
+    "rule",
+    ["2*p + 1e-20", "2*p*avogadro/avogadro", "2*p*pi/pi", "2*p*exp(0)"],
+    ids=["an exponent", "a large one", "a built-in constant", "a built-in call"],
+)
+def test_a_constant_size_written_with_a_number_or_a_builtin_keeps_the_columns(rule):
+    """`1e-20`'s `e` read as a name, and `_pi` as no parameter: both were
+    taken to move, and the columns were refused as for a rule over the state."""
+    out = bngsim.Simulator(_model(rule), method="ode").steady_state(sensitivity_params=["kf"])
+    assert np.all(np.isfinite(out.sensitivity))
+
+
+@pytest.mark.parametrize(
+    ("rule", "extra", "asked", "moves"),
+    [
+        ("2*p", "", ["kf"], False),
+        ("2*p + 1e-20", "", ["kf"], False),
+        ("2*p*pi/pi", "", ["kf"], False),
+        ("2*p", "", ["p"], True),
+        ("q", "q := 2*p;", ["p"], True),
+        ("q", "q = 2*p;", ["p"], True),
+        ("2*p + 0*A", "", ["kf"], True),
+        ("2*p + 0*time", "", ["kf"], True),
+        ("q", "q := 2*p + 0*time;", ["kf"], True),
+    ],
+    ids=[
+        "constant",
+        "an exponent",
+        "a built-in constant",
+        "asked",
+        "asked through a rule",
+        "asked through a derived parameter",
+        "a species",
+        "the time",
+        "the time through a rule",
+    ],
+)
+def test_which_sizes_move(rule, extra, asked, moves):
+    """What the refusal asks of each size. The refusals before it answer every
+    moving case here first (a parameter read at load, the time, the isolated
+    root), so it is asked of the helper itself. `time()`, as the engine spells
+    the clock, read as a call and not as the time."""
+    from bngsim._simulator import Simulator
+
+    got = Simulator._rule_sizes_that_move(_model(rule, extra), ["c2"], asked)
+    assert got == (["c2"] if moves else [])
