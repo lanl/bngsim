@@ -1871,8 +1871,7 @@ end groups
             np.testing.assert_allclose(s["Y0"][2:], [3.0, 0.0, 0.0], atol=1e-5)
         np.testing.assert_allclose(s["Y2"][2:], [0.0, 0.0, 7.0], atol=1e-5)
 
-    @pytest.mark.parametrize("kf", [1e7, 1e9])
-    def test_a_fast_loss_does_not_send_the_crossing_back_to_the_old_judgment(self, tmp_path, kf):
+    def test_a_fast_loss_does_not_send_the_crossing_back_to_the_old_judgment(self, tmp_path):
         """Y is made at ``kf*Aobs + if(A<thr1,kb,0)`` and lost at kf·Y. W gets the
         same jump. A clamp at thr2, 300 ulps above thr1, is the root reported,
         and a third jump sits 400 ulps below, in the wider probe only. Across
@@ -1881,9 +1880,34 @@ end groups
         fell back to credits the jump to the clamp: dW/d[thr1, thr2] = (0, 3)
         for a truth of (3, 0), as on main (tenth review). What the readers leave
         is now tested by its second difference across the crossing, which a
-        smooth term has none of."""
+        smooth term has none of.
+
+        The third jump crosses about 1.3e-13 after the first, against a step of
+        1.8e-13 there, so whether #763 refuses it as closer than the step that
+        tells its branches apart turns on rounding: of 17 kf from 3e6 to 5e9,
+        main refused 3 on arm64; with the dense solve reading A's row (held
+        alone; Y's row carries kf in A's column) on its own, 4 on arm64 and 4
+        on x86-64, not the same ones. Below 7e7 the refusal flips between builds
+        across a third to a half of kf; the six here ran right on all three
+        builds, and a mutant that brings the old judgment back answers (0, 3)
+        on each. So each runs right or refuses by name, never the old
+        judgment's answer, and most of them run."""
         thr2 = float(2.0 * (1 + 300 * EPS))
         thr3 = float(2.0 * (1 - 400 * EPS))
+        ran = []
+        for kf in (8e7, 1e8, 7e8, 1e9, 1.3e9, 5e9):
+            try:
+                s = self._fast_loss_columns(tmp_path, thr2, thr3, kf)
+            except bngsim.SimulationError as e:
+                assert "closer than the step" in str(e), (kf, str(e)[:300])
+                continue
+            np.testing.assert_allclose(s["W()"], [3.0, 0.0, 0.0], atol=1e-5, err_msg=f"kf={kf}")
+            np.testing.assert_allclose(s["Z()"], [0.0, 0.0, 5.0], atol=1e-5, err_msg=f"kf={kf}")
+            ran.append(kf)
+        assert len(ran) >= 4, ran
+
+    @staticmethod
+    def _fast_loss_columns(tmp_path, thr2: float, thr3: float, kf: float) -> dict:
         text = f"""begin parameters
     1 A0 10
     2 a 0.5
@@ -1921,14 +1945,13 @@ begin groups
     1 Aobs 1
 end groups
 """
-        model = _model(tmp_path, text, name="fast_loss.net")
+        model = _model(tmp_path, text, name=f"fast_loss_{kf:g}.net")
         run = bngsim.Simulator(
             model, method="ode", sensitivity_params=["thr1", "thr2", "thr3"]
         ).run(t_span=(0.0, 8.0), n_points=3, rtol=1e-10, atol=1e-12)
         names = list(run.species_names)
         s = np.asarray(run.sensitivities)[-1]
-        np.testing.assert_allclose(s[names.index("W()")], [3.0, 0.0, 0.0], atol=1e-5)
-        np.testing.assert_allclose(s[names.index("Z()")], [0.0, 0.0, 5.0], atol=1e-5)
+        return {n: s[names.index(n)] for n in ("W()", "Z()")}
 
     @pytest.mark.parametrize(
         ("fz", "k"),

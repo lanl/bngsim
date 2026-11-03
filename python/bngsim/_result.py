@@ -399,7 +399,7 @@ class Result:
                 # Which direct linear solver the ODE engine actually used, as the
                 # ``LinearSolverKind`` enum (include/bngsim/result.hpp). Pinned
                 # mapping — DO NOT reinterpret as a SUNDIALS solver-id:
-                #   0 = built-in dense LU   (SUNLinSol_Dense)
+                #   0 = built-in dense LU   (SUNDIALS' GETRF, bngsim's solver)
                 #   1 = KLU sparse          (SUNLinSol_KLU)   ← NOT "Band"
                 #   2 = BLAS dgetrf dense   (GH #84, opt-in)
                 # Auto rule (cvode_simulator.cpp choose_linear_solver_kind):

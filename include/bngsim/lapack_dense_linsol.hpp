@@ -25,9 +25,14 @@
 //     LAPACK integer ABI, converts it to SUNDIALS' 0-based sunindextype pivots
 //     for denseGETRS, and leaves the global index size (and KLU) alone.
 //
-// When no BLAS backend is linked (BNGSIM_HAS_LAPACK_DENSE undefined), the
-// factory falls back to the built-in SUNLinSol_Dense, so every build compiles
-// and runs identically to before.
+// When no BLAS backend is linked (BNGSIM_HAS_LAPACK_DENSE undefined), or the
+// BLAS factor is not asked for, the solver factors with the built-in GETRF
+// only, as SUNLinSol_Dense does. Either way it reads a row the Newton matrix
+// holds alone (no nonzero off its diagonal) as its own equation, x_i = b_i/a_ii,
+// in place of what the pivoted back-solve leaves there (see
+// lapack_dense_linsol.cpp): a species whose own row is all its equation reads,
+// held at 0, stays at exactly 0 in any species order, as on KLU. Species at 0
+// that feed each other are not covered; KLU's block-triangular form is.
 
 #pragma once
 
@@ -60,8 +65,8 @@ namespace bngsim {
 // win there. See dev/notes/gh84_lapack_dense_findings.md for the data and K.
 //
 // The env switch BNGSIM_LAPACK_DENSE=1 still gates whether the adaptive solver
-// is used at all (default off → stock built-in dense LU, zero behavioral change
-// and rr_parity DIFF 0); BNGSIM_LAPACK_DENSE_K / _MIN_N tune the adaptive gate.
+// is used at all (default off → the built-in dense GETRF, as SUNLinSol_Dense
+// factors); BNGSIM_LAPACK_DENSE_K / _MIN_N tune the adaptive gate.
 
 // True iff this build links a BLAS GETRF backend (set by CMake via the
 // BNGSIM_HAS_LAPACK_DENSE compile definition).
@@ -80,8 +85,12 @@ bool should_use_lapack_dense(int n, double density, bool force_dense);
 //   prefer_lapack && a BLAS backend linked → custom adaptive-factor solver
 //                                            (built-in GETRF for the first K
 //                                             factorizations, then BLAS dgetrf)
-//   otherwise                              → SUNDIALS built-in SUNLinSol_Dense
-// Returns nullptr only if the underlying constructor fails (out of memory).
+//   otherwise                              → the same solver on the built-in
+//                                            GETRF only (not the adaptive one:
+//                                            the GH #132 accessors give -1)
+// Both read the rows the matrix holds alone. Only if this solver cannot be
+// allocated does it return SUNDIALS' built-in SUNLinSol_Dense; nullptr only if
+// that fails too (out of memory).
 SUNLinearSolver make_dense_linear_solver(N_Vector y, SUNMatrix A, SUNContext ctx,
                                          bool prefer_lapack);
 
@@ -92,7 +101,7 @@ SUNLinearSolver make_dense_linear_solver(N_Vector y, SUNMatrix A, SUNContext ctx
 // run; a fill-routed model's alternative is KLU refactoring a 10-50%-dense
 // factor, which the BLAS factor beats from the first call. Only reached when a
 // BLAS backend is linked (the routing requires one); without one it returns the
-// built-in SUNLinSol_Dense, like make_dense_linear_solver.
+// solver on the built-in GETRF, like make_dense_linear_solver.
 SUNLinearSolver make_fill_routed_dense_linear_solver(N_Vector y, SUNMatrix A, SUNContext ctx);
 
 // Reset the GH #132 adaptive factorization counter to zero, so the gate next
@@ -102,8 +111,9 @@ SUNLinearSolver make_fill_routed_dense_linear_solver(N_Vector y, SUNMatrix A, SU
 // above K and push a later (possibly short) run straight onto the BLAS factor.
 // The cold run() path rebuilds its solver each call and so resets naturally —
 // only the warm reuse needs this. No-op unless S is the custom adaptive dense
-// solver (the built-in dense and KLU solvers have a different setup op), so it
-// is safe to call on whatever solver the warm path is holding.
+// solver (KLU and SUNLinSol_Dense have a different setup op; this solver on the
+// built-in factor only is not adaptive), so it is safe to call on whatever
+// solver the warm path is holding.
 void lapack_dense_reset_factor_count(SUNLinearSolver S);
 
 // Diagnostic: how many factorizations the adaptive solver has run since it was

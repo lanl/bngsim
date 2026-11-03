@@ -1011,7 +1011,7 @@ endif()
 # Optimized dense linear solver (GH #84): link the resolved BLAS backend and
 # define BNGSIM_HAS_LAPACK_DENSE. Absent (no Accelerate / no system LAPACK), the
 # custom solver source still compiles but lapack_dense_available() returns false
-# and make_dense_linear_solver() always returns the built-in dense LU.
+# and make_dense_linear_solver() always returns the solver on the built-in GETRF.
 if(BNGSIM_LAPACK_DENSE)
     target_link_libraries(bngsim PUBLIC ${BNGSIM_LAPACK_DENSE_LIBS})
     target_compile_definitions(bngsim PUBLIC BNGSIM_HAS_LAPACK_DENSE=1)

@@ -37,35 +37,35 @@ static int tests_skipped = 0;
 // convention, used here per-case rather than per-binary.
 #define SKIP_RC 77
 
-#define SKIP(reason)                                                                                \
-    do {                                                                                            \
-        std::cout << "SKIPPED (" << reason << ")";                                                  \
-        return SKIP_RC;                                                                             \
+#define SKIP(reason)                                                                               \
+    do {                                                                                           \
+        std::cout << "SKIPPED (" << reason << ")";                                                 \
+        return SKIP_RC;                                                                            \
     } while (0)
 
-#define CHECK(cond, msg)                                                                            \
-    do {                                                                                            \
-        if (!(cond)) {                                                                              \
-            std::cerr << "  FAIL: " << msg << " [" << __FILE__ << ":" << __LINE__ << "]"            \
-                      << std::endl;                                                                 \
-            return 1;                                                                               \
+#define CHECK(cond, msg)                                                                           \
+    do {                                                                                           \
+        if (!(cond)) {                                                                             \
+            std::cerr << "  FAIL: " << msg << " [" << __FILE__ << ":" << __LINE__ << "]"           \
+                      << std::endl;                                                                \
+            return 1;                                                                              \
         }                                                                                          \
     } while (0)
 
-#define RUN_TEST(func)                                                                              \
-    do {                                                                                            \
-        ++tests_run;                                                                                \
-        std::cout << "  " << #func << "... " << std::flush;                                         \
-        int _rc = func();                                                                           \
-        if (_rc == SKIP_RC) {                                                                       \
-            ++tests_skipped;                                                                        \
-            std::cout << std::endl;                                                                 \
-        } else if (_rc == 0) {                                                                      \
-            ++tests_passed;                                                                         \
-            std::cout << "OK" << std::endl;                                                         \
-        } else {                                                                                    \
-            std::cout << "FAILED" << std::endl;                                                     \
-        }                                                                                           \
+#define RUN_TEST(func)                                                                             \
+    do {                                                                                           \
+        ++tests_run;                                                                               \
+        std::cout << "  " << #func << "... " << std::flush;                                        \
+        int _rc = func();                                                                          \
+        if (_rc == SKIP_RC) {                                                                      \
+            ++tests_skipped;                                                                       \
+            std::cout << std::endl;                                                                \
+        } else if (_rc == 0) {                                                                     \
+            ++tests_passed;                                                                        \
+            std::cout << "OK" << std::endl;                                                        \
+        } else {                                                                                   \
+            std::cout << "FAILED" << std::endl;                                                    \
+        }                                                                                          \
     } while (0)
 
 // Fill an n×n well-conditioned (diagonally dominant) matrix into column-major
@@ -172,10 +172,11 @@ static int test_builtin_vs_lapack_parity() {
 // small test systems can take the BLAS path; K small so the switch happens.)
 static int test_adaptive_switch() {
     if (!bngsim::lapack_dense_available())
-        SKIP("no BLAS backend — solver is the built-in fallback, nothing to switch");
+        SKIP(
+            "no BLAS backend — the solver factors with the built-in GETRF only, nothing to switch");
     bngsim::SunContextGuard ctx;
     CHECK(ctx, "SUNContext_Create");
-    ::setenv("BNGSIM_LAPACK_DENSE_K", "3", 1);   // built-in for 3 factorizations, then dgetrf
+    ::setenv("BNGSIM_LAPACK_DENSE_K", "3", 1); // built-in for 3 factorizations, then dgetrf
     ::setenv("BNGSIM_LAPACK_DENSE_MIN_N", "0", 1);
 
     const int n = 64;
@@ -359,7 +360,8 @@ static int test_gate_predicate() {
     using bngsim::should_use_lapack_dense;
     if (!bngsim::lapack_dense_available()) {
         ::setenv("BNGSIM_LAPACK_DENSE", "1", 1);
-        CHECK(!should_use_lapack_dense(1000, 1.0, true), "no backend → never lapack, even opted in");
+        CHECK(!should_use_lapack_dense(1000, 1.0, true),
+              "no backend → never lapack, even opted in");
         ::unsetenv("BNGSIM_LAPACK_DENSE");
         return 0;
     }
@@ -394,8 +396,8 @@ static int test_pivoting_parity() {
         std::srand(31337u + (unsigned)n);
         for (long i = 0; i < (long)n * n; ++i)
             A[i] = ((double)std::rand() / RAND_MAX) - 0.5; // no diagonal boost
-        A[0] = 1e-6; // tiny A(0,0) ...
-        A[1] = 1.0;  // ... vs large A(1,0) → forces a row swap at step 0
+        A[0] = 1e-6;                                       // tiny A(0,0) ...
+        A[1] = 1.0; // ... vs large A(1,0) → forces a row swap at step 0
         std::vector<double> b(n);
         for (int i = 0; i < n; ++i)
             b[i] = 1.0 + (i % 5);
@@ -439,7 +441,7 @@ static int test_prefer_lapack_fallback_contract() {
     std::vector<double> x;
     double resid = 0.0;
     // prefer_lapack = true on any host: with a backend this is the adaptive
-    // solver, without one it must degrade to the built-in dense LU, not fail.
+    // solver, without one it must degrade to the built-in GETRF, not fail.
     if (solve_with(true, A.data(), b.data(), n, ctx, x, resid) != 0)
         return 1;
     CHECK(resid < 1e-11, "prefer_lapack solve is accurate on every build");
@@ -454,9 +456,137 @@ static int test_prefer_lapack_fallback_contract() {
               "backend present → adaptive solver, count starts at 0");
     } else {
         CHECK(bngsim::lapack_dense_factor_count(LS) == -1,
-              "no backend → built-in solver, count not applicable");
+              "no backend → the solver on the built-in factor, count not applicable");
         CHECK(bngsim::lapack_dense_blas_factor_count(LS) == -1,
               "no backend → no dgetrf count either");
+    }
+    return 0;
+}
+
+// ── A row the matrix holds alone ────────────────────────────────────────────
+// Row r has no nonzero off its diagonal, so x_r = b_r / a_rr, and 0 where b_r is.
+// Column r carries a dominant entry on another row, so partial pivoting takes
+// that row as the pivot for column r and the back-solve computes x_r as the
+// remainder of sums that cancel: SUNDIALS' own dense LU leaves their rounding in
+// x_r, which on an exact, unstable state (MODEL1812040005's P = 0 with its
+// species reversed) grew to 25.6x the trajectory's peak.
+static void fill_with_row_held_alone(double *data, int n, int r, double b_r, double *b,
+                                     unsigned seed) {
+    fill_well_conditioned(data, n, seed);
+    for (int j = 0; j < n; ++j)
+        if (j != r)
+            data[(long)j * n + r] = 0.0; // row r: the diagonal alone
+    data[(long)r * n + r] = 0.75;
+    data[(long)r * n + (r + 1) % n] = 1e8 * (1.0 + (seed % 7)); // pivot for column r
+    for (int i = 0; i < n; ++i)
+        b[i] = ((double)std::rand() / RAND_MAX) - 0.5;
+    b[r] = b_r;
+}
+
+// One solve of A x = b with the given solver; x is written to x_out.
+static int solve_on(SUNLinearSolver LS, const double *A_src, const double *b, int n, SUNContext ctx,
+                    std::vector<double> &x_out) {
+    bngsim::SUNMatrixGuard A(SUNDenseMatrix(n, n, ctx));
+    bngsim::NVectorGuard bv(N_VNew_Serial(n, ctx));
+    bngsim::NVectorGuard xv(N_VNew_Serial(n, ctx));
+    CHECK(A && bv && xv, "alloc");
+    std::copy(A_src, A_src + (long)n * n, SUNDenseMatrix_Data(A));
+    std::copy(b, b + n, N_VGetArrayPointer(bv));
+    CHECK(SUNLinSolInitialize(LS) == SUN_SUCCESS, "initialize");
+    CHECK(SUNLinSolSetup(LS, A) == SUN_SUCCESS, "setup");
+    CHECK(SUNLinSolSolve(LS, A, xv, bv, 0.0) == SUN_SUCCESS, "solve");
+    x_out.assign(N_VGetArrayPointer(xv), N_VGetArrayPointer(xv) + n);
+    return 0;
+}
+
+static bool same_bits(double a, double b) { return a == b || (std::isnan(a) && std::isnan(b)); }
+
+// The solver gives the row held alone its own answer to the bit, and every other
+// component as SUNDIALS' dense LU gives it (on the built-in factor; the BLAS
+// factor's other components are dgetrf's). The stock solver has to leave a
+// residue in some trial, or the case is not exercised.
+static int rows_held_alone_read_exactly(bool blas) {
+    bngsim::SunContextGuard ctx;
+    CHECK(ctx, "SUNContext_Create");
+    int stock_left_a_residue = 0;
+    const int sizes[] = {2, 3, 8, 30};
+    for (int n : sizes) {
+        for (unsigned trial = 0; trial < 40; ++trial) {
+            const int r = (int)(trial % (unsigned)n);
+            const double b_r = (trial % 2 == 0) ? 0.0 : 0.3 - 0.01 * trial;
+            std::vector<double> A((long)n * n), b(n);
+            fill_with_row_held_alone(A.data(), n, r, b_r, b.data(), 6100u + trial + 97u * n);
+
+            ::setenv("BNGSIM_LAPACK_DENSE_K", "0", 1); // the BLAS arm factors with dgetrf
+            ::setenv("BNGSIM_LAPACK_DENSE_MIN_N", "0", 1);
+            bngsim::SUNMatrixGuard M(SUNDenseMatrix(n, n, ctx));
+            bngsim::NVectorGuard y(N_VNew_Serial(n, ctx));
+            bngsim::SUNLinSolGuard ours(bngsim::make_dense_linear_solver(y, M, ctx, blas));
+            bngsim::SUNLinSolGuard stock(SUNLinSol_Dense(y, M, ctx));
+            ::unsetenv("BNGSIM_LAPACK_DENSE_K");
+            ::unsetenv("BNGSIM_LAPACK_DENSE_MIN_N");
+            CHECK(ours && stock, "solver alloc");
+
+            std::vector<double> x, x_stock;
+            if (solve_on(ours, A.data(), b.data(), n, ctx, x) != 0 ||
+                solve_on(stock, A.data(), b.data(), n, ctx, x_stock) != 0)
+                return 1;
+            CHECK(x[r] == b_r / 0.75, "the row held alone gives x_r = b_r / a_rr exactly");
+            if (x_stock[r] != x[r])
+                ++stock_left_a_residue;
+            if (!blas) {
+                for (int i = 0; i < n; ++i)
+                    CHECK(i == r || same_bits(x[i], x_stock[i]),
+                          "every other component is SUNDIALS' dense LU's to the bit");
+            }
+            CHECK(residual_inf(A.data(), n, x.data(), b.data()) < 1e-6, "residual small");
+        }
+    }
+    CHECK(stock_left_a_residue > 0, "the stock dense LU leaves a residue in some trial");
+    return 0;
+}
+
+static int test_a_row_held_alone_is_read_exactly() { return rows_held_alone_read_exactly(false); }
+
+static int test_a_row_held_alone_is_read_exactly_on_the_blas_factor() {
+    if (!bngsim::lapack_dense_available())
+        SKIP("no BLAS backend — no dgetrf factor to read it on");
+    return rows_held_alone_read_exactly(true);
+}
+
+// The control: on a matrix with no row held alone, and on one whose only
+// off-diagonal entry in a row is NaN (a NaN is not a zero), the built-in-factor
+// solver is SUNDIALS' dense LU to the bit.
+static int test_without_a_row_held_alone_the_solve_is_sunlinsol_dense() {
+    bngsim::SunContextGuard ctx;
+    CHECK(ctx, "SUNContext_Create");
+    for (int n : {1, 2, 5, 40}) {
+        for (bool with_nan : {false, true}) {
+            if (with_nan && n < 2)
+                continue;
+            std::vector<double> A((long)n * n), b(n);
+            std::srand(7300u + (unsigned)n);
+            for (long i = 0; i < (long)n * n; ++i)
+                A[i] = ((double)std::rand() / RAND_MAX) - 0.5; // pivots
+            for (int i = 0; i < n; ++i)
+                b[i] = 1.0 + (i % 3);
+            if (with_nan) {
+                for (int j = 0; j < n; ++j)
+                    A[(long)j * n + 0] = (j == 0) ? 1.0 : 0.0;
+                A[(long)1 * n + 0] = std::nan("");
+            }
+            bngsim::SUNMatrixGuard M(SUNDenseMatrix(n, n, ctx));
+            bngsim::NVectorGuard y(N_VNew_Serial(n, ctx));
+            bngsim::SUNLinSolGuard ours(bngsim::make_dense_linear_solver(y, M, ctx, false));
+            bngsim::SUNLinSolGuard stock(SUNLinSol_Dense(y, M, ctx));
+            CHECK(ours && stock, "solver alloc");
+            std::vector<double> x, x_stock;
+            if (solve_on(ours, A.data(), b.data(), n, ctx, x) != 0 ||
+                solve_on(stock, A.data(), b.data(), n, ctx, x_stock) != 0)
+                return 1;
+            for (int i = 0; i < n; ++i)
+                CHECK(same_bits(x[i], x_stock[i]), "the same solve as SUNLinSol_Dense");
+        }
     }
     return 0;
 }
@@ -480,6 +610,9 @@ int main() {
     RUN_TEST(test_blas_factor_count);
     RUN_TEST(test_gate_predicate);
     RUN_TEST(test_prefer_lapack_fallback_contract);
+    RUN_TEST(test_a_row_held_alone_is_read_exactly);
+    RUN_TEST(test_a_row_held_alone_is_read_exactly_on_the_blas_factor);
+    RUN_TEST(test_without_a_row_held_alone_the_solve_is_sunlinsol_dense);
     std::cout << tests_passed << "/" << tests_run << " passed";
     if (tests_skipped > 0)
         std::cout << ", " << tests_skipped << " SKIPPED (no BLAS dense backend)";
