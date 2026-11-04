@@ -60,21 +60,27 @@ def xml_parameter_names(xml_path: str | Path) -> frozenset[str] | None:
     )
 
 
-def xml_names(xml_path: str | Path, list_tag: str, item_tag: str, attr: str) -> list[str] | None:
-    """The *attr* of each ``<item_tag>`` in a ``<list_tag>`` of *xml_path*, in
-    document order, or ``None`` when the file cannot be parsed: the observables a
-    network-free run reports are the XML's ``ListOfObservables``/``Observable``
-    names, whatever the Model beside it holds (issue #1509)."""
+def xml_names(xml_path: str | Path, *wanted: tuple[str, str, str]) -> list[list[str]] | None:
+    """For each ``(list_tag, item_tag, attr)`` in *wanted*, the *attr* of each
+    ``<item_tag>`` in a ``<list_tag>`` of *xml_path*, in document order, from one
+    parse; ``None`` when the file cannot be parsed. The observables a network-free
+    run reports are the XML's ``ListOfObservables``/``Observable`` names, whatever
+    the Model beside it holds (issue #1509)."""
     try:
         root = ET.parse(str(xml_path)).getroot()
     except (ET.ParseError, OSError):
         return None
+    lists: dict[str, list[ET.Element]] = {}
+    for el in root.iter():
+        lists.setdefault(_local(el.tag), []).append(el)
     return [
-        name
-        for lst in root.iter()
-        if _local(lst.tag) == list_tag
-        for el in lst
-        if _local(el.tag) == item_tag and (name := el.get(attr))
+        [
+            name
+            for lst in lists.get(list_tag, [])
+            for el in lst
+            if _local(el.tag) == item_tag and (name := el.get(attr))
+        ]
+        for list_tag, item_tag, attr in wanted
     ]
 
 

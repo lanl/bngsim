@@ -777,6 +777,7 @@ class Simulator:
         "_rm_clock_offset",
         "_xml_param_names",
         "_xml_seed_species",
+        "_xml_stop_names",
         "_rtol",
         "_atol",
         # Issue #196 — per-species absolute tolerance, or None for the scalar
@@ -935,6 +936,10 @@ class Simulator:
         # nf/rm: the XML's seed species, BNGL name -> <Species id=>, None when
         # the XML cannot be read (issue #1373).
         self._xml_seed_species: dict[str, str | None] | None = {}
+        # nf/rm: the observables, functions and parameters the XML declares, read
+        # when the backend is, for the names a stop condition can read; None when
+        # the XML cannot be read (issue #1509).
+        self._xml_stop_names: tuple[list[str], list[str], list[str]] | None = None
         self._poplevel: float = 0.0
 
         # Log normalization when it changes the token.
@@ -1112,6 +1117,7 @@ class Simulator:
             # values of where the model has changed them (issue #1360).
             self._xml_param_names = xml_parameter_names(xml_path)
             self._xml_seed_species = xml_seed_species(xml_path)
+            self._xml_stop_names = _xml_stop_names(xml_path)
             if gml is not None:
                 self._sim.set_molecule_limit(int(gml))
             if connectivity is not None:
@@ -1169,6 +1175,7 @@ class Simulator:
                 self._sim = RuleMonkeySimulator(xml_path)
             self._xml_param_names = xml_parameter_names(xml_path)
             self._xml_seed_species = xml_seed_species(xml_path)
+            self._xml_stop_names = _xml_stop_names(xml_path)
             warn_rulemonkey_diagnostics(self._sim, stacklevel=2)
             self._sim.set_reads_clock(reads_clock and not self._rm_clock_offset)
             if gml is not None:
@@ -10438,17 +10445,10 @@ class Simulator:
             params=list(model.param_names),
             reads_species=True,
         )
-        if self._method in ("nfsim", "rulemonkey") and self._xml_path:
-            from bngsim._network_free_params import xml_names
-
-            path = self._xml_path
-            observables = xml_names(path, "ListOfObservables", "Observable", "name")
-            if observables is not None:
-                names = names._replace(
-                    observables=observables,
-                    functions=xml_names(path, "ListOfFunctions", "Function", "id") or [],
-                    params=xml_names(path, "ListOfParameters", "Parameter", "id") or [],
-                )
+        if self._method in ("nfsim", "rulemonkey"):
+            if self._xml_stop_names is not None:
+                observables, functions, params = self._xml_stop_names
+                names = names._replace(observables=observables, functions=functions, params=params)
             names = names._replace(reads_species=False)
         return names
 
@@ -11408,6 +11408,23 @@ def _expression_names(tree: ast.Expression) -> tuple[frozenset[str], frozenset[s
         elif isinstance(node, ast.arg):
             binds.add(node.arg)
     return frozenset(loads), frozenset(binds)
+
+
+def _xml_stop_names(xml_path: str) -> tuple[list[str], list[str], list[str]] | None:
+    """The observables, functions and parameters a network-free XML declares, in
+    one parse; None when the file cannot be read (issue #1509)."""
+    from bngsim._network_free_params import xml_names
+
+    names = xml_names(
+        xml_path,
+        ("ListOfObservables", "Observable", "name"),
+        ("ListOfFunctions", "Function", "id"),
+        ("ListOfParameters", "Parameter", "id"),
+    )
+    if names is None:
+        return None
+    observables, functions, params = names
+    return observables, functions, params
 
 
 class _StopNames(NamedTuple):

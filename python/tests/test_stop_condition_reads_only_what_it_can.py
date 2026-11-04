@@ -224,16 +224,19 @@ def test_a_replicate_that_cannot_be_evaluated_raises(net):
         sim.run_replicates(2, seed=1, **KW)
 
 
-@pytest.mark.parametrize(
-    "condition",
-    ["(lambda: A_tot < 10)()", "[A_tot < 10 for _ in (0,)][0]"],
-)
-def test_a_lambda_or_comprehension_inside_the_expression_sees_the_observables(net, condition):
+def test_a_lambda_inside_the_expression_sees_the_observables(net):
     """The names were bound as eval's locals, which a nested scope does not see:
-    the lambda raised NameError at every sample and was never met. A comprehension
-    is a nested scope before Python 3.12, so it went the same way there."""
+    the lambda raised NameError at every sample and was never met."""
     sim = _sim(net)
-    sim.add_stop_condition(condition)
+    sim.add_stop_condition("(lambda: A_tot < 10)()")
+    assert _stop_time(sim) == MET_AT
+
+
+def test_a_comprehension_inside_the_expression_sees_the_observables(net):
+    """Control on Python 3.12 and later, which inline a comprehension into its
+    scope. Before 3.12 it is a nested scope, and was never met, as the lambda."""
+    sim = _sim(net)
+    sim.add_stop_condition("[A_tot < 10 for _ in (0,)][0]")
     assert _stop_time(sim) == MET_AT
 
 
@@ -268,6 +271,21 @@ def test_a_network_free_run_reads_the_observables_its_xml_declares(method):
         sim.add_stop_condition("A_tot < 1e9")
     sim.add_stop_condition("X_free >= 0 and t >= 0.5")
     assert _stop_time(sim, t_span=(0, 1), n_points=11, seed=1) == 0.5
+
+
+@pytest.mark.parametrize("method", NF_METHODS)
+def test_the_xml_names_are_the_ones_read_when_the_simulator_was_built(method, tmp_path):
+    """Control: the names come from the XML as the backend read it, not from the
+    file as it stands when the condition is added (RuleMonkey keeps what it read)."""
+    xml = tmp_path / "simple_system.xml"
+    xml.write_bytes((NF_DATA / "simple_system.xml").read_bytes())
+    sim = bngsim.Simulator(
+        bngsim.Model.from_net(str(NF_DATA.parent / "simple_decay.net")),
+        method=method,
+        xml_path=str(xml),
+    )
+    xml.unlink()
+    sim.add_stop_condition("Xtotal > 0")
 
 
 @pytest.mark.parametrize("method", NF_METHODS)
