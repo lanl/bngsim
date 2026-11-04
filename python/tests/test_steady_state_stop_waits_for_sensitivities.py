@@ -88,7 +88,28 @@ def test_the_carried_seed_is_dx_ss_dtheta(net):
 def test_an_initial_condition_column_settles_too(net):
     """dY/dY(0) = exp(-dy t) is 0 at the steady state; the stop at t = 20 left 0.82."""
     r = _sim(net, sensitivity_ic=["Y()"]).run(**PHASE1)
-    assert abs(float(np.asarray(r.sensitivities_ic)[-1, 0, 0])) < 1e-6
+    assert abs(float(np.asarray(r.sensitivities_ic)[-1, 0, 0])) < 1e-7
+
+
+def test_a_slow_column_that_is_not_the_first_holds_the_stop(net):
+    """kx's column settles with X, at rate 5; ky's with Y, at rate 0.01."""
+    r = _sim(net, sensitivity_params=["kx", "ky"]).run(**PHASE1)
+    assert _last(r, 1, 1) == pytest.approx(DXSS_DKY, rel=1e-6)
+
+
+def test_a_column_is_held_to_theta_times_its_rate(tmp_path):
+    """Scaled up: ky = 1e4, so Y(0) = Y_ss = 1e6, and a tolerance that suits those
+    amounts. dY/dky still relaxes at dy, and its rate is 1e4 times smaller than
+    θ·dS/dt. Held to dS/dt alone the column would pass at t ~ 460, 1% short of
+    dY_ss/dky = 1/dy = 100."""
+    path = tmp_path / "big.net"
+    path.write_text(NET.replace("1 ky 1", "1 ky 1e4").replace("1 Y() 100", "1 Y() 1e6"))
+    sim = bngsim.Simulator(
+        bngsim.Model.from_net(str(path)), method="ode", sensitivity_params=["ky"]
+    )
+    r = sim.run(**PHASE1, steady_state_tol=1e-2)
+    assert r.solver_stats["steady_state_reached"]
+    assert _last(r, 0, 0) == pytest.approx(100.0, rel=1e-5)
 
 
 def test_a_batch_row_stops_where_its_columns_have_settled(net):
