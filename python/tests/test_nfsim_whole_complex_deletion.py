@@ -58,6 +58,8 @@ CONTROLS = {
     "C_m": (1, EXACT),  # heterodimer
     "B_m": (2, EXACT),  # homodimer with DeleteMolecules
     "Z_m": (1, EXACT),  # Z(s!1,s!2).P(z!1).P(z!2), written centre first
+    # M2(s~a) -> 0 on M2(s~a).N2.M2(s~b): one match, beside an M2 it does not match
+    "N2_m": (1, EXACT),
 }
 
 
@@ -198,6 +200,22 @@ def test_a_michaelis_menten_rule_counted_per_complex_is_refused():
     assert "Q_mm" not in str(exc.value)
     with pytest.raises(ModelError, match="issue #1525"):
         NfsimSession(str(xml))
+
+
+def test_a_matchonce_on_the_whole_rule_counts_as_one_on_its_patterns(tmp_path):
+    """NFsim also reads matchOnce on the ReactionRule element, for every
+    reactant; the refusal reads it there too."""
+    from bngsim._network_free_checks import mm_rules_counted_per_complex
+
+    xml = (DATA / "mm_whole_complex_deletion.xml").read_text()
+    on_pattern = '<ReactantPattern id="RR3_RP1" matchOnce="1">'
+    assert xml.count(on_pattern) == 1
+    moved = xml.replace(on_pattern, '<ReactantPattern id="RR3_RP1">').replace(
+        'name="Tmo_mm"', 'name="Tmo_mm" matchOnce="1"'
+    )
+    path = tmp_path / "rule_level.xml"
+    path.write_text(moved)
+    assert mm_rules_counted_per_complex(path) == ["SS_mm", "Tmo_mm"]
 
 
 def test_a_michaelis_menten_monomer_deletion_runs():

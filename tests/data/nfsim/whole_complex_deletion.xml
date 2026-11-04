@@ -74,7 +74,24 @@
           <ComponentType id="g"/>
         </ListOfComponentTypes>
       </MoleculeType>
+      <MoleculeType id="M2">
+        <ListOfComponentTypes>
+          <ComponentType id="s">
+            <ListOfAllowedStates>
+              <AllowedState id="a"/>
+              <AllowedState id="b"/>
+            </ListOfAllowedStates>
+          </ComponentType>
+          <ComponentType id="g"/>
+        </ListOfComponentTypes>
+      </MoleculeType>
       <MoleculeType id="N">
+        <ListOfComponentTypes>
+          <ComponentType id="m1"/>
+          <ComponentType id="m2"/>
+        </ListOfComponentTypes>
+      </MoleculeType>
+      <MoleculeType id="N2">
         <ListOfComponentTypes>
           <ComponentType id="m1"/>
           <ComponentType id="m2"/>
@@ -370,6 +387,32 @@
         <ListOfBonds>
           <Bond id="S14_B1" site1="S14_M1_C1" site2="S14_M3_C1"/>
           <Bond id="S14_B2" site1="S14_M2_C1" site2="S14_M3_C2"/>
+        </ListOfBonds>
+      </Species>
+      <Species id="S15"  concentration="X0" name="M2(g!1,s~a).M2(g!2,s~b).N2(m1!1,m2!2)">
+        <ListOfMolecules>
+          <Molecule id="S15_M1" name="M2">
+            <ListOfComponents>
+              <Component id="S15_M1_C1" name="g" numberOfBonds="1"/>
+              <Component id="S15_M1_C2" name="s" state="a" numberOfBonds="0"/>
+            </ListOfComponents>
+          </Molecule>
+          <Molecule id="S15_M2" name="M2">
+            <ListOfComponents>
+              <Component id="S15_M2_C1" name="g" numberOfBonds="1"/>
+              <Component id="S15_M2_C2" name="s" state="b" numberOfBonds="0"/>
+            </ListOfComponents>
+          </Molecule>
+          <Molecule id="S15_M3" name="N2">
+            <ListOfComponents>
+              <Component id="S15_M3_C1" name="m1" numberOfBonds="1"/>
+              <Component id="S15_M3_C2" name="m2" numberOfBonds="1"/>
+            </ListOfComponents>
+          </Molecule>
+        </ListOfMolecules>
+        <ListOfBonds>
+          <Bond id="S15_B1" site1="S15_M1_C1" site2="S15_M3_C1"/>
+          <Bond id="S15_B2" site1="S15_M2_C1" site2="S15_M3_C2"/>
         </ListOfBonds>
       </Species>
     </ListOfSpecies>
@@ -818,6 +861,33 @@
           <Delete id="RR12_RP1" DeleteMolecules="0"/>
         </ListOfOperations>
       </ReactionRule>
+      <ReactionRule id="RR13" name="M2a_del" symmetry_factor="1">
+        <ListOfReactantPatterns>
+          <ReactantPattern id="RR13_RP1">
+            <ListOfMolecules>
+              <Molecule id="RR13_RP1_M1" name="M2">
+                <ListOfComponents>
+                  <Component id="RR13_RP1_M1_C1" name="s" state="a" numberOfBonds="0"/>
+                </ListOfComponents>
+              </Molecule>
+            </ListOfMolecules>
+          </ReactantPattern>
+        </ListOfReactantPatterns>
+        <ListOfProductPatterns>
+        </ListOfProductPatterns>
+        <RateLaw id="RR13_RateLaw" type="Ele" totalrate="0">
+          <ListOfRateConstants>
+            <RateConstant value="k"/>
+          </ListOfRateConstants>
+        </RateLaw>
+        <Map>
+          <MapItem sourceID="RR13_RP1_M1"/>
+          <MapItem sourceID="RR13_RP1_M1_C1"/>
+        </Map>
+        <ListOfOperations>
+          <Delete id="RR13_RP1" DeleteMolecules="0"/>
+        </ListOfOperations>
+      </ReactionRule>
     </ListOfReactionRules>
     <ListOfObservables>
       <Observable id="O1" name="A_m" type="Molecules">
@@ -954,6 +1024,15 @@
                   <Component id="O14_P1_M1_C1" name="s" state="a" numberOfBonds="0"/>
                 </ListOfComponents>
               </Molecule>
+            </ListOfMolecules>
+          </Pattern>
+        </ListOfPatterns>
+      </Observable>
+      <Observable id="O15" name="N2_m" type="Molecules">
+        <ListOfPatterns>
+          <Pattern id="O15_P1">
+            <ListOfMolecules>
+              <Molecule id="O15_P1_M1" name="N2"/>
             </ListOfMolecules>
           </Pattern>
         </ListOfPatterns>

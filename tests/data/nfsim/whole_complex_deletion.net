@@ -26,6 +26,7 @@ begin species
    12 C(d!1).D(d!1) X0
    13 B(d!1).B(d!1) X0
    14 P(z!1).P(z!2).Z(s!1,s!2) X0
+   15 M2(g!1,s~a).M2(g!2,s~b).N2(m1!1,m2!2) X0
 end species
 begin reactions
     1 1 0 k #AA_del
@@ -41,6 +42,7 @@ begin reactions
    11 12 0 k #CD_del
    12 13 0 k #BB_del
    13 14 0 k #ZPP_del
+   14 15 0 k #M2a_del
 end reactions
 begin groups
     1 A_m                  2*1
@@ -57,4 +59,5 @@ begin groups
    12 B_m                  2*13
    13 Z_m                  14
    14 La                   9
+   15 N2_m                 15
 end groups
