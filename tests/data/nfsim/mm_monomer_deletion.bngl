@@ -1,0 +1,24 @@
+# Control for mm_whole_complex_deletion.bngl: a Michaelis-Menten rule that
+# deletes a substrate of one molecule with no components runs (issue #1525).
+begin model
+begin parameters
+  kcat  1
+  Km    10000
+end parameters
+begin molecule types
+  E()
+  Q()
+end molecule types
+begin seed species
+  E()  10
+  Q()  100
+end seed species
+begin observables
+  Molecules Qt Q()
+end observables
+begin reaction rules
+  Q_mm:  Q() + E() -> E() MM(kcat,Km)
+end reaction rules
+end model
+generate_network({overwrite=>1})
+writeXML()

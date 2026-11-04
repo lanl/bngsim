@@ -428,6 +428,30 @@ CARRY_QUEUE = (
             },
         ],
     },
+    {
+        "topic": "bngsim/carry-whole-complex-once",
+        "kind": "local",
+        "status": (
+            "Fire a rule that deletes a whole species (no DeleteMolecules), or a "
+            "MatchOnce reactant, once per complex rather than once per match: fire() "
+            "accepts such a pick with probability 1/m, m the reactant's mapping sets "
+            "rooted in the picked complex, counted by bond traversal. NFsim fired a "
+            "homodimer deletion at 2k and a 4-ring's at 4k where BioNetGen's network "
+            "gives each complex k, and MatchOnce's per-complex count never took "
+            "effect. Not under a total rate, nor for a reactant already counted per "
+            "complex; draws only where a complex holds two or more matches. See "
+            "bngsim GH #1525."
+        ),
+        "commits": [
+            {
+                "commit": "1b8ee9393b4a0c406426c7c100337d5d20e068da",
+                "summary": (
+                    "bngsim: count a whole-complex deletion and a MatchOnce reactant "
+                    "once per complex"
+                ),
+            },
+        ],
+    },
 )
 
 SUMMARY_PREVIEW_LIMIT = 12

@@ -1114,6 +1114,12 @@ namespace NFcore
 				return rxnListMappingId2[rxnIndex];
 			}
 
+			/* How many mapping sets in reaction list rxnIndex are rooted at this
+			 * molecule, without the copy getRxnListMappingSet() makes. */
+			int getRxnListMappingCount(int rxnIndex) const {
+				return (int)rxnListMappingId2[rxnIndex].size();
+			}
+
 			bool setRxnListMappingId(int rxnIndex, int rxnListMappingId) {
 					if(rxnListMappingId == -1){
 						this->rxnListMappingId2[rxnIndex].clear();
@@ -1386,6 +1392,10 @@ namespace NFcore
 				return (reactantIndex < n_reactants) ? contextCountsPerComplex[reactantIndex] : false;
 			}
 
+			/* How many of this reaction's matches for reactant `reactantIndex` are
+			 * rooted in the complex that holds molecule m; see deletesWholeComplex. */
+			int countMatchesInComplex(unsigned int reactantIndex, Molecule *m);
+
 
 			void setRxnId(int rxnId) { this->rxnId = rxnId; };
 			int getRxnId() const { return rxnId; };
@@ -1502,6 +1512,16 @@ namespace NFcore
 			 * Requires complex bookkeeping: with it off every molecule reports
 			 * complex id -1 and there is no way to tell the cases apart. */
 			bool *contextCountsPerComplex;
+
+			/* True for a reactant the rule deletes as a whole species (no
+			 * DeleteMolecules), which removes the complex the match sits in.
+			 * BioNetGen gives that one reaction per complex at the rule's rate, however
+			 * many matches the complex holds, since every match deletes the same
+			 * species.  The reactant list holds one mapping set per match, so the
+			 * propensity counts such a complex once per match; fire() thins it back
+			 * to once per complex, as it does a MatchOnce reactant.  Counted by
+			 * traversal, so it does not need complex bookkeeping (bngsim #1525). */
+			bool *deletesWholeComplex;
 
 			/* if population reactants are identical, this is the discrete
 			 * count correction for calculating the ratelaw

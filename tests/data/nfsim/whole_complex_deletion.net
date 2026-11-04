@@ -1,0 +1,60 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 k                1e-3  # Constant
+    2 k2               1e-5  # Constant
+    3 kT               2  # Constant
+    4 X0               2000  # Constant
+    5 NX               100  # Constant
+    6 _LKL_del_local1  if((1>0),(3*k),k)  # ConstantExpression
+end parameters
+begin functions
+    1 kg() k
+    2 _rateLaw2() kT
+end functions
+begin species
+    1 A(d!1).A(d!1) X0
+    2 R(a!1,b!2).R(a!3,b!1).R(a!4,b!3).R(a!2,b!4) X0
+    3 M(g!1,s~a).M(g!2,s~b).N(m1!1,m2!2) X0
+    4 Q(d!1).Q(d!1) X0
+    5 Q(d) X0
+    6 G(d!1).G(d!1) X0
+    7 H(d!1).H(d!1) X0
+    8 X() NX
+    9 K(m1!1,m2!2).L(g!1,s~a).L(g!2,s~b) X0
+   10 J(d!1).J(d!1) X0
+   11 T(d!1).T(d!1) X0
+   12 C(d!1).D(d!1) X0
+   13 B(d!1).B(d!1) X0
+   14 P(z!1).P(z!2).Z(s!1,s!2) X0
+end species
+begin reactions
+    1 1 0 k #AA_del
+    2 2 0 k #R4_del
+    3 3 0 k #MNM_del
+    4 4 0 k #QQ_del
+    5 5 0 k #QQ_del
+    6 6 0 kg #GG_del
+    7 7,8 8 k2 #HH_del
+    8 9 0 _LKL_del_local1 #LKL_del
+    9 10 0 k #JJ_del
+   10 11 0 _rateLaw2 #TT_del
+   11 12 0 k #CD_del
+   12 13 0 k #BB_del
+   13 14 0 k #ZPP_del
+end reactions
+begin groups
+    1 A_m                  2*1
+    2 R_m                  4*2
+    3 N_m                  3
+    4 Qfree                5
+    5 Qbound               2*4
+    6 G_m                  2*6
+    7 H_m                  2*7
+    8 K_m                  9
+    9 J_m                  2*10
+   10 T_m                  2*11
+   11 C_m                  12
+   12 B_m                  2*13
+   13 Z_m                  14
+   14 La                   9
+end groups

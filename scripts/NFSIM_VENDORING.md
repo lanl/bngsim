@@ -128,10 +128,16 @@ Current carry topics:
   mu::Parser shim, as the host evaluator refuses it, through
   `bngsim::expr_compat::call_before_bracket` (GH #1415; it landed in GH #1419
   as a direct edit to the vendored tree and was carried after)
+- a whole-complex deletion, and a MatchOnce reactant, fired once per complex:
+  `fire()` thins a pick to probability 1/m, m the matches in the picked complex
+  (GH #1525)
 
 Not a carry, but tied to the vendored NFsim: bngsim refuses, by name, the rate
 laws NFsim cannot run, in `python/bngsim/_network_free_checks.py`
-(`refuse_nfsim_rate_laws`). Arrhenius (energy-based) rules are refused because
+(`refuse_nfsim_rate_laws`). A Michaelis-Menten rule with a reactant counted once per
+complex (a whole-complex deletion or MatchOnce) whose complex may hold two
+matches is refused there too: the law is not linear in its counts, so the
+thinning above cannot correct it (GH #1525). Arrhenius (energy-based) rules are refused because
 NFsim's energy-rule expansion divides by an `RT` BioNetGen does not apply and
 gets one-way and state-change rules wrong (RuleWorld/nfsim#102); when a refresh
 brings in the upstream fix, drop that half and test NFsim against the generated
@@ -248,6 +254,8 @@ Expected carry order:
     (GH #892), and a linear one's ramp integrated between them (GH #1179)
 21. a bracket right after a call refused in NFsim's mu::Parser shim, as the
     host refuses it (GH #1415)
+22. a whole-complex deletion, and a MatchOnce reactant, fired once per complex
+    rather than once per match (GH #1525)
 
 When you intentionally change the carry stack, regenerate the patch bundle
 afterward.

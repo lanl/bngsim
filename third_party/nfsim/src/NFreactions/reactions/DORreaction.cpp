@@ -425,11 +425,12 @@ int DORRxnClass::getCorrectedReactantCount(unsigned int reactantIndex) const
 		         : reactantTree->size();
 	}
 
-	// MatchOnce is the user's explicit request; contextCountsPerComplex is the
-	// same counting applied automatically to a reactant the rule never transforms,
-	// which is how BNG counts one.
-	if ((matchOncePerReactant[reactantIndex] || contextCountsPerComplex[reactantIndex])
-	    && !isPopulationType[reactantIndex]) {
+	// contextCountsPerComplex counts a reactant the rule never transforms once per
+	// complex, which is how BNG counts one.  A MatchOnce reactant is counted per
+	// match, like any other, and fire() thins it to once per complex: this count
+	// never collapsed it, since a list is only noted as able to share a complex
+	// for a context reactant (bngsim issue #1525).
+	if (contextCountsPerComplex[reactantIndex] && !isPopulationType[reactantIndex]) {
 		return countDistinctComplexes(reactantLists[reactantIndex]);
 	}
 
@@ -1207,11 +1208,12 @@ int DOR2RxnClass::getCorrectedReactantCount(unsigned int reactantIndex) const
 		         ? countDistinctComplexes(reactantTree2) : reactantTree2->size();
 	}
 
-	// MatchOnce is the user's explicit request; contextCountsPerComplex is the
-	// same counting applied automatically to a reactant the rule never transforms,
-	// which is how BNG counts one.
-	if ((matchOncePerReactant[reactantIndex] || contextCountsPerComplex[reactantIndex])
-	    && !isPopulationType[reactantIndex]) {
+	// contextCountsPerComplex counts a reactant the rule never transforms once per
+	// complex, which is how BNG counts one.  A MatchOnce reactant is counted per
+	// match, like any other, and fire() thins it to once per complex: this count
+	// never collapsed it, since a list is only noted as able to share a complex
+	// for a context reactant (bngsim issue #1525).
+	if (contextCountsPerComplex[reactantIndex] && !isPopulationType[reactantIndex]) {
 		return countDistinctComplexes(reactantLists[reactantIndex]);
 	}
 

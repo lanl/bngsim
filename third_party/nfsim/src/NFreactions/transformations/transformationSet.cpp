@@ -930,6 +930,19 @@ bool TransformationSet::isPureContextReactant(unsigned int reactantIndex) const
 }
 
 
+bool TransformationSet::deletesWholeSpecies(unsigned int reactantIndex) const
+{
+	if( reactantIndex >= n_reactants ) return false;
+	for( unsigned int t=0; t<transformations[reactantIndex].size(); t++ ) {
+		Transformation *tr = transformations[reactantIndex].at(t);
+		if( tr->getType()==(int)TransformationFactory::REMOVE
+		    && tr->getRemovalType()==(int)TransformationFactory::COMPLETE_SPECIES_REMOVAL )
+			return true;
+	}
+	return false;
+}
+
+
 void TransformationSet::finalize()
 {
 	//Be sure to add at least a blank transformation to every reactant if there is no transformation

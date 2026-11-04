@@ -144,6 +144,21 @@ counted **once per complex**, not once per way it embeds into that complex
 (issues #281, #298, #300). Counting embeddings runs a multi-subunit catalyst two
 or three times too fast.
 
+### A rule that deletes a whole complex, and `MatchOnce`
+
+A rule that deletes a whole species, without `DeleteMolecules`
+(`A(d!1).A(d!1) -> 0`, or `M() -> 0` on a complex holding two `M`), removes the
+complex its match sits in, and BNG2.pl's network gives each such complex **one
+reaction at the rule's rate**, however many matches it holds. `{MatchOnce}` asks
+for the same counting. NFsim keeps one entry per match, so it fires such a pick
+with probability 1/m, m the matches in the picked complex: each complex goes at
+the rule's rate once, and complexes are picked evenly whatever their matches
+(issue #1525). Before, a homodimer pool decayed at 2k and a 4-ring at 4k, and
+`MatchOnce` had no effect. A `TotalRate` rule is not thinned. A Michaelis-Menten
+rule with such a reactant, whose complex may hold two matches, is refused by
+`method="nf"`: the law is not linear in its counts, so the thinning cannot
+correct it. RuleMonkey counts a whole-complex deletion once per complex.
+
 ### `TotalRate`
 
 Under `TotalRate` the rate law states the whole propensity of the rule outright.
