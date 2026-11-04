@@ -3,12 +3,12 @@
 Covers:
 - #6:  HAS_NFSIM exported from bngsim.__init__
 - #14: sample_times minimum relaxed from 3 to 2
-- #15: Stop condition eval failures logged instead of silently swallowed
+- #15: Stop condition eval failures logged instead of silently swallowed (now
+  refused where the condition is added, issue #1509)
 """
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 
 import bngsim
@@ -51,27 +51,18 @@ class TestSampleTimesMinimum:
             sim.run(sample_times=[50.0])
 
 
-# ─── #15: Stop condition eval logging ────────────────────────────────────
+# ─── #15: Stop condition with a name it cannot read ─────────────────────
 
 
-class TestStopConditionLogging:
-    def test_bad_expression_logs_debug(self, simple_decay_net: Path, caplog):
-        """A stop condition with an undefined variable logs at DEBUG level."""
+class TestStopConditionUnreadableName:
+    def test_bad_expression_is_refused_where_it_is_added(self, simple_decay_net: Path):
+        """A stop condition with an undefined variable is refused when it is added.
+
+        The 2026-04-05 fix logged each failed sample at DEBUG and let the run
+        finish, so the condition read as one never met; issue #1509 replaced that
+        with a refusal naming the variable.
+        """
         model = bngsim.Model.from_net(str(simple_decay_net))
         sim = bngsim.Simulator(model, method="ode")
-        sim.add_stop_condition("nonexistent_var > 999", label="bad_cond")
-
-        with caplog.at_level(logging.DEBUG, logger="bngsim"):
-            # Should complete without raising — the bad condition
-            # just never triggers.
-            result = sim.run(t_span=(0, 10), n_points=11)
-
-        assert result.n_times == 11
-        # Verify that a debug message was logged about the eval failure
-        debug_messages = [
-            r.message
-            for r in caplog.records
-            if r.levelno == logging.DEBUG and "eval failed" in r.message
-        ]
-        assert len(debug_messages) > 0
-        assert "nonexistent_var" in debug_messages[0]
+        with pytest.raises(ValueError, match="nonexistent_var is not a name the model defines"):
+            sim.add_stop_condition("nonexistent_var > 999", label="bad_cond")

@@ -101,7 +101,7 @@ Interactive:
 - **`set_time(t)`** — Set `current_time` (finite, else `ValueError`); the next `run_until` integrates from there
 
 Stop conditions:
-- **`add_stop_condition(condition, *, label)`** — `str` expression or `callable`. `run` raises `StopConditionMet` with the result cut at the first sample a condition holds at; `run_batch`, `run_replicates` and `parameter_scan` return each row that meets one cut there, with `Result.stop_condition` set, and refuse `squeeze=True` while one is registered (issue #1369)
+- **`add_stop_condition(condition, *, label)`** — `str` expression or `callable`. `run` raises `StopConditionMet` with the result cut at the first sample a condition holds at; `run_batch`, `run_replicates` and `parameter_scan` return each row that meets one cut there, with `Result.stop_condition` set, and refuse `squeeze=True` while one is registered (issue #1369). An expression reads the observables, a species by its name with `(` and `)` written as `_`, and `t`/`time`; a name it cannot read, `^` or a tuple is refused with `ValueError` where it is added (issue #1509)
 - **`clear_stop_conditions()`**
 
 Steady-state (`method` ∈ `"integration"` (default), `"newton"`, `"kinsol"` alias):
