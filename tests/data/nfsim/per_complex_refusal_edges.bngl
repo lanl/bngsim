@@ -1,0 +1,43 @@
+# Edges of the per-complex refusals of mm_whole_complex_deletion.bngl and
+# local_function_on_one_match.bngl (issue #1525). S(b,b) is first written in
+# Sb_mm's pattern, which lists one b free: an S with its other b bound to
+# another S matches, so a dimer holds two matches and Sb_mm is refused.
+# Dmol_mm and Lmol carry DeleteMolecules: they delete the matched molecule, one
+# reaction per match, so neither is counted per complex.
+begin model
+begin parameters
+  kcat  1
+  Km    10000
+  ks    1
+  kon   1e-3
+  k     1
+end parameters
+begin molecule types
+  E()
+  S(b,b)
+  D(d)
+  L(d,s~a~b)
+end molecule types
+begin seed species
+  E()  10
+  D(d!1).D(d!1)  100
+  L(d!1,s~a).L(d!1,s~b)  100
+end seed species
+begin observables
+  Molecules La L(s~a)
+  Molecules St S()
+end observables
+begin functions
+  fl(x) = k*La(x)
+end functions
+begin reaction rules
+  Sb_mm:   S(b) + E() -> E() MM(kcat,Km)
+  Ssyn:    0 -> S(b,b) ks
+  Sdim:    S(b) + S(b) -> S(b!1).S(b!1) kon
+  Dmol_mm: D(d!+) + E() -> E() MM(kcat,Km) DeleteMolecules
+  Lmol:    L%x(d!+) -> 0 fl(x) DeleteMolecules
+  DD_mm:   D(d!1).D(d!1) + E() -> E() MM(kcat,Km) DeleteMolecules
+  LL:      L%x(d!1).L(d!1) -> 0 fl(x) DeleteMolecules
+end reaction rules
+end model
+writeXML()

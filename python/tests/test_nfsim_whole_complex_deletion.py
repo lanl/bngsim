@@ -255,6 +255,23 @@ def test_the_refusal_names_no_substrate_that_is_always_free():
     ]
 
 
+def test_a_site_the_type_repeats_is_free_only_if_every_copy_is():
+    """S(b,b): Sb_mm's substrate S(b) lists one b free, so an S bound to another S
+    through its other b matches, and an S dimer holds two matches. Refused. The
+    first S the XML writes is that pattern's, so how many b an S has is read from
+    the molecule that lists the most (Ssyn's product). Control: Dmol_mm, DD_mm,
+    Lmol and LL carry DeleteMolecules, which deletes the matched molecules, one
+    reaction per match, so none is counted per complex."""
+    from bngsim._network_free_checks import (
+        local_functions_on_one_match,
+        mm_rules_counted_per_complex,
+    )
+
+    xml = DATA / "per_complex_refusal_edges.xml"
+    assert mm_rules_counted_per_complex(xml) == ["Sb_mm"]
+    assert local_functions_on_one_match(xml) == []
+
+
 def test_a_local_function_on_one_match_of_a_deleted_complex_is_refused():
     """fl(x) reads L(s~a) on the tagged molecule: k on one match of
     L(s~a).K.L(s~b), 0 on the other. BNG2.pl's network takes its first embedding's
