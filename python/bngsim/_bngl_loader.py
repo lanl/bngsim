@@ -67,7 +67,8 @@ def _default_cache_dir() -> Path:
     """Resolve the generated-network cache, honoring ``BNGSIM_BNGL_CACHE_DIR``.
 
     Same shape and the same reasons as ``_codegen.CACHE_DIR``: content-addressed,
-    so it is shared across processes and can never go stale, and overridable so a
+    so it is shared across processes and can never go stale (a model that reads
+    another file is not cached, issue #1494), and overridable so a
     cluster job can point it at node-local scratch. Networks are small text
     files; like the codegen cache this one is not pruned.
     """
@@ -144,6 +145,13 @@ _ARTIFACT_VERBS = frozenset(
 )
 _DROPPED_VERBS = _EXPERIMENT_VERBS | _GENERATE_VERBS | _ARTIFACT_VERBS
 
+# The actions that read another file into the model: ``readFile`` and the
+# ``readModel``/``readNetwork``/``readSBML`` that go through it, and
+# ``readNFspecies``. They are kept (a parameter file read before
+# ``generate_network`` is part of the model), so the network depends on a file
+# the cache key cannot see, and a load that keeps one is not cached (issue #1494).
+_READ_VERBS = frozenset({"readfile", "readmodel", "readnetwork", "readsbml", "readnfspecies"})
+
 _VERB_RE = re.compile(r"^([A-Za-z_]\w*)\s*\(")
 
 
@@ -171,7 +179,13 @@ def generation_source(text: str) -> str:
     action is kept or dropped in one piece rather than leaving a dangling
     ``t_end=>10})`` for BNG2.pl to blame on the model.
     """
+    return _generation_source(text)[0]
+
+
+def _generation_source(text: str) -> tuple[str, list[str]]:
+    """:func:`generation_source`'s text, and the verb of each action it keeps."""
     kept: list[str] = []
+    kept_verbs: list[str] = []
     stack: list[str] = []
     pending: list[str] = []  # physical lines of an in-progress action statement
     buf = ""  # ...and its comment-stripped text, for classification
@@ -184,6 +198,7 @@ def generation_source(text: str) -> str:
             seen_generate = True
         elif verb is not None and not seen_generate and verb not in _DROPPED_VERBS:
             kept.extend(pending)
+            kept_verbs.append(verb)
         pending, buf = [], ""
 
     for physical in text.splitlines():
@@ -215,7 +230,7 @@ def generation_source(text: str) -> str:
             flush()
     if pending:
         flush()
-    return "\n".join(kept) + "\n"
+    return "\n".join(kept) + "\n", kept_verbs
 
 
 # The actions after ``generate_network`` that change the state a run starts
@@ -445,12 +460,29 @@ def resolve_bng2(explicit: str | Path | None = None) -> Path:
     return r.bng2_pl
 
 
+def _bng2_library_root(bng2: Path) -> Path:
+    """The directory BNG2.pl loads its ``Perl2`` modules and ``VERSION`` from.
+
+    BNG2.pl's ``use lib`` takes ``$BNGPATH`` when it is set, else
+    ``$BioNetGenRoot``, else the script's own directory with links resolved, and
+    the subprocess inherits this environment. So a ``$BNGPATH`` that names another
+    install swaps the generator under a BNG2.pl resolved some other way.
+    """
+    for var in ("BNGPATH", "BioNetGenRoot"):
+        if var in os.environ:  # Perl's ``exists``: set, even to "", counts
+            return Path(os.environ[var] or os.sep)
+    return bng2.resolve().parent
+
+
 def _cache_key(effective_bngl: str, bng2: Path) -> str:
     """Digest of everything that determines the generated network.
 
     The flattened BNGL *and* the generator: two BioNetGen releases do not have to
     agree on what a rule set expands to, so an upgrade — in place or to a
     different install — must not be served a network the previous one produced.
+    The generator is BNG2.pl together with the ``Perl2`` library and ``VERSION``
+    it loads, which need not sit beside it (:func:`_bng2_library_root`), and which
+    a BioNetGen checkout edits in place (issue #1494).
     """
     h = hashlib.sha256()
     h.update(effective_bngl.encode())
@@ -461,6 +493,17 @@ def _cache_key(effective_bngl: str, bng2: Path) -> str:
         h.update(f"\0{st.st_size}\0{st.st_mtime_ns}".encode())
     except OSError:  # pragma: no cover - the file was just resolved
         pass
+    root = _bng2_library_root(bng2)
+    files = [os.path.join(root, "VERSION")]
+    for d, dirs, names in os.walk(os.path.join(root, "Perl2")):  # 3x Path.rglob's speed
+        dirs.sort()
+        files.extend(os.path.join(d, n) for n in sorted(names) if n.endswith(".pm"))
+    for f in files:
+        try:
+            st = os.stat(f)
+        except OSError:
+            continue
+        h.update(f"\0{os.path.relpath(f, root)}\0{st.st_size}\0{st.st_mtime_ns}".encode())
     return h.hexdigest()[:32]
 
 
@@ -499,7 +542,12 @@ def bngl_to_net(
         raise FileNotFoundError(f"BNGL file not found: {path}")
     bng2 = resolve_bng2(bng2_pl)
     source = path.read_text()
-    effective = generation_source(source) + "\n" + generate_network_call(source) + "\n"
+    kept, kept_verbs = _generation_source(source)
+    effective = kept + "\n" + generate_network_call(source) + "\n"
+    if _READ_VERBS.intersection(kept_verbs):
+        # The network depends on a file the model reads, which the key cannot
+        # see: an edited parameter file was served the first network (#1494).
+        cache = False
 
     stem = path.stem or "model"
     key = _cache_key(effective, bng2)
@@ -513,7 +561,16 @@ def bngl_to_net(
     try:
         scratch = workdir / f"{stem}.bngl"
         scratch.write_text(effective)
-        net = _run_bng2(bng2, scratch, workdir, timeout=timeout, source_name=path.name)
+        net = _run_bng2(
+            bng2,
+            scratch,
+            workdir,
+            timeout=timeout,
+            source_name=path.name,
+            # A relative readFile() path resolves as it does for BNG2.pl run
+            # from the model's own directory (issue #1494).
+            cwd=path.absolute().parent,
+        )
 
         if net_out is not None:
             # Populate the cache too, so a later plain load reuses this run.
@@ -534,15 +591,21 @@ def bngl_to_net(
         shutil.rmtree(workdir, ignore_errors=True)
 
 
-def _run_bng2(bng2: Path, scratch: Path, workdir: Path, *, timeout: int, source_name: str) -> Path:
-    """Run ``BNG2.pl`` on ``scratch`` and return the ``.net`` it wrote."""
+def _run_bng2(
+    bng2: Path, scratch: Path, workdir: Path, *, timeout: int, source_name: str, cwd: Path
+) -> Path:
+    """Run ``BNG2.pl`` on ``scratch`` from ``cwd`` and return the ``.net`` it wrote.
+
+    Its output goes to ``--outdir``, so ``cwd`` decides only how a relative path
+    the model reads (``readFile``) resolves.
+    """
     try:
         proc = subprocess.run(
             ["perl", str(bng2), "--outdir", str(workdir), str(scratch)],
             capture_output=True,
             text=True,
             timeout=timeout,
-            cwd=str(workdir),
+            cwd=str(cwd),
         )
     except subprocess.TimeoutExpired as e:
         raise ModelError(
