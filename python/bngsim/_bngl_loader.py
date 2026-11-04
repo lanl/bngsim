@@ -52,6 +52,7 @@ import shutil
 import subprocess
 import tempfile
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 
 from bngsim._exceptions import ModelError
@@ -159,10 +160,25 @@ _READ_CALL_RE = re.compile(
 )
 
 
+_CONTINUED_RE = re.compile(r"\\\s*$")
+
+
 def _reads_other_files(kept: str) -> bool:
     """Whether the BNGL BNG2.pl is handed, *kept*, calls an action that reads
-    another file."""
-    return any(_READ_CALL_RE.search(line.split("#", 1)[0]) for line in kept.splitlines())
+    another file. Lines are joined as BNG2.pl's ``get_line`` joins them: each
+    loses its comment, and one that ends in a backslash takes the next."""
+    lines = iter(kept.splitlines())
+    for line in lines:
+        line = line.split("#", 1)[0]
+        while _CONTINUED_RE.search(line):
+            nxt = next(lines, None)
+            line = _CONTINUED_RE.sub("", line)
+            if nxt is None:
+                break
+            line += nxt.split("#", 1)[0]
+        if _READ_CALL_RE.search(line):
+            return True
+    return False
 
 
 _VERB_RE = re.compile(r"^([A-Za-z_]\w*)\s*\(")
@@ -466,7 +482,7 @@ def resolve_bng2(explicit: str | Path | None = None) -> Path:
     return r.bng2_pl
 
 
-def _bng2_library_root(bng2: Path) -> Path:
+def _bng2_library_root(bng2: Path, env: dict[str, str] | None = None) -> Path:
     """The directory BNG2.pl loads its ``Perl2`` modules and ``VERSION`` from.
 
     BNG2.pl's ``use lib`` takes ``$BNGPATH`` when it is set, else
@@ -475,9 +491,10 @@ def _bng2_library_root(bng2: Path) -> Path:
     ``$BNGPATH`` that names another install swaps the generator under a BNG2.pl
     resolved some other way.
     """
+    source: Mapping[str, str] = os.environ if env is None else env
     for var in ("BNGPATH", "BioNetGenRoot"):
-        if var in os.environ:  # Perl's ``exists``: set, even to "", counts
-            return Path(os.environ[var] or os.sep)
+        if var in source:  # Perl's ``exists``: set, even to "", counts
+            return Path(source[var] or os.sep)
     return bng2.resolve().parent
 
 
@@ -488,13 +505,17 @@ def _bng2_env() -> dict[str, str]:
     from the model's directory (issue #1494), where a relative one names
     something else."""
     env = dict(os.environ)
+    cwd = os.getcwd()
     for var in ("BNGPATH", "BioNetGenRoot"):
-        if env.get(var):
-            env[var] = os.path.abspath(env[var])
+        value = env.get(var)
+        if value and not os.path.isabs(value):
+            # Joined, not normalized: ``link/..`` is the link target's parent,
+            # which only the filesystem knows.
+            env[var] = os.path.join(cwd, value)
     return env
 
 
-def _cache_key(effective_bngl: str, bng2: Path) -> str:
+def _cache_key(effective_bngl: str, bng2: Path, env: dict[str, str] | None = None) -> str:
     """Digest of everything that determines the generated network.
 
     The flattened BNGL *and* the generator: two BioNetGen releases do not have to
@@ -513,7 +534,7 @@ def _cache_key(effective_bngl: str, bng2: Path) -> str:
         h.update(f"\0{st.st_size}\0{st.st_mtime_ns}".encode())
     except OSError:  # pragma: no cover - the file was just resolved
         pass
-    root = str(_bng2_library_root(bng2))
+    root = str(_bng2_library_root(bng2, env))
     files = ["VERSION"]  # relative to root, which is not hashed: a copy keys alike
     for d, dirs, names in os.walk(os.path.join(root, "Perl2")):  # 3x Path.rglob's speed
         dirs.sort()
@@ -561,9 +582,11 @@ def bngl_to_net(
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"BNGL file not found: {path}")
-    # Absolute: BNG2.pl runs from the model's directory, where a path found
-    # relative to this process's names nothing (issue #1494).
-    bng2 = Path(os.path.abspath(resolve_bng2(bng2_pl)))
+    # Absolute, and the environment fixed once, for the key and the run alike:
+    # BNG2.pl runs from the model's directory, where a path found relative to
+    # this process's names nothing (issue #1494).
+    env = _bng2_env()
+    bng2 = Path(resolve_bng2(bng2_pl)).absolute()
     source = path.read_text()
     effective = generation_source(source) + "\n" + generate_network_call(source) + "\n"
     # The network depends on a file the model reads, which the key cannot see:
@@ -573,7 +596,7 @@ def bngl_to_net(
         cache = False
 
     stem = path.stem or "model"
-    key = _cache_key(effective, bng2)
+    key = _cache_key(effective, bng2, env)
     cached = CACHE_DIR / f"{stem}_{key}.net"
     if cache and cached.is_file():
         # A cache hit still serves a net_out= caller: they asked for the network
@@ -593,6 +616,7 @@ def bngl_to_net(
             # A relative readFile() path resolves as it does for BNG2.pl run
             # from the model's own directory (issue #1494).
             cwd=path.absolute().parent,
+            env=env,
         )
 
         if net_out is not None:
@@ -610,16 +634,26 @@ def bngl_to_net(
                 # _net_path still points at a real file.
                 pass
         # The key cannot tell two read models' networks apart either, so each
-        # gets its own file: two loads of one driver in different directories
-        # wrote the same path (issue #1494).
-        unique = f"_{uuid.uuid4().hex[:12]}" if reads else ""
-        return _publish(net, _session_dir() / f"{stem}_{key}{unique}.net")
+        # directory's gets its own file: two loads of one driver in different
+        # directories wrote the same path (issue #1494). One per directory,
+        # where one per load left a file for every load of a reloaded model.
+        where = ""
+        if reads:
+            where = "_" + hashlib.sha256(str(path.absolute().parent).encode()).hexdigest()[:12]
+        return _publish(net, _session_dir() / f"{stem}_{key}{where}.net")
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
 
 def _run_bng2(
-    bng2: Path, scratch: Path, workdir: Path, *, timeout: int, source_name: str, cwd: Path
+    bng2: Path,
+    scratch: Path,
+    workdir: Path,
+    *,
+    timeout: int,
+    source_name: str,
+    cwd: Path,
+    env: dict[str, str],
 ) -> Path:
     """Run ``BNG2.pl`` on ``scratch`` from ``cwd`` and return the ``.net`` it wrote.
 
@@ -633,7 +667,7 @@ def _run_bng2(
             text=True,
             timeout=timeout,
             cwd=str(cwd),
-            env=_bng2_env(),
+            env=env,
         )
     except subprocess.TimeoutExpired as e:
         raise ModelError(

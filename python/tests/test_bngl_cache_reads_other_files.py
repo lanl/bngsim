@@ -81,9 +81,10 @@ def fake_bng2(tmp_path, monkeypatch):
     bng2.write_text("# not run\n")
     calls: list[Path | None] = []
 
-    def run(bng2_path, scratch, workdir, *, timeout, source_name, cwd=None):
+    def run(bng2_path, scratch, workdir, *, timeout, source_name, cwd=None, env=None):
         calls.append(cwd)
-        m = re.search(r'readFile\(\{file=>"([^"]+)"', scratch.read_text())
+        joined = re.sub(r"\\\s*\n", "", scratch.read_text())  # BNG2.pl's line continuation
+        m = re.search(r'readFile\s*\(\s*\{\s*file=>"([^"]+)"', joined)
         k = 1.0
         if m:
             params = Path(m.group(1))
@@ -205,6 +206,52 @@ def test_a_read_another_action_calls_turns_the_cache_off(tmp_path, cache, fake_b
     assert bngsim.Model.from_bngl(model).get_param("k") == 2.0
 
 
+@pytest.mark.parametrize(
+    "split",
+    [
+        'readFile\\\n({{file=>"{p}", blocks=>["parameters"]}})\n',
+        'readFile \\\n  ({{file=>"{p}", blocks=>["parameters"]}})\n',
+        'read\\\nFile({{file=>"{p}", blocks=>["parameters"]}})\n',
+    ],
+    ids=["before-paren", "spaced", "inside-the-verb"],
+)
+def test_a_read_split_by_a_line_continuation_turns_the_cache_off(
+    tmp_path, cache, fake_bng2, split
+):
+    """BNG2.pl joins a line ending in a backslash to the next before it reads it."""
+    params = tmp_path / "params.bngl"
+    model = tmp_path / "m.bngl"
+    model.write_text(split.format(p=params) + MODEL + "generate_network({overwrite=>1})\n")
+    params.write_text(_params(1))
+    assert bngsim.Model.from_bngl(model).get_param("k") == 1.0
+    params.write_text(_params(2))
+    assert bngsim.Model.from_bngl(model).get_param("k") == 2.0
+
+
+def test_a_continuation_into_a_commented_read_leaves_the_cache_on(tmp_path, cache, fake_bng2):
+    """Control: BNG2.pl strips each joined line's comment, so a read there is
+    not a call."""
+    model = tmp_path / "m.bngl"
+    head = 'setOption("SpeciesLabel","Auto") \\\n# readFile({file=>"p.bngl"})\n'
+    model.write_text(head + MODEL + "generate_network({overwrite=>1})\n")
+    bngsim.Model.from_bngl(model)
+    bngsim.Model.from_bngl(model)
+    assert len(fake_bng2) == 1
+
+
+def test_a_reloaded_read_model_keeps_one_session_file(tmp_path, cache, fake_bng2, monkeypatch):
+    """One file per directory: a file per load left one for every reload."""
+    session = tmp_path / "session"
+    session.mkdir()
+    monkeypatch.setattr(_bngl_loader, "_session_dir", lambda: session)
+    (tmp_path / "params.bngl").write_text(_params(1))
+    model = tmp_path / "m.bngl"
+    model.write_text(_driver("params.bngl"))
+    for _ in range(3):
+        bngsim.Model.from_bngl(model)
+    assert len(list(session.iterdir())) == 1
+
+
 def test_a_commented_out_read_leaves_the_cache_on(tmp_path, cache, fake_bng2):
     """Control: a read in a comment is not a call. Inside the model block, where
     the loader keeps every line as written, comments included."""
@@ -279,7 +326,8 @@ def test_bngpath_wins_over_bionetgenroot(tmp_path, no_library_env, monkeypatch):
 def test_a_relative_bngpath_names_the_library_beside_this_process(
     tmp_path, no_library_env, monkeypatch
 ):
-    """Resolved against this process's directory, where BNG2.pl was found."""
+    """Control: resolved against this process's directory, where BNG2.pl was
+    found, a relative $BNGPATH keys as the absolute one does."""
     bng2 = _install(tmp_path / "a", "2.9.3")
     _install(tmp_path / "b", "2.9.10")
     monkeypatch.setenv("BNGPATH", str(tmp_path / "b"))
@@ -287,7 +335,6 @@ def test_a_relative_bngpath_names_the_library_beside_this_process(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("BNGPATH", "b")
     assert _bngl_loader._cache_key("model", bng2) == absolute
-    assert _bngl_loader._bng2_env()["BNGPATH"] == str(tmp_path / "b")
 
 
 def test_an_empty_bngpath_reads_no_library_beside_bng2_pl(tmp_path, no_library_env, monkeypatch):
@@ -409,6 +456,43 @@ def test_bng2_a_relative_bngpath_still_finds_the_library(tmp_path, cache, monkey
     model.write_text(MODEL.replace("begin molecule types", _params(1) + "begin molecule types"))
     loaded_k, atot = _atot_at_1(model)
     assert loaded_k == 1 and atot == pytest.approx(100 * math.exp(-1), rel=1e-7)
+
+
+@needs_bng2
+def test_bng2_a_read_split_by_a_line_continuation_is_read_again(tmp_path, cache):
+    """The first round of the fix scanned physical lines and missed the call."""
+    params = tmp_path / "params.bngl"
+    model = tmp_path / "m.bngl"
+    split = 'readFile\\\n({file=>"params.bngl", blocks=>["parameters"]})\n'
+    model.write_text(split + MODEL + "generate_network({overwrite=>1})\n")
+    for k in (1, 2):
+        params.write_text(_params(k))
+        loaded_k, atot = _atot_at_1(model)
+        assert loaded_k == k
+        assert atot == pytest.approx(100 * math.exp(-k), rel=1e-7)
+
+
+@needs_bng2
+def test_bng2_a_path_through_a_link_and_dotdot_still_finds_bng2_pl(tmp_path, cache, monkeypatch):
+    """``link/..`` is the link target's parent, which only the filesystem knows;
+    collapsing it as text named a directory that is not there. The absolute half
+    is a control. The relative half failed on main, where BNG2.pl ran from a
+    scratch directory that a relative $BNGPATH names nothing in."""
+    root = Path(_BNG.bng2_pl).resolve().parent
+    (tmp_path / "l").symlink_to(root / "Perl2")
+    via = tmp_path / "l" / ".."
+    model = tmp_path / "m.bngl"
+    model.write_text(MODEL.replace("begin molecule types", _params(1) + "begin molecule types"))
+    monkeypatch.delenv("BNG2_PL", raising=False)
+    monkeypatch.setenv("BNGPATH", str(via))
+    m = bngsim.Model.from_bngl(model, bng2_pl=str(via / "BNG2.pl"))
+    assert m.get_param("k") == 1.0
+    # Relative too: joined to this process's directory, not normalized.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BNGPATH", os.path.join("l", ".."))
+    model.write_text(MODEL.replace("begin molecule types", _params(2) + "begin molecule types"))
+    m = bngsim.Model.from_bngl(model, cache=False)
+    assert m.get_param("k") == 2.0
 
 
 @needs_bng2
