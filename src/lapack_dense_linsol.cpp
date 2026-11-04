@@ -5,7 +5,8 @@
 // per-factorization by the GH #132 count gate) and always back-solves with the
 // built-in denseGETRS. See lapack_dense_linsol.hpp for the rationale. Every
 // dense solve is this solver, the BLAS factor only where it is asked for and
-// linked: each reads a row the matrix holds alone as its own equation (below).
+// linked: each reads a row the matrix holds alone as its own equation, and
+// gives exactly 0 to rows that read only rows at 0 (below).
 //
 // Correctness contract (verified by tests/test_lapack_dense_linsol.cpp):
 //   LAPACK dgetrf and SUNDIALS denseGETRF produce the SAME in-place L/U storage
@@ -24,6 +25,7 @@
 #include <sunlinsol/sunlinsol_dense.h>
 #include <sunmatrix/sunmatrix_dense.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
@@ -113,10 +115,16 @@ long env_long(const char *name, long fallback) {
 }
 #endif // BNGSIM_HAS_LAPACK_DENSE
 
+// A row with at most kMaxReads nonzeros off its diagonal is a candidate to be
+// read on its own (below). A row with more is left to the LU, and so is every
+// row that reads one, directly or through others: finding a candidate's entries
+// is a pass over the matrix, which the bound keeps to a few entries per row.
+constexpr sunindextype kMaxReads = 16;
+
 // Solver content: SUNDIALS 0-based pivots consumed by denseGETRS, plus a scratch
 // LAPACK 1-based pivot array filled by dgetrf, plus the GH #132 adaptive-gate
 // state (how many factorizations have run, and the switch thresholds), plus the
-// rows the factored matrix holds alone. `adaptive` is false for a solver that
+// rows of the factored matrix the solve reads on their own. `adaptive` is false for a solver that
 // was not asked for the BLAS factor, or whose build links none: it factors with
 // the built-in GETRF only, as SUNLinSol_Dense does, and the GH #132 accessors
 // treat it as not the adaptive solver (-1, no reset).
@@ -132,14 +140,38 @@ struct LapackDenseContent {
     long switch_after;      // K: built-in for the first K factorizations, then dgetrf
     long min_n;             // never use the BLAS factor below this N
     sunindextype last_flag;
-    sunindextype n_alone;    // rows of the factored matrix held alone
+    // Per row: its nonzeros off the diagonal, counted up to kMaxReads + 1, size N.
+    unsigned char *off;
+    // Per row, at the last full look at the pattern: 0 for a row with more than
+    // kMaxReads entries off its diagonal, 1 for one that reads such a row,
+    // directly or through others, and 2 for a candidate, which reads neither.
+    unsigned char *state;
+    sunindextype *witness;     // for a row in state 1, a row in state 0 or 1 it reads
+    sunindextype n_barred;     // the rows in state 1
+    sunindextype *barred;      // their indices, size N
+    unsigned char *hit;        // scratch for finding them, size N
+    sunindextype *wave, *next; // likewise
+    bool have_pattern;         // the fields below hold a pattern still to check
+    // The candidates, and what each one's row reads.
+    sunindextype n_cand;
+    sunindextype *cand;    // candidate k's row, size N
+    sunindextype *cand_of; // a row's candidate index, or -1, size N
+    sunindextype *n_dep;   // candidate k's entries off the diagonal, size N
+    sunindextype *dep_col; // their columns, kMaxReads per candidate
+    sunindextype
+        *reader_at;       // candidate k's readers are reader[reader_at[k] .. [k + 1]), size N + 1
+    sunindextype *reader; // the candidates whose rows read candidate k's, kMaxReads per candidate
+    // The rows held alone: candidates with nothing off their diagonals.
+    sunindextype n_alone;
     sunindextype *alone;     // their indices, size N
     sunrealtype *alone_diag; // their diagonal entries, read before the factor
     sunrealtype *alone_x;    // a solve's answer for each, size N
-    unsigned char *seen;     // per row: a nonzero off the diagonal, size N
+    // Per solve: per candidate, whether its component is exactly 0, and a list.
+    unsigned char *zero; // size N
+    sunindextype *queue; // size N
 };
 
-// ── A row the matrix holds alone ────────────────────────────────────────────
+// ── Rows the solve reads on their own ───────────────────────────────────────
 // Where row i of the Newton matrix has no nonzero off its diagonal, x_i is fixed
 // by that row alone: a_ii·x_i = b_i. Partial pivoting does not see that. When
 // column i has a larger entry in another row, GETRF takes that row as the
@@ -155,48 +187,185 @@ struct LapackDenseContent {
 // elsewhere: x_P = 0 exactly. Reversed, P's column comes first, V's row is the
 // pivot, and the 1e-16 left in x_P grew to P = 2.6e8, 25.6x the trajectory's
 // peak, on x86-64. On arm64 the residue came out negative, and the band of
-// #1340 held it there. BIOMD0000000908's S = 0 went the same way. KLU does
-// not, since its block-triangular form takes such a row as a block of its own.
+// #1340 held it there. BIOMD0000000908's S = 0 went the same way. So the solve
+// reads each row held alone as its row gives it, b_i / a_ii.
 //
-// So the solve reads each such component as its row gives it, b_i / a_ii,
-// in place of what the back-solve left there. That is the exact answer of the
-// factored system, in any species order. It leaves every other component as
-// the back-solve gave it. Finding the rows is one pass over the matrix per
-// factorization, against GETRF's N^3/3; reading them is one division each per
-// solve. A NaN entry is not a zero, so a row with one is not held alone.
+// Species at 0 that feed each other went the same way (#1485): a chain,
+// Q' = kQ + P, where Q's row reads P's, and a cycle, P' = Q' = k(P + Q), where
+// P's and Q's rows read each other. Neither row is held alone, and a cycle's P
+// reached 9.6e5 from 0 with the species reversed. But a set of rows that read
+// only each other, each with b_i = 0, fixes those components at exactly 0: the
+// rows are a system of their own, A_ZZ·x_Z = 0, and A_ZZ is not singular where
+// A is not, since the rest of A does not reach them (A is block triangular
+// with A_ZZ a block). KLU's block-triangular form finds the same answer, so the
+// solve gives 0 to the largest such set. Every other component is the
+// back-solve's, so a solve whose answer has no such exact 0 is SUNDIALS' dense
+// LU's to the bit, as before.
 //
-// Only a row with nothing off its diagonal is read so. Species at 0 that
-// feed each other, a chain (Q' = kQ + P) or a cycle (P' = k(P + Q), Q' = the
-// same), are still solved by the pivoted LU, in which rounding can reach them;
-// KLU's block-triangular form isolates those too.
-void note_rows_held_alone(LapackDenseContent *c, SUNMatrix A) {
+// A NaN entry is not a zero, so a row with one reads it. Finding the rows is
+// one pass over the matrix per factorization, against GETRF's N^3/3, and a
+// check of the candidates' entries; a few more passes where the pattern has
+// changed. Reading them is a pass over the candidates and their readers per
+// solve.
+
+// The rows that read a row with more than kMaxReads entries off its diagonal,
+// directly or through others: none of them can be read on its own. Each wave
+// takes the columns of the rows barred so far, in a loop over each column that
+// vectorizes, and bars the rows with an entry there, recording the first such
+// column as the witness. Each column is taken once, and none once every row is
+// barred.
+void bar_rows(LapackDenseContent *c, sunrealtype **cols, sunindextype n) {
+    constexpr unsigned char kMore = static_cast<unsigned char>(kMaxReads + 1);
+    sunindextype n_wave = 0;
+    for (sunindextype i = 0; i < n; ++i) {
+        c->state[i] = (c->off[i] < kMore) ? 2 : 0;
+        if (c->state[i] == 0)
+            c->wave[n_wave++] = i;
+    }
+    c->n_barred = 0;
+    sunindextype left = n - n_wave; // rows not barred yet
+    unsigned char *hit = c->hit;
+    while (n_wave > 0 && left > 0) {
+        for (sunindextype i = 0; i < n; ++i)
+            hit[i] = 0;
+        for (sunindextype q = 0; q < n_wave; ++q) {
+            const sunrealtype *col = cols[c->wave[q]];
+            for (sunindextype i = 0; i < n; ++i)
+                hit[i] |= static_cast<unsigned char>(col[i] != SUN_RCONST(0.0));
+        }
+        sunindextype n_next = 0;
+        for (sunindextype i = 0; i < n; ++i) {
+            if (c->state[i] != 2 || hit[i] == 0)
+                continue;
+            sunindextype q = 0;
+            while (cols[c->wave[q]][i] == SUN_RCONST(0.0))
+                ++q;
+            c->state[i] = 1;
+            c->witness[i] = c->wave[q];
+            c->barred[c->n_barred++] = i;
+            c->next[n_next++] = i;
+        }
+        left -= n_next;
+        std::swap(c->wave, c->next);
+        n_wave = n_next;
+    }
+}
+
+// Each candidate's entries off the diagonal, by column, and from them each
+// candidate's readers. Most of a column is neither: a chunk of rows is tested
+// in a loop that vectorizes, and only a chunk holding a candidate's nonzero is
+// walked entry by entry.
+void gather_candidates(LapackDenseContent *c, sunrealtype **cols, sunindextype n) {
+    constexpr sunindextype chunk = 16;
+    const unsigned char *state = c->state;
+    const sunindextype m = c->n_cand;
+    for (sunindextype k = 0; k < m; ++k)
+        c->n_dep[k] = 0;
+    for (sunindextype j = 0; j < n; ++j) {
+        const sunrealtype *col = cols[j];
+        for (sunindextype i0 = 0; i0 < n; i0 += chunk) {
+            const sunindextype i1 = std::min(n, i0 + chunk);
+            unsigned char any = 0;
+            for (sunindextype i = i0; i < i1; ++i)
+                any |= static_cast<unsigned char>((col[i] != SUN_RCONST(0.0)) & (state[i] == 2));
+            if (any == 0)
+                continue;
+            for (sunindextype i = i0; i < i1; ++i) {
+                if (col[i] == SUN_RCONST(0.0) || state[i] != 2 || i == j)
+                    continue;
+                const sunindextype k = c->cand_of[i];
+                c->dep_col[k * kMaxReads + c->n_dep[k]++] = j;
+            }
+        }
+    }
+    // A candidate reads only candidates: a row reading any other is barred.
+    for (sunindextype k = 0; k <= m; ++k)
+        c->reader_at[k] = 0;
+    for (sunindextype k = 0; k < m; ++k)
+        for (sunindextype e = 0; e < c->n_dep[k]; ++e)
+            ++c->reader_at[c->cand_of[c->dep_col[k * kMaxReads + e]] + 1];
+    for (sunindextype k = 0; k < m; ++k)
+        c->reader_at[k + 1] += c->reader_at[k];
+    for (sunindextype k = 0; k < m; ++k)
+        c->queue[k] = c->reader_at[k]; // the next free slot of each list
+    for (sunindextype k = 0; k < m; ++k)
+        for (sunindextype e = 0; e < c->n_dep[k]; ++e)
+            c->reader[c->queue[c->cand_of[c->dep_col[k * kMaxReads + e]]]++] = k;
+}
+
+void note_rows_read_alone(LapackDenseContent *c, SUNMatrix A) {
     const sunindextype n = SUNDenseMatrix_Rows(A);
     sunrealtype **cols = SUNDenseMatrix_Cols(A);
-    // seen[i] records a nonzero off row i's diagonal, column by column as the
-    // matrix is stored, in loops with no branch either side of the diagonal:
-    // the compiler vectorizes them. A branch per entry made the scan a tenth
-    // of a fill-routed model's run (egfr_net, N = 356).
-    unsigned char *seen = c->seen;
+    constexpr unsigned char kMore = static_cast<unsigned char>(kMaxReads + 1);
+    // off[i] counts the nonzeros off row i's diagonal, column by column as the
+    // matrix is stored, up to kMore, in loops with no branch either side of the
+    // diagonal: the compiler vectorizes them. A branch per entry made the scan a
+    // tenth of a fill-routed model's run (egfr_net, N = 356).
+    unsigned char *off = c->off;
     for (sunindextype i = 0; i < n; ++i)
-        seen[i] = 0;
+        off[i] = 0;
     for (sunindextype j = 0; j < n; ++j) {
         const sunrealtype *col = cols[j];
         for (sunindextype i = 0; i < j; ++i)
-            seen[i] |= static_cast<unsigned char>(col[i] != SUN_RCONST(0.0));
+            off[i] = std::min<unsigned char>(
+                kMore, static_cast<unsigned char>(off[i] + (col[i] != SUN_RCONST(0.0))));
         for (sunindextype i = j + 1; i < n; ++i)
-            seen[i] |= static_cast<unsigned char>(col[i] != SUN_RCONST(0.0));
+            off[i] = std::min<unsigned char>(
+                kMore, static_cast<unsigned char>(off[i] + (col[i] != SUN_RCONST(0.0))));
     }
-    sunindextype k = 0;
-    for (sunindextype i = 0; i < n; ++i) {
-        // A zero diagonal on a row held alone is a singular matrix, which the
-        // factorization reports; there is nothing for the solve to read.
-        if (seen[i] == 0 && cols[i][i] != SUN_RCONST(0.0)) {
-            c->alone[k] = i;
-            c->alone_diag[k] = cols[i][i];
-            ++k;
+    // The candidates and what they read depend on the pattern alone, which
+    // changes only where an entry reaches or leaves 0. They are the last full
+    // look's where it still holds: the same rows have at most kMaxReads entries
+    // off their diagonals; each candidate has as many as it had, all still
+    // nonzero where they were, so they are the same entries; and each row
+    // barred for reading a row with more still reads the row it was barred by,
+    // so it is still barred. Looking again is a few passes over the matrix that
+    // test each entry, which on egfr_net took a fifth of the factor's time.
+    bool same = c->have_pattern;
+    if (same) {
+        unsigned char moved = 0;
+        for (sunindextype i = 0; i < n; ++i)
+            moved |= static_cast<unsigned char>((off[i] < kMore) != (c->state[i] != 0));
+        same = moved == 0;
+    }
+    for (sunindextype q = 0; same && q < c->n_barred; ++q) {
+        const sunindextype i = c->barred[q];
+        same = cols[c->witness[i]][i] != SUN_RCONST(0.0);
+    }
+    for (sunindextype k = 0; same && k < c->n_cand; ++k) {
+        const sunindextype i = c->cand[k];
+        same = c->n_dep[k] == off[i];
+        for (sunindextype e = 0; same && e < c->n_dep[k]; ++e)
+            same = cols[c->dep_col[k * kMaxReads + e]][i] != SUN_RCONST(0.0);
+    }
+    if (!same) {
+        bar_rows(c, cols, n);
+        sunindextype m = 0;
+        for (sunindextype i = 0; i < n; ++i) {
+            c->cand_of[i] = -1;
+            if (c->state[i] == 2) {
+                c->cand_of[i] = m;
+                c->cand[m++] = i;
+            }
+        }
+        c->n_cand = m;
+        if (m > 0)
+            gather_candidates(c, cols, n);
+        c->have_pattern = true;
+    }
+    // The rows held alone, with this matrix's diagonal. A zero diagonal on one is
+    // a singular matrix, which the factorization reports; there is nothing for
+    // the solve to read.
+    sunindextype k_alone = 0;
+    for (sunindextype k = 0; k < c->n_cand; ++k) {
+        const sunindextype i = c->cand[k];
+        if (c->n_dep[k] == 0 && cols[i][i] != SUN_RCONST(0.0)) {
+            c->alone[k_alone] = i;
+            c->alone_diag[k_alone] = cols[i][i];
+            ++k_alone;
         }
     }
-    c->n_alone = k;
+    c->n_alone = k_alone;
 }
 
 SUNLinearSolver_Type ls_get_type(SUNLinearSolver) { return SUNLINEARSOLVER_DIRECT; }
@@ -220,7 +389,7 @@ int ls_setup(SUNLinearSolver S, SUNMatrix A) {
     auto *c = static_cast<LapackDenseContent *>(S->content);
     const sunindextype rows = SUNDenseMatrix_Rows(A);
     ++c->factor_count;
-    note_rows_held_alone(c, A);
+    note_rows_read_alone(c, A);
 
     // Adaptive backend choice (GH #132). The first `switch_after` factorizations
     // run the built-in dense GETRF — SUNLinSol_Dense's factor, to the byte — so a
@@ -273,17 +442,41 @@ int ls_setup(SUNLinearSolver S, SUNMatrix A) {
 
 int ls_solve(SUNLinearSolver S, SUNMatrix A, N_Vector x, N_Vector b, sunrealtype /*tol*/) {
     auto *c = static_cast<LapackDenseContent *>(S->content);
-    // Each row held alone gives its component outright. Read b before x is
-    // written, in case the caller passes one vector as both.
+    // Each row held alone gives its component outright, and a candidate whose
+    // right-hand side is 0 may be exactly 0. Read b before x is written, in case
+    // the caller passes one vector as both.
     const sunrealtype *bd = N_VGetArrayPointer(b);
     for (sunindextype k = 0; k < c->n_alone; ++k)
         c->alone_x[k] = bd[c->alone[k]] / c->alone_diag[k];
+    const sunindextype m = c->n_cand;
+    sunindextype n_queue = 0;
+    for (sunindextype k = 0; k < m; ++k) {
+        c->zero[k] = static_cast<unsigned char>(bd[c->cand[k]] == SUN_RCONST(0.0));
+        if (c->zero[k] == 0)
+            c->queue[n_queue++] = k;
+    }
+    // A candidate is 0 where its own b is and every row it reads is 0: the rows
+    // read, directly or through others, from a candidate whose b is not 0 are
+    // not.
+    for (sunindextype q = 0; q < n_queue; ++q) {
+        const sunindextype k = c->queue[q];
+        for (sunindextype r = c->reader_at[k]; r < c->reader_at[k + 1]; ++r) {
+            const sunindextype w = c->reader[r];
+            if (c->zero[w] != 0) {
+                c->zero[w] = 0;
+                c->queue[n_queue++] = w;
+            }
+        }
+    }
     N_VScale(SUN_RCONST(1.0), b, x); // copy b into x, exactly as SUNLinSol_Dense does
     SUNDlsMat_denseGETRS(SUNDenseMatrix_Cols(A), SUNDenseMatrix_Rows(A), c->pivots,
                          N_VGetArrayPointer(x));
     sunrealtype *xd = N_VGetArrayPointer(x);
     for (sunindextype k = 0; k < c->n_alone; ++k)
         xd[c->alone[k]] = c->alone_x[k];
+    for (sunindextype k = 0; k < m; ++k)
+        if (c->zero[k] != 0)
+            xd[c->cand[k]] = SUN_RCONST(0.0);
     c->last_flag = SUN_SUCCESS;
     return SUN_SUCCESS;
 }
@@ -294,14 +487,15 @@ sunindextype ls_last_flag(SUNLinearSolver S) {
 
 SUNErrCode ls_space(SUNLinearSolver S, long int *lenrwLS, long int *leniwLS) {
     auto *c = static_cast<LapackDenseContent *>(S->content);
-    // pivots and the rows held alone, plus ipiv where a BLAS factor is linked
-    // (seen[], N bytes, is left out of both counts)
+    const long int n = static_cast<long int>(c->N);
+    // pivots, the candidates and what they read, plus ipiv where a BLAS factor is
+    // linked (the bytes per row, off[], state[], hit[] and zero[], are left out)
 #ifdef BNGSIM_HAS_LAPACK_DENSE
-    *leniwLS = 2 + 3 * static_cast<long int>(c->N);
+    *leniwLS = 3 + (11 + 2 * kMaxReads) * n;
 #else
-    *leniwLS = 2 + 2 * static_cast<long int>(c->N);
+    *leniwLS = 3 + (10 + 2 * kMaxReads) * n;
 #endif
-    *lenrwLS = 2 * static_cast<long int>(c->N); // alone_diag, alone_x
+    *lenrwLS = 2 * n; // alone_diag, alone_x
     return SUN_SUCCESS;
 }
 
@@ -310,10 +504,24 @@ void free_content(LapackDenseContent *c) {
 #ifdef BNGSIM_HAS_LAPACK_DENSE
     std::free(c->ipiv);
 #endif
+    std::free(c->off);
+    std::free(c->state);
+    std::free(c->hit);
+    std::free(c->zero);
+    std::free(c->witness);
+    std::free(c->barred);
+    std::free(c->wave);
+    std::free(c->next);
+    std::free(c->cand);
+    std::free(c->cand_of);
+    std::free(c->n_dep);
+    std::free(c->dep_col);
+    std::free(c->reader_at);
+    std::free(c->reader);
     std::free(c->alone);
+    std::free(c->queue);
     std::free(c->alone_diag);
     std::free(c->alone_x);
-    std::free(c->seen);
     std::free(c);
 }
 
@@ -369,16 +577,51 @@ SUNLinearSolver make_lapack_dense(SUNMatrix A, SUNContext ctx, bool adaptive) {
 #endif
     c->last_flag = 0;
     c->n_alone = 0;
+    c->n_cand = 0;
+    c->n_barred = 0;
+    c->have_pattern = false;
     c->pivots = static_cast<sunindextype *>(std::malloc(count * sizeof(sunindextype)));
-    c->alone = static_cast<sunindextype *>(std::malloc(count * sizeof(sunindextype)));
-    c->alone_diag = static_cast<sunrealtype *>(std::malloc(count * sizeof(sunrealtype)));
-    c->alone_x = static_cast<sunrealtype *>(std::malloc(count * sizeof(sunrealtype)));
-    c->seen = static_cast<unsigned char *>(std::malloc(count));
-    bool ok = c->pivots != nullptr && c->alone != nullptr && c->alone_diag != nullptr &&
-              c->alone_x != nullptr && c->seen != nullptr;
-#ifdef BNGSIM_HAS_LAPACK_DENSE
-    ok = ok && c->ipiv != nullptr;
-#endif
+    bool ok = c->pivots != nullptr;
+    c->off = static_cast<unsigned char *>(std::malloc((count) * sizeof(unsigned char)));
+    ok = ok && c->off != nullptr;
+    c->state = static_cast<unsigned char *>(std::malloc((count) * sizeof(unsigned char)));
+    ok = ok && c->state != nullptr;
+    c->hit = static_cast<unsigned char *>(std::malloc((count) * sizeof(unsigned char)));
+    ok = ok && c->hit != nullptr;
+    c->zero = static_cast<unsigned char *>(std::malloc((count) * sizeof(unsigned char)));
+    ok = ok && c->zero != nullptr;
+    c->witness = static_cast<sunindextype *>(std::malloc((count) * sizeof(sunindextype)));
+    ok = ok && c->witness != nullptr;
+    c->barred = static_cast<sunindextype *>(std::malloc((count) * sizeof(sunindextype)));
+    ok = ok && c->barred != nullptr;
+    c->wave = static_cast<sunindextype *>(std::malloc((count) * sizeof(sunindextype)));
+    ok = ok && c->wave != nullptr;
+    c->next = static_cast<sunindextype *>(std::malloc((count) * sizeof(sunindextype)));
+    ok = ok && c->next != nullptr;
+    c->cand = static_cast<sunindextype *>(std::malloc((count) * sizeof(sunindextype)));
+    ok = ok && c->cand != nullptr;
+    c->cand_of = static_cast<sunindextype *>(std::malloc((count) * sizeof(sunindextype)));
+    ok = ok && c->cand_of != nullptr;
+    c->n_dep = static_cast<sunindextype *>(std::malloc((count) * sizeof(sunindextype)));
+    ok = ok && c->n_dep != nullptr;
+    c->dep_col =
+        static_cast<sunindextype *>(std::malloc((count * kMaxReads) * sizeof(sunindextype)));
+    ok = ok && c->dep_col != nullptr;
+    c->reader_at = static_cast<sunindextype *>(std::malloc((count + 1) * sizeof(sunindextype)));
+    ok = ok && c->reader_at != nullptr;
+    c->reader =
+        static_cast<sunindextype *>(std::malloc((count * kMaxReads) * sizeof(sunindextype)));
+    ok = ok && c->reader != nullptr;
+    c->alone = static_cast<sunindextype *>(std::malloc((count) * sizeof(sunindextype)));
+    ok = ok && c->alone != nullptr;
+    c->queue = static_cast<sunindextype *>(std::malloc((count) * sizeof(sunindextype)));
+    ok = ok && c->queue != nullptr;
+    c->alone_diag = static_cast<sunrealtype *>(std::malloc((count) * sizeof(sunrealtype)));
+    ok = ok && c->alone_diag != nullptr;
+    c->alone_x = static_cast<sunrealtype *>(std::malloc((count) * sizeof(sunrealtype)));
+    ok = ok && c->alone_x != nullptr;
+    for (sunindextype i = 0; ok && i < n; ++i)
+        c->cand_of[i] = -1;
     if (!ok) {
         free_content(c);
         SUNLinSolFreeEmpty(S);
