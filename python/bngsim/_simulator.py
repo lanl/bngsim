@@ -17,6 +17,8 @@ are accepted and normalized to canonical tokens before dispatch.
 
 from __future__ import annotations
 
+import ast
+import builtins
 import contextlib
 import copy
 import ctypes
@@ -10357,15 +10359,29 @@ class Simulator:
         Parameters
         ----------
         condition : str or callable
-            - **str**: An expression string evaluated at each time
-              point using observable names as variables. Simulation
-              stops when the expression becomes true (> 0).
+            - **str**: A Python expression evaluated at each sample. It
+              reads the observables by name, a species by its name with
+              ``(`` and ``)`` written as ``_`` (``A()`` reads as ``A__``),
+              and the time as ``t`` or ``time``; nothing else is bound,
+              Python builtins included. It is met at the first sample where
+              it is true, or, for a number, > 0.
               Example: ``"A_tot < 10"``
             - **callable**: A function ``f(result) -> bool`` called
               after the simulation. If it returns True, the stop
               condition is triggered.
         label : str
             Human-readable label for the condition.
+
+        Raises
+        ------
+        ValueError
+            Here, for an expression that reads a name it cannot (a misspelled
+            observable, a parameter, a model function, a builtin such as
+            ``abs``), that uses ``^`` (bitwise XOR in Python; write ``**``
+            for a power), or that is a tuple. From the run, for an expression
+            that raises at a sample or gives something other than a truth
+            value or a number. Each used to read as a condition never met
+            (issue #1509). An exception a callable raises propagates.
 
         Notes
         -----
@@ -10393,7 +10409,13 @@ class Simulator:
         """
         sc: _StopCondition
         if isinstance(condition, str):
-            sc = _ExpressionStopCondition(condition, label=label)
+            sc = _ExpressionStopCondition(
+                condition,
+                label=label,
+                model=self._model,
+                # A network-free run reports the observables only.
+                reads_species=self._method not in ("nfsim", "rulemonkey"),
+            )
         elif callable(condition):
             sc = _CallableStopCondition(condition, label=label)
         else:
@@ -11345,12 +11367,115 @@ class Simulator:
 # ─── Stop condition implementations ────────────────────────────────
 
 
-def _code_names(code: Any) -> Iterable[str]:
-    """Every name *code*, and any code object nested in it, can look up."""
-    yield from code.co_names
-    for const in code.co_consts:
-        if isinstance(const, type(code)):
-            yield from _code_names(const)
+def _species_identifier(name: str) -> str:
+    """The spelling a stop-condition expression reads species *name* by: ``(``
+    and ``)`` written as ``_``, so ``A()`` reads as ``A__``."""
+    return name.replace("(", "_").replace(")", "_")
+
+
+def _expression_reads(tree: ast.Expression) -> frozenset[str]:
+    """The names *tree* reads from the namespace it is evaluated in: every name
+    it loads, less those it binds itself (a comprehension or ``:=`` target, a
+    lambda argument). An attribute (``x.real``) is not a name it reads."""
+    loads: set[str] = set()
+    binds: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            (loads if isinstance(node.ctx, ast.Load) else binds).add(node.id)
+        elif isinstance(node, ast.arg):
+            binds.add(node.arg)
+    return frozenset(loads - binds)
+
+
+def _stop_readable_names(
+    observable_names: Iterable[str], species_names: Iterable[str]
+) -> set[str]:
+    """Every name a stop-condition expression can read on a model with these
+    observables and species: the observables, the species' identifier spellings
+    and the time."""
+    return {"time", "t", *observable_names, *map(_species_identifier, species_names)}
+
+
+def _stop_readable_summary(model: Model, reads_species: bool) -> str:
+    obs = list(model.observable_names)
+    shown = ", ".join(obs[:8]) + (f" and {len(obs) - 8} more" if len(obs) > 8 else "")
+    if not reads_species:
+        return f"the observables ({shown or 'none'}) and the time as t or time"
+    example = next(
+        (s for s in model.species_names if "(" in s and _species_identifier(s).isidentifier()),
+        None,
+    )
+    species = "a species by its name with ( and ) written as _"
+    if example is not None:
+        species += f" ({example} as {_species_identifier(example)})"
+    return f"the observables ({shown or 'none'}), {species}, and the time as t or time"
+
+
+def _unreadable_stop_names_message(
+    expression: str, unknown: Sequence[str], model: Model, reads_species: bool
+) -> str:
+    functions = set(model.function_names)
+    params = set(model.param_names)
+    species = set(map(_species_identifier, model.species_names))
+    why = []
+    for name in unknown:
+        if name in functions:  # first: each function also names a parameter slot
+            why.append(f"{name} is a function of the model")
+        elif name in params:
+            why.append(f"{name} is a parameter")
+        elif name in species:  # reached only when the run reports no species
+            why.append(f"{name} is a species, and a network-free run reports none")
+        elif name in _PY_BUILTIN_NAMES:
+            why.append(f"{name} is a Python builtin, and a condition is evaluated without them")
+        else:
+            why.append(f"{name} is not a name the model defines")
+    return (
+        f"stop condition {expression!r} reads names it cannot: {'; '.join(why)}. A condition "
+        f"reads {_stop_readable_summary(model, reads_species)} (issue #1509)"
+    )
+
+
+_PY_BUILTIN_NAMES = frozenset(dir(builtins))
+
+# A stop condition whose expression is one of these is truthy whatever the
+# samples hold: "A < 10, B > 5" is a tuple, met at the first sample.
+_STOP_CONTAINER_KINDS: dict[type, str] = {
+    ast.Tuple: "a tuple",
+    ast.List: "a list",
+    ast.Set: "a set",
+    ast.Dict: "a dict",
+}
+
+
+def _refuse_stop_expression_shape(expression: str, tree: ast.Expression) -> None:
+    """Refuse the two shapes that read as a different condition from the one
+    written, before any sample (issue #1509)."""
+    if any(isinstance(n, ast.BinOp) and isinstance(n.op, ast.BitXor) for n in ast.walk(tree)):
+        raise ValueError(
+            f"stop condition {expression!r} uses ^, which Python reads as bitwise XOR, "
+            "not as a power: write ** (A_tot**2 < 100) (issue #1509)"
+        )
+    kind = _STOP_CONTAINER_KINDS.get(type(tree.body))
+    if kind is not None:
+        raise ValueError(
+            f"stop condition {expression!r} is {kind}, not one truth value or number: "
+            "join conditions with 'and' or 'or' (issue #1509)"
+        )
+
+
+def _stop_value_met(value: Any, expression: str, t: float) -> bool:
+    """Whether a stop-condition expression's *value* at one sample meets it: a
+    truth value as itself, a number where it is > 0 (so NaN never does), as the
+    docstring has always said. Anything else is refused, where truthiness read a
+    negative number, a tuple or a string as met (issue #1509)."""
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        return bool(value > 0)
+    raise ValueError(
+        f"stop condition {expression!r} gives {type(value).__name__} at t={t:g}, not a "
+        "truth value or a number (issue #1509)"
+    )
 
 
 class _StopCondition:
@@ -11365,22 +11490,41 @@ class _StopCondition:
 
 
 class _ExpressionStopCondition(_StopCondition):
-    """Stop condition based on observable expression string.
+    """Stop condition based on an expression string.
 
-    The expression is evaluated at each time point using
-    observable names as variables. Returns the first time
-    index where the expression evaluates to True (> 0).
+    The expression is evaluated at each time point with the observables, the
+    species (by :func:`_species_identifier`) and the time bound. Returns the
+    first time index where it is true, or, for a number, > 0.
+
+    Given the model, it refuses a name the run will not let it read (a species
+    where *reads_species* is false), where a condition that raised at every
+    sample used to read as one never met (issue #1509).
     """
 
-    def __init__(self, expression: str, *, label: str = "") -> None:
+    def __init__(
+        self,
+        expression: str,
+        *,
+        label: str = "",
+        model: Model | None = None,
+        reads_species: bool = True,
+    ) -> None:
         super().__init__(label=label or expression)
         self._expression = expression
-        self._code = compile(expression, "<stop_condition>", "eval")
-        # Every name the expression can look up, nested code included. Only
-        # these are bound at each sample: binding every observable and species
-        # there, for a condition that reads one, was paid once per row of a
-        # batch (issue #1369).
-        self._names: frozenset[str] = frozenset(_code_names(self._code))
+        tree = ast.parse(expression, "<stop_condition>", mode="eval")
+        _refuse_stop_expression_shape(expression, tree)
+        self._code = compile(tree, "<stop_condition>", "eval")
+        # The names the expression reads. Only these are bound at each sample:
+        # binding every observable and species there, for a condition that
+        # reads one, was paid once per row of a batch (issue #1369).
+        self._names: frozenset[str] = _expression_reads(tree)
+        if model is not None:
+            species = model.species_names if reads_species else ()
+            unknown = sorted(self._names - _stop_readable_names(model.observable_names, species))
+            if unknown:
+                raise ValueError(
+                    _unreadable_stop_names_message(expression, unknown, model, reads_species)
+                )
 
     def check(self, result: Result) -> int | None:
         """Evaluate expression at each time point."""
@@ -11396,31 +11540,25 @@ class _ExpressionStopCondition(_StopCondition):
             if name in self._names
         ]
         for j, name in enumerate(result.species_names):
-            # Sanitize species name for eval
-            safe = name.replace("(", "_").replace(")", "_")
+            safe = _species_identifier(name)
             if safe in self._names:
                 columns.append((sp_data, j, safe))
 
         for t_idx in range(len(time)):
-            # Build namespace for eval
             ns = {"time": time[t_idx], "t": time[t_idx]}
             for block, j, name in columns:
                 ns[name] = block[t_idx, j]
-
+            # An error is raised, not logged and skipped: a condition that
+            # failed at a sample was read as not met there (issue #1509).
             try:
-                val = eval(  # noqa: S307
-                    self._code, {"__builtins__": {}}, ns
-                )
-                if val:
-                    return t_idx
+                val = eval(self._code, {"__builtins__": {}}, ns)  # noqa: S307
             except Exception as exc:
-                logger.debug(
-                    "Stop condition '%s' eval failed at t=%s: %s",
-                    self._expression,
-                    time[t_idx],
-                    exc,
-                )
-                continue
+                raise ValueError(
+                    f"stop condition {self._expression!r} could not be evaluated at "
+                    f"t={float(time[t_idx]):g}: {type(exc).__name__}: {exc} (issue #1509)"
+                ) from exc
+            if _stop_value_met(val, self._expression, float(time[t_idx])):
+                return t_idx
 
         return None
 
@@ -11442,12 +11580,13 @@ class _CallableStopCondition(_StopCondition):
         self._func = func
 
     def check(self, result: Result) -> int | None:
-        """Call the function; if True, return last time index."""
-        try:
-            if self._func(result):
-                return len(result.time) - 1
-        except Exception:
-            pass
+        """Call the function; if it returns a true value, the last time index.
+
+        An exception the callable raises propagates: swallowing it read as "not
+        met" for a condition that was never evaluated (issue #1509).
+        """
+        if self._func(result):
+            return len(result.time) - 1
         return None
 
 

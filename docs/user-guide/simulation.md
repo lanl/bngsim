@@ -168,6 +168,17 @@ except bngsim.StopConditionMet as e:
     partial = e.result  # truncated result up to stop point
 ```
 
+An expression reads the observables by name, a species by its name with `(` and
+`)` written as `_` (`A()` reads as `A__`; a network-free run reports no
+species), and the time as `t` or `time`. Nothing else is bound, Python builtins
+included. It is met at the first sample where it is true, or, for a number,
+where it is > 0. A name it cannot read (a misspelled observable, a parameter, a
+model function, `abs`), `^` (bitwise XOR in Python; write `**` for a power), or
+a tuple is refused with `ValueError` where the condition is added. An
+expression that raises at a sample raises `ValueError` from the run, and an
+exception a callable raises propagates. Each of these used to read as a
+condition never met (issue #1509).
+
 A condition is checked against the *completed* result, so it does not interrupt
 the solve. The backend integrates the whole interval and leaves the model at its
 end; `e.result` is that trajectory truncated at the first row where the
