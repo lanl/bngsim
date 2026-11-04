@@ -86,9 +86,27 @@ def test_the_carried_seed_is_dx_ss_dtheta(net):
 
 
 def test_an_initial_condition_column_settles_too(net):
-    """dY/dY(0) = exp(-dy t) is 0 at the steady state; the stop at t = 20 left 0.82."""
+    """dY/dY(0) = exp(-dy t) is 0 at the steady state; the stop at t = 20 left 0.82.
+    The column is held to dS/dt, the scale CVODES resolves it on."""
     r = _sim(net, sensitivity_ic=["Y()"]).run(**PHASE1)
-    assert abs(float(np.asarray(r.sensitivities_ic)[-1, 0, 0])) < 1e-7
+    assert abs(float(np.asarray(r.sensitivities_ic)[-1, 0, 0])) < 1e-5
+
+
+def test_an_initial_condition_column_of_a_large_amount_settles(tmp_path):
+    """A0 = 1e6 decays at 0.1 to its steady state, with dA/dA0 = exp(-0.1 t) -> 0.
+    Scaled by the starting amount the column had to pass 1e6*dS/dt < atol, finer
+    than CVODES resolves it, and the run never stopped."""
+    path = tmp_path / "a.net"
+    path.write_text(
+        "begin parameters\n 1 ks 1e5\n 2 kd 0.1\nend parameters\n"
+        "begin species\n 1 A() 1e6\nend species\n"
+        "begin reactions\n 1 0 1 ks\n 2 1 0 kd\nend reactions\n"
+        "begin groups\n 1 At 1\nend groups\n"
+    )
+    sim = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode", sensitivity_ic=["A()"])
+    r = sim.run(t_span=(0, 1e4), n_points=1001, steady_state=True)
+    assert r.solver_stats["steady_state_reached"]
+    assert abs(float(np.asarray(r.sensitivities_ic)[-1, 0, 0])) < 1e-4
 
 
 def test_a_slow_column_that_is_not_the_first_holds_the_stop(net):
@@ -110,6 +128,24 @@ def test_a_column_is_held_to_theta_times_its_rate(tmp_path):
     r = sim.run(**PHASE1, steady_state_tol=1e-2)
     assert r.solver_stats["steady_state_reached"]
     assert _last(r, 0, 0) == pytest.approx(100.0, rel=1e-5)
+
+
+def test_a_column_of_a_parameter_at_zero_is_held_to_its_rate(tmp_path):
+    """ly = 0 is a second loss of Y. θ falls back to 1 for a zero parameter; held to
+    0·dS/dt the column would pass at once. dY/dly = -Y/dy (1 - exp(-dy t)) -> -1e4,
+    and the stop at t = 20 left -1813."""
+    path = tmp_path / "ly.net"
+    path.write_text(
+        NET.replace("    5 L  0\n", "    5 L  0\n    6 ly 0\n").replace(
+            "    5 2 0   L\n", "    5 2 0   L\n    6 1 0   ly\n"
+        )
+    )
+    sim = bngsim.Simulator(
+        bngsim.Model.from_net(str(path)), method="ode", sensitivity_params=["ly"]
+    )
+    r = sim.run(**PHASE1)
+    assert r.solver_stats["steady_state_reached"]
+    assert _last(r, 0, 0) == pytest.approx(-1e4, rel=1e-6)
 
 
 def test_a_batch_row_stops_where_its_columns_have_settled(net):

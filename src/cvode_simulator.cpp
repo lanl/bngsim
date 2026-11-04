@@ -17524,8 +17524,11 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     bool ss_reached = false;
     double ss_residual_last = 0.0;
     // Issue #1516: dS/dt at an output point, read for the early stop's
-    // sensitivity test, and each column's θ (its parameter's value, or the
-    // initial amount of an initial-condition column; 1 where that is 0).
+    // sensitivity test, and each column's θ: the scale CVODES itself gives the
+    // column (pbar), its parameter's value, 1 where that is 0 and for an
+    // initial-condition column. A column is not asked to settle finer than
+    // CVODES resolves it: scaled by a large starting amount instead, an
+    // initial-condition column at its own steady state never passed.
     NVectorArrayGuard ss_dS;
     std::vector<double> ss_theta;
     if (check_ss && n_sens > 0) {
@@ -17535,9 +17538,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 "Failed to allocate the steady-state sensitivity check vectors");
         }
         ss_theta.resize(n_sens, 1.0);
-        for (int j = 0; j < n_sens; ++j) {
-            const double v = j < n_sens_p ? sens.p_nominal[sens.param_indices[j]]
-                                          : y_start[sens.ic_species_indices[j - n_sens_p]];
+        for (int j = 0; j < n_sens_p; ++j) {
+            const double v = sens.p_nominal[sens.param_indices[j]];
             if (std::isfinite(v) && v != 0.0) {
                 ss_theta[j] = std::abs(v);
             }

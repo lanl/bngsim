@@ -606,8 +606,8 @@ rows it integrated.
 
 On a `Simulator` with `sensitivity_params` or `sensitivity_ic` the stop also
 waits for every sensitivity column to stand still, by the same test with
-`θ·dS/dt` in `f`'s place, θ the parameter's value (or the species' starting
-amount, for an initial-condition column; 1 where that is 0). The state can
+`θ·dS/dt` in `f`'s place, θ the scale CVODES gives the column: the parameter's
+value, or 1 where that is 0 and for an initial-condition column. The state can
 settle long before its sensitivities do: a slow mode that starts at its own
 steady state leaves `f` small while `dx/dθ` is still relaxing in it, and the
 stop used to hand on that unsettled column as `dx_ss/dθ`, in the last row and as
