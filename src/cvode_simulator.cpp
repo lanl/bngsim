@@ -17523,6 +17523,26 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     int last_recorded_index = 0;
     bool ss_reached = false;
     double ss_residual_last = 0.0;
+    // Issue #1516: dS/dt at an output point, read for the early stop's
+    // sensitivity test, and each column's θ (its parameter's value, or the
+    // initial amount of an initial-condition column; 1 where that is 0).
+    NVectorArrayGuard ss_dS;
+    std::vector<double> ss_theta;
+    if (check_ss && n_sens > 0) {
+        ss_dS = NVectorArrayGuard(N_VCloneVectorArray(n_sens, y), n_sens);
+        if (!ss_dS) {
+            throw std::runtime_error(
+                "Failed to allocate the steady-state sensitivity check vectors");
+        }
+        ss_theta.resize(n_sens, 1.0);
+        for (int j = 0; j < n_sens; ++j) {
+            const double v = j < n_sens_p ? sens.p_nominal[sens.param_indices[j]]
+                                          : y_start[sens.ic_species_indices[j - n_sens_p]];
+            if (std::isfinite(v) && v != 0.0) {
+                ss_theta[j] = std::abs(v);
+            }
+        }
+    }
 
     // ─── Early refresh points for the sensitivity error floor (issue #177) ───
     //
@@ -20200,7 +20220,28 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             }
             const double dx = std::sqrt(sumsq) / static_cast<double>(ns);
             ss_residual_last = dx;
-            if (dx < ss_tol) {
+            bool settled = dx < ss_tol;
+            // Issue #1516: with sensitivities the columns have to stand still
+            // too, by the same test with θ·dS/dt in f's place, column by
+            // column. A slow mode that starts at its own steady state leaves f
+            // small long before dx/dθ has settled in it: the stop at t = 20
+            // handed on dX/dky = 17.96 as dx_ss/dθ = 100, as the last row and as
+            // the carry-over seed. dS/dt is the derivative of CVODES' own
+            // interpolant at the row; a column it cannot read is not settled.
+            if (settled && n_sens > 0) {
+                const int got = CVodeGetSensDky(cvode_mem, t_ret, 1, ss_dS.arr);
+                for (int j = 0; settled && j < n_sens; ++j) {
+                    const double *dS = N_VGetArrayPointer(ss_dS[j]);
+                    double col = 0.0;
+                    for (int k = 0; k < ns; ++k) {
+                        const double v = ss_theta[j] * dS[k];
+                        col += v * v;
+                    }
+                    const double ds = std::sqrt(col) / static_cast<double>(ns);
+                    settled = got == CV_SUCCESS && ds < ss_tol;
+                }
+            }
+            if (settled) {
                 ss_reached = true;
                 break;
             }
