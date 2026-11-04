@@ -60,6 +60,24 @@ def xml_parameter_names(xml_path: str | Path) -> frozenset[str] | None:
     )
 
 
+def xml_names(xml_path: str | Path, list_tag: str, item_tag: str, attr: str) -> list[str] | None:
+    """The *attr* of each ``<item_tag>`` in a ``<list_tag>`` of *xml_path*, in
+    document order, or ``None`` when the file cannot be parsed: the observables a
+    network-free run reports are the XML's ``ListOfObservables``/``Observable``
+    names, whatever the Model beside it holds (issue #1509)."""
+    try:
+        root = ET.parse(str(xml_path)).getroot()
+    except (ET.ParseError, OSError):
+        return None
+    return [
+        name
+        for lst in root.iter()
+        if _local(lst.tag) == list_tag
+        for el in lst
+        if _local(el.tag) == item_tag and (name := el.get(attr))
+    ]
+
+
 def parameter_overrides(model: Any, xml_names: frozenset[str] | None) -> dict[str, float]:
     """The parameters of *model* the XML declares, with the model's values: each
     one the model holds at a value other than its value at load, and with them

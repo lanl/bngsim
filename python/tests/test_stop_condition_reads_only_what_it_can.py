@@ -97,9 +97,9 @@ def _sim(net: str) -> bngsim.Simulator:
     return bngsim.Simulator(bngsim.Model.from_net(net), method="ode")
 
 
-def _stop_time(sim: bngsim.Simulator) -> float | None:
+def _stop_time(sim: bngsim.Simulator, **kw) -> float | None:
     try:
-        sim.run(**KW)
+        sim.run(**(kw or KW))
     except bngsim.StopConditionMet as stop:
         return float(stop.result.time[-1])
     return None
@@ -141,13 +141,17 @@ def test_an_sbml_assignment_rule_is_refused_as_a_function(tmp_path):
     sim = bngsim.Simulator(bngsim.Model.from_sbml(str(path)), method="ode")
     with pytest.raises(ValueError, match="S is a function of the model"):
         sim.add_stop_condition("S < 5")
-    sim.add_stop_condition("A < 5")  # Control: the species reads as before.
+    # Control: the species reads as before. A(t) = 10*exp(-t) < 5 past t = ln 2.
+    sim.add_stop_condition("A < 5")
+    assert _stop_time(sim, t_span=(0, 2), n_points=21) == pytest.approx(0.7)
 
 
 def test_caret_is_refused_with_the_power_spelled(net):
     """BNGL's power is XOR in Python and raised TypeError at every sample."""
-    with pytest.raises(ValueError, match=re.escape("write ** (A_tot**2 < 100)")):
+    with pytest.raises(ValueError, match=re.escape("write ** (A_tot**2 < 100)")) as exc:
         _sim(net).add_stop_condition("A_tot^2 < 100")
+    # Between two conditions it is an exclusive or, which != also writes.
+    assert "!= between two conditions" in str(exc.value)
 
 
 def test_a_tuple_is_refused(net):
@@ -173,11 +177,18 @@ def test_a_number_that_is_nan_does_not_meet_the_condition(net):
         assert _stop_time(sim) is None
 
 
-def test_a_value_neither_a_truth_value_nor_a_number_raises_from_the_run(net):
-    """A list comprehension is a list, truthy at every sample: it was met at t = 0."""
+@pytest.mark.parametrize(
+    "condition, kind",
+    [("[x < 10 for x in (A_tot,)]", "list"), ("1j*(A_tot < 10)", "complex128")],
+)
+def test_a_value_neither_a_truth_value_nor_a_real_number_raises_from_the_run(net, condition, kind):
+    """A list comprehension is a list, truthy at every sample, and 1j*(...) is
+    complex, truthy from t = 24 on but never > 0: both were met at t = 0 or 24."""
     sim = _sim(net)
-    sim.add_stop_condition("[x < 10 for x in (A_tot,)]")
-    with pytest.raises(ValueError, match="gives list at t=0, not a truth value or a number"):
+    sim.add_stop_condition(condition)
+    with pytest.raises(
+        ValueError, match=f"gives {kind} at t=0, not a truth value or a real number"
+    ):
         sim.run(**KW)
 
 
@@ -190,12 +201,40 @@ def test_an_expression_that_raises_at_a_sample_raises_from_the_run(net):
         sim.run(**KW)
 
 
-def test_a_batch_row_that_cannot_be_evaluated_raises(net):
-    """run_batch returned the row with stop_condition=None, as one that met none."""
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda sim: sim.run_batch(params=[{"k": 0.1}], **KW),
+        lambda sim: sim.parameter_scan("k", [0.1, 0.2], **KW),
+    ],
+    ids=["run_batch", "parameter_scan"],
+)
+def test_a_batch_row_that_cannot_be_evaluated_raises(net, call):
+    """The rows came back with stop_condition=None, as ones that met none."""
     sim = _sim(net)
     sim.add_stop_condition("A_tot < 10 & t > 0")
     with pytest.raises(ValueError, match="could not be evaluated"):
-        sim.run_batch(params=[{"k": 0.1}], **KW)
+        call(sim)
+
+
+def test_a_replicate_that_cannot_be_evaluated_raises(net):
+    sim = bngsim.Simulator(bngsim.Model.from_net(net), method="ssa")
+    sim.add_stop_condition("A_tot < 10 & t > 0")
+    with pytest.raises(ValueError, match="could not be evaluated"):
+        sim.run_replicates(2, seed=1, **KW)
+
+
+@pytest.mark.parametrize(
+    "condition",
+    ["(lambda: A_tot < 10)()", "[A_tot < 10 for _ in (0,)][0]"],
+)
+def test_a_lambda_or_comprehension_inside_the_expression_sees_the_observables(net, condition):
+    """The names were bound as eval's locals, which a nested scope does not see:
+    the lambda raised NameError at every sample and was never met. A comprehension
+    is a nested scope before Python 3.12, so it went the same way there."""
+    sim = _sim(net)
+    sim.add_stop_condition(condition)
+    assert _stop_time(sim) == MET_AT
 
 
 def test_a_callable_that_raises_is_not_read_as_not_met(net):
@@ -213,6 +252,22 @@ def test_a_callable_that_returns_a_column_raises(net):
     sim.add_stop_condition(lambda r: r.observables["A_tot"] < 10, label="column")
     with pytest.raises(ValueError, match="truth value"):
         sim.run(**KW)
+
+
+@pytest.mark.parametrize("method", NF_METHODS)
+def test_a_network_free_run_reads_the_observables_its_xml_declares(method):
+    """A network-free run reports the XML's observables, whatever Model is passed
+    beside it (the benchmark harness passes a stand-in). A condition on one of the
+    Model's observables the XML lacks never fired."""
+    sim = bngsim.Simulator(
+        bngsim.Model.from_net(str(NF_DATA.parent / "simple_decay.net")),
+        method=method,
+        xml_path=str(NF_DATA / "simple_system.xml"),
+    )
+    with pytest.raises(ValueError, match="A_tot is not a name the model defines"):
+        sim.add_stop_condition("A_tot < 1e9")
+    sim.add_stop_condition("X_free >= 0 and t >= 0.5")
+    assert _stop_time(sim, t_span=(0, 1), n_points=11, seed=1) == 0.5
 
 
 @pytest.mark.parametrize("method", NF_METHODS)
@@ -240,6 +295,9 @@ def test_a_species_is_refused_on_a_network_free_run(method):
         "[x < 10 for x in (A_tot,)][0]",
         "(a := A_tot) < 10 and a >= 0",
         "A_tot.real < 10",
+        # A name the expression binds in an inner scope and reads outside it.
+        "(lambda A_tot: A_tot < 10)(A_tot)",
+        "(A_tot := A_tot) < 10",
     ],
 )
 def test_the_names_a_condition_can_read_read_as_before(net, condition):

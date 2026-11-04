@@ -169,15 +169,17 @@ except bngsim.StopConditionMet as e:
 ```
 
 An expression reads the observables by name, a species by its name with `(` and
-`)` written as `_` (`A()` reads as `A__`; a network-free run reports no
-species), and the time as `t` or `time`. Nothing else is bound, Python builtins
-included. It is met at the first sample where it is true, or, for a number,
-where it is > 0. A name it cannot read (a misspelled observable, a parameter, a
-model function, `abs`), `^` (bitwise XOR in Python; write `**` for a power), or
-a tuple is refused with `ValueError` where the condition is added. An
-expression that raises at a sample raises `ValueError` from the run, and an
-exception a callable raises propagates. Each of these used to read as a
-condition never met (issue #1509).
+`)` written as `_` (`A()` reads as `A__`; a network-free run reports no species,
+and reads the observables its XML declares), and the time as `t` or `time`.
+Nothing else is bound, Python builtins included. It is met at the first sample
+where it is true, or, for a number, where it is > 0. A name it cannot read (a
+misspelled observable, a parameter, a model function, `abs`), `^` (bitwise XOR
+in Python; write `**` for a power), or a tuple is refused with `ValueError`
+where the condition is added: a name it could not read used to make it a
+condition never met, and a tuple one met at the first sample (issue #1509). An
+expression that raises at a sample raises `ValueError` from the run, and so do
+the batch calls below. A callable is met where it returns a true value in
+Python's sense, and an exception it raises propagates.
 
 A condition is checked against the *completed* result, so it does not interrupt
 the solve. The backend integrates the whole interval and leaves the model at its
@@ -197,8 +199,8 @@ except bngsim.StopConditionMet as e:
 ```
 
 `run_batch`, `run_replicates` and `parameter_scan` (with `bifurcate`) check
-every row the same way and raise nothing: a row that meets a condition comes
-back cut there, beside the rows that ran to the end, and `Result.stop_condition`
+every row the same way and raise nothing for a condition met: a row that meets a
+condition comes back cut there, beside the rows that ran to the end, and `Result.stop_condition`
 names the condition it met (`None` on a row that met none). Conditions are
 checked in the order they were added, and the first one met cuts the row.
 `squeeze=True` is refused while a condition is registered, since a cut row is
