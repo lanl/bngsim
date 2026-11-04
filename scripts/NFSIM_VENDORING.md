@@ -129,8 +129,8 @@ Current carry topics:
   `bngsim::expr_compat::call_before_bracket` (GH #1415; it landed in GH #1419
   as a direct edit to the vendored tree and was carried after)
 - a whole-complex deletion, and a MatchOnce reactant, fired once per complex:
-  `fire()` thins a pick to probability 1/m, m the matches in the picked complex
-  (GH #1525)
+  `fire()` thins a pick to probability 1/m, m the matches in the picked complex,
+  and MatchOnce is applied to DOR rules too (GH #1525)
 
 Not a carry, but tied to the vendored NFsim: bngsim refuses, by name, the rate
 laws NFsim cannot run, in `python/bngsim/_network_free_checks.py`

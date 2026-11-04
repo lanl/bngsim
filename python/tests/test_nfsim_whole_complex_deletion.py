@@ -26,6 +26,16 @@ import bngsim
 import pytest
 from bngsim import ModelError, NfsimSession
 
+
+def _has_rulemonkey() -> bool:
+    try:
+        from bngsim._bngsim_core import HAS_RULEMONKEY
+
+        return bool(HAS_RULEMONKEY)
+    except ImportError:
+        return False
+
+
 pytestmark = pytest.mark.skipif(
     not getattr(bngsim, "HAS_NFSIM", False), reason="NFsim not compiled in"
 )
@@ -153,11 +163,14 @@ def test_match_once_counts_a_complex_once_on_a_state_change():
     for seed in SEEDS:
         sim = bngsim.Simulator(bngsim.Model.from_net(str(net)), method="nf", xml_path=str(xml))
         r = sim.run(t_span=(0, T_END), n_points=2, seed=seed)
-        for name in ("J1", "W1"):
+        for name in ("J1", "W1", "JL1"):
             flipped.setdefault(name, []).append(float(r.observables[name][-1]))
     once, twice = X0 * (1 - SURVIVE), X0 * (1 - SURVIVE**2)
     assert statistics.fmean(flipped["J1"]) == pytest.approx(once, abs=5 * SE)
     assert statistics.fmean(flipped["W1"]) == pytest.approx(twice, abs=5 * SE)
+    # JLmo: the same with a local-function rate read on the whole species. NFsim
+    # ignored MatchOnce on a local-function rule, so it ran at 2k too.
+    assert statistics.fmean(flipped["JL1"]) == pytest.approx(once, abs=5 * SE)
 
 
 @pytest.mark.parametrize("tracked", [True, False], ids=["complexes-tracked", "untracked"])
@@ -219,9 +232,31 @@ def test_a_matchonce_on_the_whole_rule_counts_as_one_on_its_patterns(tmp_path):
 
 
 def test_a_michaelis_menten_monomer_deletion_runs():
-    """Control: a substrate of one molecule with no components is always a
-    complex of its own."""
+    """Control: a substrate of one molecule no bond touches is always a complex of
+    its own: Q() with no components, and S(p~0~1) with a state but no bond. The
+    first form of the refusal took any component, and refused S_mm."""
     net, xml = DATA / "mm_monomer_deletion.net", DATA / "mm_monomer_deletion.xml"
     sim = bngsim.Simulator(bngsim.Model.from_net(str(net)), method="nf", xml_path=str(xml))
     r = sim.run(t_span=(0, 10), n_points=2, seed=1)
     assert float(r.observables["Qt"][-1]) <= 100.0
+    assert float(r.observables["St"][-1]) <= 100.0
+
+
+def test_a_local_function_on_one_match_of_a_deleted_complex_is_refused():
+    """fl(x) reads L(s~a) on the tagged molecule: k on one match of
+    L(s~a).K.L(s~b), 0 on the other. BNG2.pl's network takes its first embedding's
+    value, k; NFsim's thinning would take the mean, k/2. Refused, by name."""
+    net, xml = DATA / "local_function_on_one_match.net", DATA / "local_function_on_one_match.xml"
+    with pytest.raises(ModelError, match=r"read on one molecule .* rules 'Ldel'"):
+        bngsim.Simulator(bngsim.Model.from_net(str(net)), method="nf", xml_path=str(xml))
+
+
+@pytest.mark.skipif(not _has_rulemonkey(), reason="RuleMonkey not compiled in")
+def test_rulemonkey_refuses_matchonce_on_a_complex_with_two_matches():
+    """RuleMonkey reads no MatchOnce on a rule: Jmo flipped 1260.7 where the
+    network gives 786.9. Refused, as the session is."""
+    net, xml = DATA / "match_once_state_change.net", DATA / "match_once_state_change.xml"
+    with pytest.raises(ModelError, match=r"rules 'Jmo', 'Uctx', 'JLmo'\. RuleMonkey reads no"):
+        bngsim.Simulator(bngsim.Model.from_net(str(net)), method="rm", xml_path=str(xml))
+    with pytest.raises(ModelError, match="issue #1525"):
+        bngsim.RuleMonkeySession(str(xml))

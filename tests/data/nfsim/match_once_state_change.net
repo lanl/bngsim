@@ -1,24 +1,29 @@
 # Created by BioNetGen 2.9.3
 begin parameters
-    1 k   1e-3  # Constant
-    2 X0  2000  # Constant
+    1 k             1e-3  # Constant
+    2 X0            2000  # Constant
+    3 _JLmo_local1  if((0>=0),k,0)  # ConstantExpression
 end parameters
 begin species
     1 J(d!1,s~0).J(d!1,s~0) X0
     2 W(d!1,s~0).W(d!1,s~0) X0
     3 U(d!1).U(d!1) X0
     4 Y() 1
-    5 J(d!1,s~0).J(d!1,s~1) 0
-    6 W(d!1,s~0).W(d!1,s~1) 0
-    7 Z() 0
+    5 JL(d!1,s~0).JL(d!1,s~0) X0
+    6 J(d!1,s~0).J(d!1,s~1) 0
+    7 W(d!1,s~0).W(d!1,s~1) 0
+    8 Z() 0
+    9 JL(d!1,s~0).JL(d!1,s~1) 0
 end species
 begin reactions
-    1 1 5 k #Jmo
-    2 2 6 2*k #Wpl
-    3 3,4 3,4,7 k #Uctx
+    1 1 6 k #Jmo
+    2 2 7 2*k #Wpl
+    3 3,4 3,4,8 k #Uctx
+    4 5 9 _JLmo_local1 #JLmo
 end reactions
 begin groups
-    1 J1                   5
-    2 W1                   6
-    3 Zt                   7
+    1 J1                   6
+    2 W1                   7
+    3 Zt                   8
+    4 JL1                  9
 end groups

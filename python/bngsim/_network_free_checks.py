@@ -210,40 +210,41 @@ def _truthy_flag(value: str | None) -> bool:
     return (value or "").strip().lower() in ("1", "true")
 
 
-def mm_rules_counted_per_complex(xml_path: str | Path) -> list[str]:
-    """The names of the Michaelis-Menten rules in *xml_path* with a reactant that
-    must count once per complex, where a complex may hold two matches of its
-    pattern. A reactant counts once per complex when the rule deletes its whole
-    complex (a ``Delete`` of the reactant pattern without DeleteMolecules) or
-    carries MatchOnce. A complex may hold two matches unless the pattern is one
-    molecule whose type has no components, which is always a complex of its own.
-    Empty when the file cannot be parsed.
-
-    NFsim counts a reactant once per match. For an elementary or function rate it
-    thins such a reactant back to once per complex as the rule fires (issue
-    #1525), but the Michaelis-Menten law is not linear in its counts, so a complex
-    holding two matches enters the total twice and no thinning undoes that."""
-    try:
-        root = ET.parse(str(xml_path)).getroot()
-    except (ET.ParseError, OSError):
-        return []
-    has_components = {
-        mt.get("id"): any(_local(c.tag) == "ListOfComponentTypes" and len(c) for c in mt)
-        for mt in root.iter()
-        if _local(mt.tag) == "MoleculeType"
+def _bondable_types(root: ET.Element) -> set[str]:
+    """The molecule types a bond in the model touches: one in a seed species or a
+    pattern, or one a rule adds. A type no bond touches is always a complex of
+    its own."""
+    owner: dict[str, str] = {}
+    for mol in root.iter():
+        if _local(mol.tag) != "Molecule" or not mol.get("name"):
+            continue
+        for lst in _children(mol, "ListOfComponents"):
+            for comp in _children(lst, "Component"):
+                if comp.get("id"):
+                    owner[comp.get("id") or ""] = mol.get("name") or ""
+    return {
+        owner[site]
+        for el in root.iter()
+        if _local(el.tag) in ("Bond", "AddBond")
+        for site in (el.get("site1"), el.get("site2"))
+        if site in owner
     }
+
+
+def _per_complex_reactants(root: ET.Element) -> list[tuple[ET.Element, ET.Element, str]]:
+    """``(rule, reactant pattern, kind)`` for each reactant BioNetGen counts once
+    per complex, ``kind`` ``"deleted"`` (the rule deletes its whole complex, no
+    DeleteMolecules) or ``"MatchOnce"``, where that complex may hold two matches
+    of the pattern: a pattern of two or more molecules, or one molecule of a type
+    a bond touches.
+
+    NFsim counts such a reactant once per match and thins it back to once per
+    complex as the rule fires (issue #1525)."""
+    bondable = _bondable_types(root)
     out = []
     for rule in root.iter():
         if _local(rule.tag) != "ReactionRule":
             continue
-        laws = _children(rule, "RateLaw")
-        if not laws or laws[0].get("type") != "MM":
-            continue
-        patterns = [
-            rp
-            for lst in _children(rule, "ListOfReactantPatterns")
-            for rp in _children(lst, "ReactantPattern")
-        ]
         deleted = {
             op.get("id")
             for ops in _children(rule, "ListOfOperations")
@@ -251,31 +252,119 @@ def mm_rules_counted_per_complex(xml_path: str | Path) -> list[str]:
             if op.get("DeleteMolecules", "0") in ("0", "")
         }
         rule_once = _truthy_flag(rule.get("matchOnce"))
-        for pattern in patterns:
-            if not (
-                pattern.get("id") in deleted or rule_once or _truthy_flag(pattern.get("matchOnce"))
-            ):
-                continue
-            molecules = [
-                m.get("name")
-                for lst in _children(pattern, "ListOfMolecules")
-                for m in _children(lst, "Molecule")
-            ]
-            if len(molecules) != 1 or has_components.get(molecules[0], True):
-                out.append(rule.get("name") or rule.get("id") or "?")
-                break
+        for lst in _children(rule, "ListOfReactantPatterns"):
+            for pattern in _children(lst, "ReactantPattern"):
+                if pattern.get("id") in deleted:
+                    kind = "deleted"
+                elif rule_once or _truthy_flag(pattern.get("matchOnce")):
+                    kind = "MatchOnce"
+                else:
+                    continue
+                molecules = [
+                    m.get("name")
+                    for ml in _children(pattern, "ListOfMolecules")
+                    for m in _children(ml, "Molecule")
+                ]
+                if len(molecules) > 1 or (molecules and molecules[0] in bondable):
+                    out.append((rule, pattern, kind))
     return out
+
+
+def _parse(xml_path: str | Path) -> ET.Element | None:
+    try:
+        return ET.parse(str(xml_path)).getroot()
+    except (ET.ParseError, OSError):
+        return None
+
+
+def _rule_name(rule: ET.Element) -> str:
+    return rule.get("name") or rule.get("id") or "?"
+
+
+def _unique(names: list[str]) -> list[str]:
+    return list(dict.fromkeys(names))
+
+
+def mm_rules_counted_per_complex(xml_path: str | Path) -> list[str]:
+    """The names of the Michaelis-Menten rules in *xml_path* with a reactant
+    counted once per complex whose complex may hold two matches
+    (:func:`_per_complex_reactants`). The law is not linear in its counts, so a
+    complex holding two matches enters the total twice and no thinning undoes
+    that. Empty when the file cannot be parsed."""
+    root = _parse(xml_path)
+    if root is None:
+        return []
+    return _unique(
+        [
+            _rule_name(rule)
+            for rule, _, _ in _per_complex_reactants(root)
+            if any(law.get("type") == "MM" for law in _children(rule, "RateLaw"))
+        ]
+    )
+
+
+def local_functions_on_one_match(xml_path: str | Path) -> list[str]:
+    """The names of the rules in *xml_path* whose local-function rate reads one
+    molecule (``A%x()``) of a reactant counted once per complex whose complex may
+    hold two matches. The value can differ between the matches in a complex:
+    BioNetGen's network takes it at its first embedding, and NFsim, thinning the
+    matches to one, at their mean (issue #1525). One read on the whole species
+    (``%x:A()``) has a single value per complex. Empty when the file cannot be
+    parsed."""
+    root = _parse(xml_path)
+    if root is None:
+        return []
+    out = []
+    for rule, pattern, _ in _per_complex_reactants(root):
+        prefix = f"{pattern.get('id')}_M"
+        for law in _children(rule, "RateLaw"):
+            for args in _children(law, "ListOfArguments"):
+                for arg in _children(args, "Argument"):
+                    if (arg.get("value") or "").startswith(prefix):
+                        out.append(_rule_name(rule))
+    return _unique(out)
+
+
+def rulemonkey_match_once_rules(xml_path: str | Path) -> list[str]:
+    """The names of the rules in *xml_path* with a MatchOnce reactant whose
+    complex may hold two matches. RuleMonkey reads no MatchOnce on a rule and
+    counts such a reactant once per match (issue #1525). Empty when the file
+    cannot be parsed."""
+    root = _parse(xml_path)
+    if root is None:
+        return []
+    return _unique(
+        [_rule_name(rule) for rule, _, kind in _per_complex_reactants(root) if kind == "MatchOnce"]
+    )
+
+
+def refuse_rulemonkey_match_once(xml_path: str | Path) -> None:
+    """Raise :class:`ModelError` if *xml_path* has a rule
+    :func:`rulemonkey_match_once_rules` names."""
+    found = rulemonkey_match_once_rules(xml_path)
+    if not found:
+        return
+    raise ModelError(
+        "RuleMonkey (method='rm' / 'nf_exact') cannot run a model with MatchOnce on a "
+        "reactant whose complex may hold two matches of it: rules "
+        + ", ".join(f"'{n}'" for n in found)
+        + ". RuleMonkey reads no MatchOnce on a rule and counts such a reactant once per "
+        "match, where BioNetGen counts it once per complex (issue #1525). Simulate it "
+        "with method='nf', or with method='ode' or method='ssa' on the generated network."
+    )
 
 
 def refuse_nfsim_rate_laws(xml_path: str | Path) -> None:
     """Raise :class:`ModelError` if *xml_path* has a rule NFsim would run wrong or
     not at all: an Arrhenius rate law (RuleWorld/nfsim#102), a type NFsim does
-    not implement, or a Michaelis-Menten rule with a reactant counted once per
-    complex whose complex may hold two matches of its pattern (issue #1525)."""
+    not implement, or a reactant counted once per complex whose complex may hold
+    two matches of its pattern, under a Michaelis-Menten law or a local function
+    read on one molecule (issue #1525)."""
     arrhenius = arrhenius_rules(xml_path)
     other = nfsim_unimplemented_rate_laws(xml_path)
     mm_per_complex = mm_rules_counted_per_complex(xml_path)
-    if not arrhenius and not other and not mm_per_complex:
+    one_match = local_functions_on_one_match(xml_path)
+    if not arrhenius and not other and not mm_per_complex and not one_match:
         return
     label, _ = _BACKENDS["nfsim"]
     parts = []
@@ -305,7 +394,17 @@ def refuse_nfsim_rate_laws(xml_path: str | Path) -> None:
             + ". NFsim counts each match, so such a complex enters the law's total "
             "once per match, where BioNetGen counts it once; the law is not linear in "
             "that total, so it cannot be corrected as the rule fires (issue #1525). A "
-            "reactant of one molecule with no components runs"
+            "reactant of one molecule that no bond touches runs"
+        )
+    if one_match:
+        parts.append(
+            "local functions read on one molecule of a reactant counted once per complex "
+            "(a whole complex the rule deletes, or MatchOnce) whose complex may hold two "
+            "matches: rules "
+            + ", ".join(f"'{n}'" for n in one_match)
+            + ". The value can differ between the matches in a complex, and BioNetGen "
+            "takes it at its first embedding where NFsim would take their mean (issue "
+            "#1525). A function read on the whole species (%x: before the pattern) runs"
         )
     raise ModelError(
         f"{label} cannot run a model with {'; and with '.join(parts)}. Simulate it with "

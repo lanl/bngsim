@@ -5,9 +5,21 @@
     <ListOfParameters>
       <Parameter id="k" type="Constant" value="0.001" expr="1e-3"/>
       <Parameter id="X0" type="Constant" value="2000" expr="2000"/>
+      <Parameter id="_JLmo_local1" type="Constant" value="0.001" expr="if((0>=0),k,0)"/>
     </ListOfParameters>
     <ListOfMoleculeTypes>
       <MoleculeType id="J">
+        <ListOfComponentTypes>
+          <ComponentType id="d"/>
+          <ComponentType id="s">
+            <ListOfAllowedStates>
+              <AllowedState id="0"/>
+              <AllowedState id="1"/>
+            </ListOfAllowedStates>
+          </ComponentType>
+        </ListOfComponentTypes>
+      </MoleculeType>
+      <MoleculeType id="JL">
         <ListOfComponentTypes>
           <ComponentType id="d"/>
           <ComponentType id="s">
@@ -100,18 +112,18 @@
           <Molecule id="S4_M1" name="Y"/>
         </ListOfMolecules>
       </Species>
-      <Species id="S5"  concentration="0" name="J(d!1,s~0).J(d!1,s~1)">
+      <Species id="S5"  concentration="X0" name="JL(d!1,s~0).JL(d!1,s~0)">
         <ListOfMolecules>
-          <Molecule id="S5_M1" name="J">
+          <Molecule id="S5_M1" name="JL">
             <ListOfComponents>
               <Component id="S5_M1_C1" name="d" numberOfBonds="1"/>
               <Component id="S5_M1_C2" name="s" state="0" numberOfBonds="0"/>
             </ListOfComponents>
           </Molecule>
-          <Molecule id="S5_M2" name="J">
+          <Molecule id="S5_M2" name="JL">
             <ListOfComponents>
               <Component id="S5_M2_C1" name="d" numberOfBonds="1"/>
-              <Component id="S5_M2_C2" name="s" state="1" numberOfBonds="0"/>
+              <Component id="S5_M2_C2" name="s" state="0" numberOfBonds="0"/>
             </ListOfComponents>
           </Molecule>
         </ListOfMolecules>
@@ -119,15 +131,15 @@
           <Bond id="S5_B1" site1="S5_M1_C1" site2="S5_M2_C1"/>
         </ListOfBonds>
       </Species>
-      <Species id="S6"  concentration="0" name="W(d!1,s~0).W(d!1,s~1)">
+      <Species id="S6"  concentration="0" name="J(d!1,s~0).J(d!1,s~1)">
         <ListOfMolecules>
-          <Molecule id="S6_M1" name="W">
+          <Molecule id="S6_M1" name="J">
             <ListOfComponents>
               <Component id="S6_M1_C1" name="d" numberOfBonds="1"/>
               <Component id="S6_M1_C2" name="s" state="0" numberOfBonds="0"/>
             </ListOfComponents>
           </Molecule>
-          <Molecule id="S6_M2" name="W">
+          <Molecule id="S6_M2" name="J">
             <ListOfComponents>
               <Component id="S6_M2_C1" name="d" numberOfBonds="1"/>
               <Component id="S6_M2_C2" name="s" state="1" numberOfBonds="0"/>
@@ -138,10 +150,48 @@
           <Bond id="S6_B1" site1="S6_M1_C1" site2="S6_M2_C1"/>
         </ListOfBonds>
       </Species>
-      <Species id="S7"  concentration="0" name="Z()">
+      <Species id="S7"  concentration="0" name="W(d!1,s~0).W(d!1,s~1)">
         <ListOfMolecules>
-          <Molecule id="S7_M1" name="Z"/>
+          <Molecule id="S7_M1" name="W">
+            <ListOfComponents>
+              <Component id="S7_M1_C1" name="d" numberOfBonds="1"/>
+              <Component id="S7_M1_C2" name="s" state="0" numberOfBonds="0"/>
+            </ListOfComponents>
+          </Molecule>
+          <Molecule id="S7_M2" name="W">
+            <ListOfComponents>
+              <Component id="S7_M2_C1" name="d" numberOfBonds="1"/>
+              <Component id="S7_M2_C2" name="s" state="1" numberOfBonds="0"/>
+            </ListOfComponents>
+          </Molecule>
         </ListOfMolecules>
+        <ListOfBonds>
+          <Bond id="S7_B1" site1="S7_M1_C1" site2="S7_M2_C1"/>
+        </ListOfBonds>
+      </Species>
+      <Species id="S8"  concentration="0" name="Z()">
+        <ListOfMolecules>
+          <Molecule id="S8_M1" name="Z"/>
+        </ListOfMolecules>
+      </Species>
+      <Species id="S9"  concentration="0" name="JL(d!1,s~0).JL(d!1,s~1)">
+        <ListOfMolecules>
+          <Molecule id="S9_M1" name="JL">
+            <ListOfComponents>
+              <Component id="S9_M1_C1" name="d" numberOfBonds="1"/>
+              <Component id="S9_M1_C2" name="s" state="0" numberOfBonds="0"/>
+            </ListOfComponents>
+          </Molecule>
+          <Molecule id="S9_M2" name="JL">
+            <ListOfComponents>
+              <Component id="S9_M2_C1" name="d" numberOfBonds="1"/>
+              <Component id="S9_M2_C2" name="s" state="1" numberOfBonds="0"/>
+            </ListOfComponents>
+          </Molecule>
+        </ListOfMolecules>
+        <ListOfBonds>
+          <Bond id="S9_B1" site1="S9_M1_C1" site2="S9_M2_C1"/>
+        </ListOfBonds>
       </Species>
     </ListOfSpecies>
     <ListOfReactionRules>
@@ -335,6 +385,66 @@
           <Add id="RR3_PP3_M1"/>
         </ListOfOperations>
       </ReactionRule>
+      <ReactionRule id="RR4" name="JLmo" symmetry_factor="1">
+        <ListOfReactantPatterns>
+          <ReactantPattern id="RR4_RP1" label="x" matchOnce="1">
+            <ListOfMolecules>
+              <Molecule id="RR4_RP1_M1" name="JL">
+                <ListOfComponents>
+                  <Component id="RR4_RP1_M1_C1" name="d" numberOfBonds="1"/>
+                  <Component id="RR4_RP1_M1_C2" name="s" state="0" numberOfBonds="0"/>
+                </ListOfComponents>
+              </Molecule>
+              <Molecule id="RR4_RP1_M2" name="JL">
+                <ListOfComponents>
+                  <Component id="RR4_RP1_M2_C1" name="d" numberOfBonds="1"/>
+                  <Component id="RR4_RP1_M2_C2" name="s" state="0" numberOfBonds="0"/>
+                </ListOfComponents>
+              </Molecule>
+            </ListOfMolecules>
+            <ListOfBonds>
+              <Bond id="RR4_RP1_B1" site1="RR4_RP1_M1_C1" site2="RR4_RP1_M2_C1"/>
+            </ListOfBonds>
+          </ReactantPattern>
+        </ListOfReactantPatterns>
+        <ListOfProductPatterns>
+          <ProductPattern id="RR4_PP1">
+            <ListOfMolecules>
+              <Molecule id="RR4_PP1_M1" name="JL">
+                <ListOfComponents>
+                  <Component id="RR4_PP1_M1_C1" name="d" numberOfBonds="1"/>
+                  <Component id="RR4_PP1_M1_C2" name="s" state="1" numberOfBonds="0"/>
+                </ListOfComponents>
+              </Molecule>
+              <Molecule id="RR4_PP1_M2" name="JL">
+                <ListOfComponents>
+                  <Component id="RR4_PP1_M2_C1" name="d" numberOfBonds="1"/>
+                  <Component id="RR4_PP1_M2_C2" name="s" state="0" numberOfBonds="0"/>
+                </ListOfComponents>
+              </Molecule>
+            </ListOfMolecules>
+            <ListOfBonds>
+              <Bond id="RR4_PP1_B1" site1="RR4_PP1_M1_C1" site2="RR4_PP1_M2_C1"/>
+            </ListOfBonds>
+          </ProductPattern>
+        </ListOfProductPatterns>
+        <RateLaw id="RR4_RateLaw" type="Function" name="_rateLaw1" totalrate="0">
+          <ListOfArguments>
+            <Argument id="x" type="ObjectReference" value="RR4_RP1"/>
+          </ListOfArguments>
+        </RateLaw>
+        <Map>
+          <MapItem sourceID="RR4_RP1_M1" targetID="RR4_PP1_M1"/>
+          <MapItem sourceID="RR4_RP1_M1_C1" targetID="RR4_PP1_M1_C1"/>
+          <MapItem sourceID="RR4_RP1_M1_C2" targetID="RR4_PP1_M1_C2"/>
+          <MapItem sourceID="RR4_RP1_M2" targetID="RR4_PP1_M2"/>
+          <MapItem sourceID="RR4_RP1_M2_C1" targetID="RR4_PP1_M2_C1"/>
+          <MapItem sourceID="RR4_RP1_M2_C2" targetID="RR4_PP1_M2_C2"/>
+        </Map>
+        <ListOfOperations>
+          <StateChange site="RR4_RP1_M1_C2" finalState="1"/>
+        </ListOfOperations>
+      </ReactionRule>
     </ListOfReactionRules>
     <ListOfObservables>
       <Observable id="O1" name="J1" type="Molecules">
@@ -372,8 +482,42 @@
           </Pattern>
         </ListOfPatterns>
       </Observable>
+      <Observable id="O4" name="JL1" type="Molecules">
+        <ListOfPatterns>
+          <Pattern id="O4_P1">
+            <ListOfMolecules>
+              <Molecule id="O4_P1_M1" name="JL">
+                <ListOfComponents>
+                  <Component id="O4_P1_M1_C1" name="s" state="1" numberOfBonds="0"/>
+                </ListOfComponents>
+              </Molecule>
+            </ListOfMolecules>
+          </Pattern>
+        </ListOfPatterns>
+      </Observable>
     </ListOfObservables>
     <ListOfFunctions>
+      <Function id="fjl">
+        <ListOfArguments>
+          <Argument id="x"/>
+        </ListOfArguments>
+        <ListOfReferences>
+          <Reference name="k" type="Constant"/>
+          <Reference name="x" type="Local"/>
+          <Reference name="JL1" type="Observable"/>
+        </ListOfReferences>
+        <Expression> if((JL1(x)&gt;=0),k,0) </Expression>
+      </Function>
+      <Function id="_rateLaw1">
+        <ListOfArguments>
+          <Argument id="x"/>
+        </ListOfArguments>
+        <ListOfReferences>
+          <Reference name="fjl" type="Function"/>
+          <Reference name="x" type="Local"/>
+        </ListOfReferences>
+        <Expression> fjl(x) </Expression>
+      </Function>
     </ListOfFunctions>
   </model>
 </sbml>

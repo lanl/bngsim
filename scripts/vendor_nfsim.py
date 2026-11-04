@@ -438,13 +438,15 @@ CARRY_QUEUE = (
             "rooted in the picked complex, counted by bond traversal. NFsim fired a "
             "homodimer deletion at 2k and a 4-ring's at 4k where BioNetGen's network "
             "gives each complex k, and MatchOnce's per-complex count never took "
-            "effect. Not under a total rate, nor for a reactant already counted per "
-            "complex; draws only where a complex holds two or more matches. See "
+            "effect (NFinput dropped it on a DOR rule outright; it is applied there "
+            "too). Not under a total rate, nor for a reactant already counted per "
+            "complex; draws only where a complex holds two or more matches, and "
+            "counts over the complex's member list where complexes are tracked. See "
             "bngsim GH #1525."
         ),
         "commits": [
             {
-                "commit": "1b8ee9393b4a0c406426c7c100337d5d20e068da",
+                "commit": "70c24c9098daf536af2faa769312f8be76c987a7",
                 "summary": (
                     "bngsim: count a whole-complex deletion and a MatchOnce reactant "
                     "once per complex"

@@ -154,10 +154,19 @@ for the same counting. NFsim keeps one entry per match, so it fires such a pick
 with probability 1/m, m the matches in the picked complex: each complex goes at
 the rule's rate once, and complexes are picked evenly whatever their matches
 (issue #1525). Before, a homodimer pool decayed at 2k and a 4-ring at 4k, and
-`MatchOnce` had no effect. A `TotalRate` rule is not thinned. A Michaelis-Menten
-rule with such a reactant, whose complex may hold two matches, is refused by
-`method="nf"`: the law is not linear in its counts, so the thinning cannot
-correct it. RuleMonkey counts a whole-complex deletion once per complex.
+`MatchOnce` had no effect. A `TotalRate` rule is not thinned.
+
+`method="nf"` refuses two shapes of such a rule, where the complex may hold two
+matches (a pattern of two or more molecules, or one molecule of a type a bond in
+the model touches): a Michaelis-Menten law, which is not linear in its counts, so
+the thinning cannot correct it; and a local function read on one molecule
+(`A%x()`), whose value can differ between the matches, where BNG2.pl's network
+takes the value at its first embedding. A local function read on the whole
+species (`%x:A()`) runs.
+
+RuleMonkey counts a whole-complex deletion once per complex. It reads no
+`MatchOnce` on a rule, so `method="rm"` refuses a `MatchOnce` reactant whose
+complex may hold two matches: there the two engines would not agree.
 
 ### `TotalRate`
 

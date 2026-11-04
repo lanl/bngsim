@@ -426,9 +426,19 @@ int ReactionClass::countMatchesInComplex(unsigned int reactantIndex, Molecule *m
 {
 	MoleculeType *mt = reactantTemplates[reactantIndex]->getMoleculeType();
 	int rxnIndex = mt->getRxnIndex(this, reactantIndex);
+	int matches = 0;
+	// The complex's own member list where complexes are tracked, a bond
+	// traversal where they are not: the list is several times cheaper to walk
+	// on a large aggregate, and this runs at every pick.
+	Complex *c = system->isUsingComplex() ? m->getComplex() : 0;
+	if ( c != 0 ) {
+		for ( list<Molecule *>::iterator it = c->complexMembers.begin(); it != c->complexMembers.end(); ++it ) {
+			if ( (*it)->getMoleculeType() == mt ) matches += (*it)->getRxnListMappingCount(rxnIndex);
+		}
+		return matches;
+	}
 	list <Molecule *> members;
 	m->traverseBondedNeighborhood(members, ReactionClass::NO_LIMIT);
-	int matches = 0;
 	for ( list<Molecule *>::iterator it = members.begin(); it != members.end(); ++it ) {
 		if ( (*it)->getMoleculeType() == mt ) matches += (*it)->getRxnListMappingCount(rxnIndex);
 	}

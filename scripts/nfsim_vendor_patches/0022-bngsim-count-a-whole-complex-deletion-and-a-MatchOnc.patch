@@ -1,4 +1,4 @@
-From 1b8ee9393b4a0c406426c7c100337d5d20e068da Mon Sep 17 00:00:00 2001
+From 70c24c9098daf536af2faa769312f8be76c987a7 Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <bill.hlavacek@gmail.com>
 Date: Wed, 4 Nov 2026 15:09:30 -0700
 Subject: [PATCH] bngsim: count a whole-complex deletion and a MatchOnce
@@ -11,24 +11,26 @@ one mapping set per match, so NFsim fired it once per match: a homodimer at
 2k, a 4-ring at 4k, M() -> 0 on M.N.M at 2k. MatchOnce asks for the same
 per-complex counting, and its count through countDistinctComplexes() never
 took effect: a list is only noted as able to share a complex for a pure
-context reactant.
+context reactant. NFinput dropped MatchOnce on a DOR rule outright.
 
 fire() now fires such a pick with probability 1/m, m the mapping sets of the
-reactant's list rooted in the picked complex, counted by bond traversal so
-complex bookkeeping is not needed: a complex goes at the rule's rate once, and
-complexes are picked evenly whatever their matches. Not under a total rate,
-nor for a reactant already counted per complex. It draws only where a complex
-holds two or more matches, so other runs keep their random streams. MatchOnce
-leaves the per-complex count paths, which it never reached. See bngsim issue
-#1525.
+reactant's list rooted in the picked complex, counted over the complex's
+member list where complexes are tracked and by bond traversal where they are
+not: a complex goes at the rule's rate once, and complexes are picked evenly
+whatever their matches. Not under a total rate, nor for a reactant already
+counted per complex. It draws only where a complex holds two or more matches,
+so other runs keep their random streams. MatchOnce is applied to DOR rules
+too, and leaves the per-complex count paths, which it never reached. See
+bngsim issue #1525.
 ---
- src/NFcore/NFcore.hh                          | 20 ++++++++++
- src/NFcore/reactionClass.cpp                  | 38 +++++++++++++++++++
- src/NFreactions/reactions/DORreaction.cpp     | 22 ++++++-----
- src/NFreactions/reactions/reaction.cpp        | 11 +++---
- .../transformations/transformationSet.cpp     | 13 +++++++
- .../transformations/transformationSet.hh      |  7 ++++
- 6 files changed, 96 insertions(+), 15 deletions(-)
+ src/NFcore/NFcore.hh                          | 20 ++++++++
+ src/NFcore/reactionClass.cpp                  | 48 +++++++++++++++++++
+ src/NFinput/NFinput.cpp                       | 16 +++----
+ src/NFreactions/reactions/DORreaction.cpp     | 22 +++++----
+ src/NFreactions/reactions/reaction.cpp        | 11 +++--
+ .../transformations/transformationSet.cpp     | 13 +++++
+ .../transformations/transformationSet.hh      |  7 +++
+ 7 files changed, 113 insertions(+), 24 deletions(-)
 
 diff --git a/src/NFcore/NFcore.hh b/src/NFcore/NFcore.hh
 index bb18100..b70b3a0 100644
@@ -76,7 +78,7 @@ index bb18100..b70b3a0 100644
  			 * count correction for calculating the ratelaw
  			 */
 diff --git a/src/NFcore/reactionClass.cpp b/src/NFcore/reactionClass.cpp
-index f90e705..eb32224 100755
+index f90e705..f2c130a 100755
 --- a/src/NFcore/reactionClass.cpp
 +++ b/src/NFcore/reactionClass.cpp
 @@ -227,11 +227,13 @@ ReactionClass::ReactionClass(string name, double baseRate, string baseRateParame
@@ -101,7 +103,7 @@ index f90e705..eb32224 100755
  	delete [] identicalPopCountCorrection;
  	connectedReactions.clear();
  }
-@@ -419,6 +422,19 @@ void ReactionClass::fire(double random_A_number) {
+@@ -419,6 +422,29 @@ void ReactionClass::fire(double random_A_number) {
  	this->fire(random_A_number, false);
  }
  
@@ -109,9 +111,19 @@ index f90e705..eb32224 100755
 +{
 +	MoleculeType *mt = reactantTemplates[reactantIndex]->getMoleculeType();
 +	int rxnIndex = mt->getRxnIndex(this, reactantIndex);
++	int matches = 0;
++	// The complex's own member list where complexes are tracked, a bond
++	// traversal where they are not: the list is several times cheaper to walk
++	// on a large aggregate, and this runs at every pick.
++	Complex *c = system->isUsingComplex() ? m->getComplex() : 0;
++	if ( c != 0 ) {
++		for ( list<Molecule *>::iterator it = c->complexMembers.begin(); it != c->complexMembers.end(); ++it ) {
++			if ( (*it)->getMoleculeType() == mt ) matches += (*it)->getRxnListMappingCount(rxnIndex);
++		}
++		return matches;
++	}
 +	list <Molecule *> members;
 +	m->traverseBondedNeighborhood(members, ReactionClass::NO_LIMIT);
-+	int matches = 0;
 +	for ( list<Molecule *>::iterator it = members.begin(); it != members.end(); ++it ) {
 +		if ( (*it)->getMoleculeType() == mt ) matches += (*it)->getRxnListMappingCount(rxnIndex);
 +	}
@@ -121,7 +133,7 @@ index f90e705..eb32224 100755
  // AS2023 - Alternative call signature to tell fire call when we are tracking 
  // each firing for the rxnlog argument
  string ReactionClass::fire(double random_A_number, bool track) {
-@@ -454,6 +470,28 @@ string ReactionClass::fire(double random_A_number, bool track) {
+@@ -454,6 +480,28 @@ string ReactionClass::fire(double random_A_number, bool track) {
  		}
  	}
  
@@ -150,6 +162,34 @@ index f90e705..eb32224 100755
  
  	// Generate the set of possible products that we need to update
  	// (excluding new molecules, we'll get those later --Justin)
+diff --git a/src/NFinput/NFinput.cpp b/src/NFinput/NFinput.cpp
+index 9d7255a..a9146cf 100644
+--- a/src/NFinput/NFinput.cpp
++++ b/src/NFinput/NFinput.cpp
+@@ -2757,16 +2757,14 @@ bool NFinput::initReactionRulePermutation(
+                 if (matchOnceList[i]) hasMatchOnce = true;
+             }
+ 
++            // A MatchOnce reactant is thinned to once per complex as the rule
++            // fires (ReactionClass::fire), whatever the rate law, so a DOR rule
++            // takes it as any other; it was ignored there (bngsim issue #1525).
+             if (hasMatchOnce) {
+-                if (r->getRxnType() == ReactionClass::DOR_RXN || r->getRxnType() == ReactionClass::DOR2_RXN) {
+-                    cerr << "Warning: MatchOnce is not yet supported for DOR/functional reactions. "
+-                         << "Ignoring matchOnce on reaction: " << rxnName << endl;
+-                } else {
+-                    unsigned int nReactants = r->getNumOfReactants();
+-                    for (unsigned int i = 0; i < nReactants; i++) {
+-                        if (i < matchOnceSize) {
+-                            r->setMatchOnce(i, matchOnceList[i]);
+-                        }
++                unsigned int nReactants = r->getNumOfReactants();
++                for (unsigned int i = 0; i < nReactants; i++) {
++                    if (i < matchOnceSize) {
++                        r->setMatchOnce(i, matchOnceList[i]);
+                     }
+                 }
+             }
 diff --git a/src/NFreactions/reactions/DORreaction.cpp b/src/NFreactions/reactions/DORreaction.cpp
 index c115ab5..fc53cf8 100644
 --- a/src/NFreactions/reactions/DORreaction.cpp
