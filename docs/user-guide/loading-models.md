@@ -134,14 +134,18 @@ state is warned about while the protocol goes on, where BNG2.pl stops it.
 Network generation is the expensive step, so the emitted `.net` is kept under
 `~/.cache/bngsim/networks` (override with `$BNGSIM_BNGL_CACHE_DIR`) and reused
 when the same BNGL is loaded again. The key is a digest of the flattened model
-text *and* the BNG2.pl that produced it, so the cache cannot go stale: editing
-the model — or upgrading BioNetGen — regenerates, while editing only the actions
-block correctly reuses.
+text *and* the BioNetGen that produced it (BNG2.pl, and the `Perl2` library and
+`VERSION` it loads, from `$BNGPATH` when that is set), so the cache cannot go
+stale: editing the model — or upgrading BioNetGen — regenerates, while editing
+only the actions block correctly reuses. A model that reads another file before
+`generate_network` — a parameter set with `readFile`, seed amounts with
+`readNFspecies`, in the actions or inside `begin model` — is generated afresh on
+every load, since its network depends on that file and the key cannot see it
+(issue #1494). A relative path it reads resolves against the model's directory.
 
-Keeping the network is not only a speed choice. `Model.from_net` records the
-path, and codegen prefers that file because a BNG2.pl network carries derived
-rate-constant parameters whose chain rules the in-memory path does not
-reconstruct. To keep the `.net` as an artifact of your own, pass `net_out=`:
+`Model.from_net` records the path of the network it loaded, so the file is kept
+rather than deleted with a scratch directory. To keep the `.net` as an artifact
+of your own, pass `net_out=`:
 
 ```python
 model = bngsim.Model.from_bngl("egfr.bngl", net_out="egfr.net")

@@ -52,6 +52,7 @@ import shutil
 import subprocess
 import tempfile
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 
 from bngsim._exceptions import ModelError
@@ -67,7 +68,8 @@ def _default_cache_dir() -> Path:
     """Resolve the generated-network cache, honoring ``BNGSIM_BNGL_CACHE_DIR``.
 
     Same shape and the same reasons as ``_codegen.CACHE_DIR``: content-addressed,
-    so it is shared across processes and can never go stale, and overridable so a
+    so it is shared across processes and can never go stale (a model that reads
+    another file is not cached, issue #1494), and overridable so a
     cluster job can point it at node-local scratch. Networks are small text
     files; like the codegen cache this one is not pruned.
     """
@@ -143,6 +145,41 @@ _ARTIFACT_VERBS = frozenset(
     }
 )
 _DROPPED_VERBS = _EXPERIMENT_VERBS | _GENERATE_VERBS | _ARTIFACT_VERBS
+
+# The actions that read another file into the model: ``readFile`` and the
+# ``readModel``/``readNetwork``/``readSBML`` that go through it, and
+# ``readNFspecies``. They are kept (a parameter file read before
+# ``generate_network`` is part of the model), so the network depends on a file
+# the cache key cannot see, and a load that keeps one is not cached (issue #1494).
+# Matched anywhere in the kept text, not by statement: BNG2.pl runs a call it
+# meets inside ``begin model`` as an action too, and an action's arguments are
+# Perl, so one statement can make another call. A match that is not a call only
+# costs a cache miss.
+_READ_CALL_RE = re.compile(
+    r"\b(?:readFile|readModel|readNetwork|readSBML|readNFspecies)\s*\(", re.IGNORECASE
+)
+
+
+_CONTINUED_RE = re.compile(r"\\\s*$")
+
+
+def _reads_other_files(kept: str) -> bool:
+    """Whether the BNGL BNG2.pl is handed, *kept*, calls an action that reads
+    another file. Lines are joined as BNG2.pl's ``get_line`` joins them: each
+    loses its comment, and one that ends in a backslash takes the next."""
+    lines = iter(kept.splitlines())
+    for line in lines:
+        line = line.split("#", 1)[0]
+        while _CONTINUED_RE.search(line):
+            nxt = next(lines, None)
+            line = _CONTINUED_RE.sub("", line)
+            if nxt is None:
+                break
+            line += nxt.split("#", 1)[0]
+        if _READ_CALL_RE.search(line):
+            return True
+    return False
+
 
 _VERB_RE = re.compile(r"^([A-Za-z_]\w*)\s*\(")
 
@@ -445,12 +482,48 @@ def resolve_bng2(explicit: str | Path | None = None) -> Path:
     return r.bng2_pl
 
 
-def _cache_key(effective_bngl: str, bng2: Path) -> str:
+def _bng2_library_root(bng2: Path, env: dict[str, str] | None = None) -> Path:
+    """The directory BNG2.pl loads its ``Perl2`` modules and ``VERSION`` from.
+
+    BNG2.pl's ``use lib`` takes ``$BNGPATH`` when it is set, else
+    ``$BioNetGenRoot``, else the script's own directory with links resolved, and
+    the subprocess inherits this environment (:func:`_bng2_env`). So a
+    ``$BNGPATH`` that names another install swaps the generator under a BNG2.pl
+    resolved some other way.
+    """
+    source: Mapping[str, str] = os.environ if env is None else env
+    for var in ("BNGPATH", "BioNetGenRoot"):
+        if var in source:  # Perl's ``exists``: set, even to "", counts
+            return Path(source[var] or os.sep)
+    return bng2.resolve().parent
+
+
+def _bng2_env() -> dict[str, str]:
+    """The environment BNG2.pl runs in: this one, with a relative ``$BNGPATH`` or
+    ``$BioNetGenRoot`` made absolute against this process's directory, where
+    :func:`~bngsim._bngpath.resolve_bng` found BNG2.pl through it. BNG2.pl runs
+    from the model's directory (issue #1494), where a relative one names
+    something else."""
+    env = dict(os.environ)
+    cwd = os.getcwd()
+    for var in ("BNGPATH", "BioNetGenRoot"):
+        value = env.get(var)
+        if value and not os.path.isabs(value):
+            # Joined, not normalized: ``link/..`` is the link target's parent,
+            # which only the filesystem knows.
+            env[var] = os.path.join(cwd, value)
+    return env
+
+
+def _cache_key(effective_bngl: str, bng2: Path, env: dict[str, str] | None = None) -> str:
     """Digest of everything that determines the generated network.
 
     The flattened BNGL *and* the generator: two BioNetGen releases do not have to
     agree on what a rule set expands to, so an upgrade — in place or to a
     different install — must not be served a network the previous one produced.
+    The generator is BNG2.pl together with the ``Perl2`` library and ``VERSION``
+    it loads, which need not sit beside it (:func:`_bng2_library_root`), and which
+    a BioNetGen checkout edits in place (issue #1494).
     """
     h = hashlib.sha256()
     h.update(effective_bngl.encode())
@@ -461,6 +534,18 @@ def _cache_key(effective_bngl: str, bng2: Path) -> str:
         h.update(f"\0{st.st_size}\0{st.st_mtime_ns}".encode())
     except OSError:  # pragma: no cover - the file was just resolved
         pass
+    root = str(_bng2_library_root(bng2, env))
+    files = ["VERSION"]  # relative to root, which is not hashed: a copy keys alike
+    for d, dirs, names in os.walk(os.path.join(root, "Perl2")):  # 3x Path.rglob's speed
+        dirs.sort()
+        rel = d[len(root) :].lstrip(os.sep)
+        files.extend(os.path.join(rel, n) for n in sorted(names) if n.endswith(".pm"))
+    for f in files:
+        try:
+            st = os.stat(os.path.join(root, f))
+        except OSError:
+            continue
+        h.update(f"\0{f}\0{st.st_size}\0{st.st_mtime_ns}".encode())
     return h.hexdigest()[:32]
 
 
@@ -497,12 +582,21 @@ def bngl_to_net(
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"BNGL file not found: {path}")
-    bng2 = resolve_bng2(bng2_pl)
+    # Absolute, and the environment fixed once, for the key and the run alike:
+    # BNG2.pl runs from the model's directory, where a path found relative to
+    # this process's names nothing (issue #1494).
+    env = _bng2_env()
+    bng2 = Path(resolve_bng2(bng2_pl)).absolute()
     source = path.read_text()
     effective = generation_source(source) + "\n" + generate_network_call(source) + "\n"
+    # The network depends on a file the model reads, which the key cannot see:
+    # an edited parameter file was served the first network (issue #1494).
+    reads = _reads_other_files(effective)
+    if reads:
+        cache = False
 
     stem = path.stem or "model"
-    key = _cache_key(effective, bng2)
+    key = _cache_key(effective, bng2, env)
     cached = CACHE_DIR / f"{stem}_{key}.net"
     if cache and cached.is_file():
         # A cache hit still serves a net_out= caller: they asked for the network
@@ -513,7 +607,17 @@ def bngl_to_net(
     try:
         scratch = workdir / f"{stem}.bngl"
         scratch.write_text(effective)
-        net = _run_bng2(bng2, scratch, workdir, timeout=timeout, source_name=path.name)
+        net = _run_bng2(
+            bng2,
+            scratch,
+            workdir,
+            timeout=timeout,
+            source_name=path.name,
+            # A relative readFile() path resolves as it does for BNG2.pl run
+            # from the model's own directory (issue #1494).
+            cwd=path.absolute().parent,
+            env=env,
+        )
 
         if net_out is not None:
             # Populate the cache too, so a later plain load reuses this run.
@@ -529,20 +633,41 @@ def bngl_to_net(
                 # to the per-process directory so the load still succeeds and
                 # _net_path still points at a real file.
                 pass
-        return _publish(net, _session_dir() / f"{stem}_{key}.net")
+        # The key cannot tell two read models' networks apart either, so each
+        # directory's gets its own file: two loads of one driver in different
+        # directories wrote the same path (issue #1494). One per directory,
+        # where one per load left a file for every load of a reloaded model.
+        where = ""
+        if reads:
+            where = "_" + hashlib.sha256(str(path.absolute().parent).encode()).hexdigest()[:12]
+        return _publish(net, _session_dir() / f"{stem}_{key}{where}.net")
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
 
-def _run_bng2(bng2: Path, scratch: Path, workdir: Path, *, timeout: int, source_name: str) -> Path:
-    """Run ``BNG2.pl`` on ``scratch`` and return the ``.net`` it wrote."""
+def _run_bng2(
+    bng2: Path,
+    scratch: Path,
+    workdir: Path,
+    *,
+    timeout: int,
+    source_name: str,
+    cwd: Path,
+    env: dict[str, str],
+) -> Path:
+    """Run ``BNG2.pl`` on ``scratch`` from ``cwd`` and return the ``.net`` it wrote.
+
+    Its output goes to ``--outdir``, so ``cwd`` decides only how a relative path
+    the model reads (``readFile``) resolves.
+    """
     try:
         proc = subprocess.run(
             ["perl", str(bng2), "--outdir", str(workdir), str(scratch)],
             capture_output=True,
             text=True,
             timeout=timeout,
-            cwd=str(workdir),
+            cwd=str(cwd),
+            env=env,
         )
     except subprocess.TimeoutExpired as e:
         raise ModelError(

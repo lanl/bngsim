@@ -823,8 +823,10 @@ class Model:
         in ``simulate({...})`` or ``parameter_scan({...})``, and running the file
         as written would run the author's entire experiment just to obtain a
         network. Its actions before the first ``generate_network`` are applied,
-        except file writes. ``generate_network`` itself runs with the source's own
-        ``max_iter``/``max_agg``/``max_stoich``, since those are what make an
+        except file writes, and a relative path one reads (``readFile``)
+        resolves against the model's directory. ``generate_network`` itself
+        runs with the source's own ``max_iter``/``max_agg``/``max_stoich``,
+        since those are what make an
         unbounded rule set finite. Everything after it is dropped. A file with no
         ``generate_network`` before its first run stops at that run, the state
         the run starts from. Pass
@@ -861,7 +863,11 @@ class Model:
             Reuse a previously generated network for unchanged BNGL (default).
             The cache is content-addressed under ``~/.cache/bngsim/networks``
             (override with ``$BNGSIM_BNGL_CACHE_DIR``), keyed on the flattened
-            model text *and* the BNG2.pl that produced it, so it cannot go stale.
+            model text *and* the BioNetGen that produced it (BNG2.pl and the
+            ``Perl2`` library it loads), so it cannot go stale. A model that reads
+            another file before ``generate_network`` (``readFile``, ``readModel``,
+            ``readNetwork``, ``readSBML``, ``readNFspecies``) is not cached: its
+            network depends on that file, which the key cannot see (issue #1494).
             ``False`` regenerates into a per-process directory.
         defer_jacobian : bool, optional
             GH #145 escape hatch, forwarded to :meth:`from_net`.
