@@ -7,7 +7,8 @@ the run stopped at t = 20 with steady_state_reached = 1 and a last row of
 dX/dky = 17.96 where dx_ss/dθ = kx/(dx*dy) = 100, and carry_sensitivities=True
 started the next phase from it (dXo/dky at t = 2: 16.35 for 83.33). With
 sensitivities the stop now also asks each column to stand still, by the same
-test with θ·dS/dt in f's place.
+test with dS/dt in f's place, held to the solver's atol (or steady_state_tol,
+where that is tighter).
 
 The bug needs the check to run at output points before the slow mode settles,
 so phase 1 is sampled every 10 time units (n_points = 1001 over 1e4).
@@ -86,8 +87,7 @@ def test_the_carried_seed_is_dx_ss_dtheta(net):
 
 
 def test_an_initial_condition_column_settles_too(net):
-    """dY/dY(0) = exp(-dy t) is 0 at the steady state; the stop at t = 20 left 0.82.
-    The column is held to dS/dt, the scale CVODES resolves it on."""
+    """dY/dY(0) = exp(-dy t) is 0 at the steady state; the stop at t = 20 left 0.82."""
     r = _sim(net, sensitivity_ic=["Y()"]).run(**PHASE1)
     assert abs(float(np.asarray(r.sensitivities_ic)[-1, 0, 0])) < 1e-5
 
@@ -115,11 +115,10 @@ def test_a_slow_column_that_is_not_the_first_holds_the_stop(net):
     assert _last(r, 1, 1) == pytest.approx(DXSS_DKY, rel=1e-6)
 
 
-def test_a_column_is_held_to_theta_times_its_rate(tmp_path):
+def test_a_tolerance_loosened_for_large_amounts_holds_a_column_to_atol(tmp_path):
     """Scaled up: ky = 1e4, so Y(0) = Y_ss = 1e6, and a tolerance that suits those
-    amounts. dY/dky still relaxes at dy, and its rate is 1e4 times smaller than
-    θ·dS/dt. Held to dS/dt alone the column would pass at t ~ 460, 1% short of
-    dY_ss/dky = 1/dy = 100."""
+    amounts. dY/dky still relaxes at dy. Held to that tolerance the column would
+    pass at t ~ 460, 1% short of dY_ss/dky = 1/dy = 100."""
     path = tmp_path / "big.net"
     path.write_text(NET.replace("1 ky 1", "1 ky 1e4").replace("1 Y() 100", "1 Y() 1e6"))
     sim = bngsim.Simulator(
@@ -131,9 +130,9 @@ def test_a_column_is_held_to_theta_times_its_rate(tmp_path):
 
 
 def test_a_column_of_a_parameter_at_zero_is_held_to_its_rate(tmp_path):
-    """ly = 0 is a second loss of Y. θ falls back to 1 for a zero parameter; held to
-    0·dS/dt the column would pass at once. dY/dly = -Y/dy (1 - exp(-dy t)) -> -1e4,
-    and the stop at t = 20 left -1813."""
+    """ly = 0 is a second loss of Y. Scaled by its parameter's value the column
+    would be held to 0·dS/dt and pass at once. dY/dly = -Y/dy (1 - exp(-dy t))
+    -> -1e4, and the stop at t = 20 left -1813."""
     path = tmp_path / "ly.net"
     path.write_text(
         NET.replace("    5 L  0\n", "    5 L  0\n    6 ly 0\n").replace(
@@ -146,6 +145,103 @@ def test_a_column_of_a_parameter_at_zero_is_held_to_its_rate(tmp_path):
     r = sim.run(**PHASE1)
     assert r.solver_stats["steady_state_reached"]
     assert _last(r, 0, 0) == pytest.approx(-1e4, rel=1e-6)
+
+
+ZERO_THETA = """begin parameters
+    1 ky 1e4
+    2 dy 0.01
+    3 pz 0
+    4 dz 0.01
+end parameters
+begin species
+    1 Y() 1e6
+    2 Z() 0
+end species
+begin reactions
+    1 0 1   ky
+    2 1 0   dy
+    3 0 2   pz
+    4 2 0   dz
+end reactions
+"""
+
+
+@pytest.mark.parametrize(
+    ("kw", "exact"),
+    [({"sensitivity_ic": ["Z()"]}, 0.0), ({"sensitivity_params": ["pz"]}, 100.0)],
+    ids=["initial-condition", "parameter-at-zero"],
+)
+def test_a_small_species_column_beside_large_amounts_is_held_to_atol(tmp_path, kw, exact):
+    """Y sits at its steady state 1e6, and steady_state_tol = 1e-2 suits that
+    amount. Z starts at 0, its own steady state, and relaxes at dz = 0.01:
+    dZ/dZ0 = exp(-dz t) -> 0 and dZ/dpz = (1 - exp(-dz t))/dz -> 100. Held to
+    1e-2 the columns passed at once, and the stop at t = 10 left 0.905 and 9.52."""
+    path = tmp_path / "z.net"
+    path.write_text(ZERO_THETA)
+    sim = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode", **kw)
+    r = sim.run(**PHASE1, steady_state_tol=1e-2)
+    assert r.solver_stats["steady_state_reached"]
+    rows = r.sensitivities_ic if "sensitivity_ic" in kw else r.sensitivities
+    assert float(np.asarray(rows)[-1, 1, 0]) == pytest.approx(exact, rel=1e-5, abs=1e-4)
+
+
+SLOW_X = """begin parameters
+    1 p  PVAL
+    2 dx 0.01
+    3 ky 1
+    4 dy 0.01
+end parameters
+begin species
+    1 Y() 100
+    2 X() XSS
+end species
+begin reactions
+    1 0 1   ky
+    2 1 0   dy
+    3 1 1,2 p
+    4 2 0   dx
+end reactions
+"""
+
+
+@pytest.mark.parametrize("p", [1e-6, 1.0, 1e3])
+def test_a_column_settles_alike_whatever_its_parameters_value(tmp_path, p):
+    """X is made at p*Y and lost at dx = 0.01, from its steady state p*Y/dx, so
+    dX/dp = (Y/dx)(1 - exp(-dx t)) -> 1e4 whatever p is. Scaled by p, the column
+    test was loose for a small p (1.8e-4 off at p = 1e-6) and past what CVODES
+    resolves for a large one."""
+    path = tmp_path / "x.net"
+    path.write_text(SLOW_X.replace("PVAL", repr(p)).replace("XSS", repr(p * 100 / 0.01)))
+    sim = bngsim.Simulator(
+        bngsim.Model.from_net(str(path)), method="ode", sensitivity_params=["p"]
+    )
+    r = sim.run(**PHASE1)
+    assert r.solver_stats["steady_state_reached"]
+    assert _last(r, 1, 0) == pytest.approx(1e4, rel=1e-6)
+
+
+def test_a_large_amount_model_still_stops_at_the_default_tolerance(tmp_path):
+    """ky = 1e6, so Y(0) = Y_ss = 1e8. Scaled by ky, the column had to pass
+    1e6*|dS/dt| < atol, finer than CVODES resolves it, and the run went to the end
+    of its span without a stop."""
+    path = tmp_path / "big.net"
+    path.write_text(NET.replace("1 ky 1", "1 ky 1e6").replace("1 Y() 100", "1 Y() 1e8"))
+    sim = bngsim.Simulator(
+        bngsim.Model.from_net(str(path)), method="ode", sensitivity_params=["ky"]
+    )
+    r = sim.run(**PHASE1)
+    assert r.solver_stats["steady_state_reached"]
+    assert float(r.time[-1]) < 1e4
+    assert _last(r, 0, 0) == pytest.approx(100.0, rel=1e-6)
+
+
+def test_a_tighter_steady_state_tol_tightens_the_columns(net):
+    """With atol = 1e-6 the column is held to 1e-6 and stops 1.4e-6 off;
+    steady_state_tol = 1e-9 holds it to that."""
+    sim = _sim(net, sensitivity_params=["ky"])
+    sim.set_tolerances(rtol=1e-8, atol=1e-6)
+    r = sim.run(**PHASE1, steady_state_tol=1e-9)
+    assert _last(r, 1, 0) == pytest.approx(DXSS_DKY, rel=1e-7)
 
 
 def test_a_batch_row_stops_where_its_columns_have_settled(net):

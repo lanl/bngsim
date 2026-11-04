@@ -606,12 +606,15 @@ rows it integrated.
 
 On a `Simulator` with `sensitivity_params` or `sensitivity_ic` the stop also
 waits for every sensitivity column to stand still, by the same test with
-`θ·dS/dt` in `f`'s place, θ the scale CVODES gives the column: the parameter's
-value, or 1 where that is 0 and for an initial-condition column. The state can
-settle long before its sensitivities do: a slow mode that starts at its own
-steady state leaves `f` small while `dx/dθ` is still relaxing in it, and the
-stop used to hand on that unsettled column as `dx_ss/dθ`, in the last row and as
-the seed `carry_sensitivities=True` reads (issue #1516).
+`dS/dt` in `f`'s place, held to the solver's `atol` (or to `steady_state_tol`
+where that is tighter). The state can settle long before its sensitivities do:
+a slow mode that starts at its own steady state leaves `f` small while `dx/dθ`
+is still relaxing in it, and the stop used to hand on that unsettled column as
+`dx_ss/dθ`, in the last row and as the seed `carry_sensitivities=True` reads
+(issue #1516). A `steady_state_tol` loosened to suit large amounts does not
+loosen the columns. A column far larger than `atol` (`dB/dkdeg` near 1e9, say)
+may never pass: the run then goes to the end of its span and reports
+`steady_state_reached = 0`, with the column as accurate as the integration.
 
 ```python
 # Stop early once the network equilibrates (ODE only)
