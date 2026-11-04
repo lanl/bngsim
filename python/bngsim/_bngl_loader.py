@@ -150,7 +150,20 @@ _DROPPED_VERBS = _EXPERIMENT_VERBS | _GENERATE_VERBS | _ARTIFACT_VERBS
 # ``readNFspecies``. They are kept (a parameter file read before
 # ``generate_network`` is part of the model), so the network depends on a file
 # the cache key cannot see, and a load that keeps one is not cached (issue #1494).
-_READ_VERBS = frozenset({"readfile", "readmodel", "readnetwork", "readsbml", "readnfspecies"})
+# Matched anywhere in the kept text, not by statement: BNG2.pl runs a call it
+# meets inside ``begin model`` as an action too, and an action's arguments are
+# Perl, so one statement can make another call. A match that is not a call only
+# costs a cache miss.
+_READ_CALL_RE = re.compile(
+    r"\b(?:readFile|readModel|readNetwork|readSBML|readNFspecies)\s*\(", re.IGNORECASE
+)
+
+
+def _reads_other_files(kept: str) -> bool:
+    """Whether the BNGL BNG2.pl is handed, *kept*, calls an action that reads
+    another file."""
+    return any(_READ_CALL_RE.search(line.split("#", 1)[0]) for line in kept.splitlines())
+
 
 _VERB_RE = re.compile(r"^([A-Za-z_]\w*)\s*\(")
 
@@ -179,13 +192,7 @@ def generation_source(text: str) -> str:
     action is kept or dropped in one piece rather than leaving a dangling
     ``t_end=>10})`` for BNG2.pl to blame on the model.
     """
-    return _generation_source(text)[0]
-
-
-def _generation_source(text: str) -> tuple[str, list[str]]:
-    """:func:`generation_source`'s text, and the verb of each action it keeps."""
     kept: list[str] = []
-    kept_verbs: list[str] = []
     stack: list[str] = []
     pending: list[str] = []  # physical lines of an in-progress action statement
     buf = ""  # ...and its comment-stripped text, for classification
@@ -198,7 +205,6 @@ def _generation_source(text: str) -> tuple[str, list[str]]:
             seen_generate = True
         elif verb is not None and not seen_generate and verb not in _DROPPED_VERBS:
             kept.extend(pending)
-            kept_verbs.append(verb)
         pending, buf = [], ""
 
     for physical in text.splitlines():
@@ -230,7 +236,7 @@ def _generation_source(text: str) -> tuple[str, list[str]]:
             flush()
     if pending:
         flush()
-    return "\n".join(kept) + "\n", kept_verbs
+    return "\n".join(kept) + "\n"
 
 
 # The actions after ``generate_network`` that change the state a run starts
@@ -465,13 +471,27 @@ def _bng2_library_root(bng2: Path) -> Path:
 
     BNG2.pl's ``use lib`` takes ``$BNGPATH`` when it is set, else
     ``$BioNetGenRoot``, else the script's own directory with links resolved, and
-    the subprocess inherits this environment. So a ``$BNGPATH`` that names another
-    install swaps the generator under a BNG2.pl resolved some other way.
+    the subprocess inherits this environment (:func:`_bng2_env`). So a
+    ``$BNGPATH`` that names another install swaps the generator under a BNG2.pl
+    resolved some other way.
     """
     for var in ("BNGPATH", "BioNetGenRoot"):
         if var in os.environ:  # Perl's ``exists``: set, even to "", counts
             return Path(os.environ[var] or os.sep)
     return bng2.resolve().parent
+
+
+def _bng2_env() -> dict[str, str]:
+    """The environment BNG2.pl runs in: this one, with a relative ``$BNGPATH`` or
+    ``$BioNetGenRoot`` made absolute against this process's directory, where
+    :func:`~bngsim._bngpath.resolve_bng` found BNG2.pl through it. BNG2.pl runs
+    from the model's directory (issue #1494), where a relative one names
+    something else."""
+    env = dict(os.environ)
+    for var in ("BNGPATH", "BioNetGenRoot"):
+        if env.get(var):
+            env[var] = os.path.abspath(env[var])
+    return env
 
 
 def _cache_key(effective_bngl: str, bng2: Path) -> str:
@@ -493,17 +513,18 @@ def _cache_key(effective_bngl: str, bng2: Path) -> str:
         h.update(f"\0{st.st_size}\0{st.st_mtime_ns}".encode())
     except OSError:  # pragma: no cover - the file was just resolved
         pass
-    root = _bng2_library_root(bng2)
-    files = [os.path.join(root, "VERSION")]
+    root = str(_bng2_library_root(bng2))
+    files = ["VERSION"]  # relative to root, which is not hashed: a copy keys alike
     for d, dirs, names in os.walk(os.path.join(root, "Perl2")):  # 3x Path.rglob's speed
         dirs.sort()
-        files.extend(os.path.join(d, n) for n in sorted(names) if n.endswith(".pm"))
+        rel = d[len(root) :].lstrip(os.sep)
+        files.extend(os.path.join(rel, n) for n in sorted(names) if n.endswith(".pm"))
     for f in files:
         try:
-            st = os.stat(f)
+            st = os.stat(os.path.join(root, f))
         except OSError:
             continue
-        h.update(f"\0{os.path.relpath(f, root)}\0{st.st_size}\0{st.st_mtime_ns}".encode())
+        h.update(f"\0{f}\0{st.st_size}\0{st.st_mtime_ns}".encode())
     return h.hexdigest()[:32]
 
 
@@ -540,13 +561,15 @@ def bngl_to_net(
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"BNGL file not found: {path}")
-    bng2 = resolve_bng2(bng2_pl)
+    # Absolute: BNG2.pl runs from the model's directory, where a path found
+    # relative to this process's names nothing (issue #1494).
+    bng2 = Path(os.path.abspath(resolve_bng2(bng2_pl)))
     source = path.read_text()
-    kept, kept_verbs = _generation_source(source)
-    effective = kept + "\n" + generate_network_call(source) + "\n"
-    if _READ_VERBS.intersection(kept_verbs):
-        # The network depends on a file the model reads, which the key cannot
-        # see: an edited parameter file was served the first network (#1494).
+    effective = generation_source(source) + "\n" + generate_network_call(source) + "\n"
+    # The network depends on a file the model reads, which the key cannot see:
+    # an edited parameter file was served the first network (issue #1494).
+    reads = _reads_other_files(effective)
+    if reads:
         cache = False
 
     stem = path.stem or "model"
@@ -586,7 +609,11 @@ def bngl_to_net(
                 # to the per-process directory so the load still succeeds and
                 # _net_path still points at a real file.
                 pass
-        return _publish(net, _session_dir() / f"{stem}_{key}.net")
+        # The key cannot tell two read models' networks apart either, so each
+        # gets its own file: two loads of one driver in different directories
+        # wrote the same path (issue #1494).
+        unique = f"_{uuid.uuid4().hex[:12]}" if reads else ""
+        return _publish(net, _session_dir() / f"{stem}_{key}{unique}.net")
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
@@ -606,6 +633,7 @@ def _run_bng2(
             text=True,
             timeout=timeout,
             cwd=str(cwd),
+            env=_bng2_env(),
         )
     except subprocess.TimeoutExpired as e:
         raise ModelError(

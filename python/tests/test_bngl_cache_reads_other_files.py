@@ -166,10 +166,74 @@ def test_every_read_action_turns_the_cache_off(tmp_path, cache, fake_bng2, actio
     assert len(fake_bng2) == 2
 
 
+def _read_inside_model(params_ref: str) -> str:
+    """BNG2.pl runs a call it meets directly inside ``begin model`` as an action."""
+    read = f'readFile({{file=>"{params_ref}", blocks=>["parameters"]}})\n'
+    return (
+        MODEL.replace("begin model\n", "begin model\n" + read)
+        + "generate_network({overwrite=>1})\n"
+    )
+
+
+@pytest.mark.parametrize("where", ["absolute", "relative"])
+def test_a_read_inside_the_model_block_turns_the_cache_off(tmp_path, cache, fake_bng2, where):
+    """The loader keeps a line inside the model block whole and never read its
+    verb. With a relative path the first round of the fix served the first
+    network, where main refused the path loudly."""
+    params = tmp_path / "params.bngl"
+    model = tmp_path / "m.bngl"
+    model.write_text(_read_inside_model(str(params) if where == "absolute" else "params.bngl"))
+    params.write_text(_params(1))
+    assert bngsim.Model.from_bngl(model).get_param("k") == 1.0
+    params.write_text(_params(2))
+    assert bngsim.Model.from_bngl(model).get_param("k") == 2.0
+
+
+def test_a_read_another_action_calls_turns_the_cache_off(tmp_path, cache, fake_bng2):
+    """An action's arguments are Perl, so one statement can make another call."""
+    params = tmp_path / "params.bngl"
+    model = tmp_path / "m.bngl"
+    model.write_text(
+        'setOption("SpeciesLabel","Auto"); '
+        f'$model->readFile({{file=>"{params}", blocks=>["parameters"]}})\n'
+        + MODEL
+        + "generate_network({overwrite=>1})\n"
+    )
+    params.write_text(_params(1))
+    assert bngsim.Model.from_bngl(model).get_param("k") == 1.0
+    params.write_text(_params(2))
+    assert bngsim.Model.from_bngl(model).get_param("k") == 2.0
+
+
+def test_a_commented_out_read_leaves_the_cache_on(tmp_path, cache, fake_bng2):
+    """Control: a read in a comment is not a call. Inside the model block, where
+    the loader keeps every line as written, comments included."""
+    model = tmp_path / "m.bngl"
+    commented = MODEL.replace("begin model\n", 'begin model\n# readFile({file=>"p.bngl"})\n')
+    model.write_text(commented + "generate_network({overwrite=>1})\n")
+    bngsim.Model.from_bngl(model)
+    bngsim.Model.from_bngl(model)
+    assert len(fake_bng2) == 1
+
+
+def test_two_models_that_read_files_keep_their_own_networks(tmp_path, cache, fake_bng2):
+    """One driver text in two directories, each reading its own params.bngl, had
+    one key and so one file: the second load rewrote the first's network."""
+    nets = []
+    for k, d in ((1, tmp_path / "one"), (2, tmp_path / "two")):
+        d.mkdir()
+        (d / "params.bngl").write_text(_params(k))
+        (d / "m.bngl").write_text(_driver("params.bngl"))
+        nets.append(_bngl_loader.bngl_to_net(d / "m.bngl"))
+    assert nets[0] != nets[1]
+    assert [bngsim.Model.from_net(n).get_param("k") for n in nets] == [1.0, 2.0]
+
+
 # ─── The key follows the library BNG2.pl loads ───────────────────────────────
 
 
 def _install(root: Path, version: str) -> Path:
+    """A stand-in BioNetGen tree; installs are told apart by VERSION's size."""
     (root / "Perl2" / "XML").mkdir(parents=True)
     (root / "Perl2" / "BNGModel.pm").write_text("package BNGModel;\n1;\n")
     (root / "Perl2" / "XML" / "Reader.pm").write_text("1;\n")
@@ -191,7 +255,7 @@ def test_the_key_follows_a_library_another_install_supplies(
     """BNG2.pl loads Perl2 from $BNGPATH (else $BioNetGenRoot) whatever BNG2.pl
     was resolved from; the key named only BNG2.pl."""
     bng2 = _install(tmp_path / "a", "2.9.3")
-    _install(tmp_path / "b", "2.9.9")
+    _install(tmp_path / "b", "2.9.10")
     own = _bngl_loader._cache_key("model", bng2)
     monkeypatch.setenv(var, str(tmp_path / "b"))
     assert _bngl_loader._cache_key("model", bng2) != own
@@ -201,19 +265,41 @@ def test_the_key_follows_a_library_another_install_supplies(
 
 def test_bngpath_wins_over_bionetgenroot(tmp_path, no_library_env, monkeypatch):
     bng2 = _install(tmp_path / "a", "2.9.3")
+    _install(tmp_path / "b", "2.9.10")
+    _install(tmp_path / "c", "2.9.100")
     monkeypatch.setenv("BNGPATH", str(tmp_path / "b"))
     monkeypatch.setenv("BioNetGenRoot", str(tmp_path / "c"))
-    assert _bngl_loader._bng2_library_root(bng2) == tmp_path / "b"
+    before = _bngl_loader._cache_key("model", bng2)
+    (tmp_path / "c" / "VERSION").write_text("3.0.0.0\n")
+    assert _bngl_loader._cache_key("model", bng2) == before
+    (tmp_path / "b" / "VERSION").write_text("3.0.0.0\n")
+    assert _bngl_loader._cache_key("model", bng2) != before
 
 
-def test_an_empty_bngpath_is_the_root_directory_as_perl_reads_it(
+def test_a_relative_bngpath_names_the_library_beside_this_process(
     tmp_path, no_library_env, monkeypatch
 ):
-    """Perl's ``exists`` takes a set but empty $BNGPATH, and catdir("", "Perl2") is
-    /Perl2, so BNG2.pl does not fall back to its own directory."""
+    """Resolved against this process's directory, where BNG2.pl was found."""
     bng2 = _install(tmp_path / "a", "2.9.3")
+    _install(tmp_path / "b", "2.9.10")
+    monkeypatch.setenv("BNGPATH", str(tmp_path / "b"))
+    absolute = _bngl_loader._cache_key("model", bng2)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BNGPATH", "b")
+    assert _bngl_loader._cache_key("model", bng2) == absolute
+    assert _bngl_loader._bng2_env()["BNGPATH"] == str(tmp_path / "b")
+
+
+def test_an_empty_bngpath_reads_no_library_beside_bng2_pl(tmp_path, no_library_env, monkeypatch):
+    """Control (main hashes no library at all): Perl's ``exists`` takes a set but
+    empty $BNGPATH, and catdir("", "Perl2") is /Perl2, so BNG2.pl does not read
+    the library beside it, or one in the working directory."""
+    bng2 = _install(tmp_path / "a", "2.9.3")
+    monkeypatch.chdir(tmp_path / "a")
     monkeypatch.setenv("BNGPATH", "")
-    assert _bngl_loader._bng2_library_root(bng2) == Path(os.sep)
+    before = _bngl_loader._cache_key("model", bng2)
+    (tmp_path / "a" / "Perl2" / "BNGModel.pm").write_text("package BNGModel;\n2;\n# edited\n")
+    assert _bngl_loader._cache_key("model", bng2) == before
 
 
 @pytest.mark.parametrize("edit", ["Perl2/BNGModel.pm", "Perl2/XML/Reader.pm", "VERSION"])
@@ -250,12 +336,18 @@ def test_an_edit_that_keeps_the_size_changes_the_key(tmp_path, no_library_env):
 
 
 def test_a_link_to_bng2_pl_keys_on_the_library_beside_its_target(tmp_path, no_library_env):
-    """BNG2.pl takes its library from its own directory with links resolved."""
+    """BNG2.pl takes its library from its own directory with links resolved, not
+    from one beside the link."""
     bng2 = _install(tmp_path / "a", "2.9.3")
-    link_dir = tmp_path / "bin"
-    link_dir.mkdir()
-    (link_dir / "BNG2.pl").symlink_to(bng2)
-    assert _bngl_loader._bng2_library_root(link_dir / "BNG2.pl") == bng2.resolve().parent
+    _install(tmp_path / "bin", "2.9.10")
+    link = tmp_path / "bin" / "BNG2.pl"
+    link.unlink()
+    link.symlink_to(bng2)
+    before = _bngl_loader._cache_key("model", link)
+    (tmp_path / "bin" / "VERSION").write_text("3.0.0.0\n")
+    assert _bngl_loader._cache_key("model", link) == before
+    (tmp_path / "a" / "VERSION").write_text("3.0.0.0\n")
+    assert _bngl_loader._cache_key("model", link) != before
 
 
 # ─── With BNG2.pl itself ─────────────────────────────────────────────────────
@@ -289,6 +381,34 @@ def test_bng2_a_relative_parameter_file_is_read_from_the_models_directory(tmp_pa
     loaded_k, atot = _atot_at_1(model)
     assert loaded_k == 2
     assert atot == pytest.approx(100 * math.exp(-2), rel=1e-7)
+
+
+@needs_bng2
+@pytest.mark.parametrize("where", ["absolute", "relative"])
+def test_bng2_a_read_inside_the_model_block_is_read_again(tmp_path, cache, where):
+    """BNG2.pl runs it as an action; the loader kept it without reading it."""
+    params = tmp_path / "params.bngl"
+    model = tmp_path / "m.bngl"
+    model.write_text(_read_inside_model(str(params) if where == "absolute" else "params.bngl"))
+    for k in (1, 2):
+        params.write_text(_params(k))
+        loaded_k, atot = _atot_at_1(model)
+        assert loaded_k == k
+        assert atot == pytest.approx(100 * math.exp(-k), rel=1e-7)
+
+
+@needs_bng2
+def test_bng2_a_relative_bngpath_still_finds_the_library(tmp_path, cache, monkeypatch):
+    """BNG2.pl runs from the model's directory now; a relative $BNGPATH is passed
+    to it absolute, as resolved where BNG2.pl was found."""
+    root = Path(_BNG.bng2_pl).resolve().parent
+    monkeypatch.delenv("BNG2_PL", raising=False)
+    monkeypatch.chdir(root.parent)
+    monkeypatch.setenv("BNGPATH", root.name)
+    model = tmp_path / "m.bngl"
+    model.write_text(MODEL.replace("begin molecule types", _params(1) + "begin molecule types"))
+    loaded_k, atot = _atot_at_1(model)
+    assert loaded_k == 1 and atot == pytest.approx(100 * math.exp(-1), rel=1e-7)
 
 
 @needs_bng2
@@ -327,5 +447,4 @@ def test_bng2_runs_with_the_library_bngpath_names(tmp_path, cache, monkeypatch):
     monkeypatch.setenv("BNGPATH", str(Path(_BNG.bng2_pl).resolve().parent))
     model = tmp_path / "m.bngl"
     model.write_text(MODEL.replace("begin molecule types", _params(1) + "begin molecule types"))
-    assert _bngl_loader._bng2_library_root(Path(_BNG.bng2_pl)) == Path(os.environ["BNGPATH"])
     assert _bngl_loader.bngl_to_net(model).parent == cache
