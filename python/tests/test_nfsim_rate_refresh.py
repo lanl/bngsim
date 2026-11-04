@@ -311,17 +311,14 @@ def test_rate_laws_nfsim_implements_are_not_refused(data_dir: Path, fixture):
 def test_a_rule_nfsim_cannot_build_fails_the_load_not_the_process(data_dir: Path, fixture, says):
     # In a child process: before carry 0019, NFsim called exit(1) and took the
     # interpreter with it, which would end this test run, not fail one test.
-    # The core is driven directly: bngsim refuses three of these models before
-    # NFsim reads them (see below), and this is about NFsim's own load.
     xml = data_dir / "nfsim" / fixture
     script = (
-        "import sys\n"
-        "from bngsim._bngsim_core import NfsimSimulator\n"
-        "core = NfsimSimulator(sys.argv[1])\n"
+        "import sys, bngsim\n"
+        "s = bngsim.NfsimSession(sys.argv[1])\n"
         "try:\n"
-        "    core.initialize(1)\n"
-        "except RuntimeError as e:\n"
-        "    print('RAISED', e)\n"
+        "    s.initialize(seed=1)\n"
+        "except bngsim.BngsimError as e:\n"
+        "    print('RAISED', type(e).__name__, e)\n"
         "else:\n"
         "    print('RAN')\n"
     )
@@ -329,25 +326,8 @@ def test_a_rule_nfsim_cannot_build_fails_the_load_not_the_process(data_dir: Path
         [sys.executable, "-c", script, str(xml)], capture_output=True, text=True, timeout=120
     )
     assert proc.returncode == 0, proc.stderr[-2000:]
-    assert proc.stdout.startswith("RAISED"), proc.stdout
+    assert proc.stdout.startswith("RAISED SimulationError"), proc.stdout
     assert says in proc.stdout, proc.stdout
-
-
-@pytest.mark.parametrize(
-    "fixture",
-    [
-        "local_function_two_reactants.xml",
-        "local_function_species_observable.xml",
-        "local_function_two_arguments.xml",
-    ],
-)
-def test_a_local_function_on_one_match_of_a_whole_complex_deletion_is_refused(
-    data_dir: Path, fixture
-):
-    """Each reads a local function on one molecule of a reactant the rule deletes
-    whole, so bngsim refuses it before NFsim loads it (issue #1525)."""
-    with pytest.raises(bngsim.ModelError, match="local functions read on one molecule"):
-        bngsim.NfsimSession(str(data_dir / "nfsim" / fixture))
 
 
 def test_energy_patterns_without_an_arrhenius_rule_still_run(data_dir: Path):

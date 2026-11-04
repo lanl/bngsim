@@ -232,14 +232,27 @@ def test_a_matchonce_on_the_whole_rule_counts_as_one_on_its_patterns(tmp_path):
 
 
 def test_a_michaelis_menten_monomer_deletion_runs():
-    """Control: a substrate of one molecule no bond touches is always a complex of
-    its own: Q() with no components, and S(p~0~1) with a state but no bond. The
-    first form of the refusal took any component, and refused S_mm."""
+    """Control: a substrate of one molecule that only ever matches a free molecule
+    is always a complex of its own: Q() with no components, S(p~0~1) with a state
+    but no bond, and S2(b), which lists free the one site T binds. Earlier forms
+    of the refusal took any component, then any type a bond touches, as able to
+    hold two matches, and refused S_mm and S2_mm."""
     net, xml = DATA / "mm_monomer_deletion.net", DATA / "mm_monomer_deletion.xml"
     sim = bngsim.Simulator(bngsim.Model.from_net(str(net)), method="nf", xml_path=str(xml))
     r = sim.run(t_span=(0, 10), n_points=2, seed=1)
     assert float(r.observables["Qt"][-1]) <= 100.0
     assert float(r.observables["St"][-1]) <= 100.0
+    assert float(r.observables["S2t"][-1]) <= 100.0
+
+
+def test_the_refusal_names_no_substrate_that_is_always_free():
+    from bngsim._network_free_checks import mm_rules_counted_per_complex
+
+    assert mm_rules_counted_per_complex(DATA / "mm_monomer_deletion.xml") == []
+    assert mm_rules_counted_per_complex(DATA / "mm_whole_complex_deletion.xml") == [
+        "SS_mm",
+        "Tmo_mm",
+    ]
 
 
 def test_a_local_function_on_one_match_of_a_deleted_complex_is_refused():
@@ -254,9 +267,11 @@ def test_a_local_function_on_one_match_of_a_deleted_complex_is_refused():
 @pytest.mark.skipif(not _has_rulemonkey(), reason="RuleMonkey not compiled in")
 def test_rulemonkey_refuses_matchonce_on_a_complex_with_two_matches():
     """RuleMonkey reads no MatchOnce on a rule: Jmo flipped 1260.7 where the
-    network gives 786.9. Refused, as the session is."""
+    network gives 786.9. Refused, as the session is. Uctx, whose MatchOnce
+    reactant the rule never touches, is not named: RuleMonkey counts a context
+    reactant once per complex anyway (1004.6 for 1000)."""
     net, xml = DATA / "match_once_state_change.net", DATA / "match_once_state_change.xml"
-    with pytest.raises(ModelError, match=r"rules 'Jmo', 'Uctx', 'JLmo'\. RuleMonkey reads no"):
+    with pytest.raises(ModelError, match=r"rules 'Jmo', 'JLmo'\. RuleMonkey reads no"):
         bngsim.Simulator(bngsim.Model.from_net(str(net)), method="rm", xml_path=str(xml))
     with pytest.raises(ModelError, match="issue #1525"):
         bngsim.RuleMonkeySession(str(xml))
