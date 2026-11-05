@@ -584,8 +584,8 @@ What this does not cover:
   Far from zero, such a line holds each of its doubles for a stretch of time,
   a tread (1.2e-4 at `1e12 + time()`), and a rate law that reads the clock
   once, inside such a line, is a staircase, however the rest of it is written
-  (`floor((1e10 + time())/(0.01))`, as SBML's `quotient` loads, is read through
-  `1e10 + time()`). Where the reading above refuses such a law, or leaves it
+  (`floor((1e10 + time())/(0.01))`, as SBML's `quotient` of those operands loads,
+  is read through `1e10 + time()`). Where the reading above refuses such a law, or leaves it
   without stops, the law is read once on each tread instead, and stopped on
   the last double before each change (issue #1018): between two stops the
   rate is constant, and integrated exactly. So it is with
@@ -621,8 +621,9 @@ What this does not cover:
   stretch between never integrated. Such a law is refused where it was, and
   integrated as before where it was not. So is a rate law that reads such a
   line outside its conditions too, as SBML's `rem` does, written out as
-  `x - P*floor(x/P)`: a stop on each change of the `floor` is not a stop on
-  each step of `x`. So is a run with two laws read so, whose stops can fall a
+  `x - P*floor(x/P)` (or, where an operand is not non-negative by its form,
+  with the sign test that makes it truncate, issue #1522): a stop on each
+  change of the `floor` is not a stop on each step of `x`. So is a run with two laws read so, whose stops can fall a
   double apart and be taken as one, or with one beside a condition past the
   budget, whose step bound its stops would cut. Runs with sensitivity
   columns, an event's trigger, a counter clock, a function no rate law reads
