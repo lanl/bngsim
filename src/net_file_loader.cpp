@@ -18,6 +18,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -122,12 +123,82 @@ static std::string strip_comment(const std::string &line, std::string *comment =
     return trim(line);
 }
 
-static void skip_block(std::ifstream &file, const std::string &end_marker) {
+// ─── Block markers ───────────────────────────────────────────────────────────
+// A `begin <name>` or `end <name>` line, read as BNG2.pl's readFile reads one
+// (Perl2/BNGModel.pm, read_block_array): the comment off, `begin` or `end` as
+// the line's first word, case-sensitive, and the name the words after it joined
+// by one blank, so `begin<TAB>reactions` and `begin  reactions` open the block
+// `begin reactions` does, as they do for run_network. The markers used to be
+// found by a search of the raw line for the one spelling with a single blank:
+// any other spelling was passed over, and the block it opened loaded as nothing
+// (0 reactions, a flat trajectory, no error), and `end reactions` inside a
+// trailing comment ended the block, losing that line and every one after it
+// (issue #1498).
+struct BlockMarker {
+    bool is_begin;
+    std::string name;
+};
+
+static std::optional<BlockMarker> block_marker(const std::string &stripped) {
+    // Only a line whose first word is `begin` or `end` is split: this is asked
+    // of every data line, which its reader splits once already.
+    const auto word = [&](const char *w, size_t n) {
+        return stripped.compare(0, n, w) == 0 &&
+               (stripped.size() == n || std::isspace(static_cast<unsigned char>(stripped[n])));
+    };
+    if (!word("begin", 5) && !word("end", 3))
+        return std::nullopt;
+    const auto tokens = split_ws(stripped);
+    if (tokens.empty() || (tokens[0] != "begin" && tokens[0] != "end"))
+        return std::nullopt;
+    return BlockMarker{tokens[0] == "begin", join_tokens(tokens, 1, tokens.size())};
+}
+
+// Inside the reader of `block`: whether the comment-stripped line is its `end`.
+// Another block's `end`, or a `begin`, is refused as BNG2.pl refuses it ("end X
+// does not match begin Y", "begin block before end of previous block"); the
+// line used to be read as data, or the block ended on it.
+static bool ends_block(const std::string &stripped, const std::string &block) {
+    const auto marker = block_marker(stripped);
+    if (!marker)
+        return false;
+    if (marker->is_begin)
+        throw std::runtime_error("'begin " + marker->name + "' before the end of the " + block +
+                                 " block ('end " + block + "' is missing)");
+    if (marker->name != block)
+        throw std::runtime_error("'end " + marker->name + "' does not match 'begin " + block + "'");
+    return true;
+}
+
+// A block that reaches the end of the file is refused, as BNG2.pl ("begin X has
+// no matching end X") and run_network ("Error in end command") refuse it.
+static void require_block_end(bool got_end, const std::string &block) {
+    if (!got_end)
+        throw std::runtime_error("'begin " + block + "' has no matching 'end " + block + "'");
+}
+
+// `name(...)`: an action line, as BNG2.pl writes `setOption(...)`, `version(...)`
+// and `substanceUnits(...)` at the top of a .net. Read for its shape only.
+static bool is_action_line(const std::string &stripped) {
+    const auto open = stripped.find('(');
+    if (open == std::string::npos || open == 0 || stripped.back() != ')')
+        return false;
+    return is_bare_identifier(trim(stripped.substr(0, open)));
+}
+
+static void skip_block(std::ifstream &file, const std::string &block) {
     std::string line;
+    bool got_end = false;
     while (std::getline(file, line)) {
-        if (line.find(end_marker) != std::string::npos)
+        line = trim(line);
+        if (line.empty() || line[0] == '#')
+            continue;
+        if (ends_block(strip_comment(line), block)) {
+            got_end = true;
             break;
+        }
     }
+    require_block_end(got_end, block);
 }
 
 static std::string directory_of(const std::string &filepath) {
@@ -142,14 +213,16 @@ static std::string directory_of(const std::string &filepath) {
 static std::vector<ParsedParam> parse_parameters(std::ifstream &file) {
     std::vector<ParsedParam> params;
     std::string line;
+    bool got_end = false;
     while (std::getline(file, line)) {
         line = trim(line);
         if (line.empty() || line[0] == '#')
             continue;
-        if (line.find("end parameters") != std::string::npos)
-            break;
-
         std::string stripped = strip_comment(line);
+        if (ends_block(stripped, "parameters")) {
+            got_end = true;
+            break;
+        }
         auto tokens = split_ws(stripped);
         if (tokens.empty())
             continue;
@@ -197,6 +270,7 @@ static std::vector<ParsedParam> parse_parameters(std::ifstream &file) {
 
         params.push_back(std::move(p));
     }
+    require_block_end(got_end, "parameters");
     return params;
 }
 
@@ -205,17 +279,19 @@ static std::vector<ParsedParam> parse_parameters(std::ifstream &file) {
 // here, which the caller then feeds to ModelBuilder with the rest (issue #600).
 static std::vector<ParsedSpecies>
 parse_species(std::ifstream &file, std::unordered_map<std::string, int> &param_name_to_idx,
-              std::vector<ParsedParam> &params) {
+              std::vector<ParsedParam> &params, const std::string &block) {
     std::vector<ParsedSpecies> species;
     std::string line;
+    bool got_end = false;
     while (std::getline(file, line)) {
         line = trim(line);
         if (line.empty() || line[0] == '#')
             continue;
-        if (line.find("end species") != std::string::npos)
-            break;
-
         std::string stripped = strip_comment(line);
+        if (ends_block(stripped, block)) {
+            got_end = true;
+            break;
+        }
         auto tokens = split_ws(stripped);
         if (tokens.empty())
             continue;
@@ -342,6 +418,7 @@ parse_species(std::ifstream &file, std::unordered_map<std::string, int> &param_n
 
         species.push_back(std::move(s));
     }
+    require_block_end(got_end, block);
     return species;
 }
 
@@ -409,14 +486,16 @@ void refuse_parameters_that_read_state(const std::vector<ParsedParam> &params,
 static std::vector<ParsedFunction> parse_functions(std::ifstream &file) {
     std::vector<ParsedFunction> functions;
     std::string line;
+    bool got_end = false;
     while (std::getline(file, line)) {
         line = trim(line);
         if (line.empty() || line[0] == '#')
             continue;
-        if (line.find("end functions") != std::string::npos)
-            break;
-
         std::string stripped = strip_comment(line);
+        if (ends_block(stripped, "functions")) {
+            got_end = true;
+            break;
+        }
         auto tokens = split_ws(stripped);
         if (tokens.empty())
             continue;
@@ -473,6 +552,7 @@ static std::vector<ParsedFunction> parse_functions(std::ifstream &file) {
 
         functions.push_back(std::move(func));
     }
+    require_block_end(got_end, "functions");
     return functions;
 }
 
@@ -528,18 +608,42 @@ static double take_stat_factor(std::string &token, const std::string &line) {
     return factor;
 }
 
+// The species indices of a reaction line's reactant or product field. `0` is
+// the null species and is left out, as run_network reads it. Anything else that
+// is not a positive integer is refused by name: `-3` used to be filtered out
+// with the 0, so `C -> B` loaded as `0 -> B` with no error where run_network
+// refuses the file (issue #1498), and a token that was no number died inside
+// std::stoi with no word of where.
+static std::vector<int> species_indices(const std::string &field, const char *side,
+                                        const std::string &line) {
+    std::vector<int> out;
+    for (const auto &tok : split(field, ',')) {
+        if (!is_line_index_token(tok) || tok.size() > 9) {
+            throw std::runtime_error("reaction line '" + line + "' names " + side + " species '" +
+                                     tok +
+                                     "', which is not a species index (1 or more, or 0 for none)");
+        }
+        const int idx = std::stoi(tok);
+        if (idx > 0)
+            out.push_back(idx);
+    }
+    return out;
+}
+
 static std::vector<ParsedReaction> parse_reactions(std::ifstream &file) {
     std::vector<ParsedReaction> reactions;
     std::string line;
+    bool got_end = false;
     while (std::getline(file, line)) {
         line = trim(line);
         if (line.empty() || line[0] == '#')
             continue;
-        if (line.find("end reactions") != std::string::npos)
-            break;
-
         std::string comment;
         std::string stripped = strip_comment(line, &comment);
+        if (ends_block(stripped, "reactions")) {
+            got_end = true;
+            break;
+        }
         auto tokens = split_ws(stripped);
         if (tokens.empty())
             continue;
@@ -560,19 +664,9 @@ static std::vector<ParsedReaction> parse_reactions(std::ifstream &file) {
         rxn.comment = comment;
         rxn.stat_factor = 1.0;
 
-        // Reactants (comma-separated species indices, 0 = null)
-        for (const auto &rs : split(tokens[1], ',')) {
-            int idx = std::stoi(rs);
-            if (idx > 0)
-                rxn.reactant_indices_1based.push_back(idx);
-        }
-
-        // Products
-        for (const auto &ps : split(tokens[2], ',')) {
-            int idx = std::stoi(ps);
-            if (idx > 0)
-                rxn.product_indices_1based.push_back(idx);
-        }
+        // Reactants and products: comma-separated species indices, 0 = null.
+        rxn.reactant_indices_1based = species_indices(tokens[1], "reactant", stripped);
+        rxn.product_indices_1based = species_indices(tokens[2], "product", stripped);
 
         // Rate law. The stat factor comes off the first token before the type
         // is matched, as run_network reads it: `2*MM kcat Km` is MM times 2,
@@ -650,20 +744,23 @@ static std::vector<ParsedReaction> parse_reactions(std::ifstream &file) {
 
         reactions.push_back(std::move(rxn));
     }
+    require_block_end(got_end, "reactions");
     return reactions;
 }
 
 static std::vector<ParsedObservable> parse_groups(std::ifstream &file) {
     std::vector<ParsedObservable> observables;
     std::string line;
+    bool got_end = false;
     while (std::getline(file, line)) {
         line = trim(line);
         if (line.empty() || line[0] == '#')
             continue;
-        if (line.find("end groups") != std::string::npos)
-            break;
-
         std::string stripped = strip_comment(line);
+        if (ends_block(stripped, "groups")) {
+            got_end = true;
+            break;
+        }
         auto tokens = split_ws(stripped);
         if (tokens.empty())
             continue;
@@ -718,6 +815,7 @@ static std::vector<ParsedObservable> parse_groups(std::ifstream &file) {
 
         observables.push_back(std::move(obs));
     }
+    require_block_end(got_end, "groups");
     return observables;
 }
 
@@ -1292,15 +1390,53 @@ NetFileStructure parse_net_file_structure(const std::string &path) {
         }
     };
 
+    // The blocks BNG2.pl can write into a .net besides the five this loader
+    // reads (with include_model=1: compartments, molecule types, observables,
+    // energy patterns, population types and maps, reaction rules; and the
+    // reactions_text restatement of the reactions block, issue #13). They are
+    // passed over whole. A block of any other name is refused as BNG2.pl
+    // refuses it ("Could not process block type"): it used to be passed over
+    // line by line, so `begin reaction` loaded 0 reactions with no error.
+    static const std::unordered_set<std::string> kSkippedBlocks = {
+        "compartments",    "molecule types",   "observables",
+        "energy patterns", "population types", "population maps",
+        "reaction rules",  "reactions_text",   "actions"};
     std::string line;
+    bool in_model = false; // inside the `begin model` ... `end model` BNG2.pl reads around a .net
     while (std::getline(file, line)) {
         std::string trimmed = trim(line);
         if (trimmed.empty() || trimmed[0] == '#')
             continue;
-        if (trimmed.find("substanceUnits") != std::string::npos)
+        const std::string stripped = strip_comment(trimmed);
+        if (stripped.empty())
             continue;
-
-        if (trimmed.find("begin parameters") != std::string::npos) {
+        const auto marker = block_marker(stripped);
+        if (!marker) {
+            // Outside every block, a .net holds the actions BNG2.pl writes at
+            // its top, `setOption(...)`, `version(...)` and `substanceUnits(...)`,
+            // which this loader has no use for. Any other line is data no block
+            // will read: BNG2.pl refuses it ("does not appear to contain a
+            // command"), and this loader used to pass it over.
+            if (is_action_line(stripped))
+                continue;
+            throw std::runtime_error(
+                "the .net file has a line outside any block: '" + stripped +
+                "'. A BioNetGen .net file holds only its begin/end blocks and the actions "
+                "BNG2.pl writes above them (setOption, version, substanceUnits)");
+        }
+        const std::string &name = marker->name;
+        if (!marker->is_begin) {
+            if (name == "model" && in_model) {
+                in_model = false;
+                continue;
+            }
+            throw std::runtime_error("'end " + name + "' without a 'begin " + name + "' before it");
+        }
+        if (name == "model") {
+            if (in_model)
+                throw std::runtime_error("'begin model' inside a 'begin model'");
+            in_model = true;
+        } else if (name == "parameters") {
             once("parameters");
             // Appended, not assigned: a species block read first may already
             // have lifted `_InitialConc<N>` parameters into this list.
@@ -1308,35 +1444,29 @@ NetFileStructure parse_net_file_structure(const std::string &path) {
                 param_name_to_idx[p.name] = static_cast<int>(parsed_params.size());
                 parsed_params.push_back(std::move(p));
             }
-        } else if (trimmed.find("begin species") != std::string::npos) {
+        } else if (name == "species" || name == "seed species") {
+            // BNG2.pl reads `seed species` as the species block (BNGModel.pm).
             once("species");
-            parsed_species = parse_species(file, param_name_to_idx, parsed_params);
-        } else if (trimmed.find("begin functions") != std::string::npos) {
+            parsed_species = parse_species(file, param_name_to_idx, parsed_params, name);
+        } else if (name == "functions") {
             once("functions");
             parsed_functions = parse_functions(file);
-        } else if (trimmed.find("begin reactions_text") != std::string::npos) {
-            // Informational block emitted by BNG2.pl (restates the numeric
-            // `reactions` block in human-readable pattern form, e.g.
-            // "1 A(b) -> B(a) k1"). The numeric `reactions` block is
-            // authoritative, so skip this one — otherwise its pattern lines
-            // reach parse_reactions and std::stoi throws (issue #13). Must be
-            // checked before "begin reactions" because that string is a
-            // substring of "begin reactions_text".
-            skip_block(file, "end reactions_text");
-        } else if (trimmed.find("begin reactions") != std::string::npos) {
+        } else if (name == "reactions") {
             once("reactions");
             parsed_reactions = parse_reactions(file);
-        } else if (trimmed.find("begin groups") != std::string::npos) {
+        } else if (name == "groups") {
             once("groups");
             parsed_observables = parse_groups(file);
-        } else if (trimmed.find("begin molecule types") != std::string::npos) {
-            skip_block(file, "end molecule types");
-        } else if (trimmed.find("begin observables") != std::string::npos) {
-            skip_block(file, "end observables");
-        } else if (trimmed.find("begin reaction rules") != std::string::npos) {
-            skip_block(file, "end reaction rules");
+        } else if (kSkippedBlocks.count(name) != 0) {
+            skip_block(file, name);
+        } else {
+            throw std::runtime_error("Could not process block type '" + name +
+                                     "': a .net file's blocks are parameters, species, "
+                                     "functions, reactions and groups");
         }
     }
+    if (in_model)
+        throw std::runtime_error("'begin model' has no matching 'end model'");
 
     out.load_warnings = rewrite_legacy_sat_hill_rate_laws(parsed_reactions, parsed_params,
                                                           parsed_functions, parsed_observables);
