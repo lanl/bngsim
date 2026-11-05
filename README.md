@@ -19,7 +19,7 @@ no file I/O, no subprocess spawning, no Perl dependency.
 ## Highlights
 
 - **Fast** — in-process execution with the GIL released during simulation; thread-parallel batch sweeps
-- **No Perl at runtime** — `import bngsim`; no `BNGPATH`, no Perl (loading `.bngl` aside). A C compiler (`cc`) is needed for forward sensitivities and is used to compile models of 256 or more species ([compiled RHS](docs/user-guide/codegen.md))
+- **No Perl at runtime** — `import bngsim`; no `BNGPATH`, no Perl (loading `.bngl` aside). A C compiler (`cc`) is recommended: models of 256 or more species compile with it and fall back to the interpreter without it. Forward sensitivities need a codegen backend: `cc`, or the opt-in MIR JIT in a source build ([compiled RHS](docs/user-guide/codegen.md))
 - **Modern SUNDIALS** — v7.x CVODE/CVODES with re-entrant `SUNContext`
 - **Multi-format** — loads BioNetGen `.net` and `.xml`, Antimony (`.ant`), and SBML (`.xml`) models [SBML Test Suite results](https://sbml.bioquant.uni-heidelberg.de/Submission/Details/72), plus rule-based BNGL (`.bngl`) via BNG2.pl with `bngsim[bngl]`
 - **Rich results** — NumPy arrays, named observable access, pandas/xarray, HDF5 save/load
