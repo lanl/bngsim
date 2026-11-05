@@ -952,7 +952,9 @@ def _normalize_stub_build_stamps(stub_text: str) -> str:
     return _STUB_CAPABILITY_RE.sub(r"\1...", normalized)
 
 
-def _regenerate_stub(source_dir: Path, *, env: dict[str, str] | None) -> None:
+def _regenerate_stub(
+    source_dir: Path, *, env: dict[str, str] | None, build_dir: Path | None = None
+) -> None:
     """Regenerate the committed ``_bngsim_core.pyi`` from the freshly built module.
 
     The stub is the type contract mypy checks against, and pybind11 does not
@@ -987,6 +989,23 @@ def _regenerate_stub(source_dir: Path, *, env: dict[str, str] | None) -> None:
     # We just built the extension; let the generator import it without the
     # staleness guard tripping on an mtime race between install and import.
     stub_env["BNGSIM_ALLOW_STALE_CORE"] = "1"
+    # main() lists the build dir in SKBUILD_EDITABLE_SKIP so that a child that
+    # imports bngsim mid-build starts no rebuild of its own. scikit-build-core's
+    # editable finder (since its #1612) also stops resolving the package for a
+    # build dir listed there, so the generator could not import the extension
+    # it was run for: "No module named 'bngsim._bngsim_core'", after a build
+    # that had succeeded. The build is over by now, so the generator gets the
+    # list without it.
+    if build_dir is not None:
+        skip = [
+            entry
+            for entry in stub_env.get("SKBUILD_EDITABLE_SKIP", "").split(os.pathsep)
+            if entry and entry != str(build_dir)
+        ]
+        if skip:
+            stub_env["SKBUILD_EDITABLE_SKIP"] = os.pathsep.join(skip)
+        else:
+            stub_env.pop("SKBUILD_EDITABLE_SKIP", None)
     with tempfile.TemporaryDirectory() as tmp:
         _run(
             [
@@ -1193,7 +1212,7 @@ def main() -> int:
     print(f"installed_extension={installed_extension}", flush=True)
 
     # Keep the committed type stub in lockstep with the just-built bindings.
-    _regenerate_stub(source_dir, env=cmake_env)
+    _regenerate_stub(source_dir, env=cmake_env, build_dir=build_dir)
 
     # `cmake --install` refreshes the compiled extension but not the editable
     # install's dist-info, so after a pyproject version bump bngsim.__version__
