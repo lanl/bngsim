@@ -2,16 +2,16 @@
   "name": "NFsim",
   "vendored_path": "bngsim/third_party/nfsim",
   "source": {
-    "local_checkout": "/private/tmp/claude-11919/-Users-hlavacek-Code-bngsim/3e4d6f77-b9fd-4487-9e48-15d3424f2432/scratchpad/nfsim-candidate",
+    "local_checkout": "/private/tmp/claude-11919/-Users-hlavacek-Code-bngsim-paper/5865804a-7a99-4296-bce4-47799a75212f/scratchpad/nfsim-candidate",
     "upstream_remote": "https://github.com/RuleWorld/nfsim.git",
     "local_origin_remote": "https://github.com/RuleWorld/nfsim.git",
     "fork_remote": null,
     "branch_or_ref": "bngsim/vendor",
-    "commit": "70c24c9098daf536af2faa769312f8be76c987a7",
+    "commit": "19ae1c04c6afc85a43199ea5587bd962bcb0b312",
     "base_ref": "origin/master",
     "base_commit": "1a54f38701ab2213de831f9ba272cbb14f7c371f"
   },
-  "imported_at_utc": "2026-11-04T22:58:41+00:00",
+  "imported_at_utc": "2026-11-05T23:28:28+00:00",
   "pruning": {
     "included_paths": [
       "CMakeLists.txt",
@@ -259,6 +259,17 @@
         {
           "commit": "70c24c9098daf536af2faa769312f8be76c987a7",
           "summary": "bngsim: count a whole-complex deletion and a MatchOnce reactant once per complex"
+        }
+      ]
+    },
+    {
+      "topic": "bngsim/carry-checkbonds-partner-type",
+      "kind": "local",
+      "status": "Reject a bond partner of the wrong molecule type before indexing its component arrays. checkBonds and checkSymmetricComponents index the partner molecule with a component index belonging to the PARTNER TEMPLATE's type -- bondPartnerCompIndex[b] and symBondPartnerCompIndex[c] in their normal branches, and tryToMap's equivalency-class indices in their symmetric ones -- and the only check that the molecule is of that type sits in compare, reached after those reads. A shorter partner is read out of bounds (tcr.bngl: a ZAP70 bound to a LAT, 2 components, read at LCP2's index 3). Results are unaffected -- the match is rejected a few lines later either way -- but the read is undefined behaviour and faults when the array ends at an unmapped page, which SIGSEGV'd a 210-model network-free run. A guard sits above each branch dispatch, covering all four sites. All four are reachable and fault under AddressSanitizer; the three beyond checkBonds' normal branch need a symmetric component off the reaction centre -- on the partner's side for the two tryToMap sites, on the matched molecule's own side for checkSymmetricComponents' normal branch, whose partner index is concrete -- which nothing in a 54-model corpus sweep has. A fixture per site is committed under tests/data/nfsim/, plus a positive one holding the csc guard to `continue` rather than `return false`. Submitted upstream as RuleWorld/nfsim#113, open at the time of writing; see bngsim GH #1543.",
+      "commits": [
+        {
+          "commit": "19ae1c04c6afc85a43199ea5587bd962bcb0b312",
+          "summary": "bngsim: reject a bond partner of the wrong molecule type before indexing it"
         }
       ]
     }

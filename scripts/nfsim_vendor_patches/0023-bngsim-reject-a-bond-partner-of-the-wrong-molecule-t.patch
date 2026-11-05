@@ -1,0 +1,117 @@
+From 19ae1c04c6afc85a43199ea5587bd962bcb0b312 Mon Sep 17 00:00:00 2001
+From: Bill Hlavacek <bill.hlavacek@gmail.com>
+Date: Thu, 5 Nov 2026 13:28:46 -0700
+Subject: [PATCH] bngsim: reject a bond partner of the wrong molecule type
+ before indexing it
+
+TemplateMolecule::checkBonds and checkSymmetricComponents index a bond
+partner's component arrays with an index that belongs to the PARTNER
+TEMPLATE's molecule type, before anything has checked that the molecule is of
+that type. Four sites:
+
+  * checkBonds, normal branch: m2->getBondedMolecule(bondPartnerCompIndex[b])
+    and getBondedMoleculeBindingSiteIndex(same).
+  * checkBonds, symmetric branch: tryToMap() takes the equivalency-class
+    component indices from t2's molecule type and applies them to m2
+    (isBindingSiteOpen, getComponentState, getBondedMolecule).
+  * checkSymmetricComponents, normal branch:
+    m2->getBondedMolecule(symBondPartnerCompIndex[c]).
+  * checkSymmetricComponents, symmetric branch: tryToMap() again.
+
+The check exists -- compare() opens with a moleculeType comparison -- but it is
+reached through t2->compare(m2,...) after those reads. Molecule::bond,
+indexOfBond and component are sized to the molecule's own component count and
+the accessors do not bounds-check, so a partner of a shorter type is read out
+of bounds.
+
+All four sites are reachable, and all four fault under AddressSanitizer:
+
+  * checkBonds normal: tcr.bngl, where a ZAP70 whose bond partner template is
+    LCP2 (4 components) is matched against a bond to a LAT (2 components) and
+    read at index 3 of LAT's two-element array. The same mismatch
+    also lands inside the array (index 1 on that LAT), reading an unrelated
+    component's bond.
+  * The other three: a symmetric component off the reaction centre, so the bond
+    stays pure context -- on the PARTNER's side for the two tryToMap sites, and
+    on the matched molecule's OWN side for checkSymmetricComponents' normal
+    branch, whose partner index is concrete (that concreteness is what selects
+    the normal branch). On the reaction centre NFinput resolves a symmetric
+    component to a concrete symPermutationName, which is why a 54-model sweep
+    reaches only the first site -- zero hits there is a property of the corpus,
+    not evidence that the others cannot happen.
+
+Results are unaffected at every site -- the match is rejected a few lines later
+either way -- but the read is undefined behaviour that faults when the array
+ends at an unmapped page, which makes it an intermittent crash. It killed a
+210-model network-free parity run with SIGSEGV after 185 minutes on tcr.bngl.
+
+A molecule of another type cannot satisfy a template of this one, so the bond
+cannot match, which is the verdict compare() reaches anyway. Each guard sits
+above its branch dispatch, so it covers that function's symmetric tryToMap()
+call as well as its normal-branch reads. checkBonds returns false, matching the
+three early returns already in that branch; checkSymmetricComponents continues,
+matching that loop's own idiom -- a return there would abandon the search over
+the rest of the equivalency class, which origin/main does not do.
+
+Over a 54-model corpus the checkBonds guard is entered 4,491,016 times and its
+condition fires 36,375 times, with byte-identical output; the four hand-built
+models that reach the other three sites are byte-identical too, and the
+mismatch path is free (+5 instructions in the whole executable).
+
+Upstream: RuleWorld/nfsim#113. BNGsim: GH #1543.
+---
+ src/NFcore/templateMolecule.cpp | 31 +++++++++++++++++++++++++++++++
+ 1 file changed, 31 insertions(+)
+
+diff --git a/src/NFcore/templateMolecule.cpp b/src/NFcore/templateMolecule.cpp
+index bf6a69f..d32c532 100644
+--- a/src/NFcore/templateMolecule.cpp
++++ b/src/NFcore/templateMolecule.cpp
+@@ -1097,6 +1097,25 @@ bool TemplateMolecule::checkBonds(Molecule *m, ReactantContainer *rc, MappingSet
+ 
+ 		//Now we have to make sure that the correct bond is present on the other side
+ 		//of the interaction. This can be tricky because of symmetric sites!
++		//Every index below -- bondPartnerCompIndex[b] in the normal branch, and
++		//the equivalency-class indices tryToMap() takes from t2's type in the
++		//symmetric one -- is a component index in the PARTNER TEMPLATE's molecule
++		//type, applied to m2. That only means anything if m2 is of that type, and
++		//nothing has checked yet: the check is in t2->compare(m2,...), reached
++		//after those reads. Molecule::bond and Molecule::indexOfBond are sized to
++		//the molecule's own component count and the accessors do not bounds-check,
++		//so a molecule of a shorter type is read out of bounds -- in tcr.bngl a
++		//ZAP70 bound to a LAT (2 components) is read with LCP2's component index
++		//3, two slots past the end of LAT's bond array, which AddressSanitizer
++		//reports as a heap-buffer-overflow here. Where the stray index lands
++		//inside the array instead, it reads an unrelated component's bond.
++		//A molecule of another type cannot satisfy a template of this one, so the
++		//bond cannot match -- which is the verdict compare() reaches anyway. Answer
++		//it before reading anything.
++		if(m2->getMoleculeType()!=t2->getMoleculeType()) {
++			return false;
++		}
++
+ 		if(bondPartnerCompIndex[b]<0) { //Argh!  this means we are symmetric!!
+ 
+ 
+@@ -1204,6 +1223,18 @@ bool TemplateMolecule::checkSymmetricComponents(Molecule *m, ReactantContainer *
+ 				}
+ 
+ 
++				//Same unchecked partner-template index as in checkBonds above:
++				//symBondPartnerCompIndex[c] and tryToMap()'s equivalency-class
++				//indices both belong to t2's molecule type and are applied to m2,
++				//and the only type check is in the t2->compare(m2,...) reached
++				//after them. A molecule of another type cannot match, so skip this
++				//candidate before reading it -- `continue` rather than `return
++				//false` because this loop is searching the symmetric components
++				//for a mapping, and every path under a type mismatch continues.
++				if(m2->getMoleculeType()!=t2->getMoleculeType()) {
++					continue;
++				}
++
+ 				if(symBondPartnerCompIndex[c]<0) { //Argh!  this means we are symmetric!!
+ 					//See if we can map this bond to one of the symmetric components on m2
+ 					bool canMap = t2->tryToMap(m2,symBondPartnerCompName[c],m,this->symCompName[c]);
+-- 
+2.54.0 (Apple Git-157)
+

@@ -131,6 +131,23 @@ Current carry topics:
 - a whole-complex deletion, and a MatchOnce reactant, fired once per complex:
   `fire()` thins a pick to probability 1/m, m the matches in the picked complex,
   and MatchOnce is applied to DOR rules too (GH #1525)
+- a bond partner of the wrong molecule type rejected before its component arrays
+  are indexed with a component index belonging to the PARTNER template's type,
+  which reads out of bounds on a shorter molecule. Four sites: the normal and
+  symmetric branches of `checkBonds` and of `checkSymmetricComponents`, the
+  symmetric ones through `tryToMap()`. The type check exists in `compare()` but
+  is reached after the reads. Results are unaffected either way; the read is
+  undefined behaviour and faults when the array ends at an unmapped page. All
+  four sites are reachable and all four fault under AddressSanitizer, with a
+  fixture each under `tests/data/nfsim/`; the three beyond `checkBonds`' normal
+  branch need a symmetric component off the reaction centre -- on the partner's
+  side for the two `tryToMap()` sites, on the matched molecule's own side for
+  `checkSymmetricComponents`' normal branch, whose partner index is concrete --
+  which nothing in a 54-model sweep has, so that sweep's zero hits say nothing
+  about reachability. A positive fixture holds the `checkSymmetricComponents`
+  guard to `continue`: `return false` there abandons the rest of the equivalency
+  class and loses a match origin/main keeps (GH #1543; submitted upstream as
+  RuleWorld/nfsim#113)
 
 Not a carry, but tied to the vendored NFsim: bngsim refuses, by name, the rate
 laws NFsim cannot run, in `python/bngsim/_network_free_checks.py`
@@ -256,6 +273,11 @@ Expected carry order:
     host refuses it (GH #1415)
 22. a whole-complex deletion, and a MatchOnce reactant, fired once per complex
     rather than once per match (GH #1525)
+23. a bond partner of the wrong molecule type rejected before its component
+    arrays are indexed with the partner template's component index, in both
+    branches of `checkBonds` and of `checkSymmetricComponents` -- all four
+    reachable, all four faulting under AddressSanitizer (GH #1543; submitted
+    upstream as RuleWorld/nfsim#113)
 
 When you intentionally change the carry stack, regenerate the patch bundle
 afterward.

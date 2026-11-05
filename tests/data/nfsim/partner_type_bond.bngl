@@ -1,0 +1,30 @@
+# Minimal reproducer for the checkBonds partner-type out-of-bounds read.
+#
+# The rule's reactant pattern bonds A to C at C's FOURTH component (index 3).
+# The seed species bonds A to B, which has ONE component. Matching the A
+# template against that molecule makes checkBonds index the B molecule with the
+# C template's component index 3 -- two slots past the end of B's bond array.
+begin model
+begin parameters
+  k 1
+end parameters
+begin molecule types
+  A(s)
+  B(x)
+  C(x,y,z,w)
+end molecule types
+begin seed species
+  A(s!1).B(x!1) 100
+  C(x,y,z,w)     100
+end seed species
+begin observables
+  Molecules Abound A(s!+)
+  Molecules Cfree  C(w)
+end observables
+begin reaction rules
+  A(s!1).C(w!1) -> A(s) + C(w) k
+end reaction rules
+end model
+begin actions
+writeXML()
+end actions
