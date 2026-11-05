@@ -2757,16 +2757,14 @@ bool NFinput::initReactionRulePermutation(
                 if (matchOnceList[i]) hasMatchOnce = true;
             }
 
+            // A MatchOnce reactant is thinned to once per complex as the rule
+            // fires (ReactionClass::fire), whatever the rate law, so a DOR rule
+            // takes it as any other; it was ignored there (bngsim issue #1525).
             if (hasMatchOnce) {
-                if (r->getRxnType() == ReactionClass::DOR_RXN || r->getRxnType() == ReactionClass::DOR2_RXN) {
-                    cerr << "Warning: MatchOnce is not yet supported for DOR/functional reactions. "
-                         << "Ignoring matchOnce on reaction: " << rxnName << endl;
-                } else {
-                    unsigned int nReactants = r->getNumOfReactants();
-                    for (unsigned int i = 0; i < nReactants; i++) {
-                        if (i < matchOnceSize) {
-                            r->setMatchOnce(i, matchOnceList[i]);
-                        }
+                unsigned int nReactants = r->getNumOfReactants();
+                for (unsigned int i = 0; i < nReactants; i++) {
+                    if (i < matchOnceSize) {
+                        r->setMatchOnce(i, matchOnceList[i]);
                     }
                 }
             }

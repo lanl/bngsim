@@ -1,0 +1,21 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 kcat  1  # Constant
+    2 Km    10000  # Constant
+end parameters
+begin species
+    1 S(d!1).S(d!1) 1000
+    2 T(d!1,s~0).T(d!1,s~0) 1000
+    3 E() 10
+    4 Q() 100
+    5 T(d!1,s~0).T(d!1,s~1) 0
+end species
+begin reactions
+    1 1,3 3 MM kcat Km #SS_mm
+    2 4,3 3 MM kcat Km #Q_mm
+    3 2,3 5,3 MM kcat Km #Tmo_mm
+end reactions
+begin groups
+    1 SS                   1
+    2 Qt                   4
+end groups

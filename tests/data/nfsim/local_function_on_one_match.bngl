@@ -1,0 +1,32 @@
+# A local function read on one molecule of a complex the rule deletes whole
+# (bngsim issue #1525).
+#
+# fl(x) reads L(s~a) on the tagged molecule: k on the L(s~a) of
+# L(s~a).K.L(s~b), 0 on its L(s~b). BNG2.pl's network takes the value at its
+# first embedding, k; NFsim, thinning the two matches to one per complex, would
+# take their mean, k/2. method='nf' refuses the rule.
+begin model
+begin parameters
+  k   1e-3
+  X0  2000
+end parameters
+begin molecule types
+  L(s~a~b,g)
+  K(m1,m2)
+end molecule types
+begin seed species
+  L(s~a,g!1).K(m1!1,m2!2).L(s~b,g!2)  X0
+end seed species
+begin observables
+  Molecules La L(s~a)
+  Molecules K_m K()
+end observables
+begin functions
+  fl(x) = k*La(x)
+end functions
+begin reaction rules
+  Ldel: L%x() -> 0 fl(x)
+end reaction rules
+end model
+generate_network({overwrite=>1})
+writeXML()

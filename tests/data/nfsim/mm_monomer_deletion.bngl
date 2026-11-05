@@ -1,0 +1,39 @@
+# Control for mm_whole_complex_deletion.bngl: a Michaelis-Menten rule that
+# deletes a substrate of one molecule no bond touches runs (issue #1525): Q()
+# has no components, S(p~0~1) has a state but no bond in the model, and S2(b)
+# lists free the one site T binds, so it only ever matches a free S2.
+begin model
+begin parameters
+  kcat  1
+  Km    10000
+  kon   1e-3
+  koff  0.1
+end parameters
+begin molecule types
+  E()
+  Q()
+  S(p~0~1)
+  S2(b)
+  T(s)
+end molecule types
+begin seed species
+  E()  10
+  Q()  100
+  S(p~1)  100
+  S2(b)   100
+  T(s)    100
+end seed species
+begin observables
+  Molecules Qt Q()
+  Molecules St S()
+  Molecules S2t S2()
+end observables
+begin reaction rules
+  Q_mm:  Q() + E() -> E() MM(kcat,Km)
+  S_mm:  S(p~1) + E() -> E() MM(kcat,Km)
+  S2_mm: S2(b) + E() -> E() MM(kcat,Km)
+  bind:  S2(b) + T(s) <-> S2(b!1).T(s!1) kon, koff
+end reaction rules
+end model
+generate_network({overwrite=>1})
+writeXML()

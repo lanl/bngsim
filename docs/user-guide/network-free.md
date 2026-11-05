@@ -144,6 +144,37 @@ counted **once per complex**, not once per way it embeds into that complex
 (issues #281, #298, #300). Counting embeddings runs a multi-subunit catalyst two
 or three times too fast.
 
+### A rule that deletes a whole complex, and `MatchOnce`
+
+A rule that deletes a whole species, without `DeleteMolecules`
+(`A(d!1).A(d!1) -> 0`, or `M() -> 0` on a complex holding two `M`), removes the
+complex its match sits in, and BNG2.pl's network gives each such complex **one
+reaction at the rule's rate**, however many matches it holds. `{MatchOnce}` asks
+for the same counting. NFsim keeps one entry per match, so it fires such a pick
+with probability 1/m, m the matches in the picked complex: each complex goes at
+the rule's rate once, and complexes are picked evenly whatever their matches
+(issue #1525). Before, a homodimer pool decayed at 2k and a 4-ring at 4k, and
+`MatchOnce` had no effect. A `TotalRate` rule is not thinned.
+
+`method="nf"` refuses two shapes of such a rule, where the complex may hold two
+matches (a pattern of two or more molecules, or one molecule that does not list
+free every component some bond in the model touches): a Michaelis-Menten law, which is not linear in its counts, so
+the thinning cannot correct it; and a local function read on one molecule
+(`A%x()`), whose value can differ between the matches, where BNG2.pl's network
+takes the value at its first embedding. A local function read on the whole
+species (`%x:A()`) runs.
+
+RuleMonkey counts a whole-complex deletion once per complex. It reads no
+`MatchOnce` on a rule, so `method="rm"` refuses a `MatchOnce` reactant the rule
+acts on whose complex may hold two matches: there the two engines would not
+agree. A `MatchOnce` reactant the rule only reads is counted once per complex by
+RuleMonkey already, and runs.
+
+Not covered yet: a `MatchOnce` pattern that matches one molecule twice through a
+component its type repeats. `{MatchOnce}S(b~0) -> S(b~1) k` on
+`S(b~0~1,b~0~1)` still runs at 2k under both `nf` and `rm`, where BNG2.pl's
+network runs it at k.
+
 ### `TotalRate`
 
 Under `TotalRate` the rate law states the whole propensity of the rule outright.

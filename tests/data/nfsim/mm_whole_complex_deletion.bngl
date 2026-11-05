@@ -1,0 +1,38 @@
+# Michaelis-Menten rules with a reactant counted once per complex (bngsim
+# issue #1525).
+#
+# NFsim counts a reactant once per match, so a dimer enters the
+# Michaelis-Menten total twice. The law is not linear in that total, so the
+# count cannot be corrected as the rule fires, and bngsim refuses for
+# method='nf' SS_mm, which deletes the whole dimer, and Tmo_mm, whose substrate
+# carries MatchOnce. Q_mm deletes a substrate of one molecule with no
+# components, which is always a complex of its own, and is not named.
+begin model
+begin parameters
+  kcat  1
+  Km    10000
+end parameters
+begin molecule types
+  S(d)
+  T(d,s~0~1)
+  E()
+  Q()
+end molecule types
+begin seed species
+  S(d!1).S(d!1)  1000
+  T(d!1,s~0).T(d!1,s~0)  1000
+  E()            10
+  Q()            100
+end seed species
+begin observables
+  Species SS S(d!1).S(d!1)
+  Molecules Qt Q()
+end observables
+begin reaction rules
+  SS_mm: S(d!1).S(d!1) + E() -> E() MM(kcat,Km)
+  Q_mm:  Q() + E() -> E() MM(kcat,Km)
+  Tmo_mm: {MatchOnce}T(d!1,s~0).T(d!1,s~0) + E() -> T(d!1,s~1).T(d!1,s~0) + E() MM(kcat,Km)
+end reaction rules
+end model
+generate_network({overwrite=>1})
+writeXML()

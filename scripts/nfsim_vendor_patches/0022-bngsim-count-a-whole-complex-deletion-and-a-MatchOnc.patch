@@ -1,0 +1,299 @@
+From 70c24c9098daf536af2faa769312f8be76c987a7 Mon Sep 17 00:00:00 2001
+From: Bill Hlavacek <bill.hlavacek@gmail.com>
+Date: Wed, 4 Nov 2026 15:09:30 -0700
+Subject: [PATCH] bngsim: count a whole-complex deletion and a MatchOnce
+ reactant once per complex
+
+A rule that deletes a whole species (no DeleteMolecules) removes the complex
+its match sits in, and BioNetGen gives it one reaction per complex at the
+rule's rate, however many matches the complex holds. The reactant list holds
+one mapping set per match, so NFsim fired it once per match: a homodimer at
+2k, a 4-ring at 4k, M() -> 0 on M.N.M at 2k. MatchOnce asks for the same
+per-complex counting, and its count through countDistinctComplexes() never
+took effect: a list is only noted as able to share a complex for a pure
+context reactant. NFinput dropped MatchOnce on a DOR rule outright.
+
+fire() now fires such a pick with probability 1/m, m the mapping sets of the
+reactant's list rooted in the picked complex, counted over the complex's
+member list where complexes are tracked and by bond traversal where they are
+not: a complex goes at the rule's rate once, and complexes are picked evenly
+whatever their matches. Not under a total rate, nor for a reactant already
+counted per complex. It draws only where a complex holds two or more matches,
+so other runs keep their random streams. MatchOnce is applied to DOR rules
+too, and leaves the per-complex count paths, which it never reached. See
+bngsim issue #1525.
+---
+ src/NFcore/NFcore.hh                          | 20 ++++++++
+ src/NFcore/reactionClass.cpp                  | 48 +++++++++++++++++++
+ src/NFinput/NFinput.cpp                       | 16 +++----
+ src/NFreactions/reactions/DORreaction.cpp     | 22 +++++----
+ src/NFreactions/reactions/reaction.cpp        | 11 +++--
+ .../transformations/transformationSet.cpp     | 13 +++++
+ .../transformations/transformationSet.hh      |  7 +++
+ 7 files changed, 113 insertions(+), 24 deletions(-)
+
+diff --git a/src/NFcore/NFcore.hh b/src/NFcore/NFcore.hh
+index bb18100..b70b3a0 100644
+--- a/src/NFcore/NFcore.hh
++++ b/src/NFcore/NFcore.hh
+@@ -1114,6 +1114,12 @@ namespace NFcore
+ 				return rxnListMappingId2[rxnIndex];
+ 			}
+ 
++			/* How many mapping sets in reaction list rxnIndex are rooted at this
++			 * molecule, without the copy getRxnListMappingSet() makes. */
++			int getRxnListMappingCount(int rxnIndex) const {
++				return (int)rxnListMappingId2[rxnIndex].size();
++			}
++
+ 			bool setRxnListMappingId(int rxnIndex, int rxnListMappingId) {
+ 					if(rxnListMappingId == -1){
+ 						this->rxnListMappingId2[rxnIndex].clear();
+@@ -1386,6 +1392,10 @@ namespace NFcore
+ 				return (reactantIndex < n_reactants) ? contextCountsPerComplex[reactantIndex] : false;
+ 			}
+ 
++			/* How many of this reaction's matches for reactant `reactantIndex` are
++			 * rooted in the complex that holds molecule m; see deletesWholeComplex. */
++			int countMatchesInComplex(unsigned int reactantIndex, Molecule *m);
++
+ 
+ 			void setRxnId(int rxnId) { this->rxnId = rxnId; };
+ 			int getRxnId() const { return rxnId; };
+@@ -1503,6 +1513,16 @@ namespace NFcore
+ 			 * complex id -1 and there is no way to tell the cases apart. */
+ 			bool *contextCountsPerComplex;
+ 
++			/* True for a reactant the rule deletes as a whole species (no
++			 * DeleteMolecules), which removes the complex the match sits in.
++			 * BioNetGen gives that one reaction per complex at the rule's rate, however
++			 * many matches the complex holds, since every match deletes the same
++			 * species.  The reactant list holds one mapping set per match, so the
++			 * propensity counts such a complex once per match; fire() thins it back
++			 * to once per complex, as it does a MatchOnce reactant.  Counted by
++			 * traversal, so it does not need complex bookkeeping (bngsim #1525). */
++			bool *deletesWholeComplex;
++
+ 			/* if population reactants are identical, this is the discrete
+ 			 * count correction for calculating the ratelaw
+ 			 */
+diff --git a/src/NFcore/reactionClass.cpp b/src/NFcore/reactionClass.cpp
+index f90e705..f2c130a 100755
+--- a/src/NFcore/reactionClass.cpp
++++ b/src/NFcore/reactionClass.cpp
+@@ -227,11 +227,13 @@ ReactionClass::ReactionClass(string name, double baseRate, string baseRateParame
+ 	isPopulationType = new bool[n_reactants];
+ 	matchOncePerReactant = new bool[n_reactants];
+ 	contextCountsPerComplex = new bool[n_reactants];
++	deletesWholeComplex = new bool[n_reactants];
+ 	for( unsigned int i=0; i < n_reactants; ++i )
+ 	{
+ 		isPopulationType[i] = reactantTemplates[i]->getMoleculeType()->isPopulationType();
+ 		matchOncePerReactant[i] = false;
+ 		contextCountsPerComplex[i] = false;
++		deletesWholeComplex[i] = !isPopulationType[i] && transformationSet->deletesWholeSpecies(i);
+ 	}
+ 
+ 	// Count a reactant the rule never transforms once per complex, as BNG does.
+@@ -317,6 +319,7 @@ ReactionClass::~ReactionClass()
+ 	delete [] isPopulationType;
+ 	delete [] matchOncePerReactant;
+ 	delete [] contextCountsPerComplex;
++	delete [] deletesWholeComplex;
+ 	delete [] identicalPopCountCorrection;
+ 	connectedReactions.clear();
+ }
+@@ -419,6 +422,29 @@ void ReactionClass::fire(double random_A_number) {
+ 	this->fire(random_A_number, false);
+ }
+ 
++int ReactionClass::countMatchesInComplex(unsigned int reactantIndex, Molecule *m)
++{
++	MoleculeType *mt = reactantTemplates[reactantIndex]->getMoleculeType();
++	int rxnIndex = mt->getRxnIndex(this, reactantIndex);
++	int matches = 0;
++	// The complex's own member list where complexes are tracked, a bond
++	// traversal where they are not: the list is several times cheaper to walk
++	// on a large aggregate, and this runs at every pick.
++	Complex *c = system->isUsingComplex() ? m->getComplex() : 0;
++	if ( c != 0 ) {
++		for ( list<Molecule *>::iterator it = c->complexMembers.begin(); it != c->complexMembers.end(); ++it ) {
++			if ( (*it)->getMoleculeType() == mt ) matches += (*it)->getRxnListMappingCount(rxnIndex);
++		}
++		return matches;
++	}
++	list <Molecule *> members;
++	m->traverseBondedNeighborhood(members, ReactionClass::NO_LIMIT);
++	for ( list<Molecule *>::iterator it = members.begin(); it != members.end(); ++it ) {
++		if ( (*it)->getMoleculeType() == mt ) matches += (*it)->getRxnListMappingCount(rxnIndex);
++	}
++	return matches;
++}
++
+ // AS2023 - Alternative call signature to tell fire call when we are tracking 
+ // each firing for the rxnlog argument
+ string ReactionClass::fire(double random_A_number, bool track) {
+@@ -454,6 +480,28 @@ string ReactionClass::fire(double random_A_number, bool track) {
+ 		}
+ 	}
+ 
++	// A whole-species delete removes the complex the match sits in, and BioNetGen
++	// gives it one reaction per complex at the rule's rate; MatchOnce asks for the
++	// same counting.  The pick above is one of the complex's m matches, each of
++	// which the propensity counted, so fire it with probability 1/m: a complex then
++	// goes at the rule's rate once, not m times (a homodimer at k, not 2k), and the
++	// complexes are picked evenly whatever their matches.  Not for a reactant
++	// counted per complex already (contextCountsPerComplex), nor under a total
++	// rate, which is the rule's whole rate by definition.  Draws only where a
++	// complex holds two or more matches, so every other run keeps its random
++	// stream (bngsim issue #1525).
++	if ( !this->totalRateFlag ) {
++		for (unsigned int k=0; k<n_reactants; k++) {
++			if ( !(deletesWholeComplex[k] || matchOncePerReactant[k])
++			     || contextCountsPerComplex[k] || isPopulationType[k] ) continue;
++			int matches = countMatchesInComplex(k, mappingSet[k]->get(0)->getMolecule());
++			if ( matches > 1 && NFutil::RANDOM_INT(0, matches) != 0 ) {
++				++(System::NULL_EVENT_COUNTER);
++				return string("");
++			}
++		}
++	}
++
+ 
+ 	// Generate the set of possible products that we need to update
+ 	// (excluding new molecules, we'll get those later --Justin)
+diff --git a/src/NFinput/NFinput.cpp b/src/NFinput/NFinput.cpp
+index 9d7255a..a9146cf 100644
+--- a/src/NFinput/NFinput.cpp
++++ b/src/NFinput/NFinput.cpp
+@@ -2757,16 +2757,14 @@ bool NFinput::initReactionRulePermutation(
+                 if (matchOnceList[i]) hasMatchOnce = true;
+             }
+ 
++            // A MatchOnce reactant is thinned to once per complex as the rule
++            // fires (ReactionClass::fire), whatever the rate law, so a DOR rule
++            // takes it as any other; it was ignored there (bngsim issue #1525).
+             if (hasMatchOnce) {
+-                if (r->getRxnType() == ReactionClass::DOR_RXN || r->getRxnType() == ReactionClass::DOR2_RXN) {
+-                    cerr << "Warning: MatchOnce is not yet supported for DOR/functional reactions. "
+-                         << "Ignoring matchOnce on reaction: " << rxnName << endl;
+-                } else {
+-                    unsigned int nReactants = r->getNumOfReactants();
+-                    for (unsigned int i = 0; i < nReactants; i++) {
+-                        if (i < matchOnceSize) {
+-                            r->setMatchOnce(i, matchOnceList[i]);
+-                        }
++                unsigned int nReactants = r->getNumOfReactants();
++                for (unsigned int i = 0; i < nReactants; i++) {
++                    if (i < matchOnceSize) {
++                        r->setMatchOnce(i, matchOnceList[i]);
+                     }
+                 }
+             }
+diff --git a/src/NFreactions/reactions/DORreaction.cpp b/src/NFreactions/reactions/DORreaction.cpp
+index c115ab5..fc53cf8 100644
+--- a/src/NFreactions/reactions/DORreaction.cpp
++++ b/src/NFreactions/reactions/DORreaction.cpp
+@@ -425,11 +425,12 @@ int DORRxnClass::getCorrectedReactantCount(unsigned int reactantIndex) const
+ 		         : reactantTree->size();
+ 	}
+ 
+-	// MatchOnce is the user's explicit request; contextCountsPerComplex is the
+-	// same counting applied automatically to a reactant the rule never transforms,
+-	// which is how BNG counts one.
+-	if ((matchOncePerReactant[reactantIndex] || contextCountsPerComplex[reactantIndex])
+-	    && !isPopulationType[reactantIndex]) {
++	// contextCountsPerComplex counts a reactant the rule never transforms once per
++	// complex, which is how BNG counts one.  A MatchOnce reactant is counted per
++	// match, like any other, and fire() thins it to once per complex: this count
++	// never collapsed it, since a list is only noted as able to share a complex
++	// for a context reactant (bngsim issue #1525).
++	if (contextCountsPerComplex[reactantIndex] && !isPopulationType[reactantIndex]) {
+ 		return countDistinctComplexes(reactantLists[reactantIndex]);
+ 	}
+ 
+@@ -1207,11 +1208,12 @@ int DOR2RxnClass::getCorrectedReactantCount(unsigned int reactantIndex) const
+ 		         ? countDistinctComplexes(reactantTree2) : reactantTree2->size();
+ 	}
+ 
+-	// MatchOnce is the user's explicit request; contextCountsPerComplex is the
+-	// same counting applied automatically to a reactant the rule never transforms,
+-	// which is how BNG counts one.
+-	if ((matchOncePerReactant[reactantIndex] || contextCountsPerComplex[reactantIndex])
+-	    && !isPopulationType[reactantIndex]) {
++	// contextCountsPerComplex counts a reactant the rule never transforms once per
++	// complex, which is how BNG counts one.  A MatchOnce reactant is counted per
++	// match, like any other, and fire() thins it to once per complex: this count
++	// never collapsed it, since a list is only noted as able to share a complex
++	// for a context reactant (bngsim issue #1525).
++	if (contextCountsPerComplex[reactantIndex] && !isPopulationType[reactantIndex]) {
+ 		return countDistinctComplexes(reactantLists[reactantIndex]);
+ 	}
+ 
+diff --git a/src/NFreactions/reactions/reaction.cpp b/src/NFreactions/reactions/reaction.cpp
+index c1af293..65d9a7d 100644
+--- a/src/NFreactions/reactions/reaction.cpp
++++ b/src/NFreactions/reactions/reaction.cpp
+@@ -703,11 +703,12 @@ int BasicRxnClass::getCorrectedReactantCount(unsigned int reactantIndex) const
+ 	}
+ 	*/
+ 
+-	// MatchOnce is the user's explicit request; contextCountsPerComplex is the
+-	// same counting applied automatically to a reactant the rule never transforms,
+-	// which is how BNG counts one.
+-	if ((matchOncePerReactant[reactantIndex] || contextCountsPerComplex[reactantIndex])
+-	    && !isPopulationType[reactantIndex]) {
++	// contextCountsPerComplex counts a reactant the rule never transforms once per
++	// complex, which is how BNG counts one.  A MatchOnce reactant is counted per
++	// match, like any other, and fire() thins it to once per complex: this count
++	// never collapsed it, since a list is only noted as able to share a complex
++	// for a context reactant (bngsim issue #1525).
++	if (contextCountsPerComplex[reactantIndex] && !isPopulationType[reactantIndex]) {
+ 		return countDistinctComplexes(reactantLists[reactantIndex]);
+ 	}
+ 
+diff --git a/src/NFreactions/transformations/transformationSet.cpp b/src/NFreactions/transformations/transformationSet.cpp
+index 22113e8..bdd720a 100644
+--- a/src/NFreactions/transformations/transformationSet.cpp
++++ b/src/NFreactions/transformations/transformationSet.cpp
+@@ -930,6 +930,19 @@ bool TransformationSet::isPureContextReactant(unsigned int reactantIndex) const
+ }
+ 
+ 
++bool TransformationSet::deletesWholeSpecies(unsigned int reactantIndex) const
++{
++	if( reactantIndex >= n_reactants ) return false;
++	for( unsigned int t=0; t<transformations[reactantIndex].size(); t++ ) {
++		Transformation *tr = transformations[reactantIndex].at(t);
++		if( tr->getType()==(int)TransformationFactory::REMOVE
++		    && tr->getRemovalType()==(int)TransformationFactory::COMPLETE_SPECIES_REMOVAL )
++			return true;
++	}
++	return false;
++}
++
++
+ void TransformationSet::finalize()
+ {
+ 	//Be sure to add at least a blank transformation to every reactant if there is no transformation
+diff --git a/src/NFreactions/transformations/transformationSet.hh b/src/NFreactions/transformations/transformationSet.hh
+index 154ad0d..764a0b0 100644
+--- a/src/NFreactions/transformations/transformationSet.hh
++++ b/src/NFreactions/transformations/transformationSet.hh
+@@ -327,6 +327,13 @@ namespace NFcore
+ 			*/
+ 			bool isPureContextReactant(unsigned int reactantIndex) const;
+ 
++			/*!
++				True if the rule deletes reactant `reactantIndex` as a whole species
++				(a COMPLETE_SPECIES_REMOVAL delete: no DeleteMolecules keyword), which
++				removes every molecule connected to the match.
++			*/
++			bool deletesWholeSpecies(unsigned int reactantIndex) const;
++
+ 			// To get the connected reactions for each transformation
+ 			bool checkConnection(ReactionClass * rxn);
+ 
+-- 
+2.54.0 (Apple Git-157)
+

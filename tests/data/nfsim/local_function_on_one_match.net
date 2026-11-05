@@ -1,0 +1,16 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 k             1e-3  # Constant
+    2 X0            2000  # Constant
+    3 _Ldel_local1  k*1  # ConstantExpression
+end parameters
+begin species
+    1 K(m1!1,m2!2).L(g!1,s~a).L(g!2,s~b) X0
+end species
+begin reactions
+    1 1 0 _Ldel_local1 #Ldel
+end reactions
+begin groups
+    1 La                   1
+    2 K_m                  1
+end groups

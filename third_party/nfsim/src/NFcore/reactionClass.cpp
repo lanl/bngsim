@@ -227,11 +227,13 @@ ReactionClass::ReactionClass(string name, double baseRate, string baseRateParame
 	isPopulationType = new bool[n_reactants];
 	matchOncePerReactant = new bool[n_reactants];
 	contextCountsPerComplex = new bool[n_reactants];
+	deletesWholeComplex = new bool[n_reactants];
 	for( unsigned int i=0; i < n_reactants; ++i )
 	{
 		isPopulationType[i] = reactantTemplates[i]->getMoleculeType()->isPopulationType();
 		matchOncePerReactant[i] = false;
 		contextCountsPerComplex[i] = false;
+		deletesWholeComplex[i] = !isPopulationType[i] && transformationSet->deletesWholeSpecies(i);
 	}
 
 	// Count a reactant the rule never transforms once per complex, as BNG does.
@@ -317,6 +319,7 @@ ReactionClass::~ReactionClass()
 	delete [] isPopulationType;
 	delete [] matchOncePerReactant;
 	delete [] contextCountsPerComplex;
+	delete [] deletesWholeComplex;
 	delete [] identicalPopCountCorrection;
 	connectedReactions.clear();
 }
@@ -419,6 +422,29 @@ void ReactionClass::fire(double random_A_number) {
 	this->fire(random_A_number, false);
 }
 
+int ReactionClass::countMatchesInComplex(unsigned int reactantIndex, Molecule *m)
+{
+	MoleculeType *mt = reactantTemplates[reactantIndex]->getMoleculeType();
+	int rxnIndex = mt->getRxnIndex(this, reactantIndex);
+	int matches = 0;
+	// The complex's own member list where complexes are tracked, a bond
+	// traversal where they are not: the list is several times cheaper to walk
+	// on a large aggregate, and this runs at every pick.
+	Complex *c = system->isUsingComplex() ? m->getComplex() : 0;
+	if ( c != 0 ) {
+		for ( list<Molecule *>::iterator it = c->complexMembers.begin(); it != c->complexMembers.end(); ++it ) {
+			if ( (*it)->getMoleculeType() == mt ) matches += (*it)->getRxnListMappingCount(rxnIndex);
+		}
+		return matches;
+	}
+	list <Molecule *> members;
+	m->traverseBondedNeighborhood(members, ReactionClass::NO_LIMIT);
+	for ( list<Molecule *>::iterator it = members.begin(); it != members.end(); ++it ) {
+		if ( (*it)->getMoleculeType() == mt ) matches += (*it)->getRxnListMappingCount(rxnIndex);
+	}
+	return matches;
+}
+
 // AS2023 - Alternative call signature to tell fire call when we are tracking 
 // each firing for the rxnlog argument
 string ReactionClass::fire(double random_A_number, bool track) {
@@ -451,6 +477,28 @@ string ReactionClass::fire(double random_A_number, bool track) {
 		if (!transformationSet->checkReactantFilters(k, mol)) {
 			++(System::NULL_EVENT_COUNTER);
 			return string("");
+		}
+	}
+
+	// A whole-species delete removes the complex the match sits in, and BioNetGen
+	// gives it one reaction per complex at the rule's rate; MatchOnce asks for the
+	// same counting.  The pick above is one of the complex's m matches, each of
+	// which the propensity counted, so fire it with probability 1/m: a complex then
+	// goes at the rule's rate once, not m times (a homodimer at k, not 2k), and the
+	// complexes are picked evenly whatever their matches.  Not for a reactant
+	// counted per complex already (contextCountsPerComplex), nor under a total
+	// rate, which is the rule's whole rate by definition.  Draws only where a
+	// complex holds two or more matches, so every other run keeps its random
+	// stream (bngsim issue #1525).
+	if ( !this->totalRateFlag ) {
+		for (unsigned int k=0; k<n_reactants; k++) {
+			if ( !(deletesWholeComplex[k] || matchOncePerReactant[k])
+			     || contextCountsPerComplex[k] || isPopulationType[k] ) continue;
+			int matches = countMatchesInComplex(k, mappingSet[k]->get(0)->getMolecule());
+			if ( matches > 1 && NFutil::RANDOM_INT(0, matches) != 0 ) {
+				++(System::NULL_EVENT_COUNTER);
+				return string("");
+			}
 		}
 	}
 

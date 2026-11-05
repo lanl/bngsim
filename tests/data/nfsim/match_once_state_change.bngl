@@ -1,0 +1,51 @@
+# MatchOnce on a rule that changes a state, not a deletion (bngsim issue #1525).
+#
+# Two homodimer pools of X0, each flipping one subunit's s from 0 to 1 at k.
+# Jmo carries {MatchOnce}: BNG2.pl's network gives it one reaction per complex
+# at k. Wpl does not: BNG2.pl gives it 2*k, one reaction per subunit. NFsim's
+# per-complex count for MatchOnce never took effect, so Jmo ran at 2*k too.
+#
+# Uctx makes Z at k per U homodimer, with the dimer as pure context: NFsim counts
+# a context reactant once per complex already when it tracks complexes, so the
+# MatchOnce on it must not thin it a second time. Z(t) = k*X0*t, 1000 at t = 500.
+#
+# JLmo is Jmo with a local-function rate read on the whole species, k for every
+# complex: NFsim ignored MatchOnce on a local-function rule, so it ran at 2*k.
+begin model
+begin parameters
+  k   1e-3
+  X0  2000
+end parameters
+begin molecule types
+  J(d,s~0~1)
+  W(d,s~0~1)
+  U(d)
+  Y()
+  Z()
+  JL(d,s~0~1)
+end molecule types
+begin seed species
+  J(d!1,s~0).J(d!1,s~0)  X0
+  W(d!1,s~0).W(d!1,s~0)  X0
+  U(d!1).U(d!1)          X0
+  Y()                    1
+  JL(d!1,s~0).JL(d!1,s~0)  X0
+end seed species
+begin observables
+  Molecules J1 J(s~1)
+  Molecules W1 W(s~1)
+  Molecules Zt Z()
+  Molecules JL1 JL(s~1)
+end observables
+begin functions
+  fjl(x) = if(JL1(x) >= 0, k, 0)
+end functions
+begin reaction rules
+  Jmo: {MatchOnce}J(d!1,s~0).J(d!1,s~0) -> J(d!1,s~1).J(d!1,s~0) k
+  Wpl: W(d!1,s~0).W(d!1,s~0) -> W(d!1,s~1).W(d!1,s~0) k
+  Uctx: {MatchOnce}U(d!1).U(d!1) + Y() -> U(d!1).U(d!1) + Y() + Z() k
+  JLmo: %x:{MatchOnce}JL(d!1,s~0).JL(d!1,s~0) -> JL(d!1,s~1).JL(d!1,s~0) fjl(x)
+end reaction rules
+end model
+generate_network({overwrite=>1})
+writeXML()
