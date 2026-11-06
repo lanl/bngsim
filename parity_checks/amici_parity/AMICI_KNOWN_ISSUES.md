@@ -277,7 +277,7 @@ order, `x9 = 1e-12·exp(5.29e20·t³)`:
 |---|---|---|
 | 1e-7 | 1.697e-12 | 1.697e-12: scipy's DOP853 (explicit Runge-Kutta, not SUNDIALS) on a right-hand side built from the SBML text, rtol 1e-12, atol 1e-80 |
 | 3.36e-7 | 5.115e-4 | 5.115e-4: bngsim at rtol 1e-10, atol 1e-30 |
-| 1.1e-6 | passes the largest double | |
+| 1.1e-6 | passes the largest double (`x9` alone; the model overflows sooner, below) | |
 | 1 | ln(x9) ≈ 5e20 | |
 
 The model leaves the doubles sooner than `x9` alone would. `k9 = k9bas + (k9sim −
@@ -299,7 +299,8 @@ so neither engine's error test sees it. Each holds `x9` on its repelling equilib
 arm64 and −2.649e-34 in AMICI, each equal to its own equilibrium to 4 digits. The two
 differ because `x4 + x5` does, on the two `x1` branches below; bngsim at atol 1.01e-12
 also reads −2.649e-34. Both then run on to t = 100. A tighter tolerance (atol 1e-14, or rtol 1e-10) makes both engines try to
-follow `x9`, and both fail between t = 3.3e-7 and 5.6e-7: bngsim's step collapses
+follow `x9` (only an atol near 1e-24 or below actually tracks it), and both fail
+between t = 3.3e-7 and 5.6e-7: bngsim's step collapses
 until t + h == t, and AMICI reports `AMICI_TOO_MUCH_WORK`. So no engine has an answer
 here past t ≈ 3.364e-7, and the AMICI row compares two trajectories that are not
 solutions.

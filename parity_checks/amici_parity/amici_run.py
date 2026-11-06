@@ -658,8 +658,10 @@ def main() -> int:
                 "the reason recorded; 'no_ground_truth:applied' — the model has no "
                 "solution over the horizon, so the PASS or DIFF became a non-scoring "
                 "BAD_TEST. ':stale' means the row agrees on its own now (prune the entry); "
-                "':inapplicable' means the row produced no comparison this run, so "
-                "the entry was neither used nor falsified."
+                "':inapplicable' means the row produced no comparison this run, or, "
+                "for no_ground_truth, a DIFF whose max_rel is not finite (a grid or "
+                "species mismatch, which stays scoring), so the entry was neither "
+                "used nor falsified."
             ),
         },
         "oracle_basis": (

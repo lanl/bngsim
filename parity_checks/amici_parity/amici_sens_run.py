@@ -1250,8 +1250,10 @@ def main() -> int:
                 "solution over the horizon, so the PASS or DIFF became a non-scoring "
                 "BAD_TEST. ':stale' means the row agrees on its own now "
                 "(prune the entry); ':inapplicable' means the row produced no "
-                "comparison this run (it raised, timed out or had no oracle), so the "
-                "entry was neither used nor falsified. Every applied row carries its "
+                "comparison this run (it raised, timed out or had no oracle), or, for "
+                "no_ground_truth, a DIFF whose max_rel is not finite (which stays "
+                "scoring), so the entry was neither used nor falsified. Every "
+                "applied row carries its "
                 "reason in the row comment."
             ),
         },

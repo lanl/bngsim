@@ -471,7 +471,7 @@ def _drifted(recorded: float | None, fresh: float | None) -> bool:
     """
     if recorded is None or fresh is None:
         return False
-    finite = [x == x and abs(x) != float("inf") for x in (recorded, fresh)]
+    finite = [_finite(x) for x in (recorded, fresh)]
     if not all(finite):
         return finite[0] != finite[1]
     if recorded == 0 or fresh == 0:
