@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import stat
 from pathlib import Path
@@ -384,6 +385,9 @@ def test_the_verdict_names_the_sdk_and_an_sdk_that_links(clean, monkeypatch):
     assert bngsim.Simulator(_chain(5), method="ode", codegen=True).codegen_backend == "cc"
 
 
+@pytest.mark.skipif(
+    os.name == "nt", reason="POSIX-specific: the SDK links are symlinks, which Windows restricts"
+)
 def test_sdk_candidates_newest_first_one_name_each(tmp_path):
     """The candidates leave out the SDK in use and the unversioned link, give
     each SDK once under its shortest name, and put the newest first."""
@@ -429,6 +433,19 @@ def test_a_sharded_build_reaches_the_verdict(clean, monkeypatch):
     with pytest.raises(bngsim.CodegenToolchainError):
         cg.compile_rhs(src, "shardedhash2")
     assert len(cc.calls()) == n_before
+
+
+def test_the_probe_includes_every_header_generated_code_does():
+    """A sysroot that has lost its headers fails every model on ``<math.h>``
+    (an Xcode update that removed the SDK a build was configured with did that
+    here); the probe has to fail on it too, or that failure is blamed on the
+    model and compiled again for every one."""
+    emitted = set(
+        re.findall(r'_emit\("#include <([^>]+)>"\)', Path(cg.__file__).read_text("utf-8"))
+    )
+    assert emitted, "no emitted #include found; the pattern above has gone stale"
+    probed = set(re.findall(r"#include <([^>]+)>", tc._PROBE_SOURCE))
+    assert emitted <= probed
 
 
 @requires_cc

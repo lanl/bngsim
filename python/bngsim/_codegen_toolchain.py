@@ -208,7 +208,9 @@ def _probe(
             so_path = Path(work) / f"probe{cg._shared_lib_suffix()}"
             c_path.write_text(_PROBE_SOURCE, encoding="utf-8")
             cmd = cg._build_compile_cmd(c_path, so_path, opt_flag, compiler)
-            result = cg._run_compile(cmd, timeout=_PROBE_TIMEOUT, env=env)
+            # From the scratch directory, so what a compiler writes beside its
+            # output (MSVC's probe.obj) goes away with it.
+            result = cg._run_compile(cmd, cwd=Path(work), timeout=_PROBE_TIMEOUT, env=env)
     except subprocess.TimeoutExpired:
         return None, f"the probe build ran past {_PROBE_TIMEOUT:g} s"
     except OSError as err:

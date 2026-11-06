@@ -273,6 +273,7 @@ jobs:
             python/tests/test_codegen_mm_sens.py \
             python/tests/test_codegen_sens_rhs_gate.py \
             python/tests/test_codegen_switch_condition_sens.py \
+            python/tests/test_codegen_toolchain_verdict.py \
             python/tests/test_codegen_steady_state_mask.py \
             python/tests/test_codegen_steady_state_fd_step.py \
             -rA --tb=long ${{ inputs.pytest_args }} \
