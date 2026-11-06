@@ -56,12 +56,14 @@ class NfsimSession:
     block_same_complex_binding : bool, optional
         When ``True`` (the default), a bimolecular rule cannot bind two
         molecules of one complex, and a rule written ``A.B -> A + B`` fires
-        only where breaking the bond separates them. Both are BNGL's semantics:
-        BNG2.pl's network applies them, and so does NFsim under ``-cb`` (or
-        ``-bscb``, the same flag), which BNG2.pl's ``simulate_nf`` passes by
-        default (``complex=>1``). ``False`` turns both off, as NFsim run
-        without ``-cb`` does: same-complex binding is allowed, and such a rule
-        can break a bond inside a ring. On a model with rings that gives wrong
+        only where breaking the bond separates them. Both are BNGL's semantics,
+        and BNG2.pl's network applies them. NFsim blocks same-complex binding
+        under ``-cb`` (or ``-bscb``, the same flag), which BNG2.pl's
+        ``simulate_nf`` passes by default (``complex=>1``); under the same flag,
+        current NFsim and bngsim's vendored copy also enforce the second rule,
+        which NFsim v1.14.3 (BioNetGen 2.9.3) never does. ``False`` turns both
+        off: same-complex binding is allowed, and such a rule can break a bond
+        inside a ring. On a model with rings that gives wrong
         counts with no error; a conserved total of 30 molecules read 33-40
         (issue #1549). Complex bookkeeping for ``Species``-typed observables
         is enabled whenever the model declares one, whatever this setting.

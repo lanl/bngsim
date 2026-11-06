@@ -236,8 +236,8 @@ _RING_SPLIT = (
 )
 _SHORT_UTL = (
     "Legacy NFsim v1.14.3 sets its traversal limit to the size of the largest pattern, one "
-    "hop short of a bond made or broken beside a match, so it misses matches that BNG2.pl's "
-    "network has. Upstream NFsim set it to that size + 1 in 7d60f41 (its issues #52 and #53), "
+    "hop short of a bond made or broken beside a match, so its matches go stale: it misses "
+    "some BNG2.pl's network has and fires others it no longer has. Upstream NFsim set it to that size + 1 in 7d60f41 (its issues #52 and #53), "
     "which bngsim's vendored NFsim carries. "
 )
 _POSNER1995 = (
@@ -302,8 +302,9 @@ NF_KNOWN_REF = {
         "reason": _SHORT_UTL + "Here 2 molecules, L.R, and legacy never re-opens a receptor "
         "whose second ligand leaves: it ends with all 200 closed, against about 148 closed and "
         "52 open on BNG2.pl's network. Against bngsim's SSA and run_network's on the network, "
-        "bngsim-NF agrees at 100% of points and legacy NFsim at 28-29%; legacy given -utl 99 "
-        "agrees at 100% (30 replicates, #1549). Legacy is the outlier.",
+        "bngsim-NF agrees at 100% of points and legacy NFsim at 28-29% (30 replicates, #1549). "
+        "Legacy given -utl 3, upstream's size + 1, ends with 46-55 open (3 seeds), and given "
+        "-utl 99 agrees at 100%. Legacy is the outlier.",
     },
     # A replay night cannot show this DIFF: the archive holds only the 10-replicate
     # legacy ensemble, which bngsim matched before #1525, so the escalation's
@@ -1845,10 +1846,12 @@ def main() -> int:
             "jobs": override_records,
             "note": (
                 "Overrides are read from Job.overrides, baked by build_jobs.py from "
-                "overrides.py. A timeout override only applies when no global --timeout "
-                "is supplied. t_end_cap/n_scan_pts/action_inject overrides are applied "
-                "while building the shared artifact/protocol. Resolved settings are echoed "
-                "in timing.settings so regenerated matrices retain provenance."
+                "overrides.py. A timeout override applies only when no global --timeout "
+                "is supplied, and only above the default cap. An action_inject override "
+                "replaces the model's actions. t_end_cap and n_scan_pts are not applied "
+                "here (parity_sweep.py applies them): this runner runs each model's own "
+                "horizon. Resolved settings are echoed in timing.settings so regenerated "
+                "matrices retain provenance."
             ),
         },
         "ensemble": {

@@ -342,6 +342,9 @@ python generate_bng_matrix.py runs/report_nf.json    # -> runs/bng_matrix_nf.htm
   copy of the XML with those counts rounded (single-segment runs; a multi-segment
   run's native BNG2.pl protocol reads its XML unrounded). Before #1549 it got neither unless a
   Species observable forced `-cb`, which made 14 of 0.17.0's 15 unexplained DIFFs.
+  NFsim flags an action passes through `param=>` (such as `-utl 5`) are not given
+  to the legacy run, as they are not to bngsim; that is why `blbr_rings_posner1995`,
+  whose action passes `-utl 5`, is KNOWN REF for legacy's traversal limit.
   A model where legacy NFsim is still the outlier against an independent oracle
   (BNG2.pl's network, RuleMonkey, an analytic answer) is listed in `NF_KNOWN_REF`
   with the fault and the evidence, and renders KNOWN REF. `--nf-bscb off` is for

@@ -104,11 +104,14 @@ TOL = {
 #     The 3 `frac` models are no longer in the corpus anyway (their entries were stale).
 
 # Per-model timeout extension (seconds) for models whose overrun is a worker-
-# contention artifact, not a real failure. Read by bng_stoch_run.py only, where an
-# entry applies only above DEFAULT_STOCH_TIMEOUT (1800 s): it may raise a job's cap,
+# contention artifact, not a real failure. Both runners read it, from the job's
+# baked overrides: an entry applies only above the runner's own default
+# (bng_ode_run.py's DEFAULT_ODE_TIMEOUT, 240 s, for an ODE job; bng_stoch_run.py's
+# DEFAULT_STOCH_TIMEOUT, 1800 s, for a stochastic one), so it may raise a cap and
 # never lower it. Empty since #1549. Its three entries (mlnr 300 s, ERK_model and
-# prion_model 1200 s) were written as extensions of earlier, shorter defaults and,
-# once the default rose to 1800 s (GH #190), each cut its job's cap instead. mlnr,
+# prion_model 1200 s, all stochastic jobs) were written as extensions of earlier,
+# shorter defaults and, once the default rose to 1800 s (GH #190), each cut its
+# job's cap instead. mlnr,
 # whose ten replicates take about 1,170 s (bngsim 667 s, NFsim 499 s on an M-series
 # Mac under load), timed out at 300 s in 0.17.0's sweep for that reason.
 TIMEOUT: dict[str, tuple[float, str]] = {}

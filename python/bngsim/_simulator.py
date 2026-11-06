@@ -568,12 +568,10 @@ class Simulator:
         When ``True`` (the default), a bimolecular rule cannot bind two
         molecules of one complex, and a rule written ``A.B -> A + B`` fires
         only where breaking the bond separates them: BNGL's semantics, as
-        BNG2.pl's network and its ``simulate_nf`` (``complex=>1``, NFsim
-        ``-cb``) apply them. ``False`` turns both off, as NFsim run without
-        ``-cb`` does, and on a model with rings gives wrong counts with no
-        error (issue #1549). Complex bookkeeping for ``Species``-typed
-        observables is enabled whenever the model declares one, whatever
-        this setting.
+        BNG2.pl's network applies them. ``False`` turns both off, and on a
+        model with rings gives wrong counts with no error (issue #1549).
+        Complex bookkeeping for ``Species``-typed observables is enabled
+        whenever the model declares one, whatever this setting.
 
     traversal_limit : int, optional
         Only used for ``method="nf"`` / ``"nf_reject"`` / ``"nfsim"``.

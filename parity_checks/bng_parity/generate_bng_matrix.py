@@ -1385,8 +1385,9 @@ def _stoch_legend(regime: str, legacy_label: str) -> str:
         )
         leg_path = (
             "<code>NFsim</code> spawns a fresh process per seed (with <code>-cb</code>, as "
-            "BNG2.pl's <code>simulate_nf</code> gives it, on the XML with fractional seed "
-            "counts rounded as bngsim reads them), reporting its own total CPU + reactions/sec"
+            "BNG2.pl's <code>simulate_nf</code> gives it by default, but not an action's own "
+            "<code>param</code> flags, on the XML with fractional seed counts rounded as "
+            "bngsim reads them), reporting its own total CPU + reactions/sec"
         )
         eng_self = "<code>NFsim</code>'s self-reported <b>total CPU</b> + reactions/s"
         eng_through = "reaction firings/sec (the <code>globalEventCounter</code>)"

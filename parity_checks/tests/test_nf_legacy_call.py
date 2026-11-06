@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -284,8 +285,6 @@ def test_ring_former_and_fractional_seed_pass_against_legacy_nfsim(tmp_path):
 # mlnr.bngl's cap
 # --------------------------------------------------------------------------- #
 def _job(*overrides):
-    from types import SimpleNamespace
-
     return SimpleNamespace(
         overrides=[SimpleNamespace(field=f, value=v, reason=f"{v} s") for f, v in overrides]
     )
@@ -303,17 +302,29 @@ def test_a_timeout_override_extends_the_default_cap_and_never_cuts_it():
     assert bsr._job_timeout_override(_job(("tol", 1e-3))) is None
 
 
-def test_no_committed_job_carries_a_timeout_below_the_default():
+def test_no_committed_job_carries_a_timeout_below_its_runners_default():
+    import bng_ode_run as bor
     from _core import read_manifest
 
+    floor = {"stochastic": bsr.DEFAULT_STOCH_TIMEOUT, "ode": bor.DEFAULT_ODE_TIMEOUT}
     _meta, jobs = read_manifest(_BNG / "jobs.json")
     low = {
         j.model_id: o.value
         for j in jobs
         for o in j.overrides
-        if o.field == "timeout" and float(o.value) <= bsr.DEFAULT_STOCH_TIMEOUT
+        if o.field == "timeout" and float(o.value) <= floor[j.method]
     }
     assert low == {}
+
+
+def test_the_ode_runner_also_only_extends_its_default_cap():
+    import bng_ode_run as bor
+
+    assert bor._job_timeout_override(_job(("timeout", 200))) is None
+    assert bor._job_timeout_override(_job(("timeout", 600))) == {
+        "timeout": 600.0,
+        "reason": "600 s",
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -337,3 +348,57 @@ def test_the_legacy_ensemble_passes_cb_and_rounded_seeds_to_nfsim(monkeypatch):
     sspec = bsr.nf_run_settings({"t_end": 1.0, "n_steps": 1}, True, _MOLECULES_OBS)
     bsr._legacy_stoch_ensemble("nf", "m.xml", sspec, "NFsim", 10, 1, "leg", 60.0)
     assert seen["complex_bookkeeping"] is True and seen["round_seeds"] is True
+
+
+def test_the_worker_gives_the_legacy_run_cb_and_rounded_seeds(tmp_path, monkeypatch):
+    """The worker itself, in process: BNG2.pl's XML build and the legacy NFsim run
+    are stubbed, bngsim runs for real. A model with no Species observable, and a
+    fractional seed, gets -cb and rounded seeds on the legacy side."""
+    _bngsim_seed_count(_FIXTURE)  # skips without bngsim's NFsim
+    bngl = tmp_path / "m.bngl"
+    bngl.write_text(
+        _MOLECULES_OBS.replace("Free  R(l,l)", "X_total  X()")
+        + 'begin actions\nsimulate({method=>"nf",t_end=>1,n_steps=>2})\nend actions\n'
+    )
+
+    def fake_xml(text, bng2_pl, workdir, **_kw):
+        workdir.mkdir(parents=True, exist_ok=True)
+        shutil.copy(_FIXTURE, workdir / "model.xml")
+        return workdir / "model.xml", 0.0, ""
+
+    seen = {}
+
+    def fake_nfsim(xml, nfsim_bin, *, n_rep, n_steps, **kw):
+        seen.update(kw)
+        t = np.linspace(0.0, 1.0, n_steps + 1)
+        return t, np.full((n_rep, n_steps + 1, 1), 2.0), ["X_total"], {}
+
+    monkeypatch.setattr(bsr.bc, "measure_stoch_warmup", lambda *a, **k: {})
+    monkeypatch.setattr(bsr.bc, "generate_xml", fake_xml)
+    monkeypatch.setattr(bsr.bc, "nfsim_run", fake_nfsim)
+    spec = {
+        "key": "m.bngl:nf",
+        "model_id": "m.bngl",
+        "method": "stochastic",
+        "metric": "mean_zscore",
+        "tol": 5.0,
+        "bngl": str(bngl),
+        "track": "nf",
+        "n_rep": 3,
+        "seed_base": 1,
+        "rep_timeout": 60.0,
+        "nf_bscb": True,
+        "cap": 300.0,
+        "sub_timeout": 270.0,
+        "settings": {},
+        "bng2_pl": "BNG2.pl",
+        "legacy_bin": "NFsim",
+        "legacy_label": "NFsim",
+        "inject": None,
+        "reference_archive": None,
+        "write_reference_archive": None,
+    }
+    rows = []
+    bsr._worker(spec, SimpleNamespace(put=rows.append))
+    assert seen["complex_bookkeeping"] is True and seen["round_seeds"] is True
+    assert rows[0]["status"] == "pass", rows[0]
