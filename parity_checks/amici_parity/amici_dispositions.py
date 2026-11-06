@@ -5,9 +5,10 @@ ride the shared manifest, and refuses rr_parity's ``known_artifact`` /
 ``invalid_reference`` / ``no_oracle_adjudicated`` entries: those are calibrated
 against *RoadRunner*, so applying them here could mask a genuine bngsim-vs-AMICI
 difference. That reasoning is sound and unchanged. The gap it left is that there
-was no **amici-calibrated** path either — when AMICI is the wrong engine, or when
-neither engine is wrong and the metric simply cannot resolve a cell, the row had
-nowhere to go and scored as a bngsim ``DIFF``.
+was no **amici-calibrated** path either — when AMICI is the wrong engine, when
+neither engine is wrong and the metric simply cannot resolve a cell, or when the
+model has no solution for either engine to find, the row had nowhere to go and
+scored as a bngsim ``DIFF``.
 
 This module is that path. It is deliberately NOT baked into the job manifest the
 way rr_parity's ``overrides.py`` is: the SBML manifest is shared with rr_parity
@@ -15,8 +16,8 @@ and is built by rr_parity's builder, so an AMICI-calibrated entry written into i
 would leak into the RoadRunner suite. The runners read this module directly
 instead.
 
-Two dispositions, and the difference between them is which engine (if either) is
-at fault:
+Three dispositions, and the difference between them is which engine (if either)
+is at fault, and whether there is an answer to be at fault about:
 
   INVALID_REFERENCE    — AMICI *ran* and returned finite numbers, but a defect in
                          AMICI's own handling of the model makes them unusable as
@@ -47,7 +48,32 @@ at fault:
                          That case is INVALID_REFERENCE here, precisely so a
                          reference defect is never dressed up as agreement.
 
-Both are keyed ``"<model_id>:<regime>"`` with regime ``ode`` (``amici_run.py``) or
+  NO_GROUND_TRUTH      — over the compared horizon the model has no solution that a
+                         double-precision integrator can follow, so neither engine's
+                         answer is an oracle and their agreement or disagreement is
+                         not evidence about either. Reclassified ``DIFF`` *or*
+                         ``PASS`` -> ``BAD_TEST`` (non-scoring), this suite's "the
+                         model or test is the problem": here the model is. Not
+                         REFERENCE_FAILED, which says AMICI could not anchor a run
+                         bngsim made, a capability win the ODE matrix draws as a
+                         bngsim PASS; bngsim's run is no more a solution than
+                         AMICI's. (rr_parity records the same model as
+                         ``NO_ORACLE_ADJUDICATED``, verdict ``uncoverable``; its row
+                         is REFERENCE_FAILED only because RoadRunner raises there.)
+
+                         Authored for ``ode`` only so far: the sensitivity matrix
+                         does not yet draw such a row (the ODE matrix draws it
+                         ``NO TRUTH``), and a test holds that until it does.
+
+                         A PASS too, because on such a model a PASS is two
+                         artifacts that happened to round alike: it says nothing
+                         about bngsim, and calling it STALE would ask the author to
+                         prune an entry whose premise, a property of the model, still
+                         holds. The evidence must come from an integrator that is
+                         neither engine (and, since both run CVODES, not SUNDIALS),
+                         driven at a tolerance where it tracks the solution.
+
+All three are keyed ``"<model_id>:<regime>"`` with regime ``ode`` (``amici_run.py``) or
 ``sens`` (``amici_sens_run.py``) — regime-scoped like rr_parity's keys, but NOT
 scoped to the CVODES corrector method: #325 measured every one of these models
 producing a near-identical ``max_rel`` under both ``staggered`` and
@@ -63,10 +89,12 @@ the SBML *text* so no engine can discard the write.
 Self-maintaining, three ways, because a disposition that could go quietly wrong is
 worse than none:
 
-  * it applies ONLY to a ``DIFF``. A row that PASSes on its own is flagged STALE
-    (prune it); a row that is EXCEPTION / REFERENCE_FAILED / TIMEOUT / BAD_TEST /
-    UNSUPPORTED produced no comparison at all, so the entry is reported
-    *inapplicable* rather than stale — a timeout falsifies nothing.
+  * it applies ONLY to a row the engines were compared on: a ``DIFF``, and for
+    NO_GROUND_TRUTH a ``PASS`` as well. For the other two, a row that PASSes on its
+    own is flagged STALE (prune it). A row that is EXCEPTION / REFERENCE_FAILED /
+    TIMEOUT / BAD_TEST / UNSUPPORTED produced no comparison at all, so the entry is
+    reported *inapplicable* rather than stale — a timeout falsifies nothing. That
+    holds for NO_GROUND_TRUTH too: a bngsim EXCEPTION stays a visible, scoring row.
   * the reason is written into ``JobResult.comment`` on every applied row, so the
     report says why in the row itself and not only here.
   * an entry may record the ``max_rel`` it was authored against. If a later sweep
@@ -93,6 +121,10 @@ from _core import Outcome  # noqa: E402
 # It is settled by construction: an entry exists only with third-oracle evidence,
 # so a future sweep should not re-triage it.
 INVALID_RESULT_REFUSAL = "invalid_result"
+
+# How a NO_GROUND_TRUTH row's comment begins. Public because the ODE matrix reads
+# it to draw such a BAD_TEST as what it is, not as two engines that refused.
+NO_GROUND_TRUTH_LABEL = "no ground truth"
 
 REGIMES = ("ode", "sens")
 
@@ -325,27 +357,74 @@ COMPARISON_ARTIFACT: dict[str, dict] = {
 }
 
 
+# --------------------------------------------------------------------------- #
+# No solution to compare against: whatever the two engines return over the job's
+# horizon, neither is an oracle -> DIFF or PASS becomes BAD_TEST. Keyed
+# "model_id:regime".
+# --------------------------------------------------------------------------- #
+NO_GROUND_TRUTH: dict[str, dict] = {
+    "MODEL1112050001:ode": {
+        "issue": "GH #1542",
+        "reason": (
+            "Liu2009 glucose mobilization has no solution in double precision over "
+            "the job's horizon (t_end = 100, an invented one). Its CLOSED FORM, from "
+            "the SBML text: the rate rule for x8 drains it at the constant "
+            "k6*PTP*k8, where k8 = 7.06e12 (the term reads like a typo for x8), so "
+            "x4 + x5 = -3.42e8*t^2 early. x9' = k22*PTP*x10 - k7*x9*(x4+x5)/IRp, "
+            "with IRp = 8.97e-13, then grows x9 at rate a = k7*|x4+x5|/IRp = "
+            "1.59e21*t^2. x9 + x10 + x12 and x11 + x12 are conserved and x11 stays "
+            ">= 0, so x9' >= (a - k22)*x9 + k22*9e-13, and to leading order x9 = "
+            "1e-12*exp(5.29e20*t^3). That law gives 1.697e-12 at t = 1e-7, which "
+            "scipy's DOP853 (explicit, not SUNDIALS) reproduces on a right-hand "
+            "side built from the SBML text at rtol 1e-12 and atol 1e-80. It gives "
+            "5.115e-4 at t = 3.36e-7, which bngsim reproduces when atol (1e-30) is "
+            "below x9 and it tracks it. x9 alone passes the largest double near "
+            "t = 1.1e-6, but the model gets there first: k9 = k9bas + (k9sim - "
+            "k9bas)*x12/PI3K with PI3K = 5e-15, and x12 follows -x9, so x13 and "
+            "x14 reach -/+2.6e10 at t = 3.363e-7 in scipy's BDF and in bngsim at "
+            "atol 1e-24, growing super-exponentially. Every integrator, scipy's "
+            "included, stops near t = 3.364e-7. At the suite's atol of 1e-12, x9 "
+            "starts AT the tolerance, so neither engine's error test sees it. Both "
+            "hold x9 on its repelling equilibrium -k22*PTP*x10/a (at t = 1, each "
+            "engine's x9 equals its own equilibrium to 4 digits) and run on to "
+            "t = 100 along a trajectory that is not a solution. On that "
+            "trajectory, rounding decides whether x1 is held "
+            "the same way. Since #1076 compiled ExprTk with -ffp-contract=off, "
+            "bngsim on arm64 holds it and the row reads DIFF 1.0 (676/2929 cells). "
+            "On x86-64, and on arm64 before #1076, it does not and the row reads "
+            "PASS. Either verdict compares two non-solutions."
+        ),
+    },
+}
+
+
 _KIND_INVALID_REFERENCE = "invalid_reference"
 _KIND_COMPARISON_ARTIFACT = "comparison_artifact"
+_KIND_NO_GROUND_TRUTH = "no_ground_truth"
 _LABEL = {
     _KIND_INVALID_REFERENCE: "invalid reference",
     _KIND_COMPARISON_ARTIFACT: "comparison artifact",
+    _KIND_NO_GROUND_TRUTH: NO_GROUND_TRUTH_LABEL,
 }
 _SOURCE = {
     _KIND_INVALID_REFERENCE: INVALID_REFERENCE,
     _KIND_COMPARISON_ARTIFACT: COMPARISON_ARTIFACT,
+    _KIND_NO_GROUND_TRUTH: NO_GROUND_TRUTH,
 }
 
-ALL_KEYS = frozenset(INVALID_REFERENCE) | frozenset(COMPARISON_ARTIFACT)
+ALL_KEYS = (
+    frozenset(INVALID_REFERENCE) | frozenset(COMPARISON_ARTIFACT) | frozenset(NO_GROUND_TRUTH)
+)
 
 
 def disposition_for(model_id: str, regime: str) -> dict | None:
     """The authored disposition for ``(model_id, regime)``, or None.
 
-    Returns ``{"kind", "reason", "issue", "max_rel"}``. A key present in BOTH
-    dicts is an authoring contradiction — the same row cannot be both "the
-    reference is wrong" and "neither engine is wrong" — so it raises rather than
-    letting a dict-ordering accident pick a winner.
+    Returns ``{"kind", "reason", "issue", "max_rel"}``. A key present in more
+    than one dict is an authoring contradiction — the same row cannot be two of
+    "the reference is wrong", "neither engine is wrong" and "there is no answer
+    to be right about" — so it raises rather than letting a dict-ordering
+    accident pick a winner.
     """
     key = f"{model_id}:{regime}"
     found = [(kind, src[key]) for kind, src in _SOURCE.items() if key in src]
@@ -353,8 +432,9 @@ def disposition_for(model_id: str, regime: str) -> dict | None:
         return None
     if len(found) > 1:
         raise ValueError(
-            f"{key} is authored in {' and '.join(k for k, _ in found)}; a row is "
-            "either a defective reference or an artifact of the comparison, never both"
+            f"{key} is authored in {' and '.join(k for k, _ in found)}; a row has "
+            "one disposition: a defective reference, an artifact of the comparison, "
+            "or no ground truth"
         )
     kind, d = found[0]
     return {
@@ -391,13 +471,18 @@ def _drifted(recorded: float | None, fresh: float | None) -> bool:
     """
     if recorded is None or fresh is None:
         return False
-    finite = [x == x and abs(x) != float("inf") for x in (recorded, fresh)]
+    finite = [_finite(x) for x in (recorded, fresh)]
     if not all(finite):
         return finite[0] != finite[1]
     if recorded == 0 or fresh == 0:
         return recorded != fresh
     ratio = abs(fresh) / abs(recorded)
     return not (0.5 <= ratio <= 2.0)
+
+
+def _finite(x: float | None) -> bool:
+    """None counts as finite: an unknown metric is no evidence of a mismatch."""
+    return x is None or (x == x and abs(x) != float("inf"))
 
 
 def _join(*parts: str) -> str:
@@ -423,6 +508,30 @@ def apply_disposition(
     kind = disp["kind"]
     label = _LABEL[kind]
     tag = f" ({disp['issue']})" if disp.get("issue") else ""
+
+    # No ground truth: a PASS is two non-solutions that rounded alike, so it is
+    # disposed of exactly as a DIFF is. It is never STALE, because what the entry
+    # asserts is a property of the model, which no engine's verdict can falsify.
+    # A non-finite metric is not two trajectories rounding apart: it is a grid or
+    # species mismatch, or non-finite output, which a loader regression would
+    # produce. That stays a scoring DIFF.
+    if kind == _KIND_NO_GROUND_TRUTH and outcome == Outcome.DIFF and not _finite(value):
+        return (
+            outcome,
+            _join(
+                comment,
+                f"{label} entry{tag} did not apply: max_rel={value} is not two "
+                "trajectories rounding apart (grid or species mismatch, or "
+                "non-finite output); re-triage",
+            ),
+            None,
+            "inapplicable",
+        )
+    if kind == _KIND_NO_GROUND_TRUTH and outcome in (Outcome.DIFF, Outcome.PASS):
+        note = f"{label}{tag}: {disp['reason']}"
+        if value is not None:
+            note += f" | was {outcome} at max_rel={value:.4g}"
+        return Outcome.BAD_TEST, _join(note, comment), None, "applied"
 
     if outcome == Outcome.DIFF:
         note = f"{label}{tag}: {disp['reason']}"
