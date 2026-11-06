@@ -134,10 +134,14 @@ python generate_bng_matrix.py runs/report_ode.json   # -> runs/bng_matrix_ode.ht
   `amici_parity`.
 - **Adjudicated dispositions** (a DIFF that is a known reference-engine bug or a
   benign sampling artifact, *not* a bngsim defect) live in the matrix runners
-  themselves: `KNOWN_DETERMINISTIC_ARTIFACTS` (ODE, `bng_ode_run.py`) and
-  `NF_KNOWN_REF` / `SSA_KNOWN_DISPOSITION` (stochastic, `bng_stoch_run.py`). Each
-  renders KNOWN ARTIFACT / KNOWN REF — non-scoring — with its independent-oracle
-  evidence in the row comment. The matrix is the single adjudication home.
+  themselves: `KNOWN_DETERMINISTIC_ARTIFACTS` / `KNOWN_CHAOTIC_SYSTEMS` /
+  `KNOWN_DETERMINISTIC_REF` (ODE, `bng_ode_run.py`) and `NF_KNOWN_REF` /
+  `SSA_KNOWN_DISPOSITION` (stochastic, `bng_stoch_run.py`). Each renders KNOWN
+  ARTIFACT / KNOWN REF — non-scoring — with its independent-oracle evidence in the
+  row comment. An ODE KNOWN REF is re-checked on every run (GH #1548): the row is
+  excused only while bngsim's trajectory agrees with run_network's until run_network
+  leaves the exact solution, and with the model's closed-form solution after.
+  The matrix is the single adjudication home.
 - **Reference engine** = legacy BNG from `$BNGPATH`/`$BNG2_PL` (no hardcoded
   paths). Verified against BNG 2.9.3.
 
