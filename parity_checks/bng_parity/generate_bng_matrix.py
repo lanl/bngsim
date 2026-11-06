@@ -776,7 +776,7 @@ def _legend() -> str:
             <div class="legend-item"><div class="legend-color" style="background:#dc3545"></div><div class="legend-desc"><b>FAILED</b> — DIFF (exceeds tolerance) or TIMEOUT.</div></div>
             <div class="legend-item"><div class="legend-color" style="background:#17a2b8"></div><div class="legend-desc"><b>KNOWN ARTIFACT</b> — a DIFF that is a documented comparison artifact within a recorded magnitude bound (integrator phase-wander, staircase knife-edge sampled on a discontinuity, or a reference-side tolerance tail), not a bngsim defect (GH #69). Non-scoring — excluded from FAILED.</div></div>
             <div class="legend-item"><div class="legend-color" style="background:#ffc107"></div><div class="legend-desc"><b>TRIAGED</b> — EXCEPTION (bngsim raised, run_network ran: actionable bngsim bug), REFERENCE_FAILED (bngsim ran, run_network raised: no oracle), or KNOWN REF (a DIFF where run_network leaves the model's exact solution and bngsim's run, checked against it on every run, keeps it; GH #1548). None scores against bngsim.</div></div>
-            <div class="legend-item"><div class="legend-color" style="background:#6c757d"></div><div class="legend-desc"><b>REFUSED</b> — BAD_TEST (netgen failed / both raised) or SKIP (no resolvable ODE horizon).</div></div>
+            <div class="legend-item"><div class="legend-color" style="background:#6c757d"></div><div class="legend-desc"><b>REFUSED</b> — BAD_TEST (netgen failed / both raised), SKIP (no resolvable ODE horizon), or UNSUPPORTED (bngsim refuses a catalogued model by name, as it should; GH #1548).</div></div>
         </div>
         <h3 style="margin-top:18px">Timing tiers — ENGINE vs WORKFLOW</h3>
         <p>Both engines are <b>CVODE</b> (BDF/Newton), so a single blended "speedup" conflates two different costs. The matrix reports them separately:<br>
@@ -838,7 +838,8 @@ def generate_html(report_path: Path, output_path: Path) -> None:
     pass_n = tally.get("PASS", 0)
     fail_n = tally.get("DIFF", 0) + tally.get("TIMEOUT", 0) - known_n - known_ref_n
     triaged_n = tally.get("EXCEPTION", 0) + tally.get("REFERENCE_FAILED", 0) + known_ref_n
-    refused_n = tally.get("BAD_TEST", 0) + tally.get("SKIP", 0)
+    # GH #1548: UNSUPPORTED is bngsim refusing a catalogued model by name.
+    refused_n = tally.get("BAD_TEST", 0) + tally.get("SKIP", 0) + tally.get("UNSUPPORTED", 0)
 
     rows_html = []
     for order, r in enumerate(results):

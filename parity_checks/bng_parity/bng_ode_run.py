@@ -333,6 +333,34 @@ KNOWN_DETERMINISTIC_REF = {
         "checked against the exact solution rather than trusted.",
     },
 }
+# Models bngsim refuses by name, as it should, keyed by BNGL stem (GH #1548). A
+# bngsim error on one of these that matches ``match`` is the refusal it is meant
+# to be, and the row is UNSUPPORTED (non-scoring) whatever run_network did; any
+# other error, or this one on another model, stays an EXCEPTION, so that a new
+# refusal is looked at rather than excused.
+KNOWN_BNGSIM_REFUSALS = {
+    "l-type-calcium-channel-dynamics": {
+        "issue": "GH #1548",
+        # Within the 400 characters of bngsim's error the row keeps.
+        "match": r"come to rest on the surface of a state-dependent rate-law switch "
+        r"\(residual '\(\(-70\+Voltage_Level\)\)-\(-20\)'",
+        "reason": "Voltage() relaxes onto the threshold of v_rec() itself (50 - 49e^(-t) "
+        "against 50), so once it is within the run's tolerance of 50 the branch the rate law "
+        "reads is set by rounding: bngsim returned the exact branch on 301 outputs and "
+        "run_network's wrong one on 151, until it refused. The exact answer is in "
+        "KNOWN_DETERMINISTIC_REF, which holds a run that does not refuse to it.",
+    },
+}
+
+
+def expected_refusal(stem: str, bn_exc: str) -> dict | None:
+    """The ``KNOWN_BNGSIM_REFUSALS`` entry ``bn_exc`` is, or None (GH #1548)."""
+    entry = KNOWN_BNGSIM_REFUSALS.get(stem)
+    if entry is None or not bn_exc or re.search(entry["match"], bn_exc) is None:
+        return None
+    return entry
+
+
 # How close bngsim has to be to an ``exact_settled`` closed form: far outside the
 # runs' own error (the parity tolerance is 1e-8) and far inside the gap to the other
 # branch (187.682 against 957.956).
@@ -991,6 +1019,18 @@ def _worker(spec: dict, q) -> None:
         # 4. Classify from per-engine status. The plain-English ``comment`` is the
         #    headline a reader sees; the raw engine error stays in ``exception`` as a
         #    secondary detail the matrix renders muted underneath.
+        refusal = expected_refusal(bngl_path.stem, bn_exc)
+        if refusal is not None:
+            # GH #1548: bngsim refusing this model by name is the verdict on its
+            # side, whatever run_network did.
+            res["status"] = "unsupported"
+            res["exception"] = bn_exc + (f" || {rn_exc}" if rn_exc else "")
+            res["comment"] = (
+                f"bngsim refuses this model by name, as it should ({refusal['issue']}): "
+                f"{refusal['reason']} → non-scoring."
+            )
+            q.put(res)
+            return
         if bn_exc or rn_exc:
             if bn_exc and rn_exc:
                 res["status"], res["exception"] = "bad_test", f"{rn_exc} || {bn_exc}"
@@ -1043,6 +1083,7 @@ _OUTCOME = {
     "exception": Outcome.EXCEPTION,
     "reference_failed": Outcome.REFERENCE_FAILED,
     "bad_test": Outcome.BAD_TEST,
+    "unsupported": Outcome.UNSUPPORTED,
     "skip": Outcome.SKIP,
     "timeout": Outcome.TIMEOUT,
     "dead": Outcome.EXCEPTION,
