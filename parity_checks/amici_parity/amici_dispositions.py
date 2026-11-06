@@ -236,6 +236,68 @@ INVALID_REFERENCE: dict[str, dict] = {
             "loud caveat. The finite-difference agreement above is what stands."
         ),
     },
+    # BIOMD0000000285:ode — issue #1542. The row went PASS -> DIFF when #1150 made
+    # bngsim fire a trigger that leaves its threshold at the start (the
+    # maintainer's decision on #934, replacing #340's rule). Before that, bngsim
+    # and AMICI both left these two events unfired and agreed. RoadRunner's
+    # CVODE fires them, which is the #1153 flip on the nightly.
+    #
+    # What this entry costs: while it stands, the AMICI row checks little on
+    # this model. Its max_rel is 1.0, the metric's ceiling, and the DRIFTED guard
+    # (a factor of 2 either way) trips only below 0.5. Emulated by raising
+    # bngsim's trigger threshold, a fire at t ~ 3.7 of 10 (threshold 3e-9) reads
+    # 0.634 and is absorbed; one at t ~ 6.7 (1e-8) reads 0.332 and shows DRIFTED.
+    # A bngsim that stopped firing would PASS, and the entry would show STALE.
+    # The check on bngsim here is rr_ode (PASS against RoadRunner on the
+    # nightly), whose verdict #1153 saw flip with the runner's CPU on RoadRunner
+    # 2.9.2.
+    #
+    # The `sens` row needs no entry. bngsim refuses sensitivities on this model
+    # (#1150's flat-start refusal), so it never gives a comparison. It scores
+    # EXCEPTION, not UNSUPPORTED, because the refusal reaches the runner as a
+    # SimulationError rather than a SensitivityUnsupportedError.
+    "BIOMD0000000285:ode": {
+        "issue": "GH #1542",
+        "max_rel": 1.0,
+        "reason": (
+            "At t = 0 AMICI reads a trigger whose residual is exactly 0 as true, "
+            "for > as well as >=. The model's two death events, PIcellDeath "
+            "(PIdeath > 0) and p38cellDeath (p38death > 0), each set kalive = 0, "
+            "which stops every reaction. PIdeath and p38death start at 0 with a "
+            "rate of exactly 0 and are positive from just after t = 0 (AMICI's "
+            "own p38death reads 2.25e-14 at t = 0.01). The file is SBML L2V4, "
+            "whose triggers read initialValue = true in libSBML and in AMICI's "
+            "importer. So to AMICI both triggers are true before t = 0 and at "
+            "it, CVODES sees no later sign change, and neither event fires: the "
+            "cell lives (NatP 19520.1, MisP 3.899 at t = 10). "
+            "Whether these events should fire is a reading of the SBML start "
+            "rule, which bngsim follows by the decision on #934 (#1150). L3V2 "
+            "section 3.4.8 computes the trigger at t = 0, false here; section "
+            "4.12.7 bars an initialValue = true trigger from turning true at "
+            "t = 0 but allows it at some t > 0, and bngsim reads these, false at "
+            "0 and true at every t > 0, as the latter. Section 4.12.2's 'true "
+            "both before and after t = 0' can be read the other way, under which "
+            "they never fire. RoadRunner's CVODE, the third engine, reads it as "
+            "bngsim does. At rtol/atol 1e-9/1e-12 and "
+            "1e-6/1e-9 bngsim and RoadRunner agree on all 27 species with 0 of "
+            "27027 cells failing (NatP 19500, MisP 0), and RoadRunner against "
+            "AMICI fails 11463/27027 cells (9909 hard), the same as bngsim "
+            "against AMICI. "
+            "AMICI's answer does not come from the other reading. With "
+            "initialValue = true, as here, it also misses a crossing every "
+            "reading fires: B > 0 with B held at 0 until t = 0.5 and rising "
+            "after. AMICI integrates B right (B(1) = 0.5) and never fires; "
+            "bngsim and RoadRunner fire just after 0.5. With "
+            "initialValue = false it fires, at t = 0 itself, three triggers that "
+            "are never true: B > 0 with B(0) = 0 and dB/dt = -1, B > 0 with B "
+            "held at 0, and B < 0 with B(0) = 0 and dB/dt = 1. RoadRunner and "
+            "bngsim fire none of them. On B > 0 with B(0) = 0 and dB/dt = c*t^(k-1) "
+            "(k = 1, 2; c = 1, 1e-10, 1e-14) AMICI fires none of 6 with "
+            "initialValue = true and all 6, at t = 0, with false; RoadRunner and "
+            "bngsim fire all 12, just after t = 0. So AMICI is not an oracle at a "
+            "trigger that starts on its threshold, whichever reading is right."
+        ),
+    },
 }
 
 

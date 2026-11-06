@@ -711,7 +711,7 @@ def _effectively_constant(model) -> set[str]:
     return {i for i in ids if i not in changed}
 
 
-def _mod_form(node, value_of):
+def _mod_form(node, value_of, literal_of=None):
     """``("rem", a, b, P)`` where ``node`` is a modulo of ``a*time + b`` by a
     constant P written out as ``x - P*floor(x/P)`` (or ``ceil``), or as the
     piecewise of the two that COPASI exports for ``%`` (libsbml prints it back as
@@ -721,7 +721,7 @@ def _mod_form(node, value_of):
     ty = node.getType()
     if ty == libsbml.AST_FUNCTION_PIECEWISE:
         n = node.getNumChildren()
-        forms = [_mod_form(node.getChild(i), value_of) for i in range(0, n, 2)]
+        forms = [_mod_form(node.getChild(i), value_of, literal_of) for i in range(0, n, 2)]
         if forms and forms[0] is not None and all(f == forms[0] for f in forms):
             return forms[0]
         return None
@@ -739,8 +739,11 @@ def _mod_form(node, value_of):
         q = f_node.getChild(0) if f_node.getNumChildren() == 1 else None
         if q is None or q.getType() != libsbml.AST_DIVIDE or q.getNumChildren() != 2:
             continue
-        arg, arg2 = _affine(x, value_of), _affine(q.getChild(0), value_of)
-        per, per2 = _affine(p_node, value_of), _affine(q.getChild(1), value_of)
+        arg, arg2 = _affine(x, value_of, literal_of), _affine(q.getChild(0), value_of, literal_of)
+        per, per2 = (
+            _affine(p_node, value_of, literal_of),
+            _affine(q.getChild(1), value_of, literal_of),
+        )
         if None in (arg, arg2, per, per2) or arg != arg2 or per != per2:
             continue
         if arg[0] == per[0] == "aff" and per[1] == 0.0 and per[2] != 0.0:
@@ -748,10 +751,13 @@ def _mod_form(node, value_of):
     return None
 
 
-def _affine(node, value_of):
+def _affine(node, value_of, literal_of=None):
     """``node`` as ``("aff", a, b)`` meaning ``a*time + b``, as ``("rem", a, b, P)``
     meaning ``rem(a*time + b, P)``, or None where it is neither (a species, a
-    parameter something changes, a function this does not read)."""
+    parameter something changes, a function this does not read).
+
+    A number written in the math is ``literal_of(node)`` when given (None for one
+    it cannot value), and its exact double otherwise."""
     import libsbml
 
     ty = node.getType()
@@ -759,7 +765,8 @@ def _affine(node, value_of):
     if ty == libsbml.AST_NAME_TIME:
         return ("aff", 1.0, 0.0)
     if ty in (libsbml.AST_INTEGER, libsbml.AST_REAL, libsbml.AST_REAL_E, libsbml.AST_RATIONAL):
-        return ("aff", 0.0, float(node.getValue()))
+        v = float(node.getValue()) if literal_of is None else literal_of(node)
+        return None if v is None else ("aff", 0.0, float(v))
     if ty == libsbml.AST_CONSTANT_PI:
         return ("aff", 0.0, float(np.pi))
     if ty == libsbml.AST_CONSTANT_E:
@@ -768,10 +775,10 @@ def _affine(node, value_of):
         v = value_of(node.getName())
         return None if v is None else ("aff", 0.0, float(v))
     if ty in (libsbml.AST_FUNCTION_PIECEWISE, libsbml.AST_MINUS):
-        mod = _mod_form(node, value_of)
+        mod = _mod_form(node, value_of, literal_of)
         if mod is not None:
             return mod
-    parts = [_affine(k, value_of) for k in kids]
+    parts = [_affine(k, value_of, literal_of) for k in kids]
     if any(x is None for x in parts):
         return None
     if ty == libsbml.AST_FUNCTION_REM and len(parts) == 2:
@@ -833,7 +840,9 @@ def _atom_instants(left, right, t_start: float, t_end: float) -> tuple[list[floa
     return [], []
 
 
-def event_instants(sbml: str, t_start: float, t_end: float, value_of=None) -> list[float]:
+def event_instants(
+    sbml: str, t_start: float, t_end: float, value_of=None, literal_of=None
+) -> list[float]:
     """Output times in (t_start, t_end] that let RoadRunner see the time-only
     comparisons of the event triggers it would otherwise skip:
 
@@ -855,6 +864,8 @@ def event_instants(sbml: str, t_start: float, t_end: float, value_of=None) -> li
     after the start, valued by ``value_of(id)`` (RoadRunner's value after the
     initial assignments; the SBML value when None). A comparison that reads a
     species, or anything else, gives no instants: RoadRunner finds those itself.
+    A number written in a trigger is its exact double, or ``literal_of(node)``
+    for an engine that reads numbers differently (AMICI, issue #1542).
     """
     import libsbml
 
@@ -897,7 +908,9 @@ def event_instants(sbml: str, t_start: float, t_end: float, value_of=None) -> li
     def walk(node):
         ty = node.getType()
         if ty in relational:
-            sides = [_affine(node.getChild(i), known) for i in range(node.getNumChildren())]
+            sides = [
+                _affine(node.getChild(i), known, literal_of) for i in range(node.getNumChildren())
+            ]
             for left, right in zip(sides, sides[1:], strict=False):
                 levels, wraps = _atom_instants(left, right, t_start, t_end)
                 if ty in equality:

@@ -490,8 +490,125 @@ def _build_model(sbml_str: str):
     )
 
 
+def amici_value_of(model, sbml_str: str):
+    """``value_of(id)`` for :func:`rr_parity._rr_common.event_instants`, read from
+    AMICI's built ``model``: the value AMICI integrates with, as ``rr.getValue`` is
+    for RoadRunner.
+
+    A parameter's AMICI value is taken after its ``<initialAssignment>`` (AMICI
+    evaluates it at import). AMICI renames an id that collides with its own
+    symbols (``p`` is its parameter vector), so ``p`` is found as ``amici_p``;
+    that rename is read only when the SBML has no ``amici_p`` of its own, the
+    same no-guessing rule as :func:`normalize_amici_names`. An id AMICI keeps no
+    parameter for (it folds a constant compartment into its expressions) is
+    valued from the SBML when nothing assigns it at the start, and is None
+    otherwise, so its comparison gives no instant rather than a wrong one.
+    ``event_instants`` already limits the ids it asks about to ones no rule or
+    event changes.
+    """
+    import libsbml
+
+    values: dict[str, float] = {}
+    for ids, vals in (
+        (model.get_free_parameter_ids(), model.get_unscaled_parameters()),
+        (model.get_fixed_parameter_ids(), model.get_fixed_parameters()),
+    ):
+        values.update(zip(ids, (float(v) for v in vals), strict=True))
+    doc = libsbml.readSBMLFromString(sbml_str)
+    sbml = doc.getModel()
+    sbml_ids = set() if sbml is None else {e.getId() for e in doc.getListOfAllElements()}
+
+    def value_of(i: str) -> float | None:
+        if i in values:
+            return values[i]
+        renamed = AMICI_ID_PREFIX + i
+        if renamed in values and renamed not in sbml_ids:
+            return values[renamed]
+        if sbml is None or sbml.getInitialAssignmentBySymbol(i) is not None:
+            return None
+        par = sbml.getParameter(i)
+        if par is not None:
+            return par.getValue() if par.isSetValue() else None
+        comp = sbml.getCompartment(i)
+        return comp.getSize() if comp is not None and comp.isSetSize() else None
+
+    return value_of
+
+
+def amici_literal_of(sbml_str: str):
+    """``literal_of(node)`` for :func:`rr_parity._rr_common.event_instants`: a
+    number written in a trigger, as AMICI reads it.
+
+    AMICI does not read the double libSBML holds. It writes the math back out with
+    libSBML's MathML writer, which prints at most 15 significant digits, and
+    parses that with sbmlmath, which rebuilds an e-notation number as mantissa
+    times a power of ten. So ``0.33333333333333331`` reaches AMICI as
+    ``0.333333333333333``, and an instant at the exact double is not where AMICI's
+    trigger is 0. The same two steps, on the one number, give AMICI's value. None
+    where they fail, so that comparison gives no instant.
+    """
+    import libsbml
+    from sbmlmath import SBMLMathMLParser
+
+    doc = libsbml.readSBMLFromString(sbml_str)
+    namespaces = libsbml.SBMLNamespaces(doc.getLevel(), doc.getVersion())
+    parser = SBMLMathMLParser(
+        sbml_level=doc.getLevel(),
+        sbml_version=doc.getVersion(),
+        ignore_units=True,
+        evaluate=True,
+    )
+
+    def literal_of(node) -> float | None:
+        try:
+            mathml = libsbml.writeMathMLWithNamespaceToString(node, namespaces)
+            return float(parser.parse_str(mathml))
+        except Exception:
+            return None
+
+    return literal_of
+
+
+# An instant closer than this times max(1, |t|) to another output time is left
+# out. AMICI sets CVODES' stop time at every output time; an event fired at one,
+# with the next a few to a few hundred ulps on, can stop CVODES at once, and AMICI
+# then fails the run (status -99; a parameter 6 ulps below the grid time 0.3 does
+# this, while `time == 0.3` beside the grid's 0.30000000000000004 runs and fires).
+# An instant that close to a grid time is not AMICI's either side of it, so it was
+# missed on the grid alone and is missed still; leaving it out keeps the run as it
+# was without instants. The guard does not know AMICI's own fixed trigger times
+# (from `time >= c` events), so an equality computed a few ulps from one of those
+# is not caught; no corpus job has one (the closest output times in the corpus
+# are about 4.5e6 ulps apart).
+_INSTANT_SEPARATION = 1e-12
+
+
+def with_event_instants(grid: np.ndarray, instants) -> np.ndarray:
+    """``grid`` with the ``instants`` that are not within
+    ``_INSTANT_SEPARATION`` of a grid time or of an instant kept before them,
+    sorted. The grid itself is always kept."""
+    times = [float(t) for t in grid]
+    kept: list[float] = []
+    for t in sorted(instants):
+        sep = _INSTANT_SEPARATION * max(1.0, abs(t))
+        i = int(np.searchsorted(grid, t))
+        near = [grid[j] for j in (i - 1, i) if 0 <= j < len(grid)]
+        if kept:
+            near.append(kept[-1])
+        if all(abs(t - u) > sep for u in near):
+            kept.append(t)
+    return np.array(sorted(times + kept), dtype=float)
+
+
 def amici_ode(
-    xml: str, t_start: float, t_end: float, n_points: int, rtol: float, atol: float
+    xml: str,
+    t_start: float,
+    t_end: float,
+    n_points: int,
+    rtol: float,
+    atol: float,
+    *,
+    through_event_instants: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, list[str], dict]:
     """One AMICI CVODES run. Returns ``(time, values[n_time, n_sp], names, timing)``,
     the same signature as ``rr_ode``/``bn_ode`` so the shared comparison path is
@@ -507,6 +624,29 @@ def amici_ode(
     grid ``bn_ode`` samples (verified bit-identical in the smoke test), so the
     parity comparison's time-grid check passes.
 
+    With ``through_event_instants`` AMICI is also given output times at the
+    instants ``_rr_common.event_instants`` finds, with parameters and
+    compartments valued by :func:`amici_value_of` and written numbers by
+    :func:`amici_literal_of`, and only the job-grid rows are returned (issue
+    #1542). AMICI rewrites ``time == c`` as ``(time >= c) && (time <= c)``, whose
+    trigger function ``min(t - c, c - t)`` touches 0 at c without changing sign.
+    CVODES reports it only when a step ends exactly on c, and AMICI stops a step
+    there only at an output time (or at another event's fixed trigger time, such
+    as a ``time >= c`` beside it), so on a grid with no sample at c the event is
+    skipped — RoadRunner's miss too, which #1024 gave rr_ode the same remedy
+    for. bngsim fires it wherever c falls (#1015). The samples just after an
+    inequality's boundary, which ``event_instants`` adds for RoadRunner's narrow
+    windows, let AMICI see a window narrower than its step in the same way.
+
+    Two shapes are not helped, and stay as they were on the grid alone: ``!=``
+    (AMICI's ``|t - c|`` leaves 0 without a sign change, so no output time makes
+    it fire), and an equality whose residual AMICI does not compute as exactly 0
+    at the instant (``time - 0.1 == 0.2``: Python's ``0.1 + 0.2`` is not where
+    AMICI's ``t - 0.1 - 0.2`` vanishes). An instant within
+    ``_INSTANT_SEPARATION`` of another output time is left out (see there). A
+    model whose triggers give no instants runs exactly as without it. The timing
+    dict records ``event_instants``, how many output times were added.
+
     A non-success ``rdata.status`` (CVODES failure, e.g. too-much-work) raises so
     the worker classifies it as a reference failure rather than silently comparing
     a truncated trajectory.
@@ -514,8 +654,10 @@ def amici_ode(
     import amici.sim.sundials as ss
 
     # 1. File I/O (if xml is a path) — isolated from build time, as in rr_ode.
+    # SBML text can be longer than a file name may be, which Path.exists() raises
+    # on, so text is recognized first, as rr_ode does.
     t0 = time.perf_counter()
-    if Path(xml).exists():
+    if not str(xml).lstrip().startswith("<") and Path(xml).exists():
         sbml_str = Path(xml).read_text()
         io_sec = time.perf_counter() - t0
     else:
@@ -546,7 +688,16 @@ def amici_ode(
     # rtol/atol tighten. 21 of the 1323 corpus models have t_start != 0.
     model.set_t0(t_start)
     ts = np.linspace(t_start, t_end, n_points)
-    model.set_timepoints(ts)
+    run_ts = ts
+    if through_event_instants:
+        instants = _rc.event_instants(
+            sbml_str, t_start, t_end, amici_value_of(model, sbml_str), amici_literal_of(sbml_str)
+        )
+        run_ts = with_event_instants(ts, instants)
+    n_added = len(run_ts) - len(ts)
+    if not n_added:
+        run_ts = ts
+    model.set_timepoints(run_ts)
 
     # 4. Integration (cold + warm), the shared recipe. AMICI's simulate() is
     # stateless — each call re-integrates from the initial state — so no reset() is
@@ -612,6 +763,7 @@ def amici_ode(
         # Cross-check / renderer fallback: the full build cost when a consumer wants a
         # single number (parse+interpret+jac+codegen+compile+load).
         "parse_interpret_codegen_sec": round(build_total, 6),
+        "event_instants": n_added,
         "config": {
             # AMICI generates per-model C++ and compiles it to a shared library.
             "codegen": "C++ (compiled)",
@@ -627,6 +779,11 @@ def amici_ode(
 
     names = list(rdata.state_ids)
     x = np.asarray(rdata.x, dtype=float)
+    if n_added:
+        rows = np.searchsorted(run_ts, ts)
+        if rows.max() >= len(run_ts) or not np.array_equal(run_ts[rows], ts):
+            raise RuntimeError("AMICI's output times do not contain the job grid")
+        x = x[rows]
     return np.asarray(ts, dtype=float), x, names, timing
 
 

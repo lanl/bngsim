@@ -203,6 +203,58 @@ and the trajectory moves. A 2% runtime write reproduces all five reported number
 within 5% and in the right proportions. That is the mechanism, not a confirmed
 reconstruction — the exact recipe was not recovered, and nothing above depends on it.
 
+## Class 5 — events AMICI does not fire (issue #1542)
+
+Five rows that passed against bngsim 0.15.1 read `DIFF` against 0.17.0. bngsim had
+been skipping the same events AMICI skips, so the two agreed. bngsim began firing
+them (#1015, #1150). RoadRunner fires them too: its CVODE on BIOMD0000000285, and,
+on the other four, RoadRunner run through the event instants, as `rr_run.py` has
+done since #1024. On all five, bngsim and RoadRunner agree with 0 failing cells, and
+AMICI is the engine out.
+
+| model | trigger AMICI misses | remedy | row now |
+|---|---|---|---|
+| BIOMD0000000816, 817 | `time == 2`, `time == 4` (virus doses) | run AMICI through the instants | PASS, 0/6006 |
+| BIOMD0000000928 | `time == 20` (tenfold dilution) | run AMICI through the instants | PASS, 0/1544 |
+| BIOMD0000001059 | `time == 2000` (SMAC release) | run AMICI through the instants | PASS, 0/10010 |
+| BIOMD0000000285 | `PIdeath > 0`, `p38death > 0`, both 0 at the start | `INVALID_REFERENCE` disposition | REFERENCE_FAILED |
+
+**`time == c` between output samples.** AMICI rewrites `==` as `>=` and `<=`, whose
+trigger function `min(t − c, c − t)` touches 0 at `c` without changing sign. CVODES
+reports it only when a step ends exactly on `c`, which AMICI arranges only at an
+output time (or at another event's fixed trigger time). RoadRunner misses it the
+same way on a grid with no sample at `c`, and the remedy is the same (#1024):
+`amici_run.py` now gives AMICI the instants as extra output times and compares the
+job grid. See the README's
+[event-instants section](README.md#amici-runs-through-the-event-instants-issue-1542),
+which also lists the shapes the instants cannot help.
+
+**A trigger whose residual is exactly 0 at the start.** AMICI reads it as true at
+t = 0, for `>` as well as `>=`. BIOMD0000000285 is SBML L2V4, whose triggers read
+`initialValue = true`, so to AMICI its death triggers are true before t = 0 and at
+it, and they never fire. The cell lives (NatP 19520.1 at t = 10). bngsim (since
+#1150, the decision on #934) and RoadRunner read the trigger as false at t = 0 and
+true just after, so both events fire and set `kalive = 0`, and the cell stays at its
+initial state (NatP 19500). RoadRunner fails 11463/27027 cells against AMICI, the
+same as bngsim does, and 0 against bngsim.
+
+That reading of the SBML start rule is a choice the project made, but AMICI's answer
+does not come from the other reading. With `initialValue = true`, as here, AMICI
+also misses a crossing that every reading fires: `B > 0` with `B` held at 0 until
+t = 0.5 and rising after. AMICI integrates `B` right (`B(1) = 0.5`) and never
+fires; bngsim and RoadRunner fire just after 0.5. With `initialValue = false` AMICI
+fires, at t = 0 itself, three triggers that are never true: `B > 0` with `B(0) = 0`
+falling, `B > 0` with `B` held at 0, and `B < 0` with `B(0) = 0` rising. RoadRunner
+and bngsim fire none of them. An output time cannot help, because the trigger reads a
+species, so the row is an `INVALID_REFERENCE` entry in `amici_dispositions.py`.
+While it stands, the AMICI row checks nothing on this model; rr_ode is the check.
+
+**Not in this class: MODEL1112050001**, the sixth model in #1542. It has no events.
+It passes against AMICI on x86-64 (0/2929 cells, err/movement 2.8e-9), so the
+`DIFF` #1542 measured on an Apple M1 Max (676/2929 cells) is not reproduced here. At
+the suite's rtol 1e-9 / atol 1e-12 both engines integrate it at the edge of a wall:
+with atol 0.95e-12, or rtol 1e-10, both fail near t = 3.3e-7 to 5.6e-7.
+
 ## Bottom line
 
 AMICI passes ~79% of the SBML ODE corpus. Where it fails it is an **AMICI**
