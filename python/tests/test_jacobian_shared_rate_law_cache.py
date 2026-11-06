@@ -26,6 +26,7 @@ reaction-specific; the signature test below fails first.
 from __future__ import annotations
 
 import inspect
+import re
 import time
 from pathlib import Path
 
@@ -328,10 +329,12 @@ def test_a_shared_rate_law_that_declines_still_says_why(tmp_path, monkeypatch):
 def test_the_compiled_jacobian_derives_each_rate_law_once_and_places_it_everywhere(
     kind, tmp_path, monkeypatch
 ):
-    """Once per distinct law and path. Every per-observable reaction's C group
-    carries its law's derivatives; a per-species law's derivatives sit in one group
-    per column, headed by its first carrier, which scatters into every carrier's
-    rows (issue #1551; the values are pinned in test_jacobian_shared_rate_law_emit)."""
+    """Once per distinct law and path, and every reaction's law derivatives are
+    in the source: in its own group on the per-observable path, and on the
+    per-species path in the group of each column headed by its law's first
+    carrier. That a per-species law is printed only once, and that its groups
+    scatter into every carrier's rows, is pinned in
+    test_jacobian_shared_rate_law_emit (issue #1551)."""
     _clear_env(monkeypatch)
     m = _load(kind, tmp_path)
     assert m.prepare_analytical_jacobian() is True
@@ -358,11 +361,10 @@ def test_the_compiled_jacobian_derives_each_rate_law_once_and_places_it_everywhe
             (terms,) = per_species[law]
             first = first_carrier.setdefault(law, idx)
             for col, c in terms:
-                block = src.split(f"/* per-species rxn {first} col {col}", 1)[1]
-                assert block.split("\n", 2)[1].strip() == f"double dj = {c};", (idx, col)
-    for law, first in first_carrier.items():
-        for col, _c in per_species[law][0]:
-            assert src.count(f"/* per-species rxn {first} col {col}") == 1, (law, col)
+                (block,) = re.findall(
+                    rf"/\* per-species rxn {first} col {col}(?: \*/|, and )[^\n]*\n([^\n]*)", src
+                )
+                assert block.strip() == f"double dj = {c};", (idx, col)
 
 
 # ─── The invariant the caches rest on ────────────────────────────────────────

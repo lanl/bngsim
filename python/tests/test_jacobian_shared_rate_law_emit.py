@@ -17,9 +17,12 @@ What is pinned here:
   them per carrier. A law with one carrier keeps the group it always had.
 * **Placed everywhere.** The compiled Jacobian, dense and sparse, flat and
   chunked, matches the interpreted assembly (``_dense_analytical_jacobian``, the
-  FD-self-checked oracle) and a finite difference. The fixtures interleave
-  carriers with reactions of other laws that write the same entries, which is
-  where the merged scatter sums in a different order than the interpreted one.
+  FD-self-checked oracle) and a finite difference, so a term scattered into the
+  wrong row, or not at all, fails. In the ``.net`` fixture a source of another
+  law sits between two carriers and writes the entry (A, C) they also write, so
+  that entry sums in a different order than the interpreted assembly does. With
+  two terms the order cannot change the rounding, so no fixture here observes a
+  reordering effect; the tolerance is what would absorb one.
 * **The sensitivity RHS's ``J·v``,** the other consumer of the same groups,
   still equals the compiled ``J`` times ``v``.
 
@@ -282,15 +285,17 @@ def _call_jac(core, so, symbol: str, y: np.ndarray, size: int) -> np.ndarray:
     return np.array(out, dtype=float)
 
 
-def _compiled(m: bngsim.Model):
+def _compiled(m: bngsim.Model, src: str | None = None):
     """The compiled Jacobian as a function of the state returning J[row][col],
-    whichever symbol the model got."""
+    whichever symbol the model got. ``src`` is the model's Jacobian source, if
+    the caller already generated it."""
     core = m._core
     so = cg.prepare_model_codegen(m)
     assert so is not None
     ns = core.n_species
     plan = core.codegen_jacobian_plan()
-    src = cg.generate_jacobian_from_model(m) or ""
+    if src is None:
+        src = cg.generate_jacobian_from_model(m) or ""
     if "bngsim_codegen_jac_sparse" in src:
         cp, ri = plan["col_ptrs"], plan["row_indices"]
 
@@ -357,6 +362,8 @@ def test_the_biomass_fixture_matches_the_interpreted_jacobian(monkeypatch, chunk
     _clear_env(monkeypatch)
     monkeypatch.setenv("BNGSIM_CODEGEN_CHUNK", chunk)
     m = _sbml_model(_sbml_biomass(8))
+    src = cg.generate_jacobian_from_model(m)
+    assert src is not None and "carrying its rate law" in src
     _assert_compiled_matches(m, 8)
 
 
@@ -455,7 +462,7 @@ def test_biomd469_prints_its_biomass_law_once_and_compiles_a_correct_jacobian(mo
     for idx in carriers[1:]:
         assert f"/* per-species rxn {idx} col " not in src
     y = np.asarray(m._core.get_initial_state(), dtype=float)
-    comp = _compiled(m)(y)
+    comp = _compiled(m, src)(y)
     interp = _interpreted(m, y)
     assert np.count_nonzero(interp) > 0
     scale = np.maximum(np.maximum(np.abs(comp), np.abs(interp)), 1e-9)
