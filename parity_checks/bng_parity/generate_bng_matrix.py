@@ -39,6 +39,12 @@ def classify_row(outcome: str, subclass: str | None = None) -> tuple[str, str]:
     # renders KNOWN ARTIFACT, non-scoring, not a bngsim bug.
     if outcome == "DIFF" and subclass == "known_artifact":
         return "status-known", "KNOWN ARTIFACT"
+    # GH #1548: a DIFF tagged ``subclass="ref_bscb"`` is run_network leaving the
+    # model's exact solution, which bngsim's run was checked against and keeps — a
+    # difference explained away from bngsim, TRIAGED as KNOWN REF (non-scoring), as
+    # the stochastic matrix renders it.
+    if outcome == "DIFF" and subclass == "ref_bscb":
+        return "status-triaged", "KNOWN REF"
     if outcome == "PASS":
         return "status-passed", "PASSED"
     if outcome in ("DIFF", "TIMEOUT"):
@@ -48,13 +54,17 @@ def classify_row(outcome: str, subclass: str | None = None) -> tuple[str, str]:
     return "status-refused", "REFUSED"  # BAD_TEST / SKIP
 
 
-def verdict_badge(outcome: str, engine: str) -> tuple[str, str]:
+def verdict_badge(outcome: str, engine: str, subclass: str | None = None) -> tuple[str, str]:
     """(text, css) for the verdict badge inside one engine's cell.
 
     engine is "bngsim" or "run_network". The legacy run_network is the existence
     proof, so EXCEPTION (bngsim raised) shows run_network PASS, and
-    REFERENCE_FAILED (run_network raised) shows bngsim PASS.
+    REFERENCE_FAILED (run_network raised) shows bngsim PASS. A ``ref_bscb`` DIFF
+    (GH #1548: run_network left the exact solution bngsim's run was checked
+    against) shows bngsim PASS · run_network KNOWN REF.
     """
+    if outcome == "DIFF" and subclass == "ref_bscb":
+        return ("PASS", "verdict-pass") if engine == "bngsim" else ("KNOWN REF", "verdict-known")
     if outcome == "PASS":
         return "PASS", "verdict-pass"
     if outcome == "DIFF":
@@ -236,11 +246,11 @@ def _bn_total_sec(t: dict | None) -> float | None:
     return (t.get("load_sec") or 0) + (t.get("jac_derive_sec") or 0) + (t.get("codegen_sec") or 0)
 
 
-def render_bngsim_cell(outcome: str, timing: dict) -> str:
+def render_bngsim_cell(outcome: str, timing: dict, subclass: str | None = None) -> str:
     """Config + verdict + the BNGsim timing tiers (build · integration)."""
     bn = timing.get("bngsim") or {}
     cfg = bn.get("config", {})
-    badge_text, badge_css = verdict_badge(outcome, "bngsim")
+    badge_text, badge_css = verdict_badge(outcome, "bngsim", subclass)
     has = bool(bn)
     mode = (timing.get("spec") or {}).get("mode")
 
@@ -320,12 +330,12 @@ def render_bngsim_cell(outcome: str, timing: dict) -> str:
     return "".join(parts)
 
 
-def render_run_network_cell(outcome: str, timing: dict) -> str:
+def render_run_network_cell(outcome: str, timing: dict, subclass: str | None = None) -> str:
     """Config + verdict + the run_network timing tiers (per-call only — each
     invocation is a fresh process, no warm-solver reuse)."""
     rn = timing.get("run_network") or {}
     cfg = rn.get("config", {})
-    badge_text, badge_css = verdict_badge(outcome, "run_network")
+    badge_text, badge_css = verdict_badge(outcome, "run_network", subclass)
     has = bool(rn)
     mode = (timing.get("spec") or {}).get("mode")
 
@@ -765,7 +775,7 @@ def _legend() -> str:
             <div class="legend-item"><div class="legend-color" style="background:#28a745"></div><div class="legend-desc"><b>PASSED</b> — both engines ran and agreed within the oracle tolerance.</div></div>
             <div class="legend-item"><div class="legend-color" style="background:#dc3545"></div><div class="legend-desc"><b>FAILED</b> — DIFF (exceeds tolerance) or TIMEOUT.</div></div>
             <div class="legend-item"><div class="legend-color" style="background:#17a2b8"></div><div class="legend-desc"><b>KNOWN ARTIFACT</b> — a DIFF that is a documented comparison artifact within a recorded magnitude bound (integrator phase-wander, staircase knife-edge sampled on a discontinuity, or a reference-side tolerance tail), not a bngsim defect (GH #69). Non-scoring — excluded from FAILED.</div></div>
-            <div class="legend-item"><div class="legend-color" style="background:#ffc107"></div><div class="legend-desc"><b>TRIAGED</b> — EXCEPTION (bngsim raised, run_network ran: actionable bngsim bug) or REFERENCE_FAILED (bngsim ran, run_network raised: no oracle).</div></div>
+            <div class="legend-item"><div class="legend-color" style="background:#ffc107"></div><div class="legend-desc"><b>TRIAGED</b> — EXCEPTION (bngsim raised, run_network ran: actionable bngsim bug), REFERENCE_FAILED (bngsim ran, run_network raised: no oracle), or KNOWN REF (a DIFF where run_network leaves the model's exact solution and bngsim's run, checked against it on every run, keeps it; GH #1548). None scores against bngsim.</div></div>
             <div class="legend-item"><div class="legend-color" style="background:#6c757d"></div><div class="legend-desc"><b>REFUSED</b> — BAD_TEST (netgen failed / both raised) or SKIP (no resolvable ODE horizon).</div></div>
         </div>
         <h3 style="margin-top:18px">Timing tiers — ENGINE vs WORKFLOW</h3>
@@ -821,9 +831,13 @@ def generate_html(report_path: Path, output_path: Path) -> None:
     known_n = sum(
         1 for r in results if r.get("outcome") == "DIFF" and r.get("subclass") == "known_artifact"
     )
+    # GH #1548: a KNOWN REF DIFF is triaged away from bngsim, not FAILED.
+    known_ref_n = sum(
+        1 for r in results if r.get("outcome") == "DIFF" and r.get("subclass") == "ref_bscb"
+    )
     pass_n = tally.get("PASS", 0)
-    fail_n = tally.get("DIFF", 0) + tally.get("TIMEOUT", 0) - known_n
-    triaged_n = tally.get("EXCEPTION", 0) + tally.get("REFERENCE_FAILED", 0)
+    fail_n = tally.get("DIFF", 0) + tally.get("TIMEOUT", 0) - known_n - known_ref_n
+    triaged_n = tally.get("EXCEPTION", 0) + tally.get("REFERENCE_FAILED", 0) + known_ref_n
     refused_n = tally.get("BAD_TEST", 0) + tally.get("SKIP", 0)
 
     rows_html = []
@@ -872,8 +886,8 @@ def generate_html(report_path: Path, output_path: Path) -> None:
             f"{comment_html}"
         )
 
-        bn_cell = render_bngsim_cell(outcome, timing)
-        rn_cell = render_run_network_cell(outcome, timing)
+        bn_cell = render_bngsim_cell(outcome, timing, r.get("subclass"))
+        rn_cell = render_run_network_cell(outcome, timing, r.get("subclass"))
         # data-* for client-side sorting (WORKFLOW = warm vs per-call wall; ENGINE =
         # warm vs run_network's self-reported propagation CPU).
         bnw = _bn_warm(timing) or 0
