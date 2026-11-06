@@ -18,6 +18,7 @@ Hierarchy::
     ├── SensitivityUnsupportedError — construct forward sensitivity can't
     │                           differentiate (also a ValueError)
     ├── CodegenDeclinedError  — codegen=True on a model codegen declines
+    ├── CodegenToolchainError — the C toolchain cannot build any codegen library
     └── StopConditionMet      — stop condition triggered (carries partial result)
 """
 
@@ -214,6 +215,27 @@ class CodegenDeclinedError(BngsimError):
     Unrelated to ``bngsim._codegen.CodegenDeclined``, the emitter's private
     signal to decline, which the prepare calls turn into a ``None`` return; this
     is what a caller who asked for compiled code is told.
+    """
+
+
+class CodegenToolchainError(BngsimError):
+    """The C toolchain cannot build a codegen library for any model (issue #1544).
+
+    Raised when a codegen compile has failed and the same command fails on a
+    trivial source too, or when the compiler is not there at all: the failure is
+    the environment's (a linker that cannot read the SDK's ``libSystem.tbd``, a
+    missing compiler), not the model's. The message names the compiler, the
+    linker and, on macOS, the SDK, and suggests an installed SDK that links when
+    one does.
+
+    The verdict holds while the compiler and its environment stay as they are
+    (it is probed again every 5 minutes), so a later build is refused without
+    compiling, and before its source is generated (a model codegen would have
+    declined is refused with this too); a library already in the cache is still
+    used. ``codegen=True``, forward sensitivities and, under
+    ``BNGSIM_CODEGEN_STRICT``, automatic codegen raise it, each in its own words.
+    A ``RuntimeError`` (through :class:`BngsimError`), as a build failure was
+    raised before it had a type.
     """
 
 

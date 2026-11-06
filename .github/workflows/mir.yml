@@ -256,6 +256,7 @@ jobs:
           # not-run: test_codegen_gen_scaling.py -- source *generation* scaling; identical Python before either backend is chosen
           # not-run: test_codegen_key_stream.py -- the core's key bytes against the Python walk; made before either backend is chosen
           # not-run: test_codegen_jacobian_sparse.py -- the sparse Jacobian entry point is KLU-gated and this leg builds ENABLE_KLU=OFF
+          # not-run: test_codegen_toolchain_verdict.py -- (b) the cc toolchain's probe and verdict (issue #1544); it unsets BNGSIM_CODEGEN_JIT, so this leg would re-run the cc path verbatim
           python -m pytest -p no:cacheprovider \
             python/tests/test_mir_equivalence.py \
             python/tests/test_mir_vendoring.py \
