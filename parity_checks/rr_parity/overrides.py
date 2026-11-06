@@ -483,20 +483,30 @@ NO_ORACLE_ADJUDICATED: dict[str, dict] = {
     # RR CVODE CV_TOO_MUCH_WORK + COPASI failed; pure rate-rule ODE system on 5
     # parameters (no reactions); independent scipy LSODA/BDF reproduce to
     # max_rel=0 (peak-rel ~1e-8); verdict confirm — bngsim confirmed.
+    # MODEL1112050001:ode — re-adjudicated by GH #1542 from "confirm". The earlier
+    # entry cited "GH #117", which on lanl/bngsim is an unrelated issue. Its reason
+    # said scipy BDF "leaps" the stiffness wall near t = 3.36e-7 and took that as
+    # proof the wall is not a pole. The model does overflow there (x13/x14, below),
+    # so a run that continues past it is not following the solution. The AMICI
+    # suite records the same finding as a NO_GROUND_TRUTH disposition.
     "MODEL1112050001:ode": {
-        "verdict": "confirm",
-        "issue": "GH #117",
+        "verdict": "uncoverable",
+        "issue": "GH #1542",
         "reason": (
-            "Liu2009_GlucoseMobilization, 28 rate-rule species; bngsim integrates "
-            "to ±1e15 but is CORRECT: bngsim, RoadRunner and scipy all agree "
-            "max_rel=0 for t<=3e-7. Stiffness wall at t~3.36e-7 (same SUNDIALS "
-            "CVODE as RR, t+h=t step underflow; bngsim continues, RR aborts "
-            "CV_TOO_MUCH_WORK). Not a pole: scipy BDF leaps it (max_rel=0 to "
-            "t=1.0) and reproduces the blow-up scale to t=100 (bngsim 6.79e15 vs "
-            "BDF 6.77e15). Past t~10 the system is exponentially ill-conditioned "
-            "(~e^{135t}) so two correct solvers diverge on fine structure while "
-            "agreeing on scale — intrinsic to the model on the invented t_end=100, "
-            "not a bngsim defect. bngsim confirmed where verifiable."
+            "Liu2009_GlucoseMobilization, 28 rate-rule species, has no solution in "
+            "double precision on the invented t_end=100. x8's rate rule drains it at "
+            "the constant k6*PTP*k8 (k8 = 7.06e12; it reads like a typo for x8), so "
+            "x4+x5 = -3.42e8*t^2 early, and x9' = k22*PTP*x10 - k7*x9*(x4+x5)/IRp "
+            "(IRp = 8.97e-13) grows x9 as 1e-12*exp(5.29e20*t^3), which scipy DOP853 "
+            "on the SBML text reproduces at t=1e-7. k9 reads x12/PI3K with PI3K = "
+            "5e-15 and x12 follows -x9, so x13 and x14 reach -/+2.6e10 by "
+            "t=3.363e-7 (scipy BDF; bngsim at atol 1e-24 agrees) and grow "
+            "super-exponentially: RoadRunner's CV_TOO_MUCH_WORK at t~3.36e-7 is "
+            "that. At the sweep's atol of 1e-12, x9 starts at the tolerance, so "
+            "bngsim (like AMICI) holds it on its repelling equilibrium and runs on "
+            "to t=100 along a trajectory that is not a solution. The earlier "
+            "adjudication confirmed bngsim on that trajectory; nothing past "
+            "t~3.36e-7 can be confirmed."
         ),
     },
     "MODEL2001200002:ode": {
