@@ -539,6 +539,169 @@ static bool test_system_destruction(const string &xml_path) {
     return true;
 }
 
+// ─── Test 11: a bond partner of another molecule type (#1543) ───────────────
+//
+// Five fixtures. Four negative, one per site where a component index belonging
+// to the PARTNER TEMPLATE's molecule type is applied to the bound molecule
+// before anything has checked that the molecule is of that type; and one
+// positive, which pins the shape of the checkSymmetricComponents guard.
+//
+// What each negative fixture needs in order to reach its site, measured rather
+// than assumed -- the symmetric component must be off the reaction centre,
+// because on it NFinput resolves one to a concrete symPermutationName:
+//
+//   fixture        site                              symmetric component
+//   bond           checkBonds, normal                none
+//   cb_symmetric   checkBonds, tryToMap              partner side
+//   csc_symmetric  checkSymmetricComponents, tryToMap  both sides
+//   csc_normal     checkSymmetricComponents, normal  own side (partner index
+//                                                    concrete)
+//
+// Both checkSymmetricComponents sites need own-side symmetry because that
+// function's loop runs over the matched template's own symmetric components, so
+// it is not entered at all without one. A 54-model corpus sweep reaches only
+// the first fixture's site, which is a property of that corpus and not evidence
+// the others cannot happen.
+//
+// The four negatives are CONTROLS in an ordinary build, deliberately: whatever
+// the stray read returns, the match is rejected a few lines later, so their
+// counts hold on the unfixed engine too and they pass there. Their detector is
+// the nightly AddressSanitizer job (.github/workflows/sanitizers.yml), which
+// runs this binary; on the unfixed engine each reports
+//
+//   ERROR: AddressSanitizer: heap-buffer-overflow / READ of size 8
+//
+// in checkBonds, tryToMap, tryToMap and checkSymmetricComponents respectively,
+// and all five fixtures are clean with the guards in place. That job does not
+// run on an ordinary pull request (its pull_request trigger is restricted to
+// its own path), so dispatch it on a branch that touches this engine.
+//
+// The positive fixture is the exception: it asserts a result, fails in an
+// ordinary build if the csc guard returns instead of continuing, and is the
+// only thing here holding that choice.
+namespace {
+struct PartnerTypeCase {
+    const char *xml;    // fixture under tests/data/nfsim/
+    const char *site;   // what it exercises on the unfixed engine
+    const char *obs1;
+    const char *obs2;
+    int seed1;          // counts the seed state gives
+    int seed2;
+    int final1;         // counts after simulating; equal to the seed ones for
+    int final2;         // the four negative fixtures, different for the positive
+    double t_end;       // long enough that the positive row's conversion is
+                        // complete for any seed: at k=1, exp(-30) per molecule
+};
+const PartnerTypeCase kPartnerTypeCases[] = {
+    // Negative: no match exists, so nothing moves. One per site at which a
+    // partner-template component index is applied to the bound molecule.
+    {"partner_type_bond.xml", "checkBonds, normal branch",
+     "Abound", "Cfree", 100, 100, 100, 100, 10.0},
+    {"partner_type_cb_symmetric.xml", "checkBonds, symmetric branch (tryToMap)",
+     "Ap0", "Ap1", 100, 0, 100, 0, 10.0},
+    {"partner_type_csc_symmetric.xml", "checkSymmetricComponents, symmetric (tryToMap)",
+     "Ap0", "Ap1", 100, 0, 100, 0, 10.0},
+    {"partner_type_csc_normal.xml", "checkSymmetricComponents, normal branch",
+     "Ap0", "Ap1", 100, 0, 100, 0, 10.0},
+    // Positive, and the only row here that asserts a result rather than the
+    // absence of one. A's two symmetric s components are bonded to a wrong-typed
+    // B and to a matching C, so the rule MUST still match through the C bond.
+    // This is what makes the csc guard's `continue` load-bearing: `return false`
+    // there abandons the search over the rest of the equivalency class and loses
+    // this match (measured: Ap1 100 -> 0), which is why the guard cannot copy
+    // checkBonds' idiom.
+    {"partner_type_csc_positive.xml", "checkSymmetricComponents, match preserved",
+     "Ap0", "Ap1", 100, 0, 0, 100, 30.0},
+};
+}  // namespace
+
+static bool test_partner_type_sites(const string & /*xml_path*/) {
+    cout << "  Test 11: bond partner of another molecule type (#1543) ..." << endl;
+
+    bool ok = true;
+    for (const auto &tc : kPartnerTypeCases) {
+        cout << "    " << tc.site << " ... ";
+
+        // The configured data dir first: these fixtures are the only coverage the
+        // #1543 guards have, so a stray copy in a build tree must not win.
+        const string configured = string(NFSIM_TEST_DATA_DIR) + "/" + tc.xml;
+        const string relative = string("../../../tests/data/nfsim/") + tc.xml;
+        string xml;
+        for (const auto &c : {configured, relative}) {
+            if (file_exists(c)) {
+                xml = c;
+                break;
+            }
+        }
+        // Not SKIPPED: each fixture is committed beside this test, so its absence
+        // means the data dir is misconfigured or the file was lost -- and a skip
+        // would retire the only detector for this bug without anyone noticing.
+        if (xml.empty()) {
+            cout << "FAILED (" << tc.xml << " not found; tried " << configured
+                 << " and " << relative << ")" << endl;
+            ok = false;
+            continue;
+        }
+
+        NFutil::SEED_RANDOM(1);
+        int suggestedTraversalLimit = -1;
+        System *s = NFinput::initializeFromXML(
+            std::filesystem::absolute(xml).string(), false, 200000, false,
+            suggestedTraversalLimit, true, false);
+        if (s == nullptr) {
+            cout << "FAILED (initializeFromXML returned nullptr)" << endl;
+            ok = false;
+            continue;
+        }
+
+        s->registerOutputFileLocation("/dev/null");
+        s->outputAllObservableNames();
+        s->prepareForSimulation();
+
+        Observable *a = s->getObservableByName(tc.obs1);
+        Observable *b = s->getObservableByName(tc.obs2);
+        if (a == nullptr || b == nullptr) {
+            cout << "FAILED (observables " << tc.obs1 << "/" << tc.obs2
+                 << " not found)" << endl;
+            delete s;
+            ok = false;
+            continue;
+        }
+        if (a->getCount() != tc.seed1 || b->getCount() != tc.seed2) {
+            cout << "FAILED (seed counts are " << a->getCount() << "/"
+                 << b->getCount() << ", expected " << tc.seed1 << "/"
+                 << tc.seed2 << ")" << endl;
+            delete s;
+            ok = false;
+            continue;
+        }
+
+        const double finalTime = s->sim(tc.t_end, 10, false);
+        if (finalTime < 0.0) {
+            cout << "FAILED (sim returned negative time)" << endl;
+            delete s;
+            ok = false;
+            continue;
+        }
+
+        if (a->getCount() != tc.final1 || b->getCount() != tc.final2) {
+            cout << "FAILED (" << tc.obs1 << "=" << a->getCount() << " "
+                 << tc.obs2 << "=" << b->getCount() << " after simulating, expected "
+                 << tc.final1 << "/" << tc.final2 << ")" << endl;
+            delete s;
+            ok = false;
+            continue;
+        }
+
+        cout << "OK" << endl;
+        delete s;
+    }
+
+    if (ok)
+        cout << "  Test 11: four mismatched-partner sites rejected, one match preserved" << endl;
+    return ok;
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 int main(int argc, char *argv[]) {
     cout << "\n=== NFsim Library Integration Test (Phase C.5 Step 1) ===" << endl;
@@ -594,6 +757,7 @@ int main(int argc, char *argv[]) {
     run(test_tfun_parse_simulate);
     run(test_reserved_symbol_params);
     run(test_reserved_param_simulate);
+    run(test_partner_type_sites);
     run(test_system_destruction);
 
     cout << "\n=== Results: " << passed << " passed, " << failed << " failed ===" << endl;

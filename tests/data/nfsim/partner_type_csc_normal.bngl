@@ -1,0 +1,24 @@
+begin model
+begin parameters
+  k 1
+end parameters
+begin molecule types
+  A(s,s,p~0~1)
+  B(x)
+  C(x,y,z,w)
+end molecule types
+begin seed species
+  A(s!1,s,p~0).B(x!1) 100
+  C(x,y,z,w)          100
+end seed species
+begin observables
+  Molecules Ap1 A(p~1)
+  Molecules Ap0 A(p~0)
+end observables
+begin reaction rules
+  A(s!1,p~0).C(w!1) -> A(s!1,p~1).C(w!1) k
+end reaction rules
+end model
+begin actions
+writeXML()
+end actions
