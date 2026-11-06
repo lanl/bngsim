@@ -622,8 +622,8 @@ static void fill_with_rows_held_together(double *data, int n, int L, Held shape,
 // the solve of the rows past them on their own columns, which read the first L
 // columns only times 0. Solved by SUNDIALS' dense LU, on a matrix with no row
 // at 0 to leave a residue in.
-static int exact_past_zero(const std::vector<double> &A, const std::vector<double> &b, int n,
-                           int L, SUNContext ctx, std::vector<double> &x_exact) {
+static int exact_past_zero(const std::vector<double> &A, const std::vector<double> &b, int n, int L,
+                           SUNContext ctx, std::vector<double> &x_exact) {
     const int r = n - L;
     std::vector<double> Ar((long)r * r), br(b.begin() + L, b.end()), xr;
     for (int j = 0; j < r; ++j)
@@ -648,9 +648,8 @@ static double max_abs_diff(const std::vector<double> &a, const std::vector<doubl
 }
 
 // Solve with this solver and with SUNDIALS' own on the same matrix.
-static int solve_both(const std::vector<double> &A, const std::vector<double> &b, int n,
-                      bool blas, SUNContext ctx, std::vector<double> &x,
-                      std::vector<double> &x_stock) {
+static int solve_both(const std::vector<double> &A, const std::vector<double> &b, int n, bool blas,
+                      SUNContext ctx, std::vector<double> &x, std::vector<double> &x_stock) {
     ::setenv("BNGSIM_LAPACK_DENSE_K", "0", 1); // the BLAS arm factors with dgetrf
     ::setenv("BNGSIM_LAPACK_DENSE_MIN_N", "0", 1);
     bngsim::SUNMatrixGuard M(SUNDenseMatrix(n, n, ctx));
@@ -704,9 +703,9 @@ static int rows_held_together_read_exactly(bool blas) {
                     const double scale = 1.0 + max_abs_diff(x_exact, std::vector<double>(n), 0);
                     // dgetrf's components are as far from it as SUNDIALS' are, about
                     // 1e-9 here, one or the other ahead trial by trial.
-                    const double bound = blas ? 1e-8 * scale
-                                              : std::max(2.0 * max_abs_diff(x_stock, x_exact, L),
-                                                         1e-12 * scale);
+                    const double bound =
+                        blas ? 1e-8 * scale
+                             : std::max(2.0 * max_abs_diff(x_stock, x_exact, L), 1e-12 * scale);
                     CHECK(max_abs_diff(x, x_exact, L) <= bound,
                           "no component is further from the exact answer than an LU's");
                 }
