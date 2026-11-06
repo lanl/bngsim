@@ -41,15 +41,28 @@ posix_only = pytest.mark.skipif(
 
 
 def _real_cc() -> str | None:
-    """The machine's own compiler, as ``_find_c_compiler`` would pick it."""
+    """The machine's own gcc/clang, for the fake compiler to hand a call to."""
     cc = os.environ.get("CC")
     if cc and shutil.which(cc):
         return shutil.which(cc)
     return shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
 
 
+def _compiler_present() -> bool:
+    """Whether the compiler codegen would use is there (MSVC's cl on Windows)."""
+    try:
+        return shutil.which(cg._find_c_compiler()[0]) is not None
+    except Exception:
+        return False
+
+
 REAL_CC = _real_cc()
-requires_cc = pytest.mark.skipif(REAL_CC is None, reason="no C compiler available")
+requires_cc = pytest.mark.skipif(not _compiler_present(), reason="no C compiler available")
+# The fake compiler hands calls to gcc/clang, so it needs one; on Windows the
+# POSIX-only mark beside it is the reason these do not run.
+requires_posix_cc = pytest.mark.skipif(
+    os.name != "nt" and REAL_CC is None, reason="no C compiler available"
+)
 
 _FAKE_CC = r"""#!/bin/sh
 # A compiler for issue #1544's tests: logs each call, then fails as #1544's
@@ -193,7 +206,7 @@ def test_auto_codegen_falls_back_with_one_warning_and_one_compile(clean, monkeyp
 
 
 @posix_only
-@requires_cc
+@requires_posix_cc
 def test_auto_codegen_tries_again_once_the_environment_is_fixed(clean, monkeypatch):
     """The verdict is the toolchain's, not the model's: once SDKROOT names an
     SDK that links, the same model compiles on its next construction."""
@@ -311,7 +324,7 @@ def test_strict_ssa_propensity_emit_failure_raises(clean, monkeypatch):
 
 
 @posix_only
-@requires_cc
+@requires_posix_cc
 def test_a_model_failure_is_not_blamed_on_the_toolchain(clean, monkeypatch, caplog):
     """The probe builds, so the model's own source is what failed: the error is
     the compiler's, every model is still compiled, and the probe runs once."""
@@ -339,7 +352,7 @@ def test_a_probe_that_proves_nothing_keeps_no_verdict(clean, monkeypatch):
 
 
 @posix_only
-@requires_cc
+@requires_posix_cc
 def test_a_cached_library_is_still_used(clean, monkeypatch):
     """Control. A library built before the toolchain broke is served from the
     cache, verdict or not, and nothing is compiled."""
@@ -355,7 +368,7 @@ def test_a_cached_library_is_still_used(clean, monkeypatch):
 
 
 @posix_only
-@requires_cc
+@requires_posix_cc
 def test_the_verdict_names_the_sdk_and_an_sdk_that_links(clean, monkeypatch):
     """On macOS the verdict names the SDK and tries the other installed ones;
     setting the one it names gets a fresh attempt, which builds."""
