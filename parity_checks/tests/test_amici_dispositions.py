@@ -229,6 +229,16 @@ def test_no_ground_truth_is_neither_reference_failed_nor_pass():
         assert outcome not in (Outcome.REFERENCE_FAILED, Outcome.PASS)
 
 
+@pytest.mark.parametrize("value", [float("inf"), float("nan")])
+def test_a_no_ground_truth_entry_leaves_a_non_finite_diff_scoring(value):
+    """A non-finite max_rel is a time-grid or species mismatch, or non-finite
+    output, which a loader regression on the model would produce. It is not two
+    non-solutions rounding apart, so it stays a scoring DIFF that says why."""
+    outcome, comment, refusal, state = ad.apply_disposition(_NO_TRUTH, Outcome.DIFF, value, "")
+    assert (outcome, refusal, state) == (Outcome.DIFF, None, "inapplicable")
+    assert "did not apply" in comment and "re-triage" in comment
+
+
 def test_a_no_ground_truth_pass_is_applied_not_stale():
     """What the entry asserts is a property of the model. A PASS cannot falsify
     it, so it must not ask the author to prune the entry."""
@@ -474,6 +484,10 @@ def test_the_closed_form_that_leaves_MODEL1112050001_without_a_solution_still_ho
     ``x9 = x9(0)*exp(A*t^3)`` early, with ``A = k7*k20*k6*PTP*k8/(6*IRp)``, which
     leaves the doubles long before the job's ``t_end``.
 
+    ``x9`` alone would pass the largest double near t = 1.1e-6; the model gets
+    there sooner, through ``k9``'s ``x12/PI3K`` with ``PI3K = 5e-15``, which
+    drives ``x13`` and ``x14`` past 1e10 by t = 3.363e-7.
+
     The numbers are then checked against bngsim twice, as the MODEL0910846879
     test does against its closed form. With atol far below ``x9``, bngsim must
     follow the law, so the law is the model's and not a misreading of it. At the
@@ -522,6 +536,12 @@ def test_the_closed_form_that_leaves_MODEL1112050001_without_a_solution_still_ho
     value["k8"] = float(expr(k8_rule.getMath()))
     assert value["k8"] == pytest.approx(7.06e12, rel=1e-3)
     assert value["IRp"] == pytest.approx(8.97e-13)
+    # What overflows first: k9 reads x12/PI3K, and x12 follows -x9.
+    (k9_rule,) = [
+        r for r in model.getListOfRules() if r.isAssignment() and r.getVariable() == "k9"
+    ]
+    assert sympy.diff(expr(k9_rule.getMath()), S("x12")) == (S("k9sim") - S("k9bas")) / S("PI3K")
+    assert value["PI3K"] == pytest.approx(5e-15)
     x9_0 = model.getSpecies("x9").getInitialConcentration()
     # x9 starts AT the suite's atol, which is why neither engine's error test sees it.
     assert x9_0 == ac.DEFAULT_ATOL == 1e-12
@@ -542,15 +562,17 @@ def test_the_closed_form_that_leaves_MODEL1112050001_without_a_solution_still_ho
         warnings.simplefilter("ignore")
         m = bngsim.Model.from_sbml(str(path))
         tracked = bngsim.Simulator(m, method="ode").run(
-            sample_times=[0.0, 3e-7], rtol=1e-8, atol=1e-24
+            sample_times=[0.0, 3e-7, 3.363e-7], rtol=1e-8, atol=1e-24
         )
         m.reset()
         suite = bngsim.Simulator(m, method="ode").run(
             (0.0, 100.0), 101, rtol=ac.DEFAULT_RTOL, atol=ac.DEFAULT_ATOL
         )
     names = list(tracked.species_names)
-    got = np.asarray(tracked.species)[-1, names.index("x9")]
+    got = np.asarray(tracked.species)[1, names.index("x9")]
     assert got == pytest.approx(law(3e-7), rel=1e-4)
+    # x14 is past 1e10 by t = 3.363e-7 and climbing super-exponentially.
+    assert np.asarray(tracked.species)[2, names.index("x14")] > 1e10
 
     y = dict(zip(names, np.asarray(suite.species)[1], strict=False))  # t = 1
     a = value["k7"] * abs(y["x4"] + y["x5"]) / value["IRp"]
@@ -642,7 +664,8 @@ def test_the_ode_page_draws_a_no_ground_truth_row_as_that(tmp_path):
     out = tmp_path / "m.html"
     gam.generate_html(report, out)
     html = out.read_text()
-    assert html.count("NO TRUTH") == 2  # both engines' cells on the one row
+    assert html.count(">NO TRUTH<") == 2  # both engines' badges on the one row
+    assert "<strong>NO TRUTH:</strong>" in html  # and the badge legend explains it
     assert html.count("no solution over this horizon") == 1  # bngsim's cell
     assert html.count("no solution to check it against") == 1  # AMICI's cell
     assert html.count("Both engines rejected this model") == 2  # the other row's two cells
@@ -660,11 +683,27 @@ def test_rr_parity_does_not_confirm_bngsim_on_a_model_with_no_ground_truth():
     """One model, one finding, in both suites. A model this module says has no
     solution cannot be one rr_parity's NO_ORACLE_ADJUDICATED calls a confirmed
     bngsim solve; it must read ``uncoverable`` there (issue #1542 re-adjudicated
-    MODEL1112050001 from GH #117's ``confirm``)."""
-    import overrides as ov
+    MODEL1112050001 from ``confirm``).
+
+    Loaded by path: bng_parity has an ``overrides`` module too, and a bare import
+    resolves to whichever directory reached ``sys.path`` first."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "rr_parity_overrides_1542", _PC / "rr_parity" / "overrides.py"
+    )
+    ov = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ov)
 
     for key in ad.NO_GROUND_TRUTH:
         entry = ov.NO_ORACLE_ADJUDICATED.get(key)
         if entry is not None:
             assert entry["verdict"] == "uncoverable", key
     assert ov.NO_ORACLE_ADJUDICATED["MODEL1112050001:ode"]["verdict"] == "uncoverable"
+
+
+def test_no_ground_truth_is_authored_for_ode_only():
+    """The sensitivity matrix does not draw a NO_GROUND_TRUTH row yet, so a
+    ``:sens`` entry would render as an ordinary BAD_TEST, "both engines failed".
+    Teach generate_amici_sens_matrix.py first, then drop this."""
+    assert all(k.endswith(":ode") for k in ad.NO_GROUND_TRUTH)

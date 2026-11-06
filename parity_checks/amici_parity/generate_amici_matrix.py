@@ -6,7 +6,8 @@ Color scheme:
   - Green: PASSED
   - Red: FAILED (DIFF or TIMEOUT)
   - Yellow: TRIAGED (REFERENCE_FAILED or EXCEPTION)
-  - Gray: REFUSED (BAD_TEST - both engines rejected)
+  - Gray: REFUSED (BAD_TEST - both engines rejected, or an authored no-ground-truth
+    row, whose cells read NO TRUTH)
 
 Both engine columns have the same color per row. Within each cell, verdict badges
 show specific outcomes (PASS, DIFF, EXCEPTION, etc.).
@@ -2243,7 +2244,7 @@ def generate_html(report_path: Path, output_path: Path) -> None:
             </div>
             <div class="legend-item">
                 <div class="legend-color" style="background: linear-gradient(to right, #6c757d 4px, #f8f9fa 4px);"></div>
-                <div class="legend-desc"><strong>Gray (REFUSED):</strong> BAD_TEST (both engines rejected the model) or a worker crash (unattributable — either engine may have died)</div>
+                <div class="legend-desc"><strong>Gray (REFUSED):</strong> BAD_TEST (both engines rejected the model, or the model has no solution to check either engine against) or a worker crash (unattributable — either engine may have died)</div>
             </div>
         </div>
         <h3 style="margin-top: 25px;">Verdict Badges (within cells)</h3>
@@ -2256,6 +2257,7 @@ def generate_html(report_path: Path, output_path: Path) -> None:
             <div><strong>REF-FAIL:</strong> AMICI refused to load model</div>
             <div><strong>TIMEOUT:</strong> Wall-clock cap exceeded</div>
             <div><strong>REFUSED:</strong> Engine rejected model</div>
+            <div><strong>NO TRUTH:</strong> Both engines ran, but over the job's horizon the model has no solution to check either answer against (an authored amici_dispositions entry); non-scoring</div>
         </div>
         <h3 style="margin-top: 25px;">Timing: three cost tiers</h3>
         <div style="font-size: 0.9em; color: #495057; line-height: 1.8;">

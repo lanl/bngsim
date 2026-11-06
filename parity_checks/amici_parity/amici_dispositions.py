@@ -61,6 +61,10 @@ is at fault, and whether there is an answer to be at fault about:
                          ``NO_ORACLE_ADJUDICATED``, verdict ``uncoverable``; its row
                          is REFERENCE_FAILED only because RoadRunner raises there.)
 
+                         Authored for ``ode`` only so far: the sensitivity matrix
+                         does not yet draw such a row (the ODE matrix draws it
+                         ``NO TRUTH``), and a test holds that until it does.
+
                          A PASS too, because on such a model a PASS is two
                          artifacts that happened to round alike: it says nothing
                          about bngsim, and calling it STALE would ask the author to
@@ -374,14 +378,17 @@ NO_GROUND_TRUTH: dict[str, dict] = {
             "scipy's DOP853 (explicit, not SUNDIALS) reproduces on a right-hand "
             "side built from the SBML text at rtol 1e-12 and atol 1e-80. It gives "
             "5.115e-4 at t = 3.36e-7, which bngsim reproduces when atol (1e-30) is "
-            "below x9 and it tracks it. x9 passes the largest double near "
-            "t = 1.1e-6, and ln(x9) is about 5e20 at t = 1. At the suite's atol of "
-            "1e-12, x9 starts AT the tolerance, so neither engine's error test sees "
-            "it. Both hold x9 on its repelling equilibrium -k22*x10/a (at t = 1, "
-            "-1.609e-32 in bngsim and -2.649e-34 in AMICI, each its own "
-            "equilibrium to 4 digits) and run on to t = 100 along a trajectory "
-            "that is not a solution. A tighter atol fails both engines near "
-            "t = 3.36e-7. On that trajectory, rounding decides whether x1 is held "
+            "below x9 and it tracks it. x9 alone passes the largest double near "
+            "t = 1.1e-6, but the model gets there first: k9 = k9bas + (k9sim - "
+            "k9bas)*x12/PI3K with PI3K = 5e-15, and x12 follows -x9, so x13 and "
+            "x14 reach -/+2.6e10 at t = 3.363e-7 in scipy's BDF and in bngsim at "
+            "atol 1e-24, growing super-exponentially. Every integrator, scipy's "
+            "included, stops near t = 3.364e-7. At the suite's atol of 1e-12, x9 "
+            "starts AT the tolerance, so neither engine's error test sees it. Both "
+            "hold x9 on its repelling equilibrium -k22*PTP*x10/a (at t = 1, each "
+            "engine's x9 equals its own equilibrium to 4 digits) and run on to "
+            "t = 100 along a trajectory that is not a solution. On that "
+            "trajectory, rounding decides whether x1 is held "
             "the same way. Since #1076 compiled ExprTk with -ffp-contract=off, "
             "bngsim on arm64 holds it and the row reads DIFF 1.0 (676/2929 cells). "
             "On x86-64, and on arm64 before #1076, it does not and the row reads "
@@ -473,6 +480,11 @@ def _drifted(recorded: float | None, fresh: float | None) -> bool:
     return not (0.5 <= ratio <= 2.0)
 
 
+def _finite(x: float | None) -> bool:
+    """None counts as finite: an unknown metric is no evidence of a mismatch."""
+    return x is None or (x == x and abs(x) != float("inf"))
+
+
 def _join(*parts: str) -> str:
     return " | ".join(p for p in parts if p)
 
@@ -500,6 +512,21 @@ def apply_disposition(
     # No ground truth: a PASS is two non-solutions that rounded alike, so it is
     # disposed of exactly as a DIFF is. It is never STALE, because what the entry
     # asserts is a property of the model, which no engine's verdict can falsify.
+    # A non-finite metric is not two trajectories rounding apart: it is a grid or
+    # species mismatch, or non-finite output, which a loader regression would
+    # produce. That stays a scoring DIFF.
+    if kind == _KIND_NO_GROUND_TRUTH and outcome == Outcome.DIFF and not _finite(value):
+        return (
+            outcome,
+            _join(
+                comment,
+                f"{label} entry{tag} did not apply: max_rel={value} is not two "
+                "trajectories rounding apart (grid or species mismatch, or "
+                "non-finite output); re-triage",
+            ),
+            None,
+            "inapplicable",
+        )
     if kind == _KIND_NO_GROUND_TRUTH and outcome in (Outcome.DIFF, Outcome.PASS):
         note = f"{label}{tag}: {disp['reason']}"
         if value is not None:

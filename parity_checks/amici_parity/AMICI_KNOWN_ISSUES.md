@@ -280,14 +280,28 @@ order, `x9 = 1e-12·exp(5.29e20·t³)`:
 | 1.1e-6 | passes the largest double | |
 | 1 | ln(x9) ≈ 5e20 | |
 
+The model leaves the doubles sooner than `x9` alone would. `k9 = k9bas + (k9sim −
+k9bas)·x12/PI3K` with `PI3K = 5e-15`, and `x12` follows `−x9`, so `x13` and `x14`
+grow super-exponentially. scipy's BDF and bngsim at atol 1e-24 agree:
+
+| t | `x14` (`x13` is its negative) |
+|---|---|
+| 3.360e-7 | 2.9e5 |
+| 3.362e-7 | 2.1e8 |
+| 3.363e-7 | 2.6e10 |
+
+Every integrator stops near t = 3.364e-7: scipy's BDF, bngsim and AMICI when they
+follow `x9`, and RoadRunner at the suite's tolerance (`CV_TOO_MUCH_WORK`).
+
 **What both engines return instead.** `x9` starts at 1e-12, which is the suite's atol,
 so neither engine's error test sees it. Each holds `x9` on its repelling equilibrium,
-`−k22·x10/a`, instead of following it. At t = 1 that is −1.609e-32 in bngsim and
-−2.649e-34 in AMICI, each equal to its own equilibrium to 4 digits. Both then run on
-to t = 100. A tighter tolerance (atol 1e-14, or rtol 1e-10) makes both engines try to
+`−k22·PTP·x10/a`, instead of following it. At t = 1 that is −1.609e-32 in bngsim on
+arm64 and −2.649e-34 in AMICI, each equal to its own equilibrium to 4 digits. The two
+differ because `x4 + x5` does, on the two `x1` branches below; bngsim at atol 1.01e-12
+also reads −2.649e-34. Both then run on to t = 100. A tighter tolerance (atol 1e-14, or rtol 1e-10) makes both engines try to
 follow `x9`, and both fail between t = 3.3e-7 and 5.6e-7: bngsim's step collapses
 until t + h == t, and AMICI reports `AMICI_TOO_MUCH_WORK`. So no engine has an answer
-here past about t = 1e-6, and the AMICI row compares two trajectories that are not
+here past t ≈ 3.364e-7, and the AMICI row compares two trajectories that are not
 solutions.
 
 **Why the verdict flips.** On that trajectory, once `x6` drives `x2` negative,

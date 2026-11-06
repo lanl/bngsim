@@ -670,7 +670,8 @@ def main() -> int:
             "deterministic_verdict over the common (intersection) species in "
             "concentration units. Failure attributed per-engine (both always run): "
             "bngsim raised + AMICI ran -> EXCEPTION (bngsim bug); bngsim ran + AMICI "
-            "raised -> REFERENCE_FAILED (non-scoring); both raised -> BAD_TEST; "
+            "raised -> REFERENCE_FAILED (non-scoring); both raised -> BAD_TEST, as is "
+            "a row an authored no-ground-truth disposition covers; "
             "wall-cap overrun -> TIMEOUT. The reference engine is AMICI (analytic "
             "symbolic Jacobian + KLU sparse linear solver, per-model C++ codegen)."
         ),
