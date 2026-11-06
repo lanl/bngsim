@@ -249,6 +249,20 @@ NF_KNOWN_REF = {
         "reason": "Legacy NFsim NF-segment divergence (~72% agreement); bngsim-NF and "
         "bngsim-RuleMonkey agree exactly (100%). Legacy is the outlier.",
     },
+    # A replay night cannot show this DIFF: the archive holds only the 10-replicate
+    # legacy ensemble, which bngsim matched before #1525, so the escalation's
+    # legacy:20:11 rung is archive_unreplayable (REFERENCE_FAILED). A live night
+    # runs it and gets the DIFF this tags.
+    "error": {
+        "issue": "GH #1525",
+        "reason": "Homodimer deleted whole, I(N!1).I(N!1) -> 0 at kd. Legacy NFsim fires "
+        "it once per match, two per dimer, so at 2kd; BNG2.pl's network gives each dimer "
+        "one reaction at kd, and so does bngsim-NF since #1525. At the model's scale 1, "
+        "t = 2400, seeds 1-3: legacy NFsim leaves 13347-13387 dimers, against 13382 at 2kd; "
+        "bngsim-NF 14389-14445 and bngsim-RuleMonkey 14406-14466, against 14420 at kd, "
+        "the model's own initiator_analytical() = I20*exp(-kd*t). Its ODE twin, "
+        "delta() -> 0 at 2*kd, reproduces the legacy rate. Legacy is the outlier.",
+    },
 }
 
 

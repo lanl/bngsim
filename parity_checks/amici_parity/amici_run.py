@@ -254,7 +254,15 @@ def _worker(spec: dict, q) -> None:
     am_wall = 0.0
     try:
         t0 = time.perf_counter()
-        am = ac.amici_ode(xml, p["t_start"], p["t_end"], p["n_points"], p["rtol"], p["atol"])
+        am = ac.amici_ode(
+            xml,
+            p["t_start"],
+            p["t_end"],
+            p["n_points"],
+            p["rtol"],
+            p["atol"],
+            through_event_instants=True,
+        )
         am_wall = time.perf_counter() - t0
         if len(am) == 4:
             am_timing = am[3]
@@ -296,6 +304,9 @@ def _worker(spec: dict, q) -> None:
     # --- both ran: compare (shared _core.differ protocol) ---
     try:
         status, value, comment, metric, m_tol = _compare_ode(bn, am, atol=p["atol"])
+        n_instants = (am_timing or {}).get("event_instants", 0)
+        if n_instants:
+            comment = f"{comment}; AMICI through {n_instants} event instants"
         res["status"], res["value"], res["comment"] = status, value, comment
         res["metric"], res["tol"] = metric, m_tol
     except Exception as exc:

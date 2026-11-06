@@ -111,6 +111,38 @@ AMICI generates and compiles a bespoke C++ extension per model. These are cached
 on disk in `amici_cache/` keyed by SBML-content hash (gitignored), so the first
 sweep pays the cold compile and every re-run is load-only.
 
+### AMICI runs through the event instants (issue #1542)
+
+AMICI rewrites a `time == c` trigger as `(time >= c) && (time <= c)`. That trigger
+function, `min(t − c, c − t)`, touches 0 at `c` without changing sign. CVODES
+reports it only when a step ends exactly on `c`, and AMICI stops a step there only
+at an output time (or at another event's fixed trigger time). bngsim fires it wherever `c` falls (#1015). So on a job grid
+with no sample at `c`, AMICI skipped the dose or dilution and the row scored as a
+bngsim `DIFF`. BIOMD0000000816, 817, 928 and 1059 went PASS → DIFF that way between
+0.15.1 and 0.17.0.
+
+`amici_run.py` therefore passes `through_event_instants=True`, as `rr_run.py` does
+for RoadRunner's identical miss (#1024). `amici_ode` adds the instants
+`_rr_common.event_instants` finds to AMICI's output times and returns only the
+job-grid rows, so the compared grid is unchanged. The instants are computed with
+AMICI's own values: parameters and compartments as AMICI integrates them
+(`amici_value_of`), and numbers written in a trigger as AMICI reads them, at most
+15 significant digits (`amici_literal_of`). A row's comment says
+`AMICI through N event instants`, N being the output times added. A model with no
+time comparison in a trigger runs exactly as before.
+
+Three limits, each leaving the row as it was on the grid alone:
+
+- An instant within 1e-12·max(1, |t|) of another output time is left out. AMICI
+  can fail a run (status −99) whose output times sit a few ulps apart once an
+  event fires at the first: a parameter 6 ulps below a grid time does it. Not
+  always (`time == 0.3` beside a grid time one ulp on runs and fires), so the
+  guard is conservative.
+- `time != c` is not helped. AMICI's `|t − c|` leaves 0 without a sign change, so
+  no output time makes it fire.
+- An equality whose residual AMICI does not compute as exactly 0 at the instant,
+  such as `time − 0.1 == 0.2`, is not helped either.
+
 ## Overrides — departure from rr_parity
 
 Only the engine-agnostic **`tol`** overrides (ill-conditioned IVPs, applied to
