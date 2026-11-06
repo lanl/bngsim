@@ -161,12 +161,14 @@ into the job manifest the way rr_parity's `overrides.py` is: the SBML manifest i
 shared with rr_parity, and an AMICI-calibrated entry written into it would leak
 into that suite.
 
-Two dispositions, and the difference is which engine (if either) is at fault:
+Three dispositions. The difference is which engine (if either) is at fault, and
+whether there is an answer to be at fault about:
 
-| entry | what it means | `DIFF` becomes |
+| entry | what it means | the row becomes |
 |---|---|---|
-| `INVALID_REFERENCE` | AMICI ran and returned finite numbers, but a defect in its own handling of the model makes them unusable as an oracle | `REFERENCE_FAILED` + `reference_refusal=invalid_result` |
-| `COMPARISON_ARTIFACT` | neither engine is wrong; the residual is a cell no oracle can resolve | `PASS`, reason recorded |
+| `INVALID_REFERENCE` | AMICI ran and returned finite numbers, but a defect in its own handling of the model makes them unusable as an oracle | a `DIFF` becomes `REFERENCE_FAILED` + `reference_refusal=invalid_result` |
+| `COMPARISON_ARTIFACT` | neither engine is wrong; the residual is a cell no oracle can resolve | a `DIFF` becomes `PASS`, reason recorded |
+| `NO_GROUND_TRUTH` | over the job's horizon the model has no solution a double-precision integrator can follow, so neither engine's answer is an oracle | a `DIFF` *or* a `PASS` becomes `BAD_TEST`, reason recorded; the matrix draws it `NO TRUTH` |
 
 `REFERENCE_FAILED` and **not** `PASS`, because `PASS` would assert the engines
 agreed and they did not — this is the mirror of what #319/#323 did for bngsim's
@@ -183,6 +185,15 @@ correspondingly **narrower** than rr_parity's `KNOWN_ARTIFACT`, which also cover
 "the reference engine has the bug" — that case is `INVALID_REFERENCE` here,
 precisely so a reference defect is never dressed up as agreement.
 
+`NO_GROUND_TRUTH` lands on `BAD_TEST` for the reason the paragraph above gives:
+there, the model is the problem. A `PASS` is disposed of too, because on such a
+model it is two non-solutions that rounded alike, and it is never `STALE`, because
+what the entry asserts is a property of the model that no engine's verdict can
+falsify. Its evidence must come from neither engine, nor from SUNDIALS, which both
+run: a closed form, or an integrator such as scipy's driven where it tracks the
+solution. The one entry, `MODEL1112050001` (issue #1542), is
+[Class 6 of AMICI_KNOWN_ISSUES](AMICI_KNOWN_ISSUES.md#class-6--a-model-with-no-solution-to-compare-against-model1112050001-issue-1542).
+
 **The bar is rr_parity's, and it is high.** An entry that turned a real bngsim
 defect non-scoring would hide a regression, so every entry must cite evidence
 naming which engine is wrong and how we know, from an oracle that is **not
@@ -192,9 +203,10 @@ SBML *text* so no engine can discard the write.
 
 Three ways it stays honest:
 
-- it applies **only to a `DIFF`**. A row that agrees on its own is flagged
-  `STALE` (prune it); a row that raised, timed out or had no oracle is reported
-  *inapplicable* rather than stale — a timeout falsifies nothing.
+- it applies **only to a `DIFF`** (`NO_GROUND_TRUTH` to a `PASS` as well). A row
+  that agrees on its own is flagged `STALE` (prune it); a row that raised, timed
+  out or had no oracle is reported *inapplicable* rather than stale — a timeout
+  falsifies nothing.
 - the reason lands in the row's `comment`, so the report says why in the row and
   not only in the module.
 - an entry records the `max_rel` it was authored against. A later sweep that
