@@ -230,7 +230,8 @@ class CodegenToolchainError(BngsimError):
 
     The verdict holds while the compiler and its environment stay as they are
     (it is probed again every 5 minutes), so a later build is refused without
-    generating or compiling a source; a library already in the cache is still
+    compiling, and before its source is generated (a model codegen would have
+    declined is refused with this too); a library already in the cache is still
     used. ``codegen=True``, forward sensitivities and, under
     ``BNGSIM_CODEGEN_STRICT``, automatic codegen raise it, each in its own words.
     A ``RuntimeError`` (through :class:`BngsimError`), as a build failure was

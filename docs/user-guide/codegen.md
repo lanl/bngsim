@@ -185,14 +185,17 @@ followed by a probe: the same command on a trivial C file. If that fails too, th
 failure is the toolchain's, not the model's, and BNGsim says so once per process,
 in a warning that names the compiler, the linker and, on macOS, the SDK, and
 suggests an installed SDK that links when one does. From then on no codegen
-source is generated or compiled while the compiler and its environment (`CC`,
-`PATH`, `SDKROOT`, `DEVELOPER_DIR`, ...) stay as they are: models at or above the
+library is compiled while the compiler and its environment (`CC`, `PATH`,
+`SDKROOT`, `DEVELOPER_DIR`, ...) stay as they are, and a model's source is not
+generated either, past its cache lookup: models at or above the
 threshold run on the interpreted RHS, and `codegen=True` and forward
 sensitivities raise `bngsim.CodegenToolchainError` instead of compiling to fail
 again. Libraries already in the cache are still used, and changing one of those
 variables in the process (`os.environ["SDKROOT"] = ...`) gets a fresh attempt.
 The verdict is probed again after 5 minutes, so a toolchain that was broken for
-a while (a full disk) is used again once it builds. A missing compiler is kept
+a while (a full disk) is used again once it builds; a re-probe that fails, or
+proves nothing (it times out), keeps the verdict for another 5 minutes. A
+missing compiler is kept
 the same way. The case that prompted this (issue #1544) is conda-forge's
 ld64-956.6 with the macOS 27 SDK: it cannot read the SDK's `libSystem.tbd`, so it
 links no library at all; `SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk`
@@ -203,8 +206,11 @@ A benchmark or a fit that must not measure the interpreter by accident sets
 above the threshold, or the SSA propensity library) then raises instead of
 falling back. The SSA library is built for every mass-action model run with
 exact SSA, so strict mode raises on its failure even for a model the SSA engine
-would have run without it (one with events, or more than 64 reactions). A model that codegen declines
-still runs on the interpreter, since that is not a failed build.
+would have run without it (one with events, or more than 64 reactions). A model
+that codegen declines still runs on the interpreter, since that is not a failed
+build; but once the toolchain is known to be broken, a model is refused before
+its source is generated, so one that would have been declined is refused as the
+toolchain's failure, and raises under strict mode too.
 `Simulator.codegen_backend` says which engine an ODE run used, and a result's
 `ssa_diagnostics["propensity_backend"]` which one an SSA run used.
 

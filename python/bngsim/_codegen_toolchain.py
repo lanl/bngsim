@@ -23,10 +23,18 @@ A verdict is good for :data:`_VERDICT_TTL` seconds. After that a broken one is
 probed again before it refuses anything, so a toolchain that was broken for a
 while (a full disk, an SDK link being swapped by an update) is used again once
 it builds; the probe costs a fraction of a second, a model's compile can cost
-minutes.
+minutes. A re-probe that fails, or proves nothing (it times out), renews the
+verdict.
 
-The probe runs only after a real compile has failed, never before one, so a
-toolchain that can build a model is never refused on a probe's word.
+A toolchain is first found broken only after a real compile has failed, never on
+a probe alone, so one that can build a model is not refused because a probe
+could not. Once it is, a re-probe decides: that one refuses without a model's
+compile, since the toolchain has already failed a real build.
+
+While a verdict holds, :func:`bngsim._codegen.prepare_model_codegen` refuses a
+model after its cache lookup and before its source is generated, so a model that
+codegen would have declined while generating it is refused as the toolchain's
+failure instead.
 
 This module is not one of ``_CODEGEN_SOURCE_MODULES``: nothing here changes the
 emitted C, so editing it leaves the artifact cache alone.
