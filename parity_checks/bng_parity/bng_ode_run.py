@@ -1061,13 +1061,19 @@ def _job_tol_override(job) -> dict | None:
 
 
 def _job_timeout_override(job) -> dict | None:
-    """The per-job wall-clock cap override, when no global ``--timeout`` is forced."""
+    """The per-job wall-clock cap override, when no global ``--timeout`` is forced.
+
+    An override extends the default cap and never cuts it: one at or below
+    ``DEFAULT_ODE_TIMEOUT`` is ignored, as bng_stoch_run.py ignores one at or below
+    its own default (#1549).
+    """
     for ov in job.overrides:
         if ov.field == "timeout":
             try:
-                return {"timeout": float(ov.value), "reason": ov.reason}
+                cap = float(ov.value)
             except (ValueError, TypeError):
                 return None
+            return {"timeout": cap, "reason": ov.reason} if cap > DEFAULT_ODE_TIMEOUT else None
     return None
 
 
