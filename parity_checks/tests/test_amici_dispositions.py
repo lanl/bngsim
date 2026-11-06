@@ -646,3 +646,25 @@ def test_the_ode_page_draws_a_no_ground_truth_row_as_that(tmp_path):
     assert html.count("no solution over this horizon") == 1  # bngsim's cell
     assert html.count("no solution to check it against") == 1  # AMICI's cell
     assert html.count("Both engines rejected this model") == 2  # the other row's two cells
+
+
+def test_the_runners_regime_map_carries_the_no_ground_truth_entry():
+    """The runners read ``dispositions_for_regime``, not ``disposition_for``: an
+    entry missing from that map is never applied, however it is authored."""
+    disp = ad.dispositions_for_regime("ode")["MODEL1112050001"]
+    assert disp["kind"] == "no_ground_truth"
+    assert "MODEL1112050001" not in ad.dispositions_for_regime("sens")
+
+
+def test_rr_parity_does_not_confirm_bngsim_on_a_model_with_no_ground_truth():
+    """One model, one finding, in both suites. A model this module says has no
+    solution cannot be one rr_parity's NO_ORACLE_ADJUDICATED calls a confirmed
+    bngsim solve; it must read ``uncoverable`` there (issue #1542 re-adjudicated
+    MODEL1112050001 from GH #117's ``confirm``)."""
+    import overrides as ov
+
+    for key in ad.NO_GROUND_TRUTH:
+        entry = ov.NO_ORACLE_ADJUDICATED.get(key)
+        if entry is not None:
+            assert entry["verdict"] == "uncoverable", key
+    assert ov.NO_ORACLE_ADJUDICATED["MODEL1112050001:ode"]["verdict"] == "uncoverable"
