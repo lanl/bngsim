@@ -54,15 +54,17 @@ class NfsimSession:
         Enable NFsim v1.14.3 selector compatibility mode for
         same-seed trajectory reproducibility with the standalone CLI.
     block_same_complex_binding : bool, optional
-        NFsim ``-bscb``: when True, block bimolecular reactions whose two
-        reactant patterns match molecules in the same complex. Default:
-        ``True`` in bngsim — the NFsim CLI default is off, but bngsim defaults
-        it on for correctness on BLBR/aggregation models that polymerize within
-        a single complex otherwise. Pass ``False`` to allow same-complex
-        binding (matching BNG2.pl's ``complex=>1``). Note: this flag governs
-        only the binding policy; complex bookkeeping needed to count
-        ``Species``-typed observables is enabled automatically whenever the
-        model declares one, regardless of this setting.
+        When ``True`` (the default), a bimolecular rule cannot bind two
+        molecules of one complex, and a rule written ``A.B -> A + B`` fires
+        only where breaking the bond separates them. Both are BNGL's semantics:
+        BNG2.pl's network applies them, and so does NFsim under ``-cb`` (or
+        ``-bscb``, the same flag), which BNG2.pl's ``simulate_nf`` passes by
+        default (``complex=>1``). ``False`` turns both off, as NFsim run
+        without ``-cb`` does: same-complex binding is allowed, and such a rule
+        can break a bond inside a ring. On a model with rings that gives wrong
+        counts with no error; a conserved total of 30 molecules read 33-40
+        (issue #1549). Complex bookkeeping for ``Species``-typed observables
+        is enabled whenever the model declares one, whatever this setting.
     traversal_limit : int, optional
         NFsim ``-utl N``: universal traversal limit. ``None`` (default)
         lets NFsim auto-compute a suggested limit from the XML.

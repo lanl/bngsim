@@ -1384,17 +1384,19 @@ def _stoch_legend(regime: str, legacy_label: str) -> str:
             "network-free trajectories"
         )
         leg_path = (
-            "<code>NFsim</code> spawns a fresh process per seed (with <code>-cb</code> when the "
-            "model has a Species observable), reporting its own total CPU + reactions/sec"
+            "<code>NFsim</code> spawns a fresh process per seed (with <code>-cb</code>, as "
+            "BNG2.pl's <code>simulate_nf</code> gives it, on the XML with fractional seed "
+            "counts rounded as bngsim reads them), reporting its own total CPU + reactions/sec"
         )
         eng_self = "<code>NFsim</code>'s self-reported <b>total CPU</b> + reactions/s"
         eng_through = "reaction firings/sec (the <code>globalEventCounter</code>)"
         bscb_note = (
-            "<p><b>NF block_same_complex_binding.</b> BNGsim runs at its <b>correct</b> default "
-            "(<code>bscb=True</code>); the legacy NFsim v1.14.3 has <b>no -bscb flag</b> and "
-            "applies same-complex binding, so on ring-forming / multivalent models the two "
-            "legitimately diverge — a <b>known reference-side</b> divergence (the correctness "
-            "suite reclassifies these as PASS_REF_BUG), surfaced here as DIFF.</p>"
+            "<p><b>NF block_same_complex_binding.</b> BNGsim runs at its default "
+            "(<code>bscb=True</code>), BNG2.pl's network semantics, and the legacy NFsim "
+            "v1.14.3 gets <code>-cb</code>, which blocks same-complex binding the same way "
+            "(#1549). A DIFF where the legacy NFsim is the outlier against an independent "
+            "oracle (BNG2.pl's network, RuleMonkey, an analytic answer) renders "
+            "<b>KNOWN REF</b>.</p>"
         )
     return f"""    <div class="legend">
         <h3>Legend</h3>

@@ -104,25 +104,14 @@ TOL = {
 #     The 3 `frac` models are no longer in the corpus anyway (their entries were stale).
 
 # Per-model timeout extension (seconds) for models whose overrun is a worker-
-# contention artifact, not a real failure.
-TIMEOUT = {
-    "mlnr.bngl": (
-        300,
-        "NFsim t_end=1000/1000 steps, ~82s/seed; 180s budget overrun under 2-worker contention",
-    ),
-    "ERK_model.bngl": (
-        1200,
-        "Lin2019: 4 simulate actions (ODE+exact+std_scaling+partial_scaling SSA) on a large "
-        "network. ~292s isolated but ~505s under load (~1.7x runtime variance); 1200s gives "
-        "robust margin so the run completes (vs a boundary-race crash that truncates output).",
-    ),
-    "prion_model.bngl": (
-        1200,
-        "Lin2019: PrP=>120 network, 4 simulate actions at n_steps=30000. ~377s isolated but "
-        "crashed at 602s against a 600s budget under load (~1.6x variance); 1200s gives 2x "
-        "margin over the worst observation so the run completes cleanly.",
-    ),
-}
+# contention artifact, not a real failure. Read by bng_stoch_run.py only, where an
+# entry applies only above DEFAULT_STOCH_TIMEOUT (1800 s): it may raise a job's cap,
+# never lower it. Empty since #1549. Its three entries (mlnr 300 s, ERK_model and
+# prion_model 1200 s) were written as extensions of earlier, shorter defaults and,
+# once the default rose to 1800 s (GH #190), each cut its job's cap instead. mlnr,
+# whose ten replicates take about 1,170 s (bngsim 667 s, NFsim 499 s on an M-series
+# Mac under load), timed out at 300 s in 0.17.0's sweep for that reason.
+TIMEOUT: dict[str, tuple[float, str]] = {}
 
 
 def overrides_for(basename: str) -> list[dict]:
