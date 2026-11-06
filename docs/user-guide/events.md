@@ -71,26 +71,35 @@ Two cases are outside this:
 
 A trigger reading false whose *residual* is exactly zero at the start time is
 not below its threshold, it is sitting on it — `S > 0` with `S(t_start) = 0`.
-Whether the first move off that surface is a crossing depends on where the
-trajectory goes. bngsim decides it by evaluating the trigger itself a small
-step along the flow from the start time:
+bngsim follows the SBML start rule as the project reads it (issue #934; L3V2
+§3.4.8), which is also what libRoadRunner does: the event fires when the trigger
+turns true, so it fires at the start if the trajectory leaves the threshold into
+the trigger's true side, at whatever order it leaves, and never if it stays on
+the threshold or leaves into the false side:
 
-- **It leaves into the true side** — the crossing is real and located at the
-  start time. `time > 0` is this case, and so is a species with a nonzero
-  production rate there, and `A < 10` with `A(t_start) = 10` and A decaying.
-  The event fires, however the comparison is written.
-- **It does not leave** — nothing crosses. A root reported at the start time is
-  the initial condition being re-read, and its instant would be set by the
-  integrator's first step rather than by the model, so the event does not fire.
-  A later, genuine crossing of the same trigger is unaffected.
+- **It leaves into the true side.** `time > 0` is this case, and so is a species
+  with a nonzero production rate there, and `A < 10` with `A(t_start) = 10` and A
+  decaying. So is `B > 0` where `dB/dt` is itself 0 at the start and B rises at
+  second order or higher (`B = t²/2`). The event fires at once, however the
+  comparison is written.
+- **It stays on the threshold, or leaves into the false side.** Nothing crosses,
+  and the event does not fire. A later, genuine crossing of the same trigger is
+  unaffected.
 
-The step is first order in the flow. A trigger that leaves its threshold only at
-second order, `B > 0` where `dB/dt` is itself 0 at the start, is read as not
-leaving (issue #934).
+`initialValue` does not change this. It gives the trigger's value just before the
+start, so it decides only a trigger that is already true there. A strict
+comparison sitting on its threshold (`S > 0` at `S = 0`) reads false at the start
+whichever way `initialValue` is set; `S >= 0` there reads true, and `initialValue`
+decides it.
 
-This mirrors what SUNDIALS does with a root function that is identically zero at
-`t0`. Declare `initialValue="true"` on the trigger if you want an event
-suppressed at the start time regardless of the flow.
+Where `t_start` is not 0, the first doubles of the run cannot be read for this:
+the elapsed time there is no larger than its rounding. A trigger on its threshold
+that the flow does not carry into its true side at first order is held false for
+1e4·eps·|t_start| (1.6e-12 from 0.7) and read as it is from there. From
+`t_start = 0` there is no hold.
+
+A forward-sensitivity run refuses an event that fires at the start this way
+without first-order motion, by name: its fire time has no derivative there.
 
 #### An event beside a state-dependent rate-law switch
 
