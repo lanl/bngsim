@@ -328,8 +328,10 @@ def test_a_shared_rate_law_that_declines_still_says_why(tmp_path, monkeypatch):
 def test_the_compiled_jacobian_derives_each_rate_law_once_and_places_it_everywhere(
     kind, tmp_path, monkeypatch
 ):
-    """Once per distinct law and path, and every reaction's C group carries its
-    law's derivative: the same lines a reaction with that law to itself would get."""
+    """Once per distinct law and path. Every per-observable reaction's C group
+    carries its law's derivatives; a per-species law's derivatives sit in one group
+    per column, headed by its first carrier, which scatters into every carrier's
+    rows (issue #1551; the values are pinned in test_jacobian_shared_rate_law_emit)."""
     _clear_env(monkeypatch)
     m = _load(kind, tmp_path)
     assert m.prepare_analytical_jacobian() is True
@@ -344,6 +346,7 @@ def test_the_compiled_jacobian_derives_each_rate_law_once_and_places_it_everywhe
     assert {law: len(calls) for law, calls in per_observable.items()} == dict.fromkeys(
         laws[True], 1
     )
+    first_carrier: dict[str, int] = {}
     for rxn in m._core.functional_jacobian_context()["functional_reactions"]:
         law, idx = rxn["rate_expr"], int(rxn["rxn_idx"])
         if rxn["apply_species_factor"] and rxn["reactant_idx0"]:
@@ -353,9 +356,13 @@ def test_the_compiled_jacobian_derives_each_rate_law_once_and_places_it_everywhe
                 assert f"double d{k} = {c};" in block, (idx, k)
         else:
             (terms,) = per_species[law]
+            first = first_carrier.setdefault(law, idx)
             for col, c in terms:
-                block = src.split(f"/* per-species rxn {idx} col {col} */", 1)[1]
+                block = src.split(f"/* per-species rxn {first} col {col}", 1)[1]
                 assert block.split("\n", 2)[1].strip() == f"double dj = {c};", (idx, col)
+    for law, first in first_carrier.items():
+        for col, _c in per_species[law][0]:
+            assert src.count(f"/* per-species rxn {first} col {col}") == 1, (law, col)
 
 
 # ─── The invariant the caches rest on ────────────────────────────────────────
