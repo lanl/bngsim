@@ -29,6 +29,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "bng_parity"))
 
 import bng_ode_run as bor  # noqa: E402
+import bngsim  # noqa: E402
 import generate_bng_matrix as gbm  # noqa: E402
 
 STEM = "l-type-calcium-channel-dynamics"
@@ -311,7 +312,7 @@ class _Queue:
         self.rows.append(row)
 
 
-def _worker_row(tmp_path, monkeypatch, stem=STEM):
+def _worker_row(tmp_path, monkeypatch, stem=STEM, bn_raises=None, rn_raises=None):
     bn, rn = _runs()
 
     def generate_network(
@@ -323,9 +324,13 @@ def _worker_row(tmp_path, monkeypatch, stem=STEM):
 
     def bn_ode_net(net_path, t_start, t_end, n_points, rtol, atol, codegen=None):
         assert (t_start, t_end, n_points) == (0.0, 150.0, 301)
+        if bn_raises is not None:
+            raise bngsim.SimulationError(bn_raises)
         return (*bn, {"config": {"codegen": False}})
 
     def run_network_ode(net_path, run_network_bin, **kw):
+        if rn_raises is not None:
+            raise RuntimeError(rn_raises)
         return (*rn, {"engine": "faked run_network"})
 
     monkeypatch.setattr(bor.bc, "generate_network", generate_network)
@@ -427,3 +432,65 @@ def test_the_ode_matrix_page_counts_and_badges_known_ref(tmp_path):
     assert row.count('"verdict verdict-pass">PASS<') == 1
     assert row.count('"verdict verdict-known">KNOWN REF<') == 1
     assert "verdict-diff" not in row
+
+
+# ── bngsim refusing the model by name (the follow-up to GH #1548) ──────────────
+# What bngsim says on this model since it refuses a state come to rest on a
+# switch's surface, as the core words it (arm64, rtol 1e-8, 301 outputs).
+REFUSAL = (
+    "Simulation failed: At t=21 the state has come to rest on the surface of a "
+    "state-dependent rate-law switch (residual '((-70+Voltage_Level))-(-20)' = -4.74536e-08, "
+    "within the 6.45105e-06 the run's tolerances leave it): the flow on either side moves it "
+    "by less than that before t=150, and across the surface the rate law jumps by -95.0525 in "
+    "dLTCC(b,g~C,loc~mem,p~P,s~R)/dt. Which branch the run reads from here is set by rounding, "
+    "not by the model, so bngsim refuses rather than return either (issue #1548)."
+)
+
+
+def test_the_refusal_is_known_within_the_400_characters_the_row_keeps():
+    # The worker keeps f"bngsim: {type}: {message}"[:400]; the issue number is past it.
+    kept = f"bngsim: SimulationError: {REFUSAL}"[:400]
+    assert "#1548" not in kept
+    assert bor.expected_refusal(STEM, kept) is bor.KNOWN_BNGSIM_REFUSALS[STEM]
+
+
+@pytest.mark.parametrize(
+    ("stem", "message"),
+    [
+        ("some_other_model", REFUSAL),
+        (STEM, "Simulation failed: CVODE integration failed at t=25 (CV_ERR_FAILURE)."),
+        (STEM, REFUSAL.replace("Voltage_Level", "Calcium_Level")),
+        (STEM, ""),
+    ],
+    ids=["another-model", "another-error", "another-switch", "no-error"],
+)
+def test_nothing_else_is_known(stem, message):
+    assert bor.expected_refusal(stem, message) is None
+
+
+@pytest.mark.parametrize("rn_raises", [None, "run_network failed: Error in CVODE integration"])
+def test_the_ode_worker_scores_the_known_refusal_unsupported(tmp_path, monkeypatch, rn_raises):
+    """Whatever run_network did: the nightly's archived x86 reference fails here."""
+    row = _worker_row(tmp_path, monkeypatch, bn_raises=REFUSAL, rn_raises=rn_raises)
+    assert row["status"] == "unsupported"
+    assert bor._OUTCOME[row["status"]] is bor.Outcome.UNSUPPORTED
+    assert row["comment"].startswith("bngsim refuses this model by name, as it should (GH #1548)")
+    assert "come to rest on the surface" in row["exception"]
+
+
+def test_the_ode_worker_scores_the_refusal_on_another_model_as_an_exception(tmp_path, monkeypatch):
+    row = _worker_row(tmp_path, monkeypatch, stem="some_other_model", bn_raises=REFUSAL)
+    assert row["status"] == "exception"
+
+
+def test_the_ode_matrix_counts_unsupported_as_refused(tmp_path):
+    rows = [{"model_id": "a.bngl", "outcome": "UNSUPPORTED", "subclass": None, "timing": {}}]
+    report = tmp_path / "report_ode.json"
+    report.write_text(
+        json.dumps({"_meta": {"regime": "ode", "tally": {"UNSUPPORTED": 1}}, "results": rows})
+    )
+    out = tmp_path / "m.html"
+    gbm.generate_html(report, out)
+    html = out.read_text()
+    assert "— REFUSED/SKIP: 1<" in html
+    assert gbm.classify_row("UNSUPPORTED") == ("status-refused", "REFUSED")
