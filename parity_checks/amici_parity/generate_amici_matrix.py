@@ -41,6 +41,10 @@ import sys as _sys  # noqa: E402
 
 from _sbml_features import extract_sbml_features  # noqa: E402
 
+# The label an authored NO_GROUND_TRUTH disposition opens its row comment with,
+# from the module rather than a literal so the two cannot drift.
+from amici_dispositions import NO_GROUND_TRUTH_LABEL  # noqa: E402
+
 _sys.path.insert(0, str(HERE.parent))
 try:
     from _core import differ as _differ
@@ -101,6 +105,18 @@ def get_verdict_badge(outcome: str, engine: str, succeeded: bool) -> tuple[str, 
         return "REFUSED", "verdict-refused"
     else:
         return outcome, "verdict-refused"
+
+
+def is_no_ground_truth(result: dict) -> bool:
+    """A BAD_TEST that an authored NO_GROUND_TRUTH disposition reached (issue #1542).
+
+    Both engines ran, and the model has no solution over the job's horizon for
+    either answer to be checked against. Drawn as that, not as the default
+    BAD_TEST reading of two engines that refused the model, which neither did.
+    """
+    return result.get("outcome") == "BAD_TEST" and (result.get("comment") or "").startswith(
+        NO_GROUND_TRUTH_LABEL
+    )
 
 
 def exception_kind(result: dict) -> str:
@@ -1916,6 +1932,8 @@ def generate_html(report_path: Path, output_path: Path) -> None:
         # did NOT raise — neither should wear the bngsim "EXCEPTION" badge.
         if exc_kind == "dead":
             bn_badge, bn_badge_color = "DIED", "verdict-refused"
+        if is_no_ground_truth(result):
+            bn_badge, bn_badge_color = "NO TRUTH", "verdict-refused"
         elif exc_kind == "compare":
             bn_badge, bn_badge_color = "COMPARE-ERR", "verdict-exception"
 
@@ -1978,6 +1996,11 @@ def generate_html(report_path: Path, output_path: Path) -> None:
                 bn_footnote = '<div class="footnote">An engine raised an exception</div>'
             if exception:
                 bn_footnote += f'<div class="error-msg">{_escape(exception)}</div>'
+        elif is_no_ground_truth(result):
+            bn_footnote = (
+                '<div class="footnote">Both engines ran; the model has no solution over '
+                "this horizon for either answer to be checked against</div>"
+            )
         elif outcome == "BAD_TEST":
             bn_footnote = '<div class="footnote">Both engines rejected this model</div>'
 
@@ -2055,6 +2078,8 @@ def generate_html(report_path: Path, output_path: Path) -> None:
         # did produce a trajectory; only the comparison step failed.)
         if exc_kind == "dead":
             rr_badge, rr_badge_color = "DIED", "verdict-refused"
+        if is_no_ground_truth(result):
+            rr_badge, rr_badge_color = "NO TRUTH", "verdict-refused"
 
         # Config rows — AMICI's fixed architecture (analytical symbolic Jacobian,
         # KLU sparse solver, per-model C++ compile): the linear solver is read from
@@ -2093,6 +2118,10 @@ def generate_html(report_path: Path, output_path: Path) -> None:
             elif exc_kind == "dead":
                 rr_footnote = '<div class="footnote">Worker crashed — which engine failed is unattributable</div>'
             # else: "other" (legacy non-prefixed raise) — leave RR footnote empty
+        elif is_no_ground_truth(result):
+            rr_footnote = (
+                '<div class="footnote">AMICI ran; there is no solution to check it against</div>'
+            )
         elif outcome == "BAD_TEST":
             rr_footnote = '<div class="footnote">Both engines rejected this model</div>'
         elif outcome == "TIMEOUT":

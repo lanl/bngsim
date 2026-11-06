@@ -24,7 +24,9 @@ third-oracle evidence to a defect in AMICI's own answer becomes REFERENCE_FAILED
 with ``reference_refusal=invalid_result``, and a DIFF that is an artifact of
 comparing at a cell no oracle can resolve becomes PASS. Both record their reason
 on the row, apply only while the row is genuinely a DIFF, and are flagged STALE
-the moment it agrees on its own.
+the moment it agrees on its own. (A third kind, for a model with no solution over
+the horizon, turns a PASS or a DIFF into BAD_TEST; issue #1542 authored it for
+one ODE row and none for this sweep.)
 
 UNSUPPORTED is the forward-sensitivity peer of rr_parity's ``SsaValidationError``
 row: bngsim inspected the model, found a construct whose derivative it cannot
@@ -1244,7 +1246,9 @@ def main() -> int:
                 "REFERENCE_FAILED/"
                 f"{amici_dispositions.INVALID_RESULT_REFUSAL}; 'comparison_artifact:"
                 "applied' — neither engine is wrong and the DIFF became a PASS with "
-                "the reason recorded. ':stale' means the row agrees on its own now "
+                "the reason recorded; 'no_ground_truth:applied' — the model has no "
+                "solution over the horizon, so the PASS or DIFF became a non-scoring "
+                "BAD_TEST. ':stale' means the row agrees on its own now "
                 "(prune the entry); ':inapplicable' means the row produced no "
                 "comparison this run (it raised, timed out or had no oracle), so the "
                 "entry was neither used nor falsified. Every applied row carries its "

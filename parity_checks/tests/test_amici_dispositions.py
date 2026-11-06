@@ -15,6 +15,11 @@ The mechanism (``apply_disposition``)
   * both hold ONLY over a DIFF: a row that agrees on its own is STALE, and a row
     that produced no comparison at all (raised / timed out / no oracle) is
     *inapplicable* rather than stale, because a timeout falsifies nothing
+  * a NO_GROUND_TRUTH DIFF *or* PASS becomes BAD_TEST (issue #1542) — never
+    REFERENCE_FAILED, which the ODE matrix draws as a bngsim PASS, and never
+    STALE, because the entry asserts a property of the model; a row with no
+    comparison is inapplicable to it as to the others, so a bngsim EXCEPTION
+    stays a visible, scoring row
   * an entry whose recorded ``max_rel`` no longer matches the fresh one is still
     applied but flagged DRIFTED — the guard against an entry silently absorbing a
     different, real defect on the same model
@@ -26,14 +31,18 @@ The authored entries
     rr_parity does at manifest-build time; this module is read at run time, so it
     is checked here instead)
   * every entry carries a reason and an issue reference, and no key is authored
-    in both dicts — a row cannot be both "the reference is wrong" and "neither
-    engine is wrong"
+    in two dicts — a row cannot be two of "the reference is wrong", "neither
+    engine is wrong" and "there is no answer to be right about"
+  * a NO_GROUND_TRUTH entry cites an oracle that is neither engine, and
+    MODEL1112050001's closed form is re-derived from the SBML text
   * the three #325 rows this issue exists to record are present, with the
     disposition each was triaged to
 
-The renderer
+The renderers
   * a REFERENCE_FAILED reached by disposition reads ``REF INVALID``, not the same
     gray badge as an AMICI crash — the two are materially different facts
+  * a BAD_TEST reached by NO_GROUND_TRUTH reads ``NO TRUTH`` on the ODE matrix,
+    not as two engines that refused the model
 """
 
 from __future__ import annotations
@@ -42,6 +51,7 @@ import json
 from pathlib import Path
 
 import amici_dispositions as ad
+import generate_amici_matrix as gam
 import generate_amici_sens_matrix as gsm
 import pytest
 from _core import CLEAN, Outcome, read_manifest
@@ -97,13 +107,15 @@ def test_a_model_authored_on_both_regimes_gets_each_regimes_own_entry():
         assert ad.disposition_for(model_id, "ode") != ad.disposition_for(model_id, "sens")
 
 
-def test_a_key_authored_in_both_dicts_raises_rather_than_picking_one(monkeypatch):
-    """The two dispositions make contradictory claims about who is at fault, so a
-    key in both is an authoring error, not a precedence question."""
+@pytest.mark.parametrize("other", ["COMPARISON_ARTIFACT", "NO_GROUND_TRUTH"])
+def test_a_key_authored_in_both_dicts_raises_rather_than_picking_one(monkeypatch, other):
+    """The dispositions make contradictory claims about who is at fault, and
+    whether there is an answer at all, so a key in two of them is an authoring
+    error, not a precedence question."""
     key = next(iter(ad.INVALID_REFERENCE))
     model_id, regime = key.rsplit(":", 1)
-    monkeypatch.setitem(ad.COMPARISON_ARTIFACT, key, {"issue": None, "reason": "test"})
-    with pytest.raises(ValueError, match="never both"):
+    monkeypatch.setitem(getattr(ad, other), key, {"issue": None, "reason": "test"})
+    with pytest.raises(ValueError, match="one disposition"):
         ad.disposition_for(model_id, regime)
 
 
@@ -127,6 +139,7 @@ def test_regime_map_is_keyed_by_bare_model_id():
 # --------------------------------------------------------------------------- #
 _INVALID = {"kind": "invalid_reference", "reason": "AMICI is inert", "issue": "GH #380"}
 _ARTIFACT = {"kind": "comparison_artifact", "reason": "edge cell", "issue": "GH #380"}
+_NO_TRUTH = {"kind": "no_ground_truth", "reason": "x9 leaves the doubles", "issue": "GH #1542"}
 
 
 def test_invalid_reference_diff_becomes_a_non_scoring_reference_failed():
@@ -180,11 +193,48 @@ def test_a_row_that_agrees_on_its_own_is_stale_not_silently_kept():
 def test_a_row_with_no_comparison_is_inapplicable_not_stale(outcome):
     """Staleness means the premise was falsified. A row that raised or timed out
     produced no comparison at all, so it falsifies nothing — telling the author to
-    prune a still-valid entry because AMICI happened to time out would be wrong."""
-    got, comment, refusal, state = ad.apply_disposition(_INVALID, outcome, None, "")
-    assert (got, state, refusal) == (outcome, "inapplicable", None)
-    assert "STALE" not in comment
-    assert "did not apply" in comment
+    prune a still-valid entry because AMICI happened to time out would be wrong.
+
+    NO_GROUND_TRUTH included: it disposes of a comparison and nothing else, so a
+    bngsim EXCEPTION on such a model keeps scoring."""
+    for disp in (_INVALID, _ARTIFACT, _NO_TRUTH):
+        got, comment, refusal, state = ad.apply_disposition(disp, outcome, None, "")
+        assert (got, state, refusal) == (outcome, "inapplicable", None)
+        assert "STALE" not in comment
+        assert "did not apply" in comment
+
+
+@pytest.mark.parametrize("natural,value", [(Outcome.DIFF, 1.0), (Outcome.PASS, 0.0)])
+def test_no_ground_truth_disposes_of_a_diff_and_a_pass_alike(natural, value):
+    """On a model with no solution, a DIFF is two non-solutions that rounded apart
+    and a PASS is two that rounded alike. Neither says anything about bngsim, so
+    both become the same non-scoring BAD_TEST, with the reason and the natural
+    verdict on the row."""
+    outcome, comment, refusal, state = ad.apply_disposition(_NO_TRUTH, natural, value, "29 sp")
+    assert outcome == Outcome.BAD_TEST
+    assert outcome in CLEAN  # non-scoring
+    assert (refusal, state) == (None, "applied")
+    assert comment.startswith(ad.NO_GROUND_TRUTH_LABEL)
+    assert "x9 leaves the doubles" in comment and "GH #1542" in comment
+    assert f"was {natural} at max_rel={value:.4g}" in comment
+    assert "29 sp" in comment
+
+
+def test_no_ground_truth_is_neither_reference_failed_nor_pass():
+    """REFERENCE_FAILED says AMICI could not anchor a run bngsim made, and the ODE
+    matrix draws it as a bngsim PASS; PASS says the engines agreed about the
+    model. bngsim's run is no more a solution than AMICI's, so neither fits."""
+    for natural in (Outcome.DIFF, Outcome.PASS):
+        outcome, _c, _r, _s = ad.apply_disposition(_NO_TRUTH, natural, 1.0, "")
+        assert outcome not in (Outcome.REFERENCE_FAILED, Outcome.PASS)
+
+
+def test_a_no_ground_truth_pass_is_applied_not_stale():
+    """What the entry asserts is a property of the model. A PASS cannot falsify
+    it, so it must not ask the author to prune the entry."""
+    _o, comment, _r, state = ad.apply_disposition(_NO_TRUTH, Outcome.PASS, 0.0, "")
+    assert state == "applied"
+    assert "STALE" not in comment and "prune" not in comment
 
 
 def test_an_inapplicable_row_keeps_its_auto_derived_refusal():
@@ -268,7 +318,7 @@ def test_stale_keys_actually_flags_an_absent_model():
 def test_every_entry_cites_a_reason_and_an_issue():
     """A disposition with no rationale is a silent fudge, and one with no tracker
     reference cannot be re-litigated when the evidence changes."""
-    for src in (ad.INVALID_REFERENCE, ad.COMPARISON_ARTIFACT):
+    for src in (ad.INVALID_REFERENCE, ad.COMPARISON_ARTIFACT, ad.NO_GROUND_TRUTH):
         for key, entry in src.items():
             assert entry.get("reason", "").strip(), key
             assert entry.get("issue"), key
@@ -392,6 +442,123 @@ def test_an_entry_supported_only_by_bngsim_is_rejected(monkeypatch):
         test_the_evidence_names_an_oracle_that_is_not_bngsim()
 
 
+# What a no-ground-truth claim may rest on: not bngsim and not AMICI, and since
+# both run CVODES, not RoadRunner's CVODE either. A CLOSED FORM, or an integrator
+# that shares no code with SUNDIALS (scipy's) driven where it tracks the solution.
+_GROUND_TRUTH_ORACLES = ("CLOSED FORM", "scipy")
+
+
+def test_a_no_ground_truth_entry_cites_an_oracle_that_is_neither_engine():
+    """ "Neither engine has an answer" cannot be shown by either engine alone."""
+    for key, entry in ad.NO_GROUND_TRUTH.items():
+        reason = entry["reason"].lower()
+        assert any(o.lower() in reason for o in _GROUND_TRUTH_ORACLES), key
+
+
+def test_a_no_ground_truth_entry_resting_on_the_engines_is_rejected(monkeypatch):
+    monkeypatch.setattr(
+        ad,
+        "NO_GROUND_TRUTH",
+        {"FAKE:ode": {"issue": "GH #0", "reason": "bngsim and AMICI and RoadRunner all fail."}},
+    )
+    with pytest.raises(AssertionError):
+        test_a_no_ground_truth_entry_cites_an_oracle_that_is_neither_engine()
+
+
+def test_the_closed_form_that_leaves_MODEL1112050001_without_a_solution_still_holds():
+    """The NO_GROUND_TRUTH evidence for MODEL1112050001, re-derived (issue #1542).
+
+    From the SBML text: ``x8`` drains at the constant ``k6*PTP*k8``, which reaches
+    ``x4 + x5`` through ``k20*x8``; ``x9`` grows at ``-k7*(x4+x5)/IRp``; and
+    ``x9 + x10 + x12`` and ``x11 + x12`` are conserved. Together these give
+    ``x9 = x9(0)*exp(A*t^3)`` early, with ``A = k7*k20*k6*PTP*k8/(6*IRp)``, which
+    leaves the doubles long before the job's ``t_end``.
+
+    The numbers are then checked against bngsim twice, as the MODEL0910846879
+    test does against its closed form. With atol far below ``x9``, bngsim must
+    follow the law, so the law is the model's and not a misreading of it. At the
+    suite's tolerance, bngsim must hold ``x9`` on its repelling equilibrium,
+    which is the entry's account of what the engines return. If bngsim ever
+    stops doing that (it follows ``x9`` and fails, say), this fails and the entry
+    must be re-litigated.
+    """
+    import math
+    import re
+    import sys
+    import warnings
+
+    np = pytest.importorskip("numpy")
+    sympy = pytest.importorskip("sympy")
+    libsbml = pytest.importorskip("libsbml")
+    bngsim = pytest.importorskip("bngsim")
+    import _amici_common as ac
+
+    path = _PC / "rr_parity" / "models" / "MODEL1112050001" / "MODEL1112050001.xml"
+    if not path.is_file():
+        pytest.skip("rr_parity corpus model MODEL1112050001 not present")
+    model = libsbml.readSBMLFromFile(str(path)).getModel()
+
+    def expr(math_ast):
+        text = libsbml.formulaToL3String(math_ast).replace("^", "**")
+        names = set(re.findall(r"[A-Za-z_]\w*", text))
+        return sympy.sympify(text, locals={n: sympy.Symbol(n) for n in names})
+
+    rate = {r.getVariable(): expr(r.getMath()) for r in model.getListOfRules() if r.isRate()}
+    S = sympy.Symbol
+    x4, x5, x8, x9 = S("x4"), S("x5"), S("x8"), S("x9")
+    k6, k7, k8, k20, PTP, IRp = S("k6"), S("k7"), S("k8"), S("k20"), S("PTP"), S("IRp")
+
+    # The structure the closed form rests on.
+    assert sympy.simplify(rate["x9"] + rate["x10"] + rate["x12"]) == 0
+    assert sympy.simplify(rate["x11"] + rate["x12"]) == 0
+    assert sympy.expand(rate["x8"].subs({x5: 0, x8: 0})) == sympy.expand(-k6 * PTP * k8)
+    assert sympy.diff(rate["x4"] + rate["x5"], x8) == k20
+    assert sympy.simplify(sympy.diff(rate["x9"], x9) + k7 * (x4 + x5) / IRp) == 0
+
+    value = {p.getId(): p.getValue() for p in model.getListOfParameters() if p.isSetValue()}
+    (k8_rule,) = [
+        r for r in model.getListOfRules() if r.isAssignment() and r.getVariable() == "k8"
+    ]
+    value["k8"] = float(expr(k8_rule.getMath()))
+    assert value["k8"] == pytest.approx(7.06e12, rel=1e-3)
+    assert value["IRp"] == pytest.approx(8.97e-13)
+    x9_0 = model.getSpecies("x9").getInitialConcentration()
+    # x9 starts AT the suite's atol, which is why neither engine's error test sees it.
+    assert x9_0 == ac.DEFAULT_ATOL == 1e-12
+
+    A = value["k7"] * value["k20"] * value["k6"] * value["PTP"] * value["k8"] / (6 * value["IRp"])
+    assert pytest.approx(5.29e20, rel=1e-2) == A
+    law = lambda t: x9_0 * math.exp(A * t**3)  # noqa: E731
+    t_overflow = ((math.log(sys.float_info.max) - math.log(x9_0)) / A) ** (1 / 3)
+    assert t_overflow < 2e-6
+    (job,) = [
+        j
+        for j in read_manifest(_PC / "rr_parity" / "ode_jobs.json")[1]
+        if j.model_id == "MODEL1112050001"
+    ]
+    assert job.params["t_end"] > t_overflow * 1e6
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        m = bngsim.Model.from_sbml(str(path))
+        tracked = bngsim.Simulator(m, method="ode").run(
+            sample_times=[0.0, 3e-7], rtol=1e-8, atol=1e-24
+        )
+        m.reset()
+        suite = bngsim.Simulator(m, method="ode").run(
+            (0.0, 100.0), 101, rtol=ac.DEFAULT_RTOL, atol=ac.DEFAULT_ATOL
+        )
+    names = list(tracked.species_names)
+    got = np.asarray(tracked.species)[-1, names.index("x9")]
+    assert got == pytest.approx(law(3e-7), rel=1e-4)
+
+    y = dict(zip(names, np.asarray(suite.species)[1], strict=False))  # t = 1
+    a = value["k7"] * abs(y["x4"] + y["x5"]) / value["IRp"]
+    held = -value["k22"] * value["PTP"] * y["x10"] / a
+    assert y["x9"] < 0 < y["x10"]
+    assert y["x9"] == pytest.approx(held, rel=1e-3)
+
+
 # --------------------------------------------------------------------------- #
 # Renderer
 # --------------------------------------------------------------------------- #
@@ -433,3 +600,49 @@ def test_the_page_counts_and_explains_the_disposed_rows(tmp_path):
     assert "REF INVALID" in html
     assert "ref invalid" in html  # the summary card
     assert "30 of 31 inert" in html  # the evidence reaches the page
+
+
+def test_a_no_ground_truth_bad_test_is_recognised_and_nothing_else_is():
+    label = ad.NO_GROUND_TRUTH_LABEL
+    assert gam.is_no_ground_truth({"outcome": "BAD_TEST", "comment": f"{label} (GH #1542): x"})
+    assert not gam.is_no_ground_truth({"outcome": "BAD_TEST", "comment": "both raised"})
+    assert not gam.is_no_ground_truth({"outcome": "BAD_TEST"})
+    # The label alone does not make a row one: only the BAD_TEST the disposition made.
+    assert not gam.is_no_ground_truth({"outcome": "PASS", "comment": f"{label}: x"})
+
+
+def test_the_ode_page_draws_a_no_ground_truth_row_as_that(tmp_path):
+    """Two engines that ran are not two engines that refused: the default BAD_TEST
+    footnote would say both rejected the model, which neither did."""
+    label = ad.NO_GROUND_TRUTH_LABEL
+    rows = [
+        {
+            "model_id": "MODEL1112050001",
+            "method": "ode",
+            "reference_engine": "amici",
+            "outcome": "BAD_TEST",
+            "comment": f"{label} (GH #1542): x9 leaves the doubles | was DIFF at max_rel=1",
+        },
+        {
+            "model_id": "MODEL0000000001",
+            "method": "ode",
+            "reference_engine": "amici",
+            "outcome": "BAD_TEST",
+            "comment": "both raised",
+        },
+    ]
+    report = tmp_path / "report_ode.json"
+    meta = {
+        "tally": {"BAD_TEST": 2},
+        "n_jobs": 2,
+        "elapsed_sec": 1.0,
+        "versions": {"bngsim": "0", "amici": "0", "python": "3", "platform": "x"},
+    }
+    report.write_text(json.dumps({"_meta": meta, "results": rows}))
+    out = tmp_path / "m.html"
+    gam.generate_html(report, out)
+    html = out.read_text()
+    assert html.count("NO TRUTH") == 2  # both engines' cells on the one row
+    assert html.count("no solution over this horizon") == 1  # bngsim's cell
+    assert html.count("no solution to check it against") == 1  # AMICI's cell
+    assert html.count("Both engines rejected this model") == 2  # the other row's two cells

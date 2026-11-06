@@ -41,7 +41,10 @@ nowhere to go and scored as a bngsim DIFF. An authored disposition — third-ora
 evidence required — turns such a DIFF into REFERENCE_FAILED/``invalid_result``
 (no oracle; non-scoring), and turns a DIFF that neither engine is at fault for
 into PASS with the reason recorded. Both apply only while the row is genuinely a
-DIFF and are flagged STALE the moment it agrees on its own.
+DIFF and are flagged STALE the moment it agrees on its own. A third kind marks a
+model with no solution to compare against over the job's horizon: whichever way
+the two engines' answers fall, PASS or DIFF, the row becomes a non-scoring
+BAD_TEST (issue #1542).
 
 Usage:
     cd bngsim && .venv/bin/python parity_checks/amici_parity/amici_run.py \\
@@ -536,9 +539,8 @@ def main() -> int:
     now = _dt.datetime.now().isoformat(timespec="seconds")
     # AMICI-calibrated dispositions (issue #380) — read from the module, not the
     # manifest, because the manifest is shared with rr_parity and an
-    # AMICI-calibrated entry must not leak into that suite. None are authored for
-    # the ODE regime yet; the ODE Class-2 divergences in AMICI_KNOWN_ISSUES.md are
-    # a separate triage.
+    # AMICI-calibrated entry must not leak into that suite. The ODE Class-2
+    # divergences in AMICI_KNOWN_ISSUES.md are a separate triage.
     dispositions = amici_dispositions.dispositions_for_regime(ODE_REGIME)
     disposition_states = Counter()
     for r in raw:
@@ -653,9 +655,11 @@ def main() -> int:
                 "REFERENCE_FAILED/"
                 f"{amici_dispositions.INVALID_RESULT_REFUSAL}; 'comparison_artifact:"
                 "applied' — neither engine is wrong and the row became a PASS with "
-                "the reason recorded. ':stale' means the row agrees on its own now "
-                "(prune the entry); ':inapplicable' means the row produced no "
-                "comparison this run, so the entry was neither used nor falsified."
+                "the reason recorded; 'no_ground_truth:applied' — the model has no "
+                "solution over the horizon, so the PASS or DIFF became a non-scoring "
+                "BAD_TEST. ':stale' means the row agrees on its own now (prune the entry); "
+                "':inapplicable' means the row produced no comparison this run, so "
+                "the entry was neither used nor falsified."
             ),
         },
         "oracle_basis": (

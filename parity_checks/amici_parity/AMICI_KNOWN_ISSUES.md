@@ -9,7 +9,8 @@ one.** On all 42 of the 44 ODE divergences where an independent third oracle is 
 **RoadRunner agrees with bngsim exactly** and AMICI is the odd engine out (the other 2
 are inconclusive only because RoadRunner *also* failed those models). Class 4 is the
 narrower claim its own section states: AMICI is not a usable oracle there, which is not
-by itself a bngsim confirmation.
+by itself a bngsim confirmation. Class 6 is not an AMICI problem either: it is a
+model with no solution for either engine to be checked against.
 
 - **Environment:** AMICI pinned to `AMICI-dev/AMICI@667b17b6b` (`v1.0.1-12-g667b17b6b`,
   BSD-3; built from source into `bngsim/.venv`, needs `swig`) — see `AMICI_PIN.json` for the
@@ -249,11 +250,79 @@ and bngsim fire none of them. An output time cannot help, because the trigger re
 species, so the row is an `INVALID_REFERENCE` entry in `amici_dispositions.py`.
 While it stands, the AMICI row checks nothing on this model; rr_ode is the check.
 
-**Not in this class: MODEL1112050001**, the sixth model in #1542. It has no events.
-It passes against AMICI on x86-64 (0/2929 cells, err/movement 2.8e-9), so the
-`DIFF` #1542 measured on an Apple M1 Max (676/2929 cells) is not reproduced here. At
-the suite's rtol 1e-9 / atol 1e-12 both engines integrate it at the edge of a wall:
-with atol 0.95e-12, or rtol 1e-10, both fail near t = 3.3e-7 to 5.6e-7.
+**Not in this class: MODEL1112050001**, the sixth model in #1542. It has no events;
+see Class 6.
+
+## Class 6 — a model with no solution to compare against (MODEL1112050001, issue #1542)
+
+The sixth model in #1542 has no events. Against AMICI it read `PASS` on bngsim 0.15.1,
+and on x86-64 it still does (0/2929 cells, #1546). On arm64 it has read `DIFF` since
+#1076: 676/2929 cells, 240 hard. Those are #1542's M1 Max numbers, measured again on
+an M4 Max at `e3b66384`. Neither verdict says anything about bngsim. Over the job's
+horizon the model has no solution in double precision, and both engines return a
+trajectory that is not one. The row is a `NO_GROUND_TRUTH` entry in
+`amici_dispositions.py`, which makes it a non-scoring `BAD_TEST` whichever way it
+falls; the matrix page draws it as `NO TRUTH`. rr_parity adjudicates the model
+`uncoverable` too.
+
+**The closed form.** The rate rule `x8' = k19·x5 − k20·x8 − k6·PTP·k8` drains `x8` at
+a constant rate. `k8` is a 7.06e12 rate constant, and the term reads like a typo for
+`x8`. Early on, that makes `x4 + x5 = −3.42e8·t²` (a run reads −3.420e-6 at t = 1e-7).
+Then `x9' = k22·PTP·x10 − k7·x9·(x4+x5)/IRp`, with `IRp = 8.97e-13`, grows `x9` at
+the rate `a = k7·|x4+x5|/IRp = 1.59e21·t²`. The model conserves `x9 + x10 + x12` and
+`x11 + x12`, and keeps `x11 ≥ 0`, so `x9' ≥ (a − k22)·x9 + k22·9e-13`. To leading
+order, `x9 = 1e-12·exp(5.29e20·t³)`:
+
+| t | the law | measured |
+|---|---|---|
+| 1e-7 | 1.697e-12 | 1.697e-12: scipy's DOP853 (explicit Runge-Kutta, not SUNDIALS) on a right-hand side built from the SBML text, rtol 1e-12, atol 1e-80 |
+| 3.36e-7 | 5.115e-4 | 5.115e-4: bngsim at rtol 1e-10, atol 1e-30 |
+| 1.1e-6 | passes the largest double | |
+| 1 | ln(x9) ≈ 5e20 | |
+
+**What both engines return instead.** `x9` starts at 1e-12, which is the suite's atol,
+so neither engine's error test sees it. Each holds `x9` on its repelling equilibrium,
+`−k22·x10/a`, instead of following it. At t = 1 that is −1.609e-32 in bngsim and
+−2.649e-34 in AMICI, each equal to its own equilibrium to 4 digits. Both then run on
+to t = 100. A tighter tolerance (atol 1e-14, or rtol 1e-10) makes both engines try to
+follow `x9`, and both fail between t = 3.3e-7 and 5.6e-7: bngsim's step collapses
+until t + h == t, and AMICI reports `AMICI_TOO_MUCH_WORK`. So no engine has an answer
+here past about t = 1e-6, and the AMICI row compares two trajectories that are not
+solutions.
+
+**Why the verdict flips.** On that trajectory, once `x6` drives `x2` negative,
+`x1' = x1·(k1·|x2| − b3) + b1·vp·h1p/v` is unstable too, and rounding decides whether
+a step holds `x1` the same way.
+
+| at t = 1 | `x1` | `x2` |
+|---|---|---|
+| AMICI | 7.483e8 | −5.011e-8 |
+| bngsim, atol 1.01e-12 | 7.483e8 | −5.011e-8 |
+| bngsim, atol 1e-12, arm64 since #1076 | 3.528e-25 | −7.518e8 |
+
+`x3`, `x4`, `x5` and `x7` differ in the same way, and those cells are the `DIFF`. At
+rtol 1e-9 / atol 1e-12 exactly, bngsim at main on arm64 holds `x1`. Moving atol by 1
+to 20 ulps either way (40 points) lets `x1` grow every time. Over 120 draws, with
+rtol and atol each scaled by an independent uniform factor in
+[1 − 1e-3, 1 + 1e-3]:
+
+| engine | `x1` grows | `x1` held | fails |
+|---|---|---|---|
+| bngsim, main, arm64 | 119 | 0 | 1 |
+| AMICI 1.0.1 | 117 | 0 | 3 |
+
+At the manifest's own rtol 1e-6 / atol 1e-9 the outcome is less settled. A ±10% scan of
+rtol (41 points) gives bngsim 24 grows, 11 held and 6 failed.
+
+**What moved it.** A first-parent bisect over `3183494c..0b7b3424` stops at #1076
+(`35e9bb1a`). #1076 compiles ExprTk with `-ffp-contract=off`, so that on arm64,
+`a*b + c` is no longer fused into a multiply-add and rounds as it does on x86-64. Its
+parent, `2a4d72e0`, lets `x1` grow. Removing only that flag puts #1076 back to `x1`
+growing, and main (`e3b66384`) as well. #1076 also restored the exact sign rule in
+`cvode_simulator.cpp`'s #928 handler. With that change kept and the flag removed,
+`x1` grows, so the handler is not the cause. #1076 changed rounding on purpose, and
+its fix stands. Any later rounding change (in ExprTk, SUNDIALS or the compiler) can
+flip this row either way, on either platform, and the disposition makes that moot.
 
 ## Bottom line
 
@@ -261,6 +330,7 @@ AMICI passes ~79% of the SBML ODE corpus. Where it fails it is an **AMICI**
 limitation (codegen gaps for discrete math and events, integrator bailouts, internal
 bugs) or an **AMICI** integration error — never a bngsim defect. Across both reference
 engines (RoadRunner and AMICI) on the full SBML corpus, **bngsim is never the outlier.**
+Class 6's model has no solution for either engine to be measured against.
 
 ## Reproduce
 
