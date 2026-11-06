@@ -978,9 +978,9 @@ def bn_nf_xml(
     initial population (verified), so the build cost is paid once and the
     per-replicate cost is just initialize+simulate — the ``setup_per_rep_sec``
     (initialize) is split out of the per-trajectory headline, mirroring the SSA
-    clone+construct. ``block_same_complex_binding`` defaults to bngsim's correct
-    ``True``; the caller may set it False to match the legacy NFsim binary's
-    same-complex-binding semantics for an apples-to-apples timing comparison.
+    clone+construct. ``block_same_complex_binding`` defaults to bngsim's
+    ``True``, BNG2.pl's semantics; ``False`` is for timing only (see
+    ``bng_stoch_run.py --nf-bscb``).
     Returns the observables by name (network-free → there are no species).
     """
     import statistics as _st
@@ -2714,9 +2714,9 @@ def run_network_ssa(
 
 # A ``Species``-type observable forces NFsim to track full complex identity, which
 # it refuses to do unless the ``-cb`` (complex book-keeping) flag is set ("you have
-# a Species observable … rerun with -cb"). bngsim enables this automatically; the
-# legacy NFsim does not, so we detect it from the model and pass ``-cb`` only when
-# needed (it carries a runtime cost, so a Molecules-only model is left without it).
+# a Species observable … rerun with -cb"). bngsim enables this automatically. ``-cb``
+# also blocks same-complex binding, so the stochastic runner gives it whenever bngsim
+# blocks (``bng_stoch_run.legacy_cb``, #1549); this detects the other case.
 _NF_SPECIES_OBS_RE = re.compile(r"^\s*(?:\d+\s+)?Species\b", re.IGNORECASE)
 
 
@@ -2746,6 +2746,76 @@ def _parse_nfsim_timing(stdout: str) -> dict:
     return out
 
 
+# NFsim reads a seed count by truncating it (an ``(int)`` cast), so 421.55 seeds 421
+# molecules. bngsim rounds half-up (GH #51, as BNG2.pl's run_network and COPASI do),
+# so its network-free engines seed 422 from the same XML: bngsim rewrites each
+# fractional ``<Species concentration=...>`` in the XML it hands them
+# (``write_seed_rounded_xml`` in src/seed_count_rounding.hpp). Fed the raw XML, the
+# legacy NFsim would start every replicate from a different state, and every cell of
+# a conserved total would differ by a molecule (issue #1549). This is the same
+# rewrite, line for line, so both engines start from the same integers.
+def _xml_attr(line: str, attr: str) -> re.Match | None:
+    """``attr="value"`` in ``line`` as a whole attribute name, value in group 1."""
+    return re.search(rf"(?<![A-Za-z0-9_]){re.escape(attr)}=([\"'])(.*?)\1", line)
+
+
+def _resolve_seed_token(tok: str, params: dict[str, float]) -> float | None:
+    """A concentration token as a finite number: a literal, or a parameter's value."""
+    t = tok.strip()
+    if not t:
+        return None
+    try:
+        v = float(t)
+    except ValueError:
+        v = params.get(t)
+    return v if v is not None and np.isfinite(v) else None
+
+
+def _round_half_up(x: float) -> int:
+    return int(np.floor(x + 0.5)) if x >= 0.0 else int(np.ceil(x - 0.5))
+
+
+def seed_rounded_xml(xml_path: str | Path, out_path: str | Path) -> list[str]:
+    """Copy ``xml_path`` to ``out_path`` with every fractional seed count rounded half-up.
+
+    Mirrors bngsim's ``write_seed_rounded_xml``: one forward pass collects each
+    ``<Parameter>``'s ``value`` and rewrites each ``<Species>`` in ``<ListOfSpecies>``
+    whose ``concentration`` is a literal or a parameter id with a fractional value.
+    Anything else (a compound expression, an unknown id) is left as written, as
+    bngsim leaves it. Returns the ids of the species rewritten; ``out_path`` is
+    written only when there is at least one.
+    """
+    params: dict[str, float] = {}
+    lines = Path(xml_path).read_text().split("\n")
+    in_params = in_species = False
+    rewritten: list[str] = []
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if not in_params and "<ListOfParameters>" in line:
+            in_params = True
+        elif in_params and "</ListOfParameters>" in line:
+            in_params = False
+        elif in_params and s.startswith("<Parameter"):
+            pid, val = _xml_attr(s, "id"), _xml_attr(s, "value")
+            if pid and val:
+                with contextlib.suppress(ValueError):
+                    params[pid.group(2)] = float(val.group(2))
+        if not in_species and "<ListOfSpecies>" in line:
+            in_species = True
+        elif in_species and "</ListOfSpecies>" in line:
+            in_species = False
+        elif in_species and s.startswith("<Species"):
+            m = _xml_attr(line, "concentration")
+            v = _resolve_seed_token(m.group(2), params) if m else None
+            if m and v is not None and np.floor(v) != v:
+                lines[i] = line[: m.start(2)] + str(_round_half_up(v)) + line[m.end(2) :]
+                sid = _xml_attr(s, "id")
+                rewritten.append(sid.group(2) if sid else s)
+    if rewritten:
+        Path(out_path).write_text("\n".join(lines))
+    return rewritten
+
+
 def nfsim_run(
     xml_path: str | Path,
     nfsim_bin: str,
@@ -2758,14 +2828,18 @@ def nfsim_run(
     timeout: float,
     gml: int | None = None,
     complex_bookkeeping: bool = False,
+    round_seeds: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, list[str], dict]:
     """``n_rep`` legacy ``NFsim`` replicates on the SAME BNG-XML.
 
     Builds the NF command (``-xml <xml> -sim <t_end> -oSteps <n_steps> -seed <seed>
     [-gml <limit>] [-cb] -o <out>``) and runs it once per seed — a fresh process each
-    (per-call cost; no warm reuse). ``complex_bookkeeping`` adds ``-cb`` (required
-    for a model with a ``Species``-type observable; see
-    :func:`nf_needs_complex_bookkeeping`). NFsim has no t_start offset (it simulates
+    (per-call cost; no warm reuse). ``complex_bookkeeping`` adds ``-cb``, which a
+    model with a ``Species``-type observable needs (see
+    :func:`nf_needs_complex_bookkeeping`) and which also blocks same-complex binding
+    (``bng_stoch_run.legacy_cb``). ``round_seeds`` runs NFsim on a copy of the XML
+    whose fractional seed counts are rounded half-up, as bngsim's engines read them
+    (:func:`seed_rounded_xml`; issue #1549). NFsim has no t_start offset (it simulates
     ``[0, t_end]``), and
     ``-oSteps n_steps`` emits ``n_steps+1`` output rows, matching bngsim's
     ``n_points = n_steps+1`` grid. Reads the ``.gdat`` OBSERVABLES (network-free →
@@ -2778,6 +2852,10 @@ def nfsim_run(
     out: list[np.ndarray] = []
     walls: list[float] = []
     self_timing: dict = {}
+    if round_seeds:
+        rounded = Path(f"{out_prefix}_seed_rounded.xml")
+        if seed_rounded_xml(xml_path, rounded):
+            xml_path = rounded
     for rep in range(n_rep):
         outg = f"{out_prefix}_{rep}.gdat"
         cmd = [

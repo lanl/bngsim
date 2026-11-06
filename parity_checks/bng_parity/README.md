@@ -327,8 +327,8 @@ python generate_bng_matrix.py runs/report_nf.json    # -> runs/bng_matrix_nf.htm
   ensemble (replicate median, **cold → warm**, ensemble total, per-replicate setup).
 - **The legacy binary** runs the SAME artifact as a fresh process per seed (per-call
   cost, no warm reuse): SSA → `run_network -p ssa` with its own init/propagation CPU
-  split; NF → `NFsim` with its own total CPU + reactions/sec (and `-cb` auto-added
-  when the model has a `Species` observable, which bngsim handles natively).
+  split; NF → `NFsim` with its own total CPU + reactions/sec, given `-cb` and the
+  XML with bngsim's seed counts (next item).
 - **Judgment** is the shared `_core.differ.ensemble_verdict` over the `.gdat`
   observables (aligned by name): each ensemble is reduced to per-cell (mean, sem)
   and compared with a per-cell K=3σ frac-pass test; **PASS** iff ≥ 99% of cells
@@ -336,11 +336,24 @@ python generate_bng_matrix.py runs/report_nf.json    # -> runs/bng_matrix_nf.htm
   raised, legacy ran → `EXCEPTION`; bngsim ran, legacy raised → `REFERENCE_FAILED`;
   a clean `validate_for_ssa` refusal → `UNSUPPORTED`; build failed / both raised →
   `BAD_TEST`; no resolvable horizon → `SKIP`; wall-cap → `TIMEOUT`.
-- **NF `block_same_complex_binding`.** bngsim runs at its **correct** default
-  (`bscb=True`); the legacy NFsim v1.14.3 has **no `-bscb`** flag, so ring-forming /
-  multivalent models legitimately diverge — a known **reference-side** divergence
-  (the correctness suite reclassifies these `PASS_REF_BUG`), surfaced here as `DIFF`.
-  `--nf-bscb off` matches the legacy binary for an apples-to-apples timing run.
+- **NF: the same model on both sides (issue #1549).** bngsim blocks a bimolecular
+  rule from binding two sites of one complex (`block_same_complex_binding=True`, its
+  default), as BNG2.pl's network does. Legacy NFsim v1.14.3 does the same under
+  `-cb`, which BNG2.pl's `simulate_nf` passes by default (`complex=>1`): NFsim's
+  `-cb` and `-bscb` set one flag, and their output is byte-identical. So the legacy
+  run gets `-cb` whenever bngsim blocks. It also reads bngsim's seed counts: NFsim
+  truncates a fractional count, bngsim rounds it half-up (GH #51), so NFsim reads a
+  copy of the XML with those counts rounded (single-segment runs; a multi-segment
+  run's native BNG2.pl protocol reads its XML unrounded). Before #1549 it got neither unless a
+  Species observable forced `-cb`, which made 14 of 0.17.0's 15 unexplained DIFFs.
+  NFsim flags an action passes through `param=>` (such as `-utl 5`) are not given
+  to the legacy run, as they are not to bngsim; that is why `blbr_rings_posner1995`,
+  whose action passes `-utl 5`, is KNOWN REF for legacy's traversal limit.
+  A model where legacy NFsim is still the outlier against an independent oracle
+  (BNG2.pl's network, RuleMonkey, an analytic answer) is listed in `NF_KNOWN_REF`
+  with the fault and the evidence, and renders KNOWN REF. `--nf-bscb off` is for
+  timing only: bngsim runs without blocking, and legacy NFsim without `-cb` unless a
+  Species observable needs it.
 - **Replicate count + seed-escalation.** Defaults to the corpus' `n_rep=10`; a
   borderline DIFF on a noisy model usually clears at higher N (small-N Monte-Carlo
   noise inflates the z-gate). The runner escalates a DIFF up `ESCALATION_RUNGS`
@@ -390,7 +403,7 @@ given longer, the legacy run might have finished.
 
 An entry is used only while it still describes the job: the BNGL's and any
 injected action block's sha256, `--n-rep`, `--seed-base` and (NF) `--nf-bscb`
-must match, and so must the run derived from the artifact (interval, steps,
+and how the harness calls NFsim (`NF_REFERENCE_CALL`, raised by #1549) must match, and so must the run derived from the artifact (interval, steps,
 molecule limit, segment mode). Otherwise, or with no entry, the row is
 `archive_stale` and names what changed; an entry that cannot be read at all is
 `archive_unreadable`. All three kinds of row are `REFERENCE_FAILED`, carry the
