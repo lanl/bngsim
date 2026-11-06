@@ -415,8 +415,8 @@ def test_an_expired_verdict_is_probed_again(clean, monkeypatch, caplog):
 
 @posix_only
 def test_a_probe_that_proves_nothing_keeps_no_verdict(clean, monkeypatch):
-    """Control. A probe that runs out of time says nothing about the toolchain:
-    the model's error stands, and the next build is attempted."""
+    """A probe that runs out of time says nothing about the toolchain: the
+    model's error stands, and the next build is attempted and probed."""
     cc = FakeCC(clean, monkeypatch, "slowprobe")
     monkeypatch.setattr(tc, "_PROBE_TIMEOUT", 0.5)
     for n in (5, 6):
@@ -429,8 +429,8 @@ def test_a_probe_that_proves_nothing_keeps_no_verdict(clean, monkeypatch):
 @posix_only
 @requires_posix_cc
 def test_a_cached_library_is_still_used(clean, monkeypatch):
-    """Control. A library built before the toolchain broke is served from the
-    cache, verdict or not, and nothing is compiled."""
+    """A library built before the toolchain broke is served from the cache to
+    codegen=True, verdict or not, and nothing is compiled."""
     warm = bngsim.Simulator(_chain(5), method="ode", codegen=True)
     assert warm.codegen_backend == "cc"
     cc = FakeCC(clean, monkeypatch, "broken")
