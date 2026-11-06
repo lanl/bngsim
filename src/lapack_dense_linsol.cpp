@@ -488,12 +488,14 @@ sunindextype ls_last_flag(SUNLinearSolver S) {
 SUNErrCode ls_space(SUNLinearSolver S, long int *lenrwLS, long int *leniwLS) {
     auto *c = static_cast<LapackDenseContent *>(S->content);
     const long int n = static_cast<long int>(c->N);
-    // pivots, the candidates and what they read, plus ipiv where a BLAS factor is
-    // linked (the bytes per row, off[], state[], hit[] and zero[], are left out)
+    // 11 index arrays of size N (pivots, witness, barred, wave, next, cand, cand_of,
+    // n_dep, reader_at, alone, queue), dep_col and reader at kMaxReads per row,
+    // plus ipiv where a BLAS factor is linked (the bytes per row, off[], state[],
+    // hit[] and zero[], are left out)
 #ifdef BNGSIM_HAS_LAPACK_DENSE
-    *leniwLS = 3 + (11 + 2 * kMaxReads) * n;
+    *leniwLS = 3 + (12 + 2 * kMaxReads) * n;
 #else
-    *leniwLS = 3 + (10 + 2 * kMaxReads) * n;
+    *leniwLS = 3 + (11 + 2 * kMaxReads) * n;
 #endif
     *lenrwLS = 2 * n; // alone_diag, alone_x
     return SUN_SUCCESS;

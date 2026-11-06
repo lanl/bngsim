@@ -55,6 +55,8 @@ def test_species_at_zero_that_feed_each_other_stay_there(shape, order):
     x = _species(model, force_dense_linear_solver=True)
     np.testing.assert_array_equal(x["P"], 0.0)
     np.testing.assert_array_equal(x["Q"], 0.0)
+    # 100 times the run's rtol: V is 4.7e-8 off here, and 6.4e-3 or more where the
+    # rows at 0 leave it.
     np.testing.assert_allclose(x["V"], 1.0 - np.exp(-x["t"]), rtol=1e-6, atol=1e-9)
 
 

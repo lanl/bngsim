@@ -1801,7 +1801,7 @@ def test_arms_that_agree_attribute_the_diff_to_one_side():
 def test_an_arm_takes_a_side_within_the_bound_and_none_past_it():
     """Arms half the bound off each side take that side; twice it off, neither.
     Arms that copy a side exactly pass under any bound at all, a far too tight
-    one included, and #1304's dense arm reads neither on some grids anyway."""
+    one included, and #1304's dense arm read neither on some grids before #1485."""
     base = _base("derived-log10")
     ref, path = base.x, base.x * 1.5
     v = _verdict(ref, path)
@@ -2036,9 +2036,11 @@ def test_1304s_models_keep_their_exact_zero_on_dense_as_on_klu(model):
 def test_a_klu_base_takes_the_dense_solver_as_its_other_arm(monkeypatch):
     """The third arms of a base KLU took: its own route at a hundredfold tighter
     tolerance, and the dense solver. Every other attribution test's base is
-    dense, so without this the dense arm is read only by #1304's corpus models,
-    which CI has none of. A copy of a base that ran dense stands in for one KLU
-    took (the cached base is shared): the dense arm reruns it exactly."""
+    dense, so without this no test reads the dense arm: #1304's corpus models,
+    which CI has none of, read it until #1485 gave their dense runs KLU's answer,
+    and their test now asserts that answer. A copy of a base that ran dense
+    stands in for one KLU took (the cached base is shared): the dense arm reruns
+    it exactly."""
     shared = _base("derived-log10")
     routed = shared.linear_solver
     base = shared.against(shared.x)
