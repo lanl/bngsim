@@ -38,6 +38,7 @@ from typing import Any, Literal, NamedTuple, NoReturn
 
 import numpy as np
 
+from bngsim import _codegen_toolchain
 from bngsim._atol import AUTO as _ATOL_AUTO
 from bngsim._atol import TRACKING as _ATOL_TRACKING
 from bngsim._atol import (
@@ -58,6 +59,7 @@ from bngsim._codegen import (
 from bngsim._exceptions import (
     AtolScaleWarning,
     CodegenDeclinedError,
+    CodegenToolchainError,
     DenseSolverFallbackWarning,
     ModelError,
     SensitivityUnsupportedError,
@@ -354,9 +356,14 @@ def _codegen_refusal(cause: BaseException | None, decline: str | None) -> Runtim
     codegen declined the model (``decline``,
     :func:`bngsim._codegen.last_codegen_decline`). Both are read, never inferred
     from the other's absence. A decline is a :class:`CodegenDeclinedError`, a
-    statement about the model; a failed build a plain ``RuntimeError`` (#1313)."""
+    statement about the model; a failed build a plain ``RuntimeError`` (#1313),
+    or a :class:`CodegenToolchainError` when the toolchain cannot build any
+    library (#1544)."""
     if cause is not None:
-        return RuntimeError(
+        failed = (
+            CodegenToolchainError if isinstance(cause, CodegenToolchainError) else RuntimeError
+        )
+        return failed(
             "codegen=True requested, but the codegen build failed "
             f"({type(cause).__name__}: {cause})."
         )
@@ -1078,7 +1085,10 @@ class Simulator:
                     self._ssa_propensity_lib = prepare_ssa_propensity_lib(model) or ""
                     if self._ssa_propensity_lib:
                         logger.debug("SSA propensity .so ready: %s", self._ssa_propensity_lib)
-                except Exception:  # pragma: no cover - defensive
+                except Exception:
+                    # Only BNGSIM_CODEGEN_STRICT raises from the build (#1544).
+                    if _codegen_toolchain.codegen_strict():
+                        raise
                     logger.debug("SSA propensity codegen skipped", exc_info=True)
 
             # PSA shares SsaSimulator; dispatch happens at run time.
@@ -1285,8 +1295,29 @@ class Simulator:
                 and not os.environ.get("BNGSIM_NO_CODEGEN")
                 and model.n_species >= int(os.environ.get("BNGSIM_CODEGEN_THRESHOLD", "256"))
             ):
-                _failure_key = _auto_codegen_failure_key(model, jit_backend)
-                if _failure_key is not None and _failure_key in _AUTO_CODEGEN_FAILURES:
+                # Issue #1544: a toolchain already found unable to build anything
+                # is not asked again, for this model or any other. Its verdict was
+                # logged once, when it was reached; BNGSIM_CODEGEN_STRICT makes the
+                # fallback an error instead.
+                _toolchain_verdict = None if jit_backend else _codegen_toolchain.current_verdict()
+                _failure_key = (
+                    None
+                    if _toolchain_verdict is not None
+                    else _auto_codegen_failure_key(model, jit_backend)
+                )
+                if _toolchain_verdict is not None:
+                    if _codegen_toolchain.codegen_strict():
+                        raise _codegen_toolchain.strict_refusal(
+                            "automatic codegen of this model",
+                            CodegenToolchainError(_toolchain_verdict),
+                        )
+                    logger.debug("Automatic codegen skipped: the toolchain cannot build.")
+                elif _failure_key is not None and _failure_key in _AUTO_CODEGEN_FAILURES:
+                    if _codegen_toolchain.codegen_strict():
+                        raise _codegen_toolchain.strict_refusal(
+                            "automatic codegen of this model",
+                            f"its build failed at {_AUTO_CODEGEN_FAILURES[_failure_key]}",
+                        )
                     _log_auto_codegen_skip(_failure_key)
                 else:
                     try:
@@ -1316,7 +1347,13 @@ class Simulator:
                     except Exception as e:
                         logger.debug("Auto-codegen skipped: %s", e)
                         _failed = e
-                    if _failed is not None:
+                    if _failed is not None and _codegen_toolchain.codegen_strict():
+                        raise _codegen_toolchain.strict_refusal(
+                            "automatic codegen of this model", _failed
+                        ) from _failed
+                    # A toolchain failure is kept as the toolchain's verdict, for
+                    # every model, and checked above (issue #1544).
+                    if _failed is not None and not isinstance(_failed, CodegenToolchainError):
                         _remember_auto_codegen_failure(model, jit_backend, _failed)
 
         if codegen and dispatch == "ode":
