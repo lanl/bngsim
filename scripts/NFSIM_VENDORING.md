@@ -139,15 +139,18 @@ Current carry topics:
   is reached after the reads. Results are unaffected either way; the read is
   undefined behaviour and faults when the array ends at an unmapped page. All
   four sites are reachable and all four fault under AddressSanitizer, with a
-  fixture each under `tests/data/nfsim/`; the three beyond `checkBonds`' normal
-  branch need a symmetric component off the reaction centre -- on the partner's
-  side for the two `tryToMap()` sites, on the matched molecule's own side for
-  `checkSymmetricComponents`' normal branch, whose partner index is concrete --
-  which nothing in a 54-model sweep has, so that sweep's zero hits say nothing
-  about reachability. A positive fixture holds the `checkSymmetricComponents`
-  guard to `continue`: `return false` there abandons the rest of the equivalency
-  class and loses a match origin/main keeps (GH #1543; submitted upstream as
-  RuleWorld/nfsim#113)
+  fixture each under `tests/data/nfsim/`. The three beyond `checkBonds`' normal
+  branch each need a symmetric component off the reaction centre, on a side that
+  differs by site: the partner's for `checkBonds`' `tryToMap()` branch; the
+  matched molecule's own, with a concrete partner index, for
+  `checkSymmetricComponents`' normal branch; and both for
+  `checkSymmetricComponents`' `tryToMap()` branch, since that function's loop
+  runs over the matched template's own symmetric components and so is not
+  entered without own-side symmetry. Nothing in a 54-model sweep has that, so
+  the sweep's zero hits say nothing about reachability. A positive fixture holds
+  the `checkSymmetricComponents` guard to `continue`: `return false` there
+  abandons the rest of the equivalency class and loses a match origin/main keeps
+  (GH #1543; submitted upstream as RuleWorld/nfsim#113)
 
 Not a carry, but tied to the vendored NFsim: bngsim refuses, by name, the rate
 laws NFsim cannot run, in `python/bngsim/_network_free_checks.py`

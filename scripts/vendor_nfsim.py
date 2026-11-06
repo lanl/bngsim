@@ -471,11 +471,14 @@ CARRY_QUEUE = (
             "faults when the array ends at an unmapped page, which SIGSEGV'd a "
             "210-model network-free run. A guard sits above each branch dispatch, "
             "covering all four sites. All four are reachable and fault under "
-            "AddressSanitizer; the three beyond checkBonds' normal branch need a "
-            "symmetric component off the reaction centre -- on the partner's side "
-            "for the two tryToMap sites, on the matched molecule's own side for "
-            "checkSymmetricComponents' normal branch, whose partner index is "
-            "concrete -- which nothing in a 54-model corpus sweep has. A fixture per "
+            "AddressSanitizer. The three beyond checkBonds' normal branch each need a "
+            "symmetric component off the reaction centre, on a side that differs by "
+            "site: the partner's for checkBonds' tryToMap branch, the matched "
+            "molecule's own for checkSymmetricComponents' normal branch, and both "
+            "for checkSymmetricComponents' tryToMap branch (own-side symmetry is "
+            "what reaches that function at all, since its loop runs over the matched "
+            "template's own symmetric components). Nothing in a 54-model corpus "
+            "sweep has that, so the sweep reaches only the first site. A fixture per "
             "site is committed under tests/data/nfsim/, plus a positive one holding "
             "the csc guard to `continue` rather than `return false`. Submitted "
             "upstream as RuleWorld/nfsim#113, open at the time of writing; see "
@@ -483,7 +486,7 @@ CARRY_QUEUE = (
         ),
         "commits": [
             {
-                "commit": "19ae1c04c6afc85a43199ea5587bd962bcb0b312",
+                "commit": "8ed168fe8366c7c9c01f21b45da5f56e055fedcf",
                 "summary": (
                     "bngsim: reject a bond partner of the wrong molecule type before indexing it"
                 ),

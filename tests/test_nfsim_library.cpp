@@ -541,34 +541,44 @@ static bool test_system_destruction(const string &xml_path) {
 
 // ─── Test 11: a bond partner of another molecule type (#1543) ───────────────
 //
-// Four fixtures, one per site where a component index belonging to the PARTNER
-// TEMPLATE's molecule type is applied to the bound molecule before anything has
-// checked that the molecule is of that type. In each, the rule's partner is a
-// 2- or 4-component C while the seed species bonds to a 1-component B, so the
-// index runs off the end of B's arrays.
+// Five fixtures. Four negative, one per site where a component index belonging
+// to the PARTNER TEMPLATE's molecule type is applied to the bound molecule
+// before anything has checked that the molecule is of that type; and one
+// positive, which pins the shape of the checkSymmetricComponents guard.
 //
-// The three beyond the first reach their site only because of a symmetric
-// component off the reaction centre, leaving the bond as pure context: on the
-// PARTNER's side for the two tryToMap sites, and on the matched molecule's OWN
-// side for checkSymmetricComponents' normal branch, whose partner index is
-// concrete -- that concreteness is what selects the normal branch. On the
-// reaction centre NFinput resolves a symmetric component to a concrete
-// symPermutationName. A 54-model corpus sweep reaches only the first fixture's
-// site, which is a property of that corpus and not evidence the others cannot
-// happen.
+// What each negative fixture needs in order to reach its site, measured rather
+// than assumed -- the symmetric component must be off the reaction centre,
+// because on it NFinput resolves one to a concrete symPermutationName:
 //
-// CONTROL in an ordinary build, deliberately. Whatever the stray read returns,
-// the match is rejected a few lines later, so the counts below hold on the
-// unfixed engine too and this test passes there. The detector is the nightly
-// AddressSanitizer job (.github/workflows/sanitizers.yml), which runs this
-// binary; on the unfixed engine each fixture reports
+//   fixture        site                              symmetric component
+//   bond           checkBonds, normal                none
+//   cb_symmetric   checkBonds, tryToMap              partner side
+//   csc_symmetric  checkSymmetricComponents, tryToMap  both sides
+//   csc_normal     checkSymmetricComponents, normal  own side (partner index
+//                                                    concrete)
+//
+// Both checkSymmetricComponents sites need own-side symmetry because that
+// function's loop runs over the matched template's own symmetric components, so
+// it is not entered at all without one. A 54-model corpus sweep reaches only
+// the first fixture's site, which is a property of that corpus and not evidence
+// the others cannot happen.
+//
+// The four negatives are CONTROLS in an ordinary build, deliberately: whatever
+// the stray read returns, the match is rejected a few lines later, so their
+// counts hold on the unfixed engine too and they pass there. Their detector is
+// the nightly AddressSanitizer job (.github/workflows/sanitizers.yml), which
+// runs this binary; on the unfixed engine each reports
 //
 //   ERROR: AddressSanitizer: heap-buffer-overflow / READ of size 8
 //
-// in checkBonds, tryToMap or checkSymmetricComponents respectively, and all
-// four are clean with the guards in place. That job does not run on an ordinary
-// pull request (its pull_request trigger is restricted to its own path), so
-// dispatch it on a branch that touches this engine.
+// in checkBonds, tryToMap, tryToMap and checkSymmetricComponents respectively,
+// and all five fixtures are clean with the guards in place. That job does not
+// run on an ordinary pull request (its pull_request trigger is restricted to
+// its own path), so dispatch it on a branch that touches this engine.
+//
+// The positive fixture is the exception: it asserts a result, fails in an
+// ordinary build if the csc guard returns instead of continuing, and is the
+// only thing here holding that choice.
 namespace {
 struct PartnerTypeCase {
     const char *xml;    // fixture under tests/data/nfsim/
@@ -579,18 +589,20 @@ struct PartnerTypeCase {
     int seed2;
     int final1;         // counts after simulating; equal to the seed ones for
     int final2;         // the four negative fixtures, different for the positive
+    double t_end;       // long enough that the positive row's conversion is
+                        // complete for any seed: at k=1, exp(-30) per molecule
 };
 const PartnerTypeCase kPartnerTypeCases[] = {
     // Negative: no match exists, so nothing moves. One per site at which a
     // partner-template component index is applied to the bound molecule.
     {"partner_type_bond.xml", "checkBonds, normal branch",
-     "Abound", "Cfree", 100, 100, 100, 100},
+     "Abound", "Cfree", 100, 100, 100, 100, 10.0},
     {"partner_type_cb_symmetric.xml", "checkBonds, symmetric branch (tryToMap)",
-     "Ap0", "Ap1", 100, 0, 100, 0},
+     "Ap0", "Ap1", 100, 0, 100, 0, 10.0},
     {"partner_type_csc_symmetric.xml", "checkSymmetricComponents, symmetric (tryToMap)",
-     "Ap0", "Ap1", 100, 0, 100, 0},
+     "Ap0", "Ap1", 100, 0, 100, 0, 10.0},
     {"partner_type_csc_normal.xml", "checkSymmetricComponents, normal branch",
-     "Ap0", "Ap1", 100, 0, 100, 0},
+     "Ap0", "Ap1", 100, 0, 100, 0, 10.0},
     // Positive, and the only row here that asserts a result rather than the
     // absence of one. A's two symmetric s components are bonded to a wrong-typed
     // B and to a matching C, so the rule MUST still match through the C bond.
@@ -599,11 +611,11 @@ const PartnerTypeCase kPartnerTypeCases[] = {
     // this match (measured: Ap1 100 -> 0), which is why the guard cannot copy
     // checkBonds' idiom.
     {"partner_type_csc_positive.xml", "checkSymmetricComponents, match preserved",
-     "Ap0", "Ap1", 100, 0, 0, 100},
+     "Ap0", "Ap1", 100, 0, 0, 100, 30.0},
 };
 }  // namespace
 
-static bool test_partner_type_bond(const string & /*xml_path*/) {
+static bool test_partner_type_sites(const string & /*xml_path*/) {
     cout << "  Test 11: bond partner of another molecule type (#1543) ..." << endl;
 
     bool ok = true;
@@ -664,7 +676,7 @@ static bool test_partner_type_bond(const string & /*xml_path*/) {
             continue;
         }
 
-        const double finalTime = s->sim(10.0, 10, false);
+        const double finalTime = s->sim(tc.t_end, 10, false);
         if (finalTime < 0.0) {
             cout << "FAILED (sim returned negative time)" << endl;
             delete s;
@@ -745,7 +757,7 @@ int main(int argc, char *argv[]) {
     run(test_tfun_parse_simulate);
     run(test_reserved_symbol_params);
     run(test_reserved_param_simulate);
-    run(test_partner_type_bond);
+    run(test_partner_type_sites);
     run(test_system_destruction);
 
     cout << "\n=== Results: " << passed << " passed, " << failed << " failed ===" << endl;

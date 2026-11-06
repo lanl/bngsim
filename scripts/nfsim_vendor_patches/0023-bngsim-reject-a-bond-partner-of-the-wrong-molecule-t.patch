@@ -1,4 +1,4 @@
-From 19ae1c04c6afc85a43199ea5587bd962bcb0b312 Mon Sep 17 00:00:00 2001
+From 8ed168fe8366c7c9c01f21b45da5f56e055fedcf Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <bill.hlavacek@gmail.com>
 Date: Thu, 5 Nov 2026 13:28:46 -0700
 Subject: [PATCH] bngsim: reject a bond partner of the wrong molecule type
@@ -31,14 +31,20 @@ All four sites are reachable, and all four fault under AddressSanitizer:
     read at index 3 of LAT's two-element array. The same mismatch
     also lands inside the array (index 1 on that LAT), reading an unrelated
     component's bond.
-  * The other three: a symmetric component off the reaction centre, so the bond
-    stays pure context -- on the PARTNER's side for the two tryToMap sites, and
-    on the matched molecule's OWN side for checkSymmetricComponents' normal
-    branch, whose partner index is concrete (that concreteness is what selects
-    the normal branch). On the reaction centre NFinput resolves a symmetric
-    component to a concrete symPermutationName, which is why a 54-model sweep
-    reaches only the first site -- zero hits there is a property of the corpus,
-    not evidence that the others cannot happen.
+  * The other three each need a symmetric component off the reaction centre, and
+    which side differs by site:
+      - checkBonds' tryToMap branch: the PARTNER's side, which is what makes
+        bondPartnerCompIndex negative and selects that branch.
+      - checkSymmetricComponents' normal branch: the matched molecule's OWN
+        side, with a concrete partner index.
+      - checkSymmetricComponents' tryToMap branch: BOTH -- own-side symmetry to
+        reach that function at all, since its loop runs over the matched
+        template's own symmetric components, and partner-side to take the
+        symmetric branch within it.
+    On the reaction centre NFinput resolves a symmetric component to a concrete
+    symPermutationName, so the symmetry has to sit elsewhere in the rule. That
+    is why a sweep of 54 models reaches only the first site -- zero hits there
+    is a property of the corpus, not evidence the others cannot happen.
 
 Results are unaffected at every site -- the match is rejected a few lines later
 either way -- but the read is undefined behaviour that faults when the array
@@ -64,7 +70,7 @@ Upstream: RuleWorld/nfsim#113. BNGsim: GH #1543.
  1 file changed, 31 insertions(+)
 
 diff --git a/src/NFcore/templateMolecule.cpp b/src/NFcore/templateMolecule.cpp
-index bf6a69f..d32c532 100644
+index bf6a69f..933a7c7 100644
 --- a/src/NFcore/templateMolecule.cpp
 +++ b/src/NFcore/templateMolecule.cpp
 @@ -1097,6 +1097,25 @@ bool TemplateMolecule::checkBonds(Molecule *m, ReactantContainer *rc, MappingSet
@@ -79,8 +85,8 @@ index bf6a69f..d32c532 100644
 +		//after those reads. Molecule::bond and Molecule::indexOfBond are sized to
 +		//the molecule's own component count and the accessors do not bounds-check,
 +		//so a molecule of a shorter type is read out of bounds -- in tcr.bngl a
-+		//ZAP70 bound to a LAT (2 components) is read with LCP2's component index
-+		//3, two slots past the end of LAT's bond array, which AddressSanitizer
++		//ZAP70 bound to a LAT (2 components) is read at LCP2's component index 3,
++		//past the end of LAT's two-element bond array, which AddressSanitizer
 +		//reports as a heap-buffer-overflow here. Where the stray index lands
 +		//inside the array instead, it reads an unrelated component's bond.
 +		//A molecule of another type cannot satisfy a template of this one, so the
