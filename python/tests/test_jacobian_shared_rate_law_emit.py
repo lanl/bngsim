@@ -19,10 +19,11 @@ What is pinned here:
   chunked, matches the interpreted assembly (``_dense_analytical_jacobian``, the
   FD-self-checked oracle) and a finite difference, so a term scattered into the
   wrong row, or not at all, fails. In the ``.net`` fixture a source of another
-  law sits between two carriers and writes the entry (A, C) they also write, so
-  that entry sums in a different order than the interpreted assembly does. With
-  two terms the order cannot change the rounding, so no fixture here observes a
-  reordering effect; the tolerance is what would absorb one.
+  law sits between two carriers and writes the entry (A, C) that the second one
+  also writes, so that entry sums in a different order than the interpreted
+  assembly does. With two terms the order cannot change the rounding, so no
+  fixture here observes a reordering effect; the tolerance is what would absorb
+  one.
 * **The sensitivity RHS's ``J·v``,** the other consumer of the same groups,
   still equals the compiled ``J`` times ``v``.
 
