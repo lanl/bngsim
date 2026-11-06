@@ -71,6 +71,7 @@ kind=model
 for a in "$@"; do
   case "$a" in
     -print-prog-name=*) echo "query" >> "$FAKECC_LOG"; echo "fakecc: no linker" >&2; exit 1 ;;
+    -c) kind=object ;;
     *.c) if grep -q bngsim_toolchain_probe "$a" 2>/dev/null; then kind=probe; fi ;;
   esac
 done
@@ -80,6 +81,8 @@ case "$FAKECC_MODE" in
   model) if [ "$kind" = probe ]; then delegate "$@"; fi ;;
   sdk) case "${SDKROOT:-}" in *Good.sdk) delegate "$@" ;; esac ;;
   slowprobe) if [ "$kind" = probe ]; then sleep 5; fi ;;
+  link) if [ "$kind" = object ]; then delegate "$@"; fi ;;
+  flag) if [ ! -e "$FAKECC_FLAG" ]; then delegate "$@"; fi ;;
 esac
 echo "ld: warning: ignoring file ${SDKROOT:-}/usr/lib/libSystem.tbd, malformed file" >&2
 echo "Undefined symbols for architecture arm64:" >&2
@@ -111,6 +114,7 @@ class FakeCC:
 def clean(monkeypatch, tmp_path):
     """A fresh cache, no verdicts, no failure memo, and the cc backend chosen."""
     monkeypatch.setattr(tc, "_verdicts", {})
+    monkeypatch.setattr(tc, "_warned", set())
     monkeypatch.setattr(cg, "CACHE_DIR", tmp_path / "cache")
     monkeypatch.setattr(simmod, "_AUTO_CODEGEN_FAILURES", {})
     monkeypatch.setattr(simmod, "_AUTO_CODEGEN_SKIP_LOGGED", set())
@@ -143,6 +147,19 @@ def _chain(n: int) -> bngsim.Model:
     return bngsim.Model(_core=b.build())
 
 
+def _count_generation(monkeypatch) -> list[int]:
+    """The species count of every model whose C source is generated."""
+    generated: list[int] = []
+    real_generate = cg.generate_combined_from_model
+
+    def counting_generate(model, **kwargs):
+        generated.append(model.n_species)
+        return real_generate(model, **kwargs)
+
+    monkeypatch.setattr(cg, "generate_combined_from_model", counting_generate)
+    return generated
+
+
 def _verdict_warnings(caplog) -> list[logging.LogRecord]:
     return [
         r
@@ -163,8 +180,10 @@ def _other_codegen_warnings(caplog) -> list[str]:
 @posix_only
 def test_codegen_true_names_the_toolchain_and_does_not_compile_again(clean, monkeypatch, caplog):
     """Three models with codegen=True: the first compiles once and probes once,
-    and is told the toolchain is to blame; the other two fail at once."""
+    and is told the toolchain is to blame; the other two fail without generating
+    a source or compiling one."""
     cc = FakeCC(clean, monkeypatch, "broken")
+    generated = _count_generation(monkeypatch)
     with caplog.at_level(logging.WARNING, logger="bngsim"):
         for i, n in enumerate((5, 6, 7)):
             with pytest.raises(bngsim.CodegenToolchainError) as err:
@@ -176,8 +195,20 @@ def test_codegen_true_names_the_toolchain_and_does_not_compile_again(clean, monk
             if i == 0:
                 assert cc.calls() == ["model", "probe"]
     assert cc.calls() == ["model", "probe"]
+    assert generated == [5]
     assert len(_verdict_warnings(caplog)) == 1
     assert _other_codegen_warnings(caplog) == []
+
+
+@posix_only
+def test_a_sensitivity_run_raises_the_toolchain_error(clean, monkeypatch):
+    """A forward-sensitivity run, which needs codegen, raises the toolchain's
+    error by type, the first time and on the verdict alone."""
+    cc = FakeCC(clean, monkeypatch, "broken")
+    for n in (5, 6):
+        with pytest.raises(bngsim.CodegenToolchainError, match="analytical sensitivity RHS"):
+            bngsim.Simulator(_chain(n), method="ode", sensitivity_params=["k0"])
+    assert cc.calls() == ["model", "probe"]
 
 
 @posix_only
@@ -186,14 +217,7 @@ def test_auto_codegen_falls_back_with_one_warning_and_one_compile(clean, monkeyp
     all, one warning, and every run on the interpreter. Once the verdict is in,
     no model's source is even generated."""
     cc = FakeCC(clean, monkeypatch, "broken")
-    generated = []
-    real_generate = cg.generate_combined_from_model
-
-    def counting_generate(model, **kwargs):
-        generated.append(model.n_species)
-        return real_generate(model, **kwargs)
-
-    monkeypatch.setattr(cg, "generate_combined_from_model", counting_generate)
+    generated = _count_generation(monkeypatch)
     with caplog.at_level(logging.WARNING, logger="bngsim"):
         for n in (N_AUTO, N_AUTO + 1):
             for _ in range(2):
@@ -220,6 +244,21 @@ def test_auto_codegen_tries_again_once_the_environment_is_fixed(clean, monkeypat
 
 
 @posix_only
+@requires_posix_cc
+def test_auto_codegen_uses_a_cached_library_under_a_verdict(clean, monkeypatch):
+    """A large model compiled before the toolchain broke keeps its library on
+    the automatic path, strict or not; only the uncached model falls back."""
+    assert bngsim.Simulator(_chain(N_AUTO), method="ode").codegen_backend == "cc"
+    cc = FakeCC(clean, monkeypatch, "broken")
+    assert bngsim.Simulator(_chain(N_AUTO + 1), method="ode").codegen_backend == "exprtk"
+    assert cc.calls() == ["model", "probe"]
+    assert bngsim.Simulator(_chain(N_AUTO), method="ode").codegen_backend == "cc"
+    monkeypatch.setenv("BNGSIM_CODEGEN_STRICT", "1")
+    assert bngsim.Simulator(_chain(N_AUTO), method="ode").codegen_backend == "cc"
+    assert cc.calls() == ["model", "probe"]
+
+
+@posix_only
 def test_strict_makes_the_automatic_fallback_an_error(clean, monkeypatch):
     """BNGSIM_CODEGEN_STRICT: the build that reaches the verdict raises, and so
     does the next model, refused on the verdict alone."""
@@ -233,9 +272,9 @@ def test_strict_makes_the_automatic_fallback_an_error(clean, monkeypatch):
 
 @posix_only
 def test_strict_off_values_leave_the_fallback(clean, monkeypatch):
-    """Control. ``0`` and an empty value are off, as the SSA flags read them."""
+    """Control. Empty, ``0``, ``false``, ``no`` and ``off`` are off."""
     FakeCC(clean, monkeypatch, "broken")
-    for value in ("0", ""):
+    for value in ("0", "", "false", "No", "OFF"):
         monkeypatch.setenv("BNGSIM_CODEGEN_STRICT", value)
         assert bngsim.Simulator(_chain(N_AUTO), method="ode").codegen_backend == "exprtk"
 
@@ -334,8 +373,44 @@ def test_a_model_failure_is_not_blamed_on_the_toolchain(clean, monkeypatch, capl
             with pytest.raises(RuntimeError, match="Codegen compilation failed") as err:
                 bngsim.Simulator(_chain(n), method="ode", codegen=True)
             assert not isinstance(err.value, bngsim.CodegenToolchainError)
+            assert "(RuntimeError: Codegen compilation failed" in str(err.value)
     assert cc.calls() == ["model", "probe", "model"]
     assert _verdict_warnings(caplog) == []
+    # A working verdict expires too: the next failure is probed again.
+    monkeypatch.setattr(tc, "_VERDICT_TTL", 0.0)
+    with pytest.raises(RuntimeError, match="Codegen compilation failed"):
+        bngsim.Simulator(_chain(7), method="ode", codegen=True)
+    assert cc.calls() == ["model", "probe", "model", "model", "probe"]
+
+
+@posix_only
+@requires_posix_cc
+def test_an_expired_verdict_is_probed_again(clean, monkeypatch, caplog):
+    """A toolchain that was broken for a while (a full disk) is used again once
+    it builds: an expired verdict is probed, not trusted, before it refuses."""
+    cc = FakeCC(clean, monkeypatch, "flag")
+    flag = clean / "broken.flag"
+    flag.write_text("")
+    monkeypatch.setenv("FAKECC_FLAG", str(flag))
+    for n in (5, 6):  # reached, then refused on the verdict
+        with pytest.raises(bngsim.CodegenToolchainError):
+            bngsim.Simulator(_chain(n), method="ode", codegen=True)
+    assert cc.calls() == ["model", "probe"]
+    monkeypatch.setattr(tc, "_VERDICT_TTL", 0.0)
+    with pytest.raises(bngsim.CodegenToolchainError):  # expired, probed, still broken
+        bngsim.Simulator(_chain(6), method="ode", codegen=True)
+    assert cc.calls() == ["model", "probe", "probe"]
+    flag.unlink()
+    with caplog.at_level(logging.WARNING, logger="bngsim"):
+        assert bngsim.Simulator(_chain(6), method="ode", codegen=True).codegen_backend == "cc"
+    assert cc.calls() == ["model", "probe", "probe", "probe", "model"]
+    assert any("builds a codegen library again" in r.getMessage() for r in caplog.records)
+    # Broken again: a new verdict, and a warning for it beside the first one.
+    flag.write_text("")
+    monkeypatch.setattr(tc, "_VERDICT_TTL", 300.0)
+    with pytest.raises(bngsim.CodegenToolchainError):
+        bngsim.Simulator(_chain(7), method="ode", codegen=True)
+    assert len(_verdict_warnings(caplog)) == 2
 
 
 @posix_only
@@ -398,22 +473,50 @@ def test_the_verdict_names_the_sdk_and_an_sdk_that_links(clean, monkeypatch):
     assert bngsim.Simulator(_chain(5), method="ode", codegen=True).codegen_backend == "cc"
 
 
+@posix_only
+def test_the_sdk_scan_stops_at_its_budget(clean, monkeypatch):
+    """The SDK scan runs with the verdict's lock held, so it is bounded: past
+    its budget it tries no more SDKs and suggests nothing."""
+    cc = FakeCC(clean, monkeypatch, "broken")
+    monkeypatch.setenv("SDKROOT", str(clean / "Bad.sdk"))
+    monkeypatch.setattr(tc, "_is_macos", lambda: True)
+    monkeypatch.setattr(tc, "_macos_sdk_candidates", lambda current: [str(clean / "A.sdk")])
+    monkeypatch.setattr(tc, "_SDK_SCAN_BUDGET", 0.0)
+    with pytest.raises(bngsim.CodegenToolchainError) as err:
+        bngsim.Simulator(_chain(5), method="ode", codegen=True)
+    assert "SDKROOT=" not in str(err.value).split("error:")[-1]
+    assert "None of the other" not in str(err.value)
+    assert cc.calls() == ["model", "probe"]
+
+
 @pytest.mark.skipif(
     os.name == "nt", reason="POSIX-specific: the SDK links are symlinks, which Windows restricts"
 )
 def test_sdk_candidates_newest_first_one_name_each(tmp_path):
     """The candidates leave out the SDK in use and the unversioned link, give
-    each SDK once under its shortest name, and put the newest first."""
-    root = tmp_path / "SDKs"
-    root.mkdir()
+    each SDK once under its shortest name, and put the newest first, whether the
+    version is in the link's name (Xcode's ``MacOSX27.sdk`` points at an
+    unversioned ``MacOSX.sdk``) or in its target's (the CLT's ``MacOSX26.sdk``
+    at ``MacOSX26.5.sdk``)."""
+    clt = tmp_path / "CLT"
+    clt.mkdir()
     for name in ("MacOSX27.0.sdk", "MacOSX26.5.sdk", "MacOSX14.4.sdk"):
-        (root / name).mkdir()
-    (root / "MacOSX.sdk").symlink_to("MacOSX27.0.sdk")
-    (root / "MacOSX27.sdk").symlink_to("MacOSX27.0.sdk")
-    (root / "MacOSX26.sdk").symlink_to("MacOSX26.5.sdk")
-    (root / "MacOSX13.sdk").symlink_to("MacOSX13.3.sdk")  # dangling
-    got = tc._macos_sdk_candidates(str(root / "MacOSX.sdk"), roots=[str(root)])
-    assert got == [str(root / "MacOSX26.sdk"), str(root / "MacOSX14.4.sdk")]
+        (clt / name).mkdir()
+    (clt / "MacOSX.sdk").symlink_to("MacOSX27.0.sdk")
+    (clt / "MacOSX27.sdk").symlink_to("MacOSX27.0.sdk")
+    (clt / "MacOSX26.sdk").symlink_to("MacOSX26.5.sdk")
+    (clt / "MacOSX13.sdk").symlink_to("MacOSX13.3.sdk")  # dangling
+    xcode = tmp_path / "Xcode"
+    xcode.mkdir()
+    (xcode / "MacOSX.sdk").mkdir()
+    (xcode / "MacOSX27.sdk").symlink_to("MacOSX.sdk")
+    (xcode / "MacOSX27.2.sdk").symlink_to("MacOSX.sdk")
+    got = tc._macos_sdk_candidates(str(clt / "MacOSX.sdk"), roots=[str(clt), str(xcode)])
+    assert got == [
+        str(xcode / "MacOSX27.sdk"),
+        str(clt / "MacOSX26.sdk"),
+        str(clt / "MacOSX14.4.sdk"),
+    ]
 
 
 @posix_only
@@ -429,23 +532,59 @@ def test_a_missing_compiler_is_a_verdict_said_once(clean, monkeypatch, caplog):
     assert _other_codegen_warnings(caplog) == []
 
 
+def test_no_compiler_to_name_is_a_verdict_said_once(clean, monkeypatch, caplog):
+    """Where no compiler can be named at all (Windows with neither cl nor gcc),
+    the refusal is said once, and later models generate no source for it."""
+
+    def none_found():
+        raise RuntimeError("No C compiler found. Install Visual Studio Build Tools.")
+
+    monkeypatch.setattr(cg, "_find_c_compiler", none_found)
+    generated = _count_generation(monkeypatch)
+    with caplog.at_level(logging.WARNING, logger="bngsim"):
+        for n in (5, 6):
+            with pytest.raises(bngsim.CodegenToolchainError, match="No C compiler found"):
+                bngsim.Simulator(_chain(n), method="ode", codegen=True)
+    assert generated == []
+    assert len([r for r in caplog.records if "No C compiler found" in r.getMessage()]) == 1
+    assert _other_codegen_warnings(caplog) == []
+
+
 @posix_only
 def test_a_sharded_build_reaches_the_verdict(clean, monkeypatch):
-    """The parallel path's compile and link failures are put to the probe too."""
+    """The parallel path's object-compile failures are put to the probe too."""
     cc = FakeCC(clean, monkeypatch, "broken")
     monkeypatch.setenv("BNGSIM_CODEGEN_CHUNK", "on")
     monkeypatch.setenv("BNGSIM_CODEGEN_CHUNK_SIZE", "4")
-    monkeypatch.setenv("BNGSIM_CODEGEN_JOBS", "2")
-    m = _chain(40)
-    src, _ = cg.generate_combined_from_model(m)
+    monkeypatch.setattr(cg, "_resolve_codegen_jobs", lambda n_units: 2)
+    src, _ = cg.generate_combined_from_model(_chain(40))
     assert cg._split_sharded_source(src) is not None
     with pytest.raises(bngsim.CodegenToolchainError):
         cg.compile_rhs(src, "shardedhash")
+    assert cc.calls()[0] == "object"  # the sharded path, not the serial one
     assert cc.calls("probe") == ["probe"]
     n_before = len(cc.calls())
     with pytest.raises(bngsim.CodegenToolchainError):
         cg.compile_rhs(src, "shardedhash2")
     assert len(cc.calls()) == n_before
+
+
+@posix_only
+@requires_posix_cc
+def test_a_sharded_build_whose_link_fails_reaches_the_verdict(clean, monkeypatch):
+    """#1544's toolchain compiles every object and fails the link."""
+    cc = FakeCC(clean, monkeypatch, "link")
+    monkeypatch.setenv("BNGSIM_CODEGEN_CHUNK", "on")
+    monkeypatch.setenv("BNGSIM_CODEGEN_CHUNK_SIZE", "4")
+    monkeypatch.setattr(cg, "_resolve_codegen_jobs", lambda n_units: 2)
+    src, _ = cg.generate_combined_from_model(_chain(40))
+    split = cg._split_sharded_source(src)
+    assert split is not None
+    with pytest.raises(bngsim.CodegenToolchainError) as err:
+        cg.compile_rhs(src, "linkhash")
+    assert type(err.value.__cause__) is RuntimeError
+    assert "Codegen shard link failed" in str(err.value.__cause__)
+    assert cc.calls() == ["object"] * (len(split[1]) + 1) + ["model", "probe"]
 
 
 def test_the_probe_includes_every_header_generated_code_does():
@@ -464,9 +603,7 @@ def test_the_probe_includes_every_header_generated_code_does():
 @requires_cc
 def test_the_probe_builds_with_this_machines_compiler(clean):
     """The probe source has to build wherever a model does, MSVC included."""
-    compiler = cg._find_c_compiler()
-    opt = cg._resolve_opt_flag(Path(compiler[0]).stem.lower(), 0)
-    assert tc._probe(compiler, opt) == (True, "")
+    assert tc._probe(cg._find_c_compiler()) == (True, "")
 
 
 def test_the_sdk_comes_from_sdkroot_or_xcrun(monkeypatch):

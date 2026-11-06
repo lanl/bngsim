@@ -185,21 +185,28 @@ followed by a probe: the same command on a trivial C file. If that fails too, th
 failure is the toolchain's, not the model's, and BNGsim says so once per process,
 in a warning that names the compiler, the linker and, on macOS, the SDK, and
 suggests an installed SDK that links when one does. From then on no codegen
-library is compiled while the compiler and its environment (`CC`, `PATH`,
-`SDKROOT`, `DEVELOPER_DIR`, ...) stay as they are: models at or above the
+source is generated or compiled while the compiler and its environment (`CC`,
+`PATH`, `SDKROOT`, `DEVELOPER_DIR`, ...) stay as they are: models at or above the
 threshold run on the interpreted RHS, and `codegen=True` and forward
-sensitivities raise `bngsim.CodegenToolchainError` at once instead of compiling
-to fail again. Libraries already in the cache are still used. A missing compiler
-is kept the same way. The case that prompted this (issue #1544) is conda-forge's
-ld64-956.6 with the macOS 27 SDK: it cannot read the SDK's `libSystem.tbd`, so
-every link fails on `_bzero`; `SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk`
+sensitivities raise `bngsim.CodegenToolchainError` instead of compiling to fail
+again. Libraries already in the cache are still used, and changing one of those
+variables in the process (`os.environ["SDKROOT"] = ...`) gets a fresh attempt.
+The verdict is probed again after 5 minutes, so a toolchain that was broken for
+a while (a full disk) is used again once it builds. A missing compiler is kept
+the same way. The case that prompted this (issue #1544) is conda-forge's
+ld64-956.6 with the macOS 27 SDK: it cannot read the SDK's `libSystem.tbd`, so it
+links no library at all; `SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk`
 links.
 
 A benchmark or a fit that must not measure the interpreter by accident sets
-`BNGSIM_CODEGEN_STRICT=1`: an automatic build that fails (the ODE RHS above the
-threshold, or the SSA propensity library) then raises instead of falling back. A
-model that codegen declines still runs on the interpreter, since that is not a
-failed build. `Simulator.codegen_backend` says which engine a run used.
+`BNGSIM_CODEGEN_STRICT=1`: an automatic build that fails (the ODE RHS at or
+above the threshold, or the SSA propensity library) then raises instead of
+falling back. The SSA library is built for every mass-action model run with
+exact SSA, so strict mode raises on its failure even for a model the SSA engine
+would have run without it (one with events, or more than 64 reactions). A model that codegen declines
+still runs on the interpreter, since that is not a failed build.
+`Simulator.codegen_backend` says which engine an ODE run used, and a result's
+`ssa_diagnostics["propensity_backend"]` which one an SSA run used.
 
 A few env vars tune the compile step for large reaction networks, whose flat
 RHS source can be several MB:
@@ -207,7 +214,7 @@ RHS source can be several MB:
 | Variable | Default | Effect |
 | --- | --- | --- |
 | `BNGSIM_CODEGEN_CACHE_DIR` | `~/.cache/bngsim/codegen` | Directory for the content-addressed compiled-artifact cache. Redirect it to node-local scratch, or to a read-only dir of pre-warmed artifacts, so cluster jobs reuse one `.so` instead of recompiling. Read once at import — `export` it before launching `python`. |
-| `BNGSIM_CODEGEN_STRICT` | off | `1` makes a failed automatic codegen build (the ODE RHS at or above the threshold, the SSA propensity library) raise instead of falling back to the interpreter. `0` or empty is off. A decline still falls back. |
+| `BNGSIM_CODEGEN_STRICT` | off | `1` makes a failed automatic codegen build (the ODE RHS at or above the threshold, the SSA propensity library) raise instead of falling back to the interpreter. Empty, `0`, `false`, `no` and `off` are off. A decline still falls back. |
 | `BNGSIM_CODEGEN_TIMEOUT` | `600` | Seconds before the `cc` invocation is killed (a timeout raises a `RuntimeError` naming this var). `0` disables the limit. |
 | `BNGSIM_CODEGEN_OPT` | size-based | Optimization level: an integer `0`–`3`, or `high`/`low`. Sources over ~1 MB default to `low` (`-O1`) since `-O3` costs minutes for negligible runtime gain on a single flat function. Overrides the chunking opt level below. |
 | `BNGSIM_CODEGEN_CHUNK` | `2000` | Reaction count at/above which the RHS (and analytical sensitivity) body is split into many small `noinline` helper functions instead of one giant function — see below. `off`/`0` disables; `on` forces chunking at any size; an integer sets the threshold. |

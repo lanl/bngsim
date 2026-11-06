@@ -5275,8 +5275,8 @@ def _run_compile(
 class _CompileFailed(RuntimeError):
     """A codegen compile or link that the compiler refused (a non-zero exit), as
     against one that timed out or never ran. Only this kind is put to the
-    toolchain probe (issue #1544); its message is the one a plain
-    ``RuntimeError`` carried before."""
+    toolchain probe (issue #1544). It does not leave :func:`compile_rhs`, which
+    raises it on as the plain ``RuntimeError`` it was before."""
 
 
 def _compile_one_object(
@@ -5429,12 +5429,11 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
     token = f"{os.getpid()}_{next(_compile_counter)}"
     tmp_so_path = CACHE_DIR / f"{stem}.{token}{suffix}"
 
-    compiler = _find_c_compiler()
     # Issue #1544: a toolchain already found unable to build anything (or not
     # there at all) is not asked again.
-    broken = _toolchain.known_broken(compiler)
-    if broken is not None:
-        raise CodegenToolchainError(broken)
+    compiler, broken = _toolchain.check()
+    if broken is not None or compiler is None:
+        raise CodegenToolchainError(broken or "No C compiler found.")
     compiler_name = Path(compiler[0]).stem.lower()
     # A chunked source (Tier-1 NOINLINE blocks) compiles at -O2 at any size; the
     # marker is on the first lines of the combined source (RHS is always first).
@@ -5479,10 +5478,11 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
         # Issue #1544: the model's failure, or the toolchain's? A trivial source
         # built the same way says; a toolchain that fails it too is kept as the
         # verdict, so the next build fails at once.
-        verdict = _toolchain.classify_failure(compiler, opt_flag)
+        verdict = _toolchain.classify_failure(compiler)
         if verdict is not None:
-            raise CodegenToolchainError(verdict) from err
-        raise
+            raise CodegenToolchainError(verdict) from RuntimeError(str(err))
+        # The model's own failure, reported as it always was.
+        raise RuntimeError(str(err)) from None
     except subprocess.TimeoutExpired as err:
         raise RuntimeError(
             f"Codegen compilation timed out after {timeout:g} s "
@@ -13150,6 +13150,14 @@ def prepare_model_codegen(model) -> Path | None:
                 # also the branch where the decline would otherwise go unsaid.
                 _replay_sens_decline(cached)
                 return cached
+
+        # Issue #1544: past the cache, and before generating a source that no
+        # toolchain here can build. (The source-hash key needs the source for its
+        # lookup, so compile_rhs asks for that one.)
+        if model_hash is not None:
+            _, broken = _toolchain.check()
+            if broken is not None:
+                raise CodegenToolchainError(broken)
 
         c_source, has_sens = generate_combined_from_model(
             model,

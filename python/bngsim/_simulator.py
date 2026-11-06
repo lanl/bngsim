@@ -1296,23 +1296,11 @@ class Simulator:
                 and model.n_species >= int(os.environ.get("BNGSIM_CODEGEN_THRESHOLD", "256"))
             ):
                 # Issue #1544: a toolchain already found unable to build anything
-                # is not asked again, for this model or any other. Its verdict was
-                # logged once, when it was reached; BNGSIM_CODEGEN_STRICT makes the
-                # fallback an error instead.
-                _toolchain_verdict = None if jit_backend else _codegen_toolchain.current_verdict()
-                _failure_key = (
-                    None
-                    if _toolchain_verdict is not None
-                    else _auto_codegen_failure_key(model, jit_backend)
-                )
-                if _toolchain_verdict is not None:
-                    if _codegen_toolchain.codegen_strict():
-                        raise _codegen_toolchain.strict_refusal(
-                            "automatic codegen of this model",
-                            CodegenToolchainError(_toolchain_verdict),
-                        )
-                    logger.debug("Automatic codegen skipped: the toolchain cannot build.")
-                elif _failure_key is not None and _failure_key in _AUTO_CODEGEN_FAILURES:
+                # is refused inside the build, past the artifact cache, and is not
+                # remembered per model below; BNGSIM_CODEGEN_STRICT makes any failed
+                # build an error instead of a fallback.
+                _failure_key = _auto_codegen_failure_key(model, jit_backend)
+                if _failure_key is not None and _failure_key in _AUTO_CODEGEN_FAILURES:
                     if _codegen_toolchain.codegen_strict():
                         raise _codegen_toolchain.strict_refusal(
                             "automatic codegen of this model",
@@ -1352,7 +1340,7 @@ class Simulator:
                             "automatic codegen of this model", _failed
                         ) from _failed
                     # A toolchain failure is kept as the toolchain's verdict, for
-                    # every model, and checked above (issue #1544).
+                    # every model, and refused in the build (issue #1544).
                     if _failed is not None and not isinstance(_failed, CodegenToolchainError):
                         _remember_auto_codegen_failure(model, jit_backend, _failed)
 
@@ -3371,8 +3359,14 @@ class Simulator:
             narrowing of ``auto_src`` / ``auto_so`` below stays obvious."""
             if cause is not None:
                 # Same envelope as the try/except above — a build that failed,
-                # whatever swallowed the exception on the way out.
-                return RuntimeError(
+                # whatever swallowed the exception on the way out. A toolchain
+                # that builds nothing keeps its type (issue #1544).
+                failed = (
+                    CodegenToolchainError
+                    if isinstance(cause, CodegenToolchainError)
+                    else RuntimeError
+                )
+                return failed(
                     "Failed to build the analytical sensitivity RHS required for "
                     f"forward sensitivity ({type(cause).__name__}: {cause}). This "
                     "is a BUILD failure, not a statement about the model's "

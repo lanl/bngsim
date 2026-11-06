@@ -228,11 +228,11 @@ class CodegenToolchainError(BngsimError):
     linker and, on macOS, the SDK, and suggests an installed SDK that links when
     one does.
 
-    The verdict holds for the rest of the process while the compiler and its
-    environment stay as they are, so a later build fails at once instead of
-    compiling to fail again. ``codegen=True``, forward sensitivities and, under
-    ``BNGSIM_CODEGEN_STRICT``, automatic codegen raise it (``codegen=True`` and
-    forward sensitivities say so in their own words, with this as the cause).
+    The verdict holds while the compiler and its environment stay as they are
+    (it is probed again every 5 minutes), so a later build is refused without
+    generating or compiling a source; a library already in the cache is still
+    used. ``codegen=True``, forward sensitivities and, under
+    ``BNGSIM_CODEGEN_STRICT``, automatic codegen raise it, each in its own words.
     A ``RuntimeError`` (through :class:`BngsimError`), as a build failure was
     raised before it had a type.
     """
