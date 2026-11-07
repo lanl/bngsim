@@ -228,6 +228,17 @@ def test_the_onset_row_is_forgiven_and_the_comment_says_it_was_decisive():
     assert " | " not in comment and "fail 1/22 (hard 1" in comment
 
 
+def test_an_onset_where_the_engines_agree_is_named_but_not_decisive():
+    """A sample on an onset is left out even where nothing differs there (an
+    event that sets a parameter, say): the note names it, rescued 0."""
+    bn, am = _pair(
+        bn_col=_step(0.5, 1.0, 0.4, closed=True), am_col=_step(0.5, 1.0, 0.4, closed=True)
+    )
+    status, _, comment, _, _ = ar._compare_ode(bn, am, atol=1e-12, onsets=[0.5])
+    assert status == "pass"
+    assert comment.endswith(" | strict onset not judged at t = 0.5 (rescued 0; GH #1557)")
+
+
 def test_a_difference_off_the_onset_row_is_still_a_diff():
     """Only the sample on the onset is forgiven: an engine that fired late,
     after the next sample, still fails there."""
