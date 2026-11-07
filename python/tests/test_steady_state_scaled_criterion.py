@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import math
 import os
-import platform
 import re
 import shutil
 import sys
@@ -1940,23 +1939,18 @@ def test_a_singular_jacobian_is_singular_on_every_platform(tmp_path, jacobian):
 # retried: this pins the arm64 interpreter's route there, not its answer.
 @threshold_forced
 def test_a_march_whose_integrator_fails_is_still_retried_on_difference_quotients(data_dir):
-    # MODEL1712050008's march passes the residual test, goes on, and its
-    # integrator fails; the step does not take the state it passed (202
-    # tolerances), which the run then leaves. Reported as a failure still, the
-    # solve is retried on difference quotients, and that retry comes to rest.
-    # Taking the passed state as the answer turned the retry off. Main
-    # converges at a state a run moves 2.2e5 tolerances. That march is
-    # arm64 macOS's: rounded as x86-64 Linux rounds it, the march reaches the
-    # root by its step (4e-6) without its integrator failing, asks no retry,
-    # and the run from it cannot be taken to its time, so the solve is
-    # refused (residual 1.05e-15, on either linear solver). Everywhere, it is
-    # not converged at a state a run moves.
+    # Issue #1001: a march that passes the residual test, goes on, and whose
+    # integrator then fails must still report the failure, so the solve is
+    # retried on difference quotients. MODEL1712050008's march did that only
+    # where the build fused multiply-adds (arm64 macOS): there the retry came
+    # to rest, and taking the passed state as the answer had turned the retry
+    # off. Since #1582 nothing in the build is fused, so every platform rounds
+    # it as x86-64 Linux did and the march reaches a state without its
+    # integrator failing. What holds everywhere is kept: it is not converged
+    # at a state a run moves. #1001's path has no witness until #1583 finds one.
     path = str(data_dir / "MODEL1712050008.xml")
     ss = bngsim.Simulator(bngsim.Model.from_sbml(path), method="ode").steady_state()
     assert not ss.converged or ss.continued_run_distance <= 1.0
-    if sys.platform == "darwin" and platform.machine() == "arm64":
-        assert ss.solver_jacobian_retried
-        assert ss.converged
 
 
 _CC_ON_PATH = any(shutil.which(c) for c in ("cc", "gcc", "clang"))
