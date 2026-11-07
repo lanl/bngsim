@@ -66,7 +66,7 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - ubuntu-24.04 # x86_64 Linux
+          - ubuntu-latest # x86_64 Linux
           - macos-15 # macOS arm64
         shard: [1, 2]
     steps:
@@ -96,6 +96,11 @@ jobs:
           set -euxo pipefail
           uv sync --extra dev --python 3.12 --reinstall-package bngsim
           ccache --show-stats
+
+      # libroadrunner's wheel links libpython by name; ubuntu-26.04 has no system
+      # 3.12 to satisfy it. See ci/libpython_on_loader_path.sh.
+      - name: Let RoadRunner find libpython
+        run: bash ci/libpython_on_loader_path.sh
 
       # Without MIR compiled in, BNGSIM_CODEGEN_JIT=mir has no JIT to select,
       # and a green run would say nothing about it.
@@ -136,7 +141,7 @@ jobs:
     name: Report
     needs: [suite]
     if: always()
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read

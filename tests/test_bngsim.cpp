@@ -16,6 +16,7 @@
 #include <iostream>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -874,6 +875,110 @@ int test_reserved_names() {
 // ═══════════════════════════════════════════════════════════════════════════════
 // Test: gdat/cdat file export
 // ═══════════════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Test: Result sizes its buffers in size_t (issue #1524)
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// The block sizes and row offsets were int products, which wrap past 2^31
+// values: 65537 times x 65536 species came to a one-row buffer that every
+// record() then wrote past. A wrap that large needs 16 GB to observe, so this
+// pins the two ends that need none: rows land where they should, and a request
+// no buffer can hold is refused before anything is allocated. As int,
+// INT_MAX x INT_MAX came to 1.
+
+int test_result_sizes_in_size_t() {
+    bngsim::Result r;
+    r.allocate(3, 4, 2);
+    CHECK(r.time().size() == 3, "3 time rows");
+    CHECK(r.species_data().size() == 12, "3 x 4 species values");
+    CHECK(r.observable_data().size() == 6, "3 x 2 observable values");
+    const double species[4] = {1.0, 2.0, 3.0, 4.0};
+    const double observables[2] = {5.0, 6.0};
+    r.record(2, 7.0, species, observables);
+    CHECK(r.time()[2] == 7.0, "row 2 time");
+    CHECK(r.species_data()[8] == 1.0 && r.species_data()[11] == 4.0, "row 2 species");
+    CHECK(r.observable_data()[4] == 5.0 && r.observable_data()[5] == 6.0, "row 2 observables");
+
+    const int big = std::numeric_limits<int>::max();
+    auto throws_length_error = [](auto &&allocate) {
+        try {
+            allocate();
+        } catch (const std::length_error &) {
+            return true;
+        }
+        return false;
+    };
+    CHECK(throws_length_error([&] {
+              bngsim::Result huge;
+              huge.allocate(big, big, 0);
+          }),
+          "allocate(INT_MAX, INT_MAX, 0) refused");
+    CHECK(throws_length_error([&] {
+              bngsim::Result huge;
+              huge.allocate_sensitivities(big, big, big);
+          }),
+          "allocate_sensitivities(INT_MAX, INT_MAX, INT_MAX) refused");
+    CHECK(throws_length_error([&] {
+              bngsim::Result huge;
+              huge.allocate_observable_sensitivities_ic(big, big, big);
+          }),
+          "allocate_observable_sensitivities_ic(INT_MAX, INT_MAX, INT_MAX) refused");
+
+    bool negative_refused = false;
+    try {
+        bngsim::Result neg;
+        neg.allocate(-1, 2, 2);
+    } catch (const std::invalid_argument &) {
+        negative_refused = true;
+    }
+    CHECK(negative_refused, "allocate(-1, 2, 2) refused");
+    return 0;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Test: every backend refuses a schedule it cannot walk (issues #1504, #1523)
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// An empty grid ran off an empty t_out (CvodeSimulator::run read its ends
+// through a null pointer); a time that is not finite is a target CVODE
+// integrates toward inside one CVode call, where the budget is never checked.
+
+int test_unwalkable_schedules_are_refused() {
+    auto model = bngsim::NetworkModel::from_net(data_path("simple_decay.net"));
+    const double inf = std::numeric_limits<double>::infinity();
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+
+    std::vector<bngsim::TimeSpec> bad(5);
+    bad[0].n_points = 0;
+    bad[1].n_points = -1;
+    bad[2].t_end = inf;
+    bad[3].t_start = nan;
+    bad[4].t_end = 10.0;
+    bad[4].sample_times = {0.0, nan, 10.0};
+
+    auto refused = [](auto &&run) {
+        try {
+            run();
+        } catch (const std::invalid_argument &) {
+            return true;
+        }
+        return false;
+    };
+    for (size_t i = 0; i < bad.size(); ++i) {
+        bngsim::CvodeSimulator ode(model);
+        CHECK(refused([&] { ode.run(bad[i]); }), "CvodeSimulator refuses schedule " << i);
+        bngsim::SsaSimulator ssa(model);
+        CHECK(refused([&] { ssa.run(bad[i], 1, 1.0); }), "SsaSimulator refuses schedule " << i);
+    }
+
+    bngsim::TimeSpec good;
+    good.t_end = 10.0;
+    good.n_points = 3;
+    bngsim::CvodeSimulator ode(model);
+    CHECK(ode.run(good).n_times() == 3, "a walkable grid still runs");
+    return 0;
+}
 
 int test_file_export() {
     auto model = bngsim::NetworkModel::from_net(data_path("simple_decay.net"));
@@ -3123,6 +3228,8 @@ int main() {
     RUN_TEST(test_c_api);
     RUN_TEST(test_reserved_names);
     RUN_TEST(test_file_export);
+    RUN_TEST(test_result_sizes_in_size_t);
+    RUN_TEST(test_unwalkable_schedules_are_refused);
     RUN_TEST(test_gdat_function_columns);
 
     // Regression tests for code review fixes

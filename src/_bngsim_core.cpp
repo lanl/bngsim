@@ -1678,11 +1678,12 @@ PYBIND11_MODULE(_bngsim_core, m) {
                 auto *vec = new std::vector<double>(r.sensitivity_data());
                 auto capsule =
                     py::capsule(vec, [](void *p) { delete static_cast<std::vector<double> *>(p); });
-                return py::array_t<double>({nt, ns, np},
-                                           {static_cast<py::ssize_t>(ns * np * sizeof(double)),
-                                            static_cast<py::ssize_t>(np * sizeof(double)),
-                                            static_cast<py::ssize_t>(sizeof(double))},
-                                           vec->data(), capsule);
+                return py::array_t<double>(
+                    {nt, ns, np},
+                    {static_cast<py::ssize_t>(static_cast<size_t>(ns) * np * sizeof(double)),
+                     static_cast<py::ssize_t>(np * sizeof(double)),
+                     static_cast<py::ssize_t>(sizeof(double))},
+                    vec->data(), capsule);
             })
         // GH #616 — SSA per-reaction event statistics, (n_times, n_reactions);
         // (n_times, 0) unless the run recorded them (set_record_reaction_stats).
@@ -1720,11 +1721,12 @@ PYBIND11_MODULE(_bngsim_core, m) {
                 auto *vec = new std::vector<double>(r.sensitivity_ic_data());
                 auto capsule =
                     py::capsule(vec, [](void *p) { delete static_cast<std::vector<double> *>(p); });
-                return py::array_t<double>({nt, ns, nic},
-                                           {static_cast<py::ssize_t>(ns * nic * sizeof(double)),
-                                            static_cast<py::ssize_t>(nic * sizeof(double)),
-                                            static_cast<py::ssize_t>(sizeof(double))},
-                                           vec->data(), capsule);
+                return py::array_t<double>(
+                    {nt, ns, nic},
+                    {static_cast<py::ssize_t>(static_cast<size_t>(ns) * nic * sizeof(double)),
+                     static_cast<py::ssize_t>(nic * sizeof(double)),
+                     static_cast<py::ssize_t>(sizeof(double))},
+                    vec->data(), capsule);
             })
         // GH #196 — observable/expression output sensitivities.
         // Shape (n_times, n_rows, depth), or empty (0,0,0) when not computed.

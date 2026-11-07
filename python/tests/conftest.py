@@ -400,7 +400,9 @@ _DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
         _ANYWHERE,
         "the GH #577 leak probe reads /proc/self/statm and caps its own address "
         "space so the triggering allocation fails at a fixed size; neither has a "
-        "Windows equivalent, and the behavioural half of that file runs everywhere",
+        "Windows equivalent, and the behavioural half of that file runs everywhere. "
+        "The issue #1524 probe caps it the same way, so a 34 GB result fails as "
+        "MemoryError instead of being allocated; macOS does not enforce the cap",
     ),
     ("tomllib is 3.11+", _ANYWHERE, "stdlib module absent on 3.10, which is still supported"),
     (

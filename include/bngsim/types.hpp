@@ -4,8 +4,10 @@
 
 #pragma once
 
+#include <cmath>
 #include <complex>
 #include <cstdint>
+#include <cstdio>
 #include <functional>
 #include <limits>
 #include <stdexcept>
@@ -2026,6 +2028,39 @@ struct TimeSpec {
     // Effective number of output points.
     int effective_n_points() const {
         return sample_times.empty() ? n_points : static_cast<int>(sample_times.size());
+    }
+
+    // Refuse a schedule no backend can walk (issues #1504, #1523), naming
+    // `where`. Every backend records its first row unconditionally, so a grid
+    // with no points runs off an empty t_out: CvodeSimulator::run read the ends
+    // of one and died on a null pointer. A time that is not finite is a target
+    // no backend reaches: CVODE spun inside a single CVode call, where the
+    // wall-clock budget is never checked, SSA ran until the budget or for ever,
+    // and a NaN came back as a row labelled t = nan. The Python layer refuses
+    // both before a run; this keeps a direct core caller from reaching either.
+    // Throws std::invalid_argument (ValueError in Python).
+    void require_walkable(const char *where) const {
+        auto fmt = [](double t) {
+            char buf[32];
+            std::snprintf(buf, sizeof buf, "%.17g", t);
+            return std::string(buf);
+        };
+        if (effective_n_points() < 1) {
+            throw std::invalid_argument(std::string(where) +
+                                        ": the output grid has no points (n_points = " +
+                                        std::to_string(effective_n_points()) + ")");
+        }
+        if (!std::isfinite(t_start) || !std::isfinite(t_end)) {
+            throw std::invalid_argument(std::string(where) +
+                                        ": t_start and t_end must be finite, got " + fmt(t_start) +
+                                        " and " + fmt(t_end));
+        }
+        for (double t : sample_times) {
+            if (!std::isfinite(t)) {
+                throw std::invalid_argument(std::string(where) +
+                                            ": sample_times must all be finite, got " + fmt(t));
+            }
+        }
     }
 };
 
