@@ -3987,20 +3987,46 @@ struct CvodeSimulator::Impl {
 
     // Issue #1548. What a run keeps of each switch's residual between outputs,
     // one entry per switch: whether it has been read off its surface by more
-    // than its band, and the most it has been off; its ∂g/∂x and ∂g/∂t, kept
-    // while it stays near its surface; and, while it rests there, from when,
-    // when its jump was last read, what that jump moves per tolerance unit and
-    // unit of time, and the faster of the residual's flows on the surface.
+    // than its band, the most it has been off, and the bar it was last held to;
+    // its ∂g/∂x and ∂g/∂t, kept while it stays near its surface; and, while it
+    // rests there, from when, when its jump was last read, what that jump moves
+    // per tolerance unit and unit of time, and the faster of the flows that
+    // carry the residual onto its surface from either side. Then the work
+    // vectors a reading uses, sized once a residual is first read.
     struct RestWatch {
         std::vector<char> arrived;
         std::vector<double> largest;
+        std::vector<double> bar;
         std::vector<std::vector<double>> grad;
         std::vector<double> gt;
         std::vector<double> rest_since;
         std::vector<double> probed_t;
         std::vector<double> ratio;
-        std::vector<double> surface_flow;
+        std::vector<double> carry;
+        std::vector<double> xv, f, xw, near_f, far_f;
+        void size(std::size_t n) {
+            const double nan = std::numeric_limits<double>::quiet_NaN();
+            arrived.resize(n, 0);
+            largest.resize(n, 0.0);
+            bar.resize(n, 0.0);
+            grad.resize(n);
+            gt.resize(n, 0.0);
+            rest_since.resize(n, nan);
+            probed_t.resize(n, nan);
+            ratio.resize(n, 0.0);
+            carry.resize(n, 0.0);
+        }
     };
+    // Issue #1548. An event's assignments, executed at t, have left the state
+    // at x. A switch whose residual reads a species they wrote, and that they
+    // left exactly on its surface (a species set to the 0 its gate reads), has
+    // its branch from the model there, as one that starts on its surface does,
+    // so it is asked about again only once it has been off it. `written` marks
+    // the species the assignments wrote.
+    void note_event_on_state_switch(double t, const double *x, int ns,
+                                    const std::vector<char> &written,
+                                    const std::vector<const NetworkModel::StateSwitch *> &switches,
+                                    RestWatch &watch);
     // Issue #1548. Refuses a run whose state has come to rest, at the output t,
     // on a state-switch surface it arrived at from off it, where the run's
     // tolerances cannot say which side it is on and the branches differ. See the
@@ -11630,16 +11656,27 @@ void CvodeSimulator::Impl::refuse_slide_along_state_switch(
 // So at each output, and at the start, each switch's residual is asked whether
 //   - it has been off its surface by more than the band below at an earlier
 //     output. One that starts on its surface and stays there (a species at 0
-//     that nothing makes) has its branch from the model, not from rounding;
-//   - it is now within that band, k_resolve tolerance bands (the bar the
-//     restart test asks a crossing to clear), so the run cannot say which side
+//     that nothing makes) has its branch from the model, not from rounding, and
+//     so has one an event's assignment puts exactly on it (a species set to the
+//     0 its gate reads; note_event_on_state_switch);
+//   - it is now within that band, k_resolve tolerance bands at the state (the
+//     restart test's factor; that test also widens each species' unit to
+//     CVODE's own error weight at its step), so the run cannot say which side
 //     the state is on;
-//   - the flow, at the state and on each side of the surface, moves it by no
-//     more than that band over the stretch this output speaks for and the rest
-//     of the run, so the run will not say later either. A state crossing the
-//     surface, an output landing on the crossing or not, is carried across it
-//     by its flow; one sliding along it (#908, #926) is carried into it from
-//     both sides;
+//   - the flow at the state carries it off the side it is on by no more than
+//     that band over the stretch this output speaks for and the rest of the
+//     run, and neither side's flow carries it onto the surface by more than
+//     that, so the run will not say later either. A state nearing its rest
+//     point on the surface is not leaving it, and the flow on the surface
+//     itself, which runs out there, tells it from a crossing, whose flow does
+//     not; asked of the flow at the state, the approach read as moving until
+//     long after rounding could put the state across. A state crossing the surface, an output
+//     landing on the crossing or not, is carried across it by the flow on the side it comes from;
+//     one sliding along it (#908, #926) is carried into it from both sides; and one held on it from
+//     one side, where its rate law turns off (a species made until it reaches its cap), is put back
+//     by that side whenever rounding takes it across. A side whose flow points away from the
+//     surface resolves nothing: a state resting against it that rounding puts across is carried off
+//     the branch it arrived on;
 //   - the right-hand side jumps across the surface by enough to move some
 //     species by more than its own tolerance unit over that stretch.
 // The stretch runs from the output before this one to the end: the state may
@@ -11656,9 +11693,10 @@ void CvodeSimulator::Impl::refuse_slide_along_state_switch(
 // scale as 1.9e-9 in dDopamine/dt across dY_dt's continuous surface).
 //
 // What it costs: the residual at each output; ∂g/∂x once in a stretch beside
-// its surface, the band and the flow at the state read from it and f there; the
-// jump at the start of a rest and each time the rest has doubled; and all of it
-// read afresh before a refusal.
+// its surface, the band and the flow at the state read from it and f there, and
+// read again where that flow says the state moves within the band; ∂g/∂x and
+// the jump at the start of a rest and each time the rest has doubled; and all
+// of it read afresh before a refusal.
 static constexpr double kRestReadShare = 1e-3; // of the band: how far out each side is read
 static constexpr double kRestReadFiner = 16.0; // the second, finer reading's divisor
 void CvodeSimulator::Impl::refuse_rest_on_state_switch(
@@ -11667,14 +11705,7 @@ void CvodeSimulator::Impl::refuse_rest_on_state_switch(
     const std::vector<double> &atol_v, const AtolTracking &tracking, RestWatch &watch) {
     const std::size_t n_sw = switches.size();
     const double nan = std::numeric_limits<double>::quiet_NaN();
-    watch.arrived.resize(n_sw, 0);
-    watch.largest.resize(n_sw, 0.0);
-    watch.grad.resize(n_sw);
-    watch.gt.resize(n_sw, 0.0);
-    watch.rest_since.resize(n_sw, nan);
-    watch.probed_t.resize(n_sw, nan);
-    watch.ratio.resize(n_sw, 0.0);
-    watch.surface_flow.resize(n_sw, 0.0);
+    watch.size(n_sw);
     // What the branch can move: the stretch since the output before this one,
     // where the state may already have been resting, and the rest of the run.
     const double horizon = t_end - t_prev;
@@ -11694,10 +11725,33 @@ void CvodeSimulator::Impl::refuse_rest_on_state_switch(
     } else {
         sync_model_at(t, x, ns);
     }
-    const std::vector<double> xv(x, x + ns);
-    std::vector<double> f(static_cast<std::size_t>(ns), 0.0);
+    // The work vectors, filled the first time a residual here is read: most
+    // outputs read none past its value.
+    std::vector<double> &xv = watch.xv;
+    std::vector<double> &f = watch.f;
+    std::vector<double> &xw = watch.xw;
+    std::vector<double> &near_f = watch.near_f;
+    std::vector<double> &far_f = watch.far_f;
+    bool have_x = false;
     bool have_f = false;
-    std::vector<double> xw(xv);
+    auto need_x = [&]() {
+        if (!have_x) {
+            const auto n = static_cast<std::size_t>(ns);
+            xv.assign(x, x + ns);
+            f.resize(n);
+            xw.resize(n);
+            near_f.resize(n);
+            far_f.resize(n);
+            have_x = true;
+        }
+    };
+    auto need_f = [&]() {
+        need_x();
+        if (!have_f) {
+            model.compute_derivs(t, x, f.data());
+            have_f = true;
+        }
+    };
     auto unit_of = [&](int j, double xj) {
         const auto uj = static_cast<std::size_t>(j);
         return tolerance_unit(tracking, rtol, atol_v.empty() ? atol : atol_v[uj], uj, xj);
@@ -11711,10 +11765,7 @@ void CvodeSimulator::Impl::refuse_rest_on_state_switch(
     // ∂g/∂x and the flow of g at (t, x), kept for switch k. NaN where unreadable.
     auto read_gradient = [&](std::size_t k) {
         const NetworkModel::StateSwitch &sw = *switches[k];
-        if (!have_f) {
-            model.compute_derivs(t, x, f.data());
-            have_f = true;
-        }
+        need_f();
         double scale = 0.0;
         std::vector<double> &gx = watch.grad[k];
         const double flow =
@@ -11736,10 +11787,9 @@ void CvodeSimulator::Impl::refuse_rest_on_state_switch(
         double flow_hi = 0.0;
         double flow_lo = 0.0;
     };
-    std::vector<double> near_f(static_cast<std::size_t>(ns), 0.0);
-    std::vector<double> far_f(static_cast<std::size_t>(ns), 0.0);
     auto read_jump = [&](std::size_t k, double g, double bar, Jump &out) {
         const NetworkModel::StateSwitch &sw = *switches[k];
+        need_x();
         const std::vector<double> &gx = watch.grad[k];
         double norm2 = 0.0;
         for (int j : sw.species) {
@@ -11810,10 +11860,7 @@ void CvodeSimulator::Impl::refuse_rest_on_state_switch(
     };
     const double k_resolve = state_switch_resolve_factor(ns);
     auto flow_at_x = [&](std::size_t k) {
-        if (!have_f) {
-            model.compute_derivs(t, x, f.data());
-            have_f = true;
-        }
+        need_f();
         double flow = watch.gt[k];
         for (int j : switches[k]->species) {
             flow += watch.grad[k][static_cast<std::size_t>(j)] * f[static_cast<std::size_t>(j)];
@@ -11831,7 +11878,10 @@ void CvodeSimulator::Impl::refuse_rest_on_state_switch(
             continue;
         }
         std::vector<char> &arrived = watch.arrived;
-        const bool beside = a <= 0.1 * watch.largest[k];
+        // Near its surface: within a tenth of the most it has been off, or
+        // within the bar it was last held to (a residual that has never been
+        // off by ten bars rests inside that tenth's reach only at a tenth of one).
+        const bool beside = a <= 0.1 * watch.largest[k] || a <= watch.bar[k];
         watch.largest[k] = std::max(watch.largest[k], a);
         // Nothing to read: never off its surface and on it now, or off it and
         // not near it. The latter ends the stretch ∂g/∂x was kept for.
@@ -11842,10 +11892,13 @@ void CvodeSimulator::Impl::refuse_rest_on_state_switch(
             }
             continue;
         }
+        bool fresh = false; // ∂g/∂x and ∂g/∂t read at this state
         if (watch.grad[k].empty()) {
             read_gradient(k);
+            fresh = true;
         }
         double bar = k_resolve * band_of(sw, watch.grad[k]);
+        watch.bar[k] = std::isfinite(bar) ? bar : 0.0;
         if (!(bar > 0.0) || !std::isfinite(bar)) {
             watch.rest_since[k] = nan;
             continue;
@@ -11858,24 +11911,59 @@ void CvodeSimulator::Impl::refuse_rest_on_state_switch(
         if (arrived[k] == 0) {
             continue;
         }
-        const double flow = flow_at_x(k);
-        if (!(std::fabs(flow) * horizon <= bar)) {
+        // Leaving its surface: the flow at the state carries it away, off the
+        // side it is on, by more than the bar over the stretch. A state the
+        // flow carries toward the surface is not leaving it, however fast: a
+        // crossing is told from an approach by the flows on the surface itself
+        // below, where the approach to a rest point runs out and a crossing's
+        // does not. (Asked of the flow at the state, an approach that slows as
+        // it nears the surface read as moving until long after rounding could
+        // put it across, and a side that pushes it off took it away first.)
+        auto leaving = [&](double fl) {
+            const double away = g > 0.0 ? fl : (g < 0.0 ? -fl : 0.0);
+            return !(away * horizon <= bar);
+        };
+        double flow = flow_at_x(k);
+        if (leaving(flow) && !fresh) {
+            // Kept from an earlier output, ∂g/∂x and ∂g/∂t may say the state
+            // moves where it no longer does (a threshold that has stopped
+            // moving, a residual curved in x): read them here before saying so.
+            flow = read_gradient(k);
+            fresh = true;
+            bar = k_resolve * band_of(sw, watch.grad[k]);
+            watch.bar[k] = std::isfinite(bar) ? bar : 0.0;
+            if (!(bar > 0.0) || !std::isfinite(bar) || a > bar) {
+                watch.rest_since[k] = nan;
+                continue;
+            }
+        }
+        if (leaving(flow)) {
             watch.rest_since[k] = nan;
             continue;
         }
-        // At rest at the state. Its jump is read at the start of the rest and
-        // each time the rest has doubled since.
+        // Resting on the surface, or nearing it. Its jump is read at the start
+        // of the stretch and each time the stretch has doubled since, with
+        // ∂g/∂x read there.
         Jump jump;
         if (std::isnan(watch.rest_since[k])) {
             watch.rest_since[k] = t;
             watch.probed_t[k] = nan;
         }
         auto read = [&]() {
-            const bool readable = read_jump(k, g, bar, jump);
+            if (!fresh) {
+                read_gradient(k);
+                fresh = true;
+                bar = k_resolve * band_of(sw, watch.grad[k]);
+                watch.bar[k] = std::isfinite(bar) ? bar : 0.0;
+            }
+            const bool readable = bar > 0.0 && std::isfinite(bar) && read_jump(k, g, bar, jump);
             watch.ratio[k] = readable ? jump.ratio : 0.0;
-            watch.surface_flow[k] = readable
-                                        ? std::max(std::fabs(jump.flow_hi), std::fabs(jump.flow_lo))
-                                        : std::numeric_limits<double>::infinity();
+            // What carries the state onto the surface: the hi side's flow where
+            // it points down to it, the lo side's where it points up. A flow
+            // that points away carries the state off a side, not onto it.
+            watch.carry[k] =
+                readable ? std::max(std::max(0.0, -jump.flow_hi), std::max(0.0, jump.flow_lo))
+                         : std::numeric_limits<double>::infinity();
             watch.probed_t[k] = t;
             return readable;
         };
@@ -11884,25 +11972,25 @@ void CvodeSimulator::Impl::refuse_rest_on_state_switch(
             read();
         }
         auto refusable = [&]() {
-            return watch.ratio[k] * horizon > 1.0 && watch.surface_flow[k] * horizon <= bar;
+            return watch.ratio[k] * horizon > 1.0 && watch.carry[k] * horizon <= bar;
         };
         if (!refusable()) {
             continue;
         }
         // Before refusing, read it all again here.
         const double fresh_flow = read_gradient(k);
+        fresh = true;
         bar = k_resolve * band_of(sw, watch.grad[k]);
-        if (!(bar > 0.0) || !std::isfinite(bar) || a > bar ||
-            !(std::fabs(fresh_flow) * horizon <= bar) || !read() || !refusable() ||
-            jump.species < 0) {
+        if (!(bar > 0.0) || !std::isfinite(bar) || a > bar || leaving(fresh_flow) || !read() ||
+            !refusable() || jump.species < 0) {
             continue;
         }
         std::ostringstream msg;
         msg << "At t=" << t << " the state has come to rest on the surface of a state-dependent "
             << "rate-law switch (residual '" << sw.residual_source << "' = " << g << ", within the "
             << bar
-            << " the run's tolerances leave it): the flow on either side moves it by less than "
-               "that before t="
+            << " the run's tolerances leave it): neither side's flow carries it onto the surface "
+               "by more than that before t="
             << t_end << ", and across the surface the rate law jumps by " << jump.size << " in d"
             << model.species_names()[static_cast<std::size_t>(jump.species)]
             << "/dt. Which branch the run reads from here is set by rounding, not by the model, "
@@ -11910,6 +11998,41 @@ void CvodeSimulator::Impl::refuse_rest_on_state_switch(
                "exactly on a steady state the state relaxes to does this; move it off that state, "
                "or write the branch the model means.";
         throw std::runtime_error(msg.str());
+    }
+}
+
+void CvodeSimulator::Impl::note_event_on_state_switch(
+    double t, const double *x, int ns, const std::vector<char> &written,
+    const std::vector<const NetworkModel::StateSwitch *> &switches, RestWatch &watch) {
+    if (watch.arrived.size() != switches.size()) {
+        return; // before the run's first reading, which reads this state as its start
+    }
+    bool synced = false;
+    for (std::size_t k = 0; k < switches.size(); ++k) {
+        const NetworkModel::StateSwitch &sw = *switches[k];
+        if (watch.arrived[k] == 0) {
+            continue;
+        }
+        const bool reads_written = std::any_of(sw.species.begin(), sw.species.end(), [&](int j) {
+            return j >= 0 && j < ns && static_cast<std::size_t>(j) < written.size() &&
+                   written[static_cast<std::size_t>(j)] != 0;
+        });
+        if (!reads_written) {
+            continue;
+        }
+        if (!synced) {
+            sync_model_at(t, x, ns);
+            synced = true;
+        }
+        if (model.evaluator().evaluate(sw.residual_expr_idx) != 0.0) {
+            continue;
+        }
+        watch.arrived[k] = 0;
+        watch.largest[k] = 0.0;
+        watch.bar[k] = 0.0;
+        watch.grad[k].clear();
+        watch.rest_since[k] = std::numeric_limits<double>::quiet_NaN();
+        watch.probed_t[k] = std::numeric_limits<double>::quiet_NaN();
     }
 }
 
@@ -17247,6 +17370,21 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 trigger_changed_at[ei] = t_now;
             }
             trigger_was_true[ei] = prev[ei];
+        }
+
+        // Issue #1548: a switch's residual this batch's assignments left
+        // exactly on its surface has its branch from the model there.
+        if (!state_switches.empty() && executed_fires.size() > batch_fires_from) {
+            std::vector<char> written(static_cast<std::size_t>(ns), 0);
+            for (std::size_t fi = batch_fires_from; fi < executed_fires.size(); ++fi) {
+                for (const auto &asg : events_outer[executed_fires[fi].event_idx].assignments) {
+                    if (asg.first >= 0 && asg.first < ns) {
+                        written[static_cast<std::size_t>(asg.first)] = 1;
+                    }
+                }
+            }
+            impl_->note_event_on_state_switch(t_now, y_data, ns, written, state_switches,
+                                              state_switch_rest);
         }
 
         return any_immediate;

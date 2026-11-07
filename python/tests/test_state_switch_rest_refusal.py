@@ -132,6 +132,86 @@ def test_a_continuous_switch_resting_on_its_surface_runs(tmp_path, a0):
     assert _w(result) == pytest.approx(want, rel=1e-6, abs=1e-6)
 
 
+PUSH = "if(Aobs<thr,0,c)"  # a push up, above thr only
+
+
+def _pushed(tmp_path: Path, c: float, a0: float = 0.0) -> bngsim.Simulator:
+    """RELAX, with A pushed up at c once it is above thr = 2, where it rests."""
+    text = RELAX.format(a0=a0, thr=2.0, law=JUMP)
+    text = text.replace("    6 kc 5\n", f"    6 kc 5\n    7 c {c!r}\n")
+    text = text.replace("end functions\n", f"    3 push() {PUSH}\nend functions\n")
+    text = text.replace("    3 0 2 fW\n", "    3 0 2 fW\n    4 0 1 push\n")
+    path = tmp_path / "pushed.net"
+    path.write_text(text)
+    return bngsim.Simulator(bngsim.Model.from_net(path), method="ode")
+
+
+@pytest.mark.parametrize("c", [1e-3, 1.0])
+@pytest.mark.parametrize(("rtol", "n_points"), [(1e-8, 301), (1e-8, 151), (1e-6, 41), (1e-8, 76)])
+def test_a_state_resting_against_a_side_that_pushes_it_off_is_refused(tmp_path, c, rtol, n_points):
+    """A relaxes onto thr = 2 from below, and above it A is pushed further up
+    at c. On the exact solution A never reaches thr and W gathers kb = 3 for
+    ever, 180 by t = 60. Once rounding puts A above thr, though, it is carried
+    off at c and W gathers 0.75: a first cut of this refusal asked the flow on
+    both sides to be small, and c on the far side let these runs return W of 80
+    to 127, with nothing said, on every one of these grids."""
+    with pytest.raises(bngsim.SimulationError, match=REFUSED) as info:
+        _pushed(tmp_path, c).run(t_span=(0.0, 60.0), n_points=n_points, rtol=rtol, atol=rtol)
+    assert "'(Aobs)-(thr)'" in str(info.value)
+
+
+def test_a_species_held_at_its_cap_from_one_side_runs(tmp_path):
+    """Control: A is made at 1 while it is under cap = 5 and not at all above
+    it, so it reaches cap at t = 5 and stays. The flow under the surface points
+    up onto it and puts A back whenever rounding takes it under, so its branch
+    is the model's: W gathers kb = 3 until t = 5 and 0.75 from there."""
+    text = """begin parameters
+    1 cap 5
+    2 kb 3
+end parameters
+begin functions
+    1 make() if(Aobs<cap,1,0)
+    2 fW() if(Aobs<cap,kb,0.25*kb)
+end functions
+begin species
+    1 A() 0
+    2 W() 0
+end species
+begin reactions
+    1 0 1 make
+    2 0 2 fW
+end reactions
+begin groups
+    1 Aobs 1
+end groups
+"""
+    path = tmp_path / "cap.net"
+    path.write_text(text)
+    result = bngsim.Simulator(bngsim.Model.from_net(path), method="ode").run(
+        t_span=(0.0, 20.0), n_points=41, rtol=1e-8, atol=1e-8
+    )
+    assert _w(result) == pytest.approx(3.0 * 5.0 + 0.75 * 15.0, rel=1e-6)
+
+
+def test_a_species_an_event_sets_onto_its_gate_runs():
+    """S decays until an event sets it to 0 at t = 5, where nothing moves it
+    again, and ``S > 0`` gates W's rate. S was off its surface before the event,
+    but the event puts it exactly on it, so the gate reads the model's branch
+    (0 > 0 is false), not rounding's: W = 5·k and dW/dk = 5. A first cut
+    refused this run as come to rest."""
+    text = (
+        "species S, W; S = 1; W = 0; k = 3; kd = 0.1\n"
+        "Jd: S -> ; kd*S\nE1: at (time > 5): S = 0\nJ: -> W; piecewise(k, S > 0, 0)\n"
+    )
+    sim = bngsim.Simulator(
+        bngsim.Model.from_antimony_string(text), method="ode", sensitivity_params=["k"]
+    )
+    result = sim.run(t_span=(0.0, 10.0), n_points=11, rtol=1e-8, atol=1e-8)
+    w = list(result.species_names).index("W")
+    assert float(np.asarray(result.species)[-1, w]) == pytest.approx(15.0, rel=1e-6)
+    assert float(np.asarray(result.sensitivities)[-1, w, 0]) == pytest.approx(5.0, rel=1e-6)
+
+
 def test_a_species_that_never_leaves_its_surface_runs(tmp_path):
     """S is 0 at the start and nothing makes it: its gate ``S > 0`` reads the
     model, not rounding, and the run is not asked about it."""

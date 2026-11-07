@@ -455,6 +455,31 @@ def test_a_parked_root_does_not_restart_the_run(data_dir, tmp_path, kind, jacobi
         bngsim.Simulator(model, jacobian=jacobian).run(**window)
 
 
+@pytest.mark.parametrize(
+    "sample_times", [[0.0, 150.0], [0.0, 10.0, 150.0]], ids=["ends", "ends-and-10"]
+)
+def test_a_grazed_root_does_not_restart_the_run(data_dir, tmp_path, sample_times):
+    """``moving``'s threshold dips to touch Voltage within the tolerance near
+    t = 147.5 and rises off it again. Where an output lands on the touch the
+    run is refused for it (issue #1548); where none does, nothing has rested
+    there to refuse, and what holds the run on its branch is #903's rule: the
+    root the interpolant reports there is not resolved past the surface, so the
+    run does not restart on the far side, where the latch carries V off (0.16
+    off, silently, in the fourth review of PR #903). The other five twins rest
+    on their surface and are refused, so this is that rule's witness."""
+    text, exact_text = _ltype_variant((data_dir / _LTYPE).read_text(), "moving")
+    window = dict(sample_times=sample_times, rtol=1e-8, atol=1e-8)
+    result = bngsim.Simulator(_write(tmp_path, text, "moving.net")).run(**window)
+    assert result.solver_stats["n_steps"] < 10_000
+    exact = bngsim.Simulator(_write(tmp_path, exact_text, "moving_exact.net")).run(
+        **{**window, "rtol": 1e-12, "atol": 1e-12}
+    )
+    got = np.asarray(result.observables)
+    want = np.asarray(exact.observables)
+    scale = np.maximum(np.abs(want).max(axis=0), 1e-12)
+    assert float((np.abs(got - want) / scale).max()) < 1e-6
+
+
 @pytest.mark.parametrize(("rtol", "n_points"), [(1e-10, 301), (1e-8, 151), (1e-12, 76)])
 def test_a_state_resting_on_its_surface_is_refused(data_dir, tmp_path, rtol, n_points):
     """The rulehub model the #176 fixture was edited from: k_v_stim is 50.0, so

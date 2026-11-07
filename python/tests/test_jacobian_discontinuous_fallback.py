@@ -39,8 +39,10 @@ dV/dt < 0, so it is an artifact of the parked trajectory. The core restarts on
 a lone state-switch root only where the flow clearly carries the residual
 across, which leaves this run exactly as it was before the root existed.
 Restarting there instead held the run on the wrong branch: the analytical
-attempt no longer failed, took 2,019,910 steps, and came out 63% off. So every
-test in this file also guards that rule.
+attempt no longer failed, took 2,019,910 steps, and came out 63% off. Every
+test in this file guarded that rule until the fixture was refused (below); its
+witness now is test_net_state_switch_stepping.py's grazed root, the one parked
+twin that runs.
 
 **Since issue #1548 the time course on this fixture is refused by name.** Its
 state rests within the run's tolerance of the step from t ≈ 21, before the
