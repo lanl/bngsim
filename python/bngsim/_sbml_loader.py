@@ -12129,17 +12129,17 @@ def _xor_text(truths: list[str]) -> str:
 
 def _nonnegative_by_literal_form(node) -> bool:
     """True iff *node* is non-negative by its form alone: non-negative numbers
-    and the time, put together by +, * and /. A name is not, since a parameter
-    can be set negative after load. Where both operands of ``quotient`` or
-    ``rem`` are, truncation and the floor are the same (issue #1522)."""
+    put together by +, * and /. A name is not, since a parameter can be set
+    negative after load, and nor is the time, since a run can start before 0
+    (``t_span=(-4.5, 1.5)``), where ``rem(time, 3)`` is -1.5, not the floor's
+    1.5. Where both operands of ``quotient`` or ``rem`` are, truncation and the
+    floor are the same (issue #1522)."""
     t = node.getType()
     if t == libsbml.AST_INTEGER:
         return node.getInteger() >= 0
     if t in (libsbml.AST_REAL, libsbml.AST_REAL_E):
         v = node.getReal()
         return v == v and v >= 0
-    if t == libsbml.AST_NAME_TIME:
-        return True
     if t in (libsbml.AST_PLUS, libsbml.AST_TIMES, libsbml.AST_DIVIDE):
         return node.getNumChildren() > 0 and all(
             _nonnegative_by_literal_form(node.getChild(i)) for i in range(node.getNumChildren())
@@ -12396,9 +12396,11 @@ def _ast_to_exprtk_recursive(node, func_defs, local_params):
     # floor elsewhere, chosen by xor(a < 0, b < 0). bngsim already reads that
     # form everywhere a floor is read, as a schedule included (#465, #467), where
     # a bare trunc() would be a step call the derivations decline. Where both
-    # operands are non-negative by their form, truncation is the floor, and the
-    # floor alone is written, as before: the dead ceil would otherwise be one
-    # more step for a far line's reading (#1018) to refuse.
+    # operands are non-negative numbers by their form, truncation is the floor,
+    # and the floor alone is written, as before. An operand that reads the time
+    # takes the sign test, since a run can start before 0; on a far line
+    # (quotient(1e10 + time, 0.01)) its ceil is one more step, and the far
+    # line's reading (#1018) refuses the run by name.
     if t == libsbml.AST_FUNCTION_QUOTIENT or t == libsbml.AST_FUNCTION_REM:
         a, b = _r(0), _r(1)
         if (

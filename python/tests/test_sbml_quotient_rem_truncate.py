@@ -157,6 +157,35 @@ def test_a_remainder_of_the_time_less_a_number_truncates(codegen):
     assert float(np.asarray(result.expressions["r"])[-1]) == pytest.approx(-1.0, abs=1e-15)
 
 
+@pytest.mark.parametrize("codegen", [False, True], ids=["interpreted", "compiled"])
+def test_a_remainder_of_the_time_truncates_on_a_run_from_before_0(codegen):
+    """A run can start before 0, so the time is not non-negative by its form.
+    Over t = -4.5 .. 1.5, rem(time, 3) is fmod(t, 3), -1.5 at t = -4.5, and
+    quotient(time, 3) is trunc(t/3), -1 there; read as the floor they were 1.5
+    and -2, wrong at every row before 0. The bound is rounding: each row's t is
+    a sum of steps from -4.5."""
+    time = "<csymbol encoding='text' definitionURL='http://www.sbml.org/sbml/symbols/time'>t</csymbol>"
+    rules = "".join(
+        f'<assignmentRule variable="{v}">{_MATH}<apply><{op}/>{time}<cn type="integer">3</cn>'
+        "</apply></math></assignmentRule>"
+        for v, op in (("q", "quotient"), ("r", "rem"))
+    )
+    sbml = (
+        f'{_HDR}\n<model id="m"><listOfParameters>'
+        '<parameter id="q" constant="false"/><parameter id="r" constant="false"/>'
+        f"</listOfParameters><listOfRules>{rules}</listOfRules></model></sbml>"
+    )
+    result = bngsim.Simulator(
+        bngsim.Model.from_sbml_string(sbml), method="ode", codegen=codegen
+    ).run(t_span=(-4.5, 1.5), n_points=7)
+    t = np.asarray(result.time)
+    assert t[0] == -4.5
+    np.testing.assert_array_equal(np.asarray(result.expressions["q"]), [_q(x, 3) for x in t])
+    np.testing.assert_allclose(
+        np.asarray(result.expressions["r"]), [_r(x, 3) for x in t], rtol=0, atol=1e-12
+    )
+
+
 def _schedule_sbml(t0, *, native):
     """X is made at k while rem(time - t0, P) >= d, and lost at kd. ``native``
     writes <rem/>; otherwise libSBML's own `%`, which bngsim read as MathML does."""
@@ -261,30 +290,42 @@ def _emitted(mathml):
     "operands",
     [
         "<cn>9</cn><cn>2</cn>",
-        "<csymbol encoding='text' definitionURL='http://www.sbml.org/sbml/symbols/time'>t</csymbol><cn>24</cn>",
+        "<apply><plus/><cn>9</cn><cn>0.5</cn></apply><apply><times/><cn>2</cn><cn>3</cn></apply>",
     ],
-    ids=["two numbers", "time and a number"],
+    ids=["two numbers", "a sum and a product of numbers"],
 )
 def test_operands_non_negative_by_their_form_keep_the_floor_text(operands):
-    """Where both operands are non-negative by their form, truncation is the
-    floor, and the text written is the one main wrote, so nothing that read it
-    reads anything new."""
+    """Where both operands are non-negative numbers by their form, truncation is
+    the floor, and the text written is the one main wrote, so nothing that read
+    it reads anything new."""
     for op in ("quotient", "rem"):
         text = _emitted(f"{_MATH}<apply><{op}/>{operands}</apply></math>")
         assert "ceil" not in text and "if(" not in text, text
 
 
-def test_a_parameter_operand_takes_the_sign_test():
-    """A parameter can be set negative after load, so its remainder truncates
-    by the sign test, whatever it holds at load."""
-    text = _emitted(f"{_MATH}<apply><rem/><ci>a</ci><cn>3</cn></apply></math>")
+@pytest.mark.parametrize(
+    "operand",
+    [
+        "<ci>a</ci>",
+        "<csymbol encoding='text' definitionURL='http://www.sbml.org/sbml/symbols/time'>t</csymbol>",
+        "<apply><minus/><cn>3</cn><cn>5</cn></apply>",
+    ],
+    ids=["a parameter", "the time", "a difference of numbers"],
+)
+def test_a_parameter_the_time_or_a_difference_takes_the_sign_test(operand):
+    """A parameter can be set negative after load, a run can start before 0,
+    and a difference of non-negative numbers can be negative, so each one's
+    remainder truncates by the sign test, whatever it holds at load."""
+    text = _emitted(f"{_MATH}<apply><rem/>{operand}<cn>3</cn></apply></math>")
     assert "ceil" in text and "floor" in text and "if(" in text, text
 
 
-def test_a_far_line_quotient_of_numbers_runs_as_on_main():
-    """quotient(1e10 + time, 0.01) is floor(1e12 + 100t) on its treads, which
-    integrate to 1e12 + 49.5 over (0, 1). Written with the sign test its dead
-    ceil was a second step on the far line, and the run was refused."""
+def test_a_far_line_quotient_of_the_time_is_refused():
+    """quotient(1e10 + time, 0.01) is floor(1e12 + 100t) on its treads from 0,
+    which main integrated exactly to 1e12 + 49.5 over (0, 1). It reads the time,
+    which a run can start before 0, so it takes the sign test, whose ceil is a
+    second step on the far line: the far line's reading (#1018) refuses the run
+    by name rather than read it wrong."""
     pytest.importorskip("antimony")
     import antimony
 
@@ -293,10 +334,11 @@ def test_a_far_line_quotient_of_numbers_runs_as_on_main():
         " J0: => X; quotient(1e10 + time, 0.01)\nend"
     )
     assert antimony.loadAntimonyString(ant) >= 0, antimony.getLastError()
-    result = bngsim.Simulator(
+    sim = bngsim.Simulator(
         bngsim.Model.from_sbml_string(antimony.getSBMLString("m")), method="ode"
-    ).run(t_span=(0, 1), n_points=2, rtol=1e-8, atol=1e-10)
-    assert float(np.asarray(result.species)[-1, 0]) == pytest.approx(1e12 + 49.5, rel=1e-15)
+    )
+    with pytest.raises(bngsim.SimulationError, match="switches on"):
+        sim.run(t_span=(0, 1), n_points=2, rtol=1e-8, atol=1e-10)
 
 
 def test_a_far_line_remainder_by_a_parameter_is_refused():
