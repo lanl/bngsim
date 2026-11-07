@@ -264,3 +264,24 @@ def test_the_upstream_model_is_refused_on_every_grid(data_dir, tmp_path, n_point
     with pytest.raises(bngsim.SimulationError, match=REFUSED) as info:
         sim.run(t_span=(0.0, 150.0), n_points=n_points, rtol=1e-8, atol=1e-8)
     assert "Voltage_Level" in str(info.value)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=pytest.fail.Exception,
+    reason="lanl/bngsim#1588: a plain SBML run hands the core no state switches",
+)
+def test_a_plain_sbml_run_resting_on_its_gate_is_refused():
+    """B decays under its guard ``B > 1e-9`` and rests there, within the
+    absolute tolerance of 1e-8, so when Y stops gathering is rounding's call:
+    the plain run returns Y(12) = 2.267 for k·ln(1e9)/lam = 2.072. A sensitivity
+    run of it is refused (test_state_switch_on_a_clock_instant.py); a plain run
+    is not asked, because the switch list it hands the core is empty for SBML."""
+    text = (
+        "species B, X, Y; B = 1; X = 0; Y = 0; lam = 5; k = 0.5; r = 1.5; tau = 8\n"
+        "Jb: B -> ; lam*B\nJy: -> Y; piecewise(k, B > 1e-9, 0)\n"
+        "Jx: -> X; piecewise(r, time >= tau, 0)\n"
+    )
+    sim = bngsim.Simulator(bngsim.Model.from_antimony_string(text), method="ode")
+    with pytest.raises(bngsim.SimulationError, match=REFUSED):
+        sim.run(sample_times=[0.0, 2.0, 4.0, 8.0, 12.0], rtol=1e-8, atol=1e-8)
