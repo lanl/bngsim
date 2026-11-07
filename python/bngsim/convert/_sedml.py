@@ -66,6 +66,10 @@ _METHOD_TO_KISAO = {
     "ode": "KISAO:0000019",  # CVODE
     "ssa": "KISAO:0000029",  # Gillespie direct method
 }
+_KISAO_NFSIM = "KISAO:0000263"  # NFSim agent-based simulation method
+_KISAO_PLA = "KISAO:0000524"  # partitioned leaping method
+# The protocol vocabulary (BNG2.pl's methods). read_sedml, whose spec runs a
+# network, reads NFsim as the exact SSA and refuses PLA (issue #1500).
 _KISAO_TO_METHOD = {
     "KISAO:0000019": "ode",  # CVODE
     "KISAO:0000496": "ode",  # CVODES
@@ -74,6 +78,9 @@ _KISAO_TO_METHOD = {
     "KISAO:0000029": "ssa",  # Gillespie direct
     "KISAO:0000027": "ssa",  # next-reaction (Gibson–Bruck)
     "KISAO:0000241": "ssa",  # Gillespie-like
+    "KISAO:0000694": "ode",  # ODE solver (the generic term BioModels' SED-ML names)
+    _KISAO_NFSIM: "nf",
+    _KISAO_PLA: "pla",
 }
 
 # Solver options ↔ KiSAO algorithm-parameter terms.
@@ -192,13 +199,7 @@ def write_sedml(
     utc = ET.SubElement(
         sims,
         _q(_SEDML_NS, "uniformTimeCourse"),
-        {
-            "id": "sim0",
-            "initialTime": _num(t0),
-            "outputStartTime": _num(t0),
-            "outputEndTime": _num(t_end),
-            "numberOfPoints": str(n_steps),
-        },
+        _utc_attrs("sim0", t0, spec.output_start, t_end, n_steps),
     )
     algo = ET.SubElement(
         utc, _q(_SEDML_NS, "algorithm"), {"kisaoID": _METHOD_TO_KISAO[spec.method]}
@@ -213,14 +214,7 @@ def write_sedml(
         params.append((_KISAO_ATOL, _num(atol)))
     if spec.max_steps is not None:
         params.append((_KISAO_MAXSTEPS, str(int(spec.max_steps))))
-    if params:
-        lop = ET.SubElement(algo, _q(_SEDML_NS, "listOfAlgorithmParameters"))
-        for kid, val in params:
-            ET.SubElement(
-                lop,
-                _q(_SEDML_NS, "algorithmParameter"),
-                {"kisaoID": kid, "value": val},
-            )
+    _algorithm_param_elems(algo, params)
 
     # ── listOfModels / listOfTasks ─────────────────────────────────────────
     models = ET.SubElement(sed, _q(_SEDML_NS, "listOfModels"))
@@ -272,6 +266,29 @@ def write_sedml(
     if out_path is not None:
         Path(out_path).write_text(text)
     return text
+
+
+def _algorithm_param_elems(algo: ET.Element, params: list[tuple[str, str]]) -> None:
+    """Append an algorithm's ``listOfAlgorithmParameters``, if it has any."""
+    if not params:
+        return
+    lop = ET.SubElement(algo, _q(_SEDML_NS, "listOfAlgorithmParameters"))
+    for kid, val in params:
+        ET.SubElement(lop, _q(_SEDML_NS, "algorithmParameter"), {"kisaoID": kid, "value": val})
+
+
+def _utc_attrs(
+    sim_id: str, t0: float, output_start: float | None, t_end: float, n_steps: int
+) -> dict[str, str]:
+    """A ``uniformTimeCourse``'s attributes: integrate from *t0*, output from
+    *output_start* (``None``: from *t0*) to *t_end* in *n_steps* steps."""
+    return {
+        "id": sim_id,
+        "initialTime": _num(t0),
+        "outputStartTime": _num(t0 if output_start is None else output_start),
+        "outputEndTime": _num(t_end),
+        "numberOfPoints": str(n_steps),
+    }
 
 
 def _data_generator(parent: ET.Element, dg_id: str, name: str, *, var_attrs: dict) -> None:
@@ -346,7 +363,11 @@ def read_sedml(
     Reads the first **uniform time course** and its task's model reference,
     recovering the time grid, output selectors (from each data generator), and
     the solver + tolerances (from the algorithm's KiSAO terms). Namespace-
-    agnostic, so SED-ML L1 V1–V4 all parse.
+    agnostic, so SED-ML L1 V1–V4 all parse, V4's ``numberOfSteps`` included.
+    The spec integrates from ``initialTime``; an ``outputStartTime`` past it is
+    the spec's ``output_start``, where its output begins (issue #1493). A
+    partitioned-leaping term (``KISAO:0000524``) is refused, since bngsim has
+    no PLA, and NFsim's (``KISAO:0000263``) runs as the exact SSA it samples.
 
     Parameters
     ----------
@@ -388,19 +409,16 @@ def read_sedml(
             "the uniform-time-course protocol only"
         )
 
-    t0 = _float_attr(utc, "outputStartTime", _float_attr(utc, "initialTime", 0.0))
-    t_end = _float_attr(utc, "outputEndTime", 100.0)
-    n_steps = int(_float_attr(utc, "numberOfPoints", 100.0))
-    n_points = n_steps + 1  # inverse of the write-side steps = n_points - 1
+    t0, output_start, t_end, n_points = _utc_grid(utc)
 
     method = "ode"
     rtol = atol = None
     max_steps = None
     algo = _find(utc, "algorithm")
     if algo is not None:
-        kid = algo.get("kisaoID") or algo.get("kisaoid")
-        if kid is not None:
-            mapped = _KISAO_TO_METHOD.get(kid.strip())
+        kid = _kisao_id(algo)
+        if kid:
+            mapped = _KISAO_TO_METHOD.get(kid)
             if mapped is None:
                 warnings.warn(
                     f"unmapped algorithm KiSAO term {kid!r}; defaulting method to "
@@ -408,19 +426,19 @@ def read_sedml(
                     ConversionWarning,
                     stacklevel=2,
                 )
+            elif mapped == "pla":
+                raise ConversionError(
+                    f"the time course's algorithm is {kid} (partitioned leaping "
+                    "method), and bngsim has no PLA method to run it with (issue #1500). "
+                    "read_sedml_protocol keeps it as method 'pla' for a BNG2.pl actions block."
+                )
+            elif mapped == "nf":
+                # The spec runs a network (.net or SBML), on which the exact SSA
+                # samples the process NFsim samples from the rules.
+                method = "ssa"
             else:
                 method = mapped
-        for ap in _findall_local(algo, "algorithmParameter"):
-            apk = (ap.get("kisaoID") or ap.get("kisaoid") or "").strip()
-            val = ap.get("value")
-            if val is None:
-                continue
-            if apk == _KISAO_RTOL:
-                rtol = float(val)
-            elif apk == _KISAO_ATOL:
-                atol = float(val)
-            elif apk == _KISAO_MAXSTEPS:
-                max_steps = int(float(val))
+        rtol, atol, max_steps = _algorithm_params(algo)
 
     # Outputs. A document bngsim wrote carries the verbatim bngsim selector in
     # @name, which is the round-trip source of truth and still wins. Every other
@@ -453,12 +471,69 @@ def read_sedml(
         model_format=model_format or "sbml",
         method=method,
         t_span=(t0, t_end),
+        output_start=output_start,
         n_points=n_points,
         outputs=tuple(outputs),
         rtol=rtol,
         atol=ExactAtol(atol) if exact_atol and atol is not None else atol,
         max_steps=max_steps,
     )
+
+
+def _kisao_id(elem: ET.Element) -> str:
+    """An element's KiSAO id, ``""`` if it has none. ``KISAO_0000694``, as
+    some BioModels documents write it, is read as ``KISAO:0000694``."""
+    raw = (elem.get("kisaoID") or elem.get("kisaoid") or "").strip()
+    if raw[:6].upper() == "KISAO_":
+        raw = "KISAO:" + raw[6:]
+    return raw
+
+
+def _algorithm_params(algo: ET.Element) -> tuple[float | None, float | None, int | None]:
+    """An algorithm's ``(rtol, atol, max_steps)`` from its KiSAO parameters."""
+    rtol = atol = None
+    max_steps = None
+    for ap in _findall_local(algo, "algorithmParameter"):
+        apk = _kisao_id(ap)
+        val = ap.get("value")
+        if val is None:
+            continue
+        if apk == _KISAO_RTOL:
+            rtol = float(val)
+        elif apk == _KISAO_ATOL:
+            atol = float(val)
+        elif apk == _KISAO_MAXSTEPS:
+            max_steps = int(float(val))
+    return rtol, atol, max_steps
+
+
+def _steps_attr(elem: ET.Element) -> str | None:
+    """A uniform grid's step count as written: SED-ML L1V4 names it
+    ``numberOfSteps`` and L1V1–V3 ``numberOfPoints``, both counting the
+    intervals, so the grid has one point more (issue #1493)."""
+    raw = elem.get("numberOfSteps")
+    return raw if raw is not None else elem.get("numberOfPoints")
+
+
+def _utc_grid(utc: ET.Element) -> tuple[float, float | None, float, int]:
+    """A ``uniformTimeCourse``'s ``(initial time, output start, output end,
+    output points)``. SED-ML integrates from ``initialTime`` and reports only
+    ``outputStartTime``..``outputEndTime``; taking the output start as the run's
+    start restarted the model there from its initial state (issue #1493). The
+    output start is ``None`` where it is the initial time."""
+    sim = utc.get("id") or "the uniformTimeCourse"
+    initial_raw, start_raw = utc.get("initialTime"), utc.get("outputStartTime")
+    initial = float(initial_raw if initial_raw is not None else (start_raw or 0.0))
+    start = float(start_raw) if start_raw is not None else initial
+    t_end = _float_attr(utc, "outputEndTime", 100.0)
+    steps = _steps_attr(utc)
+    n_points = int(float(steps) if steps is not None else 100.0) + 1
+    if not initial <= start <= t_end:
+        raise ConversionError(
+            f"{sim}: SED-ML needs initialTime <= outputStartTime <= outputEndTime, and "
+            f"this one has {initial:g}, {start:g}, {t_end:g}"
+        )
+    return initial, (None if start == initial else start), t_end, n_points
 
 
 # The kinds Result.resolve_outputs accepts, aliases included. A ``@name`` in
@@ -568,9 +643,73 @@ def default_protocol(
 # the verbatim ProtocolSpec JSON so the round-trip is EXACT (the same
 # fidelity-via-annotation contract #218 uses for the single spec).
 
-# nf (network-free) has no clean KiSAO term; emit it as the stochastic family for
-# the standards element — the annotation preserves the exact method either way.
-_PROTO_METHOD_TO_KISAO = {**_METHOD_TO_KISAO, "nf": "KISAO:0000029"}
+# BNG2.pl's methods → KiSAO (issue #1500). NFsim and PLA have terms of their own;
+# filing them under Gillespie's direct method had a standards reader, bngsim's
+# own load_protocol among them, run an exact SSA for a PLA run. RuleMonkey has
+# none and samples the exact SSA's process, as NFsim does. PSA has none either
+# and approximates the exact SSA; the writer says so when it writes one.
+_KISAO_GILLESPIE = _METHOD_TO_KISAO["ssa"]
+_PROTO_METHOD_TO_KISAO = {
+    **_METHOD_TO_KISAO,
+    "nf": _KISAO_NFSIM,
+    "pla": _KISAO_PLA,
+    "rm": _KISAO_GILLESPIE,
+    "psa": _KISAO_GILLESPIE,
+}
+
+
+def _protocol_algorithm(exp, i: int) -> tuple[str, list[tuple[str, str]]]:
+    """An experiment's KiSAO algorithm term and parameters, warning of what of
+    the run they cannot hold (issue #1500). An ODE run's rtol and atol are
+    BNG2.pl's, its defaults where the action gives none: a reader at its own
+    defaults would run another experiment."""
+    from bngsim._protocol_run import _BNG_ATOL, _BNG_RTOL, _method_of
+    from bngsim.convert._protocol import _num_or
+
+    method = _method_of(exp)
+    kisao = _PROTO_METHOD_TO_KISAO.get(method)
+    if kisao is None:
+        warnings.warn(
+            f"experiment {i}'s method {exp.method!r} has no KiSAO term; SED-ML names "
+            f"Gillespie's direct method ({_KISAO_GILLESPIE}) for it, and the method is "
+            "in the bngsim annotation",
+            ConversionWarning,
+            stacklevel=3,
+        )
+        kisao = _KISAO_GILLESPIE
+    elif method == "psa":
+        warnings.warn(
+            f'experiment {i} runs PSA (BNG2.pl runs it for method=>"psa" or a '
+            "poplevel), which has no KiSAO term; SED-ML names Gillespie's direct "
+            f"method ({_KISAO_GILLESPIE}), the exact SSA it approximates, and the "
+            "method and poplevel are in the bngsim annotation",
+            ConversionWarning,
+            stacklevel=3,
+        )
+    params: list[tuple[str, str]] = []
+    lost: list[str] = []
+    if method == "ode":
+        for key, kid, default in (
+            ("rtol", _KISAO_RTOL, _BNG_RTOL),
+            ("atol", _KISAO_ATOL, _BNG_ATOL),
+        ):
+            raw = exp.extra.get(key)
+            value = default if raw is None else _num_or(raw, None)
+            if value is None:
+                lost.append(f"{key}=>{raw}, which cannot be read without the model")
+            else:
+                params.append((kid, _num(value)))
+    for key in ("pla_config", "steady_state"):
+        if key in exp.extra:
+            lost.append(f"{key}=>{exp.extra[key]}")
+    if lost:
+        warnings.warn(
+            f"SED-ML's algorithm for experiment {i} does not hold its "
+            f"{'; '.join(lost)}; the bngsim annotation does",
+            ConversionWarning,
+            stacklevel=3,
+        )
+    return kisao, params
 
 
 def _sbml_param_target(name: str) -> str:
@@ -686,19 +825,11 @@ def write_sedml_protocol(
         utc = ET.SubElement(
             sims,
             _q(_SEDML_NS, "uniformTimeCourse"),
-            {
-                "id": sim_id,
-                "initialTime": _num(t0),
-                "outputStartTime": _num(t0),
-                "outputEndTime": _num(t_end),
-                "numberOfPoints": str(n_steps),
-            },
+            _utc_attrs(sim_id, t0, exp.output_start, t_end, n_steps),
         )
-        ET.SubElement(
-            utc,
-            _q(_SEDML_NS, "algorithm"),
-            {"kisaoID": _PROTO_METHOD_TO_KISAO.get(exp.method, _PROTO_METHOD_TO_KISAO["ssa"])},
-        )
+        kisao, params = _protocol_algorithm(exp, i)
+        algo = ET.SubElement(utc, _q(_SEDML_NS, "algorithm"), {"kisaoID": kisao})
+        _algorithm_param_elems(algo, params)
 
         base_task_id = f"task_{i}"
         ET.SubElement(
@@ -818,14 +949,31 @@ def read_sedml_protocol(source: str | Path):
     scan_by_sim = _scan_targets(root)
     steps: list[object] = []
     for utc in utcs:
-        t0 = _float_attr(utc, "outputStartTime", _float_attr(utc, "initialTime", 0.0))
-        t_end = _float_attr(utc, "outputEndTime", 100.0)
-        n_points = int(_float_attr(utc, "numberOfPoints", 100.0)) + 1
+        t0, output_start, t_end, n_points = _utc_grid(utc)
         method = "ode"
+        extra: dict[str, float] = {}
         algo = _find(utc, "algorithm")
         if algo is not None:
-            kid = (algo.get("kisaoID") or algo.get("kisaoid") or "").strip()
-            method = _KISAO_TO_METHOD.get(kid, "ode")
+            kid = _kisao_id(algo)
+            mapped = _KISAO_TO_METHOD.get(kid)
+            if mapped is None:
+                # Issue #1500: as read_sedml says. A tau-leaping term read as an
+                # ODE run became method=>"ode" in the actions block, unannounced.
+                warnings.warn(
+                    f"{utc.get('id') or 'a uniformTimeCourse'}: unmapped algorithm KiSAO "
+                    f"term {kid!r}; the experiment is read as method 'ode'",
+                    ConversionWarning,
+                    stacklevel=2,
+                )
+            else:
+                method = mapped
+            if method == "ode":
+                # The run's tolerances, as BNG2.pl's simulate takes them.
+                rtol, atol, _ = _algorithm_params(algo)
+                if rtol is not None:
+                    extra["rtol"] = rtol
+                if atol is not None:
+                    extra["atol"] = atol
         scan = scan_by_sim.get(utc.get("id") or "")
         if scan is not None:
             steps.append(
@@ -833,6 +981,8 @@ def read_sedml_protocol(source: str | Path):
                     kind="scan",
                     method=method,
                     t_span=(t0, t_end),
+                    output_start=output_start,
+                    extra=extra,
                     n_points=n_points,
                     scan_parameter=scan.get("parameter"),
                     scan_min=scan.get("min"),
@@ -849,6 +999,8 @@ def read_sedml_protocol(source: str | Path):
                     kind="simulate",
                     method=method,
                     t_span=(t0, t_end),
+                    output_start=output_start,
+                    extra=extra,
                     n_points=n_points,
                 )
             )
@@ -861,9 +1013,10 @@ def _uniform_range_points(rng: ET.Element) -> int | None:
     SED-ML's ``numberOfPoints`` counts intervals — a range expands to
     ``numberOfPoints + 1`` values — which is the same convention the
     ``uniformTimeCourse`` reader above applies. bngsim's ``scan_points`` is the
-    inclusive count on both sides of that conversion (GH #575).
+    inclusive count on both sides of that conversion (GH #575). L1V4 calls the
+    attribute ``numberOfSteps`` (issue #1493).
     """
-    raw = rng.get("numberOfPoints")
+    raw = _steps_attr(rng)
     if raw is None:
         return None
     try:

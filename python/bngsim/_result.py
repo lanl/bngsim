@@ -3402,15 +3402,18 @@ class Result:
         Any populated sensitivity block (species, observable, expression, and
         their IC variants — GH #196) is carried through with the sim axis
         prepended, e.g. ``sensitivities.shape == (n_sims, n_times, n_rows,
-        n_cols)``; a block that is empty on the inputs stays empty. The
-        parameter / IC-species name lists are taken from the first result.
+        n_cols)``; a block that is empty on the inputs stays empty.
         Each row keeps its own compartment sizes and per-sample volume factors.
 
         Parameters
         ----------
         results : list[Result]
-            Results from individual simulations (all must have the
-            same n_times, n_species, n_observables).
+            Results from individual simulations. All must have the same time
+            points, the same species, observable and expression names in the
+            same order, the same sensitivity parameters and IC species, the
+            same reaction labels, and the same blocks present: the stack has
+            one time axis and one set of column names, which every row is
+            read by (issue #1513).
 
         Returns
         -------
@@ -3420,8 +3423,9 @@ class Result:
         Raises
         ------
         ValueError
-            If ``results`` is empty, or any of them met a stop condition
-            (:attr:`stop_condition`, issue #1369).
+            If ``results`` is empty, any of them met a stop condition
+            (:attr:`stop_condition`, issue #1369), or a row's time points,
+            names or blocks differ from the first row's (issue #1513).
         """
         if not results:
             raise ValueError("Cannot squeeze empty result list")
@@ -3439,6 +3443,7 @@ class Result:
             )
         if len(results) == 1:
             return results[0]
+        _refuse_disagreeing_rows(results)
 
         time = results[0]._time
         species_names = results[0]._species_names
@@ -3921,6 +3926,85 @@ class _XarrayAccessor:
 
     def __repr__(self) -> str:
         return f"<Result.xr fields={list(self._FIELDS)}>"
+
+
+# What a row of a stack is read by, besides its time points: the stack keeps row
+# 0's list of each and puts every row's columns under it by position.
+_SQUEEZE_NAME_LISTS = (
+    ("species", "_species_names"),
+    ("observables", "_observable_names"),
+    ("expressions", "_expression_names"),
+    ("sensitivity parameters", "_sensitivity_params"),
+    ("IC-sensitivity species", "_sensitivity_ic_species"),
+    ("reaction labels", "_reaction_labels"),
+)
+# The blocks row 0 alone decided whether to stack.
+_SQUEEZE_BLOCKS = (
+    ("expression values", "_expressions"),
+    ("species sensitivities", "_sensitivities"),
+    ("species IC sensitivities", "_sensitivities_ic"),
+    ("observable sensitivities", "_observable_sensitivities"),
+    ("expression sensitivities", "_expression_sensitivities"),
+    ("observable IC sensitivities", "_observable_sensitivities_ic"),
+    ("expression IC sensitivities", "_expression_sensitivities_ic"),
+    ("reaction firing counts", "_reaction_firing_counts"),
+    ("reaction propensity integrals", "_reaction_propensity_integrals"),
+)
+
+
+def _names_text(names: list[str]) -> str:
+    shown = ", ".join(repr(n) for n in names[:6])
+    return f"[{shown}{', ...' if len(names) > 6 else ''}]"
+
+
+def _refuse_disagreeing_rows(results: list[Result]) -> None:
+    """Refuse a stack whose rows do not all share row 0's times, names and blocks.
+
+    The stack has one time axis and one list of names for each kind of column,
+    both row 0's, and every row is read through them by position. A row run on
+    other times, or with its species in another order, was labelled with row
+    0's and read wrong at every point, with nothing said (issue #1513). The
+    comparison is exact: every stack bngsim builds itself (run_batch,
+    run_replicates, parameter_scan) runs one grid on clones of one model.
+    """
+    first = results[0]
+    for i, row in enumerate(results[1:], start=1):
+        problem = None
+        if row._time.shape != first._time.shape:
+            problem = (
+                f"has {row._time.shape[0]} time points where row 0 has {first._time.shape[0]}"
+            )
+        elif not np.array_equal(row._time, first._time):
+            k = int(np.flatnonzero(row._time != first._time)[0])
+            problem = (
+                f"has time point {k} at t = {float(row._time[k])!r} where row 0 has it at "
+                f"t = {float(first._time[k])!r}"
+            )
+        else:
+            for what, attr in _SQUEEZE_NAME_LISTS:
+                mine, theirs = list(getattr(row, attr)), list(getattr(first, attr))
+                if mine != theirs:
+                    problem = (
+                        f"has {what} {_names_text(mine)} where row 0 has {_names_text(theirs)}"
+                    )
+                    break
+            else:
+                for what, attr in _SQUEEZE_BLOCKS:
+                    mine, theirs = getattr(row, attr).size > 0, getattr(first, attr).size > 0
+                    if mine != theirs:
+                        problem = (
+                            f"has {what} where row 0 has none"
+                            if mine
+                            else f"has no {what} where row 0 has them"
+                        )
+                        break
+        if problem is not None:
+            raise ValueError(
+                f"Cannot squeeze these results: row {i} {problem}. A stack has one time "
+                "axis and one set of column names, the first row's, and reads every row "
+                "by them, so the rows must agree on both (issue #1513). Read them from "
+                "the list, or rerun them on one time grid and one model."
+            )
 
 
 def _empty_sens_block(arr: NDArray | None) -> NDArray[np.float64]:
