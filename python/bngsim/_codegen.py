@@ -36,7 +36,9 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
+from bngsim import _codegen_toolchain as _toolchain
 from bngsim import _term_order
+from bngsim._exceptions import CodegenToolchainError
 
 if TYPE_CHECKING:
     # Import-time cycle: _switch_sensitivity imports this module. Only the
@@ -4851,7 +4853,9 @@ def _resolve_opt_flag(compiler_name: str, source_size: int, chunked: bool = Fals
 _FP_CONTRACT_OFF = "-ffp-contract=off"
 
 
-def _build_compile_cmd(c_path: Path, so_path: Path, opt_flag: str) -> list[str]:
+def _build_compile_cmd(
+    c_path: Path, so_path: Path, opt_flag: str, compiler: list[str] | None = None
+) -> list[str]:
     """Build the platform-specific compile command.
 
     Parameters
@@ -4862,13 +4866,16 @@ def _build_compile_cmd(c_path: Path, so_path: Path, opt_flag: str) -> list[str]:
         Path to the output shared library.
     opt_flag : str
         Optimization flag for the detected compiler (e.g. "-O3" / "/O2").
+    compiler : list[str], optional
+        The compiler's base command; :func:`_find_c_compiler` when not given.
 
     Returns
     -------
     list[str]
         Command-line tokens for subprocess.run().
     """
-    compiler = _find_c_compiler()
+    if compiler is None:
+        compiler = _find_c_compiler()
     compiler_name = Path(compiler[0]).stem.lower()
 
     if compiler_name == "cl":
@@ -5224,6 +5231,7 @@ def _run_compile(
     *,
     cwd: Path | None = None,
     timeout: float | None = None,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
     """Run a compile/link command so a timeout *or* an abort kills the whole
     process group, not just the immediate compiler driver (GH #166).
@@ -5245,6 +5253,7 @@ def _run_compile(
     proc = subprocess.Popen(
         cmd,
         cwd=cwd,
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -5263,6 +5272,13 @@ def _run_compile(
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
+class _CompileFailed(RuntimeError):
+    """A codegen compile or link that the compiler refused (a non-zero exit), as
+    against one that timed out or never ran. Only this kind is put to the
+    toolchain probe (issue #1544). It does not leave :func:`compile_rhs`, which
+    raises it on as the plain ``RuntimeError`` it was before."""
+
+
 def _compile_one_object(
     compiler: list[str],
     opt_flag: str,
@@ -5278,7 +5294,7 @@ def _compile_one_object(
     cmd = compiler + [opt_flag, _FP_CONTRACT_OFF, "-fPIC", "-c", "-o", o_name, c_name]
     result = _run_compile(cmd, cwd=work, timeout=timeout)
     if result.returncode != 0:
-        raise RuntimeError(f"Codegen shard compilation failed ({c_name}):\n{result.stderr}")
+        raise _CompileFailed(f"Codegen shard compilation failed ({c_name}):\n{result.stderr}")
     os.utime(work / o_name, (_SHARD_REPRO_EPOCH, _SHARD_REPRO_EPOCH))
 
 
@@ -5341,7 +5357,7 @@ def _compile_sharded(
         )
         result = _run_compile(link_cmd, cwd=work, timeout=timeout)
         if result.returncode != 0:
-            raise RuntimeError(f"Codegen shard link failed:\n{result.stderr}")
+            raise _CompileFailed(f"Codegen shard link failed:\n{result.stderr}")
         os.replace(work / linked, tmp_so_path)
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -5413,7 +5429,11 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
     token = f"{os.getpid()}_{next(_compile_counter)}"
     tmp_so_path = CACHE_DIR / f"{stem}.{token}{suffix}"
 
-    compiler = _find_c_compiler()
+    # Issue #1544: a toolchain already found unable to build anything (or not
+    # there at all) is not asked again.
+    compiler, broken = _toolchain.check()
+    if broken is not None or compiler is None:
+        raise CodegenToolchainError(broken or "No C compiler found.")
     compiler_name = Path(compiler[0]).stem.lower()
     # A chunked source (Tier-1 NOINLINE blocks) compiles at -O2 at any size; the
     # marker is on the first lines of the combined source (RHS is always first).
@@ -5445,15 +5465,24 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
             # default (cp1252 on Windows) would raise UnicodeEncodeError.
             c_path.write_text(c_source, encoding="utf-8")
             try:
-                cmd = _build_compile_cmd(c_path, tmp_so_path, opt_flag)
+                cmd = _build_compile_cmd(c_path, tmp_so_path, opt_flag, compiler)
                 logger.info("Compiling codegen RHS (%s): %s", opt_flag, " ".join(cmd))
                 result = _run_compile(cmd, timeout=timeout)
                 if result.returncode != 0:
-                    raise RuntimeError(f"Codegen compilation failed:\n{result.stderr}")
+                    raise _CompileFailed(f"Codegen compilation failed:\n{result.stderr}")
                 os.replace(tmp_so_path, so_path)
                 _compile_installs.last = str(so_path)
             finally:
                 c_path.unlink(missing_ok=True)
+    except _CompileFailed as err:
+        # Issue #1544: the model's failure, or the toolchain's? A trivial source
+        # built the same way says; a toolchain that fails it too is kept as the
+        # verdict, so the next build fails at once.
+        verdict = _toolchain.classify_failure(compiler)
+        if verdict is not None:
+            raise CodegenToolchainError(verdict) from RuntimeError(str(err))
+        # The model's own failure, reported as it always was.
+        raise RuntimeError(str(err)) from None
     except subprocess.TimeoutExpired as err:
         raise RuntimeError(
             f"Codegen compilation timed out after {timeout:g} s "
@@ -5469,6 +5498,9 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
             "(integrates on the interpreted RHS, no compile step)."
         ) from err
     except FileNotFoundError as err:
+        missing = _toolchain.record_missing(compiler)
+        if missing is not None:
+            raise CodegenToolchainError(missing) from err
         raise RuntimeError(
             "C compiler not found. Install Xcode Command Line Tools "
             "(macOS), gcc (Linux), or Visual Studio Build Tools (Windows)."
@@ -7906,16 +7938,34 @@ def _functional_jacobian_groups(
     species_terms_by_law: dict[str, list] = {}
     observable_terms_by_law: dict[str, list] = {}
 
+    # Issue #1551: on the per-species path each distinct law's derivatives are
+    # also *printed* once. Printed once per carrier, BIOMD0000000469's Jacobian was
+    # 19.2 MB, 18.1 MB of it one law's 65 column derivatives (about 4 KB of C
+    # each) repeated for each of its 68 carriers, and took 13–22 minutes to
+    # compile. So the groups are built per law, at the position of its first
+    # carrier: one group per column computes the derivative and scatters it into
+    # the rows of every reaction carrying the law, in reaction order. A law with
+    # one carrier emits exactly the group it always did. With several, a matrix
+    # entry that another reaction writes between two carriers sums its terms in a
+    # different order than fill_dense_analytical_jacobian does, a rounding-level
+    # difference of the kind the compiled derivative already has against ExprTk's
+    # evaluation of the same text.
+    #
+    # The per-observable path keeps one group per reaction. Its derivatives are
+    # with respect to observables and short, and nesting each carrier's own f, P
+    # and columns under one shared block of them made the corpus .net sources that
+    # share a law up to 9% larger; the source size picks the optimization level.
+
     # Per-species (SBML) block — emitted for all reactions first so the scatter
     # accumulation order matches fill_dense_analytical_jacobian (all species_
     # terms, then all volume_terms, then all observable_terms).
+    species_carriers: dict[str, list[tuple[int, list]]] = {}
     for rxn in frxns:
         has_sf = bool(rxn["apply_species_factor"]) and len(rxn["reactant_idx0"]) > 0
         if has_sf:
             continue
         affected = _net_affected(rxn)
-        terms = species_terms_by_law.get(rxn["rate_expr"])
-        if terms is None:
+        if rxn["rate_expr"] not in species_terms_by_law:
             terms = build_per_species_c(
                 rxn["rate_expr"],
                 func_map,
@@ -7931,15 +7981,24 @@ def _functional_jacobian_groups(
             species_terms_by_law[rxn["rate_expr"]] = terms
         if not affected:
             continue  # set_functional_jacobian drops empty-affected terms
-        for sp_j, c_deriv in terms:
+        species_carriers.setdefault(rxn["rate_expr"], []).append((int(rxn["rxn_idx"]), affected))
+    for law, carriers in species_carriers.items():
+        n_other = len(carriers) - 1
+        note = (
+            f", and the {n_other} other reaction{'s' if n_other > 1 else ''} carrying its rate law"
+            if n_other
+            else ""
+        )
+        for sp_j, c_deriv in species_terms_by_law[law]:
             grp = [
-                f"    {{ /* per-species rxn {int(rxn['rxn_idx'])} col {sp_j} */",
+                f"    {{ /* per-species rxn {carriers[0][0]} col {sp_j}{note} */",
                 f"        double dj = {c_deriv};",
             ]
-            for i, coeff, live_idx, sdiv, sdiv_param in affected:
-                line = _scatter_existing(sp_j, i, coeff, live_idx, sdiv, sdiv_param, "dj")
-                if line is not None:
-                    grp.append(line)
+            for _rxn_idx, affected in carriers:
+                for i, coeff, live_idx, sdiv, sdiv_param in affected:
+                    line = _scatter_existing(sp_j, i, coeff, live_idx, sdiv, sdiv_param, "dj")
+                    if line is not None:
+                        grp.append(line)
             grp.append("    }")
             per_species_groups.append(grp)
 
@@ -13119,6 +13178,14 @@ def prepare_model_codegen(model) -> Path | None:
                 _replay_sens_decline(cached)
                 return cached
 
+        # Issue #1544: past the cache, and before generating a source that no
+        # toolchain here can build. (The source-hash key needs the source for its
+        # lookup, so compile_rhs asks for that one.)
+        if model_hash is not None:
+            _, broken = _toolchain.check()
+            if broken is not None:
+                raise CodegenToolchainError(broken)
+
         c_source, has_sens = generate_combined_from_model(
             model,
             emit_output_sens=emit_output_sens,
@@ -13191,6 +13258,12 @@ def prepare_model_codegen(model) -> Path | None:
         # Raised while emitting, before anything is compiled (issue #1212).
         logger.debug("codegen declined: %s", exc)
         _record_codegen_decline(str(exc))
+        return None
+    except CodegenToolchainError as e:
+        # Issue #1544: logged once, when the verdict was reached, and not again
+        # for every model a broken toolchain refuses.
+        logger.debug("Model codegen refused, the toolchain cannot build: %s", e)
+        _record_codegen_error(e)
         return None
     except Exception as e:
         logger.warning("Model codegen failed: %s", e)
@@ -13283,7 +13356,9 @@ def prepare_ssa_propensity_lib(model, *, force_recompile: bool = False) -> str |
         from bngsim._bngsim_core import emit_ssa_propensity_source_structure
 
         src, n_unsupported = emit_ssa_propensity_source_structure(core)
-    except Exception as e:  # pragma: no cover - defensive
+    except Exception as e:  # noqa: BLE001 - defensive
+        if _toolchain.codegen_strict():
+            raise _toolchain.strict_refusal("the SSA propensity library", e) from e
         logger.debug("emit_ssa_propensity_source_structure failed: %s", e)
         return None
     if n_unsupported != 0 or not src:
@@ -13305,9 +13380,15 @@ def prepare_ssa_propensity_lib(model, *, force_recompile: bool = False) -> str |
     try:
         return str(compile_rhs(src, model_hash))
     except Exception as e:
-        logger.warning(
-            "SSA propensity codegen compile failed (%s); using interpreted propensities", e
-        )
+        if _toolchain.codegen_strict():
+            raise _toolchain.strict_refusal("the SSA propensity library", e) from e
+        if isinstance(e, CodegenToolchainError):
+            # Issue #1544: logged once, when the verdict was reached.
+            logger.debug("SSA propensity codegen refused, the toolchain cannot build: %s", e)
+        else:
+            logger.warning(
+                "SSA propensity codegen compile failed (%s); using interpreted propensities", e
+            )
         return None
 
 

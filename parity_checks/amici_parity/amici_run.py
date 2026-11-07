@@ -41,7 +41,16 @@ nowhere to go and scored as a bngsim DIFF. An authored disposition — third-ora
 evidence required — turns such a DIFF into REFERENCE_FAILED/``invalid_result``
 (no oracle; non-scoring), and turns a DIFF that neither engine is at fault for
 into PASS with the reason recorded. Both apply only while the row is genuinely a
-DIFF and are flagged STALE the moment it agrees on its own.
+DIFF and are flagged STALE the moment it agrees on its own. A third kind marks a
+model with no solution to compare against over the job's horizon: whichever way
+the two engines' answers fall, PASS or DIFF, the row becomes a non-scoring
+BAD_TEST (issue #1542).
+
+On every model, a sample on a strict time trigger's onset, the c of
+``time > c``, is not judged (issue #1557). The trigger is false at c,
+so bngsim and RoadRunner report the state before the event there; AMICI reads
+``>`` as ``>=`` and reports the state after it. ``_compare_ode`` leaves that
+row out of the verdict, and the comment names it, with the failing cells on it.
 
 Usage:
     cd bngsim && .venv/bin/python parity_checks/amici_parity/amici_run.py \\
@@ -111,16 +120,37 @@ DEFAULT_ATOL = ac.DEFAULT_ATOL
 # Comparison (the oracle, applied in the worker) — identical to rr_parity's, the
 # shared _core.differ protocol over the common species.
 # --------------------------------------------------------------------------- #
-def _compare_ode(bn, am, *, atol=None) -> tuple[str, float, str, str, float]:
-    """(status, value, comment, metric, tol) for one deterministic job."""
+def _compare_ode(
+    bn, am, *, atol=None, n_instants: int = 0, onsets=()
+) -> tuple[str, float, str, str, float]:
+    """(status, value, comment, metric, tol) for one deterministic job.
+
+    ``n_instants``, the output times AMICI was given at its event instants, is
+    named in the comment ('AMICI through N event instants').
+
+    ``onsets`` are the job-grid times on the boundary of a strict comparison of
+    the clock (``_amici_common.onset_samples``). Their rows are not judged (issue
+    #1557): at such a sample AMICI reports the state after the event and bngsim
+    the state before it, which is a reading of one sample, not a difference in
+    the solution. The verdict, its tallies, the ranges the movement gate uses and
+    ``NO SIGNAL`` are all over the other rows, so a model whose only movement on
+    the grid is at an onset reads ``NO SIGNAL`` as it would without it. What
+    leaving them out changed is read off the whole grid, with those rows forgiven
+    through ``differ``'s ``forgive_mask``: ``rescued``, the failing cells on
+    them, and ``DECISIVE`` when the whole grid is a DIFF and the judged rows are
+    not. A row with a cell that is finite on one side only is judged anyway: no
+    reading of a jump puts a NaN or an inf on one engine. With no onsets the
+    comparison is the one it always was.
+    """
     bn_t, bn_v, bn_n = bn
     am_t, am_v, am_n = am
     metric, tol = "max_rel_err", differ.REL_TOL
+    instants = f"; AMICI through {n_instants} event instants" if n_instants else ""
     if bn_t.shape != am_t.shape or not np.allclose(bn_t, am_t, rtol=0, atol=1e-9):
         return (
             "diff",
             float("inf"),
-            f"time grid mismatch (bn n={bn_t.shape}, amici n={am_t.shape})",
+            f"time grid mismatch (bn n={bn_t.shape}, amici n={am_t.shape}){instants}",
             metric,
             tol,
         )
@@ -129,15 +159,44 @@ def _compare_ode(bn, am, *, atol=None) -> tuple[str, float, str, str, float]:
         return (
             "diff",
             float("inf"),
-            f"disjoint species sets: bn={bn_n[:4]} amici={am_n[:4]}",
+            f"disjoint species sets: bn={bn_n[:4]} amici={am_n[:4]}{instants}",
             metric,
             tol,
         )
     bn_idx, am_idx, common = align
-    v = differ.deterministic_verdict(bn_v[:, bn_idx], am_v[:, am_idx], atol=atol)
+    a, b = bn_v[:, bn_idx], am_v[:, am_idx]
+    # By AMICI's grid: the onsets are its own times, exactly.
+    on = {float(t) for t in onsets}
+    one_sided = (np.isfinite(a) != np.isfinite(b)).any(axis=1)
+    rows = [i for i, t in enumerate(am_t) if float(t) in on and not one_sided[i]]
+    keep = np.ones(len(am_t), dtype=bool)
+    keep[rows] = False
+    v = differ.deterministic_verdict(a[keep], b[keep], atol=atol)
     status = "pass" if v["passed"] else "diff"
-    comment = differ.ode_row_comment(v, len(common))
+    comment = differ.ode_row_comment(v, len(common)) + instants
+    if rows:
+        mask = np.zeros(a.shape, dtype=bool)
+        mask[rows, :] = True
+        whole = differ.deterministic_verdict(a, b, atol=atol, forgive_mask=mask)
+        decisive = v["passed"] and not whole["passed_without_forgive"]
+        times = [float(am_t[i]) for i in rows]
+        comment += " | " + onset_note(times, whole["n_forgive_rescued"], decisive)
     return status, v["max_rel"], comment, metric, tol
+
+
+# How the onset part of a row's comment begins. Public because the ODE matrix reads
+# it to say in plain English what was not judged.
+ONSET_NOTE_PREFIX = "strict onset not judged at t ="
+
+
+def onset_note(times: list[float], rescued: int, decisive: bool) -> str:
+    """The comment part for the samples ``_compare_ode`` left unjudged: their
+    times, the failing cells on them (``rescued``), and ``DECISIVE`` when the row
+    would have been a DIFF had they been judged."""
+    at = ", ".join(f"{t:g}" for t in times)
+    return (
+        f"{ONSET_NOTE_PREFIX} {at} (rescued {rescued}{' DECISIVE' if decisive else ''}; GH #1557)"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -251,13 +310,25 @@ def _worker(spec: dict, q) -> None:
     am_cls = ""
     am_full = ""
     am_timing = None
+    onsets: list[float] = []
     am_wall = 0.0
     try:
         t0 = time.perf_counter()
-        am = ac.amici_ode(xml, p["t_start"], p["t_end"], p["n_points"], p["rtol"], p["atol"])
+        am = ac.amici_ode(
+            xml,
+            p["t_start"],
+            p["t_end"],
+            p["n_points"],
+            p["rtol"],
+            p["atol"],
+            through_event_instants=True,
+        )
         am_wall = time.perf_counter() - t0
         if len(am) == 4:
             am_timing = am[3]
+            # Where the comparison must not look, not a cost: kept out of the
+            # report's timing block (issue #1557).
+            onsets = am_timing.pop("strict_onset_samples", [])
             am = am[:3]
     except Exception as exc:
         cap = capture_exception("amici", exc)
@@ -295,7 +366,10 @@ def _worker(spec: dict, q) -> None:
 
     # --- both ran: compare (shared _core.differ protocol) ---
     try:
-        status, value, comment, metric, m_tol = _compare_ode(bn, am, atol=p["atol"])
+        n_instants = (am_timing or {}).get("event_instants", 0)
+        status, value, comment, metric, m_tol = _compare_ode(
+            bn, am, atol=p["atol"], n_instants=n_instants, onsets=onsets
+        )
         res["status"], res["value"], res["comment"] = status, value, comment
         res["metric"], res["tol"] = metric, m_tol
     except Exception as exc:
@@ -525,9 +599,8 @@ def main() -> int:
     now = _dt.datetime.now().isoformat(timespec="seconds")
     # AMICI-calibrated dispositions (issue #380) — read from the module, not the
     # manifest, because the manifest is shared with rr_parity and an
-    # AMICI-calibrated entry must not leak into that suite. None are authored for
-    # the ODE regime yet; the ODE Class-2 divergences in AMICI_KNOWN_ISSUES.md are
-    # a separate triage.
+    # AMICI-calibrated entry must not leak into that suite. The ODE Class-2
+    # divergences in AMICI_KNOWN_ISSUES.md are a separate triage.
     dispositions = amici_dispositions.dispositions_for_regime(ODE_REGIME)
     disposition_states = Counter()
     for r in raw:
@@ -642,9 +715,13 @@ def main() -> int:
                 "REFERENCE_FAILED/"
                 f"{amici_dispositions.INVALID_RESULT_REFUSAL}; 'comparison_artifact:"
                 "applied' — neither engine is wrong and the row became a PASS with "
-                "the reason recorded. ':stale' means the row agrees on its own now "
-                "(prune the entry); ':inapplicable' means the row produced no "
-                "comparison this run, so the entry was neither used nor falsified."
+                "the reason recorded; 'no_ground_truth:applied' — the model has no "
+                "solution over the horizon, so the PASS or DIFF became a non-scoring "
+                "BAD_TEST. ':stale' means the row agrees on its own now (prune the entry); "
+                "':inapplicable' means the row produced no comparison this run, or, "
+                "for no_ground_truth, a DIFF whose max_rel is not finite (a grid or "
+                "species mismatch, which stays scoring), so the entry was neither "
+                "used nor falsified."
             ),
         },
         "oracle_basis": (
@@ -655,7 +732,8 @@ def main() -> int:
             "deterministic_verdict over the common (intersection) species in "
             "concentration units. Failure attributed per-engine (both always run): "
             "bngsim raised + AMICI ran -> EXCEPTION (bngsim bug); bngsim ran + AMICI "
-            "raised -> REFERENCE_FAILED (non-scoring); both raised -> BAD_TEST; "
+            "raised -> REFERENCE_FAILED (non-scoring); both raised -> BAD_TEST, as is "
+            "a row an authored no-ground-truth disposition covers; "
             "wall-cap overrun -> TIMEOUT. The reference engine is AMICI (analytic "
             "symbolic Jacobian + KLU sparse linear solver, per-model C++ codegen)."
         ),

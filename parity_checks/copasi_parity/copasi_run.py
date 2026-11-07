@@ -26,7 +26,13 @@ OVERRIDES — as in amici_parity, only the engine-agnostic ``tol`` overrides
 (ill-conditioned IVPs, applied identically to both engines) are honored. rr_parity's
 ``known_artifact`` / ``invalid_reference`` / ``no_oracle_adjudicated`` overrides are
 calibrated against *RoadRunner* and are intentionally NOT applied, so COPASI
-adjudicates every model independently.
+adjudicates every model independently. Where COPASI is the wrong engine, a
+COPASI-calibrated entry in ``copasi_dispositions.py`` disposes of the row, with
+evidence from an oracle that is not bngsim (issue #1550).
+
+TIME — both engines integrate from the job's SED-ML ``initial_time``, as in
+rr_parity (GH #19), and are compared on ``n_points`` over ``[initial_time,
+t_end]``. ``t_start`` (the outputStartTime) is later than it on 19 jobs (issue #1550).
 
 Usage:
     cd bngsim && .venv/bin/python parity_checks/copasi_parity/copasi_run.py \\
@@ -45,6 +51,7 @@ import json
 import os
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -55,6 +62,7 @@ sys.path.insert(0, str(HERE.parent))  # so `from _core import ...` and `from rr_
 sys.path.insert(0, str(HERE))  # so the spawned child can import _copasi_common / copasi_run
 
 import _copasi_common as cc  # noqa: E402
+import copasi_dispositions  # noqa: E402
 from _core import (  # noqa: E402
     FAILING,
     JobResult,
@@ -81,6 +89,18 @@ def _job_tol(job) -> dict | None:
     return None
 
 
+def initial_time(params: dict) -> float:
+    """The time both engines integrate from: the job's SED-ML ``initial_time``.
+
+    Not ``t_start``, which is the SED-ML outputStartTime. They differ on the
+    handful of jobs whose recorded window starts after the model does (BIOMD 42's
+    [120, 300], 569's [1e-5, 1e-2]); there the compared grid is ``n_points`` over
+    ``[initial_time, t_end]``, as in rr_run. A job file predating the field
+    integrates from ``t_start``.
+    """
+    return float(params.get("initial_time", params["t_start"]))
+
+
 DEFAULT_RTOL = cc.DEFAULT_RTOL
 DEFAULT_ATOL = cc.DEFAULT_ATOL
 
@@ -89,8 +109,13 @@ DEFAULT_ATOL = cc.DEFAULT_ATOL
 # Comparison (the oracle, applied in the worker) — identical to rr_parity /
 # amici_parity's, the shared _core.differ protocol over the common species.
 # --------------------------------------------------------------------------- #
-def _compare_ode(bn, co) -> tuple[str, float, str, str, float]:
-    """(status, value, comment, metric, tol) for one deterministic job."""
+def _compare_ode(bn, co, *, atol: float | None = None) -> tuple[str, float, str, str, float]:
+    """(status, value, comment, metric, tol) for one deterministic job.
+
+    ``atol`` is the absolute integration tolerance both engines ran at. The differ
+    keeps a cell no further apart than ten times it out of the movement gate
+    (#873), as the rr, amici and bng runners already ask it to.
+    """
     bn_t, bn_v, bn_n = bn
     co_t, co_v, co_n = co
     metric, tol = "max_rel_err", differ.REL_TOL
@@ -112,19 +137,25 @@ def _compare_ode(bn, co) -> tuple[str, float, str, str, float]:
             tol,
         )
     bn_idx, co_idx, common = align
-    v = differ.deterministic_verdict(bn_v[:, bn_idx], co_v[:, co_idx])
+    v = differ.deterministic_verdict(bn_v[:, bn_idx], co_v[:, co_idx], atol=atol)
     status = "pass" if v["passed"] else "diff"
-    comment = (
-        f"{len(common)} sp; fail {v['n_fail']}/{v['n_cells']} "
-        f"(hard {v['n_hard_fail']}, soft {v['n_soft_fail']}, forgiven {v['budget_forgiven']})"
-    )
+    # The rr and amici runners' builder, so the row reads the same in every suite:
+    # it adds the worst error over movement and NO SIGNAL (#873).
+    comment = differ.ode_row_comment(v, len(common))
     return status, v["max_rel"], comment, metric, tol
 
 
 # --------------------------------------------------------------------------- #
 # Worker (module-level so it is picklable under the 'spawn' start method)
 # --------------------------------------------------------------------------- #
-SETTLED_REFUSALS = frozenset({"adjudicated_confirm", "adjudicated_uncoverable"})
+# ``invalid_result`` is settled by construction: it exists only where a
+# ``copasi_dispositions`` entry attributed the row to COPASI's own answer, with
+# evidence from an oracle that is not bngsim.
+SETTLED_REFUSALS = frozenset(
+    {copasi_dispositions.INVALID_RESULT_REFUSAL, "adjudicated_confirm", "adjudicated_uncoverable"}
+)
+
+ODE_REGIME = "ode"
 
 
 def _classify_failure(bn_exc: str, co_exc: str) -> tuple[str, str]:
@@ -155,6 +186,14 @@ def _worker(spec: dict, q) -> None:
         {"metric": spec["metric"], "tol": tol, "value": None, "comment": "", "exception": ""}
     )
 
+    # Both engines integrate from the SED-ML initialTime, as rr_run does (GH #19).
+    # bn_ode takes its start as the time the model's initial state holds at, and
+    # COPASI integrates from the model's own initial time whatever output start it
+    # is given. Handing bngsim the outputStartTime instead started it there from
+    # the t = 0 state: a different problem from COPASI's, shifted in time by the
+    # gap, on every job whose window does not start at 0 (#1550).
+    t_int = initial_time(p)
+
     # --- bngsim side (record status; do NOT short-circuit on a generic raise) ---
     bn = None
     bn_exc = ""
@@ -164,7 +203,7 @@ def _worker(spec: dict, q) -> None:
         t0 = time.perf_counter()
         bn = cc.bn_ode(
             xml,
-            p["t_start"],
+            t_int,
             p["t_end"],
             p["n_points"],
             p["rtol"],
@@ -185,7 +224,7 @@ def _worker(spec: dict, q) -> None:
     co_wall = 0.0
     try:
         t0 = time.perf_counter()
-        co = cc.co_ode(xml, p["t_start"], p["t_end"], p["n_points"], p["rtol"], p["atol"])
+        co = cc.co_ode(xml, t_int, p["t_end"], p["n_points"], p["rtol"], p["atol"])
         co_wall = time.perf_counter() - t0
         if len(co) == 4:
             co_timing = co[3]
@@ -216,7 +255,7 @@ def _worker(spec: dict, q) -> None:
 
     # --- both ran: compare (shared _core.differ protocol) ---
     try:
-        status, value, comment, metric, m_tol = _compare_ode(bn, co)
+        status, value, comment, metric, m_tol = _compare_ode(bn, co, atol=p["atol"])
         res["status"], res["value"], res["comment"] = status, value, comment
         res["metric"], res["tol"] = metric, m_tol
     except Exception as exc:
@@ -426,6 +465,8 @@ def main() -> int:
     elapsed = time.perf_counter() - t0
 
     results = []
+    dispositions = copasi_dispositions.dispositions_for_regime(ODE_REGIME)
+    disposition_states: Counter = Counter()
     now = _dt.datetime.now().isoformat(timespec="seconds")
     for r in raw:
         outcome = _OUTCOME.get(r.get("status"), Outcome.EXCEPTION)
@@ -441,6 +482,17 @@ def main() -> int:
             comment = (
                 f"{comment} | copasi refusal={refusal}" if comment else f"copasi refusal={refusal}"
             )
+        # After the auto-derived refusal: an INVALID_REFERENCE row has no COPASI
+        # exception to classify, so it sets its own ``invalid_result`` class, while
+        # a row the disposition does not apply to keeps what the exception said.
+        disp = dispositions.get(r["model_id"])
+        if disp:
+            outcome, comment, disp_refusal, state = copasi_dispositions.apply_disposition(
+                disp, outcome, r.get("value"), comment
+            )
+            disposition_states[f"{disp['kind']}:{state}"] += 1
+            if disp_refusal:
+                refusal = disp_refusal
         results.append(
             JobResult(
                 model_id=r["model_id"],
@@ -462,8 +514,6 @@ def main() -> int:
 
     results.sort(key=lambda x: (x.model_id, x.method))
     counts = tally(r.outcome for r in results)
-    from collections import Counter
-
     refusal_breakdown = dict(
         Counter(r.reference_refusal for r in results if r.reference_refusal).most_common()
     )
@@ -503,7 +553,23 @@ def main() -> int:
                 "to BOTH engines) are honored. rr_parity's known_artifact / "
                 "invalid_reference / no_oracle_adjudicated overrides are calibrated "
                 "against RoadRunner and are intentionally NOT applied here, so COPASI "
-                "adjudicates every model independently."
+                "adjudicates every model independently. COPASI-CALIBRATED dispositions "
+                "are a separate mechanism — see 'dispositions' below."
+            ),
+        },
+        "dispositions": {
+            "counts": dict(disposition_states.most_common()),
+            "note": (
+                "COPASI-calibrated per-row dispositions (issue #1550), from "
+                "copasi_dispositions.py: an authored DIFF attribution backed by "
+                "evidence from an oracle that is not bngsim, resolved by "
+                "amici_dispositions.apply_disposition. 'invalid_reference:applied' — "
+                "COPASI ran but its answer is defective, so the row became a "
+                "non-scoring REFERENCE_FAILED/"
+                f"{copasi_dispositions.INVALID_RESULT_REFUSAL}. ':stale' means the row "
+                "agrees on its own now (prune the entry); ':inapplicable' means the "
+                "row produced no comparison this run, so the entry was neither used "
+                "nor falsified."
             ),
         },
         "oracle_basis": (
@@ -512,7 +578,9 @@ def main() -> int:
             f"integration tolerance (rtol={args.rtol:g}, atol={args.atol:g}); the "
             "SED-ML per-job rtol/atol in the manifest are provenance only. ODE: "
             "deterministic_verdict over the common (intersection) species in "
-            "concentration units. Failure attributed per-engine (both always run): "
+            "concentration units, on n_points over [initial_time, t_end]: both "
+            "engines integrate from the SED-ML initial_time, not the outputStartTime "
+            "(GH #19, issue #1550). Failure attributed per-engine (both always run): "
             "bngsim raised + COPASI ran -> EXCEPTION (bngsim bug); bngsim ran + "
             "COPASI raised -> REFERENCE_FAILED (non-scoring); both raised -> "
             "BAD_TEST; wall-cap overrun -> TIMEOUT. The reference engine is COPASI "
@@ -533,6 +601,10 @@ def main() -> int:
     if refusal_breakdown:
         parts = [f"{cls}={n}" for cls, n in refusal_breakdown.items()]
         print(f"  REFERENCE_FAILED by refusal: {', '.join(parts)}")
+    if disposition_states:
+        print(
+            "  dispositions: " + ", ".join(f"{c}={n}" for c, n in disposition_states.most_common())
+        )
     print(f"  report: {out_path}")
     print("=" * 72)
     n_fail = sum(counts.get(o.value, 0) for o in FAILING)

@@ -178,8 +178,17 @@ in Python; write `**` for a power), or a tuple is refused with `ValueError`
 where the condition is added: a name it could not read used to make it a
 condition never met, and a tuple one met at the first sample (issue #1509). An
 expression that raises at a sample raises `ValueError` from the run, and so do
-the batch calls below. A callable is met where it returns a true value in
-Python's sense, and an exception it raises propagates.
+the batch calls below. Arithmetic that numpy warns of (0/0, a division by zero,
+an overflow) is read at the value numpy gives: a NaN is not met, and `+inf` is
+where the condition reads `> 0`. Each run checked issues one `RuntimeWarning`
+that names the condition and the error; numpy's own settings (`np.errstate`)
+are kept, so an error set to raise makes it an expression that raises. Another
+warning issued inside a condition, where Python would show it (numpy's
+`ComplexWarning` for `.astype('float64')` of a complex, say), cannot be
+delivered from there on Python 3.13 and later, and refuses the run with a
+`ValueError` that says so (issue #1556). A callable is met where
+it returns a true value in Python's sense, and an exception it raises
+propagates.
 
 A condition is checked against the *completed* result, so it does not interrupt
 the solve. The backend integrates the whole interval and leaves the model at its

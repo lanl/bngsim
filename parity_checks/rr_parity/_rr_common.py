@@ -711,7 +711,7 @@ def _effectively_constant(model) -> set[str]:
     return {i for i in ids if i not in changed}
 
 
-def _mod_form(node, value_of):
+def _mod_form(node, value_of, literal_of=None):
     """``("rem", a, b, P)`` where ``node`` is a modulo of ``a*time + b`` by a
     constant P written out as ``x - P*floor(x/P)`` (or ``ceil``), or as the
     piecewise of the two that COPASI exports for ``%`` (libsbml prints it back as
@@ -721,7 +721,7 @@ def _mod_form(node, value_of):
     ty = node.getType()
     if ty == libsbml.AST_FUNCTION_PIECEWISE:
         n = node.getNumChildren()
-        forms = [_mod_form(node.getChild(i), value_of) for i in range(0, n, 2)]
+        forms = [_mod_form(node.getChild(i), value_of, literal_of) for i in range(0, n, 2)]
         if forms and forms[0] is not None and all(f == forms[0] for f in forms):
             return forms[0]
         return None
@@ -739,8 +739,11 @@ def _mod_form(node, value_of):
         q = f_node.getChild(0) if f_node.getNumChildren() == 1 else None
         if q is None or q.getType() != libsbml.AST_DIVIDE or q.getNumChildren() != 2:
             continue
-        arg, arg2 = _affine(x, value_of), _affine(q.getChild(0), value_of)
-        per, per2 = _affine(p_node, value_of), _affine(q.getChild(1), value_of)
+        arg, arg2 = _affine(x, value_of, literal_of), _affine(q.getChild(0), value_of, literal_of)
+        per, per2 = (
+            _affine(p_node, value_of, literal_of),
+            _affine(q.getChild(1), value_of, literal_of),
+        )
         if None in (arg, arg2, per, per2) or arg != arg2 or per != per2:
             continue
         if arg[0] == per[0] == "aff" and per[1] == 0.0 and per[2] != 0.0:
@@ -748,10 +751,13 @@ def _mod_form(node, value_of):
     return None
 
 
-def _affine(node, value_of):
+def _affine(node, value_of, literal_of=None):
     """``node`` as ``("aff", a, b)`` meaning ``a*time + b``, as ``("rem", a, b, P)``
     meaning ``rem(a*time + b, P)``, or None where it is neither (a species, a
-    parameter something changes, a function this does not read)."""
+    parameter something changes, a function this does not read).
+
+    A number written in the math is ``literal_of(node)`` when given (None for one
+    it cannot value), and its exact double otherwise."""
     import libsbml
 
     ty = node.getType()
@@ -759,7 +765,8 @@ def _affine(node, value_of):
     if ty == libsbml.AST_NAME_TIME:
         return ("aff", 1.0, 0.0)
     if ty in (libsbml.AST_INTEGER, libsbml.AST_REAL, libsbml.AST_REAL_E, libsbml.AST_RATIONAL):
-        return ("aff", 0.0, float(node.getValue()))
+        v = float(node.getValue()) if literal_of is None else literal_of(node)
+        return None if v is None else ("aff", 0.0, float(v))
     if ty == libsbml.AST_CONSTANT_PI:
         return ("aff", 0.0, float(np.pi))
     if ty == libsbml.AST_CONSTANT_E:
@@ -768,10 +775,10 @@ def _affine(node, value_of):
         v = value_of(node.getName())
         return None if v is None else ("aff", 0.0, float(v))
     if ty in (libsbml.AST_FUNCTION_PIECEWISE, libsbml.AST_MINUS):
-        mod = _mod_form(node, value_of)
+        mod = _mod_form(node, value_of, literal_of)
         if mod is not None:
             return mod
-    parts = [_affine(k, value_of) for k in kids]
+    parts = [_affine(k, value_of, literal_of) for k in kids]
     if any(x is None for x in parts):
         return None
     if ty == libsbml.AST_FUNCTION_REM and len(parts) == 2:
@@ -833,35 +840,25 @@ def _atom_instants(left, right, t_start: float, t_end: float) -> tuple[list[floa
     return [], []
 
 
-def event_instants(sbml: str, t_start: float, t_end: float, value_of=None) -> list[float]:
-    """Output times in (t_start, t_end] that let RoadRunner see the time-only
-    comparisons of the event triggers it would otherwise skip:
+def _trigger_comparisons(sbml: str, value_of=None, literal_of=None):
+    """Each comparison of the clock in an event trigger, as ``(type, left,
+    right)``: the libSBML relational type and the two sides as :func:`_affine`
+    forms (None for a side that is not one). A relational with more than two
+    arguments gives one per adjacent pair. A comparison anywhere in the trigger
+    counts, under ``and``, ``or``, ``not`` or a function alike.
 
-    * ``==``: the instant itself; RoadRunner does not fire it between samples.
-      ``!=`` also gets a sample just after it, where it turns true again.
-    * ``>``, ``>=``, ``<``, ``<=``: a sample just after each boundary (and, for
-      a ``rem``, just after each wrap), which lands inside any window the
-      comparison opens. RoadRunner fires a lone inequality at its own root, but
-      not a window narrower than its integrator's step, strict or closed.
-      Never a sample ON an inequality's boundary: one on the instant of a jump
-      makes RoadRunner's integrator fail at the harness tolerances
-      (MODEL0911120000's ``time >= 16.16`` pulse end: CV_CONV_FAILURE).
-
-    A window that opens exactly at ``t_start`` gets no sample (its boundary is
-    not inside the run); no corpus job has one.
-
-    Reads comparisons of `time` (and affine forms of it, `rem` of one included)
-    against constants: numbers, and parameters or compartments nothing changes
-    after the start, valued by ``value_of(id)`` (RoadRunner's value after the
-    initial assignments; the SBML value when None). A comparison that reads a
-    species, or anything else, gives no instants: RoadRunner finds those itself.
+    The shared reader of :func:`event_instants` and :func:`strict_onsets`, so the
+    two cannot disagree about what a trigger compares. Sides are read as
+    ``event_instants`` documents: numbers, and parameters or compartments
+    nothing changes after the start, valued by ``value_of(id)`` (the SBML value
+    when None).
     """
     import libsbml
 
     doc = libsbml.readSBMLFromString(sbml)
     model = doc.getModel()
     if model is None or model.getNumEvents() == 0:
-        return []
+        return
     constant = _effectively_constant(model)
     if value_of is None:
 
@@ -883,6 +880,53 @@ def event_instants(sbml: str, t_start: float, t_end: float, value_of=None) -> li
         libsbml.AST_RELATIONAL_LT,
         libsbml.AST_RELATIONAL_LEQ,
     }
+
+    def walk(node):
+        ty = node.getType()
+        if ty in relational:
+            sides = [
+                _affine(node.getChild(i), known, literal_of) for i in range(node.getNumChildren())
+            ]
+            for left, right in zip(sides, sides[1:], strict=False):
+                yield ty, left, right
+            return
+        for i in range(node.getNumChildren()):
+            yield from walk(node.getChild(i))
+
+    for e in model.getListOfEvents():
+        if e.isSetTrigger() and e.getTrigger().isSetMath():
+            yield from walk(e.getTrigger().getMath())
+
+
+def event_instants(
+    sbml: str, t_start: float, t_end: float, value_of=None, literal_of=None
+) -> list[float]:
+    """Output times in (t_start, t_end] that let RoadRunner see the time-only
+    comparisons of the event triggers it would otherwise skip:
+
+    * ``==``: the instant itself; RoadRunner does not fire it between samples.
+      ``!=`` also gets a sample just after it, where it turns true again.
+    * ``>``, ``>=``, ``<``, ``<=``: a sample just after each boundary (and, for
+      a ``rem``, just after each wrap), which lands inside any window the
+      comparison opens. RoadRunner fires a lone inequality at its own root, but
+      not a window narrower than its integrator's step, strict or closed.
+      Never a sample ON an inequality's boundary: one on the instant of a jump
+      makes RoadRunner's integrator fail at the harness tolerances
+      (MODEL0911120000's ``time >= 16.16`` pulse end: CV_CONV_FAILURE).
+
+    A window that opens exactly at ``t_start`` gets no sample (its boundary is
+    not inside the run); no corpus job has one.
+
+    Reads comparisons of `time` (and affine forms of it, `rem` of one included)
+    against constants: numbers, and parameters or compartments nothing changes
+    after the start, valued by ``value_of(id)`` (RoadRunner's value after the
+    initial assignments; the SBML value when None). A comparison that reads a
+    species, or anything else, gives no instants: RoadRunner finds those itself.
+    A number written in a trigger is its exact double, or ``literal_of(node)``
+    for an engine that reads numbers differently (AMICI, issue #1542).
+    """
+    import libsbml
+
     equality = {libsbml.AST_RELATIONAL_EQ, libsbml.AST_RELATIONAL_NEQ}
     out: set[float] = set()
 
@@ -894,27 +938,69 @@ def event_instants(sbml: str, t_start: float, t_end: float, value_of=None) -> li
         if t <= t_end:
             out.add(float(t))
 
-    def walk(node):
-        ty = node.getType()
-        if ty in relational:
-            sides = [_affine(node.getChild(i), known) for i in range(node.getNumChildren())]
-            for left, right in zip(sides, sides[1:], strict=False):
-                levels, wraps = _atom_instants(left, right, t_start, t_end)
-                if ty in equality:
-                    for t in levels:
-                        add(t)
-                        if ty == libsbml.AST_RELATIONAL_NEQ:
-                            add(t, after=True)
-                else:
-                    for t in levels + wraps:
-                        add(t, after=True)
-            return
-        for i in range(node.getNumChildren()):
-            walk(node.getChild(i))
+    for ty, left, right in _trigger_comparisons(sbml, value_of, literal_of):
+        levels, wraps = _atom_instants(left, right, t_start, t_end)
+        if ty in equality:
+            for t in levels:
+                add(t)
+                if ty == libsbml.AST_RELATIONAL_NEQ:
+                    add(t, after=True)
+        else:
+            for t in levels + wraps:
+                add(t, after=True)
+    return sorted(out)
 
-    for e in model.getListOfEvents():
-        if e.isSetTrigger() and e.getTrigger().isSetMath():
-            walk(e.getTrigger().getMath())
+
+def strict_onsets(
+    sbml: str, t_start: float, t_end: float, value_of=None, literal_of=None
+) -> list[float]:
+    """The boundaries in (t_start, t_end] where a strict comparison of the clock
+    in an event trigger is false and turns true just after: ``time > c`` and
+    ``c < time`` at c, and the same for an affine form of time (``2*time - 1 >
+    0``, ``(t_end - time) < 5``) and for the level a ``rem`` of one passes
+    upward through (``rem(time, P) > r`` at each kP + r). Issue #1557.
+
+    At such a c the trigger is false, so an engine that reports the state AT c
+    by the trigger's value there gives the value before the event: bngsim and
+    RoadRunner. One that fires at the root of ``left - right`` gives the value
+    after it: AMICI, which reads ``>`` as ``>=`` and ``<`` as ``<=``. Either way
+    the event fires at c, and the two agree everywhere after it.
+
+    Not an onset: a closed comparison (``time >= c`` is true at c, so every
+    engine reports the value after the event there), and a strict one that turns
+    false (``time < c``). The wraps of a ``rem`` are not read: where its argument
+    rises, ``rem`` is 0 at a wrap, as just after it, so a comparison of it does
+    not change there; where it falls, ``rem`` jumps just after the wrap, and that
+    case is left out (AMICI imports no ``rem``, and no corpus trigger has a falling one).
+
+    Each comparison is read alone, as written, whatever ``and``, ``or`` or
+    ``not`` it sits under. So under an ``and`` a boundary is named even where the
+    rest of the trigger holds it false (``(time > 28) && (time < 84) &&
+    rem(time, 28) > 8`` names every 28k + 8, in the window or not), which costs
+    an unjudged sample, never a missed one. Under a ``not`` an onset can be
+    missed (``not(time <= c)``), but AMICI imports no trigger with ``not`` in
+    it. A boundary at ``t_start`` is left out, as in :func:`event_instants`:
+    there a trigger's start rule decides, not the comparison. Sides are read as
+    :func:`event_instants` reads them.
+    """
+    import libsbml
+
+    def slope(side) -> float:
+        # The rate a side moves at in time: ``a`` for a*time + b, and for a rem of
+        # one between its wraps.
+        return side[1]
+
+    out: set[float] = set()
+    for ty, left, right in _trigger_comparisons(sbml, value_of, literal_of):
+        if ty not in (libsbml.AST_RELATIONAL_GT, libsbml.AST_RELATIONAL_LT):
+            continue
+        if left is None or right is None:
+            continue
+        rate = slope(left) - slope(right)  # of left - right
+        if not (rate > 0.0 if ty == libsbml.AST_RELATIONAL_GT else rate < 0.0):
+            continue
+        levels, _wraps = _atom_instants(left, right, t_start, t_end)
+        out.update(float(c) for c in levels if np.isfinite(c) and t_start < c <= t_end)
     return sorted(out)
 
 

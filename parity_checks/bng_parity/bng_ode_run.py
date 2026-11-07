@@ -35,9 +35,12 @@ A small catalog of documented comparison artifacts (``KNOWN_DETERMINISTIC_ARTIFA
 below — integrator phase-wander, a staircase function sampled on a discontinuity,
 a reference-side tolerance tail) is reclassified out of the scoring DIFF bucket as
 KNOWN ARTIFACT, but only while the divergence stays within a recorded magnitude
-bound (a regression blows past it and re-flags). Otherwise this track adjudicates
-every model independently on the network BNG2.pl produced. (These dispositions were
-folded here from the retired correctness suite, GH #69.)
+bound (a regression blows past it and re-flags). A DIFF that is run_network leaving
+the model's exact solution (``KNOWN_DETERMINISTIC_REF``, GH #1548) renders KNOWN REF,
+but only while bngsim's own run is checked against that exact solution and holds.
+Otherwise this track adjudicates every model independently on the network BNG2.pl
+produced. (The artifact dispositions were folded here from the retired correctness
+suite, GH #69.)
 
 Usage
 -----
@@ -53,6 +56,7 @@ import argparse
 import datetime as _dt
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -240,6 +244,204 @@ def annotate_known_artifact(res: dict, status: str, stem: str, max_abs: float) -
     res["comment"] = (
         f"Known comparison artifact, not a bngsim error (max_abs {observed}, within its "
         f"bound {bound:g}): {art['reason']} → non-scoring. (Raw: {raw})"
+    )
+    return res
+
+
+def ltcc_steady_state(v_rec: float) -> dict[str, float]:
+    """Every species of l-type-calcium-channel-dynamics at steady state, v_rec() = ``v_rec``.
+
+    The closed form the GH #1548 entry below holds bngsim's run to. For every t > 0
+    the model's two state switches have fixed values on the exact solution:
+    Phospho_LTCC > 0, so v_pka_shift() = k_pka_shift = -5, and Voltage() =
+    50 - 49e^(-t) stays below 50, so v_rec() = 0.5. As Voltage() -> 50, v_open() ->
+    k_open_max/(1 + e^0) = 5. Gating and inactivation read nothing of p~, and p~ reads
+    nothing else, so a channel is p~P with probability 20/(20 + 0.01) apart from its
+    (g, s) state, and the four (g, s) states of the 500 channels balance among
+    themselves. With c = k_close, a = v_open, r = v_rec and i = v_inact() =
+    5 Ca/(200 + Ca), each channel in OR (open, conducting) has beside it i/(c + r) in
+    OI, c i/((c + r) r) in CI and c (1 + i/(c + r))/a in CR, so OR = 500/(A + B i) with
+    A = 1 + c/a and B = (1 + c/r + c/a)/(c + r). Calcium() balances
+    k_ca_flux OR = k_ca_pump Ca. The two make one quadratic in Ca, whose positive root
+    is Calcium(): 957.956 at v_rec = 0.5, and 187.682 at the other branch's 0.05.
+    Keyed by the .net's species names.
+    """
+    k_close, v_open, total = 0.5, 5.0, 500.0
+    k_inact_max, km_ca = 5.0, 200.0
+    gain = 15.0 / 0.8  # k_ca_flux / k_ca_pump
+    a = 1.0 + k_close / v_open
+    b = (1.0 + k_close / v_rec + k_close / v_open) / (k_close + v_rec)
+    # Ca (a (km_ca + Ca) + b k_inact_max Ca) = total gain (km_ca + Ca)
+    qa = a + b * k_inact_max
+    qb = a * km_ca - total * gain
+    qc = -total * gain * km_ca
+    ca = (-qb + math.sqrt(qb * qb - 4.0 * qa * qc)) / (2.0 * qa)
+    i = k_inact_max * ca / (km_ca + ca)
+    o_r = total / (a + b * i)
+    o_i = i * o_r / (k_close + v_rec)
+    c_i = k_close * o_i / v_rec
+    c_r = k_close * (1.0 + i / (k_close + v_rec)) * o_r / v_open
+    p = 20.0 / (20.0 + 0.01)
+    u = 1.0 - p
+    return {
+        "LTCC(b,g~C,loc~mem,p~U,s~R)": c_r * u,
+        "Calcium()": ca,
+        "Voltage()": 50.0,
+        "LTCC(b,g~O,loc~mem,p~U,s~R)": o_r * u,
+        "LTCC(b,g~C,loc~mem,p~P,s~R)": c_r * p,
+        "LTCC(b,g~O,loc~mem,p~P,s~R)": o_r * p,
+        "LTCC(b,g~O,loc~mem,p~U,s~I)": o_i * u,
+        "LTCC(b,g~C,loc~mem,p~U,s~I)": c_i * u,
+        "LTCC(b,g~O,loc~mem,p~P,s~I)": o_i * p,
+        "LTCC(b,g~C,loc~mem,p~P,s~I)": c_i * p,
+    }
+
+
+# Reference-side divergences on deterministic models, keyed by BNGL stem (GH #1548).
+# The DIFF is run_network leaving the model's exact solution, and bngsim's run is on
+# it. That is a claim about which engine is right, so it is checked on every run
+# rather than bounded in size, and the row renders KNOWN REF (non-scoring) only while
+#   - the two runs have the same outputs, so that no row goes unread;
+#   - bngsim's ``knife_edge`` species is on the exact solution's ``side`` of
+#     ``threshold`` at every output;
+#   - run_network's ``knife_edge`` species reads as the threshold or past it at some
+#     output (its .cdat has 13 significant digits, so this is where the printed value
+#     gets there, at or before where the value it integrates does), and the two engines
+#     pass the verdict on every output before the first that does;
+#   - from that output to the end, bngsim's value of every ``exact_settled`` species
+#     is its closed form, to ``KNOWN_REF_SETTLED_REL`` of it. That is the stretch
+#     where run_network no longer stands for the exact solution, so bngsim is held to
+#     the closed form instead, at every output and in every species.
+# Any one failing leaves a scoring DIFF whose comment names it.
+KNOWN_DETERMINISTIC_REF = {
+    "l-type-calcium-channel-dynamics": {
+        "issue": "GH #1548",
+        "knife_edge": {"species": "Voltage()", "threshold": 50.0, "side": "below"},
+        # From t = 20, where Voltage() is 1e-7 short of 50, every species of the exact
+        # solution is within 6e-8 of its steady state. At the parity tolerance (1e-8)
+        # neither engine's output reads Voltage() as 50 before t = 25; at a looser one
+        # an output can read it sooner, but bngsim's then reaches 50 too and the row
+        # scores.
+        "exact_settled": ltcc_steady_state(0.5),
+        "reason": "Voltage() relaxes as 50 - 49e^(-t) and never reaches 50, so on the "
+        "exact solution -70 + Voltage_Level < -20 holds throughout, v_rec() stays 0.5 and "
+        "Calcium() settles at 957.956 (closed form). The threshold is that steady state "
+        "itself: once Voltage() is within an engine's tolerance of 50, rounding picks "
+        "v_rec()'s branch. run_network's lands on 50.0, v_rec() drops to 0.05 and Calcium() "
+        "settles at 187.682, that branch's closed form. bngsim's branch is set by rounding "
+        "too (on 151 output points instead of 301 it takes run_network's), so each run is "
+        "checked against the exact solution rather than trusted.",
+    },
+}
+# How close bngsim has to be to an ``exact_settled`` closed form: far outside the
+# runs' own error (the parity tolerance is 1e-8) and far inside the gap to the other
+# branch (187.682 against 957.956).
+KNOWN_REF_SETTLED_REL = 1e-6
+
+
+def _check_known_ref(ref: dict, bn, rn, atol: float | None) -> tuple[str, str]:
+    """(failure, evidence) for one catalogued reference divergence.
+
+    ``failure`` is "" when every check of ``KNOWN_DETERMINISTIC_REF`` holds, else
+    what failed; ``evidence`` says, for an excused row, where run_network left the
+    exact solution and what bngsim's run was checked against.
+    """
+    bn_t, bn_a, bn_names = bn
+    rn_t, rn_a, _rn_names = rn
+    bn_a, rn_a = np.asarray(bn_a), np.asarray(rn_a)
+    times = np.asarray(bn_t)
+    # The verdict reads the two runs' overlap (align_net_species); this reads them
+    # whole, or a row past run_network's last would never be asked about.
+    if (
+        bn_a.shape != rn_a.shape
+        or times.shape != (bn_a.shape[0],)
+        or not np.allclose(times, np.asarray(rn_t), rtol=1e-9, atol=0.0)
+    ):
+        return (
+            f"the runs' outputs differ (bngsim {bn_a.shape}, run_network {rn_a.shape})",
+            "",
+        )
+    names = list(bn_names)
+    if len(names) != bn_a.shape[1]:
+        return f"bngsim's run names {len(names)} species for {bn_a.shape[1]} columns", ""
+    edge = ref["knife_edge"]
+    sp, thr = edge["species"], float(edge["threshold"])
+    if sp not in names:
+        return f"bngsim's run has no species {sp}", ""
+    col = names.index(sp)
+
+    below = edge["side"] == "below"
+    # A NaN is neither on the exact side nor at or past the threshold.
+    off = ~(bn_a[:, col] < thr if below else bn_a[:, col] > thr)
+    if off.any():
+        k = int(np.argmax(off))
+        return f"bngsim's {sp} reaches {thr:g} at t={times[k]:g}", ""
+    past = rn_a[:, col] >= thr if below else rn_a[:, col] <= thr
+    if not past.any():
+        return f"run_network's {sp} never reads {thr:g}", ""
+    k = int(np.argmax(past))
+    if k == 0:
+        return f"run_network's {sp} starts at or past {thr:g}", ""
+    if not differ.deterministic_verdict(bn_a[:k], rn_a[:k], atol=atol)["passed"]:
+        return (
+            f"the engines already differ before run_network's {sp} reads {thr:g} "
+            f"at t={times[k]:g}",
+            "",
+        )
+    settled = ref["exact_settled"]
+    missing = [name for name in settled if name not in names]
+    if missing:
+        return f"bngsim's run has no species {missing[0]}", ""
+    for name, exact in settled.items():
+        got = bn_a[k:, names.index(name)]
+        bad = ~(np.abs(got - exact) <= KNOWN_REF_SETTLED_REL * abs(exact))  # NaN is bad
+        if bad.any():
+            j = k + int(np.argmax(bad))
+            return (
+                f"bngsim's {name} is {bn_a[j, names.index(name)]:.9g} at t={times[j]:g}, "
+                f"not the exact {exact:.9g}",
+                "",
+            )
+    evidence = (
+        f"run_network's output reads {sp} as {thr:g} at t={times[k]:g} and it leaves the exact "
+        f"solution, which bngsim's run keeps ({sp} {edge['side']} {thr:g} at every output; "
+        f"from t={times[k]:g} on, all {len(settled)} species within "
+        f"{KNOWN_REF_SETTLED_REL:g} of their closed forms)"
+    )
+    return "", evidence
+
+
+def annotate_known_ref(
+    res: dict, status: str, stem: str, bn, rn, atol=None, *, multi_segment: bool = False
+) -> dict:
+    """Tag a catalogued reference-side divergence in place; return ``res`` (GH #1548).
+
+    A DIFF on a ``KNOWN_DETERMINISTIC_REF`` model keeps its honest ``status="diff"``
+    and, while every check in that catalogue holds on this run's ``bn``/``rn``
+    (``(time, values, names)`` each), gets ``res["subclass"]="ref_bscb"``, which the
+    matrix renders bngsim PASS · run_network KNOWN REF (non-scoring). A failed check
+    leaves a scoring DIFF whose comment says which, near its start, so it survives
+    the nightly's 200-character verdict note. A no-op for any non-DIFF status, an
+    uncatalogued model, or a ``multi_segment`` job, whose two runs are aligned by
+    nearest time rather than row for row.
+    """
+    if status != "diff" or multi_segment:
+        return res
+    ref = KNOWN_DETERMINISTIC_REF.get(stem)
+    if ref is None:
+        return res
+    raw = res.get("comment", "")
+    failure, evidence = _check_known_ref(ref, bn, rn, atol)
+    if failure:
+        res["comment"] = (
+            f"Catalogued known reference divergence ({ref['issue']}), but {failure}, so "
+            f"this DIFF scores. {raw}"
+        )
+        return res
+    res["subclass"] = "ref_bscb"
+    res["comment"] = (
+        f"Known reference divergence ({ref['issue']}), not a bngsim error: {evidence}. "
+        f"{ref['reason']} → non-scoring. (Raw: {raw})"
     )
     return res
 
@@ -821,6 +1023,11 @@ def _worker(spec: dict, q) -> None:
             # Chaotic systems: pointwise divergence is expected (not magnitude-bounded),
             # so a separate identity-keyed disposition renders them KNOWN ARTIFACT.
             annotate_chaotic_artifact(res, status, bngl_path.stem)
+            # GH #1548: run_network leaving a model's exact solution, which bngsim's
+            # run is checked against here, renders KNOWN REF.
+            annotate_known_ref(
+                res, status, bngl_path.stem, bn, rn, atol=ode["atol"], multi_segment=dirty
+            )
         except Exception as exc:
             res["status"] = "exception"
             res["exception"] = f"compare: {type(exc).__name__}: {exc}"[:400]
@@ -854,13 +1061,19 @@ def _job_tol_override(job) -> dict | None:
 
 
 def _job_timeout_override(job) -> dict | None:
-    """The per-job wall-clock cap override, when no global ``--timeout`` is forced."""
+    """The per-job wall-clock cap override, when no global ``--timeout`` is forced.
+
+    An override extends the default cap and never cuts it: one at or below
+    ``DEFAULT_ODE_TIMEOUT`` is ignored, as bng_stoch_run.py ignores one at or below
+    its own default (#1549).
+    """
     for ov in job.overrides:
         if ov.field == "timeout":
             try:
-                return {"timeout": float(ov.value), "reason": ov.reason}
+                cap = float(ov.value)
             except (ValueError, TypeError):
                 return None
+            return {"timeout": cap, "reason": ov.reason} if cap > DEFAULT_ODE_TIMEOUT else None
     return None
 
 
@@ -1178,8 +1391,11 @@ def main() -> int:
             "ran + run_network raised -> REFERENCE_FAILED (non-scoring); netgen "
             "failed or both raised -> BAD_TEST; no resolvable ODE horizon -> SKIP; "
             "wall-cap overrun -> TIMEOUT. Only the engine-agnostic tol override is "
-            "applied here (KNOWN_ARTIFACT/PASS_REF_BUG live in the correctness "
-            "suite); this timing track adjudicates every model independently."
+            "applied here. A DIFF keeps its verdict but is tagged non-scoring on a "
+            "catalogued model: KNOWN ARTIFACT within a recorded magnitude bound or for "
+            "a chaotic system (GH #69), and KNOWN REF where run_network leaves the "
+            "model's exact solution and bngsim's run, checked against it, keeps it "
+            "(GH #1548). Every other model is adjudicated independently."
         ),
     }
     write_report(out_path, results, meta=meta)

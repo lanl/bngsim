@@ -59,7 +59,7 @@ per build, so it is read off the Simulator — `has_analytic_sens_rhs` and
 Every wheel is smoke-tested for the sparse solver before it can be published:
 
 ```
-test-command = "python {project}/ci/wheel_smoke_klu.py"
+test-command = "python {project}/ci/wheel_smoke_klu.py && python {project}/ci/wheel_smoke_stop_condition.py"
 ```
 
 The script routes a model to KLU and checks the result against the dense LU, so
@@ -153,7 +153,9 @@ distro with glibc ≥ 2.28, `pip install bngsim[antimony]` resolves cleanly.
 ## Verifying an installed wheel
 
 Each wheel leg runs the `cibuildwheel` `test-command`, `ci/wheel_smoke_klu.py`
-(a model run on KLU and checked against the dense LU), against the repaired
+(a model run on KLU and checked against the dense LU) and
+`ci/wheel_smoke_stop_condition.py` (a stop condition that meets 0/0, which on
+Python 3.13 and later refused the run, issue #1556), against the repaired
 wheel in a clean environment. The full
 `pytest` suite runs against the source tree, not against every wheel. To
 self-verify after installing:

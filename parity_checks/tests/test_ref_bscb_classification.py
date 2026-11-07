@@ -1,7 +1,8 @@
-"""GH #183: known reference-side block_same_complex_binding NF divergences.
+"""GH #183 / #1549: known reference-side NF divergences.
 
-A DIFF on a catalogued NF ring-former (the legacy NFsim v1.14.3 has no ``-bscb``)
-is a reference-side bug, not a bngsim defect. The stochastic matrix keeps the honest
+A DIFF on a catalogued NF model, where legacy NFsim v1.14.3 is the outlier against
+an independent oracle (BNG2.pl's network, RuleMonkey, an analytic answer), is a
+reference-side bug, not a bngsim defect. The stochastic matrix keeps the honest
 DIFF verdict but tags the row ``subclass="ref_bscb"`` so it renders KNOWN REF
 (non-scoring) instead of being read as a bngsim bug. These tests pin that tagging and
 its rendering without running any engine.
@@ -19,16 +20,23 @@ import bng_stoch_run as bsr  # noqa: E402
 import generate_bng_matrix as gbm  # noqa: E402
 
 
-def test_egfr_is_catalogued_with_issue_and_reason():
-    art = bsr.NF_KNOWN_REF.get("EGFR_oligo_v2")
-    assert art is not None, "EGFR_oligo_v2 must be a known reference-side bscb divergence"
-    assert art["issue"] == "internal#183"
-    assert "bscb" in art["reason"] or "-bscb" in art["reason"]
+def test_a_ring_breaking_model_is_catalogued_with_issue_and_reason():
+    art = bsr.NF_KNOWN_REF.get("overlap_rules2")
+    assert art is not None, "overlap_rules2 must be a known reference-side divergence"
+    assert "#1549" in art["issue"]
+    assert "A.B -> A + B" in art["reason"] and "BNG2.pl's network" in art["reason"]
+
+
+def test_no_entry_blames_same_complex_binding():
+    """Legacy NFsim blocks same-complex binding under -cb, which every job now gets
+    (#1549), so no entry may still give that as its cause."""
+    for stem, art in bsr.NF_KNOWN_REF.items():
+        assert "-bscb" not in art["reason"] and "no -bscb" not in art["issue"], stem
 
 
 def test_annotate_tags_known_nf_diff_keeps_verdict():
     res = {"comment": "frac_pass 0.93", "status": "diff"}
-    out = bsr.annotate_ref_bscb(res, "diff", "nf", "EGFR_oligo_v2")
+    out = bsr.annotate_ref_bscb(res, "diff", "nf", "overlap_rules2")
     # Verdict is unchanged — still an honest DIFF.
     assert out["status"] == "diff"
     # But sub-classified non-scoring (the "KNOWN REF" label is rendered from this
@@ -43,11 +51,11 @@ def test_annotate_is_noop_for_uncatalogued_or_wrong_track():
     # Uncatalogued model: untouched.
     r1 = bsr.annotate_ref_bscb({"comment": "c"}, "diff", "nf", "some_other_model")
     assert "subclass" not in r1
-    # Catalogued model but SSA track (bscb is NF-only): untouched.
-    r2 = bsr.annotate_ref_bscb({"comment": "c"}, "diff", "ssa", "EGFR_oligo_v2")
+    # Catalogued model but SSA track (NF_KNOWN_REF is NF-only): untouched.
+    r2 = bsr.annotate_ref_bscb({"comment": "c"}, "diff", "ssa", "overlap_rules2")
     assert "subclass" not in r2
     # Catalogued NF model but a PASS (not a DIFF): untouched.
-    r3 = bsr.annotate_ref_bscb({"comment": "c"}, "pass", "nf", "EGFR_oligo_v2")
+    r3 = bsr.annotate_ref_bscb({"comment": "c"}, "pass", "nf", "overlap_rules2")
     assert "subclass" not in r3
 
 

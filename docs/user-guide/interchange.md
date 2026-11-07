@@ -11,11 +11,14 @@ worth reaching for:
    supplement. This goes **beyond BioNetGen's own SBML export**: BNGsim translates
    the model's *actions* (`simulate` / `parameter_scan`, with their overrides) into
    SED-ML and packages the result as OMEX — neither of which `writeSBML()` does.
-2. **Prove the conversion is faithful — a guarantee BioNetGen does not provide.**
-   Every conversion can be gated on a validation ladder and **fails loud** rather
-   than silently emitting a model whose dynamics drifted. The reverse direction
-   (SBML → `.net`) is itself a key part of this: it lets the forward `.net` → SBML
-   path be checked by round-trip identity. The correctness check *is* the feature.
+2. **Check the conversion, which BioNetGen does not do.** Every conversion can be
+   gated on a validation ladder, and a gate that catches drifted dynamics shows in
+   the report (`report.ok` is False). The reverse direction (SBML → `.net`) is
+   itself a key part of this: it lets the forward `.net` → SBML path be checked by
+   round-trip identity. The ladder is a check, not a proof: its right-hand-side
+   levels compare the model at sample points, so a conversion can pass and still
+   differ. In issue #1499, `net_to_sbml`'s default `L1` gate passed an `if()` the
+   writer had regrouped, whose SBML gives 20 where the `.net` gives 30.
 
 Five console scripts ship with the package, each backed by a Python API under
 `bngsim.convert`.
@@ -60,7 +63,7 @@ into a BNGL actions block.
 # SBML → cBNGL (.bngl with a begin compartments block)
 report = bngsim.convert.sbml_to_bngl("model.xml", "model.bngl")
 
-# Prove faithfulness with the BNG2.pl round-trip oracle (validate="bng2"): flatten
+# Check faithfulness with the BNG2.pl round-trip oracle (validate="bng2"): flatten
 # the emitted .bngl via `BNG2.pl generate_network`, reload, and compare the ODE RHS,
 # and each assignment-rule species' reported value, to the source. Needs BNG2.pl
 # on $BNGPATH or PATH.
@@ -70,7 +73,7 @@ print(report.rhs_faithful)   # True when the round-trip reproduces the source
 
 ```bash
 bngsim-sbml2bngl model.xml -o model.bngl            # SBML → cBNGL
-bngsim-sbml2bngl model.xml -o model.bngl --gate     # + BNG2.pl round-trip proof
+bngsim-sbml2bngl model.xml -o model.bngl --gate     # + BNG2.pl round-trip check
 ```
 
 cBNGL faithfulness is validated by the BNG2.pl round-trip rather than an in-tree
@@ -163,12 +166,12 @@ so flatten it explicitly here.)
 #    generate_network() action — rule-based models you simulate already have one).
 BNG2.pl model.bngl     # → model.net
 
-# 2. Package a BioModels-ready, verified-faithful OMEX
+# 2. Package a BioModels-ready, validated OMEX
 bngsim-omex pack model.net --bngl model.bngl --gate full   # → model.omex
 ```
 
 ```python
-# Equivalent API call. A verified-faithful, runnable deliverable: SBML + the real
+# Equivalent API call. A validated, runnable deliverable: SBML + the real
 # SED-ML protocol + manifest.xml, gated L0–L4 — plus the original .net and .bngl
 # bundled for provenance (see below).
 report = bngsim.convert.net_to_omex(
@@ -198,7 +201,7 @@ a COMBINE-standard `metadata.rdf` (`dcterms` creator = `bngsim <version>`, the
 creation date, a description — the channel BioModels/COMBINE tools read) and a
 `bngsim-conversion.json` carrying the full **faithfulness verdict** — gate level and
 per-level L0–L4 result, `ok` / `rhs_faithful` / `max_rhs_delta`, and any
-dropped/lossy notes. So the *verified-faithful* claim is auditable by anyone who
+dropped/lossy notes. So the validation verdict is auditable by anyone who
 opens the archive, and a future reader can tell which bngsim version produced it.
 The `created` timestamp is injectable (`created="…"` / `--created`) for byte-reproducible archives:
 it is stamped both into the RDF and onto every zip entry, so two builds from the same

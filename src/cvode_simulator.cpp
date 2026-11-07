@@ -17523,6 +17523,25 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     int last_recorded_index = 0;
     bool ss_reached = false;
     double ss_residual_last = 0.0;
+    // Issue #1516: dS/dt at an output point, read for the early stop's
+    // sensitivity test, and the tolerance a column is held to: the solver's
+    // atol, or steady_state_tol where that is tighter. A column has no amount
+    // scale of its own, so a steady_state_tol loosened to suit large amounts
+    // does not loosen it: held to 1e-2 beside amounts of 1e6, dZ/dZ0 =
+    // exp(-0.01 t) passed at 0.905. Scaling a column by its parameter's value
+    // instead (|θ|·dS/dt, an amount rate) held a small parameter's column
+    // loosely (dX/dp 1.8e-4 off at p = 1e-6) and a large one's past what CVODES
+    // resolves: the nfkb benchmark and a model with amounts of 1e8 never
+    // stopped at the default tolerance.
+    NVectorArrayGuard ss_dS;
+    const double ss_col_tol = std::min(ss_tol, atol);
+    if (check_ss && n_sens > 0) {
+        ss_dS = NVectorArrayGuard(N_VCloneVectorArray(n_sens, y), n_sens);
+        if (!ss_dS) {
+            throw std::runtime_error(
+                "Failed to allocate the steady-state sensitivity check vectors");
+        }
+    }
 
     // ─── Early refresh points for the sensitivity error floor (issue #177) ───
     //
@@ -20200,7 +20219,28 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             }
             const double dx = std::sqrt(sumsq) / static_cast<double>(ns);
             ss_residual_last = dx;
-            if (dx < ss_tol) {
+            bool settled = dx < ss_tol;
+            // Issue #1516: with sensitivities the columns have to stand still
+            // too, by the same test with dS/dt in f's place, column by column,
+            // against ss_col_tol. A slow mode that starts at its own steady
+            // state leaves f small long before dx/dθ has settled in it: the
+            // stop at t = 20 handed on dX/dky = 17.96 as dx_ss/dθ = 100, as the
+            // last row and as the carry-over seed. dS/dt is the derivative of
+            // CVODES' own interpolant at the row; a column it cannot read is
+            // not settled.
+            if (settled && n_sens > 0) {
+                const int got = CVodeGetSensDky(cvode_mem, t_ret, 1, ss_dS.arr);
+                for (int j = 0; settled && j < n_sens; ++j) {
+                    const double *dS = N_VGetArrayPointer(ss_dS[j]);
+                    double col = 0.0;
+                    for (int k = 0; k < ns; ++k) {
+                        col += dS[k] * dS[k];
+                    }
+                    const double ds = std::sqrt(col) / static_cast<double>(ns);
+                    settled = got == CV_SUCCESS && ds < ss_col_tol;
+                }
+            }
+            if (settled) {
                 ss_reached = true;
                 break;
             }

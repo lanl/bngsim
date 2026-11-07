@@ -9,16 +9,23 @@ BioNetGen's subprocess-based `run_network` driver. The library also includes two
 and stochastic simulations in-process, and returns results as NumPy arrays —
 no file I/O, no subprocess spawning, no Perl dependency.
 
+> **Status: alpha (0.x).** bngsim is checked every night against BioNetGen,
+> libRoadRunner, AMICI and the SBML test suite, but it is early software, and
+> bugs that give a wrong answer without an error are still open. They carry the
+> [`correctness concern`](https://github.com/lanl/bngsim/issues?q=is%3Aissue%20state%3Aopen%20label%3A%22correctness%20concern%22)
+> label. Before you rely on a result for a new model, check it against a second
+> engine or a tighter tolerance, and please report what you find.
+
 ## Highlights
 
 - **Fast** — in-process execution with the GIL released during simulation; thread-parallel batch sweeps
-- **No toolchain at runtime** — `import bngsim`; no compilers, no `BNGPATH`, no Perl
+- **No Perl at runtime** — `import bngsim`; no `BNGPATH`, no Perl (loading `.bngl` aside). A C compiler (`cc`) is recommended: models of 256 or more species compile with it and fall back to the interpreter without it. Forward sensitivities need a codegen backend: `cc`, or the opt-in MIR JIT in a source build ([compiled RHS](docs/user-guide/codegen.md))
 - **Modern SUNDIALS** — v7.x CVODE/CVODES with re-entrant `SUNContext`
 - **Multi-format** — loads BioNetGen `.net` and `.xml`, Antimony (`.ant`), and SBML (`.xml`) models [SBML Test Suite results](https://sbml.bioquant.uni-heidelberg.de/Submission/Details/72), plus rule-based BNGL (`.bngl`) via BNG2.pl with `bngsim[bngl]`
 - **Rich results** — NumPy arrays, named observable access, pandas/xarray, HDF5 save/load
-- **Standards interchange** — `.net`/cBNGL ⇄ SBML and SED-ML + OMEX packaging, every conversion *verified faithful*
+- **Standards interchange** — `.net`/cBNGL ⇄ SBML and SED-ML + OMEX packaging, each conversion checked by a round-trip validation ladder (a check, not a proof; see [interchange](docs/user-guide/interchange.md))
 - **Gradient-ready** — CVODES forward sensitivities, Fisher information
-- **Validated** — matches `run_network` to ~10⁻¹² (ODE) and cross-checked against RoadRunner and the SBML semantic test suite
+- **Cross-checked** — in the nightly sweep 589 of 592 BNGL models agree with `run_network` to 1e-4 (ODE), and results are also checked against libRoadRunner, AMICI and the SBML semantic test suite
 
 ## Installation
 
@@ -80,8 +87,9 @@ that codegen fills, which nothing empties on its own. See
 ## Benchmarks & validation
 
 `bngsim` beats `run_network` on every SSA/PSA model measured (geometric-mean speedup
-~8.7× SSA), agrees with libRoadRunner across the full BioModels ODE corpus, and scores
-1577 `Match` on the SBML semantic test suite with **zero** wrong-but-plausible answers.
+~8.7× SSA), agrees with libRoadRunner to ~1e-4 on 1,237 of the 1,323 BioModels ODE
+models, and scores 1577 `Match` on the SBML semantic test suite with **zero**
+wrong-but-plausible answers.
 The numbers, methodology, and reproducible harnesses are in
 [benchmarks & validation](docs/about/benchmarks.md), with the committed cross-engine
 snapshots under [`parity_checks/`](parity_checks/). To re-run the suites and reproduce the

@@ -111,6 +111,96 @@ AMICI generates and compiles a bespoke C++ extension per model. These are cached
 on disk in `amici_cache/` keyed by SBML-content hash (gitignored), so the first
 sweep pays the cold compile and every re-run is load-only.
 
+### AMICI runs through the event instants (issue #1542)
+
+AMICI rewrites a `time == c` trigger as `(time >= c) && (time <= c)`. That trigger
+function, `min(t − c, c − t)`, touches 0 at `c` without changing sign. CVODES
+reports it only when a step ends exactly on `c`, and AMICI stops a step there only
+at an output time (or at another event's fixed trigger time). bngsim fires it wherever `c` falls (#1015). So on a job grid
+with no sample at `c`, AMICI skipped the dose or dilution and the row scored as a
+bngsim `DIFF`. BIOMD0000000816, 817, 928 and 1059 went PASS → DIFF that way between
+0.15.1 and 0.17.0.
+
+`amici_run.py` therefore passes `through_event_instants=True`, as `rr_run.py` does
+for RoadRunner's identical miss (#1024). `amici_ode` adds the instants
+`_rr_common.event_instants` finds to AMICI's output times and returns only the
+job-grid rows, so the compared grid is unchanged. The instants are computed with
+AMICI's own values: parameters and compartments as AMICI integrates them
+(`amici_value_of`), and numbers written in a trigger as AMICI reads them, at most
+15 significant digits (`amici_literal_of`). A row's comment says
+`AMICI through N event instants`, N being the output times added. A model with no
+time comparison in a trigger runs exactly as before.
+
+Three limits, each leaving the row as it was on the grid alone:
+
+- An instant within 1e-12·max(1, |t|) of another output time is left out. AMICI
+  can fail a run (status −99) whose output times sit a few ulps apart once an
+  event fires at the first: a parameter 6 ulps below a grid time does it. Not
+  always (`time == 0.3` beside a grid time one ulp on runs and fires), so the
+  guard is conservative.
+- `time != c` is not helped. AMICI's `|t − c|` leaves 0 without a sign change, so
+  no output time makes it fire.
+- An equality whose residual AMICI does not compute as exactly 0 at the instant,
+  such as `time − 0.1 == 0.2`, is not helped either.
+
+### The sample on a strict trigger's onset is not judged (issue #1557)
+
+At t = c a trigger `time > c` is false. The event has not fired yet, so bngsim and
+RoadRunner report the state before it at a sample on c. AMICI's importer turns `>`
+and `>=` into the same root function, `time − c`, so it fires at c and reports the
+state after it. All three fire the event at c, and they agree from the next sample
+on. A closed `time >= c` is true at c, and all three report the state after the
+event there.
+
+So at that one sample the engines disagree about which side of a jump to report,
+not about the solution. BIOMD0000000104, 125, 563, 860 and 862 each read `DIFF`
+on that one cell and no other. 563's onset is its last sample, `t_end = 10`.
+
+`_rr_common.strict_onsets` finds the onsets in the SBML: the boundaries where a
+strict comparison of the clock is false and turns true just after. That is
+`time > c`, `c < time`, the same for an affine form of time (`(10 − time) < 5`), and
+the level a `rem` of one rises through. A closed comparison is not an onset, and
+neither is a strict one that turns false (`time < c`). The reader is the one
+`event_instants` uses, so the two cannot disagree about what a trigger compares.
+Each comparison is read alone. Under an `and`, a boundary is named even where the
+rest of the trigger holds the trigger false, which costs a judged sample and
+never misses an onset. Under a `not` an onset can be missed, but AMICI imports no
+trigger with `not` in it, nor one with `rem` or `floor`.
+
+`amici_ode` records the job-grid samples on an onset as `strict_onset_samples`. It
+values the boundary the way AMICI does, and a sample within
+1e-12·max(1, |c|) of c counts as on it. `amici_run.py` leaves those rows out of the
+verdict. Its tallies, the ranges the movement gate uses and `NO SIGNAL` are over the
+other rows. The row comment says what leaving them out changed:
+
+```
+5 sp; fail 0/5000 (hard 0, soft 0, forgiven 0); err/movement 6.2e-09; AMICI through 1 event instants | strict onset not judged at t = 1 (rescued 1 DECISIVE; GH #1557)
+```
+
+`rescued` counts the failing cells on those rows, read off the whole grid with the
+rows forgiven through `differ`'s `forgive_mask`. `DECISIVE` means the whole grid is
+a `DIFF` and the judged rows are not. A row with a cell finite on one side only is
+judged anyway, since no reading of a jump puts a NaN or an inf on one engine. The
+matrix says the same in plain English, and keeps quiet about an onset that cleared
+nothing on a `PASS`.
+
+Over the corpus, 22 jobs have a sample on an onset. Five go `DIFF` → `PASS`. On
+four of them the event's effect is judged from the next sample on. BIOMD0000000563's
+onset is its last sample, and its jump there is all that moves on the grid, so it
+reads `PASS` with `NO SIGNAL`, as rr_parity's row for it does. BIOMD0000000318
+stays a `DIFF`: AMICI is off on nearly every cell there (Class 2). The other 16 keep
+their verdicts.
+
+The rule is scoped. It turns off one sample per onset. A per-row
+`COMPARISON_ARTIFACT` would turn off the whole row, and at `max_rel` 1.0 that
+leaves the AMICI check on the model blind. RoadRunner still judges the onset
+sample, because rr_parity is unchanged: bngsim's reading there is checked against
+an engine that reads `>` strictly.
+
+The forward-sensitivity job does not apply the rule yet. Its state check still
+judges the onset sample, so on these models the sensitivity page reads `state DIFF`
+(issue #1571).
+
 ## Overrides — departure from rr_parity
 
 Only the engine-agnostic **`tol`** overrides (ill-conditioned IVPs, applied to
@@ -129,12 +219,14 @@ into the job manifest the way rr_parity's `overrides.py` is: the SBML manifest i
 shared with rr_parity, and an AMICI-calibrated entry written into it would leak
 into that suite.
 
-Two dispositions, and the difference is which engine (if either) is at fault:
+Three dispositions. The difference is which engine (if either) is at fault, and
+whether there is an answer to be at fault about:
 
-| entry | what it means | `DIFF` becomes |
+| entry | what it means | the row becomes |
 |---|---|---|
-| `INVALID_REFERENCE` | AMICI ran and returned finite numbers, but a defect in its own handling of the model makes them unusable as an oracle | `REFERENCE_FAILED` + `reference_refusal=invalid_result` |
-| `COMPARISON_ARTIFACT` | neither engine is wrong; the residual is a cell no oracle can resolve | `PASS`, reason recorded |
+| `INVALID_REFERENCE` | AMICI ran and returned finite numbers, but a defect in its own handling of the model makes them unusable as an oracle | a `DIFF` becomes `REFERENCE_FAILED` + `reference_refusal=invalid_result` |
+| `COMPARISON_ARTIFACT` | neither engine is wrong; the residual is a cell no oracle can resolve | a `DIFF` becomes `PASS`, reason recorded |
+| `NO_GROUND_TRUTH` | over the job's horizon the model has no solution a double-precision integrator can follow, so neither engine's answer is an oracle | a `DIFF` *or* a `PASS` becomes `BAD_TEST`, reason recorded; the matrix draws it `NO TRUTH` |
 
 `REFERENCE_FAILED` and **not** `PASS`, because `PASS` would assert the engines
 agreed and they did not — this is the mirror of what #319/#323 did for bngsim's
@@ -151,6 +243,15 @@ correspondingly **narrower** than rr_parity's `KNOWN_ARTIFACT`, which also cover
 "the reference engine has the bug" — that case is `INVALID_REFERENCE` here,
 precisely so a reference defect is never dressed up as agreement.
 
+`NO_GROUND_TRUTH` lands on `BAD_TEST` for the reason the paragraph above gives:
+there, the model is the problem. A `PASS` is disposed of too, because on such a
+model it is two non-solutions that rounded alike, and it is never `STALE`, because
+what the entry asserts is a property of the model that no engine's verdict can
+falsify. Its evidence must come from neither engine, nor from SUNDIALS, which both
+run: a closed form, or an integrator such as scipy's driven where it tracks the
+solution. The one entry, `MODEL1112050001` (issue #1542), is
+[Class 6 of AMICI_KNOWN_ISSUES](AMICI_KNOWN_ISSUES.md#class-6--a-model-with-no-solution-to-compare-against-model1112050001-issue-1542).
+
 **The bar is rr_parity's, and it is high.** An entry that turned a real bngsim
 defect non-scoring would hide a regression, so every entry must cite evidence
 naming which engine is wrong and how we know, from an oracle that is **not
@@ -160,9 +261,10 @@ SBML *text* so no engine can discard the write.
 
 Three ways it stays honest:
 
-- it applies **only to a `DIFF`**. A row that agrees on its own is flagged
-  `STALE` (prune it); a row that raised, timed out or had no oracle is reported
-  *inapplicable* rather than stale — a timeout falsifies nothing.
+- it applies **only to a `DIFF`** (`NO_GROUND_TRUTH` to a `PASS` as well). A row
+  that agrees on its own is flagged `STALE` (prune it); a row that raised, timed
+  out or had no oracle is reported *inapplicable* rather than stale — a timeout
+  falsifies nothing.
 - the reason lands in the row's `comment`, so the report says why in the row and
   not only in the module.
 - an entry records the `max_rel` it was authored against. A later sweep that

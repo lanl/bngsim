@@ -9,7 +9,9 @@ one.** On all 42 of the 44 ODE divergences where an independent third oracle is 
 **RoadRunner agrees with bngsim exactly** and AMICI is the odd engine out (the other 2
 are inconclusive only because RoadRunner *also* failed those models). Class 4 is the
 narrower claim its own section states: AMICI is not a usable oracle there, which is not
-by itself a bngsim confirmation.
+by itself a bngsim confirmation. Class 6 is not an AMICI problem either: it is a
+model with no solution for either engine to be checked against. Class 7 is a
+disagreement about one sample, not about the solution.
 
 - **Environment:** AMICI pinned to `AMICI-dev/AMICI@667b17b6b` (`v1.0.1-12-g667b17b6b`,
   BSD-3; built from source into `bngsim/.venv`, needs `swig`) — see `AMICI_PIN.json` for the
@@ -203,12 +205,198 @@ and the trajectory moves. A 2% runtime write reproduces all five reported number
 within 5% and in the right proportions. That is the mechanism, not a confirmed
 reconstruction — the exact recipe was not recovered, and nothing above depends on it.
 
+## Class 5 — events AMICI does not fire (issue #1542)
+
+Five rows that passed against bngsim 0.15.1 read `DIFF` against 0.17.0. bngsim had
+been skipping the same events AMICI skips, so the two agreed. bngsim began firing
+them (#1015, #1150). RoadRunner fires them too: its CVODE on BIOMD0000000285, and,
+on the other four, RoadRunner run through the event instants, as `rr_run.py` has
+done since #1024. On all five, bngsim and RoadRunner agree with 0 failing cells, and
+AMICI is the engine out.
+
+| model | trigger AMICI misses | remedy | row now |
+|---|---|---|---|
+| BIOMD0000000816, 817 | `time == 2`, `time == 4` (virus doses) | run AMICI through the instants | PASS, 0/6006 |
+| BIOMD0000000928 | `time == 20` (tenfold dilution) | run AMICI through the instants | PASS, 0/1544 |
+| BIOMD0000001059 | `time == 2000` (SMAC release) | run AMICI through the instants | PASS, 0/10010 |
+| BIOMD0000000285 | `PIdeath > 0`, `p38death > 0`, both 0 at the start | `INVALID_REFERENCE` disposition | REFERENCE_FAILED |
+
+**`time == c` between output samples.** AMICI rewrites `==` as `>=` and `<=`, whose
+trigger function `min(t − c, c − t)` touches 0 at `c` without changing sign. CVODES
+reports it only when a step ends exactly on `c`, which AMICI arranges only at an
+output time (or at another event's fixed trigger time). RoadRunner misses it the
+same way on a grid with no sample at `c`, and the remedy is the same (#1024):
+`amici_run.py` now gives AMICI the instants as extra output times and compares the
+job grid. See the README's
+[event-instants section](README.md#amici-runs-through-the-event-instants-issue-1542),
+which also lists the shapes the instants cannot help.
+
+**A trigger whose residual is exactly 0 at the start.** AMICI reads it as true at
+t = 0, for `>` as well as `>=`. BIOMD0000000285 is SBML L2V4, whose triggers read
+`initialValue = true`, so to AMICI its death triggers are true before t = 0 and at
+it, and they never fire. The cell lives (NatP 19520.1 at t = 10). bngsim (since
+#1150, the decision on #934) and RoadRunner read the trigger as false at t = 0 and
+true just after, so both events fire and set `kalive = 0`, and the cell stays at its
+initial state (NatP 19500). RoadRunner fails 11463/27027 cells against AMICI, the
+same as bngsim does, and 0 against bngsim.
+
+That reading of the SBML start rule is a choice the project made, but AMICI's answer
+does not come from the other reading. With `initialValue = true`, as here, AMICI
+also misses a crossing that every reading fires: `B > 0` with `B` held at 0 until
+t = 0.5 and rising after. AMICI integrates `B` right (`B(1) = 0.5`) and never
+fires; bngsim and RoadRunner fire just after 0.5. With `initialValue = false` AMICI
+fires, at t = 0 itself, three triggers that are never true: `B > 0` with `B(0) = 0`
+falling, `B > 0` with `B` held at 0, and `B < 0` with `B(0) = 0` rising. RoadRunner
+and bngsim fire none of them. An output time cannot help, because the trigger reads a
+species, so the row is an `INVALID_REFERENCE` entry in `amici_dispositions.py`.
+While it stands, the AMICI row checks nothing on this model; rr_ode is the check.
+
+**Not in this class: MODEL1112050001**, the sixth model in #1542. It has no events;
+see Class 6.
+
+## Class 6 — a model with no solution to compare against (MODEL1112050001, issue #1542)
+
+The sixth model in #1542 has no events. Against AMICI it read `PASS` on bngsim 0.15.1,
+and on x86-64 it still does (0/2929 cells, #1546). On arm64 it has read `DIFF` since
+#1076: 676/2929 cells, 240 hard. Those are #1542's M1 Max numbers, measured again on
+an M4 Max at `e3b66384`. Neither verdict says anything about bngsim. Over the job's
+horizon the model has no solution in double precision, and both engines return a
+trajectory that is not one. The row is a `NO_GROUND_TRUTH` entry in
+`amici_dispositions.py`, which makes it a non-scoring `BAD_TEST` whichever way it
+falls; the matrix page draws it as `NO TRUTH`. rr_parity adjudicates the model
+`uncoverable` too.
+
+**The closed form.** The rate rule `x8' = k19·x5 − k20·x8 − k6·PTP·k8` drains `x8` at
+a constant rate. `k8` is a 7.06e12 rate constant, and the term reads like a typo for
+`x8`. Early on, that makes `x4 + x5 = −3.42e8·t²` (a run reads −3.420e-6 at t = 1e-7).
+Then `x9' = k22·PTP·x10 − k7·x9·(x4+x5)/IRp`, with `IRp = 8.97e-13`, grows `x9` at
+the rate `a = k7·|x4+x5|/IRp = 1.59e21·t²`. The model conserves `x9 + x10 + x12` and
+`x11 + x12`, and keeps `x11 ≥ 0`, so `x9' ≥ (a − k22)·x9 + k22·9e-13`. To leading
+order, `x9 = 1e-12·exp(5.29e20·t³)`:
+
+| t | the law | measured |
+|---|---|---|
+| 1e-7 | 1.697e-12 | 1.697e-12: scipy's DOP853 (explicit Runge-Kutta, not SUNDIALS) on a right-hand side built from the SBML text, rtol 1e-12, atol 1e-80 |
+| 3.36e-7 | 5.115e-4 | 5.115e-4: bngsim at rtol 1e-10, atol 1e-30 |
+| 1.1e-6 | passes the largest double (`x9` alone; the model overflows sooner, below) | |
+| 1 | ln(x9) ≈ 5e20 | |
+
+The model leaves the doubles sooner than `x9` alone would. `k9 = k9bas + (k9sim −
+k9bas)·x12/PI3K` with `PI3K = 5e-15`, and `x12` follows `−x9`, so `x13` and `x14`
+grow super-exponentially. scipy's BDF and bngsim at atol 1e-24 agree:
+
+| t | `x14` (`x13` is its negative) |
+|---|---|
+| 3.360e-7 | 2.9e5 |
+| 3.362e-7 | 2.1e8 |
+| 3.363e-7 | 2.6e10 |
+
+Every integrator stops near t = 3.364e-7: scipy's BDF, bngsim and AMICI when they
+follow `x9`, and RoadRunner at the suite's tolerance (`CV_TOO_MUCH_WORK`).
+
+**What both engines return instead.** `x9` starts at 1e-12, which is the suite's atol,
+so neither engine's error test sees it. Each holds `x9` on its repelling equilibrium,
+`−k22·PTP·x10/a`, instead of following it. At t = 1 that is −1.609e-32 in bngsim on
+arm64 and −2.649e-34 in AMICI, each equal to its own equilibrium to 4 digits. The two
+differ because `x4 + x5` does, on the two `x1` branches below; bngsim at atol 1.01e-12
+also reads −2.649e-34. Both then run on to t = 100. A tighter tolerance (atol 1e-14, or rtol 1e-10) makes both engines try to
+follow `x9` (only an atol near 1e-24 or below actually tracks it), and both fail
+between t = 3.3e-7 and 5.6e-7: bngsim's step collapses
+until t + h == t, and AMICI reports `AMICI_TOO_MUCH_WORK`. So no engine has an answer
+here past t ≈ 3.364e-7, and the AMICI row compares two trajectories that are not
+solutions.
+
+**Why the verdict flips.** On that trajectory, once `x6` drives `x2` negative,
+`x1' = x1·(k1·|x2| − b3) + b1·vp·h1p/v` is unstable too, and rounding decides whether
+a step holds `x1` the same way.
+
+| at t = 1 | `x1` | `x2` |
+|---|---|---|
+| AMICI | 7.483e8 | −5.011e-8 |
+| bngsim, atol 1.01e-12 | 7.483e8 | −5.011e-8 |
+| bngsim, atol 1e-12, arm64 since #1076 | 3.528e-25 | −7.518e8 |
+
+`x3`, `x4`, `x5` and `x7` differ in the same way, and those cells are the `DIFF`. At
+rtol 1e-9 / atol 1e-12 exactly, bngsim at main on arm64 holds `x1`. Moving atol by 1
+to 20 ulps either way (40 points) lets `x1` grow every time. Over 120 draws, with
+rtol and atol each scaled by an independent uniform factor in
+[1 − 1e-3, 1 + 1e-3]:
+
+| engine | `x1` grows | `x1` held | fails |
+|---|---|---|---|
+| bngsim, main, arm64 | 119 | 0 | 1 |
+| AMICI 1.0.1 | 117 | 0 | 3 |
+
+At the manifest's own rtol 1e-6 / atol 1e-9 the outcome is less settled. A ±10% scan of
+rtol (41 points) gives bngsim 24 grows, 11 held and 6 failed.
+
+**What moved it.** A first-parent bisect over `3183494c..0b7b3424` stops at #1076
+(`35e9bb1a`). #1076 compiles ExprTk with `-ffp-contract=off`, so that on arm64,
+`a*b + c` is no longer fused into a multiply-add and rounds as it does on x86-64. Its
+parent, `2a4d72e0`, lets `x1` grow. Removing only that flag puts #1076 back to `x1`
+growing, and main (`e3b66384`) as well. #1076 also restored the exact sign rule in
+`cvode_simulator.cpp`'s #928 handler. With that change kept and the flag removed,
+`x1` grows, so the handler is not the cause. #1076 changed rounding on purpose, and
+its fix stands. Any later rounding change (in ExprTk, SUNDIALS or the compiler) can
+flip this row either way, on either platform, and the disposition makes that moot.
+
+## Class 7 — the sample on a strict trigger's onset (5 models, issue #1557)
+
+Five rows read `DIFF` on exactly one cell (`fail 1/N (hard 1)`), at the c of a
+`time > c` trigger that sits on a sample:
+
+| model | SBML | trigger | cell | bngsim | RoadRunner | AMICI | next sample (all three) |
+|---|---|---|---|---|---|---|---|
+| BIOMD0000000104 | L2V1 | `time > 1` | t = 1, `species_2` | 1 | 1 | 0.4 | 0.4 |
+| BIOMD0000000125 | L2V1 | `time > 1` | t = 1, `x0` | 1 | 1 | 0 | 0 |
+| BIOMD0000000563 | L2V4 | `time > 10` | t = 10, `Path_bulk` | 0 | 0 | 1 | none: 10 is `t_end` |
+| BIOMD0000000860 | L2V4 | `time > 3600` | t = 3600, `TF1` | 0 | 0 | 500 | 500 |
+| BIOMD0000000862 | L2V3 | `time > 7200` | t = 7200, `Signal` | 100 | 100 | 0 | 0 |
+
+Over the whole run, bngsim and RoadRunner agree with 0 failing cells on all five.
+At t = c the strict trigger is false, so the event has not fired, and bngsim and
+RoadRunner report the state before it. AMICI's importer maps `>` and `>=` to one
+root function, `time − c`, so AMICI fires at c and reports the state after it. A
+small model shows the split by operator. With S stepping 1 → 0 on its event, at
+the sample t = 1:
+
+| trigger | bngsim | RoadRunner | AMICI |
+|---|---|---|---|
+| `time > 1`, `1 < time`, `(time > 1) && (time < 3)` | 1 (before) | 1 | 0 (after) |
+| `time >= 1`, `1 <= time` | 0 (after) | 0 | 0 |
+
+So it is the same reading as BIOMD0000000285's in Class 5, a residual of exactly
+0 read as true, but here it moves one sample, not the run. All three engines fire
+at c and agree after it. Which side of a jump to report at the instant of the jump
+is a convention. The trigger's SBML value at c, false, gives bngsim's side, but the
+solution is the same either way, so the cell is scored against neither engine.
+
+**Remedy.** `amici_run.py` leaves the sample on such an onset out of the verdict
+(README:
+[the sample on a strict trigger's onset](README.md#the-sample-on-a-strict-triggers-onset-is-not-judged-issue-1557)).
+The row comment names the sample, the failing cells on it, and whether leaving it
+out decided the verdict. All five rows now read `PASS ... (rescued 1 DECISIVE)`.
+On 563 the jump at `t_end` is all that moves on the grid, so its row also reads
+`NO SIGNAL`, as rr_parity's does: the AMICI comparison there checks nothing that
+moves. A per-row `COMPARISON_ARTIFACT` was the alternative, but at `max_rel` 1.0 it
+would have stopped the AMICI row checking anything on four of the five models.
+rr_parity still judges the onset sample, against RoadRunner. The
+forward-sensitivity job does not apply the rule yet, so its state column still
+reads DIFF on these models (#1571).
+
+The other 17 corpus jobs with a sample on an onset keep their verdicts.
+BIOMD0000000318 stays a `DIFF`: AMICI is off on 6992 of the 7000 judged cells
+there (Class 2), and on all 7 at the onset, t = 5. (Class 2's snapshot names
+BIOMD125 among its large divergences. Against bngsim 0.17.0 it differs on this one
+cell only.)
+
 ## Bottom line
 
 AMICI passes ~79% of the SBML ODE corpus. Where it fails it is an **AMICI**
 limitation (codegen gaps for discrete math and events, integrator bailouts, internal
 bugs) or an **AMICI** integration error — never a bngsim defect. Across both reference
 engines (RoadRunner and AMICI) on the full SBML corpus, **bngsim is never the outlier.**
+Class 6's model has no solution for either engine to be measured against.
 
 ## Reproduce
 

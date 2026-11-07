@@ -2048,17 +2048,19 @@ def _eval_ast_numeric(
         return None
 
     # L3v2 MathML: quotient, rem, max, min (mirror the ExprTk emit so a folded
-    # constant param equals its runtime expression column).
+    # constant param equals its runtime expression column). quotient and rem
+    # truncate, as MathML 2.0 (C.2.3.1, C.2.3.9) defines them: quotient(-5, 3)
+    # is -1 and rem(-5, 3) is -2, the remainder taking a's sign (#1522).
     if t == libsbml.AST_FUNCTION_QUOTIENT:
         a, b = _c(0), _c(1)
         if a is None or b is None or b == 0:
             return None
-        return float(_math.floor(a / b))
+        return float(_math.trunc(a / b))
     if t == libsbml.AST_FUNCTION_REM:
         a, b = _c(0), _c(1)
         if a is None or b is None or b == 0:
             return None
-        return a - b * _math.floor(a / b)
+        return a - b * _math.trunc(a / b)
     if t == libsbml.AST_FUNCTION_MAX:
         vals = [_c(i) for i in range(nc)]
         if not vals or any(v is None for v in vals):
@@ -3001,7 +3003,7 @@ def _periodic_time_disc_max_step(
             if kind == libsbml.AST_FUNCTION_REM:
                 a = _eval_ast_numeric(n.getChild(0), nctx, func_defs, time_value=t)
                 b = _eval_ast_numeric(n.getChild(1), nctx, func_defs, time_value=t)
-                sig.append(None if (a is None or b is None or b == 0) else _math.floor(a / b))
+                sig.append(None if (a is None or b is None or b == 0) else _math.trunc(a / b))
             else:
                 a = _eval_ast_numeric(n.getChild(0), nctx, func_defs, time_value=t)
                 fn = _math.floor if kind == libsbml.AST_FUNCTION_FLOOR else _math.ceil
@@ -12125,6 +12127,26 @@ def _xor_text(truths: list[str]) -> str:
     return f"(({a} and (not({b}))) or ((not({a})) and {b}))"
 
 
+def _nonnegative_by_literal_form(node) -> bool:
+    """True iff *node* is non-negative by its form alone: non-negative numbers
+    put together by +, * and /. A name is not, since a parameter can be set
+    negative after load, and nor is the time, since a run can start before 0
+    (``t_span=(-4.5, 1.5)``), where ``rem(time, 3)`` is -1.5, not the floor's
+    1.5. Where both operands of ``quotient`` or ``rem`` are, truncation and the
+    floor are the same (issue #1522)."""
+    t = node.getType()
+    if t == libsbml.AST_INTEGER:
+        return node.getInteger() >= 0
+    if t in (libsbml.AST_REAL, libsbml.AST_REAL_E):
+        v = node.getReal()
+        return v == v and v >= 0
+    if t in (libsbml.AST_PLUS, libsbml.AST_TIMES, libsbml.AST_DIVIDE):
+        return node.getNumChildren() > 0 and all(
+            _nonnegative_by_literal_form(node.getChild(i)) for i in range(node.getNumChildren())
+        )
+    return False
+
+
 def _ast_to_exprtk_recursive(node, func_defs, local_params):
     """Convert a libsbml MathML AST node to an ExprTk expression string,
     supporting inlined function definitions and local-parameter remapping.
@@ -12369,11 +12391,30 @@ def _ast_to_exprtk_recursive(node, func_defs, local_params):
         for p in parts[1:]:
             result = f"min({result},{p})"
         return result
-    if t == libsbml.AST_FUNCTION_QUOTIENT:
-        return f"(floor(({_r(0)})/({_r(1)})))"
-    if t == libsbml.AST_FUNCTION_REM:
+    # quotient and rem truncate (MathML 2.0 C.2.3.1, C.2.3.9; #1522), written
+    # as libSBML writes its own truncating `%`: a ceil where a/b is negative, a
+    # floor elsewhere, chosen by xor(a < 0, b < 0). bngsim already reads that
+    # form everywhere a floor is read, as a schedule included (#465, #467), where
+    # a bare trunc() would be a step call the derivations decline. Where both
+    # operands are non-negative numbers by their form, truncation is the floor,
+    # and the floor alone is written, as before. An operand that reads the time
+    # takes the sign test, since a run can start before 0; on a far line
+    # (quotient(1e10 + time, 0.01)) its ceil is one more step, and the far
+    # line's reading (#1018) refuses the run by name.
+    if t == libsbml.AST_FUNCTION_QUOTIENT or t == libsbml.AST_FUNCTION_REM:
         a, b = _r(0), _r(1)
-        return f"(({a})-({b})*floor(({a})/({b})))"
+        if (
+            nc == 2
+            and _nonnegative_by_literal_form(node.getChild(0))
+            and (_nonnegative_by_literal_form(node.getChild(1)))
+        ):
+            if t == libsbml.AST_FUNCTION_QUOTIENT:
+                return f"(floor(({a})/({b})))"
+            return f"(({a})-({b})*floor(({a})/({b})))"
+        neg = f"((({a})<0) and (not((({b})<0)))) or ((not((({a})<0))) and (({b})<0))"
+        if t == libsbml.AST_FUNCTION_QUOTIENT:
+            return f"(if(({neg}),ceil(({a})/({b})),floor(({a})/({b}))))"
+        return f"(if(({neg}),(({a})-({b})*ceil(({a})/({b}))),(({a})-({b})*floor(({a})/({b})))))"
     if t == libsbml.AST_LOGICAL_IMPLIES:
         return f"((not({_r(0)})) or ({_r(1)}))"
 

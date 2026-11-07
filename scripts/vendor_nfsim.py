@@ -454,6 +454,45 @@ CARRY_QUEUE = (
             },
         ],
     },
+    {
+        "topic": "bngsim/carry-checkbonds-partner-type",
+        "kind": "local",
+        "status": (
+            "Reject a bond partner of the wrong molecule type before indexing its "
+            "component arrays. checkBonds and checkSymmetricComponents index the "
+            "partner molecule with a component index belonging to the PARTNER "
+            "TEMPLATE's type -- bondPartnerCompIndex[b] and symBondPartnerCompIndex[c] "
+            "in their normal branches, and tryToMap's equivalency-class indices in "
+            "their symmetric ones -- and the only check that the molecule is of that "
+            "type sits in compare, reached after those reads. A shorter partner is "
+            "read out of bounds (tcr.bngl: a ZAP70 bound to a LAT, 2 components, read "
+            "at LCP2's index 3). Results are unaffected -- the match is rejected a "
+            "few lines later either way -- but the read is undefined behaviour and "
+            "faults when the array ends at an unmapped page, which SIGSEGV'd a "
+            "210-model network-free run. A guard sits above each branch dispatch, "
+            "covering all four sites. All four are reachable and fault under "
+            "AddressSanitizer. The three beyond checkBonds' normal branch each need a "
+            "symmetric component off the reaction centre, on a side that differs by "
+            "site: the partner's for checkBonds' tryToMap branch, the matched "
+            "molecule's own for checkSymmetricComponents' normal branch, and both "
+            "for checkSymmetricComponents' tryToMap branch (own-side symmetry is "
+            "what reaches that function at all, since its loop runs over the matched "
+            "template's own symmetric components). Nothing in a 54-model corpus "
+            "sweep has that, so the sweep reaches only the first site. A fixture per "
+            "site is committed under tests/data/nfsim/, plus a positive one holding "
+            "the csc guard to `continue` rather than `return false`. Submitted "
+            "upstream as RuleWorld/nfsim#113, open at the time of writing; see "
+            "bngsim GH #1543."
+        ),
+        "commits": [
+            {
+                "commit": "8ed168fe8366c7c9c01f21b45da5f56e055fedcf",
+                "summary": (
+                    "bngsim: reject a bond partner of the wrong molecule type before indexing it"
+                ),
+            },
+        ],
+    },
 )
 
 SUMMARY_PREVIEW_LIMIT = 12

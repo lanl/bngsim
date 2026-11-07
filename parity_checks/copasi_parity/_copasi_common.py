@@ -130,6 +130,19 @@ def _copasi_msg() -> str:
         return ""
 
 
+def sbml_source(xml: str) -> tuple[str | None, str | None]:
+    """``(path, None)`` for a file COPASI should read itself, ``(None, text)`` for
+    SBML text.
+
+    Text is recognized first, as ``rr_ode`` and ``amici_ode`` do: SBML text can be
+    longer than a file name may be, and ``Path.exists()`` raises on it (``File
+    name too long``) rather than answering False (issue #1550).
+    """
+    if not str(xml).lstrip().startswith("<") and Path(xml).exists():
+        return str(Path(xml)), None
+    return None, xml
+
+
 def co_ode(
     xml: str, t_start: float, t_end: float, n_points: int, rtol: float, atol: float
 ) -> tuple[np.ndarray, np.ndarray, list[str], dict]:
@@ -144,11 +157,19 @@ def co_ode(
     SBML id so ``align_common`` matches them against bngsim by id — the same
     partial-overlap contract rr_parity uses for RoadRunner's floating species.
 
-    The output grid is COPASI's own recorded time column (``duration = t_end -
-    t_start``, ``stepNumber = n_points - 1``, ``outputStartTime = t_start`` ⇒
-    ``n_points`` rows on ``linspace(t_start, t_end, n_points)``). Returning the real
+    The output grid is COPASI's own recorded time column: it integrates over
+    ``[model_t0, t_end]`` and records ``n_points`` rows on ``linspace(t_start,
+    t_end, n_points)`` from ``t_start`` on, when that lands on COPASI's grid
+    anchored at ``model_t0`` (see step 3 for when it does not). Returning the real
     column (not a synthetic ``linspace``) keeps the differ's time-grid check honest
     if a model with events forces a different grid.
+
+    COPASI integrates from the model's own initial time whatever ``t_start`` is,
+    and ``t_start`` only says where recording begins. ``bn_ode`` instead starts
+    the model's initial state at its ``t_start``. So the two solve the same problem
+    only when the caller passes the job's initial time, as ``copasi_run`` does
+    (issue #1550): given an output start past it, bngsim's run was the same model
+    shifted in time by the gap.
 
     A failed ``importSBML`` (unsupported construct) or a failed ``process`` (LSODA
     divergence) raises, so the worker classifies it as a reference failure rather
@@ -160,14 +181,8 @@ def co_ode(
 
     # 1. Resolve the SBML source: a path (the manifest passes one) or a string.
     t0 = time.perf_counter()
-    if Path(xml).exists():
-        sbml_path = str(Path(xml))
-        sbml_str = None
-        io_sec = 0.0  # COPASI reads the file itself; nothing read into Python here
-    else:
-        sbml_path = None
-        sbml_str = xml
-        io_sec = time.perf_counter() - t0
+    sbml_path, sbml_str = sbml_source(xml)
+    io_sec = 0.0 if sbml_path is not None else time.perf_counter() - t0
 
     dm = COPASI.CRootContainer.addDatamodel()
     try:
@@ -186,10 +201,11 @@ def co_ode(
         mod = dm.getModel()
 
         # 3. Configure the deterministic (LSODA) timecourse to reproduce the shared
-        # output grid linspace(t_start, t_end, n_points). The manifest's ``t_start``
-        # is the OUTPUT-start time (SED-ML outputStartTime), NOT the model's initial
-        # time: COPASI always integrates from ``model_t0`` and only begins *recording*
-        # at ``outputStartTime``. COPASI's recorded grid is uniform and anchored at
+        # output grid linspace(t_start, t_end, n_points). ``t_start`` is where
+        # recording begins, NOT the model's initial time: COPASI always integrates
+        # from ``model_t0`` and only begins *recording* at ``t_start``. copasi_run
+        # passes the job's initial time, so the corpus records from ``model_t0``
+        # (see the docstring). COPASI's recorded grid is uniform and anchored at
         # ``model_t0``, so it reproduces the target grid EXACTLY only when ``t_start``
         # lands on that anchored grid — i.e. (t_start - model_t0)/step_size is
         # integral (the common t_start==0 case, and windows like [120,300] step 0.3).

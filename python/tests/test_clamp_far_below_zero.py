@@ -8,13 +8,14 @@ pole is no such edge.
 
 BIOMD0000000338 (Wajima 2009, BioModels, CC0) has XIIa and K activating each
 other through ``v*S*E/(k + E)`` with k = 1, so each has a pole at -1, and XIIa =
-K = 0 is an exact, unstable solution. The dense LU's rounding can tip XIIa below
-0, and the model's own laws then carry it down to the pole. There the RHS is
--inf, and clamped it read 0 for XIIa and for K, which held both at -1. On main
-(d1b27d5d, arm64) the dense run over t 0..0.08 returned XIIa = -1 and K = -0.997
-with no error, 1e9 atols below 0. Before #1302 the x86-64 CI's run over 0..2 did
-the same, and its agreement with KLU (XIIa = 0, the exact solution) passed the
-path-agreement check.
+K = 0 is an exact, unstable solution. Before #1485 the dense LU's rounding could
+tip XIIa below 0, and the model's own laws then carried it down to the pole.
+There the RHS is -inf, and clamped it read 0 for XIIa and for K, which held both
+at -1. On main (d1b27d5d, arm64) the dense run over t 0..0.08 returned XIIa = -1
+and K = -0.997 with no error, 1e9 atols below 0. Before #1302 the x86-64 CI's run
+over 0..2 did the same, and its agreement with KLU (XIIa = 0, the exact solution)
+passed the path-agreement check. Since #1485 the dense solve keeps XIIa = K = 0
+exactly, as KLU does, so the test starts XIIa a hair below 0 itself.
 
 Where the value read is infinite, a slot the solver's step started more than
 1e6 atols below 0 is now left as it is, and where that is what keeps the value
@@ -46,33 +47,43 @@ def _cold_codegen_cache(monkeypatch, tmp_path):
     monkeypatch.setattr(cg, "CACHE_DIR", tmp_path / "cg")
 
 
-def _run_338(**kw):
-    sim = bngsim.Simulator(
-        bngsim.Model.from_sbml(str(BIOMD338)), method="ode", force_dense_linear_solver=True, **kw
-    )
-    return sim.run(t_span=(0.0, 0.08), n_points=81, rtol=1e-6, atol=1e-9, max_steps=100000)
+def _run_338(xiia=0.0, *, t_end=0.08, n_points=81, **kw):
+    model = bngsim.Model.from_sbml(str(BIOMD338))
+    model.set_concentration("XIIa", xiia)
+    sim = bngsim.Simulator(model, method="ode", force_dense_linear_solver=True, **kw)
+    return sim.run(t_span=(0.0, t_end), n_points=n_points, rtol=1e-6, atol=1e-9, max_steps=100000)
+
+
+# A hair below 0: 1e-3 of XIIa's atol. The laws carry it from there to
+# the pole at -1 by t = 0.0096 on every Jacobian, and on KLU too.
+TIPPED = -1e-12
 
 
 @pytest.mark.parametrize("jacobian", ["fd", "auto", "analytical"])
 def test_338_carried_to_its_pole_raises_rather_than_returning_it(jacobian):
-    # Where rounding tips XIIa below 0 depends on the platform's last bits: on
-    # arm64 this window takes it to the pole, on x86-64 the difference-quotient
-    # runs burst positive. Either way no concentration comes back 1e6 atols below
-    # 0, and a refusal names XIIa, whose own reading is what is infinite (K, at
+    # The refusal names XIIa, whose own reading is what is infinite (K, at
     # -0.996, is short of its pole, and its law finite).
-    try:
-        result = _run_338(jacobian=jacobian)
-    except bngsim.SimulationError as exc:
-        msg = str(exc)
-        assert "carried concentration 'XIIa'" in msg, msg
-        assert "times its atol below 0" in msg, msg
-        assert "'K' to" not in msg, msg
-        return
+    with pytest.raises(bngsim.SimulationError) as info:
+        _run_338(TIPPED, jacobian=jacobian)
+    msg = str(info.value)
+    assert "carried concentration 'XIIa'" in msg, msg
+    assert "times its atol below 0" in msg, msg
+    assert "'K' to" not in msg, msg
+
+
+@pytest.mark.parametrize("jacobian", ["fd", "auto", "analytical"])
+def test_338_on_dense_keeps_the_exact_equilibrium_at_0(jacobian):
+    # #1485: XIIa's and K's rows of the Newton matrix read only each other, and
+    # their right-hand side is 0, so the dense solve gives them exactly 0, as
+    # KLU's block-triangular form does. Before it, the LU's rounding tipped XIIa
+    # off 0: on arm64, up to 72 and Fg = 0.73 at t = 2 on this window, against
+    # KLU's 311. #1304's corpus test reads the same on the rr_parity copies; this
+    # copy is tracked, so CI reads it too.
+    result = _run_338(t_end=2.0, n_points=101, jacobian=jacobian)
     species = np.asarray(result.species, dtype=float)
-    lowest = species.min(axis=0)
     names = list(result.species_names)
-    worst = int(np.argmin(lowest))
-    assert lowest[worst] >= -1e6 * 1e-9, f"{names[worst]} returned at {lowest[worst]}"
+    assert np.all(species[:, names.index("XIIa")] == 0.0)
+    assert np.all(species[:, names.index("K")] == 0.0)
 
 
 def test_338_on_klu_keeps_the_exact_equilibrium_at_0():

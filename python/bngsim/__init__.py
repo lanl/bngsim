@@ -38,6 +38,7 @@ from bngsim._exceptions import (
     AtolScaleWarning,
     BngsimError,
     CodegenDeclinedError,
+    CodegenToolchainError,
     ConversionError,
     ConversionWarning,
     DenseSolverFallbackWarning,
@@ -400,6 +401,7 @@ __all__ = [
     # Exceptions
     "BngsimError",
     "CodegenDeclinedError",
+    "CodegenToolchainError",
     "ConversionError",
     "ConversionWarning",
     "ModelError",

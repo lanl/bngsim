@@ -29,19 +29,26 @@ ensemble means). Failure is attributed per-engine, exactly as in the ODE track:
   * no resolvable stochastic horizon               -> SKIP
   * scheduler per-job wall-cap overrun             -> TIMEOUT
 
-NF parity gotcha: bngsim runs network-free at its CORRECT default
-``block_same_complex_binding=True`` (the project's deliberate, correct default).
-The legacy NFsim v1.14.3 has no ``-bscb`` flag and applies same-complex binding, so
-on ring-forming / multivalent models the two diverge — a KNOWN, expected,
-REFERENCE-side divergence (a legacy NFsim bug, not a bngsim defect). This track
-adjudicates every model independently and surfaces them as honest DIFF (the
-ensembles really do diverge), but a catalogued model (``NF_KNOWN_REF`` for NF,
-``SSA_KNOWN_DISPOSITION`` for SSA) is tagged ``subclass="ref_bscb"`` /
-``"known_artifact"`` so the matrix renders it KNOWN REF / KNOWN ARTIFACT —
-non-scoring, not a bngsim bug — rather than a bare DIFF read as a bngsim defect.
-These dispositions were folded here from the retired correctness suite (GH #69), so
-the matrix is now their single home; each was confirmed against an independent
-oracle (ODE / RuleMonkey / COPASI / analytic). See GH #183 / #118 / #69.
+NF: both engines run the same model semantics (issue #1549). bngsim blocks a
+bimolecular rule from binding two sites of one complex
+(``block_same_complex_binding=True``, its default), as BNG2.pl's network does. The
+legacy NFsim does the same under ``-cb``, which BNG2.pl's ``simulate_nf`` passes by
+default (``complex=>1``): NFsim's ``-cb`` and ``-bscb`` set one flag
+(``cb = cb || bscb`` in NFsim.cpp), and their output is byte-identical. So the
+legacy run gets ``-cb`` whenever bngsim blocks (:func:`legacy_cb`). It also reads
+the seed counts bngsim does: NFsim truncates a fractional count and bngsim rounds
+it half-up (GH #51), so the legacy run reads an XML with those counts already
+rounded (:func:`_bng_common.seed_rounded_xml`). A multi-segment run's native
+BNG2.pl protocol gets ``-cb`` from BNG2.pl but reads its XML unrounded. Before #1549 the legacy run got
+neither unless a Species observable forced ``-cb``, and 14 of the 15 unexplained
+DIFFs in 0.17.0's sweep were these two differences, not bngsim's.
+
+A model the legacy NFsim still gets wrong is tagged from ``NF_KNOWN_REF`` (and an
+SSA one from ``SSA_KNOWN_DISPOSITION``): the row keeps its honest DIFF, with
+``subclass="ref_bscb"`` / ``"known_artifact"``, so the matrix renders it KNOWN REF /
+KNOWN ARTIFACT — non-scoring, not a bngsim bug. Each entry names the independent
+oracle that shows the reference is the outlier (BNG2.pl's network, RuleMonkey,
+COPASI, an analytic answer). See GH #183 / #118 / #69 / #1549.
 
 Usage
 -----
@@ -177,54 +184,112 @@ def _resolve_bng_tools(track: str) -> tuple[str, str]:
     return bng2_pl, legacy
 
 
+def legacy_cb(bngl_text: str, nf_bscb: bool) -> bool:
+    """Whether the legacy NFsim run gets ``-cb`` (issue #1549).
+
+    A Species observable needs it, and NFsim's ``-cb`` is also what blocks a
+    bimolecular rule from binding within one complex (NFsim.cpp passes
+    ``cb || bscb`` as the one blocking flag), so it is given whenever bngsim blocks.
+    BNG2.pl's ``simulate_nf`` gives it by default (``complex=>1``). Without it, the
+    legacy run bound within complexes that bngsim and BNG2.pl's network keep apart.
+    """
+    return bool(nf_bscb) or bc.nf_needs_complex_bookkeeping(bngl_text)
+
+
+def nf_run_settings(sspec: dict, nf_bscb: bool, bngl_text: str) -> dict:
+    """Set an NF job's run spec in place, for both engines, and return it.
+
+    NFsim has no t_start offset (it always simulates [0, t_end]), so the bngsim side
+    starts at 0 too and the two grids coincide; the corpus has no t_start>0 NF
+    action, so this only guards a future one. bngsim blocks same-complex binding
+    per ``nf_bscb``, and the legacy run gets ``-cb`` per :func:`legacy_cb`.
+    """
+    sspec["t_start"] = 0.0
+    sspec["nf_bscb"] = bool(nf_bscb)
+    sspec["nf_complex_bookkeeping"] = legacy_cb(bngl_text, nf_bscb)
+    return sspec
+
+
 # --------------------------------------------------------------------------- #
 # Known reference-side NF divergences (legacy NFsim v1.14.3 is the buggy oracle)
 # --------------------------------------------------------------------------- #
 # A network-free (NF) DIFF on one of these models is a known LEGACY-NFsim bug, not a
-# bngsim defect. Most are the ``block_same_complex_binding`` (-bscb) case: bngsim runs
-# at its CORRECT default ``bscb=True``, while the legacy NFsim v1.14.3 has no -bscb flag
-# and wrongly re-binds inside ring/multivalent complexes; a few are other legacy-NFsim
-# feature bugs (it ignores ``$``-clamped species; it mishandles a cooperative rate).
-# Every entry was confirmed against an INDEPENDENT oracle — the ODE network result,
-# bngsim's own RuleMonkey engine (an independent network-free implementation), or the
-# model's documented analytic answer — which is what attributes the divergence to the
-# reference, not to bngsim. This track keeps the honest DIFF but tags the row
-# ``subclass="ref_bscb"`` so the matrix renders it KNOWN REF (non-scoring). Folded here
-# from the retired ``parity_diff.py`` correctness suite (GH #69), restricted to the
-# models that still DIFF in the current full sweep. Keyed by the model-id stem.
+# bngsim defect: the legacy run, given ``-cb`` and bngsim's seed counts as every job
+# is (#1549), still disagrees with an INDEPENDENT oracle that bngsim agrees with —
+# BNG2.pl's own reaction network run by an SSA (bngsim's and ``run_network``'s), an
+# ODE network, bngsim's RuleMonkey engine (an independent network-free
+# implementation), or the model's documented analytic answer. That is what
+# attributes the divergence to the reference. This track keeps the honest DIFF but
+# tags the row ``subclass="ref_bscb"`` (a historical name: none of these is now a
+# same-complex-binding case) so the matrix renders it KNOWN REF (non-scoring).
+# Folded here from the retired ``parity_diff.py`` correctness suite (GH #69),
+# restricted to the models that still DIFF in the current full sweep. Keyed by the
+# model-id stem.
+#
+# Two legacy NFsim v1.14.3 faults account for most entries, both fixed upstream after
+# it, in commits bngsim's vendored NFsim carries (third_party/nfsim/VENDOR.json):
+_RING_SPLIT = (
+    "Legacy NFsim v1.14.3 fires a rule written A.B -> A + B on a bond inside a ring, where "
+    "breaking it leaves the two molecules joined, so it breaks bonds BNG2.pl's network keeps "
+    "(product molecularity). Upstream NFsim fixed this in 9ea54b2 (its issue #48), which "
+    "bngsim's vendored NFsim carries. "
+)
+_SHORT_UTL = (
+    "Legacy NFsim v1.14.3 sets its traversal limit to the size of the largest pattern, one "
+    "hop short of a bond made or broken beside a match, so its matches go stale: it misses "
+    "some BNG2.pl's network has and fires others it no longer has. Upstream NFsim set it to that size + 1 in 7d60f41 (its issues #52 and #53), "
+    "which bngsim's vendored NFsim carries. "
+)
+_POSNER1995 = (
+    "Against BNG2.pl's network (max_agg 14, 22 species), run by bngsim's SSA and by "
+    "run_network's, bngsim-NF agrees at 100% of points and legacy NFsim at 27-28% "
+    "(Obs_Cyclic_Dimer about 1,020-1,070 against 1,140-1,180; 30 replicates, #1549). Legacy "
+    "given -utl 5, as the rulehub copy's own action does, agrees with the network at 100%; "
+    "each ring rule alone runs at the network's rate in legacy. Legacy is the outlier."
+)
 NF_KNOWN_REF = {
-    "EGFR_oligo_v2": {
-        "issue": "internal#183",
-        "reason": "EGFR receptor oligomerization (multivalent ring-former). bngsim (bscb "
-        "on) blocks same-complex re-binding; legacy NFsim (no -bscb) does not, so the "
-        "oligomer-ladder observables diverge. The reference is the outlier.",
-    },
     "ode_vs_nf_discrepancy": {
-        "issue": "internal#54",
-        "reason": "Multivalent ring complex. Legacy NFsim (no -bscb) wrongly breaks a bond "
-        "inside a 5-molecule ring. bngsim-NF, bngsim-RuleMonkey, and the ODE network all "
-        "agree; legacy is the outlier (confirmed against the ODE oracle).",
+        "issue": "GH #1549 (internal#54)",
+        "reason": _RING_SPLIT + "Here B(b1!1).C(c1!1) -> B(b1) + C(c1) on the C-B-A ring. "
+        "Against bngsim's SSA on BNG2.pl's network, bngsim-NF agrees at 100% of points and "
+        "legacy NFsim at 4.5% (30 replicates). Legacy is the outlier.",
     },
     "debug": {
-        "issue": "internal#54",
-        "reason": "Same -bscb root cause (MTOR/RPTOR pre-assembled complex). bngsim-NF "
-        "tracks the ODE network result; legacy NFsim is the outlier.",
+        "issue": "GH #1549 (internal#54)",
+        "reason": _RING_SPLIT + "Here RPTOR(RNC!1).RPS6KB1(TOS!1) -> RPTOR(RNC) + "
+        "RPS6KB1(TOS) inside the seeded RPS6KB1-RPTOR-MTOR complex. Against bngsim's SSA on "
+        "BNG2.pl's network, bngsim-NF agrees at 100% of points and legacy NFsim at 0.3% "
+        "(boundPIKK about 1,000 against 200; 30 replicates). Legacy is the outlier.",
     },
     "debug_v3": {
-        "issue": "internal#54",
-        "reason": "Same -bscb root cause (simplified MTOR/RPTOR complex). bngsim-NF tracks "
-        "the ODE network result; legacy NFsim is the outlier.",
+        "issue": "GH #1549 (internal#54)",
+        "reason": _RING_SPLIT + "Here the reverse of RPTOR(RNC) + RPS6KB1(TOS) <-> "
+        "RPTOR(RNC!1).RPS6KB1(TOS!1) inside the seeded MTOR/RPTOR complex. Against bngsim's "
+        "SSA on BNG2.pl's network, bngsim-NF agrees at 100% of points and legacy NFsim at "
+        "50% (30 replicates). Legacy is the outlier.",
     },
     "overlap_rules2": {
-        "issue": "internal#54/#55",
-        "reason": "Same -bscb root cause (size-2 ring). The ODE keeps the rings "
-        "(ring-opening would violate molecularity); bngsim-NF agrees, legacy NFsim wrongly "
-        "breaks them.",
+        "issue": "GH #1549 (internal#54/#55)",
+        "reason": _RING_SPLIT + "Here L(r!1).R(l!1) -> L(r) + R(l) on the two-member ring "
+        "L2R2: BNG2.pl's network and bngsim-NF keep all 100 rings, and legacy NFsim has 0.07 "
+        "left on average by the end. bngsim-NF agrees with bngsim's SSA on the network at "
+        "100% of points, legacy at 1% (30 replicates). Legacy is the outlier.",
     },
     "testrings_wsh": {
-        "issue": "internal#54",
-        "reason": "Same -bscb root cause (ring complex). bngsim-NF tracks the ODE network "
-        "result; legacy NFsim is the outlier.",
+        "issue": "GH #1549 (internal#54)",
+        "reason": _RING_SPLIT + "Here X(a!1).Y(a!1) -> X(a) + Y(a) on an X-Y pair also "
+        "bonded at b. Against bngsim's SSA on BNG2.pl's network, bngsim-NF agrees at 100% of "
+        "points and legacy NFsim at 52% (X_Y_ring about 8,200 against 9,800; 30 "
+        "replicates). Legacy is the outlier.",
+    },
+    "blbr_rings_posner1995": {
+        "issue": "GH #1549",
+        "reason": _SHORT_UTL + "Here 4 molecules, the ring rules' L-R-L-R. " + _POSNER1995,
+    },
+    "bench_blbr_rings_posner1995": {
+        "issue": "GH #1549",
+        "reason": _SHORT_UTL + "Here 4 molecules, the ring rules' L-R-L-R; the model body is "
+        "blbr_rings_posner1995's. " + _POSNER1995,
     },
     "ft_clamped_species_strict": {
         "issue": "legacy NFsim ignores $-clamped species",
@@ -232,22 +297,28 @@ NF_KNOWN_REF = {
         "the $ clamp; bngsim enforces it and matches the model's documented analytic answer "
         "(A_tot=100, B_tot≈500). bngsim is correct; legacy is the wrong oracle.",
     },
-    "bench_blbr_rings_posner1995": {
-        "issue": "legacy NFsim ring-closure (no -bscb)",
-        "reason": "BLBR cyclic-aggregate model. Legacy NFsim disagrees catastrophically on "
-        "the bond/ring observables (~37% agreement); bngsim-NF and bngsim-RuleMonkey (an "
-        "independent network-free engine) agree to 99.9%, so legacy is the buggy reference.",
-    },
     "ft_cooperative_binding": {
-        "issue": "legacy NFsim cooperative-binding bug",
-        "reason": "Cooperative-binding feature test. Legacy NFsim mishandles the cooperative "
-        "rate (~14% agreement); bngsim-NF and bngsim-RuleMonkey agree (~99%). Legacy is the "
-        "outlier.",
+        "issue": "GH #1549",
+        "reason": _SHORT_UTL + "Here 2 molecules, L.R, and legacy never re-opens a receptor "
+        "whose second ligand leaves: it ends with all 200 closed, against about 148 closed and "
+        "52 open on BNG2.pl's network. Against bngsim's SSA and run_network's on the network, "
+        "bngsim-NF agrees at 100% of points and legacy NFsim at 28-29% (30 replicates, #1549). "
+        "Legacy given -utl 3, upstream's size + 1, ends with 46-55 open (3 seeds), and given "
+        "-utl 99 agrees at 100%. Legacy is the outlier.",
     },
-    "Tutorial_Example": {
-        "issue": "legacy NFsim NF-segment bug",
-        "reason": "Legacy NFsim NF-segment divergence (~72% agreement); bngsim-NF and "
-        "bngsim-RuleMonkey agree exactly (100%). Legacy is the outlier.",
+    # A replay night cannot show this DIFF: the archive holds only the 10-replicate
+    # legacy ensemble, which bngsim matched before #1525, so the escalation's
+    # legacy:20:11 rung is archive_unreplayable (REFERENCE_FAILED). A live night
+    # runs it and gets the DIFF this tags.
+    "error": {
+        "issue": "GH #1525",
+        "reason": "Homodimer deleted whole, I(N!1).I(N!1) -> 0 at kd. Legacy NFsim fires "
+        "it once per match, two per dimer, so at 2kd; BNG2.pl's network gives each dimer "
+        "one reaction at kd, and so does bngsim-NF since #1525. At the model's scale 1, "
+        "t = 2400, seeds 1-3: legacy NFsim leaves 13347-13387 dimers, against 13382 at 2kd; "
+        "bngsim-NF 14389-14445 and bngsim-RuleMonkey 14406-14466, against 14420 at kd, "
+        "the model's own initiator_analytical() = I20*exp(-kd*t). Its ODE twin, "
+        "delta() -> 0 at 2*kd, reproduces the legacy rate. Legacy is the outlier.",
     },
 }
 
@@ -587,7 +658,7 @@ def _run_escalation(
 # fallback oracle — each keyed by what it was asked for. A later run replays from
 # that record with neither BNG2.pl nor the legacy binary installed. An entry whose
 # inputs no longer match the job (the BNGL's and any injected action block's
-# sha256, replicates, seed base, NF binding mode) or whose derived run (interval,
+# sha256, replicates, seed base, NF binding mode, how NFsim is called) or whose derived run (interval,
 # steps, molecule limit, segment mode) differs is stale (``archive_stale``); one
 # that cannot be read at all is ``archive_unreadable``. A replay that asks for an
 # ensemble the recorded run never ran, or for a failure recorded under a shorter
@@ -601,6 +672,12 @@ def _run_escalation(
 # 2: the file name carries a hash of the key, so two keys that sanitize alike
 # no longer share a file.
 ARCHIVE_FORMAT = 2
+# How this runner calls the legacy NFsim, part of an NF entry's identity. An entry
+# without it (absent, 1) was recorded with ``-cb`` only for a model with a Species
+# observable, on the raw XML. 2 (#1549): ``-cb`` whenever bngsim blocks same-complex
+# binding, on an XML whose fractional seed counts are rounded half-up. A replay of an
+# older entry is ``archive_stale`` until the archive is re-recorded.
+NF_REFERENCE_CALL = 2
 
 
 class ArchiveMiss(Exception):
@@ -632,6 +709,7 @@ def archive_identity(spec: dict, bngl_text: str) -> dict:
         "n_rep": int(spec["n_rep"]),
         "seed_base": int(spec["seed_base"]),
         "nf_bscb": bool(spec["nf_bscb"]) if spec["track"] == "nf" else None,
+        "nf_reference_call": NF_REFERENCE_CALL if spec["track"] == "nf" else None,
     }
 
 
@@ -903,6 +981,7 @@ def _legacy_stoch_ensemble(
         timeout=timeout,
         gml=spec.get("gml"),
         complex_bookkeeping=spec.get("nf_complex_bookkeeping", False),
+        round_seeds=True,
     )
 
 
@@ -1052,15 +1131,7 @@ def _worker(spec: dict, q) -> None:
         if sspec.get("steps") is None:
             multiseg = False
         if track == "nf":
-            # NFsim has no t_start offset — it always simulates [0, t_end]. Force the
-            # bngsim side to match so the two grids coincide (the corpus has no
-            # t_start>0 NF action today; this only guards a future one).
-            sspec["t_start"] = 0.0
-            sspec["nf_bscb"] = spec["nf_bscb"]
-            # A Species-type observable forces NFsim's complex book-keeping (-cb),
-            # which bngsim enables automatically; detect it once so the legacy
-            # ensemble matches.
-            sspec["nf_complex_bookkeeping"] = bc.nf_needs_complex_bookkeeping(bngl_text)
+            nf_run_settings(sspec, spec["nf_bscb"], bngl_text)
         rep_timeout = spec["rep_timeout"]
         legacy.check_run(sspec, multiseg)
 
@@ -1460,13 +1531,20 @@ def _filter_jobs(jobs, args, track):
 
 
 def _job_timeout_override(job) -> dict | None:
-    """The per-job wall-clock cap override, when no global ``--timeout`` is forced."""
+    """The per-job wall-clock cap override, when no global ``--timeout`` is forced.
+
+    An override extends the default cap and never cuts it: one at or below
+    ``DEFAULT_STOCH_TIMEOUT`` is ignored. mlnr's 300 s, written when the default was
+    180 s, cut its cap from 1800 s once the default rose, and the job timed out
+    (#1549).
+    """
     for ov in job.overrides:
         if ov.field == "timeout":
             try:
-                return {"timeout": float(ov.value), "reason": ov.reason}
+                cap = float(ov.value)
             except (ValueError, TypeError):
                 return None
+            return {"timeout": cap, "reason": ov.reason} if cap > DEFAULT_STOCH_TIMEOUT else None
     return None
 
 
@@ -1530,9 +1608,12 @@ def main() -> int:
         "--nf-bscb",
         choices=["on", "off"],
         default="on",
-        help="NF only: bngsim block_same_complex_binding (default on — bngsim's "
-        "CORRECT default; the legacy NFsim has no -bscb, so ring-formers DIFF as "
-        "expected reference bugs). 'off' matches the legacy binary for apples-to-apples.",
+        help="NF only: bngsim block_same_complex_binding (default on, bngsim's default and "
+        "BNG2.pl's network semantics; the legacy NFsim then gets -cb, which blocks the same "
+        "way). 'off' is for timing only: bngsim runs without blocking, and legacy NFsim "
+        "without -cb unless a Species observable needs it, which then blocks there. "
+        "bngsim's vendored NFsim then also stops enforcing product molecularity, as "
+        "legacy NFsim does.",
     )
     ap.add_argument("--limit", type=int, default=0, help="Max jobs after filtering (0=all).")
     ap.add_argument("--models", default="", help="Comma-separated model_id filter.")
@@ -1765,10 +1846,12 @@ def main() -> int:
             "jobs": override_records,
             "note": (
                 "Overrides are read from Job.overrides, baked by build_jobs.py from "
-                "overrides.py. A timeout override only applies when no global --timeout "
-                "is supplied. t_end_cap/n_scan_pts/action_inject overrides are applied "
-                "while building the shared artifact/protocol. Resolved settings are echoed "
-                "in timing.settings so regenerated matrices retain provenance."
+                "overrides.py. A timeout override applies only when no global --timeout "
+                "is supplied, and only above the default cap. An action_inject override "
+                "replaces the model's actions. t_end_cap and n_scan_pts are not applied "
+                "here (parity_sweep.py applies them): this runner runs each model's own "
+                "horizon. Resolved settings are echoed in timing.settings so regenerated "
+                "matrices retain provenance."
             ),
         },
         "ensemble": {
@@ -1801,12 +1884,15 @@ def main() -> int:
             + (
                 "NF: bngsim runs at block_same_complex_binding="
                 + (
-                    "True (its correct default); the legacy NFsim v1.14.3 lacks -bscb, "
-                    "so ring-forming/multivalent models DIFF as expected REFERENCE bugs "
-                    "(not bngsim defects — the correctness suite reclassifies them "
-                    "PASS_REF_BUG)."
+                    "True (its default, BNG2.pl's network semantics), and the legacy "
+                    "NFsim v1.14.3 gets -cb, which blocks same-complex binding the same "
+                    "way (#1549). The legacy run reads the XML with fractional seed counts "
+                    "rounded half-up, as bngsim's engines read it (GH #51). Models where "
+                    "legacy NFsim is still the outlier against an independent oracle are "
+                    "tagged KNOWN REF (NF_KNOWN_REF)."
                     if nf_bscb
-                    else "False (matched to the legacy NFsim)."
+                    else "False, and the legacy NFsim runs without -cb unless a Species "
+                    "observable needs it."
                 )
                 if track == "nf"
                 else ""
