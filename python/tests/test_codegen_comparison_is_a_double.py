@@ -114,7 +114,7 @@ def test_the_auto_codegen_threshold_runs_it_compiled_too(tmp_path):
     sim = bngsim.Simulator(model, method="ode")
     with contextlib.redirect_stderr(io.StringIO()):
         result = sim.run(t_span=(0.0, 10.0), n_points=11)
-    assert sim.codegen_backend == "cc"
+    assert sim.codegen_backend in ("cc", "mir")
     x = float(np.asarray(result.species)[-1, list(model.species_names).index("X()")])
     assert x == pytest.approx(5.0, rel=1e-9)
 

@@ -282,16 +282,17 @@ def test_without_an_interpreter_to_supervise_it_still_reaps_on_timeout(tmp_path,
 def test_a_caller_with_many_descriptors_open_still_compiles(tmp_path):
     """The supervisor waits on the caller's pipe with select(), which takes no
     descriptor past FD_SETSIZE (1024), and the pipe keeps the caller's number.
-    A caller with that many files open must still get its compile."""
+    A caller with that many files open must still get its compile. Where the
+    limit is lower than that, no caller can hold a descriptor past it, and this
+    opens as many as the limit allows."""
     import resource
 
     soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-    if hard != resource.RLIM_INFINITY and hard < 1200:
-        pytest.skip(f"the descriptor limit ({hard}) is below FD_SETSIZE")
-    resource.setrlimit(resource.RLIMIT_NOFILE, (max(soft, 1200), hard))
+    ceiling = 1200 if hard == resource.RLIM_INFINITY else min(1200, hard)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (max(soft, ceiling), hard))
     held = []
     try:
-        while not held or held[-1] < 1100:
+        while not held or held[-1] < ceiling - 100:
             held.append(os.open(os.devnull, os.O_RDONLY))
         result = cg._run_compile(["/bin/sh", "-c", "printf ok"], timeout=30.0)
     finally:
