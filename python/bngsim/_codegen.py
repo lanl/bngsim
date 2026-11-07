@@ -13413,8 +13413,10 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
     Raises
     ------
     ValueError
-        When the model has no species or no reactions -- what an SBML file
-        passed as ``net_path`` loads as (GH #101) -- as the old path did.
+        When ``net_path`` is no ``.net`` file the loader reads (an SBML file,
+        which it refuses by name since issue #1498 and used to load as a
+        0-species model), or when the model loaded has no species or no
+        reactions (GH #101), as the old path did.
     CodegenDeclinedError
         When codegen declines the model. A ``RuntimeError``, as the old path
         raised.
@@ -13431,9 +13433,22 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
     )
     loaded_here = model is None or not hasattr(model, "_core")
     if loaded_here:
+        from bngsim._exceptions import ModelError
         from bngsim._model import Model
 
-        model = Model.from_net(net_path)
+        try:
+            model = Model.from_net(net_path)
+        except ModelError as e:
+            # A file that is no .net is refused by the loader, by name (issue
+            # #1498). An SBML file used to load as a 0-species model and fail
+            # the check below; this wrapper promised a ValueError for it. A .net
+            # the loader refuses comes here too, so the message says only that
+            # the file did not load, and why.
+            raise ValueError(
+                f"codegen could not load net_path as a BioNetGen .net file: {e}. For "
+                "SBML or Antimony models, load the model first and use Simulator(..., "
+                "codegen=True) without passing the SBML/XML file as net_path."
+            ) from e
     if model.n_species == 0 or model.n_reactions == 0:
         raise ValueError(
             "codegen net_path must point to a BioNetGen .net file with non-empty "

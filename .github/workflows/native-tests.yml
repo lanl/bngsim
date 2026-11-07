@@ -183,7 +183,10 @@ jobs:
           # floor (issue #584). CTEST_FLOOR had sat at 5 against 6 registered
           # binaries, so one binary could go missing unnoticed, which is the
           # case point 1 says it exists to catch.
-          total="$(grep -oE 'tests failed out of [0-9]+' /tmp/ctest.log \
+          # ctest ends a clean run "100% tests passed, 0 tests failed out of 6"
+          # on ubuntu-24.04 and "100% tests passed out of 6" on ubuntu-26.04,
+          # which ubuntu-latest began to give in Nov 2026; read N from either.
+          total="$(grep -oE 'tests (passed|failed) out of [0-9]+' /tmp/ctest.log \
             | tail -1 | grep -oE '[0-9]+$' || true)"
           if [ -z "$total" ]; then
             echo "::error::No ctest summary line — the suite did not run to completion."

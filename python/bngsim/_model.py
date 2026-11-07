@@ -3163,9 +3163,9 @@ def _unit_conversions_in(path: Path) -> list[tuple[str, str]]:
     The block is found line by line, by the first two words of a line with
     its comment taken off, so a ``reactions_text`` block, a commented-out line
     and a comment that says ``end reactions`` are none of them read for one.
-    Lines end where the loader's end, at a newline and nowhere else. (The
-    loader is stricter about the marker itself: ``begin reactions`` with one
-    blank. A file it reads no reaction from may still have names listed here.)
+    Lines end where the loader's end, at a newline and nowhere else. The loader
+    finds a marker the same way, by the words of the comment-stripped line
+    (issue #1498), so the two agree on which lines are the block's.
     """
     try:
         text = Path(path).read_text(errors="replace")

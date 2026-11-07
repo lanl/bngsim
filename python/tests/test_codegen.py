@@ -284,6 +284,23 @@ class TestCompilation:
         ):
             prepare_codegen(str(xml))
 
+    def test_prepare_codegen_names_why_a_net_file_did_not_load(self, tmp_path):
+        """#1498 review: a .net the loader refuses reaches the same ValueError as an
+        SBML file. The message had told the caller to pass a .net file; it now says
+        the file did not load, and gives the loader's reason."""
+        net = Path(DATA, "simple_decay.net").read_text()
+        assert net.count("1 1 2 k1") == 1
+        bad = tmp_path / "bad.net"
+        bad.write_text(net.replace("1 1 2 k1", "1 1 2 k_missing"))
+        with (
+            pytest.warns(DeprecationWarning),
+            pytest.raises(ValueError) as caught,
+        ):
+            prepare_codegen(str(bad))
+        assert "could not load net_path as a BioNetGen .net file" in str(caught.value)
+        assert "k_missing" in str(caught.value)
+        assert "must point to" not in str(caught.value)
+
     def test_prepare_codegen_leaves_a_callers_model_as_it_found_it(self):
         """#825 review: with ``model=`` the wrapper compiled the caller's model and
         also derived its analytical Jacobian, which the old path never did. A
