@@ -989,6 +989,17 @@ def _cmd_summarize(args) -> int:
     return 1 if (n or failed_jobs) else 0
 
 
+def _cmd_passed_over(args) -> int:
+    """Exit 0 and print the reason if run ``args.run`` is not to be compared to."""
+    path = Path(args.file)
+    runs = json.loads(path.read_text()) if path.exists() else {}
+    reason = runs.get(str(args.run))
+    if not isinstance(reason, str) or str(args.run).startswith("_"):
+        return 1
+    print(reason)
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -1073,6 +1084,14 @@ def main(argv=None) -> int:
     g.add_argument("--json-out", default="")
     g.add_argument("--md-out", default="")
     g.set_defaults(fn=_cmd_gate)
+
+    o = sub.add_parser(
+        "passed-over",
+        help="exit 0 and print why, if a nightly run is not one to compare tonight to",
+    )
+    o.add_argument("--file", required=True, help="JSON file {run_id: reason}")
+    o.add_argument("--run", required=True)
+    o.set_defaults(fn=_cmd_passed_over)
 
     args = ap.parse_args(argv)
     return args.fn(args)
