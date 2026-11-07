@@ -26,6 +26,7 @@ reaction-specific; the signature test below fails first.
 from __future__ import annotations
 
 import inspect
+import re
 import time
 from pathlib import Path
 
@@ -328,8 +329,12 @@ def test_a_shared_rate_law_that_declines_still_says_why(tmp_path, monkeypatch):
 def test_the_compiled_jacobian_derives_each_rate_law_once_and_places_it_everywhere(
     kind, tmp_path, monkeypatch
 ):
-    """Once per distinct law and path, and every reaction's C group carries its
-    law's derivative: the same lines a reaction with that law to itself would get."""
+    """Once per distinct law and path, and every reaction's law derivatives are
+    in the source: in its own group on the per-observable path, and on the
+    per-species path in the group of each column headed by its law's first
+    carrier. That a per-species law is printed only once, and that its groups
+    scatter into every carrier's rows, is pinned in
+    test_jacobian_shared_rate_law_emit (issue #1551)."""
     _clear_env(monkeypatch)
     m = _load(kind, tmp_path)
     assert m.prepare_analytical_jacobian() is True
@@ -344,6 +349,7 @@ def test_the_compiled_jacobian_derives_each_rate_law_once_and_places_it_everywhe
     assert {law: len(calls) for law, calls in per_observable.items()} == dict.fromkeys(
         laws[True], 1
     )
+    first_carrier: dict[str, int] = {}
     for rxn in m._core.functional_jacobian_context()["functional_reactions"]:
         law, idx = rxn["rate_expr"], int(rxn["rxn_idx"])
         if rxn["apply_species_factor"] and rxn["reactant_idx0"]:
@@ -353,9 +359,12 @@ def test_the_compiled_jacobian_derives_each_rate_law_once_and_places_it_everywhe
                 assert f"double d{k} = {c};" in block, (idx, k)
         else:
             (terms,) = per_species[law]
+            first = first_carrier.setdefault(law, idx)
             for col, c in terms:
-                block = src.split(f"/* per-species rxn {idx} col {col} */", 1)[1]
-                assert block.split("\n", 2)[1].strip() == f"double dj = {c};", (idx, col)
+                (block,) = re.findall(
+                    rf"/\* per-species rxn {first} col {col}(?: \*/|, and )[^\n]*\n([^\n]*)", src
+                )
+                assert block.strip() == f"double dj = {c};", (idx, col)
 
 
 # ─── The invariant the caches rest on ────────────────────────────────────────

@@ -7938,16 +7938,34 @@ def _functional_jacobian_groups(
     species_terms_by_law: dict[str, list] = {}
     observable_terms_by_law: dict[str, list] = {}
 
+    # Issue #1551: on the per-species path each distinct law's derivatives are
+    # also *printed* once. Printed once per carrier, BIOMD0000000469's Jacobian was
+    # 19.2 MB, 18.1 MB of it one law's 65 column derivatives (about 4 KB of C
+    # each) repeated for each of its 68 carriers, and took 13–22 minutes to
+    # compile. So the groups are built per law, at the position of its first
+    # carrier: one group per column computes the derivative and scatters it into
+    # the rows of every reaction carrying the law, in reaction order. A law with
+    # one carrier emits exactly the group it always did. With several, a matrix
+    # entry that another reaction writes between two carriers sums its terms in a
+    # different order than fill_dense_analytical_jacobian does, a rounding-level
+    # difference of the kind the compiled derivative already has against ExprTk's
+    # evaluation of the same text.
+    #
+    # The per-observable path keeps one group per reaction. Its derivatives are
+    # with respect to observables and short, and nesting each carrier's own f, P
+    # and columns under one shared block of them made the corpus .net sources that
+    # share a law up to 9% larger; the source size picks the optimization level.
+
     # Per-species (SBML) block — emitted for all reactions first so the scatter
     # accumulation order matches fill_dense_analytical_jacobian (all species_
     # terms, then all volume_terms, then all observable_terms).
+    species_carriers: dict[str, list[tuple[int, list]]] = {}
     for rxn in frxns:
         has_sf = bool(rxn["apply_species_factor"]) and len(rxn["reactant_idx0"]) > 0
         if has_sf:
             continue
         affected = _net_affected(rxn)
-        terms = species_terms_by_law.get(rxn["rate_expr"])
-        if terms is None:
+        if rxn["rate_expr"] not in species_terms_by_law:
             terms = build_per_species_c(
                 rxn["rate_expr"],
                 func_map,
@@ -7963,15 +7981,24 @@ def _functional_jacobian_groups(
             species_terms_by_law[rxn["rate_expr"]] = terms
         if not affected:
             continue  # set_functional_jacobian drops empty-affected terms
-        for sp_j, c_deriv in terms:
+        species_carriers.setdefault(rxn["rate_expr"], []).append((int(rxn["rxn_idx"]), affected))
+    for law, carriers in species_carriers.items():
+        n_other = len(carriers) - 1
+        note = (
+            f", and the {n_other} other reaction{'s' if n_other > 1 else ''} carrying its rate law"
+            if n_other
+            else ""
+        )
+        for sp_j, c_deriv in species_terms_by_law[law]:
             grp = [
-                f"    {{ /* per-species rxn {int(rxn['rxn_idx'])} col {sp_j} */",
+                f"    {{ /* per-species rxn {carriers[0][0]} col {sp_j}{note} */",
                 f"        double dj = {c_deriv};",
             ]
-            for i, coeff, live_idx, sdiv, sdiv_param in affected:
-                line = _scatter_existing(sp_j, i, coeff, live_idx, sdiv, sdiv_param, "dj")
-                if line is not None:
-                    grp.append(line)
+            for _rxn_idx, affected in carriers:
+                for i, coeff, live_idx, sdiv, sdiv_param in affected:
+                    line = _scatter_existing(sp_j, i, coeff, live_idx, sdiv, sdiv_param, "dj")
+                    if line is not None:
+                        grp.append(line)
             grp.append("    }")
             per_species_groups.append(grp)
 
