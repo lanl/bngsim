@@ -202,7 +202,7 @@ def test_the_sensitivity_through_a_composition_it_cannot_differentiate_is_refuse
     not approximated."""
     text, p = REFUSED[name]
     sim = bngsim.Simulator(bngsim.Model.from_antimony_string(text), sensitivity_params=[p])
-    with pytest.raises(Exception, match="issue #936"):
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="issue #936"):
         sim.run(t_span=(0, 4), n_points=5)
 
 
