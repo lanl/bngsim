@@ -46,6 +46,10 @@ from _sbml_features import extract_sbml_features  # noqa: E402
 # from the module rather than a literal so the two cannot drift.
 from amici_dispositions import NO_GROUND_TRUTH_LABEL  # noqa: E402
 
+# How the runner's note on an unjudged strict-onset sample begins (issue #1557),
+# from the runner for the same reason.
+from amici_run import ONSET_NOTE_PREFIX  # noqa: E402
+
 _sys.path.insert(0, str(HERE.parent))
 try:
     from _core import differ as _differ
@@ -411,6 +415,22 @@ def humanize_comment(result: dict) -> str:
             if n_forg:
                 extra.append(f"{n_forg:,} forgiven by the fail-fraction budget")
             out.append(seg + (f" ({'; '.join(extra)})" if extra else "") + ".")
+            continue
+        m = re.match(re.escape(ONSET_NOTE_PREFIX) + r" (.+) \(rescued (\d+)( DECISIVE)?;", part)
+        if m:
+            at, n_rescued, decisive = m.group(1), int(m.group(2)), bool(m.group(3))
+            if n_rescued == 0 and outcome == "PASS":
+                continue  # nothing there was failing: as quiet as a clean pass
+            seg = (
+                f"Not judged at t = {at}, the c of a strict time comparison (time > c) "
+                "in an event trigger: if the event fires there, AMICI reports the "
+                "state after it and bngsim and RoadRunner the state before it "
+                "(GH #1557)."
+            )
+            if n_rescued:
+                seg += f" That cleared {n_rescued:,} failing point{'s' if n_rescued != 1 else ''}"
+                seg += "; without it this row would be a DIFF." if decisive else "."
+            out.append(seg)
             continue
         m = re.match(r"known artifact([^:]*): (.+)", part)
         if m:

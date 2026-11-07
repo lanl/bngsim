@@ -364,9 +364,11 @@ def test_a_line_inside_a_step_whose_argument_is_no_line_is_read(tmp_path, dose):
 
 
 def test_a_law_that_reads_the_far_line_outside_the_condition_too_is_refused_as_on_main(tmp_path):
-    """SBML's `rem(1.1e12 + time, P)` loads as `x - P*floor(x/P)`: a stop on
+    """`rem(1.1e12 + time, P)` written out as `x - P*floor(x/P)`: a stop on
     each change of the `floor` is not a stop on each step of `x`, and the run
-    was 9e-5 off at rtol 1e-8, where main refuses it."""
+    was 9e-5 off at rtol 1e-8, where main refuses it. (SBML's own `<rem/>` by a
+    parameter now loads with a truncating sign test, and is refused too: see
+    test_sbml_quotient_rem_truncate.py.)"""
     x = "((1100000000000.0+time()))"
     dose = f"100*({x} - (0.0048828125)*floor({x}/(0.0048828125)))"
     sim = bngsim.Simulator(_model(tmp_path, dose), method="ode")

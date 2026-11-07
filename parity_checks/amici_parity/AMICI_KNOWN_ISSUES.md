@@ -10,7 +10,8 @@ one.** On all 42 of the 44 ODE divergences where an independent third oracle is 
 are inconclusive only because RoadRunner *also* failed those models). Class 4 is the
 narrower claim its own section states: AMICI is not a usable oracle there, which is not
 by itself a bngsim confirmation. Class 6 is not an AMICI problem either: it is a
-model with no solution for either engine to be checked against.
+model with no solution for either engine to be checked against. Class 7 is a
+disagreement about one sample, not about the solution.
 
 - **Environment:** AMICI pinned to `AMICI-dev/AMICI@667b17b6b` (`v1.0.1-12-g667b17b6b`,
   BSD-3; built from source into `bngsim/.venv`, needs `swig`) — see `AMICI_PIN.json` for the
@@ -338,6 +339,56 @@ growing, and main (`e3b66384`) as well. #1076 also restored the exact sign rule 
 `x1` grows, so the handler is not the cause. #1076 changed rounding on purpose, and
 its fix stands. Any later rounding change (in ExprTk, SUNDIALS or the compiler) can
 flip this row either way, on either platform, and the disposition makes that moot.
+
+## Class 7 — the sample on a strict trigger's onset (5 models, issue #1557)
+
+Five rows read `DIFF` on exactly one cell (`fail 1/N (hard 1)`), at the c of a
+`time > c` trigger that sits on a sample:
+
+| model | SBML | trigger | cell | bngsim | RoadRunner | AMICI | next sample (all three) |
+|---|---|---|---|---|---|---|---|
+| BIOMD0000000104 | L2V1 | `time > 1` | t = 1, `species_2` | 1 | 1 | 0.4 | 0.4 |
+| BIOMD0000000125 | L2V1 | `time > 1` | t = 1, `x0` | 1 | 1 | 0 | 0 |
+| BIOMD0000000563 | L2V4 | `time > 10` | t = 10, `Path_bulk` | 0 | 0 | 1 | none: 10 is `t_end` |
+| BIOMD0000000860 | L2V4 | `time > 3600` | t = 3600, `TF1` | 0 | 0 | 500 | 500 |
+| BIOMD0000000862 | L2V3 | `time > 7200` | t = 7200, `Signal` | 100 | 100 | 0 | 0 |
+
+Over the whole run, bngsim and RoadRunner agree with 0 failing cells on all five.
+At t = c the strict trigger is false, so the event has not fired, and bngsim and
+RoadRunner report the state before it. AMICI's importer maps `>` and `>=` to one
+root function, `time − c`, so AMICI fires at c and reports the state after it. A
+small model shows the split by operator. With S stepping 1 → 0 on its event, at
+the sample t = 1:
+
+| trigger | bngsim | RoadRunner | AMICI |
+|---|---|---|---|
+| `time > 1`, `1 < time`, `(time > 1) && (time < 3)` | 1 (before) | 1 | 0 (after) |
+| `time >= 1`, `1 <= time` | 0 (after) | 0 | 0 |
+
+So it is the same reading as BIOMD0000000285's in Class 5, a residual of exactly
+0 read as true, but here it moves one sample, not the run. All three engines fire
+at c and agree after it. Which side of a jump to report at the instant of the jump
+is a convention. The trigger's SBML value at c, false, gives bngsim's side, but the
+solution is the same either way, so the cell is scored against neither engine.
+
+**Remedy.** `amici_run.py` leaves the sample on such an onset out of the verdict
+(README:
+[the sample on a strict trigger's onset](README.md#the-sample-on-a-strict-triggers-onset-is-not-judged-issue-1557)).
+The row comment names the sample, the failing cells on it, and whether leaving it
+out decided the verdict. All five rows now read `PASS ... (rescued 1 DECISIVE)`.
+On 563 the jump at `t_end` is all that moves on the grid, so its row also reads
+`NO SIGNAL`, as rr_parity's does: the AMICI comparison there checks nothing that
+moves. A per-row `COMPARISON_ARTIFACT` was the alternative, but at `max_rel` 1.0 it
+would have stopped the AMICI row checking anything on four of the five models.
+rr_parity still judges the onset sample, against RoadRunner. The
+forward-sensitivity job does not apply the rule yet, so its state column still
+reads DIFF on these models (#1571).
+
+The other 17 corpus jobs with a sample on an onset keep their verdicts.
+BIOMD0000000318 stays a `DIFF`: AMICI is off on 6992 of the 7000 judged cells
+there (Class 2), and on all 7 at the onset, t = 5. (Class 2's snapshot names
+BIOMD125 among its large divergences. Against bngsim 0.17.0 it differs on this one
+cell only.)
 
 ## Bottom line
 
