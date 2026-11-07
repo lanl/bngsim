@@ -8219,6 +8219,11 @@ void CvodeSimulator::Impl::confirm_orders(const TimeSpec &times, const SolverOpt
         CvodeSimulator tighter(copy);
         tighter.impl_->order_probe = &probe;
         tighter.run(span, tight);
+    } catch (const TimeoutError &) {
+        // The run's own wall clock ran out in the confirming run: a timeout,
+        // not a statement about the order of the two. Reported against the
+        // caller's budget, not the remainder the confirming run was given.
+        throw TimeoutError(budget.limit_seconds(), budget.elapsed());
     } catch (const std::exception &e) {
         refuse(orders.front(), std::string("The run at a hundredth of the tolerances that "
                                            "confirms their order failed: ") +
@@ -8470,7 +8475,7 @@ void CvodeSimulator::Impl::residual_dtstar(int gidx, const std::vector<int> &sup
                "unbounded and bngsim refuses rather than divide by it (issue #144). Move the "
                "threshold off the trajectory's turning point, or drop sensitivities for this "
                "run.";
-        throw std::runtime_error(msg.str());
+        throw SensitivityUnsupported(msg.str());
     }
 
     tau_out.assign(static_cast<std::size_t>(n_sens), 0.0);
@@ -8876,7 +8881,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                                 });
         });
     if (t_evt <= state_crossings_dropped_until || dropped_in_window) {
-        throw std::runtime_error(
+        throw SensitivityUnsupported(
             "Forward sensitivity: an event fires at t=" + std::to_string(t_evt) +
             " after more state-dependent rate-law switches than are kept to ask it about, "
             "within the reach of one of them (issues #945, #1025). Drop sensitivities for "
@@ -9638,7 +9643,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                 if (moved || !(std::fabs(v_expr - v) <=
                                1e-9 * std::max({1.0, std::fabs(v), std::fabs(v_expr)}))) {
                     const std::string id = ev.id.empty() ? std::to_string(fire.event_idx) : ev.id;
-                    throw std::runtime_error(
+                    throw SensitivityUnsupported(
                         "forward sensitivity through event '" + id +
                         "' is not supported: it resizes a compartment after an earlier event "
                         "of the same instant changed the compartment's size or what its new "
@@ -11574,7 +11579,7 @@ void CvodeSimulator::Impl::refuse_slide_along_state_switch(
                    "a slide is not the sensitivity of either branch, and bngsim refuses rather "
                    "than integrate one of them (issue #926). Drop sensitivities for this run, or "
                    "write the held value as an algebraic constraint.";
-            throw std::runtime_error(msg.str());
+            throw SensitivityUnsupported(msg.str());
         }
     }
     sync_model_at(t, x, ns);
@@ -12618,7 +12623,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                     << "', where its branch cannot be read. bngsim refuses rather than lose "
                        "that crossing's jump (issue #763). Separate the thresholds, or drop "
                        "sensitivities for this run.";
-                throw std::runtime_error(msg.str());
+                throw SensitivityUnsupported(msg.str());
             }
             const double trial = dt_ladder * kStateSwitchLandingSteps[attempt];
             probe(-trial, g_before);
@@ -13161,7 +13166,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                            "read that jump a second time. bngsim refuses rather than apply it "
                            "twice (issue #763). Separate the thresholds, or drop sensitivities "
                            "for this run.";
-                    throw std::runtime_error(msg.str());
+                    throw SensitivityUnsupported(msg.str());
                 }
                 auto it = state_switch_rxns.find(others[o]);
                 if (it == state_switch_rxns.end()) {
@@ -15993,7 +15998,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             start_hold_end + 100.0 * std::numeric_limits<double>::epsilon() *
                                  (std::fabs(start_hold_end) + std::fabs(static_cast<double>(h0)));
         if (!(t > at_start_until)) {
-            throw std::runtime_error(
+            throw SensitivityUnsupported(
                 "Forward sensitivity: event '" + events_outer[ei].id +
                 "' fires at t=" + diag_number(t) +
                 " where its trigger, which starts exactly on its threshold, leaves it with no "
@@ -16123,7 +16128,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                   1e-9 * std::max(std::fabs(before_pre), std::fabs(before_now))))
                 scale = 1.0;
             if (scale != 1.0 && sens.n_total > 0) {
-                throw std::runtime_error(
+                throw SensitivityUnsupported(
                     "Forward sensitivity: at t=" + diag_number(t_now) +
                     " the size of compartment '" + comp + "' jumps " + std::to_string(ks.size()) +
                     " times at one instant, and its concentrations are rescaled once by the "
@@ -16361,7 +16366,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             auto id_of = [&](int e) {
                 return events_outer[e].id.empty() ? std::to_string(e) : events_outer[e].id;
             };
-            throw std::runtime_error(
+            throw SensitivityUnsupported(
                 "Forward sensitivity: event '" + id_of(ei) + "', a strict comparison, and event '" +
                 id_of(twin) +
                 "', the non-strict one on the same residual, turn true together on its crossing "
@@ -16608,7 +16613,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     // that silently miss the jump.
                     const std::string id =
                         ev.id.empty() ? std::to_string(queue[k].event_idx) : ev.id;
-                    throw std::runtime_error(
+                    throw SensitivityUnsupported(
                         "event '" + id + "' fired at t=" + diag_number(t_now) + " with delay " +
                         diag_number(delay_now) +
                         " during a forward-sensitivity run; forward sensitivity through "
@@ -16697,7 +16702,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     // does not see.
                     const std::string id =
                         ev.id.empty() ? std::to_string(queue[k].event_idx) : ev.id;
-                    throw std::runtime_error(
+                    throw SensitivityUnsupported(
                         "Forward sensitivity: at t=" + diag_number(t_now) +
                         " the size of compartment '" + ev.size_jump_compartment +
                         "' jumps (event '" + id +
@@ -16745,7 +16750,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                         if (j >= 0) {
                             const std::string id =
                                 ev.id.empty() ? std::to_string(queue[k].event_idx) : ev.id;
-                            throw std::runtime_error(
+                            throw SensitivityUnsupported(
                                 "Forward sensitivity: event '" + id +
                                 "' fires at t=" + diag_number(t_now) +
                                 ", where a compartment's size jumps, and its values, frozen "
@@ -16827,7 +16832,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                                 ? std::string("by another event's assignment")
                                 : "by the rescale of compartment '" + ev.size_jump_compartment +
                                       "''s concentrations where its size jumps (issue #1054)";
-                        throw std::runtime_error(
+                        throw SensitivityUnsupported(
                             "Forward sensitivity: event '" + events_outer[ei].id +
                             "' was triggered at t=" + std::to_string(t_now) + " " + by +
                             ", not by a crossing the integrator "
@@ -17020,7 +17025,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             if (sens.n_total > 0 && on_stop) {
                 // Issue #950: the rise lies between an output point and a stop
                 // within roundoff after it, a stretch CVODE does not search.
-                throw std::runtime_error(
+                throw SensitivityUnsupported(
                     "Forward sensitivity: event '" + events_outer[risers.front()].id +
                     "' triggers at t=" + diag_number(t_now) +
                     ", within roundoff after an output point (100 ulps of the time), where "
@@ -19449,7 +19454,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 // sensitivities are active.
                 if (any_event_fired) {
                     if (!switched.empty() && !evt_s_minus.empty()) {
-                        throw std::runtime_error(
+                        throw SensitivityUnsupported(
                             "Forward sensitivity: a state-dependent rate-law switch (residual '" +
                             state_switches[switched.front()]->residual_source +
                             "') crosses at exactly the instant t=" + std::to_string(t_ret) +
@@ -19506,7 +19511,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                         for (int ei = 0; ei < n_events; ++ei) {
                             const bool now_true = read_trigger(ei, static_cast<double>(t_ret));
                             if (now_true && !trigger_was_true[ei] && !event_dormant[ei]) {
-                                throw std::runtime_error(
+                                throw SensitivityUnsupported(
                                     "Forward sensitivity: a state-dependent rate-law switch "
                                     "(residual '" +
                                     batch.front()->residual_source + "') crosses at t=" +

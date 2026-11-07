@@ -902,9 +902,10 @@ PYBIND11_MODULE(_bngsim_core, m) {
             PyErr_SetObject(cls.ptr(), exc.ptr());
         } catch (const bngsim::SensitivityUnsupported &e) {
             // Issue #1279: a refusal the solver reaches mid-run is typed as the
-            // ones raised before a run are.
+            // ones raised before a run are, and is still the SimulationError the
+            // refusals thrown as std::runtime_error were.
             py::object cls =
-                py::module_::import("bngsim._exceptions").attr("SensitivityUnsupportedError");
+                py::module_::import("bngsim._exceptions").attr("SensitivityRefusedDuringRunError");
             PyErr_SetObject(cls.ptr(), cls(py::str(e.what())).ptr());
         }
     });

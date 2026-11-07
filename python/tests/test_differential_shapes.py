@@ -754,7 +754,9 @@ def test_a_backend_other_than_the_one_asked_is_a_finding(monkeypatch):
 
 def test_a_sensitivity_run_refused_is_unsupported_not_a_pass():
     v = _verdicts("equality-dwell")["sens_runs"]
-    assert v.status == "unsupported" and "SensitivityUnsupportedError" in v.note
+    # The solver refuses partway (#1279): a SensitivityUnsupportedError, named
+    # by its own type, SensitivityRefusedDuringRunError.
+    assert v.status == "unsupported" and "SensitivityRefusedDuringRunError" in v.note
 
 
 @functools.cache
