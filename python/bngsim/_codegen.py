@@ -125,6 +125,24 @@ _CODEGEN_BIG_SOURCE_BYTES = 1_000_000
 # to the band where -O1 already completes. Override with BNGSIM_CODEGEN_OPT.
 _CODEGEN_HUGE_SOURCE_BYTES = 8_000_000
 
+# The largest stack frame a function in a codegen library may reserve (issue
+# #1566). At -O0 the compiler gives every temporary in a function its own stack
+# slot, so a flat function's frame grows with the function, and a library whose
+# frame is bigger than the stack of the thread that calls it segfaults on its
+# first call. BIOMD0000000471's sensitivity build compiles at -O0 in about 100 s,
+# and its bngsim_dfdp reserves 12,751,024 bytes: the run crashed on the macOS
+# main thread, whose stack is 8 MiB. 8 MiB is also the default stack of the
+# Linux main thread and of a Linux thread (a CPython thread on macOS gets 16
+# MiB), so a frame of at most half of it leaves the other half to the
+# interpreter and the solver that call in. Every gcc/clang compile reports any function past this
+# (-Wframe-larger-than) and such a library is refused, never installed. MSVC has
+# no such report outside /analyze, so a cl build is not checked. Measured on the
+# corpus builds over 4 MB of C, the largest frame of a library that runs is
+# BIOMD0000000496's sensitivity bngsim_dfdp at -O0, 2,011,360 bytes, and the
+# largest at -O1/-O2 is 253,472 bytes (MODEL1603150001's
+# bngsim_codegen_output_sens); both build as before.
+_CODEGEN_MAX_FRAME_BYTES = 4 * 1024 * 1024
+
 # Per-process counter feeding unique temp filenames for atomic .so installs.
 _compile_counter = itertools.count()
 
@@ -4853,6 +4871,86 @@ def _resolve_opt_flag(compiler_name: str, source_size: int, chunked: bool = Fals
 _FP_CONTRACT_OFF = "-ffp-contract=off"
 
 
+def _frame_limit_flag() -> str:
+    """The GCC/Clang flag that reports every function whose stack frame is past
+    :data:`_CODEGEN_MAX_FRAME_BYTES` (issue #1566).
+
+    A warning, not ``-Werror``: the two compilers spell the error form
+    differently (Clang ``-Werror=frame-larger-than``, which GCC rejects; GCC
+    ``-Werror=frame-larger-than=N``, which Clang ignores), and the compiler's
+    name does not say which one ``cc`` is. :func:`_refuse_oversized_frames`
+    reads the report instead."""
+    return f"-Wframe-larger-than={_CODEGEN_MAX_FRAME_BYTES}"
+
+
+#: The option both compilers tag the report with: Clang ``[-Wframe-larger-than]``,
+#: GCC ``[-Wframe-larger-than=]``. Its presence is what refuses a library; the
+#: function name and size are read only to say which.
+_FRAME_REPORT_TAG = "-Wframe-larger-than"
+_FRAME_SIZE = re.compile(r"frame size (?:of |\()(\d+)")
+_FRAME_FUNCTION = re.compile(r"\bin (?:function )?['‘`]([^'’`]+)['’`]")
+_GCC_FUNCTION_CONTEXT = re.compile(r"In function ['‘`]([^'’`]+)['’`]")
+
+
+class _FrameTooLarge(RuntimeError):
+    """A library the compiler built with a function whose stack frame is past
+    :data:`_CODEGEN_MAX_FRAME_BYTES` (issue #1566). :func:`compile_rhs` installs
+    no such library, and raises this on as a plain ``RuntimeError``."""
+
+
+def _oversized_frames(stderr: str) -> list[tuple[str, int | None]]:
+    """``(function, frame bytes)`` for every function the compiler reported past
+    the frame limit: Clang names it on the report's own line (``stack frame size
+    (N) exceeds limit (M) in 'f'``; before Clang 13 ``stack frame size of N bytes
+    in function 'f'``), GCC on an ``In function 'f':`` line above it (``the frame
+    size of N bytes is larger than M bytes``). A report whose wording neither
+    pattern matches still counts, with what could not be read left as ``"?"`` /
+    ``None``."""
+    found: list[tuple[str, int | None]] = []
+    context = "?"
+    for line in stderr.splitlines():
+        gcc_context = _GCC_FUNCTION_CONTEXT.search(line)
+        if gcc_context is not None:
+            context = gcc_context.group(1)
+            continue
+        if _FRAME_REPORT_TAG not in line:
+            continue
+        size = _FRAME_SIZE.search(line)
+        name = _FRAME_FUNCTION.search(line)
+        found.append((name.group(1) if name else context, int(size.group(1)) if size else None))
+    return found
+
+
+def _refuse_oversized_frames(stderr: str, opt_flag: str, what: str) -> None:
+    """Raise :class:`_FrameTooLarge` when a compile that succeeded reported a
+    function whose stack frame is past :data:`_CODEGEN_MAX_FRAME_BYTES`.
+
+    ``what`` names the build in the message (the source's size, or a shard)."""
+    frames = _oversized_frames(stderr or "")
+    if not frames:
+        return
+    shown = ", ".join(
+        f"{fn} ({'?' if size is None else f'{size:,}'} bytes)" for fn, size in frames[:3]
+    )
+    if len(frames) > 3:
+        shown += f" and {len(frames) - 3} more"
+    why = (
+        " At -O0 the compiler gives every temporary in a function its own stack "
+        "slot, so the frame grows with the function; BNGSIM_CODEGEN_OPT=1 compiles "
+        "at -O1, which reuses them (raise BNGSIM_CODEGEN_TIMEOUT if that compile "
+        "runs past its budget)."
+        if opt_flag == "-O0"
+        else ""
+    )
+    raise _FrameTooLarge(
+        f"Codegen refused the library it built from {what} at {opt_flag}: the stack "
+        f"frame of {shown} is larger than {_CODEGEN_MAX_FRAME_BYTES:,} bytes, and a "
+        "call to it can overflow the stack of the thread that runs the model and "
+        f"crash the process (issue #1566).{why} A run that does not need codegen "
+        "can skip it with codegen=False."
+    )
+
+
 def _build_compile_cmd(
     c_path: Path, so_path: Path, opt_flag: str, compiler: list[str] | None = None
 ) -> list[str]:
@@ -4893,6 +4991,7 @@ def _build_compile_cmd(
         return compiler + [
             opt_flag,
             _FP_CONTRACT_OFF,
+            _frame_limit_flag(),
             "-shared",
             "-fPIC",
             "-o",
@@ -5290,11 +5389,22 @@ def _compile_one_object(
     """Compile one ``.c`` to ``.o`` (``cc <opt> -fPIC -c``) from within ``work``
     using relative names, then normalize the object's mtime. Relative names +
     fixed mtimes keep the linked .so reproducible (the linker would otherwise
-    embed absolute input paths and per-build timestamps). Raises on failure."""
-    cmd = compiler + [opt_flag, _FP_CONTRACT_OFF, "-fPIC", "-c", "-o", o_name, c_name]
+    embed absolute input paths and per-build timestamps). Raises on failure, and
+    on a function whose stack frame is past the limit (issue #1566)."""
+    cmd = compiler + [
+        opt_flag,
+        _FP_CONTRACT_OFF,
+        _frame_limit_flag(),
+        "-fPIC",
+        "-c",
+        "-o",
+        o_name,
+        c_name,
+    ]
     result = _run_compile(cmd, cwd=work, timeout=timeout)
     if result.returncode != 0:
         raise _CompileFailed(f"Codegen shard compilation failed ({c_name}):\n{result.stderr}")
+    _refuse_oversized_frames(result.stderr, opt_flag, f"shard {c_name}")
     os.utime(work / o_name, (_SHARD_REPRO_EPOCH, _SHARD_REPRO_EPOCH))
 
 
@@ -5399,6 +5509,11 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
     1-core allocation (or ``BNGSIM_CODEGEN_JOBS=1``) takes the unchanged serial
     path; MSVC always does.
 
+    A GCC/Clang library with a function whose stack frame is past
+    :data:`_CODEGEN_MAX_FRAME_BYTES` is not installed: a call to it could overflow
+    the calling thread's stack (issue #1566). That raises a ``RuntimeError``, as
+    a failed or timed-out compile does.
+
     Parameters
     ----------
     c_source : str
@@ -5470,6 +5585,11 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
                 result = _run_compile(cmd, timeout=timeout)
                 if result.returncode != 0:
                     raise _CompileFailed(f"Codegen compilation failed:\n{result.stderr}")
+                # Issue #1566: built, but not installed if a call could overflow
+                # the stack; the finally below removes it.
+                _refuse_oversized_frames(
+                    result.stderr, opt_flag, f"a {len(c_source):,}-byte C source"
+                )
                 os.replace(tmp_so_path, so_path)
                 _compile_installs.last = str(so_path)
             finally:
@@ -5482,6 +5602,10 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
         if verdict is not None:
             raise CodegenToolchainError(verdict) from RuntimeError(str(err))
         # The model's own failure, reported as it always was.
+        raise RuntimeError(str(err)) from None
+    except _FrameTooLarge as err:
+        # Issue #1566: the model's own failure too, and not the toolchain's: the
+        # compiler built it. Reported as a plain RuntimeError, as a timeout is.
         raise RuntimeError(str(err)) from None
     except subprocess.TimeoutExpired as err:
         raise RuntimeError(
