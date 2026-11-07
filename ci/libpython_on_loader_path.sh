@@ -38,5 +38,10 @@ if [ ! -f "$libdir/$soname" ]; then
   echo "::warning::libpython: $soname is neither on the system loader path nor in $libdir; RoadRunner will not import"
   exit 0
 fi
-echo "LD_LIBRARY_PATH=$libdir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >>"${GITHUB_ENV:-/dev/null}"
+if [ -z "${GITHUB_ENV:-}" ]; then
+  echo "libpython: $soname is in $libdir only; outside GitHub Actions, run with"
+  echo "  export LD_LIBRARY_PATH=$libdir\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+  exit 0
+fi
+echo "LD_LIBRARY_PATH=$libdir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >>"$GITHUB_ENV"
 echo "libpython: $soname is in $libdir only; added it to LD_LIBRARY_PATH for this job"

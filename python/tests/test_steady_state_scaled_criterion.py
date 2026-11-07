@@ -1921,9 +1921,10 @@ end reactions
 def test_a_singular_jacobian_is_singular_on_every_platform(tmp_path, jacobian):
     # The march stops with I near 1e-40, short of 0, so the rates are not 0
     # and the step is asked for. Its last pivot is -1 + (1/3)*3: 0 where the
-    # product is rounded before the sum, as on x86-64, and -5.6e-17 where the
-    # two are fused into one multiply-add, as on arm64. By its rounding the
-    # matrix is singular on both, so no step is had; the run decides.
+    # product is rounded before the sum, as every platform's build does since
+    # #1582, and -5.6e-17 where the two are fused into one multiply-add, as an
+    # arm64 build did before it. By its rounding the matrix is singular either
+    # way, so no step is had; the run decides.
     path = tmp_path / "split.net"
     path.write_text(SPLIT_NET)
     ss = bngsim.Simulator(
@@ -1936,7 +1937,7 @@ def test_a_singular_jacobian_is_singular_on_every_platform(tmp_path, jacobian):
 
 # Compiled, the march comes to the same root without its integrator failing
 # (residual 1.05e-15, within 1.6e-6 of the interpreter's state), so it is not
-# retried: this pins the arm64 interpreter's route there, not its answer.
+# retried; the assertion below holds on either route.
 @threshold_forced
 def test_a_march_whose_integrator_fails_is_still_retried_on_difference_quotients(data_dir):
     # Issue #1001: a march that passes the residual test, goes on, and whose
@@ -1944,7 +1945,7 @@ def test_a_march_whose_integrator_fails_is_still_retried_on_difference_quotients
     # retried on difference quotients. MODEL1712050008's march did that only
     # where the build fused multiply-adds (arm64 macOS): there the retry came
     # to rest, and taking the passed state as the answer had turned the retry
-    # off. Since #1582 nothing in the build is fused, so every platform rounds
+    # off. Since #1582 bngsim's build fuses nothing, so every platform rounds
     # it as x86-64 Linux did and the march reaches a state without its
     # integrator failing. What holds everywhere is kept: it is not converged
     # at a state a run moves. #1001's path has no witness until #1583 finds one.

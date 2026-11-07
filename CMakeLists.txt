@@ -60,9 +60,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# No floating-point contraction anywhere in the build: bngsim, SUNDIALS (added
-# below with FetchContent, so it inherits this directory's options), NFsim,
-# RuleMonkey and the unit tests. GCC contracts by default (-ffp-contract=fast,
+# No floating-point contraction in anything this build compiles: bngsim,
+# SUNDIALS (added below with FetchContent, so it inherits this directory's
+# options), NFsim, RuleMonkey and the unit tests. A prebuilt dependency (a
+# system SUNDIALS under BNGSIM_USE_SYSTEM_SUNDIALS, a system or wheel
+# SuiteSparse) keeps whatever its packager chose. GCC contracts by default (-ffp-contract=fast,
 # even across statements), so whether `a*b + c` is fused into one rounding
 # depends on whether the target has a fused multiply-add, and that is the
 # toolchain's default -march, not anything this project chose. ubuntu-26.04's
@@ -73,7 +75,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # a march sliding along a switch surface, a steady state at its tolerance)
 # went the other way. Unfused, a build gives the same bits whichever x86-64
 # level its compiler targets, and arm64 (where Clang contracts within an
-# expression) gives the bits x86-64 does. The generated C (_FP_CONTRACT_OFF in
+# expression) rounds the arithmetic as x86-64 does; the platforms' libm can
+# still differ in the last place. The generated C (_FP_CONTRACT_OFF in
 # _codegen.py, issue #963) and ExprTk (below) were already built this way.
 # MSVC does not contract under its default /fp:precise.
 add_compile_options(
