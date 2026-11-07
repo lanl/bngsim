@@ -46,6 +46,12 @@ model with no solution to compare against over the job's horizon: whichever way
 the two engines' answers fall, PASS or DIFF, the row becomes a non-scoring
 BAD_TEST (issue #1542).
 
+On every model, a sample on a strict time trigger's onset, the c of
+``time > c``, is not judged (issue #1557). The trigger is false at c,
+so bngsim and RoadRunner report the state before the event there; AMICI reads
+``>`` as ``>=`` and reports the state after it. ``_compare_ode`` forgives that
+row and the comment names it, with the failing cells it cleared.
+
 Usage:
     cd bngsim && .venv/bin/python parity_checks/amici_parity/amici_run.py \\
         --limit 20 --workers 4
