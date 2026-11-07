@@ -16,7 +16,9 @@ Hierarchy::
     ├── ParameterError        — unknown parameter name, type mismatch
     ├── SsaValidationError    — SBML construct incompatible with SSA
     ├── SensitivityUnsupportedError — construct forward sensitivity can't
-    │                           differentiate (also a ValueError)
+    │   │                       differentiate (also a ValueError)
+    │   └── SensitivityRefusedDuringRunError — the solver's refusal partway
+    │                           through a run (also a SimulationError)
     ├── CodegenDeclinedError  — codegen=True on a model codegen declines
     ├── CodegenToolchainError — the C toolchain cannot build any codegen library
     └── StopConditionMet      — stop condition triggered (carries partial result)
@@ -173,6 +175,10 @@ class SensitivityUnsupportedError(BngsimError, ValueError):
       law, or an unparseable expression (GH #214). bngsim refuses rather than
       fall back to finite differences.
 
+    The solver's refusals partway through a run are its subclass
+    :class:`SensitivityRefusedDuringRunError`, which is a
+    :class:`SimulationError` too.
+
     This is the forward-sensitivity peer of :class:`SsaValidationError`: both
     say "this model exercises a feature this regime does not support", and both
     are distinguishable **by type**, so a caller can separate a declared non-run
@@ -186,6 +192,32 @@ class SensitivityUnsupportedError(BngsimError, ValueError):
     Environment failures are deliberately NOT this exception: "no C compiler and
     no JIT available" is a fixable local problem, not a property of the model,
     and stays a plain ``RuntimeError``.
+    """
+
+
+class SensitivityRefusedDuringRunError(SensitivityUnsupportedError, SimulationError):
+    """A forward-sensitivity run the solver refused partway, by declaration.
+
+    The solver reached a construct whose derivative it cannot produce, by a
+    condition no choice of requested parameters changes: an event that fires as
+    its trigger leaves its threshold with no first-order motion (issue #934), a
+    compartment that jumps
+    twice at one instant (issue #1181), a delay a ``run_batch`` row made
+    positive (issue #144), and the like. The message names it and what to
+    change. A :class:`SensitivityUnsupportedError`, as the refusals raised
+    before a run are, so a fitting driver or a parity suite tells it from a
+    solver failure by its type (issue #1279). And a :class:`SimulationError`,
+    which all but one of these were raised as before they had a type, so an
+    existing ``except SimulationError`` still catches it.
+
+    A refusal whose condition turns on a requested column (a crossing or a
+    fire the column moves, two times it parts) is not this type: it stays a
+    plain :class:`SimulationError`, because
+    :meth:`Simulator.compute_all_sensitivities` retries a failed chunk one
+    column at a time and a column alone can run. The one exception is the
+    refusal of a held equality the state leaves (issue #1279), which had this
+    type first: where a restart lands on the stop, a column that moves it is
+    refused and one that does not runs.
     """
 
 

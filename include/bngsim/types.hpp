@@ -19,8 +19,17 @@ namespace bngsim {
 // A forward-sensitivity run the solver declines partway, by declaration: it
 // reached a construct whose derivative it cannot produce, and refuses rather
 // than return columns it knows are wrong (issue #1279). The pybind11 layer
-// maps it to bngsim.SensitivityUnsupportedError, the type the Python checks
-// raise before a run, where a std::runtime_error became a SimulationError.
+// maps it to bngsim.SensitivityRefusedDuringRunError: a
+// SensitivityUnsupportedError, the type the Python checks raise before a run,
+// and the SimulationError a std::runtime_error became, which an existing
+// `except SimulationError` caught. Thrown for a refusal whose condition no
+// choice of requested parameters changes (the run has sensitivities, and the
+// trajectory). One whose condition turns on a requested column (a crossing or a
+// fire it moves, two times it parts) stays a std::runtime_error, whatever its
+// message advises: compute_all_sensitivities retries a failed chunk one column
+// at a time (GH #243) and re-raises this type without trying. The exception is
+// #1279's refusal of a held equality, typed first: where a restart lands on the
+// stop it turns on whether a requested column moves the restart.
 class SensitivityUnsupported : public std::runtime_error {
   public:
     using std::runtime_error::runtime_error;
