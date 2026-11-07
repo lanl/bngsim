@@ -191,8 +191,16 @@ class TestSpeciesIndices:
             ("    2 x 2 k2\n", r"names reactant species 'x'"),
             ("    2 3 2.0 k2\n", r"names product species '2.0'"),
             ("    2 1,-3 2 k2\n", r"names reactant species '-3'"),
+            ("    2 9999999999 2 k2\n", r"names reactant species '9999999999'"),
         ],
-        ids=["negative reactant", "negative product", "a name", "a decimal", "second of two"],
+        ids=[
+            "negative reactant",
+            "negative product",
+            "a name",
+            "a decimal",
+            "second of two",
+            "ten digits",
+        ],
     )
     def test_an_index_that_is_no_species_index_is_refused_by_name(self, tmp_path, line, match):
         """-3 loaded as the null species: C -> B became 0 -> B, B(2) = 9.65."""
@@ -204,6 +212,11 @@ class TestSpeciesIndices:
         assert Model.from_net(net).n_reactions == 3
         parsed = parse_net_file(net)["reactions"]
         assert len(parsed) == 3
+
+    def test_a_plus_sign_and_a_leading_zero_are_the_species(self, tmp_path):
+        """Controls: BNG2.pl and run_network read `+3` and `03` as species 3, and so
+        did the reader before #1498."""
+        _loads_the_network(_write(tmp_path, NET.replace("    2 3 2 k2\n", "    2 +3 02 k2\n")))
 
 
 class TestUnknownBlocksAndStrayLines:
@@ -368,6 +381,14 @@ class TestBlockNesting:
                 .split("begin groups")[0],
                 r"'begin observables' has no matching 'end observables'",
             ),
+            (
+                NET.replace(
+                    "begin reactions\n",
+                    "begin observables\n    1 Molecules Atot A()\nbegin reactions\n"
+                    "end observables\nbegin reactions\n",
+                ),
+                r"'begin reactions' before the end of the observables block",
+            ),
         ],
         ids=[
             "end of another block",
@@ -377,6 +398,7 @@ class TestBlockNesting:
             "no end at the file's end",
             "no end of groups",
             "no end of a skipped block",
+            "begin inside a skipped block",
         ],
     )
     def test_is_refused_by_name(self, tmp_path, text, match):

@@ -623,12 +623,14 @@ static std::vector<int> species_indices(const std::string &field, const char *si
                                         const std::string &line) {
     std::vector<int> out;
     for (const auto &tok : split(field, ',')) {
-        if (!is_line_index_token(tok) || tok.size() > 9) {
+        // `+2` is species 2 to BNG2.pl and run_network, as it was here.
+        const std::string digits = tok.size() > 1 && tok[0] == '+' ? tok.substr(1) : tok;
+        if (!is_line_index_token(digits) || digits.size() > 9) {
             throw std::runtime_error("reaction line '" + line + "' names " + side + " species '" +
                                      tok +
                                      "', which is not a species index (1 or more, or 0 for none)");
         }
-        const int idx = std::stoi(tok);
+        const int idx = std::stoi(digits);
         if (idx > 0)
             out.push_back(idx);
     }
