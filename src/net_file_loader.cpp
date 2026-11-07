@@ -177,13 +177,18 @@ static void require_block_end(bool got_end, const std::string &block) {
         throw std::runtime_error("'begin " + block + "' has no matching 'end " + block + "'");
 }
 
-// `name(...)`: an action line, as BNG2.pl writes `setOption(...)`, `version(...)`
-// and `substanceUnits(...)` at the top of a .net. Read for its shape only.
+// `name(...)`, with the `;` BNG2.pl allows after it (readFile's action pattern,
+// `(\w+)\s*\((.*)\);?\s*$`): an action line, as BNG2.pl writes `setOption(...)`,
+// `version(...)` and `substanceUnits(...)` at the top of a .net. Read for its
+// shape only.
 static bool is_action_line(const std::string &stripped) {
-    const auto open = stripped.find('(');
-    if (open == std::string::npos || open == 0 || stripped.back() != ')')
+    const std::string call = !stripped.empty() && stripped.back() == ';'
+                                 ? stripped.substr(0, stripped.size() - 1)
+                                 : stripped;
+    const auto open = call.find('(');
+    if (open == std::string::npos || open == 0 || call.back() != ')')
         return false;
-    return is_bare_identifier(trim(stripped.substr(0, open)));
+    return is_bare_identifier(trim(call.substr(0, open)));
 }
 
 static void skip_block(std::ifstream &file, const std::string &block) {
@@ -1393,16 +1398,24 @@ NetFileStructure parse_net_file_structure(const std::string &path) {
     // The blocks BNG2.pl can write into a .net besides the five this loader
     // reads (with include_model=1: compartments, molecule types, observables,
     // energy patterns, population types and maps, reaction rules; and the
-    // reactions_text restatement of the reactions block, issue #13). They are
-    // passed over whole. A block of any other name is refused as BNG2.pl
-    // refuses it ("Could not process block type"): it used to be passed over
-    // line by line, so `begin reaction` loaded 0 reactions with no error.
+    // reactions_text restatement of the reactions block, issue #13), and the
+    // actions and protocol blocks BNG2.pl reads after a model. They are passed
+    // over whole. A block of any other name is refused as BNG2.pl refuses it
+    // ("Could not process block type"): it used to be passed over line by line,
+    // so `begin reaction` loaded 0 reactions with no error.
     static const std::unordered_set<std::string> kSkippedBlocks = {
-        "compartments",    "molecule types",   "observables",
-        "energy patterns", "population types", "population maps",
-        "reaction rules",  "reactions_text",   "actions"};
+        "compartments",     "molecule types",  "observables",    "energy patterns",
+        "population types", "population maps", "reaction rules", "reactions_text",
+        "actions",          "protocol"};
+    // The model, as BNG2.pl's readFile reads one: open from the file's first
+    // line, so neither `begin model` nor `end model` is needed; `begin model` at
+    // most once ("Only one model definition allowed per file"); `end model`
+    // closes it ("end model encountered without enclosing begin model"), after
+    // which only the actions and protocol blocks may follow ("X cannot be
+    // defined outside of a model").
+    bool in_model = true;
+    int begin_models = 0;
     std::string line;
-    bool in_model = false; // inside the `begin model` ... `end model` BNG2.pl reads around a .net
     while (std::getline(file, line)) {
         std::string trimmed = trim(line);
         if (trimmed.empty() || trimmed[0] == '#')
@@ -1415,8 +1428,11 @@ NetFileStructure parse_net_file_structure(const std::string &path) {
             // Outside every block, a .net holds the actions BNG2.pl writes at
             // its top, `setOption(...)`, `version(...)` and `substanceUnits(...)`,
             // which this loader has no use for. Any other line is data no block
-            // will read: BNG2.pl refuses it ("does not appear to contain a
-            // command"), and this loader used to pass it over.
+            // will read, and is refused, which is stricter than both referees:
+            // BNG2.pl warns of it ("Unidentified input!") and run_network passes
+            // it over. Such a line is a block whose `begin` was not read: given
+            // `Begin reactions`, BNG2.pl warns of it, of each reaction line and
+            // of `end reactions`, and exits 0 having read no reactions.
             if (is_action_line(stripped))
                 continue;
             throw std::runtime_error(
@@ -1425,18 +1441,25 @@ NetFileStructure parse_net_file_structure(const std::string &path) {
                 "BNG2.pl writes above them (setOption, version, substanceUnits)");
         }
         const std::string &name = marker->name;
-        if (!marker->is_begin) {
-            if (name == "model" && in_model) {
-                in_model = false;
-                continue;
-            }
-            throw std::runtime_error("'end " + name + "' without a 'begin " + name + "' before it");
-        }
         if (name == "model") {
-            if (in_model)
-                throw std::runtime_error("'begin model' inside a 'begin model'");
-            in_model = true;
-        } else if (name == "parameters") {
+            if (marker->is_begin) {
+                if (++begin_models > 1)
+                    throw std::runtime_error(
+                        "a second 'begin model': a .net file holds one model definition");
+                in_model = true;
+            } else {
+                if (!in_model)
+                    throw std::runtime_error("'end model' after the model has ended");
+                in_model = false;
+            }
+            continue;
+        }
+        if (!marker->is_begin)
+            throw std::runtime_error("'end " + name + "' without a 'begin " + name + "' before it");
+        if (!in_model && name != "actions" && name != "protocol")
+            throw std::runtime_error("'begin " + name + "' after 'end model': " + name +
+                                     " cannot be defined outside of a model");
+        if (name == "parameters") {
             once("parameters");
             // Appended, not assigned: a species block read first may already
             // have lifted `_InitialConc<N>` parameters into this list.
@@ -1465,8 +1488,6 @@ NetFileStructure parse_net_file_structure(const std::string &path) {
                                      "functions, reactions and groups");
         }
     }
-    if (in_model)
-        throw std::runtime_error("'begin model' has no matching 'end model'");
 
     out.load_warnings = rewrite_legacy_sat_hill_rate_laws(parsed_reactions, parsed_params,
                                                           parsed_functions, parsed_observables);

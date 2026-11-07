@@ -19,14 +19,19 @@ over any line it did not match:
 The markers are now read as BNG2.pl's ``readFile`` reads them
 (Perl2/BNGModel.pm): the comment off, ``begin`` or ``end`` as the first word,
 case-sensitive, and the name the words after it with their whitespace
-collapsed. What neither referee accepts is refused by name: an unknown block,
-a data line outside every block, another block's ``end``, a ``begin`` inside a
-block, a block with no ``end``, and an index that is not a species index.
+collapsed. What BNG2.pl refuses is refused by name: an unknown block, another
+block's ``end``, a ``begin`` inside a block, a block with no ``end``, a second
+``begin model``, a block after ``end model``, and an index that is not a
+species index. A data line outside every block is refused too, though BNG2.pl
+only warns of it ("Unidentified input!") and run_network passes it over: it is
+a block whose ``begin`` was not read, and BNG2.pl reads ``Begin reactions``
+that way, as no reactions and exit code 0.
 
 The referees' verdicts below were measured on run_network 3.0 (BNG 2.9.3) and
-read from BNGModel.pm's ``read_block_array``; the oracle for a loaded network
-is the closed form of A -> B (k1 = 1) and C -> B (k2 = 0.5) from A = 10,
-C = 2: B(2) = 12 - 10e^-2 - 2e^-1.
+on BNG2.pl and run_network 2.9.2 (PyBioNetGen's bundle), and read from
+BNGModel.pm's ``readFile`` and ``read_block_array``; the oracle for a loaded
+network is the closed form of A -> B (k1 = 1) and C -> B (k2 = 0.5) from
+A = 10, C = 2: B(2) = 12 - 10e^-2 - 2e^-1.
 """
 
 from __future__ import annotations
@@ -203,7 +208,8 @@ class TestSpeciesIndices:
 
 class TestUnknownBlocksAndStrayLines:
     """BNG2.pl refuses a block of a name it does not know ("Could not process
-    block type") and a line outside every block; the reader passed both over."""
+    block type") and warns of a line outside every block ("Unidentified
+    input!"); the reader passed both over, and refuses both now."""
 
     @pytest.mark.parametrize(
         ("text", "match"),
@@ -228,13 +234,67 @@ class TestUnknownBlocksAndStrayLines:
         """`begin reaction` loaded 0 reactions with no error."""
         _refused(_write(tmp_path, text), match)
 
-    def test_the_actions_bng2_writes_at_the_top_are_read_past(self, tmp_path):
-        head = 'setOption("SpeciesLabel","HNauty")\nversion("2.9.3")\nsubstanceUnits("Number")\n'
+    @pytest.mark.parametrize(
+        "end", ["", ";", "; # a comment"], ids=["bare", "semicolon", "commented"]
+    )
+    def test_the_actions_bng2_writes_at_the_top_are_read_past(self, tmp_path, end):
+        """BNG2.pl writes these with no `;` and reads them with one or without
+        (readFile's action pattern ends `\\);?\\s*$`); run_network passes them over."""
+        head = "".join(
+            f"{action}{end}\n"
+            for action in (
+                'setOption("SpeciesLabel","HNauty")',
+                'version("2.9.3")',
+                'substanceUnits("Number")',
+            )
+        )
         _loads_the_network(_write(tmp_path, head + NET))
 
-    def test_a_begin_model_wrapper_is_read_past(self, tmp_path):
-        """BNG2.pl reads a .net inside `begin model` ... `end model`, as run_network does."""
-        _loads_the_network(_write(tmp_path, "begin model\n" + NET + "end model\n"))
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "begin model\n" + NET + "end model\n",
+            "begin model\n" + NET,
+            NET + "end model\n",
+            NET + "end model\nbegin actions\n    writeNetwork({})\nend actions\n",
+        ],
+        ids=["begin and end", "begin only", "end only", "end, then actions"],
+    )
+    def test_a_begin_model_wrapper_is_read_past(self, tmp_path, text):
+        """BNG2.pl reads a file as one model open from its first line, so it needs
+        neither marker, and actions may follow `end model`; run_network reads
+        each of these too."""
+        _loads_the_network(_write(tmp_path, text))
+
+    @pytest.mark.parametrize(
+        ("text", "match"),
+        [
+            (
+                "begin model\n" + NET + "end model\nbegin model\nend model\n",
+                r"a second 'begin model'",
+            ),
+            (
+                NET.replace("begin groups", "end model\nbegin groups"),
+                r"'begin groups' after 'end model'",
+            ),
+            (
+                "begin model\n" + NET + "end model\nend model\n",
+                r"'end model' after the model has ended",
+            ),
+        ],
+        ids=["a second model", "a block after end model", "end model twice"],
+    )
+    def test_the_model_wrapper_bng2_refuses_is_refused(self, tmp_path, text, match):
+        """BNG2.pl: "Only one model definition allowed per file", "groups cannot
+        be defined outside of a model", "end model encountered without enclosing
+        begin model"."""
+        _refused(_write(tmp_path, text), match)
+
+    def test_a_protocol_block_is_passed_over(self, tmp_path):
+        """BNG2.pl reads `begin protocol` as it reads `begin actions`, inside a
+        model or after it, and run_network passes it over."""
+        protocol = 'begin protocol\n    simulate({method=>"ode",t_end=>1})\nend protocol\n'
+        _loads_the_network(_write(tmp_path, NET + protocol))
 
     @pytest.mark.parametrize(
         "block",
