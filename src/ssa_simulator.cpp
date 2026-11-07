@@ -650,6 +650,9 @@ Result SsaSimulator::run_psa(const TimeSpec &times, uint64_t seed, double poplev
 
 Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, double poplevel,
                                   double timeout_seconds) {
+    // Issue #1504 — a last time of inf ran a birth-death model until the budget
+    // and for ever without one, and a NaN came back as a row at t = nan.
+    times_in.require_walkable("SsaSimulator::run");
     auto &model = impl_->model;
     // Issue #1059: the run keeps its own clock as time elapsed since an origin
     // (t_start, see ssa_clock_origin), and hands the model origin + elapsed
