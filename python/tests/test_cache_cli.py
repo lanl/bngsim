@@ -183,7 +183,7 @@ def stub_compiler(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     """
     commands: list[list[str]] = []
 
-    def fake_run(cmd, *, cwd=None, timeout=None):
+    def fake_run(cmd, *, cwd=None, timeout=None, abandon=()):
         commands.append(list(cmd))
         out = Path(cmd[cmd.index("-o") + 1])
         if cwd is not None:
@@ -254,7 +254,7 @@ class TestNamesComeFromCodegen:
         means the process was killed — which is exactly what ``clean`` collects."""
         work_dirs: list[Path] = []
 
-        def fake_run(cmd, *, cwd=None, timeout=None):
+        def fake_run(cmd, *, cwd=None, timeout=None, abandon=()):
             work_dirs.append(Path(cwd))
             (Path(cwd) / cmd[cmd.index("-o") + 1]).write_bytes(b"\0" * 16)
             return subprocess.CompletedProcess(cmd, 0, "", "")
@@ -288,7 +288,7 @@ class TestNamesComeFromCodegen:
         sweeps: list[ch.CacheSweep] = []
         work_dirs: list[Path] = []
 
-        def fake_run(cmd, *, cwd=None, timeout=None):
+        def fake_run(cmd, *, cwd=None, timeout=None, abandon=()):
             # Every object compile sweeps: each one runs with the compile in
             # flight, and they run concurrently, which is the race itself.
             work_dirs.append(Path(cwd))
@@ -570,8 +570,14 @@ class TestLiveVersusOrphaned:
         assert (payload["live_entries"], payload["live_bytes"]) == (1, 64)
         assert (payload["orphaned_entries"], payload["orphaned_bytes"]) == (1, 128)
         assert payload["by_key"] == [
-            {"key": None, "entries": 1, "bytes": 128, "live": False},
-            {"key": cg._CODEGEN_CACHE_KEY, "entries": 1, "bytes": 64, "live": True},
+            {"key": None, "entries": 1, "bytes": 128, "live": False, "other_arch": False},
+            {
+                "key": cg._CODEGEN_CACHE_KEY,
+                "entries": 1,
+                "bytes": 64,
+                "live": True,
+                "other_arch": False,
+            },
         ]
 
     def test_the_report_names_both_numbers_and_the_verb_that_acts_on_them(
@@ -648,6 +654,69 @@ class TestClean:
 
 
 # ─── prune ───────────────────────────────────────────────────────────────────
+
+
+class TestAnotherArchitecture:
+    """Issue #1486 — the key's last field is the architecture, so one cache can
+    serve one bngsim on two of them. The other architecture's build of this
+    source is neither live (this install cannot load it) nor orphaned (the
+    install that can is sharing the directory)."""
+
+    #: Another version's key, on some architecture: an orphan wherever it was built.
+    _stale = "27+aaaaaaaaaaaaaaaa+arm64"
+
+    @staticmethod
+    def _twin_key() -> str:
+        head = cg._CODEGEN_CACHE_KEY.rsplit("+", 1)[0]
+        return f"{head}+{'x86-64' if cg._CODEGEN_ARCH != 'x86-64' else 'arm64'}"
+
+    def test_the_twin_is_counted_apart(self, cache: Path) -> None:
+        mine = write_entry(cache, artifact_name("a" * 16), size=100)
+        twin = write_entry(cache, orphan_name("b" * 16, key=self._twin_key()), size=300)
+        stale = write_entry(cache, orphan_name("c" * 16, key=self._stale), size=900)
+
+        info = ch.codegen_cache_info()
+
+        assert [e.path for e in info.live] == [mine]
+        assert [e.path for e in info.other_arch] == [twin]
+        assert [e.path for e in info.orphaned] == [stale]
+        assert info.other_arch_bytes == 300
+        payload = info.to_dict()
+        assert (payload["other_arch_entries"], payload["other_arch_bytes"]) == (1, 300)
+        assert {row["key"]: row["other_arch"] for row in payload["by_key"]} == {
+            cg._CODEGEN_CACHE_KEY: False,
+            self._twin_key(): True,
+            self._stale: False,
+        }
+
+    def test_an_orphan_sweep_leaves_the_twin_to_its_own_install(self, cache: Path) -> None:
+        """Run from either architecture, `prune --orphaned` must not take the
+        other's whole cache; another version on any architecture is still dead."""
+        live = write_entry(cache, artifact_name("a" * 16))
+        twin = write_entry(cache, orphan_name("b" * 16, key=self._twin_key()))
+        stale = write_entry(cache, orphan_name("c" * 16, key=self._stale))
+        before_arch = write_entry(cache, orphan_name("d" * 16, key="42+aaaaaaaaaaaaaaaa"))
+
+        sweep = ch.prune_codegen_cache(orphaned=True)
+
+        assert {e.path for e in sweep.removed} == {stale, before_arch}
+        assert live.exists() and twin.exists()
+
+    def test_an_age_bound_still_reaches_the_twin(self, cache: Path) -> None:
+        twin = write_entry(cache, orphan_name("b" * 16, key=self._twin_key()), age_days=60)
+
+        sweep = ch.prune_codegen_cache(older_than="30d")
+
+        assert [e.path for e in sweep.removed] == [twin]
+
+    def test_the_report_names_it(self, cache: Path) -> None:
+        write_entry(cache, artifact_name("a" * 16))
+        write_entry(cache, orphan_name("b" * 16, key=self._twin_key()))
+
+        out = ch._format_info(ch.codegen_cache_info(), now=time.time())
+
+        assert "other arch:" in out and "--orphaned keeps them" in out
+        assert f"{self._twin_key()} (other arch)" in out
 
 
 class TestPrune:

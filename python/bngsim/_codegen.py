@@ -28,6 +28,7 @@ import re
 import signal
 import struct
 import subprocess
+import sys
 import threading
 import time
 import weakref
@@ -124,6 +125,26 @@ _CODEGEN_BIG_SOURCE_BYTES = 1_000_000
 # fine at -O1) so only models that currently fail change behavior — no regression
 # to the band where -O1 already completes. Override with BNGSIM_CODEGEN_OPT.
 _CODEGEN_HUGE_SOURCE_BYTES = 8_000_000
+
+# The largest stack frame a function in a codegen library may reserve (issue
+# #1566). At -O0 the compiler gives every temporary in a function its own stack
+# slot, so a flat function's frame grows with the function, and a library whose
+# frame is bigger than the stack of the thread that calls it segfaults on its
+# first call. BIOMD0000000471's sensitivity build compiles at -O0 in about 100 s,
+# and its bngsim_dfdp reserves 12,751,024 bytes: the run crashed on the macOS
+# main thread, whose stack is 8 MiB. 8 MiB is also the default stack of the
+# Linux main thread and of a Linux thread (a CPython thread on macOS gets 16
+# MiB), so a frame of at most half of it leaves the other half to the
+# interpreter and the solver that call in. A Windows thread's stack is 1 MiB
+# unless the executable asks for more, so a MinGW gcc build there is held to
+# half of that. Every gcc/clang compile reports any function past the limit
+# (-Wframe-larger-than) and such a library is refused, never installed. MSVC
+# has no such report outside /analyze, so a cl build is not checked. Measured on
+# the corpus builds over 4 MB of C, the largest frame of a library that runs is
+# BIOMD0000000496's sensitivity bngsim_dfdp at -O0, 2,011,360 bytes, and the
+# largest at -O1/-O2 is 253,472 bytes (MODEL1603150001's
+# bngsim_codegen_output_sens); both build as before on Linux and macOS.
+_CODEGEN_MAX_FRAME_BYTES = (512 if platform.system() == "Windows" else 4 * 1024) * 1024
 
 # Per-process counter feeding unique temp filenames for atomic .so installs.
 _compile_counter = itertools.count()
@@ -305,7 +326,14 @@ _compile_counter = itertools.count()
 # The bump was not needed: _jacobian is in _CODEGEN_SOURCE_MODULES, so the
 # source digest already left every v41 .so behind. It stays, since undoing it
 # would leave every v42 .so behind instead.
-_CODEGEN_VERSION = "42"
+# v43: a comparison or logical result that arithmetic reads is a double
+# (issue #1495: (A>t)/(B>t) divided as ints), not() is written as ExprTk's
+# notl_impl rather than C's `!` (issue #1506: not(k)^n read as !(k^n)), and a
+# 4- or 5-argument max/min pairs its first four arguments as ExprTk does
+# (issue #1507). The key also names the architecture now (issue #1486). The
+# source digest already moves for all of it; the bump is for an install whose
+# digest is empty. Invalidate v42.
+_CODEGEN_VERSION = "43"
 
 
 # Modules whose *source* determines the emitted C. ``_codegen`` holds the
@@ -380,9 +408,44 @@ def _compute_codegen_source_digest(src_dir: Path | None = None) -> str:
 
 _CODEGEN_SOURCE_DIGEST = _compute_codegen_source_digest()
 
+
+def _codegen_arch_tag(machine: str | None = None) -> str:
+    """The architecture a library this process compiles is built for, and the only
+    one it can load, as a key field carries it (issue #1486).
+
+    ``platform.machine()`` of the running interpreter: ``arm64`` for a native
+    Python on Apple Silicon, ``x86_64`` for one under Rosetta (whose compiler
+    builds for x86_64 too), ``aarch64`` or ``x86_64`` on Linux. Written in
+    lowercase with every run of other characters as one ``-``, so that it adds
+    nothing :data:`_KEY_FIELD_UNSAFE` would rewrite and the key stays its own
+    field: ``x86_64`` is ``x86-64``.
+    """
+    raw = platform.machine() if machine is None else machine
+    return re.sub(r"[^a-z0-9]+", "-", raw.lower()).strip("-") or "unknown"
+
+
+#: This process's :func:`_codegen_arch_tag`.
+_CODEGEN_ARCH = _codegen_arch_tag()
+
+
 # The token every codegen cache key mixes in. Use this, never ``_CODEGEN_VERSION``
 # alone, anywhere a cached artifact's validity is decided (issue #51).
-_CODEGEN_CACHE_KEY = f"{_CODEGEN_VERSION}+{_CODEGEN_SOURCE_DIGEST}"
+#
+# The architecture is its last field (issue #1486). Without it two builds of one
+# bngsim on two architectures, sharing a cache (a native and a Rosetta Python on
+# one Mac, or x86-64 and aarch64 nodes on one home directory), named the same
+# model's library alike, and the second to run loaded the first's: "dlopen
+# failed ... incompatible architecture (have 'arm64', need 'x86_64')".
+# ``bngsim.cache`` reads an artifact that differs from this key in that field
+# alone as another architecture's build of this source, and does not count it
+# orphaned.
+def _codegen_cache_key_for(arch: str) -> str:
+    """The cache key this install computes on the architecture ``arch`` (a
+    :func:`_codegen_arch_tag`)."""
+    return f"{_CODEGEN_VERSION}+{_CODEGEN_SOURCE_DIGEST}+{arch}"
+
+
+_CODEGEN_CACHE_KEY = _codegen_cache_key_for(_CODEGEN_ARCH)
 
 #: Characters an artifact filename may not carry in its key field: everything but
 #: alphanumerics, ``+`` and ``-``. ``_`` and ``.`` are excluded because the name
@@ -392,7 +455,7 @@ _KEY_FIELD_UNSAFE = re.compile(r"[^A-Za-z0-9+-]")
 
 #: What makes a key field recognizable *as* one, and therefore what tells
 #: ``rhs_<key>_<hash>`` from the pre-#363 ``rhs_<hash>``. It is already structural
-#: in the key — ``f"{version}+{digest}"`` — and :func:`_artifact_key_field`
+#: in the key — ``f"{version}+{digest}+{arch}"`` — and :func:`_artifact_key_field`
 #: guarantees it is present, because a ``model_hash`` may itself contain ``_``
 #: (``compile_rhs`` takes whatever string its caller keys on) and splitting on the
 #: underscore alone would then read the first piece of a keyless legacy name as a
@@ -403,8 +466,8 @@ _KEY_FIELD_MARKER = "+"
 def _artifact_key_field(key: str | None = None) -> str:
     """``key`` (default: this install's) as it appears in an artifact filename.
 
-    Identity for the key format actually shipped — ``f"{version}+{digest}"``, whose
-    characters are all filename-safe on POSIX and Windows alike, pinned by
+    Identity for the key format actually shipped — ``f"{version}+{digest}+{arch}"``,
+    whose characters are all filename-safe on POSIX and Windows alike, pinned by
     ``test_codegen_cache_key.py``. The substitution is here so that a future key
     format cannot silently produce a name that does not round-trip; it maps the
     offending characters to ``-`` rather than dropping them, so two keys stay two
@@ -413,8 +476,8 @@ def _artifact_key_field(key: str | None = None) -> str:
     into the content hash, which is what decides validity.
 
     A ``.pyc``-only install has an empty source digest (see
-    :func:`_compute_codegen_source_digest`), so the key degrades to ``"28+"`` and
-    the field with it — short, still non-empty, still distinct from every other
+    :func:`_compute_codegen_source_digest`), so the key degrades to ``"28++arm64"``
+    and the field with it — short, still non-empty, still distinct from every other
     version's. The ``or`` guard covers only a key that is empty outright, which no
     live code path produces.
 
@@ -1007,14 +1070,16 @@ _SPECIAL_FUNCTION_C_LINES = (
 )
 
 # ExprTk's max/min (issue #660). The engine's binary form is std::max/std::min
-# (exprtk.hpp max_op/min_op) and its variadic form keeps the first argument
-# unless a later one compares strictly greater (less), which is the same left
-# fold. Both return the FIRST argument whenever the comparison is false, so a
-# NaN in first position wins and max(-0.0, 0.0) is -0.0. C's fmax/fmin, which
-# these names used to be renamed to, return the non-NaN argument instead: a
-# model the interpreter refuses as a NaN RHS then ran to completion compiled.
-# Functions rather than a ternary, so each operand is evaluated once and the
-# n-ary fold (GH #556) nests calls instead of doubling the text per argument.
+# (exprtk.hpp max_op/min_op), and its variadic form is built from the same
+# binary call: a left fold for three arguments and for six or more, and the
+# first four paired for four and five (issue #1507; _c_engine_call nests the
+# calls the same way). Both return the FIRST argument whenever the comparison is
+# false, so a NaN in first position wins and max(-0.0, 0.0) is -0.0. C's
+# fmax/fmin, which these names used to be renamed to, return the non-NaN
+# argument instead: a model the interpreter refuses as a NaN RHS then ran to
+# completion compiled. Functions rather than a ternary, so each operand is
+# evaluated once and the n-ary form (GH #556) nests calls instead of doubling
+# the text per argument.
 _MINMAX_C_LINES = (
     "#ifndef BNGSIM_MINMAX_DEFINED",
     "#define BNGSIM_MINMAX_DEFINED",
@@ -4853,6 +4918,93 @@ def _resolve_opt_flag(compiler_name: str, source_size: int, chunked: bool = Fals
 _FP_CONTRACT_OFF = "-ffp-contract=off"
 
 
+def _frame_limit_flag() -> str:
+    """The GCC/Clang flag that reports every function whose stack frame is past
+    :data:`_CODEGEN_MAX_FRAME_BYTES` (issue #1566).
+
+    A warning, not ``-Werror``: the two compilers spell the error form
+    differently (Clang ``-Werror=frame-larger-than``, which GCC rejects; GCC
+    ``-Werror=frame-larger-than=N``, which Clang ignores), and the compiler's
+    name does not say which one ``cc`` is. :func:`_refuse_oversized_frames`
+    reads the report instead."""
+    return f"-Wframe-larger-than={_CODEGEN_MAX_FRAME_BYTES}"
+
+
+#: The tag both compilers end the report with: Clang ``[-Wframe-larger-than]``,
+#: GCC ``[-Wframe-larger-than=]``. Its presence is what refuses a library; the
+#: function name and size are read only to say which. The bracket is part of it:
+#: a compiler that does not know the option and says so (icc's ``ignoring
+#: unknown option '-Wframe-larger-than=...'``) names the option bare, and that
+#: is not a report.
+_FRAME_REPORT_TAG = "[-Wframe-larger-than"
+_FRAME_SIZE = re.compile(r"frame size (?:of |\()(\d+)")
+#: A terminal colour code. GCC colours its diagnostics when a wrapper passes
+#: ``-fdiagnostics-color=always``, and the codes split the tag (``[`` ESC ``[01;35m``
+#: ESC ``[K-Wframe-larger-than=``); they are dropped before anything is read.
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_FRAME_FUNCTION = re.compile(r"\bin (?:function )?['‘`]([^'’`]+)['’`]")
+_GCC_FUNCTION_CONTEXT = re.compile(r"In function ['‘`]([^'’`]+)['’`]")
+
+
+class _FrameTooLarge(RuntimeError):
+    """A library the compiler built with a function whose stack frame is past
+    :data:`_CODEGEN_MAX_FRAME_BYTES` (issue #1566). :func:`compile_rhs` installs
+    no such library, and raises this on as a plain ``RuntimeError``."""
+
+
+def _oversized_frames(stderr: str) -> list[tuple[str, int | None]]:
+    """``(function, frame bytes)`` for every function the compiler reported past
+    the frame limit: Clang names it on the report's own line (``stack frame size
+    (N) exceeds limit (M) in 'f'``; before Clang 13 ``stack frame size of N bytes
+    in function 'f'``), GCC on an ``In function 'f':`` line above it (``the frame
+    size of N bytes is larger than M bytes``). A report whose wording neither
+    pattern matches still counts, with what could not be read left as ``"?"`` /
+    ``None``. Colour codes are dropped first."""
+    found: list[tuple[str, int | None]] = []
+    context = "?"
+    for line in _ANSI_ESCAPE.sub("", stderr).splitlines():
+        gcc_context = _GCC_FUNCTION_CONTEXT.search(line)
+        if gcc_context is not None:
+            context = gcc_context.group(1)
+            continue
+        if _FRAME_REPORT_TAG not in line:
+            continue
+        size = _FRAME_SIZE.search(line)
+        name = _FRAME_FUNCTION.search(line)
+        found.append((name.group(1) if name else context, int(size.group(1)) if size else None))
+    return found
+
+
+def _refuse_oversized_frames(stderr: str, opt_flag: str, what: str) -> None:
+    """Raise :class:`_FrameTooLarge` when a compile that succeeded reported a
+    function whose stack frame is past :data:`_CODEGEN_MAX_FRAME_BYTES`.
+
+    ``what`` names the build in the message (the source's size, or a shard)."""
+    frames = _oversized_frames(stderr or "")
+    if not frames:
+        return
+    shown = ", ".join(
+        f"{fn} ({'?' if size is None else f'{size:,}'} bytes)" for fn, size in frames[:3]
+    )
+    if len(frames) > 3:
+        shown += f" and {len(frames) - 3} more"
+    why = (
+        " At -O0 the compiler gives every temporary in a function its own stack "
+        "slot, so the frame grows with the function. BNGSIM_CODEGEN_OPT=1 compiles "
+        "at -O1, which reuses them, but a function this large can take many times "
+        "longer to compile at -O1; BNGSIM_CODEGEN_TIMEOUT sets the budget."
+        if opt_flag == "-O0"
+        else ""
+    )
+    raise _FrameTooLarge(
+        f"Codegen refused the library it built from {what} at {opt_flag}: the stack "
+        f"frame of {shown} is larger than {_CODEGEN_MAX_FRAME_BYTES:,} bytes, and a "
+        "call to it can overflow the stack of the thread that runs the model and "
+        f"crash the process (issue #1566).{why} A run that does not need codegen "
+        "can skip it with codegen=False."
+    )
+
+
 def _build_compile_cmd(
     c_path: Path, so_path: Path, opt_flag: str, compiler: list[str] | None = None
 ) -> list[str]:
@@ -4893,6 +5045,7 @@ def _build_compile_cmd(
         return compiler + [
             opt_flag,
             _FP_CONTRACT_OFF,
+            _frame_limit_flag(),
             "-shared",
             "-fPIC",
             "-o",
@@ -5226,15 +5379,124 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
         proc.kill()  # belt-and-suspenders for the direct child
 
 
+# The process each POSIX compile runs under (issue #1552), started as
+# ``python -I -S -c _COMPILE_SUPERVISOR <fd> <n> <path>... <cmd>...``.
+#
+# The compiler runs in its own session so a timeout can kill its whole process
+# group (GH #166), and only Python did that killing. A caller killed by a signal
+# (a harness's SIGTERM at its wall cap, a SIGKILL, an OOM kill) ran none of it,
+# and its session kept the compiler out of reach of the caller's own group: the
+# compile ran on for its full 13-22 minutes beside whatever ran next, wrote a
+# ``<stem>.<pid>_<n>`` library nobody installed, and left its ``.c`` behind.
+# 206 such libraries and 243 such sources held 12.8 GB of one 13 GB cache.
+#
+# The supervisor holds the read end of a pipe whose only write end the caller
+# keeps. When the caller goes, however it goes, the kernel closes that end, and
+# the supervisor kills the compiler's process group (the compiler leads a group
+# of its own, so its backends go with it), removes the paths it was given, and
+# exits. A compile that finishes is passed through as it was: the compiler
+# writes to the caller's pipes directly, and its exit status, or the signal that
+# ended it, is the supervisor's. A compiler that cannot be started is reported
+# by MARKER and errno, and the caller raises the OSError a Popen would have.
+#
+# -I -S: no site, no user site, no PYTHON* variables, no current directory on
+# the path. It needs nothing but the interpreter's own modules, and it starts
+# in about 20 ms.
+_SUPERVISOR_SPAWN_FAILED = "bngsim-compile-supervisor: spawn failed: errno "
+_COMPILE_SUPERVISOR = f"""\
+import os, select, signal, sys
+
+# The caller's descriptor number can be past select()'s FD_SETSIZE; a copy
+# here takes the lowest free one, and is not inherited by the compiler.
+watch = os.dup(int(sys.argv[1]))
+os.close(int(sys.argv[1]))
+n = int(sys.argv[2])
+abandon = sys.argv[3 : 3 + n]
+cmd = sys.argv[3 + n :]
+stop = []
+for s in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+    signal.signal(s, lambda signum, frame: stop.append(signum))
+signal.signal(signal.SIGCHLD, lambda signum, frame: None)
+wake_r, wake_w = os.pipe()
+os.set_blocking(wake_r, False)
+os.set_blocking(wake_w, False)
+signal.set_wakeup_fd(wake_w)
+try:
+    pid = os.posix_spawnp(
+        cmd[0],
+        cmd,
+        os.environ,
+        file_actions=[(os.POSIX_SPAWN_OPEN, 0, os.devnull, os.O_RDONLY, 0)],
+        setpgroup=0,
+        setsigdef=(signal.SIGPIPE, signal.SIGXFSZ),
+    )
+except OSError as err:
+    sys.stderr.write("{_SUPERVISOR_SPAWN_FAILED}" + str(err.errno) + "\\n")
+    sys.exit(127)
+status = None
+while not stop:
+    done, st = os.waitpid(pid, os.WNOHANG)
+    if done:
+        status = st
+        break
+    ready = select.select([watch, wake_r], [], [])[0]
+    if wake_r in ready:
+        try:
+            os.read(wake_r, 64)
+        except BlockingIOError:
+            pass
+    if watch in ready and not os.read(watch, 1):
+        stop.append(0)
+sig = 0
+if status is None:
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except OSError:
+        pass
+    os.waitpid(pid, 0)
+    for path in abandon:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    sig = stop[0]
+elif os.WIFSIGNALED(status):
+    sig = os.WTERMSIG(status)
+if sig:
+    try:
+        signal.signal(sig, signal.SIG_DFL)
+    except (OSError, ValueError):
+        pass
+    os.kill(os.getpid(), sig)
+os._exit(1 if status is None else os.waitstatus_to_exitcode(status))
+"""
+
+#: Seconds the caller waits for a supervisor it has let go of to exit, before
+#: killing it outright. It kills its compiler at once, so this is only a bound.
+_SUPERVISOR_GRACE_S = 10.0
+
+
+def _compile_supervisor_python() -> str | None:
+    """The interpreter to run :data:`_COMPILE_SUPERVISOR` with, or ``None`` to run
+    the compiler directly (Windows, or a frozen or embedded Python whose
+    ``sys.executable`` is not an interpreter)."""
+    exe = sys.executable
+    if os.name != "posix" or not exe or getattr(sys, "frozen", False):
+        return None
+    return exe if os.access(exe, os.X_OK) else None
+
+
 def _run_compile(
     cmd: list[str],
     *,
     cwd: Path | None = None,
     timeout: float | None = None,
     env: dict[str, str] | None = None,
+    abandon: tuple[Path, ...] = (),
 ) -> subprocess.CompletedProcess:
     """Run a compile/link command so a timeout *or* an abort kills the whole
-    process group, not just the immediate compiler driver (GH #166).
+    process group, not just the immediate compiler driver (GH #166), and so does
+    the death of this process (issue #1552).
 
     Drop-in for ``subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
     timeout=timeout)``: same ``CompletedProcess`` result, and ``TimeoutExpired``
@@ -5242,7 +5504,77 @@ def _run_compile(
     (``clang -cc1`` &c.) have been reaped, so nothing survives the call. Any
     abort mid-compile (KeyboardInterrupt, a SIGTERM handler) tears the group
     down too, since ``start_new_session`` detaches the children from the
-    terminal's foreground group and our explicit kill is then the only reaper."""
+    terminal's foreground group and our explicit kill is then the only reaper.
+
+    On POSIX the command runs under :data:`_COMPILE_SUPERVISOR`, which also
+    kills it when this process dies without running any of that, and then
+    removes the paths in ``abandon`` (the compile's own source and output, which
+    nobody else would). Letting go of it here, on a timeout or an abort, is the
+    same signal to it.
+    """
+    supervisor = _compile_supervisor_python()
+    if supervisor is None:
+        return _run_compile_unsupervised(cmd, cwd=cwd, timeout=timeout, env=env)
+
+    watch_r, watch_w = os.pipe()
+    try:
+        proc = subprocess.Popen(
+            [
+                supervisor,
+                "-I",
+                "-S",
+                "-c",
+                _COMPILE_SUPERVISOR,
+                str(watch_r),
+                str(len(abandon)),
+                *(str(p) for p in abandon),
+                *cmd,
+            ],
+            cwd=cwd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+            pass_fds=(watch_r,),
+        )
+    except BaseException:
+        os.close(watch_w)
+        raise
+    finally:
+        os.close(watch_r)
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except BaseException:
+        # Letting go of the pipe is what tells the supervisor to kill the
+        # compile and remove its files.
+        os.close(watch_w)
+        watch_w = -1
+        try:
+            proc.wait(timeout=_SUPERVISOR_GRACE_S)
+        except subprocess.TimeoutExpired:
+            _kill_process_group(proc)
+        proc.communicate()
+        raise
+    finally:
+        if watch_w >= 0:
+            os.close(watch_w)
+    if proc.returncode == 127 and stderr.startswith(_SUPERVISOR_SPAWN_FAILED):
+        code = int(stderr[len(_SUPERVISOR_SPAWN_FAILED) :].split()[0])
+        raise OSError(code, os.strerror(code), cmd[0])
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+
+
+def _run_compile_unsupervised(
+    cmd: list[str],
+    *,
+    cwd: Path | None = None,
+    timeout: float | None = None,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess:
+    """:func:`_run_compile` without the supervisor: the compiler is this
+    process's own child, in a session (POSIX) or process group (Windows) of its
+    own, and is killed from here on a timeout or an abort."""
     popen_kwargs: dict = {}
     if os.name == "posix":
         popen_kwargs["start_new_session"] = True
@@ -5290,11 +5622,22 @@ def _compile_one_object(
     """Compile one ``.c`` to ``.o`` (``cc <opt> -fPIC -c``) from within ``work``
     using relative names, then normalize the object's mtime. Relative names +
     fixed mtimes keep the linked .so reproducible (the linker would otherwise
-    embed absolute input paths and per-build timestamps). Raises on failure."""
-    cmd = compiler + [opt_flag, _FP_CONTRACT_OFF, "-fPIC", "-c", "-o", o_name, c_name]
+    embed absolute input paths and per-build timestamps). Raises on failure, and
+    on a function whose stack frame is past the limit (issue #1566)."""
+    cmd = compiler + [
+        opt_flag,
+        _FP_CONTRACT_OFF,
+        _frame_limit_flag(),
+        "-fPIC",
+        "-c",
+        "-o",
+        o_name,
+        c_name,
+    ]
     result = _run_compile(cmd, cwd=work, timeout=timeout)
     if result.returncode != 0:
         raise _CompileFailed(f"Codegen shard compilation failed ({c_name}):\n{result.stderr}")
+    _refuse_oversized_frames(result.stderr, opt_flag, f"shard {c_name}")
     os.utime(work / o_name, (_SHARD_REPRO_EPOCH, _SHARD_REPRO_EPOCH))
 
 
@@ -5399,6 +5742,11 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
     1-core allocation (or ``BNGSIM_CODEGEN_JOBS=1``) takes the unchanged serial
     path; MSVC always does.
 
+    A GCC/Clang library with a function whose stack frame is past
+    :data:`_CODEGEN_MAX_FRAME_BYTES` is not installed: a call to it could overflow
+    the calling thread's stack (issue #1566). That raises a ``RuntimeError``, as
+    a failed or timed-out compile does.
+
     Parameters
     ----------
     c_source : str
@@ -5467,9 +5815,16 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
             try:
                 cmd = _build_compile_cmd(c_path, tmp_so_path, opt_flag, compiler)
                 logger.info("Compiling codegen RHS (%s): %s", opt_flag, " ".join(cmd))
-                result = _run_compile(cmd, timeout=timeout)
+                # Removed by the supervisor if this process dies mid-compile, as
+                # the finally clauses here remove them otherwise (issue #1552).
+                result = _run_compile(cmd, timeout=timeout, abandon=(c_path, tmp_so_path))
                 if result.returncode != 0:
                     raise _CompileFailed(f"Codegen compilation failed:\n{result.stderr}")
+                # Issue #1566: built, but not installed if a call could overflow
+                # the stack; the finally below removes it.
+                _refuse_oversized_frames(
+                    result.stderr, opt_flag, f"a {len(c_source):,}-byte C source"
+                )
                 os.replace(tmp_so_path, so_path)
                 _compile_installs.last = str(so_path)
             finally:
@@ -5482,6 +5837,10 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
         if verdict is not None:
             raise CodegenToolchainError(verdict) from RuntimeError(str(err))
         # The model's own failure, reported as it always was.
+        raise RuntimeError(str(err)) from None
+    except _FrameTooLarge as err:
+        # Issue #1566: the model's own failure too, and not the toolchain's: the
+        # compiler built it. Reported as a plain RuntimeError, as a timeout is.
         raise RuntimeError(str(err)) from None
     except subprocess.TimeoutExpired as err:
         raise RuntimeError(
@@ -5865,7 +6224,10 @@ _BUILTIN_IDENT_MAP: dict[str, tuple[str, bool]] = {
     },
     "and": ("&&", False),
     "or": ("||", False),
-    "not": ("!", False),
+    # `not` is not here: ExprTk parses it as a one-argument call, and C's `!`
+    # is a prefix operator, so `not(k)^n` became `!pow(k, n)` where ExprTk
+    # reads `(not(k))^n` (issue #1506). _replace_engine_calls writes the call
+    # out whole, as ExprTk's notl_impl, before the power pass sees it.
     "ln": ("log", False),
     "abs": ("fabs", False),
     # ExprTk max/min have no C equivalent under those names. Not <math.h>'s
@@ -5873,10 +6235,10 @@ _BUILTIN_IDENT_MAP: dict[str, tuple[str, bool]] = {
     # the prelude's bngsim_max/bngsim_min transcribe std::max/std::min. Both
     # are binary. ExprTk's are variadic, and a .net (or any expression that
     # skips the loader's sympy round trip) keeps an n-ary call as written, so
-    # _replace_engine_calls first folds max(a,b,c) into max(max(a,b),c)
-    # (GH #556) and this rename then applies to each binary call. (Both are
-    # ExprTk-reserved, so they can never be user-defined model symbols that
-    # would need to win the lookup.)
+    # _replace_engine_calls first nests it into binary calls, grouped as
+    # ExprTk groups it (GH #556, issue #1507), and this rename then applies to
+    # each binary call. (Both are ExprTk-reserved, so they can never be
+    # user-defined model symbols that would need to win the lookup.)
     "max": ("bngsim_max", False),
     "min": ("bngsim_min", False),
     # A loop, not an expression, so it is a helper the generated source carries
@@ -6018,7 +6380,164 @@ def _translate_expr_to_c(expr: str, lookup: dict[str, tuple[str, bool]]) -> str:
 
     # Replace ^ with pow() — handle a^b patterns
     result = _replace_power_op(result)
-    return result
+    # Last, so it sees every comparison the passes above wrote (issue #1495).
+    return _double_valued_logic(result)
+
+
+# What a C relational or logical operator can be spelled with.
+_C_LOGIC_CHAR_RE = re.compile(r"[<>=!&|]")
+# ExprTk's `&` and `|` are its `and` and `or` (lexer::scan_operator); C's are
+# bitwise and do not take a double.
+_LONE_AMP_RE = re.compile(r"(?<!&)&(?!&)")
+_LONE_BAR_RE = re.compile(r"(?<!\|)\|(?!\|)")
+_NON_SPACE_RE = re.compile(r"\S")
+
+
+def _double_valued_logic(c: str) -> str:
+    """``c`` with every comparison or logical result that arithmetic reads
+    written as a double, 1.0 or 0.0 (issue #1495).
+
+    ExprTk computes ``A > thr`` as a double, 1 or 0. C computes it as an int, and
+    so do ``==``, ``!=``, ``&&`` and ``||``. Two ints divide as ints, so
+    ``((A>thr)+(B>thr))/((A>0)+(B>0))`` was 1/2 = 0 compiled and 0.5 interpreted,
+    ``(A>thr)/(C>thr)`` divided an int by zero (undefined behaviour, where the
+    interpreter gives inf), and ``-(C>thr)`` was 0 where the engine has -0.0.
+
+    The C text holds a comparison's result only at the top level of a bracketed
+    group, since a relational or logical operator binds looser than arithmetic:
+    a group whose top level has one, and no ``?``, ``:`` or ``,``, has an int
+    value. Each such group is written ``((...) ? 1.0 : 0.0)``, the form
+    ``mand``/``mor`` already take, unless nothing reads it as a number: the
+    condition of a ternary, an operand of ``&&``, ``||`` or a comparison (which
+    reads a 0/1 int as it reads 0.0/1.0), an argument of a call
+    (every function the C calls takes a double, so the int converts there), or
+    the whole expression (it is assigned to a double). Those reads are the same
+    for an int and a double, and leaving them alone keeps the source of a model
+    with no comparison in arithmetic as it was. A group that is all of its
+    enclosing group's content is read where that group is.
+
+    ExprTk's ``&`` and ``|`` are its ``and`` and ``or``, which C spells ``&&``
+    and ``||``; a lone one is rewritten first. It compiled as a bitwise operator
+    on two comparisons, which C cannot apply to the doubles they now are.
+    """
+    if not _C_LOGIC_CHAR_RE.search(c):
+        return c
+    c = _LONE_BAR_RE.sub("||", _LONE_AMP_RE.sub("&&", c))
+    n = len(c)
+    # Per group: [open, close, is_call, has_logic, has_separator, parent, bracket]
+    groups: list[list] = []
+    stack: list[int] = []
+    i = 0
+    while i < n:
+        ch = c[i]
+        if ch in "([":
+            j = i - 1
+            while j >= 0 and c[j].isspace():
+                j -= 1
+            is_call = ch == "(" and j >= 0 and (c[j].isalnum() or c[j] == "_")
+            groups.append([i, -1, is_call, False, False, stack[-1] if stack else None, ch])
+            stack.append(len(groups) - 1)
+        elif ch in ")]":
+            if not stack:
+                return c  # unbalanced: the compiler will say so
+            groups[stack.pop()][1] = i
+        elif ch == "-" and i + 1 < n and c[i + 1] == ">":
+            i += 2  # `data->tfun_eval`, a member access and not a comparison
+            continue
+        elif ch in "<>=!&|":
+            if stack:
+                groups[stack[-1]][3] = True
+        elif ch in "?:," and stack:
+            groups[stack[-1]][4] = True
+        i += 1
+    if stack:
+        return c
+
+    def _prev(pos: int) -> str:
+        j = pos - 1
+        while j >= 0 and c[j].isspace():
+            j -= 1
+        if j < 0:
+            return "start"
+        ch = c[j]
+        if ch == "(":
+            return "open"
+        if ch in "&|":
+            return "logic"
+        if ch == "!":
+            return "not"
+        if ch in "<>=":
+            return "rel"
+        return {",": "comma", "?": "qmark", ":": "colon"}.get(ch, "other")
+
+    def _next(pos: int) -> str:
+        k = pos + 1
+        while k < n and c[k].isspace():
+            k += 1
+        if k >= n:
+            return "end"
+        ch = c[k]
+        if ch == ")":
+            return "close"
+        if ch in "&|":
+            return "logic"
+        if ch in "<>=!":
+            return "rel"  # a `!` after an operand is the start of `!=`
+        return {",": "comma", "?": "qmark", ":": "colon"}.get(ch, "other")
+
+    # Where an operand of a `&&`, `||`, `?` or comparison begins or ends: each
+    # binds looser than arithmetic, so an operand that meets one of these at both
+    # ends is all of that operand.
+    operand_edge_before = {"start", "open", "comma", "qmark", "colon", "logic", "not", "rel"}
+    operand_edge_after = {"end", "close", "comma", "qmark", "colon", "logic", "rel"}
+
+    def _read_as_a_number(gi: int) -> bool:
+        g = groups[gi]
+        # Climb while the group is all of a plain (non-call) group's content.
+        while g[5] is not None:
+            parent = groups[g[5]]
+            if parent[6] != "(" or parent[2]:
+                break
+            if _NON_SPACE_RE.search(c, parent[0] + 1, g[0]) or _NON_SPACE_RE.search(
+                c, g[1] + 1, parent[1]
+            ):
+                break
+            g = parent
+        before, after = _prev(g[0]), _next(g[1])
+        if before == "start" and after == "end":
+            return False  # the whole expression, assigned to a double
+        if before == "not":
+            return False
+        if after in ("qmark", "logic", "rel") and before in operand_edge_before:
+            # A ternary's condition, or the left operand of && / || or of a
+            # comparison, which reads a 0/1 int as it reads 0.0/1.0.
+            return False
+        if before in ("logic", "rel") and after in operand_edge_after:
+            return False  # the right operand of && / || or of a comparison
+        # An argument of a call is converted by the call.
+        return not (
+            g[5] is not None
+            and groups[g[5]][2]
+            and before in ("open", "comma")
+            and after in ("close", "comma")
+        )
+
+    opens: set[int] = set()
+    closes: set[int] = set()
+    for gi, g in enumerate(groups):
+        if g[6] == "(" and not g[2] and g[3] and not g[4] and _read_as_a_number(gi):
+            opens.add(g[0])
+            closes.add(g[1])
+    if not opens:
+        return c
+    out: list[str] = []
+    for i, ch in enumerate(c):
+        if i in opens:
+            out.append("(")
+        out.append(ch)
+        if i in closes:
+            out.append(" ? 1.0 : 0.0)")
+    return "".join(out)
 
 
 def _replace_if_calls(expr: str) -> str:
@@ -6115,6 +6634,9 @@ def _split_if_args(expr: str, paren_pos: int) -> list[str] | None:
 # spells ``fmod``. It is not reserved, but a model's own ``mod`` is a function
 # called with empty parens or a scalar, and neither is a two-argument call.
 #
+# ``not`` joins them because C's ``!`` is a prefix operator, not a call, and
+# the power pass read ``not(k)^n`` as ``!(k^n)`` (issue #1506). It is reserved.
+#
 # The rest of ExprTk's functions that C has no function for by their name, or
 # has one with other arithmetic, join them for the same reason (issue #1212):
 # the two tables below, and the variadic ``mul``/``mand``/``mor``. A model's own
@@ -6158,6 +6680,7 @@ _EXPRTK_HELPER_C: dict[str, tuple[int, str]] = {
 
 _ENGINE_CALL_NAMES = (
     ("sign", "sgn", "rint", "clamp", "avg", "sum", "max", "min", "mod", "mul", "mand", "mor")
+    + ("not",)
     + tuple(_EXPRTK_ONE_LINE_C)
     + tuple(_EXPRTK_HELPER_C)
 )
@@ -6203,6 +6726,16 @@ def _c_engine_call(name: str, args: list[str]) -> str | None:
             return None
         joined = (" && " if name == "mand" else " || ").join(f"(({a}) != 0.0)" for a in args)
         return f"(({joined}) ? 1.0 : 0.0)"
+    if name == "not":
+        # ExprTk's notl_impl: 0 for a nonzero argument (a NaN included), else 1.
+        # Written whole and parenthesised, so it is one operand to the power
+        # pass on either side of a `^`: `not(k)^n` is `(not(k))^n` and
+        # `2^not(k)` is `2^(not(k))`, as ExprTk parses them (issue #1506). C's
+        # `!` was a prefix the power pass left outside its pow(), and it is an
+        # int, which a quotient divided as one (issue #1495).
+        if n != 1:
+            return None
+        return f"((({args[0]}) != 0.0) ? 0.0 : 1.0)"
     if name in ("sign", "sgn"):
         # SignFunction in src/expression.cpp and ExprTk's sgn_impl, same form.
         if n != 1:
@@ -6236,11 +6769,17 @@ def _c_engine_call(name: str, args: list[str]) -> str | None:
         total = " + ".join(f"({a})" for a in args)
         return f"({total})" if name == "sum" else f"(({total}) / {n}.0)"
     if name in ("max", "min"):
-        # ExprTk reduces a variadic max/min left to right, so fold the same way:
-        # max(a,b,c,d) -> max(max(max(a,b),c),d). The result is still spelled
-        # max/min, and the identifier pass renames each binary call to
-        # bngsim_max/bngsim_min. A binary call (the only form that ever compiled) is left
-        # exactly as written, so its emitted source does not change.
+        # Nested binary calls, grouped as ExprTk groups them (vararg_max_op /
+        # vararg_min_op in exprtk.hpp). Three arguments, and six or more, are a
+        # left fold: max(a,b,c) -> max(max(a,b),c). Four and five are not:
+        # process_4 pairs them, max(max(a,b),max(c,d)), and process_5 is
+        # max(max(max(a,b),max(c,d)),e). The grouping only shows when an
+        # argument is NaN, since std::max keeps its first argument unless the
+        # second compares greater: max(0,0,NaN,1) is 1 as a left fold and 0 as
+        # ExprTk pairs it (issue #1507). The result is still spelled max/min,
+        # and the identifier pass renames each binary call to
+        # bngsim_max/bngsim_min. A binary call (the only form that ever compiled)
+        # is left exactly as written, so its emitted source does not change.
         #
         # ExprTk also accepts a single argument and returns it (only the
         # zero-argument form is rejected), while the binary helpers would refuse one, so
@@ -6249,6 +6788,9 @@ def _c_engine_call(name: str, args: list[str]) -> str | None:
             return f"({args[0]})"
         if n <= 2:
             return None
+        if n in (4, 5):
+            folded = f"{name}({name}({args[0]},{args[1]}),{name}({args[2]},{args[3]}))"
+            return folded if n == 4 else f"{name}({folded},{args[4]})"
         folded = args[0]
         for a in args[1:]:
             folded = f"{name}({folded},{a})"

@@ -149,7 +149,7 @@ jobs:
   # ------------------------------------------------------------------------- #
   plan:
     name: Plan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -219,7 +219,7 @@ jobs:
     name: BioModels corpus
     needs: plan
     if: needs.plan.outputs.corpus == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     outputs:
       key: ${{ steps.key.outputs.key }}
@@ -282,7 +282,7 @@ jobs:
     name: SBML test suite + DSMTS
     needs: plan
     if: needs.plan.outputs.sbml == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -365,7 +365,7 @@ jobs:
     name: RoadRunner ODE parity
     needs: [plan, corpus]
     if: needs.plan.outputs.rr-ode == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 210
     env:
       MODE: ${{ needs.plan.outputs.mode }}
@@ -461,7 +461,7 @@ jobs:
     name: BNG ODE parity · ${{ matrix.arm }}
     needs: plan
     if: needs.plan.outputs.bng-ode == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 180
     # Both arms replay the bng_ode archive (run_network's side does not depend on how
     # bngsim evaluates its RHS); in record mode only the interpreter arm writes it.
@@ -545,7 +545,7 @@ jobs:
     name: RoadRunner SSA screen
     needs: [plan, corpus]
     if: needs.plan.outputs.rr-ssa == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 300
     env:
       MODE: ${{ needs.plan.outputs.mode }}
@@ -614,7 +614,7 @@ jobs:
     name: Finite-difference sensitivity check
     needs: plan
     if: needs.plan.outputs.fd-sens == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -654,7 +654,7 @@ jobs:
     name: Path-agreement check
     needs: [plan, corpus]
     if: needs.plan.outputs.differential == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
@@ -711,7 +711,7 @@ jobs:
     name: Network-free engine agreement
     needs: plan
     if: needs.plan.outputs.differential-nf == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
@@ -750,7 +750,7 @@ jobs:
     name: BNG stochastic parity · ${{ matrix.track }}
     needs: plan
     if: needs.plan.outputs.bng-stoch == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 350
     env:
       MODE: ${{ needs.plan.outputs.mode }}
@@ -832,7 +832,7 @@ jobs:
     name: AMICI forward-sensitivity parity
     needs: [plan, corpus]
     if: needs.plan.outputs.amici-sens == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 300
     env:
       MODE: ${{ needs.plan.outputs.mode }}
@@ -935,7 +935,7 @@ jobs:
     name: Publish the reference archive
     needs: [plan, rr-ode, bng-ode, bng-stoch, amici-sens, rr-ssa]
     if: always() && needs.plan.outputs.mode == 'record'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: write
@@ -999,7 +999,7 @@ jobs:
     name: Report
     needs: [plan, corpus, sbml, rr-ode, bng-ode, bng-stoch, amici-sens, rr-ssa, fd-sens, differential, differential-nf, publish]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read

@@ -149,7 +149,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest    # manylinux-class x86_64
+          - os: ubuntu-24.04    # manylinux-class x86_64
           - os: macos-15-intel   # macOS x86_64 (Intel)
           - os: macos-15         # macOS arm64 (Apple Silicon); macos-14 retires 2026-11-02
           - os: windows-latest   # Windows x86_64 (issue #3)
@@ -257,6 +257,7 @@ jobs:
           # not-run: test_codegen_key_stream.py -- the core's key bytes against the Python walk; made before either backend is chosen
           # not-run: test_codegen_jacobian_sparse.py -- the sparse Jacobian entry point is KLU-gated and this leg builds ENABLE_KLU=OFF
           # not-run: test_codegen_toolchain_verdict.py -- (b) the cc toolchain's probe and verdict (issue #1544); it unsets BNGSIM_CODEGEN_JIT, so this leg would re-run the cc path verbatim
+          # not-run: test_codegen_cache_architecture.py -- (a) the architecture in the .so cache key (issue #1486); the JIT caches no artifact to name
           python -m pytest -p no:cacheprovider \
             python/tests/test_mir_equivalence.py \
             python/tests/test_mir_vendoring.py \
@@ -282,6 +283,8 @@ jobs:
             python/tests/test_codegen_engine_functions.py \
             python/tests/test_codegen_nary_minmax.py \
             python/tests/test_codegen_minmax_nan.py \
+            python/tests/test_codegen_comparison_is_a_double.py \
+            python/tests/test_codegen_not_is_a_call.py \
             python/tests/test_periodic_step_stops.py \
             python/tests/test_codegen_mratio.py \
             python/tests/test_codegen_determinism.py \
