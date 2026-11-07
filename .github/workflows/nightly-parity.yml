@@ -292,6 +292,12 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - name: Provision from uv.lock
         run: uv sync --extra dev --python 3.12
+
+      # libroadrunner's wheel links libpython by name; ubuntu-26.04 has no system
+      # 3.12 to satisfy it. See ci/libpython_on_loader_path.sh.
+      - name: Let RoadRunner find libpython
+        run: bash ci/libpython_on_loader_path.sh
+
       - name: Build identity
         run: uv run --no-sync python -c "import bngsim, bngsim._build_provenance as bp; print('bngsim', bngsim.__version__); bp.print_identity()"
 
@@ -392,6 +398,12 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - name: Provision from uv.lock
         run: uv sync --extra dev --python 3.12
+
+      # libroadrunner's wheel links libpython by name; ubuntu-26.04 has no system
+      # 3.12 to satisfy it. See ci/libpython_on_loader_path.sh.
+      - name: Let RoadRunner find libpython
+        run: bash ci/libpython_on_loader_path.sh
+
       - name: Build identity
         run: uv run --no-sync python -c "import bngsim, bngsim._build_provenance as bp, roadrunner; print('bngsim', bngsim.__version__, 'roadrunner', roadrunner.__version__); bp.print_identity()"
       # --timeout 300 rather than the runner's 120 s: four models sit at 115-118 s on
@@ -487,6 +499,12 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - name: Provision from uv.lock
         run: uv sync --extra dev --python 3.12
+
+      # libroadrunner's wheel links libpython by name; ubuntu-26.04 has no system
+      # 3.12 to satisfy it. See ci/libpython_on_loader_path.sh.
+      - name: Let RoadRunner find libpython
+        run: bash ci/libpython_on_loader_path.sh
+
       - name: Build identity
         run: uv run --no-sync python -c "import bngsim, bngsim._build_provenance as bp; from bngsim import _codegen; print('bngsim', bngsim.__version__, 'cc', _codegen._find_c_compiler()); bp.print_identity()"
       # A replay needs neither BNG2.pl nor run_network: the archive holds the .net.
@@ -569,6 +587,12 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - name: Provision from uv.lock
         run: uv sync --extra dev --python 3.12
+
+      # libroadrunner's wheel links libpython by name; ubuntu-26.04 has no system
+      # 3.12 to satisfy it. See ci/libpython_on_loader_path.sh.
+      - name: Let RoadRunner find libpython
+        run: bash ci/libpython_on_loader_path.sh
+
       - name: Build identity
         run: uv run --no-sync python -c "import bngsim, bngsim._build_provenance as bp, roadrunner; print('bngsim', bngsim.__version__, 'roadrunner', roadrunner.__version__); bp.print_identity()"
       - name: Reference side (${{ env.MODE }})
@@ -624,6 +648,12 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - name: Provision from uv.lock
         run: uv sync --extra dev --python 3.12
+
+      # libroadrunner's wheel links libpython by name; ubuntu-26.04 has no system
+      # 3.12 to satisfy it. See ci/libpython_on_loader_path.sh.
+      - name: Let RoadRunner find libpython
+        run: bash ci/libpython_on_loader_path.sh
+
       - name: Build identity
         run: uv run --no-sync python -c "import bngsim, bngsim._build_provenance as bp; print('bngsim', bngsim.__version__); bp.print_identity()"
       - name: Run fd_sens_run.py
@@ -673,6 +703,12 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - name: Provision from uv.lock
         run: uv sync --extra dev --python 3.12
+
+      # libroadrunner's wheel links libpython by name; ubuntu-26.04 has no system
+      # 3.12 to satisfy it. See ci/libpython_on_loader_path.sh.
+      - name: Let RoadRunner find libpython
+        run: bash ci/libpython_on_loader_path.sh
+
       - name: Build identity
         run: uv run --no-sync python -c "import bngsim, bngsim._build_provenance as bp; print('bngsim', bngsim.__version__); bp.print_identity()"
       # --timeout 900, not 300: three of a model's paths compile C, and the cache
@@ -721,6 +757,12 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - name: Provision from uv.lock
         run: uv sync --extra dev --python 3.12
+
+      # libroadrunner's wheel links libpython by name; ubuntu-26.04 has no system
+      # 3.12 to satisfy it. See ci/libpython_on_loader_path.sh.
+      - name: Let RoadRunner find libpython
+        run: bash ci/libpython_on_loader_path.sh
+
       - name: Build identity
         run: uv run --no-sync python -c "import bngsim, bngsim._build_provenance as bp; print('bngsim', bngsim.__version__); bp.print_identity()"
       - name: Fetch bng_nf's models
@@ -780,6 +822,12 @@ jobs:
           cache-dependency-glob: "uv.lock"
       - name: Provision from uv.lock
         run: uv sync --extra dev --python 3.12
+
+      # libroadrunner's wheel links libpython by name; ubuntu-26.04 has no system
+      # 3.12 to satisfy it. See ci/libpython_on_loader_path.sh.
+      - name: Let RoadRunner find libpython
+        run: bash ci/libpython_on_loader_path.sh
+
       - name: Build identity
         run: uv run --no-sync python -c "import bngsim, bngsim._build_provenance as bp; print('bngsim', bngsim.__version__, 'HAS_NFSIM', bngsim.HAS_NFSIM); bp.print_identity()"
       # A replay needs neither BNG2.pl nor the legacy binaries: the archive holds the
@@ -861,6 +909,12 @@ jobs:
       # A replay neither builds AMICI nor compiles a model with it.
       - name: Provision from uv.lock (with the pinned AMICI unless replaying)
         run: uv sync --extra dev ${{ env.MODE != 'replay' && '--group amici' || '' }} --python 3.12
+
+      # libroadrunner's wheel links libpython by name; ubuntu-26.04 has no system
+      # 3.12 to satisfy it. See ci/libpython_on_loader_path.sh.
+      - name: Let RoadRunner find libpython
+        run: bash ci/libpython_on_loader_path.sh
+
       - name: Build identity
         run: |
           uv run --no-sync python -c "import bngsim, bngsim._build_provenance as bp; print('bngsim', bngsim.__version__); bp.print_identity()"
