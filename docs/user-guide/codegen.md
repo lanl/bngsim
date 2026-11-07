@@ -89,6 +89,15 @@ source-hash fallback key, plus the debris of interrupted compiles (`bngsim_shard
 scratch directories and stray `.c`, which nothing else cleans up) — and a second
 breakdown by codegen key.
 
+On Linux and macOS a compile does not outlive the Python process that asked for
+it. It runs under a small supervisor that holds a pipe from that process; when the
+process dies, by a harness's `SIGTERM` at its wall cap or a `SIGKILL` alike, the
+supervisor kills the compiler and its backends and removes the compile's `.c` and
+partial library (issue #1552). Before, the compile ran on to the end, competing
+for the CPU with whatever ran next, and left a library nobody installed. So that
+debris now comes only from a kill that takes the supervisor too, or from a
+compile older than this.
+
 `clean` is safe by construction: it removes only that debris, so no compiled
 artifact is touched and no cache hit is lost. `prune` bounds the cache by orphan
 status, age and/or total size, evicting least-recently-used artifacts first; it runs
@@ -131,8 +140,9 @@ bngsim.prune_codegen_cache(max_size="2G")
 ### Which artifacts are dead
 
 An artifact is named `rhs_<key>_<hash><suffix>`, where `<key>` is the codegen cache
-key described above — the `_CODEGEN_VERSION` constant and a digest of the emitters'
-source. The key is mixed into `<hash>` as well, so it is what decides validity;
+key described above — the `_CODEGEN_VERSION` constant, a digest of the emitters'
+source, and the architecture the library is built for (`arm64`, `x86-64`,
+`aarch64`). The key is mixed into `<hash>` as well, so it is what decides validity;
 carrying it beside the hash is what makes the dead corpus *countable*:
 
 ```console
@@ -141,15 +151,15 @@ codegen cache: /home/you/.cache/bngsim/codegen
   entries:   14,377
   size:      2.0 GiB
   ...
-  key:       28+317a5b34d5dc9959
+  key:       43+317a5b34d5dc9959+arm64
   live:      412 artifact(s), 61.0 MiB
   orphaned:  13,901 artifact(s), 1.9 GiB
 
-  codegen key                  entries         size
-  -------------------------- --------- ------------
-  27+9f0c1de2ab3c4d5e             9,001      1.2 GiB
-  28+317a5b34d5dc9959 (live)        412     61.0 MiB
-  -                               4,900    700.0 MiB
+  codegen key                              entries         size
+  -------------------------------------- --------- ------------
+  42+9f0c1de2ab3c4d5e                        9,001      1.2 GiB
+  43+317a5b34d5dc9959+arm64 (live)             412     61.0 MiB
+  -                                          4,900    700.0 MiB
 ```
 
 `prune --orphaned` removes exactly that second number: every artifact whose key is
@@ -164,8 +174,18 @@ orphans are another's live artifacts. Spare a sibling install's key with `--keep
 repeatable:
 
 ```bash
-bngsim-cache prune --orphaned --keep-key 27+9f0c1de2ab3c4d5e
+bngsim-cache prune --orphaned --keep-key 42+9f0c1de2ab3c4d5e
 ```
+
+One cache can also serve one bngsim on two architectures: a native and a Rosetta
+Python on an Apple Silicon Mac, or the x86-64 and aarch64 nodes of a cluster that
+share a home directory. Each builds and loads only its own libraries, which the
+architecture in the key keeps apart (issue #1486; before it, the second to run
+loaded the first's and failed with `incompatible architecture`). An artifact whose
+key differs from this install's in the architecture alone is the other
+architecture's build of the same source, so `info` counts it as `other arch`, not
+orphaned, and `prune --orphaned` leaves it alone. Run the prune from that
+architecture's Python to sweep its own.
 
 Artifacts written before this naming landed (issue #363) carry no key at all. They
 count as orphaned — no keyed lookup will ever reach one again — and `info` lists them
