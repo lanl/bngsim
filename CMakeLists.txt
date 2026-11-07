@@ -60,6 +60,26 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# No floating-point contraction anywhere in the build: bngsim, SUNDIALS (added
+# below with FetchContent, so it inherits this directory's options), NFsim,
+# RuleMonkey and the unit tests. GCC contracts by default (-ffp-contract=fast,
+# even across statements), so whether `a*b + c` is fused into one rounding
+# depends on whether the target has a fused multiply-add, and that is the
+# toolchain's default -march, not anything this project chose. ubuntu-26.04's
+# GCCs default to -march=x86-64-v3 (--with-arch-64=x86-64-v3), where
+# ubuntu-24.04's target plain x86-64: the same source built on the two images
+# rounded CVODE's arithmetic differently from the first step on, and every
+# result that sits on a knife edge (a step size collapsing at a discontinuity,
+# a march sliding along a switch surface, a steady state at its tolerance)
+# went the other way. Unfused, a build gives the same bits whichever x86-64
+# level its compiler targets, and arm64 (where Clang contracts within an
+# expression) gives the bits x86-64 does. The generated C (_FP_CONTRACT_OFF in
+# _codegen.py, issue #963) and ExprTk (below) were already built this way.
+# MSVC does not contract under its default /fp:precise.
+add_compile_options(
+    "$<$<COMPILE_LANG_AND_ID:C,GNU,Clang,AppleClang>:-ffp-contract=off>"
+    "$<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang>:-ffp-contract=off>")
+
 # Build shared library by default
 option(BUILD_SHARED_LIBS "Build shared libraries" ON)
 option(BNGSIM_BUILD_TESTS "Build unit tests" ON)
@@ -538,7 +558,10 @@ set(BNGSIM_EXPRTK_VENDOR_METADATA "${BNGSIM_EXPRTK_DIR}/VENDOR.json")
 # its own copy of the node templates, and the linker keeps one. With it on
 # bngsim_expression only, NFsim's copy (its mu::Parser shim includes
 # exprtk.hpp) was the one kept, and the residual still read 5.75e-17. The
-# option is for GCC and Clang; MSVC is left at its defaults.
+# option is for GCC and Clang; MSVC is left at its defaults. The directory-wide
+# add_compile_options after project() now gives every target the same flag;
+# this one stays on the ExprTk targets so their copies keep it whatever the
+# directory's options become.
 set(BNGSIM_EXPRTK_COMPILE_OPTIONS $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off>)
 
 if(NOT EXISTS "${BNGSIM_EXPRTK_HEADER}")

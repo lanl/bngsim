@@ -75,6 +75,11 @@ args=(
     -DSUITESPARSE_USE_OPENMP=OFF
     -DSUITESPARSE_USE_CUDA=OFF
     -DSUITESPARSE_DEMOS=OFF
+    # KLU unfused, as bngsim builds everything else (the add_compile_options by
+    # project() in CMakeLists.txt): a sparse LU then rounds alike whatever
+    # x86-64 level the compiler targets by default (ubuntu-26.04's is v3, with
+    # FMA). CFLAGS from the environment, as CMake would have read it, come first.
+    "-DCMAKE_C_FLAGS=${CFLAGS:-} -ffp-contract=off"
     # Skip SuiteSparse_config's BLAS probe entirely -- see the BLAS_LIBRARIES
     # paragraph in the header. Empty, not a stub library, so that anything which
     # did try to link it gets nothing rather than a lie.
