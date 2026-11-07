@@ -93,9 +93,7 @@ concurrency:
 jobs:
   native-tests:
     name: C++ unit suite · ubuntu-latest · BLAS ${{ matrix.blas }}
-    # ubuntu-24.04, not ubuntu-latest, as python-tests.yml says why; the job's
-    # name keeps "ubuntu-latest".
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
