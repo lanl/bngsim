@@ -10403,7 +10403,9 @@ class Simulator:
               ``(`` and ``)`` written as ``_`` (``A()`` reads as ``A__``),
               and the time as ``t`` or ``time``; nothing else is bound,
               Python builtins included. It is met at the first sample where
-              it is true, or, for a number, > 0.
+              it is true, or, for a number, > 0. Arithmetic numpy warns of
+              (0/0, x/0, an overflow) is read at the value numpy gives, so a
+              NaN is not met, and one RuntimeWarning names it (issue #1556).
               Example: ``"A_tot < 10"``
             - **callable**: A function ``f(result) -> bool`` called
               after the simulation. If it returns a true value (in
@@ -11558,6 +11560,80 @@ def _stop_value_met(value: Any, expression: str, time: np.ndarray, t_idx: int) -
     )
 
 
+# numpy's floating-point errors: the name its error callback gives each, and the
+# key np.geterr() keeps its mode under.
+_FP_ERROR_KEYS = {
+    "divide by zero": "divide",
+    "overflow": "over",
+    "underflow": "under",
+    "invalid value": "invalid",
+}
+_FpMode = Literal["ignore", "warn", "raise", "call", "print", "log"]
+
+
+def _routed(mode: _FpMode) -> _FpMode:
+    """A mode as a stop condition runs under it: numpy's warning becomes a call."""
+    return "call" if mode == "warn" else mode
+
+
+class _StopArithmeticErrors:
+    """The floating-point errors numpy meets in a stop condition's arithmetic,
+    told once the condition has stopped running (issue #1556).
+
+    The condition runs with no builtins. On Python 3.13 and later, a warning
+    numpy issues inside it looks ``__import__`` up there and raises KeyError,
+    so 0/0, x/0 or an overflow at any sample refused the run. Each error numpy
+    is set to warn of is sent here instead (as numpy's error callback) and
+    :meth:`warn` issues one RuntimeWarning, from outside the condition, naming
+    it. An error numpy is set to ignore, print or raise is left to numpy, and
+    one it is set to call or log for still goes to the callback or log it had.
+    """
+
+    def __init__(self) -> None:
+        self._modes = np.geterr()
+        self._callback = np.geterrcall()
+        self.kinds: list[str] = []
+
+    def errstate(self) -> np.errstate:
+        m = self._modes
+        return np.errstate(
+            call=self,
+            divide=_routed(m["divide"]),
+            over=_routed(m["over"]),
+            under=_routed(m["under"]),
+            invalid=_routed(m["invalid"]),
+        )
+
+    def __call__(self, kind: str, flag: int) -> None:
+        if self._modes.get(_FP_ERROR_KEYS.get(kind, "")) == "call":
+            callback = self._callback
+            if not callable(callback):
+                # As numpy raises with "call" set and no callback given.
+                raise NameError(f"python callback specified for {kind} but no function found.")
+            callback(kind, flag)
+        elif kind not in self.kinds:
+            self.kinds.append(kind)
+
+    def write(self, message: str) -> None:
+        # numpy's "log" mode writes to the callback; that one was the user's.
+        log = getattr(self._callback, "write", None)
+        if log is None:
+            # As numpy raises with "log" set and nothing to write to.
+            what = message.strip().removeprefix("Warning: ")
+            raise NameError(f"log specified for {what} but no object with write method found.")
+        log(message)
+
+    def warn(self, expression: str) -> None:
+        if self.kinds:
+            warnings.warn(
+                f"{' and '.join(self.kinds)} encountered in stop condition {expression!r}; "
+                "each sample is read at the value numpy gives it, where NaN is not met "
+                "(issue #1556)",
+                RuntimeWarning,
+                stacklevel=_stacklevel_outside_bngsim(),
+            )
+
+
 class _StopCondition:
     """Base class for stop conditions."""
 
@@ -11618,25 +11694,40 @@ class _ExpressionStopCondition(_StopCondition):
             if safe in self._names:
                 columns.append((sp_data, j, safe))
 
-        for t_idx in range(len(time)):
-            # The globals, so a lambda or comprehension inside the expression
-            # sees them too: as locals, only its outermost scope did (#1509).
-            ns = {"__builtins__": {}, "time": time[t_idx], "t": time[t_idx]}
-            for block, j, name in columns:
-                ns[name] = block[t_idx, j]
-            # An error is raised, not logged and skipped: a condition that
-            # failed at a sample was read as not met there (issue #1509).
-            try:
-                val = eval(self._code, ns)  # noqa: S307
-            except Exception as exc:
-                raise ValueError(
-                    f"stop condition {self._expression!r} could not be evaluated at "
-                    f"t={float(time[t_idx]):g}: {type(exc).__name__}: {exc} (issue #1509)"
-                ) from exc
-            if _stop_value_met(val, self._expression, time, t_idx):
-                return t_idx
-
-        return None
+        # numpy may not warn from inside the condition (issue #1556): its
+        # errors are collected here and told after the last sample read.
+        errors = _StopArithmeticErrors()
+        met = None
+        with errors.errstate():
+            for t_idx in range(len(time)):
+                # The globals, so a lambda or comprehension inside the expression
+                # sees them too: as locals, only its outermost scope did (#1509).
+                ns = {"__builtins__": {}, "time": time[t_idx], "t": time[t_idx]}
+                for block, j, name in columns:
+                    ns[name] = block[t_idx, j]
+                # An error is raised, not logged and skipped: a condition that
+                # failed at a sample was read as not met there (issue #1509).
+                try:
+                    val = eval(self._code, ns)  # noqa: S307
+                except Exception as exc:
+                    why, issue = f"{type(exc).__name__}: {exc}", "issue #1509"
+                    if isinstance(exc, KeyError) and exc.args == ("__import__",):
+                        # Most often a warning other than numpy's arithmetic,
+                        # which 3.13+ cannot deliver from a frame with no builtins.
+                        why += (
+                            ", which a stop condition does not have; on Python 3.13 "
+                            "and later a warning issued inside one needs it"
+                        )
+                        issue = "issues #1509, #1556"
+                    raise ValueError(
+                        f"stop condition {self._expression!r} could not be evaluated at "
+                        f"t={float(time[t_idx]):g}: {why} ({issue})"
+                    ) from exc
+                if _stop_value_met(val, self._expression, time, t_idx):
+                    met = t_idx
+                    break
+        errors.warn(self._expression)
+        return met
 
 
 class _CallableStopCondition(_StopCondition):
