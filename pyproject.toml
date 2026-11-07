@@ -389,7 +389,12 @@ environment = { BNGSIM_ENABLE_KLU = "ON", BNGSIM_REQUIRE_KLU = "ON" }
 # leg now, while the macOS and Linux repairs have no counterpart anywhere.
 # The script needs no C compiler and nothing beyond bngsim's own runtime
 # dependencies, so there is no test-requires and it runs on every CPython here.
-test-command = "python {project}/ci/wheel_smoke_klu.py"
+#
+# ci/wheel_smoke_stop_condition.py runs a stop condition that meets 0/0 (issue
+# #1556): on Python 3.13 and later a numpy warning inside a condition refused the
+# run, and the pull-request suites run 3.12 only, so the wheels are where 3.13 is
+# exercised. Same constraints: bngsim and numpy only.
+test-command = "python {project}/ci/wheel_smoke_klu.py && python {project}/ci/wheel_smoke_stop_condition.py"
 
 [tool.cibuildwheel.linux]
 # manylinux_2_28 = AlmaLinux 8 (has dnf); SuiteSparse/KLU comes from EPEL. Its

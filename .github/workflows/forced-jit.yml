@@ -97,6 +97,11 @@ jobs:
           uv sync --extra dev --python 3.12 --reinstall-package bngsim
           ccache --show-stats
 
+      # libroadrunner's wheel links libpython by name; ubuntu-26.04 has no system
+      # 3.12 to satisfy it. See ci/libpython_on_loader_path.sh.
+      - name: Let RoadRunner find libpython
+        run: bash ci/libpython_on_loader_path.sh
+
       # Without MIR compiled in, BNGSIM_CODEGEN_JIT=mir has no JIT to select,
       # and a green run would say nothing about it.
       - name: Guard against a build without MIR

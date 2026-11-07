@@ -33,6 +33,11 @@ not the same for all three (issue #643):
 
 ``copy.deepcopy`` reaches the pickle refusal on all three and is meant to: it
 failed before too, with the message this module exists to replace.
+
+:class:`bngsim.NfsimSession` and :class:`bngsim.RuleMonkeySession` refuse both
+as well. A shallow copy shared the session's handle into the network-free
+engine, and the copy's ``__del__`` destroyed it: dropping ``copy.copy(session)``
+left the original's next ``simulate()`` failing with "No active session".
 """
 
 from __future__ import annotations

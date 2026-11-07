@@ -18,14 +18,48 @@ namespace bngsim {
 Result::Result() = default;
 Result::~Result() = default;
 
+namespace {
+
+// The number of values in a row-major block of `n_times` rows of `a` x `b`
+// values, computed in size_t (issue #1524). The block sizes and the row offsets
+// below used to be int products, which wrap past 2^31 values: 65537 output
+// times x 65536 species came to 65536, a one-row buffer that each record()
+// then wrote past the end of, and 49152 times wrapped negative and failed as
+// "vector". In size_t both are the 25-34 GB requests they are, which allocate
+// or fail as std::bad_alloc (MemoryError in Python). A request too large for
+// any vector to hold, or a negative count, is refused here by name instead.
+size_t block_values(const char *where, int n_times, int a, int b = 1) {
+    const std::string shape = std::to_string(n_times) + " output times x " + std::to_string(a) +
+                              (b == 1 ? std::string() : " x " + std::to_string(b)) + " values";
+    if (n_times < 0 || a < 0 || b < 0) {
+        throw std::invalid_argument(std::string(where) + ": negative size, " + shape);
+    }
+    const size_t limit = std::vector<double>().max_size();
+    size_t n = static_cast<size_t>(n_times);
+    for (int f : {a, b}) {
+        const size_t factor = static_cast<size_t>(f);
+        if (factor != 0 && n > limit / factor) {
+            throw std::length_error(std::string(where) + ": " + shape +
+                                    " is more than one buffer can hold");
+        }
+        n *= factor;
+    }
+    return n;
+}
+
+} // namespace
+
 void Result::allocate(int n_times, int n_species, int n_observables) {
+    const size_t n_species_values = block_values("Result::allocate", n_times, n_species);
+    const size_t n_observable_values = block_values("Result::allocate", n_times, n_observables);
+
     n_times_ = n_times;
     n_species_ = n_species;
     n_observables_ = n_observables;
 
-    time_.resize(n_times, 0.0);
-    species_.resize(n_times * n_species, 0.0);
-    observables_.resize(n_times * n_observables, 0.0);
+    time_.resize(static_cast<size_t>(n_times), 0.0);
+    species_.resize(n_species_values, 0.0);
+    observables_.resize(n_observable_values, 0.0);
 }
 
 void Result::set_time(int time_index, double t) {
@@ -44,11 +78,12 @@ void Result::record(int time_index, double t, const double *species_conc,
     time_[time_index] = t;
 
     if (species_conc && n_species_ > 0) {
-        std::memcpy(&species_[time_index * n_species_], species_conc, n_species_ * sizeof(double));
+        std::memcpy(&species_[static_cast<size_t>(time_index) * n_species_], species_conc,
+                    n_species_ * sizeof(double));
     }
     if (observable_vals && n_observables_ > 0) {
-        std::memcpy(&observables_[time_index * n_observables_], observable_vals,
-                    n_observables_ * sizeof(double));
+        std::memcpy(&observables_[static_cast<size_t>(time_index) * n_observables_],
+                    observable_vals, n_observables_ * sizeof(double));
     }
 }
 
@@ -56,7 +91,7 @@ void Result::record_expressions(int time_index, const double *expr_vals) {
     if (time_index < 0 || time_index >= n_times_ || n_expressions_ == 0)
         return;
     if (expr_vals) {
-        std::memcpy(&expressions_[time_index * n_expressions_], expr_vals,
+        std::memcpy(&expressions_[static_cast<size_t>(time_index) * n_expressions_], expr_vals,
                     n_expressions_ * sizeof(double));
     }
 }
@@ -79,7 +114,8 @@ void Result::set_expression_names(const std::vector<std::string> &names) {
     expression_names_ = names;
     n_expressions_ = static_cast<int>(names.size());
     if (n_times_ > 0 && n_expressions_ > 0) {
-        expressions_.resize(n_times_ * n_expressions_, 0.0);
+        expressions_.resize(block_values("Result::set_expression_names", n_times_, n_expressions_),
+                            0.0);
     }
 }
 const std::vector<std::string> &Result::species_names() const { return species_names_; }
@@ -102,8 +138,10 @@ const SsaDiagnostics &Result::ssa_diagnostics() const { return ssa_diag_; }
 // ─── Sensitivity data ────────────────────────────────────────────────────────
 
 void Result::allocate_sensitivities(int n_times, int n_species, int n_params) {
+    const size_t n_values =
+        block_values("Result::allocate_sensitivities", n_times, n_species, n_params);
     n_sens_params_ = n_params;
-    sensitivities_.resize(n_times * n_species * n_params, 0.0);
+    sensitivities_.resize(n_values, 0.0);
 }
 
 void Result::record_sensitivities(int time_index, const double *const *sens_data, int n_species,
@@ -112,10 +150,10 @@ void Result::record_sensitivities(int time_index, const double *const *sens_data
         return;
     // sens_data[p][i] = dY_i/dp_p at this time point
     // We store as [time][species][param] = sensitivities_[t*ns*np + i*np + p]
-    int offset = time_index * n_species * n_params;
+    const size_t offset = static_cast<size_t>(time_index) * n_species * n_params;
     for (int p = 0; p < n_params; ++p) {
         for (int i = 0; i < n_species; ++i) {
-            sensitivities_[offset + i * n_params + p] = sens_data[p][i];
+            sensitivities_[offset + static_cast<size_t>(i) * n_params + p] = sens_data[p][i];
         }
     }
 }
@@ -131,18 +169,20 @@ const std::vector<std::string> &Result::sens_param_names() const { return sens_p
 // ─── IC sensitivity data ─────────────────────────────────────────────────────
 
 void Result::allocate_sensitivities_ic(int n_times, int n_species, int n_ic) {
+    const size_t n_values =
+        block_values("Result::allocate_sensitivities_ic", n_times, n_species, n_ic);
     n_sens_ic_species_ = n_ic;
-    sensitivities_ic_.resize(n_times * n_species * n_ic, 0.0);
+    sensitivities_ic_.resize(n_values, 0.0);
 }
 
 void Result::record_sensitivities_ic(int time_index, const double *const *sens_data, int n_species,
                                      int n_ic) {
     if (time_index < 0 || time_index >= n_times_ || n_sens_ic_species_ == 0)
         return;
-    int offset = time_index * n_species * n_ic;
+    const size_t offset = static_cast<size_t>(time_index) * n_species * n_ic;
     for (int p = 0; p < n_ic; ++p) {
         for (int i = 0; i < n_species; ++i) {
-            sensitivities_ic_[offset + i * n_ic + p] = sens_data[p][i];
+            sensitivities_ic_[offset + static_cast<size_t>(i) * n_ic + p] = sens_data[p][i];
         }
     }
 }
@@ -164,7 +204,9 @@ const std::vector<std::string> &Result::sens_ic_species_names() const {
 // record on an unpopulated block can never index out of range.
 
 void Result::allocate_observable_sensitivities(int n_times, int n_observables, int n_params) {
-    observable_sensitivities_.assign(static_cast<size_t>(n_times) * n_observables * n_params, 0.0);
+    observable_sensitivities_.assign(
+        block_values("Result::allocate_observable_sensitivities", n_times, n_observables, n_params),
+        0.0);
 }
 
 void Result::record_observable_sensitivities(int time_index, const double *const *sens_data,
@@ -185,7 +227,9 @@ const std::vector<double> &Result::observable_sensitivity_data() const {
 }
 
 void Result::allocate_expression_sensitivities(int n_times, int n_expressions, int n_params) {
-    expression_sensitivities_.assign(static_cast<size_t>(n_times) * n_expressions * n_params, 0.0);
+    expression_sensitivities_.assign(
+        block_values("Result::allocate_expression_sensitivities", n_times, n_expressions, n_params),
+        0.0);
 }
 
 void Result::record_expression_sensitivities(int time_index, const double *const *sens_data,
@@ -206,7 +250,9 @@ const std::vector<double> &Result::expression_sensitivity_data() const {
 }
 
 void Result::allocate_observable_sensitivities_ic(int n_times, int n_observables, int n_ic) {
-    observable_sensitivities_ic_.assign(static_cast<size_t>(n_times) * n_observables * n_ic, 0.0);
+    observable_sensitivities_ic_.assign(
+        block_values("Result::allocate_observable_sensitivities_ic", n_times, n_observables, n_ic),
+        0.0);
 }
 
 void Result::record_observable_sensitivities_ic(int time_index, const double *const *sens_data,
@@ -227,7 +273,9 @@ const std::vector<double> &Result::observable_sensitivity_ic_data() const {
 }
 
 void Result::allocate_expression_sensitivities_ic(int n_times, int n_expressions, int n_ic) {
-    expression_sensitivities_ic_.assign(static_cast<size_t>(n_times) * n_expressions * n_ic, 0.0);
+    expression_sensitivities_ic_.assign(
+        block_values("Result::allocate_expression_sensitivities_ic", n_times, n_expressions, n_ic),
+        0.0);
 }
 
 void Result::record_expression_sensitivities_ic(int time_index, const double *const *sens_data,
@@ -300,9 +348,10 @@ void Result::truncate(int new_n_times) {
 // ─── SSA per-reaction event statistics (GH #616) ─────────────────────────────
 
 void Result::allocate_reaction_stats(int n_times, int n_reactions) {
+    const size_t n_values = block_values("Result::allocate_reaction_stats", n_times, n_reactions);
     n_reaction_stats_ = n_reactions;
-    reaction_counts_.assign(static_cast<size_t>(n_times) * n_reactions, 0.0);
-    reaction_integrals_.assign(static_cast<size_t>(n_times) * n_reactions, 0.0);
+    reaction_counts_.assign(n_values, 0.0);
+    reaction_integrals_.assign(n_values, 0.0);
 }
 
 void Result::record_reaction_stats(int time_index, const double *counts, const double *integrals) {
@@ -359,10 +408,12 @@ void Result::to_gdat(const std::string &path, bool print_functions, bool print_r
     for (int t = 0; t < n_times_; ++t) {
         out << " " << std::setw(18) << time_[t];
         for (size_t c : obs_cols) {
-            out << " " << std::setw(18) << observables_[t * n_observables_ + c];
+            out << " " << std::setw(18)
+                << observables_[static_cast<size_t>(t) * n_observables_ + c];
         }
         for (size_t c : func_cols) {
-            out << " " << std::setw(18) << expressions_[t * n_expressions_ + c];
+            out << " " << std::setw(18)
+                << expressions_[static_cast<size_t>(t) * n_expressions_ + c];
         }
         out << "\n";
     }
@@ -397,7 +448,7 @@ void Result::to_cdat(const std::string &path) const {
     for (int t = 0; t < n_times_; ++t) {
         out << " " << std::setw(18) << time_[t];
         for (std::size_t j : cols) {
-            out << " " << std::setw(18) << species_[t * n_species_ + j];
+            out << " " << std::setw(18) << species_[static_cast<size_t>(t) * n_species_ + j];
         }
         out << "\n";
     }

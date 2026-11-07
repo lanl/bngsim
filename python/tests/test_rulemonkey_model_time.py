@@ -350,11 +350,14 @@ def test_a_session_counts_its_events_since_initialize():
 def test_a_span_that_is_not_finite_is_refused(xml):
     # On a model that reads the clock it used to integrate for ever, past any
     # timeout; on one that does not, it returned nan and inf for times.
+    # Simulator.run refuses the span itself now, the same ValueError on every
+    # method (issue #1504); the session below takes bare times, which the C++
+    # refuses.
     for times in (
         {"t_span": (0.0, math.inf), "n_points": 3},
         {"t_span": (math.nan, 1.0), "n_points": 3},
     ):
-        with pytest.raises(bngsim.SimulationError, match="finite"):
+        with pytest.raises(ValueError, match="finite"):
             _rm(xml, 1, **times)
     with bngsim.RuleMonkeySession(xml) as s:
         s.initialize(seed=1)

@@ -89,6 +89,15 @@ source-hash fallback key, plus the debris of interrupted compiles (`bngsim_shard
 scratch directories and stray `.c`, which nothing else cleans up) — and a second
 breakdown by codegen key.
 
+On Linux and macOS a compile does not outlive the Python process that asked for
+it. It runs under a small supervisor that holds a pipe from that process; when the
+process dies, by a harness's `SIGTERM` at its wall cap or a `SIGKILL` alike, the
+supervisor kills the compiler and its backends and removes the compile's `.c` and
+partial library (issue #1552). Before, the compile ran on to the end, competing
+for the CPU with whatever ran next, and left a library nobody installed. So that
+debris now comes only from a kill that takes the supervisor too, or from a
+compile older than this.
+
 `clean` is safe by construction: it removes only that debris, so no compiled
 artifact is touched and no cache hit is lost. `prune` bounds the cache by orphan
 status, age and/or total size, evicting least-recently-used artifacts first; it runs
@@ -131,8 +140,9 @@ bngsim.prune_codegen_cache(max_size="2G")
 ### Which artifacts are dead
 
 An artifact is named `rhs_<key>_<hash><suffix>`, where `<key>` is the codegen cache
-key described above — the `_CODEGEN_VERSION` constant and a digest of the emitters'
-source. The key is mixed into `<hash>` as well, so it is what decides validity;
+key described above — the `_CODEGEN_VERSION` constant, a digest of the emitters'
+source, and the architecture the library is built for (`arm64`, `x86-64`,
+`aarch64`). The key is mixed into `<hash>` as well, so it is what decides validity;
 carrying it beside the hash is what makes the dead corpus *countable*:
 
 ```console
@@ -141,15 +151,15 @@ codegen cache: /home/you/.cache/bngsim/codegen
   entries:   14,377
   size:      2.0 GiB
   ...
-  key:       28+317a5b34d5dc9959
+  key:       43+317a5b34d5dc9959+arm64
   live:      412 artifact(s), 61.0 MiB
   orphaned:  13,901 artifact(s), 1.9 GiB
 
-  codegen key                  entries         size
-  -------------------------- --------- ------------
-  27+9f0c1de2ab3c4d5e             9,001      1.2 GiB
-  28+317a5b34d5dc9959 (live)        412     61.0 MiB
-  -                               4,900    700.0 MiB
+  codegen key                              entries         size
+  -------------------------------------- --------- ------------
+  42+9f0c1de2ab3c4d5e                        9,001      1.2 GiB
+  43+317a5b34d5dc9959+arm64 (live)             412     61.0 MiB
+  -                                          4,900    700.0 MiB
 ```
 
 `prune --orphaned` removes exactly that second number: every artifact whose key is
@@ -164,8 +174,18 @@ orphans are another's live artifacts. Spare a sibling install's key with `--keep
 repeatable:
 
 ```bash
-bngsim-cache prune --orphaned --keep-key 27+9f0c1de2ab3c4d5e
+bngsim-cache prune --orphaned --keep-key 42+9f0c1de2ab3c4d5e
 ```
+
+One cache can also serve one bngsim on two architectures: a native and a Rosetta
+Python on an Apple Silicon Mac, or the x86-64 and aarch64 nodes of a cluster that
+share a home directory. Each builds and loads only its own libraries, which the
+architecture in the key keeps apart (issue #1486; before it, the second to run
+loaded the first's and failed with `incompatible architecture`). An artifact whose
+key differs from this install's in the architecture alone is the other
+architecture's build of the same source, so `info` counts it as `other arch`, not
+orphaned, and `prune --orphaned` leaves it alone. Run the prune from that
+architecture's Python to sweep its own.
 
 Artifacts written before this naming landed (issue #363) carry no key at all. They
 count as orphaned — no keyed lookup will ever reach one again — and `info` lists them
@@ -222,7 +242,7 @@ RHS source can be several MB:
 | `BNGSIM_CODEGEN_CACHE_DIR` | `~/.cache/bngsim/codegen` | Directory for the content-addressed compiled-artifact cache. Redirect it to node-local scratch, or to a read-only dir of pre-warmed artifacts, so cluster jobs reuse one `.so` instead of recompiling. Read once at import — `export` it before launching `python`. |
 | `BNGSIM_CODEGEN_STRICT` | off | `1` makes a failed automatic codegen build (the ODE RHS at or above the threshold, the SSA propensity library) raise instead of falling back to the interpreter. Empty, `0`, `false`, `no` and `off` are off. A decline still falls back. |
 | `BNGSIM_CODEGEN_TIMEOUT` | `600` | Seconds before the `cc` invocation is killed (a timeout raises a `RuntimeError` naming this var). `0` disables the limit. |
-| `BNGSIM_CODEGEN_OPT` | size-based | Optimization level: an integer `0`–`3`, or `high`/`low`. Sources over ~1 MB default to `low` (`-O1`) since `-O3` costs minutes for negligible runtime gain on a single flat function. Overrides the chunking opt level below. |
+| `BNGSIM_CODEGEN_OPT` | size-based | Optimization level: an integer `0`–`3`, or `high`/`low`/`none`. Sources over ~1 MB default to `low` (`-O1`) since `-O3` costs minutes for negligible runtime gain on a single flat function, and unchunked sources over ~8 MB to `none` (`-O0`). At `-O0` every temporary in a function gets its own stack slot, so a large function's stack frame grows with it; a gcc/clang library with a function whose frame is over 4 MiB (512 KiB on Windows, where a thread's stack is 1 MiB) is refused, as a failed build, rather than installed, since a call to it can overflow the calling thread's stack and crash the process (issue #1566). Overrides the chunking opt level below. |
 | `BNGSIM_CODEGEN_CHUNK` | `2000` | Reaction count at/above which the RHS (and analytical sensitivity) body is split into many small `noinline` helper functions instead of one giant function — see below. `off`/`0` disables; `on` forces chunking at any size; an integer sets the threshold. |
 | `BNGSIM_CODEGEN_CHUNK_SIZE` | `256` | Reactions per chunked helper function. Smaller blocks compile a little faster at a slight call-overhead cost. |
 | `BNGSIM_CODEGEN_JOBS` | allocation-aware | Parallel compiler processes for a chunked source — see below. `auto` (default) sizes the pool from the CPUs the process is actually allocated (`sched_getaffinity` / `SLURM_CPUS_PER_TASK`), never the node's core count; `1` keeps the serial single-`cc` compile; a positive integer caps the pool. |

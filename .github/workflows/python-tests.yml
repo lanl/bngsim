@@ -250,6 +250,11 @@ jobs:
           uv sync --extra dev --python 3.12
           ccache --show-stats
 
+      # libroadrunner's wheel links libpython by name; ubuntu-26.04 has no system
+      # 3.12 to satisfy it. See ci/libpython_on_loader_path.sh.
+      - name: Let RoadRunner find libpython
+        run: bash ci/libpython_on_loader_path.sh
+
       - name: Show build / capability info
         env:
           EXPECT_LAPACK: ${{ matrix.leg.expect_lapack }}
@@ -286,6 +291,11 @@ jobs:
           PY
           # The runtime codegen path shells out to this compiler at simulate time.
           uv run --no-sync python -c "from bngsim import _codegen; print('C compiler:', _codegen._find_c_compiler())"
+          # --extra dev installs RoadRunner, and conftest declares a RoadRunner
+          # skip as expected (it is a developer-only engine), so a wheel that
+          # stops importing turns every test that needs it into a skip without a
+          # word. ubuntu-26.04 did exactly that (libpython3.12.so.1.0 not found).
+          uv run --no-sync python -c "import roadrunner; print('roadrunner', roadrunner.__version__)"
 
       # BNGSIM_SKIP_AUDIT=strict turns any skip whose reason is not in conftest's
       # _DECLARED_SKIPS into a failure. That is the second half of the false-green

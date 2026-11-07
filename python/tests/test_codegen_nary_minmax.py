@@ -9,10 +9,13 @@ emitter already folds an n-ary call. A ``.net`` function body keeps the call as
 written, so an explicit ``codegen=True`` run and every forward sensitivity run of
 such a model failed to build while the interpreted run was fine.
 
-The fix folds the call left to right, the way ExprTk reduces it:
+The fix nests the call into binary calls, grouped as ExprTk groups it:
 ``max(a,b,c)`` becomes ``max(max(a,b),c)``, and the rename then applies to each
-binary call. A binary call is the only form that ever compiled, and it is left
-byte-for-byte as written, so no existing model's generated source changes.
+binary call. Four and five arguments are not a left fold in ExprTk: it pairs the
+first four, ``max(max(a,b),max(c,d))``, which differs from the fold when an
+argument is NaN (issue #1507; test_codegen_minmax_nan.py). A binary call is the
+only form that ever compiled, and it is left byte-for-byte as written, so no
+existing model's generated source changes.
 
 ExprTk also accepts a one-argument call and returns the argument; ``fmax(a)``
 does not compile, so ``max(a)`` becomes ``(a)``. Only the zero-argument form,
@@ -72,7 +75,11 @@ def _run(tmp_path, body: str, a0: float = 5.0, codegen: bool = False, t_end: flo
     [
         ("max(a,b,c)", "max(max(a,b),c)"),
         ("min(a,b,c)", "min(min(a,b),c)"),
-        ("max(a,b,c,d)", "max(max(max(a,b),c),d)"),
+        # ExprTk's process_4 and process_5 pair the first four (issue #1507);
+        # six or more are a left fold again.
+        ("max(a,b,c,d)", "max(max(a,b),max(c,d))"),
+        ("min(a,b,c,d,e)", "min(min(min(a,b),min(c,d)),e)"),
+        ("max(a,b,c,d,e,f)", "max(max(max(max(max(a,b),c),d),e),f)"),
         ("max(a, b, c)", "max(max(a,b),c)"),
         # an n-ary call inside another n-ary one
         ("max(a,min(b,c,d),e)", "max(max(a,min(min(b,c),d)),e)"),
@@ -84,7 +91,7 @@ def _run(tmp_path, body: str, a0: float = 5.0, codegen: bool = False, t_end: flo
         ("max(a+b, pow(b,c), 2)", "max(max(a+b,pow(b,c)),2)"),
     ],
 )
-def test_an_n_ary_call_folds_left_to_right(expr, expect):
+def test_an_n_ary_call_nests_as_exprtk_groups_it(expr, expect):
     assert _replace_engine_calls(expr) == expect
 
 

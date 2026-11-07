@@ -395,7 +395,10 @@ def _fold_minmax(expr: str) -> str:
 # rewritten to ` and `/` or ` before ExprTk ever sees them
 # (replace_logical_operators, src/expression.cpp), so a model may write either.
 # And the six comparisons, longer spelling first so `<=` is not read as `<`.
-_LOGICAL_OPS = ("&&", "||", "and", "or")
+# ExprTk's `&` and `|` are its `and` and `or` (lexer::scan_operator), not
+# bitwise operators, which jnp would refuse on the doubles comparisons now are.
+# Each single one after its double, which _split_top_level_ops tries first.
+_LOGICAL_OPS = ("&&", "||", "&", "|", "and", "or")
 _COMPARISON_OPS = ("<=", ">=", "==", "!=", "<", ">")
 
 
@@ -490,7 +493,10 @@ def _regroup_for_python(expr: str) -> str:
 
 def _regroup_operand(expr: str) -> str:
     """One region between commas: bracket its logical operands, or, failing
-    that, left-fold its comparison run."""
+    that, left-fold its comparison run.
+
+    The results are JAX booleans; :class:`_BooleansAsDoubles` makes a double of
+    each one arithmetic reads, once the text is Python."""
     parts = _split_top_level_ops(expr, _LOGICAL_OPS)
     if len(parts) > 1:
         # Emitted as calls, not operators. Python's `and`/`or` ask a traced value
@@ -503,7 +509,7 @@ def _regroup_operand(expr: str) -> str:
         disjuncts: list[str] = []
         current = operands[0]
         for op, operand in zip(parts[1::2], operands[1:], strict=True):
-            if op in ("&&", "and"):
+            if op in ("&&", "&", "and"):
                 current = f"jnp.logical_and({current}, {operand})"
             else:
                 disjuncts.append(current)
@@ -636,6 +642,8 @@ def _translate_expr_jax(
     # denominator shape to a stable sigmoid before JAX traces the expression.
     c = _rewrite_hill_power_denominators(c)
 
+    c = _booleans_as_doubles(c)
+
     # Spend the clock placeholder last: `t` is the JAX RHS's own time argument,
     # and nothing above may rewrite it (issue #659).
     c = c.replace(_CLOCK_SYM, "t")
@@ -645,6 +653,93 @@ def _translate_expr_jax(
     _reject_untranslated_names(expr, c)
 
     return c
+
+
+#: The jnp calls whose result is a boolean, and which read each argument as a
+#: truth value.
+_JNP_LOGICAL_CALLS = frozenset({"logical_and", "logical_or", "logical_not", "logical_xor"})
+
+
+def _jnp_call_name(node: ast.AST) -> str | None:
+    """``"where"`` for ``jnp.where(...)``, and so on; ``None`` for anything else."""
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "jnp"
+    ):
+        return node.func.attr
+    return None
+
+
+def _is_boolean(node: ast.AST) -> bool:
+    return isinstance(node, ast.Compare) or _jnp_call_name(node) in _JNP_LOGICAL_CALLS
+
+
+def _as_double(node: ast.expr) -> ast.expr:
+    """``jnp.where(node, 1.0, 0.0)``."""
+    return ast.Call(
+        func=ast.Attribute(value=ast.Name(id="jnp", ctx=ast.Load()), attr="where", ctx=ast.Load()),
+        args=[node, ast.Constant(1.0), ast.Constant(0.0)],
+        keywords=[],
+    )
+
+
+class _BooleansAsDoubles:
+    """Make a double, 1.0 or 0.0, of every comparison or logical result that is
+    read as a number (issue #1495).
+
+    ExprTk computes ``A > B`` as a double. JAX computes a boolean, and adds two
+    booleans as a logical or and will not negate one, so ``((A>0)+(B>0))`` was 1
+    where the engine has 2, and ``-(A>B)`` raised. A boolean that is a condition
+    (``jnp.where``'s first argument), an argument of a ``jnp.logical_*`` call, or
+    an operand of a comparison reads as the double would and is left alone; so is
+    the text of an expression that has no other, which is nearly all of them.
+    Everywhere else, the whole expression included (a function's value is read by
+    the functions after it), it is written ``jnp.where(..., 1.0, 0.0)``.
+    """
+
+    def __init__(self) -> None:
+        self.changed = False
+
+    def visit(self, node: ast.expr, truth: bool = False) -> ast.expr:
+        name = _jnp_call_name(node)
+        if isinstance(node, ast.Compare):
+            node.left = self.visit(node.left, truth=True)
+            node.comparators = [self.visit(c, truth=True) for c in node.comparators]
+        elif isinstance(node, ast.Call):
+            if name in _JNP_LOGICAL_CALLS:
+                node.args = [self.visit(a, truth=True) for a in node.args]
+            elif name == "where" and node.args:
+                node.args = [self.visit(a, truth=(i == 0)) for i, a in enumerate(node.args)]
+            else:
+                node.args = [self.visit(a) for a in node.args]
+        elif isinstance(node, ast.BinOp):
+            node.left = self.visit(node.left)
+            node.right = self.visit(node.right)
+        elif isinstance(node, ast.UnaryOp):
+            node.operand = self.visit(node.operand)
+        if _is_boolean(node) and not truth:
+            self.changed = True
+            return _as_double(node)
+        return node
+
+
+def _booleans_as_doubles(expr: str) -> str:
+    """``expr`` with :class:`_BooleansAsDoubles` applied; as it was when no
+    boolean is read as a number, or when it is not one Python expression."""
+    if not any(ch in expr for ch in "<>=") and "logical_" not in expr:
+        return expr
+    try:
+        tree = ast.parse(expr, mode="eval")
+    except SyntaxError:
+        return expr
+    transformer = _BooleansAsDoubles()
+    tree.body = transformer.visit(tree.body)
+    if not transformer.changed:
+        return expr
+    ast.fix_missing_locations(tree)
+    return ast.unparse(tree)
 
 
 class _HillPowerDenominator(ast.NodeTransformer):

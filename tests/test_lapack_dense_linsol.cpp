@@ -217,10 +217,16 @@ static int test_adaptive_switch() {
         CHECK(r_ref < 1e-6, "reference residual small");
         CHECK(residual_inf(A_src.data(), n, x_adaptive.data(), b.data()) < 1e-6,
               "adaptive residual small across the backend switch");
-        double dmax = 0.0;
-        for (int i = 0; i < n; ++i)
+        // Relative to the solution's size (see test_pivoting_parity): cycle 3's
+        // system has cond 1.9e4 and |x| up to 4.2e3, where a fused and an
+        // unfused LU differ by 1.3e-9 (3e-13 of |x|), more than the absolute
+        // 1e-9 this once asserted.
+        double dmax = 0.0, xmax = 0.0;
+        for (int i = 0; i < n; ++i) {
             dmax = std::max(dmax, std::fabs(x_adaptive[i] - x_ref[i]));
-        CHECK(dmax < 1e-9, "adaptive solve matches built-in before and after the switch");
+            xmax = std::max(xmax, std::fabs(x_ref[i]));
+        }
+        CHECK(dmax <= 1e-9 * xmax, "adaptive solve matches built-in before and after the switch");
     }
     ::unsetenv("BNGSIM_LAPACK_DENSE_K");
     ::unsetenv("BNGSIM_LAPACK_DENSE_MIN_N");
@@ -410,10 +416,19 @@ static int test_pivoting_parity() {
             return 1;
         CHECK(rb < 1e-6, "built-in residual small (pivoting)");
         CHECK(rl < 1e-6, "lapack residual small (pivoting) — rebase correct");
-        double dmax = 0.0;
-        for (int i = 0; i < n; ++i)
+        // The two factors agree to the system's conditioning, not to the bit:
+        // they are different code, and the system's dgetrf may be built with
+        // fused multiply-adds where bngsim's GETRF is not (ubuntu-26.04's
+        // liblapack is; issue #1582). Measured fused against unfused, the n=64
+        // system (cond 4.5e3, |x| up to 1.9e3) differs by 1.4e-10, 7e-14 of |x|.
+        // A mis-rebased pivot is off by O(|x|), so 1e-9 of |x| still tells the two
+        // apart with room on both sides.
+        double dmax = 0.0, xmax = 0.0;
+        for (int i = 0; i < n; ++i) {
             dmax = std::max(dmax, std::fabs(xb[i] - xl[i]));
-        CHECK(dmax < 1e-9, "built-in and lapack agree under row pivoting");
+            xmax = std::max(xmax, std::fabs(xb[i]));
+        }
+        CHECK(dmax <= 1e-9 * xmax, "built-in and lapack agree under row pivoting");
     }
     return 0;
 }
@@ -591,6 +606,282 @@ static int test_without_a_row_held_alone_the_solve_is_sunlinsol_dense() {
     return 0;
 }
 
+// ── Rows at 0 that read only each other (#1485) ─────────────────────────────
+// Rows 0..L-1 read only each other off their diagonals. In a chain row k reads
+// row k-1 (row 0 is held alone); in a cycle row k reads row k+1 and row L-1
+// reads row 0. Each one's column has a dominant entry on a row past them, which
+// partial pivoting takes as the pivot, as in #1485's models with the species
+// reversed (P' = kP, Q' = kQ + P read by V' = 1 + 1e8·Q - V, and the cycle
+// P' = Q' = k(P + Q)). The rows past them are dense, and read every column.
+// Where their right-hand side is 0, so are their components, exactly.
+enum class Held { chain, cycle };
+
+static void fill_with_rows_held_together(double *data, int n, int L, Held shape, double *b,
+                                         unsigned seed) {
+    fill_well_conditioned(data, n, seed);
+    for (int k = 0; k < L; ++k) {
+        for (int j = 0; j < n; ++j)
+            data[(long)j * n + k] = 0.0;
+        data[(long)k * n + k] = 0.75;
+        if (shape == Held::chain && k > 0) // below the diagonal, or a long chain is ill-conditioned
+            data[(long)(k - 1) * n + k] = 0.5 + 0.005 * k;
+        if (shape == Held::cycle && L > 1)
+            data[(long)((k + 1) % L) * n + k] = 1.0 + 0.1 * k;
+        data[(long)k * n + L + k % (n - L)] = 1e8 * (1.0 + k); // pivot for column k
+    }
+    for (int i = 0; i < n; ++i)
+        b[i] = (i < L) ? 0.0 : ((double)std::rand() / RAND_MAX) - 0.5;
+}
+
+// The exact answer where rows 0..L-1 are at 0: x_k = 0 there, and the rest is
+// the solve of the rows past them on their own columns, which read the first L
+// columns only times 0. Solved by SUNDIALS' dense LU, on a matrix with no row
+// at 0 to leave a residue in.
+static int exact_past_zero(const std::vector<double> &A, const std::vector<double> &b, int n, int L,
+                           SUNContext ctx, std::vector<double> &x_exact) {
+    const int r = n - L;
+    std::vector<double> Ar((long)r * r), br(b.begin() + L, b.end()), xr;
+    for (int j = 0; j < r; ++j)
+        for (int i = 0; i < r; ++i)
+            Ar[(long)j * r + i] = A[(long)(j + L) * n + (i + L)];
+    bngsim::SUNMatrixGuard M(SUNDenseMatrix(r, r, ctx));
+    bngsim::NVectorGuard y(N_VNew_Serial(r, ctx));
+    bngsim::SUNLinSolGuard stock(SUNLinSol_Dense(y, M, ctx));
+    CHECK(stock, "solver alloc");
+    if (solve_on(stock, Ar.data(), br.data(), r, ctx, xr) != 0)
+        return 1;
+    x_exact.assign(L, 0.0);
+    x_exact.insert(x_exact.end(), xr.begin(), xr.end());
+    return 0;
+}
+
+static double max_abs_diff(const std::vector<double> &a, const std::vector<double> &b, int from) {
+    double m = 0.0;
+    for (size_t i = from; i < a.size(); ++i)
+        m = std::max(m, std::fabs(a[i] - b[i]));
+    return m;
+}
+
+// Solve with this solver and with SUNDIALS' own on the same matrix.
+static int solve_both(const std::vector<double> &A, const std::vector<double> &b, int n, bool blas,
+                      SUNContext ctx, std::vector<double> &x, std::vector<double> &x_stock) {
+    ::setenv("BNGSIM_LAPACK_DENSE_K", "0", 1); // the BLAS arm factors with dgetrf
+    ::setenv("BNGSIM_LAPACK_DENSE_MIN_N", "0", 1);
+    bngsim::SUNMatrixGuard M(SUNDenseMatrix(n, n, ctx));
+    bngsim::NVectorGuard y(N_VNew_Serial(n, ctx));
+    bngsim::SUNLinSolGuard ours(bngsim::make_dense_linear_solver(y, M, ctx, blas));
+    bngsim::SUNLinSolGuard stock(SUNLinSol_Dense(y, M, ctx));
+    ::unsetenv("BNGSIM_LAPACK_DENSE_K");
+    ::unsetenv("BNGSIM_LAPACK_DENSE_MIN_N");
+    CHECK(ours && stock, "solver alloc");
+    if (solve_on(ours, A.data(), b.data(), n, ctx, x) != 0 ||
+        solve_on(stock, A.data(), b.data(), n, ctx, x_stock) != 0)
+        return 1;
+    return 0;
+}
+
+// The rows at 0 give exactly 0, and every other component is SUNDIALS' dense
+// LU's to the bit (on the built-in factor; on the BLAS factor dgetrf's, no
+// further from the exact answer than SUNDIALS' are). The stock solver has to
+// leave a residue in some trial, or the case is not exercised. A cycle of 40
+// rows is read as a cycle of 2 is: there is no bound on how many rows read each
+// other. The residual of the rows past them is not a measure here: the LU's
+// components there are what they were, and were computed against its residue
+// at the rows at 0, which a dominant entry multiplies; their error is what it
+// was.
+static int rows_held_together_read_exactly(bool blas) {
+    bngsim::SunContextGuard ctx;
+    CHECK(ctx, "SUNContext_Create");
+    int stock_left_a_residue = 0;
+    for (Held shape : {Held::chain, Held::cycle}) {
+        for (int L : {2, 3, 16, 40}) {
+            for (int past : {3, 30}) {
+                const int n = L + past;
+                for (unsigned trial = 0; trial < 10; ++trial) {
+                    std::vector<double> A((long)n * n), b(n), x, x_stock;
+                    fill_with_rows_held_together(A.data(), n, L, shape, b.data(),
+                                                 8100u + trial + 31u * n + 7u * L);
+                    if (solve_both(A, b, n, blas, ctx, x, x_stock) != 0)
+                        return 1;
+                    for (int k = 0; k < L; ++k) {
+                        CHECK(x[k] == 0.0, "a row held at 0 with others gives exactly 0");
+                        if (x_stock[k] != 0.0)
+                            ++stock_left_a_residue;
+                    }
+                    if (!blas)
+                        for (int i = L; i < n; ++i)
+                            CHECK(same_bits(x[i], x_stock[i]),
+                                  "every other component is SUNDIALS' dense LU's to the bit");
+                    std::vector<double> x_exact;
+                    if (exact_past_zero(A, b, n, L, ctx, x_exact) != 0)
+                        return 1;
+                    const double scale = 1.0 + max_abs_diff(x_exact, std::vector<double>(n), 0);
+                    // dgetrf's components are as far from it as SUNDIALS' are, about
+                    // 1e-9 here, one or the other ahead trial by trial.
+                    const double bound =
+                        blas ? 1e-8 * scale
+                             : std::max(2.0 * max_abs_diff(x_stock, x_exact, L), 1e-12 * scale);
+                    CHECK(max_abs_diff(x, x_exact, L) <= bound,
+                          "no component is further from the exact answer than an LU's");
+                }
+            }
+        }
+    }
+    CHECK(stock_left_a_residue > 0, "the stock dense LU leaves a residue in some trial");
+    return 0;
+}
+
+static int test_rows_at_zero_that_read_each_other_are_read_exactly() {
+    return rows_held_together_read_exactly(false);
+}
+
+static int test_rows_at_zero_that_read_each_other_are_read_exactly_on_the_blas_factor() {
+    if (!bngsim::lapack_dense_available())
+        SKIP("no BLAS backend — no dgetrf factor to read it on");
+    return rows_held_together_read_exactly(true);
+}
+
+// A row whose right-hand side is 0 but that reads a row whose answer is not, is
+// not 0, and neither is a row that reads it: in a chain 0 <- 1 <- 2 <- 3, b is
+// nonzero on row `lead` alone, so rows lead.. are the LU's to the bit and rows
+// before it are 0. Nothing is read where b is nonzero on every row of a block,
+// so the solve is SUNDIALS' to the bit everywhere.
+static int test_a_row_at_zero_that_reads_a_row_off_zero_is_the_lus() {
+    bngsim::SunContextGuard ctx;
+    CHECK(ctx, "SUNContext_Create");
+    const int L = 4, n = L + 30;
+    for (int lead = 0; lead <= L; ++lead) { // lead == L: no row of the chain off 0
+        for (unsigned trial = 0; trial < 10; ++trial) {
+            std::vector<double> A((long)n * n), b(n), x, x_stock;
+            fill_with_rows_held_together(A.data(), n, L, Held::chain, b.data(), 9600u + trial);
+            if (lead < L)
+                b[lead] = 0.3 + 0.1 * trial;
+            if (solve_both(A, b, n, false, ctx, x, x_stock) != 0)
+                return 1;
+            for (int k = 0; k < L; ++k) {
+                if (k < lead)
+                    CHECK(x[k] == 0.0, "a row reading only rows at 0 gives exactly 0");
+                else if (k == 0)
+                    CHECK(x[k] == b[0] / 0.75, "row 0 is held alone: b / a, as before");
+                else
+                    CHECK(same_bits(x[k], x_stock[k]), "a row reading a row off 0 is the LU's");
+            }
+            for (int i = L; i < n; ++i)
+                CHECK(same_bits(x[i], x_stock[i]), "every other component is the LU's");
+        }
+    }
+    // Every row's right-hand side nonzero: the solve is SUNDIALS' everywhere.
+    for (Held shape : {Held::chain, Held::cycle}) {
+        std::vector<double> A((long)n * n), b(n), x, x_stock;
+        fill_with_rows_held_together(A.data(), n, L, shape, b.data(), 9700u);
+        for (int k = 0; k < L; ++k)
+            b[k] = 0.25 + 0.5 * k;
+        if (solve_both(A, b, n, false, ctx, x, x_stock) != 0)
+            return 1;
+        for (int i = 0; i < n; ++i)
+            CHECK(i < 1 || same_bits(x[i], x_stock[i]), "no 0 to read: the LU's to the bit");
+    }
+    return 0;
+}
+
+// The bound. A row with 16 entries off its diagonal, each on a row held alone at
+// 0, is read, and so is a row at 0 that reads it; one with 17 is not, nor is
+// its reader, and both are the LU's to the bit. Rows 0..16 are held alone,
+// row 17 reads rows 0..15 (or 0..16), and row 18 reads row 17.
+static int test_a_row_past_the_bound_is_left_to_the_lu() {
+    bngsim::SunContextGuard ctx;
+    CHECK(ctx, "SUNContext_Create");
+    const int X = 17, Y = 18, n = Y + 1 + 30;
+    for (int reads : {16, 17}) {
+        std::vector<double> A((long)n * n), b(n), x, x_stock;
+        fill_with_rows_held_together(A.data(), n, Y + 1, Held::chain, b.data(), 9500u);
+        for (int k = 0; k <= Y; ++k)
+            for (int j = 0; j < n; ++j)
+                if (j != k)
+                    A[(long)j * n + k] = 0.0;
+        for (int j = 0; j < reads; ++j)
+            A[(long)j * n + X] = 1.0 + 0.01 * j;
+        A[(long)X * n + Y] = 2.0;
+        if (solve_both(A, b, n, false, ctx, x, x_stock) != 0)
+            return 1;
+        for (int k = 0; k < X; ++k)
+            CHECK(x[k] == 0.0, "a row held alone is read either way");
+        for (int k : {X, Y}) {
+            if (reads == 16) {
+                CHECK(x[k] == 0.0, "within the bound, the row and its reader are 0 exactly");
+            } else {
+                CHECK(x_stock[k] != 0.0, "the stock LU leaves a residue there");
+                CHECK(same_bits(x[k], x_stock[k]), "past it, the LU's to the bit");
+            }
+        }
+    }
+    return 0;
+}
+
+// One solver, factoring matrices whose pattern changes from one to the next, as
+// a Newton matrix's does where an entry reaches or leaves 0. The solver keeps
+// what it found of the pattern while it holds; each answer must be the one a
+// fresh solver gives. A chain, rows 0 <- 1 <- 2, and row 3 held alone off 0,
+// ahead of 30 dense rows; then row 1 reads a dense row; then the chain again;
+// then row 2 reads row 3 in place of row 1 (as many entries, so only where they
+// lie tells it from the chain: it is off 0 now); then rows 0..16 held alone
+// with row 17 reading 17 of them, 16, and 17 again (a row that drops to the
+// bound).
+static int test_a_pattern_that_changes_is_read_anew() {
+    bngsim::SunContextGuard ctx;
+    CHECK(ctx, "SUNContext_Create");
+    const int n = 19 + 30;
+    enum Step { chain, reads_dense, moved, wide17, wide16 };
+    bngsim::SUNMatrixGuard M(SUNDenseMatrix(n, n, ctx));
+    bngsim::NVectorGuard y(N_VNew_Serial(n, ctx));
+    bngsim::SUNLinSolGuard kept(bngsim::make_dense_linear_solver(y, M, ctx, false));
+    CHECK(kept, "solver alloc");
+    for (Step step : {chain, reads_dense, chain, moved, chain, wide17, wide16, wide17, chain}) {
+        for (bool zero : {true, false}) {
+            std::vector<double> A((long)n * n), b(n);
+            const bool wide = step == wide17 || step == wide16;
+            fill_with_rows_held_together(A.data(), n, wide ? 19 : 4, Held::chain, b.data(), 9400u);
+            if (!wide) {
+                A[(long)2 * n + 3] = 0.0; // row 3 held alone, off 0
+                b[3] = 0.7;
+            }
+            if (wide) {
+                for (int k = 0; k < 19; ++k)
+                    for (int j = 0; j < n; ++j)
+                        if (j != k)
+                            A[(long)j * n + k] = 0.0;
+                for (int j = 0; j < (step == wide17 ? 17 : 16); ++j)
+                    A[(long)j * n + 17] = 1.0 + 0.01 * j;
+                A[(long)17 * n + 18] = 2.0;
+            }
+            if (step == reads_dense)
+                A[(long)(4 + 5) * n + 1] = 0.5;
+            if (step == moved) {
+                A[(long)1 * n + 2] = 0.0;
+                A[(long)3 * n + 2] = 1.3;
+            }
+            if (!zero)
+                b[0] = 0.5; // the chain's head off 0: nothing of the chain is 0
+            bngsim::SUNLinSolGuard fresh(bngsim::make_dense_linear_solver(y, M, ctx, false));
+            CHECK(fresh, "solver alloc");
+            std::vector<double> x, x_fresh;
+            if (solve_on(kept, A.data(), b.data(), n, ctx, x) != 0 ||
+                solve_on(fresh, A.data(), b.data(), n, ctx, x_fresh) != 0)
+                return 1;
+            for (int i = 0; i < n; ++i)
+                CHECK(same_bits(x[i], x_fresh[i]), "the kept solver gives a fresh one's answer");
+            if (zero && step == chain)
+                for (int k = 0; k < 3; ++k)
+                    CHECK(x[k] == 0.0, "the chain at 0 is read exactly");
+            if (zero && step == moved)
+                CHECK(x[2] != 0.0, "a row that now reads a row off 0 is not 0");
+            if (zero && step == wide16)
+                CHECK(x[17] == 0.0 && x[18] == 0.0, "at the bound, read exactly");
+        }
+    }
+    return 0;
+}
+
 int main() {
     const bool have_blas = bngsim::lapack_dense_available();
     std::cout << "test_lapack_dense_linsol (GH #84)\n";
@@ -613,6 +904,11 @@ int main() {
     RUN_TEST(test_a_row_held_alone_is_read_exactly);
     RUN_TEST(test_a_row_held_alone_is_read_exactly_on_the_blas_factor);
     RUN_TEST(test_without_a_row_held_alone_the_solve_is_sunlinsol_dense);
+    RUN_TEST(test_rows_at_zero_that_read_each_other_are_read_exactly);
+    RUN_TEST(test_rows_at_zero_that_read_each_other_are_read_exactly_on_the_blas_factor);
+    RUN_TEST(test_a_row_at_zero_that_reads_a_row_off_zero_is_the_lus);
+    RUN_TEST(test_a_row_past_the_bound_is_left_to_the_lu);
+    RUN_TEST(test_a_pattern_that_changes_is_read_anew);
     std::cout << tests_passed << "/" << tests_run << " passed";
     if (tests_skipped > 0)
         std::cout << ", " << tests_skipped << " SKIPPED (no BLAS dense backend)";

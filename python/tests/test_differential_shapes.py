@@ -754,7 +754,9 @@ def test_a_backend_other_than_the_one_asked_is_a_finding(monkeypatch):
 
 def test_a_sensitivity_run_refused_is_unsupported_not_a_pass():
     v = _verdicts("equality-dwell")["sens_runs"]
-    assert v.status == "unsupported" and "SensitivityUnsupportedError" in v.note
+    # The solver refuses partway (#1279): a SensitivityUnsupportedError, named
+    # by its own type, SensitivityRefusedDuringRunError.
+    assert v.status == "unsupported" and "SensitivityRefusedDuringRunError" in v.note
 
 
 @functools.cache
@@ -1801,7 +1803,7 @@ def test_arms_that_agree_attribute_the_diff_to_one_side():
 def test_an_arm_takes_a_side_within_the_bound_and_none_past_it():
     """Arms half the bound off each side take that side; twice it off, neither.
     Arms that copy a side exactly pass under any bound at all, a far too tight
-    one included, and #1304's dense arm reads neither on some grids anyway."""
+    one included, and #1304's dense arm read neither on some grids before #1485."""
     base = _base("derived-log10")
     ref, path = base.x, base.x * 1.5
     v = _verdict(ref, path)
@@ -2004,55 +2006,43 @@ _B1304 = {
 
 @pytest.mark.parametrize("model", sorted(_B1304))
 @pytest.mark.skipif(not bngsim._bngsim_core.HAS_KLU, reason="KLU not compiled")
-def test_1304s_models_attribute_each_arm_to_the_side_it_takes(model):
+def test_1304s_models_keep_their_exact_zero_on_dense_as_on_klu(model):
     """#1304: XIIa = K = 0 is an exact, unstable solution of both models, and
-    the KLU base keeps it. The dense LU's rounding breaks it, and which way and
-    when depend on the CPU and the output grid. So the check reads a coin with
-    three faces:
-
-    * Broken upward, dense takes the activated branch, as libRoadRunner does
-      (338's Fg 0.73 against KLU's 311; 339 1.8e-2 of the peak apart), and
-      the dense arm lands with the reference: the arms split, and the
-      model is contested. Both models at this window on arm64; 339 on x86-64.
-    * Broken upward, but the dense arm, on the default Jacobian, leaves 0 at
-      another moment than the reference on the FD one, and lands within the
-      bound of neither side: only the tighter arm takes one, and the verdict
-      is the path's. 338 at 61 and 81 points on arm64, at 99 on x86-64.
-    * Broken downward, the laws carry XIIa to its pole at -1 and the dense
-      reference is refused (#135; test_clamp_far_below_zero.py): nothing to
-      attribute, and the test skips. 338 at this window on x86-64; 339 at
-      4001 points on arm64.
-
-    What holds on every face is asserted: KLU's tighter arm keeps the exact
-    solution, on the path's side; no arm that leaves it takes that side; the
-    verdict follows from the sides. A test of one face at one grid reads the
-    coin, not the code, as 338's did: it passed on arm64 and failed on x86-64."""
+    the KLU base keeps it. The dense LU's rounding broke it, which way and when
+    depending on the CPU and the output grid: upward, dense took the activated
+    branch libRoadRunner takes (338's Fg 0.73 against KLU's 311), and downward
+    the laws carried XIIa to its pole at -1 and the run was refused. Their rows
+    read only each other and their right-hand side is 0, so since #1485 the
+    dense solve gives them exactly 0, as KLU's block-triangular form does, and
+    the two linear solvers take the same branch on either Jacobian. (The
+    Jacobians are a loop, not a parameter: a CI checkout has no corpus, so each
+    case is a skip there, and the suite's skip count has a ceiling.)"""
     path = _B1304[model]
     if not path.exists():
         pytest.skip(f"rr_parity corpus model {model} not present")
     job = D.Job(model, path, 0.0, 2.0, 101, rtol=1e-6, atol=1e-9)
+    for jacobian in ("auto", "fd"):
+        for solver in ("force_dense_linear_solver", "force_sparse_linear_solver"):
+            result, _ = D.run(job, jacobian=jacobian, **{solver: True})
+            names = list(result.species_names)
+            for name in ("XIIa", "K"):
+                np.testing.assert_array_equal(
+                    np.asarray(result.species)[:, names.index(name)],
+                    0.0,
+                    err_msg=f"{jacobian} {solver} {name}",
+                )
     v = D.check_all(job, None, ("klu_vs_dense",))["klu_vs_dense"]
-    if v.status == "exception":
-        # The note is the first line of whichever run failed. Skip only where
-        # KLU completes and the dense run is the refusal at XIIa's pole.
-        D.run(job, force_sparse_linear_solver=True, jacobian="fd")
-        with pytest.raises(bngsim.SimulationError, match="carried concentration 'XIIa'"):
-            D.run(job, force_dense_linear_solver=True, jacobian="fd")
-        pytest.skip("the dense reference was refused at XIIa's pole here, so nothing to attribute")
-    assert v.status == "diff", v
-    a = v.extra["attribution"]
-    sides = {arm: s["side"] for arm, s in a["arms"].items()}
-    assert sides.pop("tighter") == "path", a
-    assert "dense" in sides and set(sides.values()) <= {"reference", "neither"}, a
-    assert a["verdict"] == ("split" if "reference" in sides.values() else "path"), a
+    assert v.status == "pass", v
 
 
 def test_a_klu_base_takes_the_dense_solver_as_its_other_arm(monkeypatch):
     """The third arms of a base KLU took: its own route at a hundredfold tighter
     tolerance, and the dense solver. Every other attribution test's base is
-    dense, so without this the dense arm is read only by #1304's corpus models,
-    which CI has none of. A copy of a base that ran dense stands in for one KLU
-    took (the cached base is shared): the dense arm reruns it exactly."""
+    dense, so without this no test reads the dense arm: #1304's corpus models,
+    which CI has none of, read it until #1485 gave their dense runs KLU's answer,
+    and their test now asserts that answer. A copy of a base that ran dense
+    stands in for one KLU took (the cached base is shared): the dense arm reruns
+    it exactly."""
     shared = _base("derived-log10")
     routed = shared.linear_solver
     base = shared.against(shared.x)

@@ -143,6 +143,64 @@ Three limits, each leaving the row as it was on the grid alone:
 - An equality whose residual AMICI does not compute as exactly 0 at the instant,
   such as `time − 0.1 == 0.2`, is not helped either.
 
+### The sample on a strict trigger's onset is not judged (issue #1557)
+
+At t = c a trigger `time > c` is false. The event has not fired yet, so bngsim and
+RoadRunner report the state before it at a sample on c. AMICI's importer turns `>`
+and `>=` into the same root function, `time − c`, so it fires at c and reports the
+state after it. All three fire the event at c, and they agree from the next sample
+on. A closed `time >= c` is true at c, and all three report the state after the
+event there.
+
+So at that one sample the engines disagree about which side of a jump to report,
+not about the solution. BIOMD0000000104, 125, 563, 860 and 862 each read `DIFF`
+on that one cell and no other. 563's onset is its last sample, `t_end = 10`.
+
+`_rr_common.strict_onsets` finds the onsets in the SBML: the boundaries where a
+strict comparison of the clock is false and turns true just after. That is
+`time > c`, `c < time`, the same for an affine form of time (`(10 − time) < 5`), and
+the level a `rem` of one rises through. A closed comparison is not an onset, and
+neither is a strict one that turns false (`time < c`). The reader is the one
+`event_instants` uses, so the two cannot disagree about what a trigger compares.
+Each comparison is read alone. Under an `and`, a boundary is named even where the
+rest of the trigger holds the trigger false, which costs a judged sample and
+never misses an onset. Under a `not` an onset can be missed, but AMICI imports no
+trigger with `not` in it, nor one with `rem` or `floor`.
+
+`amici_ode` records the job-grid samples on an onset as `strict_onset_samples`. It
+values the boundary the way AMICI does, and a sample within
+1e-12·max(1, |c|) of c counts as on it. `amici_run.py` leaves those rows out of the
+verdict. Its tallies, the ranges the movement gate uses and `NO SIGNAL` are over the
+other rows. The row comment says what leaving them out changed:
+
+```
+5 sp; fail 0/5000 (hard 0, soft 0, forgiven 0); err/movement 6.2e-09; AMICI through 1 event instants | strict onset not judged at t = 1 (rescued 1 DECISIVE; GH #1557)
+```
+
+`rescued` counts the failing cells on those rows, read off the whole grid with the
+rows forgiven through `differ`'s `forgive_mask`. `DECISIVE` means the whole grid is
+a `DIFF` and the judged rows are not. A row with a cell finite on one side only is
+judged anyway, since no reading of a jump puts a NaN or an inf on one engine. The
+matrix says the same in plain English, and keeps quiet about an onset that cleared
+nothing on a `PASS`.
+
+Over the corpus, 22 jobs have a sample on an onset. Five go `DIFF` → `PASS`. On
+four of them the event's effect is judged from the next sample on. BIOMD0000000563's
+onset is its last sample, and its jump there is all that moves on the grid, so it
+reads `PASS` with `NO SIGNAL`, as rr_parity's row for it does. BIOMD0000000318
+stays a `DIFF`: AMICI is off on nearly every cell there (Class 2). The other 16 keep
+their verdicts.
+
+The rule is scoped. It turns off one sample per onset. A per-row
+`COMPARISON_ARTIFACT` would turn off the whole row, and at `max_rel` 1.0 that
+leaves the AMICI check on the model blind. RoadRunner still judges the onset
+sample, because rr_parity is unchanged: bngsim's reading there is checked against
+an engine that reads `>` strictly.
+
+The forward-sensitivity job does not apply the rule yet. Its state check still
+judges the onset sample, so on these models the sensitivity page reads `state DIFF`
+(issue #1571).
+
 ## Overrides — departure from rr_parity
 
 Only the engine-agnostic **`tol`** overrides (ill-conditioned IVPs, applied to

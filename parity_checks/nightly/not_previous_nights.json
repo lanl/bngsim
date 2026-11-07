@@ -1,0 +1,4 @@
+{
+  "_comment": "Nightly runs on main that compare.sh does not compare tonight to, with the reason: runs whose verdicts and solver work stand for the runner they had rather than the code they ran, so a comparison to them alerts on the runner. compare.sh takes the night before instead. Add a run only with the measurement that shows it.",
+  "42383667564": "Scheduled run on 6e08b715, the first on ubuntu-26.04, before #1584: every GCC there defaults to -march=x86-64-v3, so SUNDIALS and the core were built with fused multiply-adds (#1582), a build nothing has had since. Against it the unfused build alerts on work alone: PBPK_v2.bngl's codegen run needs 74 Jacobian evaluations to its 56, where the committed baseline (ubuntu-24.04, unfused) agrees with 74."
+}

@@ -61,6 +61,11 @@ jobs:
           uv pip install --python .venv/bin/python pip
           uv sync --extra dev --group parity --python 3.12
 
+      # libroadrunner's wheel links libpython by name; ubuntu-26.04 has no system
+      # 3.12 to satisfy it. See ci/libpython_on_loader_path.sh.
+      - name: Let RoadRunner find libpython
+        run: bash ci/libpython_on_loader_path.sh
+
       - name: Verify the gated goldens
         run: |
           uv run --no-sync python parity_checks/bng_parity/parity_golden.py \

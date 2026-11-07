@@ -1615,6 +1615,21 @@ def _worker(
             entry["timing"].update(ptiming)
             entry["partial_horizon"] = round(h, 6)
             entry["status"] = "partial"
+            # The search starts at t_end. Where every replicate finishes there, the
+            # full-horizon ensemble did after all: the timeout above was one slow
+            # replicate against REP_WALL_CAP, which a slow runner can cost a model
+            # whose replicates take about that long (BIOMD0000001026 and 1040: PASS
+            # on the four nights to run 42247324088, then "partial t=0→100", their
+            # whole horizon, with the same max_z, on run 42408820114). The
+            # same seeds and the same reference then give the full flow's verdict,
+            # so a pass with cells compared is that flow's pass. A fail, or a pass
+            # that compared nothing, stays provisional: the full flow would go on
+            # to attribute the one or to extend the other.
+            if h >= t_end and entry["partial_pass"] and int(entry.get("n_compared", 0) or 0) > 0:
+                entry["status"] = "pass"
+                entry["full_horizon_on_retry"] = True
+                entry.pop("partial_pass", None)
+                entry.pop("partial_horizon", None)
         except ArchiveMiss as miss:
             _not_from_archive(entry, ref, miss)
         except bngsim.SimulationTimeout:

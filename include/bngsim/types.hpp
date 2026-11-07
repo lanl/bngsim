@@ -4,8 +4,10 @@
 
 #pragma once
 
+#include <cmath>
 #include <complex>
 #include <cstdint>
+#include <cstdio>
 #include <functional>
 #include <limits>
 #include <stdexcept>
@@ -19,8 +21,17 @@ namespace bngsim {
 // A forward-sensitivity run the solver declines partway, by declaration: it
 // reached a construct whose derivative it cannot produce, and refuses rather
 // than return columns it knows are wrong (issue #1279). The pybind11 layer
-// maps it to bngsim.SensitivityUnsupportedError, the type the Python checks
-// raise before a run, where a std::runtime_error became a SimulationError.
+// maps it to bngsim.SensitivityRefusedDuringRunError: a
+// SensitivityUnsupportedError, the type the Python checks raise before a run,
+// and the SimulationError a std::runtime_error became, which an existing
+// `except SimulationError` caught. Thrown for a refusal whose condition no
+// choice of requested parameters changes (the run has sensitivities, and the
+// trajectory). One whose condition turns on a requested column (a crossing or a
+// fire it moves, two times it parts) stays a std::runtime_error, whatever its
+// message advises: compute_all_sensitivities retries a failed chunk one column
+// at a time (GH #243) and re-raises this type without trying. The exception is
+// #1279's refusal of a held equality, typed first: where a restart lands on the
+// stop it turns on whether a requested column moves the restart.
 class SensitivityUnsupported : public std::runtime_error {
   public:
     using std::runtime_error::runtime_error;
@@ -2017,6 +2028,39 @@ struct TimeSpec {
     // Effective number of output points.
     int effective_n_points() const {
         return sample_times.empty() ? n_points : static_cast<int>(sample_times.size());
+    }
+
+    // Refuse a schedule no backend can walk (issues #1504, #1523), naming
+    // `where`. Every backend records its first row unconditionally, so a grid
+    // with no points runs off an empty t_out: CvodeSimulator::run read the ends
+    // of one and died on a null pointer. A time that is not finite is a target
+    // no backend reaches: CVODE spun inside a single CVode call, where the
+    // wall-clock budget is never checked, SSA ran until the budget or for ever,
+    // and a NaN came back as a row labelled t = nan. The Python layer refuses
+    // both before a run; this keeps a direct core caller from reaching either.
+    // Throws std::invalid_argument (ValueError in Python).
+    void require_walkable(const char *where) const {
+        auto fmt = [](double t) {
+            char buf[32];
+            std::snprintf(buf, sizeof buf, "%.17g", t);
+            return std::string(buf);
+        };
+        if (effective_n_points() < 1) {
+            throw std::invalid_argument(std::string(where) +
+                                        ": the output grid has no points (n_points = " +
+                                        std::to_string(effective_n_points()) + ")");
+        }
+        if (!std::isfinite(t_start) || !std::isfinite(t_end)) {
+            throw std::invalid_argument(std::string(where) +
+                                        ": t_start and t_end must be finite, got " + fmt(t_start) +
+                                        " and " + fmt(t_end));
+        }
+        for (double t : sample_times) {
+            if (!std::isfinite(t)) {
+                throw std::invalid_argument(std::string(where) +
+                                            ": sample_times must all be finite, got " + fmt(t));
+            }
+        }
     }
 };
 

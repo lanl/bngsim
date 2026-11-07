@@ -600,6 +600,30 @@ def with_event_instants(grid: np.ndarray, instants) -> np.ndarray:
     return np.array(sorted(times + kept), dtype=float)
 
 
+# A grid time this close to a strict onset, times max(1, |t|), sits on it. The two
+# engines read the boundary from the same SBML, a few ulps apart at most: AMICI
+# rounds a written number to 15 significant digits (amici_literal_of), and bngsim
+# keeps the double. Any closer and an onset one engine sees on the sample and the
+# other an ulp past it would escape; any wider would take in a sample the engines
+# both read on one side of it.
+_ON_ONSET = 1e-12
+
+
+def onset_samples(grid: np.ndarray, onsets) -> list[float]:
+    """The times of ``grid`` that sit on one of the ``onsets`` (from
+    :func:`rr_parity._rr_common.strict_onsets`), within ``_ON_ONSET``.
+
+    At such a sample AMICI reports the state after the event the onset fires and
+    bngsim the state before it (issue #1557): AMICI reads a strict comparison of
+    the clock as true at its boundary, and the SBML reads it as false there.
+    """
+    out: list[float] = []
+    for t in (float(x) for x in grid):
+        if any(abs(t - c) <= _ON_ONSET * max(1.0, abs(c)) for c in onsets):
+            out.append(t)
+    return out
+
+
 def amici_ode(
     xml: str,
     t_start: float,
@@ -647,6 +671,15 @@ def amici_ode(
     model whose triggers give no instants runs exactly as without it. The timing
     dict records ``event_instants``, how many output times were added.
 
+    It also records ``strict_onset_samples``: the job-grid times on the boundary
+    of a strict comparison of the clock that turns true there (``time > c`` at
+    c; ``_rr_common.strict_onsets``), as AMICI values the boundary, with or
+    without ``through_event_instants``. AMICI's importer turns ``>`` and ``>=``
+    into one root function, so it fires such an event at c and reports the
+    state after it at that sample. The SBML trigger is false at c, and bngsim
+    and RoadRunner report the state before it (issue #1557). ``amici_run``
+    leaves those samples unjudged.
+
     A non-success ``rdata.status`` (CVODES failure, e.g. too-much-work) raises so
     the worker classifies it as a reference failure rather than silently comparing
     a truncated trajectory.
@@ -689,11 +722,13 @@ def amici_ode(
     model.set_t0(t_start)
     ts = np.linspace(t_start, t_end, n_points)
     run_ts = ts
+    value_of, literal_of = amici_value_of(model, sbml_str), amici_literal_of(sbml_str)
     if through_event_instants:
-        instants = _rc.event_instants(
-            sbml_str, t_start, t_end, amici_value_of(model, sbml_str), amici_literal_of(sbml_str)
-        )
+        instants = _rc.event_instants(sbml_str, t_start, t_end, value_of, literal_of)
         run_ts = with_event_instants(ts, instants)
+    on_onsets = onset_samples(
+        ts, _rc.strict_onsets(sbml_str, t_start, t_end, value_of, literal_of)
+    )
     n_added = len(run_ts) - len(ts)
     if not n_added:
         run_ts = ts
@@ -764,6 +799,9 @@ def amici_ode(
         # single number (parse+interpret+jac+codegen+compile+load).
         "parse_interpret_codegen_sec": round(build_total, 6),
         "event_instants": n_added,
+        # Not a cost: the job-grid samples where AMICI's reading of a strict
+        # trigger differs from the SBML's (issue #1557). amici_run reads them out.
+        "strict_onset_samples": on_onsets,
         "config": {
             # AMICI generates per-model C++ and compiles it to a shared library.
             "codegen": "C++ (compiled)",
