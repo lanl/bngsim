@@ -49,8 +49,8 @@ BAD_TEST (issue #1542).
 On every model, a sample on a strict time trigger's onset, the c of
 ``time > c``, is not judged (issue #1557). The trigger is false at c,
 so bngsim and RoadRunner report the state before the event there; AMICI reads
-``>`` as ``>=`` and reports the state after it. ``_compare_ode`` forgives that
-row and the comment names it, with the failing cells it cleared.
+``>`` as ``>=`` and reports the state after it. ``_compare_ode`` leaves that
+row out of the verdict, and the comment names it, with the failing cells on it.
 
 Usage:
     cd bngsim && .venv/bin/python parity_checks/amici_parity/amici_run.py \\
@@ -126,23 +126,31 @@ def _compare_ode(
     """(status, value, comment, metric, tol) for one deterministic job.
 
     ``n_instants``, the output times AMICI was given at its event instants, is
-    named in the comment ('AMICI through N event instants'). ``onsets`` are the job-grid times on a strict trigger's onset
-    (``_amici_common.onset_samples``). Their rows are not judged (issue #1557):
-    there AMICI reports the state after the event and bngsim the state before
-    it, a reading of one sample and not a difference in the solution. They are
-    forgiven through ``differ``'s ``forgive_mask``, which audits what it changed,
-    and the comment says how many failing cells it cleared and whether the row
-    would have been a DIFF without it. A one-sided non-finite cell is never
-    forgiven. With no onsets the comparison is the one it always was.
+    named in the comment ('AMICI through N event instants').
+
+    ``onsets`` are the job-grid times on the boundary of a strict comparison of
+    the clock (``_amici_common.onset_samples``). Their rows are not judged (issue
+    #1557): at such a sample AMICI reports the state after the event and bngsim
+    the state before it, which is a reading of one sample, not a difference in
+    the solution. The verdict, its tallies, the ranges the movement gate uses and
+    ``NO SIGNAL`` are all over the other rows, so a model whose only movement on
+    the grid is at an onset reads ``NO SIGNAL`` as it would without it. What
+    leaving them out changed is read off the whole grid, with those rows forgiven
+    through ``differ``'s ``forgive_mask``: ``rescued``, the failing cells on
+    them, and ``DECISIVE`` when the whole grid is a DIFF and the judged rows are
+    not. A row with a cell that is finite on one side only is judged anyway: no
+    reading of a jump puts a NaN or an inf on one engine. With no onsets the
+    comparison is the one it always was.
     """
     bn_t, bn_v, bn_n = bn
     am_t, am_v, am_n = am
     metric, tol = "max_rel_err", differ.REL_TOL
+    instants = f"; AMICI through {n_instants} event instants" if n_instants else ""
     if bn_t.shape != am_t.shape or not np.allclose(bn_t, am_t, rtol=0, atol=1e-9):
         return (
             "diff",
             float("inf"),
-            f"time grid mismatch (bn n={bn_t.shape}, amici n={am_t.shape})",
+            f"time grid mismatch (bn n={bn_t.shape}, amici n={am_t.shape}){instants}",
             metric,
             tol,
         )
@@ -151,7 +159,7 @@ def _compare_ode(
         return (
             "diff",
             float("inf"),
-            f"disjoint species sets: bn={bn_n[:4]} amici={am_n[:4]}",
+            f"disjoint species sets: bn={bn_n[:4]} amici={am_n[:4]}{instants}",
             metric,
             tol,
         )
@@ -159,18 +167,20 @@ def _compare_ode(
     a, b = bn_v[:, bn_idx], am_v[:, am_idx]
     # By AMICI's grid: the onsets are its own times, exactly.
     on = {float(t) for t in onsets}
-    rows = [i for i, t in enumerate(am_t) if float(t) in on]
-    mask = None
+    one_sided = (np.isfinite(a) != np.isfinite(b)).any(axis=1)
+    rows = [i for i, t in enumerate(am_t) if float(t) in on and not one_sided[i]]
+    keep = np.ones(len(am_t), dtype=bool)
+    keep[rows] = False
+    v = differ.deterministic_verdict(a[keep], b[keep], atol=atol)
+    status = "pass" if v["passed"] else "diff"
+    comment = differ.ode_row_comment(v, len(common)) + instants
     if rows:
         mask = np.zeros(a.shape, dtype=bool)
         mask[rows, :] = True
-    v = differ.deterministic_verdict(a, b, atol=atol, forgive_mask=mask)
-    status = "pass" if v["passed"] else "diff"
-    comment = differ.ode_row_comment(v, len(common))
-    if n_instants:
-        comment = f"{comment}; AMICI through {n_instants} event instants"
-    if rows:
-        comment += " | " + onset_note([float(am_t[i]) for i in rows], v)
+        whole = differ.deterministic_verdict(a, b, atol=atol, forgive_mask=mask)
+        decisive = v["passed"] and not whole["passed_without_forgive"]
+        times = [float(am_t[i]) for i in rows]
+        comment += " | " + onset_note(times, whole["n_forgive_rescued"], decisive)
     return status, v["max_rel"], comment, metric, tol
 
 
@@ -179,15 +189,13 @@ def _compare_ode(
 ONSET_NOTE_PREFIX = "strict onset not judged at t ="
 
 
-def onset_note(times: list[float], v: dict) -> str:
+def onset_note(times: list[float], rescued: int, decisive: bool) -> str:
     """The comment part for the samples ``_compare_ode`` left unjudged: their
-    times, the failing cells the mask alone cleared, and ``DECISIVE`` when the
-    row would have been a DIFF without it."""
+    times, the failing cells on them (``rescued``), and ``DECISIVE`` when the row
+    would have been a DIFF had they been judged."""
     at = ", ".join(f"{t:g}" for t in times)
-    decisive = v["passed"] and not v["passed_without_forgive"]
     return (
-        f"{ONSET_NOTE_PREFIX} {at} (rescued {v['n_forgive_rescued']}"
-        f"{' DECISIVE' if decisive else ''}; GH #1557)"
+        f"{ONSET_NOTE_PREFIX} {at} (rescued {rescued}{' DECISIVE' if decisive else ''}; GH #1557)"
     )
 
 

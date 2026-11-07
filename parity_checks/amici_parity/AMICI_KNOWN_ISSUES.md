@@ -371,17 +371,22 @@ at c and agree after it. Which side of a jump to report at the instant of the ju
 is a convention. The trigger's SBML value at c, false, gives bngsim's side, but the
 solution is the same either way, so the cell is scored against neither engine.
 
-**Remedy.** `amici_run.py` does not judge the sample on such an onset (README:
+**Remedy.** `amici_run.py` leaves the sample on such an onset out of the verdict
+(README:
 [the sample on a strict trigger's onset](README.md#the-sample-on-a-strict-triggers-onset-is-not-judged-issue-1557)).
-The row comment names the sample, the failing cells that cleared, and whether that
-decided the verdict. All five rows now read `PASS ... (rescued 1 DECISIVE)`. A
-per-row `COMPARISON_ARTIFACT` was the alternative, but at `max_rel` 1.0 it would
-have stopped the AMICI row checking anything on four of the five models. rr_parity
-still judges the onset sample, against RoadRunner.
+The row comment names the sample, the failing cells on it, and whether leaving it
+out decided the verdict. All five rows now read `PASS ... (rescued 1 DECISIVE)`.
+On 563 the jump at `t_end` is all that moves on the grid, so its row also reads
+`NO SIGNAL`, as rr_parity's does: the AMICI comparison there checks nothing that
+moves. A per-row `COMPARISON_ARTIFACT` was the alternative, but at `max_rel` 1.0 it
+would have stopped the AMICI row checking anything on four of the five models.
+rr_parity still judges the onset sample, against RoadRunner. The
+forward-sensitivity job does not apply the rule yet, so its state column still
+reads DIFF on these models (#1571).
 
 The other 17 corpus jobs with a sample on an onset keep their verdicts.
-BIOMD0000000318 stays a `DIFF`: AMICI is off on 6999 of 7007 cells there (Class 2).
-Its 7 cells at t = 5 are among those not judged. (Class 2's snapshot names
+BIOMD0000000318 stays a `DIFF`: AMICI is off on 6992 of the 7000 judged cells
+there (Class 2), and on all 7 at the onset, t = 5. (Class 2's snapshot names
 BIOMD125 among its large divergences. Against bngsim 0.17.0 it differs on this one
 cell only.)
 

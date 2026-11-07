@@ -422,9 +422,10 @@ def humanize_comment(result: dict) -> str:
             if n_rescued == 0 and outcome == "PASS":
                 continue  # nothing there was failing: as quiet as a clean pass
             seg = (
-                f"Not judged at t = {at}, where a strict time trigger (time > c) "
-                "fires: AMICI reports the state after the event there, bngsim and "
-                "RoadRunner the state before it (GH #1557)."
+                f"Not judged at t = {at}, the c of a strict time comparison (time > c) "
+                "in an event trigger: if the event fires there, AMICI reports the "
+                "state after it and bngsim and RoadRunner the state before it "
+                "(GH #1557)."
             )
             if n_rescued:
                 seg += f" That cleared {n_rescued:,} failing point{'s' if n_rescued != 1 else ''}"

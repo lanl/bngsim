@@ -8,8 +8,8 @@ and 862 each read DIFF against AMICI on that one cell and nowhere else.
 
 ``_rr_common.strict_onsets`` finds the onsets from the SBML; ``_amici_common``
 names the job-grid samples on one (``onset_samples``, and ``amici_ode``'s
-``strict_onset_samples``); ``amici_run._compare_ode`` forgives their rows and
-says what that changed. A closed comparison (``time >= c``) is not an onset:
+``strict_onset_samples``); ``amici_run._compare_ode`` leaves their rows out of the
+verdict and says what that changed. A closed comparison (``time >= c``) is not an onset:
 every engine reports the state after the event at c, so that sample is still
 judged. rr_parity is unchanged, so RoadRunner still checks bngsim's reading of
 the onset sample.
@@ -38,12 +38,12 @@ def _cn(v) -> str:
     return f"<cn>{v}</cn>"
 
 
-def _rel(op: str, *args: str) -> str:
-    return f"<apply><{op}/>{''.join(args)}</apply>"
-
-
 def _apply(op: str, *args: str) -> str:
+    """``<apply><op/>args</apply>``: a relational (``gt``, ``lt``, ...) or any other operator."""
     return f"<apply><{op}/>{''.join(args)}</apply>"
+
+
+_rel = _apply
 
 
 def _param(pid: str, value: float, constant: bool = True) -> str:
@@ -194,7 +194,7 @@ def test_onset_samples_are_the_grid_times_within_1e_12_of_an_onset():
 
 
 # --------------------------------------------------------------------------- #
-# _compare_ode forgives the onset rows, and says so
+# _compare_ode leaves the onset rows out, and says what that changed
 # --------------------------------------------------------------------------- #
 _T = np.linspace(0.0, 1.0, 11)
 
@@ -219,6 +219,8 @@ def test_the_onset_row_is_forgiven_and_the_comment_says_it_was_decisive():
     )
     status, value, comment, _, _ = ar._compare_ode(bn, am, atol=1e-12, onsets=[0.5])
     assert (status, value) == ("pass", 0.0)
+    # The tallies are over the judged rows: 10 of 11 samples, 2 species.
+    assert comment.startswith("2 sp; fail 0/20 (hard 0, soft 0, forgiven 0)")
     assert comment.endswith(" | strict onset not judged at t = 0.5 (rescued 1 DECISIVE; GH #1557)")
     # The premise of the forgiveness: without it this is the #1557 DIFF.
     status, value, comment, _, _ = ar._compare_ode(bn, am, atol=1e-12)
@@ -237,12 +239,47 @@ def test_a_difference_off_the_onset_row_is_still_a_diff():
     assert "(rescued 1;" in comment and "DECISIVE" not in comment
 
 
+def test_every_species_on_the_onset_row_is_left_out_and_counted():
+    """The whole sample goes, not just the cells that jump: here both species
+    step at the onset, and both cells are counted as rescued."""
+    bn_col, am_col = _step(0.5, 1.0, 0.4, closed=False), _step(0.5, 1.0, 0.4, closed=True)
+    bn = (_T, np.column_stack([bn_col, 3 * bn_col]), ["S", "R"])
+    am = (_T, np.column_stack([am_col, 3 * am_col]), ["S", "R"])
+    status, _, comment, _, _ = ar._compare_ode(bn, am, atol=1e-12, onsets=[0.5])
+    assert status == "pass" and "(rescued 2 DECISIVE;" in comment
+
+
 def test_a_one_sided_non_finite_onset_cell_is_never_forgiven():
+    """No reading of a jump puts a NaN on one engine, so that row is judged."""
     bn_col = _step(0.5, 1.0, 0.4, closed=False)
     bn_col[5] = np.nan
     bn, am = _pair(bn_col=bn_col, am_col=_step(0.5, 1.0, 0.4, closed=True))
-    status, value, _, _, _ = ar._compare_ode(bn, am, atol=1e-12, onsets=[0.5])
+    status, value, comment, _, _ = ar._compare_ode(bn, am, atol=1e-12, onsets=[0.5])
     assert status == "diff" and value == np.inf
+    assert " | " not in comment  # nothing was left out
+
+
+def test_movement_only_at_an_onset_is_no_signal():
+    """BIOMD0000000563's shape: the onset is the last sample, and the jump there
+    is all that moves on AMICI's grid. Left out, nothing moves in the rows that
+    are judged, and the row says NO SIGNAL as it would without the onset."""
+    flat = np.ones(len(_T))
+    bn = (_T, np.column_stack([flat * 0.0, flat]), ["S", "R"])
+    am_s = np.where(_T >= 1.0, 1.0, 0.0)
+    am = (_T, np.column_stack([am_s, flat]), ["S", "R"])
+    status, _, comment, _, _ = ar._compare_ode(bn, am, atol=1e-12, onsets=[1.0])
+    assert status == "pass"
+    assert "NO SIGNAL" in comment and "(rescued 1 DECISIVE;" in comment
+    note = gam.humanize_comment({"comment": comment, "outcome": "PASS"})
+    assert note.startswith("No species moves in either engine")
+
+
+def test_a_grid_or_species_mismatch_keeps_the_instants_note():
+    bn, am = _pair(bn_col=np.zeros(len(_T)), am_col=np.zeros(len(_T)))
+    short = (am[0][:-1], am[1][:-1], am[2])
+    assert ar._compare_ode(bn, short, n_instants=3)[2].endswith("; AMICI through 3 event instants")
+    other = (am[0], am[1], ["X", "Y"])
+    assert ar._compare_ode(bn, other, n_instants=3)[2].endswith("; AMICI through 3 event instants")
 
 
 def test_without_an_onset_on_the_grid_the_comparison_is_the_one_it_was():
@@ -305,25 +342,23 @@ def test_amici_run_reads_the_onsets_out_of_amicis_timing(monkeypatch):
 # --------------------------------------------------------------------------- #
 # The AMICI matrix says it in plain English
 # --------------------------------------------------------------------------- #
-def _row_comment(v: dict, times=(1.0,)) -> str:
-    head = "5 sp; fail 1/5005 (hard 0, soft 0, forgiven 0); err/movement 6.2e-09"
-    return f"{head} | {ar.onset_note(list(times), v)}"
+def _row_comment(rescued: int, decisive: bool, times=(1.0,), fail: int = 0) -> str:
+    head = f"5 sp; fail {fail}/5000 (hard {fail}, soft 0, forgiven 0); err/movement 6.2e-09"
+    return f"{head} | {ar.onset_note(list(times), rescued, decisive)}"
 
 
 def test_the_matrix_names_a_decisive_onset():
-    v = {"passed": True, "passed_without_forgive": False, "n_forgive_rescued": 1}
-    note = gam.humanize_comment({"comment": _row_comment(v), "outcome": "PASS"})
-    assert "Not judged at t = 1, where a strict time trigger (time > c) fires" in note
+    note = gam.humanize_comment({"comment": _row_comment(1, True), "outcome": "PASS"})
+    assert note.startswith("Not judged at t = 1, the c of a strict time comparison (time > c)")
     assert note.endswith("That cleared 1 failing point; without it this row would be a DIFF.")
 
 
 def test_the_matrix_is_quiet_about_an_onset_that_cleared_nothing_on_a_pass():
-    v = {"passed": True, "passed_without_forgive": True, "n_forgive_rescued": 0}
-    comment = _row_comment(v, (2.0, 5.0)).replace("fail 1/5005", "fail 0/5005")
+    comment = _row_comment(0, False, (2.0, 5.0))
     assert gam.humanize_comment({"comment": comment, "outcome": "PASS"}) == ""
     # ... and still says it on a DIFF, where every unjudged sample is worth knowing
-    v = {"passed": False, "passed_without_forgive": False, "n_forgive_rescued": 0}
-    note = gam.humanize_comment({"comment": _row_comment(v, (2.0, 5.0)), "outcome": "DIFF"})
+    comment = _row_comment(0, False, (2.0, 5.0), fail=9)
+    note = gam.humanize_comment({"comment": comment, "outcome": "DIFF"})
     assert "Not judged at t = 2, 5," in note and "cleared" not in note
 
 
@@ -332,6 +367,16 @@ def test_the_matrix_is_quiet_about_an_onset_that_cleared_nothing_on_a_pass():
 # --------------------------------------------------------------------------- #
 _GRID = (0.0, 1.0, 11)  # samples every 0.1, one on 0.5
 _PREMISE = _sbml({"S": _rel("gt", T, _cn(0.5)), "Q": _rel("geq", T, _cn(0.5))})
+# ``time > tc`` with tc = 0.3 in the SBML and 0.7 after its initialAssignment:
+# amici_ode must place the onset where AMICI does, at 0.7.
+_ASSIGNED = _sbml(
+    {"P": _rel("gt", T, "<ci>tc</ci>")},
+    params=_param("tc", 0.3),
+    extra=(
+        '<listOfInitialAssignments><initialAssignment symbol="tc">'
+        f"<math {MATH}><cn>0.7</cn></math></initialAssignment></listOfInitialAssignments>"
+    ),
+)
 
 
 def _col(run, name):
@@ -368,3 +413,11 @@ def test_amici_reads_a_strict_onset_as_true_and_names_its_sample():
     status, _, comment, _, _ = ar._compare_ode(bn, am[:3], atol=1e-12, onsets=onsets)
     assert status == "pass" and "(rescued 1 DECISIVE;" in comment
     assert ar._compare_ode(bn, am[:3], atol=1e-12)[0] == "diff"
+
+
+def test_amici_ode_places_an_onset_by_amicis_own_parameter_values():
+    pytest.importorskip("amici")
+    am = ac.amici_ode(_ASSIGNED, *_GRID, 1e-9, 1e-12, through_event_instants=True)
+    (at,) = am[3]["strict_onset_samples"]
+    assert at == pytest.approx(0.7, abs=1e-15)
+    assert rc.strict_onsets(_ASSIGNED, 0.0, 1.0) == [0.3]  # the SBML attribute, unassigned

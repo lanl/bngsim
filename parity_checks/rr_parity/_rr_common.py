@@ -967,12 +967,20 @@ def strict_onsets(
     the event fires at c, and the two agree everywhere after it.
 
     Not an onset: a closed comparison (``time >= c`` is true at c, so every
-    engine reports the value after the event there), a strict one that turns
-    false (``time < c``), and the wrap of a ``rem`` (it is 0 at the wrap, its
-    value just after). A comparison is read as written, whatever ``not`` or
-    ``and`` it sits under; AMICI imports no trigger with ``not`` in it. A
-    boundary at ``t_start`` is left out, as in :func:`event_instants`: there a
-    trigger's start rule decides, not the comparison. Sides are read as
+    engine reports the value after the event there), and a strict one that turns
+    false (``time < c``). The wraps of a ``rem`` are not read: where its argument
+    rises, ``rem`` is 0 at a wrap, as just after it, so a comparison of it does
+    not change there; where it falls, ``rem`` jumps just after the wrap, and that
+    case is left out (AMICI imports no ``rem``, and no corpus trigger has a falling one).
+
+    Each comparison is read alone, as written, whatever ``and``, ``or`` or
+    ``not`` it sits under. So under an ``and`` a boundary is named even where the
+    rest of the trigger holds it false (``(time > 28) && (time < 84) &&
+    rem(time, 28) > 8`` names every 28k + 8, in the window or not), which costs
+    an unjudged sample, never a missed one. Under a ``not`` an onset can be
+    missed (``not(time <= c)``), but AMICI imports no trigger with ``not`` in
+    it. A boundary at ``t_start`` is left out, as in :func:`event_instants`:
+    there a trigger's start rule decides, not the comparison. Sides are read as
     :func:`event_instants` reads them.
     """
     import libsbml
