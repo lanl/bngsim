@@ -840,6 +840,64 @@ def _atom_instants(left, right, t_start: float, t_end: float) -> tuple[list[floa
     return [], []
 
 
+def _trigger_comparisons(sbml: str, value_of=None, literal_of=None):
+    """Each comparison of the clock in an event trigger, as ``(type, left,
+    right)``: the libSBML relational type and the two sides as :func:`_affine`
+    forms (None for a side that is not one). A relational with more than two
+    arguments gives one per adjacent pair. A comparison anywhere in the trigger
+    counts, under ``and``, ``or``, ``not`` or a function alike.
+
+    The shared reader of :func:`event_instants` and :func:`strict_onsets`, so the
+    two cannot disagree about what a trigger compares. Sides are read as
+    ``event_instants`` documents: numbers, and parameters or compartments
+    nothing changes after the start, valued by ``value_of(id)`` (the SBML value
+    when None).
+    """
+    import libsbml
+
+    doc = libsbml.readSBMLFromString(sbml)
+    model = doc.getModel()
+    if model is None or model.getNumEvents() == 0:
+        return
+    constant = _effectively_constant(model)
+    if value_of is None:
+
+        def value_of(i):
+            par = model.getParameter(i)
+            if par is not None:
+                return par.getValue() if par.isSetValue() else None
+            comp = model.getCompartment(i)
+            return comp.getSize() if comp is not None and comp.isSetSize() else None
+
+    def known(i):
+        return value_of(i) if i in constant else None
+
+    relational = {
+        libsbml.AST_RELATIONAL_EQ,
+        libsbml.AST_RELATIONAL_NEQ,
+        libsbml.AST_RELATIONAL_GT,
+        libsbml.AST_RELATIONAL_GEQ,
+        libsbml.AST_RELATIONAL_LT,
+        libsbml.AST_RELATIONAL_LEQ,
+    }
+
+    def walk(node):
+        ty = node.getType()
+        if ty in relational:
+            sides = [
+                _affine(node.getChild(i), known, literal_of) for i in range(node.getNumChildren())
+            ]
+            for left, right in zip(sides, sides[1:], strict=False):
+                yield ty, left, right
+            return
+        for i in range(node.getNumChildren()):
+            yield from walk(node.getChild(i))
+
+    for e in model.getListOfEvents():
+        if e.isSetTrigger() and e.getTrigger().isSetMath():
+            yield from walk(e.getTrigger().getMath())
+
+
 def event_instants(
     sbml: str, t_start: float, t_end: float, value_of=None, literal_of=None
 ) -> list[float]:
@@ -869,31 +927,6 @@ def event_instants(
     """
     import libsbml
 
-    doc = libsbml.readSBMLFromString(sbml)
-    model = doc.getModel()
-    if model is None or model.getNumEvents() == 0:
-        return []
-    constant = _effectively_constant(model)
-    if value_of is None:
-
-        def value_of(i):
-            par = model.getParameter(i)
-            if par is not None:
-                return par.getValue() if par.isSetValue() else None
-            comp = model.getCompartment(i)
-            return comp.getSize() if comp is not None and comp.isSetSize() else None
-
-    def known(i):
-        return value_of(i) if i in constant else None
-
-    relational = {
-        libsbml.AST_RELATIONAL_EQ,
-        libsbml.AST_RELATIONAL_NEQ,
-        libsbml.AST_RELATIONAL_GT,
-        libsbml.AST_RELATIONAL_GEQ,
-        libsbml.AST_RELATIONAL_LT,
-        libsbml.AST_RELATIONAL_LEQ,
-    }
     equality = {libsbml.AST_RELATIONAL_EQ, libsbml.AST_RELATIONAL_NEQ}
     out: set[float] = set()
 
@@ -905,29 +938,61 @@ def event_instants(
         if t <= t_end:
             out.add(float(t))
 
-    def walk(node):
-        ty = node.getType()
-        if ty in relational:
-            sides = [
-                _affine(node.getChild(i), known, literal_of) for i in range(node.getNumChildren())
-            ]
-            for left, right in zip(sides, sides[1:], strict=False):
-                levels, wraps = _atom_instants(left, right, t_start, t_end)
-                if ty in equality:
-                    for t in levels:
-                        add(t)
-                        if ty == libsbml.AST_RELATIONAL_NEQ:
-                            add(t, after=True)
-                else:
-                    for t in levels + wraps:
-                        add(t, after=True)
-            return
-        for i in range(node.getNumChildren()):
-            walk(node.getChild(i))
+    for ty, left, right in _trigger_comparisons(sbml, value_of, literal_of):
+        levels, wraps = _atom_instants(left, right, t_start, t_end)
+        if ty in equality:
+            for t in levels:
+                add(t)
+                if ty == libsbml.AST_RELATIONAL_NEQ:
+                    add(t, after=True)
+        else:
+            for t in levels + wraps:
+                add(t, after=True)
+    return sorted(out)
 
-    for e in model.getListOfEvents():
-        if e.isSetTrigger() and e.getTrigger().isSetMath():
-            walk(e.getTrigger().getMath())
+
+def strict_onsets(
+    sbml: str, t_start: float, t_end: float, value_of=None, literal_of=None
+) -> list[float]:
+    """The boundaries in (t_start, t_end] where a strict comparison of the clock
+    in an event trigger is false and turns true just after: ``time > c`` and
+    ``c < time`` at c, and the same for an affine form of time (``2*time - 1 >
+    0``, ``(t_end - time) < 5``) and for the level a ``rem`` of one passes
+    upward through (``rem(time, P) > r`` at each kP + r). Issue #1557.
+
+    At such a c the trigger is false, so an engine that reports the state AT c
+    by the trigger's value there gives the value before the event: bngsim and
+    RoadRunner. One that fires at the root of ``left - right`` gives the value
+    after it: AMICI, which reads ``>`` as ``>=`` and ``<`` as ``<=``. Either way
+    the event fires at c, and the two agree everywhere after it.
+
+    Not an onset: a closed comparison (``time >= c`` is true at c, so every
+    engine reports the value after the event there), a strict one that turns
+    false (``time < c``), and the wrap of a ``rem`` (it is 0 at the wrap, its
+    value just after). A comparison is read as written, whatever ``not`` or
+    ``and`` it sits under; AMICI imports no trigger with ``not`` in it. A
+    boundary at ``t_start`` is left out, as in :func:`event_instants`: there a
+    trigger's start rule decides, not the comparison. Sides are read as
+    :func:`event_instants` reads them.
+    """
+    import libsbml
+
+    def slope(side) -> float:
+        # The rate a side moves at in time: ``a`` for a*time + b, and for a rem of
+        # one between its wraps.
+        return side[1]
+
+    out: set[float] = set()
+    for ty, left, right in _trigger_comparisons(sbml, value_of, literal_of):
+        if ty not in (libsbml.AST_RELATIONAL_GT, libsbml.AST_RELATIONAL_LT):
+            continue
+        if left is None or right is None:
+            continue
+        rate = slope(left) - slope(right)  # of left - right
+        if not (rate > 0.0 if ty == libsbml.AST_RELATIONAL_GT else rate < 0.0):
+            continue
+        levels, _wraps = _atom_instants(left, right, t_start, t_end)
+        out.update(float(c) for c in levels if np.isfinite(c) and t_start < c <= t_end)
     return sorted(out)
 
 

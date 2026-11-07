@@ -114,8 +114,21 @@ DEFAULT_ATOL = ac.DEFAULT_ATOL
 # Comparison (the oracle, applied in the worker) — identical to rr_parity's, the
 # shared _core.differ protocol over the common species.
 # --------------------------------------------------------------------------- #
-def _compare_ode(bn, am, *, atol=None) -> tuple[str, float, str, str, float]:
-    """(status, value, comment, metric, tol) for one deterministic job."""
+def _compare_ode(
+    bn, am, *, atol=None, n_instants: int = 0, onsets=()
+) -> tuple[str, float, str, str, float]:
+    """(status, value, comment, metric, tol) for one deterministic job.
+
+    ``n_instants``, the output times AMICI was given at its event instants, is
+    named in the comment ('AMICI through N event instants'). ``onsets`` are the job-grid times on a strict trigger's onset
+    (``_amici_common.onset_samples``). Their rows are not judged (issue #1557):
+    there AMICI reports the state after the event and bngsim the state before
+    it, a reading of one sample and not a difference in the solution. They are
+    forgiven through ``differ``'s ``forgive_mask``, which audits what it changed,
+    and the comment says how many failing cells it cleared and whether the row
+    would have been a DIFF without it. A one-sided non-finite cell is never
+    forgiven. With no onsets the comparison is the one it always was.
+    """
     bn_t, bn_v, bn_n = bn
     am_t, am_v, am_n = am
     metric, tol = "max_rel_err", differ.REL_TOL
@@ -137,10 +150,39 @@ def _compare_ode(bn, am, *, atol=None) -> tuple[str, float, str, str, float]:
             tol,
         )
     bn_idx, am_idx, common = align
-    v = differ.deterministic_verdict(bn_v[:, bn_idx], am_v[:, am_idx], atol=atol)
+    a, b = bn_v[:, bn_idx], am_v[:, am_idx]
+    # By AMICI's grid: the onsets are its own times, exactly.
+    on = {float(t) for t in onsets}
+    rows = [i for i, t in enumerate(am_t) if float(t) in on]
+    mask = None
+    if rows:
+        mask = np.zeros(a.shape, dtype=bool)
+        mask[rows, :] = True
+    v = differ.deterministic_verdict(a, b, atol=atol, forgive_mask=mask)
     status = "pass" if v["passed"] else "diff"
     comment = differ.ode_row_comment(v, len(common))
+    if n_instants:
+        comment = f"{comment}; AMICI through {n_instants} event instants"
+    if rows:
+        comment += " | " + onset_note([float(am_t[i]) for i in rows], v)
     return status, v["max_rel"], comment, metric, tol
+
+
+# How the onset part of a row's comment begins. Public because the ODE matrix reads
+# it to say in plain English what was not judged.
+ONSET_NOTE_PREFIX = "strict onset not judged at t ="
+
+
+def onset_note(times: list[float], v: dict) -> str:
+    """The comment part for the samples ``_compare_ode`` left unjudged: their
+    times, the failing cells the mask alone cleared, and ``DECISIVE`` when the
+    row would have been a DIFF without it."""
+    at = ", ".join(f"{t:g}" for t in times)
+    decisive = v["passed"] and not v["passed_without_forgive"]
+    return (
+        f"{ONSET_NOTE_PREFIX} {at} (rescued {v['n_forgive_rescued']}"
+        f"{' DECISIVE' if decisive else ''}; GH #1557)"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -254,6 +296,7 @@ def _worker(spec: dict, q) -> None:
     am_cls = ""
     am_full = ""
     am_timing = None
+    onsets: list[float] = []
     am_wall = 0.0
     try:
         t0 = time.perf_counter()
@@ -269,6 +312,9 @@ def _worker(spec: dict, q) -> None:
         am_wall = time.perf_counter() - t0
         if len(am) == 4:
             am_timing = am[3]
+            # Where the comparison must not look, not a cost: kept out of the
+            # report's timing block (issue #1557).
+            onsets = am_timing.pop("strict_onset_samples", [])
             am = am[:3]
     except Exception as exc:
         cap = capture_exception("amici", exc)
@@ -306,10 +352,10 @@ def _worker(spec: dict, q) -> None:
 
     # --- both ran: compare (shared _core.differ protocol) ---
     try:
-        status, value, comment, metric, m_tol = _compare_ode(bn, am, atol=p["atol"])
         n_instants = (am_timing or {}).get("event_instants", 0)
-        if n_instants:
-            comment = f"{comment}; AMICI through {n_instants} event instants"
+        status, value, comment, metric, m_tol = _compare_ode(
+            bn, am, atol=p["atol"], n_instants=n_instants, onsets=onsets
+        )
         res["status"], res["value"], res["comment"] = status, value, comment
         res["metric"], res["tol"] = metric, m_tol
     except Exception as exc:
