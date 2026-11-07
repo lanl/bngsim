@@ -29,10 +29,13 @@
 // BLAS factor is not asked for, the solver factors with the built-in GETRF
 // only, as SUNLinSol_Dense does. Either way it reads a row the Newton matrix
 // holds alone (no nonzero off its diagonal) as its own equation, x_i = b_i/a_ii,
-// in place of what the pivoted back-solve leaves there (see
-// lapack_dense_linsol.cpp): a species whose own row is all its equation reads,
-// held at 0, stays at exactly 0 in any species order, as on KLU. Species at 0
-// that feed each other are not covered; KLU's block-triangular form is.
+// in place of what the pivoted back-solve leaves there, and gives exactly 0 to
+// the largest set of rows whose right-hand side is 0 and that read only each
+// other, as KLU's block-triangular form finds (see lapack_dense_linsol.cpp): a
+// species held at 0, alone or with others it feeds in a chain or a cycle, stays
+// at exactly 0 in any species order, as on KLU. A row with more than 16 entries
+// off its diagonal, and every row that reads one, is left to the LU; so is
+// every component where there is no such 0, to the bit.
 
 #pragma once
 
@@ -88,7 +91,7 @@ bool should_use_lapack_dense(int n, double density, bool force_dense);
 //   otherwise                              → the same solver on the built-in
 //                                            GETRF only (not the adaptive one:
 //                                            the GH #132 accessors give -1)
-// Both read the rows the matrix holds alone. Only if this solver cannot be
+// Both read the rows above. Only if this solver cannot be
 // allocated does it return SUNDIALS' built-in SUNLinSol_Dense; nullptr only if
 // that fails too (out of memory).
 SUNLinearSolver make_dense_linear_solver(N_Vector y, SUNMatrix A, SUNContext ctx,
