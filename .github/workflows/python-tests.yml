@@ -147,7 +147,10 @@ jobs:
       matrix:
         shard: [1, 2]
         leg:
-          - os: ubuntu-latest # x86_64 Linux — no Python coverage at all before #169
+          # ubuntu-24.04, not ubuntu-latest: the 26.04 image ubuntu-latest began to
+          # give on 2026-11-07 fails 7 tests of this suite; pinned until they pass
+          # there. The labels keep the names the counts and artifacts use.
+          - os: ubuntu-24.04 # x86_64 Linux — no Python coverage at all before #169
             label: ubuntu-latest
             apt: "" # bare host: the #178 proof. Do not add a package here.
             expect_lapack: "false"
@@ -162,7 +165,7 @@ jobs:
           # GH #269. Same bare-host build as the first leg plus exactly one
           # package, so the LAPACK dense solver (GH #84) is exercised against
           # reference LAPACK and not only against macOS Accelerate.
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             label: ubuntu-latest-lapack
             apt: liblapack-dev
             expect_lapack: "true"
@@ -503,7 +506,7 @@ jobs:
     name: Python coverage (report only)
     needs: python-tests
     if: ${{ !cancelled() && !github.event.inputs.pytest_args }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -569,7 +572,7 @@ jobs:
     name: Python suite counts · ${{ matrix.label }}
     needs: python-tests
     if: ${{ !github.event.inputs.pytest_args }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     strategy:
       fail-fast: false
