@@ -7,7 +7,7 @@ import logging
 import math
 import warnings
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from bngsim._exceptions import (
     ParameterError,
@@ -15,6 +15,7 @@ from bngsim._exceptions import (
     SimulationError,
     SimulationTimeout,
 )
+from bngsim._extension_handle import raise_cannot_pickle, raise_cannot_shallow_copy
 from bngsim._result import Result
 from bngsim._rounding import round_half_up
 from bngsim._sample_times import normalize_sample_times
@@ -707,11 +708,38 @@ class RuleMonkeySession:
             )
 
     def __del__(self) -> None:
-        if not self._destroyed:
+        # A constructor that raised before it set _destroyed (an unknown
+        # keyword, which never enters __init__, or a build without this
+        # engine) left nothing to release; reading the unset slot raised
+        # AttributeError here, printed beside the real error.
+        if not getattr(self, "_destroyed", True):
             self.destroy()
 
-    def __repr__(self) -> str:
-        state = (
-            "destroyed" if self._destroyed else "initialized" if self._initialized else "created"
+    def __reduce__(self) -> NoReturn:
+        raise_cannot_pickle(
+            "RuleMonkeySession",
+            "Build a RuleMonkeySession(xml_path) in each worker, initialize() it there, and send "
+            "results back as arrays or as files written with Result.save(path).",
         )
-        return f"RuleMonkeySession(xml_path={self._xml_path!r}, state={state})"
+
+    def __copy__(self) -> NoReturn:
+        # The default copy shared this session's handle into the RuleMonkey engine:
+        # a simulate() through the copy advanced the original's system, and
+        # dropping the copy destroyed the original's session, whose next
+        # simulate() then failed with "No active session". As Model and
+        # Simulator refuse (issue #643, bngsim._extension_handle).
+        raise_cannot_shallow_copy(
+            "RuleMonkeySession",
+            "this session's RuleMonkey system, and destroys it when the copy goes",
+            "Build a second RuleMonkeySession(xml_path) and initialize() it for an independent "
+            "session.",
+        )
+
+    def __repr__(self) -> str:
+        # getattr: a traceback that shows locals can repr a session whose
+        # constructor raised before these were set.
+        if getattr(self, "_destroyed", True):
+            state = "destroyed"
+        else:
+            state = "initialized" if getattr(self, "_initialized", False) else "created"
+        return f"RuleMonkeySession(xml_path={getattr(self, '_xml_path', None)!r}, state={state})"
