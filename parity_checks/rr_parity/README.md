@@ -370,7 +370,14 @@ comparison gives RoadRunner output times as follows:
   no corpus job has one.
 
 RoadRunner integrates through the union of the job grid and these times, and only
-the job-grid rows are returned, so the compared grid is unchanged. A model whose
+the job-grid rows are returned, so the compared grid is unchanged. An instant so
+shortly before a grid time that CVODE will not start the step between them (closer
+than 2·eps·max(|t|, |t'|), 2 to 4 ulps) takes that grid time's place instead:
+given both, RoadRunner fires the event at the instant and then refuses the step
+(CV_TOO_CLOSE), so `time == 0.3` beside the grid's 0.30000000000000004 failed the
+run. For an equality the row holds the state just after the event, as an engine
+reports at the grid time; for `!=`, the state before. Nothing a run completed
+before changes, and the row's time is reported as the grid time. A model whose
 triggers give none runs exactly as before. 75 of the 1,323 ODE jobs get any. On
 those, the A/B against the previous harness changed no outcome and no bngsim work
 counter. The 10 known artifacts pass on their own, and BIOMD0000000822 went from

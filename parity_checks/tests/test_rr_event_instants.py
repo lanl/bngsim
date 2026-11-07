@@ -292,3 +292,61 @@ def test_a_model_without_time_triggers_runs_as_before():
     np.testing.assert_array_equal(plain[0], through[0])
     np.testing.assert_array_equal(plain[1], through[1])
     assert through[3]["event_instants"] == 0
+
+
+def _ulps_from(x: float, k: int) -> float:
+    for _ in range(abs(k)):
+        x = float(np.nextafter(x, np.inf if k > 0 else -np.inf))
+    return x
+
+
+# Grids and the sample each case is near. 0.30000000000000004 and 1.0 sit at
+# different places between powers of two, so CVODE's refusal (closer than
+# 2·eps·max(|t0|, |tout|)) reaches 2 ulps before the first and 3 before the
+# second; 1e7's ulps are past the 1e-9 a returned time used to be held to.
+_NEAR = {
+    "0.3": ((0.0, 1.0, 11), 3),
+    "1.0": ((0.0, 1.0, 11), 10),
+    "1e7": ((0.0, 2e7, 3), 1),
+}
+
+
+@pytest.mark.parametrize(
+    "near, k",
+    [
+        *[("0.3", k) for k in (-1, -2, -3, -4, -5, 0, 1, 5)],
+        ("0.3", "1e-12"),
+        *[("1.0", k) for k in (-1, -2, -3, -4)],
+        *[("1e7", k) for k in (-1, -2, -3, -4)],
+    ],
+)
+def test_an_equality_ulps_from_a_sample_fires_where_it_is(near, k):
+    """`time == p` near a sample fires at p, so S is 1 on every sample at or
+    after p and 0 before it, and the job grid comes back exactly. Main refused
+    the run (CV_TOO_CLOSE) wherever p was close enough before the sample that
+    CVODE would not start the step to it after the event: 1 and 2 ulps before
+    0.3, 1 to 3 before 1.0, 1 and 2 before 1e7; there p now takes the sample's
+    place. Main ran the rest, and still does."""
+    pytest.importorskip("roadrunner")
+    grid_args, i = _NEAR[near]
+    grid = np.linspace(*grid_args)
+    p = float(grid[i]) - 1e-12 if k == "1e-12" else _ulps_from(float(grid[i]), k)
+    sbml = _sbml(_rel("eq", T, f"<cn>{p!r}</cn>"))
+    t, v, names, _ = rc.rr_ode(sbml, *grid_args, 1e-8, 1e-12, through_event_instants=True)
+    np.testing.assert_array_equal(t, grid)
+    np.testing.assert_array_equal(_s_column(t, v, names), (grid >= p).astype(float))
+
+
+def test_only_an_instant_cvode_would_not_step_from_moves_a_sample():
+    """Every other instant gives main's union of grid and instants."""
+    grid = np.linspace(0.0, 1.0, 11)
+    g3 = float(grid[3])
+    for instants in ([0.33], [g3], [_ulps_from(g3, 1)], [_ulps_from(g3, -3)], [g3 - 1e-12]):
+        times, rows = rc.rr_output_times(grid, instants)
+        assert times == list(np.union1d(grid, instants)), instants
+        assert [times[r] for r in rows] == list(grid)
+    for k in (-1, -2):
+        times, rows = rc.rr_output_times(grid, [_ulps_from(g3, k)])
+        assert len(times) == len(grid) and times[rows[3]] == _ulps_from(g3, k)
+    times, rows = rc.rr_output_times(grid, [_ulps_from(1.0, -3)])
+    assert len(times) == len(grid) and times[rows[10]] == _ulps_from(1.0, -3)
