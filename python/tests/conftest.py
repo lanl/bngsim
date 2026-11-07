@@ -403,7 +403,12 @@ _DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
         "Windows equivalent, and the behavioural half of that file runs everywhere",
     ),
     ("tomllib is 3.11+", _ANYWHERE, "stdlib module absent on 3.10, which is still supported"),
-    ("gcc/clang only", _ANYWHERE, "the sharded compile path; MSVC takes the other branch"),
+    (
+        "gcc/clang only",
+        _ANYWHERE,
+        "the sharded compile path, where MSVC takes the other branch, and the stack "
+        "frame report (issue #1566), which cl gives only under /analyze",
+    ),
     (
         "no fused multiply-add",
         _ANYWHERE,
