@@ -455,29 +455,42 @@ def test_a_parked_root_does_not_restart_the_run(data_dir, tmp_path, kind, jacobi
         bngsim.Simulator(model, jacobian=jacobian).run(**window)
 
 
-@pytest.mark.parametrize(
-    "sample_times", [[0.0, 150.0], [0.0, 10.0, 150.0]], ids=["ends", "ends-and-10"]
-)
-def test_a_grazed_root_does_not_restart_the_run(data_dir, tmp_path, sample_times):
+def test_a_grazed_root_does_not_restart_the_run(data_dir, tmp_path):
     """``moving``'s threshold dips to touch Voltage within the tolerance near
-    t = 147.5 and rises off it again. Where an output lands on the touch the
+    t = 147.5 and rises off it again. Where an output lands near the touch the
     run is refused for it (issue #1548); where none does, nothing has rested
     there to refuse, and what holds the run on its branch is #903's rule: the
     root the interpolant reports there is not resolved past the surface, so the
-    run does not restart on the far side, where the latch carries V off (0.16
-    off, silently, in the fourth review of PR #903). The other five twins rest
-    on their surface and are refused, so this is that rule's witness."""
+    run does not restart on the far side, where the latch carries V off. The
+    other five twins rest on their surface and are refused, so this is that
+    rule's witness. Without the rule, these grids ran 13,000 to 25,000 steps and
+    came out 14% to 24% off, with nothing said, where each runs in about 550
+    and on the exact twin. Which grid lands near the touch is rounding's call,
+    so each is held to the exact twin where it runs, and one at least has to."""
     text, exact_text = _ltype_variant((data_dir / _LTYPE).read_text(), "moving")
-    window = dict(sample_times=sample_times, rtol=1e-8, atol=1e-8)
-    result = bngsim.Simulator(_write(tmp_path, text, "moving.net")).run(**window)
-    assert result.solver_stats["n_steps"] < 10_000
-    exact = bngsim.Simulator(_write(tmp_path, exact_text, "moving_exact.net")).run(
-        **{**window, "rtol": 1e-12, "atol": 1e-12}
-    )
-    got = np.asarray(result.observables)
-    want = np.asarray(exact.observables)
-    scale = np.maximum(np.abs(want).max(axis=0), 1e-12)
-    assert float((np.abs(got - want) / scale).max()) < 1e-6
+    grids = [
+        dict(t_span=(0.0, 150.0), n_points=n, rtol=1e-8, atol=1e-8) for n in (4, 6, 11, 16)
+    ] + [
+        dict(t_span=(0.0, 150.0), n_points=3, rtol=1e-7, atol=1e-7),
+        dict(sample_times=[0.0, 10.0, 150.0], rtol=1e-7, atol=1e-7),
+    ]
+    ran = 0
+    for window in grids:
+        try:
+            result = bngsim.Simulator(_write(tmp_path, text, "moving.net")).run(**window)
+        except bngsim.SimulationError as e:
+            assert "come to rest" in str(e) and "issue #1548" in str(e), window
+            continue
+        ran += 1
+        assert result.solver_stats["n_steps"] < 10_000, window
+        exact = bngsim.Simulator(_write(tmp_path, exact_text, "moving_exact.net")).run(
+            **{**window, "rtol": 1e-12, "atol": 1e-12}
+        )
+        got = np.asarray(result.observables)
+        want = np.asarray(exact.observables)
+        scale = np.maximum(np.abs(want).max(axis=0), 1e-12)
+        assert float((np.abs(got - want) / scale).max()) < 1e-6, window
+    assert ran > 0, "every grid was refused, so the rule went unasked"
 
 
 @pytest.mark.parametrize(("rtol", "n_points"), [(1e-10, 301), (1e-8, 151), (1e-12, 76)])
