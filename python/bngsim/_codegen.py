@@ -4936,9 +4936,9 @@ def _refuse_oversized_frames(stderr: str, opt_flag: str, what: str) -> None:
         shown += f" and {len(frames) - 3} more"
     why = (
         " At -O0 the compiler gives every temporary in a function its own stack "
-        "slot, so the frame grows with the function; BNGSIM_CODEGEN_OPT=1 compiles "
-        "at -O1, which reuses them (raise BNGSIM_CODEGEN_TIMEOUT if that compile "
-        "runs past its budget)."
+        "slot, so the frame grows with the function. BNGSIM_CODEGEN_OPT=1 compiles "
+        "at -O1, which reuses them, but a function this large can take many times "
+        "longer to compile at -O1; BNGSIM_CODEGEN_TIMEOUT sets the budget."
         if opt_flag == "-O0"
         else ""
     )
