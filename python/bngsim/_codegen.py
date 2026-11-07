@@ -13441,10 +13441,12 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
         except ModelError as e:
             # A file that is no .net is refused by the loader, by name (issue
             # #1498). An SBML file used to load as a 0-species model and fail
-            # the check below; this wrapper promised a ValueError for it.
+            # the check below; this wrapper promised a ValueError for it. A .net
+            # the loader refuses comes here too, so the message says only that
+            # the file did not load, and why.
             raise ValueError(
-                f"codegen net_path must point to a BioNetGen .net file; {e}. For SBML "
-                "or Antimony models, load the model first and use Simulator(..., "
+                f"codegen could not load net_path as a BioNetGen .net file: {e}. For "
+                "SBML or Antimony models, load the model first and use Simulator(..., "
                 "codegen=True) without passing the SBML/XML file as net_path."
             ) from e
     if model.n_species == 0 or model.n_reactions == 0:
