@@ -217,10 +217,16 @@ static int test_adaptive_switch() {
         CHECK(r_ref < 1e-6, "reference residual small");
         CHECK(residual_inf(A_src.data(), n, x_adaptive.data(), b.data()) < 1e-6,
               "adaptive residual small across the backend switch");
-        double dmax = 0.0;
-        for (int i = 0; i < n; ++i)
+        // Relative to the solution's size (see test_pivoting_parity): cycle 3's
+        // system has cond 1.9e4 and |x| up to 4.2e3, where a fused and an
+        // unfused LU differ by 1.3e-9 (3e-13 of |x|), more than the absolute
+        // 1e-9 this once asserted.
+        double dmax = 0.0, xmax = 0.0;
+        for (int i = 0; i < n; ++i) {
             dmax = std::max(dmax, std::fabs(x_adaptive[i] - x_ref[i]));
-        CHECK(dmax < 1e-9, "adaptive solve matches built-in before and after the switch");
+            xmax = std::max(xmax, std::fabs(x_ref[i]));
+        }
+        CHECK(dmax <= 1e-9 * xmax, "adaptive solve matches built-in before and after the switch");
     }
     ::unsetenv("BNGSIM_LAPACK_DENSE_K");
     ::unsetenv("BNGSIM_LAPACK_DENSE_MIN_N");
@@ -410,10 +416,19 @@ static int test_pivoting_parity() {
             return 1;
         CHECK(rb < 1e-6, "built-in residual small (pivoting)");
         CHECK(rl < 1e-6, "lapack residual small (pivoting) — rebase correct");
-        double dmax = 0.0;
-        for (int i = 0; i < n; ++i)
+        // The two factors agree to the system's conditioning, not to the bit:
+        // they are different code, and the system's dgetrf may be built with
+        // fused multiply-adds where bngsim's GETRF is not (ubuntu-26.04's
+        // liblapack is; issue #1582). Measured fused against unfused, the n=64
+        // system (cond 4.5e3, |x| up to 1.9e3) differs by 1.4e-10, 7e-14 of |x|.
+        // A mis-rebased pivot is off by O(|x|), so 1e-9 of |x| still tells the two
+        // apart with room on both sides.
+        double dmax = 0.0, xmax = 0.0;
+        for (int i = 0; i < n; ++i) {
             dmax = std::max(dmax, std::fabs(xb[i] - xl[i]));
-        CHECK(dmax < 1e-9, "built-in and lapack agree under row pivoting");
+            xmax = std::max(xmax, std::fabs(xb[i]));
+        }
+        CHECK(dmax <= 1e-9 * xmax, "built-in and lapack agree under row pivoting");
     }
     return 0;
 }
