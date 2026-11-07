@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import math
 import os
-import platform
 import re
 import shutil
 import sys
@@ -1922,9 +1921,10 @@ end reactions
 def test_a_singular_jacobian_is_singular_on_every_platform(tmp_path, jacobian):
     # The march stops with I near 1e-40, short of 0, so the rates are not 0
     # and the step is asked for. Its last pivot is -1 + (1/3)*3: 0 where the
-    # product is rounded before the sum, as on x86-64, and -5.6e-17 where the
-    # two are fused into one multiply-add, as on arm64. By its rounding the
-    # matrix is singular on both, so no step is had; the run decides.
+    # product is rounded before the sum, as every platform's build does since
+    # #1582, and -5.6e-17 where the two are fused into one multiply-add, as an
+    # arm64 build did before it. By its rounding the matrix is singular either
+    # way, so no step is had; the run decides.
     path = tmp_path / "split.net"
     path.write_text(SPLIT_NET)
     ss = bngsim.Simulator(
@@ -1937,26 +1937,21 @@ def test_a_singular_jacobian_is_singular_on_every_platform(tmp_path, jacobian):
 
 # Compiled, the march comes to the same root without its integrator failing
 # (residual 1.05e-15, within 1.6e-6 of the interpreter's state), so it is not
-# retried: this pins the arm64 interpreter's route there, not its answer.
+# retried; the assertion below holds on either route.
 @threshold_forced
 def test_a_march_whose_integrator_fails_is_still_retried_on_difference_quotients(data_dir):
-    # MODEL1712050008's march passes the residual test, goes on, and its
-    # integrator fails; the step does not take the state it passed (202
-    # tolerances), which the run then leaves. Reported as a failure still, the
-    # solve is retried on difference quotients, and that retry comes to rest.
-    # Taking the passed state as the answer turned the retry off. Main
-    # converges at a state a run moves 2.2e5 tolerances. That march is
-    # arm64 macOS's: rounded as x86-64 Linux rounds it, the march reaches the
-    # root by its step (4e-6) without its integrator failing, asks no retry,
-    # and the run from it cannot be taken to its time, so the solve is
-    # refused (residual 1.05e-15, on either linear solver). Everywhere, it is
-    # not converged at a state a run moves.
+    # Issue #1001: a march that passes the residual test, goes on, and whose
+    # integrator then fails must still report the failure, so the solve is
+    # retried on difference quotients. MODEL1712050008's march did that only
+    # where the build fused multiply-adds (arm64 macOS): there the retry came
+    # to rest, and taking the passed state as the answer had turned the retry
+    # off. Since #1582 bngsim's build fuses nothing, so every platform rounds
+    # it as x86-64 Linux did and the march reaches a state without its
+    # integrator failing. What holds everywhere is kept: it is not converged
+    # at a state a run moves. #1001's path has no witness until #1583 finds one.
     path = str(data_dir / "MODEL1712050008.xml")
     ss = bngsim.Simulator(bngsim.Model.from_sbml(path), method="ode").steady_state()
     assert not ss.converged or ss.continued_run_distance <= 1.0
-    if sys.platform == "darwin" and platform.machine() == "arm64":
-        assert ss.solver_jacobian_retried
-        assert ss.converged
 
 
 _CC_ON_PATH = any(shutil.which(c) for c in ("cc", "gcc", "clang"))

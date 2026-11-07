@@ -149,7 +149,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-24.04    # manylinux-class x86_64
+          - os: ubuntu-latest    # manylinux-class x86_64
           - os: macos-15-intel   # macOS x86_64 (Intel)
           - os: macos-15         # macOS arm64 (Apple Silicon); macos-14 retires 2026-11-02
           - os: windows-latest   # Windows x86_64 (issue #3)

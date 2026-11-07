@@ -31,7 +31,7 @@ concurrency:
 jobs:
   pre-commit:
     name: pre-commit (pinned hooks)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -68,7 +68,7 @@ jobs:
   # has none.
   nfsim-vendor:
     name: vendored NFsim matches its patch series
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -108,7 +108,7 @@ jobs:
   # does not, so an outage at numpy.org does not fail every PR.
   docs:
     name: docs (sphinx -W)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
