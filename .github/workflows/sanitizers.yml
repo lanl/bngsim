@@ -75,7 +75,7 @@ concurrency:
 jobs:
   cpp:
     name: C++ unit suite · ubuntu-latest · ASan + UBSan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -160,7 +160,7 @@ jobs:
 
   python:
     name: Python suite · ubuntu-latest · ASan + UBSan · ${{ matrix.shard }}/2
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 150
     strategy:
       fail-fast: false
@@ -396,7 +396,7 @@ jobs:
     name: Report
     needs: [cpp, python]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
