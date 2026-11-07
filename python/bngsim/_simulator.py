@@ -443,10 +443,12 @@ def normalize_method(requested: str) -> tuple[str, str]:
 # default) and fell back again. A fitting loop or a parameter scan paid that on
 # every construction. A failure is now remembered for the process, keyed on the
 # structural codegen key plus the settings that decide the outcome — the
-# compile timeout, the job count and the backend — so a larger budget or more
-# cores still gets a fresh attempt. Only failures are remembered, not declines
-# (a decline is decided before anything compiles). An explicit codegen=True
-# never consults this: the caller asked for the build.
+# compile timeout, the job count, the optimization level and the backend — so a
+# larger budget, more cores or another -O level still gets a fresh attempt (a
+# library refused for its stack frame at -O0 may build at -O1, issue #1566).
+# Only failures are remembered, not declines (a decline is decided before
+# anything compiles). An explicit codegen=True never consults this: the caller
+# asked for the build.
 _AUTO_CODEGEN_FAILURES: dict[tuple, str] = {}
 _AUTO_CODEGEN_SKIP_LOGGED: set[tuple] = set()
 
@@ -467,6 +469,7 @@ def _auto_codegen_failure_key(model, jit_backend, *, force: bool = False) -> tup
             compute_model_codegen_hash(model),
             _resolve_codegen_timeout(),
             os.environ.get("BNGSIM_CODEGEN_JOBS", "").strip().lower(),
+            os.environ.get("BNGSIM_CODEGEN_OPT", "").strip().lower(),
             jit_backend or "cc",
         )
     except Exception as exc:  # noqa: BLE001 - no key just means no memo
