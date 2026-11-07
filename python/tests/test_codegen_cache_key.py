@@ -100,12 +100,16 @@ class TestSourceDigest:
         empty.mkdir()
         assert cg._compute_codegen_source_digest(empty) == ""
 
-    def test_live_key_carries_both_halves(self):
-        """The shipped key must actually contain the constant and a real digest;
-        an empty digest here would mean the package cannot read its own source."""
+    def test_live_key_carries_all_three_parts(self):
+        """The shipped key must actually contain the constant, a real digest and
+        the architecture (issue #1486); an empty digest here would mean the package
+        cannot read its own source."""
         assert cg._CODEGEN_CACHE_KEY.startswith(cg._CODEGEN_VERSION + "+")
         assert cg._CODEGEN_SOURCE_DIGEST, "codegen source digest is empty in a source install"
-        assert f"{cg._CODEGEN_VERSION}+{cg._CODEGEN_SOURCE_DIGEST}" == cg._CODEGEN_CACHE_KEY
+        assert (
+            f"{cg._CODEGEN_VERSION}+{cg._CODEGEN_SOURCE_DIGEST}+{cg._CODEGEN_ARCH}"
+            == cg._CODEGEN_CACHE_KEY
+        )
 
 
 class TestTheKeyIsFilenameSafe:
@@ -119,7 +123,7 @@ class TestTheKeyIsFilenameSafe:
     """
 
     def test_the_shipped_key_needs_no_escaping(self):
-        """``<version>+<digest>`` is alphanumerics and a ``+``, which is legal on
+        """``<version>+<digest>+<arch>`` is alphanumerics, ``-`` and ``+``, legal on
         POSIX and NTFS alike — so the field in the name IS the key, and what
         ``info`` prints is what ``prune --keep-key`` takes."""
         assert cg._artifact_key_field() == cg._CODEGEN_CACHE_KEY
