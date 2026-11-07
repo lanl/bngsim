@@ -298,10 +298,11 @@ jobs:
       #
       # Also deselected here, and only here (python-tests.yml runs them all):
       #
-      #   * test_nfsim_run_system_leak's throwing-run probe. It caps its own
-      #     address space at 1.5 GB to make an allocation fail; ASan reserves
+      #   * test_nfsim_run_system_leak's throwing-run probe, and
+      #     test_time_inputs_refused's oversized-result probe (issue #1524). Each
+      #     caps its own address space to make an allocation fail; ASan reserves
       #     terabytes of address space and aborts on a failed allocation instead
-      #     of throwing, so the probe cannot run under it ("Failed to mmap").
+      #     of throwing, so neither probe can run under it ("Failed to mmap").
       #   * test_run_tests_sh's end-to-end check, which needs the dev extra's
       #     diffrax and vivarium-core. This job installs only the test extra.
       #   * The 18 stochastic-ensemble comparisons in test_ssa_variable_volume
@@ -345,6 +346,7 @@ jobs:
             test_timeout.py::test_rulemonkey_session_simulate_timeout_raises
             test_timeout.py::test_nfsim_session_simulate_timeout_raises
             test_nfsim_run_system_leak.py::test_a_throwing_run_does_not_retain_the_system
+            test_time_inputs_refused.py::test_a_result_too_large_to_allocate_is_a_memory_error
             test_run_tests_sh.py::test_the_script_itself_runs_walk_up_dependent_tests_green
         run: |
           set -euxo pipefail

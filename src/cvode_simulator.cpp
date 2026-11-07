@@ -15080,6 +15080,12 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             "auto-selection.");
     }
 
+    // The schedule, for the same reason, ahead of the dispatch so the warm and
+    // algebraic-only paths are covered too (issues #1504, #1523): an empty grid
+    // was read through a null pointer below, and a target that is not finite is
+    // one CVode integrates toward without ever returning.
+    times.require_walkable("CvodeSimulator::run");
+
     // Per-species atol (issue #196). Checked here, alongside the pin above, for
     // the same reason: it is a property of the request. A vector whose length
     // does not match the model is a caller error that has to surface as one —
