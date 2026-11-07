@@ -19,11 +19,17 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
+import sys
 
 import bngsim
 import bngsim._codegen as cg
 import numpy as np
 import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _codegen_backend import under_jit_no_cc_artifact  # noqa: E402
 
 NET = """begin parameters
     1 k 0.5
@@ -91,6 +97,7 @@ def _libraries(cache) -> set:
     return {p for p in cache.iterdir() if p.name.endswith(suffix)}
 
 
+@under_jit_no_cc_artifact
 def test_another_architectures_library_is_never_loaded(tmp_path, monkeypatch):
     """The issue's reproducer, on one machine: a run on the other architecture
     leaves its library in a shared cache, and a run here must build its own
