@@ -163,6 +163,34 @@ class TestTheReportIsRead:
         assert cg._oversized_frames(err) == []
         cg._refuse_oversized_frames(err, "-O3", "a source")
 
+    @pytest.mark.parametrize(
+        "err",
+        [
+            "icc: command line warning #10006: ignoring unknown option "
+            "'-Wframe-larger-than=4194304'\n",
+            "warning: unknown warning option '-Wframe-larger-thn=4194304'; did you mean "
+            "'-Wframe-larger-than='? [-Wunknown-warning-option]\n",
+        ],
+        ids=["icc-unknown-option", "clang-did-you-mean"],
+    )
+    def test_naming_the_option_is_not_a_report(self, err):
+        """A compiler that does not know the option says so by name; refusing on
+        that would refuse every library it builds."""
+        assert cg._oversized_frames(err) == []
+
+    def test_past_three_the_rest_are_counted(self, monkeypatch):
+        monkeypatch.setattr(cg, "_CODEGEN_MAX_FRAME_BYTES", _LIMIT)
+        err = "".join(
+            f"a.c:{i}:1: warning: stack frame size ({10_000 + i}) exceeds limit ({_LIMIT}) "
+            f"in 'f{i}' [-Wframe-larger-than]\n"
+            for i in range(5)
+        )
+        with pytest.raises(cg._FrameTooLarge) as err_info:
+            cg._refuse_oversized_frames(err, "-O2", "a source")
+        message = str(err_info.value)
+        assert "f0 (10,000 bytes), f1 (10,001 bytes), f2 (10,002 bytes) and 2 more" in message
+        assert "BNGSIM_CODEGEN_OPT" not in message, "the -O1 remedy is for an -O0 build"
+
 
 @requires_gcc_clang
 class TestCompileRhs:
@@ -196,36 +224,67 @@ class TestCompileRhs:
         assert so_path.exists()
         assert cg.get_cached_so("f1566a01") == so_path
 
-    def test_a_shard_past_the_limit_refuses_the_whole_library(self, small_limit, monkeypatch):
+    @pytest.mark.parametrize("where", ["block", "driver"])
+    def test_a_shard_past_the_limit_refuses_the_whole_library(
+        self, small_limit, monkeypatch, where
+    ):
         """A chunked source compiles in parallel shards (GH #160); a shard over
-        the limit refuses the library as the serial compile does."""
+        the limit refuses the library as the serial compile does. The driver
+        unit is checked too: it is where an unchunked ``bngsim_dfdp`` lives."""
         monkeypatch.setenv("BNGSIM_CODEGEN_OPT", "0")
         monkeypatch.setenv("BNGSIM_CODEGEN_JOBS", "2")
         monkeypatch.setattr(cg, "_SHARD_UNIT_BLOCKS", 1)
         monkeypatch.setattr(cg, "_available_memory_bytes", lambda: None)
+        big = _N_TEMPORARIES
         blocks = []
-        for name in ("blk_small", "blk_flat"):
-            body = _flat_function(name, 4 if name == "blk_small" else _N_TEMPORARIES)
-            blocks += [cg._SHARD_BLOCK_OPEN, body.rstrip("\n"), cg._SHARD_BLOCK_CLOSE]
+        for name, n in (("blk_a", 4), ("blk_b", big if where == "block" else 4)):
+            blocks += [
+                cg._SHARD_BLOCK_OPEN,
+                _flat_function(name, n).rstrip("\n"),
+                cg._SHARD_BLOCK_CLOSE,
+            ]
         source = "\n".join(
             [
                 cg._CHUNK_MARKER,
-                "void blk_small(const double* y, const double* p, double* out);",
-                "void blk_flat(const double* y, const double* p, double* out);",
+                "void blk_a(const double* y, const double* p, double* out);",
+                "void blk_b(const double* y, const double* p, double* out);",
                 *blocks,
+                _flat_function("drive_flat", big if where == "driver" else 4),
                 "void drive(const double* y, const double* p, double* out) {",
-                "    blk_small(y, p, out);",
-                "    blk_flat(y, p, out);",
+                "    blk_a(y, p, out);",
+                "    blk_b(y, p, out);",
+                "    drive_flat(y, p, out);",
                 "}",
                 "",
             ]
         )
-        assert cg._split_sharded_source(source) is not None
+        split = cg._split_sharded_source(source)
+        assert split is not None and len(split[1]) == 2
+        culprit, unit = (
+            ("blk_b", "unit_0001.c") if where == "block" else ("drive_flat", "driver.c")
+        )
 
-        with pytest.raises(RuntimeError, match=r"shard .* the stack frame of blk_flat \("):
-            cg.compile_rhs(source, "f1566a02")
+        with pytest.raises(
+            RuntimeError, match=rf"shard {unit} .* the stack frame of {culprit} \("
+        ):
+            cg.compile_rhs(source, f"f1566a02{where}")
 
-        assert cg.get_cached_so("f1566a02") is None
+        assert cg.get_cached_so(f"f1566a02{where}") is None
+
+
+class TestARefusedBuildIsRetriedAtAnotherLevel:
+    def test_the_failure_memo_is_keyed_on_the_opt_level(self, monkeypatch):
+        """The refusal suggests ``BNGSIM_CODEGEN_OPT=1``; an automatic build the
+        process remembers as failed at -O0 is tried again at -O1, not skipped."""
+        from bngsim import _simulator
+
+        model = Model.from_net(os.path.join(DATA, "simple_decay.net"))
+        monkeypatch.delenv("BNGSIM_CODEGEN_OPT", raising=False)
+        at_default = _simulator._auto_codegen_failure_key(model, None, force=True)
+        monkeypatch.setenv("BNGSIM_CODEGEN_OPT", "1")
+        at_O1 = _simulator._auto_codegen_failure_key(model, None, force=True)
+        assert at_default is not None and at_O1 is not None
+        assert at_default != at_O1
 
 
 @requires_gcc_clang

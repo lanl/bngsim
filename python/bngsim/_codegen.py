@@ -134,14 +134,16 @@ _CODEGEN_HUGE_SOURCE_BYTES = 8_000_000
 # main thread, whose stack is 8 MiB. 8 MiB is also the default stack of the
 # Linux main thread and of a Linux thread (a CPython thread on macOS gets 16
 # MiB), so a frame of at most half of it leaves the other half to the
-# interpreter and the solver that call in. Every gcc/clang compile reports any function past this
-# (-Wframe-larger-than) and such a library is refused, never installed. MSVC has
-# no such report outside /analyze, so a cl build is not checked. Measured on the
-# corpus builds over 4 MB of C, the largest frame of a library that runs is
+# interpreter and the solver that call in. A Windows thread's stack is 1 MiB
+# unless the executable asks for more, so a MinGW gcc build there is held to
+# half of that. Every gcc/clang compile reports any function past the limit
+# (-Wframe-larger-than) and such a library is refused, never installed. MSVC
+# has no such report outside /analyze, so a cl build is not checked. Measured on
+# the corpus builds over 4 MB of C, the largest frame of a library that runs is
 # BIOMD0000000496's sensitivity bngsim_dfdp at -O0, 2,011,360 bytes, and the
 # largest at -O1/-O2 is 253,472 bytes (MODEL1603150001's
-# bngsim_codegen_output_sens); both build as before.
-_CODEGEN_MAX_FRAME_BYTES = 4 * 1024 * 1024
+# bngsim_codegen_output_sens); both build as before on Linux and macOS.
+_CODEGEN_MAX_FRAME_BYTES = (512 if platform.system() == "Windows" else 4 * 1024) * 1024
 
 # Per-process counter feeding unique temp filenames for atomic .so installs.
 _compile_counter = itertools.count()
@@ -4883,10 +4885,13 @@ def _frame_limit_flag() -> str:
     return f"-Wframe-larger-than={_CODEGEN_MAX_FRAME_BYTES}"
 
 
-#: The option both compilers tag the report with: Clang ``[-Wframe-larger-than]``,
+#: The tag both compilers end the report with: Clang ``[-Wframe-larger-than]``,
 #: GCC ``[-Wframe-larger-than=]``. Its presence is what refuses a library; the
-#: function name and size are read only to say which.
-_FRAME_REPORT_TAG = "-Wframe-larger-than"
+#: function name and size are read only to say which. The bracket is part of it:
+#: a compiler that does not know the option and says so (icc's ``ignoring
+#: unknown option '-Wframe-larger-than=...'``) names the option bare, and that
+#: is not a report.
+_FRAME_REPORT_TAG = "[-Wframe-larger-than"
 _FRAME_SIZE = re.compile(r"frame size (?:of |\()(\d+)")
 _FRAME_FUNCTION = re.compile(r"\bin (?:function )?['‘`]([^'’`]+)['’`]")
 _GCC_FUNCTION_CONTEXT = re.compile(r"In function ['‘`]([^'’`]+)['’`]")
