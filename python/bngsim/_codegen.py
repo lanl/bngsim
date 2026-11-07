@@ -4893,6 +4893,10 @@ def _frame_limit_flag() -> str:
 #: is not a report.
 _FRAME_REPORT_TAG = "[-Wframe-larger-than"
 _FRAME_SIZE = re.compile(r"frame size (?:of |\()(\d+)")
+#: A terminal colour code. GCC colours its diagnostics when a wrapper passes
+#: ``-fdiagnostics-color=always``, and the codes split the tag (``[`` ESC ``[01;35m``
+#: ESC ``[K-Wframe-larger-than=``); they are dropped before anything is read.
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _FRAME_FUNCTION = re.compile(r"\bin (?:function )?['‘`]([^'’`]+)['’`]")
 _GCC_FUNCTION_CONTEXT = re.compile(r"In function ['‘`]([^'’`]+)['’`]")
 
@@ -4910,10 +4914,10 @@ def _oversized_frames(stderr: str) -> list[tuple[str, int | None]]:
     in function 'f'``), GCC on an ``In function 'f':`` line above it (``the frame
     size of N bytes is larger than M bytes``). A report whose wording neither
     pattern matches still counts, with what could not be read left as ``"?"`` /
-    ``None``."""
+    ``None``. Colour codes are dropped first."""
     found: list[tuple[str, int | None]] = []
     context = "?"
-    for line in stderr.splitlines():
+    for line in _ANSI_ESCAPE.sub("", stderr).splitlines():
         gcc_context = _GCC_FUNCTION_CONTEXT.search(line)
         if gcc_context is not None:
             context = gcc_context.group(1)

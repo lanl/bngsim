@@ -154,6 +154,17 @@ class TestTheReportIsRead:
         )
         assert cg._oversized_frames(err) == [("flat", 16_032)]
 
+    def test_gcc_in_colour(self):
+        """What gcc 15 prints when a wrapper passes -fdiagnostics-color=always:
+        the colour codes split the tag and the function name."""
+        err = (
+            "\x1b[01m\x1b[Ka.c:\x1b[m\x1b[K In function '\x1b[01m\x1b[Kflat\x1b[m\x1b[K':\n"
+            "\x1b[01m\x1b[Ka.c:4002:1:\x1b[m\x1b[K \x1b[01;35m\x1b[Kwarning: \x1b[m\x1b[K"
+            "the frame size of 16032 bytes is larger than 8192 bytes "
+            "[\x1b[01;35m\x1b[K-Wframe-larger-than=\x1b[m\x1b[K]\n"
+        )
+        assert cg._oversized_frames(err) == [("flat", 16_032)]
+
     def test_a_report_in_words_it_cannot_read_still_counts(self):
         err = "a.c:1:1: avertissement: cadre de pile trop grand [-Wframe-larger-than=]\n"
         assert cg._oversized_frames(err) == [("?", None)]
