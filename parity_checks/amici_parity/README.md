@@ -111,6 +111,34 @@ AMICI generates and compiles a bespoke C++ extension per model. These are cached
 on disk in `amici_cache/` keyed by SBML-content hash (gitignored), so the first
 sweep pays the cold compile and every re-run is load-only.
 
+### Both engines start at the SED-ML initial time (issue #1564)
+
+On 19 corpus jobs the SED-ML outputStartTime, the manifest's `t_start`, is later
+than its initialTime, `initial_time`: BIOMD0000000042 is on [120, 300], 569 on
+[1e-5, 1e-2], 878 on [25000, 33000]. Each engine takes the start it is handed as
+the time the model's initial state holds at. Handed `t_start`, both solved the
+initial state placed at the output start: nothing before it happened, and
+BIOMD0000000834's `H := 1.8` at `t >= 200` (window [400, 700]) never fired. The two
+agreed, so the rows passed, but about a different problem from the SED-ML's.
+
+Both jobs now integrate from `initial_time` (`_amici_common.initial_time`) and
+compare `n_points` over `[initial_time, t_end]`, as rr_run has since GH #19 and
+copasi_run since #1550. A job file predating the field integrates from `t_start`.
+On the 19 jobs:
+
+| | ODE job | sensitivity job (both methods) |
+|---|---|---|
+| `REFERENCE_FAILED` → `PASS` | 943 (AMICI's integrator had failed from the output start) | — |
+| `PASS` → `REFERENCE_FAILED`, `AMICI_TOO_MUCH_WORK` | 042, 691 | 691, 878 |
+| unchanged | the other 16: 12 `PASS`, 4 `REFERENCE_FAILED` (878's on `AMICI_TOO_MUCH_WORK`, as before) | the other 17 |
+
+834 still passes, now with its event: `AMICI through 1 event instants`. The new
+refusals are AMICI's step budget over the longer horizon, not a bngsim
+difference: rr_parity, which has integrated these jobs from `initial_time` all
+along, passes bngsim on 042, 691 and 878, where bngsim takes 11,940, 173,344 and
+154,852 steps. The ODE job leaves AMICI at its default budget of 10,000; the
+sensitivity job gives both engines 100,000 (#339).
+
 ### AMICI runs through the event instants (issue #1542)
 
 AMICI rewrites a `time == c` trigger as `(time >= c) && (time <= c)`. That trigger
@@ -197,9 +225,9 @@ leaves the AMICI check on the model blind. RoadRunner still judges the onset
 sample, because rr_parity is unchanged: bngsim's reading there is checked against
 an engine that reads `>` strictly.
 
-The forward-sensitivity job does not apply the rule yet. Its state check still
-judges the onset sample, so on these models the sensitivity page reads `state DIFF`
-(issue #1571).
+The forward-sensitivity job applies the same rule, to the state and to the
+sensitivities (issue #1571): see
+[its section](#the-sample-on-a-strict-onset-is-not-judged-there-either-issue-1571).
 
 ## Overrides — departure from rr_parity
 
@@ -476,6 +504,34 @@ trajectory. Each row carries its own state verdict, kept out of the headline
 metric so a sensitivity DIFF on a model whose states already disagree is never
 mistaken for a sensitivity-specific bug.
 
+### The sample on a strict onset is not judged there either (issue #1571)
+
+At a sample on the c of a `time > c` trigger AMICI reports the state and its
+sensitivities after the event, and bngsim before it, as in the ODE job
+([above](#the-sample-on-a-strict-triggers-onset-is-not-judged-issue-1557)).
+`amici_sens` records those samples as `strict_onset_samples`, placed by the same
+`_amici_common.grid_onset_samples` `amici_ode` uses, and `_compare` leaves their
+rows out of the state verdict and of every sensitivity verdict, by the same
+`_amici_common.onset_rows`. The comment says what that changed, for each:
+
+```
+5 sp x 2 par; 2/2 columns judged: fail 0/10000 (hard 0, soft 0, forgiven 0, noise-rescued 0); state ok | strict onset not judged at t = 1 (state rescued 1 DECISIVE; sensitivities rescued 0; GH #1571)
+```
+
+`rescued` counts the failing cells on those rows, read off every sample with the
+rows forgiven: the state's, and the judged columns' cells that the
+solver-resolution floor had not already forgiven. `DECISIVE` means that verdict
+is a `DIFF` on every sample and not on the judged ones. A row with a cell finite
+on one side only, in the state or a sensitivity, is judged anyway.
+
+On the 22 jobs with a sample on an onset: BIOMD0000000104, 125, 860 and 862 go
+from `state DIFF` to `state ok`, each on its one cell. BIOMD0000000820 goes `DIFF`
+→ `PASS`: its one failing cell was d/d`tau` at t = `tau`, the onset itself.
+BIOMD0000000117's `COMPARISON_ARTIFACT` entry read `STALE` and is retired: its
+one cell was the sample at t = `tstim` = 4. 563 stays `BAD_TEST` (no column
+judged), now with `state ok`; 318 stays a `DIFF` (Class 2). The rest keep their
+verdicts.
+
 ### Reading what the solver-resolution noise floor did
 
 A zero derivative that one engine returns as exact `0.0` and the other as its own
@@ -640,12 +696,14 @@ later runs can compare bngsim against the record with no AMICI at all:
 An entry holds AMICI's free parameter ids (so the replay negotiates the same
 shared parameter list without building the model), the shared list it ran
 with, its state and sensitivity tensors, its timing, or the build or run
-failure it hit. The replay re-runs bngsim and scores it exactly as a live run
+failure it hit. Its timing carries the samples on a strict onset (issue #1571),
+so a replay leaves out the same ones a live run does. The replay re-runs bngsim and scores it exactly as a live run
 would; on the smoke subset the two give the same outcome, value and comment on
 every job, and the row's `timing.amici.replayed_from_archive` is `true`.
 
 An entry is used only when it still describes the job: the model file's
-sha256, the grid (`t_start`, `t_end`, `n_points`), `rtol`, `atol`, the method,
+sha256, the grid (`t_int`, the initial time both runs start at; `t_end`;
+`n_points`), `rtol`, `atol`, the method,
 `--max-steps`, `--param-cap` and `--param-budget` must all match, and so must
 the shared parameter list the replay negotiates. Otherwise, or with no entry,
 the row is `REFERENCE_FAILED` with `reference_refusal: archive_stale` and the

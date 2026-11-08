@@ -45,6 +45,14 @@ So **events are a modest slice** (~10 explicit + some of the `deltax` compiles);
 dominant failures are **integrator bailouts, unsupported `floor`/`ceiling` math, model
 compile failures, and SBML-load failures**, plus a handful of AMICI internal bugs.
 
+Since issue #1564 both jobs start at the SED-ML initial time on the 19 jobs whose
+window starts after the model does, and three of them run past AMICI's step budget
+over the longer horizon (`AMICI_TOO_MUCH_WORK`): BIOMD0000000042 and 691 in the ODE
+job, 691 and 878 in the sensitivity job (878's ODE row already failed that way).
+rr_parity passes bngsim on all three from the same start; bngsim takes 11,940,
+173,344 and 154,852 steps there, and the ODE job leaves AMICI at its default
+10,000. The same change lets AMICI's ODE run of BIOMD0000000943 finish; it `PASS`es.
+
 ## Class 2 — AMICI integration outliers (44 DIFF; 42 confirmed AMICI-side)
 
 Both engines ran but disagree, and **RoadRunner sides with bngsim** (max_rel_err = 0):
@@ -384,8 +392,10 @@ On 563 the jump at `t_end` is all that moves on the grid, so its row also reads
 moves. A per-row `COMPARISON_ARTIFACT` was the alternative, but at `max_rel` 1.0 it
 would have stopped the AMICI row checking anything on four of the five models.
 rr_parity still judges the onset sample, against RoadRunner. The
-forward-sensitivity job does not apply the rule yet, so its state column still
-reads DIFF on these models (#1571).
+forward-sensitivity job applies the rule too since #1571, to the state and the
+sensitivities: 104, 125, 860 and 862 read `state ok` there now, and
+BIOMD0000000820's one failing sensitivity cell, d/d`tau` at t = `tau`, was the
+same reading, so that row `PASS`es. So was BIOMD0000000117's (Class 4).
 
 The other 17 corpus jobs with a sample on an onset keep their verdicts.
 BIOMD0000000318 stays a `DIFF`: AMICI is off on 6992 of the 7000 judged cells
