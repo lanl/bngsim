@@ -30,6 +30,8 @@ cannot step over a period. None of them is the run under test.
 
 from __future__ import annotations
 
+import math
+
 import bngsim
 import numpy as np
 import pytest
@@ -367,3 +369,78 @@ def test_a_row_after_a_root_stepped_on_through_is_read_at_its_time():
     t = np.linspace(0.0, 60.0, 241)
     before = t < 50.0
     assert np.max(np.abs(s[before] - (0.0008 + 0.0005 * np.sin(t[before])))) < 2e-6
+
+
+# S drifts up at dlt from 1 at t = 30 while thr() sweeps from 1 to 1 + A by
+# t = 30.05, on the time or on a clock species C. S < thr() opens a window
+# where the sweep passes S, and S closes it where it passes thr()'s ceiling.
+# Y integrates a Gaussian pulse centred at 30.047 while it is open, so only
+# the pulse's tail after the window opens counts. The pulse's centre is a stop
+# the run restarts at.
+_WINDOW_NET = """begin parameters
+    1 k    10.0
+    2 A    0.05
+    3 tp   30.05
+    4 sig  0.001
+    5 dlt  0.1
+    6 tz   30.047
+    7 one  1.0
+end parameters
+begin functions
+    1 thr() 1+A*(1+tanh(({clock}-tp)/sig))/2
+    2 up() dlt
+    3 z() exp(-((time()-tz)/0.001)^2)
+    4 r() if(Sobs<thr(),k,0)*z()
+end functions
+begin species
+    1 S() 1.0
+    2 Y() 0
+    3 C() 30.0
+end species
+begin reactions
+    1 0 1 up
+    2 0 2 r
+    3 0 3 one
+end reactions
+begin groups
+    1 Sobs 1
+    2 Cobs 3
+end groups
+"""
+
+
+@pytest.mark.parametrize("clock", ["time()", "Cobs"])
+@pytest.mark.parametrize("rtol, rel", [(1e-3, 0.2), (1e-6, 1e-3)])
+def test_a_window_a_switch_opens_and_closes_inside_the_step_is_seen(tmp_path, clock, rtol, rel):
+    """The window S < thr() is open from t = 30.0489 to 30.5. After the stop at
+    the pulse's centre the run's first step is 8e-5 and the next 0.81, which
+    holds the whole window, so S > thr() at both of its ends and CVODE's root
+    search, which reads those two, found no crossing. The step's ends and its
+    three places inside all fall where the pulse is spent, so the look found
+    no change either: Y gained 0 where the pulse's tail gives it 6.7e-5, at
+    every tolerance down to rtol 1e-6, on either clock. The look now reads the
+    switch's side at its places as well, and one where the switch is on the
+    other side from both ends becomes a stop: the step is cut there, and the
+    crossing in it is found. At rtol 1e-3 the gain is 7e-6 off, under atol."""
+    path = tmp_path / "window.net"
+    path.write_text(_WINDOW_NET.format(clock=clock))
+    sim = bngsim.Simulator(bngsim.Model.from_net(str(path)))
+    result = sim.run(sample_times=[30.0, 31.05], rtol=rtol, atol=rtol * 1e-2)
+    amp, tp, sig, dlt, tz = 0.05, 30.05, 0.001, 0.1, 30.047
+    lo, hi = 30.0, tp + 0.5
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        if 1.0 + amp * (1.0 + math.tanh((mid - tp) / sig)) / 2.0 < 1.0 + dlt * (mid - 30.0):
+            lo = mid
+        else:
+            hi = mid
+    t_open, t_close = 0.5 * (lo + hi), 30.0 + amp / dlt
+    exact = (
+        10.0
+        * 0.001
+        * math.sqrt(math.pi)
+        / 2.0
+        * (math.erf((t_close - tz) / 0.001) - math.erf((t_open - tz) / 0.001))
+    )
+    assert exact == pytest.approx(6.6955e-5, rel=1e-4)
+    assert float(result.species[-1][1]) == pytest.approx(exact, rel=rel)
