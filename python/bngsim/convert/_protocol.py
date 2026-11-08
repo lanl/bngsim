@@ -256,6 +256,31 @@ class Experiment:
     # starts at a model time an earlier run leaves unknown is not one of them:
     # ``extra["continue"]`` says where it starts, and a replay knows that time.
     approximations: tuple[str, ...] = ()
+    # Where the output starts, when it is after the run's start: a SED-ML
+    # uniformTimeCourse whose outputStartTime is past its initialTime. The run
+    # integrates from ``t_span[0]`` and outputs ``n_points`` even times over
+    # ``(output_start, t_span[1])``. None outputs from ``t_span[0]``, as every
+    # BNG2.pl action does (issue #1493).
+    output_start: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.output_start is None:
+            return
+        start = float(self.output_start)
+        t0, t_end = (float(t) for t in self.t_span)
+        if not (math.isfinite(start) and t0 <= start <= t_end):
+            raise ValueError(
+                f"output_start={self.output_start!r} must lie in t_span ({t0:g}, {t_end:g}): "
+                "the run integrates from t_span[0] and outputs from output_start to t_span[1]"
+            )
+        if self.sample_times is not None:
+            raise ValueError(
+                "an experiment takes output_start or sample_times, not both: "
+                "sample_times already names every output time"
+            )
+        # An output that starts where the run does is the plain experiment, and
+        # compares equal to it.
+        object.__setattr__(self, "output_start", None if start == t0 else start)
 
     @property
     def is_scan(self) -> bool:
@@ -270,7 +295,7 @@ class Experiment:
         return self.method == "ode"
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out = {
             "step": "experiment",
             "kind": self.kind,
             "method": self.method,
@@ -288,6 +313,10 @@ class Experiment:
             "sample_times": None if self.sample_times is None else list(self.sample_times),
             "approximations": list(self.approximations),
         }
+        # Only where it is set, so a protocol without one serializes as before.
+        if self.output_start is not None:
+            out["output_start"] = self.output_start
+        return out
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> Experiment:
@@ -309,6 +338,7 @@ class Experiment:
             scan_values=None if scan_values is None else tuple(float(v) for v in scan_values),
             sample_times=None if sample_times is None else tuple(float(t) for t in sample_times),
             approximations=tuple(d.get("approximations", ())),
+            output_start=None if d.get("output_start") is None else float(d["output_start"]),
         )
 
 
@@ -704,6 +734,14 @@ def _action_value(v: Any) -> str:
     return f'"{v}"'
 
 
+def _output_grid(e: Experiment) -> list[float]:
+    """The even output times of an experiment with an ``output_start``."""
+    import numpy as np
+
+    assert e.output_start is not None
+    return [float(t) for t in np.linspace(e.output_start, e.t_span[1], int(e.n_points))]
+
+
 def _experiment_action(e: Experiment) -> str:
     """Serialize an :class:`Experiment` to a ``simulate``/``parameter_scan`` call.
 
@@ -712,7 +750,13 @@ def _experiment_action(e: Experiment) -> str:
     """
     pairs: list[tuple[str, str]] = [("method", f'"{e.method}"')]
     pairs.append(("t_start", _action_num(e.t_span[0])))
-    if e.sample_times is not None:
+    if e.output_start is not None:
+        # BNG2.pl has no output start (issue #1493): the run integrates from
+        # t_start and writes t_start's row, then these times. t_start is among
+        # them so the list has the 3 entries BNG2.pl needs at n_points = 2.
+        times = ",".join(_action_num(t) for t in (e.t_span[0], *_output_grid(e)))
+        pairs.append(("sample_times", f"[{times}]"))
+    elif e.sample_times is not None:
         # The written times: BNG2.pl outputs t_start first and ends at the last.
         times = ",".join(_action_num(t) for t in e.sample_times[1:])
         pairs.append(("sample_times", f"[{times}]"))
@@ -742,9 +786,12 @@ def _experiment_action(e: Experiment) -> str:
         if str(k) not in written:
             pairs.append((str(k), _action_value(v)))
 
-    verb = "bifurcate" if e.is_bifurcation else "parameter_scan" if e.is_scan else "simulate"
     body = ",".join(f"{k}=>{v}" for k, v in pairs)
-    return f"{verb}({{{body}}})"
+    return f"{_experiment_verb(e)}({{{body}}})"
+
+
+def _experiment_verb(e: Experiment) -> str:
+    return "bifurcate" if e.is_bifurcation else "parameter_scan" if e.is_scan else "simulate"
 
 
 # StateChange kind → its BNG action verb, the inverse of ``_STATE_VERBS``.
@@ -801,6 +848,16 @@ def write_bngl_protocol(protocol: ProtocolSpec, out_path: str | Path | None = No
     lines = ["begin actions", ""]
     for step in protocol.steps:
         if isinstance(step, Experiment):
+            if step.output_start is not None:
+                warnings.warn(
+                    f"{_experiment_verb(step)} integrates from "
+                    f"t={step.t_span[0]:g} and outputs from t={step.output_start:g} "
+                    "(a SED-ML outputStartTime past its initialTime); BNG2.pl has no "
+                    "output start, so the action is written as sample_times from "
+                    f"t_start={step.t_span[0]:g}, and its output has that row before them",
+                    ConversionWarning,
+                    stacklevel=2,
+                )
             lines.append(_experiment_action(step))
         elif isinstance(step, StateChange):
             lines.append(_state_change_action(step))
