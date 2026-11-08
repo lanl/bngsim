@@ -91,7 +91,8 @@ def test_compute_all_sensitivities_raises_the_refusal_without_retrying_columns(m
 # nowhere else in the solver. Each is reached whatever columns are requested:
 # what throws reads whether the run has sensitivities and the trajectory, not
 # which parameters move what (and a per-parameter probe of the refusal tests
-# found no column that ran alone for any of them).
+# found no column that ran alone for any of them a test reaches; no test
+# reaches the two caps).
 TYPED = {
     "tangentially at t=": "#144, a trigger met tangentially",
     "after more state-dependent rate-law switches than": "#945/#1025, crossings over the cap",
