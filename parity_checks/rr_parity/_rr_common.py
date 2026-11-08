@@ -898,6 +898,73 @@ def _trigger_comparisons(sbml: str, value_of=None, literal_of=None):
             yield from walk(e.getTrigger().getMath())
 
 
+def _cvode_refuses_step(t0: float, tout: float) -> bool:
+    """Whether CVODE refuses to start a step from ``t0`` to ``tout``: it does
+    where they are closer than 2·eps·max(|t0|, |tout|) (CV_TOO_CLOSE, "tout too
+    close to t0 to start integration"), 2 to 4 ulps of ``tout``."""
+    return abs(tout - t0) < 2.0 * np.finfo(float).eps * max(abs(t0), abs(tout))
+
+
+def rr_output_times(grid: np.ndarray, instants, held=frozenset()) -> tuple[list[float], list[int]]:
+    """RoadRunner's output times for a run through ``instants``, and the index
+    of each grid time's row among them.
+
+    The grid plus the instants, as a set, except where an instant falls so
+    shortly before a grid time that CVODE refuses the step between them
+    (:func:`_cvode_refuses_step`): given both, RoadRunner fires the event at
+    the instant and then cannot start the step on, so the run fails; `time ==
+    0.3` beside the grid's 0.30000000000000004 did. There the instant takes the
+    grid time's place, which changes nothing a run main completed, and its row
+    holds the state just after the event, what an engine reports at the grid
+    time. An instant after a grid time is kept beside it.
+
+    Two kinds of instant never take a grid time's place, and the run fails as
+    before rather than give a wrong row:
+
+    * one in ``held`` (:func:`_neq_instants`): a `!=` is false at its instant
+      and fires just after it, so in the grid time's place its row would hold
+      the state before an event the grid time comes after;
+    * one before a grid time that is an instant itself: the event there would
+      go unseen.
+    """
+    times = [float(g) for g in grid]
+    instants = set(instants)
+    added: list[float] = []
+    for t in sorted(instants):
+        i = int(np.searchsorted(grid, t))
+        if i < len(grid) and grid[i] == t:
+            continue  # already a grid time
+        if (
+            i < len(grid)
+            and t not in held
+            and times[i] == grid[i]
+            and times[i] not in instants
+            and _cvode_refuses_step(t, times[i])
+        ):
+            times[i] = t
+            continue
+        added.append(t)
+    out = sorted(times + added)
+    position = {x: k for k, x in enumerate(out)}
+    return out, [position[x] for x in times]
+
+
+def _neq_instants(
+    sbml: str, t_start: float, t_end: float, value_of=None, literal_of=None
+) -> set[float]:
+    """The instants :func:`event_instants` gives for the ``!=`` comparisons of
+    the clock in the event triggers: where each is false, its event firing just
+    after. Read as it reads them, so each is one of its instants exactly."""
+    import libsbml
+
+    out: set[float] = set()
+    for ty, left, right in _trigger_comparisons(sbml, value_of, literal_of):
+        if ty == libsbml.AST_RELATIONAL_NEQ:
+            levels, _wraps = _atom_instants(left, right, t_start, t_end)
+            out.update(float(t) for t in levels if np.isfinite(t) and t_start < t <= t_end)
+    return out
+
+
 def event_instants(
     sbml: str, t_start: float, t_end: float, value_of=None, literal_of=None
 ) -> list[float]:
@@ -1095,6 +1162,7 @@ def rr_ode(
         load = {}
 
     instants: list[float] = []
+    held: set[float] = set()
     if through_event_instants:
 
         def _value(i):
@@ -1104,8 +1172,10 @@ def rr_ode(
                 return None
 
         instants = event_instants(xml_string, t_start, t_end, _value)
+        if instants:
+            held = _neq_instants(xml_string, t_start, t_end, _value)
     grid = np.linspace(t_start, t_end, n_points) if instants else None
-    times = list(np.union1d(grid, instants)) if instants else None
+    times, grid_rows = rr_output_times(grid, instants, held) if instants else (None, None)
 
     def _simulate():
         if times is None:
@@ -1174,10 +1244,16 @@ def rr_ode(
     names = _rr_colnames(res)
     arr = np.asarray(res)
     if times is not None:
-        rows = np.searchsorted(arr[:, 0], grid)
-        if rows.max() >= len(arr) or not np.allclose(arr[rows, 0], grid, rtol=0, atol=1e-9):
+        # By index: a grid time an instant took the place of is not in the run.
+        # That row's time is the instant, a few ulps off, so it is held to the
+        # grid in ulps rather than by a fixed tolerance, and reported as the grid
+        # time: past t = 2e6 a few ulps are more than 1e-9.
+        rows = np.asarray(grid_rows)
+        off = np.abs(arr[rows, 0] - grid) if len(arr) == len(times) else None
+        if off is None or not np.all((off <= 1e-9) | (off <= 4 * np.abs(np.spacing(grid)))):
             raise RuntimeError("RoadRunner did not report every time of the job grid")
         arr = arr[rows]
+        arr[:, 0] = grid
     return arr[:, 0].copy(), arr[:, 1:], names, timing
 
 

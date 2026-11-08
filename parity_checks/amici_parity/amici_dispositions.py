@@ -292,9 +292,11 @@ INVALID_REFERENCE: dict[str, dict] = {
     # 2.9.2.
     #
     # The `sens` row needs no entry. bngsim refuses sensitivities on this model
-    # (#1150's flat-start refusal), so it never gives a comparison. It scores
-    # EXCEPTION, not UNSUPPORTED, because the refusal reaches the runner as a
-    # SimulationError rather than a SensitivityUnsupportedError.
+    # (#934's refusal of a trigger that leaves its threshold flat: PIcellDeath
+    # fires at t ~ 3e-27), so it never gives a comparison. It scores UNSUPPORTED:
+    # since #1577 that refusal is a SensitivityRefusedDuringRunError, a
+    # SensitivityUnsupportedError. Before, it reached the runner as a plain
+    # SimulationError and scored EXCEPTION.
     "BIOMD0000000285:ode": {
         "issue": "GH #1542",
         "max_rel": 1.0,
