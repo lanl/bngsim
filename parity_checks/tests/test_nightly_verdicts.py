@@ -286,6 +286,9 @@ def test_a_replay_after_the_live_night_reports_the_archive_gap_the_baseline_reco
     assert "no regressions" in md and f"{LIVE} -> {ARCHIVE}" in md
     # The --baseline-now alone does it: compare.sh may not get that night's.
     assert V.main([*args, "--baseline-now", committed]) == 0
+    # A suite with no committed baseline yet (compare.sh names it all the same)
+    # excuses nothing, and does not break the diff.
+    assert V.main([*args, "--baseline-now", str(tmp_path / "absent.json")]) == 1
 
 
 def test_an_archive_gap_between_two_replays_still_alerts():
