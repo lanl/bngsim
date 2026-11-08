@@ -1224,14 +1224,15 @@ def test_a_residual_that_reads_the_time_is_not_held(tmp_path):
 
 # The scaled sweep again with the clock a species: C grows at rate 1, as a
 # BNGL "Time" species does, and thr() and h() read C, so the residual reads
-# only species and can be held. Written with {h} for h().
+# only species and can be held. Written with {h} for h() and {dlt} for the
+# drift.
 _CLOCK_SWEEP_NET = """\
 begin parameters
     1 k    10.0
     2 A    0.5
     3 tp   30.05
     4 sig  0.001
-    5 dlt  0.01
+    5 dlt  {dlt}
     6 te   30.0
     7 one  1.0
 end parameters
@@ -1287,7 +1288,7 @@ def test_a_threshold_on_a_clock_species(tmp_path, h):
     this host it does for the h() that falls. Main ran only because no output
     did. The run is refused there for the rest, never silently wrong, or runs
     and gains what the pulse gives."""
-    model = _write(tmp_path, _CLOCK_SWEEP_NET.format(h=h))
+    model = _write(tmp_path, _CLOCK_SWEEP_NET.format(h=h, dlt=0.01))
     t1, tp, amp, sig, dlt = 30.04, 30.05, 0.5, 0.001, 0.01
     try:
         result = bngsim.Simulator(model).run(
@@ -1310,6 +1311,44 @@ def test_a_threshold_on_a_clock_species(tmp_path, h):
             hi = mid
     t_open = 0.5 * (lo + hi)
     exact = 10.0 * 0.001 * math.sqrt(math.pi) / 2.0 * math.erfc((t_open - 30.047) / 0.001)
+    gained = float(result.species[-1][1]) - float(result.species[1][1])
+    assert gained == pytest.approx(exact, rel=2e-2)
+
+
+@pytest.mark.parametrize("dlt", [0.05, 0.1])
+@pytest.mark.parametrize(
+    "h",
+    ["1", "1e-3+1/(1+exp((Cobs-30.02)/0.002))"],
+    ids=["h = 1", "h falls a thousandfold"],
+)
+def test_a_crossing_in_the_steep_of_a_sweep_is_restarted_at(tmp_path, h, dlt):
+    """The clock sweep with S drifting faster, so that it is 2e-3 to 4e-3 above
+    the surface when thr() sweeps past it: the crossing is in the steep of the
+    sweep, where dthr/dC is 3 to 3.8. The restart test held every reading of
+    the step after the root to that slope times C's unit, 0.03 at C = 30 and
+    rtol 1e-3, a bar of 0.63 to 0.79 against the sweep's whole height of 0.5.
+    The step runs from the pulse's centre to t = 30.86, past the sweep and the
+    pulse both, and no reading could clear it, not even where thr() has
+    flattened at 1.5 and C's error cannot move it. The crossing was declined,
+    the run stepped on over the window it opens, and Y gained 0 where the
+    pulse gives it 0.0068 and 0.0032. Each reading is now held to the band at
+    its own state. At drifts of 0.01 and 0.03 the crossing is at the foot of
+    the sweep, which main gets right."""
+    model = _write(tmp_path, _CLOCK_SWEEP_NET.format(h=h, dlt=dlt))
+    t1, tp, amp, sig = 30.04, 30.05, 0.5, 0.001
+    result = bngsim.Simulator(model).run(sample_times=[0.0, t1, tp + 1.0], rtol=1e-3, atol=1e-5)
+    s1 = float(result.species[1][0])
+    lo, hi = t1, tp + 0.5
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        thr = 1.0 + amp * (1.0 + math.tanh((mid - tp) / sig)) / 2.0
+        if thr - (s1 + dlt * (mid - t1)) < 0.0:
+            lo = mid
+        else:
+            hi = mid
+    t_open = 0.5 * (lo + hi)
+    exact = 10.0 * 0.001 * math.sqrt(math.pi) / 2.0 * math.erfc((t_open - 30.047) / 0.001)
+    assert exact > 3e-3
     gained = float(result.species[-1][1]) - float(result.species[1][1])
     assert gained == pytest.approx(exact, rel=2e-2)
 
