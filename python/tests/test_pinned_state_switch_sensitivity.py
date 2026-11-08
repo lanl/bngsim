@@ -133,18 +133,23 @@ def test_a_state_at_rest_within_the_tolerance_of_the_surface_is_not_a_slide(tmp_
 
 
 @pytest.mark.parametrize("max_steps", [None, 50])
-def test_a_state_that_comes_to_rest_short_of_the_surface_is_not_refused(tmp_path, max_steps):
-    """Control. A relaxes to Ainf, 1024 ulp short of thr, and stays there: the
-    switch is never taken, Y = 0, and nothing is pinned, whether the run takes
-    its steps in batches of 50 or not. (Nearer than that, or at a looser
-    tolerance, the root finder reports a crossing the state then does not
-    make, and the run is refused as riding the surface, as it is on main.)"""
+def test_a_state_that_comes_to_rest_short_of_the_surface_is_not_refused_as_pinned(
+    tmp_path, max_steps
+):
+    """Control. A relaxes to Ainf, 1024 ulp short of thr, and stays there:
+    nothing is pinned, whether the run takes its steps in batches of 50 or not,
+    so the run is not refused as riding the surface (nearer than that, or at a
+    looser tolerance, the root finder reports a crossing the state then does
+    not make, and it is, as it is on main).
+
+    It is refused by name for resting there, though (issue #1548). 1024 ulp is
+    2.3e-13, inside the 8.5e-10 the run's tolerances leave the residual: the run
+    cannot say which side of thr A rests on, and the switch it gates jumps."""
     thr = 1.5
     Ainf = float(thr - 1024 * np.spacing(thr))
     model = _model(tmp_path, 1.0, thr=thr, fA="eps*(Ainf-Aobs)", Ainf=Ainf)
     extra = {} if max_steps is None else {"max_steps": max_steps}
-    run = bngsim.Simulator(model, method="ode", sensitivity_params=["eps", "thr"]).run(
-        t_span=(0.0, 100.0), n_points=2, rtol=1e-10, atol=1e-12, timeout=20, **extra
-    )
-    assert np.asarray(run.species)[-1, 1] == 0.0
-    np.testing.assert_array_equal(np.asarray(run.sensitivities)[-1, 1, :], [0.0, 0.0])
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["eps", "thr"])
+    with pytest.raises(bngsim.SimulationError, match="come to rest.*issue #1548") as info:
+        sim.run(t_span=(0.0, 100.0), n_points=2, rtol=1e-10, atol=1e-12, timeout=20, **extra)
+    assert "pinned" not in str(info.value) and "#952" not in str(info.value)

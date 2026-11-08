@@ -35,7 +35,7 @@ concurrency:
 jobs:
   verify:
     name: Golden trajectories · ubuntu-latest
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -60,6 +60,11 @@ jobs:
           uv sync --extra dev --python 3.12
           uv pip install --python .venv/bin/python pip
           uv sync --extra dev --group parity --python 3.12
+
+      # libroadrunner's wheel links libpython by name; ubuntu-26.04 has no system
+      # 3.12 to satisfy it. See ci/libpython_on_loader_path.sh.
+      - name: Let RoadRunner find libpython
+        run: bash ci/libpython_on_loader_path.sh
 
       - name: Verify the gated goldens
         run: |

@@ -74,6 +74,11 @@ from bngsim._exceptions import (
 from bngsim._extension_handle import raise_cannot_pickle, raise_cannot_shallow_copy
 from bngsim._model import _STEP_DECIDES_WHY, Model
 from bngsim._result import Result, _as_selector_list, _resolve_output_selector
+from bngsim._sample_times import (
+    normalize_sample_times,
+    require_finite_time,
+    validate_time_span,
+)
 from bngsim._seed import _DEFAULT_EVENT_SEED, _resolve_seed, derived_seeds
 from bngsim._ssa_validation import validate_for_ssa
 
@@ -443,10 +448,12 @@ def normalize_method(requested: str) -> tuple[str, str]:
 # default) and fell back again. A fitting loop or a parameter scan paid that on
 # every construction. A failure is now remembered for the process, keyed on the
 # structural codegen key plus the settings that decide the outcome — the
-# compile timeout, the job count and the backend — so a larger budget or more
-# cores still gets a fresh attempt. Only failures are remembered, not declines
-# (a decline is decided before anything compiles). An explicit codegen=True
-# never consults this: the caller asked for the build.
+# compile timeout, the job count, the optimization level and the backend — so a
+# larger budget, more cores or another -O level still gets a fresh attempt (a
+# library refused for its stack frame at -O0 may build at -O1, issue #1566).
+# Only failures are remembered, not declines (a decline is decided before
+# anything compiles). An explicit codegen=True never consults this: the caller
+# asked for the build.
 _AUTO_CODEGEN_FAILURES: dict[tuple, str] = {}
 _AUTO_CODEGEN_SKIP_LOGGED: set[tuple] = set()
 
@@ -467,6 +474,7 @@ def _auto_codegen_failure_key(model, jit_backend, *, force: bool = False) -> tup
             compute_model_codegen_hash(model),
             _resolve_codegen_timeout(),
             os.environ.get("BNGSIM_CODEGEN_JOBS", "").strip().lower(),
+            os.environ.get("BNGSIM_CODEGEN_OPT", "").strip().lower(),
             jit_backend or "cc",
         )
     except Exception as exc:  # noqa: BLE001 - no key just means no memo
@@ -494,14 +502,6 @@ def _log_auto_codegen_skip(key: tuple) -> None:
         "BNGSIM_CODEGEN_TIMEOUT / BNGSIM_CODEGEN_JOBS, which starts a fresh attempt.",
         _AUTO_CODEGEN_FAILURES[key],
     )
-
-
-def _finite_time(t: float) -> float:
-    """``t`` as a float, for :meth:`Simulator.set_time`; ``ValueError`` unless finite."""
-    t = float(t)
-    if not math.isfinite(t):
-        raise ValueError(f"time must be finite, got {t}")
-    return t
 
 
 # Issue #891: the loosest rtol at which a plain ODE run's stops are moved onto
@@ -5256,7 +5256,7 @@ class Simulator:
         sample_times : list[float], optional
             Explicit output time points. When provided, overrides
             ``t_span`` and ``n_points``. Must contain at least 2
-            values. Values are sorted automatically.
+            values, all finite. Values are sorted automatically.
 
             The override covers the interval, not just the output
             grid: the run starts at the first sample time and ends at
@@ -5406,7 +5406,9 @@ class Simulator:
         StopConditionMet
             If a stop condition triggers (partial result attached).
         ValueError
-            If t_span or n_points are invalid, or if output sensitivities
+            If t_span, n_points or sample_times are invalid (a time that is
+            not finite, ``t_end <= t_start``, ``n_points < 2``, fewer than two
+            sample times), or if output sensitivities
             were requested (``sensitivity_params`` / ``sensitivity_ic``,
             including the ``carry_sensitivities`` path) on a model that
             contains events. Events reinitialise the CVODE state
@@ -5420,12 +5422,11 @@ class Simulator:
 
         times = TimeSpec()
 
+        # Issue #1504 — every time finite, before anything is sorted or run: a
+        # NaN or inf target sent CVODE toward a time it never reaches, inside one
+        # CVode call that `timeout=` cannot interrupt.
         if sample_times is not None:
-            sorted_times = sorted(float(t) for t in sample_times)
-            if len(sorted_times) < 2:
-                raise ValueError(
-                    f"sample_times must contain at least 2 points, got {len(sorted_times)}"
-                )
+            sorted_times = normalize_sample_times(sample_times)
             times.sample_times = sorted_times
             times.t_start = sorted_times[0]
             times.t_end = sorted_times[-1]
@@ -5434,11 +5435,7 @@ class Simulator:
             t_end = times.t_end
             n_points = times.n_points
         else:
-            t_start, t_end = t_span
-            if t_end <= t_start:
-                raise ValueError(f"t_end ({t_end}) must be > t_start ({t_start})")
-            if n_points < 2:
-                raise ValueError(f"n_points ({n_points}) must be >= 2")
+            t_start, t_end, n_points = validate_time_span(t_span, n_points)
             times.t_start = t_start
             times.t_end = t_end
             times.n_points = n_points
@@ -5995,11 +5992,7 @@ class Simulator:
         if params is None or len(params) == 0:
             raise ValueError("params must be a non-empty sequence of dicts")
 
-        t_start, t_end = t_span
-        if t_end <= t_start:
-            raise ValueError(f"t_end ({t_end}) must be > t_start ({t_start})")
-        if n_points < 2:
-            raise ValueError(f"n_points ({n_points}) must be >= 2")
+        t_start, t_end, n_points = validate_time_span(t_span, n_points)
 
         if steady_state and self._method != "ode":
             raise ValueError(
@@ -6248,11 +6241,7 @@ class Simulator:
             )
         if n_replicates < 1:
             raise ValueError(f"n_replicates must be >= 1, got {n_replicates}")
-        t_start, t_end = t_span
-        if t_end <= t_start:
-            raise ValueError(f"t_end ({t_end}) must be > t_start ({t_start})")
-        if n_points < 2:
-            raise ValueError(f"n_points ({n_points}) must be >= 2")
+        t_start, t_end, n_points = validate_time_span(t_span, n_points)
         self._refuse_squeeze_with_stop_conditions("run_replicates", squeeze)
 
         eff_timeout: float = 0.0
@@ -7013,6 +7002,10 @@ class Simulator:
                 f"(got method='{self._method}')."
             )
         self._refuse_squeeze_with_stop_conditions("parameter_scan", squeeze)
+        # Before anything below snapshots or moves the model (issue #1504): every
+        # point's run() would refuse this span anyway, but only from inside the
+        # loop.
+        validate_time_span(t_span, n_points)
         values = self._resolve_scan_values(par_scan_vals, par_min, par_max, n_scan_pts, log_scale)
 
         # Validate the parameter and capture its pre-scan value so the model can
@@ -7502,8 +7495,11 @@ class Simulator:
         Raises
         ------
         ValueError
-            If method is not 'ode', or params contains unknown names, or the
-            analytical sensitivity RHS every chunk needs cannot be built —
+            If method is not 'ode', or ``t_span`` / ``n_points`` are ones
+            :meth:`run` refuses (a time that is not finite, ``t_end <=
+            t_start``, ``n_points < 2``; issue #1523), or params contains
+            unknown names, or the analytical sensitivity RHS every chunk needs
+            cannot be built —
             ``codegen=False`` / ``BNGSIM_NO_CODEGEN``, no codegen backend, or
             rate laws that do not differentiate to closed form. That is the same
             hard requirement ``Simulator(..., sensitivity_params=...)`` carries
@@ -7564,6 +7560,15 @@ class Simulator:
 
         if chunk_size < 1:
             raise ValueError(f"chunk_size must be >= 1, got {chunk_size}")
+        # Issue #1523 — run()'s refusals, which this entry point never made: the
+        # chunks build their own TimeSpec and call the core directly, so an empty
+        # grid (n_points=0) reached CvodeSimulator::run, which read the ends of
+        # an empty t_out and killed the interpreter, and t_span=(10, 0) returned
+        # three rows at t = 10 with zero sensitivities. The JAX bridge's JVP rule
+        # and the per-column retry (_recover_failed_chunk) reach the core through
+        # here, so this covers them too.
+        t_start, t_end, n_points = validate_time_span(t_span, n_points)
+        t_span = (t_start, t_end)
 
         # Determine parameter list
         all_param_names = self._model.param_names
@@ -10745,7 +10750,7 @@ class Simulator:
         Parameters
         ----------
         t : float
-            Target time. Must be > current time.
+            Target time. Must be finite and > current time.
         n_points : int, optional
             Number of output points. Default: max(2, int(dt)+1).
         seed : int, optional
@@ -10784,6 +10789,9 @@ class Simulator:
         """
         self._require_interactive_backend_support()
 
+        # Issue #1504 — a NaN target passed the comparison below, which is false
+        # for it, and failed only by accident at int(dt).
+        t = require_finite_time("Target time", t)
         if t <= self._current_time:
             raise ValueError(f"Target time ({t}) must be > current time ({self._current_time})")
 
@@ -10992,7 +11000,7 @@ class Simulator:
         are validated before either is assigned, so a rejected call changes
         neither.
         """
-        t = None if time is None else _finite_time(time)
+        t = None if time is None else require_finite_time("time", time)
         self._model.set_state(state)
         if t is not None:
             self._set_clock(t)
@@ -11019,7 +11027,7 @@ class Simulator:
         ValueError
             If ``t`` is not finite.
         """
-        self._set_clock(_finite_time(t))
+        self._set_clock(require_finite_time("time", t))
 
     def _set_clock(self, t: float) -> None:
         # Rolled back to where an earlier run ended, the events go back with the

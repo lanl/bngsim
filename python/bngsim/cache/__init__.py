@@ -232,6 +232,27 @@ _NOTE_EXT = _codegen._SENS_DECLINE_NOTE_EXT
 #: is named, paired and swept as the decline note is.
 _NOTE_EXTS = (_NOTE_EXT, _codegen._OUTPUT_SENS_NOTE_EXT)
 
+
+def _other_arch_twin(field: str | None, ours: str) -> bool:
+    """Whether a key field is ``ours`` built for another architecture (issue #1486).
+
+    A key is ``version+digest+arch``, so such a field differs from ours in its last
+    ``+``-separated part alone: the same bngsim source, compiled by a native and a
+    Rosetta Python on one Mac, or by the x86-64 and aarch64 nodes of a cluster that
+    share a home directory. Each install can load only its own, so neither is
+    *live* for the other; but neither is dead either, and an orphan sweep run from
+    one would otherwise take the other's whole cache.
+    """
+    if field is None or field == ours:
+        return False
+    head, sep, _ = field.rpartition(_KEY_FIELD_MARKER)
+    return (
+        bool(sep)
+        and head == ours.rpartition(_KEY_FIELD_MARKER)[0]
+        and field.count(_KEY_FIELD_MARKER) == ours.count(_KEY_FIELD_MARKER)
+    )
+
+
 DEFAULT_MIN_AGE = 3600.0
 """Seconds an entry must be untouched before any sweep will remove it.
 
@@ -420,7 +441,8 @@ class CacheInfo:
 
     @property
     def orphaned(self) -> tuple[CacheEntry, ...]:
-        """Artifacts built under any *other* key, plus every pre-#363 name.
+        """Artifacts built under any *other* key, plus every pre-#363 name, but not
+        :attr:`other_arch`.
 
         Dead weight for this install by construction: the key is part of the content
         hash, so nothing here will ever be looked up again. On a machine that tracks
@@ -432,11 +454,36 @@ class CacheInfo:
         orphans. That is what ``keep_keys`` on :func:`prune_codegen_cache` is for.
         """
         field = self._key_field
-        return tuple(e for e in self.entries if e.is_artifact and e.codegen_key != field)
+        return tuple(
+            e
+            for e in self.entries
+            if e.is_artifact
+            and e.codegen_key != field
+            and not _other_arch_twin(e.codegen_key, field)
+        )
+
+    @property
+    def other_arch(self) -> tuple[CacheEntry, ...]:
+        """Artifacts of this install's source built for another architecture
+        (issue #1486): the same version and digest, another last field.
+
+        This install cannot load them, and another one sharing the directory can,
+        so they are neither :attr:`live` nor :attr:`orphaned`, and
+        ``prune(orphaned=True)`` leaves them to the install they belong to. An age
+        or size bound still applies to them, as to every artifact.
+        """
+        field = self._key_field
+        return tuple(
+            e for e in self.entries if e.is_artifact and _other_arch_twin(e.codegen_key, field)
+        )
 
     @property
     def live_bytes(self) -> int:
         return sum(e.size for e in self.live)
+
+    @property
+    def other_arch_bytes(self) -> int:
+        return sum(e.size for e in self.other_arch)
 
     @property
     def orphaned_bytes(self) -> int:
@@ -517,11 +564,19 @@ class CacheInfo:
             "live_bytes": self.live_bytes,
             "orphaned_entries": len(self.orphaned),
             "orphaned_bytes": self.orphaned_bytes,
+            "other_arch_entries": len(self.other_arch),
+            "other_arch_bytes": self.other_arch_bytes,
             # A list, not an object: the pre-#363 bucket's key is null, which JSON
             # cannot spell as a member name. Ordered largest-first, which is the
             # order a reader deciding what to sweep wants them in.
             "by_key": [
-                {"key": k, "entries": n, "bytes": b, "live": k == field}
+                {
+                    "key": k,
+                    "entries": n,
+                    "bytes": b,
+                    "live": k == field,
+                    "other_arch": _other_arch_twin(k, field),
+                }
                 for k, (n, b) in sorted(
                     self.by_key.items(), key=lambda kv: (-kv[1][1], kv[0] or "")
                 )
@@ -673,7 +728,7 @@ def codegen_cache_info(cache_dir: str | os.PathLike[str] | None = None) -> Cache
     True
     >>> set(info.by_kind) == set(bngsim.cache.KINDS)
     True
-    >>> len(info.live) + len(info.orphaned) == sum(
+    >>> len(info.live) + len(info.orphaned) + len(info.other_arch) == sum(
     ...     1 for e in info.entries if e.is_artifact
     ... )
     True
@@ -956,9 +1011,15 @@ def prune_codegen_cache(
         # be: on a developer machine the orphan sweep alone usually brings the
         # directory under a --max-size cap, and the LRU pass then has no live
         # artifact left to nominate.
+        # Another architecture's build of this source is not this install's to
+        # judge (issue #1486): CacheInfo.other_arch.
         keep = {info._key_field, *keep_keys}
         for e in artifacts:
-            if e.codegen_key not in keep and e not in chosen:
+            if (
+                e.codegen_key not in keep
+                and not _other_arch_twin(e.codegen_key, info._key_field)
+                and e not in chosen
+            ):
                 selected.append(e)
                 chosen.add(e)
 
@@ -1163,11 +1224,14 @@ def _key_table(info: CacheInfo) -> list[str]:
     field = info._key_field
     rows = sorted(by_key.items(), key=lambda kv: (-kv[1][1], kv[0] or ""))
     head, tail = rows[:_KEY_TABLE_ROWS], rows[_KEY_TABLE_ROWS:]
-    width = max(len(k or _NO_KEY_LABEL) for k, _ in head) + 7  # room for " (live)"
+    width = max(len(k or _NO_KEY_LABEL) for k, _ in head) + 13  # room for " (other arch)"
     lines = ["", f"  {'codegen key':<{width}} {'entries':>9} {'size':>12}"]
     lines.append(f"  {'-' * width} {'-' * 9} {'-' * 12}")
     for key, (n, b) in head:
-        label = (key or _NO_KEY_LABEL) + (" (live)" if key == field else "")
+        mark = " (live)" if key == field else ""
+        if _other_arch_twin(key, field):
+            mark = " (other arch)"
+        label = (key or _NO_KEY_LABEL) + mark
         lines.append(f"  {label:<{width}} {n:>9,} {_fmt_size(b):>12}")
     if tail:
         n = sum(c for _, (c, _) in tail)
@@ -1201,6 +1265,12 @@ def _format_info(info: CacheInfo, *, now: float) -> str:
     lines.append(
         f"  orphaned:  {len(info.orphaned):,} artifact(s), {_fmt_size(info.orphaned_bytes)}"
     )
+    if info.other_arch:
+        lines.append(
+            f"  other arch: {len(info.other_arch):,} artifact(s), "
+            f"{_fmt_size(info.other_arch_bytes)} (this source, built for another "
+            "architecture; --orphaned keeps them)"
+        )
 
     by_kind = info.by_kind
     lines.append("")

@@ -25,10 +25,12 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -1100,6 +1102,21 @@ static void require_positive_n_points(const char *where, int n_points) {
     }
 }
 
+// A session segment or step whose ends are not finite (issue #1504): stepTo(inf)
+// never returns, past the budget, which is checked only between hops, and a NaN
+// end labelled every row t = nan. The session API takes its times as bare
+// doubles rather than a TimeSpec, so it is checked here, in the words and with
+// the exception RuleMonkeySimulator's require_finite_span uses, which keeps the
+// two sessions interchangeable.
+static void require_finite_span(const char *where, double t_from, double t_to) {
+    if (!std::isfinite(t_from) || !std::isfinite(t_to)) {
+        std::ostringstream os;
+        os << std::setprecision(17) << where << ": t_start and t_end must be finite, got " << t_from
+           << " and " << t_to;
+        throw std::runtime_error(os.str());
+    }
+}
+
 // ─── run() — stateless simulation (re-parses XML each call) ──────────────────
 
 Result NfsimSimulator::run(const TimeSpec &times, uint64_t seed, double timeout_seconds) {
@@ -1113,6 +1130,10 @@ Result NfsimSimulator::run(const TimeSpec &times, uint64_t seed, double timeout_
     // words. Checked before create_system() so nothing is built at all on this
     // path.
     require_positive_n_points("NfsimSimulator::run", times.effective_n_points());
+    // Issue #1504 — and every time finite: a last time of inf stepped for ever,
+    // past the budget, which is checked only between stepTo() hops, and a NaN
+    // came back as a row at t = nan.
+    times.require_walkable("NfsimSimulator::run");
 
     // GH #577 — the System is owned for the whole function, not from the
     // stepping loop onwards. It used to be a bare pointer freed in two places:
@@ -1224,6 +1245,7 @@ void NfsimSimulator::initialize(uint64_t seed) {
 
 void NfsimSimulator::step_to(double time) {
     impl_->require_session();
+    require_finite_span("NfsimSimulator::step_to", impl_->session_logical_time, time);
     StreamSuppressor suppress;
     impl_->session_system->stepTo(time);
     impl_->session_logical_time = time;
@@ -1265,6 +1287,17 @@ Result NfsimSimulator::simulate(double t_start, double t_end, int n_points, doub
     const int n_out = explicit_times ? static_cast<int>(sample_times.size()) : n_points;
     // GH #570 — same unguarded t_out[0] / record(0, ...) as run(); see there.
     require_positive_n_points("NfsimSimulator::simulate", n_out);
+    if (explicit_times) {
+        for (double t : sample_times) {
+            if (!std::isfinite(t)) {
+                std::ostringstream os;
+                os << "NfsimSimulator::simulate: sample_times must all be finite, got " << t;
+                throw std::runtime_error(os.str());
+            }
+        }
+    } else {
+        require_finite_span("NfsimSimulator::simulate", t_start, t_end);
+    }
 
     std::vector<double> t_out(n_out);
     std::vector<double> abs_targets(n_out);

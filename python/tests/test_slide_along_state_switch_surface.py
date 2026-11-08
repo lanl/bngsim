@@ -304,21 +304,27 @@ def test_a_state_at_rest_on_a_threshold_that_gates_another_rate_is_not_a_slide(
     """Control. A' = k·(thr − A): A relaxes to thr and rests on it, and
     ``if(A < thr, kb, kb/4)`` is the rate of W. The right-hand side jumps at
     the surface and the flow past it points back, but the flow on this side
-    runs out there: the state never arrives, and W stays on the branch it
-    started on. A corpus model whose voltage settles on the threshold of its
-    recovery rate does this. A cut that asked whether the rate law jumps and
-    the far side points back refused it."""
+    runs out there: the state never arrives, and on the exact solution W stays
+    on the branch it started on. That is not a slide, and is not refused as
+    one: a cut that asked whether the rate law jumps and the far side points
+    back refused it as #926.
+
+    It is refused by name all the same (issue #1548), and for what it is. Once
+    A is within the run's tolerance of thr, which branch W reads is set by
+    rounding: l-type-calcium-channel-dynamics.bngl, whose voltage settles on
+    the threshold of its recovery rate in just this way, came back on the other
+    branch on some output grids, 187.68 for 957.96, with nothing said."""
     path = tmp_path / "m.net"
     path.write_text(RESTS_ON.format(a0=a0))
     extra = {} if max_steps is None else {"max_steps": max_steps}
-    run = bngsim.Simulator(
+    sim = bngsim.Simulator(
         bngsim.Model.from_net(path), method="ode", sensitivity_params=["k", "thr", "kb"]
-    ).run(sample_times=[0.0, 10.0, 30.0, 100.0], rtol=1e-8, atol=1e-10, timeout=60.0, **extra)
-    rate = 0.75 if a0 > 2.0 else 3.0
-    got = np.asarray(run.sensitivities)[-1]
-    assert np.asarray(run.species)[-1, 1] == pytest.approx(100.0 * rate, rel=1e-9)
-    np.testing.assert_allclose(got[0], [0.0, 1.0, 0.0], atol=1e-6)
-    np.testing.assert_allclose(got[1], [0.0, 0.0, 100.0 * rate / 3.0], atol=1e-6)
+    )
+    with pytest.raises(bngsim.SimulationError, match="come to rest.*issue #1548") as info:
+        sim.run(
+            sample_times=[0.0, 10.0, 30.0, 100.0], rtol=1e-8, atol=1e-10, timeout=60.0, **extra
+        )
+    assert "#926" not in str(info.value)
 
 
 BLOWS_UP = """begin parameters

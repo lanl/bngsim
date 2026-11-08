@@ -176,6 +176,32 @@ CORPUS: tuple[str, ...] = (
     "if(A>B && z, 1, 0)",
     "if(not(A>B), 1, 0)",
     "if(not(A>B) || k<n, 1, 0)",
+    # A comparison or logical result is a double, 1 or 0, wherever arithmetic
+    # reads it (issue #1495). C computes each as an int, so a quotient of two
+    # divided as ints, 1/2 = 0; JAX adds two booleans as a logical or.
+    "((A>B)+(k>n))/((A>0)+(B>0))",
+    "(A>B)/((B>0)+(A>0))",
+    "(A>B)/(k>n)*z",
+    "(A>B && k>n)/((A>0)+(B>0))",
+    "((A>B) || (B>A))/((k>n)+(q>n))",
+    "((A>B) & (k>n))/((A>0)+(B>0))",
+    "((A>B) | (k<n))/((A>0)+(B>0))",
+    "(A>B and k>n)/((A>0) or (B>0))",
+    "not(A>B)/((A>0)+(B>0))",
+    # -(B>A) is -0.0 where B>A is false, so atan(1/-0.0) is -pi/2; a C int
+    # lost the sign.
+    "atan(1/-(B>A))",
+    # `not` is a call, so not(k)^n is (not(k))^n (issue #1506). The two
+    # readings differ at an exponent <= 0, and where k^n underflows.
+    "not(k-3)^(n-2)",
+    "not(k-3)^-n",
+    "not (k-3)^-n",
+    "not(not(k))^(n-2)",
+    "z*not(k-3)^-n",
+    "not(k*1e-201)^n",
+    "2^not(k)",
+    "A^not(k-3)",
+    "if(not(k-3)^(n-2) > 0.5, 1, 2)",
     # Constants.
     "_pi*_e",
     "_pi*A",

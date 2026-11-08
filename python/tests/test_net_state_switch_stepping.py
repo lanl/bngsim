@@ -423,7 +423,8 @@ def _ltype_variant(text, kind):
 
 
 @pytest.mark.parametrize("kind", ["fixture", "split", "ramp", "latch", "damped", "moving"])
-def test_a_parked_root_does_not_restart_the_run(data_dir, tmp_path, kind):
+@pytest.mark.parametrize("jacobian", ["auto", "fd"])
+def test_a_parked_root_does_not_restart_the_run(data_dir, tmp_path, kind, jacobian):
     """GH #176's fixture parks Voltage 1e-11 below the step at 50, far inside
     the solver's own error at rtol 1e-8, so the interpolant can cross the step
     while the vector field points back: dV/dt = 49.99999999999 - V < 0 there.
@@ -431,80 +432,85 @@ def test_a_parked_root_does_not_restart_the_run(data_dir, tmp_path, kind):
     never takes. The observables came out 63% off after 2,019,910 steps, with no
     error.
 
-    The core restarts at a lone state-switch root only at a genuine crossing:
-    the solver's own trajectory has to go past the surface by more than its
-    tolerance can blur, and the flow on the near side, where the arriving
-    branch is live, has to stay finite at the surface and carry the state
-    across. A parked trajectory fails the first test at least, so its root
-    steps on as it did before the root existed: the analytical attempt fails
-    loudly and ``auto`` retries with FD.
+    The core restarts at a lone state-switch root only at a genuine crossing,
+    and a parked trajectory is not one. Each twin defeated an earlier rule
+    (review of PR #903): restarting unless the flow read as opposed sent split
+    and ramp 9.4e-3 and 0.62 off; restarting whenever the flow at the located
+    state carried sent latch 0.633 off; restarting on a finite near-side flow
+    alone sent damped and moving 1.085 and 0.16 off.
 
-    Each twin defeated an earlier rule (review of PR #903):
-    - Restarting unless the flow read as opposed sent split and ramp 9.4e-3 and
-      0.62 off, worse at tighter tolerances.
-    - Restarting whenever the flow at the located state carried sent latch 0.633
-      off at every tolerance.
-    - Restarting on a finite near-side flow alone sent damped and moving 1.085
-      and 0.16 off: there the arriving flow is finite, and only the tolerance
-      tells the crossing is not resolved.
-
-    main is right on all six.
+    Not restarting left each run on whichever branch rounding put it, and that
+    was right here on macOS and 0.62 off on x86-64 Linux (#176, and
+    test_difference_quotient_jump's parked sums). Since issue #1548 each of the
+    six is refused by name: the state rests within the run's tolerance of the
+    step, and no rule about restarting can make its branch the model's.
+    ``moving``'s threshold moves, but dips to touch Voltage within the tolerance
+    near t = 147.5, too slowly to be told from resting there.
     """
-    text, exact_text = _ltype_variant((data_dir / _LTYPE).read_text(), kind)
+    text, _exact_text = _ltype_variant((data_dir / _LTYPE).read_text(), kind)
     model = _write(tmp_path, text, f"{kind}.net")
     assert any("Voltage_Level" in c for c in model.state_switch_root_conditions())
     window = dict(t_span=(0.0, 150.0), n_points=301, rtol=1e-8, atol=1e-8)
-    # Keyed on explicit FD, as the #176 tests are: whether FD carries this
-    # fixture is the host's business, but once it does, the default run failing
-    # is this rule failing and must not read as a skip.
-    try:
-        bngsim.Simulator(_write(tmp_path, text, f"{kind}_fd.net"), jacobian="fd").run(**window)
-    except bngsim.SimulationError:
-        pytest.skip(
-            "the finite-difference Jacobian does not carry this fixture on this "
-            "build, so there is no rescue to compare (see lanl/bngsim#176)"
+    with pytest.raises(bngsim.SimulationError, match="come to rest.*Voltage_Level.*issue #1548"):
+        bngsim.Simulator(model, jacobian=jacobian).run(**window)
+
+
+def test_a_grazed_root_does_not_restart_the_run(data_dir, tmp_path):
+    """``moving``'s threshold dips to touch Voltage within the tolerance near
+    t = 147.5 and rises off it again. Where an output lands near the touch the
+    run is refused for it (issue #1548); where none does, nothing has rested
+    there to refuse, and what holds the run on its branch is #903's rule: the
+    root the interpolant reports there is not resolved past the surface, so the
+    run does not restart on the far side, where the latch carries V off. The
+    other five twins rest on their surface and are refused, so this is that
+    rule's witness. Without the rule, these grids ran 13,000 to 25,000 steps and
+    came out 14% to 24% off, with nothing said, where each runs in about 550
+    and on the exact twin. Which grid lands near the touch is rounding's call,
+    so each is held to the exact twin where it runs, and one at least has to."""
+    text, exact_text = _ltype_variant((data_dir / _LTYPE).read_text(), "moving")
+    grids = [
+        dict(t_span=(0.0, 150.0), n_points=n, rtol=1e-8, atol=1e-8) for n in (4, 6, 11, 16)
+    ] + [
+        dict(t_span=(0.0, 150.0), n_points=3, rtol=1e-7, atol=1e-7),
+        dict(sample_times=[0.0, 10.0, 150.0], rtol=1e-7, atol=1e-7),
+    ]
+    ran = 0
+    for window in grids:
+        try:
+            result = bngsim.Simulator(_write(tmp_path, text, "moving.net")).run(**window)
+        except bngsim.SimulationError as e:
+            assert "come to rest" in str(e) and "issue #1548" in str(e), window
+            continue
+        ran += 1
+        assert result.solver_stats["n_steps"] < 10_000, window
+        exact = bngsim.Simulator(_write(tmp_path, exact_text, "moving_exact.net")).run(
+            **{**window, "rtol": 1e-12, "atol": 1e-12}
         )
-    result = bngsim.Simulator(model).run(**window)
-    assert result.solver_stats["n_steps"] < 10_000
-    exact = bngsim.Simulator(_write(tmp_path, exact_text, f"{kind}_exact.net")).run(
-        **{**window, "rtol": 1e-12, "atol": 1e-12}
-    )
-    got = np.asarray(result.observables)
-    want = np.asarray(exact.observables)
-    scale = np.maximum(np.abs(want).max(axis=0), 1e-12)
-    assert float((np.abs(got - want) / scale).max()) < 1e-6
+        got = np.asarray(result.observables)
+        want = np.asarray(exact.observables)
+        scale = np.maximum(np.abs(want).max(axis=0), 1e-12)
+        assert float((np.abs(got - want) / scale).max()) < 1e-6, window
+    assert ran > 0, "every grid was refused, so the rule went unasked"
 
 
-def test_a_state_resting_on_its_surface_steps_on(data_dir, tmp_path):
+@pytest.mark.parametrize(("rtol", "n_points"), [(1e-10, 301), (1e-8, 151), (1e-12, 76)])
+def test_a_state_resting_on_its_surface_is_refused(data_dir, tmp_path, rtol, n_points):
     """The rulehub model the #176 fixture was edited from: k_v_stim is 50.0, so
     Voltage relaxes to exactly the threshold. The exact trajectory never reaches
-    it (V = 50 - 49 e^-t), and main converges to that at rtol 1e-10 (9.8e-10).
-    The root finder, though, interpolates V onto 50.0 itself, where dV/dt = 0.
-    A rule that restarted on a residual lying on its surface held V on 50.0 and
-    on the far branch for the rest of the run: 0.633 off at every tolerance
-    (review of PR #903). V relaxes onto the threshold, so its near-side flow
-    vanishes there, and the root steps on.
-    """
+    it (V = 50 - 49 e^-t). The root finder interpolates V onto 50.0 itself,
+    where dV/dt = 0, and a rule that restarted on a residual lying on its surface
+    held V on 50.0 and on the far branch for the rest of the run: 0.633 off at
+    every tolerance (review of PR #903). So the root steps on, and main's answer
+    was whichever side rounding left V on: right at rtol 1e-10 on 301 outputs,
+    0.633 off at 1e-8 on 151 (issue #1548), and wrong on 5 of 252 runs between
+    1e-9 and 1e-12. Each is now refused by name."""
     text = (data_dir / _LTYPE).read_text()
     old = "   16 k_v_stim        49.99999999999  # Constant\n"
     assert text.count(old) == 1
     text = text.replace(old, "   16 k_v_stim        50.0  # Constant\n")
-    window = dict(t_span=(0.0, 150.0), n_points=301, rtol=1e-10, atol=1e-10)
-    result = bngsim.Simulator(_write(tmp_path, text, "upstream.net")).run(**window)
-    exact_text = text
-    for condition, branch in (
-        (_V_STEP, "0.5"),
-        ("if((Phospho_LTCC>0),k_pka_shift,0)", "k_pka_shift"),
-    ):
-        assert exact_text.count(condition) == 1, condition
-        exact_text = exact_text.replace(condition, branch)
-    exact = bngsim.Simulator(_write(tmp_path, exact_text, "upstream_exact.net")).run(
-        **{**window, "rtol": 1e-12, "atol": 1e-12}
-    )
-    got = np.asarray(result.observables)
-    want = np.asarray(exact.observables)
-    scale = np.maximum(np.abs(want).max(axis=0), 1e-12)
-    assert float((np.abs(got - want) / scale).max()) < 1e-6
+    window = dict(t_span=(0.0, 150.0), n_points=n_points, rtol=rtol, atol=rtol)
+    with pytest.raises(bngsim.SimulationError, match="come to rest.*issue #1548"):
+        bngsim.Simulator(_write(tmp_path, text, "upstream.net")).run(**window)
 
 
 # dY_dt() > 0, inlined: (Sig_Y() - Y_Out)/Tau.

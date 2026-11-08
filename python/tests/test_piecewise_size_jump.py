@@ -1038,7 +1038,7 @@ def test_the_sensitivity_of_a_rescale_on_a_rescale_is_refused(xml, param, match)
     sim = bngsim.Simulator(
         bngsim.Model.from_sbml_string(xml), method="ode", sensitivity_params=[param]
     )
-    with pytest.raises(bngsim.SimulationError, match=match):
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match=match):
         sim.run(t_span=(0.0, 4.0), n_points=17)
 
 
@@ -1212,7 +1212,8 @@ def test_the_sensitivity_of_jumps_a_few_ulp_apart_is_refused():
     model = bngsim.Model.from_sbml_string(_two_steps(2.0, _ulps_past(2.0)))
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k"])
     with pytest.raises(
-        bngsim.SimulationError, match=r"compartment 'cv' jumps 2 times at one instant.*#1181"
+        bngsim.SensitivityUnsupportedError,
+        match=r"compartment 'cv' jumps 2 times at one instant.*#1181",
     ):
         sim.run(sample_times=[0.0, 1.9, 2.5], rtol=1e-10, atol=1e-12)
 

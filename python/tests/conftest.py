@@ -400,10 +400,17 @@ _DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
         _ANYWHERE,
         "the GH #577 leak probe reads /proc/self/statm and caps its own address "
         "space so the triggering allocation fails at a fixed size; neither has a "
-        "Windows equivalent, and the behavioural half of that file runs everywhere",
+        "Windows equivalent, and the behavioural half of that file runs everywhere. "
+        "The issue #1524 probe caps it the same way, so a 34 GB result fails as "
+        "MemoryError instead of being allocated; macOS does not enforce the cap",
     ),
     ("tomllib is 3.11+", _ANYWHERE, "stdlib module absent on 3.10, which is still supported"),
-    ("gcc/clang only", _ANYWHERE, "the sharded compile path; MSVC takes the other branch"),
+    (
+        "gcc/clang only",
+        _ANYWHERE,
+        "the sharded compile path, where MSVC takes the other branch, and the stack "
+        "frame report (issue #1566), which cl gives only under /analyze",
+    ),
     (
         "no fused multiply-add",
         _ANYWHERE,
@@ -467,15 +474,6 @@ _DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
     # Numerics that a given host does not reproduce. Narrow on purpose: this is a
     # licence to not run a test, so it is spelled out per case rather than left as
     # a general "the numbers came out differently here" escape.
-    (
-        "finite-difference Jacobian does not carry this fixture",
-        _ANYWHERE,
-        "lanl/bngsim#176: the FD retry is a second attempt, not a guarantee, so "
-        "the tests that assert a successful rescue stand down where there is no "
-        "rescue to assert. The contract itself (auto reproduces explicit-FD "
-        "whatever FD does) is asserted unconditionally and does not skip, so this "
-        "never hides the fallback going missing",
-    ),
     (
         "returns a finite sensitivity tensor on this host",
         _ANYWHERE,

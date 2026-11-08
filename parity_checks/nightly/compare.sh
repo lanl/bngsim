@@ -79,6 +79,14 @@ if [ -n "${GH_TOKEN:-}" ] && [ -n "${GITHUB_REPOSITORY:-}" ]; then
   while read -r id sha <&3; do
     [ -n "$id" ] || continue
     [ "$id" = "${GITHUB_RUN_ID:-}" ] && continue
+    # A night whose numbers stand for its runner rather than its code is passed over
+    # (not_previous_nights.json says which, and why), and the one before it is used.
+    if reason=$(python3 "$here/verdicts.py" passed-over \
+      --file "${NOT_PREVIOUS_NIGHTS:-$here/not_previous_nights.json}" --run "$id"); then
+      echo "$suite: run $id is not compared to: $reason"
+      printf '_Not compared to run %s: %s_\n\n' "$id" "$reason" >>"$summary"
+      continue
+    fi
     prev=$(mktemp -d)
     if gh run download "$id" -R "$GITHUB_REPOSITORY" -n "nightly-$suite" -D "$prev" >/dev/null 2>&1 &&
       [ -f "$prev/verdicts.json" ]; then

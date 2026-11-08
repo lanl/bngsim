@@ -153,6 +153,19 @@ and concentration overrides — into SED-ML, then bundles it with the SBML into 
 COMBINE archive. The `.bngl` also drives the L3 gate over the model's *own*
 horizon instead of a blanket one.
 
+Each run lands in SED-ML as BNG2.pl runs it. A run that starts from the model's
+initial state, after any `setConcentration` / `addConcentration` / `setParameter`
+actions, is a task on a derived model that makes those changes. A run that starts
+where earlier runs left the model, such as the stimulation after an equilibration,
+is a `repeatedTask` that resets the model once and then runs the earlier runs and
+this one as ordered subtasks on one model state, with the actions between them as
+`setValue` changes. In SED-ML, model state is not reset between subtasks unless
+`resetModel="true"` asks for it. A bifurcate is its sweep up and back down, each
+point continuing from the last. Every target names an id in the archive's SBML,
+under a declared `sbml` prefix. A simulator that resets the model between
+subtasks does not follow that part of the spec, and runs such a protocol
+differently: tellurium 2.2.13's own SED-ML runner, for one.
+
 **Starting from a `.bngl` model (the full export pipeline).** The converter's model
 input is the flattened **`.net`**, so a rule-based model is first expanded to a
 network with BioNetGen, then packaged — passing the same `.bngl` so its actions

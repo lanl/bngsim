@@ -231,6 +231,28 @@ def test_the_committed_flaky_file_is_well_formed():
             assert len(reason) > 20, f"{cid}: give the measurement, not just a label"
 
 
+def test_a_listed_night_is_passed_over_with_its_reason(tmp_path, capsys):
+    # compare.sh asks this of each previous nightly; exit 0 means "skip it".
+    nights = tmp_path / "nights.json"
+    nights.write_text(json.dumps({"_comment": "about", "123": "ran on the fused build"}))
+    assert V.main(["passed-over", "--file", str(nights), "--run", "123"]) == 0
+    assert capsys.readouterr().out.strip() == "ran on the fused build"
+    assert V.main(["passed-over", "--file", str(nights), "--run", "456"]) == 1
+    assert V.main(["passed-over", "--file", str(nights), "--run", "_comment"]) == 1
+    missing = str(tmp_path / "absent.json")
+    assert V.main(["passed-over", "--file", missing, "--run", "123"]) == 1
+
+
+def test_the_committed_not_previous_nights_file_is_well_formed():
+    path = Path(V.__file__).with_name("not_previous_nights.json")
+    data = json.loads(path.read_text())
+    for run, reason in data.items():
+        if run.startswith("_"):
+            continue
+        assert run.isdigit(), f"{run}: a run id"
+        assert len(reason) > 20, f"{run}: give the measurement, not just a label"
+
+
 def test_new_case_is_reported_not_alerted():
     fresh = fresh_with()
     fresh["cases"]["Z|ode"] = rec("EXCEPTION")
