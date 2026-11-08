@@ -375,9 +375,13 @@ shortly before a grid time that CVODE will not start the step between them (clos
 than 2·eps·max(|t|, |t'|), 2 to 4 ulps) takes that grid time's place instead:
 given both, RoadRunner fires the event at the instant and then refuses the step
 (CV_TOO_CLOSE), so `time == 0.3` beside the grid's 0.30000000000000004 failed the
-run. For an equality the row holds the state just after the event, as an engine
-reports at the grid time; for `!=`, the state before. Nothing a run completed
-before changes, and the row's time is reported as the grid time. A model whose
+run. The row holds the state just after the event, as an engine reports at the
+grid time. A `!=` instant never takes a grid time's place: the trigger is false
+there and fires just after, so the row would hold the state before an event the
+grid time comes after. Nor does one before a grid time that is an instant itself,
+whose event would go unseen. Those runs fail as before, a reference failure
+rather than a DIFF. Nothing a run completed before changes, and the row's time is
+reported as the grid time. A model whose
 triggers give none runs exactly as before. 75 of the 1,323 ODE jobs get any. On
 those, the A/B against the previous harness changed no outcome and no bngsim work
 counter. The 10 known artifacts pass on their own, and BIOMD0000000822 went from

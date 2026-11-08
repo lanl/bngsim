@@ -350,3 +350,57 @@ def test_only_an_instant_cvode_would_not_step_from_moves_a_sample():
         assert len(times) == len(grid) and times[rows[3]] == _ulps_from(g3, k)
     times, rows = rc.rr_output_times(grid, [_ulps_from(1.0, -3)])
     assert len(times) == len(grid) and times[rows[10]] == _ulps_from(1.0, -3)
+
+
+# Where main's RoadRunner run of `time == p` or `time != p`, p that many ulps
+# before the sample, failed with CV_TOO_CLOSE.
+_REFUSED = {"0.3": {-1, -2}, "1.0": {-1, -2, -3}, "1e7": {-1, -2}}
+
+
+@pytest.mark.parametrize("near, k", [(near, k) for near in _NEAR for k in (-1, -2, -3, -4, 0, 1)])
+def test_a_not_equal_ulps_from_a_sample_never_reads_the_state_before_its_event(near, k):
+    """`time != p` is false at p and fires just after it, so S is 1 on every
+    sample after p, as bngsim reports it. Where CVODE will not step from p to
+    the sample, p cannot take the sample's place, since that row would hold the
+    state before the event, a DIFF blaming bngsim: the run fails, as on main,
+    and the job is a reference failure."""
+    pytest.importorskip("roadrunner")
+    grid_args, i = _NEAR[near]
+    grid = np.linspace(*grid_args)
+    p = _ulps_from(float(grid[i]), k)
+    # Starts true, so the event fires just after p and not at the start.
+    sbml = _sbml(_rel("neq", T, f"<cn>{p!r}</cn>")).replace(
+        'initialValue="false"', 'initialValue="true"'
+    )
+
+    def run():
+        return rc.rr_ode(sbml, *grid_args, 1e-8, 1e-12, through_event_instants=True)
+
+    if k in _REFUSED[near]:
+        with pytest.raises(RuntimeError, match="CV_TOO_CLOSE"):
+            run()
+        return
+    t, v, names, _ = run()
+    np.testing.assert_array_equal(t, grid)
+    np.testing.assert_array_equal(_s_column(t, v, names), (grid > p).astype(float))
+
+
+def test_an_instant_whose_row_would_be_wrong_moves_no_sample():
+    """Main's union, so the run fails as before: a `!=` instant (held), whose
+    row would hold the state before its event, and one before a grid time that
+    is an instant too, whose event would then go unseen."""
+    grid = np.linspace(0.0, 1.0, 11)
+    g3 = float(grid[3])
+    p = _ulps_from(g3, -1)
+    for instants, held in (([p], {p}), ([p, g3], set())):
+        times, rows = rc.rr_output_times(grid, instants, held)
+        assert times == list(np.union1d(grid, instants)), instants
+        assert [times[r] for r in rows] == list(grid)
+
+
+def test_the_held_instants_are_the_not_equal_ones():
+    """Each exactly the instant event_instants gives, not the sample after it."""
+    trig = f"<apply><or/>{_rel('neq', T, _cn(5))}{_rel('eq', T, _cn(7))}</apply>"
+    sbml = _sbml(trig)
+    assert rc._neq_instants(sbml, 0.0, 10.0) == {5.0}
+    assert {5.0, 7.0} <= set(rc.event_instants(sbml, 0.0, 10.0))
