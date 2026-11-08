@@ -275,6 +275,13 @@ def test_a_held_species_that_holds_over_the_run_reads_as_a_run_constant():
 def _stretches_past(budget, monkeypatch, events, t_end):
     from bngsim import _switch_sensitivity
 
+    # The resolvers' memo keeps an answer made against the budget, a refusal
+    # included, and outlives the test: under the lowered budget, 0..240 at
+    # w = 1 is remembered as past it, and a later run of that window on the
+    # same worker was refused at the real budget. So this test has its own,
+    # and monkeypatch hands back the untouched one (test_crossing_stop_budget's
+    # fixture empties it on both sides for the same reason).
+    monkeypatch.setattr(_switch_sensitivity, "_SCHEDULE_CACHE", {})
     monkeypatch.setattr(_switch_sensitivity, "_RUN_STOP_BUDGET", budget)
     model = _model(events)
     past: list = []

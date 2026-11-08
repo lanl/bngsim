@@ -712,6 +712,135 @@ def _protocol_algorithm(exp, i: int) -> tuple[str, list[tuple[str, str]]]:
     return kisao, params
 
 
+class _HeldState:
+    """One kind of model state (concentrations or parameters) as BNG2.pl holds
+    it at a point in a protocol: the numeric values set since the model's
+    initial state, and what else moved it there, if anything did."""
+
+    def __init__(self, values: dict | None = None, moved: list | None = None):
+        self.values: dict[str | None, tuple[float, str]] = dict(values or {})
+        # (the target it moved, or None for the whole state; what moved it)
+        self.moved: list[tuple[str | None, str]] = list(moved or [])
+
+    def copy(self) -> _HeldState:
+        return _HeldState(self.values, self.moved)
+
+    def differs(
+        self, described: dict[str | None, float], noun: str, ignore: str | None
+    ) -> str | None:
+        """How this state differs from the initial state with *described* set,
+        leaving out *ignore*, a parameter the experiment sets itself."""
+        moved = [text for target, text in self.moved if target is None or target != ignore]
+        if moved:
+            return f"the {noun} left by " + ", then ".join(moved)
+        diffs = [
+            f"{target}={value:g}{note}"
+            for target, (value, note) in self.values.items()
+            if target != ignore and described.get(target) != value
+        ]
+        diffs += [
+            f"{t} at its initial value" for t in described if t != ignore and t not in self.values
+        ]
+        return f"{noun} {', '.join(diffs)}" if diffs else None
+
+
+def _carried_starts(protocol) -> dict[int, str]:
+    """Experiment index → how the state BNG2.pl starts it from differs from the
+    one SED-ML's standard elements give it, for each experiment where they do.
+
+    The standard elements start every experiment from the model's initial state,
+    with the numeric ``setConcentration``/``setParameter`` values that
+    :meth:`~bngsim.convert.ProtocolSpec.state_changes_before` collects baked
+    into a derived model. BNG2.pl starts each from the state the steps before it
+    left: the end of the last run, unless a ``resetConcentrations`` restored
+    another; an ``addConcentration``; a value only the model can read; a scanned
+    parameter where the scan left it; a saved state a reset restored. A standards
+    tool restarted every one of those from the initial state, with nothing said.
+    Encoding the carry-over as a ``repeatedTask``'s ordered subtasks does not
+    help: tellurium resets the model between subtasks.
+    """
+    from bngsim._protocol_run import _DEFAULT_LABEL, _scan_values
+    from bngsim.convert._protocol import Experiment, StateChange, _state_change_action
+
+    held = {"conc": _HeldState(), "param": _HeldState()}
+    # What state_changes_before gives: the latest set of each target since the
+    # last reset of its kind, None where that set is not a number.
+    described: dict[str, dict[str | None, float | None]] = {"conc": {}, "param": {}}
+    saved: dict[str, dict[str, _HeldState]] = {"conc": {}, "param": {}}
+    built_until = protocol.generation_step or 0
+    out: dict[int, str] = {}
+    n = 0
+    for k, step in enumerate(protocol.steps):
+        # A step before the network was generated is in the network the SBML
+        # was written from, so it does not move the state from that one.
+        built = k < built_until
+        if isinstance(step, StateChange):
+            kind = (
+                "param"
+                if step.kind.endswith("_parameter") or "parameters" in step.kind
+                else "conc"
+            )
+            state = held[kind]
+            label = step.label or _DEFAULT_LABEL
+            if step.kind in ("set_concentration", "set_parameter"):
+                described[kind][step.target] = step.value
+                if step.value is not None:
+                    state.values[step.target] = (step.value, "")
+                else:
+                    state.values.pop(step.target, None)
+                    if not built:
+                        state.moved.append(
+                            (
+                                step.target if kind == "param" else None,
+                                f"{_state_change_action(step)}, which needs the model to read",
+                            )
+                        )
+            elif step.kind == "add_concentration":
+                if not built:
+                    state.moved.append((None, _state_change_action(step)))
+            elif step.kind.startswith("save_"):
+                saved[kind][label] = state.copy()
+            elif step.kind.startswith("reset_"):
+                described[kind] = {}
+                held[kind] = saved[kind].get(label, _HeldState()).copy()
+            continue
+        if not isinstance(step, Experiment):  # pragma: no cover — two step types only
+            continue
+        why = [
+            reason
+            for kind, noun in (("conc", "concentrations"), ("param", "parameters"))
+            if (
+                reason := held[kind].differs(
+                    {t: v for t, v in described[kind].items() if v is not None},
+                    noun,
+                    # A scan sets its own parameter at every point.
+                    step.scan_parameter if step.is_scan and kind == "param" else None,
+                )
+            )
+            is not None
+        ]
+        if why:
+            out[n] = "; ".join(why)
+        if step.is_scan and step.scan_parameter:
+            # The parameter keeps the value the sweep ended on (BNGAction.pm).
+            try:
+                values = _scan_values(step, backward=step.is_bifurcation)
+            except ConversionError:
+                values = []
+            note = f" (where experiment {n}'s scan left it)"
+            if values:
+                held["param"].values[step.scan_parameter] = (float(values[-1]), note)
+            else:
+                held["param"].moved.append(
+                    (step.scan_parameter, f"experiment {n}'s scan of {step.scan_parameter}")
+                )
+        if not (step.kind == "scan" and step.reset_between):
+            # A scan that resets each point ends reset to where it started.
+            held["conc"].moved = [(None, f"experiment {n}'s run")]
+        n += 1
+    return out
+
+
 def _sbml_param_target(name: str) -> str:
     return f"/sbml:sbml/sbml:model/sbml:listOfParameters/sbml:parameter[@id='{name}']/@value"
 
@@ -737,6 +866,12 @@ def write_sedml_protocol(
     ``changeAttribute``-derived model — plus a bngsim ``<annotation>`` carrying
     the verbatim ``ProtocolSpec`` JSON so :func:`read_sedml_protocol` recovers it
     exactly. Build/IO directives were already dropped at parse time.
+
+    The standard elements start each experiment from the model's initial state
+    with those overrides. An experiment BNG2.pl starts from somewhere else, such
+    as where the run before it ended, is named in a
+    :class:`~bngsim.ConversionWarning`; a standards tool runs it from the
+    initial state.
 
     Parameters
     ----------
@@ -778,6 +913,21 @@ def write_sedml_protocol(
     )
     sims = ET.SubElement(sed, _q(_SEDML_NS, "listOfSimulations"))
     tasks = ET.SubElement(sed, _q(_SEDML_NS, "listOfTasks"))
+
+    carried = _carried_starts(protocol)
+    if carried:
+        shown = [f"experiment {i} from {why}" for i, why in list(carried.items())[:5]]
+        more = len(carried) - len(shown)
+        warnings.warn(
+            "SED-ML's standard elements start each experiment from the model's initial "
+            "state, with the protocol's numeric setConcentration and setParameter values "
+            "applied, and a standards tool runs them so; BNG2.pl starts "
+            + "; ".join(shown)
+            + (f"; and {more} more experiment(s) from a carried state" if more else "")
+            + ". The bngsim annotation holds the protocol as BNG2.pl runs it.",
+            ConversionWarning,
+            stacklevel=2,
+        )
 
     for i, exp in enumerate(experiments):
         # What the standard elements below cannot hold; the annotation holds it.
