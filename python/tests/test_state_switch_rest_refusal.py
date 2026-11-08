@@ -193,23 +193,26 @@ end groups
     assert _w(result) == pytest.approx(3.0 * 5.0 + 0.75 * 15.0, rel=1e-6)
 
 
-def test_a_species_an_event_sets_onto_its_gate_runs():
+@pytest.mark.parametrize("sens", [["k"], None], ids=["sensitivity", "plain"])
+def test_a_species_an_event_sets_onto_its_gate_runs(sens):
     """S decays until an event sets it to 0 at t = 5, where nothing moves it
     again, and ``S > 0`` gates W's rate. S was off its surface before the event,
     but the event puts it exactly on it, so the gate reads the model's branch
     (0 > 0 is false), not rounding's: W = 5·k and dW/dk = 5. A first cut
-    refused this run as come to rest."""
+    refused this run as come to rest. (A plain run of an SBML model is not
+    asked yet, lanl/bngsim#1588; once it is, the plain case holds the event
+    hook to a run with no sensitivity record of its fires.)"""
     text = (
         "species S, W; S = 1; W = 0; k = 3; kd = 0.1\n"
         "Jd: S -> ; kd*S\nE1: at (time > 5): S = 0\nJ: -> W; piecewise(k, S > 0, 0)\n"
     )
-    sim = bngsim.Simulator(
-        bngsim.Model.from_antimony_string(text), method="ode", sensitivity_params=["k"]
-    )
+    extra = {} if sens is None else {"sensitivity_params": sens}
+    sim = bngsim.Simulator(bngsim.Model.from_antimony_string(text), method="ode", **extra)
     result = sim.run(t_span=(0.0, 10.0), n_points=11, rtol=1e-8, atol=1e-8)
     w = list(result.species_names).index("W")
     assert float(np.asarray(result.species)[-1, w]) == pytest.approx(15.0, rel=1e-6)
-    assert float(np.asarray(result.sensitivities)[-1, w, 0]) == pytest.approx(5.0, rel=1e-6)
+    if sens is not None:
+        assert float(np.asarray(result.sensitivities)[-1, w, 0]) == pytest.approx(5.0, rel=1e-6)
 
 
 def test_a_species_that_never_leaves_its_surface_runs(tmp_path):

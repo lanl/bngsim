@@ -15942,6 +15942,9 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     std::vector<long> state_switch_pinned_steps;
     // Issue #1548: what refuse_rest_on_state_switch keeps of each residual.
     Impl::RestWatch state_switch_rest;
+    // Issue #1548: the species event assignments have written since the last
+    // batch's end, in any run (the fires record is a sensitivity run's alone).
+    std::vector<char> state_switch_rest_written;
     impl_->state_switch_rxns.clear();
     impl_->state_switch_all.clear();
     impl_->state_switch_consumed.clear();
@@ -16333,6 +16336,14 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             const double base = b >= 0 ? nv[static_cast<std::size_t>(b)] : y_data[assigns[a].first];
             rescales.emplace_back(
                 a, base * eval_ref_outer.evaluate(ev.assignment_rescale_size_expr[a]));
+        }
+        if (!state_switches.empty()) {
+            state_switch_rest_written.resize(static_cast<std::size_t>(ns), 0);
+            for (const auto &asg : assigns) {
+                if (asg.first >= 0 && asg.first < ns) {
+                    state_switch_rest_written[static_cast<std::size_t>(asg.first)] = 1;
+                }
+            }
         }
         for (std::size_t a = 0; a < assigns.size(); ++a) {
             if (is_resize_rescale(ev, a))
@@ -17374,17 +17385,10 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
 
         // Issue #1548: a switch's residual this batch's assignments left
         // exactly on its surface has its branch from the model there.
-        if (!state_switches.empty() && executed_fires.size() > batch_fires_from) {
-            std::vector<char> written(static_cast<std::size_t>(ns), 0);
-            for (std::size_t fi = batch_fires_from; fi < executed_fires.size(); ++fi) {
-                for (const auto &asg : events_outer[executed_fires[fi].event_idx].assignments) {
-                    if (asg.first >= 0 && asg.first < ns) {
-                        written[static_cast<std::size_t>(asg.first)] = 1;
-                    }
-                }
-            }
-            impl_->note_event_on_state_switch(t_now, y_data, ns, written, state_switches,
-                                              state_switch_rest);
+        if (!state_switch_rest_written.empty()) {
+            impl_->note_event_on_state_switch(t_now, y_data, ns, state_switch_rest_written,
+                                              state_switches, state_switch_rest);
+            state_switch_rest_written.clear();
         }
 
         return any_immediate;
@@ -17948,6 +17952,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                                            y_data, ns, state_switches, rtol, atol, atol_v,
                                            user_data.atol_tracking, state_switch_rest);
     }
+    state_switch_rest_written.clear(); // a t = 0 event's writes are that start
 
     // Record initial sensitivities. Param cols are zero at t=0 for a fresh
     // start (or the carried-over dx/dθ seed under carry_sensitivities, GH
