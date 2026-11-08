@@ -329,9 +329,10 @@ def test_a_gap_the_committed_baseline_does_not_record_still_alerts(committed_row
     [
         refused("roadrunner (archive): RuntimeError: CVODE failed"),  # judged, and failed
         refused("roadrunner: archive_unreplayable is named, not stamped"),
+        refused("roadrunner (archive): archive_unreadable: BadZipFile: bad"),  # damage
         rec("DIFF"),
     ],
-    ids=["replayed-failure", "unstamped", "diff"],
+    ids=["replayed-failure", "unstamped", "unreadable", "diff"],
 )
 def test_a_replay_that_judged_the_row_still_alerts(tonight_row):
     tonight = night(ARCHIVE, {**REPLAYED, GAP_ROW: tonight_row})
@@ -433,7 +434,7 @@ def test_compare_sh_hands_the_committed_baseline_to_the_night_to_night_diff(tmp_
         "  *) exit 2 ;;\nesac\n",
     )
     committed = here / "baselines" / "rr_ssa.json"
-    show = f'cat "{committed}"' if fetch_ok else "exit 1"
+    show = f'cat "{committed}"; exit $?' if fetch_ok else "exit 1"
     _stub(
         bin_ / "git",
         f'case " $* " in\n  *" fetch "*) exit 0 ;;\n  *" show "*) {show} ;;\nesac\nexit 1\n',
