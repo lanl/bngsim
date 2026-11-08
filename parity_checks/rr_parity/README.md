@@ -370,18 +370,24 @@ comparison gives RoadRunner output times as follows:
   no corpus job has one.
 
 RoadRunner integrates through the union of the job grid and these times, and only
-the job-grid rows are returned, so the compared grid is unchanged. An instant so
-shortly before a grid time that CVODE will not start the step between them (closer
-than 2·eps·max(|t|, |t'|), 2 to 4 ulps) takes that grid time's place instead:
-given both, RoadRunner fires the event at the instant and then refuses the step
-(CV_TOO_CLOSE), so `time == 0.3` beside the grid's 0.30000000000000004 failed the
-run. The row holds the state just after the event, as an engine reports at the
-grid time. A `!=` instant never takes a grid time's place: the trigger is false
-there and fires just after, so the row would hold the state before an event the
-grid time comes after. Nor does one before a grid time that is an instant itself,
-whose event would go unseen. Those runs fail as before, a reference failure
-rather than a DIFF. Nothing a run completed before changes, and the row's time is
-reported as the grid time. A model whose
+the job-grid rows are returned, so the compared grid is unchanged. Where an
+instant falls so shortly before a grid time that CVODE will not start the step
+between them (closer than 2·eps·max(|t|, |t'|), 2 to 4 ulps), RoadRunner fires the
+event at the instant and then refuses the step (CV_TOO_CLOSE): `time == 0.3`
+beside the grid's 0.30000000000000004 failed the run (#1558). There the grid time
+moves on to the first time CVODE will step to, a few ulps later, and its row is
+reported at the grid time. The instant itself never moves, since RoadRunner fires
+`time == c` only on an output time at c. So the row holds the state after the
+event, as an engine reports it at the grid time, for `==` (fired at the instant)
+and `!=` (false at the instant, fired at the moved grid time) alike.
+
+A grid time moves past no instant, so its row never holds a later event. What
+RoadRunner cannot run at all still fails, a reference failure rather than a DIFF:
+two times that must each be exact, closer together than CVODE will step after an
+event. That is two `time ==` instants a few ulps apart, an instant just before a
+grid time that is an instant too, or an instant a few ulps after a nonzero start.
+No corpus job has an instant that close to a grid time, so no corpus row changes.
+A model whose
 triggers give none runs exactly as before. 75 of the 1,323 ODE jobs get any. On
 those, the A/B against the previous harness changed no outcome and no bngsim work
 counter. The 10 known artifacts pass on their own, and BIOMD0000000822 went from
