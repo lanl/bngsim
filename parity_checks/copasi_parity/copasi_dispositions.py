@@ -18,7 +18,8 @@ here. In short:
     engines did not agree.
   * A row that PASSes on its own is flagged STALE (prune the entry); a row that
     produced no comparison (EXCEPTION, TIMEOUT, ...) leaves the entry
-    inapplicable, and the row keeps scoring.
+    inapplicable, and the row keeps scoring. So does a DIFF whose ``max_rel`` is
+    not finite: a grid or species mismatch, or non-finite output (issue #1565).
   * An entry records the ``max_rel`` it was written against; a fresh value more
     than a factor of 2 away is still disposed of, but the comment says DRIFTED.
 

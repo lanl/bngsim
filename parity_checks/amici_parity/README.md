@@ -264,7 +264,11 @@ Three ways it stays honest:
 - it applies **only to a `DIFF`** (`NO_GROUND_TRUTH` to a `PASS` as well). A row
   that agrees on its own is flagged `STALE` (prune it); a row that raised, timed
   out or had no oracle is reported *inapplicable* rather than stale — a timeout
-  falsifies nothing.
+  falsifies nothing. So is a `DIFF` whose `max_rel` is not finite (issue #1565):
+  `inf` is what the comparison returns for a time-grid mismatch or disjoint
+  species sets, and a NaN or inf in the output gives one too. That is what a
+  loader regression on a disposed row would look like, so the row keeps its
+  scoring `DIFF`, with a note to re-triage.
 - the reason lands in the row's `comment`, so the report says why in the row and
   not only in the module.
 - an entry records the `max_rel` it was authored against. A later sweep that

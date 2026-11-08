@@ -95,6 +95,13 @@ worse than none:
     TIMEOUT / BAD_TEST / UNSUPPORTED produced no comparison at all, so the entry is
     reported *inapplicable* rather than stale — a timeout falsifies nothing. That
     holds for NO_GROUND_TRUTH too: a bngsim EXCEPTION stays a visible, scoring row.
+    Nor does any entry apply to a DIFF whose ``max_rel`` is not finite (issue
+    #1565). The runners' comparisons return ``inf`` for a time-grid mismatch and
+    for disjoint species sets, and a NaN or inf in either engine's output gives
+    a non-finite metric too. None of that is two answers rounding apart, which
+    is what every entry is written about; it is what a loader regression on a
+    disposed row would look like. So the row keeps its own scoring DIFF, and the
+    entry is reported inapplicable with a note to re-triage.
   * the reason is written into ``JobResult.comment`` on every applied row, so the
     report says why in the row itself and not only here.
   * an entry may record the ``max_rel`` it was authored against. If a later sweep
@@ -502,26 +509,26 @@ def apply_disposition(
     ``reference_refusal`` is non-None only when the disposition itself set one
     (so a caller can leave an auto-derived refusal alone).
 
-    ``value`` is the row's metric (``max_rel_err``); it is only read to compare
-    against the entry's recorded ``max_rel``, and ``None`` simply skips that check.
+    ``value`` is the row's metric (``max_rel_err``). A DIFF whose metric is not
+    finite is never disposed of (issue #1565; the module docstring says why).
+    Otherwise it is only read to compare against the entry's recorded
+    ``max_rel``. ``None`` skips both checks.
     """
     kind = disp["kind"]
     label = _LABEL[kind]
     tag = f" ({disp['issue']})" if disp.get("issue") else ""
 
-    # No ground truth: a PASS is two non-solutions that rounded alike, so it is
-    # disposed of exactly as a DIFF is. It is never STALE, because what the entry
-    # asserts is a property of the model, which no engine's verdict can falsify.
     # A non-finite metric is not two trajectories rounding apart: it is a grid or
     # species mismatch, or non-finite output, which a loader regression would
-    # produce. That stays a scoring DIFF.
-    if kind == _KIND_NO_GROUND_TRUTH and outcome == Outcome.DIFF and not _finite(value):
+    # produce. Whatever an entry says about the row, that stays a scoring DIFF
+    # (issue #1565; NO_GROUND_TRUTH had this guard first).
+    if outcome == Outcome.DIFF and not _finite(value):
         return (
             outcome,
             _join(
                 comment,
                 f"{label} entry{tag} did not apply: max_rel={value} is not two "
-                "trajectories rounding apart (grid or species mismatch, or "
+                "answers rounding apart (grid or species mismatch, or "
                 "non-finite output); re-triage",
             ),
             None,
