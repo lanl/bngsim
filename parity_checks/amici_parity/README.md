@@ -133,11 +133,13 @@ On the 19 jobs:
 | unchanged | the other 16: 12 `PASS`, 4 `REFERENCE_FAILED` (878's on `AMICI_TOO_MUCH_WORK`, as before) | the other 17 |
 
 834 still passes, now with its event: `AMICI through 1 event instants`. The new
-refusals are AMICI's step budget over the longer horizon, not a bngsim
+refusals are AMICI running out of steps over the longer horizon, not a bngsim
 difference: rr_parity, which has integrated these jobs from `initial_time` all
 along, passes bngsim on 042, 691 and 878, where bngsim takes 11,940, 173,344 and
-154,852 steps. The ODE job leaves AMICI at its default budget of 10,000; the
-sensitivity job gives both engines 100,000 (#339).
+154,852 steps in all. Both engines run under the same CVODES step limit, 10,000 at
+their defaults in the ODE job and 100,000 in the sensitivity job (#339); bngsim
+stays within it and AMICI does not. They join Class 1's integrator bailouts in
+[AMICI_KNOWN_ISSUES](AMICI_KNOWN_ISSUES.md).
 
 ### AMICI runs through the event instants (issue #1542)
 
@@ -158,6 +160,13 @@ AMICI's own values: parameters and compartments as AMICI integrates them
 15 significant digits (`amici_literal_of`). A row's comment says
 `AMICI through N event instants`, N being the output times added. A model with no
 time comparison in a trigger runs exactly as before.
+
+`amici_sens_run.py` runs AMICI's sensitivity run through the same instants (issue
+#1571). Until then it missed the same events there: BIOMD0000000816, 817 and 928
+read `DIFF` in the sensitivity job, `state DIFF` included, while the ODE job
+passed them, and now read `PASS` on both corrector methods (1059 is a declared
+bngsim refusal there, `UNSUPPORTED`). Both runs take their output times from one
+helper, `_amici_common.output_times`, so they cannot drift apart.
 
 Three limits, each leaving the row as it was on the grid alone:
 
@@ -703,7 +712,7 @@ every job, and the row's `timing.amici.replayed_from_archive` is `true`.
 
 An entry is used only when it still describes the job: the model file's
 sha256, the grid (`t_int`, the initial time both runs start at; `t_end`;
-`n_points`), `rtol`, `atol`, the method,
+`n_points`), whether AMICI ran through its event instants, `rtol`, `atol`, the method,
 `--max-steps`, `--param-cap` and `--param-budget` must all match, and so must
 the shared parameter list the replay negotiates. Otherwise, or with no entry,
 the row is `REFERENCE_FAILED` with `reference_refusal: archive_stale` and the

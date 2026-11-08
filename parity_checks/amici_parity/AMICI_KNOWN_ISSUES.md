@@ -50,8 +50,9 @@ window starts after the model does, and three of them run past AMICI's step budg
 over the longer horizon (`AMICI_TOO_MUCH_WORK`): BIOMD0000000042 and 691 in the ODE
 job, 691 and 878 in the sensitivity job (878's ODE row already failed that way).
 rr_parity passes bngsim on all three from the same start; bngsim takes 11,940,
-173,344 and 154,852 steps there, and the ODE job leaves AMICI at its default
-10,000. The same change lets AMICI's ODE run of BIOMD0000000943 finish; it `PASS`es.
+173,344 and 154,852 steps there in all, within the same CVODES step limit AMICI
+runs out of (10,000 in the ODE job, 100,000 in the sensitivity job). The same
+change lets AMICI's ODE run of BIOMD0000000943 finish; it `PASS`es.
 
 ## Class 2 — AMICI integration outliers (44 DIFF; 42 confirmed AMICI-side)
 
@@ -240,7 +241,9 @@ same way on a grid with no sample at `c`, and the remedy is the same (#1024):
 `amici_run.py` now gives AMICI the instants as extra output times and compares the
 job grid. See the README's
 [event-instants section](README.md#amici-runs-through-the-event-instants-issue-1542),
-which also lists the shapes the instants cannot help.
+which also lists the shapes the instants cannot help. `amici_sens_run.py` does the
+same since #1571: 816, 817 and 928 had read `DIFF` in the sensitivity job for the
+same miss, and `PASS` there now.
 
 **A trigger whose residual is exactly 0 at the start.** AMICI reads it as true at
 t = 0, for `>` as well as `>=`. BIOMD0000000285 is SBML L2V4, whose triggers read
