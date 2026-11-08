@@ -489,12 +489,17 @@ def test_a_parked_sum_keeps_the_slope_that_holds_it(
     threshold, in the rows of the species the step gates, not V's own, so
     nothing of it is mended and the straddled slope still carries the run.
     Mended, the run crossed on macOS at these tolerances, 0.633 off at rtol 1e-7
-    and 3e-7 (601 points), where main is right there."""
+    and 3e-7 (601 points), where main is right there.
+
+    Where the run is right is rounding's call, though: the sum rests within the
+    run's tolerance of the step. At rtol 1e-8 the run is now refused by name
+    (issue #1548) where it used to be held to the exact branch."""
     net, exact = _split(data_dir, tmp_path, "49.99999999999")
     window = dict(t_span=(0.0, 150.0), n_points=n_points, rtol=rtol, atol=atol)
     assert "across a jump" not in _split_mends(net, monkeypatch, capfd, sparse=False, **window)
     if rtol == 1e-8:
-        assert _split_deviation(net, exact, jacobian="fd", sparse=False, **window) < 1e-6
+        with pytest.raises(bngsim.SimulationError, match="come to rest.*issue #1548"):
+            _split_deviation(net, exact, jacobian="fd", sparse=False, **window)
 
 
 @pytest.mark.parametrize(

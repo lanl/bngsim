@@ -29,6 +29,8 @@ crosses thr at t*, and Y = kb·(T − t*), Z = kc·(T − t*).
 
 from __future__ import annotations
 
+import re
+
 import bngsim
 import numpy as np
 import pytest
@@ -357,18 +359,24 @@ def test_a_state_that_comes_to_rest_short_of_a_surface_is_not_put_across(tmp_pat
     not 0, and over 1e5 units of time that flow would have covered the few ulp
     many times. A first cut put it across: Y = 3e5 and A = 2. The flow has to
     reach the surface, and this one runs out before it: read as far back again,
-    it is larger in proportion to the distance from Ainf."""
+    it is larger in proportion to the distance from Ainf.
+
+    Not put across, A rests within the run's tolerance of thr, where Y's rate
+    jumps by kb and the feedback past it would carry A off: which side A stays
+    on is rounding's call, so the run is refused by name for that (issue
+    #1548), with A on the near side. Put across, A would have gone on to 2, off
+    the surface, and the run would not be refused at all."""
     thr = 1.0
     for _ in range(ulps):
         thr = float(np.nextafter(thr, np.inf))
     path = tmp_path / "rest.net"
     path.write_text(REST.format(thr=thr))
-    run = bngsim.Simulator(bngsim.Model.from_net(path), method="ode").run(
-        t_span=(0.0, 1e5), n_points=2, rtol=rtol, atol=rtol * 1e-2, timeout=60.0
-    )
-    end = np.asarray(run.species)[-1]
-    assert end[1] == 0.0
-    assert end[0] <= thr
+    sim = bngsim.Simulator(bngsim.Model.from_net(path), method="ode")
+    with pytest.raises(bngsim.SimulationError, match="come to rest.*issue #1548") as info:
+        sim.run(t_span=(0.0, 1e5), n_points=2, rtol=rtol, atol=rtol * 1e-2, timeout=60.0)
+    residual = re.search(r"residual '\(Aobs\)-\(thr\)' = (\S+),", str(info.value))
+    assert residual is not None, str(info.value)
+    assert float(residual.group(1)) <= 0.0
 
 
 TWO_MOVING = """begin parameters

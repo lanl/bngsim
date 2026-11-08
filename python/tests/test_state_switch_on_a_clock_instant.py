@@ -885,17 +885,17 @@ MANY_CROSSINGS = (
 EVICTION_TIMES = [float(t) for t in np.linspace(0.0, 5.0, 51)]
 
 
-def _evicted(text, param, times):
+def _evicted(text, param, times, atol=1e-9):
     model = bngsim.Model.from_antimony_string(text)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=[param])
     with pytest.raises(bngsim.SimulationError, match="than are kept to ask it about"):
-        sim.run(sample_times=times, rtol=1e-6, atol=1e-9, timeout=60)
+        sim.run(sample_times=times, rtol=1e-6, atol=atol, timeout=60)
 
 
-def _column(text, param, times, name):
+def _column(text, param, times, name, atol=1e-9):
     model = bngsim.Model.from_antimony_string(text)
     run = bngsim.Simulator(model, method="ode", sensitivity_params=[param]).run(
-        sample_times=times, rtol=1e-6, atol=1e-9, timeout=60
+        sample_times=times, rtol=1e-6, atol=atol, timeout=60
     )
     return np.asarray(run.sensitivities)[-1, list(run.species_names).index(name), 0]
 
@@ -935,24 +935,30 @@ MANY_FIRES = (
     "E1: at (C >= 1): C = 0\nE2: at (time >= 0.1): X = X + 1\n"
 )
 FIRES_TIMES = [float(t) for t in np.linspace(0.0, 10.0, 101)]
+# B's threshold, 1e-9, has to be one the run can tell B from: at the atol of 1e-9
+# these used B goes on to rest beside it, within its tolerance, and the run is
+# refused for that (issue #1548) before the fire it is about can be asked of.
+FIRES_ATOL = 1e-12
 
 
 def test_a_crossing_whose_event_s_only_fire_was_dropped_is_refused():
     """Past 4,096 fires of E1, E2's one fire is dropped, and no later fire of
     E2 is kept to stand for it."""
-    _evicted(MANY_FIRES.format(rate=1000.0), "lam", FIRES_TIMES)
+    _evicted(MANY_FIRES.format(rate=1000.0), "lam", FIRES_TIMES, atol=FIRES_ATOL)
 
 
 def test_a_crossing_whose_event_s_only_fire_is_kept_runs():
     """Control: at rate 800 it is kept, and the order is confirmed. Y
     gathers q·X from t_C = ln(1e9)/lam, where X = t_C + 1: dY/dlam =
-    q·(t_C + 1)·t_C/lam, 21.56. B is read to atol 1e-9 at a threshold of
-    1e-9, so the run's crossing is off by a few percent, and by 1.7e-4
-    more on Linux than on macOS."""
+    q·(t_C + 1)·t_C/lam, 21.56. B is read to atol 1e-12 at its threshold of
+    1e-9, so the run resolves the crossing. (At atol 1e-9 it was off by a few
+    percent, 1.7e-4 more on Linux than on macOS, and B then rested within its
+    tolerance of the threshold, which is now refused, issue #1548.)"""
     text = MANY_FIRES.format(rate=800.0)
     t_cross = math.log(1e9) / 2.5
     truth = 0.7 * (t_cross + 1.0) * t_cross / 2.5
-    assert _column(text, "lam", FIRES_TIMES, "Y") == pytest.approx(truth, rel=0.05)
+    got = _column(text, "lam", FIRES_TIMES, "Y", atol=FIRES_ATOL)
+    assert got == pytest.approx(truth, rel=1e-3)
 
 
 def test_a_trigger_that_reads_the_switch_s_species_and_another_is_refused():
@@ -1410,16 +1416,6 @@ ON_A_SURFACE_AND_STAYING = {
         1e-12,
         [1.5, 0.0],
     ),
-    # B = e^(−5t) is long under its guard, and under the absolute tolerance.
-    "a-guard-on-a-species-that-has-decayed": (
-        "species B, X, Y; B = 1; X = 0; Y = 0; lam = 5; k = 0.5; r = 1.5; tau = 8\n"
-        "Jb: B -> ; lam*B\nJy: -> Y; piecewise(k, B > 1e-9, 0)\n"
-        "Jx: -> X; piecewise(r, time >= tau, 0)\n",
-        [0.0, 2.0, 4.0, 8.0, 12.0],
-        1e-8,
-        1e-8,
-        [0.0, -1.5, 0.0],
-    ),
 }
 
 
@@ -1436,6 +1432,25 @@ def test_a_fitted_gate_beside_a_state_that_stays_on_its_surface_runs(case):
     )
     got = np.asarray(run.sensitivities)[-1][:, 0]
     np.testing.assert_allclose(got, want, rtol=1e-6, atol=1e-8)
+
+
+def test_a_gate_on_a_species_decayed_under_its_tolerance_is_refused():
+    """B = e^(−5t) starts off its guard ``B > 1e-9``, crosses it at t = 4.1 and
+    then rests under it, within the absolute tolerance of 1e-8: the run cannot
+    tell B from the threshold, so when Y stops gathering k is the rounding's
+    call, not the model's. It was a case of the control above, which it never
+    fit (it is started off its surface), and ran; it is refused by name now
+    (issue #1548)."""
+    text = (
+        "species B, X, Y; B = 1; X = 0; Y = 0; lam = 5; k = 0.5; r = 1.5; tau = 8\n"
+        "Jb: B -> ; lam*B\nJy: -> Y; piecewise(k, B > 1e-9, 0)\n"
+        "Jx: -> X; piecewise(r, time >= tau, 0)\n"
+    )
+    sim = bngsim.Simulator(
+        bngsim.Model.from_antimony_string(text), method="ode", sensitivity_params=["tau"]
+    )
+    with pytest.raises(bngsim.SimulationError, match="come to rest.*issue #1548"):
+        sim.run(sample_times=[0.0, 2.0, 4.0, 8.0, 12.0], rtol=1e-8, atol=1e-8, timeout=60)
 
 
 def _nested_law(tmp_path, law, params):

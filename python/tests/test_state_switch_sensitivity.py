@@ -1276,7 +1276,12 @@ end groups
         also crosses thr1 = 2, whose jump kb sits in the same rate law: near =
         kc, far = kc + kb, "growth", so the crossing was taken as continuous and
         left without a restart, standing on a real jump. Main never returns from
-        that run. A jump at a crossing the flow cannot resolve is refused."""
+        that run. A jump at a crossing the flow cannot resolve is refused.
+
+        A nears thr1 itself as it goes, and is within the run's tolerance of it
+        from t ~ 18, where kb's branch is rounding's call: an output there is
+        refused for that (issue #1548) before the crawl past thr2 at t ~ 21.7
+        that this is about, so none is asked for there."""
         text = """\
 begin parameters
     1 A0 10
@@ -1306,7 +1311,7 @@ end groups
         model = _model(tmp_path, text, name="crawl.net")
         sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k", "thr1", "kb"])
         with pytest.raises(SimulationError, match="rides that surface") as err:
-            sim.run(t_span=(0.0, 40.0), n_points=5, rtol=1e-8, atol=1e-12)
+            sim.run(sample_times=[0.0, 15.0, 40.0], rtol=1e-8, atol=1e-12)
         assert "crosses another switch's surface" in str(err.value)
 
     @pytest.mark.parametrize("B0", [1e3, 3e6])
@@ -2146,7 +2151,12 @@ end groups
         clamp, ``kc·(thr2 − Aobs)`` below it and 0 above, continuous at its own
         switch, and thr1 = 2 is read by another reaction. The wider probe still
         crosses thr1, but nothing it reads changes there, so the clamp's gap is
-        read by how it grows, as continuous, and the run is not refused."""
+        read by how it grows, as continuous, and the run is not refused for it.
+
+        A relaxes to thr1 itself, though, and rests on it within the run's
+        tolerance from t ~ 17, so whether W gathers kb from there is rounding's
+        call: the run is refused by name for that switch (issue #1548), and not
+        for the clamp."""
         text = """\
 begin parameters
     1 A0 10
@@ -2177,14 +2187,11 @@ begin groups
 end groups
 """
         model = _model(tmp_path, text, name="crawl_clamp.net")
-        run = bngsim.Simulator(model, method="ode", sensitivity_params=["k", "kc"]).run(
-            t_span=(0.0, 30.0), n_points=5, rtol=1e-8, atol=1e-12
-        )
-        names = list(run.species_names)
-        y = np.asarray(run.species)[-1, names.index("Y()")]
-        s = np.asarray(run.sensitivities)[-1, names.index("Y()")]
-        # Y = kc·∫(thr2 − A)⁺, so dY/dkc = Y/kc; both are ~1e-8.
-        assert y > 0.0 and s[1] == pytest.approx(y / 5.0, rel=1e-3)
+        sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k", "kc"])
+        with pytest.raises(bngsim.SimulationError, match="come to rest.*issue #1548") as info:
+            sim.run(t_span=(0.0, 30.0), n_points=5, rtol=1e-8, atol=1e-12)
+        assert "'(Aobs)-(thr1)'" in str(info.value)
+        assert "thr2" not in str(info.value)
 
     def test_the_trajectory_was_never_the_problem(self, tmp_path):
         """Only the sensitivity was wrong: Y(T) = kb·(T − t*) either way, to the

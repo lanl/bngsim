@@ -39,8 +39,23 @@ dV/dt < 0, so it is an artifact of the parked trajectory. The core restarts on
 a lone state-switch root only where the flow clearly carries the residual
 across, which leaves this run exactly as it was before the root existed.
 Restarting there instead held the run on the wrong branch: the analytical
-attempt no longer failed, took 2,019,910 steps, and came out 63% off. So every
-test in this file also guards that rule.
+attempt no longer failed, took 2,019,910 steps, and came out 63% off. Every
+test in this file guarded that rule until the fixture was refused (below); its
+witness now is test_net_state_switch_stepping.py's grazed root, the one parked
+twin that runs.
+
+**Since issue #1548 the time course on this fixture is refused by name.** Its
+state rests within the run's tolerance of the step from t ≈ 21, before the
+analytical attempt fails at t ≈ 25, and which branch it reads from there is
+rounding's call: the unparked rulehub model came back 0.633 off on some output
+grids, and #176's own FD rescue held on one platform and died on another. So no
+attempt, analytical, FD or compiled, returns a trajectory here, and the auto ->
+FD retry is not reached. The retry's contract (``auto`` is the explicit FD run
+bit for bit, an explicit ``analytical`` is not second-guessed, interpreted and
+compiled) is held on #867's ``S -> ; k*sqrt(S)`` instead, where the analytical
+Jacobian fails for its infinite slope at 0 with nothing parked
+(test_nonfinite_jacobian_after_clamp.py), and the tests below that are about the
+retry's memo and its compiled path run on that model too.
 
 Issue #127 gave the steady-state solver the same bet — its march installs the
 closed-form Jacobian too — and therefore needed the same way out. That half is
@@ -64,10 +79,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from _codegen_backend import threshold_forced  # noqa: E402
 
-# This module, for the two tests that monkeypatch its own helper. pytest loads
-# the file by path, so it is not importable under its bare filename.
-_THIS = sys.modules[__name__]
-
 FIXTURE = "ltype_calcium_discontinuous_jacobian.net"
 T_SPAN = (0.0, 150.0)
 N_POINTS = 301
@@ -78,128 +89,77 @@ def _net(data_dir: Path) -> str:
     return str(data_dir / FIXTURE)
 
 
-def _run(net: str, jacobian: str | None = None) -> tuple[str, np.ndarray | None]:
-    """Run ``net`` to the full horizon and report the OUTCOME rather than assume
-    one: ``("ok", observables)`` or ``("raised", None)``.
+REFUSED = "come to rest.*issue #1548"
 
-    lanl/bngsim#176 is the standing reason this is a pair and not a bare call. In
-    the parked-on-the-step regime the module docstring describes, whether FD
-    carries a model to 150 s is settled by rounding, so a test that hard-codes
-    "it integrates" is asserting something neither bngsim nor the model decides.
-    Comparing two outcomes taken on the same host asserts only the part bngsim
-    does decide.
-    """
-    kwargs = {} if jacobian is None else {"jacobian": jacobian}
-    sim = bngsim.Simulator(bngsim.Model.from_net(net), method="ode", **kwargs)
-    try:
-        result = sim.run(t_span=T_SPAN, n_points=N_POINTS, rtol=TOL, atol=TOL)
-    except SimulationError:
-        return "raised", None
-    return "ok", np.asarray(result.observables)
-
-
-def _require_fd_reference(net: str) -> np.ndarray:
-    """The explicit-FD trajectory on THIS host, or skip.
-
-    The tests below that assert a *successful* rescue need FD to actually carry
-    the fixture here. It does wherever the fixture's two margins hold, which is
-    the point of parking it 1e-11 below the step — but the skip is keyed on the
-    observable itself rather than on a guessed platform axis, which is the
-    mistake lanl/bngsim#176 recorded (it read as Linux-vs-macOS; #228 then showed
-    the causal axis was neither the OS nor the BLAS).
-    """
-    outcome, observables = _run(net, "fd")
-    if outcome != "ok":
-        pytest.skip(
-            "the finite-difference Jacobian does not carry this fixture on this "
-            "build, so there is no rescue to assert — see the module docstring"
-        )
-    assert observables is not None
-    return observables
+# #867's model, which the retry is held on here: S empties at t = 2, where
+# d/dS sqrt(S) is infinite, so the analytical attempt fails with nothing parked.
+SINK = "species S; S = 1; C = 1; k = 1;\nR1: S -> ; C*k*sqrt(S)\n"
+SINK_WINDOW = dict(t_span=(0.0, 40.0), n_points=5)
 
 
 def test_auto_is_exactly_the_fd_run(data_dir: Path) -> None:
     """The contract, and the one assertion that holds on every host: ``auto`` is
-    "try analytical, then FD", so whatever explicit FD does here ``auto`` does —
-    bit for bit when FD integrates, and the same failure when it does not."""
+    "try analytical, then FD", so whatever explicit FD does here ``auto`` does.
+    On this fixture both are refused by name (issue #1548)."""
     net = _net(data_dir)
-    auto_outcome, auto_obs = _run(net)
-    fd_outcome, fd_obs = _run(net, "fd")
-    assert auto_outcome == fd_outcome
-    if fd_outcome == "ok":
-        assert auto_obs is not None and fd_obs is not None
-        assert np.array_equal(auto_obs, fd_obs)
+    for jacobian in (None, "fd"):
+        kwargs = {} if jacobian is None else {"jacobian": jacobian}
+        sim = bngsim.Simulator(bngsim.Model.from_net(net), method="ode", **kwargs)
+        with pytest.raises(SimulationError, match=REFUSED):
+            sim.run(t_span=T_SPAN, n_points=N_POINTS, rtol=TOL, atol=TOL)
 
 
-def test_auto_falls_back_to_fd_and_integrates(data_dir: Path) -> None:
-    """The default config integrates the full horizon (the analytical attempt
-    fails internally and is retried with FD)."""
-    net = _net(data_dir)
-    _require_fd_reference(net)
-    sim = bngsim.Simulator(bngsim.Model.from_net(net), method="ode")
-    result = sim.run(t_span=T_SPAN, n_points=N_POINTS, rtol=TOL, atol=TOL)
-    assert result.n_times == N_POINTS
-    # The fallback is observable post-hoc.
+def test_the_refusal_is_not_retried(data_dir: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """The refusal is not a CVODE failure, so ``auto`` does not retry it on FD:
+    a retry could return what the refusal withholds. The simulator is left on
+    its own strategy, and nothing is logged as a fallback."""
+    sim = bngsim.Simulator(bngsim.Model.from_net(_net(data_dir)), method="ode")
+    with (
+        caplog.at_level("WARNING", logger="bngsim"),
+        pytest.raises(SimulationError, match=REFUSED),
+    ):
+        sim.run(t_span=T_SPAN, n_points=N_POINTS, rtol=TOL, atol=TOL)
+    assert sim._ode_jacobian_fell_back is False
+    assert not [r for r in caplog.records if "GH#176 analytical Jacobian" in r.getMessage()]
+
+
+def test_auto_falls_back_to_fd_and_integrates() -> None:
+    """The default config integrates the full horizon where the analytical
+    attempt fails (it is retried with FD), and the run is the explicit FD one."""
+    sim = bngsim.Simulator(bngsim.Model.from_antimony_string(SINK), method="ode")
+    result = sim.run(**SINK_WINDOW)
+    assert result.n_times == SINK_WINDOW["n_points"]
     assert sim.jacobian_strategy == "fd"
-
-
-def test_auto_fallback_matches_explicit_fd(data_dir: Path) -> None:
-    """The auto (fallen-back) trajectory is identical to the explicit-FD one —
-    the retry simply selects the FD Jacobian, which is deterministic."""
-    net = _net(data_dir)
-    fd_obs = _require_fd_reference(net)
-    r_auto = bngsim.Simulator(bngsim.Model.from_net(net), method="ode").run(
-        t_span=T_SPAN, n_points=N_POINTS, rtol=TOL, atol=TOL
-    )
-    assert np.array_equal(np.asarray(r_auto.observables), fd_obs)
-
-
-def test_fd_reference_skips_rather_than_fails_when_fd_cannot_carry(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The guard's skip branch only ever fires on a host where FD gives up, i.e.
-    never on the host that ordinarily runs these tests — the same one-platform
-    blind spot lanl/bngsim#176 itself came from. So exercise it directly rather
-    than let a typo in it sleep until some future Linux run trips over it."""
-    monkeypatch.setattr(_THIS, "_run", lambda net, jacobian=None: ("raised", None))
-    with pytest.raises(pytest.skip.Exception) as excinfo:
-        _require_fd_reference("unused.net")
-    assert "does not carry this fixture" in str(excinfo.value)
-
-
-def test_fd_reference_returns_the_trajectory_when_fd_carries(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """And the other branch hands back the reference itself, so the callers that
-    compare against it are comparing against FD and not against ``None``."""
-    reference = np.arange(6.0).reshape(3, 2)
-    monkeypatch.setattr(_THIS, "_run", lambda net, jacobian=None: ("ok", reference))
-    assert _require_fd_reference("unused.net") is reference
+    fd = bngsim.Simulator(bngsim.Model.from_antimony_string(SINK), method="ode", jacobian="fd")
+    assert np.array_equal(np.asarray(result.species), np.asarray(fd.run(**SINK_WINDOW).species))
 
 
 def test_explicit_analytical_is_not_second_guessed(data_dir: Path) -> None:
     """An explicit ``jacobian="analytical"`` surfaces the failure rather than
-    silently falling back — the user asked for analytical."""
+    silently falling back — the user asked for analytical. On this fixture what
+    it surfaces is the refusal (issue #1548), which comes first; #867's model has
+    it surface the Jacobian's own failure."""
     m = bngsim.Model.from_net(_net(data_dir))
     sim = bngsim.Simulator(m, method="ode", jacobian="analytical")
-    with pytest.raises(SimulationError):
+    with pytest.raises(SimulationError, match=REFUSED):
         sim.run(t_span=T_SPAN, n_points=N_POINTS, rtol=TOL, atol=TOL)
+    sink = bngsim.Simulator(
+        bngsim.Model.from_antimony_string(SINK), method="ode", jacobian="analytical"
+    )
+    with pytest.raises(SimulationError, match="CVODE integration failed.*Jacobian"):
+        sink.run(**SINK_WINDOW)
 
 
-def test_repeated_runs_skip_the_doomed_attempt(
-    data_dir: Path, caplog: pytest.LogCaptureFixture
-) -> None:
+def test_repeated_runs_skip_the_doomed_attempt(caplog: pytest.LogCaptureFixture) -> None:
     """Once the analytical attempt has failed on a Simulator, subsequent runs go
     straight to FD (memoized): only the first run pays for (and logs) a failed
     analytical attempt."""
-    _require_fd_reference(_net(data_dir))
-    m = bngsim.Model.from_net(_net(data_dir))
-    sim = bngsim.Simulator(m, method="ode")
+    sim = bngsim.Simulator(bngsim.Model.from_antimony_string(SINK), method="ode")
     with caplog.at_level("WARNING", logger="bngsim"):
-        first = sim.run(t_span=T_SPAN, n_points=N_POINTS, rtol=TOL, atol=TOL)
+        first = sim.run(**SINK_WINDOW)
         assert sim._ode_jacobian_fell_back is True
-        second = sim.run(t_span=T_SPAN, n_points=N_POINTS, rtol=TOL, atol=TOL)
-    assert second.n_times == first.n_times == N_POINTS
+        second = sim.run(**SINK_WINDOW)
+    assert second.n_times == first.n_times == SINK_WINDOW["n_points"]
     # The fallback warning is logged exactly once — the second run did not retry.
     fallbacks = [r for r in caplog.records if "GH#176 analytical Jacobian" in r.getMessage()]
     assert len(fallbacks) == 1
@@ -220,32 +180,33 @@ def _compiled(net: str, **kwargs) -> bngsim.Simulator:
     return sim
 
 
-def _require_compiled_fd_reference(net: str) -> np.ndarray:
-    try:
-        result = _compiled(net, jacobian="fd").run(
-            t_span=T_SPAN, n_points=N_POINTS, rtol=TOL, atol=TOL
-        )
-    except SimulationError:
-        pytest.skip(
-            "the finite-difference Jacobian does not carry this fixture on this "
-            "build, so there is no rescue to assert — see the module docstring"
-        )
-    return np.asarray(result.observables)
+@pytest.mark.parametrize(
+    "kwargs", [{}, {"codegen": True}], ids=["auto-compiled", "explicit-codegen"]
+)
+def test_a_compiled_rhs_falls_back_to_fd(monkeypatch: pytest.MonkeyPatch, kwargs: dict) -> None:
+    monkeypatch.setenv("BNGSIM_CODEGEN_THRESHOLD", "1")
+    fd = bngsim.Simulator(
+        bngsim.Model.from_antimony_string(SINK), method="ode", jacobian="fd", **kwargs
+    )
+    assert fd.codegen_backend in ("cc", "mir")
+    fd_species = np.asarray(fd.run(**SINK_WINDOW).species)
+    sim = bngsim.Simulator(bngsim.Model.from_antimony_string(SINK), method="ode", **kwargs)
+    assert sim.codegen_backend in ("cc", "mir")
+    result = sim.run(**SINK_WINDOW)
+    assert sim.jacobian_strategy == "fd"
+    assert np.array_equal(np.asarray(result.species), fd_species)
 
 
 @pytest.mark.parametrize(
     "kwargs", [{}, {"codegen": True}], ids=["auto-compiled", "explicit-codegen"]
 )
-def test_a_compiled_rhs_falls_back_to_fd(
+def test_a_compiled_rhs_refuses_the_parked_fixture(
     data_dir: Path, monkeypatch: pytest.MonkeyPatch, kwargs: dict
 ) -> None:
     monkeypatch.setenv("BNGSIM_CODEGEN_THRESHOLD", "1")
-    net = _net(data_dir)
-    fd_obs = _require_compiled_fd_reference(net)
-    sim = _compiled(net, **kwargs)
-    result = sim.run(t_span=T_SPAN, n_points=N_POINTS, rtol=TOL, atol=TOL)
-    assert sim.jacobian_strategy == "fd"
-    assert np.array_equal(np.asarray(result.observables), fd_obs)
+    sim = _compiled(_net(data_dir), **kwargs)
+    with pytest.raises(SimulationError, match=REFUSED):
+        sim.run(t_span=T_SPAN, n_points=N_POINTS, rtol=TOL, atol=TOL)
 
 
 def test_a_compiled_explicit_analytical_is_not_second_guessed(
@@ -253,7 +214,7 @@ def test_a_compiled_explicit_analytical_is_not_second_guessed(
 ) -> None:
     monkeypatch.setenv("BNGSIM_CODEGEN_THRESHOLD", "1")
     sim = _compiled(_net(data_dir), codegen=True, jacobian="analytical")
-    with pytest.raises(SimulationError):
+    with pytest.raises(SimulationError, match=REFUSED):
         sim.run(t_span=T_SPAN, n_points=N_POINTS, rtol=TOL, atol=TOL)
 
 
