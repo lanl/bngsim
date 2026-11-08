@@ -328,3 +328,88 @@ def test_amici_run_runs_amici_through_the_instants(monkeypatch):
     (res,) = out
     assert res["status"] == "pass"
     assert res["comment"].endswith("; AMICI through 2 event instants")
+
+
+# --------------------------------------------------------------------------- #
+# The sensitivity job runs AMICI through the instants too (issue #1571)
+# --------------------------------------------------------------------------- #
+def _amici_sens(tmp_path, sbml: str, **kw):
+    # A compiled AMICI model reads amici.sim.sundials at import; the runner's
+    # warmup imports it before any model loads.
+    pytest.importorskip("amici.sim.sundials")
+    import _amici_sens as asens
+
+    xml = tmp_path / "m.xml"
+    xml.write_text(sbml)
+    ids, built = asens.amici_free_parameter_ids(str(xml))
+    return asens.amici_sens(built, *_GRID, 1e-9, 1e-12, ids[:1], "staggered", sbml=sbml, **kw)
+
+
+def test_amicis_sensitivity_run_fires_them_through_the_instants(tmp_path):
+    """Without the instants AMICI's sensitivity run misses the equalities as its
+    ODE run does (816, 817 and 928 read DIFF in the sensitivity job, state DIFF
+    included); through them it fires each one and reports the job grid, its
+    sensitivities included."""
+    plain = _amici_sens(tmp_path, _TIME_SBML)
+    assert np.all(plain[1] == 0.0) and plain[4]["event_instants"] == 0
+    t, x, sx, names, timing = _amici_sens(tmp_path, _TIME_SBML, through_event_instants=True)
+    np.testing.assert_array_equal(t, np.linspace(*_GRID))
+    assert x.shape[0] == sx.shape[0] == len(t)
+    names = ac.normalize_amici_names(list(names))
+    for name, at in (("A", 0.33), ("B", 0.53), ("D", 0.63), ("E", 0.733333333333333)):
+        col = x[:, names.index(name)]
+        assert np.all(col[t < at] == 0.0) and np.all(col[t > at] == 1.0), name
+    assert timing["event_instants"] == 5
+
+
+def test_the_sens_worker_runs_amici_through_the_instants(monkeypatch, tmp_path):
+    """The sensitivity sweep asks for them and says so in the row, as amici_run
+    does. Both engines are stand-ins, so this runs without AMICI."""
+    import amici_sens_run as asr
+
+    grid = np.linspace(*_GRID)
+    x = np.column_stack([np.exp(-grid), 1.0 - np.exp(-grid)])
+    run = (grid, x, x[:, :, None] * 0.5, ["S", "R"])
+    seen = {}
+
+    def fake_amici_sens(*a, **kw):
+        seen.update(kw)
+        return (*run, {"integrate_sec": 0.01, "event_instants": 2, "strict_onset_samples": []})
+
+    xml = tmp_path / "m.xml"
+    xml.write_text(_TIME_SBML)
+    monkeypatch.setattr(asr.asens, "measure_warmup", lambda include_amici=True: {})
+    monkeypatch.setattr(asr.asens, "set_amici_quiet", lambda: None)
+    monkeypatch.setattr(asr.asens, "amici_free_parameter_ids", lambda xml: (["p"], "built"))
+    monkeypatch.setattr(
+        asr.asens, "shared_sensitivity_params", lambda *a, **k: (["p"], {"p": "p"}, 1)
+    )
+    monkeypatch.setattr(asr.asens, "amici_sens", fake_amici_sens)
+    monkeypatch.setattr(asr.asens, "bn_sens", lambda *a, **k: (*run, {}))
+    spec = {
+        "key": "M:sens:staggered",
+        "model_id": "M",
+        "method": "sens/staggered",
+        "sens_method": "staggered",
+        "metric": "max_rel_err",
+        "tol": 1e-4,
+        "xml": str(xml),
+        "params": {"t_start": 0.0, "t_end": 1.0, "n_points": 11, "rtol": 1e-9, "atol": 1e-12},
+        "param_cap": 20,
+        "param_budget": 20_000,
+        "max_steps": 10_000,
+        "config_env": {},
+    }
+    out: list[dict] = []
+
+    class _Queue:
+        put = staticmethod(out.append)
+
+    asr._worker(spec, _Queue())
+    assert seen["through_event_instants"] is True
+    (res,) = out
+    assert res["status"] == "pass"
+    assert res["comment"].endswith("; AMICI through 2 event instants")
+    # A recorded entry says how AMICI was run, so a replay of one made without
+    # the instants is refused.
+    assert asr.archive_identity(spec)["through_event_instants"] is True

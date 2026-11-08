@@ -680,6 +680,42 @@ def onset_rows(grid, onsets, *pairs) -> list[int]:
     return [i for i, t in enumerate(grid) if float(t) in on and not one_sided[i]]
 
 
+def output_times(model, sbml_str: str, ts, *, through_event_instants: bool):
+    """``(run_ts, onsets)`` for one AMICI run over the job grid ``ts``.
+
+    ``run_ts`` are the output times AMICI is given: ``ts`` itself, or with
+    ``through_event_instants`` the grid with the instants
+    ``_rr_common.event_instants`` finds (:func:`with_event_instants`; see
+    :func:`amici_ode` for why, issue #1542). ``onsets`` are the grid's samples on
+    a strict onset (:func:`grid_onset_samples`, issue #1557). Both are valued as
+    AMICI values the built ``model``. Shared by the ODE run and the sensitivity
+    run (issue #1571), so the two give AMICI the same output times and leave out
+    the same samples. :func:`job_rows` takes the grid's rows back out.
+    """
+    ts = np.asarray(ts, dtype=float)
+    value_of, literal_of = amici_value_of(model, sbml_str), amici_literal_of(sbml_str)
+    run_ts = ts
+    if through_event_instants:
+        t0, t1 = float(ts[0]), float(ts[-1])
+        added = with_event_instants(ts, _rc.event_instants(sbml_str, t0, t1, value_of, literal_of))
+        if len(added) != len(ts):
+            run_ts = added
+    onsets = grid_onset_samples(model, sbml_str, ts, value_of=value_of, literal_of=literal_of)
+    return run_ts, onsets
+
+
+def job_rows(run_ts, ts):
+    """The rows of AMICI's output for the job grid ``ts`` out of its output times
+    ``run_ts``, or None where they are the grid itself. Raises if the grid is not
+    among them, rather than compare the wrong rows."""
+    if len(run_ts) == len(ts):
+        return None
+    rows = np.searchsorted(run_ts, ts)
+    if rows.max() >= len(run_ts) or not np.array_equal(run_ts[rows], ts):
+        raise RuntimeError("AMICI's output times do not contain the job grid")
+    return rows
+
+
 # How the part of a row's comment that names the unjudged onset samples begins.
 # Public because the ODE matrix reads it to say in plain English what was not
 # judged, and both runners write it.
@@ -783,15 +819,10 @@ def amici_ode(
     # rtol/atol tighten. 21 of the 1323 corpus models have t_start != 0.
     model.set_t0(t_start)
     ts = np.linspace(t_start, t_end, n_points)
-    run_ts = ts
-    value_of, literal_of = amici_value_of(model, sbml_str), amici_literal_of(sbml_str)
-    if through_event_instants:
-        instants = _rc.event_instants(sbml_str, t_start, t_end, value_of, literal_of)
-        run_ts = with_event_instants(ts, instants)
-    on_onsets = grid_onset_samples(model, sbml_str, ts, value_of=value_of, literal_of=literal_of)
+    run_ts, on_onsets = output_times(
+        model, sbml_str, ts, through_event_instants=through_event_instants
+    )
     n_added = len(run_ts) - len(ts)
-    if not n_added:
-        run_ts = ts
     model.set_timepoints(run_ts)
 
     # 4. Integration (cold + warm), the shared recipe. AMICI's simulate() is
@@ -877,10 +908,8 @@ def amici_ode(
 
     names = list(rdata.state_ids)
     x = np.asarray(rdata.x, dtype=float)
-    if n_added:
-        rows = np.searchsorted(run_ts, ts)
-        if rows.max() >= len(run_ts) or not np.array_equal(run_ts[rows], ts):
-            raise RuntimeError("AMICI's output times do not contain the job grid")
+    rows = job_rows(run_ts, ts)
+    if rows is not None:
         x = x[rows]
     return np.asarray(ts, dtype=float), x, names, timing
 

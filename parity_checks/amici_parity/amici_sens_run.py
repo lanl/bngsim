@@ -136,7 +136,9 @@ DEFAULT_RTOL = asens.DEFAULT_RTOL
 DEFAULT_ATOL = asens.DEFAULT_ATOL
 
 
-def _compare(bn, am, param_values=None, atol=None, param_ids=None, onsets=()) -> dict:
+def _compare(
+    bn, am, param_values=None, atol=None, param_ids=None, onsets=(), n_instants: int = 0
+) -> dict:
     """Compare one (state, sensitivity) pair. Returns a result-fragment dict.
 
     ``bn``/``am`` are ``(t, x, sx, species_names)``. The parameter axis needs no
@@ -164,22 +166,27 @@ def _compare(bn, am, param_values=None, atol=None, param_ids=None, onsets=()) ->
     gives a DIFF and the judged ones do not. A row with a cell finite on one
     side only is judged anyway. With no onsets the comparison is the one it
     always was.
+
+    ``n_instants``, the output times AMICI was given at its event instants
+    (issue #1571, as #1542 for the ODE job), is named in the comment ('AMICI
+    through N event instants').
     """
     bn_t, bn_x, bn_sx, bn_names = bn
     am_t, am_x, am_sx, am_names = am
+    instants = f"; AMICI through {n_instants} event instants" if n_instants else ""
 
     if bn_t.shape != am_t.shape or not np.allclose(bn_t, am_t, rtol=0, atol=1e-9):
         return {
             "status": "diff",
             "value": float("inf"),
-            "comment": f"time grid mismatch (bn n={bn_t.shape}, amici n={am_t.shape})",
+            "comment": f"time grid mismatch (bn n={bn_t.shape}, amici n={am_t.shape}){instants}",
         }
     align = asens.align_common(bn_names, am_names)
     if align is None:
         return {
             "status": "diff",
             "value": float("inf"),
-            "comment": f"disjoint species sets: bn={bn_names[:4]} amici={am_names[:4]}",
+            "comment": f"disjoint species sets: bn={bn_names[:4]} amici={am_names[:4]}{instants}",
         }
     bn_idx, am_idx, common = align
     x_pair = (bn_x[:, bn_idx], am_x[:, am_idx])
@@ -188,10 +195,13 @@ def _compare(bn, am, param_values=None, atol=None, param_ids=None, onsets=()) ->
 
     rows = asens.onset_rows(am_t, onsets, x_pair, sx_pair)
     if not rows:
-        return _judge(*x_pair, *sx_pair, **judge)
+        out = _judge(*x_pair, *sx_pair, **judge)
+        out["comment"] += instants
+        return out
     keep = np.ones(len(am_t), dtype=bool)
     keep[rows] = False
     out = _judge(*(a[keep] for a in (*x_pair, *sx_pair)), **judge)
+    out["comment"] += instants
 
     # The audit, over every sample. `whole` is the row as it was before #1571.
     whole = _judge(*x_pair, *sx_pair, **judge)
@@ -552,8 +562,9 @@ _is_declared_refusal = asens.is_declared_refusal
 # 2: the file name carries a hash of the key, so two keys that sanitize alike
 # no longer share a file.
 # 3: AMICI's run starts at the SED-ML initial_time, ``t_int`` in the identity
-# where ``t_start`` was (issue #1564), and its timing records the samples on a
-# strict onset, which a replay leaves unjudged as a live run does (#1571).
+# where ``t_start`` was (issue #1564); it runs through its event instants; and
+# its timing records the samples on a strict onset, which a replay leaves
+# unjudged as a live run does (#1571).
 ARCHIVE_FORMAT = 3
 
 
@@ -578,6 +589,8 @@ def archive_identity(spec: dict) -> dict:
         "rtol": float(p["rtol"]),
         "atol": float(p["atol"]),
         "max_steps": int(spec.get("max_steps", asens.DEFAULT_SENS_MAX_STEPS)),
+        # AMICI's run is given output times at its event instants (issue #1571).
+        "through_event_instants": True,
         "param_cap": int(spec["param_cap"]),
         "param_budget": int(spec["param_budget"]),
     }
@@ -875,6 +888,7 @@ def _worker(spec: dict, q) -> None:
                 method,
                 max_steps=max_steps,
                 sbml=_src,
+                through_event_instants=True,
             )
             am_wall += time.perf_counter() - t0
             am, am_timing = out[:4], out[4]
@@ -927,6 +941,7 @@ def _worker(spec: dict, q) -> None:
                 atol=p["atol"],
                 param_ids=shared_ids,
                 onsets=onsets,
+                n_instants=(am_timing or {}).get("event_instants", 0),
             )
         )
     except Exception as exc:
