@@ -491,11 +491,17 @@ def diff(
     archive, as when a replay follows the weekly live night (issue #1599). The
     archive cannot stand in for every row the live run judged. A row that
     tonight is such an archive gap, and that the committed baseline records as
-    the same verdict and the same kind of gap, was reviewed when it was
-    recorded. It is reported, not alerted, and listed under ``changed`` with
-    its reason, since the row was still not compared tonight. A gap between two
-    replays, or two live nights, still alerts, and so does one the committed
-    baseline does not record.
+    the same verdict, is in the state the baseline was reviewed in. It is
+    reported, not alerted, and listed under ``changed`` with its reason, since
+    the row was still not compared tonight. As in the committed-baseline diff,
+    the baseline's note is not compared: a row it holds as another refusal, or
+    as the other kind of gap, was not compared there either, and a new archive
+    that rewrites the note would otherwise alert after every live night. Nor
+    can the rule see why the replay needed what the archive lacks: ssa_screen
+    walks the ladder rungs bngsim's own ensemble leads it to, so a gap can stand
+    for bngsim slowing down between the two nights, as a timeout flip can. A
+    gap between two replays, or two live nights, still alerts, and so does one
+    whose verdict the committed baseline does not record.
     """
     flaky = flaky or {}
     rebaselined = rebaselined or {}
@@ -533,10 +539,9 @@ def diff(
             soft = "re-baselined since that night"
         elif (
             after_live
-            and (gap := _archive_gap(fr)) is not None
+            and _archive_gap(fr) is not None
             and cid in committed
             and _verdict(committed[cid]) == _verdict(fr)
-            and _archive_gap(committed[cid]) == gap
         ):
             soft = "archive gap after a live night, as the committed baseline records"
         elif timeout_flips_info and "TIMEOUT" in (bo, fo) and bo != fo:
@@ -912,7 +917,7 @@ def render_md(result: dict, label: str = "", limit: int = 40) -> str:
         ]
     for name, title in (
         ("improved", "Improved (failing before, good now) — re-baseline to lock these in"),
-        ("changed", "Changed between failing states"),
+        ("changed", "Changed, not alerted (between failing states, or for the [reason] given)"),
         ("new", "New cases (not in baseline)"),
         ("dropped", "Failing cases no longer in the run"),
     ):
@@ -1145,7 +1150,7 @@ def main(argv=None) -> int:
         default="",
         help="the committed baseline now; also, where the --baseline night ran live "
         "and --fresh replayed the reference archive, a row the archive could not "
-        "replay is reported, not alerted, if this records the same gap (issue #1599)",
+        "replay is reported, not alerted, if this records the same verdict (issue #1599)",
     )
     d.add_argument(
         "--allow-missing-baseline",

@@ -13,9 +13,9 @@
 #      regresses before anyone re-baselined it. A row the committed baseline
 #      re-recorded since that night's commit, which tonight matches, is reported there
 #      and not alerted: it was reviewed when it was recorded. So is a row the
-#      reference archive cannot replay, after a night that ran live, where the
-#      committed baseline records that gap (issue #1599; verdicts.py reads which
-#      side each night ran from the two files).
+#      reference archive cannot replay, after a night that ran live, which the
+#      committed baseline records as the same verdict (issue #1599; verdicts.py
+#      reads which side each night ran from the two files).
 #
 # Both Markdown reports go to $GITHUB_STEP_SUMMARY. Exit 1 on any alert or on a
 # missing report; a missing baseline is an alert unless ALLOW_MISSING_BASELINE is set

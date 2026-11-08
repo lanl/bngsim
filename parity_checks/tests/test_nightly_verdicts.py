@@ -308,12 +308,10 @@ def test_an_archive_gap_between_two_replays_still_alerts():
         rec("PASS"),  # the baseline never recorded the gap
         None,  # nor the row
         refused(UNREPLAYABLE, "BAD_TEST"),  # another verdict, the same note
-        refused("roadrunner (archive): RuntimeError: CVODE failed"),  # a replayed failure
-        refused(NO_ENTRY),  # another gap than tonight's
     ],
-    ids=["pass", "missing", "other-verdict", "not-a-gap", "other-gap"],
+    ids=["pass", "missing", "other-verdict"],
 )
-def test_a_gap_the_committed_baseline_does_not_record_still_alerts(committed_row):
+def test_a_gap_whose_verdict_the_committed_baseline_does_not_record_still_alerts(committed_row):
     cases = {k: v for k, v in REPLAYED.items() if k != GAP_ROW}
     if committed_row is not None:
         cases[GAP_ROW] = committed_row
@@ -322,6 +320,28 @@ def test_a_gap_the_committed_baseline_does_not_record_still_alerts(committed_row
     # ... and against the committed baseline itself nothing changes.
     if committed_row is not None and committed_row["outcome"] == "PASS":
         assert V.diff(night(ARCHIVE, cases), MONDAY)["alerts"]["regressed"] == 1
+
+
+@pytest.mark.parametrize(
+    "committed_row",
+    [
+        refused("roadrunner (archive): RuntimeError: CVODE failed"),  # a replayed failure
+        refused(NO_ENTRY),  # the other kind of gap
+        refused(UNREPLAYABLE.replace("t=0→100", "t=0→10")),  # another rung
+    ],
+    ids=["replayed-failure", "other-gap", "other-rung"],
+)
+def test_the_baseline_s_note_is_not_compared_only_its_verdict(committed_row):
+    # As against the committed baseline, where tonight's row is silent: it was not
+    # compared there either, and a new archive that rewrote the note would
+    # otherwise alert after every live night until someone re-baselined.
+    committed = night(ARCHIVE, {**REPLAYED, GAP_ROW: committed_row})
+    r = V.diff(SUNDAY, MONDAY, baseline_now=committed)
+    assert r["n_alerts"] == 0
+    assert (
+        "archive gap after a live night" in {x["case"]: x for x in r["changed"]}[GAP_ROW]["note"]
+    )
+    assert V.diff(committed, MONDAY)["n_alerts"] == 0
 
 
 @pytest.mark.parametrize(
