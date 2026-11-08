@@ -8033,7 +8033,9 @@ class Simulator:
             # that is the hand bisection this replaces. Past a screenful it stops
             # being that and starts being a wall, so say it the short way instead.
             advice = (
-                f" Re-run with params={computable!r} for the remaining "
+                ""
+                if refused and not computable
+                else f" Re-run with params={computable!r} for the remaining "
                 f"{len(computable)} column(s){loosen}."
                 if len(computable) <= 40
                 else (

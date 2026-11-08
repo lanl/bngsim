@@ -14924,7 +14924,9 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                     << " after more event fires than are kept to ask it about, within the "
                        "window where the order of the two is confirmed (issues #945, #1025). "
                        "Drop sensitivities for this run.";
-                throw SensitivityRefusedForParameters(msg.str());
+                // Reached whatever columns are asked: the kept fires and their
+                // windows are the trajectory's, as the mirror cap's switches are.
+                throw SensitivityUnsupported(msg.str());
             }
             const bool reads_time = std::find(crossing_reads.begin(), crossing_reads.end(),
                                               kReadsTime) != crossing_reads.end();

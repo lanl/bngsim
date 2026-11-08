@@ -95,6 +95,7 @@ def test_compute_all_sensitivities_raises_the_refusal_without_retrying_columns(m
 TYPED = {
     "tangentially at t=": "#144, a trigger met tangentially",
     "after more state-dependent rate-law switches than": "#945/#1025, crossings over the cap",
+    "after more event fires than are kept": "#945/#1025, fires over the cap (issue #1435)",
     "it resizes a compartment after an earlier event": "#936",
     "the state is held on the surface of a state-dependent": "#926",
     "and a probe step of": "#763, a probe step past a crossing",
@@ -294,6 +295,16 @@ def test_a_column_that_fails_alone_otherwise_reports_the_failure_it_was(monkeypa
     assert "or loosen rtol/atol" in str(failed.value)
 
 
+def test_every_column_refused_alone_leaves_no_re_run_to_advise(monkeypatch):
+    sim = _scripted(
+        monkeypatch,
+        {("k1", "k2"): _refused("the pair"), ("k1",): _refused("k1"), ("k2",): _refused("k2")},
+    )
+    with pytest.raises(bngsim.SensitivityRefusedForParametersError) as refused:
+        _all(sim)
+    assert str(refused.value).endswith("Column(s) ['k1', 'k2'] are refused on their own.")
+
+
 def test_columns_refused_alone_are_a_refusal_whatever_failed_the_chunk(monkeypatch):
     """The report is about the columns alone: a pair that failed as a solver
     failure, then one column refused alone and the other run, is a refusal."""
@@ -341,13 +352,9 @@ UNTYPED = {"' was found triggered at t=": "GH #205/#910, a fire found and not lo
 
 # Throws of SensitivityRefusedForParameters: one per message below but #951's
 # two, kept as a reason and thrown at one place. The type says a smaller set of
-# columns may run, so the per-column retry is worth its cost, not that one does
-# at every site. A refusal #1577 found reached whatever columns are asked is in
-# TYPED; the rest are this one, as their cost if they are not is only that
-# retry. So the mirror of TYPED's "after more state-dependent rate-law switches
-# than", a switch "after more event fires than are kept", is this type: #1577
-# left it untyped, and no test reaches either cap.
-REFUSED_FOR_PARAMETERS = 29
+# columns may run, so the per-column retry is worth its cost; a refusal reached
+# whatever columns are asked is in TYPED, raised at once.
+REFUSED_FOR_PARAMETERS = 28
 
 _KEPT = re.compile(r"(\w+) = msg\.str\(\);")
 
