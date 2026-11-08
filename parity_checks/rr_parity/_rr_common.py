@@ -26,6 +26,7 @@ overrun. One bad model never takes down the screen.
 
 from __future__ import annotations
 
+import bisect
 import contextlib
 import multiprocessing as mp
 import queue as _queue
@@ -905,64 +906,51 @@ def _cvode_refuses_step(t0: float, tout: float) -> bool:
     return abs(tout - t0) < 2.0 * np.finfo(float).eps * max(abs(t0), abs(tout))
 
 
-def rr_output_times(grid: np.ndarray, instants, held=frozenset()) -> tuple[list[float], list[int]]:
+def _first_step_from(t0: float, t: float) -> float:
+    """The first time at or after ``t`` that CVODE will start a step to from
+    ``t0``: ``t`` itself, or a few ulps past it (:func:`_cvode_refuses_step`)."""
+    while _cvode_refuses_step(t0, t):
+        t = float(np.nextafter(t, np.inf))
+    return t
+
+
+def rr_output_times(grid: np.ndarray, instants) -> tuple[list[float], list[int]]:
     """RoadRunner's output times for a run through ``instants``, and the index
     of each grid time's row among them.
 
     The grid plus the instants, as a set, except where an instant falls so
     shortly before a grid time that CVODE refuses the step between them
-    (:func:`_cvode_refuses_step`): given both, RoadRunner fires the event at
-    the instant and then cannot start the step on, so the run fails; `time ==
-    0.3` beside the grid's 0.30000000000000004 did. There the instant takes the
-    grid time's place, which changes nothing a run main completed, and its row
-    holds the state just after the event, what an engine reports at the grid
-    time. An instant after a grid time is kept beside it.
+    (:func:`_cvode_refuses_step`). Given both, RoadRunner fires the event at the
+    instant and then cannot start the step on, so the run fails; `time == 0.3`
+    beside the grid's 0.30000000000000004 did (#1558). There the grid time moves
+    on to the first time CVODE will step to, a few ulps later, and its row is
+    reported as the grid time. An instant never moves: RoadRunner fires `time ==
+    c` only on an output time at c. Either way the row holds the state after the
+    event, as an engine reports it at the grid time: `==` fires at the instant,
+    and `!=`, false there, fires at the moved grid time.
 
-    Two kinds of instant never take a grid time's place, and the run fails as
-    before rather than give a wrong row:
-
-    * one in ``held`` (:func:`_neq_instants`): a `!=` is false at its instant
-      and fires just after it, so in the grid time's place its row would hold
-      the state before an event the grid time comes after;
-    * one before a grid time that is an instant itself: the event there would
-      go unseen.
+    A grid time moves only past no instant, so its row holds no event the grid
+    time comes before. One it cannot move is left where it is, and the run fails
+    as before rather than give a wrong row: a grid time that is itself an
+    instant, or one whose move would reach the next instant or grid time. Both
+    come from two times that must each be exact closer together than CVODE will
+    step after an event, which no choice of output times can run.
     """
+    instants = sorted(set(instants))
     times = [float(g) for g in grid]
-    instants = set(instants)
-    added: list[float] = []
-    for t in sorted(instants):
-        i = int(np.searchsorted(grid, t))
-        if i < len(grid) and grid[i] == t:
-            continue  # already a grid time
-        if (
-            i < len(grid)
-            and t not in held
-            and times[i] == grid[i]
-            and times[i] not in instants
-            and _cvode_refuses_step(t, times[i])
-        ):
-            times[i] = t
+    for k, g in enumerate(times):
+        j = bisect.bisect_left(instants, g)  # instants[j - 1] < g <= instants[j]
+        if j == 0 or not _cvode_refuses_step(instants[j - 1], g):
             continue
-        added.append(t)
-    out = sorted(times + added)
+        after = [instants[j]] if j < len(instants) else []
+        if k + 1 < len(times):
+            after.append(times[k + 1])
+        moved = _first_step_from(instants[j - 1], g)
+        if all(moved < t for t in after):
+            times[k] = moved
+    out = sorted(set(times).union(instants))
     position = {x: k for k, x in enumerate(out)}
     return out, [position[x] for x in times]
-
-
-def _neq_instants(
-    sbml: str, t_start: float, t_end: float, value_of=None, literal_of=None
-) -> set[float]:
-    """The instants :func:`event_instants` gives for the ``!=`` comparisons of
-    the clock in the event triggers: where each is false, its event firing just
-    after. Read as it reads them, so each is one of its instants exactly."""
-    import libsbml
-
-    out: set[float] = set()
-    for ty, left, right in _trigger_comparisons(sbml, value_of, literal_of):
-        if ty == libsbml.AST_RELATIONAL_NEQ:
-            levels, _wraps = _atom_instants(left, right, t_start, t_end)
-            out.update(float(t) for t in levels if np.isfinite(t) and t_start < t <= t_end)
-    return out
 
 
 def event_instants(
@@ -1162,7 +1150,6 @@ def rr_ode(
         load = {}
 
     instants: list[float] = []
-    held: set[float] = set()
     if through_event_instants:
 
         def _value(i):
@@ -1172,10 +1159,8 @@ def rr_ode(
                 return None
 
         instants = event_instants(xml_string, t_start, t_end, _value)
-        if instants:
-            held = _neq_instants(xml_string, t_start, t_end, _value)
     grid = np.linspace(t_start, t_end, n_points) if instants else None
-    times, grid_rows = rr_output_times(grid, instants, held) if instants else (None, None)
+    times, grid_rows = rr_output_times(grid, instants) if instants else (None, None)
 
     def _simulate():
         if times is None:
@@ -1244,14 +1229,13 @@ def rr_ode(
     names = _rr_colnames(res)
     arr = np.asarray(res)
     if times is not None:
-        # By index: a grid time an instant took the place of is not in the run.
-        # That row's time is the instant, a few ulps off, so it is held to the
-        # grid in ulps rather than by a fixed tolerance, and reported as the grid
-        # time: past t = 2e6 a few ulps are more than 1e-9.
-        rows = np.asarray(grid_rows)
-        off = np.abs(arr[rows, 0] - grid) if len(arr) == len(times) else None
-        if off is None or not np.all((off <= 1e-9) | (off <= 4 * np.abs(np.spacing(grid)))):
+        # By index: a grid time rr_output_times moved is not in the run. Each row
+        # is held to the time RoadRunner was asked for, and the grid rows are
+        # reported at the grid times (a moved one ran to a few ulps later).
+        off = np.abs(arr[:, 0] - times) if len(arr) == len(times) else None
+        if off is None or not np.all((off <= 1e-9) | (off <= 4 * np.spacing(np.abs(times)))):
             raise RuntimeError("RoadRunner did not report every time of the job grid")
+        rows = np.asarray(grid_rows)
         arr = arr[rows]
         arr[:, 0] = grid
     return arr[:, 0].copy(), arr[:, 1:], names, timing
