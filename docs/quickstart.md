@@ -170,6 +170,8 @@ r3 = sim.run(t_span=(0, 100), n_points=101, seed=42)
 assert (r3.species == r1.species).all()  # exactly reproduces r1
 ```
 
-Two fresh `Simulator` instances with the same seed also reproduce —
-they just both start from the model's initial state, which is the
-same as calling `model.reset()` between runs.
+The state lives in the `Model`, not the `Simulator`: a second
+`Simulator` built on the same model also starts from where the last
+run ended. To run two trajectories from the model's initial state,
+call `model.reset()` between them, or give each its own
+`model.clone()`.
