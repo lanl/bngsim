@@ -544,7 +544,9 @@ def test_both_runners_place_and_leave_out_onsets_through_one_helper():
 def test_amici_sens_records_the_onset_samples_by_amicis_own_values(tmp_path):
     """The sensitivity run names the sample on 0.7, where AMICI places the
     initially assigned ``tc``, as ``amici_ode`` does; the SBML attribute says 0.3."""
-    pytest.importorskip("amici")
+    # The runner's warmup imports this before any model loads; a compiled AMICI
+    # model reads amici.sim.sundials at import and fails if nothing has.
+    pytest.importorskip("amici.sim.sundials")
     import _amici_sens as asens
 
     xml = tmp_path / "assigned.xml"
