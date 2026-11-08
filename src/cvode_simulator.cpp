@@ -4027,13 +4027,14 @@ struct CvodeSimulator::Impl {
                                     const std::vector<char> &written,
                                     const std::vector<const NetworkModel::StateSwitch *> &switches,
                                     RestWatch &watch);
-    // Issue #1548. Refuses a run whose state has come to rest, at the output t,
-    // on a state-switch surface it arrived at from off it, where the run's
+    // Issue #1548. Refuses a run whose state has come to rest, at t, on a
+    // state-switch surface it arrived at from off it, where the run's
     // tolerances cannot say which side it is on and the branches differ. See the
-    // definition. `t_prev` is the output before t (t itself at the first), and
-    // `evaluated` says the model's observables and functions were just
-    // evaluated at (t, x), with nothing since (no rateOf buffer, no assignment
-    // rule copied into x).
+    // definition. t is an output, the start, or a time the run stopped at in
+    // between (issue #1589). `t_prev` is the output before t (t itself at the
+    // start), and `evaluated` says the model's observables and functions were
+    // just evaluated at (t, x), with nothing since (no rateOf buffer, no
+    // assignment rule copied into x).
     void refuse_rest_on_state_switch(double t, double t_prev, double t_end, bool evaluated,
                                      const double *x, int ns,
                                      const std::vector<const NetworkModel::StateSwitch *> &switches,
@@ -11658,9 +11659,10 @@ void CvodeSimulator::Impl::refuse_slide_along_state_switch(
 // else here sees it: an exact 0.0 is no crossing, and a crossing inside the band
 // is stepped on (#897).
 //
-// So at each output, and at the start, each switch's residual is asked whether
+// So at the start, at each output, and where the run stops in between (below),
+// each switch's residual is asked whether
 //   - it has been off its surface by more than the band below at an earlier
-//     output. One that starts on its surface and stays there (a species at 0
+//     asking. One that starts on its surface and stays there (a species at 0
 //     that nothing makes) has its branch from the model, not from rounding, and
 //     so has one an event's assignment puts exactly on it (a species set to the
 //     0 its gate reads; note_event_on_state_switch);
@@ -11683,10 +11685,42 @@ void CvodeSimulator::Impl::refuse_slide_along_state_switch(
 //     surface resolves nothing: a state resting against it that rounding puts across is carried off
 //     the branch it arrived on;
 //   - the right-hand side jumps across the surface by enough to move some
-//     species by more than its own tolerance unit over that stretch.
+//     species by more than its own tolerance unit over that stretch. Where
+//     both sides carry the state onto the surface, the jump's part along
+//     ∂g/∂x takes it back onto it from either side and is not counted.
 // The stretch runs from the output before this one to the end: the state may
 // have come to rest anywhere since that output, and a run asked for t_end alone
 // is asked about the whole of it.
+//
+// Between outputs (issue #1589). Asked at outputs alone, a rest the run entered
+// and left between two of them was never seen. _pushed's A rests on thr from
+// t ~ 16 until rounding puts it across at t ~ 18, and from there c carries it
+// off on the wrong branch: refused on every grid with an output in that
+// stretch, the run returned W(60) = 86 for 180 on two outputs. So the run is
+// also asked where CVODE returns between outputs: after each batch of
+// kWatchSteps steps (a plain run is taken in such batches while it has a
+// switch to ask about, which changes no step), and at every root and stop,
+// before what is there is handled. A rest that ends in rounding's crossing
+// ends at a root, which CVODE locates on the surface, and one that an event
+// or a switch in time ends, at that event's root or stop. Asked after batches
+// alone, 5 of 384 pushed runs (k, c, rtol and the grid varied) still returned
+// the wrong branch, a rest between two batch ends; asked at roots too, none
+// did. Each asking judges the stretch from the output before it, as the next
+// output does.
+//
+// Asked that often, the flows read at one instant decide on every grid what
+// they decided before only on a grid with an output at that instant. A
+// threshold that dips to touch the state within its tolerance and rises off
+// it again (#903's `moving`) is refused wherever it touches: let through, a
+// latch carried V off on 151 outputs, 3.8e4 off its exact twin. So is one
+// that turns back toward the state and then sweeps across it, at the instant
+// the two move together (#908's clock sweep at rtol 1e-3), which the sweep
+// would have carried across. Read at one instant, the two are the same, and
+// telling them apart from earlier askings let `moving` through: they sample
+// its threshold, which moves faster than CVODE steps over a resting V, at
+// random phases. A slide whose flows decay to nothing was refused for the
+// jump in its own species, which only takes it back onto the surface, and
+// that part of the jump is no longer counted (read_jump).
 //
 // Each side is read on the surface itself: the state is put on it along ∂g/∂x,
 // f is read a little way out on that side at two distances, and the two are
@@ -11697,7 +11731,7 @@ void CvodeSimulator::Impl::refuse_slide_along_state_switch(
 // distance (nn_xor's signed-rate idiom, if(r>0,r,0) on every rate, read at one
 // scale as 1.9e-9 in dDopamine/dt across dY_dt's continuous surface).
 //
-// What it costs: the residual at each output; ∂g/∂x once in a stretch beside
+// What it costs: the residual at each asking; ∂g/∂x once in a stretch beside
 // its surface, the band and the flow at the state read from it and f there, and
 // read again where that flow says the state moves within the band; ∂g/∂x and
 // the jump at the start of a rest and each time the rest has doubled; and all
@@ -11844,14 +11878,36 @@ void CvodeSimulator::Impl::refuse_rest_on_state_switch(
         out = Jump{};
         out.flow_hi = watch.gt[k];
         out.flow_lo = watch.gt[k];
+        for (std::size_t i = 0; i < gx.size(); ++i) {
+            if (gx[i] != 0.0) {
+                out.flow_hi += gx[i] * hi[i];
+                out.flow_lo += gx[i] * lo[i];
+            }
+        }
+        // Where both sides carry the state onto the surface, the part of the
+        // jump along ∂g/∂x only takes the state back onto it from whichever
+        // side rounding left it: what the branch can move is the rest of the
+        // jump (issue #1589). A slide is carried in from both sides, and one
+        // whose flows decay to nothing, with the jump they make (#908's park and
+        // push, S' = ±e^(−10t)), was refused as at rest wherever an asking
+        // found them under the bar, for a jump in S that moves S by 2e-7 at
+        // most. A jump in what the residual does not read, or along the surface,
+        // is read as before.
+        double normal = 0.0;
+        double normal_coarse = 0.0;
+        if (out.flow_lo > 0.0 && out.flow_hi < 0.0) {
+            for (std::size_t i = 0; i < gx.size(); ++i) {
+                normal += gx[i] * (hi_fine[i] - lo_fine[i]);
+                normal_coarse += gx[i] * (hi[i] - lo[i]);
+            }
+            normal /= norm2;
+            normal_coarse /= norm2;
+        }
         for (int i = 0; i < ns; ++i) {
             const auto ui = static_cast<std::size_t>(i);
-            if (gx[ui] != 0.0) {
-                out.flow_hi += gx[ui] * hi[ui];
-                out.flow_lo += gx[ui] * lo[ui];
-            }
-            const double jump = hi_fine[ui] - lo_fine[ui];
-            if (!(std::fabs(jump - (hi[ui] - lo[ui])) <= 0.5 * std::fabs(jump))) {
+            const double jump = hi_fine[ui] - lo_fine[ui] - normal * gx[ui];
+            const double coarse = hi[ui] - lo[ui] - normal_coarse * gx[ui];
+            if (!(std::fabs(jump - coarse) <= 0.5 * std::fabs(jump))) {
                 continue; // not the same at both scales: no jump of its own
             }
             const double ratio = std::fabs(jump) / unit_of(i, x[i]);
@@ -16124,6 +16180,12 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             }
         }
     }
+    // Issue #1588: the surfaces a run is asked about for a state come to rest
+    // on one (issue #1548), the same set. A plain run of an SBML model hands
+    // the core its thresholds as watched conditions alone, and its state
+    // switches are empty, so asked of those it was never asked at all, while a
+    // sensitivity run of the same model, which roots them, was refused.
+    const std::vector<const NetworkModel::StateSwitch *> &rest_switches = stall_switches;
     // Issue #908: residuals held off the root search while their crossings are
     // a slide's (StateSwitchHold). Only a run without sensitivities holds one.
     // BNGSIM_STATE_SWITCH_HOLD=0 holds none, which steps every root as before
@@ -16344,7 +16406,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             rescales.emplace_back(
                 a, base * eval_ref_outer.evaluate(ev.assignment_rescale_size_expr[a]));
         }
-        if (!state_switches.empty()) {
+        if (!rest_switches.empty()) {
             state_switch_rest_written.resize(static_cast<std::size_t>(ns), 0);
             for (const auto &asg : assigns) {
                 if (asg.first >= 0 && asg.first < ns) {
@@ -17394,7 +17456,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         // exactly on its surface has its branch from the model there.
         if (!state_switch_rest_written.empty()) {
             impl_->note_event_on_state_switch(t_now, y_data, ns, state_switch_rest_written,
-                                              state_switches, state_switch_rest);
+                                              rest_switches, state_switch_rest);
             state_switch_rest_written.clear();
         }
 
@@ -17957,11 +18019,16 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     }
 
     // Issue #1548: where each switch's residual starts, off its surface or on it.
-    if (!state_switches.empty()) {
+    if (!rest_switches.empty()) {
         impl_->refuse_rest_on_state_switch(times.t_start, times.t_start, t_out.back(), false,
-                                           y_data, ns, state_switches, rtol, atol, atol_v,
+                                           y_data, ns, rest_switches, rtol, atol, atol_v,
                                            user_data.atol_tracking, state_switch_rest);
     }
+    // Issue #1589: the output before the stretch the run is in, which an
+    // asking between outputs speaks from as the next output does, and CVODE's
+    // count of steps where the run was last asked (ask_rest, below).
+    double rest_output_t = times.t_start;
+    long rest_steps_asked = 0;
     state_switch_rest_written.clear(); // a t = 0 event's writes are that start
 
     // Record initial sensitivities. Param cols are zero at t=0 for a fresh
@@ -18240,6 +18307,47 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         }
         if (steps - watch_steps_asked >= (watch_pending ? 1 : every)) {
             watch_state_switches(t, t_from);
+        }
+    };
+
+    // ─── A rest between two outputs (issue #1589) ────────────────────────────
+    //
+    // The rest refusal (issue #1548) is asked at the start and at each output,
+    // and here between them: at each root and stop CVODE returns at, before
+    // what is there is handled, and where kWatchSteps steps have gone by. A
+    // sensitivity run with a state switch is already taken in batches that
+    // short (the watch above). A plain run with a switch to ask about is taken
+    // in them from here, which changes no step: CVODE goes on from where a
+    // batch ended. Its max_steps is still what it asks of a stall and of a
+    // pinned state (carry_if_pinned), counted from the call each output makes
+    // as before, and each batch is cut to end where one of those would have.
+    const bool rest_batched = sens.n_total == 0 && !rest_switches.empty();
+    const long rest_batch = std::min<long>(static_cast<long>(max_steps), kWatchSteps);
+    if (rest_batched) {
+        CVodeSetMaxNumSteps(cvode_mem, rest_batch);
+    }
+    // Each asking speaks from the output before it, as the next output will,
+    // not from the asking before it: the stretch it judges a rest over is not
+    // to shrink with how often the run is asked. Judged from the asking
+    // before, a slide's flows (carried into the surface at 1 from either
+    // side) read as a rest wherever two askings fell within its bar's worth
+    // of time of the end of the run, and a slide was refused.
+    auto ask_rest = [&](double t) {
+        impl_->refuse_rest_on_state_switch(t, rest_output_t, t_out.back(), false,
+                                           N_VGetArrayPointer(y), ns, rest_switches, rtol, atol,
+                                           atol_v, user_data.atol_tracking, state_switch_rest);
+        CVodeGetNumSteps(cvode_mem, &rest_steps_asked);
+    };
+    // Asked where `every` steps have gone by since it last was. CVODE's count
+    // starts again where the run is restarted.
+    auto rest_after = [&](long every, double t) {
+        long steps = 0;
+        CVodeGetNumSteps(cvode_mem, &steps);
+        if (steps < rest_steps_asked) {
+            rest_steps_asked = 0;
+        }
+        if (steps - rest_steps_asked >= every) {
+            ask_rest(t);
         }
     };
 
@@ -18904,8 +19012,16 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             sunrealtype t_ret;
             long steps_at_call = 0;
             const long look_failed_at_call = looks_inside ? look_failures(cvode_mem) : 0;
-            if (watch) {
+            if (watch || rest_batched) {
                 CVodeGetNumSteps(cvode_mem, &steps_at_call);
+            }
+            // Issue #1589: where a plain run taken in batches ends the window of
+            // max_steps steps that its pinned test is asked after, by CVODE's
+            // count, and when that window began.
+            long pinned_window_end = steps_at_call + static_cast<long>(max_steps);
+            double pinned_window_from = static_cast<double>(t_now);
+            if (rest_batched && !one_normal_step) {
+                CVodeSetMaxNumSteps(cvode_mem, rest_batch);
             }
             // A fixed stop closer ahead than CVODE integrates over: a run, or a
             // leg, that starts a double or two before `at (time >= tau)`. CVODE
@@ -18935,7 +19051,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 flag = CVode(cvode_mem, look_tout, y, &t_ret,
                              (one_step || first_alone) ? CV_ONE_STEP : CV_NORMAL);
                 if (one_normal_step) {
-                    CVodeSetMaxNumSteps(cvode_mem, max_steps);
+                    CVodeSetMaxNumSteps(cvode_mem, rest_batched ? rest_batch : max_steps);
                     // One step taken, short of t_target: a step alone.
                     if (flag == CV_TOO_MUCH_WORK) {
                         flag = CV_SUCCESS;
@@ -18980,7 +19096,27 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     // is refused where it slides (issue #926) or is pinned
                     // (issue #952), and goes on otherwise.
                     watch_state_switches(static_cast<double>(t_ret), t_batch);
+                    ask_rest(static_cast<double>(t_ret)); // issue #1589
                     return false;
+                }
+                if (rest_batched) {
+                    // Issue #1589: a batch's end, asked about a rest. The
+                    // pinned test is asked only where a window of max_steps
+                    // steps ends, as where the run took its steps in one
+                    // batch to a window, and of the whole window; the next
+                    // batch is cut so as to end there.
+                    ask_rest(static_cast<double>(t_ret));
+                    long steps = 0;
+                    CVodeGetNumSteps(cvode_mem, &steps);
+                    if (steps < pinned_window_end) {
+                        CVodeSetMaxNumSteps(cvode_mem,
+                                            std::min(rest_batch, pinned_window_end - steps));
+                        return false;
+                    }
+                    t_batch = pinned_window_from;
+                    pinned_window_from = static_cast<double>(t_ret);
+                    pinned_window_end = steps + static_cast<long>(max_steps);
+                    CVodeSetMaxNumSteps(cvode_mem, rest_batch);
                 }
                 // A pinned state is one a step has just failed its error test
                 // on. A batch in which none did is a model taking its steps,
@@ -19009,15 +19145,18 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // collapsed step size at a discontinuity, where retrying forever is
             // what made this never return (issue #54). The wall-clock budget is
             // still re-checked between batches.
+            // The retry goes on to where the call was going: a look's tout
+            // (issue #998), which a batch can end short of (issue #1589).
             if (!carried) {
                 retry_while_advancing(
-                    cvode_mem, t_target, y, &t_ret, flag,
+                    cvode_mem, look_tout, y, &t_ret, flag,
                     "while integrating to the next output point", user_data,
                     [&budget] {
                         if (budget.active())
                             budget.check();
                     },
-                    carry_if_pinned, watch ? static_cast<long>(max_steps) : 0L, steps_at_call);
+                    carry_if_pinned, (watch || rest_batched) ? static_cast<long>(max_steps) : 0L,
+                    steps_at_call);
             }
             // CV_NORMAL returns tout by interpolating to it in its last step and
             // does not check that the interpolation succeeded: where that step
@@ -19282,6 +19421,19 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     ((stop_at_crossing && same_instant(static_cast<double>(t_ret), t_crossing)) ||
                      (stop_at_switch && same_instant(static_cast<double>(t_ret), t_switch)))) {
                     flag = CV_TSTOP_RETURN;
+                }
+            }
+
+            // Issue #1589: a rest asked about at every root and stop, before
+            // the event or crossing there is handled, and where kWatchSteps
+            // steps have gone by since it last was (a batch's end is asked in
+            // carry_if_pinned). A rest that rounding ends by putting the state
+            // across, or that an event or a stop ends, is asked about there.
+            if (!rest_switches.empty()) {
+                if (flag == CV_ROOT_RETURN || flag == CV_TSTOP_RETURN) {
+                    ask_rest(static_cast<double>(t_ret));
+                } else {
+                    rest_after(kWatchSteps, static_cast<double>(t_ret));
                 }
             }
 
@@ -20643,11 +20795,13 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
 
         // Issue #1548: a state come to rest on a switch's surface, its branch
         // set by rounding.
-        if (!state_switches.empty()) {
+        if (!rest_switches.empty()) {
             impl_->refuse_rest_on_state_switch(t_row, t_out[i - 1], t_out.back(),
                                                ar_copyback.empty() && !model.uses_rateof(), y_data,
-                                               ns, state_switches, rtol, atol, atol_v,
+                                               ns, rest_switches, rtol, atol, atol_v,
                                                user_data.atol_tracking, state_switch_rest);
+            rest_output_t = t_out[i];
+            CVodeGetNumSteps(cvode_mem, &rest_steps_asked);
         }
 
         // Extract sensitivities at this time point.

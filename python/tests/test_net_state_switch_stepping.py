@@ -1277,10 +1277,28 @@ def test_a_threshold_on_a_clock_species(tmp_path, h):
     #908 fix). dg/dx is now read across the box and that residual is not held.
     Main gets both right (control). C runs at rate 1 from 0, S moves at dlt,
     and the pulse is a Gaussian, so the gain is exact given S before the
-    sweep."""
+    sweep.
+
+    Where thr() turns back toward S and sweeps across it, the two move
+    together for a moment, 2.5e-4 apart where the run's tolerance at rtol 1e-3
+    leaves the residual a band of 7.4e-3 (in S), and the rest refusal reads
+    that instant as a rest (issue #1548). Since the run is asked between
+    outputs (issue #1589) that is so wherever an asking lands in it, which on
+    this host it does for the h() that falls. Main ran only because no output
+    did. The run is refused there for the rest, never silently wrong, or runs
+    and gains what the pulse gives."""
     model = _write(tmp_path, _CLOCK_SWEEP_NET.format(h=h))
     t1, tp, amp, sig, dlt = 30.04, 30.05, 0.5, 0.001, 0.01
-    result = bngsim.Simulator(model).run(sample_times=[0.0, t1, tp + 1.0], rtol=1e-3, atol=1e-5)
+    try:
+        result = bngsim.Simulator(model).run(
+            sample_times=[0.0, t1, tp + 1.0], rtol=1e-3, atol=1e-5
+        )
+    except bngsim.SimulationError as e:
+        found = re.search(r"At t=(\S+) the state has come to rest on the surface", str(e))
+        assert found is not None and "#1548" in str(e), str(e)
+        assert t1 < float(found.group(1)) < tp, str(e)
+        assert "(Cobs-tp)/sig" in str(e), str(e)
+        return
     s1 = float(result.species[1][0])
     lo, hi = t1, tp + 0.5
     for _ in range(200):
