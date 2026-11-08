@@ -303,7 +303,7 @@ def run_bngl(
 
 def _check_runnable(protocol: ProtocolSpec, *, allow_lossy: bool) -> None:
     """Refuse, before anything runs, a protocol this replay cannot run as written."""
-    from bngsim.convert._protocol import _BUILD_VERBS, Experiment
+    from bngsim.convert._protocol import _BUILD_VERBS, Experiment, _as_bool
 
     problems: list[str] = []
     lossy_problems: list[str] = []
@@ -333,6 +333,11 @@ def _check_runnable(protocol: ProtocolSpec, *, allow_lossy: bool) -> None:
             problems.append(f"{where}: a scan needs a parameter; BNG2.pl refuses one without")
         if step.sample_times is None and step.n_points < 2:
             problems.append(f"{where}: n_steps must be 1 or more; BNG2.pl cannot run 0")
+        if step.output_start is not None and _as_bool(step.extra.get("continue", 0)):
+            problems.append(
+                f"{where}: an output start past t_start={step.t_span[0]:g} needs the run to "
+                "start there, and continue=>1 starts it at the model time"
+            )
         for note in step.approximations:
             lossy_problems.append(f"{where}: {note}")
     if problems:
@@ -791,7 +796,6 @@ class _Runner:
     def _run(self, exp: Experiment) -> Result:
         """One BNG2.pl ``simulate``: from the state the last run left, from the
         model time for ``continue=>1``, else from ``t_start``."""
-        from bngsim._atol import ExactAtol
         from bngsim.convert._protocol import _as_bool
 
         for key in exp.extra:
@@ -815,6 +819,11 @@ class _Runner:
                 f"time is {self.now:g}; BNG2.pl refuses a continuation that does not start there"
             )
         t0 = self.now if continued else float(exp.t_span[0])
+        if exp.output_start is not None:
+            # A SED-ML run whose output starts after it does (issue #1493): the
+            # part before outputStartTime is integrated and not output.
+            self._run_to(exp, method, sim, t0, float(exp.output_start))
+            t0 = float(exp.output_start)
         if exp.sample_times is not None:
             times = [t0, *(t for t in exp.sample_times[1:] if t > t0)]
             t_end = times[-1]
@@ -832,10 +841,7 @@ class _Runner:
         kwargs: dict[str, Any] = {}
         steady = method == "ode" and _as_bool(exp.extra.get("steady_state", 0))
         if method == "ode":
-            rtol = self._rtol if self._rtol is not None else self._number(exp, "rtol")
-            atol = self._atol if self._atol is not None else self._number(exp, "atol")
-            kwargs["rtol"] = _BNG_RTOL if rtol is None else rtol
-            kwargs["atol"] = ExactAtol(_BNG_ATOL if atol is None else atol)
+            kwargs.update(self._tolerances(exp))
             if steady:
                 kwargs["steady_state"] = True
         else:
@@ -862,6 +868,35 @@ class _Runner:
         self.symbolic.clear()
         self.now = float(result.time[-1])
         return result
+
+    def _tolerances(self, exp: Experiment) -> dict[str, Any]:
+        """An ODE run's rtol and atol: the replay's, else the action's, else
+        run_network's, with the atol exact as run_network holds it."""
+        from bngsim._atol import ExactAtol
+
+        rtol = self._rtol if self._rtol is not None else self._number(exp, "rtol")
+        atol = self._atol if self._atol is not None else self._number(exp, "atol")
+        return {
+            "rtol": _BNG_RTOL if rtol is None else rtol,
+            "atol": ExactAtol(_BNG_ATOL if atol is None else atol),
+        }
+
+    def _run_to(self, exp: Experiment, method: str, sim: Any, t0: float, t1: float) -> None:
+        """Integrate from *t0* to *t1* and output nothing: the part of a SED-ML
+        run before its outputStartTime (issue #1493). The run that outputs then
+        starts from the state this leaves, at *t1*."""
+        if t1 <= t0:
+            return
+        kwargs: dict[str, Any] = {}
+        if method == "ode":
+            kwargs.update(self._tolerances(exp))
+        else:
+            # Its own seed: the run that outputs takes the action's.
+            kwargs["seed"] = int(self._seeds.spawn(1)[0].generate_state(1)[0] >> 1)
+        self._resolve_symbolic()
+        sim.run(t_span=(t0, t1), n_points=2, **kwargs)
+        self.symbolic.clear()
+        self.now = t1
 
     def _one_row(self, t0: float) -> Result:
         """A run that runs no time, as BNG2.pl's does: one row, the state at *t0*,

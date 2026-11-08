@@ -266,7 +266,7 @@ Methods:
 - **`to_xarray()`** → `xarray.Dataset` bundling species/observables/expressions/sensitivities/sensitivities_ic with shared `time` coord (requires xarray); `custom_attrs` + `seed` propagate to `ds.attrs`
 - **`save(path)`** — Save to HDF5 (requires h5py)
 - **`Result.load(path)`** — Load from HDF5 (class method)
-- **`Result.squeeze(results)`** — Stack list into 3D batch result; refuses a list holding a row that met a stop condition
+- **`Result.squeeze(results)`** — Stack list into 3D batch result; refuses a list holding a row that met a stop condition, or a row whose time points, species/observable/expression names, sensitivity parameters or IC species, reaction labels or present blocks differ from the first row's (issue #1513)
 
 ## `bngsim.SteadyStateResult`
 

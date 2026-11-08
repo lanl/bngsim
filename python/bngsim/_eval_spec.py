@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -77,7 +78,17 @@ class EvaluationSpec:
     t_span : tuple[float, float]
         ``(t_start, t_end)`` integration interval.
     n_points : int
-        Number of output time points (including ``t_start``).
+        Number of output time points (including ``t_start``, or
+        ``output_start`` when one is set).
+    output_start : float, optional
+        Where the output starts, when that is after ``t_start``: the run
+        integrates from ``t_start`` and returns ``n_points`` even times over
+        ``(output_start, t_end)``. This is a SED-ML uniform time course whose
+        ``outputStartTime`` is past its ``initialTime`` (issue #1493). ``None``
+        (the default) outputs from ``t_start``. It takes
+        ``sensitivity_params`` across the unreported part as
+        ``carry_sensitivities`` does, and refuses ``sensitivity_ic``, which
+        does not cross it.
     params : Mapping[str, float]
         Parameter overrides applied to the model before running (the θ vector).
     sensitivity_params : Sequence[str]
@@ -131,6 +142,7 @@ class EvaluationSpec:
     atol: float | Sequence[float] | str | ExactAtol | None = None
     max_steps: int | None = None
     model_sha256: str | None = None
+    output_start: float | None = None
 
     def __post_init__(self) -> None:
         # Normalize to canonical, immutable container types so two specs built
@@ -146,6 +158,15 @@ class EvaluationSpec:
             raise ValueError(f"t_span must be a 2-tuple (t_start, t_end), got {self.t_span!r}.")
         object.__setattr__(self, "t_span", ts)
         object.__setattr__(self, "n_points", int(self.n_points))
+        if self.output_start is not None:
+            start = float(self.output_start)
+            if not (math.isfinite(start) and ts[0] <= start <= ts[1]):
+                raise ValueError(
+                    f"output_start={self.output_start!r} must lie in t_span {ts!r}: the "
+                    "run integrates from t_span[0] and outputs from output_start to t_span[1]"
+                )
+            # An output that starts where the run does is the plain spec.
+            object.__setattr__(self, "output_start", None if start == ts[0] else start)
         object.__setattr__(
             self, "params", {str(k): float(v) for k, v in dict(self.params).items()}
         )
@@ -166,9 +187,10 @@ class EvaluationSpec:
 
         ``params`` is emitted sorted by name and sequences as lists, so the dict
         (and :meth:`to_json`) is byte-stable for a fixed spec — usable directly
-        as a content key for caching/deduplication.
+        as a content key for caching/deduplication. ``output_start`` is emitted
+        only when set, so a spec without one keeps the bytes it always had.
         """
-        return {
+        out = {
             "model_source": self.model_source,
             "model_format": self.model_format,
             "method": self.method,
@@ -192,6 +214,9 @@ class EvaluationSpec:
             "max_steps": self.max_steps,
             "model_sha256": self.model_sha256,
         }
+        if self.output_start is not None:
+            out["output_start"] = self.output_start
+        return out
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> EvaluationSpec:
@@ -211,6 +236,7 @@ class EvaluationSpec:
             "atol",
             "max_steps",
             "model_sha256",
+            "output_start",
         }
         unknown = set(data) - known
         if unknown:
@@ -312,12 +338,29 @@ class EvaluationSpec:
         options). Read named outputs via :meth:`Result.outputs` and gradients via
         :meth:`Result.output_sensitivities` with :attr:`outputs` as selectors.
         """
+        if self.output_start is not None and self.sensitivity_ic:
+            raise ValueError(
+                f"sensitivity_ic={list(self.sensitivity_ic)!r} with output_start="
+                f"{self.output_start!r}: the run integrates from t_span[0] to output_start "
+                "before it outputs anything, and IC sensitivities are not carried across "
+                "that boundary (GH #210). Use sensitivity_params, or no output_start."
+            )
         sim = self.build_simulator()
-        run_kwargs: dict[str, Any] = {"t_span": self.t_span, "n_points": self.n_points}
+        solver: dict[str, Any] = {}
         if self.rtol is not None:
-            run_kwargs["rtol"] = self.rtol
+            solver["rtol"] = self.rtol
         if self.atol is not None:
-            run_kwargs["atol"] = self.atol
+            solver["atol"] = self.atol
         if self.max_steps is not None:
-            run_kwargs["max_steps"] = self.max_steps
-        return sim.run(**run_kwargs)
+            solver["max_steps"] = self.max_steps
+        if self.output_start is None:
+            return sim.run(t_span=self.t_span, n_points=self.n_points, **solver)
+        # Issue #1493: integrate up to the output start with nothing returned,
+        # then output from there, on the state (and sensitivities) it left.
+        sim.run(t_span=(self.t_span[0], self.output_start), n_points=2, **solver)
+        return sim.run(
+            t_span=(self.output_start, self.t_span[1]),
+            n_points=self.n_points,
+            carry_sensitivities=bool(self.sensitivity_params),
+            **solver,
+        )

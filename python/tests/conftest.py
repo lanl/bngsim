@@ -475,15 +475,6 @@ _DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
     # licence to not run a test, so it is spelled out per case rather than left as
     # a general "the numbers came out differently here" escape.
     (
-        "finite-difference Jacobian does not carry this fixture",
-        _ANYWHERE,
-        "lanl/bngsim#176: the FD retry is a second attempt, not a guarantee, so "
-        "the tests that assert a successful rescue stand down where there is no "
-        "rescue to assert. The contract itself (auto reproduces explicit-FD "
-        "whatever FD does) is asserted unconditionally and does not skip, so this "
-        "never hides the fallback going missing",
-    ),
-    (
         "returns a finite sensitivity tensor on this host",
         _ANYWHERE,
         "lanl/bngsim#389: the non-finite forward-sensitivity guard's real-model "

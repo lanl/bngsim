@@ -3985,6 +3985,61 @@ struct CvodeSimulator::Impl {
         bool at_root = false, std::vector<double> *band_out = nullptr,
         std::vector<std::array<double, 3>> *last_seen = nullptr, bool *pending = nullptr);
 
+    // Issue #1548. What a run keeps of each switch's residual between outputs,
+    // one entry per switch: whether it has been read off its surface by more
+    // than its band, the most it has been off, and the bar it was last held to;
+    // its ∂g/∂x and ∂g/∂t, kept while it stays near its surface; and, while it
+    // rests there, from when, when its jump was last read, what that jump moves
+    // per tolerance unit and unit of time, and the faster of the flows that
+    // carry the residual onto its surface from either side. Then the work
+    // vectors a reading uses, sized once a residual is first read.
+    struct RestWatch {
+        std::vector<char> arrived;
+        std::vector<double> largest;
+        std::vector<double> bar;
+        std::vector<std::vector<double>> grad;
+        std::vector<double> gt;
+        std::vector<double> rest_since;
+        std::vector<double> probed_t;
+        std::vector<double> ratio;
+        std::vector<double> carry;
+        std::vector<double> xv, f, xw, near_f, far_f;
+        void size(std::size_t n) {
+            const double nan = std::numeric_limits<double>::quiet_NaN();
+            arrived.resize(n, 0);
+            largest.resize(n, 0.0);
+            bar.resize(n, 0.0);
+            grad.resize(n);
+            gt.resize(n, 0.0);
+            rest_since.resize(n, nan);
+            probed_t.resize(n, nan);
+            ratio.resize(n, 0.0);
+            carry.resize(n, 0.0);
+        }
+    };
+    // Issue #1548. An event's assignments, executed at t, have left the state
+    // at x. A switch whose residual reads a species they wrote, and that they
+    // left exactly on its surface (a species set to the 0 its gate reads), has
+    // its branch from the model there, as one that starts on its surface does,
+    // so it is asked about again only once it has been off it. `written` marks
+    // the species the assignments wrote.
+    void note_event_on_state_switch(double t, const double *x, int ns,
+                                    const std::vector<char> &written,
+                                    const std::vector<const NetworkModel::StateSwitch *> &switches,
+                                    RestWatch &watch);
+    // Issue #1548. Refuses a run whose state has come to rest, at the output t,
+    // on a state-switch surface it arrived at from off it, where the run's
+    // tolerances cannot say which side it is on and the branches differ. See the
+    // definition. `t_prev` is the output before t (t itself at the first), and
+    // `evaluated` says the model's observables and functions were just
+    // evaluated at (t, x), with nothing since (no rateOf buffer, no assignment
+    // rule copied into x).
+    void refuse_rest_on_state_switch(double t, double t_prev, double t_end, bool evaluated,
+                                     const double *x, int ns,
+                                     const std::vector<const NetworkModel::StateSwitch *> &switches,
+                                     double rtol, double atol, const std::vector<double> &atol_v,
+                                     const AtolTracking &tracking, RestWatch &watch);
+
     // Issue #928. Whether a run is pinned on a state-switch surface, and if
     // so, the state put across it and the integrator restarted there.
     // `t_batch` is where the batch of steps that has just ended started.
@@ -11585,6 +11640,402 @@ void CvodeSimulator::Impl::refuse_slide_along_state_switch(
     sync_model_at(t, x, ns);
 }
 
+// ─── A state come to rest on a state-switch surface (issue #1548) ───────────
+//
+// l-type-calcium-channel-dynamics.bngl gives v_rec() = if(-70 + Voltage_Level
+// < -20, 0.5, 0.05), and Voltage() relaxes as 50 - 49e^(-t): the threshold is
+// that steady state. The exact solution never reaches it, so v_rec() is 0.5
+// throughout and Calcium() settles at 957.956. A run is within its tolerance of
+// the surface by t ~ 20 and then sits on it: the branch the rate law reads from
+// there is whichever side rounding left the state on. On 301 outputs that was
+// the exact one; on 151, 76 and 601, Voltage() landed on 50.0 and the run
+// returned the other branch's steady state, 187.68, with nothing said. Nothing
+// else here sees it: an exact 0.0 is no crossing, and a crossing inside the band
+// is stepped on (#897).
+//
+// So at each output, and at the start, each switch's residual is asked whether
+//   - it has been off its surface by more than the band below at an earlier
+//     output. One that starts on its surface and stays there (a species at 0
+//     that nothing makes) has its branch from the model, not from rounding, and
+//     so has one an event's assignment puts exactly on it (a species set to the
+//     0 its gate reads; note_event_on_state_switch);
+//   - it is now within that band, k_resolve tolerance bands at the state (the
+//     restart test's factor; that test also widens each species' unit to
+//     CVODE's own error weight at its step), so the run cannot say which side
+//     the state is on;
+//   - the flow at the state carries it off the side it is on by no more than
+//     that band over the stretch this output speaks for and the rest of the
+//     run, and neither side's flow carries it onto the surface by more than
+//     that, so the run will not say later either. A state nearing its rest
+//     point on the surface is not leaving it, and the flow on the surface
+//     itself, which runs out there, tells it from a crossing, whose flow does
+//     not; asked of the flow at the state, the approach read as moving until
+//     long after rounding could put the state across. A state crossing the surface, an output
+//     landing on the crossing or not, is carried across it by the flow on the side it comes from;
+//     one sliding along it (#908, #926) is carried into it from both sides; and one held on it from
+//     one side, where its rate law turns off (a species made until it reaches its cap), is put back
+//     by that side whenever rounding takes it across. A side whose flow points away from the
+//     surface resolves nothing: a state resting against it that rounding puts across is carried off
+//     the branch it arrived on;
+//   - the right-hand side jumps across the surface by enough to move some
+//     species by more than its own tolerance unit over that stretch.
+// The stretch runs from the output before this one to the end: the state may
+// have come to rest anywhere since that output, and a run asked for t_end alone
+// is asked about the whole of it.
+//
+// Each side is read on the surface itself: the state is put on it along ∂g/∂x,
+// f is read a little way out on that side at two distances, and the two are
+// carried back to the surface as a line, so that the jump is the rate law's and
+// not the change of a smooth f over the distance read across. That is done at
+// two scales, and a species' jump counts only where both agree: what a reading
+// picks up of another switch's kink the probe straddles shrinks with the
+// distance (nn_xor's signed-rate idiom, if(r>0,r,0) on every rate, read at one
+// scale as 1.9e-9 in dDopamine/dt across dY_dt's continuous surface).
+//
+// What it costs: the residual at each output; ∂g/∂x once in a stretch beside
+// its surface, the band and the flow at the state read from it and f there, and
+// read again where that flow says the state moves within the band; ∂g/∂x and
+// the jump at the start of a rest and each time the rest has doubled; and all
+// of it read afresh before a refusal.
+static constexpr double kRestReadShare = 1e-3; // of the band: how far out each side is read
+static constexpr double kRestReadFiner = 16.0; // the second, finer reading's divisor
+void CvodeSimulator::Impl::refuse_rest_on_state_switch(
+    double t, double t_prev, double t_end, bool evaluated, const double *x, int ns,
+    const std::vector<const NetworkModel::StateSwitch *> &switches, double rtol, double atol,
+    const std::vector<double> &atol_v, const AtolTracking &tracking, RestWatch &watch) {
+    const std::size_t n_sw = switches.size();
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    watch.size(n_sw);
+    // What the branch can move: the stretch since the output before this one,
+    // where the state may already have been resting, and the rest of the run.
+    const double horizon = t_end - t_prev;
+    if (n_sw == 0 || !(horizon > 0.0)) {
+        return;
+    }
+    auto &eval = model.evaluator();
+    // One sync for every residual: a switch that is read below leaves the model
+    // synced at (t, x) again when it is done. Where the output row has just
+    // evaluated the observables and functions at (t, x), only the species are
+    // left to set: a sync per output was most of what this cost on 1001 rows.
+    if (evaluated) {
+        auto &sp_vec = const_cast<std::vector<Species> &>(model.species());
+        for (int i = 0; i < ns; ++i) {
+            sp_vec[static_cast<std::size_t>(i)].concentration = x[i];
+        }
+    } else {
+        sync_model_at(t, x, ns);
+    }
+    // The work vectors, filled the first time a residual here is read: most
+    // outputs read none past its value.
+    std::vector<double> &xv = watch.xv;
+    std::vector<double> &f = watch.f;
+    std::vector<double> &xw = watch.xw;
+    std::vector<double> &near_f = watch.near_f;
+    std::vector<double> &far_f = watch.far_f;
+    bool have_x = false;
+    bool have_f = false;
+    auto need_x = [&]() {
+        if (!have_x) {
+            const auto n = static_cast<std::size_t>(ns);
+            xv.assign(x, x + ns);
+            f.resize(n);
+            xw.resize(n);
+            near_f.resize(n);
+            far_f.resize(n);
+            have_x = true;
+        }
+    };
+    auto need_f = [&]() {
+        need_x();
+        if (!have_f) {
+            model.compute_derivs(t, x, f.data());
+            have_f = true;
+        }
+    };
+    auto unit_of = [&](int j, double xj) {
+        const auto uj = static_cast<std::size_t>(j);
+        return tolerance_unit(tracking, rtol, atol_v.empty() ? atol : atol_v[uj], uj, xj);
+    };
+    auto band_of = [&](const NetworkModel::StateSwitch &sw, const std::vector<double> &grad) {
+        return state_switch_band(sw.species.size(), [&](std::size_t s) {
+            const int j = sw.species[s];
+            return std::fabs(grad[static_cast<std::size_t>(j)]) * unit_of(j, x[j]);
+        });
+    };
+    // ∂g/∂x and the flow of g at (t, x), kept for switch k. NaN where unreadable.
+    auto read_gradient = [&](std::size_t k) {
+        const NetworkModel::StateSwitch &sw = *switches[k];
+        need_f();
+        double scale = 0.0;
+        std::vector<double> &gx = watch.grad[k];
+        const double flow =
+            residual_flow(sw.residual_expr_idx, sw.species, t, ns, xv, f, gx, scale);
+        double gx_f = 0.0;
+        for (int j : sw.species) {
+            gx_f += gx[static_cast<std::size_t>(j)] * f[static_cast<std::size_t>(j)];
+        }
+        watch.gt[k] = flow - gx_f; // the residual's own time dependence
+        return flow;
+    };
+    // What a jump across switch k's surface moves, per tolerance unit and unit
+    // of time, at its worst species, and the flows of g on the surface from
+    // each side. False where a reading cannot be made.
+    struct Jump {
+        double ratio = 0.0;
+        int species = -1;
+        double size = 0.0;
+        double flow_hi = 0.0;
+        double flow_lo = 0.0;
+    };
+    auto read_jump = [&](std::size_t k, double g, double bar, Jump &out) {
+        const NetworkModel::StateSwitch &sw = *switches[k];
+        need_x();
+        const std::vector<double> &gx = watch.grad[k];
+        double norm2 = 0.0;
+        for (int j : sw.species) {
+            norm2 += gx[static_cast<std::size_t>(j)] * gx[static_cast<std::size_t>(j)];
+        }
+        if (!(norm2 > 0.0) || !std::isfinite(norm2)) {
+            return false;
+        }
+        // f on one side of the surface, carried back to it as a line from dist
+        // and 2·dist out.
+        auto read_side = [&](double dist, std::vector<double> &side) {
+            for (int s = 0; s < 2; ++s) {
+                const double at = (s == 0 ? 1.0 : 2.0) * dist;
+                const double along = (at - g) / norm2;
+                xw = xv;
+                for (int j : sw.species) {
+                    xw[static_cast<std::size_t>(j)] += along * gx[static_cast<std::size_t>(j)];
+                }
+                sync_model_at(t, xw.data(), ns);
+                const double gs = eval.evaluate(sw.residual_expr_idx);
+                if (!(at > 0.0 ? gs > 0.0 : gs < 0.0)) {
+                    return false;
+                }
+                std::vector<double> &into = s == 0 ? near_f : far_f;
+                model.compute_derivs(t, xw.data(), into.data());
+                for (double v : into) {
+                    if (!std::isfinite(v)) {
+                        return false;
+                    }
+                }
+            }
+            side.resize(static_cast<std::size_t>(ns));
+            for (std::size_t i = 0; i < side.size(); ++i) {
+                side[i] = 2.0 * near_f[i] - far_f[i];
+            }
+            return true;
+        };
+        const double d = kRestReadShare * bar;
+        std::vector<double> hi, lo, hi_fine, lo_fine;
+        const bool readable = read_side(d, hi) && read_side(-d, lo) &&
+                              read_side(d / kRestReadFiner, hi_fine) &&
+                              read_side(-d / kRestReadFiner, lo_fine);
+        sync_model_at(t, x, ns);
+        if (!readable) {
+            return false;
+        }
+        out = Jump{};
+        out.flow_hi = watch.gt[k];
+        out.flow_lo = watch.gt[k];
+        for (int i = 0; i < ns; ++i) {
+            const auto ui = static_cast<std::size_t>(i);
+            if (gx[ui] != 0.0) {
+                out.flow_hi += gx[ui] * hi[ui];
+                out.flow_lo += gx[ui] * lo[ui];
+            }
+            const double jump = hi_fine[ui] - lo_fine[ui];
+            if (!(std::fabs(jump - (hi[ui] - lo[ui])) <= 0.5 * std::fabs(jump))) {
+                continue; // not the same at both scales: no jump of its own
+            }
+            const double ratio = std::fabs(jump) / unit_of(i, x[i]);
+            if (ratio > out.ratio) {
+                out.ratio = ratio;
+                out.species = i;
+                out.size = jump;
+            }
+        }
+        return true;
+    };
+    const double k_resolve = state_switch_resolve_factor(ns);
+    auto flow_at_x = [&](std::size_t k) {
+        need_f();
+        double flow = watch.gt[k];
+        for (int j : switches[k]->species) {
+            flow += watch.grad[k][static_cast<std::size_t>(j)] * f[static_cast<std::size_t>(j)];
+        }
+        return flow;
+    };
+    for (std::size_t k = 0; k < n_sw; ++k) {
+        const NetworkModel::StateSwitch &sw = *switches[k];
+        if (sw.species.empty()) {
+            continue; // reads no state: nothing rests on its surface
+        }
+        const double g = eval.evaluate(sw.residual_expr_idx);
+        const double a = std::fabs(g);
+        if (!std::isfinite(a)) {
+            continue;
+        }
+        std::vector<char> &arrived = watch.arrived;
+        // Near its surface: within a tenth of the most it has been off, or
+        // within the bar it was last held to (a residual that has never been
+        // off by ten bars rests inside that tenth's reach only at a tenth of one).
+        const bool beside = a <= 0.1 * watch.largest[k] || a <= watch.bar[k];
+        watch.largest[k] = std::max(watch.largest[k], a);
+        // Nothing to read: never off its surface and on it now, or off it and
+        // not near it. The latter ends the stretch ∂g/∂x was kept for.
+        if ((arrived[k] == 0 && a == 0.0) || (arrived[k] != 0 && !beside)) {
+            watch.rest_since[k] = nan;
+            if (arrived[k] != 0) {
+                watch.grad[k].clear();
+            }
+            continue;
+        }
+        bool fresh = false; // ∂g/∂x and ∂g/∂t read at this state
+        if (watch.grad[k].empty()) {
+            read_gradient(k);
+            fresh = true;
+        }
+        double bar = k_resolve * band_of(sw, watch.grad[k]);
+        watch.bar[k] = std::isfinite(bar) ? bar : 0.0;
+        if (!(bar > 0.0) || !std::isfinite(bar)) {
+            watch.rest_since[k] = nan;
+            continue;
+        }
+        if (a > bar) {
+            arrived[k] = 1;
+            watch.rest_since[k] = nan;
+            continue;
+        }
+        if (arrived[k] == 0) {
+            continue;
+        }
+        // Leaving its surface: the flow at the state carries it away, off the
+        // side it is on, by more than the bar over the stretch. A state the
+        // flow carries toward the surface is not leaving it, however fast: a
+        // crossing is told from an approach by the flows on the surface itself
+        // below, where the approach to a rest point runs out and a crossing's
+        // does not. (Asked of the flow at the state, an approach that slows as
+        // it nears the surface read as moving until long after rounding could
+        // put it across, and a side that pushes it off took it away first.)
+        auto leaving = [&](double fl) {
+            const double away = g > 0.0 ? fl : (g < 0.0 ? -fl : 0.0);
+            return !(away * horizon <= bar);
+        };
+        double flow = flow_at_x(k);
+        if (leaving(flow) && !fresh) {
+            // Kept from an earlier output, ∂g/∂x and ∂g/∂t may say the state
+            // moves where it no longer does (a threshold that has stopped
+            // moving, a residual curved in x): read them here before saying so.
+            flow = read_gradient(k);
+            fresh = true;
+            bar = k_resolve * band_of(sw, watch.grad[k]);
+            watch.bar[k] = std::isfinite(bar) ? bar : 0.0;
+            if (!(bar > 0.0) || !std::isfinite(bar) || a > bar) {
+                watch.rest_since[k] = nan;
+                continue;
+            }
+        }
+        if (leaving(flow)) {
+            watch.rest_since[k] = nan;
+            continue;
+        }
+        // Resting on the surface, or nearing it. Its jump is read at the start
+        // of the stretch and each time the stretch has doubled since, with
+        // ∂g/∂x read there.
+        Jump jump;
+        if (std::isnan(watch.rest_since[k])) {
+            watch.rest_since[k] = t;
+            watch.probed_t[k] = nan;
+        }
+        auto read = [&]() {
+            if (!fresh) {
+                read_gradient(k);
+                fresh = true;
+                bar = k_resolve * band_of(sw, watch.grad[k]);
+                watch.bar[k] = std::isfinite(bar) ? bar : 0.0;
+            }
+            const bool readable = bar > 0.0 && std::isfinite(bar) && read_jump(k, g, bar, jump);
+            watch.ratio[k] = readable ? jump.ratio : 0.0;
+            // What carries the state onto the surface: the hi side's flow where
+            // it points down to it, the lo side's where it points up. A flow
+            // that points away carries the state off a side, not onto it.
+            watch.carry[k] =
+                readable ? std::max(std::max(0.0, -jump.flow_hi), std::max(0.0, jump.flow_lo))
+                         : std::numeric_limits<double>::infinity();
+            watch.probed_t[k] = t;
+            return readable;
+        };
+        if (std::isnan(watch.probed_t[k]) ||
+            t - watch.probed_t[k] >= watch.probed_t[k] - watch.rest_since[k]) {
+            read();
+        }
+        auto refusable = [&]() {
+            return watch.ratio[k] * horizon > 1.0 && watch.carry[k] * horizon <= bar;
+        };
+        if (!refusable()) {
+            continue;
+        }
+        // Before refusing, read it all again here.
+        const double fresh_flow = read_gradient(k);
+        fresh = true;
+        bar = k_resolve * band_of(sw, watch.grad[k]);
+        if (!(bar > 0.0) || !std::isfinite(bar) || a > bar || leaving(fresh_flow) || !read() ||
+            !refusable() || jump.species < 0) {
+            continue;
+        }
+        std::ostringstream msg;
+        msg << "At t=" << t << " the state has come to rest on the surface of a state-dependent "
+            << "rate-law switch (residual '" << sw.residual_source << "' = " << g << ", within the "
+            << bar
+            << " the run's tolerances leave it): neither side's flow carries it onto the surface "
+               "by more than that before t="
+            << t_end << ", and across the surface the rate law jumps by " << jump.size << " in d"
+            << model.species_names()[static_cast<std::size_t>(jump.species)]
+            << "/dt. Which branch the run reads from here is set by rounding, not by the model, "
+               "so bngsim refuses rather than return either (issue #1548). A threshold that sits "
+               "exactly on a steady state the state relaxes to does this; move it off that state, "
+               "or write the branch the model means.";
+        throw std::runtime_error(msg.str());
+    }
+}
+
+void CvodeSimulator::Impl::note_event_on_state_switch(
+    double t, const double *x, int ns, const std::vector<char> &written,
+    const std::vector<const NetworkModel::StateSwitch *> &switches, RestWatch &watch) {
+    if (watch.arrived.size() != switches.size()) {
+        return; // before the run's first reading, which reads this state as its start
+    }
+    bool synced = false;
+    for (std::size_t k = 0; k < switches.size(); ++k) {
+        const NetworkModel::StateSwitch &sw = *switches[k];
+        if (watch.arrived[k] == 0) {
+            continue;
+        }
+        const bool reads_written = std::any_of(sw.species.begin(), sw.species.end(), [&](int j) {
+            return j >= 0 && j < ns && static_cast<std::size_t>(j) < written.size() &&
+                   written[static_cast<std::size_t>(j)] != 0;
+        });
+        if (!reads_written) {
+            continue;
+        }
+        if (!synced) {
+            sync_model_at(t, x, ns);
+            synced = true;
+        }
+        if (model.evaluator().evaluate(sw.residual_expr_idx) != 0.0) {
+            continue;
+        }
+        watch.arrived[k] = 0;
+        watch.largest[k] = 0.0;
+        watch.bar[k] = 0.0;
+        watch.grad[k].clear();
+        watch.rest_since[k] = std::numeric_limits<double>::quiet_NaN();
+        watch.probed_t[k] = std::numeric_limits<double>::quiet_NaN();
+    }
+}
+
 // ─── A run pinned on a state-switch surface (issue #928) ────────────────────
 //
 // A run without sensitivities restarts at a state-switch root only where the
@@ -15489,6 +15940,11 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     long state_switch_pinned_fails = 0;
     // The run's count of steps when each residual was first seen pinned.
     std::vector<long> state_switch_pinned_steps;
+    // Issue #1548: what refuse_rest_on_state_switch keeps of each residual.
+    Impl::RestWatch state_switch_rest;
+    // Issue #1548: the species event assignments have written since the last
+    // batch's end, in any run (the fires record is a sensitivity run's alone).
+    std::vector<char> state_switch_rest_written;
     impl_->state_switch_rxns.clear();
     impl_->state_switch_all.clear();
     impl_->state_switch_consumed.clear();
@@ -15880,6 +16336,14 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             const double base = b >= 0 ? nv[static_cast<std::size_t>(b)] : y_data[assigns[a].first];
             rescales.emplace_back(
                 a, base * eval_ref_outer.evaluate(ev.assignment_rescale_size_expr[a]));
+        }
+        if (!state_switches.empty()) {
+            state_switch_rest_written.resize(static_cast<std::size_t>(ns), 0);
+            for (const auto &asg : assigns) {
+                if (asg.first >= 0 && asg.first < ns) {
+                    state_switch_rest_written[static_cast<std::size_t>(asg.first)] = 1;
+                }
+            }
         }
         for (std::size_t a = 0; a < assigns.size(); ++a) {
             if (is_resize_rescale(ev, a))
@@ -16919,6 +17383,14 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             trigger_was_true[ei] = prev[ei];
         }
 
+        // Issue #1548: a switch's residual this batch's assignments left
+        // exactly on its surface has its branch from the model there.
+        if (!state_switch_rest_written.empty()) {
+            impl_->note_event_on_state_switch(t_now, y_data, ns, state_switch_rest_written,
+                                              state_switches, state_switch_rest);
+            state_switch_rest_written.clear();
+        }
+
         return any_immediate;
     };
 
@@ -17473,6 +17945,14 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     if (n_func > 0) {
         result.record_expressions(0, model.function_value_cache().data());
     }
+
+    // Issue #1548: where each switch's residual starts, off its surface or on it.
+    if (!state_switches.empty()) {
+        impl_->refuse_rest_on_state_switch(times.t_start, times.t_start, t_out.back(), false,
+                                           y_data, ns, state_switches, rtol, atol, atol_v,
+                                           user_data.atol_tracking, state_switch_rest);
+    }
+    state_switch_rest_written.clear(); // a t = 0 event's writes are that start
 
     // Record initial sensitivities. Param cols are zero at t=0 for a fresh
     // start (or the carried-over dx/dθ seed under carry_sensitivities, GH
@@ -20149,6 +20629,15 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         // Record function values
         if (n_func > 0) {
             result.record_expressions(i, model.function_value_cache().data());
+        }
+
+        // Issue #1548: a state come to rest on a switch's surface, its branch
+        // set by rounding.
+        if (!state_switches.empty()) {
+            impl_->refuse_rest_on_state_switch(t_row, t_out[i - 1], t_out.back(),
+                                               ar_copyback.empty() && !model.uses_rateof(), y_data,
+                                               ns, state_switches, rtol, atol, atol_v,
+                                               user_data.atol_tracking, state_switch_rest);
         }
 
         // Extract sensitivities at this time point.
