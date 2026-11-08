@@ -8280,6 +8280,11 @@ void CvodeSimulator::Impl::confirm_orders(const TimeSpec &times, const SolverOpt
         // caller's budget, not the remainder the confirming run was given.
         throw TimeoutError(budget.limit_seconds(), budget.elapsed());
     } catch (const std::exception &e) {
+        // Whatever stopped the confirming run, its own refusal included, is a
+        // refusal of the order this run asked it about, and keeps that type
+        // (issue #1435): a refusal the tighter run reached, raised as itself,
+        // would read as the model's whatever columns are asked, where a smaller
+        // set may not reach it, or ask for a confirming run at all.
         refuse(orders.front(), std::string("The run at a hundredth of the tolerances that "
                                            "confirms their order failed: ") +
                                    e.what());

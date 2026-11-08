@@ -234,6 +234,23 @@ def test_compute_all_sensitivities_retries_such_a_chunk_and_reports_it_by_type(m
     assert "loosen" not in text and "CVODES error test" not in text
 
 
+@pytest.mark.parametrize("num_processors", [1, 2])
+def test_a_run_batch_row_refused_for_its_parameters_is_named(num_processors):
+    """The refusal turns on the row's values, so a scan says which row: at k = 2
+    E1 fires at t = 1.25, apart from E0, and at k = 1 the two share t = 2.5."""
+    sim = _one_instant(sensitivity_params=["k"])
+    with pytest.raises(
+        bngsim.SensitivityRefusedForParametersError,
+        match=r"^run_batch row 1: Forward sensitivity: events 'E0' and 'E1'",
+    ):
+        sim.run_batch(
+            params=[{"k": 2.0}, {"k": 1.0}],
+            t_span=(0, 3),
+            n_points=4,
+            num_processors=num_processors,
+        )
+
+
 DECAY = "species X = 1; k1 = 1; k2 = 1\nX' = -k1*X - k2*X;\n"
 
 
@@ -323,7 +340,13 @@ def test_a_chunk_too_wide_to_retry_is_reported_by_type(monkeypatch):
 UNTYPED = {"' was found triggered at t=": "GH #205/#910, a fire found and not located"}
 
 # Throws of SensitivityRefusedForParameters: one per message below but #951's
-# two, kept as a reason and thrown at one place.
+# two, kept as a reason and thrown at one place. The type says a smaller set of
+# columns may run, so the per-column retry is worth its cost, not that one does
+# at every site. A refusal #1577 found reached whatever columns are asked is in
+# TYPED; the rest are this one, as their cost if they are not is only that
+# retry. So the mirror of TYPED's "after more state-dependent rate-law switches
+# than", a switch "after more event fires than are kept", is this type: #1577
+# left it untyped, and no test reaches either cap.
 REFUSED_FOR_PARAMETERS = 29
 
 _KEPT = re.compile(r"(\w+) = msg\.str\(\);")

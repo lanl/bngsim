@@ -38,7 +38,7 @@ class SensitivityUnsupported : public std::runtime_error {
 };
 
 // A forward-sensitivity refusal partway through a run, by declaration, whose
-// condition turns on the columns requested: a crossing or a fire a column
+// condition can turn on the columns requested: a crossing or a fire a column
 // moves, two times a column parts, an edge a column moves the run onto. A
 // smaller set of columns may run, so compute_all_sensitivities retries a chunk
 // that throws it one column at a time (GH #243) and names the columns that run

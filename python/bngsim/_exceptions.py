@@ -227,11 +227,12 @@ class SensitivityRefusedForParametersError(SensitivityRefusedDuringRunError):
     """A forward-sensitivity run the solver refused partway, for the parameters
     requested.
 
-    The condition turns on which sensitivities were asked for: a crossing or a
-    fire a requested parameter moves, two times it moves apart, or an edge it
-    moves the run onto, where the result has a kink or a jump and no
+    The condition can turn on which sensitivities were asked for: a crossing
+    or a fire a requested parameter moves, two times it moves apart, or an edge
+    it moves the run onto, where the result has a kink or a jump and no
     derivative (issues #49, #150, #760, #767, #945, #1025 and others). The
-    message names it and the parameters to drop. A smaller set may run, so
+    message names it and, where it can, the parameters to drop. A smaller set
+    may run, so
     :meth:`Simulator.compute_all_sensitivities` retries a chunk refused this way
     one column at a time (GH #243) and raises this type, naming the parameters
     refused alone and the ones that ran, when some are refused alone too.

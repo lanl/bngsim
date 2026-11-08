@@ -62,6 +62,7 @@ from bngsim._exceptions import (
     CodegenToolchainError,
     DenseSolverFallbackWarning,
     ModelError,
+    SensitivityRefusedDuringRunError,
     SensitivityRefusedForParametersError,
     SensitivityUnsupportedError,
     SimulationError,
@@ -7380,6 +7381,11 @@ class Simulator:
                 f"rate-law condition ({e}) at the row's values, and the batch's code was "
                 "built where it could (issues #414, #708)."
             ) from None
+        except SensitivityRefusedDuringRunError as e:
+            # The solver's refusal partway, by type, and by row (issue #1435): it
+            # can turn on the row's values, and a scan has to say which row. A
+            # runtime_error said so as "Batch simulation N failed".
+            raise type(e)(f"run_batch row {index}: {e}") from None
         except _PASSED_THROUGH:
             # A timeout or a refusal is the row's, as it is from run().
             raise
