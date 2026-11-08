@@ -1667,15 +1667,24 @@ TOUCHES = (
 
 
 @pytest.mark.parametrize(
-    ("after", "cmp"), [("-0.5", ">"), ("0", ">=")], ids=["and-turns-back", "and-stops"]
+    ("after", "cmp", "issue"),
+    [("-0.5", ">", 946), ("0", ">=", 1548)],
+    ids=["and-turns-back", "and-stops"],
 )
-def test_a_state_that_comes_to_its_surface_as_a_fitted_gate_turns_it_is_refused(after, cmp):
+def test_a_state_that_comes_to_its_surface_as_a_fitted_gate_turns_it_is_refused(after, cmp, issue):
     """X rises to X0 at t = 3, where the fitted gate turns it back or stops
     it. With the gate later X is over X0 for a while: dY/dtau is 0 | 1 where
     it turns back, and Y itself jumps where it stops. No root is reported
     for a residual that comes to 0 and does not go through, and 0 came
-    back."""
-    _refused(TOUCHES.format(after=after, cmp=cmp), ["tau"], 946)
+    back.
+
+    Where the gate stops it, X rests on X0 from t = 3 on, and which branch Y
+    reads there is rounding's call. The run is asked about that at the stop
+    itself, before the stop is read for the gate (issue #1589), and is
+    refused for the rest (issue #1548), which no choice of sensitivities
+    changes. It was refused for the gate (#946) only because the first output
+    after the stop came later."""
+    _refused(TOUCHES.format(after=after, cmp=cmp), ["tau"], issue)
 
 
 FAST_SPECIES = (
