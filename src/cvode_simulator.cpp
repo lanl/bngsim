@@ -3397,12 +3397,21 @@ struct LookScratch {
 // ends counts as a change there: the step is cut there, and CVODE's root
 // search finds the crossing in it.
 //
+// A run with a state switch is looked at whether or not it has a stop. With
+// none, its steps over a stretch where nothing changes grow the same way from
+// the start or a restart: from t = 30 the same window took the whole run in
+// three steps, and Y gained 0 of the 4.51 a rate of 10 while it is open gives.
+// Such a run has no rate that repeats on a stop, so its look reads only the
+// switches' sides, and places a stop only where it sees a window. Its steps
+// are watched a call each, as in any run whose roots are searched, which costs
+// up to a tenth on a run of a few hundred steps; the steps are CVODE's own.
+//
 // What it still does not see: a pulse that is nothing at both ends of a step
 // and at the three places inside it, or a switch's window between them; either
 // inside a step that takes less than a quarter of what is left; the step after
-// a stop or a root where the step before it does not settle it; a run with no
-// stop, which is not looked at; and, at CVODE's higher orders, a step CVODE
-// passes that the order-one estimate takes for one it fails (kLookFails).
+// a stop or a root where the step before it does not settle it; and, at
+// CVODE's higher orders, a step CVODE passes that the order-one estimate takes
+// for one it fails (kLookFails).
 //
 // A stop placed anywhere else changes where CVODE's steps end, and a step cut
 // to end on it can pass over a pulse that a step of CVODE's own would have
@@ -3904,7 +3913,7 @@ struct CvodeSimulator::Impl {
     // step's two ends, does not see that pair of crossings.
     double changes_inside(void *cvode_mem, N_Vector y, int ns, double tn, double end,
                           LookScratch &scratch, bool &end_fails, const std::vector<int> &residuals,
-                          const StateSwitchHold *hold);
+                          const StateSwitchHold *hold, bool reads_rate);
     // f on the branch every crossing stop at t was approached on: each stop's clock
     // put back across its threshold, the way the #48 jump reads f⁻. The evaluator
     // is left on the true state.
@@ -7347,7 +7356,7 @@ double CvodeSimulator::Impl::settled_next_step(void *cvode_mem, N_Vector y, Look
 double CvodeSimulator::Impl::changes_inside(void *cvode_mem, N_Vector y, int ns, double tn,
                                             double end, LookScratch &scratch, bool &end_fails,
                                             const std::vector<int> &residuals,
-                                            const StateSwitchHold *hold) {
+                                            const StateSwitchHold *hold, bool reads_rate) {
     const double none = std::numeric_limits<double>::quiet_NaN();
     end_fails = false;
     // CVODE's own history at tn: the derivatives of the polynomial its next
@@ -7501,20 +7510,45 @@ double CvodeSimulator::Impl::changes_inside(void *cvode_mem, N_Vector y, int ns,
         }
         return false;
     };
+    // The state the step's predictor puts at `at`, into scratch.y_at, for a
+    // look that reads no rate (estimate_at puts it there otherwise).
+    const auto predict_at = [&](double at) {
+        const double dt = at - tn;
+        std::fill(scratch.y_at.begin(), scratch.y_at.end(), 0.0);
+        double term = 1.0; // dt^k / k!
+        for (int k = 0; k <= order; ++k) {
+            const double *d = scratch.dky[static_cast<size_t>(k)].data();
+            for (int i = 0; i < ns; ++i) {
+                scratch.y_at[static_cast<size_t>(i)] += term * d[i];
+            }
+            term *= dt / static_cast<double>(k + 1);
+        }
+    };
     double found = none;
     if (end > tn) {
-        if (!(estimate_at(end) <= kLookFails)) {
+        if (reads_rate && !(estimate_at(end) <= kLookFails)) {
             end_fails = true;
         } else {
             const bool reads_sides = !residuals.empty();
+            if (!reads_rate) {
+                predict_at(end);
+            }
             if (reads_sides) {
                 sides_at(end, scratch.y_at.data(), side_end);
                 sides_at(tn, scratch.dky[0].data(), side_from);
             }
             for (const double part : kLooksInsideAt) {
                 const double at = tn + part * (end - tn);
-                if (at > tn &&
-                    (!(estimate_at(at) <= kLookFails) || (reads_sides && crossed_back(at)))) {
+                if (!(at > tn)) {
+                    continue;
+                }
+                bool changes = false;
+                if (reads_rate) {
+                    changes = !(estimate_at(at) <= kLookFails);
+                } else {
+                    predict_at(at);
+                }
+                if (changes || (reads_sides && crossed_back(at))) {
                     found = at;
                     break;
                 }
@@ -17872,7 +17906,25 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // stale (see where it is set), and, where it is, the step CVODE does take
     // next where the step it took settles that (settled_next_step; NaN where
     // it does not).
-    const bool looks_inside = !wants_sensitivity && !crossing_stops.empty();
+    const bool looks_inside =
+        !wants_sensitivity && (!crossing_stops.empty() || !state_switch_roots.empty());
+    // A run with no stop has no rate that repeats on one, and its look reads
+    // only the state switches' sides (changes_inside).
+    const bool look_reads_rate = !crossing_stops.empty();
+    // Issue #998 (kSpansAStretch): the stop ahead, or the run's end; only a
+    // step that takes a quarter or more of what is left to it is read.
+    auto look_stop_ahead = [&]() {
+        return next_crossing < crossing_stops.size() ? crossing_stops[next_crossing].t_star
+                                                     : t_out.back();
+    };
+    // And in a run with no stop, whose look reads only the switches' sides, a
+    // stretch whose steps max_step keeps under that quarter is not watched:
+    // its calls are main's. Watched a step a call, a run with a small max_step
+    // ended no batch, and so logged none it spent.
+    auto look_left_to_max_step = [&](double tn) {
+        return !look_reads_rate && opts.max_step_size > 0.0 &&
+               opts.max_step_size < kSpansAStretch * (look_stop_ahead() - tn);
+    };
     bool look_open = false;
     double look_from = -std::numeric_limits<double>::infinity();
     bool look_h_stale = false;
@@ -18944,9 +18996,9 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                             ? std::nextafter(to, -std::numeric_limits<double>::infinity())
                             : to;
                     bool end_fails = false;
-                    const double at =
-                        impl_->changes_inside(cvode_mem, y, ns, tn, end, look_scratch, end_fails,
-                                              state_switch_roots, &state_switch_hold);
+                    const double at = impl_->changes_inside(cvode_mem, y, ns, tn, end, look_scratch,
+                                                            end_fails, state_switch_roots,
+                                                            &state_switch_hold, look_reads_rate);
                     if (end_fails) {
                         // CVODE's own test sees the change: the step is left to
                         // it, and what it walks to the step's end, as on main
@@ -19083,7 +19135,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // Nor while a state switch's residual is held off the root search
             // (issue #908), which is searched at every return: there the
             // calls are main's.
-            if (looks_inside && look_open && !one_step && state_switch_hold.n_held == 0) {
+            if (looks_inside && look_open && !one_step && state_switch_hold.n_held == 0 &&
+                !look_left_to_max_step(static_cast<double>(look_tn))) {
                 const double tn = static_cast<double>(look_tn);
                 const double window = kLookWindow * ((next_crossing < crossing_stops.size()
                                                           ? crossing_stops[next_crossing].t_star
