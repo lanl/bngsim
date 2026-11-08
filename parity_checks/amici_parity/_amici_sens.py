@@ -612,6 +612,8 @@ def amici_sens(
     # _amici_common.amici_ode. Sensitivities inherit the problem doubly: an
     # unrequested [0, t_start] prelude moves the state the sensitivities are
     # linearized about, so dx/dp is computed at the wrong operating point.
+    # ``t_start`` is where the run starts: amici_sens_run hands it the job's
+    # SED-ML initial time, not its outputStartTime (issue #1564).
     model.set_t0(t_start)
     ts = np.linspace(t_start, t_end, n_points)
     run_ts, on_onsets = ts, []

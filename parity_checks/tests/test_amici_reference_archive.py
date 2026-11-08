@@ -102,17 +102,11 @@ def test_every_input_of_the_job_is_in_its_identity(tmp_path, change, keys):
     assert [k for k in was if was[k] != now[k]] == keys
 
 
-def test_an_entry_recorded_from_the_output_start_is_stale(tmp_path):
-    """An archive recorded before #1564 started AMICI at the outputStartTime and
-    holds ``t_start``; the identity now holds where the run starts, ``t_int``,
-    so such an entry is refused, not replayed against a run from the initial
-    time. On a job whose window starts after the model does, the two differ."""
+def test_the_identity_holds_where_the_run_starts(tmp_path):
     spec = _spec(tmp_path, initial_time=0.0, t_start=120.0)
     now = A.archive_identity(spec)
-    assert now["t_int"] == 0.0 and "t_start" not in now
-    assert now["format"] == 3
-    old = {**{k: v for k, v in now.items() if k != "t_int"}, "format": 2, "t_start": 120.0}
-    assert sorted(k for k in now if old.get(k) != now[k]) == ["format", "t_int"]
+    assert (now["format"], now["t_int"], now["through_event_instants"]) == (3, 0.0, True)
+    assert "t_start" not in now
 
 
 def test_the_output_start_alone_is_not_in_the_identity(tmp_path):
@@ -431,3 +425,26 @@ def test_a_recorded_run_archives_the_onsets_and_reports_them_only_as_a_note(tmp_
     assert "strict_onset_samples" not in res["timing"]["amici"]
     record, _am = A.archive_load(arch, spec)
     assert record["timing"]["strict_onset_samples"] == [1.0]
+
+
+def test_a_replay_refuses_an_entry_recorded_before_1564(tmp_path, monkeypatch):
+    """An archive recorded before #1564 started AMICI at the outputStartTime,
+    without its event instants, and holds ``t_start`` in its identity. The worker
+    refuses it rather than compare a run from the initial time against it, and
+    says which inputs changed, before bngsim's sensitivity run."""
+    spec = _minimal_spec(tmp_path)
+    spec["params"] = {**spec["params"], "initial_time": 0.0, "t_start": 4.0}
+    now = A.archive_identity(spec)
+    old = {k: v for k, v in now.items() if k not in ("t_int", "through_event_instants")}
+    record = {
+        **old,
+        "format": 2,
+        "t_start": 4.0,
+        "amici_free_ids": ["k1"],
+        "shared_ids": ["k1"],
+        "timing": {"integrate_sec": 0.01},
+    }
+    A.archive_save(spec["reference_archive"], spec, record, _am_one_param())
+    res = _replay(monkeypatch, spec, bn_sens=_bngsim_must_not_run)
+    assert res["reference_refusal"] == "archive_stale"
+    assert res["exception"].endswith("the job's format, t_int, through_event_instants changed")

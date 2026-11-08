@@ -817,6 +817,8 @@ def amici_ode(
     # RoadRunner both apply the initial state AT t_start. That is a silent
     # apples-to-oranges comparison, not a tolerance effect: it does not shrink as
     # rtol/atol tighten. 21 of the 1323 corpus models have t_start != 0.
+    # ``t_start`` is where the run starts: amici_run hands it the job's SED-ML
+    # initial time, not its outputStartTime (issue #1564).
     model.set_t0(t_start)
     ts = np.linspace(t_start, t_end, n_points)
     run_ts, on_onsets = output_times(

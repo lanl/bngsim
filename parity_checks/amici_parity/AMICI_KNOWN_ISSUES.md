@@ -52,7 +52,9 @@ job, 691 and 878 in the sensitivity job (878's ODE row already failed that way).
 rr_parity passes bngsim on all three from the same start; bngsim takes 11,940,
 173,344 and 154,852 steps there in all, within the same CVODES step limit AMICI
 runs out of (10,000 in the ODE job, 100,000 in the sensitivity job). The same
-change lets AMICI's ODE run of BIOMD0000000943 finish; it `PASS`es.
+change lets AMICI's ODE run of BIOMD0000000943 finish; it `PASS`es. The tallies
+above predate #1564: the corpus was not re-swept in full for it, only the 19 jobs
+whose start moved and the 22 with a sample on a strict onset (Class 7).
 
 ## Class 2 — AMICI integration outliers (44 DIFF; 42 confirmed AMICI-side)
 

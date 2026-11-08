@@ -527,10 +527,14 @@ rows out of the state verdict and of every sensitivity verdict, by the same
 5 sp x 2 par; 2/2 columns judged: fail 0/10000 (hard 0, soft 0, forgiven 0, noise-rescued 0); state ok | strict onset not judged at t = 1 (state rescued 1 DECISIVE; sensitivities rescued 0; GH #1571)
 ```
 
-`rescued` counts the failing cells on those rows, read off every sample with the
-rows forgiven: the state's, and the judged columns' cells that the
-solver-resolution floor had not already forgiven. `DECISIVE` means that verdict
-is a `DIFF` on every sample and not on the judged ones. A row with a cell finite
+`rescued` counts the cells on those rows that only their forgiveness clears,
+read off every sample with the rows forgiven through `differ`'s `forgive_mask`:
+for the state, and for the judged sensitivity columns. A cell that `differ`'s own
+gates (the near-zero backstop, the dynamic-range gate) or the solver-resolution
+floor already forgive is not counted, so a row can lose failing cells from its
+tally with `rescued 0` (BIOMD0000000077: `fail 6/56056` before, `0/56000` after).
+`DECISIVE` means that verdict is a `DIFF` on every sample and not on the judged
+ones. A row with a cell finite
 on one side only, in the state or a sensitivity, is judged anyway.
 
 On the 22 jobs with a sample on an onset: BIOMD0000000104, 125, 860 and 862 go
@@ -723,5 +727,10 @@ records the AMICI version that made it, and a replayed row's `versions.amici`
 is that version rather than whatever AMICI is installed where the replay ran.
 The two flags are mutually exclusive, and the report's `_meta.reference_source`
 says which side the AMICI numbers came from.
+
+A change to how AMICI's side is run makes every recorded entry stale, and the
+replay then refuses each row as `archive_stale` until the archive is re-recorded.
+Issues #1564 and #1571 did that (`ARCHIVE_FORMAT` 3: `t_int` in the identity, the
+event instants, the onset samples in the timing).
 
 In CI the nightly replays this archive Monday to Saturday and runs the engine live on Sundays; recording and publishing it, and what may go in it, are in [`nightly/README.md`](../nightly/README.md#the-reference-archive-issue-805).

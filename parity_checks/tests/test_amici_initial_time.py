@@ -14,6 +14,8 @@ These run without AMICI: both engines are stand-ins.
 
 from __future__ import annotations
 
+import json
+
 import _amici_common as ac
 import amici_run as ar
 import numpy as np
@@ -67,3 +69,22 @@ def test_both_engines_of_the_ode_job_start_at_the_initial_time(monkeypatch):
     (res,) = out
     assert res["status"] == "pass"
     assert seen == {"bngsim": 0.0, "amici": 0.0}
+
+
+def test_the_curated_manifest_carries_the_source_manifests_times():
+    """``amici_ode_jobs.json`` is the runners' default manifest and the nightly
+    amici-sens leg's: a curated subset of ``rr_parity/ode_jobs.json`` built before
+    the source gained ``initial_time``, so without it two of its jobs
+    (BIOMD0000000569, 943) still ran from the outputStartTime. Each curated job's
+    params are its source job's."""
+    here = ar.HERE
+    source = json.loads((ar.RR_ODE_JOBS).read_text())["jobs"]
+    curated = json.loads((here / "amici_ode_jobs.json").read_text())["jobs"]
+    by_id = {j["model_id"]: j for j in source}
+    for job in curated:
+        assert job["params"] == by_id[job["model_id"]]["params"], job["model_id"]
+        assert "initial_time" in job["params"], job["model_id"]
+    offset = {
+        j["model_id"] for j in curated if ac.initial_time(j["params"]) != j["params"]["t_start"]
+    }
+    assert offset == {"BIOMD0000000569", "BIOMD0000000943"}
