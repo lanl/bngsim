@@ -27,14 +27,30 @@ namespace bngsim {
 // `except SimulationError` caught. Thrown for a refusal whose condition no
 // choice of requested parameters changes (the run has sensitivities, and the
 // trajectory). One whose condition turns on a requested column (a crossing or a
-// fire it moves, two times it parts) stays a std::runtime_error, whatever its
-// message advises: compute_all_sensitivities retries a failed chunk one column
-// at a time (GH #243) and re-raises this type without trying. The exception is
-// #1279's refusal of a held equality, typed first: where a restart lands on the
-// stop it turns on whether a requested column moves the restart.
+// fire it moves, two times it parts) is SensitivityRefusedForParameters below:
+// compute_all_sensitivities retries a failed chunk one column at a time (GH
+// #243) and re-raises this type without trying. The exception is #1279's
+// refusal of a held equality, typed first: where a restart lands on the stop it
+// turns on whether a requested column moves the restart.
 class SensitivityUnsupported : public std::runtime_error {
   public:
     using std::runtime_error::runtime_error;
+};
+
+// A forward-sensitivity refusal partway through a run, by declaration, whose
+// condition turns on the columns requested: a crossing or a fire a column
+// moves, two times a column parts, an edge a column moves the run onto. A
+// smaller set of columns may run, so compute_all_sensitivities retries a chunk
+// that throws it one column at a time (GH #243) and names the columns that run
+// alone, where it re-raises the SensitivityUnsupported it derives from at once.
+// The pybind11 layer maps it to bngsim.SensitivityRefusedForParametersError, a
+// SensitivityRefusedDuringRunError, so a caller tells it from a solver failure
+// by its type (issue #1435). A guard against a state the solver should not
+// reach (a message that asks for the model to be reported) is not a refusal
+// and stays a std::runtime_error.
+class SensitivityRefusedForParameters : public SensitivityUnsupported {
+  public:
+    using SensitivityUnsupported::SensitivityUnsupported;
 };
 
 // ─── Rate law types ─────────────────────────────────────────────────────────
