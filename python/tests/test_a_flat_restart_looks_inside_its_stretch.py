@@ -374,9 +374,10 @@ def test_a_row_after_a_root_stepped_on_through_is_read_at_its_time():
 # S drifts up at dlt from 1 at t = 30 while thr() sweeps from 1 to 1 + A by
 # t = 30.05, on the time or on a clock species C. S < thr() opens a window
 # where the sweep passes S, and S closes it where it passes thr()'s ceiling.
-# Y integrates a Gaussian pulse centred at 30.047 while it is open, so only
-# the pulse's tail after the window opens counts. The pulse's centre is a stop
-# the run restarts at.
+# Y integrates {pulse} while it is open: a Gaussian centred at 30.047, a stop
+# the run restarts at, whose tail after the window opens is all that counts;
+# or 1, and the run has no stop at all.
+_PULSE = "exp(-((time()-tz)/0.001)^2)"
 _WINDOW_NET = """begin parameters
     1 k    10.0
     2 A    0.05
@@ -389,7 +390,7 @@ end parameters
 begin functions
     1 thr() 1+A*(1+tanh(({clock}-tp)/sig))/2
     2 up() dlt
-    3 z() exp(-((time()-tz)/0.001)^2)
+    3 z() {pulse}
     4 r() if(Sobs<thr(),k,0)*z()
 end functions
 begin species
@@ -423,7 +424,7 @@ def test_a_window_a_switch_opens_and_closes_inside_the_step_is_seen(tmp_path, cl
     other side from both ends becomes a stop: the step is cut there, and the
     crossing in it is found. At rtol 1e-3 the gain is 7e-6 off, under atol."""
     path = tmp_path / "window.net"
-    path.write_text(_WINDOW_NET.format(clock=clock))
+    path.write_text(_WINDOW_NET.format(clock=clock, pulse=_PULSE))
     sim = bngsim.Simulator(bngsim.Model.from_net(str(path)))
     result = sim.run(sample_times=[30.0, 31.05], rtol=rtol, atol=rtol * 1e-2)
     amp, tp, sig, dlt, tz = 0.05, 30.05, 0.001, 0.1, 30.047
@@ -443,4 +444,35 @@ def test_a_window_a_switch_opens_and_closes_inside_the_step_is_seen(tmp_path, cl
         * (math.erf((t_close - tz) / 0.001) - math.erf((t_open - tz) / 0.001))
     )
     assert exact == pytest.approx(6.6955e-5, rel=1e-4)
+    assert float(result.species[-1][1]) == pytest.approx(exact, rel=rel)
+
+
+def _window_opens(amp=0.05, tp=30.05, sig=0.001, dlt=0.1):
+    """Where the sweep passes S, by bisection."""
+    lo, hi = 30.0, tp + 0.5
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        if 1.0 + amp * (1.0 + math.tanh((mid - tp) / sig)) / 2.0 < 1.0 + dlt * (mid - 30.0):
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
+@pytest.mark.parametrize("clock", ["time()", "Cobs"])
+@pytest.mark.parametrize("rtol, rel", [(1e-3, 1e-2), (1e-6, 1e-5)])
+def test_a_window_in_a_run_with_no_stop_is_seen(tmp_path, clock, rtol, rel):
+    """The same window with Y's rate k while it is open, and so no stop in the
+    run. A run with no stop was not looked at: from t = 30 it took the whole
+    run in three steps, S > thr() at the ends of every one, and Y gained 0
+    where the window gives it k times its length, 4.51. A run with a state
+    switch is now looked at whether or not it has a stop, and where it has
+    none the look reads only the switches' sides."""
+    path = tmp_path / "window.net"
+    path.write_text(_WINDOW_NET.format(clock=clock, pulse="1"))
+    result = bngsim.Simulator(bngsim.Model.from_net(str(path))).run(
+        sample_times=[30.0, 31.05], rtol=rtol, atol=rtol * 1e-2
+    )
+    exact = 10.0 * (30.0 + 0.05 / 0.1 - _window_opens())
+    assert exact == pytest.approx(4.5111, rel=1e-4)
     assert float(result.species[-1][1]) == pytest.approx(exact, rel=rel)
