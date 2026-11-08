@@ -11,6 +11,10 @@ JSON: no engines, no corpus.
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -206,6 +210,255 @@ def test_cli_reads_the_baseline_then_and_now(tmp_path):
     # Without a baseline of that night's commit, nothing is excused.
     missing = str(tmp_path / "absent.json")
     assert V.main([*args[:5], "--baseline-then", missing, "--baseline-now", tonight]) == 1
+
+
+# --------------------------------------------------------------------------- #
+# a replay after the live Sunday night (#1599)
+# --------------------------------------------------------------------------- #
+# rr_ssa's two nights in #1599, reduced to the rows that tell: the scheduled
+# Sunday run 42493810983 judged live, and the replay dispatched after it,
+# 42510555519, read the reference archive. The committed baseline was recorded
+# from a replay and holds every row as that replay judged it.
+LIVE = "roadrunner (live)"
+ARCHIVE = "archive:/home/runner/work/_temp/reference/rr_ssa"
+UNREPLAYABLE = (
+    "roadrunner (archive): archive_unreplayable: the replay needs RoadRunner over "
+    "t=0→100, which the recorded run never ran"
+)
+NO_ENTRY = "roadrunner (archive): archive_stale: no entry for this model"
+GAP_ROW = "MODEL2003200001|ssa"
+
+
+def refused(note, outcome="REFERENCE_FAILED"):
+    return {**rec(outcome), "note": note}
+
+
+def night(reference_source, cases, where="config"):
+    obj = core(cases, suite="rr_ssa")
+    if where == "config":
+        obj["source"] = {"config": {"reference_source": reference_source}}
+    elif where == "meta":
+        obj["source"] = {"reference_source": reference_source}
+    return obj
+
+
+REPLAYED = {
+    GAP_ROW: refused(UNREPLAYABLE),
+    "BIOMD0000000312|ssa": refused(NO_ENTRY),
+    "BIOMD0000000008|ssa": rec("PASS"),
+}
+SUNDAY = night(
+    LIVE,
+    {
+        GAP_ROW: rec("PASS"),
+        "BIOMD0000000312|ssa": rec("TIMEOUT"),
+        "BIOMD0000000008|ssa": rec("PASS"),
+    },
+)
+MONDAY = night(ARCHIVE, REPLAYED)
+COMMITTED = night(ARCHIVE, REPLAYED)
+
+
+def test_a_replay_after_the_live_night_reports_the_archive_gap_the_baseline_records(tmp_path):
+    # compare.sh's own arguments for the night-to-night diff. Without the
+    # committed baseline the row is a regression, as it was on run 42510555519.
+    prev = _write(tmp_path, "prev.json", SUNDAY)
+    tonight = _write(tmp_path, "tonight.json", MONDAY)
+    committed = _write(tmp_path, "committed.json", COMMITTED)
+    out = tmp_path / "diff-prev.json"
+    args = ["diff", "--baseline", prev, "--fresh", tonight, "--timeout-flips-info"]
+    args += ["--phases-may-differ", "--json-out", str(out)]
+    assert V.main(args) == 1
+    assert [x["case"] for x in json.loads(out.read_text())["regressed"]] == [GAP_ROW]
+    then_now = ["--baseline-then", committed, "--baseline-now", committed]
+    assert V.main([*args, *then_now]) == 0
+    r = json.loads(out.read_text())
+    assert r["regressed"] == [] and r["n_alerts"] == 0
+    changed = {x["case"]: x for x in r["changed"]}
+    # Still listed, with its own reason, and so is the timeout row beside it.
+    assert sorted(changed) == ["BIOMD0000000312|ssa", GAP_ROW]
+    assert (changed[GAP_ROW]["before"], changed[GAP_ROW]["after"]) == ("PASS", "REFERENCE_FAILED")
+    for row in changed.values():
+        assert row["note"].startswith("[archive gap after a live night")
+    assert changed[GAP_ROW]["note"].endswith(UNREPLAYABLE)
+    assert r["reference_source"] == {"before": LIVE, "after": ARCHIVE}
+    md = V.render_md(r, "vs previous night")
+    assert "no regressions" in md and f"{LIVE} -> {ARCHIVE}" in md
+    # The --baseline-now alone does it: compare.sh may not get that night's.
+    assert V.main([*args, "--baseline-now", committed]) == 0
+
+
+def test_an_archive_gap_between_two_replays_still_alerts():
+    # bng_nf's error.bngl|stochastic in #1355 (2026-11-05): PASS -> an archive
+    # gap between two weekday replays. Nothing switched reference sides.
+    last_night = night(ARCHIVE, {**REPLAYED, GAP_ROW: rec("PASS")})
+    r = V.diff(last_night, MONDAY, baseline_now=COMMITTED)
+    assert [x["case"] for x in r["regressed"]] == [GAP_ROW]
+    # Two live nights, the same.
+    r = V.diff(SUNDAY, night(LIVE, {**REPLAYED}), baseline_now=COMMITTED)
+    assert [x["case"] for x in r["regressed"]] == [GAP_ROW]
+
+
+@pytest.mark.parametrize(
+    "committed_row",
+    [
+        rec("PASS"),  # the baseline never recorded the gap
+        None,  # nor the row
+        refused(UNREPLAYABLE, "BAD_TEST"),  # another verdict, the same note
+        refused("roadrunner (archive): RuntimeError: CVODE failed"),  # a replayed failure
+        refused(NO_ENTRY),  # another gap than tonight's
+    ],
+    ids=["pass", "missing", "other-verdict", "not-a-gap", "other-gap"],
+)
+def test_a_gap_the_committed_baseline_does_not_record_still_alerts(committed_row):
+    cases = {k: v for k, v in REPLAYED.items() if k != GAP_ROW}
+    if committed_row is not None:
+        cases[GAP_ROW] = committed_row
+    r = V.diff(SUNDAY, MONDAY, baseline_now=night(ARCHIVE, cases))
+    assert [x["case"] for x in r["regressed"]] == [GAP_ROW]
+    # ... and against the committed baseline itself nothing changes.
+    if committed_row is not None and committed_row["outcome"] == "PASS":
+        assert V.diff(night(ARCHIVE, cases), MONDAY)["alerts"]["regressed"] == 1
+
+
+@pytest.mark.parametrize(
+    "tonight_row",
+    [
+        refused("roadrunner (archive): RuntimeError: CVODE failed"),  # judged, and failed
+        refused("roadrunner: archive_unreplayable is named, not stamped"),
+        rec("DIFF"),
+    ],
+    ids=["replayed-failure", "unstamped", "diff"],
+)
+def test_a_replay_that_judged_the_row_still_alerts(tonight_row):
+    tonight = night(ARCHIVE, {**REPLAYED, GAP_ROW: tonight_row})
+    r = V.diff(SUNDAY, tonight, baseline_now=night(ARCHIVE, {**REPLAYED, GAP_ROW: tonight_row}))
+    assert [x["case"] for x in r["regressed"]] == [GAP_ROW]
+
+
+@pytest.mark.parametrize(
+    "last_night",
+    [
+        night(None, SUNDAY["cases"], where="none"),  # extracted before it was recorded
+        night(f"{ARCHIVE}-v2", SUNDAY["cases"]),  # another archive, not live
+    ],
+    ids=["unsaid", "other-archive"],
+)
+def test_a_previous_night_that_was_not_live_excuses_nothing(last_night):
+    r = V.diff(last_night, MONDAY, baseline_now=COMMITTED)
+    assert [x["case"] for x in r["regressed"]] == [GAP_ROW]
+
+
+def test_a_tonight_that_does_not_say_it_replayed_excuses_nothing():
+    tonight = night(None, REPLAYED, where="none")
+    r = V.diff(SUNDAY, tonight, baseline_now=COMMITTED)
+    assert [x["case"] for x in r["regressed"]] == [GAP_ROW]
+
+
+def test_reference_source_reads_the_meta_or_the_config_and_wants_one_answer():
+    assert V.reference_source(night(LIVE, {}, where="meta")) == LIVE
+    assert V.reference_source(night(ARCHIVE, {})) == ARCHIVE
+    assert V.reference_source(core({})) is None
+    # rr_ode's passes: one reference side between them, or none is known.
+    two = {"reference_source": ARCHIVE, "parts": [{"reference_source": ARCHIVE}] * 2}
+    assert V.reference_source({"source": two}) == ARCHIVE
+    mixed = {**two, "parts": [{"reference_source": ARCHIVE}, {"reference_source": LIVE}]}
+    assert V.reference_source({"source": mixed}) is None
+    half = {**two, "parts": [{"reference_source": ARCHIVE}, {}]}
+    assert V.reference_source({"source": half}) is None
+
+
+def test_a_meta_level_reference_source_works_like_the_config_one():
+    # rr_ode, bng_ode and amici_sens record it in _meta, not in config.
+    r = V.diff(
+        night(LIVE, SUNDAY["cases"], where="meta"),
+        night(ARCHIVE, REPLAYED, where="meta"),
+        baseline_now=COMMITTED,
+    )
+    assert r["n_alerts"] == 0 and GAP_ROW in {x["case"] for x in r["changed"]}
+
+
+def test_extract_records_where_the_reference_side_came_from(tmp_path):
+    # rr_run, bng_ode_run and amici_sens_run put it in _meta; ssa_screen and
+    # bng_stoch_run in _meta.config, which the file already kept.
+    top, cfg = tmp_path / "top.json", tmp_path / "cfg.json"
+    write_report(top, [_jr("M1", "PASS")], meta={"reference_source": ARCHIVE})
+    write_report(cfg, [_jr("M2", "PASS")], meta={"config": {"reference_source": LIVE}})
+    assert V.extract("core", top, "rr_ode")["source"]["reference_source"] == ARCHIVE
+    assert V.reference_source(V.extract("core", top, "rr_ode")) == ARCHIVE
+    assert V.reference_source(V.extract("core", cfg, "rr_ssa")) == LIVE
+    assert V.reference_source(V.extract("core", [top, cfg], "rr_ode")) is None
+
+
+def _stub(path: Path, body: str) -> None:
+    path.write_text("#!/bin/sh\n" + body)
+    path.chmod(0o755)
+
+
+@pytest.mark.skipif(not shutil.which("bash"), reason="compare.sh is a bash script")
+@pytest.mark.parametrize("fetch_ok", [True, False], ids=["with-that-nights", "without"])
+def test_compare_sh_hands_the_committed_baseline_to_the_night_to_night_diff(tmp_path, fetch_ok):
+    # compare.sh end to end, with gh and git stubbed: tonight is Monday's replay,
+    # the run gh lists is Sunday's live night. Whether or not git can fetch the
+    # committed baseline as of Sunday's commit, the gap is reported, not alerted.
+    here = tmp_path / "nightly"
+    (here / "baselines").mkdir(parents=True)
+    for name in ("compare.sh", "verdicts.py"):
+        shutil.copy(Path(V.__file__).with_name(name), here / name)
+    (here / "flaky.json").write_text("{}")
+    V.dump_verdicts(COMMITTED, here / "baselines" / "rr_ssa.json")
+    prev = tmp_path / "sunday.json"
+    V.dump_verdicts(SUNDAY, prev)
+
+    report = tmp_path / "report.json"
+    rows = [
+        _jr("MODEL2003200001", "REFERENCE_FAILED", method="ssa", exception=UNREPLAYABLE),
+        _jr("BIOMD0000000312", "REFERENCE_FAILED", method="ssa", exception=NO_ENTRY),
+        _jr("BIOMD0000000008", "PASS", method="ssa"),
+    ]
+    write_report(report, rows, meta={"config": {"reference_source": ARCHIVE}})
+
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    _stub(bin_ / "python3", f'exec "{sys.executable}" "$@"\n')
+    _stub(
+        bin_ / "gh",
+        'case "$1 $2" in\n'
+        '  "run list") echo "111 0123abcd" ;;\n'
+        '  "run download") while [ $# -gt 0 ]; do [ "$1" = -D ] && d=$2; shift; done\n'
+        f'    cp "{prev}" "$d/verdicts.json" ;;\n'
+        "  *) exit 2 ;;\nesac\n",
+    )
+    committed = here / "baselines" / "rr_ssa.json"
+    show = f'cat "{committed}"' if fetch_ok else "exit 1"
+    _stub(
+        bin_ / "git",
+        f'case " $* " in\n  *" fetch "*) exit 0 ;;\n  *" show "*) {show} ;;\nesac\nexit 1\n',
+    )
+
+    out = tmp_path / "out"
+    env = {
+        **os.environ,
+        "PATH": f"{bin_}{os.pathsep}{os.environ['PATH']}",
+        "GH_TOKEN": "x",
+        "GITHUB_REPOSITORY": "o/r",
+        "GITHUB_RUN_ID": "222",
+        "NIGHTLY_OUT": str(out),
+        "NOT_PREVIOUS_NIGHTS": str(tmp_path / "absent.json"),
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
+    }
+    proc = subprocess.run(
+        ["bash", str(here / "compare.sh"), "rr_ssa", "core", str(report)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    r = json.loads((out / "rr_ssa" / "diff-prev.json").read_text())
+    assert r["label"] == "vs previous night (run 111)" and r["n_alerts"] == 0
+    assert GAP_ROW in {x["case"] for x in r["changed"]}
+    assert json.loads((out / "rr_ssa" / "diff-baseline.json").read_text())["n_alerts"] == 0
 
 
 def test_cli_reads_the_flaky_file_for_its_suite(tmp_path):

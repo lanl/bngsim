@@ -253,7 +253,19 @@ EXTRACTORS = {"core": extract_core, "sbml-suite": extract_sbml_suite, "dsmts": e
 def _source_meta(kind: str, payload: dict) -> dict:
     if kind == "core":
         meta = payload.get("_meta") or {}
-        keep = ("suite", "regime", "git_rev", "versions", "generated", "elapsed_sec", "config")
+        # reference_source: where the reference side came from (issue #805), which
+        # rr_run, bng_ode_run and amici_sens_run record here and ssa_screen and
+        # bng_stoch_run in ``config`` (see :func:`reference_source`).
+        keep = (
+            "suite",
+            "regime",
+            "git_rev",
+            "versions",
+            "generated",
+            "elapsed_sec",
+            "config",
+            "reference_source",
+        )
         out = {k: meta[k] for k in keep if k in meta}
         cpu = (meta.get("hardware") or {}).get("cpu")
         if cpu:
@@ -360,6 +372,35 @@ def load_verdicts(path: Path) -> dict:
 # --------------------------------------------------------------------------- #
 # diff
 # --------------------------------------------------------------------------- #
+# A replay's note for a row the reference archive cannot stand in for, which it
+# never compares: "<engine> (archive): archive_stale: ..." where the entry is
+# missing or no longer matches the job, "... archive_unreplayable: ..." where
+# the replay needs a run the recorded one never made. (An entry that cannot be
+# read, archive_unreadable, is the archive's damage and is not one of them.)
+_ARCHIVE_GAP = re.compile(r"\(archive\): (archive_stale|archive_unreplayable):")
+ARCHIVE_PREFIX = "archive:"
+
+
+def reference_source(obj: dict) -> str | None:
+    """Where a verdict file's reference side came from (issue #805): ``archive:DIR``
+    for a replay of the reference archive, the engine and ``(live)`` for a live
+    run. A runner records it in its report's ``_meta`` or in its ``config``;
+    None when the file does not say, or its passes do not agree."""
+    source = obj.get("source") or {}
+    seen = {
+        part.get("reference_source") or (part.get("config") or {}).get("reference_source")
+        for part in (source.get("parts") or [source])
+    }
+    return seen.pop() if len(seen) == 1 else None
+
+
+def _archive_gap(rec: dict | None) -> str | None:
+    """The archive gap a row's note records, ``archive_stale`` or
+    ``archive_unreplayable``; None for a row the reference side judged."""
+    m = _ARCHIVE_GAP.search((rec or {}).get("note") or "")
+    return m.group(1) if m else None
+
+
 def rebaselined(then: dict, now: dict) -> dict[str, dict]:
     """The cases the committed baseline re-recorded between two of its versions:
     case id -> its record in ``now``, where ``then`` held another verdict, other
@@ -414,6 +455,7 @@ def diff(
     timeout_flips_info: bool = False,
     phases_may_differ: bool = False,
     rebaselined: dict[str, dict] | None = None,
+    baseline_now: dict | None = None,
 ) -> dict:
     """Compare two verdict files of the same kind. Returns a JSON-able result.
 
@@ -443,9 +485,28 @@ def diff(
     before anyone re-baselined it is not among them, and still alerts. The same
     goes for solver work: a case whose work was re-recorded, and which tonight
     does not exceed, is left out of the work comparison (``rebaselined_work``).
+
+    ``baseline_now`` is the committed baseline. It matters only where ``base``
+    judged against the live reference and ``fresh`` replayed the reference
+    archive, as when a replay follows the weekly live night (issue #1599). The
+    archive cannot stand in for every row the live run judged. A row that
+    tonight is such an archive gap, and that the committed baseline records as
+    the same verdict and the same kind of gap, was reviewed when it was
+    recorded. It is reported, not alerted, and listed under ``changed`` with
+    its reason, since the row was still not compared tonight. A gap between two
+    replays, or two live nights, still alerts, and so does one the committed
+    baseline does not record.
     """
     flaky = flaky or {}
     rebaselined = rebaselined or {}
+    committed = (baseline_now or {}).get("cases") or {}
+    src_b, src_f = reference_source(base), reference_source(fresh)
+    after_live = (
+        src_b is not None
+        and src_f is not None
+        and not src_b.startswith(ARCHIVE_PREFIX)
+        and src_f.startswith(ARCHIVE_PREFIX)
+    )
     if base["kind"] != fresh["kind"]:
         raise ValueError(f"kind mismatch: baseline {base['kind']} vs fresh {fresh['kind']}")
     kind = base["kind"]
@@ -470,6 +531,14 @@ def diff(
             soft = f"flaky: {flaky[cid]}"
         elif cid in rebaselined and _verdict(rebaselined[cid]) == _verdict(fr):
             soft = "re-baselined since that night"
+        elif (
+            after_live
+            and (gap := _archive_gap(fr)) is not None
+            and cid in committed
+            and _verdict(committed[cid]) == _verdict(fr)
+            and _archive_gap(committed[cid]) == gap
+        ):
+            soft = "archive gap after a live night, as the committed baseline records"
         elif timeout_flips_info and "TIMEOUT" in (bo, fo) and bo != fo:
             soft = "timeout flip between two nights (runner speed)"
         if soft and (bo, br.get("subclass")) != (fo, fr.get("subclass")):
@@ -589,6 +658,7 @@ def diff(
         "n_fresh": n_fresh,
         "tally_baseline": base.get("tally") or tally(b),
         "tally_fresh": fresh.get("tally") or tally(f),
+        "reference_source": {"before": src_b, "after": src_f},
         "alerts": alerts,
         "n_alerts": sum(alerts.values()),
         "regressed": regressed,
@@ -757,6 +827,9 @@ def render_md(result: dict, label: str = "", limit: int = 40) -> str:
         f"{status} · {result['n_fresh']} cases tonight, {result['n_baseline']} in baseline",
         "",
     ]
+    ref = result.get("reference_source") or {}
+    if ref.get("before") and ref.get("after") and ref["before"] != ref["after"]:
+        lines += [f"Reference side: {ref['before']} -> {ref['after']}.", ""]
 
     outcomes = sorted(set(result["tally_baseline"]) | set(result["tally_fresh"]))
     lines.append("| outcome | baseline | tonight |")
@@ -914,6 +987,11 @@ def _cmd_diff(args) -> int:
         timeout_flips_info=args.timeout_flips_info,
         phases_may_differ=args.phases_may_differ,
         rebaselined=_rebaselined_from(args.baseline_then, args.baseline_now),
+        baseline_now=(
+            load_verdicts(Path(args.baseline_now))
+            if args.baseline_now and Path(args.baseline_now).exists()
+            else None
+        ),
     )
     result["label"] = args.label
     md = render_md(result, args.label)
@@ -1062,7 +1140,13 @@ def main(argv=None) -> int:
         "--baseline-now, a change into a verdict the baseline re-recorded since "
         "then is reported, not alerted",
     )
-    d.add_argument("--baseline-now", default="", help="the committed baseline now")
+    d.add_argument(
+        "--baseline-now",
+        default="",
+        help="the committed baseline now; also, where the --baseline night ran live "
+        "and --fresh replayed the reference archive, a row the archive could not "
+        "replay is reported, not alerted, if this records the same gap (issue #1599)",
+    )
     d.add_argument(
         "--allow-missing-baseline",
         action="store_true",
