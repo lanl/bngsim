@@ -25,7 +25,8 @@ entry that no longer describes its job is refused, never compared
     packed: an archive missing one would turn that good case into an
     ``archive_stale`` alert every night. A TIMEOUT row with no entry is listed
     (``timed_out_unrecorded``) for the same reason: a replay that needs the entry
-    refuses it, which alerts the night after a live night that passes it. An
+    refuses it, which alerts the night after a live night that passes it, until
+    the committed baseline records the row that way (issue #1599). An
     entry goes in only if its model's
     license, as a corpus provenance manifest records it, allows a copy; the rest
     are listed and left out, and their nightly row is ``archive_stale`` until the
@@ -326,7 +327,8 @@ def pack(
         ),
         # Jobs killed before their reference was saved (issue #1290). A replay that
         # needs the entry refuses them as archive_stale, an alert on the night after
-        # a live night that passes them. Listed, not refused: a model too slow for
+        # a live night that passes them until the committed baseline records them
+        # that way (#1599). Listed, not refused: a model too slow for
         # the recording must not block the rest. TIMEOUT rows only: a row of another
         # outcome may need no entry (ssa_screen decides its time-event rows before
         # it reads the archive).

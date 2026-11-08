@@ -12,7 +12,10 @@
 #      manual run on main), when one can be downloaded. This catches a fix that
 #      regresses before anyone re-baselined it. A row the committed baseline
 #      re-recorded since that night's commit, which tonight matches, is reported there
-#      and not alerted: it was reviewed when it was recorded.
+#      and not alerted: it was reviewed when it was recorded. So is a row the
+#      reference archive cannot replay, after a night that ran live, which the
+#      committed baseline records as the same verdict (issue #1599; verdicts.py
+#      reads which side each night ran from the two files).
 #
 # Both Markdown reports go to $GITHUB_STEP_SUMMARY. Exit 1 on any alert or on a
 # missing report; a missing baseline is an alert unless ALLOW_MISSING_BASELINE is set
@@ -90,17 +93,18 @@ if [ -n "${GH_TOKEN:-}" ] && [ -n "${GITHUB_REPOSITORY:-}" ]; then
     prev=$(mktemp -d)
     if gh run download "$id" -R "$GITHUB_REPOSITORY" -n "nightly-$suite" -D "$prev" >/dev/null 2>&1 &&
       [ -f "$prev/verdicts.json" ]; then
-      # The committed baseline as of that night's commit (a shallow checkout fetches
-      # it); without it every change between the two nights is judged as before.
-      then_args=()
+      # The committed baseline now, and as of that night's commit (a shallow checkout
+      # fetches it); without that night's, every change between the two nights but
+      # an archive gap after a live night is judged as before.
+      baseline_args=(--baseline-now "$here/baselines/$suite.json")
       if git -C "$here" fetch -q --depth=1 origin "$sha" 2>/dev/null &&
         git -C "$here" show "$sha:./baselines/$suite.json" >"$prev/baseline-then.json" 2>/dev/null; then
-        then_args=(--baseline-then "$prev/baseline-then.json" --baseline-now "$here/baselines/$suite.json")
+        baseline_args+=(--baseline-then "$prev/baseline-then.json")
       fi
       python3 "$here/verdicts.py" diff \
         --baseline "$prev/verdicts.json" --fresh "$out/verdicts.json" \
         --label "vs previous night (run $id)" --flaky "$here/flaky.json" \
-        --timeout-flips-info --phases-may-differ ${then_args[@]+"${then_args[@]}"} \
+        --timeout-flips-info --phases-may-differ "${baseline_args[@]}" \
         --json-out "$out/diff-prev.json" --md-out "$out/diff-prev.md" "$@" >/dev/null || rc=1
       [ -f "$out/diff-prev.md" ] && cat "$out/diff-prev.md" >>"$summary"
       break

@@ -89,7 +89,13 @@ re-recorded, where tonight does not exceed it: such a case is left out of that
 night's work comparison, per case and in the totals. In that night-to-night
 comparison a flip into or out of TIMEOUT is reported, not alerted: two single nights
 can land on runner CPUs of different speed, and a timeout verdict depends on the wall
-clock. Against the committed baseline PASS -> TIMEOUT still alerts.
+clock. Against the committed baseline PASS -> TIMEOUT still alerts. And a row the
+reference archive cannot replay (`archive_stale`, `archive_unreplayable`) is reported,
+not alerted, when the previous night ran live and the committed baseline records the
+row as the same verdict: the weekly live run is the previous night for the replay
+after it, and the archive cannot stand in for every row a live run judges (#1599).
+Each night's `verdicts.json` says which side it ran (`reference_source`). The row
+stays in the report, with its reason; a gap between two replays still alerts.
 
 `flaky.json` lists cases whose verdict or solver work measurably changes on
 identical code (with the runs that show it); their changes are reported and never
@@ -160,7 +166,9 @@ error it raised) and the job identity it is valid for: the model file's sha256,
 the grid, the tolerances and so on, per runner. An entry that no longer matches its
 job (a model, grid or tolerance changed) is refused, never compared: the row is
 REFERENCE_FAILED with `reference_refusal: archive_stale`, which alerts wherever the
-case was good. A replayed row reports the engine version the entry recorded.
+case was good. (Against a live previous night it alerts only until the committed
+baseline records the row that way, #1599.) A replayed row reports the engine version
+the entry recorded.
 
 **Refreshing it.** Re-record after anything that changes the reference side: an
 engine pin (BioNetGen, AMICI, libRoadRunner), the corpus, a forced tolerance, or a
@@ -176,8 +184,9 @@ record (`reference_archive.py pack`) before comparing, and refuses if any PASS r
 has no recorded reference, since that row would then alert every night. A TIMEOUT
 row with no entry is listed in the publish summary: a replay that needs the entry
 refuses it as `archive_stale`, which alerts the night after any live night that
-passes it (#1290). To keep that list short, `rr_run.py` records RoadRunner's side
-first, before bngsim starts, and kills a job only at twice the cap, up to 600 s
+passes it (#1290), until the committed baseline records the row that way (#1599).
+To keep that list short, `rr_run.py` records RoadRunner's side first, before
+bngsim starts, and kills a job only at twice the cap, up to 600 s
 (the giant pass's cap, which it does not extend); the row is still TIMEOUT past
 the cap itself, as on a live night. `ssa_screen.py`, which saves its entry after
 every RoadRunner call, likewise takes a model's row at its cap as a live run does
