@@ -968,10 +968,17 @@ def net_to_omex(
     # The SED-ML protocol references the SBML model inside the archive.
     sbml_location = "./model.xml"
     loc = sbml_location.lstrip("./")
+    # Every SED-ML target is an id in this SBML (and, for a species pattern, the
+    # network species the model resolves it to).
+    from bngsim._model import Model as _Model
+
+    network = _Model.from_net(str(net_path))
     if protocol is not None:
-        sedml_text = write_sedml(protocol, model_source=loc)
+        sedml_text = write_sedml(protocol, model_source=loc, sbml=sbml_text, model=network)
     elif parsed_protocol is not None and not parsed_protocol.is_empty:
-        sedml_text = write_sedml_protocol(parsed_protocol, model_source=loc)
+        sedml_text = write_sedml_protocol(
+            parsed_protocol, model_source=loc, sbml=sbml_text, model=network
+        )
     else:
         # No real protocol available — fabricate a runnable default, but warn
         # loudly and mark it as synthesized so it is never mistaken for the
@@ -998,7 +1005,9 @@ def net_to_omex(
             t_span=t_span,
             n_points=n_points,
         )
-        sedml_text = write_sedml(default, model_source=loc, synthesized_default=True)
+        sedml_text = write_sedml(
+            default, model_source=loc, synthesized_default=True, sbml=sbml_text, model=network
+        )
 
     # Bundle the original source files for provenance (the SBML stays master): the
     # flattened .net as a secondary model entry, and the rule-based .bngl — the

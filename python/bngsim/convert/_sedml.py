@@ -32,7 +32,7 @@ import re
 import warnings
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from bngsim._atol import ExactAtol
 from bngsim._eval_spec import EvaluationSpec
@@ -102,17 +102,24 @@ def _q(uri: str, local: str) -> str:
 # ─── Writing: EvaluationSpec → SED-ML ───────────────────────────────────────
 
 
-def _selector_target(selector: str) -> dict[str, str]:
+def _selector_target(selector: str, targets: _SbmlTargets) -> dict[str, str]:
     """Standards-compliant ``variable`` attributes for a bngsim output selector.
 
-    A ``species:`` selector gets a real SBML XPath ``target`` (interoperable with
-    other SED-ML tools); ``observable:``/``expression:`` are bngsim concepts with
-    no standard SBML element, so they carry only the verbatim selector in
-    ``name`` (the round-trip source of truth) and no ``target``.
+    The verbatim selector rides in ``name`` (the round-trip source of truth);
+    ``target`` is the SBML element it reads, by the id the SBML gives it: a
+    species, or for an observable or a function the parameter bngsim's SBML
+    writer makes of it (an assignment rule). A species' BNGL name is not its
+    id (``A()`` is ``A``), so without the SBML none is written.
     """
     kind, _, name = selector.partition(":")
-    if kind == "species" and name:
-        return {"target": f"/sbml:sbml/sbml:model/sbml:listOfSpecies/sbml:species[@id='{name}']"}
+    if not name:
+        return {}
+    if kind == "species":
+        sid = targets.species_id(name) if targets.read else None
+        return {"target": targets.species_path(sid)} if sid else {}
+    if kind in ("observable", "expression", "function"):
+        pid = targets.param_id(name)
+        return {"target": targets.param_path(pid)} if pid else {}
     return {}
 
 
@@ -130,6 +137,8 @@ def write_sedml(
     *,
     model_source: str | None = None,
     synthesized_default: bool = False,
+    sbml: str | Path | None = None,
+    model: Model | None = None,
 ) -> str:
     """Serialize an :class:`~bngsim.EvaluationSpec` to a SED-ML (L1V3) document.
 
@@ -151,6 +160,15 @@ def write_sedml(
         annotation and a distinguishing report name so a consumer can never
         mistake the placeholder for the modeller's protocol. The orchestrators
         also emit a :class:`bngsim.ConversionWarning` when they synthesize one.
+    sbml : str | Path | None
+        The SBML the document points at, as text or a path, which each output's
+        ``target`` is written against: the namespace its ``sbml`` prefix binds,
+        and the id the SBML writer gave each species, observable and function.
+        Defaults to the model source, when that is a readable file. An output
+        the SBML does not name is written without a target, with a warning.
+    model : Model | None
+        The model the SBML was written from, to resolve a species name as
+        BNG2.pl does.
 
     Returns
     -------
@@ -181,7 +199,11 @@ def write_sedml(
 
     ET.register_namespace("", _SEDML_NS)
     ET.register_namespace("mml", _MATHML_NS)
+    source = model_source if model_source is not None else spec.model_source
+    targets = _SbmlTargets(sbml if sbml is not None else source, model)
     sed = ET.Element(_q(_SEDML_NS, "sedML"), {"level": "1", "version": "3"})
+    # The prefix every target is written under.
+    sed.set("xmlns:sbml", targets.ns)
 
     # A synthesized-default marker (first child, before the listOf* elements):
     # machine-readable provenance that this protocol was fabricated, not parsed.
@@ -224,7 +246,7 @@ def write_sedml(
         {
             "id": "model0",
             "language": _SBML_LANG,
-            "source": model_source if model_source is not None else spec.model_source,
+            "source": source,
         },
     )
     tasks = ET.SubElement(sed, _q(_SEDML_NS, "listOfTasks"))
@@ -238,10 +260,26 @@ def write_sedml(
     dgs = ET.SubElement(sed, _q(_SEDML_NS, "listOfDataGenerators"))
     _data_generator(dgs, "dg_time", "time", var_attrs={"symbol": _TIME_SYMBOL})
     dataset_refs: list[tuple[str, str]] = [("dg_time", "time")]
+    untargeted: list[str] = []
     for i, selector in enumerate(spec.outputs):
         dg_id = f"dg_{i}"
-        _data_generator(dgs, dg_id, selector, var_attrs=_selector_target(selector))
+        var_attrs = _selector_target(selector, targets)
+        if not var_attrs:
+            untargeted.append(selector)
+        _data_generator(dgs, dg_id, selector, var_attrs=var_attrs)
         dataset_refs.append((dg_id, selector))
+    if untargeted:
+        warnings.warn(
+            f"SED-ML's variables for {untargeted} have no target: "
+            + (
+                "the SBML has no element they name"
+                if targets.read
+                else "naming their SBML elements needs the SBML (pass sbml=)"
+            )
+            + "; a standards reader cannot read them, and bngsim reads their names",
+            ConversionWarning,
+            stacklevel=2,
+        )
 
     # ── listOfOutputs: a report binding every data generator ───────────────
     outs = ET.SubElement(sed, _q(_SEDML_NS, "listOfOutputs"))
@@ -712,144 +750,662 @@ def _protocol_algorithm(exp, i: int) -> tuple[str, list[tuple[str, str]]]:
     return kisao, params
 
 
-class _HeldState:
-    """One kind of model state (concentrations or parameters) as BNG2.pl holds
-    it at a point in a protocol: the numeric values set since the model's
-    initial state, and what else moved it there, if anything did."""
+# ─── SBML targets ────────────────────────────────────────────────────────────
+# A SED-ML target is an XPath into the SBML the document points at, under a
+# prefix the document declares (SED-ML L1V3 §2.2.6). bngsim's SBML writer
+# sanitizes and de-duplicates ids — `A()` is `A`, or `A_2` beside an observable
+# `A` — and keeps the BNGL string as the species' name, so a BNGL pattern names
+# an SBML element only through that SBML. Writing the pattern as the id
+# (`species[@id='A()']`) addressed nothing, and the prefix was never declared.
 
-    def __init__(self, values: dict | None = None, moved: list | None = None):
-        self.values: dict[str | None, tuple[float, str]] = dict(values or {})
-        # (the target it moved, or None for the whole state; what moved it)
-        self.moved: list[tuple[str | None, str]] = list(moved or [])
-
-    def copy(self) -> _HeldState:
-        return _HeldState(self.values, self.moved)
-
-    def differs(
-        self, described: dict[str | None, float], noun: str, ignore: str | None
-    ) -> str | None:
-        """How this state differs from the initial state with *described* set,
-        leaving out *ignore*, a parameter the experiment sets itself."""
-        moved = [text for target, text in self.moved if target is None or target != ignore]
-        if moved:
-            return f"the {noun} left by " + ", then ".join(moved)
-        diffs = [
-            f"{target}={value:g}{note}"
-            for target, (value, note) in self.values.items()
-            if target != ignore and described.get(target) != value
-        ]
-        diffs += [
-            f"{t} at its initial value" for t in described if t != ignore and t not in self.values
-        ]
-        return f"{noun} {', '.join(diffs)}" if diffs else None
+# What bngsim's SBML writer emits (convert/_sbml_writer.py, SBML L3V2).
+_SBML_DEFAULT_NS = "http://www.sbml.org/sbml/level3/version2/core"
+_SID = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
 
 
-def _carried_starts(protocol) -> dict[int, str]:
-    """Experiment index → how the state BNG2.pl starts it from differs from the
-    one SED-ML's standard elements give it, for each experiment where they do.
+def _sbml_text(sbml) -> str | None:
+    """The SBML document *sbml* gives: its text, a path to it, or ``None``."""
+    if sbml is None:
+        return None
+    if isinstance(sbml, Path):
+        return sbml.read_text() if sbml.is_file() else None
+    text = str(sbml)
+    if text.lstrip().startswith("<"):
+        return text
+    path = Path(text)
+    return path.read_text() if path.is_file() else None
 
-    The standard elements start every experiment from the model's initial state,
-    with the numeric ``setConcentration``/``setParameter`` values that
-    :meth:`~bngsim.convert.ProtocolSpec.state_changes_before` collects baked
-    into a derived model. BNG2.pl starts each from the state the steps before it
-    left: the end of the last run, unless a ``resetConcentrations`` restored
-    another; an ``addConcentration``; a value only the model can read; a scanned
-    parameter where the scan left it; a saved state a reset restored. A standards
-    tool restarted every one of those from the initial state, with nothing said.
-    Encoding the carry-over as a ``repeatedTask``'s ordered subtasks does not
-    help: tellurium resets the model between subtasks.
+
+class _SbmlTargets:
+    """The SBML a document points at, read for what its targets need: the
+    namespace the ``sbml`` prefix binds, each species' id, units and
+    compartment size, and each parameter's id and value."""
+
+    def __init__(self, sbml: str | Path | None = None, model: Model | None = None) -> None:
+        self.model = model
+        self.ns = _SBML_DEFAULT_NS
+        # name (the BNGL string, or the id where the SBML gives no name) → id
+        self.species: dict[str, str] = {}
+        self.amount_scale: dict[str, float] = {}  # species id → its size, if amount-valued
+        self.params: dict[str, str] = {}
+        self.param_values: dict[str, float] = {}  # parameter id → its value
+        self.read = False
+        text = _sbml_text(sbml)
+        if text is None:
+            return
+        try:
+            root = ET.fromstring(text)
+        except ET.ParseError:
+            return
+        if not root.tag.startswith("{") or _local(root.tag) != "sbml":
+            return
+        self.ns = root.tag[1:].split("}", 1)[0]
+        self.read = True
+        sizes = {
+            c.get("id"): float(c.get("size", "1") or 1.0)
+            for c in _findall_local(root, "compartment")
+        }
+        for sp in _findall_local(root, "species"):
+            sid = sp.get("id")
+            if not sid:
+                continue
+            self.species[sp.get("name") or sid] = sid
+            self.species.setdefault(sid, sid)
+            if (sp.get("hasOnlySubstanceUnits") or "false").lower() == "true":
+                self.amount_scale[sid] = sizes.get(sp.get("compartment"), 1.0)
+        for p in _findall_local(root, "parameter"):
+            pid = p.get("id")
+            if not pid:
+                continue
+            self.params[p.get("name") or pid] = pid
+            self.params.setdefault(pid, pid)
+            value = p.get("value")
+            if value is not None:
+                self.param_values[pid] = float(value)
+
+    def species_id(self, pattern: str) -> str | None:
+        """The SBML id of the species a BNGL pattern names, as BNG2.pl and the
+        replay resolve it (:func:`bngsim._bngl_loader._species_name`)."""
+        from bngsim._bngl_loader import _molecule_key, _network_spelling, _species_name
+
+        names: list[str] = []
+        if self.model is not None:
+            name = _species_name(self.model, pattern)
+            if name is not None:
+                names.append(name)
+        names += [pattern, _network_spelling(pattern)]
+        for name in names:
+            if name in self.species:
+                return self.species[name]
+        key = _molecule_key(pattern)
+        if key is not None:
+            for name, sid in self.species.items():
+                if _molecule_key(name) == key:
+                    return sid
+        return None
+
+    def param_id(self, name: str) -> str | None:
+        if name in self.params:
+            return self.params[name]
+        # Without the SBML, a name that is an SId is the id the writer keeps.
+        return name if not self.read and _SID.match(name) else None
+
+    @staticmethod
+    def species_path(sid: str) -> str:
+        return f"/sbml:sbml/sbml:model/sbml:listOfSpecies/sbml:species[@id='{sid}']"
+
+    @staticmethod
+    def param_path(pid: str) -> str:
+        return f"/sbml:sbml/sbml:model/sbml:listOfParameters/sbml:parameter[@id='{pid}']"
+
+    def initial_attribute(self, kind: str, sid: str) -> str:
+        if kind == "param":
+            return self.param_path(sid) + "/@value"
+        attr = "initialAmount" if sid in self.amount_scale else "initialConcentration"
+        return self.species_path(sid) + f"/@{attr}"
+
+
+class _Change(NamedTuple):
+    """One change a protocol step makes to the model's state, on SBML ids.
+
+    ``value`` is the number written, or ``None`` where ``expr`` is the BNGL
+    expression the action writes; ``add`` is an ``addConcentration``. ``scale``
+    turns a BNGL amount into the SBML species' own value: its compartment's
+    size for an amount-valued species (the SBML writer's ``initialAmount``),
+    else 1."""
+
+    kind: str  # "species" | "param"
+    sid: str
+    value: float | None
+    expr: str | None
+    add: bool
+    scale: float
+    action: str
+
+
+def _ordered(changes: list[_Change]) -> list[_Change]:
+    """*changes* in the order SED-ML applies them for one step: the parameters
+    as written, then each species' own changes. BNG2.pl reads a species set to
+    an expression at the run that follows, after every parameter set before it
+    (the replay's ``symbolic`` amounts), so the species come last."""
+    return [c for c in changes if c.kind == "param"] + [c for c in changes if c.kind == "species"]
+
+
+# ─── Multi-experiment writer ─────────────────────────────────────────────────
+
+
+class _ProtocolWriter:
+    """:func:`write_sedml_protocol`'s document, built step by step.
+
+    Each experiment BNG2.pl starts from the model's initial state, with the
+    ``set*``/``add*`` actions since then, is a task on a derived model that
+    holds those changes (``changeAttribute``, or ``computeChange`` where the
+    value is an expression or an addition). One BNG2.pl starts where earlier
+    runs left the model is a ``repeatedTask`` (``resetModel="true"``, one
+    iteration) whose ordered subtasks replay those runs on the base model, with
+    the actions between them as ``setValue`` changes: in SED-ML, unlike tasks,
+    "model states are not reset unless explicitly told to reset with the
+    resetModel=true attribute" (L1V4; SED-ML/sed-ml#54). A simulator that resets
+    between subtasks departs from that, and is not written around here.
     """
-    from bngsim._protocol_run import _DEFAULT_LABEL, _scan_values
-    from bngsim.convert._protocol import Experiment, StateChange, _state_change_action
 
-    held = {"conc": _HeldState(), "param": _HeldState()}
-    # What state_changes_before gives: the latest set of each target since the
-    # last reset of its kind, None where that set is not a number.
-    described: dict[str, dict[str | None, float | None]] = {"conc": {}, "param": {}}
-    saved: dict[str, dict[str, _HeldState]] = {"conc": {}, "param": {}}
-    built_until = protocol.generation_step or 0
-    out: dict[int, str] = {}
-    n = 0
-    for k, step in enumerate(protocol.steps):
-        # A step before the network was generated is in the network the SBML
-        # was written from, so it does not move the state from that one.
-        built = k < built_until
-        if isinstance(step, StateChange):
-            kind = (
-                "param"
-                if step.kind.endswith("_parameter") or "parameters" in step.kind
-                else "conc"
-            )
-            state = held[kind]
-            label = step.label or _DEFAULT_LABEL
-            if step.kind in ("set_concentration", "set_parameter"):
-                described[kind][step.target] = step.value
-                if step.value is not None:
-                    state.values[step.target] = (step.value, "")
-                else:
-                    state.values.pop(step.target, None)
-                    if not built:
-                        state.moved.append(
-                            (
-                                step.target if kind == "param" else None,
-                                f"{_state_change_action(step)}, which needs the model to read",
-                            )
-                        )
-            elif step.kind == "add_concentration":
-                if not built:
-                    state.moved.append((None, _state_change_action(step)))
-            elif step.kind.startswith("save_"):
-                saved[kind][label] = state.copy()
-            elif step.kind.startswith("reset_"):
-                described[kind] = {}
-                held[kind] = saved[kind].get(label, _HeldState()).copy()
-            continue
-        if not isinstance(step, Experiment):  # pragma: no cover — two step types only
-            continue
-        why = [
-            reason
-            for kind, noun in (("conc", "concentrations"), ("param", "parameters"))
-            if (
-                reason := held[kind].differs(
-                    {t: v for t, v in described[kind].items() if v is not None},
-                    noun,
-                    # A scan sets its own parameter at every point.
-                    step.scan_parameter if step.is_scan and kind == "param" else None,
+    def __init__(self, protocol, targets: _SbmlTargets, model_source: str):
+        self.protocol = protocol
+        self.targets = targets
+        ET.register_namespace("", _SEDML_NS)
+        ET.register_namespace("mml", _MATHML_NS)
+        self.sed = ET.Element(_q(_SEDML_NS, "sedML"), {"level": "1", "version": "3"})
+        # The prefix every target is written under (issue: it was never declared).
+        self.sed.set("xmlns:sbml", targets.ns)
+        annot = ET.SubElement(self.sed, _q(_SEDML_NS, "annotation"))
+        payload = ET.SubElement(annot, _q(_BNGSIM_ANNOT_NS, "protocol"))
+        payload.text = protocol.to_json()
+        self.models = ET.SubElement(self.sed, _q(_SEDML_NS, "listOfModels"))
+        ET.SubElement(
+            self.models,
+            _q(_SEDML_NS, "model"),
+            {"id": "model0", "language": _SBML_LANG, "source": model_source},
+        )
+        self.sims = ET.SubElement(self.sed, _q(_SEDML_NS, "listOfSimulations"))
+        self.tasks = ET.SubElement(self.sed, _q(_SEDML_NS, "listOfTasks"))
+        self._ids: dict[str, int] = {}
+        self._runs: dict[int, str] = {}
+        self._sweeps: dict[int, str] = {}
+
+    # ── ids and small elements ─────────────────────────────────────────────
+    def _id(self, stem: str) -> str:
+        n = self._ids.get(stem, 0)
+        self._ids[stem] = n + 1
+        return f"{stem}_{n}"
+
+    def _math(self, parent: ET.Element, change: _Change, model_ref: str) -> None:
+        """A change's ``listOfVariables`` and ``math`` under *parent* (a
+        ``setValue`` or a ``computeChange``): its value in the SBML species'
+        own units, plus the species' value for an addition."""
+        variables: list[tuple[str, str]] = []
+        terms: list[ET.Element] = []
+        if change.add:
+            vid = self._id("v")
+            variables.append((vid, self.targets.species_path(change.sid)))
+            terms.append(_ci(vid))
+        if change.value is not None:
+            terms.append(_cn(change.value * change.scale))
+        else:
+            expr, refs = self._expression(change.expr or "")
+            for name, vid in refs.items():
+                pid = self.targets.param_id(name)
+                variables.append((vid, self.targets.param_path(pid or name)))
+            terms.append(_scaled(expr, change.scale))
+        if variables:
+            lov = ET.SubElement(parent, _q(_SEDML_NS, "listOfVariables"))
+            for vid, target in variables:
+                ET.SubElement(
+                    lov,
+                    _q(_SEDML_NS, "variable"),
+                    {"id": vid, "target": target, "modelReference": model_ref},
                 )
+        math = ET.SubElement(parent, _q(_MATHML_NS, "math"))
+        math.append(_apply("plus", terms) if len(terms) > 1 else terms[0])
+
+    def _ast(self, text: str):
+        """A BNGL value expression as a libSBML AST, and the names it reads."""
+        import libsbml
+
+        from bngsim.convert._sbml_writer import _exprtk_to_ast
+
+        ast = _exprtk_to_ast(
+            text, where=f"the value {text!r}", scalar_names=frozenset(self.targets.params)
+        )
+        names: list[str] = []
+
+        def walk(node) -> None:
+            if node.getType() == libsbml.AST_NAME and node.getName() not in names:
+                names.append(node.getName())
+            for k in range(node.getNumChildren()):
+                walk(node.getChild(k))
+
+        walk(ast)
+        return ast, names
+
+    def _expression(self, text: str) -> tuple[ET.Element, dict[str, str]]:
+        """A BNGL value expression as MathML whose names are SED-ML variables,
+        and the model name each variable reads."""
+        import libsbml
+
+        ast, names = self._ast(text)
+        refs: dict[str, str] = {}
+        for name in names:
+            vid = self._id("v")
+            refs[name] = vid
+            ast.renameSIdRefs(name, vid)
+        root = ET.fromstring(libsbml.writeMathMLToString(ast))
+        # writeMathMLToString wraps the expression in its own <math>.
+        return root[0], refs
+
+    def _model_change(self, changes: ET.Element, change: _Change, model_ref: str) -> None:
+        target = self.targets.initial_attribute(change.kind, change.sid)
+        if change.value is not None and not change.add:
+            ET.SubElement(
+                changes,
+                _q(_SEDML_NS, "changeAttribute"),
+                {"target": target, "newValue": _num(change.value * change.scale)},
             )
-            is not None
-        ]
-        if why:
-            out[n] = "; ".join(why)
-        if step.is_scan and step.scan_parameter:
-            # The parameter keeps the value the sweep ended on (BNGAction.pm).
+            return
+        cc = ET.SubElement(changes, _q(_SEDML_NS, "computeChange"), {"target": target})
+        self._math(cc, change, model_ref)
+
+    def _set_value(self, changes: ET.Element, change: _Change, model_ref: str) -> None:
+        path = (
+            self.targets.param_path(change.sid)
+            if change.kind == "param"
+            else self.targets.species_path(change.sid)
+        )
+        sv = ET.SubElement(
+            changes, _q(_SEDML_NS, "setValue"), {"target": path, "modelReference": model_ref}
+        )
+        self._math(sv, change, model_ref)
+
+    def _once(self, rt: ET.Element) -> None:
+        rid = self._id("once")
+        rt.set("range", rid)
+        lor = ET.SubElement(rt, _q(_SEDML_NS, "listOfRanges"))
+        vr = ET.SubElement(lor, _q(_SEDML_NS, "vectorRange"), {"id": rid})
+        ET.SubElement(vr, _q(_SEDML_NS, "value")).text = "0"
+
+    def _subtasks(self, rt: ET.Element, task_ids: list[str]) -> None:
+        lost = ET.SubElement(rt, _q(_SEDML_NS, "listOfSubTasks"))
+        for order, tid in enumerate(task_ids, start=1):
+            ET.SubElement(lost, _q(_SEDML_NS, "subTask"), {"order": str(order), "task": tid})
+
+    # ── the change a step makes ────────────────────────────────────────────
+    def change(self, step) -> _Change | None:
+        """The change *step* (a set or add) makes, or ``None``, said, where the
+        SBML has nothing it names or its value cannot be written."""
+        from bngsim.convert._protocol import _state_change_action
+
+        action = _state_change_action(step)
+        kind = "param" if step.kind == "set_parameter" else "species"
+        if kind == "param":
+            sid = self.targets.param_id(step.target or "")
+            scale = 1.0
+        else:
+            sid = self.targets.species_id(step.target or "") if self.targets.read else None
+            scale = self.targets.amount_scale.get(sid, 1.0) if sid else 1.0
+        why = None
+        if sid is None:
+            why = (
+                "the SBML has no element it names"
+                if self.targets.read
+                else "naming its SBML species needs the SBML (pass sbml=)"
+            )
+        elif step.value is None:
             try:
-                values = _scan_values(step, backward=step.is_bifurcation)
-            except ConversionError:
-                values = []
-            note = f" (where experiment {n}'s scan left it)"
-            if values:
-                held["param"].values[step.scan_parameter] = (float(values[-1]), note)
+                _, names = self._ast(step.value_expr or "")
+            except ConversionError as exc:
+                why = f"its value cannot be written as MathML ({exc})"
             else:
-                held["param"].moved.append(
-                    (step.scan_parameter, f"experiment {n}'s scan of {step.scan_parameter}")
+                unknown = [n for n in names if self.targets.param_id(n) is None]
+                if unknown:
+                    why = f"its value reads {unknown}, which the SBML has no parameter for"
+        if why is not None or sid is None:
+            warnings.warn(
+                f"SED-ML's standard elements leave out {action}: {why}; the bngsim "
+                "annotation holds it",
+                ConversionWarning,
+                stacklevel=4,
+            )
+            return None
+        return _Change(
+            kind=kind,
+            sid=sid,
+            value=None if step.value is None else float(step.value),
+            expr=step.value_expr if step.value is None else None,
+            add=step.kind == "add_concentration",
+            scale=scale,
+            action=action,
+        )
+
+    def original(self, pid: str) -> _Change | None:
+        """A parameter back at the value the SBML holds."""
+        value = self.targets.param_values.get(pid)
+        if value is None:
+            warnings.warn(
+                f"SED-ML's standard elements cannot reset parameter {pid}: the value it "
+                "goes back to needs the SBML (pass sbml=); the bngsim annotation holds it",
+                ConversionWarning,
+                stacklevel=4,
+            )
+            return None
+        return _Change("param", pid, value, None, False, 1.0, f"resetParameters ({pid})")
+
+    # ── experiments ────────────────────────────────────────────────────────
+    def simulation(self, i: int, exp) -> str:
+        sim_id = f"sim_{i}"
+        utc = ET.SubElement(
+            self.sims,
+            _q(_SEDML_NS, "uniformTimeCourse"),
+            _utc_attrs(sim_id, exp.t_span[0], exp.output_start, exp.t_span[1], _steps(exp)),
+        )
+        kisao, params = _protocol_algorithm(exp, i)
+        algo = ET.SubElement(utc, _q(_SEDML_NS, "algorithm"), {"kisaoID": kisao})
+        _algorithm_param_elems(algo, params)
+        return sim_id
+
+    def derived_model(self, i: int, changes: list[_Change]) -> str:
+        if not changes:
+            return "model0"
+        model_ref = f"model_{i}"
+        dm = ET.SubElement(
+            self.models,
+            _q(_SEDML_NS, "model"),
+            {"id": model_ref, "language": _SBML_LANG, "source": "model0"},
+        )
+        loc = ET.SubElement(dm, _q(_SEDML_NS, "listOfChanges"))
+        for change in _ordered(changes):
+            self._model_change(loc, change, model_ref)
+        return model_ref
+
+    def sweep(self, rt_id: str, exp, model_ref: str, task_id: str, *, reset: bool) -> None:
+        """A scan or bifurcate as a repeatedTask over its values: every point
+        from the start state when *reset*, else each from where the last left
+        it. A bifurcate is its sweep up and then back down, in one range."""
+        values = _sweep_values(exp)
+        pid = self.targets.param_id(exp.scan_parameter or "") or exp.scan_parameter
+        rng_id = f"range_{rt_id}"
+        rt = ET.SubElement(
+            self.tasks,
+            _q(_SEDML_NS, "repeatedTask"),
+            {"id": rt_id, "resetModel": _xsd_bool(reset), "range": rng_id},
+        )
+        lor = ET.SubElement(rt, _q(_SEDML_NS, "listOfRanges"))
+        if values is not None:
+            vr = ET.SubElement(lor, _q(_SEDML_NS, "vectorRange"), {"id": rng_id})
+            for v in values:
+                ET.SubElement(vr, _q(_SEDML_NS, "value")).text = _num(v)
+        else:
+            ET.SubElement(
+                lor,
+                _q(_SEDML_NS, "uniformRange"),
+                {
+                    "id": rng_id,
+                    "start": _num(exp.scan_min or 0.0),
+                    "end": _num(exp.scan_max if exp.scan_max is not None else 1.0),
+                    # GH #575 — numberOfPoints counts the INTERVALS, as it does
+                    # on the uniformTimeCourse: a consumer expands a
+                    # uniformRange to numberOfPoints+1 values. bngsim's
+                    # scan_points is the inclusive point count (the linspace /
+                    # BNG2.pl n_scan_pts convention, delta = (max-min)/(n-1)),
+                    # so writing it verbatim handed every standards-compliant
+                    # reader one point more than the scan bngsim ran.
+                    "numberOfPoints": str(max(int(exp.scan_points or 1) - 1, 0)),
+                    "type": "log" if exp.scan_log else "linear",
+                },
+            )
+        loc = ET.SubElement(rt, _q(_SEDML_NS, "listOfChanges"))
+        sv = ET.SubElement(
+            loc,
+            _q(_SEDML_NS, "setValue"),
+            {
+                "target": self.targets.param_path(pid),
+                "range": rng_id,
+                "modelReference": model_ref,
+            },
+        )
+        ET.SubElement(sv, _q(_MATHML_NS, "math")).append(_ci(rng_id))
+        self._subtasks(rt, [task_id])
+
+    def run(self, i: int, exp) -> str:
+        """Experiment *i* on the base model, as a step of a chain: a task, or
+        for a sweep that continues, its repeatedTask."""
+        if i not in self._runs:
+            self._runs[i] = f"run_{i}"
+            ET.SubElement(
+                self.tasks,
+                _q(_SEDML_NS, "task"),
+                {"id": f"run_{i}", "modelReference": "model0", "simulationReference": f"sim_{i}"},
+            )
+        if not _sweeps(exp):
+            return self._runs[i]
+        if i not in self._sweeps:
+            self._sweeps[i] = f"sweep_{i}"
+            self.sweep(f"sweep_{i}", exp, "model0", self._runs[i], reset=False)
+        return self._sweeps[i]
+
+    def step(self, changes: list[_Change], body: str) -> str:
+        """*body* after *changes*: a one-iteration repeatedTask that sets them
+        and runs it, without resetting the model (or *body*, with none)."""
+        if not changes:
+            return body
+        rt = ET.SubElement(
+            self.tasks,
+            _q(_SEDML_NS, "repeatedTask"),
+            {"id": self._id("step"), "resetModel": "false"},
+        )
+        self._once(rt)
+        loc = ET.SubElement(rt, _q(_SEDML_NS, "listOfChanges"))
+        for change in _ordered(changes):
+            self._set_value(loc, change, "model0")
+        self._subtasks(rt, [body])
+        return rt.get("id") or ""
+
+    def chain(self, i: int, lead: str, step: str) -> str:
+        """Experiment *i* run from where *lead* left the model: a one-iteration
+        repeatedTask that resets the base model once, then runs *lead* and the
+        experiment's own step in order, on one model state."""
+        rt = ET.SubElement(
+            self.tasks, _q(_SEDML_NS, "repeatedTask"), {"id": f"chain_{i}", "resetModel": "true"}
+        )
+        self._once(rt)
+        self._subtasks(rt, [lead, step])
+        return f"chain_{i}"
+
+    def standalone(self, i: int, exp, changes: list[_Change]) -> None:
+        """Experiment *i* from the model's initial state with *changes*."""
+        model_ref = self.derived_model(i, changes)
+        task_id = f"task_{i}"
+        ET.SubElement(
+            self.tasks,
+            _q(_SEDML_NS, "task"),
+            {"id": task_id, "modelReference": model_ref, "simulationReference": f"sim_{i}"},
+        )
+        if _scans(exp):
+            resets = exp.kind == "scan" and exp.reset_between
+            self.sweep(f"rtask_{i}", exp, model_ref, task_id, reset=resets)
+
+    # ── the walk ───────────────────────────────────────────────────────────
+    def write(self) -> str:
+        from bngsim._protocol_run import _DEFAULT_LABEL
+        from bngsim.convert._protocol import Experiment, StateChange, _evenly_spaced
+
+        protocol = self.protocol
+        index = {id(e): i for i, e in enumerate(protocol.experiments)}
+        # The state BNG2.pl holds, in what SED-ML can say: `lead` is a task that
+        # runs the base model from its initial state to where the last run left
+        # it (None: no run since that state), as ("first", i, changes) until a
+        # chain needs it written; `pending` are the changes since; `params` the
+        # parameters set since the network was generated, by SBML id.
+        lead: object = None
+        pending: list[_Change] = []
+        params: dict[str, _Change] = {}
+        saved_conc: dict[str, tuple[object, list[_Change], dict[str, _Change]]] = {}
+        saved_params: dict[str, dict[str, _Change]] = {}
+        # Steps before the network was generated are in it, so in the SBML.
+        for k, step in enumerate(protocol.steps):
+            if k < (protocol.generation_step or 0):
+                continue
+            if isinstance(step, StateChange):
+                label = step.label or _DEFAULT_LABEL
+                if step.kind in ("set_concentration", "add_concentration", "set_parameter"):
+                    change = self.change(step)
+                    if change is not None:
+                        pending.append(change)
+                        if change.kind == "param":
+                            params[change.sid] = change
+                elif step.kind == "save_concentrations":
+                    saved_conc[label] = (lead, list(pending), dict(params))
+                elif step.kind == "save_parameters":
+                    saved_params[label] = dict(params)
+                elif step.kind == "reset_concentrations":
+                    if label in saved_conc:
+                        lead, then, params_then = saved_conc[label]
+                        # The concentrations go back; the parameters stay as set.
+                        pending = list(then) + self._params_since(params_then, params)
+                    else:
+                        lead, pending = None, list(params.values())
+                elif step.kind == "reset_parameters":
+                    back = saved_params.get(label, {})
+                    pending += self._params_since(params, back)
+                    params = dict(back)
+                continue
+            if not isinstance(step, Experiment):  # pragma: no cover — two step types only
+                continue
+            i = index[id(step)]
+            exp = step
+            if exp.sample_times is not None and not _evenly_spaced(list(exp.sample_times)):
+                warnings.warn(
+                    f"SED-ML holds experiment {i}'s uneven output times "
+                    f"{list(exp.sample_times)} as {exp.n_points} even points; the exact "
+                    "times are in the bngsim annotation",
+                    ConversionWarning,
+                    stacklevel=3,
                 )
-        if not (step.kind == "scan" and step.reset_between):
-            # A scan that resets each point ends reset to where it started.
-            held["conc"].moved = [(None, f"experiment {n}'s run")]
-        n += 1
-    return out
+            self.simulation(i, exp)
+            resets = exp.kind == "scan" and exp.reset_between and _scans(exp)
+            if lead is None:
+                self.standalone(i, exp, pending)
+                if not resets:
+                    lead, pending = ("first", i, list(pending)), []
+            elif resets:
+                # Every point of BNG2.pl's scan starts where the last run left
+                # the model; a repeatedTask's reset goes to the initial state.
+                warnings.warn(
+                    f"experiment {i} is a parameter_scan with reset_conc=>1 that BNG2.pl "
+                    "starts where the run before it left the model, and SED-ML resets a "
+                    "repeatedTask's model to its initial state, not to that one; the "
+                    "standard elements start each point from the initial state, and the "
+                    "bngsim annotation holds the protocol",
+                    ConversionWarning,
+                    stacklevel=3,
+                )
+                self.standalone(i, exp, list(params.values()))
+            else:
+                self.chain(i, self._lead(lead), self.step(pending, self.run(i, exp)))
+                lead, pending = f"chain_{i}", []
+            if exp.is_scan and exp.scan_parameter:
+                last = _last_value(exp)
+                pid = self.targets.param_id(exp.scan_parameter)
+                if last is not None and pid is not None:
+                    # The parameter keeps the value the sweep ended on (BNGAction.pm).
+                    left = _Change("param", pid, last, None, False, 1.0, "the scan")
+                    params[pid] = left
+                    if resets:
+                        pending.append(left)
+        ET.indent(self.sed, space="  ")
+        text = '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(
+            self.sed, encoding="unicode"
+        )
+        return text if text.endswith("\n") else text + "\n"
+
+    def _lead(self, lead) -> str:
+        if isinstance(lead, tuple):
+            _, i, changes = lead
+            return self.step(changes, self.run(i, self.protocol.experiments[i]))
+        return str(lead)
+
+    def _params_since(self, before: dict[str, _Change], now: dict[str, _Change]) -> list[_Change]:
+        """The parameter changes that take *before* to *now*."""
+        out = []
+        for pid in dict.fromkeys([*before, *now]):
+            if pid in now:
+                if before.get(pid) != now[pid]:
+                    out.append(now[pid])
+            else:
+                back = self.original(pid)
+                if back is not None:
+                    out.append(back)
+        return out
 
 
-def _sbml_param_target(name: str) -> str:
-    return f"/sbml:sbml/sbml:model/sbml:listOfParameters/sbml:parameter[@id='{name}']/@value"
+def _ci(name: str) -> ET.Element:
+    el = ET.Element(_q(_MATHML_NS, "ci"))
+    el.text = name
+    return el
 
 
-def _sbml_species_conc_target(name: str) -> str:
-    return (
-        f"/sbml:sbml/sbml:model/sbml:listOfSpecies/sbml:species[@id='{name}']"
-        "/@initialConcentration"
-    )
+def _cn(value: float) -> ET.Element:
+    el = ET.Element(_q(_MATHML_NS, "cn"))
+    el.text = _num(value)
+    return el
+
+
+def _apply(op: str, args: list[ET.Element]) -> ET.Element:
+    el = ET.Element(_q(_MATHML_NS, "apply"))
+    ET.SubElement(el, _q(_MATHML_NS, op))
+    el.extend(args)
+    return el
+
+
+def _scaled(expr: ET.Element, scale: float) -> ET.Element:
+    return expr if scale == 1.0 else _apply("times", [expr, _cn(scale)])
+
+
+def _steps(exp) -> int:
+    return max(int(exp.n_points) - 1, 0)
+
+
+def _scans(exp) -> bool:
+    return bool(exp.is_scan and exp.scan_parameter and exp.scan_points)
+
+
+def _sweeps(exp) -> bool:
+    """A scan whose points continue from each other: one without reset_conc,
+    or a bifurcate."""
+    return _scans(exp) and not (exp.kind == "scan" and exp.reset_between)
+
+
+def _sweep_values(exp) -> list[float] | None:
+    """The values a sweep runs, in order: ``par_scan_vals`` as given, a
+    bifurcate's sweep up and then back down, or ``None`` for a plain range,
+    which a ``uniformRange`` states."""
+    from bngsim._protocol_run import _scan_values
+
+    try:
+        if exp.is_bifurcation:
+            return _scan_values(exp) + _scan_values(exp, backward=True)
+        if exp.scan_values is not None:
+            return list(exp.scan_values)
+    except ConversionError:
+        return None
+    return None
+
+
+def _last_value(exp) -> float | None:
+    from bngsim._protocol_run import _scan_values
+
+    try:
+        return float(_scan_values(exp, backward=exp.is_bifurcation)[-1])
+    except (ConversionError, IndexError):
+        return None
 
 
 def write_sedml_protocol(
@@ -857,21 +1413,29 @@ def write_sedml_protocol(
     out_path: str | Path | None = None,
     *,
     model_source: str = "model.xml",
+    sbml: str | Path | None = None,
+    model: Model | None = None,
 ) -> str:
     """Serialize a :class:`~bngsim.convert.ProtocolSpec` to a SED-ML document.
 
-    Emits one ``<uniformTimeCourse>`` + ``<task>`` per experiment (a
-    ``<repeatedTask>`` + range for a ``parameter_scan``), with each experiment's
-    accumulated ``setParameter``/``setConcentration`` overrides baked into a
-    ``changeAttribute``-derived model — plus a bngsim ``<annotation>`` carrying
-    the verbatim ``ProtocolSpec`` JSON so :func:`read_sedml_protocol` recovers it
+    Every experiment gets a ``<uniformTimeCourse>``. One that BNG2.pl starts
+    from the model's initial state, with the ``setConcentration``,
+    ``addConcentration`` and ``setParameter`` actions before it, is a ``<task>``
+    on a derived model that makes those changes (a ``<repeatedTask>`` over its
+    range for a ``parameter_scan``; a bifurcate is its sweep up and back down,
+    each point continuing from the last). One that BNG2.pl starts where an
+    earlier run left the model is a ``<repeatedTask>`` that resets the model
+    once and replays, as ordered subtasks on one model state, the runs since
+    that state, with the actions between them as ``<setValue>`` changes: the
+    carried state as SED-ML states it. A bngsim ``<annotation>`` carries the
+    verbatim ``ProtocolSpec`` JSON, so :func:`read_sedml_protocol` recovers it
     exactly. Build/IO directives were already dropped at parse time.
 
-    The standard elements start each experiment from the model's initial state
-    with those overrides. An experiment BNG2.pl starts from somewhere else, such
-    as where the run before it ended, is named in a
-    :class:`~bngsim.ConversionWarning`; a standards tool runs it from the
-    initial state.
+    What SED-ML cannot say is named in a :class:`~bngsim.ConversionWarning`: a
+    ``parameter_scan`` with ``reset_conc=>1`` that BNG2.pl starts from a
+    carried state (a ``repeatedTask`` resets to the initial state), a method
+    with no KiSAO term, and an action whose target or value the SBML cannot
+    name.
 
     Parameters
     ----------
@@ -881,173 +1445,28 @@ def write_sedml_protocol(
         If given, the document is also written here.
     model_source : str
         The ``<model source="…">`` reference (e.g. the SBML inside the archive).
+    sbml : str | Path | None
+        The SBML that *model_source* names, as text or a path, which every
+        target is written against: its namespace, and the ids bngsim's SBML
+        writer gave each species and parameter. Defaults to *model_source*,
+        when that is a readable file. Without it, a species action cannot be
+        written, and is left to the annotation with a warning.
+    model : Model | None
+        The model the SBML was written from, to resolve a BNGL species
+        pattern (``@c:A()``, components in another order) as BNG2.pl does.
 
     Returns
     -------
     str
         The SED-ML document text.
     """
-    from bngsim.convert._protocol import _evenly_spaced
-
-    experiments = protocol.experiments
-    if not experiments:
+    if not protocol.experiments:
         raise ConversionError(
             "cannot emit SED-ML for an empty protocol (no simulate/parameter_scan "
             "experiments were parsed from the .bngl)"
         )
-
-    ET.register_namespace("", _SEDML_NS)
-    ET.register_namespace("mml", _MATHML_NS)
-    sed = ET.Element(_q(_SEDML_NS, "sedML"), {"level": "1", "version": "3"})
-
-    # Verbatim ProtocolSpec for exact round-trip (interop reads the elements).
-    annot = ET.SubElement(sed, _q(_SEDML_NS, "annotation"))
-    payload = ET.SubElement(annot, _q(_BNGSIM_ANNOT_NS, "protocol"))
-    payload.text = protocol.to_json()
-
-    models = ET.SubElement(sed, _q(_SEDML_NS, "listOfModels"))
-    ET.SubElement(
-        models,
-        _q(_SEDML_NS, "model"),
-        {"id": "model0", "language": _SBML_LANG, "source": model_source},
-    )
-    sims = ET.SubElement(sed, _q(_SEDML_NS, "listOfSimulations"))
-    tasks = ET.SubElement(sed, _q(_SEDML_NS, "listOfTasks"))
-
-    carried = _carried_starts(protocol)
-    if carried:
-        shown = [f"experiment {i} from {why}" for i, why in list(carried.items())[:5]]
-        more = len(carried) - len(shown)
-        warnings.warn(
-            "SED-ML's standard elements start each experiment from the model's initial "
-            "state, with the protocol's numeric setConcentration and setParameter values "
-            "applied, and a standards tool runs them so; BNG2.pl starts "
-            + "; ".join(shown)
-            + (f"; and {more} more experiment(s) from a carried state" if more else "")
-            + ". The bngsim annotation holds the protocol as BNG2.pl runs it.",
-            ConversionWarning,
-            stacklevel=2,
-        )
-
-    for i, exp in enumerate(experiments):
-        # What the standard elements below cannot hold; the annotation holds it.
-        if exp.is_bifurcation:
-            warnings.warn(
-                f"SED-ML holds experiment {i}, a bifurcate, as its upward sweep only; "
-                "the sweep back down is in the bngsim annotation",
-                ConversionWarning,
-                stacklevel=2,
-            )
-        if exp.sample_times is not None and not _evenly_spaced(list(exp.sample_times)):
-            warnings.warn(
-                f"SED-ML holds experiment {i}'s uneven output times {list(exp.sample_times)} "
-                f"as {exp.n_points} even points; the exact times are in the bngsim annotation",
-                ConversionWarning,
-                stacklevel=2,
-            )
-        # Per-experiment derived model carrying the accumulated operating point.
-        overrides = protocol.state_changes_before(exp)
-        model_ref = "model0"
-        numeric_overrides = [o for o in overrides if o.value is not None]
-        if numeric_overrides:
-            model_ref = f"model_{i}"
-            dm = ET.SubElement(
-                models,
-                _q(_SEDML_NS, "model"),
-                {"id": model_ref, "language": _SBML_LANG, "source": "model0"},
-            )
-            loc = ET.SubElement(dm, _q(_SEDML_NS, "listOfChanges"))
-            for o in numeric_overrides:
-                target = (
-                    _sbml_param_target(o.target)
-                    if o.kind == "set_parameter"
-                    else _sbml_species_conc_target(o.target)
-                )
-                ET.SubElement(
-                    loc,
-                    _q(_SEDML_NS, "changeAttribute"),
-                    {"target": target, "newValue": _num(o.value)},
-                )
-
-        t0, t_end = exp.t_span
-        n_steps = max(int(exp.n_points) - 1, 0)
-        sim_id = f"sim_{i}"
-        utc = ET.SubElement(
-            sims,
-            _q(_SEDML_NS, "uniformTimeCourse"),
-            _utc_attrs(sim_id, t0, exp.output_start, t_end, n_steps),
-        )
-        kisao, params = _protocol_algorithm(exp, i)
-        algo = ET.SubElement(utc, _q(_SEDML_NS, "algorithm"), {"kisaoID": kisao})
-        _algorithm_param_elems(algo, params)
-
-        base_task_id = f"task_{i}"
-        ET.SubElement(
-            tasks,
-            _q(_SEDML_NS, "task"),
-            {"id": base_task_id, "modelReference": model_ref, "simulationReference": sim_id},
-        )
-
-        if exp.is_scan and exp.scan_parameter and exp.scan_points:
-            # A scan wraps the base task in a repeatedTask over the swept range.
-            rng_id = f"range_{i}"
-            rt = ET.SubElement(
-                tasks,
-                _q(_SEDML_NS, "repeatedTask"),
-                {"id": f"rtask_{i}", "resetModel": _xsd_bool(exp.reset_between), "range": rng_id},
-            )
-            lor = ET.SubElement(rt, _q(_SEDML_NS, "listOfRanges"))
-            if exp.scan_values is not None:
-                # par_scan_vals, exactly and in their order (issue #1366).
-                vr = ET.SubElement(lor, _q(_SEDML_NS, "vectorRange"), {"id": rng_id})
-                for v in exp.scan_values:
-                    ET.SubElement(vr, _q(_SEDML_NS, "value")).text = _num(v)
-            else:
-                ET.SubElement(
-                    lor,
-                    _q(_SEDML_NS, "uniformRange"),
-                    {
-                        "id": rng_id,
-                        "start": _num(exp.scan_min or 0.0),
-                        "end": _num(exp.scan_max if exp.scan_max is not None else 1.0),
-                        # GH #575 — numberOfPoints counts the INTERVALS, as it does
-                        # on the uniformTimeCourse above: a consumer expands a
-                        # uniformRange to numberOfPoints+1 values. bngsim's
-                        # scan_points is the inclusive point count (the linspace /
-                        # BNG2.pl n_scan_pts convention, delta = (max-min)/(n-1)),
-                        # so writing it verbatim handed every standards-compliant
-                        # reader one point more than the scan bngsim ran — 6 values
-                        # over [1,2] where bngsim used 5, each at a different
-                        # parameter value. Nothing downstream could notice: the
-                        # document is well-formed and the sweep looks reasonable.
-                        "numberOfPoints": str(max(int(exp.scan_points) - 1, 0)),
-                        "type": "log" if exp.scan_log else "linear",
-                    },
-                )
-            loc = ET.SubElement(rt, _q(_SEDML_NS, "listOfChanges"))
-            sv = ET.SubElement(
-                loc,
-                _q(_SEDML_NS, "setValue"),
-                {
-                    "target": _sbml_param_target(exp.scan_parameter),
-                    "range": rng_id,
-                    "modelReference": model_ref,
-                },
-            )
-            math = ET.SubElement(sv, _q(_MATHML_NS, "math"))
-            ci = ET.SubElement(math, _q(_MATHML_NS, "ci"))
-            ci.text = rng_id
-            lost = ET.SubElement(rt, _q(_SEDML_NS, "listOfSubTasks"))
-            ET.SubElement(
-                lost,
-                _q(_SEDML_NS, "subTask"),
-                {"order": "1", "task": base_task_id},
-            )
-
-    ET.indent(sed, space="  ")
-    text = '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(sed, encoding="unicode")
-    if not text.endswith("\n"):
-        text += "\n"
+    targets = _SbmlTargets(sbml if sbml is not None else model_source, model)
+    text = _ProtocolWriter(protocol, targets, model_source).write()
     if out_path is not None:
         Path(out_path).write_text(text)
     return text
@@ -1187,6 +1606,21 @@ def _scan_targets(root: ET.Element) -> dict[str, dict]:
     sim_of_task = {t.get("id"): t.get("simulationReference") for t in _findall_local(root, "task")}
     out: dict[str, dict] = {}
     for rt in _findall_local(root, "repeatedTask"):
+        # A sweep sets a parameter from its own range. A repeatedTask that does
+        # not — one iteration that chains runs, or sets a value between them —
+        # runs its subtasks; it does not scan them.
+        ranges = {r.get("id") for r in rt.iter() if _local(r.tag).endswith("Range")}
+        swept = [
+            sv
+            for sv in _findall_local(rt, "setValue")
+            if "parameter[@id='" in (sv.get("target") or "")
+            and (
+                sv.get("range") in ranges
+                or any((ci.text or "").strip() in ranges for ci in _findall_local(sv, "ci"))
+            )
+        ]
+        if not swept:
+            continue
         rng = _find(rt, "uniformRange")
         vec = _find(rt, "vectorRange")
         if rng is not None:
@@ -1217,11 +1651,8 @@ def _scan_targets(root: ET.Element) -> dict[str, dict]:
         else:
             continue
         info["reset"] = (rt.get("resetModel") or "true").lower() == "true"
-        sv = _find(rt, "setValue")
-        if sv is not None:
-            tgt = sv.get("target") or ""
-            if "parameter[@id='" in tgt:
-                info["parameter"] = tgt.split("parameter[@id='", 1)[1].split("'", 1)[0]
+        tgt = swept[0].get("target") or ""
+        info["parameter"] = tgt.split("parameter[@id='", 1)[1].split("'", 1)[0]
         for st in _findall_local(rt, "subTask"):
             sim = sim_of_task.get(st.get("task"))
             if sim is not None:

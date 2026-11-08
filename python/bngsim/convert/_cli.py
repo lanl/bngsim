@@ -263,7 +263,9 @@ def net2sbml_main(argv: list[str] | None = None) -> int:
                     # The real .bngl protocol (every simulate/scan).
                     from bngsim.convert import write_sedml_protocol
 
-                    write_sedml_protocol(report.protocol, sidecar_path, model_source=str(out))
+                    write_sedml_protocol(
+                        report.protocol, sidecar_path, model_source=str(out), sbml=Path(out)
+                    )
                 else:
                     # No real protocol — fabricate a default, but warn + mark it.
                     from bngsim._exceptions import ConversionWarning
@@ -282,7 +284,7 @@ def net2sbml_main(argv: list[str] | None = None) -> int:
                         stacklevel=2,
                     )
                     proto = default_protocol(args.net, model_source=str(out), model_format="sbml")
-                    write_sedml(proto, sidecar_path, synthesized_default=True)
+                    write_sedml(proto, sidecar_path, synthesized_default=True, sbml=Path(out))
     except ConversionError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
