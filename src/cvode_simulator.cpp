@@ -11049,6 +11049,11 @@ static constexpr int kStateSwitchResolveHalvings = 40;
 // of its bar, by this many golden-section steps over its two neighbours.
 static constexpr double kStateSwitchResolveRefineShare = 0.25;
 static constexpr int kStateSwitchResolveRefinements = 24;
+// A residual is read as smooth at the root, and its gradient read again at
+// each reading, where each component of dg/dx keeps to within this share of
+// itself as the central difference's distance doubles. Across a jump it
+// halves.
+static constexpr double kStateSwitchSmoothShare = 0.25;
 // Issue #908 (StateSwitchHold). A residual is held after this many steps in a
 // row, each at most kStateSwitchHoldStepGap steps after the last, have had a
 // crossing of it declined as unresolved. A slide crosses on nearly every step.
@@ -11103,19 +11108,20 @@ bool CvodeSimulator::Impl::flow_carries_state_switch(
     // the residual,
     //     δg = sqrt(Σ_j (∂g/∂x_j·u_j)²),
     // because the WRMS error test lets a single component carry √N of the
-    // tolerance (kStateSwitchResolveMargin). u_j is what the error weight's
-    // own rule holds x_j to there, rtol·|x_j| + atol_j, a tracking atol's where
-    // the run tracks, and no tighter than the weights the step was tested
-    // with; and the terms add in quadrature, as the WRMS norm adds them (issue
-    // #907). Read from the run's ceiling, the bar lost a 5e-9 window of a
-    // species held to 2e-14; summed one by one over an observable of a
-    // thousand species of 1e-3, the band was 1e-5 and the bar 3.2e-3, past the
-    // window's whole excursion of 1e-3; at 10·√N bands it lost a window 10
-    // bands wide at N = 3. A crossing inside the bar is one the requested
-    // tolerance cannot decide, and it steps on. The whole step is sampled
-    // rather than its end: a window can open and close inside one step, and a
-    // curved residual (3u − u³) can cross and come back, so the end may be on
-    // the near side again after an excursion of 0.03.
+    // tolerance (kStateSwitchResolveMargin). ∂g/∂x_j is read there, at the
+    // state of the reading, and not carried from the root (see grad_at below).
+    // u_j is what the error weight's own rule holds x_j to there, rtol·|x_j| +
+    // atol_j, a tracking atol's where the run tracks, and no tighter than the
+    // weights the step was tested with; and the terms add in quadrature, as the
+    // WRMS norm adds them (issue #907). Read from the run's ceiling, the bar
+    // lost a 5e-9 window of a species held to 2e-14; summed one by one over an
+    // observable of a thousand species of 1e-3, the band was 1e-5 and the bar
+    // 3.2e-3, past the window's whole excursion of 1e-3; at 10·√N bands it lost
+    // a window 10 bands wide at N = 3. A crossing inside the bar is one the
+    // requested tolerance cannot decide, and it steps on. The whole step is
+    // sampled rather than its end: a window can open and close inside one step,
+    // and a curved residual (3u − u³) can cross and come back, so the end may
+    // be on the near side again after an excursion of 0.03.
     //
     // It is read evenly, and then at halvings toward the root (issue #907).
     // After a restart CVODE grows its step about tenfold at a time, so the step
@@ -11207,12 +11213,71 @@ bool CvodeSimulator::Impl::flow_carries_state_switch(
             return step_unit.empty() ? u : std::max(u, step_unit[uj]);
         };
         // The residual's band at x: |∂g/∂x_j|·u_j over its species, added in
-        // quadrature (state_switch_band).
-        auto band_at = [&](const double *xs) {
+        // quadrature (state_switch_band), with dg/dx `gx` read at x.
+        auto band_at = [&](const std::vector<double> &gx, const double *xs) {
             return state_switch_band(sw.species.size(), [&](std::size_t s) {
                 const int j = sw.species[s];
-                return std::fabs(grad[static_cast<std::size_t>(j)]) * unit_of(j, xs[j]);
+                return std::fabs(gx[static_cast<std::size_t>(j)]) * unit_of(j, xs[j]);
             });
+        };
+        // dg/dx at (tk, xs) by the root's central differences, each at `reach`
+        // times the root's distance.
+        std::vector<double> x_read(xv);
+        std::vector<double> grad_read(static_cast<std::size_t>(ns), 0.0);
+        auto gradient_at = [&](double tk, const double *xs,
+                               double reach) -> const std::vector<double> & {
+            x_read.assign(xs, xs + ns);
+            for (int j : sw.species) {
+                const auto uj = static_cast<std::size_t>(j);
+                const double xj = xs[j];
+                const double h = reach * 1e-7 * std::max(std::fabs(xj), 1.0);
+                x_read[uj] = xj + h;
+                sync_model_at(tk, x_read.data(), ns);
+                const double g_hi = eval.evaluate(sw.residual_expr_idx);
+                x_read[uj] = xj - h;
+                sync_model_at(tk, x_read.data(), ns);
+                const double g_lo = eval.evaluate(sw.residual_expr_idx);
+                x_read[uj] = xj;
+                const double gj = (g_hi - g_lo) / (2.0 * h);
+                grad_read[uj] = std::isfinite(gj) ? gj : 0.0;
+            }
+            return grad_read;
+        };
+        // The band a reading is held to is the one at the state it is read at,
+        // so where the residual is smooth its gradient is read there too, and
+        // not carried from the root. A residual that is linear in its species
+        // has the root's gradient everywhere. One that is not can be steep at
+        // the root and flat at the reading: thr(C) = 1 + A·(1 + tanh((C −
+        // tp)/σ))/2 on a clock species C, crossed mid-sweep where ∂thr/∂C is
+        // A/(2σ) times sech², 3.8 at a drift of 0.1 in #908's clock sweep.
+        // Times C's unit at rtol 1e-3, 0.03 at C = 30, that bar was 0.79, past
+        // the sweep's whole height of 0.5, so no reading could clear it, not
+        // even one where thr had long since flattened at 1.5 and C's error
+        // could not move it at all. The run stepped on over the window the
+        // crossing opened, and Y gained 0 where the pulse gives it 0.0032.
+        //
+        // A residual that jumps at the root keeps the root's gradient. A step
+        // in a species, (if(X > 0.5, 1, 0)) − 0.5 as a Boolean network's
+        // conditions on its own functions give, reads J/(2h) across its jump
+        // J, a bar no reading clears, so its crossings are declined and a
+        // slide on it is left to the #908 hold. Read at a reading a few bands
+        // past the jump, the central difference saw it flat, every crossing
+        // cleared a bar of 0, and Hawse_reduced restarted each crossing of its
+        // slides: 1,171,191 steps to t = 8 where the run without its roots
+        // takes 9,899. A jump is told from a slope at the root itself: across
+        // it the central difference halves as its distance doubles.
+        const std::vector<double> &grad_twice = gradient_at(t, xv.data(), 2.0);
+        bool smooth = true;
+        for (int j : sw.species) {
+            const auto uj = static_cast<std::size_t>(j);
+            const double g1 = grad[uj];
+            const double g2 = grad_twice[uj];
+            smooth = smooth && std::fabs(g2 - g1) <=
+                                   kStateSwitchSmoothShare * std::max(std::fabs(g1), std::fabs(g2));
+        }
+        sync_model_at(t, x, ns);
+        auto grad_at = [&](double tk, const double *xs) -> const std::vector<double> & {
+            return smooth ? gradient_at(tk, xs, 1.0) : grad;
         };
         // The excursion at t + d and the k_resolve bands it has to clear there.
         struct Reading {
@@ -11232,7 +11297,7 @@ bool CvodeSimulator::Impl::flow_carries_state_switch(
             const double *xk = N_VGetArrayPointer(scratch);
             sync_model_at(tk, xk, ns);
             r.excursion = eval.evaluate(sw.residual_expr_idx) * static_cast<double>(dir);
-            r.bar = k_resolve * band_at(xk);
+            r.bar = k_resolve * band_at(grad_at(tk, xk), xk);
             resolved = std::isfinite(r.excursion) && r.excursion > r.bar;
             return r;
         };
@@ -11273,7 +11338,7 @@ bool CvodeSimulator::Impl::flow_carries_state_switch(
                     taylor.push_back(std::fabs(xm[sw.species[s]]) / factorial);
                 }
             }
-            const double band_root = band_at(xv.data());
+            const double band_root = band_at(grad, xv.data());
             // dg/dt at the root's state, the clock's own term, read once. On its
             // own surface h(t)·(S − thr) reads 0 here; what h does over a reach
             // in which S moves less than its band is second order.
