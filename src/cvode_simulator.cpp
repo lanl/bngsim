@@ -3385,10 +3385,23 @@ struct LookScratch {
 // is left, not half; and where a step's end reads as one CVODE fails, it is
 // read again through CVODE's corrector (kLookFails).
 //
+// A state switch's side is read too. CVODE finds a switch's crossing only
+// where a step's two ends are on different sides, so a window a switch opens
+// and closes inside one step is no crossing to it. Where the pulse that window
+// lets through is spent at the three places, the rate there shows nothing
+// either: S drifting up past a threshold that swept up past it, the step after
+// a stop at the pulse's centre ran from 30.047 to 30.86 over the whole window,
+// 30.049 to 30.5, and Y gained 0 of the 6.7e-5 the pulse's tail gives it, at
+// every tolerance. So at each place each switch's residual is read on the
+// predicted state as well, and one on the other side from both of the step's
+// ends counts as a change there: the step is cut there, and CVODE's root
+// search finds the crossing in it.
+//
 // What it still does not see: a pulse that is nothing at both ends of a step
-// and at the three places inside it, or inside a step that takes less than a
-// quarter of what is left; the step after a stop or a root where the step
-// before it does not settle it; and, at CVODE's higher orders, a step CVODE
+// and at the three places inside it, or a switch's window between them; either
+// inside a step that takes less than a quarter of what is left; the step after
+// a stop or a root where the step before it does not settle it; a run with no
+// stop, which is not looked at; and, at CVODE's higher orders, a step CVODE
 // passes that the order-one estimate takes for one it fails (kLookFails).
 //
 // A stop placed anywhere else changes where CVODE's steps end, and a step cut
@@ -3885,8 +3898,13 @@ struct CvodeSimulator::Impl {
     // first of kLooksInsideAt, as parts of the step, where a step from *tn*
     // would fail it (kLookFails); NaN where none would. Each place is read on
     // the state CVODE's history predicts there, against the rate it predicts.
+    // A place where one of *residuals* (the state-switch residuals, those
+    // *hold* holds left out) is on the other side from where it is at *tn*
+    // and at *end* counts as one too: CVODE's root search, which reads a
+    // step's two ends, does not see that pair of crossings.
     double changes_inside(void *cvode_mem, N_Vector y, int ns, double tn, double end,
-                          LookScratch &scratch, bool &end_fails);
+                          LookScratch &scratch, bool &end_fails, const std::vector<int> &residuals,
+                          const StateSwitchHold *hold);
     // f on the branch every crossing stop at t was approached on: each stop's clock
     // put back across its threshold, the way the #48 jump reads f⁻. The evaluator
     // is left on the true state.
@@ -7327,7 +7345,9 @@ double CvodeSimulator::Impl::settled_next_step(void *cvode_mem, N_Vector y, Look
 }
 
 double CvodeSimulator::Impl::changes_inside(void *cvode_mem, N_Vector y, int ns, double tn,
-                                            double end, LookScratch &scratch, bool &end_fails) {
+                                            double end, LookScratch &scratch, bool &end_fails,
+                                            const std::vector<int> &residuals,
+                                            const StateSwitchHold *hold) {
     const double none = std::numeric_limits<double>::quiet_NaN();
     end_fails = false;
     // CVODE's own history at tn: the derivatives of the polynomial its next
@@ -7452,14 +7472,49 @@ double CvodeSimulator::Impl::changes_inside(void *cvode_mem, N_Vector y, int ns,
         const double settled = corrected_at(dt);
         return std::isfinite(settled) ? settled : estimate;
     };
+    // The side of its surface each state-switch residual is on at `at`, on
+    // the state in scratch.y_at (or at tn, on CVODE's own): 1 or -1, and 0
+    // where it is held, on its surface or not finite. A held residual is not
+    // what CVODE's root search reads (StateSwitchHold).
+    auto &eval = model.evaluator();
+    const auto sides_at = [&](double at, const double *x, std::vector<signed char> &out) {
+        out.assign(residuals.size(), 0);
+        sync_model_at(at, x, ns);
+        for (std::size_t k = 0; k < residuals.size(); ++k) {
+            if (hold != nullptr && k < hold->held.size() && hold->held[k] != 0) {
+                continue;
+            }
+            const double g = eval.evaluate(residuals[k]);
+            out[k] = g > 0.0 ? 1 : (g < 0.0 ? -1 : 0);
+        }
+    };
+    std::vector<signed char> side_from, side_end, side_at;
+    // Whether some residual is on one side at tn and at the step's end and on
+    // the other at `at`: a window it opens and closes inside the step, which
+    // the step's two ends cannot show CVODE's root search.
+    const auto crossed_back = [&](double at) {
+        sides_at(at, scratch.y_at.data(), side_at);
+        for (std::size_t k = 0; k < residuals.size(); ++k) {
+            if (side_from[k] != 0 && side_end[k] == side_from[k] && side_at[k] == -side_from[k]) {
+                return true;
+            }
+        }
+        return false;
+    };
     double found = none;
     if (end > tn) {
         if (!(estimate_at(end) <= kLookFails)) {
             end_fails = true;
         } else {
+            const bool reads_sides = !residuals.empty();
+            if (reads_sides) {
+                sides_at(end, scratch.y_at.data(), side_end);
+                sides_at(tn, scratch.dky[0].data(), side_from);
+            }
             for (const double part : kLooksInsideAt) {
                 const double at = tn + part * (end - tn);
-                if (at > tn && !(estimate_at(at) <= kLookFails)) {
+                if (at > tn &&
+                    (!(estimate_at(at) <= kLookFails) || (reads_sides && crossed_back(at)))) {
                     found = at;
                     break;
                 }
@@ -18880,7 +18935,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                             : to;
                     bool end_fails = false;
                     const double at =
-                        impl_->changes_inside(cvode_mem, y, ns, tn, end, look_scratch, end_fails);
+                        impl_->changes_inside(cvode_mem, y, ns, tn, end, look_scratch, end_fails,
+                                              state_switch_roots, &state_switch_hold);
                     if (end_fails) {
                         // CVODE's own test sees the change: the step is left to
                         // it, and what it walks to the step's end, as on main
