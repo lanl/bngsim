@@ -50,11 +50,13 @@ window starts after the model does, and three of them run past AMICI's step budg
 over the longer horizon (`AMICI_TOO_MUCH_WORK`): BIOMD0000000042 and 691 in the ODE
 job, 691 and 878 in the sensitivity job (878's ODE row already failed that way).
 rr_parity passes bngsim on all three from the same start; bngsim takes 11,940,
-173,344 and 154,852 steps there in all, within the same CVODES step limit AMICI
-runs out of (10,000 in the ODE job, 100,000 in the sensitivity job). The same
+173,344 and 154,852 steps there in all. AMICI's `max_steps` (10,000 in the ODE job,
+100,000 in the sensitivity job) is CVODES' hard step limit, which it runs into;
+bngsim's is a batch its core resumes from, not a ceiling. The same
 change lets AMICI's ODE run of BIOMD0000000943 finish; it `PASS`es. The tallies
-above predate #1564: the corpus was not re-swept in full for it, only the 19 jobs
-whose start moved and the 22 with a sample on a strict onset (Class 7).
+above predate #1564: the corpus was not re-swept in full for it, only the 45 models
+it and #1571 touch: the 19 jobs whose start moved, the 22 with a sample on a strict
+onset (Class 7), and Class 5's four event-instant models.
 
 ## Class 2 — AMICI integration outliers (44 DIFF; 42 confirmed AMICI-side)
 

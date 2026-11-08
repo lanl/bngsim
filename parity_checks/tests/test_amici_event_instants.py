@@ -333,7 +333,9 @@ def test_amici_run_runs_amici_through_the_instants(monkeypatch):
 # --------------------------------------------------------------------------- #
 # The sensitivity job runs AMICI through the instants too (issue #1571)
 # --------------------------------------------------------------------------- #
-def _amici_sens(tmp_path, sbml: str, **kw):
+def _amici_sens(tmp_path, sbml: str, param: str | None = None, **kw):
+    """AMICI's sensitivity run over ``_GRID``, to ``param`` (its first free
+    parameter by default)."""
     # A compiled AMICI model reads amici.sim.sundials at import; the runner's
     # warmup imports it before any model loads.
     pytest.importorskip("amici.sim.sundials")
@@ -342,7 +344,8 @@ def _amici_sens(tmp_path, sbml: str, **kw):
     xml = tmp_path / "m.xml"
     xml.write_text(sbml)
     ids, built = asens.amici_free_parameter_ids(str(xml))
-    return asens.amici_sens(built, *_GRID, 1e-9, 1e-12, ids[:1], "staggered", sbml=sbml, **kw)
+    sens = [param] if param is not None else ids[:1]
+    return asens.amici_sens(built, *_GRID, 1e-9, 1e-12, sens, "staggered", sbml=sbml, **kw)
 
 
 def test_amicis_sensitivity_run_fires_them_through_the_instants(tmp_path):
@@ -356,10 +359,56 @@ def test_amicis_sensitivity_run_fires_them_through_the_instants(tmp_path):
     np.testing.assert_array_equal(t, np.linspace(*_GRID))
     assert x.shape[0] == sx.shape[0] == len(t)
     names = ac.normalize_amici_names(list(names))
-    for name, at in (("A", 0.33), ("B", 0.53), ("D", 0.63), ("E", 0.733333333333333)):
+    fires = (("A", 0.33), ("B", 0.53), ("D", 0.63), ("E", 0.733333333333333), ("H", _H_AT))
+    for name, at in fires:
         col = x[:, names.index(name)]
         assert np.all(col[t < at] == 0.0) and np.all(col[t > at] == 1.0), name
     assert timing["event_instants"] == 5
+
+
+# S decays at rate kd from S(0) = 1 while ``time == 0.33`` sets A, so AMICI's
+# output times hold an instant between two grid times, and dS/dkd =
+# -t*exp(-kd*t) has a closed form at every one of them. (Not ``k``: AMICI
+# renames that one, ``amici_k``.)
+_DECAY_SBML = _sbml(
+    ["A", "S"],
+    [_event("EA", _eq_time("<cn>0.33</cn>"), "A")],
+    params=_param("kd", 1.0),
+    extra=(
+        '<listOfInitialAssignments><initialAssignment symbol="S">'
+        f"<math {MATH}><cn>1</cn></math></initialAssignment></listOfInitialAssignments>"
+        f'<listOfRules><rateRule variable="S"><math {MATH}>'
+        "<apply><times/><apply><minus/><ci>kd</ci></apply><ci>S</ci></apply>"
+        "</math></rateRule></listOfRules>"
+    ),
+)
+
+
+def test_the_sensitivities_come_from_the_job_grids_rows(tmp_path):
+    """Through the instants, the state and its sensitivities are both read at
+    the job grid's times, not at the instants between them: S and dS/dkd match
+    their closed forms on every grid time."""
+    t, x, sx, names, timing = _amici_sens(
+        tmp_path, _DECAY_SBML, param="kd", through_event_instants=True
+    )
+    assert timing["event_instants"] == 1
+    names = ac.normalize_amici_names(list(names))
+    s = names.index("S")
+    np.testing.assert_allclose(x[:, s], np.exp(-t), rtol=1e-6)
+    np.testing.assert_allclose(sx[:, s, 0], -t * np.exp(-t), rtol=1e-5, atol=1e-9)
+    a = x[:, names.index("A")]
+    assert np.all(a[t < 0.33] == 0.0) and np.all(a[t > 0.33] == 1.0)
+
+
+def test_job_rows_takes_the_grid_back_out_or_refuses():
+    grid = np.linspace(0.0, 1.0, 11)
+    assert ac.job_rows(grid, grid) is None
+    run_ts = np.sort(np.concatenate([grid, [0.33]]))
+    rows = ac.job_rows(run_ts, grid)
+    np.testing.assert_array_equal(run_ts[rows], grid)
+    # Output times that lost a grid time are not compared against the grid.
+    with pytest.raises(RuntimeError, match="do not contain the job grid"):
+        ac.job_rows(np.sort(np.concatenate([np.delete(grid, 5), [0.33, 0.77]])), grid)
 
 
 def test_the_sens_worker_runs_amici_through_the_instants(monkeypatch, tmp_path):

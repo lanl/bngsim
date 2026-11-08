@@ -136,10 +136,11 @@ On the 19 jobs:
 refusals are AMICI running out of steps over the longer horizon, not a bngsim
 difference: rr_parity, which has integrated these jobs from `initial_time` all
 along, passes bngsim on 042, 691 and 878, where bngsim takes 11,940, 173,344 and
-154,852 steps in all. Both engines run under the same CVODES step limit, 10,000 at
-their defaults in the ODE job and 100,000 in the sensitivity job (#339); bngsim
-stays within it and AMICI does not. They join Class 1's integrator bailouts in
-[AMICI_KNOWN_ISSUES](AMICI_KNOWN_ISSUES.md).
+154,852 steps in all. For AMICI, `max_steps` (10,000 at its default in the ODE job,
+100,000 in the sensitivity job, #339) is CVODES' hard step limit, and it hits it:
+`AMICI_TOO_MUCH_WORK`. For bngsim it is a batch the core resumes from while the run
+advances, not a ceiling, so it cannot refuse this way. They join Class 1's
+integrator bailouts in [AMICI_KNOWN_ISSUES](AMICI_KNOWN_ISSUES.md).
 
 ### AMICI runs through the event instants (issue #1542)
 
