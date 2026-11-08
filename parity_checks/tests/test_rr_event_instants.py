@@ -292,3 +292,115 @@ def test_a_model_without_time_triggers_runs_as_before():
     np.testing.assert_array_equal(plain[0], through[0])
     np.testing.assert_array_equal(plain[1], through[1])
     assert through[3]["event_instants"] == 0
+
+
+def _ulps_from(x: float, k: int) -> float:
+    for _ in range(abs(k)):
+        x = float(np.nextafter(x, np.inf if k > 0 else -np.inf))
+    return x
+
+
+# Grids and the sample each case is near. 0.30000000000000004 and 1.0 sit at
+# different places between powers of two, so CVODE's refusal (closer than
+# 2·eps·max(|t0|, |tout|)) reaches 2 ulps before the first and 3 before the
+# second; 1e7's ulps are past the 1e-9 a returned time used to be held to.
+_NEAR = {
+    "0.3": ((0.0, 1.0, 11), 3),
+    "1.0": ((0.0, 1.0, 11), 10),
+    "1e7": ((0.0, 2e7, 3), 1),
+}
+
+
+@pytest.mark.parametrize(
+    "near, k",
+    [
+        *[("0.3", k) for k in (-1, -2, -3, -4, -5, 0, 1, 5)],
+        ("0.3", "1e-12"),
+        *[("1.0", k) for k in (-1, -2, -3, -4)],
+        *[("1e7", k) for k in (-1, -2, -3, -4)],
+    ],
+)
+def test_an_equality_ulps_from_a_sample_fires_where_it_is(near, k):
+    """`time == p` near a sample fires at p, so S is 1 on every sample at or
+    after p and 0 before it, and the job grid comes back exactly. Main refused
+    the run (CV_TOO_CLOSE) wherever p was close enough before the sample that
+    CVODE would not start the step to it after the event: 1 and 2 ulps before
+    0.3, 1 to 3 before 1.0, 1 and 2 before 1e7; there p now takes the sample's
+    place. Main ran the rest, and still does."""
+    pytest.importorskip("roadrunner")
+    grid_args, i = _NEAR[near]
+    grid = np.linspace(*grid_args)
+    p = float(grid[i]) - 1e-12 if k == "1e-12" else _ulps_from(float(grid[i]), k)
+    sbml = _sbml(_rel("eq", T, f"<cn>{p!r}</cn>"))
+    t, v, names, _ = rc.rr_ode(sbml, *grid_args, 1e-8, 1e-12, through_event_instants=True)
+    np.testing.assert_array_equal(t, grid)
+    np.testing.assert_array_equal(_s_column(t, v, names), (grid >= p).astype(float))
+
+
+def test_only_an_instant_cvode_would_not_step_from_moves_a_sample():
+    """Every other instant gives main's union of grid and instants."""
+    grid = np.linspace(0.0, 1.0, 11)
+    g3 = float(grid[3])
+    for instants in ([0.33], [g3], [_ulps_from(g3, 1)], [_ulps_from(g3, -3)], [g3 - 1e-12]):
+        times, rows = rc.rr_output_times(grid, instants)
+        assert times == list(np.union1d(grid, instants)), instants
+        assert [times[r] for r in rows] == list(grid)
+    for k in (-1, -2):
+        times, rows = rc.rr_output_times(grid, [_ulps_from(g3, k)])
+        assert len(times) == len(grid) and times[rows[3]] == _ulps_from(g3, k)
+    times, rows = rc.rr_output_times(grid, [_ulps_from(1.0, -3)])
+    assert len(times) == len(grid) and times[rows[10]] == _ulps_from(1.0, -3)
+
+
+# Where main's RoadRunner run of `time == p` or `time != p`, p that many ulps
+# before the sample, failed with CV_TOO_CLOSE.
+_REFUSED = {"0.3": {-1, -2}, "1.0": {-1, -2, -3}, "1e7": {-1, -2}}
+
+
+@pytest.mark.parametrize("near, k", [(near, k) for near in _NEAR for k in (-1, -2, -3, -4, 0, 1)])
+def test_a_not_equal_ulps_from_a_sample_never_reads_the_state_before_its_event(near, k):
+    """`time != p` is false at p and fires just after it, so S is 1 on every
+    sample after p, as bngsim reports it. Where CVODE will not step from p to
+    the sample, p cannot take the sample's place, since that row would hold the
+    state before the event, a DIFF blaming bngsim: the run fails, as on main,
+    and the job is a reference failure."""
+    pytest.importorskip("roadrunner")
+    grid_args, i = _NEAR[near]
+    grid = np.linspace(*grid_args)
+    p = _ulps_from(float(grid[i]), k)
+    # Starts true, so the event fires just after p and not at the start.
+    sbml = _sbml(_rel("neq", T, f"<cn>{p!r}</cn>")).replace(
+        'initialValue="false"', 'initialValue="true"'
+    )
+
+    def run():
+        return rc.rr_ode(sbml, *grid_args, 1e-8, 1e-12, through_event_instants=True)
+
+    if k in _REFUSED[near]:
+        with pytest.raises(RuntimeError, match="CV_TOO_CLOSE"):
+            run()
+        return
+    t, v, names, _ = run()
+    np.testing.assert_array_equal(t, grid)
+    np.testing.assert_array_equal(_s_column(t, v, names), (grid > p).astype(float))
+
+
+def test_an_instant_whose_row_would_be_wrong_moves_no_sample():
+    """Main's union, so the run fails as before: a `!=` instant (held), whose
+    row would hold the state before its event, and one before a grid time that
+    is an instant too, whose event would then go unseen."""
+    grid = np.linspace(0.0, 1.0, 11)
+    g3 = float(grid[3])
+    p = _ulps_from(g3, -1)
+    for instants, held in (([p], {p}), ([p, g3], set())):
+        times, rows = rc.rr_output_times(grid, instants, held)
+        assert times == list(np.union1d(grid, instants)), instants
+        assert [times[r] for r in rows] == list(grid)
+
+
+def test_the_held_instants_are_the_not_equal_ones():
+    """Each exactly the instant event_instants gives, not the sample after it."""
+    trig = f"<apply><or/>{_rel('neq', T, _cn(5))}{_rel('eq', T, _cn(7))}</apply>"
+    sbml = _sbml(trig)
+    assert rc._neq_instants(sbml, 0.0, 10.0) == {5.0}
+    assert {5.0, 7.0} <= set(rc.event_instants(sbml, 0.0, 10.0))
