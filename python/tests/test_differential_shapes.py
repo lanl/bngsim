@@ -759,6 +759,20 @@ def test_a_sensitivity_run_refused_is_unsupported_not_a_pass():
     assert v.status == "unsupported" and "SensitivityRefusedDuringRunError" in v.note
 
 
+def test_a_refusal_is_read_by_its_type_and_not_its_text():
+    """#1435: each refusal the solver reaches has a type, so the harness reads
+    no message. A reworded refusal stays one, and a failure that names forward
+    sensitivity is a failure."""
+    refused = bngsim.SensitivityRefusedForParametersError("Forward sensitivity: events 'E0'")
+    assert D._declined(refused)
+    assert D._declined(bngsim.SensitivityUnsupportedError("reworded, with no such words"))
+    assert not D._declined(
+        bngsim.SimulationError(
+            "Simulation failed: Forward sensitivity was handed a non-finite initial seed"
+        )
+    )
+
+
 @functools.cache
 def _base(shape):
     return D.Base(SHAPES[shape])

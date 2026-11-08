@@ -62,6 +62,8 @@ from bngsim._exceptions import (
     CodegenToolchainError,
     DenseSolverFallbackWarning,
     ModelError,
+    SensitivityRefusedDuringRunError,
+    SensitivityRefusedForParametersError,
     SensitivityUnsupportedError,
     SimulationError,
     SimulationTimeout,
@@ -7379,6 +7381,11 @@ class Simulator:
                 f"rate-law condition ({e}) at the row's values, and the batch's code was "
                 "built where it could (issues #414, #708)."
             ) from None
+        except SensitivityRefusedDuringRunError as e:
+            # The solver's refusal partway, by type, and by row (issue #1435): it
+            # can turn on the row's values, and a scan has to say which row. A
+            # runtime_error said so as "Batch simulation N failed".
+            raise type(e)(f"run_batch row {index}: {e}") from None
         except _PASSED_THROUGH:
             # A timeout or a refusal is the row's, as it is from run().
             raise
@@ -7849,10 +7856,14 @@ class Simulator:
                     "(issue #708). A Simulator built at these values is refused too: it has "
                     "no analytic right-hand side for the condition (issues #414, #961)."
                 ) from None
-            if isinstance(exc, SensitivityUnsupportedError):
+            if isinstance(exc, SensitivityUnsupportedError) and not isinstance(
+                exc, SensitivityRefusedForParametersError
+            ):
                 # A refusal of the model, raised as a chunk sets up (issue
                 # #1228's held equality): no column runs alone either, and
                 # retrying them reported it as a tolerance failure, untyped.
+                # One that turns on the columns asked (issue #1435) is retried
+                # below, as an untyped failure is: a column alone can run.
                 raise exc
             return self._recover_failed_chunk(
                 chunk_idx,
@@ -7947,6 +7958,9 @@ class Simulator:
         solo_results: list[Result] = []
         solo_ok: list[str] = []
         solo_failed: list[str] = []
+        # What each failure was, so a refusal is reported as one (issue #1435):
+        # the chunk's own, or each column's alone once they are retried.
+        failures: list[BaseException] = [exc]
         diagnosed = True
 
         if len(chunk_params) == 1:
@@ -7969,7 +7983,15 @@ class Simulator:
                             [name], t_span, n_points, rtol, atol_spec, max_steps
                         )
                     )
-                except Exception:  # noqa: BLE001 — classified, then reported below
+                except Exception as solo:  # noqa: BLE001 — classified, then reported below
+                    if isinstance(solo, SensitivityUnsupportedError) and not isinstance(
+                        solo, SensitivityRefusedForParametersError
+                    ):
+                        # The model's refusal whatever is asked: no column runs.
+                        raise solo from None
+                    if not solo_failed:
+                        failures = []
+                    failures.append(solo)
                     solo_failed.append(name)
                 else:
                     solo_ok.append(name)
@@ -7988,11 +8010,20 @@ class Simulator:
                 )
                 return solo_results
 
-        # Something in this chunk cannot be integrated at these tolerances.
+        # Every failure a refusal for the parameters asked (issue #1435): one by
+        # type, as each was, and said as one, not as a tolerance failure. Any
+        # other failure among them, and the report is the SimulationError it was.
+        refused = all(isinstance(e, SensitivityRefusedForParametersError) for e in failures)
+        # Otherwise something in this chunk cannot be integrated at these tolerances.
+        loosen = "" if refused else ", or loosen rtol/atol"
         if diagnosed:
             verdict = (
-                f"Column(s) {solo_failed} also fail on their own, so they are "
-                f"unresolvable at this tolerance rather than badly grouped"
+                f"Column(s) {solo_failed} are refused on their own"
+                if refused
+                else (
+                    f"Column(s) {solo_failed} also fail on their own, so they are "
+                    f"unresolvable at this tolerance rather than badly grouped"
+                )
             )
             if solo_ok:
                 verdict += f"; {solo_ok} integrated fine alone"
@@ -8002,32 +8033,40 @@ class Simulator:
             # that is the hand bisection this replaces. Past a screenful it stops
             # being that and starts being a wall, so say it the short way instead.
             advice = (
-                f" Re-run with params={computable!r} for the remaining "
-                f"{len(computable)} column(s), or loosen rtol/atol."
+                ""
+                if refused and not computable
+                else f" Re-run with params={computable!r} for the remaining "
+                f"{len(computable)} column(s){loosen}."
                 if len(computable) <= 40
                 else (
                     f" Re-run without {solo_failed!r} — the other {len(computable)} "
-                    f"column(s) are unaffected — or loosen rtol/atol."
+                    f"column(s) are unaffected{' — or loosen rtol/atol' if not refused else ''}."
                 )
             )
         else:
             verdict = (
                 f"This chunk is wider than {self._MAX_COLUMNS_FOR_SOLO_RETRY} columns, "
                 f"so its columns were NOT retried individually — which of them is "
-                f"unresolvable is unknown"
+                f"{'refused alone' if refused else 'unresolvable'} is unknown"
             ) + "."
             advice = (
                 f" Re-run just this chunk with params={chunk_params!r}, chunk_size=1 "
-                f"to find out, or loosen rtol/atol."
+                f"to find out{loosen}."
             )
-
-        raise SimulationError(
-            f"Sensitivity chunk {chunk_idx} (params={chunk_params}) failed: {exc}\n"
-            f"{verdict}"
-            f" A chunk's columns share one CVODES error test, so chunk_size — "
-            f"documented as a throughput knob — also decides which columns are "
-            f"error-controlled together, and a different value can change whether "
-            f"this call succeeds (issue #243).{advice}"
+        grouping = (
+            ""
+            if refused
+            else (
+                " A chunk's columns share one CVODES error test, so chunk_size — "
+                "documented as a throughput knob — also decides which columns are "
+                "error-controlled together, and a different value can change whether "
+                "this call succeeds (issue #243)."
+            )
+        )
+        raise (SensitivityRefusedForParametersError if refused else SimulationError)(
+            f"Sensitivity chunk {chunk_idx} (params={chunk_params}) "
+            f"{'was refused' if refused else 'failed'}: {exc}\n"
+            f"{verdict}{grouping}{advice}"
         ) from exc
 
     def _run_sensitivity_chunk(

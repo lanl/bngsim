@@ -418,18 +418,16 @@ def _first_line(e: BaseException) -> str:
 
 
 def _declined(e: Exception) -> bool:
-    """A refusal by type, or a sensitivity run's refusal by name at run time: a
-    SimulationError whose message says forward sensitivity is what it declines
-    (an event not smooth in its parameter, a trigger that starts on its
-    threshold, a delay; #1229's class). A crash says no such thing."""
+    """A refusal by type: SensitivityUnsupportedError, raised before a run or by
+    the solver partway through one (an event not smooth in its parameter, a
+    trigger that starts on its threshold, a delay; #1229's class). Each refusal
+    the solver reaches has a type since #1577 and #1435, so its message is not
+    read: a reworded one cannot turn it into a crash, and a failure that names
+    forward sensitivity (a non-finite seed, a fire the solver did not locate)
+    is not taken for a refusal."""
     import bngsim
 
-    if isinstance(e, bngsim.SensitivityUnsupportedError):
-        return True
-    text = str(e).lower()
-    return isinstance(e, bngsim.SimulationError) and (
-        "forward sensitivity" in text or "forward-sensitivity run" in text
-    )
+    return isinstance(e, bngsim.SensitivityUnsupportedError)
 
 
 #: The words bngsim's compile timeout is reported in (``_codegen``), where

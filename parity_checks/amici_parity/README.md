@@ -592,7 +592,11 @@ raises on rather than answer wrongly:
   expression — where the alternative is unreliable finite differences (GH #214).
 
 Both are `bngsim.SensitivityUnsupportedError`, and the runner buckets them
-`UNSUPPORTED` (non-scoring), not `EXCEPTION`. This is the same treatment
+`UNSUPPORTED` (non-scoring), not `EXCEPTION`. So are the refusals the solver
+reaches partway through a run: `SensitivityRefusedDuringRunError` (#1577), and
+its `SensitivityRefusedForParametersError` where the refusal turns on the
+parameters asked (#1435). Before they had a type they were a plain
+`SimulationError` and scored `EXCEPTION`, as BIOMD0000000285's row did. This is the same treatment
 rr_parity gives `SsaValidationError`, for the same reason: `EXCEPTION` means
 *AMICI ran and bngsim broke*, an actionable bug, and mixing documented capability
 gaps into it dilutes exactly the signal the bucket exists to carry.

@@ -18,7 +18,9 @@ Hierarchy::
     ├── SensitivityUnsupportedError — construct forward sensitivity can't
     │   │                       differentiate (also a ValueError)
     │   └── SensitivityRefusedDuringRunError — the solver's refusal partway
-    │                           through a run (also a SimulationError)
+    │       │                   through a run (also a SimulationError)
+    │       └── SensitivityRefusedForParametersError — one that turns on
+    │                           the parameters requested
     ├── CodegenDeclinedError  — codegen=True on a model codegen declines
     ├── CodegenToolchainError — the C toolchain cannot build any codegen library
     └── StopConditionMet      — stop condition triggered (carries partial result)
@@ -198,26 +200,48 @@ class SensitivityUnsupportedError(BngsimError, ValueError):
 class SensitivityRefusedDuringRunError(SensitivityUnsupportedError, SimulationError):
     """A forward-sensitivity run the solver refused partway, by declaration.
 
-    The solver reached a construct whose derivative it cannot produce, by a
-    condition no choice of requested parameters changes: an event that fires as
-    its trigger leaves its threshold with no first-order motion (issue #934), a
-    compartment that jumps
-    twice at one instant (issue #1181), a delay a ``run_batch`` row made
-    positive (issue #144), and the like. The message names it and what to
-    change. A :class:`SensitivityUnsupportedError`, as the refusals raised
-    before a run are, so a fitting driver or a parity suite tells it from a
-    solver failure by its type (issue #1279). And a :class:`SimulationError`,
-    which all but one of these were raised as before they had a type, so an
-    existing ``except SimulationError`` still catches it.
+    The solver reached a construct whose derivative it cannot produce. Raised
+    as this type itself, by a condition no choice of requested parameters
+    changes: an event that fires as its trigger leaves its threshold with no
+    first-order motion (issue #934), a compartment that jumps twice at one
+    instant (issue #1181), a delay a ``run_batch`` row made positive (issue
+    #144), and the like. The message names it and what to change. A
+    :class:`SensitivityUnsupportedError`, as the refusals raised before a run
+    are, so a fitting driver or a parity suite tells it from a solver failure
+    by its type (issue #1279). And a :class:`SimulationError`, which all but one
+    of these were raised as before they had a type, so an existing
+    ``except SimulationError`` still catches it.
 
     A refusal whose condition turns on a requested column (a crossing or a
-    fire the column moves, two times it parts) is not this type: it stays a
-    plain :class:`SimulationError`, because
-    :meth:`Simulator.compute_all_sensitivities` retries a failed chunk one
-    column at a time and a column alone can run. The one exception is the
-    refusal of a held equality the state leaves (issue #1279), which had this
-    type first: where a restart lands on the stop, a column that moves it is
-    refused and one that does not runs.
+    fire the column moves, two times it parts) is its subclass
+    :class:`SensitivityRefusedForParametersError`, because
+    :meth:`Simulator.compute_all_sensitivities` retries a failed chunk of those
+    one column at a time and a column alone can run, where it raises this type
+    as it is. The one exception is the refusal of a held equality the state
+    leaves (issue #1279), which had this type first: where a restart lands on
+    the stop, a column that moves it is refused and one that does not runs.
+    """
+
+
+class SensitivityRefusedForParametersError(SensitivityRefusedDuringRunError):
+    """A forward-sensitivity run the solver refused partway, for the parameters
+    requested.
+
+    The condition can turn on which sensitivities were asked for: a crossing
+    or a fire a requested parameter moves, two times it moves apart, or an edge
+    it moves the run onto, where the result has a kink or a jump and no
+    derivative (issues #49, #150, #760, #767, #945, #1025 and others). The
+    message names it and, where it can, the parameters to drop. A smaller set
+    may run, so
+    :meth:`Simulator.compute_all_sensitivities` retries a chunk refused this way
+    one column at a time (GH #243) and raises this type, naming the parameters
+    refused alone and the ones that ran, when some are refused alone too.
+
+    A :class:`SensitivityRefusedDuringRunError`, so a
+    :class:`SensitivityUnsupportedError` and a :class:`SimulationError`: a
+    fitting driver or a parity suite tells it from a solver failure by its type,
+    and an ``except SimulationError`` that caught these before they had one
+    still does (issue #1435).
     """
 
 
