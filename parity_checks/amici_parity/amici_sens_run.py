@@ -55,6 +55,19 @@ is reported in its own field rather than folded into the headline metric, so a
 sensitivity DIFF on a model whose states already disagree is never mistaken for a
 sensitivity-specific bug.
 
+TIME — both engines integrate from the job's SED-ML ``initial_time`` and are
+compared on ``n_points`` over ``[initial_time, t_end]``, as ``amici_run.py``,
+rr_parity (GH #19) and copasi_parity (issue #1550) do. ``t_start`` (the
+outputStartTime) is later than it on 19 jobs (issue #1564).
+
+A sample on a strict time trigger's onset, the c of ``time > c``, is not judged
+(issue #1571), for the state or the sensitivities, as ``amici_run.py`` does not
+judge it (#1557). The trigger is false at c, so bngsim reports the state before
+the event there; AMICI reads ``>`` as ``>=`` and reports the state after it.
+``_amici_sens.amici_sens`` records those samples with AMICI's side, so a replay
+from the reference archive leaves out the same ones, and ``_compare`` names them
+in the row's comment with the failing cells on them.
+
 Usage:
     cd bngsim && .venv/bin/python parity_checks/amici_parity/amici_sens_run.py --workers 4
     # full corpus (the reportable run)
@@ -123,7 +136,7 @@ DEFAULT_RTOL = asens.DEFAULT_RTOL
 DEFAULT_ATOL = asens.DEFAULT_ATOL
 
 
-def _compare(bn, am, param_values=None, atol=None, param_ids=None) -> dict:
+def _compare(bn, am, param_values=None, atol=None, param_ids=None, onsets=()) -> dict:
     """Compare one (state, sensitivity) pair. Returns a result-fragment dict.
 
     ``bn``/``am`` are ``(t, x, sx, species_names)``. The parameter axis needs no
@@ -138,6 +151,19 @@ def _compare(bn, am, param_values=None, atol=None, param_ids=None) -> dict:
     each parameter column is judged on its own scale (issue #1261), the tensor
     as a whole is judged as before, and the row passes only if both do.
     ``param_ids`` names the columns the row reports as not judged or failing.
+
+    ``onsets`` are the job-grid times on the c of a strict ``time > c``
+    trigger (``strict_onset_samples`` from ``_amici_sens.amici_sens``). Their
+    rows are not judged (issue #1571), as ``amici_run._compare_ode`` does not
+    judge them (#1557): AMICI reports the state and its sensitivities there
+    after the event, bngsim before it. Every verdict, tally and witness on the
+    row is over the other samples. What leaving them out changed is read off
+    every sample, with those rows forgiven through ``differ``'s
+    ``forgive_mask``: ``rescued``, the failing cells on them, for the state and
+    for the judged sensitivity columns, and ``DECISIVE`` where every sample
+    gives a DIFF and the judged ones do not. A row with a cell finite on one
+    side only is judged anyway. With no onsets the comparison is the one it
+    always was.
     """
     bn_t, bn_x, bn_sx, bn_names = bn
     am_t, am_x, am_sx, am_names = am
@@ -156,16 +182,75 @@ def _compare(bn, am, param_values=None, atol=None, param_ids=None) -> dict:
             "comment": f"disjoint species sets: bn={bn_names[:4]} amici={am_names[:4]}",
         }
     bn_idx, am_idx, common = align
+    x_pair = (bn_x[:, bn_idx], am_x[:, am_idx])
+    sx_pair = (bn_sx[:, bn_idx, :], am_sx[:, am_idx, :])
+    judge = dict(n_common=len(common), param_values=param_values, atol=atol, param_ids=param_ids)
 
+    rows = asens.onset_rows(am_t, onsets, x_pair, sx_pair)
+    if not rows:
+        return _judge(*x_pair, *sx_pair, **judge)
+    keep = np.ones(len(am_t), dtype=bool)
+    keep[rows] = False
+    out = _judge(*(a[keep] for a in (*x_pair, *sx_pair)), **judge)
+
+    # The audit, over every sample. `whole` is the row as it was before #1571.
+    whole = _judge(*x_pair, *sx_pair, **judge)
+    on_rows = np.zeros(len(am_t), dtype=bool)
+    on_rows[rows] = True
+    x_mask = np.broadcast_to(on_rows[:, None], x_pair[0].shape).copy()
+    state_rescued = differ.deterministic_verdict(*x_pair, forgive_mask=x_mask)["n_forgive_rescued"]
+    sx_rescued = _onset_rescued_cells(*sx_pair, on_rows, param_values, atol)
+    note = sens_onset_note(
+        [float(am_t[i]) for i in rows],
+        state_rescued,
+        out["state_passed"] and not whole["state_passed"],
+        sx_rescued,
+        out["status"] == "pass" and whole["status"] == "diff",
+    )
+    out["comment"] += " | " + note
+    return out
+
+
+def _onset_rescued_cells(bn_sx, am_sx, on_rows, param_values, atol) -> int:
+    """The failing sensitivity cells on the ``on_rows`` samples, over every
+    sample, in the columns the verdict judges: those the rows' forgiveness, and
+    not the solver-resolution floor, cleared."""
+    mask = np.broadcast_to(on_rows[:, None, None], bn_sx.shape).copy()
+    if param_values is None or atol is None:
+        base = asens.sens_verdict(bn_sx, am_sx)
+        masked = asens.sens_verdict(bn_sx, am_sx, forgive_mask=mask)
+        return int(masked["n_noise_rescued"] - base["n_noise_rescued"])
+    judged = asens.judged_columns(bn_sx, am_sx, param_values, atol)
+    base = asens.column_verdicts(bn_sx, am_sx, param_values, atol, judged)
+    masked = asens.column_verdicts(bn_sx, am_sx, param_values, atol, judged, forgive_mask=mask)
+    return int(sum(masked[j]["n_noise_rescued"] - base[j]["n_noise_rescued"] for j in judged))
+
+
+def sens_onset_note(
+    times: list[float], state_rescued: int, state_decisive: bool, sx_rescued: int, decisive: bool
+) -> str:
+    """The comment part for the samples ``_compare`` left unjudged: their times,
+    the failing cells on them for the state and for the sensitivities, and
+    ``DECISIVE`` where judging them would have made that verdict a DIFF."""
+    at = ", ".join(f"{t:g}" for t in times)
+    return (
+        f"{asens.ONSET_NOTE_PREFIX} {at} (state rescued {state_rescued}"
+        f"{' DECISIVE' if state_decisive else ''}; sensitivities rescued {sx_rescued}"
+        f"{' DECISIVE' if decisive else ''}; GH #1571)"
+    )
+
+
+def _judge(bn_x, am_x, bn_used, am_used, *, n_common, param_values, atol, param_ids) -> dict:
+    """``_compare``'s verdict on aligned arrays: the states ``(n_t, n_sp)`` and
+    the sensitivities ``(n_t, n_sp, n_p)``, both in the common species order."""
     # State parity first — it qualifies the sensitivity verdict below.
-    sv = differ.deterministic_verdict(bn_x[:, bn_idx], am_x[:, am_idx])
+    sv = differ.deterministic_verdict(bn_x, am_x)
 
     # Sensitivity parity: the headline, judged a parameter column at a time
     # (issue #1261). On the tensor as a whole, differ counted a column only past
     # 1e-3 of the largest one's peak: 2,702 of 4,272 columns here could be
     # zeroed, negated or multiplied by 1000 and still read PASS.
-    n_p = bn_sx.shape[2]
-    bn_used, am_used = bn_sx[:, bn_idx, :], am_sx[:, am_idx, :]
+    n_p = bn_used.shape[2]
     # None where no column was assessed alone, as n_columns_judged.
     not_judged = columns_diff = None
     whole = None
@@ -251,8 +336,7 @@ def _compare(bn, am, param_values=None, atol=None, param_ids=None) -> dict:
     # single tiny-valued parameter would otherwise inflate a global floor and
     # mark a live model degenerate (see sens_resolution_floors).
     sx_peak = float(np.nanmax(np.abs(bn_used))) if bn_used.size else 0.0
-    x_used = bn_x[:, bn_idx]
-    state_span = float(np.nanmax(np.nanmax(x_used, axis=0) - np.nanmin(x_used, axis=0)))
+    state_span = float(np.nanmax(np.nanmax(bn_x, axis=0) - np.nanmin(bn_x, axis=0)))
     n_resolvable = asens.resolvable_param_columns(bn_used, param_values, atol)
 
     # Issue #316 — the comment reports what the floor RESCUED, not how much of
@@ -265,7 +349,7 @@ def _compare(bn, am, param_values=None, atol=None, param_ids=None) -> dict:
         judged_txt = f"{len(verdicts)}/{n_p} columns judged: "
         decisive = passed and any(cv["noise_decisive"] for cv in verdicts.values())
     comment = (
-        f"{len(common)} sp x {n_p} par; {judged_txt}fail {v['n_fail']}/{v['n_cells']} "
+        f"{n_common} sp x {n_p} par; {judged_txt}fail {v['n_fail']}/{v['n_cells']} "
         f"(hard {v['n_hard_fail']}, soft {v['n_soft_fail']}, "
         f"forgiven {v['budget_forgiven']}, noise-rescued {v['n_noise_rescued']}"
         f"{' DECISIVE' if decisive else ''}); "
@@ -306,7 +390,7 @@ def _compare(bn, am, param_values=None, atol=None, param_ids=None) -> dict:
         "columns_diff": columns_diff,
         "state_passed": bool(sv["passed"]),
         "state_max_rel": float(sv["max_rel"]),
-        "n_common_species": len(common),
+        "n_common_species": n_common,
         "n_params": int(n_p),
         # issue #316 — three numbers, because the audit question needs three.
         # How much of the tensor is under solver resolution (data); how much of
@@ -467,7 +551,10 @@ _is_declared_refusal = asens.is_declared_refusal
 # reports the archived version as the reference's.
 # 2: the file name carries a hash of the key, so two keys that sanitize alike
 # no longer share a file.
-ARCHIVE_FORMAT = 2
+# 3: AMICI's run starts at the SED-ML initial_time, ``t_int`` in the identity
+# where ``t_start`` was (issue #1564), and its timing records the samples on a
+# strict onset, which a replay leaves unjudged as a live run does (#1571).
+ARCHIVE_FORMAT = 3
 
 
 def _archive_file(directory, key: str) -> Path:
@@ -483,7 +570,9 @@ def archive_identity(spec: dict) -> dict:
         "model_id": spec["model_id"],
         "method": spec["method"],
         "model_sha256": hashlib.sha256(Path(spec["xml"]).read_bytes()).hexdigest(),
-        "t_start": float(p["t_start"]),
+        # Where both runs start and the compared grid begins (issue #1564). The
+        # outputStartTime no longer enters either run.
+        "t_int": asens.initial_time(p),
         "t_end": float(p["t_end"]),
         "n_points": int(p["n_points"]),
         "rtol": float(p["rtol"]),
@@ -553,6 +642,10 @@ def _worker(spec: dict, q) -> None:
     p = spec["params"]
     xml = spec["xml"]
     method = spec["sens_method"]
+    # Both engines integrate from the SED-ML initialTime and are compared on
+    # n_points over [t_int, t_end], as in amici_run, rr_run and copasi_run
+    # (GH #19, issue #1564).
+    t_int = asens.initial_time(p)
     res = {k: spec[k] for k in ("key", "model_id", "method")}
     res.update(
         {
@@ -736,7 +829,7 @@ def _worker(spec: dict, q) -> None:
         t0 = time.perf_counter()
         out = asens.bn_sens(
             xml,
-            p["t_start"],
+            t_int,
             p["t_end"],
             p["n_points"],
             p["rtol"],
@@ -773,7 +866,7 @@ def _worker(spec: dict, q) -> None:
             t0 = time.perf_counter()
             out = asens.amici_sens(
                 built,
-                p["t_start"],
+                t_int,
                 p["t_end"],
                 p["n_points"],
                 p["rtol"],
@@ -781,6 +874,7 @@ def _worker(spec: dict, q) -> None:
                 shared_ids,
                 method,
                 max_steps=max_steps,
+                sbml=_src,
             )
             am_wall += time.perf_counter() - t0
             am, am_timing = out[:4], out[4]
@@ -793,6 +887,11 @@ def _worker(spec: dict, q) -> None:
             if am is None:
                 record["run_error"] = {"text": am_exc, "cls": am_cls, "full": am_full}
             archive_save(record_to, spec, record, am)
+
+    # Where the comparison must not look, not a cost: kept out of the report's
+    # timing block (issue #1571). Recorded with AMICI's side above, so a replay
+    # reads them from the archive.
+    onsets = am_timing.pop("strict_onset_samples", []) if am_timing else []
 
     res["wall_sec"] = round(bn_wall + am_wall, 3)
     if am is not None:
@@ -821,7 +920,14 @@ def _worker(spec: dict, q) -> None:
 
     try:
         res.update(
-            _compare(bn, am, param_values=param_values, atol=p["atol"], param_ids=shared_ids)
+            _compare(
+                bn,
+                am,
+                param_values=param_values,
+                atol=p["atol"],
+                param_ids=shared_ids,
+                onsets=onsets,
+            )
         )
     except Exception as exc:
         cap = capture_exception("compare", exc)
@@ -1269,7 +1375,10 @@ def main() -> int:
             "local-parameter prefix stripped, compartment-size parameters and "
             "AMICI-fixed parameters excluded, capped at "
             f"{args.param_cap or 'no limit'} per model). AMICI's parameter scale is "
-            "pinned to linear so both report dx/dp rather than dx/dln(p). State "
+            "pinned to linear so both report dx/dp rather than dx/dln(p). Both "
+            "engines integrate from the SED-ML initial_time and are compared on "
+            "n_points over [initial_time, t_end] (GH #19, issue #1564); a sample on "
+            "the c of a strict time > c trigger is not judged (issue #1571). State "
             "trajectories are compared separately and reported per row. Failure is "
             "attributed per engine: bngsim raised + AMICI ran -> EXCEPTION; bngsim "
             "ran + AMICI raised -> REFERENCE_FAILED (non-scoring); both raised, or "

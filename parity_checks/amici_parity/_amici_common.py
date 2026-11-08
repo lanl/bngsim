@@ -170,6 +170,23 @@ def align_common(bn_names: list[str], am_names: list[str]):
     return _rc.align_common(bn_names, normalize_amici_names(am_names))
 
 
+def initial_time(params: dict) -> float:
+    """The time both engines integrate from: the job's SED-ML ``initial_time``
+    (issue #1564).
+
+    Not ``t_start``, the SED-ML outputStartTime, which is later on 19 corpus jobs
+    (BIOMD0000000042's [120, 300], 569's [1e-5, 1e-2]). Each engine takes the
+    start it is handed as the time the model's initial state holds at, so a run
+    from ``t_start`` solves that state placed at the output start: dynamics
+    before it never happen, and neither does an event (BIOMD0000000834's
+    ``H := 1.8`` at ``t >= 200`` with the window [400, 700]). The compared grid
+    is ``n_points`` over ``[initial_time, t_end]``, as in rr_run (GH #19) and
+    copasi_run (issue #1550). A job file predating the field integrates from
+    ``t_start``.
+    """
+    return float(params.get("initial_time", params["t_start"]))
+
+
 # On-disk cache of compiled AMICI extensions, keyed by SBML content + build flags.
 # AMICI does NO automatic staleness check, so the key is the whole hash: a changed
 # model or build flag yields a fresh directory. Gitignored; the first sweep pays
@@ -624,6 +641,51 @@ def onset_samples(grid: np.ndarray, onsets) -> list[float]:
     return out
 
 
+def grid_onset_samples(model, sbml_str: str, ts, *, value_of=None, literal_of=None) -> list[float]:
+    """The times of the job grid ``ts`` that sit on a strict onset in ``(ts[0],
+    ts[-1]]`` (:func:`onset_samples` of :func:`rr_parity._rr_common.strict_onsets`),
+    with the boundary valued as AMICI values it: parameters and compartments by
+    :func:`amici_value_of` over the built ``model``, written numbers by
+    :func:`amici_literal_of`. The one place both AMICI adapters place them, the
+    ODE run (issue #1557) and the sensitivity run (issue #1571); a caller that
+    already holds the two readers passes them.
+    """
+    if value_of is None:
+        value_of = amici_value_of(model, sbml_str)
+    if literal_of is None:
+        literal_of = amici_literal_of(sbml_str)
+    ts = np.asarray(ts, dtype=float)
+    on = _rc.strict_onsets(sbml_str, float(ts[0]), float(ts[-1]), value_of, literal_of)
+    return onset_samples(ts, on)
+
+
+def onset_rows(grid, onsets, *pairs) -> list[int]:
+    """The indices of ``grid`` (AMICI's output times) that are in ``onsets``, the
+    samples :func:`grid_onset_samples` named, exactly: they are AMICI's own times.
+
+    Each of ``pairs`` is a ``(bngsim, AMICI)`` pair of arrays with time on the
+    first axis. A row where a cell of any of them is finite on one side only is
+    left out of the result, and so is judged: no reading of a jump puts a NaN or
+    an inf on one engine. Shared by ``amici_run`` and ``amici_sens_run``, so the
+    two leave out the same rows.
+    """
+    on = {float(t) for t in onsets}
+    if not on:
+        return []
+    n = len(grid)
+    one_sided = np.zeros(n, dtype=bool)
+    for a, b in pairs:
+        differs = np.isfinite(np.asarray(a)) != np.isfinite(np.asarray(b))
+        one_sided |= differs.reshape(n, -1).any(axis=1)
+    return [i for i, t in enumerate(grid) if float(t) in on and not one_sided[i]]
+
+
+# How the part of a row's comment that names the unjudged onset samples begins.
+# Public because the ODE matrix reads it to say in plain English what was not
+# judged, and both runners write it.
+ONSET_NOTE_PREFIX = "strict onset not judged at t ="
+
+
 def amici_ode(
     xml: str,
     t_start: float,
@@ -726,9 +788,7 @@ def amici_ode(
     if through_event_instants:
         instants = _rc.event_instants(sbml_str, t_start, t_end, value_of, literal_of)
         run_ts = with_event_instants(ts, instants)
-    on_onsets = onset_samples(
-        ts, _rc.strict_onsets(sbml_str, t_start, t_end, value_of, literal_of)
-    )
+    on_onsets = grid_onset_samples(model, sbml_str, ts, value_of=value_of, literal_of=literal_of)
     n_added = len(run_ts) - len(ts)
     if not n_added:
         run_ts = ts

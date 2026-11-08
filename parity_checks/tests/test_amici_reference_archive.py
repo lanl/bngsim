@@ -29,7 +29,8 @@ def _spec(tmp_path: Path, **change) -> dict:
     if not xml.exists():
         xml.write_text("<sbml>the model</sbml>")
     p = {"t_start": 0.0, "t_end": 10.0, "n_points": 11, "rtol": 1e-6, "atol": 1e-9}
-    p.update({k: v for k, v in change.items() if k in p})
+    params = {*p, "initial_time"}
+    p.update({k: v for k, v in change.items() if k in params})
     spec = {
         "key": "BIOMD1:fsa",
         "model_id": "BIOMD1",
@@ -40,7 +41,7 @@ def _spec(tmp_path: Path, **change) -> dict:
         "param_cap": 0,
         "param_budget": 50,
     }
-    spec.update({k: v for k, v in change.items() if k not in p})
+    spec.update({k: v for k, v in change.items() if k not in params})
     return spec
 
 
@@ -78,24 +79,48 @@ def test_no_entry_loads_as_none(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "change",
+    "change,keys",
     [
-        {"rtol": 1e-12},
-        {"atol": 1e-16},
-        {"n_points": 101},
-        {"t_end": 20.0},
-        {"t_start": 1.0},
-        {"max_steps": 500},
-        {"param_cap": 3},
-        {"param_budget": 10},
+        ({"rtol": 1e-12}, ["rtol"]),
+        ({"atol": 1e-16}, ["atol"]),
+        ({"n_points": 101}, ["n_points"]),
+        ({"t_end": 20.0}, ["t_end"]),
+        # Where both runs start (issue #1564): the job's SED-ML initial_time,
+        # or, in a job file predating the field, its t_start.
+        ({"initial_time": 1.0}, ["t_int"]),
+        ({"t_start": 1.0}, ["t_int"]),
+        ({"max_steps": 500}, ["max_steps"]),
+        ({"param_cap": 3}, ["param_cap"]),
+        ({"param_budget": 10}, ["param_budget"]),
     ],
 )
-def test_every_input_of_the_job_is_in_its_identity(tmp_path, change):
+def test_every_input_of_the_job_is_in_its_identity(tmp_path, change, keys):
     """A changed field makes the recorded identity differ, which the worker
     turns into an ``archive_stale`` row rather than a comparison."""
     was = A.archive_identity(_spec(tmp_path))
     now = A.archive_identity(_spec(tmp_path, **change))
-    assert [k for k in was if was[k] != now[k]] == list(change)
+    assert [k for k in was if was[k] != now[k]] == keys
+
+
+def test_an_entry_recorded_from_the_output_start_is_stale(tmp_path):
+    """An archive recorded before #1564 started AMICI at the outputStartTime and
+    holds ``t_start``; the identity now holds where the run starts, ``t_int``,
+    so such an entry is refused, not replayed against a run from the initial
+    time. On a job whose window starts after the model does, the two differ."""
+    spec = _spec(tmp_path, initial_time=0.0, t_start=120.0)
+    now = A.archive_identity(spec)
+    assert now["t_int"] == 0.0 and "t_start" not in now
+    assert now["format"] == 3
+    old = {**{k: v for k, v in now.items() if k != "t_int"}, "format": 2, "t_start": 120.0}
+    assert sorted(k for k in now if old.get(k) != now[k]) == ["format", "t_int"]
+
+
+def test_the_output_start_alone_is_not_in_the_identity(tmp_path):
+    """Neither run reads the outputStartTime any more: both start at the initial
+    time and the compared grid begins there."""
+    was = A.archive_identity(_spec(tmp_path, initial_time=0.0, t_start=0.0))
+    now = A.archive_identity(_spec(tmp_path, initial_time=0.0, t_start=5.0))
+    assert was == now
 
 
 def test_a_changed_model_file_changes_the_identity(tmp_path):

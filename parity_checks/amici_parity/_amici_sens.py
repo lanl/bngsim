@@ -101,6 +101,9 @@ import _amici_common as ac  # noqa: E402
 
 # Engine-agnostic surface, re-exported so the runner imports only this module.
 align_common = ac.align_common
+initial_time = ac.initial_time
+onset_rows = ac.onset_rows
+ONSET_NOTE_PREFIX = ac.ONSET_NOTE_PREFIX
 is_declared_refusal = ac.is_declared_refusal
 schedule = ac.schedule
 hardware_info = ac.hardware_info
@@ -539,6 +542,8 @@ def amici_sens(
     sens_ids: list[str],
     method: str,
     max_steps: int = DEFAULT_SENS_MAX_STEPS,
+    *,
+    sbml: str | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str], dict]:
     """One AMICI CVODES forward-sensitivity run over the pre-built model.
 
@@ -555,6 +560,13 @@ def amici_sens(
     integrates exactly the same ``n_species*(Np+1)`` coupled system as bngsim —
     both a fairness requirement for the timing and a large cost saving on
     many-parameter models.
+
+    ``sbml``, the model's SBML text, lets the timing dict record
+    ``strict_onset_samples`` as :func:`_amici_common.amici_ode` does: the grid
+    times on the c of a ``time > c`` trigger, where AMICI reports the state and
+    its sensitivities after the event and bngsim before it (issue #1571).
+    ``amici_sens_run`` leaves those samples unjudged. Without it none are
+    recorded.
     """
     import amici.sim.sundials as ss
 
@@ -594,6 +606,7 @@ def amici_sens(
     model.set_t0(t_start)
     ts = np.linspace(t_start, t_end, n_points)
     model.set_timepoints(ts)
+    on_onsets = [] if sbml is None else ac.grid_onset_samples(model, sbml, ts)
 
     t1 = time.perf_counter()
     rdata = model.simulate(solver=solver)
@@ -629,6 +642,10 @@ def amici_sens(
         **integ,
         "integrate_cpu_ms": round(float(rdata.cpu_time), 4),
         "parse_interpret_codegen_sec": round(build_total, 6),
+        # Not a cost: the job-grid samples where AMICI's reading of a strict
+        # trigger differs from the SBML's (issue #1571). amici_sens_run reads
+        # them out, after the reference archive has recorded them.
+        "strict_onset_samples": on_onsets,
         "config": {
             "codegen": "C++ (compiled, +sensitivity)",
             "jacobian": "analytical (symbolic)",
