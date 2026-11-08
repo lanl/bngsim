@@ -95,6 +95,13 @@ worse than none:
     TIMEOUT / BAD_TEST / UNSUPPORTED produced no comparison at all, so the entry is
     reported *inapplicable* rather than stale — a timeout falsifies nothing. That
     holds for NO_GROUND_TRUTH too: a bngsim EXCEPTION stays a visible, scoring row.
+    Nor does any entry apply to a DIFF whose ``max_rel`` is not finite (issue
+    #1565). The runners' comparisons return ``inf`` for a time-grid mismatch and
+    for disjoint species sets, and a NaN or inf in either engine's output gives
+    a non-finite metric too. None of that is two answers rounding apart, which
+    is what every entry is written about; it is what a loader regression on a
+    disposed row would look like. So the row keeps its own scoring DIFF, and the
+    entry is reported inapplicable with a note to re-triage.
   * the reason is written into ``JobResult.comment`` on every applied row, so the
     report says why in the row itself and not only here.
   * an entry may record the ``max_rel`` it was authored against. If a later sweep
@@ -340,22 +347,17 @@ INVALID_REFERENCE: dict[str, dict] = {
 # PASS with the reason recorded. Keyed "model_id:regime".
 # --------------------------------------------------------------------------- #
 COMPARISON_ARTIFACT: dict[str, dict] = {
-    "BIOMD0000000117:sens": {
-        "issue": "GH #380",
-        "max_rel": 0.1746,
-        "reason": (
-            "Unresolvable cell at a stimulus edge (no engine at fault). bngsim and "
-            "AMICI agree to 7 significant figures on the columns in question "
-            "(tstim: -40.13189 vs -40.13190; v0: 181.9811 vs 181.9811) and "
-            "RoadRunner's finite difference converges to both as h shrinks (-11.04 "
-            "at h=0.04 -> -37.93 at h=0.004). What survives is 1 hard cell out of "
-            "22022, sitting on the stimulus discontinuity where no finite-difference "
-            "oracle can resolve the answer and the two engines' step placement "
-            "decides the value. Not an invalid reference — AMICI is right here — and "
-            "not something a tighter tolerance fixes, since the cell is a "
-            "discontinuity rather than an ill-conditioned but smooth one."
-        ),
-    },
+    # NOTE: BIOMD0000000117:sens — retired by issue #1571, which made the entry
+    # STALE on both corrector methods. It disposed of 1 hard cell of 22022 (GH
+    # #380, max_rel 0.1746), "on the stimulus discontinuity". That cell is the
+    # sample at t = 4 = tstim, the c of the model's `time > tstim` trigger:
+    # AMICI reads `>` as `>=` and reports the sensitivities there after the
+    # event, bngsim before it (the #1557 reading). amici_sens_run now leaves
+    # that sample unjudged on every model, and the row PASSes on its own, 0 of
+    # 22000 cells failing, with the onset note `sensitivities rescued 1
+    # DECISIVE`. The entry's evidence still stands (bngsim and AMICI agree to 7
+    # significant figures off that sample, and RoadRunner's finite difference
+    # converges to both); the rule explains the one cell it could not.
 }
 
 
@@ -504,26 +506,26 @@ def apply_disposition(
     ``reference_refusal`` is non-None only when the disposition itself set one
     (so a caller can leave an auto-derived refusal alone).
 
-    ``value`` is the row's metric (``max_rel_err``); it is only read to compare
-    against the entry's recorded ``max_rel``, and ``None`` simply skips that check.
+    ``value`` is the row's metric (``max_rel_err``). A DIFF whose metric is not
+    finite is never disposed of (issue #1565; the module docstring says why).
+    Otherwise it is only read to compare against the entry's recorded
+    ``max_rel``. ``None`` skips both checks.
     """
     kind = disp["kind"]
     label = _LABEL[kind]
     tag = f" ({disp['issue']})" if disp.get("issue") else ""
 
-    # No ground truth: a PASS is two non-solutions that rounded alike, so it is
-    # disposed of exactly as a DIFF is. It is never STALE, because what the entry
-    # asserts is a property of the model, which no engine's verdict can falsify.
     # A non-finite metric is not two trajectories rounding apart: it is a grid or
     # species mismatch, or non-finite output, which a loader regression would
-    # produce. That stays a scoring DIFF.
-    if kind == _KIND_NO_GROUND_TRUTH and outcome == Outcome.DIFF and not _finite(value):
+    # produce. Whatever an entry says about the row, that stays a scoring DIFF
+    # (issue #1565; NO_GROUND_TRUTH had this guard first).
+    if outcome == Outcome.DIFF and not _finite(value):
         return (
             outcome,
             _join(
                 comment,
                 f"{label} entry{tag} did not apply: max_rel={value} is not two "
-                "trajectories rounding apart (grid or species mismatch, or "
+                "answers rounding apart (grid or species mismatch, or "
                 "non-finite output); re-triage",
             ),
             None,

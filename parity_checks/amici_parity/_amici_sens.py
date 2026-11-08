@@ -101,6 +101,9 @@ import _amici_common as ac  # noqa: E402
 
 # Engine-agnostic surface, re-exported so the runner imports only this module.
 align_common = ac.align_common
+initial_time = ac.initial_time
+onset_rows = ac.onset_rows
+ONSET_NOTE_PREFIX = ac.ONSET_NOTE_PREFIX
 is_declared_refusal = ac.is_declared_refusal
 schedule = ac.schedule
 hardware_info = ac.hardware_info
@@ -539,6 +542,9 @@ def amici_sens(
     sens_ids: list[str],
     method: str,
     max_steps: int = DEFAULT_SENS_MAX_STEPS,
+    *,
+    sbml: str | None = None,
+    through_event_instants: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str], dict]:
     """One AMICI CVODES forward-sensitivity run over the pre-built model.
 
@@ -555,6 +561,21 @@ def amici_sens(
     integrates exactly the same ``n_species*(Np+1)`` coupled system as bngsim —
     both a fairness requirement for the timing and a large cost saving on
     many-parameter models.
+
+    ``sbml``, the model's SBML text, lets the timing dict record
+    ``strict_onset_samples`` as :func:`_amici_common.amici_ode` does: the grid
+    times on the c of a ``time > c`` trigger, where AMICI reports the state and
+    its sensitivities after the event and bngsim before it (issue #1571).
+    ``amici_sens_run`` leaves those samples unjudged. Without it none are
+    recorded.
+
+    With ``sbml`` and ``through_event_instants`` AMICI is also given output
+    times at its event instants and only the job grid's rows are returned, as
+    :func:`_amici_common.amici_ode` does for the ODE job (issue #1542): without
+    them AMICI skips a ``time == c`` event whose c falls between its samples,
+    and its sensitivities with it (issue #1571). The timing dict records
+    ``event_instants``, how many output times were added. Both come from
+    :func:`_amici_common.output_times`, which the ODE run uses too.
     """
     import amici.sim.sundials as ss
 
@@ -591,9 +612,16 @@ def amici_sens(
     # _amici_common.amici_ode. Sensitivities inherit the problem doubly: an
     # unrequested [0, t_start] prelude moves the state the sensitivities are
     # linearized about, so dx/dp is computed at the wrong operating point.
+    # ``t_start`` is where the run starts: amici_sens_run hands it the job's
+    # SED-ML initial time, not its outputStartTime (issue #1564).
     model.set_t0(t_start)
     ts = np.linspace(t_start, t_end, n_points)
-    model.set_timepoints(ts)
+    run_ts, on_onsets = ts, []
+    if sbml is not None:
+        run_ts, on_onsets = ac.output_times(
+            model, sbml, ts, through_event_instants=through_event_instants
+        )
+    model.set_timepoints(run_ts)
 
     t1 = time.perf_counter()
     rdata = model.simulate(solver=solver)
@@ -629,6 +657,11 @@ def amici_sens(
         **integ,
         "integrate_cpu_ms": round(float(rdata.cpu_time), 4),
         "parse_interpret_codegen_sec": round(build_total, 6),
+        "event_instants": len(run_ts) - len(ts),
+        # Not a cost: the job-grid samples where AMICI's reading of a strict
+        # trigger differs from the SBML's (issue #1571). amici_sens_run reads
+        # them out, after the reference archive has recorded them.
+        "strict_onset_samples": on_onsets,
         "config": {
             "codegen": "C++ (compiled, +sensitivity)",
             "jacobian": "analytical (symbolic)",
@@ -638,10 +671,14 @@ def amici_sens(
         },
     }
 
+    x = np.asarray(rdata.x, dtype=float)
     sx = np.transpose(np.asarray(rdata.sx, dtype=float), (0, 2, 1))  # -> (n_t, n_sp, n_p)
+    rows = ac.job_rows(run_ts, ts)
+    if rows is not None:
+        x, sx = x[rows], sx[rows]
     return (
         np.asarray(ts, dtype=float),
-        np.asarray(rdata.x, dtype=float),
+        x,
         sx,
         list(rdata.state_ids),
         timing,

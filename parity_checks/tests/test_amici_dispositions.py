@@ -15,6 +15,8 @@ The mechanism (``apply_disposition``)
   * both hold ONLY over a DIFF: a row that agrees on its own is STALE, and a row
     that produced no comparison at all (raised / timed out / no oracle) is
     *inapplicable* rather than stale, because a timeout falsifies nothing
+  * no kind disposes of a DIFF whose ``max_rel`` is not finite (a grid or
+    species mismatch, or non-finite output): it stays scoring (issue #1565)
   * a NO_GROUND_TRUTH DIFF *or* PASS becomes BAD_TEST (issue #1542) — never
     REFERENCE_FAILED, which the ODE matrix draws as a bngsim PASS, and never
     STALE, because the entry asserts a property of the model; a row with no
@@ -230,13 +232,31 @@ def test_no_ground_truth_is_neither_reference_failed_nor_pass():
 
 
 @pytest.mark.parametrize("value", [float("inf"), float("nan")])
-def test_a_no_ground_truth_entry_leaves_a_non_finite_diff_scoring(value):
+@pytest.mark.parametrize("disp", [_INVALID, _ARTIFACT, _NO_TRUTH], ids=lambda d: d["kind"])
+def test_no_entry_disposes_of_a_non_finite_diff(disp, value):
     """A non-finite max_rel is a time-grid or species mismatch, or non-finite
-    output, which a loader regression on the model would produce. It is not two
-    non-solutions rounding apart, so it stays a scoring DIFF that says why."""
-    outcome, comment, refusal, state = ad.apply_disposition(_NO_TRUTH, Outcome.DIFF, value, "")
+    output, which a loader regression on the model would produce. It is not the
+    two answers rounding apart that any entry is written about, so the row stays
+    a scoring DIFF that says why (issue #1565; NO_GROUND_TRUTH alone had this
+    guard before it)."""
+    outcome, comment, refusal, state = ad.apply_disposition(disp, Outcome.DIFF, value, "20 sp")
     assert (outcome, refusal, state) == (Outcome.DIFF, None, "inapplicable")
+    assert outcome not in CLEAN  # scoring
     assert "did not apply" in comment and "re-triage" in comment
+    assert comment.startswith("20 sp")  # the row's own comparison leads
+
+
+def test_an_entry_with_a_recorded_metric_does_not_absorb_a_grid_mismatch():
+    """#1565's case: an INVALID_REFERENCE entry written against max_rel 1.0, and
+    a fresh DIFF of inf from ``_compare_ode``'s time-grid check. Before the guard
+    the row became a non-scoring REFERENCE_FAILED/invalid_result, and the only
+    sign was DRIFTED in its comment."""
+    disp = {**_INVALID, "max_rel": 1.0}
+    outcome, comment, refusal, state = ad.apply_disposition(
+        disp, Outcome.DIFF, float("inf"), "time grid mismatch (bn n=(11,), amici n=(10,))"
+    )
+    assert (outcome, refusal, state) == (Outcome.DIFF, None, "inapplicable")
+    assert "DRIFTED" not in comment and "AMICI is inert" not in comment
 
 
 def test_a_no_ground_truth_pass_is_applied_not_stale():
@@ -335,11 +355,17 @@ def test_every_entry_cites_a_reason_and_an_issue():
 
 
 def test_the_triaged_rows_from_325_are_recorded_on_the_right_disposition():
-    """The #380 rows that are still DIFFs, each on the disposition its triage
-    reached: the AMICI defect that has no saltation term, and the row where
-    neither engine is wrong."""
+    """The #380 row that is still a DIFF, on the disposition its triage reached:
+    the AMICI defect that has no saltation term."""
     assert "MODEL2105110001:sens" in ad.INVALID_REFERENCE
-    assert "BIOMD0000000117:sens" in ad.COMPARISON_ARTIFACT
+
+
+def test_the_row_1571_explained_is_not_authored():
+    """BIOMD0000000117:sens's one failing cell was the sample on its strict
+    onset, t = tstim = 4, which amici_sens_run leaves unjudged since #1571. The
+    row PASSes on its own, so its COMPARISON_ARTIFACT entry was retired to a NOTE
+    rather than left for the runner to flag STALE."""
+    assert "BIOMD0000000117:sens" not in ad.ALL_KEYS
 
 
 def test_the_row_383_fixed_is_not_authored():

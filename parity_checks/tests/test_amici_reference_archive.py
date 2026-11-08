@@ -29,7 +29,8 @@ def _spec(tmp_path: Path, **change) -> dict:
     if not xml.exists():
         xml.write_text("<sbml>the model</sbml>")
     p = {"t_start": 0.0, "t_end": 10.0, "n_points": 11, "rtol": 1e-6, "atol": 1e-9}
-    p.update({k: v for k, v in change.items() if k in p})
+    params = {*p, "initial_time"}
+    p.update({k: v for k, v in change.items() if k in params})
     spec = {
         "key": "BIOMD1:fsa",
         "model_id": "BIOMD1",
@@ -40,7 +41,7 @@ def _spec(tmp_path: Path, **change) -> dict:
         "param_cap": 0,
         "param_budget": 50,
     }
-    spec.update({k: v for k, v in change.items() if k not in p})
+    spec.update({k: v for k, v in change.items() if k not in params})
     return spec
 
 
@@ -78,24 +79,42 @@ def test_no_entry_loads_as_none(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "change",
+    "change,keys",
     [
-        {"rtol": 1e-12},
-        {"atol": 1e-16},
-        {"n_points": 101},
-        {"t_end": 20.0},
-        {"t_start": 1.0},
-        {"max_steps": 500},
-        {"param_cap": 3},
-        {"param_budget": 10},
+        ({"rtol": 1e-12}, ["rtol"]),
+        ({"atol": 1e-16}, ["atol"]),
+        ({"n_points": 101}, ["n_points"]),
+        ({"t_end": 20.0}, ["t_end"]),
+        # Where both runs start (issue #1564): the job's SED-ML initial_time,
+        # or, in a job file predating the field, its t_start.
+        ({"initial_time": 1.0}, ["t_int"]),
+        ({"t_start": 1.0}, ["t_int"]),
+        ({"max_steps": 500}, ["max_steps"]),
+        ({"param_cap": 3}, ["param_cap"]),
+        ({"param_budget": 10}, ["param_budget"]),
     ],
 )
-def test_every_input_of_the_job_is_in_its_identity(tmp_path, change):
+def test_every_input_of_the_job_is_in_its_identity(tmp_path, change, keys):
     """A changed field makes the recorded identity differ, which the worker
     turns into an ``archive_stale`` row rather than a comparison."""
     was = A.archive_identity(_spec(tmp_path))
     now = A.archive_identity(_spec(tmp_path, **change))
-    assert [k for k in was if was[k] != now[k]] == list(change)
+    assert [k for k in was if was[k] != now[k]] == keys
+
+
+def test_the_identity_holds_where_the_run_starts(tmp_path):
+    spec = _spec(tmp_path, initial_time=0.0, t_start=120.0)
+    now = A.archive_identity(spec)
+    assert (now["format"], now["t_int"], now["through_event_instants"]) == (3, 0.0, True)
+    assert "t_start" not in now
+
+
+def test_the_output_start_alone_is_not_in_the_identity(tmp_path):
+    """Neither run reads the outputStartTime any more: both start at the initial
+    time and the compared grid begins there."""
+    was = A.archive_identity(_spec(tmp_path, initial_time=0.0, t_start=0.0))
+    now = A.archive_identity(_spec(tmp_path, initial_time=0.0, t_start=5.0))
+    assert was == now
 
 
 def test_a_changed_model_file_changes_the_identity(tmp_path):
@@ -285,3 +304,147 @@ def test_a_replay_without_amici_reproduces_the_live_verdicts(tmp_path):
             assert got["timing"]["amici"]["replayed_from_archive"] is True
     stale = _run(tmp_path, "--reference-archive", str(arch), "--rtol", "1e-7", env=env)
     assert {r["reference_refusal"] for r in stale.values()} == {"archive_stale"}
+
+
+# --------------------------------------------------------------------------- #
+# Where both runs start (issue #1564), and the onset samples a replay reads
+# back with AMICI's side (issue #1571)
+# --------------------------------------------------------------------------- #
+def _am_step_at_one():
+    """AMICI's side of a ``time > 1`` event that halves A: at t = 1, on the
+    onset, AMICI already reports the state and sensitivities after it."""
+    t, x, sx, names = _am_one_param()
+    after = t >= 1.0
+    x, sx = x.copy(), sx.copy()
+    x[after, 0] *= 0.5
+    sx[after, 0, :] *= 0.5
+    return t, x, sx, names
+
+
+def _bn_step_at_one():
+    """bngsim's side of the same event: at t = 1 the trigger is false, so the
+    sample there is before it; from the next one on the two agree."""
+    t, x, sx, names = _am_step_at_one()
+    _t, x0, sx0, _n = _am_one_param()
+    x, sx = x.copy(), sx.copy()
+    x[1], sx[1] = x0[1], sx0[1]
+    return t, x, sx, names
+
+
+def _onset_record(spec, onsets):
+    timing = {"integrate_sec": 0.01}
+    if onsets is not None:
+        timing["strict_onset_samples"] = onsets
+    return {
+        **A.archive_identity(spec),
+        "reference_version": "1.0.1",
+        "amici_free_ids": ["k1"],
+        "shared_ids": ["k1"],
+        "timing": timing,
+    }
+
+
+def test_a_replay_leaves_out_the_onset_samples_the_record_holds(tmp_path, monkeypatch):
+    spec = _minimal_spec(tmp_path)
+    A.archive_save(spec["reference_archive"], spec, _onset_record(spec, [1.0]), _am_step_at_one())
+    res = _replay(monkeypatch, spec, bn_sens=lambda *a, **k: (*_bn_step_at_one(), {}))
+    assert (res["status"], res["state_passed"]) == ("pass", True)
+    assert "| strict onset not judged at t = 1 (state rescued" in res["comment"]
+    # Where the comparison must not look is not a cost: kept out of the timing.
+    assert "strict_onset_samples" not in res["timing"]["amici"]
+
+
+def test_a_replay_of_a_record_with_no_onsets_judges_every_sample(tmp_path, monkeypatch):
+    """The premise of the test above, and what a record with none says."""
+    spec = _minimal_spec(tmp_path)
+    for onsets in ([], None):
+        A.archive_save(
+            spec["reference_archive"], spec, _onset_record(spec, onsets), _am_step_at_one()
+        )
+        res = _replay(monkeypatch, spec, bn_sens=lambda *a, **k: (*_bn_step_at_one(), {}))
+        assert (res["status"], res["state_passed"]) == ("diff", False), onsets
+        assert "strict onset" not in res["comment"]
+
+
+def _live(monkeypatch, spec, *, amici_sens, bn_sens):
+    """Drive the worker in-process on a live run of the minimal model, with
+    AMICI's build and run and bngsim's sensitivity run stood in for."""
+    monkeypatch.setattr(A.asens, "measure_warmup", lambda include_amici=True: {})
+    monkeypatch.setattr(A.asens, "set_amici_quiet", lambda: None)
+    monkeypatch.setattr(A.asens, "amici_free_parameter_ids", lambda xml: (["k1"], "built"))
+    monkeypatch.setattr(
+        A.asens, "shared_sensitivity_params", lambda *a, **k: (["k1"], {"k1": "k1"}, 1)
+    )
+    monkeypatch.setattr(A.asens, "amici_sens", amici_sens)
+    monkeypatch.setattr(A.asens, "bn_sens", bn_sens)
+    q = _Queue()
+    A._worker(spec, q)
+    (res,) = q
+    return res
+
+
+def test_both_sensitivity_runs_start_at_the_initial_time(tmp_path, monkeypatch):
+    """Issue #1564: on a job whose window starts after the model does, both
+    engines are handed the SED-ML initial_time, not the outputStartTime."""
+    spec = _minimal_spec(tmp_path)
+    spec.pop("reference_archive")
+    spec["params"] = {**spec["params"], "initial_time": 0.0, "t_start": 4.0}
+    seen = {}
+
+    def amici_sens(built, t0, *a, sbml=None, **k):
+        seen["amici"], seen["sbml"] = t0, sbml
+        return (*_am_one_param(), {"strict_onset_samples": []})
+
+    def bn_sens(xml, t0, *a, **k):
+        seen["bngsim"] = t0
+        return (*_am_one_param(), {})
+
+    res = _live(monkeypatch, spec, amici_sens=amici_sens, bn_sens=bn_sens)
+    assert res["status"] == "pass"
+    assert (seen["amici"], seen["bngsim"]) == (0.0, 0.0)
+    # AMICI's run is handed the model's text, to place the onsets.
+    assert seen["sbml"] == Path(spec["xml"]).read_text()
+
+
+def test_a_recorded_run_archives_the_onsets_and_reports_them_only_as_a_note(tmp_path, monkeypatch):
+    """Recording keeps the onset samples with AMICI's side, so a replay can
+    leave out the same ones; the live row leaves them out of its timing."""
+    spec = _minimal_spec(tmp_path)
+    arch = spec.pop("reference_archive")
+    spec["write_reference_archive"] = arch
+    res = _live(
+        monkeypatch,
+        spec,
+        amici_sens=lambda *a, **k: (
+            *_am_step_at_one(),
+            {"integrate_sec": 0.01, "strict_onset_samples": [1.0]},
+        ),
+        bn_sens=lambda *a, **k: (*_bn_step_at_one(), {}),
+    )
+    assert res["status"] == "pass" and "strict onset not judged at t = 1" in res["comment"]
+    assert "strict_onset_samples" not in res["timing"]["amici"]
+    record, _am = A.archive_load(arch, spec)
+    assert record["timing"]["strict_onset_samples"] == [1.0]
+
+
+def test_a_replay_refuses_an_entry_recorded_before_1564(tmp_path, monkeypatch):
+    """An archive recorded before #1564 started AMICI at the outputStartTime,
+    without its event instants, and holds ``t_start`` in its identity. The worker
+    refuses it rather than compare a run from the initial time against it, and
+    says which inputs changed, before bngsim's sensitivity run."""
+    spec = _minimal_spec(tmp_path)
+    spec["params"] = {**spec["params"], "initial_time": 0.0, "t_start": 4.0}
+    now = A.archive_identity(spec)
+    old = {k: v for k, v in now.items() if k not in ("t_int", "through_event_instants")}
+    record = {
+        **old,
+        "format": 2,
+        "t_start": 4.0,
+        "amici_free_ids": ["k1"],
+        "shared_ids": ["k1"],
+        "timing": {"integrate_sec": 0.01},
+    }
+    A.archive_save(spec["reference_archive"], spec, record, _am_one_param())
+    res = _replay(monkeypatch, spec, bn_sens=_bngsim_must_not_run)
+    assert res["reference_refusal"] == "archive_stale"
+    assert res["exception"].endswith("the job's format, t_int, through_event_instants changed")

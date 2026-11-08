@@ -46,6 +46,11 @@ model with no solution to compare against over the job's horizon: whichever way
 the two engines' answers fall, PASS or DIFF, the row becomes a non-scoring
 BAD_TEST (issue #1542).
 
+TIME — both engines integrate from the job's SED-ML ``initial_time``, as in
+rr_parity (GH #19) and copasi_parity (issue #1550), and are compared on
+``n_points`` over ``[initial_time, t_end]``. ``t_start`` (the outputStartTime) is
+later than it on 19 jobs (issue #1564).
+
 On every model, a sample on a strict time trigger's onset, the c of
 ``time > c``, is not judged (issue #1557). The trigger is false at c,
 so bngsim and RoadRunner report the state before the event there; AMICI reads
@@ -165,10 +170,7 @@ def _compare_ode(
         )
     bn_idx, am_idx, common = align
     a, b = bn_v[:, bn_idx], am_v[:, am_idx]
-    # By AMICI's grid: the onsets are its own times, exactly.
-    on = {float(t) for t in onsets}
-    one_sided = (np.isfinite(a) != np.isfinite(b)).any(axis=1)
-    rows = [i for i, t in enumerate(am_t) if float(t) in on and not one_sided[i]]
+    rows = ac.onset_rows(am_t, onsets, (a, b))
     keep = np.ones(len(am_t), dtype=bool)
     keep[rows] = False
     v = differ.deterministic_verdict(a[keep], b[keep], atol=atol)
@@ -184,9 +186,9 @@ def _compare_ode(
     return status, v["max_rel"], comment, metric, tol
 
 
-# How the onset part of a row's comment begins. Public because the ODE matrix reads
-# it to say in plain English what was not judged.
-ONSET_NOTE_PREFIX = "strict onset not judged at t ="
+# How the onset part of a row's comment begins (``_amici_common``'s, which the
+# sensitivity runner writes too). Public here because the ODE matrix reads it.
+ONSET_NOTE_PREFIX = ac.ONSET_NOTE_PREFIX
 
 
 def onset_note(times: list[float], rescued: int, decisive: bool) -> str:
@@ -277,6 +279,12 @@ def _worker(spec: dict, q) -> None:
         {"metric": spec["metric"], "tol": tol, "value": None, "comment": "", "exception": ""}
     )
 
+    # Both engines integrate from the SED-ML initialTime, as rr_run and copasi_run
+    # do (GH #19, issue #1550), and are compared on n_points over [t_int, t_end].
+    # Each takes its start as the time the model's initial state holds at, so the
+    # outputStartTime here solved the model shifted to the output start (#1564).
+    t_int = ac.initial_time(p)
+
     # --- bngsim side (record status; do NOT short-circuit on a generic raise) ---
     bn = None
     bn_exc = ""
@@ -288,7 +296,7 @@ def _worker(spec: dict, q) -> None:
         t0 = time.perf_counter()
         bn = ac.bn_ode(
             xml,
-            p["t_start"],
+            t_int,
             p["t_end"],
             p["n_points"],
             p["rtol"],
@@ -316,7 +324,7 @@ def _worker(spec: dict, q) -> None:
         t0 = time.perf_counter()
         am = ac.amici_ode(
             xml,
-            p["t_start"],
+            t_int,
             p["t_end"],
             p["n_points"],
             p["rtol"],
@@ -718,10 +726,10 @@ def main() -> int:
                 "the reason recorded; 'no_ground_truth:applied' — the model has no "
                 "solution over the horizon, so the PASS or DIFF became a non-scoring "
                 "BAD_TEST. ':stale' means the row agrees on its own now (prune the entry); "
-                "':inapplicable' means the row produced no comparison this run, or, "
-                "for no_ground_truth, a DIFF whose max_rel is not finite (a grid or "
-                "species mismatch, which stays scoring), so the entry was neither "
-                "used nor falsified."
+                "':inapplicable' means the row produced no comparison this run, or "
+                "is a DIFF whose max_rel is not finite (a grid or species mismatch, "
+                "or non-finite output, which stays scoring; issue #1565), so the "
+                "entry was neither used nor falsified."
             ),
         },
         "oracle_basis": (
@@ -730,7 +738,9 @@ def main() -> int:
             f"integration tolerance (rtol={args.rtol:g}, atol={args.atol:g}); the "
             "SED-ML per-job rtol/atol in the manifest are provenance only. ODE: "
             "deterministic_verdict over the common (intersection) species in "
-            "concentration units. Failure attributed per-engine (both always run): "
+            "concentration units, on n_points over [initial_time, t_end]: both "
+            "engines integrate from the SED-ML initial_time, not the outputStartTime "
+            "(GH #19, issue #1564). Failure attributed per-engine (both always run): "
             "bngsim raised + AMICI ran -> EXCEPTION (bngsim bug); bngsim ran + AMICI "
             "raised -> REFERENCE_FAILED (non-scoring); both raised -> BAD_TEST, as is "
             "a row an authored no-ground-truth disposition covers; "

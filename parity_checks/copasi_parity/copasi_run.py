@@ -568,8 +568,10 @@ def main() -> int:
                 "non-scoring REFERENCE_FAILED/"
                 f"{copasi_dispositions.INVALID_RESULT_REFUSAL}. ':stale' means the row "
                 "agrees on its own now (prune the entry); ':inapplicable' means the "
-                "row produced no comparison this run, so the entry was neither used "
-                "nor falsified."
+                "row produced no comparison this run, or is a DIFF whose max_rel is "
+                "not finite (a grid or species mismatch, or non-finite output, which "
+                "stays scoring; issue #1565), so the entry was neither used nor "
+                "falsified."
             ),
         },
         "oracle_basis": (

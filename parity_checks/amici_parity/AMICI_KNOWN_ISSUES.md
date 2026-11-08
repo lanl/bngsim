@@ -45,6 +45,19 @@ So **events are a modest slice** (~10 explicit + some of the `deltax` compiles);
 dominant failures are **integrator bailouts, unsupported `floor`/`ceiling` math, model
 compile failures, and SBML-load failures**, plus a handful of AMICI internal bugs.
 
+Since issue #1564 both jobs start at the SED-ML initial time on the 19 jobs whose
+window starts after the model does, and three of them run past AMICI's step budget
+over the longer horizon (`AMICI_TOO_MUCH_WORK`): BIOMD0000000042 and 691 in the ODE
+job, 691 and 878 in the sensitivity job (878's ODE row already failed that way).
+rr_parity passes bngsim on all three from the same start; bngsim takes 11,940,
+173,344 and 154,852 steps there in all. AMICI's `max_steps` (10,000 in the ODE job,
+100,000 in the sensitivity job) is CVODES' hard step limit, which it runs into;
+bngsim's is a batch its core resumes from, not a ceiling. The same
+change lets AMICI's ODE run of BIOMD0000000943 finish; it `PASS`es. The tallies
+above predate #1564: the corpus was not re-swept in full for it, only the 45 models
+it and #1571 touch: the 19 jobs whose start moved, the 22 with a sample on a strict
+onset (Class 7), and Class 5's four event-instant models.
+
 ## Class 2 — AMICI integration outliers (44 DIFF; 42 confirmed AMICI-side)
 
 Both engines ran but disagree, and **RoadRunner sides with bngsim** (max_rel_err = 0):
@@ -150,11 +163,14 @@ bngsim is right.
 
 ### The other two #325 rows are not in this class
 
-`BIOMD0000000117` is recorded as a `COMPARISON_ARTIFACT` instead, because **neither engine
+`BIOMD0000000117` was recorded as a `COMPARISON_ARTIFACT` instead, because **neither engine
 is wrong**: bngsim and AMICI agree to 7 significant figures (`tstim`: −40.13189 vs
 −40.13190; `v0`: 181.9811 vs 181.9811) and RR's FD converges to both as h shrinks (−11.04
-at h=0.04 → −37.93 at h=0.004). What survives is 1 hard cell out of 22022, on a stimulus
-discontinuity no finite-difference oracle can resolve.
+at h=0.04 → −37.93 at h=0.004). What survived was 1 hard cell out of 22022, on the
+stimulus discontinuity. #1571 found that cell is the sample at t = 4 = `tstim`, the c of
+the model's `time > tstim` trigger: Class 7's reading, in a sensitivity. The sensitivity
+job leaves that sample unjudged since then, the row PASSes on its own (0 of 22000), and the
+entry is retired to a NOTE in `amici_dispositions.py`.
 
 `MODEL1607210000` has **no entry at all**: #383 landed first and the row is no longer a
 DIFF. #380 measured it at HEAD `d5c4323` as `max_rel=1` with 2849 hard-failing cells and
@@ -229,7 +245,9 @@ same way on a grid with no sample at `c`, and the remedy is the same (#1024):
 `amici_run.py` now gives AMICI the instants as extra output times and compares the
 job grid. See the README's
 [event-instants section](README.md#amici-runs-through-the-event-instants-issue-1542),
-which also lists the shapes the instants cannot help.
+which also lists the shapes the instants cannot help. `amici_sens_run.py` does the
+same since #1571: 816, 817 and 928 had read `DIFF` in the sensitivity job for the
+same miss, and `PASS` there now.
 
 **A trigger whose residual is exactly 0 at the start.** AMICI reads it as true at
 t = 0, for `>` as well as `>=`. BIOMD0000000285 is SBML L2V4, whose triggers read
@@ -381,8 +399,10 @@ On 563 the jump at `t_end` is all that moves on the grid, so its row also reads
 moves. A per-row `COMPARISON_ARTIFACT` was the alternative, but at `max_rel` 1.0 it
 would have stopped the AMICI row checking anything on four of the five models.
 rr_parity still judges the onset sample, against RoadRunner. The
-forward-sensitivity job does not apply the rule yet, so its state column still
-reads DIFF on these models (#1571).
+forward-sensitivity job applies the rule too since #1571, to the state and the
+sensitivities: 104, 125, 860 and 862 read `state ok` there now, and
+BIOMD0000000820's one failing sensitivity cell, d/d`tau` at t = `tau`, was the
+same reading, so that row `PASS`es. So was BIOMD0000000117's (Class 4).
 
 The other 17 corpus jobs with a sample on an onset keep their verdicts.
 BIOMD0000000318 stays a `DIFF`: AMICI is off on 6992 of the 7000 judged cells
