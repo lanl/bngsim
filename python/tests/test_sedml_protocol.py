@@ -60,14 +60,18 @@ def test_exact_round_trip(text: str) -> None:
 # ─── Standards-compliant elements for interop ───────────────────────────────
 
 
-def test_sequential_emits_task_per_experiment_and_derived_model() -> None:
+def test_sequential_emits_a_time_course_per_experiment_and_chains_the_second() -> None:
     p = parse_bngl_protocol(_SEQUENTIAL)
     root = ET.fromstring(write_sedml_protocol(p))
     assert len(_locals(root, "uniformTimeCourse")) == 2
-    assert len(_locals(root, "task")) == 2
-    # The setParameter before the 2nd simulate → one changeAttribute-derived model.
-    assert len(_locals(root, "changeAttribute")) == 1
-    assert len(_locals(root, "repeatedTask")) == 0
+    # BNG2.pl runs the 2nd simulate from where the 1st left the model, with L
+    # set: a repeatedTask that resets once and runs the 1st, then sets L and runs
+    # the 2nd on the same state (test_sedml_carried_state runs it).
+    chains = [r for r in _locals(root, "repeatedTask") if r.get("id") == "chain_1"]
+    assert len(chains) == 1 and chains[0].get("resetModel") == "true"
+    (set_l,) = _locals(root, "setValue")
+    assert set_l.get("target").endswith("parameter[@id='L']")
+    assert len(_locals(root, "changeAttribute")) == 0
 
 
 def test_scan_emits_repeated_task_with_range_and_setvalue() -> None:
