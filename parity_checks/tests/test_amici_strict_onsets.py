@@ -28,6 +28,7 @@ pytest.importorskip("libsbml")
 import _amici_common as ac  # noqa: E402
 import _rr_common as rc  # noqa: E402
 import amici_run as ar  # noqa: E402
+import amici_sens_run as asr  # noqa: E402
 import generate_amici_matrix as gam  # noqa: E402
 
 T = '<csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time">t</csymbol>'
@@ -432,3 +433,126 @@ def test_amici_ode_places_an_onset_by_amicis_own_parameter_values():
     (at,) = am[3]["strict_onset_samples"]
     assert at == pytest.approx(0.7, abs=1e-15)
     assert rc.strict_onsets(_ASSIGNED, 0.0, 1.0) == [0.3]  # the SBML attribute, unassigned
+
+
+# --------------------------------------------------------------------------- #
+# The sensitivity job leaves the onset rows out too (issue #1571)
+# --------------------------------------------------------------------------- #
+def _sens_pair(*, bn_col, am_col, bn_s=None, am_s=None):
+    """``(t, x, sx, names)`` for both engines: species S (``*_col``) and a flat
+    R, one parameter, whose sensitivities are ``*_s`` for S (S's own column by
+    default) and a ramp for R."""
+    flat = np.linspace(1.0, 2.0, len(_T))
+    ramp = np.linspace(0.1, 0.3, len(_T))
+
+    def run(col, s):
+        x = np.column_stack([col, flat])
+        sx = np.stack([col if s is None else s, ramp], axis=1)[:, :, None]
+        return _T, x, sx, ["S", "R"]
+
+    return run(bn_col, bn_s), run(am_col, am_s)
+
+
+_SENS = {"param_values": [1.0], "atol": 1e-12, "param_ids": ["k"]}
+
+
+def test_the_sens_job_leaves_the_onset_row_out_of_both_verdicts():
+    """BIOMD0000000104's shape: at the onset AMICI's state and sensitivities
+    are after the event and bngsim's before it. Left out, the state is ok and
+    the row passes; the note counts the failing cells on that row for each."""
+    bn, am = _sens_pair(
+        bn_col=_step(0.5, 1.0, 0.4, closed=False), am_col=_step(0.5, 1.0, 0.4, closed=True)
+    )
+    got = asr._compare(bn, am, onsets=[0.5], **_SENS)
+    assert (got["status"], got["value"], got["state_passed"]) == ("pass", 0.0, True)
+    assert got["comment"].startswith("2 sp x 1 par; 1/1 columns judged: fail 0/20 (hard 0")
+    assert got["comment"].endswith(
+        " | strict onset not judged at t = 0.5 (state rescued 1 DECISIVE;"
+        " sensitivities rescued 1 DECISIVE; GH #1571)"
+    )
+    # The premise: judged on every sample, this is the #1571 row.
+    got = asr._compare(bn, am, **_SENS)
+    assert (got["status"], got["state_passed"]) == ("diff", False)
+    assert " | " not in got["comment"]
+
+
+def test_a_state_only_onset_cell_is_the_state_verdicts_alone():
+    """104, 125, 860 and 862 read 'state DIFF' with the sensitivity verdict PASS:
+    the jump is in the state, not in its sensitivities. Only the state is
+    DECISIVE then."""
+    smooth = np.linspace(0.2, 0.8, len(_T))
+    bn, am = _sens_pair(
+        bn_col=_step(0.5, 1.0, 0.4, closed=False),
+        am_col=_step(0.5, 1.0, 0.4, closed=True),
+        bn_s=smooth,
+        am_s=smooth,
+    )
+    assert asr._compare(bn, am, **_SENS)["status"] == "pass"
+    got = asr._compare(bn, am, onsets=[0.5], **_SENS)
+    assert (got["status"], got["state_passed"]) == ("pass", True)
+    assert got["comment"].endswith("(state rescued 1 DECISIVE; sensitivities rescued 0; GH #1571)")
+
+
+def test_the_sens_job_still_judges_a_difference_off_the_onset_row():
+    bn, am = _sens_pair(
+        bn_col=_step(0.65, 1.0, 0.4, closed=False), am_col=_step(0.5, 1.0, 0.4, closed=True)
+    )
+    got = asr._compare(bn, am, onsets=[0.5], **_SENS)
+    assert (got["status"], got["state_passed"]) == ("diff", False)
+    assert "(state rescued 1;" in got["comment"] and "DECISIVE" not in got["comment"]
+
+
+def test_the_sens_job_judges_an_onset_row_with_a_one_sided_non_finite_cell():
+    """In the state or in a sensitivity, as ``amici_run`` does for the state."""
+    bn_col, am_col = _step(0.5, 1.0, 0.4, closed=False), _step(0.5, 1.0, 0.4, closed=True)
+    bn_s = bn_col.copy()
+    bn_s[5] = np.nan
+    bn, am = _sens_pair(bn_col=bn_col, am_col=am_col, bn_s=bn_s)
+    got = asr._compare(bn, am, onsets=[0.5], **_SENS)
+    assert got["status"] == "diff" and " | " not in got["comment"]
+
+
+def test_without_an_onset_on_the_grid_the_sens_comparison_is_the_one_it_was():
+    bn, am = _sens_pair(
+        bn_col=_step(0.5, 1.0, 0.4, closed=False), am_col=_step(0.5, 1.0, 0.4, closed=True)
+    )
+    plain = asr._compare(bn, am, **_SENS)
+    assert asr._compare(bn, am, onsets=[], **_SENS) == plain
+    assert asr._compare(bn, am, onsets=[0.55], **_SENS) == plain  # between samples
+    # Without the floor's inputs, too: the tensor-wide verdict alone.
+    assert asr._compare(bn, am, onsets=[0.55]) == asr._compare(bn, am)
+
+
+def test_the_sens_job_audits_the_onset_without_the_floor_inputs():
+    """``_compare`` without ``param_values``/``atol`` judges the tensor as a
+    whole; the rescued count is taken over that verdict then."""
+    bn, am = _sens_pair(
+        bn_col=_step(0.5, 1.0, 0.4, closed=False), am_col=_step(0.5, 1.0, 0.4, closed=True)
+    )
+    got = asr._compare(bn, am, onsets=[0.5])
+    assert got["status"] == "pass"
+    assert "(state rescued 1 DECISIVE; sensitivities rescued 1 DECISIVE;" in got["comment"]
+
+
+def test_both_runners_place_and_leave_out_onsets_through_one_helper():
+    """The ODE and sensitivity jobs must not drift on which samples they leave
+    out: both call ``_amici_common.onset_rows``, and their notes share a prefix."""
+    assert asr.asens.onset_rows is ac.onset_rows
+    assert ar.ONSET_NOTE_PREFIX == asr.asens.ONSET_NOTE_PREFIX == ac.ONSET_NOTE_PREFIX
+
+
+def test_amici_sens_records_the_onset_samples_by_amicis_own_values(tmp_path):
+    """The sensitivity run names the sample on 0.7, where AMICI places the
+    initially assigned ``tc``, as ``amici_ode`` does; the SBML attribute says 0.3."""
+    pytest.importorskip("amici")
+    import _amici_sens as asens
+
+    xml = tmp_path / "assigned.xml"
+    xml.write_text(_ASSIGNED)
+    ids, built = asens.amici_free_parameter_ids(str(xml))
+    out = asens.amici_sens(built, *_GRID, 1e-9, 1e-12, ids[:1], "staggered", sbml=_ASSIGNED)
+    (at,) = out[4]["strict_onset_samples"]
+    assert at == pytest.approx(0.7, abs=1e-15)
+    # Without the text, nothing is placed.
+    out = asens.amici_sens(built, *_GRID, 1e-9, 1e-12, ids[:1], "staggered")
+    assert out[4]["strict_onset_samples"] == []

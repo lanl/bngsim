@@ -280,14 +280,14 @@ Three ways it stays honest:
 Keys are `"<model_id>:<regime>"` with regime `ode` or `sens` — regime-scoped like
 rr_parity's, but **not** scoped to the CVODES corrector method, because #325
 measured these models producing a near-identical `max_rel` under both `staggered`
-and `simultaneous`. Currently authored: two of the three sensitivity rows triaged
-out of #325 — one confirmed AMICI defect (no switch-time term) and one row where
-neither engine is wrong. See `AMICI_KNOWN_ISSUES.md` Class 4. The third,
-`MODEL1607210000`, is deliberately **not** authored: #383 seeded the
-initialAssignment initial-condition term bngsim was missing and the row now
-PASSes at `max_rel=0`, so an entry would be dead weight the runner could only
-flag STALE — the retirement and the one question it leaves open are recorded as a
-NOTE in the module. The ODE regime has the mechanism wired but no entries; the 44
+and `simultaneous`. Of the three sensitivity rows triaged out of #325, one is
+authored: a confirmed AMICI defect (no switch-time term). See
+`AMICI_KNOWN_ISSUES.md` Class 4. The other two are retired to a NOTE in the module,
+because the row PASSes on its own and an entry would be dead weight the runner
+could only flag STALE. `MODEL1607210000` PASSes at `max_rel=0` since #383 seeded
+the initialAssignment initial-condition term bngsim was missing.
+`BIOMD0000000117`, a `COMPARISON_ARTIFACT` for its 1 failing cell until #1571,
+PASSes since that cell, the sample on its strict onset, is no longer judged. The ODE regime has the mechanism wired but no entries; the 44
 Class-2 ODE divergences are a separate triage.
 
 The sensitivity matrix renders a disposed row as **`REF INVALID`** rather than the

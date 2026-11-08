@@ -345,22 +345,17 @@ INVALID_REFERENCE: dict[str, dict] = {
 # PASS with the reason recorded. Keyed "model_id:regime".
 # --------------------------------------------------------------------------- #
 COMPARISON_ARTIFACT: dict[str, dict] = {
-    "BIOMD0000000117:sens": {
-        "issue": "GH #380",
-        "max_rel": 0.1746,
-        "reason": (
-            "Unresolvable cell at a stimulus edge (no engine at fault). bngsim and "
-            "AMICI agree to 7 significant figures on the columns in question "
-            "(tstim: -40.13189 vs -40.13190; v0: 181.9811 vs 181.9811) and "
-            "RoadRunner's finite difference converges to both as h shrinks (-11.04 "
-            "at h=0.04 -> -37.93 at h=0.004). What survives is 1 hard cell out of "
-            "22022, sitting on the stimulus discontinuity where no finite-difference "
-            "oracle can resolve the answer and the two engines' step placement "
-            "decides the value. Not an invalid reference — AMICI is right here — and "
-            "not something a tighter tolerance fixes, since the cell is a "
-            "discontinuity rather than an ill-conditioned but smooth one."
-        ),
-    },
+    # NOTE: BIOMD0000000117:sens — retired by issue #1571, which made the entry
+    # STALE on both corrector methods. It disposed of 1 hard cell of 22022 (GH
+    # #380, max_rel 0.1746), "on the stimulus discontinuity". That cell is the
+    # sample at t = 4 = tstim, the c of the model's `time > tstim` trigger:
+    # AMICI reads `>` as `>=` and reports the sensitivities there after the
+    # event, bngsim before it (the #1557 reading). amici_sens_run now leaves
+    # that sample unjudged on every model, and the row PASSes on its own, 0 of
+    # 22000 cells failing, with the onset note `sensitivities rescued 1
+    # DECISIVE`. The entry's evidence still stands (bngsim and AMICI agree to 7
+    # significant figures off that sample, and RoadRunner's finite difference
+    # converges to both); the rule explains the one cell it could not.
 }
 
 

@@ -355,11 +355,17 @@ def test_every_entry_cites_a_reason_and_an_issue():
 
 
 def test_the_triaged_rows_from_325_are_recorded_on_the_right_disposition():
-    """The #380 rows that are still DIFFs, each on the disposition its triage
-    reached: the AMICI defect that has no saltation term, and the row where
-    neither engine is wrong."""
+    """The #380 row that is still a DIFF, on the disposition its triage reached:
+    the AMICI defect that has no saltation term."""
     assert "MODEL2105110001:sens" in ad.INVALID_REFERENCE
-    assert "BIOMD0000000117:sens" in ad.COMPARISON_ARTIFACT
+
+
+def test_the_row_1571_explained_is_not_authored():
+    """BIOMD0000000117:sens's one failing cell was the sample on its strict
+    onset, t = tstim = 4, which amici_sens_run leaves unjudged since #1571. The
+    row PASSes on its own, so its COMPARISON_ARTIFACT entry was retired to a NOTE
+    rather than left for the runner to flag STALE."""
+    assert "BIOMD0000000117:sens" not in ad.ALL_KEYS
 
 
 def test_the_row_383_fixed_is_not_authored():

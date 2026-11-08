@@ -150,11 +150,14 @@ bngsim is right.
 
 ### The other two #325 rows are not in this class
 
-`BIOMD0000000117` is recorded as a `COMPARISON_ARTIFACT` instead, because **neither engine
+`BIOMD0000000117` was recorded as a `COMPARISON_ARTIFACT` instead, because **neither engine
 is wrong**: bngsim and AMICI agree to 7 significant figures (`tstim`: −40.13189 vs
 −40.13190; `v0`: 181.9811 vs 181.9811) and RR's FD converges to both as h shrinks (−11.04
-at h=0.04 → −37.93 at h=0.004). What survives is 1 hard cell out of 22022, on a stimulus
-discontinuity no finite-difference oracle can resolve.
+at h=0.04 → −37.93 at h=0.004). What survived was 1 hard cell out of 22022, on the
+stimulus discontinuity. #1571 found that cell is the sample at t = 4 = `tstim`, the c of
+the model's `time > tstim` trigger: Class 7's reading, in a sensitivity. The sensitivity
+job leaves that sample unjudged since then, the row PASSes on its own (0 of 22000), and the
+entry is retired to a NOTE in `amici_dispositions.py`.
 
 `MODEL1607210000` has **no entry at all**: #383 landed first and the row is no longer a
 DIFF. #380 measured it at HEAD `d5c4323` as `max_rel=1` with 2849 hard-failing cells and
