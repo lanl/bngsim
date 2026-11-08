@@ -1270,18 +1270,23 @@ end groups
             assert np.max(np.abs(np.asarray(run.sensitivities)[-1, 1:4])) < 1e-12 * X0
 
     def test_a_tangent_crossing_beside_a_second_threshold_is_refused(self, tmp_path):
-        """A relaxes onto 2 from above and passes thr2 = 2 + 3e-9 at a crawl, too
-        slowly for a step along the flow to carry it across, so the crossing is
-        read along a coordinate instead, at ±2e-9 and at ±4e-9. The wider pair
-        also crosses thr1 = 2, whose jump kb sits in the same rate law: near =
-        kc, far = kc + kb, "growth", so the crossing was taken as continuous and
-        left without a restart, standing on a real jump. Main never returns from
-        that run. A jump at a crossing the flow cannot resolve is refused.
+        """A relaxes from 10 toward 2 − 4e-9: it passes thr2 = 2 + 3e-9 at 7e-9
+        a unit of time, and thr1 = 2 at a crawl of 4e-9, too slowly for a step
+        along the flow to carry it across, so that crossing is read along a
+        coordinate instead. The wider probe also crosses thr2, whose jump kc
+        sits in the same rate law: near = kb, far = kb + kc, "growth", so the
+        crossing was taken as continuous and left without a restart, standing
+        on a real jump (#763). A jump at a crossing the flow cannot resolve is
+        refused.
 
-        A nears thr1 itself as it goes, and is within the run's tolerance of it
-        from t ~ 18, where kb's branch is rounding's call: an output there is
-        refused for that (issue #1548) before the crawl past thr2 at t ~ 21.7
-        that this is about, so none is asked for there."""
+        The fixture was A relaxing onto thr1 itself, which is a rest on its
+        surface with kb's branch rounding's call (issue #1548). It reached the
+        crawl only because no output was asked for in the rest, and since the
+        run is asked between outputs (issue #1589) it is refused for the rest
+        first. Here the flow
+        onto thr1 from above, 4e-9, carries A 3.4e-7 over the 85 time units
+        after the output at 15, three times the band of 1.1e-7 the run's
+        tolerance leaves it there, so which side A is on is the model's."""
         text = """\
 begin parameters
     1 A0 10
@@ -1290,9 +1295,10 @@ begin parameters
     4 thr2 2.000000003
     5 kb 3
     6 kc 5
+    7 d 4e-9
 end parameters
 begin functions
-    1 src() k*thr1
+    1 src() k*(thr1-d)
     2 fY() if(Aobs<thr1,kb,0)+if(Aobs<thr2,kc,0)
 end functions
 begin species
@@ -1311,7 +1317,7 @@ end groups
         model = _model(tmp_path, text, name="crawl.net")
         sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k", "thr1", "kb"])
         with pytest.raises(SimulationError, match="rides that surface") as err:
-            sim.run(sample_times=[0.0, 15.0, 40.0], rtol=1e-8, atol=1e-12)
+            sim.run(sample_times=[0.0, 15.0, 100.0], rtol=1e-8, atol=1e-12)
         assert "crosses another switch's surface" in str(err.value)
 
     @pytest.mark.parametrize("B0", [1e3, 3e6])
