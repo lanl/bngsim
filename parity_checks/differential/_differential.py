@@ -1226,7 +1226,8 @@ BATCH_THREADS = 4
 # disagree, not which is wrong, and a small own drift does not make an answer
 # uncontested: on #1304's BIOMD0000000338 the KLU base moved 1e-7 at a tenfold
 # tighter tolerance while dense and libRoadRunner sat 3.5% away, and dense once
-# landed on KLU's branch.
+# landed on KLU's branch. (KLU was right: it kept an exact, unstable 0 that the
+# dense LU's rounding left. Since #1485 the dense solve keeps it too.)
 
 ATTRIBUTION_TIGHTEN = 100.0
 JITTER_RTOL = (0.5, 2.0)
@@ -1455,8 +1456,8 @@ def check_batch(base: Base) -> Verdict:
 def contested(rows: dict[str, dict]) -> bool:
     """Whether a model's rows mark it contested: its ``stable`` row reads DIFF
     (the answer jumps under a jittered grid, tolerance or start), or a DIFF's third
-    arms split between its two sides (#1304's BIOMD0000000339: KLU at a
-    hundredfold tighter tolerance sides with KLU, the dense solver with
+    arms split between its two sides (#1304's BIOMD0000000339 before #1485: KLU
+    at a hundredfold tighter tolerance sided with KLU, the dense solver with
     dense). Its DIFFs are real but unattributed, its PASSes
     luck. ``rows`` maps a check to ``{"status", "extra"}``, as a report holds
     them."""
