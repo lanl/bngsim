@@ -476,3 +476,62 @@ def test_a_window_in_a_run_with_no_stop_is_seen(tmp_path, clock, rtol, rel):
     exact = 10.0 * (30.0 + 0.05 / 0.1 - _window_opens())
     assert exact == pytest.approx(4.5111, rel=1e-4)
     assert float(result.species[-1][1]) == pytest.approx(exact, rel=rel)
+
+
+# S drifts up at 0.3 from 1.0167 at t = 30, and thr() rises from 1 to 1.05
+# around 30.064, faster than S: S < thr() opens a window where thr() passes S
+# and closes it where S passes 1.05, at 30.111. Y's rate is 10 while it is
+# open. The run has no stop.
+_FAST_WINDOW_NET = """begin parameters
+    1 k    10.0
+    2 A    0.05
+    3 tp   30.064
+    4 sig  0.0005
+    5 dlt  0.3
+end parameters
+begin functions
+    1 thr() 1+A*(1+tanh((time()-tp)/sig))/2
+    2 up() dlt
+    3 r() if(Sobs<thr(),k,0)
+end functions
+begin species
+    1 S() 1.0167
+    2 Y() 0
+end species
+begin reactions
+    1 0 1 up
+    2 0 2 r
+end reactions
+begin groups
+    1 Sobs 1
+end groups
+"""
+
+
+@pytest.mark.parametrize("rtol, rel", [(1e-3, 2e-3), (1e-6, 1e-6)])
+def test_a_window_before_the_looks_first_place_is_seen(tmp_path, rtol, rel):
+    """The run took three steps. The last ran from t = 30 to past 31 and was
+    looked at (#998), but its places, a quarter of it apart, all fell after
+    the window, which is 0.047 wide. S > thr() at the step's ends, so CVODE's
+    root search saw no crossing, and Y gained 0 where the window gives it
+    0.4676, at every tolerance. Each step the run takes is now held against
+    what the root search read at the ends of it: the residual went from
+    +0.017 to +0.28 without crossing, more than it was at either end from its
+    surface, so the step is read inside, the window is found, and the run
+    goes back and stops in it."""
+    path = tmp_path / "fast.net"
+    path.write_text(_FAST_WINDOW_NET)
+    result = bngsim.Simulator(bngsim.Model.from_net(str(path))).run(
+        sample_times=[30.0, 31.05], rtol=rtol, atol=rtol * 1e-2
+    )
+    lo, hi = 30.0, 30.1
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        thr = 1.0 + 0.025 * (1.0 + math.tanh((mid - 30.064) / 0.0005))
+        if 1.0167 + 0.3 * (mid - 30.0) < thr:
+            hi = mid
+        else:
+            lo = mid
+    exact = 10.0 * (30.0 + (1.05 - 1.0167) / 0.3 - 0.5 * (lo + hi))
+    assert exact == pytest.approx(0.467646, rel=1e-5)
+    assert float(result.species[-1][1]) == pytest.approx(exact, rel=rel)
