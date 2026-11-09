@@ -1420,10 +1420,12 @@ def test_a_slow_runner_walks_the_same_rungs(monkeypatch, tmp_path):
     assert slow.note == real.note
 
 
-@pytest.mark.parametrize("budget, walked", [(89, [30]), (90, [30, 100])])
+@pytest.mark.parametrize("budget, walked", [(None, [30]), (89, [30]), (90, [30, 100])])
 def test_the_budget_counts_every_rung_walked(monkeypatch, budget, walked):
     """The 100-replicate rung adds 70 more after the 30 one's 20: 90 in all.
-    It is refused under a budget of 89 though 70 alone would fit."""
+    It is refused under a budget of 89 though 70 alone would fit. The nightly's
+    budget walks the 30 rung and never the 100 one, whose 70 more replicates
+    each would be past any cap on the slowest rows (#1555)."""
     n_points = _nf_job().n_points
 
     def runs(job, engine, n=None, seed=None):
@@ -1444,7 +1446,8 @@ def test_the_budget_counts_every_rung_walked(monkeypatch, budget, walked):
         return status, frac, note, None, None, rungs, False
 
     monkeypatch.setattr(D, "_nf_runs", runs)
-    monkeypatch.setattr(D, "NF_ESCALATION_REPLICATES", budget)
+    if budget is not None:
+        monkeypatch.setattr(D, "NF_ESCALATION_REPLICATES", budget)
     monkeypatch.setitem(
         sys.modules, "bng_stoch_run", types.SimpleNamespace(_run_escalation=escalation)
     )
