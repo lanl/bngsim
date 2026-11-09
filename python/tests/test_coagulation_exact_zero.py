@@ -12,7 +12,7 @@ arm64, 338's dense run clotted (Fg(2) = 0.73 against KLU's 311) and 339's read
 1.8% of the peak from KLU's; on Linux, 338's failed at t = 0.72; on macOS
 x86-64, it was refused at t = 0.069, with XIIa carried to r4's pole at -1.
 libRoadRunner leaves the 0 too, by its own rounding: upward, XIIa spikes and the
-cascade clots; downward, XIIa passes the pole and its step collapses. So the
+cascade clots; downward, XIIa goes below 0 and its step collapses. So the
 rr_parity overrides for both models name RoadRunner, not bngsim, as the engine
 that diverges, and this test is their evidence. That dense keeps the 0 and
 agrees with KLU is test_differential_shapes.py's #1304 test, on the same files.
@@ -41,9 +41,10 @@ ZERO = ("XIIa", "K", "CA")
 # Of each species' peak after t = 0: the dilution event at t > 0 thins every
 # species threefold, and some are consumed before t = 0.02, so a peak that read
 # the initial row would loosen the bound for them (338's VIII is 0.7 at t = 0 and
-# at most 9.2e-3 after it). Measured on macOS arm64: 6.0e-7 (338, VIII) and
-# 4.7e-7 (339, V); with jacobian="fd", 1.03e-6. The bound leaves room for other
-# CPUs and RoadRunner versions, and still fails a 1e-4 change in one rate
+# at most 9.2e-3 after it). Measured on macOS arm64 against RoadRunner 2.9.2:
+# 6.0e-7 (338, VIII) and 4.7e-7 (339, V), and 1.03e-6 with jacobian="fd"; against
+# 2.11.0: 3.5e-7 (338, VIII) and 1.3e-7 (339, Fg), and 7.9e-7 with jacobian="fd".
+# The bound leaves room for other CPUs, and still fails a 1e-4 change in one rate
 # constant (a gap of about 1e-4). A run that leaves the 0 is off by about 1 in
 # the species downstream of XIIa (and XIIa, K and CA fail the exact-0 check).
 BOUND = 3e-5
