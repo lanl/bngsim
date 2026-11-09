@@ -210,54 +210,58 @@ KNOWN_ARTIFACT: dict[str, dict] = {
             "way). See GH #482."
         ),
     },
+    # BIOMD0000000338 and 339 — GH #1304. Until #1485 (PR #1535) bngsim's dense
+    # solver left the same exact 0 by rounding, and these two entries described a
+    # spike every engine shared as "no engine attributable". bngsim no longer
+    # spikes on any route; the entries now say who leaves the 0 and how we know.
     "BIOMD0000000338:ode": {
-        "issue": None,
+        "issue": 1304,
         "reason": (
-            "Sharp ill-conditioned transient (no engine attributable). Wajima2009 "
-            "coagulation cascade with a t=0 dilution event (compartment_1 x3). The "
-            "XIIa activation curve has a narrow spike whose HEIGHT is "
-            "engine-independent (peak ~74.2 in every engine/tol: bngsim 74.12, "
-            "RoadRunner 74.22 at rtol 1e-10, 74.24 at rtol 5e-11) but whose TIMING "
-            "is below the conditioning limit -- it shifts from t=0.170 to t=0.182 "
-            "WITHIN RoadRunner alone as rtol tightens 1e-10->5e-11, and within "
-            "bngsim it moves with the output grid (bngsim peaks at t=0.121). The "
-            "differ compares pointwise, so a ~0.05 t-unit phase shift of a sharp "
-            "spike registers as max_rel_err 0.986 (worst XIIa, sweep grid); the "
-            "post-transient trajectory (t>=0.3) agrees across engines. Neither "
-            "engine integrates tight enough to pin the phase (the transient is "
-            "stiff: bngsim hits the CVODE step cap / times out below ~1e-10, RR "
-            "raises CV_TOO_MUCH_WORK at the sweep tol), so no high-accuracy "
-            "reference can attribute the 'true' timing. Same class as the "
-            "oscillator phase-drift entries (BIOMD373/376/682, "
-            "MODEL0406553884/0912940495). NOT a loader or Jacobian defect: the #74 "
-            "compartment-resize fix is correct (Pk=450/3 post-event, "
-            "regression-tested) and the #76 analytical Functional Jacobian matches "
-            "a finite-difference Jacobian entrywise to FD precision at physical "
-            "states (a default-on speedup, not a wrong result -- jacobian='fd' and "
-            "'analytical' both spike). See dev/notes/rr_parity_triage.md."
+            "RoadRunner leaves an exact solution by rounding (bngsim correct). "
+            "Wajima2009 aPTT test. XIIa, K and CA start at 0; each of the six "
+            "reactions that change them is proportional to one of the three, and "
+            "no rule, initial assignment or event sets them. So XIIa = K = CA = 0 "
+            "for all t is the exact solution. It is unstable: the XIIa <-> K loop "
+            "grows any departure. bngsim keeps it exactly, on KLU and (since GH "
+            "#1485) on the dense solver, with either Jacobian: Fg(2) = 310.989 at "
+            "rr_run's rtol 1e-9, atol 1e-12. RoadRunner's rounding tips XIIa off 0, "
+            "upward or downward depending on its build, tolerance and output grid. "
+            "Upward, XIIa spikes and the cascade clots: at rr_run's tolerances, RR "
+            "2.9.2 on macOS arm64 peaks at XIIa = 72.8 (t = 0.14) and ends at "
+            "Fg(2) = 0.7365, and the row is this DIFF, max_rel_err 1.0. Downward, "
+            "XIIa goes below 0, RoadRunner's step collapses, and the row is "
+            "REFERENCE_FAILED, CV_TOO_MUCH_WORK: so with RR 2.11.0 at the same "
+            "tolerances, on the Linux nightly (run 42676740345) and on macOS "
+            "arm64, where a run on the job's grid stops at t = 0.097 with XIIa = "
+            "-2.0e-7 and K = -7.0e-8 (which way XIIa goes on Linux is inferred "
+            "from that). Oracle: RoadRunner on the same SBML with XIIa, K and CA "
+            "made constant at 0, which it cannot leave, matches bngsim's run of "
+            "the model as written on all 55 species, KLU and dense alike (PASS, "
+            "error/movement 9.3e-9 with RR 2.9.2 and 9.6e-9 with 2.11.0, at rtol "
+            "1e-9, atol 1e-12). python/tests/test_coagulation_exact_zero.py runs "
+            "that oracle."
         ),
     },
     "BIOMD0000000339:ode": {
-        "issue": None,
+        "issue": 1304,
         "reason": (
-            "Sharp ill-conditioned transient (no engine attributable) -- the SAME "
-            "class as BIOMD0000000338, of which this is the Wajima2009 coagulation-"
-            "cascade sibling (same t=0 dilution event, same worst species XIIa). The "
-            "XIIa activation spike has an engine-INDEPENDENT height (peak ~74.2: "
-            "bngsim 74.20, RoadRunner 74.14 @rtol1e-9) but tol/grid-DEPENDENT timing "
-            "(bngsim-analytical t=0.16, bngsim-fd t=0.115, RR t=0.15), and the post-"
-            "transient values agree to the digit across engines (t=1.0: bngsim "
-            "0.2242 = RR 0.2242; t=2.0: bngsim 0.2246 = RR 0.2246). The differ "
-            "compares pointwise, so the phase shift of a sharp spike on the coarse "
-            "sweep grid reads as max_rel_err 0.957 (worst XIIa). Unlike #338, no "
-            "Jacobian strategy happens to phase-align with RR on that grid "
-            "(jacobian=fd and =analytical both DIFF ~0.96), but the divergence is "
-            "the same artifact, not a distinct defect -- the equal peak height and "
-            "the digit-identical post-transient tail rule out a real divergence. "
-            "Both engines are stiff (RR raises CV_TOO_MUCH_WORK at rtol1e-10), so no "
-            "high-accuracy reference can pin the phase. NOT a loader/Jacobian defect. "
-            "Repro dev/investigations/peak_339.py; see the #338 entry + "
-            "dev/notes/rr_parity_triage.md."
+            "RoadRunner leaves an exact solution by rounding (bngsim correct), as "
+            "on BIOMD0000000338. Wajima2009 PT test: TF = 300 starts the extrinsic "
+            "path, and XIIa = K = CA = 0 is again an exact, unstable solution (the "
+            "same six reactions, each proportional to one of the three). bngsim "
+            "keeps it exactly on both linear solvers and either Jacobian: Fg(2) = "
+            "0.611371 at every rtol from 1e-6 to 1e-12. At rr_run's rtol 1e-9, "
+            "atol 1e-12, RR 2.9.2 on macOS arm64 goes downward: XIIa passes r4's "
+            "pole at -1 (-150 when it stops), the step collapses, and the row is "
+            "REFERENCE_FAILED, CV_TOO_MUCH_WORK. RR 2.11.0 goes upward and "
+            "completes: on macOS arm64 XIIa peaks at 71.4 (t = 0.10) and Fg(2) = "
+            "0.611052, and on the Linux nightly the row is this DIFF, max_rel_err "
+            "1.0 (run 42676740345; which way XIIa goes there is inferred from the "
+            "arm64 run). Oracle: RoadRunner on the SBML with XIIa, K and CA made "
+            "constant at 0 matches bngsim's run of the model as written on all 55 "
+            "species, KLU and dense alike (PASS, error/movement 8.4e-9 with RR "
+            "2.9.2 and 7.7e-9 with 2.11.0, at rtol 1e-9, atol 1e-12). "
+            "python/tests/test_coagulation_exact_zero.py runs that oracle."
         ),
     },
     # NOTE: MODEL1708310001:ode is the #88 root fix — the loader now bounds the

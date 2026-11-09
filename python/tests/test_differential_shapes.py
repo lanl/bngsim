@@ -2071,34 +2071,30 @@ def test_a_run_that_fails_from_the_nudged_start_is_contested(monkeypatch):
     assert D.contested({"stable": {"status": "diff", "extra": v.extra}})
 
 
-_B1304 = {
-    m: _ROOT / f"parity_checks/rr_parity/models/{m}/{m}_url.xml"
-    for m in ("BIOMD0000000338", "BIOMD0000000339")
-}
+# The rr_parity corpus copies, tracked so that CI runs this (BioModels, CC0).
+_B1304 = {m: _ROOT / f"tests/data/{m}.xml" for m in ("BIOMD0000000338", "BIOMD0000000339")}
 
 
 @pytest.mark.parametrize("model", sorted(_B1304))
 @pytest.mark.skipif(not bngsim._bngsim_core.HAS_KLU, reason="KLU not compiled")
 def test_1304s_models_keep_their_exact_zero_on_dense_as_on_klu(model):
-    """#1304: XIIa = K = 0 is an exact, unstable solution of both models, and
-    the KLU base keeps it. The dense LU's rounding broke it, which way and when
-    depending on the CPU and the output grid: upward, dense took the activated
-    branch libRoadRunner takes (338's Fg 0.73 against KLU's 311), and downward
-    the laws carried XIIa to its pole at -1 and the run was refused. Their rows
-    read only each other and their right-hand side is 0, so since #1485 the
-    dense solve gives them exactly 0, as KLU's block-triangular form does, and
-    the two linear solvers take the same branch on either Jacobian. (The
-    Jacobians are a loop, not a parameter: a CI checkout has no corpus, so each
-    case is a skip there, and the suite's skip count has a ceiling.)"""
-    path = _B1304[model]
-    if not path.exists():
-        pytest.skip(f"rr_parity corpus model {model} not present")
-    job = D.Job(model, path, 0.0, 2.0, 101, rtol=1e-6, atol=1e-9)
+    """#1304: XIIa = K = CA = 0 is an exact, unstable solution of both models,
+    and the KLU base keeps it. The dense LU's rounding broke it, which way and
+    when depending on the CPU and the output grid: upward, dense took the
+    activated branch libRoadRunner takes (338's Fg 0.73 against KLU's 311), and
+    downward the laws carried XIIa to its pole at -1 and the run was refused.
+    Their rows read only each other and their right-hand side is 0, so since
+    #1485 the dense solve gives them exactly 0, as KLU's block-triangular form
+    does, and the two linear solvers take the same branch on either Jacobian.
+    That the branch is the model's own is test_coagulation_exact_zero.py's
+    RoadRunner oracle. Control: passes on main; with #1485's zeroing switched
+    off (arm64), both models fail."""
+    job = D.Job(model, _B1304[model], 0.0, 2.0, 101, rtol=1e-6, atol=1e-9)
     for jacobian in ("auto", "fd"):
         for solver in ("force_dense_linear_solver", "force_sparse_linear_solver"):
             result, _ = D.run(job, jacobian=jacobian, **{solver: True})
             names = list(result.species_names)
-            for name in ("XIIa", "K"):
+            for name in ("XIIa", "K", "CA"):
                 np.testing.assert_array_equal(
                     np.asarray(result.species)[:, names.index(name)],
                     0.0,
@@ -2111,9 +2107,9 @@ def test_1304s_models_keep_their_exact_zero_on_dense_as_on_klu(model):
 def test_a_klu_base_takes_the_dense_solver_as_its_other_arm(monkeypatch):
     """The third arms of a base KLU took: its own route at a hundredfold tighter
     tolerance, and the dense solver. Every other attribution test's base is
-    dense, so without this no test reads the dense arm: #1304's corpus models,
-    which CI has none of, read it until #1485 gave their dense runs KLU's answer,
-    and their test now asserts that answer. A copy of a base that ran dense
+    dense, so without this no test reads the dense arm: #1304's models read it
+    until #1485 gave their dense runs KLU's answer, and their test now asserts
+    that answer. A copy of a base that ran dense
     stands in for one KLU took (the cached base is shared): the dense arm reruns
     it exactly."""
     shared = _base("derived-log10")
