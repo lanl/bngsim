@@ -1391,14 +1391,65 @@ def test_one_rate_perturbed_on_one_engine_is_a_finding(monkeypatch, tmp_path):
     assert v.extra["worst_observable"] in ("X_p_total", "Xp_free", "X_free"), v.extra
 
 
-def test_an_escalation_past_its_budget_is_not_walked(monkeypatch, tmp_path):
-    """A slow model's DIFF is not walked to 100 replicates each past the
-    nightly's cap: the row stays at its base rung and says so."""
+@pytest.mark.parametrize("budget, rungs", [(19, [10]), (20, [10, 30])])
+def test_a_rung_past_the_replicate_budget_is_not_walked(monkeypatch, tmp_path, budget, rungs):
+    """The 30-replicate rung adds 20 of each engine: a budget of 19 leaves the
+    row at its base rung, saying so, and one of 20 walks it."""
     _faster_on_rulemonkey(monkeypatch, tmp_path, 3.0)
-    monkeypatch.setattr(D, "NF_ESCALATION_BUDGET", 0.0)
+    monkeypatch.setattr(D, "NF_ESCALATION_REPLICATES", budget)
     v = D.check_all(_nf_job(), None)["nf_reject_vs_exact"]
-    assert v.status == "diff" and "aborted" in v.note, v
-    assert [n for n, _ in v.extra["rungs"]] == [10], v.extra
+    assert v.status == "diff", v
+    assert [n for n, _ in v.extra["rungs"]][:2] == rungs, v.extra
+    assert ("N=30 aborted: _OverBudget" in v.note) == (rungs == [10]), v.note
+
+
+def test_a_slow_runner_walks_the_same_rungs(monkeypatch, tmp_path):
+    """#1555: the escalation budget was 300 wall seconds, so a runner slow
+    enough left a rung unwalked. IL7_Carmen's 30-replicate rung took 186-340 s
+    across runners and read DIFF on the slowest. The budget counts replicates
+    now, so a clock that jumps 1000 s at every reading walks the same rungs to
+    the same verdict."""
+    _faster_on_rulemonkey(monkeypatch, tmp_path, 3.0)
+    real = D.check_all(_nf_job(), None)["nf_reject_vs_exact"]
+    assert [n for n, _ in real.extra["rungs"]][:2] == [10, 30], real.extra
+
+    ticks = iter(range(10**9))
+    monkeypatch.setattr(D.time, "perf_counter", lambda: 1000.0 * next(ticks))
+    slow = D.check_all(_nf_job(), None)["nf_reject_vs_exact"]
+    assert (slow.status, slow.extra["rungs"]) == (real.status, real.extra["rungs"]), slow
+    assert slow.note == real.note
+
+
+@pytest.mark.parametrize("budget, walked", [(89, [30]), (90, [30, 100])])
+def test_the_budget_counts_every_rung_walked(monkeypatch, budget, walked):
+    """The 100-replicate rung adds 70 more after the 30 one's 20: 90 in all.
+    It is refused under a budget of 89 though 70 alone would fit."""
+    n_points = _nf_job().n_points
+
+    def runs(job, engine, n=None, seed=None):
+        return np.ones((job.n_rep if n is None else n, n_points, 2)), ["A", "B"]
+
+    calls = []
+
+    def escalation(*pair_and_verdict, n_rep_base, seed_base, compare, escalate):
+        status, frac, note = pair_and_verdict[2:5]
+        rungs = [(n_rep_base, frac)]
+        for target in (30, 100):
+            try:
+                escalate(target - rungs[-1][0], seed_base + rungs[-1][0], target)
+            except D._OverBudget:
+                break
+            calls.append(target)
+            rungs.append((target, frac))
+        return status, frac, note, None, None, rungs, False
+
+    monkeypatch.setattr(D, "_nf_runs", runs)
+    monkeypatch.setattr(D, "NF_ESCALATION_REPLICATES", budget)
+    monkeypatch.setitem(
+        sys.modules, "bng_stoch_run", types.SimpleNamespace(_run_escalation=escalation)
+    )
+    D.check_all(_nf_job(), None)
+    assert calls == walked
 
 
 def test_engines_reporting_different_observables_is_a_finding(monkeypatch):

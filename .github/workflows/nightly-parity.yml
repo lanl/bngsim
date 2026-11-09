@@ -748,7 +748,11 @@ jobs:
     needs: plan
     if: needs.plan.outputs.differential-nf == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    # 240, not 180 (#1555): the eleven nightlies to 2026-11-08 took 48-88 min of
+    # rows over four workers. The 30-replicate rungs add up to ~23 min and the
+    # rows that timed out at 810 s now run to their end (AMPK_MTORC1_ULK1_v2,
+    # which always did, holds a worker 2700 s), about 124 min on the slowest night.
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -767,11 +771,19 @@ jobs:
         run: uv run --no-sync python -c "import bngsim, bngsim._build_provenance as bp; print('bngsim', bngsim.__version__); bp.print_identity()"
       - name: Fetch bng_nf's models
         run: python3 parity_checks/nightly/reference_archive.py fetch bng_nf --dest "$RUNNER_TEMP/bng_nf"
+      # --timeout 3000, not 900 (#1555). At 900 (deadline 810), three rows'
+      # verdicts followed the runner over the eleven nightlies to 2026-11-08:
+      # local_func_bug, AD 3 State FREE Expanding nfs and mlnr took up to
+      # 876-880 s, so each read TIMEOUT on some nights and PASS on others. The
+      # escalation budget now counts replicates, so the five rows it once stopped
+      # (population_scaling, tcr, fcr, fceri_ji, error) walk their 30-replicate
+      # rung every night. That's about three times their base run, up to 1739 s
+      # for population_scaling, against a deadline of 2700.
       - name: Run differential_run.py (NF arm)
         run: |
           uv run --no-sync python parity_checks/differential/differential_run.py \
             --fd-sens-jobs '' --rr-jobs '' --ssa-jobs '' --no-locale \
-            --nf-archive "$RUNNER_TEMP/bng_nf" --workers 4 --timeout 900 \
+            --nf-archive "$RUNNER_TEMP/bng_nf" --workers 4 --timeout 3000 \
             --out "$RUNNER_TEMP/differential_nf.json" || true
       - name: Compare
         env:
