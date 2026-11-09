@@ -169,6 +169,7 @@ jobs:
             coverage: "false"
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/sundials-archive
 
       # Only the LAPACK leg installs anything, and only this one package. The
       # other two legs must stay bare — see the header on lanl/bngsim#178.
@@ -195,8 +196,9 @@ jobs:
           }
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10.3.3
         with:
+          prune-cache: true
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
@@ -519,7 +521,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10.3.3
+        with:
+          prune-cache: true
 
       - name: Download the coverage leg's shard data
         uses: actions/download-artifact@v4

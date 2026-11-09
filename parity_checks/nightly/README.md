@@ -158,10 +158,12 @@ need no engine and run the same in every mode.
 **What a replay compares against.** The archive is one release asset per suite,
 `reference-<suite>.tar.gz` on a `reference-data-vN` release (not a bngsim
 release: `release.yml` publishes `v*` tags only). `reference_archive.json` here
-pins each asset's URL and sha256. Each job's `reference_archive.py prepare` step
-downloads its asset, checks the sha256, and unpacks one `.npz` per job for the
-runner's `--reference-archive` flag; a missing or mismatched asset fails the job,
-and the night alerts. Inside, an entry holds what the engine returned (or the
+pins each asset's URL and sha256. Each job's Reference side step
+(`.github/actions/reference-side`) takes its asset from the Actions cache, keyed
+on that sha256, and downloads it only on a miss, so a GitHub release-download
+outage does not stop a replay (#1607). `reference_archive.py prepare` then checks
+the sha256 and unpacks one `.npz` per job for the runner's `--reference-archive`
+flag; a missing or mismatched asset fails the job, and the night alerts. Inside, an entry holds what the engine returned (or the
 error it raised) and the job identity it is valid for: the model file's sha256,
 the grid, the tolerances and so on, per runner. An entry that no longer matches its
 job (a model, grid or tolerance changed) is refused, never compared: the row is

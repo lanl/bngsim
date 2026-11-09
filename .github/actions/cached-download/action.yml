@@ -1,0 +1,61 @@
+name: Cached download
+description: >-
+  Put a sha256-pinned file at a path from the Actions cache, or download it,
+  check it and save it to the cache. A warm cache downloads nothing.
+# lanl/bngsim#1607. Every build leg downloaded the same release assets at its
+# start (SUNDIALS' source archive, BNG2.pl, the reference archives), so one
+# GitHub release-download outage failed them all. The cache key is the sha256,
+# so a new pin is a new entry and an old entry can never stand in for it.
+# ci/cached_download.py checks the file's sha256 on a hit as well as after a
+# download, and downloads again if a cached copy has other bytes. An entry is
+# never overwritten, so a corrupt one makes every later run download until the
+# entry is deleted (gh cache delete download-<sha256>).
+#
+# Caches saved on a pull request's branch are read only by that pull request;
+# main's are read by every branch. So the first run of a new pin on a pull
+# request downloads, and a pin that has run on main is a hit everywhere. The
+# entry's version includes the path, which differs by OS, so each runner OS
+# keeps its own entry and downloads once.
+inputs:
+  url:
+    description: Where to download the file from on a cache miss.
+    required: true
+  sha256:
+    description: The file's sha256, as a hex digest. Also the cache key.
+    required: true
+  path:
+    description: Where to put the file.
+    required: true
+outputs:
+  downloaded:
+    description: "'true' if the file was downloaded, 'false' if the cache had it."
+    value: ${{ steps.fetch.outputs.downloaded }}
+runs:
+  using: composite
+  steps:
+    - name: Restore ${{ inputs.path }} from the cache
+      id: restore
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ inputs.path }}
+        key: download-${{ inputs.sha256 }}
+
+    - name: Check it, or download it
+      id: fetch
+      shell: bash
+      env:
+        URL: ${{ inputs.url }}
+        SHA256: ${{ inputs.sha256 }}
+        DEST: ${{ inputs.path }}
+      run: |
+        set -euo pipefail
+        # Windows runners put their Python on PATH as `python`.
+        py=python3; [ "$RUNNER_OS" = Windows ] && py=python
+        "$py" "$GITHUB_WORKSPACE/ci/cached_download.py" --url "$URL" --sha256 "$SHA256" --dest "$DEST"
+
+    - name: Save ${{ inputs.path }} to the cache
+      if: steps.fetch.outputs.downloaded == 'true' && steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ inputs.path }}
+        key: download-${{ inputs.sha256 }}

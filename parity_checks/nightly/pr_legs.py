@@ -46,11 +46,17 @@ _DIFF = frozenset({"differential", "differential-nf"})
 _BNG = frozenset({"bng-ode", "bng-stoch"})
 _AMICI = frozenset({"amici-sens", "fd-sens"}) | _DIFF
 _FD = frozenset({"fd-sens", "differential"})
+# The legs that replay a reference archive (.github/actions/reference-side).
+_REPLAY = frozenset({"rr-ode", "bng-ode", "rr-ssa", "bng-stoch", "amici-sens"})
 
 # The workflow's pull_request.paths, as path prefixes ("dir/**" -> "dir/");
 # test_pr_legs.py keeps the two the same.
 TRIGGERS = (
     ".github/workflows/nightly-parity.yml",
+    ".github/actions/sundials-archive/",
+    ".github/actions/cached-download/",
+    "ci/cached_download.py",
+    ".github/actions/reference-side/",
     "parity_checks/nightly/",
     "parity_checks/_core/",
     "parity_checks/rr_parity/",
@@ -79,6 +85,13 @@ RULES: tuple[tuple[str, frozenset[str]], ...] = (
     # Shared by every leg: the workflow, compare.sh, verdicts.py,
     # reference_archive.py, present_models.py, and this file.
     (".github/workflows/nightly-parity.yml", frozenset(LEGS)),
+    # The steps they build and fetch through (issue #1607): every leg builds from
+    # the cached SUNDIALS archive, and the replay legs take their reference
+    # archive the same way.
+    (".github/actions/sundials-archive/", frozenset(LEGS)),
+    (".github/actions/cached-download/", frozenset(LEGS)),
+    ("ci/cached_download.py", frozenset(LEGS)),
+    (".github/actions/reference-side/", _REPLAY),
     ("parity_checks/nightly/", frozenset(LEGS)),
     # Every parity runner imports _core and rr_parity's _rr_common (and
     # reference_archive.py does too). The rest of rr_parity is rr-ode's
