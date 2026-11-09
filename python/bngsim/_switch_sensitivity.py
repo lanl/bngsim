@@ -3569,9 +3569,12 @@ def _is_instant_atom(cond: str) -> bool:
     )
 
 
-def _top_level_conjuncts(text: str) -> list[str] | None:
-    """The parts of *text* joined by ``and`` (or ``&&``) at paren depth 0, or
-    ``None`` where any other logical operator joins them there."""
+def _top_level_parts(text: str) -> tuple[str, list[str]] | None:
+    """The logical operator that joins *text*'s parts at paren depth 0
+    (``"and"``, ``"or"``, or ``""`` for one part) and the parts, or ``None``
+    where more than one kind joins them there, or any other kind."""
+    kinds = {"and": "and", "&&": "and", "or": "or", "||": "or"}
+    kind = ""
     parts: list[str] = []
     depth = start = i = 0
     while i < len(text):
@@ -3583,32 +3586,47 @@ def _top_level_conjuncts(text: str) -> list[str] | None:
         elif depth == 0:
             m = _LOGICAL.match(text, i)
             if m is not None:
-                if m.group(0) not in ("and", "&&"):
+                this = kinds.get(m.group(0))
+                if this is None or kind not in ("", this):
                     return None
+                kind = this
                 parts.append(text[start : m.start()])
                 start = i = m.end()
                 continue
         i += 1
     parts.append(text[start:])
-    return [_strip_redundant_parens(p.strip()) for p in parts]
+    return kind, [_strip_redundant_parens(p.strip()) for p in parts]
 
 
-def _instant_trigger_atom(flat: str, scope: SwitchConditionScope) -> str | None:
-    """The ``==`` on the clock a trigger holds at an instant through, where the
-    trigger (*flat*, its functions written in) is that equality alone or joined
-    to others by ``and``: it is true then only on that equality's instants, and
-    rises on each one at which the rest holds. ``None`` for any other trigger."""
-    parts = _top_level_conjuncts(_strip_redundant_parens(flat.strip()))
-    for atom in parts or ():
-        split = _relational_split_op(atom)
-        if (
-            split is not None
-            and split[1] == "=="
-            and _is_instant_atom(atom)
-            and not _clock_free(atom, scope.clock_symbols)
-        ):
-            return atom
-    return None
+def _instant_trigger_atoms(flat: str, scope: SwitchConditionScope) -> list[str] | None:
+    """The ``==`` on the clock each part of a trigger holds at an instant
+    through, where the trigger (*flat*, its functions written in) is such an
+    equality alone or joined to others by ``and``, or several of those joined
+    by ``or`` (a first dose, or a later one: ``time == t0 || (time == t0 + c &&
+    time < t_end)``). It is true then only on those equalities' instants, and
+    rises on each one at which it holds. ``None`` for any other trigger."""
+    top = _top_level_parts(_strip_redundant_parens(flat.strip()))
+    if top is None:
+        return None
+    kind, parts = top
+    found = []
+    for part in parts if kind == "or" else [_strip_redundant_parens(flat.strip())]:
+        conjunction = _top_level_parts(part)
+        if conjunction is None or conjunction[0] == "or":
+            return None
+        for atom in conjunction[1]:
+            split = _relational_split_op(atom)
+            if (
+                split is not None
+                and split[1] == "=="
+                and _is_instant_atom(atom)
+                and not _clock_free(atom, scope.clock_symbols)
+            ):
+                found.append(atom)
+                break
+        else:
+            return None
+    return found or None
 
 
 def _reads_run_constants_alone(text: str, scope: SwitchConditionScope) -> bool:
@@ -3653,7 +3671,11 @@ def _held_schedule(
     Known: every event that writes it fires on ``time() >= c`` (or ``>``, or
     the same written the other way), with c a run constant, after a constant
     delay, and sets a value that reads only run constants and held species
-    known then. Such a trigger rises once, so the event fires once. A run that
+    known then. Such a trigger rises once, so the event fires once. So is one
+    on the instants of an equality on the clock (``time == c && c < 91``, issue
+    #1519) whose sides read run constants and held species, which can fire
+    again with each value it sets, and whose value may read the time of its
+    instant (:func:`_schedule_with_instants`). A run that
     starts where the last one ended continues its events (``event_carry``, issue
     #693): a trigger rises in it only where it was false there, and the
     executions the last run delayed into it are taken with the values they
@@ -3758,7 +3780,7 @@ def _held_schedule(
         if m is None:
             if bodies is None:
                 bodies = _function_slot_bodies(core.functional_jacobian_context())
-            writer, why = _instant_writer(ev, trigger, label, writes, scope, bodies, start, moved)
+            writer, why = _instant_writer(ev, trigger, label, writes, scope, bodies, start)
             if writer is not None:
                 if continued:
                     writer = writer._replace(true_before=bool(was_true[i]))
@@ -3834,9 +3856,10 @@ class _InstantWriter(NamedTuple):
     label: str
     # [(held species, value text)]
     writes: list[tuple[str, str]]
-    # The trigger, and its equality on the clock, with functions written in.
+    # The trigger, and the equality on the clock of each of its parts joined
+    # by `or`, with functions written in.
     trigger: str
-    atom: str
+    atoms: tuple[str, ...]
     delay: float
     from_trigger: bool
     # Whether the trigger read true before the run started.
@@ -3844,29 +3867,27 @@ class _InstantWriter(NamedTuple):
 
 
 def _instant_writer(
-    ev, trigger: str, label: str, writes, scope, bodies, start, moved
+    ev, trigger: str, label: str, writes, scope, bodies, start
 ) -> tuple[_InstantWriter | None, str]:
     """*ev* as an :class:`_InstantWriter`, or ``None`` and why it is not one.
 
     One: its trigger is an equality on the clock, alone or joined by ``and``
-    (:func:`_instant_trigger_atom`), that reads only the clock, run constants
-    and held species, and a requested sensitivity parameter in none of them;
-    after a constant delay, if any, and persistent. (A trigger true at one
-    instant is false again before a delay ends, and a fire that is not
-    persistent is not taken.)"""
+    (:func:`_instant_trigger_atoms`), that reads only literal time, run
+    constants and held species; after a constant delay, if any, and
+    persistent. (A trigger true at one instant is false again before a delay
+    ends, and a fire that is not persistent is not taken.) A requested
+    sensitivity parameter in it needs no test here: a run with sensitivity
+    columns refuses any event trigger that reads one, or a species, first."""
     flat = _inline_function_slots(trigger, bodies)
-    atom = _instant_trigger_atom(flat, scope)
+    atoms = _instant_trigger_atoms(flat, scope)
     # On literal time alone: no stop is placed on an equality on a counter.
-    if atom is None or not _clock_free(flat, frozenset(scope.clocks)):
+    if atoms is None or not _clock_free(flat, frozenset(scope.clocks)):
         return None, "a trigger that is no fixed time"
     if ev["delay_expr"]:
         return None, f"after a delay of {ev['delay_expr']}, not a constant"
     delay = float(ev["delay"])
     if delay > 0 and not ev["persistent"]:
         return None, "after a delay, on an instant, and it is not persistent"
-    hit = moved(flat)
-    if hit:
-        return None, f"on an instant a requested sensitivity parameter moves ({', '.join(hit)})"
     probe = _with_values(flat, start)
     if not _reads_clock_and_run_constants(
         _inline_derived_param_refs(probe, scope.derived_exprs) or probe, scope
@@ -3874,7 +3895,7 @@ def _instant_writer(
         return None, "on an instant that reads more than the clock and what events alone set"
     from_trigger = delay > 0 and bool(ev["use_values_from_trigger_time"])
     writer = _InstantWriter(
-        label, list(writes), flat, atom, delay, from_trigger, bool(ev["initial_value"])
+        label, list(writes), flat, tuple(atoms), delay, from_trigger, bool(ev["initial_value"])
     )
     return writer, ""
 
@@ -3910,15 +3931,15 @@ def _schedule_with_instants(
         return v != 0.0
 
     def next_instant(writer: _InstantWriter, after: float) -> float | None:
-        atom = _with_values(writer.atom, values)
+        atoms = list(dict.fromkeys(_with_values(atom, values) for atom in writer.atoms))
         _, _, crossings = _resolve_flat(
             core,
             after,
             t_end,
-            [atom],
+            atoms,
             periodic=True,
-            touches=frozenset({atom}),
-            written={atom: atom},
+            touches=frozenset(atoms),
+            written={atom: atom for atom in atoms},
         )
         for stop in sorted(crossings, key=lambda s: s.time):
             if after < stop.time < t_end and holds(writer, stop.time):
@@ -4054,6 +4075,12 @@ def _resolve_crossings(
     root's sign change, and an event's trigger is located as a root, so both
     are read as before; so is one that only an output reads.
 
+    An event trigger's equality on the clock (``time == c``) is no root: it
+    holds at one instant, and its stop is all that makes the event fire (issue
+    #1519). Where it reads such a species, its instants are placed stretch by
+    stretch the same way, and where they are not known the run is refused by
+    name (:class:`InstantsMoveWithAnEvent`).
+
     The run has one budget of stops (:data:`_RUN_STOP_BUDGET`), whatever its
     stretches, and each call reads the rate laws for every condition of the
     run as the model spells it."""
@@ -4076,7 +4103,14 @@ def _resolve_crossings(
     if instants and len(core.event_assigned_species):
         bodies = _function_slot_bodies(core.functional_jacobian_context())
         for cond in instants:
-            texts[cond] = _inline_function_slots(_strip_redundant_parens(cond.strip()), bodies)
+            text = _inline_function_slots(_strip_redundant_parens(cond.strip()), bodies)
+            # On literal time. An equality of things that hold between events
+            # (`flag == 1`) changes only where an event sets them, and the
+            # engine reads the triggers again there; no stop is placed on an
+            # equality on a counter species, whatever it reads (events.md).
+            if not _clock_free(text, _TIME_SYMBOLS):
+                texts[cond] = text
+    instants = [cond for cond in instants if cond in texts]
     held = _event_held_species(core, list(texts.values()))
     reads = {
         cond: sorted(set(_IDENTIFIER.findall(text)) & held.keys()) for cond, text in texts.items()

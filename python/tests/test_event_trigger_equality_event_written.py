@@ -110,6 +110,18 @@ _CASES = {
         "var c = 0; E: at (time == c), t0=false: n = n + 1, c = c + 1;",
         11,
     ),
+    # A first dose, or a later one (BIOMD0000000613's shape): 0.5, then c + 0.5
+    # while before 9.6.
+    "a_first_dose_or_a_later_one": (
+        "var c = 0; E: at (time == 0.5 || (time == c + 0.5 && time < 9.6)): n = n + 1, c = c + 1;",
+        10,
+    ),
+    # True at the start with initialValue true, so no fire there; F then adds
+    # 3.5 to c at 2.2, and E fires at 3.5, 4.5, ..., 9.5.
+    "true_before_the_start_then_set_later": (
+        "var c = 0; E: at (time == c): n = n + 1, c = c + 1; F: at (time >= 2.2): c = c + 3.5;",
+        7,
+    ),
     # A reaction beside it: the SSA's probe windows start at random times.
     "beside_a_reaction": ("species X = 0; J: -> X; 5; var c = 0.5; " + _COUNTER, 10),
     # A rate law that reads c, stiffly: c stays the double the event set.
@@ -156,6 +168,15 @@ def test_a_stochastic_run_fires_it_too(name, grid):
 def test_a_span_off_the_probe_lattice(method):
     """Over (0, 10.3) main gave 0 of 10 in both engines."""
     assert _count("var c = 0.5; " + _COUNTER, method, t_span=(0.0, 10.3), n_points=2) == 10
+
+
+@pytest.mark.parametrize("method", ["ode", "ssa"])
+def test_control_a_trigger_true_before_the_start_does_not_fire_there(method):
+    """Control: c = 0 at t = 0, with initialValue true (the default), so the
+    trigger does not rise at the start, c stays 0, and the event never
+    fires. As on main. Taken to fire at the start, it fires 11 times."""
+    body = "var c = 0; E: at (time == c): n = n + 1, c = c + 1;"
+    assert _count(body, method, t_span=_SPAN, n_points=2) == 0
 
 
 @pytest.mark.parametrize("method", ["ode", "ssa"])
@@ -225,6 +246,34 @@ def test_biomd0000000620_gives_every_dose(n_points, rtol):
             "var c = 0.5; E: at 0.1 after (time == c), persistent=false: n = n + 1, c = c + 1;",
             "after a delay, on an instant, and it is not persistent",
         ),
+        # E's trigger is not an equality that holds at an instant: it rises
+        # just after c, at a double no stop names.
+        (
+            "var c = 0.5; E: at (time != c): n = n + 1, c = c + 1;",
+            "a trigger that is no fixed time",
+        ),
+        # F's value is read at its trigger, 2, and E sets c at 2.5, before F
+        # executes at 3.
+        (
+            "var c = 0.5; F: at 1 after (time >= 2): c = c + 5; "
+            "E: at (time == c): n = n + 1, c = c + 1;",
+            "reads its value at its trigger, before another event sets it",
+        ),
+        # E's guard reads X = 2t, which moves: whether E fires at 0.5 is not
+        # known before the run (it does not; F then sets c = 2.5, and E fires
+        # at 2.5, 3.5, ..., 9.5).
+        (
+            "species X = 0; X' = 2; var c = 0.5; "
+            "E: at (time == c && X > 4): n = n + 1, c = c + 1; F: at (time >= 2.2): c = 2.5;",
+            "on an instant that reads more than the clock and what events alone set",
+        ),
+        # G fires on an equality on a counter, which no stop is placed on:
+        # whether it fires is not known.
+        (
+            "species tau = 0; tau' = 1; var c = 0.5; G: at (tau == 3): c = 7.5; "
+            "E: at (time == c): n = n + 1, c = c + 1;",
+            "event G on tau==3 sets it, a trigger that is no fixed time",
+        ),
         # E sets d to the instant it fires on, which makes G's trigger rise
         # on that same instant.
         (
@@ -238,6 +287,10 @@ def test_biomd0000000620_gives_every_dose(n_points, rtol):
         "a-value-of-the-state",
         "two-writers-at-one-instant",
         "not-persistent",
+        "a-writer-on-not-equal",
+        "a-value-frozen-before-an-instant",
+        "a-guard-on-the-state",
+        "a-writer-on-a-counter-equality",
         "a-cascade-on-the-instant",
     ],
 )
@@ -274,3 +327,64 @@ def test_an_instant_no_double_meets_is_refused_as_for_a_constant():
     body = "var c = 0; F: at (time >= 0.5): c = 1.3; E: at (time - 1 == c): n = n + 1;"
     with pytest.raises(bngsim.SimulationError, match="never equal in double arithmetic"):
         _count(body, t_span=_SPAN, n_points=2)
+
+
+def test_biomd0000000613_gives_every_dose():
+    """Teriparatide at 12, then every 24 while before 84 (BIOMD0000000613),
+    on ``time == t0 || (time == counter + t0 && time < 84)``: three doses, so
+    the counter reads 72. Main gave 24, one dose, off the grid of 101 over
+    (0, 100), with nothing said."""
+    path = Path(__file__).resolve().parents[2] / "benchmarks/sbml_events/BIOMD0000000613.xml"
+
+    def at_100(n):
+        r = bngsim.Simulator(bngsim.Model.from_sbml(str(path)), method="ode").run(
+            t_span=(0, 100), n_points=n, rtol=1e-10, atol=1e-20
+        )
+        x = np.asarray(r.species, float)[-1, list(r.species_names).index("TERISC")]
+        names = list(r.observable_names)
+        return np.asarray(r.observables, float)[-1, names.index("event_counter")], x
+
+    oracle = at_100(101)
+    for n in (2, 1000, 1002):
+        counter, dose = at_100(n)
+        assert counter == 72.0
+        assert dose == pytest.approx(oracle[1], rel=1e-6)
+
+
+def test_biomd0000000628_is_refused():
+    """Each pulse of BIOMD0000000628 ends at ``time == parameter_7 + 0.008``,
+    and parameter_7 is set to the time by an event on ``parameter_6 == 1``,
+    which fires in the instant another event sets that flag. That cascade is
+    not read here, so the instant is not known, and the run is refused. Main
+    never ended the first pulse, on any grid, with nothing said."""
+    path = Path(__file__).resolve().parents[2] / "benchmarks/sbml_events/BIOMD0000000628.xml"
+    model = bngsim.Model.from_sbml(str(path))
+    with pytest.raises(bngsim.SimulationError, match="issue #1519") as e:
+        bngsim.Simulator(model, method="ode").run(t_span=(0, 1000), n_points=2)
+    assert "event event_1 on parameter_6==1.0 sets it" in str(e.value)
+
+
+# ── Read as before ──────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("method", ["ode", "ssa"])
+def test_control_an_equality_of_a_flag_a_state_trigger_sets(method):
+    """Control: ``flag == 1`` reads no clock, and changes only where an event
+    sets the flag, where the engine reads the triggers again. No stop is
+    needed, and a state trigger's write is no reason to refuse it."""
+    body = (
+        "species X = 0; X' = 1; var flag = 0; F: at (X > 2): flag = 1; "
+        "E: at (flag == 1): n = n + 1;"
+    )
+    assert _count(body, method, t_span=_SPAN, n_points=2) == 1
+
+
+def test_control_an_equality_on_a_counter_is_read_as_before():
+    """Control: no stop is placed on an equality on a counter species (the
+    exception events.md names), whatever its other side reads, so one a state
+    trigger writes is not refused either. As on main."""
+    body = (
+        "species tau = 0; tau' = 1; species X = 0; X' = 2; var c = 0.5; "
+        "F: at (X > 6): c = 5.5; E: at (tau == c): n = n + 1;"
+    )
+    _count(body, t_span=_SPAN, n_points=2)

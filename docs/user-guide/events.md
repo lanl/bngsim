@@ -54,6 +54,24 @@ evaluator's own rounding of `tau/7`, and `time == pi` or `time^2 == 4` is found
 the same way. An equality of things that hold their values, such as
 `floor(time/24) == 3`, is true for a stretch and is an ordinary window.
 
+The other side may be a parameter that events set, as in a dose counter:
+
+```
+var c = 0.5;
+E: at (time == c && c < 91): dose = dose + 100, c = c + 1;
+```
+
+Between two executions of the events that set `c`, it holds its value, so the
+run stops on each instant in turn: 0.5, 1.5, 2.5 and so on. The same holds
+where `c` is read through an assignment rule, after a delay, for `!=`, and
+for a first dose or a later one (`time == t0 || (time == c + t0 && time <
+t_end)`). The events that set `c` must fire at a fixed time (`time >= t1`) or
+on such an instant themselves, and set values known before the run: numbers,
+constants, the parameters they set, or the time of the instant. Otherwise the
+run is refused with an error that names the parameter and why: when an event
+on the state sets it, when two such events fire at one instant, or when they
+fire more than 512 times in one run (run it in shorter legs).
+
 Two cases are outside this:
 
 - An equality that no time satisfies in double arithmetic, such as
