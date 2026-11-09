@@ -4827,7 +4827,7 @@ struct CvodeSimulator::Impl {
     double crossing_step_error(void *cvode_mem, double t, const double *x, const double *slope,
                                int ns, const NetworkModel::StateSwitch &sw, int dir, double span,
                                N_Vector scratch, bool *genuine = nullptr,
-                               double genuine_above = 0.0);
+                               double genuine_above = 0.0, double *blur = nullptr);
     // Forget the order probe's states asked for at `t` or later, read again
     // where the run re-takes a stretch.
     void forget_times_from(double t) {
@@ -11826,7 +11826,7 @@ double CvodeSimulator::Impl::crossing_step_error(void *cvode_mem, double t, cons
                                                  const double *slope, int ns,
                                                  const NetworkModel::StateSwitch &sw, int dir,
                                                  double span, N_Vector scratch, bool *genuine,
-                                                 double genuine_above) {
+                                                 double genuine_above, double *blur) {
     const double none = std::numeric_limits<double>::quiet_NaN();
     if (genuine != nullptr) {
         *genuine = false;
@@ -11904,6 +11904,34 @@ double CvodeSimulator::Impl::crossing_step_error(void *cvode_mem, double t, cons
         }
         worst = std::max(worst, moved);
     }
+    // The band the tolerance leaves the residual, in the units CVODE holds each
+    // species to, but a species BDF integrates exactly at its rounding
+    // (rate_constant): a threshold on a counter clock held to 0.03 at rtol
+    // 1e-3 read a band as wide as its sweep.
+    auto band_of_crossing = [&]() {
+        return state_switch_band(sw.species.size(), [&](std::size_t q) {
+            const auto uj = static_cast<std::size_t>(sw.species[q]);
+            const double unit =
+                uj < rate_constant.size() && rate_constant[uj] != 0
+                    ? 64.0 * std::numeric_limits<double>::epsilon() *
+                          std::max(std::fabs(xv[uj]), 1.0)
+                    : (w[uj] > 0.0 ? 1.0 / w[uj] : std::numeric_limits<double>::infinity());
+            return std::fabs(gx_star[uj]) * unit;
+        });
+    };
+    // How far in time the crossing itself is blurred: that band, over the
+    // rate the near side carries the residual at.
+    if (blur != nullptr) {
+        const double dt = 1e-7 * std::max(std::fabs(t), 1.0);
+        sync_model_at(t + dt, x, ns);
+        double flow = (eval.evaluate(sw.residual_expr_idx) - g_star) / dt;
+        sync_model_at(t, x, ns);
+        for (int j : sw.species) {
+            flow += gx_star[static_cast<std::size_t>(j)] * f_near[static_cast<std::size_t>(j)];
+        }
+        *blur = std::isfinite(flow) && flow != 0.0 ? band_of_crossing() / std::fabs(flow)
+                                                   : std::numeric_limits<double>::infinity();
+    }
     if (genuine != nullptr && worst > genuine_above) {
         // dg/dt at the point on the side `sign` whose residual reads
         // `sign * dist`, along the rate there: a difference in time over the
@@ -11937,20 +11965,10 @@ double CvodeSimulator::Impl::crossing_step_error(void *cvode_mem, double t, cons
         // bar over the stretch before the crossing: a state that rests within
         // the tolerance of a threshold that dips to touch it (#903's
         // `moving`) has a near-side flow of nothing, read the same at both
-        // distances. The band in the units CVODE holds each species to, but
-        // a species BDF integrates exactly at its rounding (rate_constant): a
-        // threshold on a counter clock held to 0.03 at rtol 1e-3 read a band
-        // as wide as its sweep, and a crossing it was stepping across by its
-        // own flow read as one it was not.
-        const double band = state_switch_band(sw.species.size(), [&](std::size_t q) {
-            const auto uj = static_cast<std::size_t>(sw.species[q]);
-            const double unit =
-                uj < rate_constant.size() && rate_constant[uj] != 0
-                    ? 64.0 * std::numeric_limits<double>::epsilon() *
-                          std::max(std::fabs(xv[uj]), 1.0)
-                    : (w[uj] > 0.0 ? 1.0 / w[uj] : std::numeric_limits<double>::infinity());
-            return std::fabs(gx_star[uj]) * unit;
-        });
+        // distances. In band_of_crossing's units: with every species at its
+        // tolerance a crossing a counter clock's threshold was stepping
+        // across by its own flow read as one it was not.
+        const double band = band_of_crossing();
         const bool carries = std::fabs(flow_near) * span > state_switch_resolve_factor(ns) * band;
         *genuine = finite && carries && flow_near * far_sign > 0.0 && flow_twice * far_sign > 0.0 &&
                    flow_far * far_sign > 0.0;
@@ -18537,9 +18555,9 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // next where the step it took settles that (settled_next_step; NaN where
     // it does not).
     // Which species change at one constant rate (Impl::rate_constant), read
-    // where a declined crossing can be re-taken.
+    // where a crossing can be re-taken.
     impl_->rate_constant.clear();
-    if (n_state_switch > 0 && sens.n_total == 0) {
+    if (n_state_switch > 0) {
         const double t0 = static_cast<double>(times.t_start);
         const double *x0 = N_VGetArrayPointer(y);
         std::vector<double> xs(x0, x0 + ns);
@@ -19337,9 +19355,16 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // finds the crossing again from there in a step too short to carry the
     // far side's rate anywhere. Rows recorded inside the stretch, read off
     // the step that crossed, are recorded again (retake_from_row). Only in a
-    // plain run, holding no residual (whose search is its own), with no
-    // event fired or waiting since the step began, and no steady-state stop.
-    const bool retakes = sens.n_total == 0 && n_state_switch > 0 && !check_ss && !wants_sensitivity;
+    // run holding no residual (whose search is its own), with no event fired
+    // or waiting since the step began, and no steady-state stop. A run that
+    // carries sensitivities restarts at every crossing, and the step that
+    // found it read the far side's rate all the same: a pulse a closing
+    // window cut off was lost whole, Y and dY/dk at 1e-134 where they are
+    // 0.0127 and 0.00127, at every tolerance. Its columns are taken back to
+    // the step's start with the state, and the crossing's jump is made where
+    // the crossing is found again; not while a column is in a comoving frame
+    // (issue #545), which a re-take would have to leave and enter again.
+    const bool retakes = n_state_switch > 0 && !check_ss;
     long retake_fires_seen = impl_->event_fires_total;
     double retake_last_fire_t = -std::numeric_limits<double>::infinity();
     int retakes_nested = 0;
@@ -19353,8 +19378,24 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // gives, with a stop the run restarts at on t_stop; `t_to` is how far the
     // stretch the re-take covers reaches (kCrossingRetakesMost).
     auto go_back_to_step_start = [&](double t_a, double t_stop, double t_to, bool nested) {
+        if (sens.n_total > 0 && sens.comoving.n_active > 0) {
+            return false;
+        }
         if (CVodeGetDky(cvode_mem, static_cast<sunrealtype>(t_a), 0, retake_x) != CV_SUCCESS) {
             return false;
+        }
+        // The columns at t_a, off the same history.
+        std::vector<std::vector<double>> s_at_a;
+        if (sens.n_total > 0) {
+            if (CVodeGetSensDky(cvode_mem, static_cast<sunrealtype>(t_a), 0, sens.yS.arr) !=
+                CV_SUCCESS) {
+                return false;
+            }
+            s_at_a.resize(static_cast<std::size_t>(sens.n_total));
+            for (int c = 0; c < sens.n_total; ++c) {
+                const double *col = N_VGetArrayPointer(sens.yS[c]);
+                s_at_a[static_cast<std::size_t>(c)].assign(col, col + ns);
+            }
         }
         N_VScale(1.0, retake_x, y);
         std::fill(state_switch_zero_hold.begin(), state_switch_zero_hold.end(), 0.0);
@@ -19362,6 +19403,9 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         if (rf != CV_SUCCESS) {
             throw std::runtime_error("CVodeReInit to re-take a step over a state switch failed: " +
                                      std::to_string(rf));
+        }
+        if (!s_at_a.empty()) {
+            impl_->resume_sens_after_reinit(cvode_mem, ns, s_at_a, sens);
         }
         CrossingStop back;
         back.t_star = t_stop;
@@ -19381,9 +19425,22 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         t_now = static_cast<sunrealtype>(t_a);
         return true;
     };
+    // The crossing a chain of re-takes is of: its residual, its direction and
+    // how many times it has been re-taken since the run last restarted at a
+    // crossing of it. Each re-take of a slow crossing, in a run with
+    // sensitivities that restarts at it, found it again a step past its stop
+    // and was re-taken from there: it crept 1e-12 a time, 412,890 times,
+    // starting each re-take past the stretch the one before had taken, and
+    // timed out. A chain is re-taken kCrossingRetakesMost times, and then the
+    // run takes what it has, as at a crossing it does not re-take.
+    int retake_chain_j = -1;
+    int retake_chain_dir = 0;
+    int retake_chain_n = 0;
     auto retake_crossing_step = [&](double t_r, int j, int dir, bool declined) -> bool {
+        const int links = j == retake_chain_j && dir == retake_chain_dir ? retake_chain_n : 0;
+        retake_chain_j = -1; // a crossing not re-taken here ends its chain
         if (!retakes || state_switch_hold.n_held != 0 || !pending_events.empty() ||
-            rise_on_stop_due) {
+            rise_on_stop_due || links >= kCrossingRetakesMost) {
             return false;
         }
         sunrealtype tn_s = 0.0;
@@ -19404,10 +19461,11 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             return false;
         }
         bool genuine = false;
+        double blur = 0.0;
         const double err = impl_->crossing_step_error(
             cvode_mem, t_r, N_VGetArrayPointer(retake_x), N_VGetArrayPointer(retake_slope), ns,
             *state_switches[static_cast<size_t>(j)], dir, t_r - t_a, retake_w,
-            declined ? &genuine : nullptr, kCrossingStepShare);
+            declined ? &genuine : nullptr, kCrossingStepShare, &blur);
         // A crossing the restart test declined, as one its tolerance cannot
         // tell from its blur, is re-taken where its flows are a crossing's
         // (crossing_step_error's `genuine`). Re-taken, it is not restarted at
@@ -19422,6 +19480,18 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         if (!(err > kCrossingStepShare)) {
             return false;
         }
+        // Nor a stretch shorter than the crossing's own time is blurred by:
+        // the band its tolerance leaves the residual, over the rate the near
+        // side carries it at. Taken again, it cannot put the crossing anywhere
+        // better than its blur, and its stop lands within it. A slow crossing
+        // in a run with sensitivities, under a plateau 2e-4 above it, was
+        // re-taken over 5.7e-12 where its blur was 2e-6, from a stop 1e-13
+        // short of it: no step could take B a ulp further without failing
+        // its error test on the jump, and the run was refused as pinned on
+        // the surface (issue #952) where main returns its sensitivities.
+        if (!(t_r - t_a > blur)) {
+            return false;
+        }
         // The stop is short of the crossing, on the near side, by as much of
         // the stretch as leaves a quarter of a unit for the step from it
         // across. On the crossing itself, the step that ended there read the
@@ -19429,7 +19499,13 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         // crossing opens was read from 4.5e-5 before it, and Y, held to its
         // atol of 1e-5, gained 1.3e-5 it does not have.
         const double shortfall = std::min(0.25, 0.25 * kCrossingStepShare / err) * (t_r - t_a);
-        return go_back_to_step_start(t_a, t_r - shortfall, t_r, nested);
+        if (!go_back_to_step_start(t_a, t_r - shortfall, t_r, nested)) {
+            return false;
+        }
+        retake_chain_j = j;
+        retake_chain_dir = dir;
+        retake_chain_n = links + 1;
+        return true;
     };
     // A window a switch opened and closed inside one step: on the same side
     // of its surface at both of the step's ends, which is all CVODE's root
@@ -21335,6 +21411,23 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 // rate it cannot absorb: the step is taken again from its
                 // start up to it, the rows recorded inside that stretch with
                 // it (retake_crossing_step).
+                // A run that carries sensitivities restarts at every crossing,
+                // with no restart test: its crossing is re-taken as a carried
+                // one is, under the same conditions.
+                if (sens.n_total > 0 && !any_event_fired && !switched.empty() && restart &&
+                    carried_switch < 0) {
+                    bool other_root = false;
+                    for (int r = 0; r < n_events + n_disc; ++r) {
+                        other_root = other_root || root_info[r] != 0;
+                    }
+                    const double t_root = static_cast<double>(t_ret);
+                    const bool at_stop = (stop_at_crossing && same_instant(t_root, t_crossing)) ||
+                                         (stop_at_switch && same_instant(t_root, t_switch));
+                    if (!other_root && !at_stop) {
+                        carried_switch = switched.front();
+                        carried_dir = root_info[n_events + n_disc + carried_switch];
+                    }
+                }
                 const bool retaken =
                     restart ? carried_switch >= 0 &&
                                   retake_crossing_step(static_cast<double>(t_ret), carried_switch,
