@@ -153,8 +153,8 @@ Current carry topics:
   (GH #1543; submitted upstream as RuleWorld/nfsim#113)
 - product molecularity tested as BioNetGen tests it: no two molecules a rule
   acts on that map to different product patterns may stay connected once its
-  deleted bonds and molecules are gone and its added bonds are in place, for any
-  number of reactants and whatever `-cb` says. The loader records each reactant
+  deleted bonds and molecules are gone (a bond it adds joins molecules of one
+  pattern), for any number of reactants and whatever `-cb` says. The loader records each reactant
   molecule's product pattern from the rule's `Map`; `finalize()` records the
   molecules a rule acts on and the ones it deletes (BNG2.pl writes no
   `DeleteBond` for a deleted molecule's bonds). Upstream's test (issue #48) ran

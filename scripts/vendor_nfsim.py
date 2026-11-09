@@ -510,8 +510,8 @@ CARRY_QUEUE = (
             "pattern from the rule's Map; finalize() records the molecules a rule "
             "acts on and the molecules it deletes; productsSeparate requires every "
             "pair of acted-on molecules in different patterns to be disconnected "
-            "with deleted bonds and molecules gone and added bonds in place, for "
-            "any reactant count, searching from both ends without allocating. "
+            "with deleted bonds and molecules gone (added bonds join one pattern), "
+            "for any reactant count, searching from both ends without allocating. "
             "Without -cb, getListOfProducts also listed molecules two reactants' "
             "neighbourhoods share twice, adding them to the Molecules observables "
             "twice (a conserved 30 read 84-98); each is listed once now. Not "
@@ -520,11 +520,12 @@ CARRY_QUEUE = (
             "ring_bimolecular_split, intra_pattern_bond_split, "
             "split_rejoined_by_added_bond, ring_large_singlebond, "
             "three_product_ring, deleted_bridge_ring, "
-            "deleted_bridge_ring_bimolecular, created_bridge_same_complex)."
+            "deleted_bridge_ring_bimolecular, created_bridge_same_complex, "
+            "untouched_reactant_same_complex)."
         ),
         "commits": [
             {
-                "commit": "46553d9edf6e43cd2990c65177032e218a64d70a",
+                "commit": "cd1a550b59cc38240bc35a1658aabf0cdeeb47a3",
                 "summary": (
                     "bngsim: test product molecularity as BioNetGen does, and list each "
                     "product molecule once"

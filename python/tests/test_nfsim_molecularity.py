@@ -300,3 +300,15 @@ class TestEveryPairOfProductPatterns:
             assert obs["Xtot"] == pytest.approx(0.0), (
                 f"split onto a created molecule fired (Xtot={obs['Xtot']}, seed={seed})"
             )
+
+    def test_untouched_reactant_in_the_same_complex_blocked(self, data_dir: Path) -> None:
+        # With the flag off, A(b!1).B(a!1) + C(x) -> A(b) + B(a) + C(x) may match
+        # the C bonded to B. The rule never touches C, but its product C stays
+        # bonded to product B, so the rule must not fire (Afree 0). Main fired it
+        # (Afree 1).
+        xml = data_dir / "nfsim" / "untouched_reactant_same_complex.xml"
+        for seed in (1, 2, 3):
+            obs = _final_observables(xml, seed=seed, t_end=20.0, block_same_complex_binding=False)
+            assert obs["Afree"] == pytest.approx(0.0), (
+                f"split beside an untouched reactant fired (Afree={obs['Afree']}, seed={seed})"
+            )

@@ -369,7 +369,7 @@ namespace NFcore
 
 			/*!
 				Helper method to check if two molecules remain connected through alternative paths
-				when a set of bonds is removed and another added. This is used to enforce
+				when a set of bonds and molecules is removed. This is used to enforce
 				product-side molecularity (Issue #48). The full set of bonds that the firing
 				rule will delete is excluded at once, so multi-bond ring-opening dissociations are
 				judged on the post-reaction graph rather than one bond in isolation. It searches
@@ -378,21 +378,19 @@ namespace NFcore
 				@param mol2 The bonded partner molecule
 				@param excludedBonds The bonds to exclude, each recorded as both of its
 				       (molecule, component-index) half-edges
-				@param addedBonds The bonds the rule adds between molecules that exist now
 				@param deletedMolecules The molecules the rule deletes, which a search does not enter
 				@return true if mol1 can be reached from mol2 through alternative paths, false otherwise
 				@author Fix for Issues #48 and #61
 			*/
 			bool canReachExcludingBonds(Molecule *mol1, Molecule *mol2,
 				const std::vector< std::pair<Molecule *, int> > &excludedBonds,
-				const std::vector< std::pair<Molecule *, Molecule *> > &addedBonds,
 				const std::vector< Molecule * > &deletedMolecules);
 
 			/*!
 				Product-side molecularity: no two molecules the rule acts on that map
 				to different product patterns may stay connected once the rule's
-				deleted bonds and molecules are gone and its added bonds are in place.
-				BioNetGen rejects such a match (a "+" that cannot hold); so must we,
+				deleted bonds and molecules are gone (the bonds it adds join molecules of
+				one pattern, so they need not be counted). BioNetGen rejects such a match (a "+" that cannot hold); so must we,
 				whatever the number of reactants and whatever block_same_complex_binding
 				says. Returns false when the products would not separate.
 			*/
