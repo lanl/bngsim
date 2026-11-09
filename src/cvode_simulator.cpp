@@ -741,6 +741,11 @@ struct CvodeUserData {
     // function the saltation jump differentiates there. Null (and the root set
     // unchanged) for every model with no such condition. Owned by run().
     const std::vector<int> *state_switch_roots = nullptr;
+    // The state-switch residuals as the root search last read them, and the
+    // time it read them at, for the window screen in run() (NaN where held,
+    // which the root search does not read as it is). Not kept where null.
+    std::vector<double> *switch_g_seen = nullptr;
+    double switch_g_seen_t = std::numeric_limits<double>::quiet_NaN();
 
     // Issue #897: per state-switch root, what to report instead of a residual
     // that evaluates to exactly 0.0, or 0.0 to report it as it is. Set when a
@@ -3007,6 +3012,10 @@ static int cvode_event_root_fn_body(sunrealtype t, N_Vector y, sunrealtype *gout
             const StateSwitchHold *hold = data->state_switch_hold;
             if (hold != nullptr && hold->held[static_cast<size_t>(j)] != 0 && !hold->probe) {
                 gout[base + j] = hold->shown(static_cast<size_t>(j), y_ptr, g); // issue #908
+                if (data->switch_g_seen != nullptr) {
+                    (*data->switch_g_seen)[static_cast<size_t>(j)] =
+                        std::numeric_limits<double>::quiet_NaN();
+                }
                 continue;
             }
             if (g == 0.0 && data->state_switch_zero_hold != nullptr) {
@@ -3016,6 +3025,12 @@ static int cvode_event_root_fn_body(sunrealtype t, N_Vector y, sunrealtype *gout
                 }
             }
             gout[base + j] = g;
+            if (data->switch_g_seen != nullptr) {
+                (*data->switch_g_seen)[static_cast<size_t>(j)] = g;
+            }
+        }
+        if (data->switch_g_seen != nullptr) {
+            data->switch_g_seen_t = static_cast<double>(t);
         }
     }
     if (data->held_equality_roots != nullptr) {
@@ -11184,6 +11199,14 @@ static constexpr double kCrossingStepShare = 1.0;
 // How many times in a row a crossing is re-taken inside the stretch the last
 // re-take covered before the run takes what it has.
 static constexpr int kCrossingRetakesMost = 3;
+// The least part of what is left to the next stop, or to the run's end, that
+// a step must take to be screened for a window a switch opened and closed in
+// it (screen_for_a_window). The look reads a step that takes a quarter, at
+// three places; a step that takes less than this can hide only a window
+// shorter than itself. Every step screened, the residuals of a run that
+// crosses its thresholds a hundred times sent one step in eight to be read
+// inside, 40 readings each, for 68% on sp_fourier_synthesizer.
+static constexpr double kScreenSpan = 1.0 / 64.0;
 // Issue #908 (StateSwitchHold). A residual is held after this many steps in a
 // row, each at most kStateSwitchHoldStepGap steps after the last, have had a
 // crossing of it declined as unresolved. A slide crosses on nearly every step.
@@ -18800,6 +18823,38 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     NVectorGuard retake_x(N_VClone(y));
     NVectorGuard retake_slope(N_VClone(y));
     NVectorGuard retake_w(N_VClone(y));
+    // Back to t_a, the start of CVODE's last step, whose state its history
+    // gives, with a stop the run restarts at on t_stop; `t_to` is how far the
+    // stretch the re-take covers reaches (kCrossingRetakesMost).
+    auto go_back_to_step_start = [&](double t_a, double t_stop, double t_to, bool nested) {
+        if (CVodeGetDky(cvode_mem, static_cast<sunrealtype>(t_a), 0, retake_x) != CV_SUCCESS) {
+            return false;
+        }
+        N_VScale(1.0, retake_x, y);
+        std::fill(state_switch_zero_hold.begin(), state_switch_zero_hold.end(), 0.0);
+        const int rf = impl_->reinit_cvode(cvode_mem, static_cast<sunrealtype>(t_a), y);
+        if (rf != CV_SUCCESS) {
+            throw std::runtime_error("CVodeReInit to re-take a step over a state switch failed: " +
+                                     std::to_string(rf));
+        }
+        CrossingStop back;
+        back.t_star = t_stop;
+        back.restart = true;
+        // Into the slot of a stop already passed, as the look's are.
+        if (next_crossing > 0 && crossing_stops[next_crossing - 1].t_star <= t_a) {
+            crossing_stops[--next_crossing] = back;
+        } else {
+            crossing_stops.insert(
+                crossing_stops.begin() + static_cast<std::ptrdiff_t>(next_crossing), back);
+        }
+        // The stops have moved under the #891 question, which is asked again.
+        shift_asked_for = std::numeric_limits<size_t>::max();
+        retakes_nested = nested ? retakes_nested + 1 : 1;
+        retaken_from = t_a;
+        retaken_to = t_to;
+        t_now = static_cast<sunrealtype>(t_a);
+        return true;
+    };
     auto retake_crossing_step = [&](double t_r, int j, int dir) -> bool {
         if (!retakes || state_switch_hold.n_held != 0 || !pending_events.empty() ||
             rise_on_stop_due) {
@@ -18828,16 +18883,6 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         if (!(err > kCrossingStepShare)) {
             return false;
         }
-        if (CVodeGetDky(cvode_mem, static_cast<sunrealtype>(t_a), 0, retake_x) != CV_SUCCESS) {
-            return false;
-        }
-        N_VScale(1.0, retake_x, y);
-        std::fill(state_switch_zero_hold.begin(), state_switch_zero_hold.end(), 0.0);
-        const int rf = impl_->reinit_cvode(cvode_mem, static_cast<sunrealtype>(t_a), y);
-        if (rf != CV_SUCCESS) {
-            throw std::runtime_error("CVodeReInit to re-take a step over a state switch failed: " +
-                                     std::to_string(rf));
-        }
         // The stop is short of the crossing, on the near side, by as much of
         // the stretch as leaves a quarter of a unit for the step from it
         // across. On the crossing itself, the step that ended there read the
@@ -18845,23 +18890,188 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         // crossing opens was read from 4.5e-5 before it, and Y, held to its
         // atol of 1e-5, gained 1.3e-5 it does not have.
         const double shortfall = std::min(0.25, 0.25 * kCrossingStepShare / err) * (t_r - t_a);
-        CrossingStop back;
-        back.t_star = t_r - shortfall;
-        back.restart = true;
-        // Into the slot of a stop already passed, as the look's are.
-        if (next_crossing > 0 && crossing_stops[next_crossing - 1].t_star <= t_a) {
-            crossing_stops[--next_crossing] = back;
-        } else {
-            crossing_stops.insert(
-                crossing_stops.begin() + static_cast<std::ptrdiff_t>(next_crossing), back);
+        return go_back_to_step_start(t_a, t_r - shortfall, t_r, nested);
+    };
+    // A window a switch opened and closed inside one step: on the same side
+    // of its surface at both of the step's ends, which is all CVODE's root
+    // search reads, and on the other side between them. The residuals the
+    // root search read at the end of the step just taken (switch_g_seen) are
+    // held against what it read at the end of the one before. One that came
+    // closer to its surface over the step than it was at either end may have
+    // crossed it and come back, and the step is read inside, on CVODE's
+    // interpolant: evenly, and then at the residual's deepest reading, by
+    // golden section between its neighbours. Where it is on the other side
+    // there, the run goes back to the step's start with a stop the run
+    // restarts at there, and the window's first crossing is a root of the
+    // stretch to it. Only a step that takes kScreenSpan or more of what is
+    // left is screened. A dip and a return with little change between the
+    // ends is not seen; nor is a window in a step before the last of a batch.
+    std::vector<double> switch_g_seen(static_cast<std::size_t>(n_state_switch),
+                                      std::numeric_limits<double>::quiet_NaN());
+    std::vector<double> screen_g(switch_g_seen);
+    double screen_t = std::numeric_limits<double>::quiet_NaN();
+    if (retakes) {
+        user_data.switch_g_seen = &switch_g_seen;
+    }
+    // Whether residual j, `depth` past its surface at t on CVODE's
+    // interpolant, is past it by more than the restart test's bar there:
+    // 4·√N times the band the tolerance leaves it (flow_carries_state_switch),
+    // with dg/dx read there and each unit no tighter than CVODE's weights. A
+    // dip inside the bar is one the tolerance cannot decide, as a crossing
+    // inside it is, and is not taken for a window: a threshold that spans 0.01
+    // read against S held to 1e-3 at rtol 1e-3 put a stop on such a dip, and
+    // a window CVODE's own steps had nearly right came out 30% long.
+    auto clears_the_bar = [&](int j, double t, double depth) {
+        const NetworkModel::StateSwitch &sw = *state_switches[static_cast<std::size_t>(j)];
+        if (CVodeGetDky(cvode_mem, static_cast<sunrealtype>(t), 0, retake_x) != CV_SUCCESS ||
+            CVodeGetErrWeights(cvode_mem, retake_w) != CV_SUCCESS) {
+            return false;
         }
-        // The stops have moved under the #891 question, which is asked again.
-        shift_asked_for = std::numeric_limits<size_t>::max();
-        retakes_nested = nested ? retakes_nested + 1 : 1;
-        retaken_from = t_a;
-        retaken_to = t_r;
-        t_now = static_cast<sunrealtype>(t_a);
-        return true;
+        const double *xr = N_VGetArrayPointer(retake_x);
+        const double *wr = N_VGetArrayPointer(retake_w);
+        auto &eval = model.evaluator();
+        std::vector<double> xw(xr, xr + ns);
+        std::vector<double> gx(static_cast<std::size_t>(ns), 0.0);
+        for (int jj : sw.species) {
+            const auto uj = static_cast<std::size_t>(jj);
+            const double xj = xw[uj];
+            const double h = 1e-7 * std::max(std::fabs(xj), 1.0);
+            xw[uj] = xj + h;
+            impl_->sync_model_at(t, xw.data(), ns);
+            const double g_hi = eval.evaluate(sw.residual_expr_idx);
+            xw[uj] = xj - h;
+            impl_->sync_model_at(t, xw.data(), ns);
+            const double g_lo = eval.evaluate(sw.residual_expr_idx);
+            xw[uj] = xj;
+            const double gj = (g_hi - g_lo) / (2.0 * h);
+            gx[uj] = std::isfinite(gj) ? gj : 0.0;
+        }
+        const double band = state_switch_band(sw.species.size(), [&](std::size_t q) {
+            const int jj = sw.species[q];
+            const auto uj = static_cast<std::size_t>(jj);
+            const double rule = tolerance_unit(user_data.atol_tracking, rtol,
+                                               atol_v.empty() ? atol : atol_v[uj], uj, xr[jj]);
+            const double floor = wr[jj] > 0.0 ? 1.0 / wr[jj] : 0.0;
+            return std::fabs(gx[uj]) * std::max(rule, floor);
+        });
+        return depth > state_switch_resolve_factor(ns) * band;
+    };
+    // The deepest point in (t_lo, t_hi) at which residual j reads on the side
+    // opposite `side`, on CVODE's interpolant, where it clears the bar there;
+    // NaN where none does. Read evenly, and then by golden section between the
+    // neighbours of the deepest even reading.
+    auto other_side_in = [&](int j, double t_lo, double t_hi, double side) {
+        const double none = std::numeric_limits<double>::quiet_NaN();
+        const int idx = state_switch_roots[static_cast<std::size_t>(j)];
+        auto &eval = model.evaluator();
+        double *xr = N_VGetArrayPointer(retake_x);
+        auto reads = [&](double t) {
+            if (CVodeGetDky(cvode_mem, static_cast<sunrealtype>(t), 0, retake_x) != CV_SUCCESS) {
+                return none;
+            }
+            impl_->sync_model_at(t, xr, ns);
+            return eval.evaluate(idx) * side;
+        };
+        constexpr int kEven = 16;
+        double t_min = none;
+        double v_min = std::numeric_limits<double>::infinity();
+        int k_min = -1;
+        for (int k = 1; k < kEven; ++k) {
+            const double t = t_lo + (t_hi - t_lo) * static_cast<double>(k) / kEven;
+            const double v = reads(t);
+            if (v < v_min) {
+                v_min = v;
+                t_min = t;
+                k_min = k;
+            }
+        }
+        if (k_min < 0) {
+            return none;
+        }
+        constexpr double kGolden = 0.6180339887498949;
+        double lo = t_lo + (t_hi - t_lo) * static_cast<double>(k_min - 1) / kEven;
+        double hi = t_lo + (t_hi - t_lo) * static_cast<double>(k_min + 1) / kEven;
+        double a = hi - kGolden * (hi - lo);
+        double b = lo + kGolden * (hi - lo);
+        double va = reads(a);
+        double vb = reads(b);
+        for (int it = 0; it < 24 && std::isfinite(va) && std::isfinite(vb); ++it) {
+            if (va <= vb) {
+                hi = b;
+                b = a;
+                vb = va;
+                a = hi - kGolden * (hi - lo);
+                va = reads(a);
+            } else {
+                lo = a;
+                a = b;
+                va = vb;
+                b = lo + kGolden * (hi - lo);
+                vb = reads(b);
+            }
+        }
+        for (const auto &[t, v] :
+             {std::pair<double, double>{a, va}, std::pair<double, double>{b, vb}}) {
+            if (v < v_min) {
+                v_min = v;
+                t_min = t;
+            }
+        }
+        if (!(v_min < 0.0) || !clears_the_bar(j, t_min, -v_min)) {
+            return none;
+        }
+        return t_min;
+    };
+    auto screen_for_a_window = [&]() -> bool {
+        const double t_c = user_data.switch_g_seen_t;
+        bool went_back = false;
+        if (retakes && state_switch_hold.n_held == 0 && pending_events.empty() &&
+            !rise_on_stop_due && std::isfinite(t_c) && std::isfinite(screen_t) && t_c > screen_t) {
+            sunrealtype tn_s = 0.0;
+            sunrealtype h_s = 0.0;
+            CVodeGetCurrentTime(cvode_mem, &tn_s);
+            CVodeGetLastStep(cvode_mem, &h_s);
+            const double tn = static_cast<double>(tn_s);
+            const double t_a = tn - std::fabs(static_cast<double>(h_s));
+            const double t_lo = std::max(screen_t, t_a);
+            const double t_hi = std::min(t_c, tn);
+            const double ahead =
+                (next_crossing < crossing_stops.size() ? crossing_stops[next_crossing].t_star
+                                                       : t_out.back()) -
+                t_a;
+            double t_w = std::numeric_limits<double>::infinity();
+            if (t_hi > t_lo && retake_last_fire_t < t_a && tn - t_a >= kScreenSpan * ahead) {
+                for (int j = 0; j < n_state_switch; ++j) {
+                    const auto uj = static_cast<std::size_t>(j);
+                    const double g0 = screen_g[uj];
+                    const double g1 = switch_g_seen[uj];
+                    if (!std::isfinite(g0) || !std::isfinite(g1) || g0 == 0.0 || g1 == 0.0 ||
+                        (g0 > 0.0) != (g1 > 0.0) ||
+                        !(std::fabs(g1 - g0) > std::min(std::fabs(g0), std::fabs(g1)))) {
+                        continue;
+                    }
+                    const double at =
+                        other_side_in(j, t_lo, std::min(t_hi, t_w), g1 > 0.0 ? 1.0 : -1.0);
+                    if (at < t_w) {
+                        t_w = at;
+                    }
+                }
+                impl_->sync_model_at(static_cast<double>(t_now), y_data, ns);
+            }
+            if (std::isfinite(t_w)) {
+                const bool nested = t_a >= retaken_from && t_w <= retaken_to;
+                if (!(nested && retakes_nested >= kCrossingRetakesMost)) {
+                    went_back = go_back_to_step_start(t_a, t_w, t_w, nested);
+                }
+            }
+        }
+        if (went_back) {
+            screen_t = std::numeric_limits<double>::quiet_NaN();
+        } else {
+            screen_t = t_c;
+            screen_g = switch_g_seen;
+        }
+        return went_back;
     };
     for (int i = 1; i < n_out; ++i) {
         // Loop until we've reached t_out[i] (within numerical tolerance).
@@ -19612,6 +19822,21 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                                                                static_cast<double>(t_internal)));
             }
             t_now = t_ret;
+            // A window a switch opened and closed inside the step just taken
+            // (screen_for_a_window): back to the step's start, the rows
+            // recorded inside it with it.
+            if (flag == CV_SUCCESS && screen_for_a_window()) {
+                for (int k = 1; k < i; ++k) {
+                    if (t_out[k] > static_cast<double>(t_now)) {
+                        retake_from_row = k;
+                        break;
+                    }
+                }
+                if (retake_from_row > 0) {
+                    break;
+                }
+                continue;
+            }
 
             // Issue #908: a return while a residual is held off the root search.
             // The step just taken is searched for a crossing of each held
