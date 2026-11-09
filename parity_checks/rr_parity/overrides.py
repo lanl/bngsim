@@ -38,13 +38,16 @@ sub-particle SSA artifact says nothing about the ODE run):
 
   NO_ORACLE_ADJUDICATED — a REFERENCE_FAILED row (bngsim ran, RoadRunner refused)
                     whose correctness blind spot was closed by an INDEPENDENT
-                    oracle that does not share the reference's failure mode (#117).
+                    oracle that does not share the reference's failure mode.
                     The outcome stays REFERENCE_FAILED (non-scoring); this records
                     the verdict (confirm / uncoverable) + evidence and flips the
                     row's auto-derived ``reference_refusal`` to a SETTLED class so
                     a future sweep does not re-triage it. Self-stales the moment
-                    the row stops being REFERENCE_FAILED. Each entry MUST cite the
-                    oracle evidence (see dev/notes/issue117_adjudication.md).
+                    the row stops being REFERENCE_FAILED. Each entry MUST cite
+                    oracle evidence that runs from this repository: a ``confirm``
+                    entry is re-derived by ``scipy_oracle.py`` in
+                    ``parity_checks/tests/test_no_oracle_adjudications.py``
+                    (#1559), and an ``uncoverable`` one by its own test.
 
   TOL_OVERRIDES   — a per-model integration tolerance (rtol/atol) applied
                     IDENTICALLY to both engines, for an ill-conditioned IVP where
@@ -447,12 +450,11 @@ TOL_OVERRIDES: dict[str, dict] = {
 # --------------------------------------------------------------------------- #
 # REFERENCE_FAILED (bngsim ran, RR raised) is auto-derived and non-scoring, and
 # its `reference_refusal` sub-classes (integrator / feature_gap / recursive /
-# other) are "oracle-unverified, triage-worthy" — a correctness blind spot
-# (#117). When that blind spot is closed by an independent oracle that does NOT
-# share the reference's failure mode (a scale-appropriate scipy stiff solver, or
-# a model-specific scipy-literal integrator — see
-# `dev/investigations/oracle_117.py` + `dev/notes/issue117_adjudication.md`),
-# the verdict is recorded HERE so a future sweep marks the row *settled* instead
+# other) are "oracle-unverified, triage-worthy" — a correctness blind spot.
+# When that blind spot is closed by an independent oracle that does NOT share the
+# reference's failure mode (`scipy_oracle.py`: the right-hand side built from the
+# SBML text with libsbml and integrated by scipy, which shares no code with
+# bngsim or SUNDIALS), the verdict is recorded HERE so a future sweep marks the row *settled* instead
 # of re-triaging it. This does NOT change the auto-derived outcome (still
 # REFERENCE_FAILED, non-scoring) — it sets `reference_refusal` to
 # `adjudicated_<verdict>` (a SETTLED class) and records the evidence in the
@@ -468,22 +470,37 @@ TOL_OVERRIDES: dict[str, dict] = {
 # REFERENCE_FAILED. If RoadRunner later integrates the model (the row becomes
 # PASS/DIFF) or bngsim's status changes (EXCEPTION/BAD_TEST), rr_run flags the
 # entry STALE in the comment — the recovery (or a newly-surfaced bngsim defect)
-# can never be silently masked. Each entry MUST cite its oracle evidence.
+# can never be silently masked. Each entry MUST cite oracle evidence that runs
+# from this repository: `parity_checks/tests/test_no_oracle_adjudications.py`
+# re-derives every `confirm` entry with `scipy_oracle.py` and fails on a confirm
+# entry it has no oracle run for (#1559).
 NO_ORACLE_ADJUDICATED: dict[str, dict] = {
+    # BIOMD0000000250:ode and MODEL2001200002:ode were confirmed first under
+    # "GH #117", an unrelated issue here, on evidence files that were never in
+    # this repository. #1559 re-derived both with scipy_oracle.py; the reasons
+    # below are what test_no_oracle_adjudications.py checks.
     "BIOMD0000000250:ode": {
         "verdict": "confirm",
-        "issue": "GH #117",
+        "issue": "GH #1559",
         "reason": (
-            "RR CVODE CV_CONV_FAILURE (stiff) + COPASI failed. Independent scipy "
-            "BDF reproduces all 47 species to max_rel=0 (worst per-species "
-            "peak-rels ~5e-3 sit on species at peak ~1e-30, i.e. numerical zero "
-            "below the significance floor). bngsim confirmed."
+            "RoadRunner (CV_CONV_FAILURE at t~1.25) and COPASI both fail. "
+            "Nakakuki2010, 47 species and 78 reactions, Hill exponents 3.97 and "
+            "3.58 on ppERK_n and FOSn_2, 36 species starting at 0. scipy on a "
+            "right-hand side built from the SBML text (scipy_oracle.py), which "
+            "equals RoadRunner's own rates at t=0 and at a random state: Radau and "
+            "BDF at rtol 1e-11, atol 1e-25 agree (err/movement 1.1e-11), and "
+            "bngsim at the suite tolerance passes against both on all 47047 cells "
+            "(err/movement 2.9e-9). Every species below the suite's atol has "
+            "df_i/dx_i <= 0, so none is held on a repelling equilibrium (#1542). "
+            "bngsim confirmed."
         ),
     },
     # MODEL1006230083:ode — RETIRED 2026-08-25 as a stale key (GH #482 follow-up),
     # same cause as MODEL6963432821 below and MODEL0913003363 in TOL_OVERRIDES:
     # `drop,no_model` in the stage-1 corpus filter, so no job is built and the key
-    # can never match. The GH #117 adjudication it carried, kept for the record:
+    # can never match. The adjudication it carried, kept for the record (it
+    # cited "GH #117", an unrelated issue here, and evidence files that were never
+    # in this repository, #1559):
     # RR CVODE CV_TOO_MUCH_WORK + COPASI failed; pure rate-rule ODE system on 5
     # parameters (no reactions); independent scipy LSODA/BDF reproduce to
     # max_rel=0 (peak-rel ~1e-8); verdict confirm — bngsim confirmed.
@@ -515,32 +532,39 @@ NO_ORACLE_ADJUDICATED: dict[str, dict] = {
     },
     "MODEL2001200002:ode": {
         "verdict": "confirm",
-        "issue": "GH #117",
+        "issue": "GH #1559",
         "reason": (
-            "RR CVODE CV_CONV_FAILURE + COPASI failed. 7-species reaction net with "
-            "pow(L/T,1.36) Hill terms; species underflow (1e-33..1e-41) makes a "
-            "stiff solver's trial step overshoot negative -> pow(neg,1.36)=NaN. "
-            "With species floored at 1e-100 in the RHS (60 orders below the "
-            "smallest physical value), all three independent solvers (Radau, BDF, "
-            "LSODA) agree with bngsim to max_rel=0 (peak-rel ~2e-7). bngsim "
-            "confirmed."
+            "RoadRunner (CV_CONV_FAILURE at t~53) and COPASI both fail. "
+            "Mpekris2017, 7 species, D = 1.43*T*(L/T)^1.36/(2.73 + (L/T)^1.36): T, "
+            "Csc, I and L decay to 1e-34..1e-42, where a trial step that goes "
+            "negative makes (L/T)^1.36 NaN. scipy in log coordinates "
+            "(scipy_oracle.py; x = exp(u) cannot go negative, so no floor or clamp "
+            "changes the model), on a right-hand side that equals RoadRunner's own "
+            "rates: explicit DOP853 and BDF agree (err/movement 1.2e-8), and bngsim "
+            "at the suite tolerance passes against both on all 707 cells "
+            "(err/movement 1.7e-8). bngsim's L is below 0 from t=23 on (78 of 101 "
+            "rows, down to -8.5e-10), where the solution is positive and below "
+            "1.7e-15: 8.5e-10 of L's peak of 1. Every species below the suite's "
+            "atol has df_i/dx_i <= -0.76, so none is held on a repelling "
+            "equilibrium (#1542). bngsim confirmed. The earlier evidence floored "
+            "species at 1e-100 in the right-hand side, which changes the model."
         ),
     },
     # MODEL6963432821:ode — RETIRED 2026-08-25 as a stale key (GH #482 follow-up),
     # same cause as MODEL1006230083 above: `drop,no_model` in the stage-1 corpus
-    # filter, so no job is built and the key can never match. The GH #117
-    # adjudication it carried, kept for the record: RR CVODE CV_TOO_MUCH_WORK +
-    # COPASI failed; pure rate-rule ODE system on 7 parameters; independent scipy
-    # LSODA/BDF reproduce to max_rel=0 (peak-rel ~4e-9); verdict confirm — bngsim
-    # confirmed.
+    # filter, so no job is built and the key can never match. The adjudication it
+    # carried, kept for the record (cited as "GH #117", like the one above): RR
+    # CVODE CV_TOO_MUCH_WORK + COPASI failed; pure rate-rule ODE system on 7
+    # parameters; independent scipy LSODA/BDF reproduce to max_rel=0 (peak-rel
+    # ~4e-9); verdict confirm — bngsim confirmed.
     # MODEL9811206584:ode — RETIRED 2026-11-02 (GH #1288). libRoadRunner 2.11.0
     # (#1349) integrates the model, so the row is no longer REFERENCE_FAILED: it
     # PASSes against RR itself, and the nightly flags the entry "STALE
     # no-oracle-adjudication: natural=PASS" (run 41499451003, replaying
-    # reference-data-v4, #1443). The GH #117 adjudication it carried: RR CVODE
-    # CV_TOO_MUCH_WORK + COPASI failed on 2.9.2; pure rate-rule ODE system on 4
-    # parameters; independent scipy BDF reproduces to max_rel=0 (peak-rel ~1e-9);
-    # verdict confirm — bngsim confirmed.
+    # reference-data-v4, #1443). The adjudication it carried (cited as "GH #117",
+    # like the ones above): RR CVODE CV_TOO_MUCH_WORK + COPASI failed on 2.9.2;
+    # pure rate-rule ODE system on 4 parameters; independent scipy BDF reproduces
+    # to max_rel=0 (peak-rel ~1e-9); verdict confirm — bngsim confirmed.
     # MODEL2205030001:ode — RETIRED 2026-06-09 when GH #119 landed. The model is
     # malformed (all 23 initial assignments reference undefined symbols; 16 Kd_*
     # constants dropped on export). It was adjudicated UNCOVERABLE while bngsim

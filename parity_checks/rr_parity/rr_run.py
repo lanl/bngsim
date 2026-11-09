@@ -293,7 +293,7 @@ def classify_reference_refusal(rr_exc: str) -> str:
 # ``overstrict_missing_value``: bngsim's run is justified by construction (RR is
 # over-strict). ``adjudicated_confirm`` / ``adjudicated_uncoverable``: the row was
 # settled by an INDEPENDENT oracle (a confirmed bngsim solve, or a model with no
-# possible ground truth) via overrides.NO_ORACLE_ADJUDICATED (#117). The rest are
+# possible ground truth) via overrides.NO_ORACLE_ADJUDICATED (#1559). The rest are
 # unverified.
 SETTLED_REFUSALS = frozenset(
     {"overstrict_missing_value", "adjudicated_confirm", "adjudicated_uncoverable"}
@@ -1051,7 +1051,7 @@ def main() -> int:
             note = f"reference refusal={refusal} ({tag})"
             comment = f"{comment} | {note}" if comment else note
         # NO_ORACLE adjudication: a REFERENCE_FAILED row settled by an independent
-        # oracle (#117). It does NOT change the (non-scoring) outcome — it flips
+        # oracle (#1559). It does NOT change the (non-scoring) outcome — it flips
         # the auto-derived refusal class to a SETTLED ``adjudicated_<verdict>`` and
         # records the verdict + evidence, so a future sweep skips re-triage. Holds
         # ONLY while the row is genuinely REFERENCE_FAILED: if RR now runs it, or
@@ -1175,7 +1175,7 @@ def main() -> int:
                 "invalid_reference reclassifies an EXCEPTION/BAD_TEST to BAD_TEST "
                 "(reference ran but non-finite), and a no_oracle_adjudicated marks a "
                 "REFERENCE_FAILED row's refusal class SETTLED (verdict confirm/"
-                "uncoverable, independent oracle, #117) without changing the "
+                "uncoverable, independent oracle, #1559) without changing the "
                 "non-scoring outcome — all with the reason in JobResult.comment. "
                 "Stale = the premise no longer holds (passes on its own / the "
                 "reference is usable again / no longer REFERENCE_FAILED), flagged "
