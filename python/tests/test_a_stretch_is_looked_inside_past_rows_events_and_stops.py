@@ -206,6 +206,43 @@ def test_a_stiff_species_elsewhere_in_the_model(tmp_path, k):
     assert x == pytest.approx(100 * _LATE_A_PERIOD, rel=2e-4)
 
 
+_STIFF = {
+    "params": "    3 K 1e4\n    4 kd 1e-4\n",
+    "species": "    2 S() 1\n    3 B() 1\n    4 C() 0\n",
+    "reactions": "    2 2,3 4 K #_R2\n    3 4 2,3 K #_R3\n    4 2 0 kd #_R4\n",
+}
+
+
+@pytest.mark.parametrize(
+    "law, t0, t1, n_points, exact, extra",
+    [
+        (_NOON, 0.0, 2400.0, 301, 100 * _NOON_A_DAY, {}),
+        (_LATE, 1000.0, 1200.0, 801, 200 * _LATE_A_PERIOD, {}),
+        (_LATE, 0.0, 100.0, 3, 100 * _LATE_A_PERIOD, _STIFF),
+    ],
+    ids=["noon-rows-every-8-h", "late-rows-from-1000", "stiff-species"],
+)
+def test_a_run_with_sensitivities_looks_too(tmp_path, law, t0, t1, n_points, exact, extra):
+    """Rows inside each period and a stiff species, at k = 2 with dX/dk asked
+    for. The look was off in a run with sensitivity columns: on main X and
+    dX/dk were 0.02, 0 and 0.04 of their integrals. The doses do not move
+    with k, so dX/dk = X/k."""
+    params = "    2 k 2.0\n" + extra.get("params", "")
+    model = _model(
+        tmp_path,
+        f"k*({law})",
+        params=params,
+        species=extra.get("species", ""),
+        reactions=extra.get("reactions", ""),
+    )
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k"])
+    result = sim.run(t_span=(t0, t1), n_points=n_points)
+    x = np.asarray(result.species)[:, 0]
+    assert x[-1] - x[0] == pytest.approx(2.0 * exact, rel=2e-4)
+    dx_dk = np.asarray(result.sensitivities)[:, 0, 0]
+    assert dx_dk[-1] - dx_dk[0] == pytest.approx(exact, rel=2e-4)
+
+
 def _two_pulses(u):
     return 9.95 * np.exp(-(((u - 0.18) / 0.031) ** 2)) + 0.985 * np.exp(
         -(((u - 0.186) / 0.0198) ** 2)
