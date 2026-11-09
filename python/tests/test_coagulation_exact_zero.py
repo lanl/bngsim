@@ -41,9 +41,12 @@ ZERO = ("XIIa", "K", "CA")
 # Of each species' peak after t = 0: the dilution event at t > 0 thins every
 # species threefold, and some are consumed before t = 0.02, so a peak that read
 # the initial row would loosen the bound for them (338's VIII is 0.7 at t = 0 and
-# at most 9.2e-3 after it). Measured on macOS arm64: 1.03e-6 (338, VIII) and
-# 4.7e-7 (339, V). A run that leaves the 0 is off by about 1.
-BOUND = 1e-5
+# at most 9.2e-3 after it). Measured on macOS arm64: 6.0e-7 (338, VIII) and
+# 4.7e-7 (339, V); with jacobian="fd", 1.03e-6. The bound leaves room for other
+# CPUs and RoadRunner versions, and still fails a 1e-4 change in one rate
+# constant (a gap of about 1e-4). A run that leaves the 0 is off by about 1 in
+# the species downstream of XIIa (and XIIa, K and CA fail the exact-0 check).
+BOUND = 3e-5
 
 
 @pytest.mark.parametrize(
