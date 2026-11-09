@@ -601,3 +601,71 @@ def test_an_address_taken_label_out_of_adr_reach_is_refused_by_name(level):
         for _ in range(n):
             once = once * 0.9999 + 0.5
         assert out == {"values": [once, 1.0], "after": 3.0}, out
+
+
+# A branch that reaches its label in the first translation can be pushed out of
+# reach in the second, by the branches relaxed between it and its label. Each
+# adds 4 bytes, and a jump table, which MIR aligns to 8, can add 4 more past it.
+# A sparse switch's compares come before its cases, so an early compare's
+# branch to case 2 has a later compare's branch to case 3 inside it, and case
+# 1's body (a dense switch's table, then n one-insn statements) sets how far
+# case 2 is. With n = 262,093 (MIR level 0 at 439a90a2, 4 bytes a statement)
+# the branch to case 2 is 8 bytes short of 1 MiB and the table's padding flips:
+# a margin of 4 bytes a relaxed branch refused the function ("cannot reach its
+# label 1048576 bytes away"). The window around it covers a few bytes of drift.
+_CROSSING_PROBE = r"""
+import ctypes, json, sys
+from bngsim._bngsim_core import _MirJit
+
+sig = ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_double, ctypes.c_int)
+body2 = "".join("      r = r + x;\n" for _ in range(2000))
+out = []
+for n in map(int, sys.argv[1:]):
+    fill = "".join("      r = r + x;\n" for _ in range(n))
+    source = f'''double f(double x, int p) {{
+  double r = 1.0;
+  long t = p;
+  switch (p) {{
+    case 1:
+      switch (t) {{
+        case 0: r += 1; break; case 1: r += 2; break; case 2: r += 3; break;
+        case 3: r += 4; break; case 4: r += 5; break; case 5: r += 6; break;
+      }}
+{fill}      break;
+    case 2:
+      r = -2.0;
+{body2}      break;
+    case 3:
+      r = -3.0;
+      break;
+  }}
+  return r;
+}}
+'''
+    try:
+        jit = _MirJit(source, 0)
+    except RuntimeError as e:
+        out.append((n, str(e)))
+        continue
+    f = sig(jit.address("f"))
+    got = [f(0.5, p) for p in (0, 1, 2, 3)]
+    if got != [1.0, 3.0 + 0.5 * n, 998.0, -3.0]:
+        out.append((n, got))
+print(json.dumps(out))
+"""
+
+
+def test_a_branch_the_relaxed_ones_push_toward_its_reach_still_reaches():
+    """The second translation's margin covers a jump table's alignment: every
+    layout in the window compiles and gives the closed form, where a margin of 4
+    bytes a relaxed branch refused n = 262,093."""
+    if not _AARCH64:
+        pytest.skip("the layout is aarch64's: x86-64 relaxes no branch")
+    done = subprocess.run(
+        [sys.executable, "-c", _CROSSING_PROBE, *map(str, range(262_090, 262_097))],
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    assert done.returncode == 0, (done.returncode, done.stderr[-2000:])
+    assert json.loads(done.stdout.strip().splitlines()[-1]) == []

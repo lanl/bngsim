@@ -2511,12 +2511,17 @@ static int label_ref_reach_p (const label_ref_t *lr, int64_t offset, int64_t gro
 /* BNGsim local carry (lanl/bngsim#1575): mark in far_label_refs each short branch
    that cannot reach its label, or could not once the marked ones each take one
    insn more, and return whether any is marked.  An adr (MIR_LADDR) has no longer
-   form; check_label_refs_reach reports it.  */
+   form; check_label_refs_reach reports it.
+
+   Each marked branch moves the code after it by 4 bytes, and a MIR_SWITCH's
+   table, which out_insn aligns to 8 bytes, can turn that into 8 or 0 past it.
+   So past any point the code moves by 0 to 8 bytes per marked branch, and an
+   offset changes by at most that much.  */
 static int mark_far_label_refs (gen_ctx_t gen_ctx) {
   size_t far_n = 0, prev_far_n;
 
   do {
-    int64_t growth = 4 * (int64_t) far_n;
+    int64_t growth = 8 * (int64_t) far_n;
     prev_far_n = far_n;
     for (size_t i = 0; i < VARR_LENGTH (label_ref_t, label_refs); i++) {
       const label_ref_t *lr = &VARR_ADDR (label_ref_t, label_refs)[i];
