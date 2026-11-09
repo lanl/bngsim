@@ -291,6 +291,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/sundials-archive
+      - name: "Verification only, #1607: block GitHub release downloads"
+        shell: bash
+        run: |
+          set -euo pipefail
+          py=python3; [ "$RUNNER_OS" = Windows ] && py=python
+          url=$("$py" -c 'import json; print(json.load(open("third_party/sundials/VENDOR.json"))["source"]["authoritative_release_asset_url"])')
+          # The control, both ways: the first kilobyte of a real release asset
+          # arrives before the block and not after it.
+          curl -fsSL -r 0-1023 -o /dev/null --max-time 60 "$url"
+          line="0.0.0.0 release-assets.githubusercontent.com objects.githubusercontent.com"
+          if [ "$RUNNER_OS" = Windows ]; then
+            echo "$line" >> /c/Windows/System32/drivers/etc/hosts
+          else
+            echo "$line" | sudo tee -a /etc/hosts >/dev/null
+          fi
+          if [ "$RUNNER_OS" = macOS ]; then sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder || true; fi
+          if curl -fsSL -r 0-1023 -o /dev/null --max-time 60 "$url"; then
+            echo "::error::a GitHub release download still works"; exit 1
+          fi
+          echo "GitHub release downloads are blocked for the rest of this job"
       - uses: astral-sh/setup-uv@v10.3.3
         with:
           prune-cache: true
@@ -432,6 +452,26 @@ jobs:
           suite: rr_ode
           mode: ${{ env.MODE }}
           root: ${{ runner.temp }}/reference
+      - name: "Verification only, #1607: block GitHub release downloads"
+        shell: bash
+        run: |
+          set -euo pipefail
+          py=python3; [ "$RUNNER_OS" = Windows ] && py=python
+          url=$("$py" -c 'import json; print(json.load(open("third_party/sundials/VENDOR.json"))["source"]["authoritative_release_asset_url"])')
+          # The control, both ways: the first kilobyte of a real release asset
+          # arrives before the block and not after it.
+          curl -fsSL -r 0-1023 -o /dev/null --max-time 60 "$url"
+          line="0.0.0.0 release-assets.githubusercontent.com objects.githubusercontent.com"
+          if [ "$RUNNER_OS" = Windows ]; then
+            echo "$line" >> /c/Windows/System32/drivers/etc/hosts
+          else
+            echo "$line" | sudo tee -a /etc/hosts >/dev/null
+          fi
+          if [ "$RUNNER_OS" = macOS ]; then sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder || true; fi
+          if curl -fsSL -r 0-1023 -o /dev/null --max-time 60 "$url"; then
+            echo "::error::a GitHub release download still works"; exit 1
+          fi
+          echo "GitHub release downloads are blocked for the rest of this job"
       - name: Run rr_run.py
         env:
           BNGSIM_CODEGEN_CACHE_DIR: ${{ runner.temp }}/codegen
@@ -544,6 +584,26 @@ jobs:
           suite: bng_ode
           mode: ${{ env.MODE }}
           root: ${{ runner.temp }}/reference
+      - name: "Verification only, #1607: block GitHub release downloads"
+        shell: bash
+        run: |
+          set -euo pipefail
+          py=python3; [ "$RUNNER_OS" = Windows ] && py=python
+          url=$("$py" -c 'import json; print(json.load(open("third_party/sundials/VENDOR.json"))["source"]["authoritative_release_asset_url"])')
+          # The control, both ways: the first kilobyte of a real release asset
+          # arrives before the block and not after it.
+          curl -fsSL -r 0-1023 -o /dev/null --max-time 60 "$url"
+          line="0.0.0.0 release-assets.githubusercontent.com objects.githubusercontent.com"
+          if [ "$RUNNER_OS" = Windows ]; then
+            echo "$line" >> /c/Windows/System32/drivers/etc/hosts
+          else
+            echo "$line" | sudo tee -a /etc/hosts >/dev/null
+          fi
+          if [ "$RUNNER_OS" = macOS ]; then sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder || true; fi
+          if curl -fsSL -r 0-1023 -o /dev/null --max-time 60 "$url"; then
+            echo "::error::a GitHub release download still works"; exit 1
+          fi
+          echo "GitHub release downloads are blocked for the rest of this job"
       # An explicit --timeout also retires the per-job timeout overrides, which were
       # sized for parity_sweep's 180 s budget. A fresh codegen cache per run: its key
       # covers the Python emitters, not the C++ core.
@@ -626,6 +686,26 @@ jobs:
           suite: rr_ssa
           mode: ${{ env.MODE }}
           root: ${{ runner.temp }}/reference
+      - name: "Verification only, #1607: block GitHub release downloads"
+        shell: bash
+        run: |
+          set -euo pipefail
+          py=python3; [ "$RUNNER_OS" = Windows ] && py=python
+          url=$("$py" -c 'import json; print(json.load(open("third_party/sundials/VENDOR.json"))["source"]["authoritative_release_asset_url"])')
+          # The control, both ways: the first kilobyte of a real release asset
+          # arrives before the block and not after it.
+          curl -fsSL -r 0-1023 -o /dev/null --max-time 60 "$url"
+          line="0.0.0.0 release-assets.githubusercontent.com objects.githubusercontent.com"
+          if [ "$RUNNER_OS" = Windows ]; then
+            echo "$line" >> /c/Windows/System32/drivers/etc/hosts
+          else
+            echo "$line" | sudo tee -a /etc/hosts >/dev/null
+          fi
+          if [ "$RUNNER_OS" = macOS ]; then sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder || true; fi
+          if curl -fsSL -r 0-1023 -o /dev/null --max-time 60 "$url"; then
+            echo "::error::a GitHub release download still works"; exit 1
+          fi
+          echo "GitHub release downloads are blocked for the rest of this job"
       - name: Run ssa_screen.py
         env:
           BNGSIM_CODEGEN_CACHE_DIR: ${{ runner.temp }}/codegen
@@ -672,6 +752,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/sundials-archive
+      - name: "Verification only, #1607: block GitHub release downloads"
+        shell: bash
+        run: |
+          set -euo pipefail
+          py=python3; [ "$RUNNER_OS" = Windows ] && py=python
+          url=$("$py" -c 'import json; print(json.load(open("third_party/sundials/VENDOR.json"))["source"]["authoritative_release_asset_url"])')
+          # The control, both ways: the first kilobyte of a real release asset
+          # arrives before the block and not after it.
+          curl -fsSL -r 0-1023 -o /dev/null --max-time 60 "$url"
+          line="0.0.0.0 release-assets.githubusercontent.com objects.githubusercontent.com"
+          if [ "$RUNNER_OS" = Windows ]; then
+            echo "$line" >> /c/Windows/System32/drivers/etc/hosts
+          else
+            echo "$line" | sudo tee -a /etc/hosts >/dev/null
+          fi
+          if [ "$RUNNER_OS" = macOS ]; then sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder || true; fi
+          if curl -fsSL -r 0-1023 -o /dev/null --max-time 60 "$url"; then
+            echo "::error::a GitHub release download still works"; exit 1
+          fi
+          echo "GitHub release downloads are blocked for the rest of this job"
       - uses: astral-sh/setup-uv@v10.3.3
         with:
           prune-cache: true
@@ -720,6 +820,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/sundials-archive
+      - name: "Verification only, #1607: block GitHub release downloads"
+        shell: bash
+        run: |
+          set -euo pipefail
+          py=python3; [ "$RUNNER_OS" = Windows ] && py=python
+          url=$("$py" -c 'import json; print(json.load(open("third_party/sundials/VENDOR.json"))["source"]["authoritative_release_asset_url"])')
+          # The control, both ways: the first kilobyte of a real release asset
+          # arrives before the block and not after it.
+          curl -fsSL -r 0-1023 -o /dev/null --max-time 60 "$url"
+          line="0.0.0.0 release-assets.githubusercontent.com objects.githubusercontent.com"
+          if [ "$RUNNER_OS" = Windows ]; then
+            echo "$line" >> /c/Windows/System32/drivers/etc/hosts
+          else
+            echo "$line" | sudo tee -a /etc/hosts >/dev/null
+          fi
+          if [ "$RUNNER_OS" = macOS ]; then sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder || true; fi
+          if curl -fsSL -r 0-1023 -o /dev/null --max-time 60 "$url"; then
+            echo "::error::a GitHub release download still works"; exit 1
+          fi
+          echo "GitHub release downloads are blocked for the rest of this job"
       - uses: actions/cache/restore@v4
         with:
           path: parity_checks/rr_parity/models
@@ -790,6 +910,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/sundials-archive
+      - name: "Verification only, #1607: block GitHub release downloads"
+        shell: bash
+        run: |
+          set -euo pipefail
+          py=python3; [ "$RUNNER_OS" = Windows ] && py=python
+          url=$("$py" -c 'import json; print(json.load(open("third_party/sundials/VENDOR.json"))["source"]["authoritative_release_asset_url"])')
+          # The control, both ways: the first kilobyte of a real release asset
+          # arrives before the block and not after it.
+          curl -fsSL -r 0-1023 -o /dev/null --max-time 60 "$url"
+          line="0.0.0.0 release-assets.githubusercontent.com objects.githubusercontent.com"
+          if [ "$RUNNER_OS" = Windows ]; then
+            echo "$line" >> /c/Windows/System32/drivers/etc/hosts
+          else
+            echo "$line" | sudo tee -a /etc/hosts >/dev/null
+          fi
+          if [ "$RUNNER_OS" = macOS ]; then sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder || true; fi
+          if curl -fsSL -r 0-1023 -o /dev/null --max-time 60 "$url"; then
+            echo "::error::a GitHub release download still works"; exit 1
+          fi
+          echo "GitHub release downloads are blocked for the rest of this job"
       - uses: astral-sh/setup-uv@v10.3.3
         with:
           prune-cache: true
@@ -906,6 +1046,26 @@ jobs:
           suite: bng_${{ matrix.track }}
           mode: ${{ env.MODE }}
           root: ${{ runner.temp }}/reference
+      - name: "Verification only, #1607: block GitHub release downloads"
+        shell: bash
+        run: |
+          set -euo pipefail
+          py=python3; [ "$RUNNER_OS" = Windows ] && py=python
+          url=$("$py" -c 'import json; print(json.load(open("third_party/sundials/VENDOR.json"))["source"]["authoritative_release_asset_url"])')
+          # The control, both ways: the first kilobyte of a real release asset
+          # arrives before the block and not after it.
+          curl -fsSL -r 0-1023 -o /dev/null --max-time 60 "$url"
+          line="0.0.0.0 release-assets.githubusercontent.com objects.githubusercontent.com"
+          if [ "$RUNNER_OS" = Windows ]; then
+            echo "$line" >> /c/Windows/System32/drivers/etc/hosts
+          else
+            echo "$line" | sudo tee -a /etc/hosts >/dev/null
+          fi
+          if [ "$RUNNER_OS" = macOS ]; then sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder || true; fi
+          if curl -fsSL -r 0-1023 -o /dev/null --max-time 60 "$url"; then
+            echo "::error::a GitHub release download still works"; exit 1
+          fi
+          echo "GitHub release downloads are blocked for the rest of this job"
       - name: Run bng_stoch_run.py
         env:
           BNGSIM_CODEGEN_CACHE_DIR: ${{ runner.temp }}/codegen
@@ -1006,6 +1166,26 @@ jobs:
           suite: amici_sens
           mode: ${{ env.MODE }}
           root: ${{ runner.temp }}/reference
+      - name: "Verification only, #1607: block GitHub release downloads"
+        shell: bash
+        run: |
+          set -euo pipefail
+          py=python3; [ "$RUNNER_OS" = Windows ] && py=python
+          url=$("$py" -c 'import json; print(json.load(open("third_party/sundials/VENDOR.json"))["source"]["authoritative_release_asset_url"])')
+          # The control, both ways: the first kilobyte of a real release asset
+          # arrives before the block and not after it.
+          curl -fsSL -r 0-1023 -o /dev/null --max-time 60 "$url"
+          line="0.0.0.0 release-assets.githubusercontent.com objects.githubusercontent.com"
+          if [ "$RUNNER_OS" = Windows ]; then
+            echo "$line" >> /c/Windows/System32/drivers/etc/hosts
+          else
+            echo "$line" | sudo tee -a /etc/hosts >/dev/null
+          fi
+          if [ "$RUNNER_OS" = macOS ]; then sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder || true; fi
+          if curl -fsSL -r 0-1023 -o /dev/null --max-time 60 "$url"; then
+            echo "::error::a GitHub release download still works"; exit 1
+          fi
+          echo "GitHub release downloads are blocked for the rest of this job"
       - name: Run amici_sens_run.py
         env:
           BNGSIM_CODEGEN_CACHE_DIR: ${{ runner.temp }}/codegen
