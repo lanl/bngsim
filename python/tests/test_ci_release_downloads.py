@@ -14,9 +14,16 @@ not reach:
 
 These tests read the workflows as text (see _ci_workflow.py for why) and pin
 what keeps that true: every job that builds bngsim from source takes SUNDIALS
-from the cache before it builds, no step downloads a GitHub release asset
-itself, setup-uv stays on a version with the mirror, and a workflow filtered by
-path also runs when the steps it builds through change.
+from the cache before it builds, no workflow step downloads a GitHub release
+asset itself, setup-uv stays on a version with the mirror, and a workflow
+filtered by path also runs when the steps it builds through change.
+
+They read workflow YAML only. Downloads made by code the steps run are outside
+them, and two remain, both behind a cache: the corpus job's BioModels mirror
+(fetch_biomodels_mirror.py, on a corpus-cache miss), and golden-verify's
+`--group parity` sync, whose PyBioNetGen build downloads BioNetGen from GitHub's
+releases on a uv-cache miss (a uv.lock change). uv's managed Python comes from
+Astral's mirror, not from GitHub.
 """
 
 from __future__ import annotations

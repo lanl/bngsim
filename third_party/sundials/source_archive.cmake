@@ -11,7 +11,9 @@
 # exactly as it would the download, so the #1301 carry is applied either way. A
 # FETCHCONTENT_SOURCE_DIR_SUNDIALS source tree skips that patch step.
 #
-# A name that is not a file falls back to the download, with a warning, rather
+# The name must be an absolute path: a relative one would be read against
+# whatever directory the build backend configures in. A name that is not
+# absolute, or not a file, falls back to the download, with a warning, rather
 # than stopping the configure.
 #
 # python/tests/test_sundials_source_archive.py runs this under cmake -P.
@@ -20,7 +22,11 @@ function(bngsim_sundials_source_url out_var release_url)
     set(_url "${release_url}")
     if(NOT "$ENV{BNGSIM_SUNDIALS_ARCHIVE}" STREQUAL "")
         file(TO_CMAKE_PATH "$ENV{BNGSIM_SUNDIALS_ARCHIVE}" _local)
-        if(EXISTS "${_local}" AND NOT IS_DIRECTORY "${_local}")
+        if(NOT IS_ABSOLUTE "${_local}")
+            message(WARNING
+                "BNGSIM_SUNDIALS_ARCHIVE names ${_local}, which is not an absolute "
+                "path. Downloading ${release_url} instead.")
+        elseif(EXISTS "${_local}" AND NOT IS_DIRECTORY "${_local}")
             set(_url "${_local}")
         else()
             message(WARNING

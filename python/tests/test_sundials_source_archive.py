@@ -9,7 +9,8 @@ These tests run the real module under real cmake. Each pins one rule:
 
 * with the variable unset or empty, the URL is VENDOR.json's release URL;
 * naming a file, the URL is that file;
-* naming nothing, or a directory, falls back to the release URL with a warning;
+* naming nothing, a directory, or a relative path, falls back to the release
+  URL with a warning;
 * FetchContent takes the local file with no network: it checks it against
   URL_HASH, unpacks it and runs the patch step, as it would the download. A copy
   whose bytes differ stops the configure;
@@ -53,7 +54,8 @@ def _env(archive: str | None) -> dict[str, str]:
 
 
 def _url(tmp_path: Path, archive: str | None) -> tuple[str, str]:
-    """The module's answer under ``archive``, and what cmake printed."""
+    """The module's answer under ``archive``, and what cmake printed, with its
+    whitespace collapsed: cmake wraps a warning's text at any space."""
     out = tmp_path / "url.txt"
     driver = tmp_path / "driver.cmake"
     driver.write_text(
@@ -65,7 +67,7 @@ def _url(tmp_path: Path, archive: str | None) -> tuple[str, str]:
         [CMAKE, "-P", str(driver)], capture_output=True, text=True, timeout=60, env=_env(archive)
     )
     assert proc.returncode == 0, proc.stderr
-    return out.read_text(), proc.stdout + proc.stderr
+    return out.read_text(), " ".join((proc.stdout + proc.stderr).split())
 
 
 @pytest.mark.parametrize("archive", [None, ""], ids=["unset", "empty"])
@@ -90,8 +92,16 @@ def test_a_name_that_is_not_a_file_falls_back_with_a_warning(tmp_path, kind):
         archive.mkdir()
     url, out = _url(tmp_path, str(archive))
     assert url == RELEASE_URL
-    assert "BNGSIM_SUNDIALS_ARCHIVE names" in out
-    assert "Downloading" in out
+    assert "which is not a file. Downloading" in out
+
+
+def test_a_relative_name_falls_back_with_a_warning(tmp_path, monkeypatch):
+    """Relative to what? The backend's configure directory is not the user's."""
+    (tmp_path / "sundials-7.2.1.tar.gz").write_bytes(b"not checked here")
+    monkeypatch.chdir(tmp_path)
+    url, out = _url(tmp_path, "sundials-7.2.1.tar.gz")
+    assert url == RELEASE_URL
+    assert "which is not an absolute path" in out
 
 
 def _archive(path: Path) -> str:

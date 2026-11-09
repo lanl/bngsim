@@ -7,11 +7,15 @@ description: >-
 # GitHub release-download outage failed them all. The cache key is the sha256,
 # so a new pin is a new entry and an old entry can never stand in for it.
 # ci/cached_download.py checks the file's sha256 on a hit as well as after a
-# download, and downloads again if a cached copy has other bytes.
+# download, and downloads again if a cached copy has other bytes. An entry is
+# never overwritten, so a corrupt one makes every later run download until the
+# entry is deleted (gh cache delete download-<sha256>).
 #
 # Caches saved on a pull request's branch are read only by that pull request;
 # main's are read by every branch. So the first run of a new pin on a pull
-# request downloads, and a pin that has run on main is a hit everywhere.
+# request downloads, and a pin that has run on main is a hit everywhere. The
+# entry's version includes the path, which differs by OS, so each runner OS
+# keeps its own entry and downloads once.
 inputs:
   url:
     description: Where to download the file from on a cache miss.

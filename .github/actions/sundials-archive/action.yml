@@ -11,8 +11,9 @@ description: >-
 #
 # Use it after actions/checkout and before the step that builds. The export
 # reaches `uv sync`, `pip install` and `cmake` alike, since each passes the
-# environment on to CMake. cibuildwheel's Linux containers do not see the
-# runner's temp directory, so wheels.yml and release.yml still download.
+# environment on to CMake. wheels.yml and release.yml do not use it, and still
+# download: cibuildwheel builds their Linux wheels in containers that do not see
+# the runner's temp directory.
 runs:
   using: composite
   steps:
