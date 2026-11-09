@@ -945,8 +945,20 @@ jobs:
 
       - name: Build identity
         run: uv run --no-sync python -c "import bngsim, bngsim._build_provenance as bp; print('bngsim', bngsim.__version__); bp.print_identity()"
+      # bng_nf's asset from the Actions cache when it has it (#1607), checked
+      # against reference_archive.json's sha256 by fetch, as a download is.
+      - name: Find bng_nf's asset
+        id: bng-nf
+        run: python3 parity_checks/nightly/reference_archive.py locate bng_nf >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/cached-download
+        with:
+          url: ${{ steps.bng-nf.outputs.url }}
+          sha256: ${{ steps.bng-nf.outputs.sha256 }}
+          path: ${{ runner.temp }}/reference-download/${{ steps.bng-nf.outputs.name }}
       - name: Fetch bng_nf's models
-        run: python3 parity_checks/nightly/reference_archive.py fetch bng_nf --dest "$RUNNER_TEMP/bng_nf"
+        env:
+          ARCHIVE: ${{ runner.temp }}/reference-download/${{ steps.bng-nf.outputs.name }}
+        run: python3 parity_checks/nightly/reference_archive.py fetch bng_nf --dest "$RUNNER_TEMP/bng_nf" --archive "$ARCHIVE"
       # --timeout 3000, not 900 (#1555). The pool kills an NF row at --timeout
       # itself: check_nf reads no deadline. At 900, three rows' verdicts followed
       # the runner over eleven runs to 2026-11-08 (ten nightlies and #1547's):

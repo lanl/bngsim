@@ -117,6 +117,25 @@ def test_no_step_downloads_a_github_release_asset_itself():
                 pytest.fail(f"{name}: {key} is not a cached-download url")
 
 
+def test_every_reference_archive_comes_from_the_cache():
+    """reference_archive.py downloads a suite's asset unless --archive names a
+    copy. A workflow step runs `fetch` with --archive only, and `prepare` only
+    through reference-side, which passes it. A bare `fetch bng_nf` in the
+    differential-nf job was the download this test was added for: round 1 of
+    #1611 caught it with release downloads blocked."""
+    calls = []
+    for name, text in _workflows().items():
+        for line in text.splitlines():
+            m = re.search(r"reference_archive\.py (fetch|prepare)\b", line)
+            if m:
+                calls.append(m.group(1))
+                assert m.group(1) == "fetch", f"{name}: prepare outside reference-side: {line}"
+                assert "--archive" in line, f"{name}: fetch without --archive: {line.strip()}"
+    assert calls, "no reference_archive.py fetch found: the pattern went blind"
+    action = (ACTIONS / "reference-side" / "action.yml").read_text()
+    assert re.search(r"reference_archive\.py prepare .*\n.*--archive", action)
+
+
 def test_setup_uv_downloads_from_astrals_mirror_and_prunes_its_cache():
     """setup-uv before 10 downloads uv only from GitHub's releases. Pruning keeps
     the uv cache the size it was under v5, whose default it was."""
