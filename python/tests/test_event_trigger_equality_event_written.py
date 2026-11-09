@@ -180,6 +180,20 @@ _CASES = {
         "F: at (on == 1): t1 = time + 0.25, on = 0; G: at (time == t1): c = c + 1;",
         10,
     ),
+    # The guard is false at 3.5, so c stays there until F adds 3.5 at 6.2;
+    # E then fires at 7, 8, 9, 10. A schedule that took the instant at 3.5
+    # as a fire put c at 10 by then.
+    "a_guard_false_on_an_instant": (
+        "var c = 0.5; E: at (time == c && (time < 3 || time > 6)): n = n + 1, c = c + 1; "
+        "F: at (time >= 6.2): c = c + 3.5;",
+        7,
+    ),
+    # Executed 0.25 after its instant, on that double, with the time then.
+    "a_delayed_value_from_the_clock": (
+        "var c = 0.5; E: at 0.25 after (time == c), fromTrigger=false: n = n + 1, "
+        "c = time + 0.75;",
+        10,
+    ),
     # A reaction beside it: the SSA's probe windows start at random times.
     "beside_a_reaction": ("species X = 0; J: -> X; 5; var c = 0.5; " + _COUNTER, 10),
     # A rate law that reads c, stiffly: c stays the double the event set.
@@ -200,6 +214,7 @@ _ON_THE_GRID = [
         "a_step_of_a_tenth",
         "hourly_in_days",
         "a_flag_set_on_an_instant",
+        "a_delayed_value_from_the_clock",
     )
 ]
 
@@ -318,7 +333,7 @@ def test_a_counter_beside_two_writers_at_one_instant():
     gives its 10. Main gave 0."""
     body = (
         "var c = 0.5; var on1 = 0; " + _COUNTER + " W1: at (time == 5.25): on1 = 1; "
-        "W2: at (time == 5.25): on1 = 2; species Y = 0; Y' = piecewise(1, time > 9 && on1 > 0, 0);"
+        "W2: at (time == 5.25): on1 = 2; species Y = 0; Y' = piecewise(1, time > 9 + on1, 0);"
     )
     for method, span in (("ode", _SPAN), ("ssa", _SSA_SPAN)):
         assert _count(body, method, t_span=span, n_points=2) == 10
