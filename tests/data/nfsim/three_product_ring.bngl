@@ -1,0 +1,27 @@
+# Product-molecularity fixture: 100 rings A.B.C (B and C also bonded to each
+# other) and 100 linear A.B.C. The rule deletes A's bonds to B and to C and
+# claims three products. On a ring B and C stay bonded, so the products never
+# separate: BNG2.pl's network reacts only the linear species, and Ring stays 100.
+# Testing only the ends of each deleted bond (A-B, A-C) missed it.
+begin model
+begin parameters
+  k 1
+end parameters
+begin molecule types
+  A(b,c)
+  B(a,c)
+  C(a,b)
+end molecule types
+begin seed species
+  A(b!1,c!3).B(a!1,c!2).C(b!2,a!3) 100
+  A(b!1,c!2).B(a!1,c).C(a!2,b) 100
+end seed species
+begin observables
+  Species Ring A(b!1,c!3).B(a!1,c!2).C(b!2,a!3)
+  Molecules Afree A(b,c)
+end observables
+begin reaction rules
+  A(b!1,c!2).B(a!1).C(a!2) -> A(b,c) + B(a) + C(a) k
+end reaction rules
+end model
+writeXML()

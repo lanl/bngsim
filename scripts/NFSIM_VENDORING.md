@@ -151,6 +151,21 @@ Current carry topics:
   the `checkSymmetricComponents` guard to `continue`: `return false` there
   abandons the rest of the equivalency class and loses a match origin/main keeps
   (GH #1543; submitted upstream as RuleWorld/nfsim#113)
+- product molecularity tested as BioNetGen tests it: no two molecules a rule
+  acts on that map to different product patterns may stay connected once its
+  deleted bonds and molecules are gone (a bond it adds joins molecules of one
+  pattern), for any number of reactants and whatever `-cb` says. The loader records each reactant
+  molecule's product pattern from the rule's `Map`; `finalize()` records the
+  molecules a rule acts on and the ones it deletes (BNG2.pl writes no
+  `DeleteBond` for a deleted molecule's bonds). Upstream's test (issue #48) ran
+  for one-reactant rules under `-cb` only, between the ends of each deleted
+  bond, so without `-cb` a ring bond broke, bimolecular and three-product splits
+  fired on rings, and a rule deleting a bond inside one pattern, or a molecule
+  bridging its products, never fired. Not tested yet: a product held apart only
+  by a deleted molecule, or tied to its pattern only by `.` (neither has a
+  molecule the rule acts on), and `ensureConnected`. Same carry: `getListOfProducts`
+  lists each molecule once (without `-cb`, two reactants in one complex listed
+  shared neighbours twice and inflated the Molecules observables)
 
 Not a carry, but tied to the vendored NFsim: bngsim refuses, by name, the rate
 laws NFsim cannot run, in `python/bngsim/_network_free_checks.py`

@@ -1,0 +1,25 @@
+# Product-molecularity fixture: the rule deletes A-B's x bond, which stays inside
+# the first product pattern (A and B are still bonded through y), and A-C's z
+# bond, which separates C. BNG2.pl fires it at rate k (complexes left after t:
+# 100 exp(-k t)). NFsim tested every deleted bond, found A and B still
+# connected, and never fired it.
+begin model
+begin parameters
+  k 1
+end parameters
+begin molecule types
+  A(x,y,z)
+  B(x,y)
+  C(a)
+end molecule types
+begin seed species
+  A(x!1,y!2,z!3).B(x!1,y!2).C(a!3) 100
+end seed species
+begin observables
+  Molecules Cfree C(a)
+end observables
+begin reaction rules
+  A(x!1,y!2,z!3).B(x!1,y!2).C(a!3) -> A(x,y!2,z).B(x,y!2) + C(a) k
+end reaction rules
+end model
+writeXML()

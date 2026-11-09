@@ -1,0 +1,26 @@
+# Product-molecularity fixture: 30 A(l,r) bind head to tail into chains, and the
+# bonds break again. With block_same_complex_binding=False the binding rule may
+# close a chain into a ring, and the two reactants of a binding can sit in one
+# complex beyond each other's traversal limit. NFsim listed the molecules their
+# neighbourhoods share twice and added them to the Molecules observables twice,
+# so the conserved total Atot drifted up to 84-98. It must stay 30.
+begin model
+begin parameters
+  kf 1
+  kb 1
+end parameters
+begin molecule types
+  A(l,r)
+end molecule types
+begin seed species
+  A(l,r) 30
+end seed species
+begin observables
+  Molecules Atot A()
+end observables
+begin reaction rules
+  A(r) + A(l) -> A(r!1).A(l!1) kf
+  A(r!1).A(l!1) -> A(r) + A(l) kb
+end reaction rules
+end model
+writeXML()

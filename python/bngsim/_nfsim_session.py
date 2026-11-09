@@ -57,18 +57,25 @@ class NfsimSession:
         same-seed trajectory reproducibility with the standalone CLI.
     block_same_complex_binding : bool, optional
         When ``True`` (the default), a bimolecular rule cannot bind two
-        molecules of one complex, and a rule written ``A.B -> A + B`` fires
-        only where breaking the bond separates them. Both are BNGL's semantics,
-        and BNG2.pl's network applies them. NFsim blocks same-complex binding
-        under ``-cb`` (or ``-bscb``, the same flag), which BNG2.pl's
-        ``simulate_nf`` passes by default (``complex=>1``); under the same flag,
-        current NFsim and bngsim's vendored copy also enforce the second rule,
-        which NFsim v1.14.3 (BioNetGen 2.9.3) never does. ``False`` turns both
-        off: same-complex binding is allowed, and such a rule can break a bond
-        inside a ring. On a model with rings that gives wrong
-        counts with no error; a conserved total of 30 molecules read 33-40
-        (issue #1549). Complex bookkeeping for ``Species``-typed observables
-        is enabled whenever the model declares one, whatever this setting.
+        molecules of one complex: BNGL's semantics, as BNG2.pl's network
+        applies them. NFsim blocks same-complex binding under ``-cb`` (or
+        ``-bscb``, the same flag), which BNG2.pl's ``simulate_nf`` passes by
+        default (``complex=>1``). ``False`` allows it, so a binding rule can
+        close a ring inside one complex. Either way, a rule whose products are
+        written apart (``A.B -> A + B``) and that deletes a bond or a molecule
+        does not fire where the molecules it acts on would stay in one complex
+        across products, as BNG2.pl's network requires. NFsim v1.14.3
+        (BioNetGen 2.9.3) never makes that test, and current NFsim makes it
+        only under ``-cb``, for one-reactant rules. Not tested yet: a product
+        held apart only by a molecule the rule deletes, or tied to the rest of
+        its pattern only by ``.``; and a product written joined (``A.B ->
+        A.B``) that breaking the bond splits. With ``False``, a bimolecular
+        rule that deletes nothing (``A + B -> A + B`` changing states) may
+        match two molecules of one complex and fire. With ``False`` a gelling
+        model can run far slower: it fills with ring bonds such a rule may
+        never break, and each attempt on one is refused. Complex bookkeeping
+        for ``Species``-typed observables is enabled whenever the model
+        declares one, whatever this setting.
     traversal_limit : int, optional
         NFsim ``-utl N``: universal traversal limit. ``None`` (default)
         lets NFsim auto-compute a suggested limit from the XML.
