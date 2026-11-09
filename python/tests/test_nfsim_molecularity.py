@@ -144,6 +144,21 @@ class TestProductMolecularityWhateverTheFlag:
             )
 
     @BSCB
+    def test_long_way_round_blocked(self, data_dir: Path, bscb: bool) -> None:
+        # 20 ten-member rings L.R x 5 with only L(r!1).R(l!1) -> L(r) + R(l):
+        # a broken bond's ends stay connected the long way round, eight more
+        # molecules, so BNG2.pl generates no reaction and Lfree stays 0. The
+        # search that shows it must go past its first budget of 8 molecules.
+        # Main opened the rings with the flag off. Control: bscb_on passes on
+        # main.
+        xml = data_dir / "nfsim" / "ring_large_singlebond.xml"
+        for seed in (1, 2):
+            obs = _final_observables(xml, seed=seed, t_end=5.0, block_same_complex_binding=bscb)
+            assert obs["Lfree"] == pytest.approx(0.0), (
+                f"ten-member ring opened (Lfree={obs['Lfree']}, seed={seed}, bscb={bscb})"
+            )
+
+    @BSCB
     def test_conserved_total_with_same_complex_binding(self, data_dir: Path, bscb: bool) -> None:
         # 30 A(l,r) bind into chains (rings, with the flag off) and break again.
         # Nothing makes or removes an A, so Atot == 30 at every sample. With the

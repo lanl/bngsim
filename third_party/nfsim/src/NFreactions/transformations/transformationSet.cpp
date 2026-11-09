@@ -515,75 +515,66 @@ static void productGraphNeighbors(Molecule *current,
 }
 
 
+// Breadth-first search from `from` for `target` in that graph, discovering at
+// most `budget` molecules. Returns 1 if it reaches the target, 0 if it runs out
+// of molecules first (the two are apart), and -1 if it reaches the budget.
+// Marks molecules with their visited flag and clears it before returning; the
+// buffers are reused, so a search allocates nothing once they have grown.
+static int boundedProductGraphSearch(Molecule *from, Molecule *target, size_t budget,
+		const std::vector< std::pair<Molecule *, int> > &excludedBonds,
+		const std::vector< std::pair<Molecule *, Molecule *> > &addedBonds)
+{
+	static std::vector<Molecule *> visited, neighbors;
+	visited.clear();
+	visited.push_back(from);
+	from->setVisitedMolecule(true);
+
+	int result = 0;
+	for (size_t head = 0; head < visited.size() && result == 0; ++head) {
+		if (visited.size() > budget) { result = -1; break; }
+		productGraphNeighbors(visited[head], excludedBonds, addedBonds, neighbors);
+		for (unsigned int n = 0; n < neighbors.size(); ++n) {
+			if (neighbors[n] == target) { result = 1; break; }
+			if (!neighbors[n]->getVisitedMolecule()) {
+				neighbors[n]->setVisitedMolecule(true);
+				visited.push_back(neighbors[n]);
+			}
+		}
+	}
+
+	for (size_t v = 0; v < visited.size(); ++v)
+		visited[v]->setVisitedMolecule(false);
+	return result;
+}
+
+
 bool TransformationSet::canReachExcludingBonds(Molecule *mol1, Molecule *mol2,
 		const std::vector< std::pair<Molecule *, int> > &excludedBonds,
 		const std::vector< std::pair<Molecule *, Molecule *> > &addedBonds)
 {
 	// Is mol1 reachable from mol2 once the bonds in excludedBonds are gone and
 	// the bonds in addedBonds are in place? Each excluded bond is recorded as
-	// both of its (molecule, component-index) half-edges, so the bond is skipped
-	// regardless of which endpoint a search reaches first.
+	// both of its (molecule, component-index) half-edges, so the bond is
+	// skipped regardless of which endpoint a search reaches first.
 	//
 	// Excluding the full set of bonds that the firing rule deletes (rather than
 	// one bond at a time) is what lets a multi-bond ring-opening dissociation be
 	// recognized as genuinely separating its products: each individual bond may
 	// leave the partners connected, while removing all of them does not.
 	//
-	// Two searches run in turn, one from each end. If the ends are connected
-	// they meet; if not, the search on the smaller side runs out first. So a
-	// bond that detaches a small piece from a large aggregate costs the small
-	// piece, not the aggregate: searching from one end only walked the whole
-	// gel to learn that a ligand hanging off it by one bond had come free.
-	// Side 2 marks the molecules it reaches with their visited flag, side 1
-	// keeps a set.
+	// Searches run from each end in turn, each allowed four times the molecules
+	// of the last. If the ends are apart, the search on the smaller side runs
+	// out first, so a bond that detaches a small piece from a large aggregate
+	// costs the small piece, not the aggregate: searching from one end only
+	// walked the whole gel to learn that a ligand hanging off it by one bond had
+	// come free. The restarts cost at most a constant factor.
 	if (mol1 == mol2) return true;
-
-	static std::queue <Molecule *> q1, q2;
-	static std::vector <Molecule *> visited2, neighbors;
-	static std::unordered_set <Molecule *> visited1;
-
-	while (!q1.empty()) q1.pop();
-	while (!q2.empty()) q2.pop();
-	visited1.clear();
-	visited2.clear();
-
-	q1.push(mol1);
-	visited1.insert(mol1);
-	q2.push(mol2);
-	visited2.push_back(mol2);
-	mol2->setVisitedMolecule(true);
-
-	bool found = false;
-	while (!found && !q1.empty() && !q2.empty()) {
-		// One molecule from side 1
-		Molecule *current = q1.front();
-		q1.pop();
-		productGraphNeighbors(current, excludedBonds, addedBonds, neighbors);
-		for (unsigned int n = 0; n < neighbors.size(); ++n) {
-			if (neighbors[n]->getVisitedMolecule()) { found = true; break; }
-			if (visited1.insert(neighbors[n]).second) q1.push(neighbors[n]);
-		}
-		if (found || q1.empty()) break;
-
-		// One molecule from side 2
-		current = q2.front();
-		q2.pop();
-		productGraphNeighbors(current, excludedBonds, addedBonds, neighbors);
-		for (unsigned int n = 0; n < neighbors.size(); ++n) {
-			if (visited1.count(neighbors[n])) { found = true; break; }
-			if (!neighbors[n]->getVisitedMolecule()) {
-				neighbors[n]->setVisitedMolecule(true);
-				visited2.push_back(neighbors[n]);
-				q2.push(neighbors[n]);
-			}
-		}
+	for (size_t budget = 8; ; budget *= 4) {
+		int result = boundedProductGraphSearch(mol1, mol2, budget, excludedBonds, addedBonds);
+		if (result >= 0) return result == 1;
+		result = boundedProductGraphSearch(mol2, mol1, budget, excludedBonds, addedBonds);
+		if (result >= 0) return result == 1;
 	}
-
-	// Clear the visited flags before returning
-	for (unsigned int v = 0; v < visited2.size(); ++v)
-		visited2[v]->setVisitedMolecule(false);
-
-	return found;
 }
 
 
@@ -788,8 +779,14 @@ bool TransformationSet::productsSeparate( MappingSet ** mappingSets )
 	// into two monomers): each single bond's removal leaves the partners
 	// connected through the rule's other deleted bond, even though removing both
 	// genuinely separates the products.
-	std::vector< std::pair<Molecule *, int> > excludedBonds;       // half-edges
-	std::vector< std::pair<Molecule *, Molecule *> > brokenPairs;  // endpoints to test
+	// Reused across calls: most calls are refused matches in a large aggregate,
+	// and allocating on each was half their cost.
+	static std::vector< std::pair<Molecule *, int> > excludedBonds;       // half-edges
+	static std::vector< std::pair<Molecule *, Molecule *> > brokenPairs;  // endpoints to test
+	static std::vector< std::pair<Molecule *, Molecule *> > addedBonds;
+	excludedBonds.clear();
+	brokenPairs.clear();
+	addedBonds.clear();
 	for ( unsigned int b = 0; b < deletedBonds.size(); ++b )
 	{
 		const DeletedBond & deleted = deletedBonds[b];
@@ -821,7 +818,6 @@ bool TransformationSet::productsSeparate( MappingSet ** mappingSets )
 	// The bonds the rule adds between molecules that already exist. A bond to a
 	// molecule the rule creates cannot join two existing molecules, so it is
 	// left out.
-	std::vector< std::pair<Molecule *, Molecule *> > addedBonds;
 	for ( unsigned int r = 0; r < n_reactants; ++r )
 	{
 		for ( unsigned int t = 0; t < getNumOfTransformations(r); ++t )

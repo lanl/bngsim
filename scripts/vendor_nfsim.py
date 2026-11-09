@@ -513,11 +513,12 @@ CARRY_QUEUE = (
             "neighbourhoods share twice, adding them to the Molecules observables "
             "twice (a conserved 30 read 84-98); each is listed once now. Fixtures "
             "under tests/data/nfsim/ (ring_close_open, ring_bimolecular_split, "
-            "intra_pattern_bond_split, split_rejoined_by_added_bond)."
+            "intra_pattern_bond_split, split_rejoined_by_added_bond, "
+            "ring_large_singlebond)."
         ),
         "commits": [
             {
-                "commit": "46deb19a9824c8e9e2adcaeded20f06e90c594d3",
+                "commit": "bf038af8dd02b6a1a849d3ce115be28640b6d617",
                 "summary": (
                     "bngsim: test product molecularity as BioNetGen does, and list each "
                     "product molecule once"
