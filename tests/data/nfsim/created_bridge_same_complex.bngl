@@ -1,0 +1,26 @@
+# Product-molecularity fixture: one complex A.B.D. The rule deletes A-B and
+# creates X bonded to A and D, claiming two products, A.X.D and B. The only D is
+# the one bonded to B, which a bimolecular rule may match only with
+# block_same_complex_binding=False; D stays bonded to B, so the products do not
+# separate and the rule must not fire (Xtot stays 0). Main fired it (Xtot 1).
+begin model
+begin parameters
+  k 1
+end parameters
+begin molecule types
+  A(b,c)
+  B(a,d)
+  D(e,x)
+  X(a,d)
+end molecule types
+begin seed species
+  A(b!1,c).B(a!1,d!2).D(e!2,x) 1
+end seed species
+begin observables
+  Molecules Xtot X()
+end observables
+begin reaction rules
+  A(b!1,c).B(a!1) + D(x) -> A(b,c!3).X(a!3,d!4).D(x!4) + B(a) k
+end reaction rules
+end model
+writeXML()

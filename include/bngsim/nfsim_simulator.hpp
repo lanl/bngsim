@@ -265,8 +265,9 @@ class NfsimSimulator {
     /// match molecules in the same complex. Implies complex bookkeeping
     /// (``-cb``). Default: ``true`` in bngsim (NFsim CLI default is off,
     /// but bngsim defaults it on for correctness on BLBR/aggregation models).
-    /// The product-side test (``A.B -> A + B`` fires only where the bonds it
-    /// breaks separate the products) is made either way.
+    /// The product-side test (``A.B -> A + B`` does not fire where the
+    /// molecules it acts on would stay in one complex across products) is
+    /// made either way.
     void set_block_same_complex_binding(bool enabled);
 
     /// Set the universal traversal limit (NFsim CLI ``-utl N``).

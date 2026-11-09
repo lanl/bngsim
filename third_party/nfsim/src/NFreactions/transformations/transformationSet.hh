@@ -379,22 +379,37 @@ namespace NFcore
 				@param excludedBonds The bonds to exclude, each recorded as both of its
 				       (molecule, component-index) half-edges
 				@param addedBonds The bonds the rule adds between molecules that exist now
+				@param deletedMolecules The molecules the rule deletes, which a search does not enter
 				@return true if mol1 can be reached from mol2 through alternative paths, false otherwise
 				@author Fix for Issues #48 and #61
 			*/
 			bool canReachExcludingBonds(Molecule *mol1, Molecule *mol2,
 				const std::vector< std::pair<Molecule *, int> > &excludedBonds,
-				const std::vector< std::pair<Molecule *, Molecule *> > &addedBonds);
+				const std::vector< std::pair<Molecule *, Molecule *> > &addedBonds,
+				const std::vector< Molecule * > &deletedMolecules);
 
 			/*!
-				Product-side molecularity: every bond the rule deletes between two
-				product patterns must leave its ends in different complexes once all
-				the rule's deleted bonds are gone and its added bonds are in place.
+				Product-side molecularity: no two molecules the rule acts on that map
+				to different product patterns may stay connected once the rule's
+				deleted bonds and molecules are gone and its added bonds are in place.
 				BioNetGen rejects such a match (a "+" that cannot hold); so must we,
 				whatever the number of reactants and whatever block_same_complex_binding
 				says. Returns false when the products would not separate.
 			*/
 			bool productsSeparate( MappingSet ** mappingSets );
+
+			/*!	A molecule the rule acts on (a transformation maps it) and the product
+			 *   pattern it maps to, recorded by finalize() for productsSeparate. */
+			struct ProductRep {
+				unsigned int reactant;
+				unsigned int transform;
+				int pattern;
+			};
+			vector <ProductRep> productReps;
+
+			/*!	The (reactant, transformation) of each molecule the rule deletes, short of
+			 *   a whole species. BioNetGen writes no DeleteBond for its bonds. */
+			vector < pair<unsigned int, unsigned int> > deletedMolecules;
 
 			/*!	A bond the rule deletes: the reactant and transformation index of its
 			 *   UnbindingTransform, the template molecules at its two ends (the second

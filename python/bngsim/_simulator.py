@@ -571,8 +571,12 @@ class Simulator:
         bimolecular rule cannot bind two molecules of one complex: BNGL's
         semantics, as BNG2.pl's network applies them. ``False`` allows it.
         With the NFsim methods, a rule whose products are written apart
-        (``A.B -> A + B``) fires only where the bonds it breaks separate them,
-        whatever this setting. With ``method="rm"``, ``False`` also stops
+        (``A.B -> A + B``) does not fire where the molecules it acts on would
+        stay in one complex across products, whatever this setting (see
+        ``NfsimSession`` for the cases not yet tested), so with ``False`` a
+        gelling model can run far
+        slower: it fills with ring bonds such a rule may never break, and each
+        attempt on one is refused. With ``method="rm"``, ``False`` also stops
         RuleMonkey making that test, so on a model with rings such a rule can
         break a bond inside a ring, which gives wrong counts with no error.
         Complex bookkeeping for ``Species``-typed observables is enabled

@@ -238,3 +238,65 @@ class TestBondInsideOneProductPattern:
         assert mean == pytest.approx(63.2, abs=11.0), (
             f"Cfree mean {mean} (seeds {cfree}, bscb={bscb})"
         )
+
+
+class TestEveryPairOfProductPatterns:
+    """No two molecules the rule acts on may end up connected across product
+    patterns, and a molecule the rule deletes takes its bonds with it."""
+
+    @BSCB
+    def test_three_products_on_a_ring_blocked(self, data_dir: Path, bscb: bool) -> None:
+        # A(b!1,c!2).B(a!1).C(a!2) -> A(b,c) + B(a) + C(a) on 100 rings where B
+        # and C are also bonded: the products never separate, so BNG2.pl reacts
+        # only the 100 linear complexes and Ring stays 100. Testing only the ends
+        # of each deleted bond (A-B, A-C) let main break every ring.
+        xml = data_dir / "nfsim" / "three_product_ring.xml"
+        for seed in (1, 2):
+            obs = _final_observables(xml, seed=seed, t_end=5.0, block_same_complex_binding=bscb)
+            assert obs["Ring"] == pytest.approx(100.0), (
+                f"three-product split fired on a ring (Ring={obs['Ring']}, "
+                f"seed={seed}, bscb={bscb})"
+            )
+            assert obs["Afree"] >= 95.0  # the linear complexes do react
+
+    @BSCB
+    def test_deleted_molecule_takes_its_bonds(self, data_dir: Path, bscb: bool) -> None:
+        # A(b!1,x!2).B(a!1).X(a!2) -> A(b,x) + B(a) DeleteMolecules on 100 rings
+        # A.B.X: BioNetGen writes no DeleteBond for X's bonds, which go with X,
+        # and once X is gone A and B are apart, so the network fires the rule at
+        # k = 1: Afree(1) = 63.2 (sd 2.2 for the mean of 5 seeds). Main never
+        # fired it with the flag on (it tested the A-B bond and found A and B
+        # connected through X). Control: bscb_off passes on main, which made no
+        # test with the flag off.
+        xml = data_dir / "nfsim" / "deleted_bridge_ring.xml"
+        afree = [
+            _final_observables(xml, seed=seed, t_end=1.0, block_same_complex_binding=bscb)["Afree"]
+            for seed in range(1, 6)
+        ]
+        mean = sum(afree) / len(afree)
+        assert mean == pytest.approx(63.2, abs=11.0), (
+            f"Afree mean {mean} (seeds {afree}, bscb={bscb})"
+        )
+
+    def test_deleted_molecule_bimolecular_control(self, data_dir: Path) -> None:
+        """Control: main fires this default-path rule, and BNG2.pl's network
+        agrees. A search that walked through the deleted X refused it (Afree 0).
+        Rings and C(y~0) fall together, 100 / (1 + 100 k t): Afree(5) = 83.3."""
+        xml = data_dir / "nfsim" / "deleted_bridge_ring_bimolecular.xml"
+        for seed in (1, 2):
+            obs = _final_observables(xml, seed=seed, t_end=5.0)
+            assert obs["Afree"] == pytest.approx(83.3, abs=12.0), (
+                f"Afree {obs['Afree']} (seed={seed})"
+            )
+
+    def test_created_molecule_on_a_bridge_blocked(self, data_dir: Path) -> None:
+        # With the flag off, A(b!1,c).B(a!1) + D(x) -> A(b,c!3).X(a!3,d!4).D(x!4)
+        # + B(a) may match the D bonded to B in the same complex. D stays bonded
+        # to B, so the products do not separate and the rule must not fire
+        # (Xtot 0). Main fired it (Xtot 1).
+        xml = data_dir / "nfsim" / "created_bridge_same_complex.xml"
+        for seed in (1, 2, 3):
+            obs = _final_observables(xml, seed=seed, t_end=20.0, block_same_complex_binding=False)
+            assert obs["Xtot"] == pytest.approx(0.0), (
+                f"split onto a created molecule fired (Xtot={obs['Xtot']}, seed={seed})"
+            )
