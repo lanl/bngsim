@@ -15,7 +15,9 @@ under the MIR CI job.
 
 import ast
 import errno
+import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -421,3 +423,181 @@ def test_a_compile_at_a_cap_on_the_address_space_raises(tmp_path):
     assert set(outcomes) <= {"compiled", "RuntimeError", "MemoryError"}, outcomes
     assert "RuntimeError" in outcomes, outcomes
     assert outcomes[-1] == "compiled", outcomes
+
+
+# ── Issue #1575: a branch more than a megabyte of code from its label ────────
+# MIR's aarch64 backend encoded each branch in one pass and masked its offset to
+# the instruction's field: 19 bits of words for b.cond, cbz and cbnz (±1 MiB),
+# 26 for b (±128 MiB). A conditional branch over more than a megabyte of code
+# went to some other address. BIOMD0000000471's sensitivity run died there with
+# a bus error; where the address fell inside the function, the function carried
+# on from the middle of its code and returned a wrong number. The local carry in
+# third_party/mir/mir-gen-aarch64.c relaxes such a branch into the opposite
+# condition over a b, and refuses by name an insn that even so cannot reach.
+#
+# BIG is n statements r = r * 0.9999 + x: about 22 bytes of code each at MIR
+# levels 0 and 1, so 80,000 come to about 1.7 MiB. That is the premise of the
+# branch test, and the address-taken label test checks it: its label sits past
+# the same BIG, and it is refused only when that is more than a megabyte away.
+# Level 2 compiles a function that size in about a minute, and emits the same
+# branches. Oracle: the closed form, bit for bit: the result says which path
+# ran, and how many times. Each probe runs in a child, where a wild branch is a
+# failed test, not a lost worker.
+_FAR_BRANCH_STATEMENTS = 80_000
+
+_FAR_BRANCH_PROBE = r"""
+import ctypes, json, math, operator, sys
+from bngsim._bngsim_core import _MirJit
+
+level, n = int(sys.argv[1]), int(sys.argv[2])
+# Each condition as C and as Python, and whether it takes NaN. An unsigned
+# operand goes through long first: a negative double converted straight to an
+# unsigned type is undefined behaviour.
+OPS = {"==": operator.eq, "!=": operator.ne, "<": operator.lt,
+       "<=": operator.le, ">": operator.gt, ">=": operator.ge}
+TYPES = {
+    "int": ("", int),
+    "unsigned": ("(long) ", lambda v: int(v) % 2**32),
+    "long": ("", int),
+    "unsigned long": ("(long) ", lambda v: int(v) % 2**64),
+    "float": ("", float),
+    "double": ("", float),
+}
+CONDS = []
+for t, (via, conv) in TYPES.items():
+    for op, fn in OPS.items():
+        CONDS.append((f"(({t}) {via}a {op} ({t}) {via}b)",
+                      lambda a, b, conv=conv, fn=fn: fn(conv(a), conv(b)),
+                      t in ("float", "double")))
+CONDS.append(("((long) a)", lambda a, b: int(a) != 0, False))  # cbz, cbnz
+CONDS.append(("((int) a)", lambda a, b: int(a) != 0, False))
+
+# far_forward: with k == i, every test but the i-th passes on k, so BIG runs
+# exactly when condition i holds; each test's branch past BIG is far.
+# far_backward: BIG runs once, and again when condition k holds; each
+# condition's branch back to the top is far.
+BIG = "".join("    r = r * 0.9999 + x;\n" for _ in range(n))
+fwd = "".join(f"  if (k != {i} || {c})\n" for i, (c, _, _) in enumerate(CONDS))
+back = " || ".join(f"(k == {i} && {c})" for i, (c, _, _) in enumerate(CONDS))
+SOURCE = f'''
+double far_forward(double x, double a, double b, double kd) {{
+  long k = (long) kd;
+  double r = 1.0;
+{fwd}  {{
+{BIG}  }}
+  return r;
+}}
+double far_backward(double x, double a, double b, double kd) {{
+  long k = (long) kd;
+  double r = 1.0;
+  int i = 0;
+  do {{
+{BIG}  }} while (++i < 2 && ({back}));
+  return r;
+}}
+'''
+once = 1.0
+for _ in range(n):
+    once = once * 0.9999 + 0.5
+twice = once
+for _ in range(n):
+    twice = twice * 0.9999 + 0.5
+
+jit = _MirJit(SOURCE, level)
+sig = ctypes.CFUNCTYPE(ctypes.c_double, *[ctypes.c_double] * 4)
+forward = sig(jit.address("far_forward"))
+backward = sig(jit.address("far_backward"))
+wrong, calls = [], 0
+values = [-1.0, 0.0, 1.0, 2.0]
+for k, (c, holds, takes_nan) in enumerate(CONDS):
+    pairs = [(a, b) for a in values for b in values]
+    if takes_nan:
+        pairs += [(math.nan, 1.0), (1.0, math.nan), (math.nan, math.nan)]
+    for a, b in pairs:
+        h = holds(a, b)
+        for name, fn, want in (("forward", forward, once if h else 1.0),
+                               ("backward", backward, twice if h else once)):
+            got = fn(0.5, a, b, float(k))
+            calls += 1
+            if got != want:
+                wrong.append((name, c, a, b, got, want))
+print(json.dumps({"calls": calls, "wrong": wrong[:10], "n_wrong": len(wrong)}))
+"""
+
+_AARCH64 = platform.machine().lower() in ("arm64", "aarch64")
+
+
+@pytest.mark.parametrize("level", [0, 1])
+def test_a_conditional_branch_over_more_than_a_megabyte_of_code_reaches_its_label(level):
+    """Every comparison C has (==, !=, <, <=, >, >= on int, unsigned, long,
+    unsigned long, float and double, NaN included) and a bare test of a value,
+    as a branch more than a megabyte of code forward and backward of its label:
+    all ten b.cond conditions MIR emits from C, cbz and cbnz. On main the first
+    call at either level died with SIGILL; a lone if (p) over 100,000 statements
+    returned 4999.1987... for p == 0, which must skip them and return 1."""
+    done = subprocess.run(
+        [sys.executable, "-c", _FAR_BRANCH_PROBE, str(level), str(_FAR_BRANCH_STATEMENTS)],
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    assert done.returncode == 0, (done.returncode, done.stderr[-2000:])
+    out = json.loads(done.stdout.strip().splitlines()[-1])
+    assert out["n_wrong"] == 0, out["wrong"]
+    assert out["calls"] == 2 * (24 * 16 + 12 * 19 + 2 * 16), out["calls"]
+
+
+_FAR_LABEL_PROBE = r"""
+import ctypes, json, sys
+from bngsim._bngsim_core import _MirJit
+
+level, n = int(sys.argv[1]), int(sys.argv[2])
+BIG = "".join("    r = r * 0.9999 + x;\n" for _ in range(n))
+SOURCE = (
+    "double f(double x, double p) {\n  void *done_at = &&done;\n  double r = 1.0;\n"
+    "  if (p != 0.0) goto *done_at;\n" + BIG + "done:\n  return r;\n}\n"
+)
+sig = ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_double, ctypes.c_double)
+out = {}
+try:
+    jit = _MirJit(SOURCE, level)
+    f = sig(jit.address("f"))
+    out["values"] = [f(0.5, 0.0), f(0.5, 1.0)]
+except RuntimeError as e:
+    out["refused"] = str(e)
+# The thread compiles again after a refusal.
+small = _MirJit("double g(double x) { return 2.0 * x; }", 0)
+out["after"] = ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_double)(small.address("g"))(1.5)
+print(json.dumps(out))
+"""
+
+
+@pytest.mark.parametrize("level", [0, 1])
+def test_an_address_taken_label_out_of_adr_reach_is_refused_by_name(level):
+    """&&label is an adr on aarch64, a 19-bit offset with no longer form, so a
+    label more than a megabyte of code away cannot be reached: MIR refuses the
+    function through its error function and MirJit raises. On main the compile
+    succeeded and the goto went to a wrong address. Where an address-taken
+    label is within reach of the target's code (x86-64's ±2 GiB), it runs.
+
+    The refusal is also the premise of the branch test above: the same BIG, at
+    the same level, is more than a megabyte of code."""
+    n = _FAR_BRANCH_STATEMENTS
+    done = subprocess.run(
+        [sys.executable, "-c", _FAR_LABEL_PROBE, str(level), str(n)],
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    assert done.returncode == 0, (done.returncode, done.stderr[-2000:])
+    out = json.loads(done.stdout.strip().splitlines()[-1])
+    assert out["after"] == 3.0, out
+    if _AARCH64:
+        assert "values" not in out, out
+        assert "function f is too large for aarch64" in out["refused"], out
+        assert "cannot reach its label" in out["refused"], out
+    else:
+        once = 1.0
+        for _ in range(n):
+            once = once * 0.9999 + 0.5
+        assert out == {"values": [once, 1.0], "after": 3.0}, out

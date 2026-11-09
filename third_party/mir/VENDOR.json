@@ -108,6 +108,17 @@
       "reapply": "If upstream's nop_pats still has 0F 1F C0 or 48 0F 1F C0, set entries 3 and 4 to \"\\x0f\\x1f\\x00\" and \"\\x0f\\x1f\\x40\\x00\" with the marker comment. If upstream moved to memory forms, drop this entry and keep test_mir_x86_64_loop_padding_is_intels_recommended_nops as the guard.",
       "upstream_file_sha256": "d118e7a4a5aead5b5d964de33952a06d5aa1d0d39f5ca7fd34b0a5926ae4619c",
       "upstream_file_sha256_note": "sha256 of mir-gen-x86_64.c as vendored from the pinned commit, before the carry. A refresh whose file matches it can re-apply the carry verbatim; one that doesn't means upstream rewrote the file, so read nop_pats first."
+    },
+    {
+      "file": "mir-gen-aarch64.c",
+      "function": "target_translate, out_insn (with new label_ref_offset, label_ref_reach_p, mark_far_label_refs, check_label_refs_reach, invert_short_branch)",
+      "marker": "BNGsim local carry (lanl/bngsim#1575)",
+      "issue": "https://github.com/lanl/bngsim/issues/1575",
+      "upstream_status": "not reported upstream as of 2026-11-09; upstream master dc2c763f (2026-10-23) still masks each label offset unchecked in target_translate.",
+      "summary": "target_translate encodes each branch in one pass and masks its offset to the insn's field: 19 bits of words for b.cond, cbz, cbnz and adr (+-1 MiB), 26 for b (+-128 MiB). A conditional branch over more than a megabyte of code went to a wrong address: BIOMD0000000471's forward-sensitivity run (25.8 MB of C in one function, MIR level 0) died with a bus error, and an if over 100,000 statements returned the wrong number without an error. The carry translates a second time when any short branch is that far, with each such branch, and each that the first ones' growth could push out of reach, emitted as the opposite condition over a b (b.cond flips the condition's low bit, cbz and cbnz swap); then it checks every label offset against its insn's reach and reports one out of reach (an adr, which has no longer form, or a b past 128 MiB) through MIR's error function, which MirJit turns into a RuntimeError. Functions under 1 MiB of code translate once, as before.",
+      "reapply": "If upstream's target_translate still sets label offsets with a bare & 0x7ffff / & 0x3ffffff, re-apply the carry (search the marker in the carrying commit). If upstream now relaxes or checks them, compare with the carry, drop this entry if it covers the same cases, and keep python/tests/test_mir_equivalence.py's #1575 tests, which run on the macOS arm64 MIR leg. test_mir_vendoring.py::test_mir_aarch64_label_insns_are_ones_the_far_branch_carry_handles fails if a refresh encodes a label on an insn the carry does not know.",
+      "upstream_file_sha256": "18927d27cc6289b847e49928d9aebe3904c2fcd1a1d79b44dd2a7be00aaf329c",
+      "upstream_file_sha256_note": "sha256 of mir-gen-aarch64.c as vendored from the pinned commit, before the carry. A refresh whose file matches it can re-apply the carry verbatim; one that doesn't means upstream rewrote the file, so read target_translate first."
     }
   ],
   "notes": [

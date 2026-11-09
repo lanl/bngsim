@@ -81,8 +81,9 @@ def test_mir_vendor_metadata_shape():
 def test_mir_local_carries_are_still_applied():
     """Every declared local carry must still be present in the vendored file.
 
-    Three carries today: issue #1215's two (in mir.c and c2mir/c2mir.c) and
-    issue #1216's loop-padding NOPs in mir-gen-x86_64.c. Issue #413's was
+    Four carries today: issue #1215's two (in mir.c and c2mir/c2mir.c), issue
+    #1216's loop-padding NOPs in mir-gen-x86_64.c, and issue #1575's far
+    branches in mir-gen-aarch64.c. Issue #413's was
     dropped when upstream merged it (vnmakarov/mir#468). Checksum anchors cannot
     guard a carry — a refresh rewrites the file from upstream AND re-anchors it,
     so the patch vanishes with the tree still matching its own metadata. Each
@@ -163,6 +164,59 @@ INTEL_RECOMMENDED_NOPS = [
     b"\x66\x0f\x1f\x44\x00\x00",
     b"\x0f\x1f\x80\x00\x00\x00\x00",
 ]
+
+
+# Issue #1575: the aarch64 insns that take a label operand, by the top byte of
+# their opcode, and what the carry in mir-gen-aarch64.c does with each when the
+# label is out of reach. "l" is a 19-bit word offset (+-1 MiB), "L" a 26-bit
+# one (+-128 MiB).
+AARCH64_LABEL_INSNS = {
+    "l": {
+        0x54: "b.cond: relaxed to the opposite condition over a b",
+        0x34: "cbz w: relaxed to cbnz over a b",
+        0x35: "cbnz w: relaxed to cbz over a b",
+        0xB4: "cbz x: relaxed to cbnz over a b",
+        0xB5: "cbnz x: relaxed to cbz over a b",
+        0x10: "adr: no longer form; refused by name",
+    },
+    "L": {0x14: "b: refused by name beyond +-128 MiB"},
+}
+
+
+def test_mir_aarch64_label_insns_are_ones_the_far_branch_carry_handles():
+    """Issue #1575: every aarch64 insn MIR encodes with a label offset is one
+    the far-branch carry relaxes or refuses.
+
+    Upstream masks each label offset to its insn's field in one pass, so a
+    branch out of reach went to a wrong address. The carry knows b.cond, cbz,
+    cbnz and adr (19-bit) and b (26-bit). A refresh that encodes another insn
+    with a label, tbz's 14-bit offset say, would be encoded and checked as a
+    19-bit one, and a label 32 KiB away would be missed: fail here instead.
+    """
+    src = (MIR_DIR / "mir-gen-aarch64.c").read_text()
+    code = re.sub(r"/\*.*?\*/", " ", src, flags=re.S)
+    found = {"l": set(), "L": set()}
+    unknown = []
+    for literal in re.findall(r'"((?:[^"\\]|\\.)*)"', code):
+        for insn in literal.split(";"):
+            m = re.fullmatch(r"\s*([0-9a-fA-F]{8})(?::[0-9a-fA-F]{8})?((?:\s+\S+)*)\s*", insn)
+            if m is None:
+                continue
+            opcode = int(m.group(1), 16)
+            for kind in set(m.group(2).split()) & {"l", "L"}:
+                top = opcode >> 24
+                found[kind].add(top)
+                if top not in AARCH64_LABEL_INSNS[kind]:
+                    unknown.append(f"{insn.strip()!r} ({kind})")
+                elif top == 0x54 and opcode & 0xE == 0xE:
+                    unknown.append(f"{insn.strip()!r}: b.al or b.nv has no opposite")
+    assert not unknown, (
+        "mir-gen-aarch64.c encodes a label operand on an insn the #1575 carry does not "
+        f"know: {'; '.join(unknown)}. Teach invert_short_branch and label_ref_reach_p "
+        "its reach, or refuse it (VENDOR.json local_carries, #1575)."
+    )
+    # The parse still sees the table: every kind above is in it today.
+    assert found == {k: set(v) for k, v in AARCH64_LABEL_INSNS.items()}, found
 
 
 def test_mir_x86_64_loop_padding_is_intels_recommended_nops():

@@ -1615,6 +1615,15 @@ class _CNumericLocale:
         ...
     def __init__(self) -> None:
         ...
+class _MirJit:
+    def __init__(self, source: str, opt_level: typing.SupportsInt | typing.SupportsIndex = -1) -> None:
+        """
+        MIR-compile a C source at MIR optimization level opt_level (0-3; -1 picks it by source size, as the codegen path does). A failure raises MirJit's RuntimeError. Internal.
+        """
+    def address(self, name: str) -> int:
+        """
+        The address of the compiled function `name`, or 0 if the source defines none. It stays valid while this object lives. Internal.
+        """
 def _mir_jit_compile(source: str, fail_allocation: typing.SupportsInt | typing.SupportsIndex = -1, fail_mapping: typing.SupportsInt | typing.SupportsIndex = -1, fail_mapping_errno: typing.SupportsInt | typing.SupportsIndex = 12) -> tuple[int, int]:
     """
     MIR-compile a generated C source as if the C heap ran out at MIR's allocation number fail_allocation, or its code mapping number fail_mapping were refused with errno fail_mapping_errno (both counted from 0; -1 fails none), and return how many allocations and code mappings MIR made. A failure raises MirJit's RuntimeError (issue #1215). Internal.

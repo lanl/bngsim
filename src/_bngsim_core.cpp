@@ -27,6 +27,7 @@
 #include <charconv>
 #include <chrono>
 #include <cmath>
+#include <cstdint> // uintptr_t (_MirJit.address, issue #1575)
 #include <cstring>
 #include <optional>
 #include <sstream>
@@ -3549,6 +3550,28 @@ PYBIND11_MODULE(_bngsim_core, m) {
         "fail_mapping_errno (both counted from 0; -1 fails none), and return how many allocations "
         "and code mappings MIR made. A failure raises MirJit's RuntimeError (issue #1215). "
         "Internal.");
+
+    // Issue #1575: a MirJit that a test keeps alive while it calls the compiled
+    // code by address (ctypes), at the MIR optimization level the test names.
+    // On a build without MIR the constructor raises.
+    //
+    // Internal — the leading underscore is the contract.
+    py::class_<bngsim::MirJit>(m, "_MirJit")
+        .def(py::init([](const std::string &source, int opt_level) {
+                 return std::make_unique<bngsim::MirJit>(source, opt_level);
+             }),
+             py::arg("source"), py::arg("opt_level") = -1,
+             "MIR-compile a C source at MIR optimization level opt_level (0-3; -1 picks it by "
+             "source size, as the codegen path does). A failure raises MirJit's RuntimeError. "
+             "Internal.")
+        .def(
+            "address",
+            [](const bngsim::MirJit &self, const std::string &name) {
+                return reinterpret_cast<std::uintptr_t>(self.try_symbol<void *>(name));
+            },
+            py::arg("name"),
+            "The address of the compiled function `name`, or 0 if the source defines none. It "
+            "stays valid while this object lives. Internal.");
 
     // ─── ModelBuilder (programmatic model construction) ──────────────────────
     py::class_<bngsim::ModelBuilder>(m, "ModelBuilder")
