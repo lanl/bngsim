@@ -2536,9 +2536,10 @@ static size_t far_label_ref_need (gen_ctx_t gen_ctx, const label_ref_t *lr, size
   return need > n ? n + 1 : (size_t) need;
 }
 
-/* BNGsim local carry (lanl/bngsim#1575): mark in far_label_refs the fewest short
-   branches whose relaxation leaves every other one in reach, and return whether
-   any is marked: the least m such that exactly m branches need m or fewer.  */
+/* BNGsim local carry (lanl/bngsim#1575): mark in far_label_refs the short
+   branches to relax, and return whether any is marked: those needing m or fewer
+   for the least m such that exactly m do, the least fixed point of the bound of
+   8 bytes per relaxed branch (not always the fewest branches that would do).  */
 static int mark_far_label_refs (gen_ctx_t gen_ctx) {
   size_t n = VARR_LENGTH (label_ref_t, label_refs), i, m;
   uint64_t *count;

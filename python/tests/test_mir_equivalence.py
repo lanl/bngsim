@@ -747,24 +747,27 @@ def test_a_sensitivity_to_a_parameter_without_a_dfdp_case_is_zero_under_mir(tmp_
 # allocator may give x30, the link register, to a value: it is caller-saved,
 # and the prologue saves it and the epilogue restores it. But a leaf function
 # that needs neither a callee-saved register nor a stack slot gets no prologue,
-# so with x30 allocated it returned to whatever value x30 held last. Fourteen
-# live longs are enough at MIR levels 0 and 1 (SIGBUS on main); level 2
-# allocates differently.
+# so with x30 allocated it returned to whatever value x30 held last (SIGBUS on
+# main). It takes just enough live integers: on macOS 14 put x30 in use with no
+# callee-saved register (Linux, where x18 is not reserved, needs one more), and
+# at levels 2 and 3 the compared constants must be ones no compare immediate can
+# hold, or combine folds them and x30 is never written. So N sweeps 12 to 20.
 _LEAF_LINK_REGISTER_PROBE = r"""
 import ctypes, json, sys
 from bngsim._bngsim_core import _MirJit
 
-N = 14
-SOURCE = (
-    "double f(double pd) {\n  long ip = (long) pd;\n"
-    + "".join(f"  long a{i} = ip * {i + 3} + {i};\n" for i in range(N))
-    + "  long k = 0;\n"
-    + "".join(f"  if (ip > {i}) k += a{i};\n" for i in range(N))
-    + "  k += " + " ^ ".join(f"a{i}" for i in range(N)) + ";\n  return (double) k;\n}\n"
-)
-def want(ip):
-    a = [ip * (i + 3) + i for i in range(N)]
-    k = sum(a[i] for i in range(N) if ip > i)
+def source(n):
+    return (
+        "double f(double pd) {\n  long ip = (long) pd;\n"
+        + "".join(f"  long a{i} = ip * {i + 3} + {i};\n" for i in range(n))
+        + "  long k = 0;\n"
+        + "".join(f"  if (ip > {123457 + 1000 * i}) k += a{i};\n" for i in range(n))
+        + "  k += " + " ^ ".join(f"a{i}" for i in range(n)) + ";\n  return (double) k;\n}\n"
+    )
+
+def want(n, ip):
+    a = [ip * (i + 3) + i for i in range(n)]
+    k = sum(a[i] for i in range(n) if ip > 123457 + 1000 * i)
     x = 0
     for v in a:
         x ^= v
@@ -772,22 +775,23 @@ def want(ip):
 
 out = []
 for level in map(int, sys.argv[1:]):
-    jit = _MirJit(SOURCE, level)
-    f = ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_double)(jit.address("f"))
-    for ip in (-3, 0, 5, 20):
-        got = f(float(ip))
-        if got != want(ip):
-            out.append((level, ip, got, want(ip)))
+    for n in range(12, 21):
+        jit = _MirJit(source(n), level)
+        f = ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_double)(jit.address("f"))
+        for ip in (-3, 0, 5, 130000, 200000):
+            got = f(float(ip))
+            if got != want(n, ip):
+                out.append((level, n, ip, got, want(n, ip)))
 print(json.dumps(out))
 """
 
 
 def test_a_leaf_function_that_uses_the_link_register_returns_to_its_caller():
-    """x30 allocated in a leaf function: every call returns, with the closed
-    form, at levels 0, 1 and 2. On main the first call at level 0 died with
+    """x30 in a leaf function: every call returns, with the closed form, at
+    MIR levels 0 to 3. On main the first such call at each level died with
     SIGBUS."""
     done = subprocess.run(
-        [sys.executable, "-c", _LEAF_LINK_REGISTER_PROBE, "0", "1", "2"],
+        [sys.executable, "-c", _LEAF_LINK_REGISTER_PROBE, "0", "1", "2", "3"],
         capture_output=True,
         text=True,
         timeout=600,

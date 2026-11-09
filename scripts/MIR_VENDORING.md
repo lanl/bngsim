@@ -332,12 +332,12 @@ The fourth and fifth are issue #1575's, marked
   epilogue save and restore it. But `target_make_prolog_epilog` skips both for
   a leaf function that needs no callee-saved register and no stack slot. A
   leaf function the allocator gave x30 to therefore returned to whatever value
-  x30 held last: fourteen live `long`s were enough at MIR levels 0 and 1
+  x30 held last: fourteen live `long`s were enough at every MIR level
   (SIGBUS). The carry keeps the prologue and epilogue when x30 is used, so a
   function that does not use it is unchanged. Upstream master (`dc2c763f`) has
   the same shortcut; not reported upstream as of 2026-11-09.
   `test_mir_equivalence.py::test_a_leaf_function_that_uses_the_link_register_returns_to_its_caller`
-  holds it at levels 0 to 2.
+  holds it at levels 0 to 3.
 
 ### Past carries
 
