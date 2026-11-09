@@ -1,0 +1,24 @@
+# Product-molecularity fixture: 20 ten-member rings L.R.L.R.L.R.L.R.L.R and the
+# single rule L(r!1).R(l!1) -> L(r) + R(l). Breaking one bond leaves L and R
+# connected the long way round (eight more molecules), so the products never
+# separate: BNG2.pl generates no reaction and Lfree, the count of L with a free
+# site, stays 0. The search that tests this must go past its first budget.
+begin model
+begin parameters
+  k 1
+end parameters
+begin molecule types
+  L(r,r)
+  R(l,l)
+end molecule types
+begin seed species
+  L(r!1,r!2).R(l!2,l!3).L(r!3,r!4).R(l!4,l!5).L(r!5,r!6).R(l!6,l!7).L(r!7,r!8).R(l!8,l!9).L(r!9,r!10).R(l!10,l!1) 20
+end seed species
+begin observables
+  Molecules Lfree L(r)
+end observables
+begin reaction rules
+  L(r!1).R(l!1) -> L(r) + R(l) k
+end reaction rules
+end model
+writeXML()

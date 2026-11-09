@@ -1,0 +1,27 @@
+# Product-molecularity fixture: 100 rings L.R.L.R and 100 free C. The only rule
+# moves L from R to C, claiming two products, L.C and R. On a ring bond L and R
+# stay connected through the rest of the ring, so the products never separate:
+# BNG2.pl generates no reaction and Cfree stays 100. NFsim made the product test
+# for unimolecular rules only and bound every C.
+begin model
+begin parameters
+  k 1
+end parameters
+begin molecule types
+  L(r,r,c)
+  R(l,l)
+  C(x)
+end molecule types
+begin seed species
+  L(r!1,r!2,c).R(l!2,l!3).L(r!3,r!4,c).R(l!4,l!1) 100
+  C(x) 100
+end seed species
+begin observables
+  Molecules Cfree C(x)
+  Species Ring2 L(r!1,r!2).R(l!2,l!3).L(r!3,r!4).R(l!4,l!1)
+end observables
+begin reaction rules
+  L(r!1,c).R(l!1) + C(x) -> L(r,c!2).C(x!2) + R(l) k
+end reaction rules
+end model
+writeXML()

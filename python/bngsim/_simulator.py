@@ -566,12 +566,20 @@ class Simulator:
         same-seed trajectory compatibility with the standalone CLI.
 
     block_same_complex_binding : bool, optional
-        Only used for ``method="nf"`` / ``"nf_reject"`` / ``"nfsim"``.
-        When ``True`` (the default), a bimolecular rule cannot bind two
-        molecules of one complex, and a rule written ``A.B -> A + B`` fires
-        only where breaking the bond separates them: BNGL's semantics, as
-        BNG2.pl's network applies them. ``False`` turns both off, and on a
-        model with rings gives wrong counts with no error (issue #1549).
+        Used for ``method="nf"`` / ``"nf_reject"`` / ``"nfsim"`` and
+        ``method="rm"`` / ``"rulemonkey"``. When ``True`` (the default), a
+        bimolecular rule cannot bind two molecules of one complex: BNGL's
+        semantics, as BNG2.pl's network applies them. ``False`` allows it.
+        With the NFsim methods, a rule whose products are written apart
+        (``A.B -> A + B``) and that deletes a bond or a molecule does not fire
+        where the molecules it acts on would stay in one complex across
+        products, whatever this setting (see ``NfsimSession`` for the cases not
+        yet tested), so with ``False`` a
+        gelling model can run far
+        slower: it fills with ring bonds such a rule may never break, and each
+        attempt on one is refused. With ``method="rm"``, ``False`` also stops
+        RuleMonkey making that test, so on a model with rings such a rule can
+        break a bond inside a ring, which gives wrong counts with no error.
         Complex bookkeeping for ``Species``-typed observables is enabled
         whenever the model declares one, whatever this setting.
 
