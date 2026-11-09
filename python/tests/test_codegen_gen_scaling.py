@@ -30,13 +30,13 @@ These tests pin the properties, not a wall-clock number on one machine:
 The ratio is measured, not seconds (#1479). A 20 s budget took 1.7 s on an
 M-series Mac and 22.7 s and 22.2 s on GitHub's ubuntu runners, though neither
 change touched codegen. Two things make the ratio steadier than the seconds:
-  * Both sizes run on the same machine in the same process, so the runner's
-    speed cancels.
-  * The cyclic collector is paused while timing. With it on, each full collection
-    scans the whole heap, so the generator's cost grows with whatever the rest of
-    the test session holds. In an isolated process the elementary generator
-    already grew as about n^1.2 from 2.5k to 80k reactions (40k/4k: about 20).
-    With the collector paused it grew as n^1.00-1.04 (40k/4k: 10.3).
+  * Both sizes run on the same machine in the same process, so whatever slows
+    that machine down (a slower CPU, pytest-xdist's other workers, a coverage
+    tracer) slows both.
+  * The cyclic collector is paused while timing. With it on, the elementary
+    generator grew as about n^1.2 from 2.5k to 80k reactions (40k/4k: about 20 in
+    a bare process, 16.5 beside 4M other live objects). With it paused it grew as
+    n^1.00-1.04 (40k/4k: 10.3 in both).
 """
 
 from __future__ import annotations
