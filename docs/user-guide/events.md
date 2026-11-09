@@ -65,12 +65,18 @@ Between two executions of the events that set `c`, it holds its value, so the
 run stops on each instant in turn: 0.5, 1.5, 2.5 and so on. The same holds
 where `c` is read through an assignment rule, after a delay, for `!=`, and
 for a first dose or a later one (`time == t0 || (time == c + t0 && time <
-t_end)`). The events that set `c` must fire at a fixed time (`time >= t1`) or
-on such an instant themselves, and set values known before the run: numbers,
-constants, the parameters they set, or the time of the instant. Otherwise the
-run is refused with an error that names the parameter and why: when an event
-on the state sets it, when two such events fire at one instant, or when they
-fire more than 512 times in one run (run it in shorter legs).
+t_end)`). The events that set `c` are followed in time order. Each must fire
+at a fixed time (`time >= t1`), on such an instant itself, or on a flag that
+only events set (`on == 1`), in the instant another event raises it; and set
+a value known before the run: numbers, constants, the parameters events set,
+or the time of the instant. Several such events at one instant are taken
+together where none reads or sets what another sets. In a stochastic run, a
+value within rounding of a whole number is kept on the number, as the
+engine stores it. Otherwise the run is refused with an error that names the
+parameter and why: when an event on the state sets it, or reads such a
+parameter; when two events at one instant set what the other reads; when
+two instants come within a rounding of each other; or when the events
+execute more than 10,000 times in one run (run it in shorter legs).
 
 Two cases are outside this:
 

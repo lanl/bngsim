@@ -3344,6 +3344,7 @@ def crossings_with_periodic(
     on_the_flip=False,
     before_the_flip=False,
     by_tread=False,
+    ssa=False,
 ) -> tuple[list[CrossingStop], list[CrossingStop], list[CrossingStop]]:
     """:func:`all_fixed_crossings`, and for the conditions it leaves out, their
     stops and their crossings, from one pass over the conditions.
@@ -3406,6 +3407,9 @@ def crossings_with_periodic(
     :func:`_tread_stop_times`); the ODE path asks for it in a run with no
     sensitivity columns. Not the SSA's: its stops are a double before each
     change, and a step rate read there is the old one.
+
+    *ssa*: the run is stochastic, which stores an event's value within
+    rounding of a whole count as that count (:func:`_held_schedule`).
     """
     return _resolve_crossings(
         core,
@@ -3419,6 +3423,7 @@ def crossings_with_periodic(
         on_the_flip=on_the_flip,
         before_the_flip=before_the_flip,
         by_tread=by_tread,
+        ssa=ssa,
     )
 
 
@@ -3662,32 +3667,45 @@ def _held_schedule(
     t_start: float,
     t_end: float,
     sensitivity_params,
+    ssa: bool = False,
 ) -> tuple[list[tuple[float, dict[str, float]]], dict[str, str], dict[str, set[float]]]:
     """When each held species changes in ``(t_start, t_end)``, and to what, as
     ``[(t_start, values), (t1, values from t1), ...]``; for each held species
     whose changes are not known before the run, why; and for each, the numbers
-    an event is known to set it to, whenever that event fires.
+    an event is known to set it to, whenever that event fires. A value is what
+    an expression reads for the species: the amount of one whose expressions
+    read an amount (issue #1519).
 
     Known: every event that writes it fires on ``time() >= c`` (or ``>``, or
     the same written the other way), with c a run constant, after a constant
     delay, and sets a value that reads only run constants and held species
     known then. Such a trigger rises once, so the event fires once. So is one
-    on the instants of an equality on the clock (``time == c && c < 91``, issue
-    #1519) whose sides read run constants and held species, which can fire
-    again with each value it sets, and whose value may read the time of its
-    instant (:func:`_schedule_with_instants`). A run that
+    whose trigger is an equality on the clock (``time == c && c < 91``, issue
+    #1519) or reads held species alone (``flag == 1``), which fires again with
+    each value an event sets (:func:`_schedule_with_writers`). A run that
     starts where the last one ended continues its events (``event_carry``, issue
     #693): a trigger rises in it only where it was false there, and the
     executions the last run delayed into it are taken with the values they
     froze. A fresh run's trigger was false before it unless its initialValue
-    says true. Not known: two writers executing at one instant, which are not ordered here;
-    a delayed fire whose value, read at its trigger, reads a held species that
-    another fire sets in between; and, in a run with sensitivity columns, a
+    says true. Not known: two writers executing at one instant, which are not
+    ordered here; a delayed fire whose value, read at its trigger, reads a held
+    species that another fire sets in between; one that reads a held species
+    whose own changes are not known; and, in a run with sensitivity columns, a
     time or a value that reads a requested parameter, or one derived from
-    them, whose stops would move with it."""
+    them, whose stops would move with it.
+
+    *ssa*: the run is stochastic, where an event's value within rounding of a
+    whole count is stored as that count."""
     names_of = {i: name for name, i in held.items()}
     unknown: dict[str, str] = {}
+    # From when each species in *unknown* is not known: a value read before
+    # then is still the schedule's.
+    unknown_from: dict[str, float] = {}
     requested = set(sensitivity_params or ())
+
+    def mark(name: str, why: str, at: float = t_start) -> None:
+        unknown.setdefault(name, why)
+        unknown_from[name] = min(unknown_from.get(name, math.inf), float(at))
 
     def moved(text: str) -> list[str]:
         """The requested parameters *text* reads, directly or through a
@@ -3699,9 +3717,10 @@ def _held_schedule(
     if sensitivity_params:
         for sp, p in core.species_ic_param_refs:
             if sp in names_of and moved(param_names[p]):
-                unknown[names_of[sp]] = (
+                mark(
+                    names_of[sp],
                     f"its initial value is {param_names[p]}, which a requested "
-                    "sensitivity parameter moves"
+                    "sensitivity parameter moves",
                 )
 
     def value_of(text: str, at: float, clock: bool = False) -> tuple[float | None, str]:
@@ -3724,7 +3743,50 @@ def _held_schedule(
         v = float(core.evaluate_over_times(text, [float(at)], 0.0)[0])
         return (v, "") if math.isfinite(v) else (None, f"which reads {v}")
 
-    start = {name: float(core.get_concentration(name)) for name in held}
+    # A value is read through the model's assignment rules (`c = c + interval`,
+    # interval := 1*k), as the run reads it when the event executes.
+    bodies = _function_slot_bodies(core.functional_jacobian_context())
+
+    def written(text: str) -> str:
+        return _inline_function_slots(text, bodies)
+
+    # What an expression reads for a species is its amount where it is
+    # amount-valued (storage times its volume factor), and an event's value is
+    # what is stored.
+    data = core.codegen_data()
+    factor = {}
+    for i, sp in enumerate(data["species"]):
+        if i in names_of:
+            factor[names_of[i]] = (float(sp["volume_factor"]), bool(sp["amount_valued"]))
+
+    def stored(name: str, v: float) -> float:
+        """What expressions read for *name* once an event writes *v* to it."""
+        vf, amount = factor[name]
+        if ssa:
+            # The SSA keeps a count within rounding of a whole number on the
+            # number (storage_to_count, issue #692), as the engine stores it.
+            n = v * vf
+            whole = math.copysign(math.floor(abs(n) + 0.5), n)
+            if abs(n - whole) <= 8.0 * _EPS * max(1.0, abs(whole)):
+                n = whole + 0.0
+            if n == math.copysign(math.floor(abs(n) + 0.5), n):
+                v = n / vf
+        return v * vf if amount else v
+
+    start = {}
+    # The SSA starts a molecule count on a whole number (it warns as it rounds
+    # one): every species but one marked continuous or a rate rule's target.
+    rate_rule_targets = {
+        p for rxn in data["reactions"] if rxn.get("is_rate_rule_ode") for p in rxn["products"]
+    }
+    for name, i in held.items():
+        v = float(core.get_concentration(name))
+        vf, amount = factor[name]
+        counted = not data["species"][i].get("continuous", False) and i not in rate_rule_targets
+        if ssa and counted and math.isfinite(v) and vf > 0:
+            n = v * vf
+            v = (math.floor(n + 0.5) if n >= 0 else math.ceil(n - 0.5)) / vf
+        start[name] = v * vf if amount else v
     # What each event is known to set a held species to, read with the others
     # as the run starts, whenever it fires: a condition whose stops cannot be
     # placed is read with each of these as well as with its start.
@@ -3736,7 +3798,19 @@ def _held_schedule(
             if _reads_run_constants_alone(text, scope):
                 v = float(core.evaluate_over_times(text, [float(t_start)], 0.0)[0])
                 if math.isfinite(v):
-                    sets.setdefault(name, set()).add(v)
+                    sets.setdefault(name, set()).add(stored(name, v))
+
+    held_names = set(held)
+
+    def reads_of(*texts: str) -> frozenset[str]:
+        return frozenset({n for t in texts for n in _IDENTIFIER.findall(t)} & held_names)
+
+    # What the events that set held species read, for an unknown to pass on to
+    # what they set: each execution's values, read at a time, as (time, label,
+    # names it sets, held species read); and each trigger a writer reads all
+    # through the run, as (label, names it sets, held species read).
+    reads_at: list[tuple[float, str, list[str], frozenset[str]]] = []
+    trigger_reads: list[tuple[str, list[str], frozenset[str]]] = []
 
     # The last run's events, where this one continues it: what each trigger read
     # where it ended, and its executions not yet applied.
@@ -3745,16 +3819,15 @@ def _held_schedule(
     was_true: list = list(carry[1]) if continued else []
     events = core.events_as_written()
 
-    # (execution time, trigger time, label, [(species, value text)], from trigger)
-    fires: list[tuple[float, float, str, list[tuple[str, str]], bool]] = []
-    # Events that fire on the instants of an equality (issue #1519).
-    instants: list[_InstantWriter] = []
-    bodies: dict[str, str] | None = None
+    fires: list[_Fire] = []
+    # Events whose trigger is an equality on the clock or reads held species
+    # alone (issue #1519).
+    writers: list[_TriggerWriter] = []
     if continued:
         for i, at, frozen in carry[2]:
             ev = events[i]
             writes = [
-                (names_of[sp], (repr(float(frozen[k])) if frozen else text))
+                (names_of[sp], (repr(float(frozen[k])) if frozen else written(text)))
                 for k, (sp, text) in enumerate(ev["assignments"])
                 if sp in names_of
             ]
@@ -3764,266 +3837,498 @@ def _held_schedule(
             label = f"event {ev['id'] or '?'}, delayed from the last run"
             if frozen and len(frozen) != len(ev["assignments"]):
                 for name, _ in writes:
-                    unknown.setdefault(name, f"{label} carries values it cannot be read by")
+                    mark(name, f"{label} carries values it cannot be read by")
                 continue
             if float(at) < t_end:
-                fires.append((float(at), t_start, label, writes, False))
+                fires.append(_Fire(float(at), t_start, label, writes, False, False))
     for i, ev in enumerate(events):
-        writes = [(names_of[sp], text) for sp, text in ev["assignments"] if sp in names_of]
+        writes = [
+            (names_of[sp], written(text)) for sp, text in ev["assignments"] if sp in names_of
+        ]
         if not writes:
             continue
         may_set(writes)
         trigger = _strip_redundant_parens(ev["trigger"])
         label = f"event {ev['id'] or '?'} on {trigger}"
+        values_read = reads_of(*(t for _, t in writes))
         m = _TIME_TRIGGER.match(trigger.replace(" ", ""))
         threshold, why = None, "a trigger that is no fixed time"
         if m is None:
-            if bodies is None:
-                bodies = _function_slot_bodies(core.functional_jacobian_context())
-            writer, why = _instant_writer(ev, trigger, label, writes, scope, bodies, start)
+            writer, why_not = _trigger_writer(ev, trigger, label, writes, scope, bodies, start)
+            if why_not is None:
+                continue  # never executes
+            why = why_not
             if writer is not None:
                 if continued:
                     writer = writer._replace(true_before=bool(was_true[i]))
-                instants.append(writer)
+                writer = writer._replace(reads=reads_of(writer.trigger) | values_read)
+                trigger_reads.append((label, [n for n, _ in writes], reads_of(writer.trigger)))
+                writers.append(writer)
                 continue
         elif ev["delay_expr"]:
             why = f"after a delay of {ev['delay_expr']}, not a constant"
         elif m is not None:
             op, c = (m.group(1), m.group(2)) if m.group(1) else (m.group(4), m.group(3))
-            threshold, why = value_of(c, t_start)
+            threshold, why = value_of(written(c), t_start)
             why = f"at time {c}, {why}"
         if threshold is None:
             for name, _ in writes:
-                unknown.setdefault(name, f"{label} sets it, {why}")
+                mark(name, f"{label} sets it, {why}")
             continue
         true_at_start = t_start >= threshold if op in (">=", "<=") else t_start > threshold
         true_before = bool(was_true[i]) if continued else bool(ev["initial_value"])
         if true_at_start and true_before:
             continue  # it never rises in this run
         rises = t_start if true_at_start else threshold
-        at = rises + float(ev["delay"])
+        delay = float(ev["delay"])
+        at = rises + delay
         if at < t_end:
-            from_trigger = float(ev["delay"]) > 0 and ev["use_values_from_trigger_time"]
-            fires.append((at, rises, label, writes, from_trigger))
-    fires.sort(key=lambda f: f[0])
+            from_trigger = delay > 0 and ev["use_values_from_trigger_time"]
+            # Taken on its double where it holds from its threshold on, with
+            # no delay: the run stops there (`time >= c`).
+            exact = delay == 0 and (true_at_start or op in (">=", "<="))
+            fires.append(_Fire(at, rises, label, writes, from_trigger, exact))
+    fires.sort(key=lambda f: f.at)
     for a, b in zip(fires, fires[1:], strict=False):
-        if abs(b[0] - a[0]) <= 1e-12 * max(1.0, abs(a[0])):
-            for name, _ in a[3] + b[3]:
-                unknown.setdefault(name, f"{a[2]} and {b[2]} set it at one instant")
+        if abs(b.at - a.at) <= 1e-12 * max(1.0, abs(a.at)):
+            for name, _ in a.writes + b.writes:
+                mark(name, f"{a.label} and {b.label} set it at one instant", a.at)
     if len(fires) > _HELD_STRETCHES_MOST:
         for f in fires:
-            for name, _ in f[3]:
-                unknown.setdefault(name, f"events set it {len(fires)} times in the run")
-    if instants:
-        schedule = _schedule_with_instants(
-            core, start, fires, instants, t_start, t_end, unknown, sets, value_of
-        )
-        return schedule, unknown, sets
+            for name, _ in f.writes:
+                mark(name, f"events set it {len(fires)} times in the run")
 
-    values = dict(start)
-    schedule = [(t_start, dict(values))]
-    for at, rises, label, writes, from_trigger in fires:
-        if from_trigger and any(rises < other[0] < at for other in fires):
-            # Its value is read at its trigger, before a fire it would read.
-            for name, _ in writes:
-                unknown.setdefault(
-                    name, f"{label} reads its value at its trigger, before another event sets it"
-                )
-            continue
-        new = {}
-        for name, text in writes:
-            v, why = value_of(_with_values(text, values), at)
-            if v is None:
-                unknown.setdefault(name, f"{label} sets it to {text}, {why}")
-            else:
-                new[name] = v
-        if new:
-            values = {**values, **new}
-            if at > t_start:
-                schedule.append((at, dict(values)))
-            else:
-                schedule[0] = (t_start, dict(values))
-            for name, v in new.items():
-                sets.setdefault(name, set()).add(v)
+    if writers:
+        schedule = _schedule_with_writers(
+            core,
+            scope,
+            start,
+            fires,
+            writers,
+            t_start,
+            t_end,
+            mark,
+            sets,
+            value_of,
+            stored,
+            reads_at,
+        )
+    else:
+        values = dict(start)
+        schedule = [(t_start, dict(values))]
+        for f in fires:
+            if f.from_trigger and any(f.rises < other.at < f.at for other in fires):
+                # Its value is read at its trigger, before a fire it would read.
+                for name, _ in f.writes:
+                    mark(
+                        name,
+                        f"{f.label} reads its value at its trigger, before another event sets it",
+                        f.at,
+                    )
+                continue
+            new = {}
+            reads_at.append(
+                (f.at, f.label, [n for n, _ in f.writes], reads_of(*(t for _, t in f.writes)))
+            )
+            for name, text in f.writes:
+                v, why = value_of(_with_values(text, values), f.at)
+                if v is None:
+                    mark(name, f"{f.label} sets it to {text}, {why}", f.at)
+                else:
+                    new[name] = stored(name, v)
+            if new:
+                values = {**values, **new}
+                if f.at > t_start:
+                    schedule.append((f.at, dict(values)))
+                else:
+                    schedule[0] = (t_start, dict(values))
+                for name, v in new.items():
+                    sets.setdefault(name, set()).add(v)
+
+    # A value read from a species once it is not known, and every change of a
+    # writer whose trigger reads one, is not known either: the schedule above
+    # read the species as it last knew it.
+    grew = True
+    while grew:
+        grew = False
+        for at, label, names, reads in reads_at:
+            hit = sorted(x for x in reads if unknown_from.get(x, math.inf) <= at)
+            for name in names if hit else ():
+                if unknown_from.get(name, math.inf) > at:
+                    mark(
+                        name,
+                        f"{label} sets it at t={at!r} from {hit[0]}, which is not known then",
+                        at,
+                    )
+                    grew = True
+        for label, names, reads in trigger_reads:
+            hit = sorted(reads & unknown_from.keys(), key=lambda x: unknown_from[x])
+            if not hit:
+                continue
+            since = unknown_from[hit[0]]
+            for name in names:
+                if unknown_from.get(name, math.inf) > since:
+                    mark(
+                        name,
+                        f"{label} sets it, and its trigger reads {hit[0]}, which is not "
+                        f"known from t={since!r}",
+                        since,
+                    )
+                    grew = True
     return schedule, unknown, sets
 
 
-class _InstantWriter(NamedTuple):
-    """An event that sets a held species and fires on the instants of an
-    equality on the clock (issue #1519): ``time == c && c < 91``, which then
-    sets ``c = c + 1``."""
+class _Fire(NamedTuple):
+    """An execution of an event whose time is known before the run."""
+
+    at: float
+    # When its trigger rose.
+    rises: float
+    label: str
+    # [(held species, value text)]
+    writes: list[tuple[str, str]]
+    # Its values are read at its trigger, not at *at*.
+    from_trigger: bool
+    # It executes on the double *at* itself, where a value may read the time.
+    exact: bool
+
+
+class _TriggerWriter(NamedTuple):
+    """An event that sets a held species and whose trigger is an equality on
+    the clock (issue #1519, ``time == c && c < 91``, which then sets
+    ``c = c + 1``), or reads held species and run constants alone
+    (``flag == 1``), so that only an event's execution can make it rise."""
 
     label: str
     # [(held species, value text)]
     writes: list[tuple[str, str]]
     # The trigger, and the equality on the clock of each of its parts joined
-    # by `or`, with functions written in.
+    # by `or`, with functions written in. No equalities: a flag.
     trigger: str
     atoms: tuple[str, ...]
     delay: float
     from_trigger: bool
     # Whether the trigger read true before the run started.
     true_before: bool
+    # The held species its trigger and its values read.
+    reads: frozenset[str] = frozenset()
 
 
-def _instant_writer(
+def _trigger_writer(
     ev, trigger: str, label: str, writes, scope, bodies, start
-) -> tuple[_InstantWriter | None, str]:
-    """*ev* as an :class:`_InstantWriter`, or ``None`` and why it is not one.
+) -> tuple[_TriggerWriter | None, str | None]:
+    """*ev* as a :class:`_TriggerWriter`, or ``None`` and why it is not one;
+    ``None, None`` for one that never executes.
 
     One: its trigger is an equality on the clock, alone or joined by ``and``
     (:func:`_instant_trigger_atoms`), that reads only literal time, run
-    constants and held species; after a constant delay, if any, and
-    persistent. (A trigger true at one instant is false again before a delay
-    ends, and a fire that is not persistent is not taken.) A requested
-    sensitivity parameter in it needs no test here: a run with sensitivity
-    columns refuses any event trigger that reads one, or a species, first."""
+    constants and held species; after a constant delay, if any. A trigger
+    true at one instant is false again before a delay ends, so one that is
+    not persistent never executes. Or its trigger reads held species and run
+    constants alone, with no delay. A requested sensitivity parameter in it
+    needs no test here: a run with sensitivity columns refuses any event
+    trigger that reads one, or a species, first."""
     flat = _inline_function_slots(trigger, bodies)
-    atoms = _instant_trigger_atoms(flat, scope)
     # On literal time alone: no stop is placed on an equality on a counter.
-    if atoms is None or not _clock_free(flat, frozenset(scope.clocks)):
+    if not _clock_free(flat, frozenset(scope.clocks)):
         return None, "a trigger that is no fixed time"
+    probe = _with_values(flat, start)
+    atoms = _instant_trigger_atoms(flat, scope)
+    delay = float(ev["delay"])
+    if atoms is None:
+        if not (
+            _clock_free(flat, scope.clock_symbols) and _reads_run_constants_alone(probe, scope)
+        ):
+            return None, "a trigger that is no fixed time"
+        if ev["delay_expr"] or delay > 0:
+            return None, "after a delay, on a trigger only events change"
+        writer = _TriggerWriter(
+            label, list(writes), flat, (), 0.0, False, bool(ev["initial_value"])
+        )
+        return writer, ""
     if ev["delay_expr"]:
         return None, f"after a delay of {ev['delay_expr']}, not a constant"
-    delay = float(ev["delay"])
     if delay > 0 and not ev["persistent"]:
-        return None, "after a delay, on an instant, and it is not persistent"
-    probe = _with_values(flat, start)
+        if len(atoms) == 1:
+            return None, None
+        return None, "after a delay, on instants, and it is not persistent"
     if not _reads_clock_and_run_constants(
         _inline_derived_param_refs(probe, scope.derived_exprs) or probe, scope
     ):
         return None, "on an instant that reads more than the clock and what events alone set"
     from_trigger = delay > 0 and bool(ev["use_values_from_trigger_time"])
-    writer = _InstantWriter(
+    writer = _TriggerWriter(
         label, list(writes), flat, tuple(atoms), delay, from_trigger, bool(ev["initial_value"])
     )
     return writer, ""
 
 
-def _schedule_with_instants(
-    core, start, fires, instants, t_start, t_end, unknown, sets, value_of
+# Executions of events a run's schedule of held species is followed through,
+# at most, where some fire on instants (issue #1519). Past it the run is
+# refused, and can be run in legs. Each costs a resolver call or two.
+_HELD_EXECUTIONS_MOST = 10_000
+
+
+def _schedule_with_writers(
+    core, scope, start, fires, writers, t_start, t_end, mark, sets, value_of, stored, reads_at
 ) -> list[tuple[float, dict[str, float]]]:
-    """:func:`_held_schedule`'s schedule where some of the events fire on the
-    instants of an equality (:class:`_InstantWriter`, issue #1519).
+    """:func:`_held_schedule`'s schedule where some of the events that set held
+    species are :class:`_TriggerWriter`s (issue #1519).
 
     Such an event's next instant reads what the events before it set: a dose
     counter ``time == c`` that sets ``c = c + 1`` fires at c, c + 1, c + 2 and
     so on. So the run is taken in time order: the next instant of each such
-    trigger is placed with the values that hold since the last execution, by
-    :func:`_resolve_flat` as the run's stops are, and the earliest of those and
-    of the executions *fires* lists is taken next. Not known, and every species
-    such an event sets is put in *unknown*: two of these at one instant, which
-    are not ordered here; an execution that makes a trigger rise on its own
-    instant; and more of them than :data:`_HELD_STRETCHES_MOST`."""
+    trigger is placed with the values that hold since the last execution, as
+    the run's stops are, and the earliest of those and of *fires* is taken
+    next, with every other at the same instant where their writes are apart
+    (none reads or sets what another sets). After them, a trigger that rises
+    on that instant (an equality its value now meets, or a flag it sets) fires
+    there too, as the engine fires it. Not known from that instant (*mark*),
+    and the writers no longer followed while the rest are: two at one instant
+    that read or set what the other sets; a trigger that rises on the instant
+    of a fire whose time is known only to within the tolerance; instants
+    closer than a stop tells apart; and, for all of them, more executions than
+    :data:`_HELD_EXECUTIONS_MOST`. What each execution reads goes in
+    *reads_at*."""
     values = dict(start)
     schedule = [(t_start, dict(values))]
-    # (execution time, trigger time, label, writes, from trigger, values frozen at the trigger)
-    pending = [(*f, None) for f in fires]
-    # The times executions were taken at, for a fixed fire that reads its
-    # values at its trigger.
+    # (execution time, trigger time, label, writes, from trigger, values frozen
+    # at the trigger or None, exact, from a writer)
+    # at the trigger or None, exact, the writer it is delayed from or -1)
+    pending: list[tuple] = [
+        (f.at, f.rises, f.label, f.writes, f.from_trigger, None, f.exact, -1) for f in fires
+    ]
     taken: list[float] = []
+    fixed_times = [f.at for f in fires]
+    alive = [True] * len(writers)
+    state = {"executions": 0}
+    names_read = set(start)
 
     def close(a: float, b: float) -> bool:
         return abs(a - b) <= 1e-12 * max(1.0, abs(a))
 
-    def holds(writer: _InstantWriter, at: float) -> bool:
+    def truth(writer: _TriggerWriter, at: float) -> bool:
         v = float(core.evaluate_over_times(_with_values(writer.trigger, values), [at], 0.0)[0])
         return v != 0.0
 
-    def next_instant(writer: _InstantWriter, after: float) -> float | None:
-        atoms = list(dict.fromkeys(_with_values(atom, values) for atom in writer.atoms))
-        _, _, crossings = _resolve_flat(
-            core,
-            after,
-            t_end,
-            atoms,
-            periodic=True,
-            touches=frozenset(atoms),
-            written={atom: atom for atom in atoms},
-        )
-        for stop in sorted(crossings, key=lambda s: s.time):
-            if after < stop.time < t_end and holds(writer, stop.time):
-                return float(stop.time)
+    def first_double(atom: str, after: float) -> float | None | bool:
+        """Where ``time() == x``, x a number, first holds: on the double x
+        itself or a few before it, as the evaluator reads it. ``False`` for
+        any other atom."""
+        split = _relational_split_op(atom)
+        if split is None or split[1] != "==":
+            return False
+        lhs, _, rhs = (_strip_redundant_parens(s.strip()) for s in split)
+        side = rhs if lhs in _TIME_SYMBOLS else lhs if rhs in _TIME_SYMBOLS else None
+        if side is None or not _reads_run_constants_alone(side, scope):
+            return False
+        x = float(core.evaluate_over_times(side, [after], 0.0)[0])
+        if not math.isfinite(x):
+            return None
+        at, reach = x, 0
+        held_at = float(core.evaluate_over_times(atom, [at], 0.0)[0]) != 0.0
+        if not held_at:
+            return False
+        while reach < _EQUALITY_REACH:
+            before = math.nextafter(at, -math.inf)
+            if float(core.evaluate_over_times(atom, [before], 0.0)[0]) == 0.0:
+                return at if after < at < t_end else None
+            at, reach = before, reach + 1
+        return False
+
+    def next_instant(writer: _TriggerWriter, after: float) -> float | None:
+        if not writer.atoms:
+            return None
+        found: list[float] = []
+        slow: list[str] = []
+        for atom in dict.fromkeys(_with_values(a, values) for a in writer.atoms):
+            at = first_double(atom, after)
+            if at is False:
+                slow.append(atom)
+            elif at is not None:
+                found.append(float(at))
+        if slow:
+            _, _, crossings = _resolve_flat(
+                core,
+                after,
+                t_end,
+                slow,
+                periodic=True,
+                touches=frozenset(slow),
+                written={atom: atom for atom in slow},
+            )
+            found += [float(s.time) for s in crossings if after < s.time < t_end]
+        for at in sorted(found):
+            if truth(writer, at):
+                return at
         return None
 
-    def give_up(why: str) -> None:
-        for writer in instants:
-            for name, _ in writer.writes:
-                unknown.setdefault(name, f"{writer.label} sets it, {why}")
-        for f in pending:
-            for name, _ in f[3]:
-                unknown.setdefault(name, f"{f[2]} sets it, {why}")
+    def give_up(ks, why: str, at: float) -> None:
+        """Writers *ks* are not followed from *at* on."""
+        for k in ks:
+            alive[k] = False
+            for name, _ in writers[k].writes:
+                mark(name, f"{writers[k].label} sets it, {why}", at)
+        # Executions delayed from them set species no longer known.
+        pending[:] = [p for p in pending if p[7] < 0 or alive[p[7]]]
 
-    def execute(label, writes, at, frozen, clock=False) -> None:
+    def execute(label, writes, at, frozen, clock, read_at) -> None:
         nonlocal values
         new = {}
+        if not frozen:
+            reads = {n for _, t in writes for n in _IDENTIFIER.findall(t)} & names_read
+            reads_at.append((read_at, label, [n for n, _ in writes], frozenset(reads)))
         for name, text in writes:
             v, why = frozen[name] if frozen else value_of(_with_values(text, values), at, clock)
             if v is None:
-                unknown.setdefault(name, f"{label} sets it to {text}, {why}")
+                mark(name, f"{label} sets it to {text}, {why}", at)
             else:
-                new[name] = v
+                new[name] = stored(name, v)
         taken.append(at)
+        state["executions"] += 1
         if new:
             values = {**values, **new}
             if at > t_start:
-                schedule.append((at, dict(values)))
+                if schedule[-1][0] == at:
+                    schedule[-1] = (at, dict(values))
+                else:
+                    schedule.append((at, dict(values)))
             else:
                 schedule[0] = (t_start, dict(values))
             for name, v in new.items():
                 sets.setdefault(name, set()).add(v)
 
-    nxt = [
-        t_start if holds(w, t_start) and not w.true_before else next_instant(w, t_start)
-        for w in instants
-    ]
-    count = 0
+    def apart(members) -> bool:
+        """Whether no member reads or sets what another sets."""
+        for i, (w1, r1) in enumerate(members):
+            for w2, r2 in members[i + 1 :]:
+                if w1 & w2 or w1 & r2 or w2 & r1:
+                    return False
+        return True
+
+    def take(k: int, at: float, exact: bool) -> None:
+        """Writer *k*'s trigger, risen at *at*."""
+        writer = writers[k]
+        if writer.delay == 0:
+            execute(writer.label, writer.writes, at, None, exact, at)
+        elif at + writer.delay < t_end:
+            frozen = None
+            if writer.from_trigger:
+                reads = {n for _, t in writer.writes for n in _IDENTIFIER.findall(t)} & names_read
+                reads_at.append(
+                    (at, writer.label, [n for n, _ in writer.writes], frozenset(reads))
+                )
+                frozen = {
+                    name: value_of(_with_values(text, values), at, exact)
+                    for name, text in writer.writes
+                }
+            pending.append(
+                (at + writer.delay, at, writer.label, writer.writes, False, frozen, False, k)
+            )
+            pending.sort(key=lambda p: p[0])
+
+    nxt: list[float | None] = []
+    for w in writers:
+        if truth(w, t_start) and not w.true_before:
+            nxt.append(t_start)
+        else:
+            nxt.append(next_instant(w, t_start))
+    last: float | None = None
     while True:
-        # Each candidate: (time, an instant's index or -1 for the next execution).
-        cands = [(t, k) for k, t in enumerate(nxt) if t is not None]
-        cands += [(f[0], -1) for f in pending]
+        cands = [(t, k) for k, t in enumerate(nxt) if t is not None and alive[k]]
+        cands += [(p[0], -1 - j) for j, p in enumerate(pending)]
         if not cands:
             break
-        at, k = min(cands)
-        group = [c for c in cands if close(c[0], at)]
-        if len(group) > 1 and any(c[1] >= 0 for c in group):
-            give_up(f"with another event at t={at!r}, in an order not known before the run")
-            break
-        count += 1
-        if count > _HELD_STRETCHES_MOST:
-            give_up(f"more than {_HELD_STRETCHES_MOST} times in the run (run it in shorter legs)")
-            break
-        before = [holds(w, at) for w in instants]
-        if k >= 0:
-            writer = instants[k]
-            if writer.delay == 0:
-                execute(writer.label, writer.writes, at, None, clock=True)
-            elif at + writer.delay < t_end:
-                frozen = None
-                if writer.from_trigger:
-                    frozen = {
-                        name: value_of(_with_values(text, values), at, True)
-                        for name, text in writer.writes
-                    }
-                pending.append((at + writer.delay, at, writer.label, writer.writes, False, frozen))
-                pending.sort(key=lambda f: f[0])
-            nxt[k] = next_instant(writer, at)
-            if writer.delay > 0:
-                continue  # nothing set at the trigger
-        else:
-            at, rises, label, writes, from_trigger, frozen = pending.pop(0)
-            if from_trigger and any(rises < other < at for other in [f[0] for f in fires] + taken):
+        at = min(c[0] for c in cands)
+        group = sorted(c for c in cands if close(c[0], at))
+        triggers = [k for _, k in group if k >= 0]
+        if triggers and last is not None and at != last and _same_instant(last, at, 1.0):
+            give_up(triggers, f"at t={last!r} and t={at!r}, closer than a stop tells apart", at)
+            continue
+        exact = bool(triggers) or at == t_start
+        if len(group) > 1:
+            members = []
+            for _, k in group:
+                if k >= 0:
+                    w = writers[k]
+                    names = {n for n, _ in w.writes} if w.delay == 0 else set()
+                    members.append((names, w.reads))
+                else:
+                    p = pending[-1 - k]
+                    reads = (
+                        frozenset()
+                        if p[5]
+                        else frozenset(n for _, t in p[3] for n in _IDENTIFIER.findall(t))
+                    )
+                    members.append(({n for n, _ in p[3]}, reads))
+            if not apart(members):
+                ks = triggers + [pending[-1 - k][7] for _, k in group if k < 0]
+                give_up(
+                    [k for k in ks if k >= 0],
+                    f"with another event at t={at!r}, in an order not known before the run",
+                    at,
+                )
+                if triggers:
+                    continue
+                # Fixed fires alone at one instant are taken in turn, as
+                # before; what they set was marked as their schedule was read.
+        before = [truth(w, at) if alive[k] else False for k, w in enumerate(writers)]
+        # The executions of the instant, in time order, then its triggers.
+        js = sorted(-1 - k for _, k in group if k < 0)
+        due = [pending[j] for j in js]
+        for j in reversed(js):
+            pending.pop(j)
+        exact = exact or any(p[6] for p in due)
+        for p in due:
+            p_at, rises, label, writes, from_trigger, frozen, p_exact, _ = p
+            if from_trigger and any(rises < other < p_at for other in fixed_times + taken):
                 for name, _ in writes:
-                    unknown.setdefault(
+                    mark(
                         name,
                         f"{label} reads its value at its trigger, before another event sets it",
+                        p_at,
                     )
                 continue
-            execute(label, writes, at, frozen)
-        if any(holds(w, at) and not was for w, was in zip(instants, before, strict=True)):
-            give_up(f"which makes an equality hold on its own instant, t={at!r}")
-            break
-        nxt = [next_instant(w, at) for w in instants]
+            execute(label, writes, p_at, frozen, p_exact, p_at)
+        for k in triggers:
+            take(k, at, True)
+        if state["executions"] > _HELD_EXECUTIONS_MOST:
+            give_up(
+                [k for k in range(len(writers)) if alive[k]],
+                f"more than {_HELD_EXECUTIONS_MOST} times in the run (run it in shorter legs)",
+                at,
+            )
+            continue
+        # A trigger the instant's executions make rise fires on it too.
+        for _ in range(len(writers) + 2):
+            now = [truth(w, at) if alive[k] else False for k, w in enumerate(writers)]
+            rose = [k for k in range(len(writers)) if now[k] and not before[k]]
+            if not rose:
+                break
+            if not exact:
+                give_up(
+                    rose,
+                    f"on the instant t={at!r} of an execution whose time is known only "
+                    "to within the tolerance",
+                    at,
+                )
+                break
+            members = [({n for n, _ in writers[k].writes}, writers[k].reads) for k in rose]
+            if not apart(members):
+                give_up(
+                    rose,
+                    f"with another event at t={at!r}, in an order not known before the run",
+                    at,
+                )
+                break
+            for k in rose:
+                take(k, at, True)
+            before = now
+        else:
+            give_up(rose, f"in executions at t={at!r} that go on rising", at)
+        if triggers:
+            last = at
+        nxt = [next_instant(w, at) if alive[k] else None for k, w in enumerate(writers)]
     return schedule
 
 
@@ -4058,6 +4363,7 @@ def _resolve_crossings(
     on_the_flip=False,
     before_the_flip=False,
     by_tread=False,
+    ssa=False,
 ) -> tuple[list[CrossingStop], list[CrossingStop], list[CrossingStop]]:
     """:func:`_resolve_flat`, with a condition that reads a species only events
     write resolved stretch by stretch between their executions (issue #1244).
@@ -4122,7 +4428,9 @@ def _resolve_crossings(
         return _resolve_flat(core, t_start, t_end, conditions, touches=touches, **kw)
     ctx = core.functional_jacobian_context()
     scope = switch_condition_scope(core, ctx)
-    schedule, unknown, sets = _held_schedule(core, scope, held, t_start, t_end, sensitivity_params)
+    schedule, unknown, sets = _held_schedule(
+        core, scope, held, t_start, t_end, sensitivity_params, ssa=ssa
+    )
     known = {cond: names for cond, names in reads.items() if not set(names) & unknown.keys()}
     # What is not known is read as before: given no stop, or refused below.
     rest = [cond for cond in conditions if cond not in known]
@@ -4136,10 +4444,9 @@ def _resolve_crossings(
             f"which reads {name}, and only events set {name}: {unknown[name]}. So the "
             "instants cannot be placed before the run, and no root finds an instant: the "
             "event would fire only where an output sample lands on one (issue #1519). "
-            f"bngsim refuses rather than miss it. An event that sets {name} at a fixed "
-            "time (`time >= c`) or on such an instant (`time == c`) to a value known before "
-            "the run, with no requested sensitivity parameter in either, has the instants "
-            "placed stretch by stretch."
+            f"bngsim refuses rather than miss it. Events that set {name} at a fixed time "
+            "(`time >= c`), on such an instant (`time == c`) or on a flag only events set, "
+            "to values known before the run, have the instants placed stretch by stretch."
         )
     # Only where a rate law reads it: a step across a window of a condition
     # that only an output reads moves nothing (as past the budget,
