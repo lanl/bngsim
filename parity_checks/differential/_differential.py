@@ -1773,10 +1773,19 @@ def _ssa_verdict(job, interp, comp, no_compiler, differ, oracles) -> Verdict:
     return Verdict("pass" if v["passed"] else "diff", v["max_z"], note, extra)
 
 
-#: The seconds an NF check may spend escalating a DIFF to more replicates, the
-#: way the stochastic suites do (30, then 100 each): a rung that would take
-#: longer is not walked, and the row says so.
-NF_ESCALATION_BUDGET = 300.0
+#: The most replicates of each engine an NF check pools escalating a DIFF, the
+#: way the stochastic suites do (30, then 100 each): a rung past it is not
+#: walked, and the row says so. 30 walks the 30-replicate rung and not the 100
+#: one, whatever the base. It's a count, not seconds (#1555). The budget was 300
+#: wall seconds, which made the runner decide: IL7_Carmen's 30-replicate rung
+#: took 174-334 s across runners, so it read PASS on most nights and DIFF on the
+#: slowest. No row walked to 100 in eleven nightly-parity runs to 2026-11-08,
+#: and the slowest rows' 70 more replicates (about 58 s each for
+#: population_scaling) would be past any cap. The per-model cap (the NF arm's
+#: ``--timeout`` in nightly-parity.yml, at which the pool kills the row) is the
+#: only wall-clock limit left, a backstop sized above the slowest row's base
+#: run plus this rung.
+NF_ESCALATION_MAX_REPLICATES = 30
 
 
 def _nf_runs(
@@ -1805,7 +1814,7 @@ def _nf_runs(
 
 
 class _OverBudget(RuntimeError):
-    """A rung of escalation that would not fit in :data:`NF_ESCALATION_BUDGET`."""
+    """A rung of escalation past :data:`NF_ESCALATION_MAX_REPLICATES`."""
 
 
 def check_nf(job: Job, checks=NF_CHECKS) -> dict[str, Verdict]:
@@ -1817,8 +1826,9 @@ def check_nf(job: Job, checks=NF_CHECKS) -> dict[str, Verdict]:
     (``differ.ensemble_verdict`` at ``ensemble_k_for(n_rep)``). A DIFF is
     escalated as bng_parity's NF track escalates one (``_run_escalation``: 30,
     then 100 replicates each, stopping where agreement stalls), within
-    :data:`NF_ESCALATION_BUDGET`, so finite-sample scatter clears and a real
-    divergence stays. A known difference (the context symmetry factor of #281,
+    :data:`NF_ESCALATION_MAX_REPLICATES`, so finite-sample scatter clears and a
+    real divergence stays. The limit counts replicates, so a seeded model reads
+    the same on any runner. A known difference (the context symmetry factor of #281,
     #298, #300, #301) is a DIFF the baseline holds, so a new one alerts."""
     parity = str(Path(__file__).resolve().parents[1])
     if parity not in sys.path:
@@ -1840,7 +1850,6 @@ def check_nf(job: Job, checks=NF_CHECKS) -> dict[str, Verdict]:
         return {
             "nf_reject_vs_exact": Verdict("skip", note=f"no replicates asked (n_rep {job.n_rep})")
         }
-    start = time.perf_counter()
     try:
         reject, names_r = _nf_runs(job, "nf_reject")
     except Exception as e:  # noqa: BLE001 - no base, as for ODE
@@ -1850,8 +1859,6 @@ def check_nf(job: Job, checks=NF_CHECKS) -> dict[str, Verdict]:
     def go():
         try:
             exact, names_e = _nf_runs(job, "nf_exact")
-            # one replicate of each engine, for what a rung of escalation costs
-            per_rep = (time.perf_counter() - start) / job.n_rep
         except bngsim.ModelError as e:
             # RuleMonkey refuses by name what it does not model (compartments).
             raise _Declined(f"{type(e).__name__}: {_first_line(e)}") from e
@@ -1888,16 +1895,17 @@ def check_nf(job: Job, checks=NF_CHECKS) -> dict[str, Verdict]:
             return status, v["frac_pass"], note, "frac_pass", differ.ENSEMBLE_PASS_FRAC
 
         def escalate(delta, seed, rung):
-            cost = per_rep * delta
-            if cost > NF_ESCALATION_BUDGET - (time.perf_counter() - t0):
-                raise _OverBudget(f"~{cost:.0f}s, past the {NF_ESCALATION_BUDGET:g}s budget")
+            # ``rung`` is the replicates each the pooled ensemble would hold
+            if rung > NF_ESCALATION_MAX_REPLICATES:
+                raise _OverBudget(
+                    f"{rung} replicates each, past the most of {NF_ESCALATION_MAX_REPLICATES}"
+                )
             more = [_nf_runs(job, e, delta, seed)[0] for e in ("nf_reject", "nf_exact")]
             return [(None, x, names_r) for x in more]
 
         judged: list = []
         pair = ((None, reject, names_r), (None, exact, names_e))
         status, frac, note, *_ = judge(*pair)
-        t0 = time.perf_counter()
         status, frac, note, _, _, rungs, stalled = stoch._run_escalation(
             *pair,
             status,
