@@ -4273,6 +4273,15 @@ struct CvodeSimulator::Impl {
     // to where it is small: V = sin(t) at its crossing near π is 1e-7 and
     // its error is what it took on at 1.
     std::vector<double> run_x_max;
+    // The species whose rate is one constant wherever the run goes, read from
+    // three probes of the right-hand side at shifted states and times: a
+    // counter clock, BNGL's `Time` species, a species nothing makes or uses.
+    // BDF integrates such a species exactly, so its tolerance blurs nothing a
+    // residual reads. Used only where a declined crossing is asked whether
+    // its flow carries it across (crossing_step_error); the restart test's
+    // band, which decides slides, keeps every species' tolerance. Empty where
+    // not read.
+    std::vector<char> rate_constant;
     void note_state(const double *x, int ns) {
         if (run_x_max.size() != static_cast<std::size_t>(ns)) {
             run_x_max.assign(static_cast<std::size_t>(ns), 0.0);
@@ -4612,6 +4621,12 @@ struct CvodeSimulator::Impl {
     // (t, x). `reads_time` is NetworkModel::state_switch_reads_time for `sw`.
     // Where given, `resolved` is set to whether the crossing cleared the band,
     // and `grad` to dg/dx at (t, x) over the residual's species (issue #908).
+    bool flow_carries_state_switch(void *cvode_mem, double t, const double *x, int ns,
+                                   const NetworkModel::StateSwitch &sw, int dir, double t_end,
+                                   N_Vector scratch, double rtol, double atol,
+                                   const std::vector<double> &atol_v, const AtolTracking &tracking,
+                                   bool reads_time, bool *resolved = nullptr,
+                                   std::vector<double> *grad_out = nullptr);
     // How far, in tolerance units of the species it is worst in, a step that
     // crossed switch `sw` at (t, x) carried the far side's rate over `span`
     // before it: in each species, the slope CVODE's interpolant has there
@@ -4622,9 +4637,19 @@ struct CvodeSimulator::Impl {
     // near side's rate (a window opened and closed in it) carries none; a
     // species that does not jump carries none. NaN where either side cannot
     // be read. `dir` is the side the crossing goes to, as a root's is.
+    //
+    // Where given, `genuine` is set to whether the crossing's flows are a
+    // crossing's: on the near side dg/dt is the same, to a quarter, at the
+    // distance read and twice it, and carries the residual across (as the
+    // restart test asks, flow_carries_state_switch); and on the far side it
+    // carries it on, away from the surface. Not a slide, whose far side sends
+    // it back; nor a state parked beside the surface or a residual on an
+    // unstable one, whose near-side flow falls with the distance; nor a
+    // graze, whose flow there falls as its root.
     double crossing_step_error(void *cvode_mem, double t, const double *x, const double *slope,
                                int ns, const NetworkModel::StateSwitch &sw, int dir, double span,
-                               N_Vector scratch);
+                               N_Vector scratch, bool *genuine = nullptr,
+                               double genuine_above = 0.0);
     // Forget the order probe's states asked for at `t` or later, read again
     // where the run re-takes a stretch.
     void forget_times_from(double t) {
@@ -4637,12 +4662,6 @@ struct CvodeSimulator::Impl {
             }
         }
     }
-    bool flow_carries_state_switch(void *cvode_mem, double t, const double *x, int ns,
-                                   const NetworkModel::StateSwitch &sw, int dir, double t_end,
-                                   N_Vector scratch, double rtol, double atol,
-                                   const std::vector<double> &atol_v, const AtolTracking &tracking,
-                                   bool reads_time, bool *resolved = nullptr,
-                                   std::vector<double> *grad_out = nullptr);
 };
 
 // ─── Shared integrator setup (used by run() and run_warm()) ──────────────────
@@ -11614,8 +11633,12 @@ bool CvodeSimulator::Impl::flow_carries_state_switch(
 double CvodeSimulator::Impl::crossing_step_error(void *cvode_mem, double t, const double *x,
                                                  const double *slope, int ns,
                                                  const NetworkModel::StateSwitch &sw, int dir,
-                                                 double span, N_Vector scratch) {
+                                                 double span, N_Vector scratch, bool *genuine,
+                                                 double genuine_above) {
     const double none = std::numeric_limits<double>::quiet_NaN();
+    if (genuine != nullptr) {
+        *genuine = false;
+    }
     auto &eval = model.evaluator();
     const std::vector<double> xv(x, x + ns);
     std::vector<double> xw(xv);
@@ -11626,6 +11649,7 @@ double CvodeSimulator::Impl::crossing_step_error(void *cvode_mem, double t, cons
     int best = -1;
     double best_gj = 0.0;
     double best_weight = 0.0;
+    std::vector<double> gx_star(static_cast<std::size_t>(ns), 0.0);
     for (int j : sw.species) {
         const auto uj = static_cast<std::size_t>(j);
         const double xj = xv[uj];
@@ -11638,6 +11662,9 @@ double CvodeSimulator::Impl::crossing_step_error(void *cvode_mem, double t, cons
         const double g_lo = eval.evaluate(sw.residual_expr_idx);
         xw[uj] = xj;
         const double gj = (g_hi - g_lo) / (2.0 * h);
+        if (std::isfinite(gj)) {
+            gx_star[uj] = gj;
+        }
         const double weight = std::fabs(gj) * std::max(std::fabs(xj), 1.0);
         if (std::isfinite(gj) && gj != 0.0 && weight > best_weight) {
             best_weight = weight;
@@ -11684,6 +11711,57 @@ double CvodeSimulator::Impl::crossing_step_error(void *cvode_mem, double t, cons
             return none;
         }
         worst = std::max(worst, moved);
+    }
+    if (genuine != nullptr && worst > genuine_above) {
+        // dg/dt at the point on the side `sign` whose residual reads
+        // `sign * dist`, along the rate there: a difference in time over the
+        // state that rate carries it to, one evaluation. NaN where the point is
+        // not on that side.
+        std::vector<double> fs(static_cast<std::size_t>(ns), 0.0);
+        auto flow_at = [&](double sign, double dist) {
+            const auto ub = static_cast<std::size_t>(best);
+            xw.assign(xv.begin(), xv.end());
+            xw[ub] = xv[ub] + (sign * dist - g_star) / best_gj;
+            sync_model_at(t, xw.data(), ns);
+            const double g0 = eval.evaluate(sw.residual_expr_idx);
+            if (!std::isfinite(g0) || g0 == 0.0 || (g0 < 0.0) != (sign < 0.0)) {
+                return none;
+            }
+            model.compute_derivs(t, xw.data(), fs.data());
+            const double dt = 1e-7 * std::max(std::fabs(t), 1.0);
+            for (int i = 0; i < ns; ++i) {
+                xw[static_cast<std::size_t>(i)] += dt * fs[static_cast<std::size_t>(i)];
+            }
+            sync_model_at(t + dt, xw.data(), ns);
+            return (eval.evaluate(sw.residual_expr_idx) - g0) / dt;
+        };
+        const double flow_near = flow_at(-far_sign, eta);
+        const double flow_twice = flow_at(-far_sign, 2.0 * eta);
+        const double flow_far = flow_at(far_sign, eta);
+        sync_model_at(t, x, ns);
+        const bool finite = std::isfinite(flow_near) && std::isfinite(flow_twice) &&
+                            std::fabs(flow_twice - flow_near) <= 0.25 * std::fabs(flow_near);
+        // And it carries the residual across by more than the restart test's
+        // bar over the stretch before the crossing: a state that rests within
+        // the tolerance of a threshold that dips to touch it (#903's
+        // `moving`) has a near-side flow of nothing, read the same at both
+        // distances. The band in the units CVODE holds each species to, but
+        // a species BDF integrates exactly at its rounding (rate_constant): a
+        // threshold on a counter clock held to 0.03 at rtol 1e-3 read a band
+        // as wide as its sweep, and a crossing it was stepping across by its
+        // own flow read as one it was not.
+        const double band = state_switch_band(sw.species.size(), [&](std::size_t q) {
+            const auto uj = static_cast<std::size_t>(sw.species[q]);
+            const double unit =
+                uj < rate_constant.size() && rate_constant[uj] != 0
+                    ? 64.0 * std::numeric_limits<double>::epsilon() *
+                          std::max(std::fabs(xv[uj]), 1.0)
+                    : (w[uj] > 0.0 ? 1.0 / w[uj] : std::numeric_limits<double>::infinity());
+            return std::fabs(gx_star[uj]) * unit;
+        });
+        const bool carries = std::fabs(flow_near) * span > state_switch_resolve_factor(ns) * band;
+        *genuine = finite && carries && flow_near * far_sign > 0.0 && flow_twice * far_sign > 0.0 &&
+                   flow_far * far_sign > 0.0;
     }
     return worst;
 }
@@ -18042,6 +18120,38 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // stale (see where it is set), and, where it is, the step CVODE does take
     // next where the step it took settles that (settled_next_step; NaN where
     // it does not).
+    // Which species change at one constant rate (Impl::rate_constant), read
+    // where a declined crossing can be re-taken.
+    impl_->rate_constant.clear();
+    if (n_state_switch > 0 && sens.n_total == 0) {
+        const double t0 = static_cast<double>(times.t_start);
+        const double *x0 = N_VGetArrayPointer(y);
+        std::vector<double> xs(x0, x0 + ns);
+        std::vector<double> f0(static_cast<std::size_t>(ns), 0.0);
+        std::vector<double> fk(static_cast<std::size_t>(ns), 0.0);
+        std::vector<char> constant(static_cast<std::size_t>(ns), 1);
+        try {
+            model.compute_derivs(t0, xs.data(), f0.data());
+            const double shifts[2][3] = {{1.0, 1.0, 1.0}, {2.3, 1.31, 0.7}};
+            for (const auto &sh : shifts) {
+                std::vector<double> xk(xs);
+                for (int i = 0; i < ns; ++i) {
+                    xk[static_cast<std::size_t>(i)] =
+                        xs[static_cast<std::size_t>(i)] * sh[1] + sh[2];
+                }
+                model.compute_derivs(t0 + sh[0] * std::max(std::fabs(t0), 1.0), xk.data(),
+                                     fk.data());
+                for (int i = 0; i < ns; ++i) {
+                    const auto ui = static_cast<std::size_t>(i);
+                    constant[ui] = constant[ui] && std::isfinite(f0[ui]) && fk[ui] == f0[ui];
+                }
+            }
+            impl_->rate_constant = std::move(constant);
+        } catch (...) {
+            impl_->rate_constant.clear();
+        }
+        impl_->sync_model_at(t0, x0, ns);
+    }
     const bool looks_inside =
         !wants_sensitivity && (!crossing_stops.empty() || !state_switch_roots.empty());
     // A run with no stop has no rate that repeats on one, and its look reads
@@ -18855,7 +18965,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         t_now = static_cast<sunrealtype>(t_a);
         return true;
     };
-    auto retake_crossing_step = [&](double t_r, int j, int dir) -> bool {
+    auto retake_crossing_step = [&](double t_r, int j, int dir, bool declined) -> bool {
         if (!retakes || state_switch_hold.n_held != 0 || !pending_events.empty() ||
             rise_on_stop_due) {
             return false;
@@ -18877,9 +18987,22 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             CVodeGetDky(cvode_mem, static_cast<sunrealtype>(t_r), 1, retake_slope) != CV_SUCCESS) {
             return false;
         }
+        bool genuine = false;
         const double err = impl_->crossing_step_error(
             cvode_mem, t_r, N_VGetArrayPointer(retake_x), N_VGetArrayPointer(retake_slope), ns,
-            *state_switches[static_cast<size_t>(j)], dir, t_r - t_a, retake_w);
+            *state_switches[static_cast<size_t>(j)], dir, t_r - t_a, retake_w,
+            declined ? &genuine : nullptr, kCrossingStepShare);
+        // A crossing the restart test declined, as one its tolerance cannot
+        // tell from its blur, is re-taken where its flows are a crossing's
+        // (crossing_step_error's `genuine`). Re-taken, it is not restarted at
+        // on its far side, which is what the decline refuses: the stretch is
+        // integrated again on the near side to a stop short of it, and CVODE
+        // steps on from there. A threshold on a counter clock, held at C = 30
+        // to 0.03 at rtol 1e-3, was declined however far past it the step
+        // went, and the pulse a falling one cut off was lost.
+        if (declined && !genuine) {
+            return false;
+        }
         if (!(err > kCrossingStepShare)) {
             return false;
         }
@@ -20499,6 +20622,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 bool restart = true;
                 int carried_switch = -1;
                 int carried_dir = 0;
+                int declined_switch = -1;
+                int declined_dir = 0;
                 if (!any_event_fired && sens.n_total == 0 && !switched.empty()) {
                     bool other_root = false;
                     for (int i = 0; i < n_events + n_disc; ++i) {
@@ -20549,6 +20674,10 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                             // Issue #908: a slide's crossings, declined as
                             // unresolved on consecutive steps, are held off the
                             // root search (StateSwitchHold).
+                            if (declined_switch < 0) {
+                                declined_switch = j;
+                                declined_dir = root_info[n_events + n_disc + j];
+                            }
                             int &run_j = state_switch_hold.run[jx];
                             if (resolved) {
                                 run_j = 0;
@@ -20686,8 +20815,14 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 // rate it cannot absorb: the step is taken again from its
                 // start up to it, the rows recorded inside that stretch with
                 // it (retake_crossing_step).
-                if (restart && carried_switch >= 0 &&
-                    retake_crossing_step(static_cast<double>(t_ret), carried_switch, carried_dir)) {
+                const bool retaken =
+                    restart ? carried_switch >= 0 &&
+                                  retake_crossing_step(static_cast<double>(t_ret), carried_switch,
+                                                       carried_dir, false)
+                            : declined_switch >= 0 &&
+                                  retake_crossing_step(static_cast<double>(t_ret), declined_switch,
+                                                       declined_dir, true);
+                if (retaken) {
                     for (int k = 1; k < i; ++k) {
                         if (t_out[k] > static_cast<double>(t_now)) {
                             retake_from_row = k;
