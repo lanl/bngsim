@@ -715,6 +715,8 @@ struct target_ctx {
   VARR (label_ref_t) * label_refs;
   VARR (uint64_t) * abs_address_locs;
   VARR (MIR_code_reloc_t) * relocs;
+  bitmap_t far_label_refs; /* BNGsim local carry (lanl/bngsim#1575): see target_translate */
+  VARR (uint64_t) * far_need_counts; /* BNGsim local carry (lanl/bngsim#1575) */
 };
 
 #define alloca_p gen_ctx->target_ctx->alloca_p
@@ -730,6 +732,8 @@ struct target_ctx {
 #define label_refs gen_ctx->target_ctx->label_refs
 #define abs_address_locs gen_ctx->target_ctx->abs_address_locs
 #define relocs gen_ctx->target_ctx->relocs
+#define far_label_refs gen_ctx->target_ctx->far_label_refs
+#define far_need_counts gen_ctx->target_ctx->far_need_counts
 
 static MIR_disp_t target_get_stack_slot_offset (gen_ctx_t gen_ctx, MIR_type_t type MIR_UNUSED,
                                                 MIR_reg_t slot) {
@@ -1035,8 +1039,13 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
       else
         saved_fregs_num++;
     }
+  /* BNGsim local carry (lanl/bngsim#1575, the link register): x30 is
+     allocatable and caller-saved, so a leaf function the register allocator
+     gave it to returned to whatever value it held last.  Only the prologue
+     saves it and the epilogue restores it.  */
   if (leaf_p && !alloca_p && saved_iregs_num == 0 && saved_fregs_num == 0 && !func->vararg_p
-      && stack_slots_num == 0 && !block_arg_func_p && small_aggregate_save_area == 0)
+      && stack_slots_num == 0 && !block_arg_func_p && small_aggregate_save_area == 0
+      && !bitmap_bit_p (used_hard_regs, LINK_HARD_REG))
     return;
   sp_reg_op = _MIR_new_var_op (ctx, SP_HARD_REG);
   fp_reg_op = _MIR_new_var_op (ctx, FP_HARD_REG);
@@ -2163,6 +2172,17 @@ static uint32_t check_and_set_mask (uint32_t opcode_mask, uint32_t mask) {
   return opcode_mask | mask;
 }
 
+/* BNGsim local carry (lanl/bngsim#1575): the short branch (b.cond, cbz or cbnz)
+   taken exactly when OPCODE is not.  */
+static uint32_t invert_short_branch (uint32_t opcode) {
+  if ((opcode & 0xff000010) == 0x54000000) { /* b.cond */
+    gen_assert ((opcode & 0xe) != 0xe);      /* not al or nv */
+    return opcode ^ 1;                       /* eq<->ne, cs<->cc, ..., gt<->le */
+  }
+  gen_assert ((opcode & 0x7e000000) == 0x34000000); /* cbz or cbnz */
+  return opcode ^ (1 << 24);                        /* cbz<->cbnz */
+}
+
 static void out_insn (gen_ctx_t gen_ctx, MIR_insn_t insn, const char *replacement,
                       void **jump_addrs) {
   MIR_context_t ctx = gen_ctx->ctx;
@@ -2422,6 +2442,16 @@ static void out_insn (gen_ctx_t gen_ctx, MIR_insn_t insn, const char *replacemen
       opcode |= imm12_shift << 22;
       opcode_mask = check_and_set_mask (opcode_mask, 0x3 << 22);
     }
+    if (label_ref_num >= 0 && jump_addrs == NULL
+        && bitmap_bit_p (far_label_refs, (size_t) label_ref_num)) {
+      /* BNGsim local carry (lanl/bngsim#1575): target_translate found this
+         branch's label beyond the +-1MB reach of b.cond, cbz and cbnz.  Branch on
+         the opposite condition over a b, which reaches +-128MB.  */
+      gen_assert (VARR_GET (label_ref_t, label_refs, label_ref_num).short_p);
+      put_uint64 (gen_ctx, invert_short_branch (opcode) | (2 << 5), 4); /* skip the b */
+      VARR_ADDR (label_ref_t, label_refs)[label_ref_num].short_p = FALSE;
+      opcode = 0x14000000; /* b */
+    }
     if (label_ref_num >= 0) VARR_ADDR (label_ref_t, label_refs)
     [label_ref_num].label_val_disp = VARR_LENGTH (uint8_t, result_code);
 
@@ -2471,6 +2501,82 @@ static int target_insn_ok_p (gen_ctx_t gen_ctx, MIR_insn_t insn) {
 
 static void target_split_insns (gen_ctx_t gen_ctx MIR_UNUSED) {}
 
+/* BNGsim local carry (lanl/bngsim#1575): the byte offset from LR's insn to its
+   label.  */
+static int64_t label_ref_offset (gen_ctx_t gen_ctx, const label_ref_t *lr) {
+  return (int64_t) get_label_disp (gen_ctx, lr->u.label) - (int64_t) lr->label_val_disp;
+}
+
+/* BNGsim local carry (lanl/bngsim#1575): whether LR's insn reaches a label OFFSET
+   bytes away with GROWTH more bytes of code between them: a 19-bit insn offset
+   (b.cond, cbz, cbnz, adr) reaches +-1MB, a 26-bit one (b) +-128MB.  */
+static int label_ref_reach_p (const label_ref_t *lr, int64_t offset, int64_t growth) {
+  int64_t reach = lr->short_p ? (int64_t) 1 << 20 : (int64_t) 1 << 27;
+  return -reach + growth <= offset && offset < reach - growth;
+}
+
+/* BNGsim local carry (lanl/bngsim#1575): how many relaxed branches it takes to
+   push label ref LR out of reach: 0 if it is out already, N + 1 if no N can or
+   it is no short branch.  An adr (MIR_LADDR) has no longer form and is never
+   relaxed; check_label_refs_reach reports it.
+
+   Each relaxed branch moves the code after it by 4 bytes, and a MIR_SWITCH's
+   table, which out_insn aligns to 8 bytes, can turn that into 8 or 0 past it.
+   So past any point the code moves by 0 to 8 bytes per relaxed branch, and an
+   offset changes by at most that much.  */
+static size_t far_label_ref_need (gen_ctx_t gen_ctx, const label_ref_t *lr, size_t n) {
+  if (lr->abs_addr_p || !lr->short_p) return n + 1;
+  uint32_t insn = *(uint32_t *) (VARR_ADDR (uint8_t, result_code) + lr->label_val_disp);
+  if ((insn & 0x9f000000) == 0x10000000) return n + 1; /* adr */
+  int64_t offset = label_ref_offset (gen_ctx, lr), reach = (int64_t) 1 << 20;
+  /* The most growth with which it still reaches (see label_ref_reach_p): */
+  int64_t slack = offset + reach < reach - 1 - offset ? offset + reach : reach - 1 - offset;
+  if (slack < 0) return 0;
+  uint64_t need = (uint64_t) slack / 8 + 1; /* the fewest m with 8m > slack */
+  return need > n ? n + 1 : (size_t) need;
+}
+
+/* BNGsim local carry (lanl/bngsim#1575): mark in far_label_refs the short
+   branches to relax, and return whether any is marked: those needing m or fewer
+   for the least m such that exactly m do, the least fixed point of the bound of
+   8 bytes per relaxed branch (not always the fewest branches that would do).  */
+static int mark_far_label_refs (gen_ctx_t gen_ctx) {
+  size_t n = VARR_LENGTH (label_ref_t, label_refs), i, m;
+  uint64_t *count;
+
+  VARR_TRUNC (uint64_t, far_need_counts, 0);
+  for (i = 0; i <= n + 1; i++) VARR_PUSH (uint64_t, far_need_counts, 0);
+  count = VARR_ADDR (uint64_t, far_need_counts);
+  for (i = 0; i < n; i++)
+    count[far_label_ref_need (gen_ctx, &VARR_ADDR (label_ref_t, label_refs)[i], n)]++;
+  for (i = 1; i <= n; i++) count[i] += count[i - 1]; /* count[m]: how many need <= m */
+  for (m = count[0]; count[m] != m; m = count[m]) /* nondecreasing, at most n */
+    ;
+  if (m == 0) return FALSE;
+  for (i = 0; i < n; i++)
+    if (far_label_ref_need (gen_ctx, &VARR_ADDR (label_ref_t, label_refs)[i], n) <= m)
+      bitmap_set_bit_p (far_label_refs, i);
+  return TRUE;
+}
+
+/* BNGsim local carry (lanl/bngsim#1575): report through MIR's error function an
+   insn that cannot reach its label, rather than encode a wrapped offset.  */
+static void check_label_refs_reach (gen_ctx_t gen_ctx) {
+  for (size_t i = 0; i < VARR_LENGTH (label_ref_t, label_refs); i++) {
+    const label_ref_t *lr = &VARR_ADDR (label_ref_t, label_refs)[i];
+    if (lr->abs_addr_p) continue;
+    int64_t offset = label_ref_offset (gen_ctx, lr);
+    if (label_ref_reach_p (lr, offset, 0)) continue;
+    (*MIR_get_error_func (gen_ctx->ctx)) (MIR_invalid_insn_error,
+                                          "function %s is too large for aarch64: a branch or "
+                                          "adr at byte %llu of its code cannot reach its label "
+                                          "%lld bytes away",
+                                          curr_func_item->u.func->name,
+                                          (unsigned long long) lr->label_val_disp,
+                                          (long long) offset);
+  }
+}
+
 static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
   MIR_context_t ctx = gen_ctx->ctx;
   size_t i;
@@ -2478,25 +2584,37 @@ static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
   const char *replacement;
 
   gen_assert (curr_func_item->item_type == MIR_func_item);
-  VARR_TRUNC (uint8_t, result_code, 0);
-  VARR_TRUNC (label_ref_t, label_refs, 0);
-  VARR_TRUNC (uint64_t, abs_address_locs, 0);
-  for (insn = DLIST_HEAD (MIR_insn_t, curr_func_item->u.func->insns); insn != NULL;
-       insn = DLIST_NEXT (MIR_insn_t, insn)) {
-    if (insn->code == MIR_LABEL) {
-      set_label_disp (gen_ctx, insn, VARR_LENGTH (uint8_t, result_code));
-    } else if (insn->code != MIR_USE) {
-      replacement = find_insn_pattern_replacement (gen_ctx, insn);
-      if (replacement == NULL) {
-        fprintf (stderr, "fatal failure in matching insn:");
-        MIR_output_insn (ctx, stderr, insn, curr_func_item->u.func, TRUE);
-        exit (1);
-      } else {
-        gen_assert (replacement != NULL);
-        out_insn (gen_ctx, insn, replacement, NULL);
+  /* BNGsim local carry (lanl/bngsim#1575): upstream encodes each branch in one
+     pass and masks its offset to the insn's field, so a b.cond, cbz or cbnz whose
+     label is more than 1MB away jumped to a wrong address, as did a b more than
+     128MB away.  Translate a second time if any short branch is that far, with
+     each such branch relaxed (see out_insn), and refuse what is still out of
+     reach.  */
+  bitmap_clear (far_label_refs);
+  for (int relaxed_p = FALSE;; relaxed_p = TRUE) {
+    VARR_TRUNC (uint8_t, result_code, 0);
+    VARR_TRUNC (label_ref_t, label_refs, 0);
+    VARR_TRUNC (uint64_t, abs_address_locs, 0);
+    for (insn = DLIST_HEAD (MIR_insn_t, curr_func_item->u.func->insns); insn != NULL;
+         insn = DLIST_NEXT (MIR_insn_t, insn)) {
+      if (insn->code == MIR_LABEL) {
+        set_label_disp (gen_ctx, insn, VARR_LENGTH (uint8_t, result_code));
+      } else if (insn->code != MIR_USE) {
+        replacement = find_insn_pattern_replacement (gen_ctx, insn);
+        if (replacement == NULL) {
+          fprintf (stderr, "fatal failure in matching insn:");
+          MIR_output_insn (ctx, stderr, insn, curr_func_item->u.func, TRUE);
+          exit (1);
+        } else {
+          gen_assert (replacement != NULL);
+          out_insn (gen_ctx, insn, replacement, NULL);
+        }
       }
     }
+    if (relaxed_p || !mark_far_label_refs (gen_ctx)) break;
   }
+  bitmap_clear (far_label_refs);
+  check_label_refs_reach (gen_ctx);
   /* Setting up labels */
   for (i = 0; i < VARR_LENGTH (label_ref_t, label_refs); i++) {
     label_ref_t lr = VARR_GET (label_ref_t, label_refs, i);
@@ -2553,6 +2671,7 @@ static void target_bb_translate_start (gen_ctx_t gen_ctx) {
   VARR_TRUNC (uint8_t, result_code, 0);
   VARR_TRUNC (label_ref_t, label_refs, 0);
   VARR_TRUNC (uint64_t, abs_address_locs, 0);
+  bitmap_clear (far_label_refs); /* BNGsim local carry (lanl/bngsim#1575): none here */
 }
 
 static void target_bb_insn_translate (gen_ctx_t gen_ctx, MIR_insn_t insn, void **jump_addrs) {
@@ -2667,6 +2786,8 @@ static void target_init (gen_ctx_t gen_ctx) {
   VARR_CREATE (label_ref_t, label_refs, alloc, 0);
   VARR_CREATE (uint64_t, abs_address_locs, alloc, 0);
   VARR_CREATE (MIR_code_reloc_t, relocs, alloc, 0);
+  far_label_refs = bitmap_create (alloc);
+  VARR_CREATE (uint64_t, far_need_counts, alloc, 0);
   patterns_init (gen_ctx);
   temp_jump = MIR_new_insn (ctx, MIR_JMP, MIR_new_label_op (ctx, NULL));
   temp_jump_replacement = find_insn_pattern_replacement (gen_ctx, temp_jump);
@@ -2680,6 +2801,8 @@ static void target_finish (gen_ctx_t gen_ctx) {
   VARR_DESTROY (label_ref_t, label_refs);
   VARR_DESTROY (uint64_t, abs_address_locs);
   VARR_DESTROY (MIR_code_reloc_t, relocs);
+  bitmap_destroy (far_label_refs);
+  VARR_DESTROY (uint64_t, far_need_counts);
   MIR_free (alloc, gen_ctx->target_ctx);
   gen_ctx->target_ctx = NULL;
 }

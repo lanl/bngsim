@@ -15,7 +15,9 @@ under the MIR CI job.
 
 import ast
 import errno
+import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -421,3 +423,385 @@ def test_a_compile_at_a_cap_on_the_address_space_raises(tmp_path):
     assert set(outcomes) <= {"compiled", "RuntimeError", "MemoryError"}, outcomes
     assert "RuntimeError" in outcomes, outcomes
     assert outcomes[-1] == "compiled", outcomes
+
+
+# ── Issue #1575: a branch more than a megabyte of code from its label ────────
+# MIR's aarch64 backend encoded each branch in one pass and masked its offset to
+# the instruction's field: 19 bits of words for b.cond, cbz and cbnz (±1 MiB),
+# 26 for b (±128 MiB). A conditional branch over more than a megabyte of code
+# went to some other address. BIOMD0000000471's sensitivity run died there with
+# a bus error; where the address fell inside the function, the function carried
+# on from the middle of its code and returned a wrong number. The local carry in
+# third_party/mir/mir-gen-aarch64.c relaxes such a branch into the opposite
+# condition over a b, and refuses by name an insn that even so cannot reach.
+#
+# BIG is n statements r = r * 0.9999 + x: 24 bytes of code each at MIR levels
+# 0 and 1, so 80,000 come to 1,920,000 bytes (1.83 MiB). That is the premise of the
+# branch test, and the address-taken label test checks it: its label sits past
+# the same BIG, and it is refused only when that is more than a megabyte away.
+# Level 2 compiles a function that size in about a minute, and emits the same
+# branches. Oracle: the closed form, bit for bit: the result says which path
+# ran, and how many times. Each probe runs in a child, where a wild branch is a
+# failed test, not a lost worker.
+_FAR_BRANCH_STATEMENTS = 80_000
+
+_FAR_BRANCH_PROBE = r"""
+import ctypes, json, math, operator, sys
+from bngsim._bngsim_core import _MirJit
+
+level, n = int(sys.argv[1]), int(sys.argv[2])
+# Each condition as C and as Python, and whether it takes NaN. An unsigned
+# operand goes through long first: a negative double converted straight to an
+# unsigned type is undefined behaviour.
+OPS = {"==": operator.eq, "!=": operator.ne, "<": operator.lt,
+       "<=": operator.le, ">": operator.gt, ">=": operator.ge}
+TYPES = {
+    "int": ("", int),
+    "unsigned": ("(long) ", lambda v: int(v) % 2**32),
+    "long": ("", int),
+    "unsigned long": ("(long) ", lambda v: int(v) % 2**64),
+    "float": ("", float),
+    "double": ("", float),
+}
+CONDS = []
+for t, (via, conv) in TYPES.items():
+    for op, fn in OPS.items():
+        CONDS.append((f"(({t}) {via}a {op} ({t}) {via}b)",
+                      lambda a, b, conv=conv, fn=fn: fn(conv(a), conv(b)),
+                      t in ("float", "double")))
+CONDS.append(("((long) a)", lambda a, b: int(a) != 0, False))  # cbz, cbnz
+CONDS.append(("((int) a)", lambda a, b: int(a) != 0, False))
+
+# far_forward: with k == i, every test but the i-th passes on k, so BIG runs
+# exactly when condition i holds; each test's branch past BIG is far.
+# far_backward: BIG runs once, and again when condition k holds; each
+# condition's branch back to the top is far.
+BIG = "".join("    r = r * 0.9999 + x;\n" for _ in range(n))
+fwd = "".join(f"  if (k != {i} || {c})\n" for i, (c, _, _) in enumerate(CONDS))
+back = " || ".join(f"(k == {i} && {c})" for i, (c, _, _) in enumerate(CONDS))
+SOURCE = f'''
+double far_forward(double x, double a, double b, double kd) {{
+  long k = (long) kd;
+  double r = 1.0;
+{fwd}  {{
+{BIG}  }}
+  return r;
+}}
+double far_backward(double x, double a, double b, double kd) {{
+  long k = (long) kd;
+  double r = 1.0;
+  int i = 0;
+  do {{
+{BIG}  }} while (++i < 2 && ({back}));
+  return r;
+}}
+'''
+once = 1.0
+for _ in range(n):
+    once = once * 0.9999 + 0.5
+twice = once
+for _ in range(n):
+    twice = twice * 0.9999 + 0.5
+
+jit = _MirJit(SOURCE, level)
+sig = ctypes.CFUNCTYPE(ctypes.c_double, *[ctypes.c_double] * 4)
+forward = sig(jit.address("far_forward"))
+backward = sig(jit.address("far_backward"))
+wrong, calls = [], 0
+values = [-1.0, 0.0, 1.0, 2.0]
+for k, (c, holds, takes_nan) in enumerate(CONDS):
+    pairs = [(a, b) for a in values for b in values]
+    if takes_nan:
+        pairs += [(math.nan, 1.0), (1.0, math.nan), (math.nan, math.nan)]
+    for a, b in pairs:
+        h = holds(a, b)
+        for name, fn, want in (("forward", forward, once if h else 1.0),
+                               ("backward", backward, twice if h else once)):
+            got = fn(0.5, a, b, float(k))
+            calls += 1
+            if got != want:
+                wrong.append((name, c, a, b, got, want))
+print(json.dumps({"calls": calls, "wrong": wrong[:10], "n_wrong": len(wrong)}))
+"""
+
+_AARCH64 = platform.machine().lower() in ("arm64", "aarch64")
+
+
+@pytest.mark.parametrize("level", [0, 1])
+def test_a_conditional_branch_over_more_than_a_megabyte_of_code_reaches_its_label(level):
+    """Every comparison C has (==, !=, <, <=, >, >= on int, unsigned, long,
+    unsigned long, float and double, NaN included) and a bare test of a value,
+    as a branch more than a megabyte of code forward and backward of its label:
+    all ten b.cond conditions MIR emits from C, cbz and cbnz. On main the first
+    call at either level died with SIGILL; a lone if (p) over 100,000 statements
+    returned 4999.2 for p == 0 (the digits depend on where the wrapped offset
+    lands), which must skip them and return 1."""
+    done = subprocess.run(
+        [sys.executable, "-c", _FAR_BRANCH_PROBE, str(level), str(_FAR_BRANCH_STATEMENTS)],
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    assert done.returncode == 0, (done.returncode, done.stderr[-2000:])
+    out = json.loads(done.stdout.strip().splitlines()[-1])
+    assert out["n_wrong"] == 0, out["wrong"]
+    assert out["calls"] == 2 * (24 * 16 + 12 * 19 + 2 * 16), out["calls"]
+
+
+_FAR_LABEL_PROBE = r"""
+import ctypes, json, sys
+from bngsim._bngsim_core import _MirJit
+
+level, n = int(sys.argv[1]), int(sys.argv[2])
+BIG = "".join("    r = r * 0.9999 + x;\n" for _ in range(n))
+SOURCE = (
+    "double f(double x, double p) {\n  void *done_at = &&done;\n  double r = 1.0;\n"
+    "  if (p != 0.0) goto *done_at;\n" + BIG + "done:\n  return r;\n}\n"
+)
+sig = ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_double, ctypes.c_double)
+out = {}
+try:
+    jit = _MirJit(SOURCE, level)
+    f = sig(jit.address("f"))
+    out["values"] = [f(0.5, 0.0), f(0.5, 1.0)]
+except RuntimeError as e:
+    out["refused"] = str(e)
+# The thread compiles again after a refusal.
+small = _MirJit("double g(double x) { return 2.0 * x; }", 0)
+out["after"] = ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_double)(small.address("g"))(1.5)
+print(json.dumps(out))
+"""
+
+
+@pytest.mark.parametrize("level", [0, 1])
+def test_an_address_taken_label_out_of_adr_reach_is_refused_by_name(level):
+    """&&label is an adr on aarch64, a 19-bit offset with no longer form, so a
+    label more than a megabyte of code away cannot be reached: MIR refuses the
+    function through its error function and MirJit raises. On main the compile
+    succeeded and the goto went to a wrong address. Where an address-taken
+    label is within reach of the target's code (x86-64's ±2 GiB), it runs.
+
+    The refusal is also the premise of the branch test above: the same BIG, at
+    the same level, is more than a megabyte of code."""
+    n = _FAR_BRANCH_STATEMENTS
+    done = subprocess.run(
+        [sys.executable, "-c", _FAR_LABEL_PROBE, str(level), str(n)],
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    assert done.returncode == 0, (done.returncode, done.stderr[-2000:])
+    out = json.loads(done.stdout.strip().splitlines()[-1])
+    assert out["after"] == 3.0, out
+    if _AARCH64:
+        assert "values" not in out, out
+        assert "function f is too large for aarch64" in out["refused"], out
+        assert "cannot reach its label" in out["refused"], out
+    else:
+        once = 1.0
+        for _ in range(n):
+            once = once * 0.9999 + 0.5
+        assert out == {"values": [once, 1.0], "after": 3.0}, out
+
+
+# A branch that reaches its label in the first translation can be pushed out of
+# reach in the second, by the branches relaxed between it and its label. Each
+# adds 4 bytes, and a jump table, which MIR aligns to 8, can add 4 more past it.
+# A sparse switch's compares come before its cases, so an early compare's
+# branch to case 2 has a later compare's branch to case 3 inside it, and case
+# 1's body (a dense switch's table, then n one-insn statements) sets how far
+# case 2 is. With n = 262,093 (MIR level 0 at 439a90a2, 4 bytes a statement)
+# the branch to case 2 is 8 bytes short of 1 MiB and the table's padding flips:
+# a margin of 4 bytes a relaxed branch refused the function ("cannot reach its
+# label 1048576 bytes away"). The window around it covers a few bytes of drift.
+_CROSSING_PROBE = r"""
+import ctypes, json, sys
+from bngsim._bngsim_core import _MirJit
+
+sig = ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_double, ctypes.c_int)
+body2 = "".join("      r = r + x;\n" for _ in range(2000))
+out = []
+for n in map(int, sys.argv[1:]):
+    fill = "".join("      r = r + x;\n" for _ in range(n))
+    source = f'''double f(double x, int p) {{
+  double r = 1.0;
+  long t = p;
+  switch (p) {{
+    case 1:
+      switch (t) {{
+        case 0: r += 1; break; case 1: r += 2; break; case 2: r += 3; break;
+        case 3: r += 4; break; case 4: r += 5; break; case 5: r += 6; break;
+      }}
+{fill}      break;
+    case 2:
+      r = -2.0;
+{body2}      break;
+    case 3:
+      r = -3.0;
+      break;
+  }}
+  return r;
+}}
+'''
+    try:
+        jit = _MirJit(source, 0)
+    except RuntimeError as e:
+        out.append((n, str(e)))
+        continue
+    f = sig(jit.address("f"))
+    got = [f(0.5, p) for p in (0, 1, 2, 3)]
+    if got != [1.0, 3.0 + 0.5 * n, 998.0, -3.0]:
+        out.append((n, got))
+print(json.dumps(out))
+"""
+
+
+def test_a_branch_the_relaxed_ones_push_toward_its_reach_still_reaches():
+    """The second translation's margin covers a jump table's alignment: every
+    layout in the window compiles and gives the closed form, where a margin of 4
+    bytes a relaxed branch refused n = 262,093."""
+    if not _AARCH64:
+        pytest.skip("aarch64 only: the layout is placed in its code, and x86-64 relaxes no branch")
+    done = subprocess.run(
+        [sys.executable, "-c", _CROSSING_PROBE, *map(str, range(262_090, 262_097))],
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    assert done.returncode == 0, (done.returncode, done.stderr[-2000:])
+    assert json.loads(done.stdout.strip().splitlines()[-1]) == []
+
+
+# The codegen path itself. bngsim_dfdp is a switch over the parameters with a
+# case for each one a rate law reads, compiled to a jump table; a parameter with
+# no case takes the switch's range check to the end of the function. In a model
+# of 9,000 reactions that is more than a megabyte away (the source is over 4 MB,
+# so MIR level 0), and on main a sensitivity to such a parameter died with
+# SIGSEGV; at 16,000 reactions it returned 72.4 where 0 is exact, with no error.
+# BIOMD0000000471 took the same branch: its switch starts at case 2, and its
+# first parameter, `cell`, has no case. Every kinetic law there is cell * v(...),
+# which the division by the compartment's volume cancels, so 0 is right there
+# too (libRoadRunner's central difference through init(cell): at most 6e-11).
+_UNUSED_PARAMETER_PROBE = r"""
+import json, random, sys
+import numpy as np
+from bngsim import Model, Simulator
+
+path = sys.argv[1]
+rng = random.Random(1575)
+n_species, n_reactions, n_rates = 200, 9000, 4
+lines = ["begin parameters"]
+for p in range(n_rates):
+    lines.append(f"  {p + 1} k{p} {rng.uniform(0.0005, 0.005):.6g}")
+lines.append(f"  {n_rates + 1} k_unused 0.3")
+lines.append("end parameters\nbegin species")
+for s in range(n_species):
+    lines.append(f"  {s + 1} S{s}() {rng.uniform(0.5, 2.0):.6g}")
+lines.append("end species\nbegin reactions")
+seen, r = set(), 0
+while r < n_reactions:
+    a, b = rng.randrange(n_species), rng.randrange(n_species)
+    reactants = f"{a + 1}" if rng.random() < 0.5 else f"{a + 1},{rng.randrange(n_species) + 1}"
+    key = (reactants, b, rng.randrange(n_rates))
+    if key in seen:
+        continue
+    seen.add(key)
+    r += 1
+    lines.append(f"  {r} {reactants} {b + 1} k{key[2]}")
+lines.append("end reactions\nbegin groups\n  1 S0_tot 1\nend groups")
+open(path, "w").write("\n".join(lines) + "\n")
+
+m = Model.from_net(path)
+sim = Simulator(m, method="ode", sensitivity_params=list(m.primary_param_names))
+res = sim.run(t_span=(0, 20), n_points=5)
+sens = np.asarray(res.sensitivities)
+print(json.dumps({
+    "backend": sim.codegen_backend,
+    "params": list(res.sensitivity_params),
+    "unused": float(np.abs(sens[:, :, -1]).max()),
+    "used": float(np.abs(sens[:, :, :-1]).max()),
+    "finite": bool(np.isfinite(sens).all()),
+}))
+"""
+
+
+def test_a_sensitivity_to_a_parameter_without_a_dfdp_case_is_zero_under_mir(tmp_path):
+    """Forward sensitivity under BNGSIM_CODEGEN_JIT=mir to a parameter no rate
+    law reads: exactly 0, the closed form. On main the run died with SIGSEGV.
+    (The cc backend gives the same numbers bit for bit, but compiling this
+    source takes it half a minute.)"""
+    env = {**os.environ, "BNGSIM_CODEGEN_JIT": "mir"}
+    done = subprocess.run(
+        [sys.executable, "-c", _UNUSED_PARAMETER_PROBE, str(tmp_path / "unused.net")],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=600,
+    )
+    assert done.returncode == 0, (done.returncode, done.stderr[-2000:])
+    out = json.loads(done.stdout.strip().splitlines()[-1])
+    assert out["backend"] == "mir", out
+    assert out["params"][-1] == "k_unused", out
+    assert out["finite"], out
+    assert out["unused"] == 0.0, out
+    assert out["used"] > 1.0, out  # the run computed real sensitivities
+
+
+# Found in #1575's review, and fixed beside it. MIR's aarch64 register
+# allocator may give x30, the link register, to a value: it is caller-saved,
+# and the prologue saves it and the epilogue restores it. But a leaf function
+# that needs neither a callee-saved register nor a stack slot gets no prologue,
+# so with x30 allocated it returned to whatever value x30 held last (SIGBUS on
+# main). It takes integer values that fill every caller-saved register, x30
+# included, without needing a callee-saved one: on macOS the probe's 14 do (16
+# live longs and a compare constant), 15 bring in x19 and the prologue with it,
+# and Linux, where x18 is not reserved, needs one more. And
+# at levels 2 and 3 the compared constants must be ones no compare immediate can
+# hold, or combine folds them and x30 is never written. So N sweeps 12 to 20.
+_LEAF_LINK_REGISTER_PROBE = r"""
+import ctypes, json, sys
+from bngsim._bngsim_core import _MirJit
+
+def source(n):
+    return (
+        "double f(double pd) {\n  long ip = (long) pd;\n"
+        + "".join(f"  long a{i} = ip * {i + 3} + {i};\n" for i in range(n))
+        + "  long k = 0;\n"
+        + "".join(f"  if (ip > {123457 + 1000 * i}) k += a{i};\n" for i in range(n))
+        + "  k += " + " ^ ".join(f"a{i}" for i in range(n)) + ";\n  return (double) k;\n}\n"
+    )
+
+def want(n, ip):
+    a = [ip * (i + 3) + i for i in range(n)]
+    k = sum(a[i] for i in range(n) if ip > 123457 + 1000 * i)
+    x = 0
+    for v in a:
+        x ^= v
+    return float(k + x)
+
+out = []
+for level in map(int, sys.argv[1:]):
+    for n in range(12, 21):
+        print(json.dumps(["at level, n", level, n]), flush=True)  # names a crash
+        jit = _MirJit(source(n), level)
+        f = ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_double)(jit.address("f"))
+        for ip in (-3, 0, 5, 130000, 200000):
+            got = f(float(ip))
+            if got != want(n, ip):
+                out.append((level, n, ip, got, want(n, ip)))
+print(json.dumps(out))
+"""
+
+
+def test_a_leaf_function_that_uses_the_link_register_returns_to_its_caller():
+    """x30 in a leaf function: every call returns, with the closed form, at
+    MIR levels 0 to 3. On main the first such call at each level died with
+    SIGBUS."""
+    done = subprocess.run(
+        [sys.executable, "-c", _LEAF_LINK_REGISTER_PROBE, "0", "1", "2", "3"],
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    assert done.returncode == 0, (done.returncode, done.stdout[-200:], done.stderr[-2000:])
+    assert json.loads(done.stdout.strip().splitlines()[-1]) == []

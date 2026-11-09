@@ -213,9 +213,11 @@ These behaviors are required by `mir_jit.hpp` and recorded under
   `MIR_get_global_item`, the scan still works — but verify before relying on it.
 - **Single-maintainer upstream.** MIR is effectively single-maintainer and pinned
   to an immutable commit. Refresh deliberately.
-- **Local carries: three** (see "Current carries" below): two for issue
-  #1215, in `mir.c` and `c2mir/c2mir.c`, and one for issue #1216,
-  `mir-gen-x86_64.c`'s 3- and 4-byte loop-padding NOPs. `VENDOR.json` →
+- **Local carries: five** (see "Current carries" below): two for issue
+  #1215, in `mir.c` and `c2mir/c2mir.c`, one for issue #1216,
+  `mir-gen-x86_64.c`'s 3- and 4-byte loop-padding NOPs, and two for issue
+  #1575 in `mir-gen-aarch64.c`: branches to labels out of reach, and the link
+  register in leaf functions. `VENDOR.json` →
   `local_carries` records each deliberate BNGsim edit, and both
   `vendor_mir.py --check` and `test_mir_vendoring.py` verify every recorded
   carry is *still applied* — see "Local Carries" below.
@@ -296,6 +298,47 @@ The third is issue #1216's, marked `BNGsim local carry (lanl/bngsim#1216)`.
   2026-10-30; upstream master (`dc2c763f`) still has the register forms.
   `test_mir_vendoring.py::test_mir_x86_64_loop_padding_is_intels_recommended_nops`
   holds the table to Intel's list, and stays when upstream takes the fix.
+
+The fourth and fifth are issue #1575's, marked
+`BNGsim local carry (lanl/bngsim#1575)` and
+`BNGsim local carry (lanl/bngsim#1575, the link register)`.
+
+- **`mir-gen-aarch64.c` — branches to labels out of reach (issue #1575),
+  carried from 2026-11-09.** `target_translate` encodes each function in one
+  pass and masks each label offset to its insn's field: 19 bits of words for
+  `b.cond`, `cbz`, `cbnz` and `adr` (±1 MiB), 26 for `b` (±128 MiB). A
+  conditional branch over more than a megabyte of code went to some other
+  address. BIOMD0000000471's forward-sensitivity run, whose `bngsim_dfdp` is
+  25.8 MB of C at MIR level 0, died with a bus error; an `if` over 100,000
+  statements skipped to the middle of them and returned a wrong number without
+  an error. The carry translates a second time when a short branch is that far,
+  emitting each such branch as the opposite condition over a `b`. It also
+  relaxes each branch that their growth could push out of reach, allowing 8
+  bytes per relaxed branch: its extra insn, plus up to 4 bytes of a jump
+  table's 8-byte alignment. A counting pass finds that set in linear time. A
+  function under a megabyte of code translates once, as before. Then it checks every label offset against its
+  insn's reach and reports one still out of it (an `adr`, which has no longer
+  form, or a `b` past 128 MiB) through MIR's error function, which `MirJit`
+  turns into a `RuntimeError`. x86-64 needs nothing: it picks a short or a
+  32-bit jump from a size estimate. Upstream master (`dc2c763f`) still masks the
+  offsets; not reported upstream as of 2026-11-09.
+  `test_mir_equivalence.py`'s #1575 tests check every condition C has, forward
+  and backward, against the closed form on the macOS arm64 MIR leg, and
+  `test_mir_vendoring.py::test_mir_aarch64_label_insns_are_ones_the_far_branch_carry_handles`
+  fails if a refresh encodes a label on an insn the carry does not know.
+- **`mir-gen-aarch64.c` — the link register in leaf functions (found in
+  issue #1575's review), carried from 2026-11-09.** The register allocator may
+  give x30 to a value, because it is caller-saved and the prologue and
+  epilogue save and restore it. But `target_make_prolog_epilog` skips both for
+  a leaf function that needs no callee-saved register and no stack slot. A
+  leaf function the allocator gave x30 to therefore returned to whatever value
+  x30 held last (SIGBUS, at every MIR level): it takes integer values that fill
+  every caller-saved register, x30 included, without needing a callee-saved
+  one. The carry keeps the prologue and epilogue when x30 is used, so a
+  function that does not use it is unchanged. Upstream master (`dc2c763f`) has
+  the same shortcut; not reported upstream as of 2026-11-09.
+  `test_mir_equivalence.py::test_a_leaf_function_that_uses_the_link_register_returns_to_its_caller`
+  holds it at levels 0 to 3.
 
 ### Past carries
 

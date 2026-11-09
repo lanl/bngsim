@@ -412,6 +412,13 @@ _DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
         "frame report (issue #1566), which cl gives only under /analyze",
     ),
     (
+        "aarch64 only",
+        _ANYWHERE,
+        "issue #1575's margin test places a branch to the byte in MIR's aarch64 code; "
+        "x86-64 picks short or long jumps from a size estimate and relaxes nothing, "
+        "so the layout tests nothing there. Its other #1575 tests run everywhere",
+    ),
+    (
         "no fused multiply-add",
         _ANYWHERE,
         "test_switch_residual_unfused.py shows codegen's C unfused against a build "
