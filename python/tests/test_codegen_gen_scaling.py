@@ -30,13 +30,15 @@ These tests pin the properties, not a wall-clock number on one machine:
 The ratio is measured, not seconds (#1479). A 20 s budget took 1.7 s on an
 M-series Mac and 22.7 s and 22.2 s on GitHub's ubuntu runners, though neither
 change touched codegen. Two things make the ratio steadier than the seconds:
-  * Both sizes run on the same machine in the same process, so whatever slows
-    that machine down (a slower CPU, pytest-xdist's other workers, a coverage
-    tracer) slows both.
+  * Both sizes run in the same process and are timed by its CPU time
+    (``time.process_time``), not the wall clock. A slower CPU or a coverage
+    tracer slows both sizes alike. pytest-xdist's other workers don't count at
+    all. By the wall clock they did: with 32 busy processes on 16 CPUs the
+    function-heavy ratio read 23.5-28.0, because a short run lands in a quiet
+    moment more often than a long one, and by CPU time 11.4-12.3.
   * The cyclic collector is paused while timing. With it on, the elementary
-    generator grew as about n^1.2 from 2.5k to 80k reactions (40k/4k: about 20 in
-    a bare process, 16.5 beside 4M other live objects). With it paused it grew as
-    n^1.00-1.04 (40k/4k: 10.3 in both).
+    generator grew as about n^1.2 from 2.5k to 80k reactions (40k/4k: 16-20).
+    With it paused it grew as n^1.00-1.04 (40k/4k: 10.3).
 """
 
 from __future__ import annotations
@@ -108,19 +110,18 @@ MAX_GROWTH = 30.0
 
 
 def _fastest_seconds(fn, repeats: int) -> float:
-    """The fastest of ``repeats`` calls of ``fn``, each timed with the cyclic
-    collector paused, so a full collection's scan of the session's whole heap is
-    not charged to ``fn``. The fastest call, not the mean: a stall on a shared
-    runner only ever adds time."""
+    """The fastest of ``repeats`` calls of ``fn``, in this process's CPU
+    seconds, each with the cyclic collector paused. The fastest call, not the
+    mean: cache contention on a shared runner only ever adds time."""
     best = math.inf
     for _ in range(repeats):
         gc.collect()
         was_enabled = gc.isenabled()
         gc.disable()
         try:
-            t0 = time.perf_counter()
+            t0 = time.process_time()
             fn()
-            best = min(best, time.perf_counter() - t0)
+            best = min(best, time.process_time() - t0)
         finally:
             if was_enabled:
                 gc.enable()
