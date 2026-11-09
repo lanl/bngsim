@@ -16856,9 +16856,10 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             }
         }
         impl_->sync_model_at(t, x, ns);
-        auto finite = [](double near, double twice) {
-            return std::isfinite(near) && std::isfinite(twice) &&
-                   std::fabs(twice - near) <= kHeldSlideFlowKept * std::fabs(near);
+        // (Not `near`: <windows.h> defines it, and `far`, as nothing.)
+        auto finite = [](double at_offset, double twice) {
+            return std::isfinite(at_offset) && std::isfinite(twice) &&
+                   std::fabs(twice - at_offset) <= kHeldSlideFlowKept * std::fabs(at_offset);
         };
         const double inward = std::min(lo, -hi);
         if (!read || !(std::fabs(g) <= s.bar) || !finite(lo, lo_twice) || !finite(hi, hi_twice) ||
