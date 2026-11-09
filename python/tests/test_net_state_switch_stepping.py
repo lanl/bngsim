@@ -1389,7 +1389,9 @@ end groups
 """
 
 
-@pytest.mark.parametrize("clock, rtol", [("time()", 1e-3), ("time()", 1e-6), ("Cobs", 1e-6)])
+@pytest.mark.parametrize(
+    "clock, rtol", [("time()", 1e-3), ("time()", 1e-6), ("Cobs", 1e-3), ("Cobs", 1e-6)]
+)
 def test_a_step_over_a_crossing_is_taken_again_up_to_it(tmp_path, clock, rtol):
     """The step that crosses t_close reads the rate law at its end, where the
     window is closed, so what CVODE hands back inside it carries a rate of 0
@@ -1399,7 +1401,14 @@ def test_a_step_over_a_crossing_is_taken_again_up_to_it(tmp_path, clock, rtol):
     before t_close read 0 of 0.0063, 400 to 400,000 tolerance units off. Such
     a step is now taken again from its start up to a stop short of the
     crossing, and the row recorded inside it again. Each is the pulse's
-    integral from -inf to the time, in closed form."""
+    integral from -inf to the time, in closed form.
+
+    On the clock species at rtol 1e-3, C at 30 is held to 0.03, wider than
+    the sweep, and the restart test declines the crossing as one the
+    tolerance cannot decide from its blur. It is taken again all the same,
+    since its flows are a crossing's: the near side's carries the residual
+    across, the same at two distances, and the far side's carries it on. The
+    re-take does not restart on the far side, which the decline refuses."""
     t_close = 30.05 + 0.001 * math.atanh(0.2)
     tz = t_close + 0.0015
     row = t_close - 0.001
