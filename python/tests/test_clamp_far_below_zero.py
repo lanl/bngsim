@@ -77,8 +77,8 @@ def test_338_on_dense_keeps_the_exact_equilibrium_at_0(jacobian):
     # their right-hand side is 0, so the dense solve gives them exactly 0, as
     # KLU's block-triangular form does. Before it, the LU's rounding tipped XIIa
     # off 0: on arm64, up to 72 and Fg = 0.73 at t = 2 on this window, against
-    # KLU's 311. #1304's corpus test reads the same on the rr_parity copies; this
-    # copy is tracked, so CI reads it too.
+    # KLU's 311. #1304's test in test_differential_shapes.py checks the same on
+    # this file and on 339's, both tracked, so CI runs it.
     result = _run_338(t_end=2.0, n_points=101, jacobian=jacobian)
     species = np.asarray(result.species, dtype=float)
     names = list(result.species_names)
