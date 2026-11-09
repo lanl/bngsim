@@ -1596,6 +1596,8 @@ bool NFinput::initReactionRulePermutation(
 
 				TiXmlElement *pProduct;
 				unsigned int numProductPatterns = 0;
+				// product molecule id -> index of the product pattern it is in
+				map <string, int> productPatternOfMolecule;
 				for ( pProduct = pListOfProductPatterns->FirstChildElement("ProductPattern"); pProduct != 0; pProduct = pProduct->NextSiblingElement("ProductPattern"))
 				{
 					numProductPatterns++;
@@ -1610,6 +1612,8 @@ bool NFinput::initReactionRulePermutation(
 					if(pListOfMols) {
 						/* At this point, only the first reactant molecule is sent back as a template - rasi */
 						readTemplatePattern(pListOfMols, s, allowedStates, productName, products, comps, symMap, verbose);
+						for ( TiXmlElement *pMol = pListOfMols->FirstChildElement("Molecule"); pMol != 0; pMol = pMol->NextSiblingElement("Molecule") )
+							if ( pMol->Attribute("id") ) productPatternOfMolecule[ pMol->Attribute("id") ] = numProductPatterns - 1;
 					}
 					else {
 						cerr<<"Product pattern "<<productName <<" in reaction "<<rxnName<<" without a valid 'ListOfMolecules'!  Quiting."<<endl;
@@ -1627,6 +1631,9 @@ bool NFinput::initReactionRulePermutation(
 				}
 				TiXmlElement *pMap;
 				string reactantId, productId;
+				// reactant template molecule -> product pattern it maps to, for the
+				// product-side molecularity test (TransformationSet::productsSeparate)
+				map <TemplateMolecule *, int> productPatternOfReactant;
 				for ( pMap = pListOfMaps->FirstChildElement("MapItem"); pMap != 0; pMap = pMap->NextSiblingElement("MapItem"))
 				{
 					// sourceID and targetID might be absent for molecules being created or degraded
@@ -1648,6 +1655,9 @@ bool NFinput::initReactionRulePermutation(
 						reactantIt->second->setMappedPartner(productIt->second);
 						productIt->second->setMappedPartner(reactantIt->second);
 					}
+					map <string, int>::const_iterator patternIt = productPatternOfMolecule.find(productId);
+					if ( reactantIt != reactants.end() && patternIt != productPatternOfMolecule.end() )
+						productPatternOfReactant[ reactantIt->second ] = patternIt->second;
 				}
 
 
@@ -1683,6 +1693,9 @@ bool NFinput::initReactionRulePermutation(
 				// Should we use complex bookkeeping?
 				ts->setComplexBookkeeping( blockSameComplexBinding );
 				ts->setNumProductPatterns(numProductPatterns);
+				for ( map <TemplateMolecule *, int>::const_iterator pr = productPatternOfReactant.begin();
+						pr != productPatternOfReactant.end(); ++pr )
+					ts->setProductPatternOf( pr->first, pr->second );
 
 				// Are we using a symmetry factor?
 				if (useSymmetryFactor)

@@ -1,0 +1,637 @@
+From 46deb19a9824c8e9e2adcaeded20f06e90c594d3 Mon Sep 17 00:00:00 2001
+From: Bill Hlavacek <bill.hlavacek@gmail.com>
+Date: Mon, 9 Nov 2026 10:03:49 -0700
+Subject: [PATCH] bngsim: test product molecularity as BioNetGen does, and list
+ each product molecule once
+
+A rule whose products are written apart (A.B -> A + B) may fire only where
+the bonds it deletes separate them. NFsim made that test for one-reactant
+rules only, only under complex bookkeeping (-cb/-bscb), and on every bond
+the rule deletes:
+
+- Without -cb, L(r!1).R(l!1) -> L(r) + R(l) opened every ring: 100
+  four-member rings L.R.L.R all broke, where BNG2.pl's network keeps 100.
+- A bimolecular rule was never tested. L(r!1,c).R(l!1) + C(x) ->
+  L(r,c!2).C(x!2) + R(l) on those rings bound every C; BNG2.pl generates no
+  reaction for it.
+- A bond deleted inside one product pattern was tested as if it had to
+  separate. A(x!1,y!2,z!3).B(x!1,y!2).C(a!3) -> A(x,y!2,z).B(x,y!2) + C(a)
+  deletes A-B's x bond while A and B stay bonded through y, so the test
+  refused every match and the rule never fired; BNG2.pl fires it at its
+  rate.
+
+The loader now records which product pattern each reactant molecule maps
+to (from the rule's Map), and TransformationSet::productsSeparate tests
+each bond deleted between two product patterns, for any number of
+reactants, whatever complex bookkeeping says. The test removes every bond
+the rule deletes and adds the bonds it creates between existing molecules,
+then asks whether the two ends are still connected. It searches from both
+ends in turn, so when they are apart it costs the smaller side: from one
+end only, a ligand hanging off a gel by one bond walked the whole gel.
+
+Without -cb a bimolecular rule may also match two molecules of one complex.
+getListOfProducts appended each reactant's bonded neighbourhood to the
+product list, and two such neighbourhoods overlap when the second reactant
+lies beyond the first's traversal limit. A molecule listed twice was added
+to the Molecules observables twice (removal is idempotent, addition is
+not), so a conserved count of 30 read 84-98. Each molecule is now listed
+once.
+---
+ src/NFinput/NFinput.cpp                       |  13 +
+ .../transformations/transformation.hh         |   2 +
+ .../transformations/transformationSet.cpp     | 381 ++++++++++--------
+ .../transformations/transformationSet.hh      |  46 ++-
+ 4 files changed, 279 insertions(+), 163 deletions(-)
+
+diff --git a/src/NFinput/NFinput.cpp b/src/NFinput/NFinput.cpp
+index a9146cf..0338634 100644
+--- a/src/NFinput/NFinput.cpp
++++ b/src/NFinput/NFinput.cpp
+@@ -1596,6 +1596,8 @@ bool NFinput::initReactionRulePermutation(
+ 
+ 				TiXmlElement *pProduct;
+ 				unsigned int numProductPatterns = 0;
++				// product molecule id -> index of the product pattern it is in
++				map <string, int> productPatternOfMolecule;
+ 				for ( pProduct = pListOfProductPatterns->FirstChildElement("ProductPattern"); pProduct != 0; pProduct = pProduct->NextSiblingElement("ProductPattern"))
+ 				{
+ 					numProductPatterns++;
+@@ -1610,6 +1612,8 @@ bool NFinput::initReactionRulePermutation(
+ 					if(pListOfMols) {
+ 						/* At this point, only the first reactant molecule is sent back as a template - rasi */
+ 						readTemplatePattern(pListOfMols, s, allowedStates, productName, products, comps, symMap, verbose);
++						for ( TiXmlElement *pMol = pListOfMols->FirstChildElement("Molecule"); pMol != 0; pMol = pMol->NextSiblingElement("Molecule") )
++							if ( pMol->Attribute("id") ) productPatternOfMolecule[ pMol->Attribute("id") ] = numProductPatterns - 1;
+ 					}
+ 					else {
+ 						cerr<<"Product pattern "<<productName <<" in reaction "<<rxnName<<" without a valid 'ListOfMolecules'!  Quiting."<<endl;
+@@ -1627,6 +1631,9 @@ bool NFinput::initReactionRulePermutation(
+ 				}
+ 				TiXmlElement *pMap;
+ 				string reactantId, productId;
++				// reactant template molecule -> product pattern it maps to, for the
++				// product-side molecularity test (TransformationSet::productsSeparate)
++				map <TemplateMolecule *, int> productPatternOfReactant;
+ 				for ( pMap = pListOfMaps->FirstChildElement("MapItem"); pMap != 0; pMap = pMap->NextSiblingElement("MapItem"))
+ 				{
+ 					// sourceID and targetID might be absent for molecules being created or degraded
+@@ -1648,6 +1655,9 @@ bool NFinput::initReactionRulePermutation(
+ 						reactantIt->second->setMappedPartner(productIt->second);
+ 						productIt->second->setMappedPartner(reactantIt->second);
+ 					}
++					map <string, int>::const_iterator patternIt = productPatternOfMolecule.find(productId);
++					if ( reactantIt != reactants.end() && patternIt != productPatternOfMolecule.end() )
++						productPatternOfReactant[ reactantIt->second ] = patternIt->second;
+ 				}
+ 
+ 
+@@ -1683,6 +1693,9 @@ bool NFinput::initReactionRulePermutation(
+ 				// Should we use complex bookkeeping?
+ 				ts->setComplexBookkeeping( blockSameComplexBinding );
+ 				ts->setNumProductPatterns(numProductPatterns);
++				for ( map <TemplateMolecule *, int>::const_iterator pr = productPatternOfReactant.begin();
++						pr != productPatternOfReactant.end(); ++pr )
++					ts->setProductPatternOf( pr->first, pr->second );
+ 
+ 				// Are we using a symmetry factor?
+ 				if (useSymmetryFactor)
+diff --git a/src/NFreactions/transformations/transformation.hh b/src/NFreactions/transformations/transformation.hh
+index 16adce4..4d18bf7 100644
+--- a/src/NFreactions/transformations/transformation.hh
++++ b/src/NFreactions/transformations/transformation.hh
+@@ -290,6 +290,8 @@ namespace NFcore
+ 
+ 			virtual bool checkForNullCondition(Mapping *m, MappingSet **ms);
+ 			virtual TemplateMolecule * getTemplateMolecule() const {return this->tm;};
++			int getOtherReactantIndex() const {return otherReactantIndex;};
++			int getOtherMappingIndex() const {return otherMappingIndex;};
+ 		protected:
+ 			int cIndex;
+ 			int otherReactantIndex;
+diff --git a/src/NFreactions/transformations/transformationSet.cpp b/src/NFreactions/transformations/transformationSet.cpp
+index bdd720a..f093745 100644
+--- a/src/NFreactions/transformations/transformationSet.cpp
++++ b/src/NFreactions/transformations/transformationSet.cpp
+@@ -346,6 +346,18 @@ bool TransformationSet::addUnbindingTransform(TemplateMolecule *t, string bSiteN
+ 	// 3) Add the transformation object to the TransformationSet
+ 	transformations[reactantIndex].push_back(transformation);
+ 
++	// Remember the bond for the product-side molecularity test. The partner
++	// template is the end that was not transformed; it is null when the
++	// partner is not part of the pattern.
++	DeletedBond deleted;
++	deleted.reactant = reactantIndex;
++	deleted.transform = transformations[reactantIndex].size()-1;
++	deleted.t1 = tToTransform;
++	deleted.t2 = ( tToTransform == t ) ? t2 : t;
++	deleted.pattern1 = -1;
++	deleted.pattern2 = -1;
++	deletedBonds.push_back(deleted);
++
+ 	// 4) Create a MapGenerator object and add it to the templateMolecule
+ 	MapGenerator *mg = new MapGenerator(transformations[reactantIndex].size()-1);
+ 	tToTransform->addMapGenerator(mg);
+@@ -474,80 +486,103 @@ bool TransformationSet::addAddMolecule( MoleculeCreator *mc )
+ 
+ 
+ 
++// The neighbours of `current` in the graph a firing leaves behind: its bonds,
++// less the half-edges in excludedBonds, plus the bonds in addedBonds.
++static void productGraphNeighbors(Molecule *current,
++		const std::vector< std::pair<Molecule *, int> > &excludedBonds,
++		const std::vector< std::pair<Molecule *, Molecule *> > &addedBonds,
++		std::vector<Molecule *> &out)
++{
++	out.clear();
++	int numComponents = current->getMoleculeType()->getNumOfComponents();
++	for (int c = 0; c < numComponents; ++c) {
++		if (!current->isBindingSiteBonded(c)) continue;
++		// Skip any half-edge belonging to a bond the rule will delete.
++		bool isExcluded = false;
++		for (unsigned int e = 0; e < excludedBonds.size(); ++e) {
++			if (excludedBonds[e].first == current && excludedBonds[e].second == c) {
++				isExcluded = true;
++				break;
++			}
++		}
++		if (isExcluded) continue;
++		out.push_back(current->getBondedMolecule(c));
++	}
++	for (unsigned int a = 0; a < addedBonds.size(); ++a) {
++		if (addedBonds[a].first == current) out.push_back(addedBonds[a].second);
++		else if (addedBonds[a].second == current) out.push_back(addedBonds[a].first);
++	}
++}
++
++
+ bool TransformationSet::canReachExcludingBonds(Molecule *mol1, Molecule *mol2,
+-		const std::vector< std::pair<Molecule *, int> > &excludedBonds)
++		const std::vector< std::pair<Molecule *, int> > &excludedBonds,
++		const std::vector< std::pair<Molecule *, Molecule *> > &addedBonds)
+ {
+-	// Perform a BFS from mol2 to see if mol1 is reachable while refusing to
+-	// traverse any of the bonds in excludedBonds. Each excluded bond is recorded
+-	// as both of its (molecule, component-index) half-edges, so the bond is
+-	// skipped regardless of which endpoint the BFS reaches first.
+-	// Returns true if mol1 can still be reached, false otherwise.
++	// Is mol1 reachable from mol2 once the bonds in excludedBonds are gone and
++	// the bonds in addedBonds are in place? Each excluded bond is recorded as
++	// both of its (molecule, component-index) half-edges, so the bond is skipped
++	// regardless of which endpoint a search reaches first.
+ 	//
+ 	// Excluding the full set of bonds that the firing rule deletes (rather than
+ 	// one bond at a time) is what lets a multi-bond ring-opening dissociation be
+ 	// recognized as genuinely separating its products: each individual bond may
+ 	// leave the partners connected, while removing all of them does not.
+-
+-	// Use a static queue for efficiency (reusing the BFS infrastructure)
+-	static queue <Molecule *> q;
+-	static list <Molecule *> visited;
+-
+-	// Clear queues and visited list
+-	while(!q.empty()) q.pop();
+-	visited.clear();
+-	// Start BFS from mol2
+-	q.push(mol2);
+-	visited.push_back(mol2);
++	//
++	// Two searches run in turn, one from each end. If the ends are connected
++	// they meet; if not, the search on the smaller side runs out first. So a
++	// bond that detaches a small piece from a large aggregate costs the small
++	// piece, not the aggregate: searching from one end only walked the whole
++	// gel to learn that a ligand hanging off it by one bond had come free.
++	// Side 2 marks the molecules it reaches with their visited flag, side 1
++	// keeps a set.
++	if (mol1 == mol2) return true;
++
++	static std::queue <Molecule *> q1, q2;
++	static std::vector <Molecule *> visited2, neighbors;
++	static std::unordered_set <Molecule *> visited1;
++
++	while (!q1.empty()) q1.pop();
++	while (!q2.empty()) q2.pop();
++	visited1.clear();
++	visited2.clear();
++
++	q1.push(mol1);
++	visited1.insert(mol1);
++	q2.push(mol2);
++	visited2.push_back(mol2);
+ 	mol2->setVisitedMolecule(true);
+ 
+ 	bool found = false;
+-
+-	while(!q.empty()) {
+-		Molecule *current = q.front();
+-		q.pop();
+-
+-		// Check if we reached mol1
+-		if (current == mol1) {
+-			found = true;
+-			break;
++	while (!found && !q1.empty() && !q2.empty()) {
++		// One molecule from side 1
++		Molecule *current = q1.front();
++		q1.pop();
++		productGraphNeighbors(current, excludedBonds, addedBonds, neighbors);
++		for (unsigned int n = 0; n < neighbors.size(); ++n) {
++			if (neighbors[n]->getVisitedMolecule()) { found = true; break; }
++			if (visited1.insert(neighbors[n]).second) q1.push(neighbors[n]);
+ 		}
+-
+-		// Explore neighbors through bonds
+-		int numComponents = current->getMoleculeType()->getNumOfComponents();
+-		for (int c = 0; c < numComponents; ++c) {
+-			// Skip any half-edge belonging to a bond the rule will delete.
+-			bool isExcluded = false;
+-			for (unsigned int e = 0; e < excludedBonds.size(); ++e) {
+-				if (excludedBonds[e].first == current && excludedBonds[e].second == c) {
+-					isExcluded = true;
+-					break;
+-				}
+-			}
+-			if (isExcluded) {
+-				continue;
+-			}
+-
+-			// Check if this component is bonded
+-			if (current->isBindingSiteBonded(c)) {
+-				Molecule *neighbor = current->getBondedMolecule(c);
+-
+-				// Check if we've already visited this neighbor
+-				if (!neighbor->getVisitedMolecule()) {
+-					// Haven't visited this neighbor yet
+-					neighbor->setVisitedMolecule(true);
+-					visited.push_back(neighbor);
+-					q.push(neighbor);
+-				}
++		if (found || q1.empty()) break;
++
++		// One molecule from side 2
++		current = q2.front();
++		q2.pop();
++		productGraphNeighbors(current, excludedBonds, addedBonds, neighbors);
++		for (unsigned int n = 0; n < neighbors.size(); ++n) {
++			if (visited1.count(neighbors[n])) { found = true; break; }
++			if (!neighbors[n]->getVisitedMolecule()) {
++				neighbors[n]->setVisitedMolecule(true);
++				visited2.push_back(neighbors[n]);
++				q2.push(neighbors[n]);
+ 			}
+ 		}
+ 	}
+-	
+-	// Clear the hasVisitedMolecule values before returning
+-	for (list<Molecule *>::iterator it = visited.begin(); it != visited.end(); ++it) {
+-		(*it)->setVisitedMolecule(false);
+-	}
+ 
+-	// Return whether mol1 is reachable from mol2 when excluding the bond
++	// Clear the visited flags before returning
++	for (unsigned int v = 0; v < visited2.size(); ++v)
++		visited2[v]->setVisitedMolecule(false);
++
+ 	return found;
+ }
+ 
+@@ -693,114 +728,128 @@ string TransformationSet::transform(MappingSet **mappingSets, bool tracking)
+ 
+ bool TransformationSet::checkMolecularity( MappingSet ** mappingSets )
+ {
+-	if ( n_reactants < 2 )
+-	{	// unimolecular, so there's nothing to check
+-		// HOWEVER: if we have unbinding transforms in a unimolecular rule
+-		// with multiple product patterns (+), we need to verify that the products
+-		// end up in separate connected components. This enforces the BNGL
+-		// semantics that "A.B -> A + B" should only fire if breaking the
+-		// bond actually separates the molecules into different complexes.
+-		// Issue #48: NFsim does not enforce product molecularity for unimolecular unbinding rules
+-		if ( n_reactants == 1 && complex_bookkeeping && n_product_patterns > 1 )
+-		{
+-			// First pass: gather every bond this rule's UNBINDING transforms will
+-			// delete. The connectivity test below must reflect the post-reaction
+-			// graph with ALL of them removed at once. Testing each bond in
+-			// isolation wrongly blocks multi-bond ring-opening dissociations
+-			// (e.g. a symmetric two-bond homodimer splitting into two monomers):
+-			// each single bond's removal leaves the partners connected through
+-			// the rule's other deleted bond, even though removing both genuinely
+-			// separates the products.
+-			std::vector< std::pair<Molecule *, int> > excludedBonds;       // half-edges
+-			std::vector< std::pair<Molecule *, Molecule *> > brokenPairs;  // endpoints to test
+-			for ( unsigned int t = 0; t < getNumOfTransformations(0); ++t )
++	// Reactant side: two reactant patterns must match different complexes
++	// (complex bookkeeping, block_same_complex_binding on) or at least
++	// non-overlapping reaction centers.
++	if ( n_reactants >= 2 )
++	{
++		if ( complex_bookkeeping )
++		{	// verify that each reactant pattern points to a unique complex
++			complex_ids.clear();
++			for ( unsigned int ir = 0;  ir < n_reactants;  ++ir )
+ 			{
+-				Transformation * transform = getTransformation(0, t);
+-				if ( transform->getType() != TransformationFactory::UNBINDING )
+-					continue;
+-
+-				UnbindingTransform * unbindingTransform =
+-					static_cast<UnbindingTransform *>( transform );
+-
+-				Mapping * mapping = mappingSets[0]->get(t);
+-				if (mapping == NULL) {
+-					continue;
+-				}
+-
+-				// Get the molecule that will be unbound
+-				Molecule * mol = mapping->getMolecule();
+-				if (mol == NULL) {
+-					continue;
+-				}
+-				int componentIndex = unbindingTransform->getComponentIndex();
+-
+-				// Get the molecule bonded at this site
+-				if ( !mol->isBindingSiteBonded(componentIndex) )
+-				{
+-					// Site is not bonded, so this won't actually unbind anything
+-					continue;
+-				}
++				// skip populations
++				if ( reactants[ir]->getMoleculeType()->isPopulationType() ) continue;
+ 
+-				Molecule * bondedMol = mol->getBondedMolecule(componentIndex);
+-				if ( bondedMol == NULL )
+-				{
+-					// This shouldn't happen, but skip if it does
+-					continue;
++				complex_id = mappingSets[ir]->getComplexID();
++				if ( !complex_ids.insert( complex_id ).second )
++				{   // two reactant patterns matched the same complex!
++					return false;
+ 				}
+-
+-				int partnerIndex = mol->getBondedMoleculeBindingSiteIndex(componentIndex);
+-				excludedBonds.push_back( std::make_pair(mol, componentIndex) );
+-				excludedBonds.push_back( std::make_pair(bondedMol, partnerIndex) );
+-				brokenPairs.push_back( std::make_pair(mol, bondedMol) );
+ 			}
+-
+-			// Second pass: with every deleted bond removed, each unbound pair must
+-			// end up in different connected components. If any pair is still
+-			// mutually reachable, the products do not actually separate, which
+-			// violates the product-side molecularity constraint -> refuse to fire.
+-			for ( unsigned int b = 0; b < brokenPairs.size(); ++b )
++		}
++		else if ( check_collisions )
++		{	// we won't do a proper check for molecularity, but we should ensure that mappingSets
++			//  point to non-overlapping reaction centers.
++			for ( collision_pair_iter = collision_pairs.begin(); collision_pair_iter != collision_pairs.end(); ++collision_pair_iter )
+ 			{
+-				if ( canReachExcludingBonds( brokenPairs[b].first, brokenPairs[b].second, excludedBonds ) )
+-				{
++				if ( MappingSet::checkForCollisions( mappingSets[ (*collision_pair_iter).first  ],
++						                             mappingSets[ (*collision_pair_iter).second ]  ) )
++				{	// reaction centers overlap!
+ 					return false;
+ 				}
+ 			}
+ 		}
+-		return true;
+ 	}
+-	else if ( complex_bookkeeping )
+-	{	// verify that each reactant pattern points to a unique complex
+-		complex_ids.clear();
+-		for ( unsigned int ir = 0;  ir < n_reactants;  ++ir )
+-		{
+-			// skip populations
+-			if ( reactants[ir]->getMoleculeType()->isPopulationType() ) continue;
+ 
+-			complex_id = mappingSets[ir]->getComplexID();
+-			if ( !complex_ids.insert( complex_id ).second )
+-			{   // two reactant patterns matched the same complex!
+-				return false;
+-			}
+-		}
+-		return true;
++	// Product side: a "+" between product patterns must hold (issue #48).
++	if ( n_product_patterns > 1 && !deletedBonds.empty() )
++		return productsSeparate( mappingSets );
++
++	return true;
++}
++
++
++bool TransformationSet::productsSeparate( MappingSet ** mappingSets )
++{
++	// A rule such as A.B -> A + B may fire only if deleting its bonds actually
++	// separates the products. BioNetGen makes this test for every bond the rule
++	// deletes between two product patterns, whatever the number of reactant
++	// patterns; a bond inside one product pattern (the other bond of a double
++	// bond, say) carries no such claim. The test walks bonds, not complexes, so
++	// it needs no complex bookkeeping and holds whatever
++	// block_same_complex_binding says: that flag governs which molecules a
++	// bimolecular rule may bind, not whether a product-side "+" holds.
++	//
++	// First pass: gather every bond the rule deletes. The connectivity test
++	// below must reflect the post-reaction graph with ALL of them removed at
++	// once. Testing each bond in isolation wrongly blocks multi-bond
++	// ring-opening dissociations (e.g. a symmetric two-bond homodimer splitting
++	// into two monomers): each single bond's removal leaves the partners
++	// connected through the rule's other deleted bond, even though removing both
++	// genuinely separates the products.
++	std::vector< std::pair<Molecule *, int> > excludedBonds;       // half-edges
++	std::vector< std::pair<Molecule *, Molecule *> > brokenPairs;  // endpoints to test
++	for ( unsigned int b = 0; b < deletedBonds.size(); ++b )
++	{
++		const DeletedBond & deleted = deletedBonds[b];
++		Mapping * mapping = mappingSets[deleted.reactant]->get(deleted.transform);
++		if ( mapping == NULL ) continue;
++
++		// Get the molecule that will be unbound
++		Molecule * mol = mapping->getMolecule();
++		if ( mol == NULL ) continue;
++		int componentIndex = getTransformation(deleted.reactant, deleted.transform)->getComponentIndex();
++
++		// Site is not bonded, so this won't actually unbind anything
++		if ( !mol->isBindingSiteBonded(componentIndex) ) continue;
++
++		Molecule * bondedMol = mol->getBondedMolecule(componentIndex);
++		if ( bondedMol == NULL ) continue;
++
++		int partnerIndex = mol->getBondedMoleculeBindingSiteIndex(componentIndex);
++		excludedBonds.push_back( std::make_pair(mol, componentIndex) );
++		excludedBonds.push_back( std::make_pair(bondedMol, partnerIndex) );
++
++		// Only a bond between two product patterns claims a separation. An end
++		// whose product pattern is unknown counts as mapped apart.
++		if ( deleted.pattern1 < 0 || deleted.pattern2 < 0 || deleted.pattern1 != deleted.pattern2 )
++			brokenPairs.push_back( std::make_pair(mol, bondedMol) );
+ 	}
+-	else if ( check_collisions )
+-	{	// we won't do a proper check for molecularity, but we should ensure that mappingSets
+-		//  point to non-overlapping reaction centers.
+-		for ( collision_pair_iter = collision_pairs.begin(); collision_pair_iter != collision_pairs.end(); ++collision_pair_iter )
++	if ( brokenPairs.empty() ) return true;
++
++	// The bonds the rule adds between molecules that already exist. A bond to a
++	// molecule the rule creates cannot join two existing molecules, so it is
++	// left out.
++	std::vector< std::pair<Molecule *, Molecule *> > addedBonds;
++	for ( unsigned int r = 0; r < n_reactants; ++r )
++	{
++		for ( unsigned int t = 0; t < getNumOfTransformations(r); ++t )
+ 		{
+-			if ( MappingSet::checkForCollisions( mappingSets[ (*collision_pair_iter).first  ],
+-					                             mappingSets[ (*collision_pair_iter).second ]  ) )
+-			{	// reaction centers overlap!
+-				return false;
+-			}
++			Transformation * transform = getTransformation(r, t);
++			if ( transform->getType() != TransformationFactory::BINDING ) continue;
++			BindingTransform * binding = static_cast<BindingTransform *>( transform );
++			int other = binding->getOtherReactantIndex();
++			if ( other < 0 || (unsigned int)other >= n_reactants ) continue;
++			Mapping * m1 = mappingSets[r]->get(t);
++			Mapping * m2 = mappingSets[other]->get( binding->getOtherMappingIndex() );
++			if ( m1 == NULL || m2 == NULL ) continue;
++			if ( m1->getMolecule() == NULL || m2->getMolecule() == NULL ) continue;
++			addedBonds.push_back( std::make_pair(m1->getMolecule(), m2->getMolecule()) );
+ 		}
+-		return true;
+ 	}
+-	else
+-	{   // do nothing
+-		return true;
++
++	// Second pass: with every deleted bond removed and every added bond in
++	// place, each pair a deleted bond held across product patterns must end up
++	// in different connected components. If any pair is still mutually
++	// reachable, the products do not actually separate, which violates the
++	// product-side molecularity constraint -> refuse to fire.
++	for ( unsigned int b = 0; b < brokenPairs.size(); ++b )
++	{
++		if ( canReachExcludingBonds( brokenPairs[b].first, brokenPairs[b].second, excludedBonds, addedBonds ) )
++			return false;
+ 	}
++	return true;
+ }
+ 
+ 
+@@ -835,14 +884,19 @@ bool TransformationSet::getListOfProducts(MappingSet **mappingSets, list <Molecu
+ 
+ 			// is this molecule already on the product list?
+ 			if ( product_set.find( molecule ) == product_set.end() )
+-			{	// Traverse neighbor and add molecules to list
+-				bool was_empty = products.empty();
+-				auto last = was_empty ? products.end() : std::prev(products.end());
+-				molecule->traverseBondedNeighborhood(products, traversalLimit);
+-				// Sync only newly appended molecules into the set
+-				auto it = was_empty ? products.begin() : std::next(last);
+-				for (; it != products.end(); ++it) {
+-					product_set.insert(*it);
++			{	// Traverse the neighborhood and append only the molecules not
++				// listed yet. With same-complex binding allowed
++				// (block_same_complex_binding off), two reactants of a
++				// bimolecular rule can sit in one complex, beyond each other's
++				// traversal limit but with overlapping neighborhoods. A molecule
++				// listed twice was added to the Molecules observables twice
++				// (removal is idempotent, addition is not), so a conserved count
++				// such as A() drifted upward.
++				list <Molecule *> reached;
++				molecule->traverseBondedNeighborhood(reached, traversalLimit);
++				for ( molIter = reached.begin(); molIter != reached.end(); ++molIter ) {
++					if ( product_set.insert(*molIter).second )
++						products.push_back(*molIter);
+ 				}
+ 				//molecule->traverseBondedNeighborhoodForUpdate(products,traversalLimit);
+ 			}
+@@ -945,6 +999,15 @@ bool TransformationSet::deletesWholeSpecies(unsigned int reactantIndex) const
+ 
+ void TransformationSet::finalize()
+ {
++	// Resolve the product pattern at each end of every deleted bond.
++	for ( unsigned int b = 0; b < deletedBonds.size(); ++b ) {
++		map <TemplateMolecule *, int>::const_iterator pp;
++		pp = productPatternOfTemplate.find( deletedBonds[b].t1 );
++		deletedBonds[b].pattern1 = ( pp == productPatternOfTemplate.end() ) ? -1 : pp->second;
++		pp = productPatternOfTemplate.find( deletedBonds[b].t2 );
++		deletedBonds[b].pattern2 = ( pp == productPatternOfTemplate.end() ) ? -1 : pp->second;
++	}
++
+ 	//Be sure to add at least a blank transformation to every reactant if there is no transformation
+ 	//specified so that we count the reactants even if we don't do anything to it.
+ 	for(unsigned int r=0; r<getNmappingSets(); r++)  {
+diff --git a/src/NFreactions/transformations/transformationSet.hh b/src/NFreactions/transformations/transformationSet.hh
+index 764a0b0..a99fcb5 100644
+--- a/src/NFreactions/transformations/transformationSet.hh
++++ b/src/NFreactions/transformations/transformationSet.hh
+@@ -229,6 +229,16 @@ namespace NFcore
+ 			unsigned int getNumProductPatterns() const { return n_product_patterns; };
+ 			void setNumProductPatterns( unsigned int val ) { n_product_patterns = val; };
+ 
++			/*!
++				Record the product pattern (0-based) that a reactant template molecule
++				maps to, from the rule's reactant-product map. finalize() reads it to
++				tell a deleted bond between two product patterns, which must separate
++				its ends, from one inside a single product pattern, which need not.
++				A template with no entry (a deleted molecule, or a rule loaded without
++				a map) counts as mapped apart from its partner.
++			*/
++			void setProductPatternOf( TemplateMolecule * t, int productPattern ) { productPatternOfTemplate[t] = productPattern; };
++
+ 
+ 			/*!
+ 				This function sets up the actual array of Transformation objects for this TransformationSet
+@@ -359,19 +369,47 @@ namespace NFcore
+ 
+ 			/*!
+ 				Helper method to check if two molecules remain connected through alternative paths
+-				when a set of bonds is removed. This is used to enforce product-side molecularity
+-				for unimolecular unbinding rules (Issue #48). The full set of bonds that the firing
++				when a set of bonds is removed and another added. This is used to enforce
++				product-side molecularity (Issue #48). The full set of bonds that the firing
+ 				rule will delete is excluded at once, so multi-bond ring-opening dissociations are
+-				judged on the post-reaction graph rather than one bond in isolation.
++				judged on the post-reaction graph rather than one bond in isolation. It searches
++				from both ends in turn, so it costs the smaller side when they are apart.
+ 				@param mol1 The molecule containing the binding site
+ 				@param mol2 The bonded partner molecule
+ 				@param excludedBonds The bonds to exclude, each recorded as both of its
+ 				       (molecule, component-index) half-edges
++				@param addedBonds The bonds the rule adds between molecules that exist now
+ 				@return true if mol1 can be reached from mol2 through alternative paths, false otherwise
+ 				@author Fix for Issues #48 and #61
+ 			*/
+ 			bool canReachExcludingBonds(Molecule *mol1, Molecule *mol2,
+-				const std::vector< std::pair<Molecule *, int> > &excludedBonds);
++				const std::vector< std::pair<Molecule *, int> > &excludedBonds,
++				const std::vector< std::pair<Molecule *, Molecule *> > &addedBonds);
++
++			/*!
++				Product-side molecularity: every bond the rule deletes between two
++				product patterns must leave its ends in different complexes once all
++				the rule's deleted bonds are gone and its added bonds are in place.
++				BioNetGen rejects such a match (a "+" that cannot hold); so must we,
++				whatever the number of reactants and whatever block_same_complex_binding
++				says. Returns false when the products would not separate.
++			*/
++			bool productsSeparate( MappingSet ** mappingSets );
++
++			/*!	A bond the rule deletes: the reactant and transformation index of its
++			 *   UnbindingTransform, the template molecules at its two ends (the second
++			 *   is null when the partner is not in the pattern), and the product
++			 *   patterns they map to (-1 when unknown), resolved by finalize(). */
++			struct DeletedBond {
++				unsigned int reactant;
++				unsigned int transform;
++				TemplateMolecule * t1;
++				TemplateMolecule * t2;
++				int pattern1;
++				int pattern2;
++			};
++			vector <DeletedBond> deletedBonds;
++			map <TemplateMolecule *, int> productPatternOfTemplate;
+ 
+ 			/*!	Remembers if the finalize function has been called	*/
+ 			bool finalized;
+-- 
+2.54.0 (Apple Git-157)
+

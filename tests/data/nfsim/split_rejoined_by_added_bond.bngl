@@ -1,0 +1,26 @@
+# Product-molecularity fixture: one complex A.B.C. The rule deletes A-B and
+# binds A to a C, claiming two products, A.C and B. The only C is the one bonded
+# to B, which a bimolecular rule may match only with
+# block_same_complex_binding=False; the bond the rule adds then joins A back to B
+# through C, so the products do not separate and the rule must not fire (Bfree
+# stays 0). With block_same_complex_binding=True there is no second complex.
+begin model
+begin parameters
+  k 1
+end parameters
+begin molecule types
+  A(b)
+  B(a,c)
+  C(b,x)
+end molecule types
+begin seed species
+  A(b!1).B(a!1,c!2).C(b!2,x) 1
+end seed species
+begin observables
+  Molecules Bfree B(a)
+end observables
+begin reaction rules
+  A(b!1).B(a!1) + C(x) -> A(b!2).C(x!2) + B(a) k
+end reaction rules
+end model
+writeXML()

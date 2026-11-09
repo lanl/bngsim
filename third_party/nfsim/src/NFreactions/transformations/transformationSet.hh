@@ -229,6 +229,16 @@ namespace NFcore
 			unsigned int getNumProductPatterns() const { return n_product_patterns; };
 			void setNumProductPatterns( unsigned int val ) { n_product_patterns = val; };
 
+			/*!
+				Record the product pattern (0-based) that a reactant template molecule
+				maps to, from the rule's reactant-product map. finalize() reads it to
+				tell a deleted bond between two product patterns, which must separate
+				its ends, from one inside a single product pattern, which need not.
+				A template with no entry (a deleted molecule, or a rule loaded without
+				a map) counts as mapped apart from its partner.
+			*/
+			void setProductPatternOf( TemplateMolecule * t, int productPattern ) { productPatternOfTemplate[t] = productPattern; };
+
 
 			/*!
 				This function sets up the actual array of Transformation objects for this TransformationSet
@@ -359,19 +369,47 @@ namespace NFcore
 
 			/*!
 				Helper method to check if two molecules remain connected through alternative paths
-				when a set of bonds is removed. This is used to enforce product-side molecularity
-				for unimolecular unbinding rules (Issue #48). The full set of bonds that the firing
+				when a set of bonds is removed and another added. This is used to enforce
+				product-side molecularity (Issue #48). The full set of bonds that the firing
 				rule will delete is excluded at once, so multi-bond ring-opening dissociations are
-				judged on the post-reaction graph rather than one bond in isolation.
+				judged on the post-reaction graph rather than one bond in isolation. It searches
+				from both ends in turn, so it costs the smaller side when they are apart.
 				@param mol1 The molecule containing the binding site
 				@param mol2 The bonded partner molecule
 				@param excludedBonds The bonds to exclude, each recorded as both of its
 				       (molecule, component-index) half-edges
+				@param addedBonds The bonds the rule adds between molecules that exist now
 				@return true if mol1 can be reached from mol2 through alternative paths, false otherwise
 				@author Fix for Issues #48 and #61
 			*/
 			bool canReachExcludingBonds(Molecule *mol1, Molecule *mol2,
-				const std::vector< std::pair<Molecule *, int> > &excludedBonds);
+				const std::vector< std::pair<Molecule *, int> > &excludedBonds,
+				const std::vector< std::pair<Molecule *, Molecule *> > &addedBonds);
+
+			/*!
+				Product-side molecularity: every bond the rule deletes between two
+				product patterns must leave its ends in different complexes once all
+				the rule's deleted bonds are gone and its added bonds are in place.
+				BioNetGen rejects such a match (a "+" that cannot hold); so must we,
+				whatever the number of reactants and whatever block_same_complex_binding
+				says. Returns false when the products would not separate.
+			*/
+			bool productsSeparate( MappingSet ** mappingSets );
+
+			/*!	A bond the rule deletes: the reactant and transformation index of its
+			 *   UnbindingTransform, the template molecules at its two ends (the second
+			 *   is null when the partner is not in the pattern), and the product
+			 *   patterns they map to (-1 when unknown), resolved by finalize(). */
+			struct DeletedBond {
+				unsigned int reactant;
+				unsigned int transform;
+				TemplateMolecule * t1;
+				TemplateMolecule * t2;
+				int pattern1;
+				int pattern2;
+			};
+			vector <DeletedBond> deletedBonds;
+			map <TemplateMolecule *, int> productPatternOfTemplate;
 
 			/*!	Remembers if the finalize function has been called	*/
 			bool finalized;

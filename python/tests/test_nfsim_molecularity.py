@@ -4,11 +4,13 @@ These guard the multi-bond ring-opening fix (internal#57) without
 re-breaking the single-bond cyclic-dissociation behavior that the same
 ``checkMolecularity`` path is responsible for (internal#54/#55).
 
-``checkMolecularity`` enforces product-side molecularity for unimolecular
-unbinding rules under complex bookkeeping: ``A.B -> A + B`` may only fire when
-the deletion actually separates the match into different connected components.
-The fix makes that test consider *all* the bonds a rule deletes at once instead
-of one bond in isolation.
+``checkMolecularity`` enforces product-side molecularity: ``A.B -> A + B`` may
+only fire when the deletion actually separates the match into different
+connected components. The test considers *all* the bonds a rule deletes at once
+instead of one bond in isolation, and the bonds it adds. Like BioNetGen, it is
+made for every bond deleted between two product patterns, whatever the number
+of reactant patterns and whatever ``block_same_complex_binding`` says; a bond
+deleted inside one product pattern claims no separation.
 """
 
 from __future__ import annotations
@@ -117,3 +119,107 @@ class TestSpeciesObservableComplexTracking:
         )
         # And it should match the binding-blocked count within stochastic scatter.
         assert off["dimers"] == pytest.approx(on["dimers"], abs=20)
+
+
+BSCB = pytest.mark.parametrize("bscb", [True, False], ids=["bscb_on", "bscb_off"])
+
+
+class TestProductMolecularityWhateverTheFlag:
+    """The product-side test holds with ``block_same_complex_binding`` off.
+
+    The flag governs which molecules a bimolecular rule may bind. NFsim also
+    gated the product-side ``+`` test on it, so with the flag off
+    ``L(r!1).R(l!1) -> L(r) + R(l)`` opened every ring.
+    """
+
+    def test_single_bond_ring_break_blocked_with_bscb_off(self, data_dir: Path) -> None:
+        # Same fixture as TestSingleBondMolecularityStillBlocked: the network
+        # keeps Ring2 == 100. With the flag off main broke all 100 rings.
+        xml = data_dir / "nfsim" / "ring_singlebond.xml"
+        for seed in (1, 2, 3):
+            obs = _final_observables(xml, seed=seed, t_end=5.0, block_same_complex_binding=False)
+            assert obs["Ring2"] == pytest.approx(100.0), (
+                f"single-bond ring break fired with block_same_complex_binding=False "
+                f"(Ring2={obs['Ring2']}, seed={seed})"
+            )
+
+    @BSCB
+    def test_conserved_total_with_same_complex_binding(self, data_dir: Path, bscb: bool) -> None:
+        # 30 A(l,r) bind into chains (rings, with the flag off) and break again.
+        # Nothing makes or removes an A, so Atot == 30 at every sample. With the
+        # flag off, a binding whose two reactants sat in one complex beyond each
+        # other's traversal limit listed their shared neighbours twice and added
+        # them to the Molecules observables twice: main read 84-98. Control:
+        # bscb_on passes on main (no two reactants share a complex).
+        xml = data_dir / "nfsim" / "ring_close_open.xml"
+        for seed in (1, 2, 3):
+            with NfsimSession(str(xml), block_same_complex_binding=bscb) as nf:
+                nf.initialize(seed=seed)
+                res = nf.simulate(0.0, 40.0, 81)
+                col = list(res.observable_names).index("Atot")
+                atot = [row[col] for row in res.observables]
+            assert min(atot) == pytest.approx(30.0) and max(atot) == pytest.approx(30.0), (
+                f"conserved Atot left 30 (range {min(atot)}..{max(atot)}, "
+                f"seed={seed}, bscb={bscb})"
+            )
+
+
+class TestProductMolecularityBimolecular:
+    """A bimolecular rule's product-side ``+`` is tested too."""
+
+    @BSCB
+    def test_bimolecular_split_on_a_ring_blocked(self, data_dir: Path, bscb: bool) -> None:
+        # L(r!1,c).R(l!1) + C(x) -> L(r,c!2).C(x!2) + R(l) on 100 rings: L and R
+        # stay connected through the ring, so BNG2.pl generates no reaction and
+        # Cfree stays 100. Main fired it and bound every C (Cfree 0).
+        xml = data_dir / "nfsim" / "ring_bimolecular_split.xml"
+        for seed in (1, 2):
+            obs = _final_observables(xml, seed=seed, t_end=5.0, block_same_complex_binding=bscb)
+            assert obs["Cfree"] == pytest.approx(100.0), (
+                f"bimolecular split fired on a ring bond (Cfree={obs['Cfree']}, "
+                f"seed={seed}, bscb={bscb})"
+            )
+            assert obs["Ring2"] == pytest.approx(100.0)
+
+    def test_split_rejoined_by_the_added_bond_blocked(self, data_dir: Path) -> None:
+        # With the flag off, A(b!1).B(a!1) + C(x) -> A(b!2).C(x!2) + B(a) may
+        # match the C bonded to B in the same complex. The bond the rule adds
+        # then joins A back to B through C, so the products do not separate and
+        # B must stay bound (Bfree 0). Main freed it (Bfree 1).
+        xml = data_dir / "nfsim" / "split_rejoined_by_added_bond.xml"
+        for seed in (1, 2, 3):
+            obs = _final_observables(xml, seed=seed, t_end=20.0, block_same_complex_binding=False)
+            assert obs["Bfree"] == pytest.approx(0.0), (
+                f"split rejoined by the added bond fired (Bfree={obs['Bfree']}, seed={seed})"
+            )
+
+    def test_split_rejoined_control_bscb_on(self, data_dir: Path) -> None:
+        """Control: with the flag on, the only C is in the same complex, so the
+        rule never matches (main passes too)."""
+        xml = data_dir / "nfsim" / "split_rejoined_by_added_bond.xml"
+        obs = _final_observables(xml, seed=1, t_end=20.0, block_same_complex_binding=True)
+        assert obs["Bfree"] == pytest.approx(0.0)
+
+
+class TestBondInsideOneProductPattern:
+    """A bond deleted inside one product pattern claims no separation."""
+
+    @BSCB
+    def test_intra_pattern_bond_does_not_block(self, data_dir: Path, bscb: bool) -> None:
+        # A(x!1,y!2,z!3).B(x!1,y!2).C(a!3) -> A(x,y!2,z).B(x,y!2) + C(a), k = 1:
+        # the x bond is deleted inside the first product pattern (A and B stay
+        # bonded through y) and only the z bond separates C. BNG2.pl fires it at
+        # rate k, so Cfree(1) = 100 (1 - e^-1) = 63.2 (binomial sd 4.8; sd 2.2 for
+        # the mean of 5 seeds). Main tested the x bond too, found A and B still
+        # connected, and never fired with the flag on (Cfree 0). Control:
+        # bscb_off passes on main, which made no product-side test with the flag
+        # off; it guards against a fix that tests every deleted bond.
+        xml = data_dir / "nfsim" / "intra_pattern_bond_split.xml"
+        cfree = [
+            _final_observables(xml, seed=seed, t_end=1.0, block_same_complex_binding=bscb)["Cfree"]
+            for seed in range(1, 6)
+        ]
+        mean = sum(cfree) / len(cfree)
+        assert mean == pytest.approx(63.2, abs=11.0), (
+            f"Cfree mean {mean} (seeds {cfree}, bscb={bscb})"
+        )

@@ -290,6 +290,8 @@ namespace NFcore
 
 			virtual bool checkForNullCondition(Mapping *m, MappingSet **ms);
 			virtual TemplateMolecule * getTemplateMolecule() const {return this->tm;};
+			int getOtherReactantIndex() const {return otherReactantIndex;};
+			int getOtherMappingIndex() const {return otherMappingIndex;};
 		protected:
 			int cIndex;
 			int otherReactantIndex;

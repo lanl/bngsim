@@ -493,6 +493,38 @@ CARRY_QUEUE = (
             },
         ],
     },
+    {
+        "topic": "bngsim/carry-product-molecularity",
+        "kind": "local",
+        "status": (
+            "Test product molecularity as BioNetGen does. A rule whose products "
+            "are written apart (A.B -> A + B) fires only where the bonds it "
+            "deletes separate them. Upstream's test (issue #48) ran for "
+            "one-reactant rules only, only under complex bookkeeping, and on every "
+            "deleted bond: without -cb, 100 four-member rings all opened (BNG2.pl "
+            "keeps 100); a bimolecular rule moving L from R to C on a ring bound "
+            "every C (BNG2.pl generates no reaction); and a rule that also deletes "
+            "a bond inside one product pattern never fired. The loader records "
+            "each reactant molecule's product pattern from the rule's Map, and "
+            "productsSeparate tests every bond deleted between two patterns, for "
+            "any reactant count, with the rule's added bonds in place, searching "
+            "from both ends so a release from a gel costs the small side. Without "
+            "-cb, getListOfProducts also listed molecules two reactants' "
+            "neighbourhoods share twice, adding them to the Molecules observables "
+            "twice (a conserved 30 read 84-98); each is listed once now. Fixtures "
+            "under tests/data/nfsim/ (ring_close_open, ring_bimolecular_split, "
+            "intra_pattern_bond_split, split_rejoined_by_added_bond)."
+        ),
+        "commits": [
+            {
+                "commit": "46deb19a9824c8e9e2adcaeded20f06e90c594d3",
+                "summary": (
+                    "bngsim: test product molecularity as BioNetGen does, and list each "
+                    "product molecule once"
+                ),
+            },
+        ],
+    },
 )
 
 SUMMARY_PREVIEW_LIMIT = 12
