@@ -66,6 +66,18 @@ divergence during development:
   cubic-spline-interpolates onto the exact target grid — knot-exact where the grids
   coincide, so it removes the spurious time-grid mismatch without manufacturing a
   divergence.
+- **Distribution annotations.** A function definition can carry the SBML
+  `distribution` annotation (`http://sbml.org/annotations/distribution`, the scheme
+  before the `distrib` package) beside its math. BIOMD0000000589's
+  `RUNIFORM(a, b)` has the math `(a + b) / 2` and a uniform distribution as its
+  annotation. bngsim, RoadRunner and AMICI evaluate the math. COPASI reads the
+  annotation and draws a new value on every run, so its reference was a different
+  model each time: 589 read max_rel from 0.04 to 0.34 against bngsim from run to
+  run, in one process, and once PASSed (issue #1563). `co_ode` gives COPASI
+  `sbml_core_reading` of the model, with that annotation element removed and
+  nothing else changed, and the row's comment says it did. On 589 COPASI is then
+  repeatable to the bit and PASSes against bngsim (0 of 13013 cells). It is the
+  only corpus model with the annotation.
 
 ## Comparison protocol
 

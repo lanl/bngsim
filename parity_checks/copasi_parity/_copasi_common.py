@@ -12,6 +12,9 @@ comparison path — only the *reference* engine changes.
 Public surface:
   * ``co_ode``               — one COPASI deterministic timecourse, same
                                signature/return as ``rr_ode``/``amici_ode``.
+  * ``sbml_core_reading``    — the SBML with distribution annotations taken off
+                               function definitions, the model the other engines
+                               read (issue #1563).
   * ``measure_warmup``       — per-process warmup (bngsim SymPy + COPASI import).
   * ``set_copasi_quiet``     — drain COPASI's message deque between models.
   * ``classify_reference_refusal`` — map a COPASI failure to a refusal subclass.
@@ -31,6 +34,22 @@ from pathlib import Path
 import numpy as np
 
 
+@contextlib.contextmanager
+def keep_locale():
+    """Restore the process ``LC_CTYPE`` after the block, whatever COPASI did to it.
+
+    COPASI sets ``LC_CTYPE`` to ``C`` when its module loads, and again when it imports
+    SBML whose function definitions carry an annotation (issue #1563: 589's RUNIFORM,
+    or any annotation there). Every COPASI import goes through this, for the reason
+    ``_import_copasi`` gives."""
+    saved = locale.setlocale(locale.LC_CTYPE)
+    try:
+        yield
+    finally:
+        with contextlib.suppress(Exception):
+            locale.setlocale(locale.LC_CTYPE, saved)
+
+
 def _import_copasi():
     """Import COPASI while preserving the process ``LC_CTYPE``.
 
@@ -42,14 +61,10 @@ def _import_copasi():
     in bngsim, misattributing a reference-engine side effect as a bngsim bug. Saving
     and restoring around the (one-time) import keeps the reference engine from
     corrupting the test engine. Subsequent imports are cached no-ops."""
-    saved = locale.setlocale(locale.LC_CTYPE)
-    try:
+    with keep_locale():
         import COPASI
 
         return COPASI
-    finally:
-        with contextlib.suppress(Exception):
-            locale.setlocale(locale.LC_CTYPE, saved)
 
 
 # Reuse the bngsim adapter + engine-agnostic helpers from rr_parity. _rr_common
@@ -143,6 +158,44 @@ def sbml_source(xml: str) -> tuple[str | None, str | None]:
     return None, xml
 
 
+# The SBML "distribution" annotation (the scheme before the distrib package). A
+# function definition carrying it, such as BIOMD0000000589's
+#   RUNIFORM(a, b) = (a + b) / 2  with  <distribution definition=".../uniform"/>,
+# has the mean as its SBML math and a distribution as its annotation. bngsim,
+# RoadRunner and AMICI evaluate the math. COPASI reads the annotation and draws
+# a fresh value on every run, so its reference is a different model each time.
+DISTRIBUTION_ANNOTATION_NS = "http://sbml.org/annotations/distribution"
+
+
+def sbml_core_reading(text: str) -> tuple[str, list[str]]:
+    """``(sbml, ids)``: the SBML with the distribution annotation removed from each
+    function definition that carries one, and those definitions' ids.
+
+    Without it COPASI samples such a function instead of evaluating its SBML math,
+    which every other engine here evaluates (issue #1563). Only that annotation
+    element goes; the rest of each annotation, and the model, are written back as
+    libsbml read them. Text without the annotation comes back unchanged, unparsed.
+    """
+    if DISTRIBUTION_ANNOTATION_NS not in text:
+        return text, []
+    import libsbml
+
+    doc = libsbml.readSBMLFromString(text)
+    model = doc.getModel()
+    dropped: list[str] = []
+    for f in model.getListOfFunctionDefinitions() if model is not None else []:
+        if f.isSetAnnotation() and DISTRIBUTION_ANNOTATION_NS in f.getAnnotationString():
+            status = f.removeTopLevelAnnotationElement("distribution", DISTRIBUTION_ANNOTATION_NS)
+            if status != libsbml.LIBSBML_OPERATION_SUCCESS:
+                raise RuntimeError(
+                    f"could not remove the distribution annotation from {f.getId()}"
+                )
+            dropped.append(f.getId())
+    if not dropped:
+        return text, []
+    return libsbml.writeSBMLToString(doc), dropped
+
+
 def co_ode(
     xml: str, t_start: float, t_end: float, n_points: int, rtol: float, atol: float
 ) -> tuple[np.ndarray, np.ndarray, list[str], dict]:
@@ -171,6 +224,11 @@ def co_ode(
     (issue #1550): given an output start past it, bngsim's run was the same model
     shifted in time by the gap.
 
+    COPASI is given ``sbml_core_reading`` of the model, so a function definition
+    with a distribution annotation is evaluated, as the other engines evaluate
+    it, rather than sampled (issue #1563). ``timing["distribution_annotations_dropped"]``
+    names the definitions that applies to, empty for every other model.
+
     A failed ``importSBML`` (unsupported construct) or a failed ``process`` (LSODA
     divergence) raises, so the worker classifies it as a reference failure rather
     than silently comparing a truncated trajectory.
@@ -179,9 +237,17 @@ def co_ode(
 
     set_copasi_quiet()
 
+    # 0. Outside the timed phases: the SBML-core reading of a function definition
+    #    COPASI would otherwise sample (issue #1563). A model without one keeps
+    #    its path, and COPASI reads the file itself as before.
+    sbml_path, sbml_str = sbml_source(xml)
+    text = sbml_str if sbml_str is not None else Path(sbml_path).read_text(encoding="utf-8")
+    core, dropped = sbml_core_reading(text)
+    if dropped:
+        sbml_path, sbml_str = None, core
+
     # 1. Resolve the SBML source: a path (the manifest passes one) or a string.
     t0 = time.perf_counter()
-    sbml_path, sbml_str = sbml_source(xml)
     io_sec = 0.0 if sbml_path is not None else time.perf_counter() - t0
 
     dm = COPASI.CRootContainer.addDatamodel()
@@ -189,11 +255,12 @@ def co_ode(
         # 2. Import (libSBML parse + COPASI model build). importSBML returns False
         #    on an unsupported construct; the reason is in the message deque.
         t1 = time.perf_counter()
-        ok = (
-            dm.importSBML(sbml_path)
-            if sbml_path is not None
-            else dm.importSBMLFromString(sbml_str)
-        )
+        with keep_locale():
+            ok = (
+                dm.importSBML(sbml_path)
+                if sbml_path is not None
+                else dm.importSBMLFromString(sbml_str)
+            )
         if not ok:
             raise RuntimeError(f"COPASI importSBML failed: {_copasi_msg()}")
         load_sec = time.perf_counter() - t1
@@ -296,6 +363,7 @@ def co_ode(
         timing = {
             "io_sec": round(io_sec, 6),
             "load_sec": round(load_sec, 6),
+            "distribution_annotations_dropped": dropped,
             **integ,
             "config": {
                 "integrator": "LSODA (deterministic)",

@@ -129,6 +129,33 @@ INVALID_REFERENCE: dict[str, dict] = {
             "right."
         ),
     },
+    # BIOMD0000000627:ode. DIFF at 0.15.1 too; until #1550 it was also one of the
+    # 19 offset-window jobs copasi_run integrated from the wrong time. rr_parity's
+    # entry for this model (#482) is RoadRunner stepping over the same ramp.
+    "BIOMD0000000627:ode": {
+        "issue": "GH #1563",
+        "max_rel": 1.0,
+        "reason": (
+            "COPASI's LSODA steps over two narrow features of the time course that "
+            "it never samples. Jolivet2015's blood flow f_CBF_dyn rises on a logistic "
+            "centred at t = 199, and its stimulus is gated by is_stimulated = "
+            "piecewise(0, (time <= 200) or (time >= t_0 + t_end), 1), t_0 = 200, "
+            "t_end = 40. COPASI steps over both: species_24 reads 2.2085 at t = 199.6 "
+            "where the solution is 1.9435, and at t = 240 GLU_extracellular_space "
+            "reads 0 and Na__neurons 15.5312, where the solution is 0.02570 and "
+            "17.1738. The solution: RoadRunner with its step bounded at 0.05 and at "
+            "0.01 agrees with itself (err/movement 2.9e-7); on its 60 floating "
+            "species it agrees with bngsim on all 60060 cells (3.5e-7) and fails "
+            "COPASI on 22778 (10264 hard); and COPASI with its own internal step "
+            "bounded at 0.1 passes against both. On one species, B' = gate and B(0) = 0, the closed form is "
+            "B(400) = 40. COPASI reads 0 for the window written with or, with and, "
+            "or as nested piecewise, on 11, 101 and 1001 output points, and 40 once "
+            "a harmonic oscillator beside B bounds its step; bngsim reads 40 on all "
+            "three grids, RoadRunner on 101 and 1001 (and on 11 for the nested "
+            "form). Each edge alone COPASI gets right: 200 for the gate opening at "
+            "200, 240 for one closing at 240."
+        ),
+    },
 }
 
 ALL_KEYS = frozenset(INVALID_REFERENCE)

@@ -20,8 +20,18 @@ The last two are COPASI-calibrated ``INVALID_REFERENCE`` entries in
 other runners took (the run's atol in the movement gate, the shared row comment),
 and ``co_ode`` reads SBML text without taking it for a path.
 
-The harness tests stand both engines in, so they run without COPASI. The two
-tests that pin COPASI's defects need COPASI and RoadRunner and skip without them.
+Issue #1563 found two more rows that are COPASI's:
+
+  * BIOMD0000000627: COPASI's LSODA steps over a time window it never samples,
+    and over the blood-flow ramp before it. A third entry.
+  * BIOMD0000000589: COPASI samples a function definition that carries the SBML
+    distribution annotation, where the other engines evaluate its math, so its
+    reference changed on every run. Not an entry: ``co_ode`` gives COPASI the
+    model's SBML-core reading, and the row PASSes.
+
+The harness tests stand both engines in, so they run without COPASI. The tests
+that pin COPASI's defects need COPASI, most of them RoadRunner too, and skip
+without them.
 """
 
 from __future__ import annotations
@@ -183,11 +193,17 @@ def test_sbml_text_is_not_taken_for_a_path(tmp_path):
 # The COPASI-calibrated dispositions
 # --------------------------------------------------------------------------- #
 def test_the_issues_rows_are_authored_and_the_harness_row_is_not():
-    """183 and 285 are COPASI's answer; 569 was the harness and PASSes once both
-    engines start at 0 (one sub-atol cell of 21021 fails, and is exempt), so an entry for it would only
-    report itself STALE."""
-    assert set(cd.INVALID_REFERENCE) == {"BIOMD0000000183:ode", "BIOMD0000000285:ode"}
+    """183, 285 and 627 are COPASI's answer. 569 was the harness and PASSes once both
+    engines start at 0 (one sub-atol cell of 21021 fails, and is exempt), and 589
+    PASSes once COPASI evaluates RUNIFORM's math (#1563), so an entry for either
+    would only report itself STALE."""
+    assert set(cd.INVALID_REFERENCE) == {
+        "BIOMD0000000183:ode",
+        "BIOMD0000000285:ode",
+        "BIOMD0000000627:ode",
+    }
     assert cd.disposition_for("BIOMD0000000569", "ode") is None
+    assert cd.disposition_for("BIOMD0000000589", "ode") is None
 
 
 def test_every_authored_key_names_a_model_the_corpus_builds():
@@ -222,7 +238,7 @@ def test_an_entry_disposes_of_the_diff_it_was_written_against(key):
         "applied",
     )
     assert "DRIFTED" not in comment
-    assert comment.startswith("invalid reference (GH #1550): ")
+    assert comment.startswith(f"invalid reference ({cd.INVALID_REFERENCE[key]['issue']}): ")
 
 
 def test_a_row_that_agrees_on_its_own_reports_the_entry_stale():
@@ -239,6 +255,7 @@ def test_copasi_run_disposes_of_the_rows_it_runs(monkeypatch, tmp_path):
     natural = {
         "BIOMD0000000183": ("diff", 0.6197),
         "BIOMD0000000285": ("diff", 1.0),
+        "BIOMD0000000627": ("diff", 1.0),
         "BIOMD0000000569": ("pass", 0.0),
     }
 
@@ -270,12 +287,12 @@ def test_copasi_run_disposes_of_the_rows_it_runs(monkeypatch, tmp_path):
     assert copasi_run.main() == 0
     report = json.loads(out.read_text())
     rows = {r["model_id"]: r for r in report["results"]}
-    for mid in ("BIOMD0000000183", "BIOMD0000000285"):
+    for mid in ("BIOMD0000000183", "BIOMD0000000285", "BIOMD0000000627"):
         assert rows[mid]["outcome"] == str(Outcome.REFERENCE_FAILED), mid
         assert rows[mid]["reference_refusal"] == cd.INVALID_RESULT_REFUSAL
-        assert "GH #1550" in rows[mid]["comment"]
+        assert cd.INVALID_REFERENCE[f"{mid}:ode"]["issue"] in rows[mid]["comment"]
     assert rows["BIOMD0000000569"]["outcome"] == str(Outcome.PASS)
-    assert report["_meta"]["dispositions"]["counts"] == {"invalid_reference:applied": 2}
+    assert report["_meta"]["dispositions"]["counts"] == {"invalid_reference:applied": 3}
     assert cd.INVALID_RESULT_REFUSAL in report["_meta"]["reference_refusal_breakdown"]["settled"]
 
 
@@ -336,7 +353,8 @@ def _copasi_rate(xml: str) -> tuple[str, float]:
     COPASI = cc._import_copasi()
     dm = COPASI.CRootContainer.addDatamodel()
     try:
-        assert dm.importSBMLFromString(xml)
+        with cc.keep_locale():
+            assert dm.importSBMLFromString(xml)
         mod = dm.getModel()
         mod.applyInitialValues()
         r = mod.getReaction(0)
@@ -411,3 +429,212 @@ def test_copasi_misses_a_trigger_that_sits_on_its_threshold(initial_value):
     assert both(_HELD_THEN_RISING) == (False, True)
     assert both(_TIME) == (False, True)
     assert both("<cn>1</cn>") == (True, True)
+
+
+def _gate(value, cond, other) -> str:
+    return (
+        f"<piecewise><piece><cn>{value}</cn>{cond}</piece>"
+        f"<otherwise>{other if other.startswith('<') else f'<cn>{other}</cn>'}</otherwise></piecewise>"
+    )
+
+
+def _cmp(op: str, a: str, b: str) -> str:
+    return f"<apply><{op}/>{a}{b}</apply>"
+
+
+def _rate_rule_sbml(rate_math: str, oscillator: bool = False) -> str:
+    """B' = rate_math, B(0) = 0, and with ``oscillator`` a harmonic oscillator
+    X' = Y, Y' = -X beside it, which keeps any integrator's step below about 1."""
+    species = _species("B", 0) + (_species("X", 1) + _species("Y", 0) if oscillator else "")
+    rules = f'<rateRule variable="B">{_MATH.format(rate_math)}</rateRule>'
+    if oscillator:
+        rules += f'<rateRule variable="X">{_MATH.format("<ci>Y</ci>")}</rateRule>'
+        rules += f'<rateRule variable="Y">{_MATH.format("<apply><minus/><ci>X</ci></apply>")}</rateRule>'
+    return (
+        _HEAD
+        + f"<listOfSpecies>{species}</listOfSpecies>"
+        + f"<listOfRules>{rules}</listOfRules>"
+        + "</model></sbml>"
+    )
+
+
+_AT = {x: f"<cn>{x}</cn>" for x in (200, 240)}
+_WINDOWS = {
+    "or": _gate(
+        0,
+        f"<apply><or/>{_cmp('leq', _TIME, _AT[200])}{_cmp('geq', _TIME, _AT[240])}</apply>",
+        "1",
+    ),
+    "and": _gate(
+        1,
+        f"<apply><and/>{_cmp('gt', _TIME, _AT[200])}{_cmp('lt', _TIME, _AT[240])}</apply>",
+        "0",
+    ),
+    "nested": _gate(0, _cmp("leq", _TIME, _AT[200]), _gate(0, _cmp("geq", _TIME, _AT[240]), "1")),
+}
+
+
+@pytest.mark.parametrize("form", sorted(_WINDOWS))
+def test_copasi_steps_over_a_window_it_never_samples(form):
+    """The premise of the ``BIOMD0000000627:ode`` entry (#1563). B' is 1 on
+    (200, 240) and 0 elsewhere, so B(400) = 40 in closed form. COPASI reads 0
+    however the window is written, and RoadRunner 40. Beside an oscillator that
+    bounds its step COPASI reads 40, so the window is not lost in reading the
+    model: its LSODA steps clean over a window nothing makes it sample. The
+    controls: a gate with one edge, opening at 200 or closing at 240, COPASI gets
+    right. If this starts failing, COPASI has changed here, and the entry will
+    report itself STALE or DRIFTED."""
+    _need_copasi()
+    pytest.importorskip("roadrunner")
+    from rr_parity import _rr_common as rc
+
+    def end(run) -> float:
+        t, v, names = run[:3]
+        return float(v[-1, list(names).index("B")])
+
+    def both(rate, oscillator=False):
+        xml = _rate_rule_sbml(rate, oscillator)
+        return (
+            end(cc.co_ode(xml, 0.0, 400.0, 1001, 1e-9, 1e-12)),
+            end(rc.rr_ode(xml, 0.0, 400.0, 1001, 1e-9, 1e-12)),
+        )
+
+    assert both(_WINDOWS[form]) == pytest.approx((0.0, 40.0), rel=1e-6, abs=1e-9)
+    assert both(_WINDOWS[form], oscillator=True) == pytest.approx((40.0, 40.0), rel=1e-6)
+    opening = both(_gate(0, _cmp("leq", _TIME, _AT[200]), "1"))
+    closing = both(_gate(0, _cmp("geq", _TIME, _AT[240]), "1"))
+    assert opening == pytest.approx((200.0, 200.0), rel=1e-6)
+    assert closing == pytest.approx((240.0, 240.0), rel=1e-6)
+
+
+# --------------------------------------------------------------------------- #
+# BIOMD0000000589: COPASI samples a distribution-annotated function (#1563)
+# --------------------------------------------------------------------------- #
+_DIST = (
+    '<annotation><distribution xmlns="http://sbml.org/annotations/distribution" '
+    'definition="http://www.uncertml.org/distributions/uniform"/></annotation>'
+)
+_KEEP = '<annotation><other xmlns="http://example.org/kept" note="stays"/></annotation>'
+
+
+def _runiform_sbml(annotation: str = _DIST) -> str:
+    """RUNIFORM(a, b) = (a + b) / 2 with ``annotation``, the way BIOMD0000000589
+    writes it; p := RUNIFORM(2, 6) and B' = p, so B(1) = 4 when the function is
+    evaluated as its SBML math."""
+    runiform = (
+        '<listOfFunctionDefinitions><functionDefinition id="RUNIFORM">'
+        + annotation
+        + _MATH.format(
+            "<lambda><bvar><ci>a</ci></bvar><bvar><ci>b</ci></bvar>"
+            "<apply><divide/><apply><plus/><ci>a</ci><ci>b</ci></apply><cn>2</cn></apply>"
+            "</lambda>"
+        )
+        + "</functionDefinition></listOfFunctionDefinitions>"
+    )
+    return (
+        _HEAD.replace("<listOfCompartments>", runiform + "<listOfCompartments>")
+        + f"<listOfSpecies>{_species('B', 0)}</listOfSpecies>"
+        + '<listOfParameters><parameter id="p" constant="true"/></listOfParameters>'
+        + '<listOfInitialAssignments><initialAssignment symbol="p">'
+        + _MATH.format("<apply><ci>RUNIFORM</ci><cn>2</cn><cn>6</cn></apply>")
+        + "</initialAssignment></listOfInitialAssignments>"
+        + f'<listOfRules><rateRule variable="B">{_MATH.format("<ci>p</ci>")}</rateRule></listOfRules>'
+        + "</model></sbml>"
+    )
+
+
+def test_the_core_reading_removes_the_distribution_annotation_and_nothing_else():
+    libsbml = pytest.importorskip("libsbml")
+    both = _DIST.replace(
+        "</annotation>", _KEEP[len("<annotation>") :]
+    )  # one annotation, two elements
+    text, dropped = cc.sbml_core_reading(_runiform_sbml(both))
+    assert dropped == ["RUNIFORM"]
+    doc = libsbml.readSBMLFromString(text)
+    f = doc.getModel().getFunctionDefinition("RUNIFORM")
+    assert cc.DISTRIBUTION_ANNOTATION_NS not in f.getAnnotationString()
+    assert "http://example.org/kept" in f.getAnnotationString()
+    assert libsbml.formulaToL3String(f.getBody()) == "(a + b) / 2"
+
+
+@pytest.mark.parametrize("annotation", ["", _KEEP], ids=["none", "another"])
+def test_sbml_without_the_annotation_comes_back_unchanged(annotation):
+    xml = _runiform_sbml(annotation)
+    assert cc.sbml_core_reading(xml) == (xml, [])
+
+
+def _copasi_p(xml: str) -> float:
+    """p as COPASI's own import sets it, without co_ode's core reading."""
+    COPASI = cc._import_copasi()
+    dm = COPASI.CRootContainer.addDatamodel()
+    try:
+        with cc.keep_locale():
+            assert dm.importSBMLFromString(xml)
+        mod = dm.getModel()
+        mod.applyInitialValues()
+        return mod.getModelValue("p").getInitialValue()
+    finally:
+        COPASI.CRootContainer.removeDatamodel(dm)
+
+
+def test_copasi_samples_an_annotated_function_unless_given_its_math():
+    """The premise of the fix for BIOMD0000000589 (#1563). Imported as written,
+    COPASI draws p from uniform(2, 6) on every import, where the SBML math says 4.
+    Through co_ode, which gives it ``sbml_core_reading``, it evaluates the math,
+    as RoadRunner does, and two runs agree to the bit."""
+    _need_copasi()
+    roadrunner = pytest.importorskip("roadrunner")
+    draws = {_copasi_p(_runiform_sbml()) for _ in range(5)}
+    assert len(draws) > 1
+    assert all(2.0 <= d <= 6.0 for d in draws)
+    assert _copasi_p(_runiform_sbml("")) == 4.0
+
+    runs = [cc.co_ode(_runiform_sbml(), 0.0, 1.0, 11, 1e-9, 1e-12) for _ in range(2)]
+    assert np.array_equal(runs[0][1], runs[1][1])
+    t, v, names, timing = runs[0]
+    assert v[-1, list(names).index("B")] == pytest.approx(4.0, rel=1e-9)
+    assert timing["distribution_annotations_dropped"] == ["RUNIFORM"]
+    rr = roadrunner.RoadRunner(_runiform_sbml())
+    assert rr.simulate(0, 1, 2)[-1, 1] == pytest.approx(4.0, rel=1e-9)
+
+
+def test_the_row_says_copasi_was_given_the_core_reading(stand_ins, monkeypatch):
+    """The SBML-core reading is never silent: the worker names what it applied to."""
+    monkeypatch.setattr(
+        cc,
+        "co_ode",
+        lambda *a, **k: (
+            _GRID,
+            np.zeros((len(_GRID), 1)),
+            ["S"],
+            {"distribution_annotations_dropped": ["RUNIFORM"]},
+        ),
+    )
+    q = _Queue()
+    copasi_run._worker(_spec({"t_start": 0.0, "t_end": 1.0}), q)
+    assert q.out[0]["status"] == "pass"
+    assert "RUNIFORM" in q.out[0]["comment"]
+    assert "#1563" in q.out[0]["comment"]
+
+
+def test_copasi_imports_leave_the_process_locale_alone():
+    """COPASI sets LC_CTYPE to C when it imports a function definition that carries
+    an annotation, as 589's RUNIFORM does. In a process whose locale is UTF-8 (a
+    LANG set, an xdist worker) every later ``read_text()`` without an encoding then
+    decodes as ASCII, which failed 30 unrelated tests. ``co_ode`` and this file's
+    direct imports restore it (#1563)."""
+    _need_copasi()
+    import locale
+
+    saved = locale.setlocale(locale.LC_CTYPE)
+    try:
+        try:
+            locale.setlocale(locale.LC_CTYPE, "en_US.UTF-8")
+        except locale.Error:
+            pytest.skip("no en_US.UTF-8 locale here")
+        cc.co_ode(_runiform_sbml(_KEEP), 0.0, 1.0, 3, 1e-9, 1e-12)
+        assert locale.setlocale(locale.LC_CTYPE) == "en_US.UTF-8"
+        _copasi_p(_runiform_sbml())
+        assert locale.setlocale(locale.LC_CTYPE) == "en_US.UTF-8"
+    finally:
+        locale.setlocale(locale.LC_CTYPE, saved)
