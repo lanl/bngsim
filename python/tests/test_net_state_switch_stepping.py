@@ -1353,6 +1353,76 @@ def test_a_crossing_in_the_steep_of_a_sweep_is_restarted_at(tmp_path, h, dlt):
     assert gained == pytest.approx(exact, rel=2e-2)
 
 
+# A threshold that falls past S = 1.2, from 1.5 to 1 around tp, closes the
+# window S < thr() at t_close = tp + sig*atanh(0.2). Y integrates a Gaussian
+# pulse while the window is open; the pulse is centred half its width after
+# t_close, a stop the run restarts at, so the part before t_close is what Y
+# gains. Written with {clock} for the clock thr() reads.
+_CLOSING_PULSE_NET = """\
+begin parameters
+    1 k    10.0
+    2 A    0.5
+    3 tp   30.05
+    4 sig  0.001
+    5 tz   {tz!r}
+    6 wz   0.003
+    7 one  1.0
+end parameters
+begin functions
+    1 thr() 1+A*(1+tanh(-({clock}-tp)/sig))/2
+    2 z() exp(-((time()-tz)/wz)^2)
+    3 r() if(Sobs<thr(),k,0)*z()
+end functions
+begin species
+    1 S() 1.2
+    2 Y() 0
+    3 C() 30.0
+end species
+begin reactions
+    1 0 2 r
+    2 0 3 one
+end reactions
+begin groups
+    1 Sobs 1
+    2 Cobs 3
+end groups
+"""
+
+
+@pytest.mark.parametrize("clock, rtol", [("time()", 1e-3), ("time()", 1e-6), ("Cobs", 1e-6)])
+def test_a_step_over_a_crossing_is_taken_again_up_to_it(tmp_path, clock, rtol):
+    """The step that crosses t_close reads the rate law at its end, where the
+    window is closed, so what CVODE hands back inside it carries a rate of 0
+    over the part of the step before the crossing: the state at the root the
+    run restarts from, and a row recorded inside the step before it. Y gained
+    0 of the 0.0127 the pulse gives it before t_close, and the row 0.001
+    before t_close read 0 of 0.0063, 400 to 400,000 tolerance units off. Such
+    a step is now taken again from its start up to a stop short of the
+    crossing, and the row recorded inside it again. Each is the pulse's
+    integral from -inf to the time, in closed form."""
+    t_close = 30.05 + 0.001 * math.atanh(0.2)
+    tz = t_close + 0.0015
+    row = t_close - 0.001
+    model = _write(tmp_path, _CLOSING_PULSE_NET.format(clock=clock, tz=tz))
+    atol = rtol * 1e-2
+    result = bngsim.Simulator(model).run(sample_times=[30.0, row, 31.0], rtol=rtol, atol=atol)
+
+    def gained(t):
+        return (
+            10.0
+            * 0.003
+            * math.sqrt(math.pi)
+            / 2.0
+            * (1.0 + math.erf((min(t, t_close) - tz) / 0.003))
+        )
+
+    y = np.asarray(result.species)[:, 1]
+    for got, at in ((y[1], row), (y[2], 31.0)):
+        exact = gained(at)
+        assert exact > 0.006
+        assert abs(got - exact) <= 20.0 * (rtol * exact + atol), (at, got, exact)
+
+
 # S slides on S = 1, parks just above it once a() has decayed, and is pushed
 # further up by v(): the residual leaves its band without crossing.
 _SLIDE_PARK_PUSH_NET = """\
