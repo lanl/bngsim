@@ -1534,10 +1534,11 @@ end groups
 """
 
 
+@pytest.mark.parametrize("sens", [None, ["k"]], ids=["plain", "dY/dk"])
 @pytest.mark.parametrize(
     "clock, rtol", [("time()", 1e-3), ("time()", 1e-6), ("Cobs", 1e-3), ("Cobs", 1e-6)]
 )
-def test_a_step_over_a_crossing_is_taken_again_up_to_it(tmp_path, clock, rtol):
+def test_a_step_over_a_crossing_is_taken_again_up_to_it(tmp_path, clock, rtol, sens):
     """The step that crosses t_close reads the rate law at its end, where the
     window is closed, so what CVODE hands back inside it carries a rate of 0
     over the part of the step before the crossing: the state at the root the
@@ -1553,13 +1554,21 @@ def test_a_step_over_a_crossing_is_taken_again_up_to_it(tmp_path, clock, rtol):
     tolerance cannot decide from its blur. It is taken again all the same,
     since its flows are a crossing's: the near side's carries the residual
     across, the same at two distances, and the far side's carries it on. The
-    re-take does not restart on the far side, which the decline refuses."""
+    re-take does not restart on the far side, which the decline refuses.
+
+    A run that carries dY/dk restarts at every crossing, and its step over
+    t_close read the far side's rate all the same: Y and dY/dk came out
+    1e-134 where they are 0.0127 and 0.00127, at every tolerance. Its columns
+    are taken back with the state. Y is k times the pulse's integral up to
+    t_close, which does not move with k, so dY/dk = Y/k."""
     t_close = 30.05 + 0.001 * math.atanh(0.2)
     tz = t_close + 0.0015
     row = t_close - 0.001
     model = _write(tmp_path, _CLOSING_PULSE_NET.format(clock=clock, tz=tz))
     atol = rtol * 1e-2
-    result = bngsim.Simulator(model).run(sample_times=[30.0, row, 31.0], rtol=rtol, atol=atol)
+    result = bngsim.Simulator(model, sensitivity_params=sens).run(
+        sample_times=[30.0, row, 31.0], rtol=rtol, atol=atol
+    )
 
     def gained(t):
         return (
@@ -1575,6 +1584,11 @@ def test_a_step_over_a_crossing_is_taken_again_up_to_it(tmp_path, clock, rtol):
         exact = gained(at)
         assert exact > 0.006
         assert abs(got - exact) <= 20.0 * (rtol * exact + atol), (at, got, exact)
+    if sens is not None:
+        dy_dk = np.asarray(result.sensitivities)[:, 1, 0]
+        for got, at in ((dy_dk[1], row), (dy_dk[2], 31.0)):
+            exact = gained(at) / 10.0
+            assert abs(got - exact) <= 20.0 * (rtol * exact + atol), (at, got, exact)
 
 
 # S slides on S = 1, parks just above it once a() has decayed, and is pushed

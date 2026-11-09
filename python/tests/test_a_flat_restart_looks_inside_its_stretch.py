@@ -378,6 +378,20 @@ def test_a_row_after_a_root_stepped_on_through_is_read_at_its_time():
 # the run restarts at, whose tail after the window opens is all that counts;
 # or 1, and the run has no stop at all.
 _PULSE = "exp(-((time()-tz)/0.001)^2)"
+
+
+def _assert_dy_dk(result, sens, exact, rel):
+    """A run that carries dY/dk, where Y is k times the window's pulse: the
+    window does not move with k, so dY/dk = Y/k, here with k = 10. A run with
+    sensitivities restarts at every crossing, and the window fixes above once
+    reached plain runs alone (#1597, #1601, #1604): the same window came out
+    0 in such a run, and dY/dk with it."""
+    if sens is None:
+        return
+    dy_dk = float(np.asarray(result.sensitivities)[-1, 1, 0])
+    assert dy_dk == pytest.approx(exact / 10.0, rel=rel)
+
+
 _WINDOW_NET = """begin parameters
     1 k    10.0
     2 A    0.05
@@ -410,9 +424,12 @@ end groups
 """
 
 
+@pytest.mark.parametrize("sens", [None, ["k"]], ids=["plain", "dY/dk"])
 @pytest.mark.parametrize("clock", ["time()", "Cobs"])
 @pytest.mark.parametrize("rtol, rel", [(1e-3, 0.2), (1e-6, 1e-3)])
-def test_a_window_a_switch_opens_and_closes_inside_the_step_is_seen(tmp_path, clock, rtol, rel):
+def test_a_window_a_switch_opens_and_closes_inside_the_step_is_seen(
+    tmp_path, clock, rtol, rel, sens
+):
     """The window S < thr() is open from t = 30.0489 to 30.5. After the stop at
     the pulse's centre the run's first step is 8e-5 and the next 0.81, which
     holds the whole window, so S > thr() at both of its ends and CVODE's root
@@ -425,7 +442,7 @@ def test_a_window_a_switch_opens_and_closes_inside_the_step_is_seen(tmp_path, cl
     crossing in it is found. At rtol 1e-3 the gain is 7e-6 off, under atol."""
     path = tmp_path / "window.net"
     path.write_text(_WINDOW_NET.format(clock=clock, pulse=_PULSE))
-    sim = bngsim.Simulator(bngsim.Model.from_net(str(path)))
+    sim = bngsim.Simulator(bngsim.Model.from_net(str(path)), sensitivity_params=sens)
     result = sim.run(sample_times=[30.0, 31.05], rtol=rtol, atol=rtol * 1e-2)
     amp, tp, sig, dlt, tz = 0.05, 30.05, 0.001, 0.1, 30.047
     lo, hi = 30.0, tp + 0.5
@@ -445,6 +462,7 @@ def test_a_window_a_switch_opens_and_closes_inside_the_step_is_seen(tmp_path, cl
     )
     assert exact == pytest.approx(6.6955e-5, rel=1e-4)
     assert float(result.species[-1][1]) == pytest.approx(exact, rel=rel)
+    _assert_dy_dk(result, sens, exact, rel)
 
 
 def _window_opens(amp=0.05, tp=30.05, sig=0.001, dlt=0.1):
@@ -459,9 +477,10 @@ def _window_opens(amp=0.05, tp=30.05, sig=0.001, dlt=0.1):
     return 0.5 * (lo + hi)
 
 
+@pytest.mark.parametrize("sens", [None, ["k"]], ids=["plain", "dY/dk"])
 @pytest.mark.parametrize("clock", ["time()", "Cobs"])
 @pytest.mark.parametrize("rtol, rel", [(1e-3, 1e-2), (1e-6, 1e-5)])
-def test_a_window_in_a_run_with_no_stop_is_seen(tmp_path, clock, rtol, rel):
+def test_a_window_in_a_run_with_no_stop_is_seen(tmp_path, clock, rtol, rel, sens):
     """The same window with Y's rate k while it is open, and so no stop in the
     run. A run with no stop was not looked at: from t = 30 it took the whole
     run in three steps, S > thr() at the ends of every one, and Y gained 0
@@ -470,12 +489,13 @@ def test_a_window_in_a_run_with_no_stop_is_seen(tmp_path, clock, rtol, rel):
     none the look reads only the switches' sides."""
     path = tmp_path / "window.net"
     path.write_text(_WINDOW_NET.format(clock=clock, pulse="1"))
-    result = bngsim.Simulator(bngsim.Model.from_net(str(path))).run(
+    result = bngsim.Simulator(bngsim.Model.from_net(str(path)), sensitivity_params=sens).run(
         sample_times=[30.0, 31.05], rtol=rtol, atol=rtol * 1e-2
     )
     exact = 10.0 * (30.0 + 0.05 / 0.1 - _window_opens())
     assert exact == pytest.approx(4.5111, rel=1e-4)
     assert float(result.species[-1][1]) == pytest.approx(exact, rel=rel)
+    _assert_dy_dk(result, sens, exact, rel)
 
 
 # S drifts up at 0.3 from 1.0167 at t = 30, and thr() rises from 1 to 1.05
@@ -508,8 +528,9 @@ end groups
 """
 
 
+@pytest.mark.parametrize("sens", [None, ["k"]], ids=["plain", "dY/dk"])
 @pytest.mark.parametrize("rtol, rel", [(1e-3, 2e-3), (1e-6, 1e-6)])
-def test_a_window_before_the_looks_first_place_is_seen(tmp_path, rtol, rel):
+def test_a_window_before_the_looks_first_place_is_seen(tmp_path, rtol, rel, sens):
     """The run took three steps. The last ran from t = 30 to past 31 and was
     looked at (#998), but its places, a quarter of it apart, all fell after
     the window, which is 0.047 wide. S > thr() at the step's ends, so CVODE's
@@ -521,7 +542,7 @@ def test_a_window_before_the_looks_first_place_is_seen(tmp_path, rtol, rel):
     goes back and stops in it."""
     path = tmp_path / "fast.net"
     path.write_text(_FAST_WINDOW_NET)
-    result = bngsim.Simulator(bngsim.Model.from_net(str(path))).run(
+    result = bngsim.Simulator(bngsim.Model.from_net(str(path)), sensitivity_params=sens).run(
         sample_times=[30.0, 31.05], rtol=rtol, atol=rtol * 1e-2
     )
     lo, hi = 30.0, 30.1
@@ -535,3 +556,4 @@ def test_a_window_before_the_looks_first_place_is_seen(tmp_path, rtol, rel):
     exact = 10.0 * (30.0 + (1.05 - 1.0167) / 0.3 - 0.5 * (lo + hi))
     assert exact == pytest.approx(0.467646, rel=1e-5)
     assert float(result.species[-1][1]) == pytest.approx(exact, rel=rel)
+    _assert_dy_dk(result, sens, exact, rel)
