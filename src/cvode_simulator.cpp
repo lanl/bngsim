@@ -18546,14 +18546,13 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         }
     }
     size_t next_crossing = 0; // index into crossing_stops of the next one ahead
-    // Issue #998: a run with stops and no sensitivity columns looks inside a
-    // stretch before a step takes most of it at once. Per stretch: whether it
-    // has yet to be seen (and its steps are watched), the time a step must end
-    // past to be looked at (a stop the look placed, or the end of a step it
-    // left to CVODE to fail), whether the step CVODE reports as its next is
-    // stale (see where it is set), and, where it is, the step CVODE does take
-    // next where the step it took settles that (settled_next_step; NaN where
-    // it does not).
+    // Issue #998: a run with stops looks inside a stretch before a step takes
+    // most of it at once. Per stretch: whether it has yet to be seen (and its
+    // steps are watched), the time a step must end past to be looked at (a
+    // stop the look placed, or the end of a step it left to CVODE to fail),
+    // whether the step CVODE reports as its next is stale (see where it is
+    // set), and, where it is, the step CVODE does take next where the step it
+    // took settles that (settled_next_step; NaN where it does not).
     // Which species change at one constant rate (Impl::rate_constant), read
     // where a crossing can be re-taken.
     impl_->rate_constant.clear();
@@ -18586,8 +18585,16 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         }
         impl_->sync_model_at(t0, x0, ns);
     }
-    const bool looks_inside =
-        !wants_sensitivity && (!crossing_stops.empty() || !state_switch_roots.empty());
+    // A run with sensitivity columns looks too. It restarts at the look's stop
+    // as at any crossing stop, its columns captured and resumed across it, and
+    // the right-hand side is continuous there, so the columns take no jump.
+    // Left out, a run with sensitivities lost what #998 fixed: a late pulse
+    // over ten periods from t = 1,000 added 0, and dX/dk with it, where the
+    // same run without sensitivities adds every period. Not while a column is
+    // in a comoving frame (issue #545, no_comoving_frame): a stop there
+    // leaves the frame ahead of the crossing it was entered for.
+    const bool looks_inside = !crossing_stops.empty() || !state_switch_roots.empty();
+    auto no_comoving_frame = [&]() { return sens.n_total == 0 || sens.comoving.n_active == 0; };
     // A run with no stop has no rate that repeats on one, and its look reads
     // only the state switches' sides (changes_inside).
     const bool look_reads_rate = !crossing_stops.empty();
@@ -19178,6 +19185,15 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     if (rest_batched) {
         CVodeSetMaxNumSteps(cvode_mem, rest_batch);
     }
+    // The steps a call is held to between batch ends: the watch's batch in a
+    // sensitivity run with a state switch, the rest's in a plain run with one
+    // to ask about, and max_steps otherwise. What a call cut short for its own
+    // reason (the look's one step) is set back to.
+    auto steps_a_call = [&]() -> long {
+        return watch          ? (watch_pending ? 1 : watch_batch)
+               : rest_batched ? rest_batch
+                              : static_cast<long>(max_steps);
+    };
     // Each asking speaks from the output before it, as the next output will,
     // not from the asking before it: the stretch it judges a rest over is not
     // to shrink with how often the run is asked. Judged from the asking
@@ -20014,7 +20030,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 // settled: that step is left to it.
                 const double h_next =
                     look_h_stale ? look_h_next : std::fabs(static_cast<double>(look_h));
-                if (look_open && look_steps > 0 && std::isfinite(h_next) &&
+                if (look_open && no_comoving_frame() && look_steps > 0 && std::isfinite(h_next) &&
                     tn + h_next > look_from && left > 0.0 && h_next >= kSpansAStretch * left) {
                     // The step's own end. One that reaches the stop ahead is
                     // read where CVODE ends it: on the stop, the side where it
@@ -20167,10 +20183,10 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             double look_tout = t_target;
             bool one_normal_step = false;
             // Nor while a state switch's residual is held off the root search
-            // (issue #908), which is searched at every return: there the
-            // calls are main's.
+            // (issue #908), which is searched at every return, or a column is
+            // in a comoving frame: there the calls are main's.
             if (looks_inside && look_open && !one_step && state_switch_hold.n_held == 0 &&
-                !look_left_to_max_step(static_cast<double>(look_tn))) {
+                no_comoving_frame() && !look_left_to_max_step(static_cast<double>(look_tn))) {
                 const double tn = static_cast<double>(look_tn);
                 const double window = kLookWindow * ((next_crossing < crossing_stops.size()
                                                           ? crossing_stops[next_crossing].t_star
@@ -20259,7 +20275,12 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 flag = CVode(cvode_mem, look_tout, y, &t_ret,
                              (one_step || first_alone) ? CV_ONE_STEP : CV_NORMAL);
                 if (one_normal_step) {
-                    CVodeSetMaxNumSteps(cvode_mem, rest_batched ? rest_batch : max_steps);
+                    // Not max_steps in a sensitivity run, whose watch is asked
+                    // where a batch of a few steps ends: set back to max_steps,
+                    // a run stalled on a corner of a narrow pulse in the clock
+                    // was carried over it (issue #1229) 10,000 steps late, and
+                    // its clock-rate column came out 5e-4 off for 4e-5.
+                    CVodeSetMaxNumSteps(cvode_mem, steps_a_call());
                     // One step taken, short of t_target: a step alone.
                     if (flag == CV_TOO_MUCH_WORK) {
                         flag = CV_SUCCESS;
@@ -20768,7 +20789,22 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             if ((first_alone || one_normal_step || look_tout < t_target) && flag == CV_SUCCESS) {
                 // A step alone, or a few, of a stretch not yet looked at (issue
                 // #998): short of t_target, so nothing is recorded, and the
-                // next pass looks before it steps on.
+                // next pass looks before it steps on. Such a call ends no
+                // batch, so the watch counts its steps, as a step the error
+                // floor takes alone does. And a step that moved the time not
+                // at all leaves the stretch to CVODE's batches, whose ends are
+                // where the watch can tell a stall from a step (issue #1283's
+                // t + h == t: after a step alone CVODE's next is already grown
+                // past it). Watched step by step, a sensitivity run stalled on
+                // a corner of a narrow pulse in the clock was stepped 2,000
+                // times in place before it was carried over it (issue #1229),
+                // and its clock-rate column came out 8e-5 off for 4e-5.
+                if (watch) {
+                    if (static_cast<double>(t_ret) <= t_before_step) {
+                        look_open = false;
+                    }
+                    watch_after(watch_batch, static_cast<double>(t_ret), t_before_step);
+                }
                 continue;
             }
             if (one_step && flag == CV_SUCCESS) {

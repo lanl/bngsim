@@ -155,6 +155,41 @@ def test_the_remainder_of_a_far_clock_adds_every_period(tmp_path, modulus, perio
     assert x == pytest.approx(_tread_sum(100.0, 1e12, modulus, 0.0, t1), rel=1e-3)
 
 
+_K_NET = """begin parameters
+    1 k 2.0
+end parameters
+begin species
+    1 X() 0
+end species
+begin functions
+    1 dose() k*({law})
+end functions
+begin reactions
+    1 0 1 dose #_R1
+end reactions
+"""
+
+
+@pytest.mark.parametrize("law, period, a_period", _TRAINS)
+@pytest.mark.parametrize("periods, start", [(100, 0), (10, 1000)], ids=["100", "10-from-1000"])
+def test_a_run_with_sensitivities_adds_every_period(
+    tmp_path, law, period, a_period, periods, start
+):
+    """The same trains at k = 2 with dX/dk asked for. The look was off in a
+    run with sensitivity columns, so such a run lost the periods #998 lost:
+    on main X and dX/dk were 0.72, 0.72, 0.04 and 0.61 of their integrals over
+    100 periods, and 0.1, 0.1, 0 and 0.1 over ten periods from period 1,000.
+    The trains do not move with k, so dX/dk = X/k."""
+    path = tmp_path / "k.net"
+    path.write_text(_K_NET.format(law=law))
+    sim = bngsim.Simulator(bngsim.Model.from_net(str(path)), sensitivity_params=["k"])
+    result = sim.run(t_span=(start * period, (start + periods) * period), n_points=3)
+    exact = 2.0 * periods * a_period
+    assert float(np.asarray(result.species)[-1, 0]) == pytest.approx(exact, rel=2e-4)
+    dx_dk = float(np.asarray(result.sensitivities)[-1, 0, 0])
+    assert dx_dk == pytest.approx(exact / 2.0, rel=2e-4)
+
+
 @pytest.mark.parametrize("codegen", [False, True], ids=["interpreted", "compiled"])
 def test_a_compiled_right_hand_side_is_looked_inside_alike(tmp_path, codegen):
     """The look reads the interpreter's right-hand side whichever one the run
