@@ -3931,11 +3931,11 @@ def _held_schedule(
                 (f.at, f.label, [n for n, _ in f.writes], reads_of(*(t for _, t in f.writes)))
             )
             for name, text in f.writes:
-                v, why = value_of(_with_values(text, values), f.at)
-                if v is None:
+                got, why = value_of(_with_values(text, values), f.at)
+                if got is None:
                     mark(name, f"{f.label} sets it to {text}, {why}", f.at)
                 else:
-                    new[name] = stored(name, v)
+                    new[name] = stored(name, got)
             if new:
                 values = {**values, **new}
                 if f.at > t_start:
