@@ -62,17 +62,20 @@ class NfsimSession:
         ``-bscb``, the same flag), which BNG2.pl's ``simulate_nf`` passes by
         default (``complex=>1``). ``False`` allows it, so a binding rule can
         close a ring inside one complex. Either way, a rule whose products are
-        written apart (``A.B -> A + B``) does not fire where the molecules it
-        acts on would stay in one complex across products, as BNG2.pl's network
-        requires. NFsim v1.14.3 (BioNetGen 2.9.3) never makes that test, and
-        current NFsim makes it only under ``-cb``, for one-reactant rules. Not
-        tested yet: products held apart only by a molecule the rule deletes,
-        and a product written joined (``A.B -> A.B``) that breaking the bond
-        splits. With ``False`` a gelling model can run far slower:
-        it fills with ring bonds such a rule may never break, and each attempt
-        on one is refused. Complex bookkeeping for ``Species``-typed
-        observables is enabled whenever the model declares one, whatever this
-        setting.
+        written apart (``A.B -> A + B``) and that deletes a bond or a molecule
+        does not fire where the molecules it acts on would stay in one complex
+        across products, as BNG2.pl's network requires. NFsim v1.14.3
+        (BioNetGen 2.9.3) never makes that test, and current NFsim makes it
+        only under ``-cb``, for one-reactant rules. Not tested yet: a product
+        held apart only by a molecule the rule deletes, or tied to the rest of
+        its pattern only by ``.``; and a product written joined (``A.B ->
+        A.B``) that breaking the bond splits. With ``False``, a bimolecular
+        rule that deletes nothing (``A + B -> A + B`` changing states) may
+        match two molecules of one complex and fire. With ``False`` a gelling
+        model can run far slower: it fills with ring bonds such a rule may
+        never break, and each attempt on one is refused. Complex bookkeeping
+        for ``Species``-typed observables is enabled whenever the model
+        declares one, whatever this setting.
     traversal_limit : int, optional
         NFsim ``-utl N``: universal traversal limit. ``None`` (default)
         lets NFsim auto-compute a suggested limit from the XML.

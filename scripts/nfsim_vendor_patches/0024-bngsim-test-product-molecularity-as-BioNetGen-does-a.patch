@@ -1,4 +1,4 @@
-From cd1a550b59cc38240bc35a1658aabf0cdeeb47a3 Mon Sep 17 00:00:00 2001
+From 6ded35013dd5952330f126bdd76a200bc653406a Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <bill.hlavacek@gmail.com>
 Date: Mon, 9 Nov 2026 10:03:49 -0700
 Subject: [PATCH] bngsim: test product molecularity as BioNetGen does, and list
@@ -49,9 +49,9 @@ to the Molecules observables twice (removal is idempotent, addition is
 not), so a conserved count of 30 read 84-98. Each molecule is now listed
 once.
 
-Not tested yet: products held apart only by a molecule the rule deletes
-(their molecules carry no transformation), and the "." half
-(ensureConnected), which NFsim ignores.
+Not tested yet: a product held apart only by a molecule the rule deletes,
+or tied to the rest of its pattern only by "." (neither has a molecule the
+rule acts on), and the "." half (ensureConnected), which NFsim ignores.
 ---
  src/NFinput/NFinput.cpp                       |  13 +
  .../transformations/transformationSet.cpp     | 434 +++++++++++-------

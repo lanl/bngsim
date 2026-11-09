@@ -161,8 +161,9 @@ Current carry topics:
   for one-reactant rules under `-cb` only, between the ends of each deleted
   bond, so without `-cb` a ring bond broke, bimolecular and three-product splits
   fired on rings, and a rule deleting a bond inside one pattern, or a molecule
-  bridging its products, never fired. Not tested yet: products held apart only
-  by a deleted molecule, and `ensureConnected`. Same carry: `getListOfProducts`
+  bridging its products, never fired. Not tested yet: a product held apart only
+  by a deleted molecule, or tied to its pattern only by `.` (neither has a
+  molecule the rule acts on), and `ensureConnected`. Same carry: `getListOfProducts`
   lists each molecule once (without `-cb`, two reactants in one complex listed
   shared neighbours twice and inflated the Molecules observables)
 

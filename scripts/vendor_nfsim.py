@@ -515,7 +515,8 @@ CARRY_QUEUE = (
             "Without -cb, getListOfProducts also listed molecules two reactants' "
             "neighbourhoods share twice, adding them to the Molecules observables "
             "twice (a conserved 30 read 84-98); each is listed once now. Not "
-            "tested yet: products held apart only by a deleted molecule, and "
+            "tested yet: a product held apart only by a deleted molecule or tied "
+            "to its pattern only by '.', and "
             "ensureConnected. Fixtures under tests/data/nfsim/ (ring_close_open, "
             "ring_bimolecular_split, intra_pattern_bond_split, "
             "split_rejoined_by_added_bond, ring_large_singlebond, "
@@ -525,7 +526,7 @@ CARRY_QUEUE = (
         ),
         "commits": [
             {
-                "commit": "cd1a550b59cc38240bc35a1658aabf0cdeeb47a3",
+                "commit": "6ded35013dd5952330f126bdd76a200bc653406a",
                 "summary": (
                     "bngsim: test product molecularity as BioNetGen does, and list each "
                     "product molecule once"

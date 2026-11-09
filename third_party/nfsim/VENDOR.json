@@ -7,11 +7,11 @@
     "local_origin_remote": "https://github.com/RuleWorld/nfsim.git",
     "fork_remote": null,
     "branch_or_ref": "bngsim/vendor",
-    "commit": "cd1a550b59cc38240bc35a1658aabf0cdeeb47a3",
+    "commit": "6ded35013dd5952330f126bdd76a200bc653406a",
     "base_ref": "origin/master",
     "base_commit": "1a54f38701ab2213de831f9ba272cbb14f7c371f"
   },
-  "imported_at_utc": "2026-11-09T18:00:41+00:00",
+  "imported_at_utc": "2026-11-09T18:21:32+00:00",
   "pruning": {
     "included_paths": [
       "CMakeLists.txt",
@@ -276,10 +276,10 @@
     {
       "topic": "bngsim/carry-product-molecularity",
       "kind": "local",
-      "status": "Test product molecularity as BioNetGen does. A rule whose products are written apart (A.B -> A + B) fires only where they end up in different complexes. Upstream's test (issue #48) ran for one-reactant rules only, only under complex bookkeeping, and only between the ends of each deleted bond, all of which had to separate: without -cb, 100 four-member rings all opened (BNG2.pl keeps 100); a bimolecular split on a ring bound every C and a three-product split broke every ring (BNG2.pl generates no reaction); a rule deleting a bond inside one product pattern, or a molecule bridging its products, never fired. The loader records each reactant molecule's product pattern from the rule's Map; finalize() records the molecules a rule acts on and the molecules it deletes; productsSeparate requires every pair of acted-on molecules in different patterns to be disconnected with deleted bonds and molecules gone (added bonds join one pattern), for any reactant count, searching from both ends without allocating. Without -cb, getListOfProducts also listed molecules two reactants' neighbourhoods share twice, adding them to the Molecules observables twice (a conserved 30 read 84-98); each is listed once now. Not tested yet: products held apart only by a deleted molecule, and ensureConnected. Fixtures under tests/data/nfsim/ (ring_close_open, ring_bimolecular_split, intra_pattern_bond_split, split_rejoined_by_added_bond, ring_large_singlebond, three_product_ring, deleted_bridge_ring, deleted_bridge_ring_bimolecular, created_bridge_same_complex, untouched_reactant_same_complex).",
+      "status": "Test product molecularity as BioNetGen does. A rule whose products are written apart (A.B -> A + B) fires only where they end up in different complexes. Upstream's test (issue #48) ran for one-reactant rules only, only under complex bookkeeping, and only between the ends of each deleted bond, all of which had to separate: without -cb, 100 four-member rings all opened (BNG2.pl keeps 100); a bimolecular split on a ring bound every C and a three-product split broke every ring (BNG2.pl generates no reaction); a rule deleting a bond inside one product pattern, or a molecule bridging its products, never fired. The loader records each reactant molecule's product pattern from the rule's Map; finalize() records the molecules a rule acts on and the molecules it deletes; productsSeparate requires every pair of acted-on molecules in different patterns to be disconnected with deleted bonds and molecules gone (added bonds join one pattern), for any reactant count, searching from both ends without allocating. Without -cb, getListOfProducts also listed molecules two reactants' neighbourhoods share twice, adding them to the Molecules observables twice (a conserved 30 read 84-98); each is listed once now. Not tested yet: a product held apart only by a deleted molecule or tied to its pattern only by '.', and ensureConnected. Fixtures under tests/data/nfsim/ (ring_close_open, ring_bimolecular_split, intra_pattern_bond_split, split_rejoined_by_added_bond, ring_large_singlebond, three_product_ring, deleted_bridge_ring, deleted_bridge_ring_bimolecular, created_bridge_same_complex, untouched_reactant_same_complex).",
       "commits": [
         {
-          "commit": "cd1a550b59cc38240bc35a1658aabf0cdeeb47a3",
+          "commit": "6ded35013dd5952330f126bdd76a200bc653406a",
           "summary": "bngsim: test product molecularity as BioNetGen does, and list each product molecule once"
         }
       ]
