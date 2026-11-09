@@ -972,14 +972,17 @@ def _within_budget(rooted, unrooted, **run):
 
 
 @pytest.mark.parametrize("n_points", [None, 401])
-def test_a_slide_costs_what_it_cost_without_its_root(tmp_path, n_points):
+def test_a_slide_is_stepped_along_its_surface(tmp_path, n_points):
     """The issue's model ran 7.6 times as long as the same model with no
     state-switch roots (2.8 s against 0.37 s on arm64 macOS at rtol 1e-5), and
-    12 times at rtol 1e-6, over the same 1.3 million steps. The slide's
-    crossings are now held off the root search. The run takes every step the
-    unrooted run takes, within three times its wall time, with two output
-    points and with an output point at each of 401, where each crossing since
-    the last is searched for and tested. Fails on main (timeout)."""
+    12 times at rtol 1e-6, over the same 1.3 million steps. Its crossings were
+    then held off the root search, and the run took every step the unrooted
+    run takes: 1,327,225, on a rate law that turns on every side of S = 1 a
+    Newton iterate lands on. The slide is now stepped as Filippov's sliding
+    mode (StateSwitchHold::HeldSlide), in under a thousandth of those steps,
+    with two output points and with an output point at each of 401. S rises at
+    1 to the surface at t = 1 and stays on it, so W = t^2/2 up to t = 1 and
+    1/2 + (t - 1) after; the unrooted run is within its time budget."""
     run = (
         dict(sample_times=[0.0, 4.25])
         if n_points is None
@@ -992,8 +995,14 @@ def test_a_slide_costs_what_it_cost_without_its_root(tmp_path, n_points):
         atol=1e-5,
         **run,
     )
-    assert result.solver_stats["n_steps"] == reference.solver_stats["n_steps"]
-    np.testing.assert_array_equal(np.asarray(result.species), np.asarray(reference.species))
+    assert result.solver_stats["n_steps"] * 1000 < reference.solver_stats["n_steps"]
+    t = np.asarray(result.time)
+    x = np.asarray(result.species)
+    s_exact = np.minimum(t, 1.0)
+    w_exact = np.where(t <= 1.0, t * t / 2.0, 0.5 + (t - 1.0))
+    for got, exact in ((x[:, 0], s_exact), (x[:, 1], w_exact)):
+        units = np.abs(got - exact) / (1e-5 * np.abs(exact) + 1e-5)
+        assert units.max() <= 1.0, units.max()
 
 
 # S slides on S = 1 until t1, is then driven down for half a time unit and up at
@@ -1315,13 +1324,14 @@ def test_a_threshold_on_a_clock_species(tmp_path, h):
     assert gained == pytest.approx(exact, rel=2e-2)
 
 
+@pytest.mark.parametrize("rtol", [1e-3, 1e-6])
 @pytest.mark.parametrize("dlt", [0.05, 0.1])
 @pytest.mark.parametrize(
     "h",
     ["1", "1e-3+1/(1+exp((Cobs-30.02)/0.002))"],
     ids=["h = 1", "h falls a thousandfold"],
 )
-def test_a_crossing_in_the_steep_of_a_sweep_is_restarted_at(tmp_path, h, dlt):
+def test_a_crossing_in_the_steep_of_a_sweep_is_restarted_at(tmp_path, h, dlt, rtol):
     """The clock sweep with S drifting faster, so that it is 2e-3 to 4e-3 above
     the surface when thr() sweeps past it: the crossing is in the steep of the
     sweep, where dthr/dC is 3 to 3.8. The restart test held every reading of
@@ -1333,24 +1343,159 @@ def test_a_crossing_in_the_steep_of_a_sweep_is_restarted_at(tmp_path, h, dlt):
     the run stepped on over the window it opens, and Y gained 0 where the
     pulse gives it 0.0068 and 0.0032. Each reading is now held to the band at
     its own state. At drifts of 0.01 and 0.03 the crossing is at the foot of
-    the sweep, which main gets right."""
+    the sweep, which main gets right.
+
+    The gain is held to 2%, or to what a quarter of S's tolerance at the
+    crossing moves it, whichever is more. The crossing time is set by S, and
+    in the steep a quarter of S's unit at rtol 1e-3 moves the gain 6% to 9%:
+    the slide before t1 is now stepped along its surface in about a hundred
+    steps, where it chattered in up to 22,000, and 3.9% off was 0.07 of S's
+    unit. At rtol 1e-6 that is under 0.01%, and the 2% stands."""
     model = _write(tmp_path, _CLOCK_SWEEP_NET.format(h=h, dlt=dlt))
     t1, tp, amp, sig = 30.04, 30.05, 0.5, 0.001
-    result = bngsim.Simulator(model).run(sample_times=[0.0, t1, tp + 1.0], rtol=1e-3, atol=1e-5)
+    result = bngsim.Simulator(model).run(
+        sample_times=[0.0, t1, tp + 1.0], rtol=rtol, atol=rtol * 1e-2
+    )
     s1 = float(result.species[1][0])
-    lo, hi = t1, tp + 0.5
-    for _ in range(200):
-        mid = 0.5 * (lo + hi)
-        thr = 1.0 + amp * (1.0 + math.tanh((mid - tp) / sig)) / 2.0
-        if thr - (s1 + dlt * (mid - t1)) < 0.0:
-            lo = mid
-        else:
-            hi = mid
-    t_open = 0.5 * (lo + hi)
-    exact = 10.0 * 0.001 * math.sqrt(math.pi) / 2.0 * math.erfc((t_open - 30.047) / 0.001)
+
+    def exact_from(s):
+        lo, hi = t1, tp + 0.5
+        for _ in range(200):
+            mid = 0.5 * (lo + hi)
+            thr = 1.0 + amp * (1.0 + math.tanh((mid - tp) / sig)) / 2.0
+            if thr - (s + dlt * (mid - t1)) < 0.0:
+                lo = mid
+            else:
+                hi = mid
+        t_open = 0.5 * (lo + hi)
+        return 10.0 * 0.001 * math.sqrt(math.pi) / 2.0 * math.erfc((t_open - 30.047) / 0.001)
+
+    exact = exact_from(s1)
     assert exact > 3e-3
+    quarter = 0.25 * (rtol * s1 + rtol * 1e-2)
+    blur = abs(exact_from(s1 + quarter) - exact_from(s1 - quarter)) / 2.0
     gained = float(result.species[-1][1]) - float(result.species[1][1])
-    assert gained == pytest.approx(exact, rel=2e-2)
+    assert abs(gained - exact) <= max(2e-2 * exact, blur), (gained, exact, blur)
+
+
+@pytest.mark.parametrize("rtol", [1e-6, 1e-8])
+@pytest.mark.parametrize("clock", ["Cobs", "time()"])
+@pytest.mark.parametrize(
+    "h",
+    ["1", "1e-3+1/(1+exp((Cobs-30.02)/0.002))"],
+    ids=["h = 1", "h falls a thousandfold"],
+)
+def test_the_clock_sweeps_slide_takes_a_few_hundred_steps(tmp_path, h, clock, rtol):
+    """S falls onto thr() = 1 at t = 27.5 and slides along it until a() falls
+    to dlt, at t_x = 30 + 0.002*ln(1/dlt - 1), and leaves it upward. Held off
+    the root search, its rate law still turned on every side of the surface
+    CVODE asked it at: three steps in four failed to converge, and the run
+    took 34,000 steps to t = 31.05 at rtol 1e-3, 34 million and 91 s at 1e-6,
+    with dlt = 0.02, and at 1e-8 did not finish. A threshold that reads time()
+    was never held, and chattered the same way. The slide is now stepped as
+    Filippov's sliding mode (StateSwitchHold::HeldSlide), in a few hundred
+    steps at either tolerance. S at t1 is 1 + dlt*(t1 - t_x) less the integral
+    of a() since t_x, in closed form, and the run is within 8 of S's units of
+    it (CVODE's own error after t_x, on a() falling in 0.002 time, is about 5
+    of them at rtol 1e-6). The gain is held, as in the tests above, to the
+    window S opens there: to 0.1%, or to what a quarter of S's tolerance at
+    the crossing moves it."""
+    dlt = 0.02
+    text = _CLOCK_SWEEP_NET.format(h=h, dlt=dlt).replace(
+        "tanh((Cobs-tp)/sig)", f"tanh(({clock}-tp)/sig)"
+    )
+    model = _write(tmp_path, text)
+    t1, tp, amp, sig, tau = 30.04, 30.05, 0.5, 0.001, 0.002
+    atol = rtol * 1e-2
+    result = bngsim.Simulator(model).run(
+        sample_times=[0.0, t1, tp + 1.0], rtol=rtol, atol=atol, timeout=60
+    )
+    assert result.solver_stats["n_steps"] < 1000
+
+    def softplus(t):  # the integral of 1 - a() from 30, up to a constant
+        return tau * math.log1p(math.exp((t - 30.0) / tau))
+
+    t_x = 30.0 + tau * math.log(1.0 / dlt - 1.0)
+    s1_exact = 1.0 + dlt * (t1 - t_x) - ((t1 - t_x) - (softplus(t1) - softplus(t_x)))
+    s1 = float(result.species[1][0])
+    assert abs(s1 - s1_exact) <= 8.0 * (rtol * s1_exact + atol), (s1, s1_exact)
+
+    def exact_from(s):
+        lo, hi = t1, tp + 0.5
+        for _ in range(200):
+            mid = 0.5 * (lo + hi)
+            thr = 1.0 + amp * (1.0 + math.tanh((mid - tp) / sig)) / 2.0
+            if thr - (s + dlt * (mid - t1)) < 0.0:
+                lo = mid
+            else:
+                hi = mid
+        t_open = 0.5 * (lo + hi)
+        return 10.0 * 0.001 * math.sqrt(math.pi) / 2.0 * math.erfc((t_open - 30.047) / 0.001)
+
+    exact = exact_from(s1)
+    quarter = 0.25 * (rtol * s1 + atol)
+    blur = abs(exact_from(s1 + quarter) - exact_from(s1 - quarter)) / 2.0
+    gained = float(result.species[-1][1]) - float(result.species[1][1])
+    assert abs(gained - exact) <= max(1e-3 * exact, blur), (gained, exact, blur)
+
+
+# A slide whose two branches are not mirror images, on a surface that may move
+# with time: S rises at {up} to thr() = 1 + {c}*t, and slides along it with the
+# rate law turning between {up} below it and -{dn} above. Y gains 1 for each
+# unit of time S spends below it.
+_FILIPPOV_NET = """\
+begin parameters
+    1 up  {up}
+    2 dn  {dn}
+    3 c   {c}
+end parameters
+begin functions
+    1 thr() 1+c*time()
+    2 f() if(Sobs<thr(),up,-dn)
+    3 r() if(Sobs<thr(),1,0)
+end functions
+begin species
+    1 S() 0
+    2 Y() 0
+end species
+begin reactions
+    1 0 1 f
+    2 0 2 r
+end reactions
+begin groups
+    1 Sobs 1
+    2 Yobs 2
+end groups
+"""
+
+
+@pytest.mark.parametrize("rtol", [1e-4, 1e-6, 1e-8])
+@pytest.mark.parametrize(
+    "up, dn, c",
+    [(2.0, 1.0, 0.0), (1.0, 1.0, 0.1), (1.0, 3.0, -0.2)],
+    ids=["two to one", "a rising surface", "a falling surface"],
+)
+def test_a_slide_moves_as_its_chatter_averages(tmp_path, up, dn, c, rtol):
+    """Filippov's sliding mode, the limit the chatter of a slide converges to
+    as its steps shrink: on the surface S = 1 + c*t, the rate law is the blend
+    of its two branches that keeps S there, so the share of the time spent
+    below it is (dn + c)/(up + dn), and Y rises at that rate. S reaches the
+    surface at t = 1/(up - c). Both are exact, and the run is within a unit of
+    each at every output, in a few thousand steps at any tolerance. Held, the
+    slide chattered in a number of steps that grows as 1/rtol: main does not
+    finish at rtol 1e-8 in the time this allows."""
+    model = _write(tmp_path, _FILIPPOV_NET.format(up=up, dn=dn, c=c))
+    ts = np.linspace(0.0, 10.0, 21)
+    result = bngsim.Simulator(model).run(sample_times=ts, rtol=rtol, atol=rtol, timeout=60)
+    assert result.solver_stats["n_steps"] < 5000
+    t_on = 1.0 / (up - c)
+    below = (dn + c) / (up + dn)
+    s_exact = np.where(ts <= t_on, up * ts, 1.0 + c * ts)
+    y_exact = np.where(ts <= t_on, ts, t_on + below * (ts - t_on))
+    x = np.asarray(result.species)
+    for got, exact in ((x[:, 0], s_exact), (x[:, 1], y_exact)):
+        units = np.abs(got - exact) / (rtol * np.abs(exact) + rtol)
+        assert units.max() <= 1.0, units.max()
 
 
 # A threshold that falls past S = 1.2, from 1.5 to 1 around tp, closes the
@@ -1458,17 +1603,68 @@ end groups
 """
 
 
+# The slide's far side alone, -a() + v(), from S = 1.
+_PARK_PUSH_FAR_SIDE_NET = """\
+begin parameters
+    1 V    2.0
+    2 tp   3.0
+    3 sig  0.1
+end parameters
+begin functions
+    1 a() exp(-10*time())
+    2 f() -a()
+    3 v() V*exp(-((time()-tp)/sig)^2)
+end functions
+begin species
+    1 S() 1
+end species
+begin reactions
+    1 0 1 f
+    2 0 1 v
+end reactions
+begin groups
+    1 Sobs 1
+end groups
+"""
+
+
 def test_a_held_residual_leaving_its_band_is_no_root(tmp_path):
     """Where a held residual's band runs out, CVODE returns a root of what it
     is shown, which is not a crossing and must not be handled as one: taken
     for a root of the residual, it is given the restart test at a point off
-    the surface. The run takes every step the run with no state-switch roots
-    takes. Main does too (control)."""
-    run = dict(sample_times=[0.0, 3.5], rtol=1e-6, atol=1e-8, max_step=0.02)
-    result = bngsim.Simulator(_write(tmp_path, _SLIDE_PARK_PUSH_NET)).run(**run)
-    reference = bngsim.Simulator(_unrooted(tmp_path, _SLIDE_PARK_PUSH_NET, "u.net")).run(**run)
-    assert result.solver_stats["n_steps"] == reference.solver_stats["n_steps"]
-    np.testing.assert_array_equal(np.asarray(result.species), np.asarray(reference.species))
+    the surface. Here that root is the slide's end (StateSwitchHold::
+    HeldSlide): S stays on S = 1 until v() overtakes a(), at t_x where
+    v = a, and leaves it on the far side. The run from there is the far
+    side's rate law integrated from S = 1 at t_x: it ends within a unit of
+    that run, the same model with no switch, started there. The slide crept
+    up to its surface for 116,000 steps, none failed, before a crossing came
+    to the restart test; the run takes under a hundredth of the steps the run
+    with no state-switch roots takes (724,939)."""
+    run = dict(rtol=1e-6, atol=1e-8, max_step=0.02)
+    result = bngsim.Simulator(_write(tmp_path, _SLIDE_PARK_PUSH_NET)).run(
+        sample_times=[0.0, 3.5], **run
+    )
+    reference = bngsim.Simulator(_unrooted(tmp_path, _SLIDE_PARK_PUSH_NET, "u.net")).run(
+        sample_times=[0.0, 3.5], **run
+    )
+    assert result.solver_stats["n_steps"] * 100 < reference.solver_stats["n_steps"]
+
+    def gap(t):
+        return 2.0 * math.exp(-(((t - 3.0) / 0.1) ** 2)) - math.exp(-10.0 * t)
+
+    lo, hi = 1.0, 2.9
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        if gap(mid) < 0.0:
+            lo = mid
+        else:
+            hi = mid
+    far = bngsim.Simulator(_write(tmp_path, _PARK_PUSH_FAR_SIDE_NET, "far.net")).run(
+        sample_times=[0.5 * (lo + hi), 3.5], **run
+    )
+    got = float(result.species[-1][0])
+    want = float(far.species[-1][0])
+    assert abs(got - want) <= 1e-6 * abs(want) + 1e-8, (got, want)
 
 
 # S slides on S = 1 while a() decays; dn() then takes S down and out of its
@@ -1522,19 +1718,25 @@ _HOLD_CASES = {
 def test_holding_takes_the_steps_main_takes(tmp_path, monkeypatch, case):
     """Holding a residual changes which crossings CVODE locates, never what
     the run does at one: every crossing main restarts at is still restarted
-    at. Each run here takes every step it takes with holding off
+    at. Each run here is set against the run with holding off
     (BNGSIM_STATE_SWITCH_HOLD=0), which roots and tests every crossing as main
-    does, and ends on the same bits. Each hold here ends where the state leaves
-    its band. One that ends inside a slide, or a held crossing the run
-    restarts at, lands within CVODE's root tolerance of main's restart instead,
-    and the answers agree to the tolerance rather than to the bit."""
+    does. Each slide here is stepped along its surface
+    (StateSwitchHold::HeldSlide) and ends where its flow on one side stops
+    carrying the state onto it; S then leaves, and two of them cross back
+    later. That run took every step the run with holding off takes, and ended
+    on its bits; the slide is now taken in under a hundredth of those steps
+    (269 against 856,237, 227 against 215,896, 304 against 2,017,705), and the
+    two agree to two units of the tolerance."""
     text = _SLIDE_LEAVE_NET.format(**_HOLD_CASES[case])
     run = dict(sample_times=[0.0, 4.0], rtol=1e-6, atol=1e-8, max_step=0.05)
     result = bngsim.Simulator(_write(tmp_path, text)).run(**run)
     monkeypatch.setenv("BNGSIM_STATE_SWITCH_HOLD", "0")
     reference = bngsim.Simulator(_write(tmp_path, text, "off.net")).run(**run)
-    assert result.solver_stats["n_steps"] == reference.solver_stats["n_steps"]
-    np.testing.assert_array_equal(np.asarray(result.species), np.asarray(reference.species))
+    assert result.solver_stats["n_steps"] * 100 < reference.solver_stats["n_steps"]
+    got = np.asarray(result.species)
+    want = np.asarray(reference.species)
+    units = np.abs(got - want) / (1e-6 * np.abs(want) + 1e-8)
+    assert units.max() <= 2.0, units.max()
 
 
 def test_a_held_slide_prints_nothing(tmp_path):
@@ -1554,7 +1756,10 @@ def test_a_held_slide_prints_nothing(tmp_path):
     done = subprocess.run(
         [sys.executable, "-c", script], capture_output=True, text=True, check=True
     )
-    assert "S 0.99999" in done.stdout
+    found = re.search(r"^S (\S+)$", done.stdout, re.MULTILINE)
+    assert found is not None, done.stdout
+    # On its surface: the slide is stepped along it (StateSwitchHold::HeldSlide).
+    assert abs(float(found.group(1)) - 1.0) <= 1e-5
     assert "mxstep" not in done.stdout + done.stderr
 
 
@@ -1662,10 +1867,17 @@ def test_a_residual_scaled_by_a_constant_steps_alike(tmp_path, cond, hold):
     bracket, and asked for times outside the step. At H = 5.18e21 this run took
     51,990 steps where H = 1 takes 55,002, and logged 105 "Illegal value for t"
     errors; at 1e23, 47,424 and 280. The surface is the same at every H, so the
-    steps and the answer are too."""
+    steps and the answer are too. A residual that reads the time is slid along
+    (StateSwitchHold::HeldSlide), whose two sides are read by differences of
+    the residual, and those round at each H as H*S rounds: the answer is the
+    same to 1e-12, a billionth of the tolerance, and not to the bit."""
     reference = _scaled_slide(tmp_path, "1", cond, hold)
     assert reference[2].strip() == ""
     for H in ("5.18e21", "1e23", "1e100", "1e-20"):
         steps, bits, log = _scaled_slide(tmp_path, H, cond, hold)
         assert "Illegal value for t" not in log, H
-        assert (steps, bits) == reference[:2], H
+        assert steps == reference[0], H
+        if hold == "0":
+            assert bits == reference[1], H
+        else:
+            assert float.fromhex(bits) == pytest.approx(float.fromhex(reference[1]), rel=1e-12), H

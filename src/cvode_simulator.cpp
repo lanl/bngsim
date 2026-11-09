@@ -433,6 +433,66 @@ struct StateSwitchHold {
     std::vector<int> run;
     std::vector<long> last_step;
 
+    // ─── A held slide, stepped along its surface ───────────────────────────
+    //
+    // Held, a slide's roots are off, but its rate law still turns on every
+    // side of the surface CVODE asks it at. The Newton iterates of a step
+    // land on both sides, three steps in four failed to converge, and the
+    // steps shrank to the tolerance's own scale. #908's clock sweep took
+    // 34,000 steps at rtol 1e-3 and 34 million at 1e-6, 91 s for three
+    // species, and at the default 1e-8 it does not finish.
+    //
+    // So a residual the state slides along is stepped as Filippov's sliding
+    // mode, the limit that chatter converges to as its steps shrink: the
+    // rate law is the blend (1 - w)·f_lo + w·f_hi of its two branches, with
+    // w = a_lo / (a_lo - a_hi), where a_lo and a_hi are dg/dt on the side
+    // where g < 0 and where g > 0. That keeps dg/dt at 0, so the state stays
+    // on the surface and moves along it as the chatter's average does: a
+    // species whose rate one branch alone has gains it for the share of the
+    // time the chatter spends on that side. Each side's flow is read at the
+    // state's projection onto the surface, moved `offset` past it along the
+    // species that moves g most (`axis`), so the blend is the same field
+    // wherever on that line the state is. A residual that reads the time
+    // adds its dg/dt at the state, so a moving surface is followed.
+    //
+    // A residual is slid along where it is a slide: the flow on each side
+    // carries the state onto the surface, by more than rounding, and is the
+    // same, to a quarter, read at the offset and at twice it. A state that
+    // rests beside a surface, or one on an unstable one, has a flow that falls
+    // with the distance; a graze has none. Those are held as before. It is
+    // asked where the crossings would have held the residual (the same
+    // declines in a row), and where a run has spent its steps failing or
+    // hardly moving the time with no crossing to show for it (run()'s
+    // slide_from_a_crawl). The state is put onto the surface, along the axis,
+    // and the run restarts there, sliding.
+    //
+    // The slide ends where either inward flow runs out, or where g is past
+    // the restart test's bar: CVODE is shown the lesser of the two flows, as
+    // a share of what it was when the slide began, and 1 - |g|/bar, and
+    // locates the first to reach 0. The step over that end is taken again up
+    // to it, still sliding, and the run restarts there on the rate law as it
+    // is. Any other restart lets the slide go too. One residual is slid along
+    // at a time; a second on its own surface is held as before. Only a run
+    // without sensitivities holds, so none slides.
+    struct HeldSlide {
+        int j = -1; // the residual slid along, or -1
+        int g_idx = -1;
+        std::vector<int> species;
+        std::vector<double> grad; // signed dg/dx, by species index, at the last return
+        int axis = -1;
+        double offset = 0.0; // how far past the surface each side's flow is read, in g
+        double bar = 0.0;
+        double flow = 0.0; // the lesser inward flow where the slide began
+        bool reads_time = false;
+        // The run's right-hand side (its interpreted or compiled body), and
+        // scratch the side readings use; run() owns the vectors.
+        int (*body)(sunrealtype, N_Vector, N_Vector, void *) = nullptr;
+        N_Vector x_side = nullptr;
+        N_Vector f_lo = nullptr;
+        N_Vector f_hi = nullptr;
+    };
+    HeldSlide slide;
+
     void mute(SUNLogger logger) {
         if (muted == nullptr && logger != nullptr) {
             SUNLogger_SetErrorFilename(logger, bngsim::null_device);
@@ -452,6 +512,7 @@ struct StateSwitchHold {
         std::fill(held.begin(), held.end(), 0);
         std::fill(run.begin(), run.end(), 0);
         n_held = 0;
+        slide.j = -1;
         unmute();
     }
 
@@ -2084,10 +2145,13 @@ static void note_rhs_state(void *user_data, N_Vector y) {
     }
 }
 
+static int held_slide_rhs(sunrealtype t, N_Vector y, N_Vector ydot, void *user_data,
+                          int (*body)(sunrealtype, N_Vector, N_Vector, void *));
+
 static int cvode_rhs(sunrealtype t, N_Vector y, N_Vector ydot, void *user_data) {
     note_rhs_state(user_data, y);
-    const int rc =
-        guard_cvode_callback(user_data, [&] { return cvode_rhs_body(t, y, ydot, user_data); });
+    const int rc = guard_cvode_callback(
+        user_data, [&] { return held_slide_rhs(t, y, ydot, user_data, cvode_rhs_body); });
     restore_params_after_probe(static_cast<CvodeUserData *>(user_data));
     return rc;
 }
@@ -2179,9 +2243,112 @@ static int cvode_codegen_rhs_body(sunrealtype t, N_Vector y, N_Vector ydot, void
 static int cvode_codegen_rhs(sunrealtype t, N_Vector y, N_Vector ydot, void *user_data) {
     note_rhs_state(user_data, y);
     const int rc = guard_cvode_callback(
-        user_data, [&] { return cvode_codegen_rhs_body(t, y, ydot, user_data); });
+        user_data, [&] { return held_slide_rhs(t, y, ydot, user_data, cvode_codegen_rhs_body); });
     restore_params_after_probe(static_cast<CvodeUserData *>(user_data));
     return rc;
+}
+
+// ─── A held slide's two sides (StateSwitchHold::HeldSlide) ───────────────────
+
+// The model at (t, x), as Impl::sync_model_at puts it there.
+static void held_slide_sync(NetworkModel *mdl, double t, const double *x) {
+    auto &sp_vec = const_cast<std::vector<Species> &>(mdl->species());
+    const int nsp = mdl->n_species();
+    for (int i = 0; i < nsp; ++i) {
+        sp_vec[i].concentration = x[i];
+    }
+    mdl->update_observables(x);
+    mdl->evaluate_functions(t);
+    if (mdl->uses_rateof()) {
+        mdl->refresh_rateof_derivs(t, x);
+        mdl->evaluate_functions(t);
+    }
+}
+
+// dg/dt on the two sides of the surface of slide `s` at (t, x): on the side
+// where g < 0 into *a_lo and the other into *a_hi, each read with the rate law
+// at x's projection onto the surface moved `reach` offsets to that side along
+// the slide's axis, that rate law into s.f_lo or s.f_hi. g at x into *g.
+// Returns what a reading of the rate law returned where it was not 0.
+static int held_slide_flows(CvodeUserData *data, const StateSwitchHold::HeldSlide &s, double t,
+                            const double *x, double reach, double *g, double *a_lo, double *a_hi) {
+    NetworkModel *mdl = data->model;
+    const int nsp = mdl->n_species();
+    auto &eval = mdl->evaluator();
+    held_slide_sync(mdl, t, x);
+    const double g0 = eval.evaluate(s.g_idx);
+    double g_t = 0.0;
+    if (s.reads_time) {
+        const double dt = 1e-7 * std::max(std::fabs(t), 1.0);
+        held_slide_sync(mdl, t + dt, x);
+        g_t = (eval.evaluate(s.g_idx) - g0) / dt;
+    }
+    *g = g0;
+    double *xs = N_VGetArrayPointer(s.x_side);
+    const double g_axis = s.grad[static_cast<std::size_t>(s.axis)];
+    auto side = [&](double past, N_Vector f, double *a) {
+        std::copy(x, x + nsp, xs);
+        xs[s.axis] += (past - g0) / g_axis;
+        const int rc = s.body(static_cast<sunrealtype>(t), s.x_side, f, data);
+        if (rc != 0) {
+            return rc;
+        }
+        const double *fv = N_VGetArrayPointer(f);
+        double flow = g_t;
+        for (int sp : s.species) {
+            flow += s.grad[static_cast<std::size_t>(sp)] * fv[sp];
+        }
+        *a = flow;
+        return 0;
+    };
+    const int rc = side(-reach * s.offset, s.f_lo, a_lo);
+    return rc != 0 ? rc : side(reach * s.offset, s.f_hi, a_hi);
+}
+
+// The rate law CVODE integrates: the slide's blend while one is slid along and
+// the state is on it, the body's own rate law everywhere else. Where one side's
+// flow has stopped carrying the state onto the surface, the weight is held at
+// that side, so that the blend runs into the rate law of the side the state
+// leaves by as the slide ends, whichever side of the surface rounding has the
+// state on. Where the flows part, the surface does not hold the state, and the
+// rate law is the body's.
+static int held_slide_rhs(sunrealtype t, N_Vector y, N_Vector ydot, void *user_data,
+                          int (*body)(sunrealtype, N_Vector, N_Vector, void *)) {
+    auto *data = static_cast<CvodeUserData *>(user_data);
+    const StateSwitchHold *hold = data->state_switch_hold;
+    if (hold == nullptr || hold->slide.j < 0) {
+        return body(t, y, ydot, user_data);
+    }
+    const StateSwitchHold::HeldSlide &s = hold->slide;
+    double g = 0.0;
+    double a_lo = 0.0;
+    double a_hi = 0.0;
+    const int rc = held_slide_flows(data, s, static_cast<double>(t), N_VGetArrayPointer(y), 1.0, &g,
+                                    &a_lo, &a_hi);
+    if (rc != 0) {
+        return rc;
+    }
+    if (!(std::fabs(g) <= s.bar) || !(a_lo - a_hi > 0.0)) {
+        return body(t, y, ydot, user_data);
+    }
+    const double w = std::clamp(a_lo / (a_lo - a_hi), 0.0, 1.0);
+    N_VLinearSum(1.0 - w, s.f_lo, w, s.f_hi, ydot);
+    return 0;
+}
+
+// What CVODE is shown for the residual slid along at (t, x): the lesser of the
+// two inward flows, as a share of what it was where the slide began, or what
+// is left of the bar, whichever is less. The slide ends where it reaches 0.
+static double held_slide_margin(CvodeUserData *data, double t, const double *x) {
+    const StateSwitchHold::HeldSlide &s = data->state_switch_hold->slide;
+    double g = 0.0;
+    double a_lo = 0.0;
+    double a_hi = 0.0;
+    if (held_slide_flows(data, s, t, x, 1.0, &g, &a_lo, &a_hi) != 0) {
+        return -1.0;
+    }
+    const double m = std::min(1.0 - std::fabs(g) / s.bar, std::min(a_lo, -a_hi) / s.flow);
+    return std::isfinite(m) ? m : -1.0;
 }
 
 // ─── Codegen Sensitivity RHS callback ────────────────────────────────────────
@@ -3011,7 +3178,11 @@ static int cvode_event_root_fn_body(sunrealtype t, N_Vector y, sunrealtype *gout
             double g = eval.evaluate(ss[j]);
             const StateSwitchHold *hold = data->state_switch_hold;
             if (hold != nullptr && hold->held[static_cast<size_t>(j)] != 0 && !hold->probe) {
-                gout[base + j] = hold->shown(static_cast<size_t>(j), y_ptr, g); // issue #908
+                // A slide's margin is read last, below: its side readings
+                // move the model off this state.
+                gout[base + j] = j == hold->slide.j
+                                     ? 1.0
+                                     : hold->shown(static_cast<size_t>(j), y_ptr, g); // issue #908
                 if (data->switch_g_seen != nullptr) {
                     (*data->switch_g_seen)[static_cast<size_t>(j)] =
                         std::numeric_limits<double>::quiet_NaN();
@@ -3050,6 +3221,13 @@ static int cvode_event_root_fn_body(sunrealtype t, N_Vector y, sunrealtype *gout
                               static_cast<std::ptrdiff_t>(ju * static_cast<std::size_t>(nsp)));
             }
         }
+    }
+    // The residual slid along (StateSwitchHold::HeldSlide), after everything
+    // else here has read the model at this state.
+    if (data->state_switch_roots != nullptr && data->state_switch_hold != nullptr &&
+        data->state_switch_hold->slide.j >= 0 && !data->state_switch_hold->probe) {
+        gout[ne + static_cast<int>(disc.size()) + data->state_switch_hold->slide.j] =
+            held_slide_margin(data, static_cast<double>(t), y_ptr);
     }
     return 0;
 }
@@ -4081,7 +4259,7 @@ struct CvodeSimulator::Impl {
                                      const double *x, int ns,
                                      const std::vector<const NetworkModel::StateSwitch *> &switches,
                                      double rtol, double atol, const std::vector<double> &atol_v,
-                                     const AtolTracking &tracking, RestWatch &watch);
+                                     const AtolTracking &tracking, RestWatch &watch, int slid = -1);
 
     // Issue #928. Whether a run is pinned on a state-switch surface, and if
     // so, the state put across it and the integrator restarted there.
@@ -11242,6 +11420,20 @@ static constexpr double kStateSwitchHoldGradKept = 0.75;
 // A residual over more species than this is not held: reading dg/dx across
 // its box costs (4n + 2) * 2n evaluations.
 static constexpr std::size_t kStateSwitchHoldMaxSpecies = 16;
+// How far past its surface, as a share of the band the tolerance leaves the
+// residual there, each side of a held slide is read (StateSwitchHold::HeldSlide).
+static constexpr double kHeldSlideOffset = 0.25;
+// How much each side's flow may change, as a share of itself, between that
+// distance and twice it for the state to be sliding there: the restart
+// test's measure of a flow that is finite at the surface.
+static constexpr double kHeldSlideFlowKept = 0.25;
+// A run is asked whether its state slides along a surface where, over at
+// least kHeldSlideCheckSteps steps since it was last asked, it failed this
+// share of its Newton iterations or moved the time by less than
+// kHeldSlideCrawl of what was left.
+static constexpr long kHeldSlideCheckSteps = 64;
+static constexpr double kHeldSlideFailShare = 0.25;
+static constexpr double kHeldSlideCrawl = 1e-3;
 
 bool CvodeSimulator::Impl::flow_carries_state_switch(
     void *cvode_mem, double t, const double *x, int ns, const NetworkModel::StateSwitch &sw,
@@ -12109,7 +12301,7 @@ static constexpr double kRestReadFiner = 16.0; // the second, finer reading's di
 void CvodeSimulator::Impl::refuse_rest_on_state_switch(
     double t, double t_prev, double t_end, bool evaluated, const double *x, int ns,
     const std::vector<const NetworkModel::StateSwitch *> &switches, double rtol, double atol,
-    const std::vector<double> &atol_v, const AtolTracking &tracking, RestWatch &watch) {
+    const std::vector<double> &atol_v, const AtolTracking &tracking, RestWatch &watch, int slid) {
     const std::size_t n_sw = switches.size();
     const double nan = std::numeric_limits<double>::quiet_NaN();
     watch.size(n_sw);
@@ -12400,8 +12592,17 @@ void CvodeSimulator::Impl::refuse_rest_on_state_switch(
             t - watch.probed_t[k] >= watch.probed_t[k] - watch.rest_since[k]) {
             read();
         }
+        // The surface a slide is stepped along (StateSwitchHold::HeldSlide),
+        // `slid` its residual, holds the state where its flows carry it across
+        // its band, not its bar, over what is left: the side it is on is then
+        // theirs, and the run reads the blend of the branches they set, not
+        // the branch rounding leaves it on. Held to the bar over the 0.03 left
+        // of a run, a slide whose flows were 1.8 read as carrying the state
+        // nowhere and was refused at t = 5.74 of 5.77, by main as well. A
+        // slide whose flows decay under the band is refused as before.
         auto refusable = [&]() {
-            return watch.ratio[k] * horizon > 1.0 && watch.carry[k] * horizon <= bar;
+            const double reach = sw.residual_expr_idx == slid ? bar / k_resolve : bar;
+            return watch.ratio[k] * horizon > 1.0 && watch.carry[k] * horizon <= reach;
         };
         if (!refusable()) {
             continue;
@@ -16584,6 +16785,221 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         state_switch_hold.tracking = user_data.atol_tracking;
         user_data.state_switch_hold = &state_switch_hold;
     }
+    // What a held slide reads its two sides with (StateSwitchHold::HeldSlide).
+    NVectorGuard slide_x, slide_lo, slide_hi;
+    if (n_state_switch > 0 && sens.n_total == 0) {
+        slide_x = NVectorGuard(N_VClone(y));
+        slide_lo = NVectorGuard(N_VClone(y));
+        slide_hi = NVectorGuard(N_VClone(y));
+        StateSwitchHold::HeldSlide &s = state_switch_hold.slide;
+        s.x_side = slide_x;
+        s.f_lo = slide_lo;
+        s.f_hi = slide_hi;
+        s.body = impl_->run_rhs_fn == cvode_codegen_rhs ? cvode_codegen_rhs_body : cvode_rhs_body;
+    }
+    // Whether residual j, at a crossing of it declined at (t, x) with dg/dx
+    // `grad` read there, is a slide (StateSwitchHold::HeldSlide): the flow on
+    // each side carries the state onto the surface, by more than rounding, and
+    // is the same, to a quarter, at the offset and at twice it. The slide's
+    // readings are filled in where it is one, and the caller slides along it
+    // once the run has restarted. The model is left at (t, x).
+    auto takes_a_slide = [&](int j, double t, const double *x, const std::vector<double> &grad) {
+        StateSwitchHold::HeldSlide &s = state_switch_hold.slide;
+        if (s.body == nullptr || s.j >= 0) {
+            return false;
+        }
+        const NetworkModel::StateSwitch &sw = *state_switches[static_cast<std::size_t>(j)];
+        int axis = -1;
+        double most = 0.0;
+        for (int sp : sw.species) {
+            const double gs = grad[static_cast<std::size_t>(sp)];
+            const double moves = std::fabs(gs) * std::max(std::fabs(x[sp]), 1.0);
+            if (std::isfinite(gs) && gs != 0.0 && moves > most) {
+                most = moves;
+                axis = sp;
+            }
+        }
+        const double band = state_switch_band(sw.species.size(), [&](std::size_t k) {
+            const auto sx = static_cast<std::size_t>(sw.species[k]);
+            return std::fabs(grad[sx]) * tolerance_unit(user_data.atol_tracking, rtol,
+                                                        atol_v.empty() ? atol : atol_v[sx], sx,
+                                                        x[sx]);
+        });
+        if (axis < 0 || !(band > 0.0) || !std::isfinite(band)) {
+            return false;
+        }
+        s.g_idx = sw.residual_expr_idx;
+        s.species = sw.species;
+        s.grad = grad;
+        s.axis = axis;
+        s.offset = kHeldSlideOffset * band;
+        s.bar = state_switch_resolve_factor(ns) * band;
+        s.reads_time = state_switch_hold.reads_time[static_cast<std::size_t>(j)] != 0;
+        double g = 0.0;
+        double lo = 0.0;
+        double hi = 0.0;
+        double lo_twice = 0.0;
+        double hi_twice = 0.0;
+        const bool read = held_slide_flows(&user_data, s, t, x, 1.0, &g, &lo, &hi) == 0 &&
+                          held_slide_flows(&user_data, s, t, x, 2.0, &g, &lo_twice, &hi_twice) == 0;
+        // What the flows are summed from, on the side readings at twice the
+        // offset, for the rounding they carry.
+        double terms = 0.0;
+        if (read) {
+            for (N_Vector f : {s.f_lo, s.f_hi}) {
+                const double *fv = N_VGetArrayPointer(f);
+                double sum = 0.0;
+                for (int sp : s.species) {
+                    sum += std::fabs(grad[static_cast<std::size_t>(sp)] * fv[sp]);
+                }
+                terms = std::max(terms, sum);
+            }
+        }
+        impl_->sync_model_at(t, x, ns);
+        // (Not `near`: <windows.h> defines it, and `far`, as nothing.)
+        auto finite = [](double at_offset, double twice) {
+            return std::isfinite(at_offset) && std::isfinite(twice) &&
+                   std::fabs(twice - at_offset) <= kHeldSlideFlowKept * std::fabs(at_offset);
+        };
+        const double inward = std::min(lo, -hi);
+        if (!read || !(std::fabs(g) <= s.bar) || !finite(lo, lo_twice) || !finite(hi, hi_twice) ||
+            !(inward > kStateSwitchSlideRelTol * terms)) {
+            return false;
+        }
+        s.flow = inward;
+        return true;
+    };
+    // The state at t put onto the surface of the slide takes_a_slide has just
+    // read, along its axis, before the restart the slide starts from. A slide
+    // is on its surface, and the blend keeps g where it starts: from a batch's
+    // end, anywhere inside the bar, #908's slide whose force decays sat 0.4 of
+    // S's tolerance below its surface the whole way. The state moves by no
+    // more than the bar, the few tolerance units the run's own error put it
+    // off by.
+    auto onto_the_surface = [&](double t) {
+        const StateSwitchHold::HeldSlide &s = state_switch_hold.slide;
+        impl_->sync_model_at(t, y_data, ns);
+        const double g = model.evaluator().evaluate(s.g_idx);
+        const double step = g / s.grad[static_cast<std::size_t>(s.axis)];
+        if (std::isfinite(step) && std::fabs(g) <= s.bar) {
+            y_data[s.axis] -= step;
+        }
+    };
+    // The residual of the slide being stepped along, or -1, for the rest
+    // refusal (refuse_rest_on_state_switch).
+    auto slid_residual = [&]() {
+        return state_switch_hold.slide.j >= 0 ? state_switch_hold.slide.g_idx : -1;
+    };
+    // The slide along residual j from t, after the restart there, which let
+    // every hold go.
+    auto start_slide = [&](int j, double t) {
+        const auto jx = static_cast<std::size_t>(j);
+        state_switch_hold.slide.j = j;
+        state_switch_hold.held[jx] = 1;
+        state_switch_hold.tested_to[jx] = t;
+        ++state_switch_hold.n_held;
+        SUNLogger logger = nullptr;
+        if (SUNContext_GetLogger(ctx, &logger) == SUN_SUCCESS) {
+            state_switch_hold.mute(logger);
+        }
+    };
+    // A run that has taken kHeldSlideCheckSteps or more steps since this was
+    // last asked, and in them has either failed a quarter of its Newton
+    // iterations or moved the time by less than kHeldSlideCrawl of what was
+    // left to `t_to`: a state that may slide along a surface without crossing
+    // it at any step's end, short of it inside the tolerance, its iterates on
+    // both sides of it (#926's slide the root finder never sees), or crawling
+    // up to it with no step failed (#928's pinned state where the far side
+    // points back). Its crossings, where it makes any, need not come to the
+    // restart test in the declines in a row the slide is taken on in the
+    // batch below, nor at all. #908's slide whose force decays crept up to its
+    // surface for 116,000 steps at rtol 1e-6, eight to a batch, none of them
+    // failed; the issue's own slide, asked for 401 outputs, chattered 364,000
+    // steps in the 0.4 time before four declines came in a row. Asked at each batch's
+    // end and before each call CVODE is given, of the counts since the last
+    // asking: each residual inside its bar is asked whether it is a slide,
+    // and the run slides along the first that is, from t. The model is left
+    // at (t, y).
+    long crawl_steps_seen = 0;
+    long crawl_fails_seen = 0;
+    double crawl_t_seen = times.t_start;
+    auto slide_from_a_crawl = [&](double t, double t_to) {
+        if (!hold_allowed || state_switch_hold.slide.body == nullptr ||
+            state_switch_hold.slide.j >= 0) {
+            return false;
+        }
+        long steps = 0;
+        long fails = 0;
+        CVodeGetNumSteps(cvode_mem, &steps);
+        CVodeGetNumNonlinSolvConvFails(cvode_mem, &fails);
+        steps += impl_->closed_segments.steps;
+        fails += impl_->closed_segments.nonlin_conv_fails;
+        if (steps - crawl_steps_seen < kHeldSlideCheckSteps) {
+            return false;
+        }
+        const double taken = static_cast<double>(steps - crawl_steps_seen);
+        const double failed = static_cast<double>(fails - crawl_fails_seen);
+        const double t_from = crawl_t_seen;
+        crawl_steps_seen = steps;
+        crawl_fails_seen = fails;
+        crawl_t_seen = t;
+        if (!(kHeldSlideFailShare * taken <= failed) &&
+            !(t - t_from < kHeldSlideCrawl * (t_to - t_from))) {
+            return false;
+        }
+        auto &eval = model.evaluator();
+        impl_->sync_model_at(t, y_data, ns);
+        std::vector<double> g_at(static_cast<std::size_t>(n_state_switch));
+        for (int j = 0; j < n_state_switch; ++j) {
+            g_at[static_cast<std::size_t>(j)] =
+                eval.evaluate(state_switches[static_cast<std::size_t>(j)]->residual_expr_idx);
+        }
+        std::vector<double> xw(y_data, y_data + ns);
+        std::vector<double> grad(static_cast<std::size_t>(ns), 0.0);
+        for (int j = 0; j < n_state_switch; ++j) {
+            const NetworkModel::StateSwitch &sw = *state_switches[static_cast<std::size_t>(j)];
+            const double g = g_at[static_cast<std::size_t>(j)];
+            if (!std::isfinite(g)) {
+                continue;
+            }
+            std::fill(grad.begin(), grad.end(), 0.0);
+            for (int sp : sw.species) {
+                const auto sx = static_cast<std::size_t>(sp);
+                const double xj = xw[sx];
+                const double h = 1e-7 * std::max(std::fabs(xj), 1.0);
+                xw[sx] = xj + h;
+                impl_->sync_model_at(t, xw.data(), ns);
+                const double g_hi = eval.evaluate(sw.residual_expr_idx);
+                xw[sx] = xj - h;
+                impl_->sync_model_at(t, xw.data(), ns);
+                const double g_lo = eval.evaluate(sw.residual_expr_idx);
+                xw[sx] = xj;
+                const double gj = (g_hi - g_lo) / (2.0 * h);
+                grad[sx] = std::isfinite(gj) ? gj : 0.0;
+            }
+            const double band = state_switch_band(sw.species.size(), [&](std::size_t k) {
+                const auto sx = static_cast<std::size_t>(sw.species[k]);
+                return std::fabs(grad[sx]) * tolerance_unit(user_data.atol_tracking, rtol,
+                                                            atol_v.empty() ? atol : atol_v[sx], sx,
+                                                            y_data[sx]);
+            });
+            if (!(std::fabs(g) <= state_switch_resolve_factor(ns) * band) ||
+                !takes_a_slide(j, t, y_data, grad)) {
+                continue;
+            }
+            onto_the_surface(t);
+            std::fill(state_switch_zero_hold.begin(), state_switch_zero_hold.end(), 0.0);
+            const int rf = impl_->reinit_cvode(cvode_mem, static_cast<sunrealtype>(t), y);
+            if (rf != CV_SUCCESS) {
+                throw std::runtime_error("CVodeReInit to slide along a state switch failed: " +
+                                         std::to_string(rf));
+            }
+            start_slide(j, t);
+            return true;
+        }
+        impl_->sync_model_at(t, y_data, ns);
+        return false;
+    };
     // Issue #1279: the held equalities' roots, after the state-switch roots.
     const int n_held_equality = static_cast<int>(held_equality_roots.size());
     std::vector<double> held_on_t(static_cast<std::size_t>(n_held_equality),
@@ -18751,9 +19167,9 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // side) read as a rest wherever two askings fell within its bar's worth
     // of time of the end of the run, and a slide was refused.
     auto ask_rest = [&](double t) {
-        impl_->refuse_rest_on_state_switch(t, rest_output_t, t_out.back(), false,
-                                           N_VGetArrayPointer(y), ns, rest_switches, rtol, atol,
-                                           atol_v, user_data.atol_tracking, state_switch_rest);
+        impl_->refuse_rest_on_state_switch(
+            t, rest_output_t, t_out.back(), false, N_VGetArrayPointer(y), ns, rest_switches, rtol,
+            atol, atol_v, user_data.atol_tracking, state_switch_rest, slid_residual());
         CVodeGetNumSteps(cvode_mem, &rest_steps_asked);
     };
     // Asked where `every` steps have gone by since it last was. CVODE's count
@@ -19217,6 +19633,12 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             if (rise_on_stop_due && static_cast<double>(t_now) <= t_out[i]) {
                 rise_on_stop_due = false;
                 fire_rises_on_stop(static_cast<double>(t_now), static_cast<double>(t_now));
+            }
+            // A slide its crossings have not shown, asked before each call
+            // (slide_from_a_crawl). Where it is one, the run restarts here on
+            // its surface and slides along it.
+            if (sens.n_total == 0 && n_state_switch > 0) {
+                slide_from_a_crawl(static_cast<double>(t_now), times.t_end);
             }
 
             // An output the run already stands past. CVODE returns a stop time
@@ -19798,6 +20220,11 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // each batch it spends.
             bool carried = false;
             auto carry_if_pinned = [&](double t_batch) {
+                if (sens.n_total == 0 && slide_from_a_crawl(static_cast<double>(t_ret),
+                                                            static_cast<double>(look_tout))) {
+                    carried = true;
+                    return true;
+                }
                 if (stall_switches.empty()) {
                     return false;
                 }
@@ -20001,6 +20428,37 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     if (!info.empty() && info[static_cast<size_t>(n_events + n_disc + j)] != 0) {
                         held_left.push_back(j);
                     }
+                    // The residual slid along is on its surface by its own
+                    // rate law, so it has no crossing to search for; dg/dx,
+                    // which its sides are read with, is read again where the
+                    // step ended (StateSwitchHold::HeldSlide).
+                    if (j == state_switch_hold.slide.j) {
+                        StateSwitchHold::HeldSlide &s = state_switch_hold.slide;
+                        std::vector<double> xw(y_data, y_data + ns);
+                        std::vector<double> grad_here = s.grad;
+                        for (int sp : s.species) {
+                            const auto sx = static_cast<std::size_t>(sp);
+                            const double xj = xw[sx];
+                            const double h = 1e-7 * std::max(std::fabs(xj), 1.0);
+                            xw[sx] = xj + h;
+                            impl_->sync_model_at(t_here, xw.data(), ns);
+                            const double g_hi = eval.evaluate(s.g_idx);
+                            xw[sx] = xj - h;
+                            impl_->sync_model_at(t_here, xw.data(), ns);
+                            const double g_lo = eval.evaluate(s.g_idx);
+                            xw[sx] = xj;
+                            grad_here[sx] = (g_hi - g_lo) / (2.0 * h);
+                        }
+                        const double on_axis = grad_here[static_cast<std::size_t>(s.axis)];
+                        if (std::isfinite(on_axis) && on_axis != 0.0 &&
+                            std::all_of(s.species.begin(), s.species.end(), [&](int sp) {
+                                return std::isfinite(grad_here[static_cast<std::size_t>(sp)]);
+                            })) {
+                            s.grad = std::move(grad_here);
+                        }
+                        state_switch_hold.tested_to[jx] = t_here;
+                        continue;
+                    }
                     const double from = std::max(state_switch_hold.tested_to[jx], t_step_start);
                     state_switch_hold.tested_to[jx] = t_here;
                     const int g_idx = state_switches[jx]->residual_expr_idx;
@@ -20088,14 +20546,64 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 impl_->sync_model_at(t_here, y_data, ns);
                 // Out of its band: shown as it is again. CVODE reads every root
                 // afresh after a root return, so the change is seen whole.
+                bool slide_ended = false;
                 for (int j : held_left) {
                     const auto jx = static_cast<size_t>(j);
                     state_switch_hold.held[jx] = 0;
                     state_switch_hold.run[jx] = 0;
                     --state_switch_hold.n_held;
+                    slide_ended = slide_ended || j == state_switch_hold.slide.j;
                 }
                 if (state_switch_hold.n_held == 0) {
                     state_switch_hold.unmute();
+                }
+                // A slide's end: one side's flow no longer carries the state
+                // onto the surface, or the state is past the bar. The step
+                // that ended past it read the rate law beyond the end at its
+                // own end and carried it back over the slide: at rtol 1e-3
+                // the clock sweep's S came to the end 0.67 of its tolerance
+                // off the surface it slides on at dlt = 0.02, and at dlt =
+                // 0.01 the pulse the threshold's crossing opens later gained
+                // 57% too little. So the step is taken
+                // again, from its start up to the end, as a crossing's is
+                // (go_back_to_step_start), still sliding: the blend runs into
+                // the side the state leaves by, so the stop is on the end
+                // itself and the run restarts there on the rate law as it is.
+                // Where the step cannot be taken again, the run restarts at
+                // the end as CVODE located it.
+                if (slide_ended) {
+                    const int j_slid = state_switch_hold.slide.j;
+                    state_switch_hold.slide.j = -1;
+                    sunrealtype tn_s = 0.0;
+                    sunrealtype h_s = 0.0;
+                    CVodeGetCurrentTime(cvode_mem, &tn_s);
+                    CVodeGetLastStep(cvode_mem, &h_s);
+                    const double h = std::fabs(static_cast<double>(h_s));
+                    const double t_a = static_cast<double>(tn_s) - h;
+                    const double t_r = static_cast<double>(t_ret);
+                    const bool nested = t_a >= retaken_from && t_r <= retaken_to;
+                    if (retakes && !nested && state_switch_hold.n_held == 0 &&
+                        pending_events.empty() && !rise_on_stop_due && retake_last_fire_t < t_a &&
+                        h > 0.0 && t_r > t_a && go_back_to_step_start(t_a, t_r, t_r, false)) {
+                        // The restart let the slide go; it slides on from t_a.
+                        start_slide(j_slid, t_a);
+                        for (int k = 1; k < i; ++k) {
+                            if (t_out[k] > static_cast<double>(t_now)) {
+                                retake_from_row = k;
+                                break;
+                            }
+                        }
+                        if (retake_from_row > 0) {
+                            break;
+                        }
+                        continue;
+                    }
+                    std::fill(state_switch_zero_hold.begin(), state_switch_zero_hold.end(), 0.0);
+                    const int rf = impl_->reinit_cvode(cvode_mem, t_ret, y);
+                    if (rf != CV_SUCCESS) {
+                        throw std::runtime_error("CVodeReInit at a slide's end failed: " +
+                                                 std::to_string(rf));
+                    }
                 }
             }
             // Issue #1279: a held equality's root is the state leaving its
@@ -20624,6 +21132,9 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 int carried_dir = 0;
                 int declined_switch = -1;
                 int declined_dir = 0;
+                // A residual slid along from this batch's restart on
+                // (StateSwitchHold::HeldSlide).
+                int slide_from_here = -1;
                 if (!any_event_fired && sens.n_total == 0 && !switched.empty()) {
                     bool other_root = false;
                     for (int i = 0; i < n_events + n_disc; ++i) {
@@ -20688,6 +21199,15 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                                 run_j = 1;
                             }
                             state_switch_hold.last_step[jx] = steps_now;
+                            // A slide is stepped along its surface, from a
+                            // restart here, and is not held as below.
+                            if (hold_allowed && run_j >= kStateSwitchHoldAfter &&
+                                state_switch_hold.held[jx] == 0 && slide_from_here < 0 &&
+                                takes_a_slide(j, t_root, y_data, grad)) {
+                                slide_from_here = j;
+                                restart = true;
+                                continue;
+                            }
                             if (!hold_allowed || run_j < kStateSwitchHoldAfter ||
                                 state_switch_hold.held[jx] != 0 ||
                                 state_switch_hold.reads_time[jx] != 0) {
@@ -20837,12 +21357,18 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
 
                 // Reinitialize CVODE with modified state vector
                 if (restart) {
+                    if (slide_from_here >= 0) {
+                        onto_the_surface(static_cast<double>(t_ret));
+                    }
                     // CVODE sets a root that is zero at a restart aside itself.
                     std::fill(state_switch_zero_hold.begin(), state_switch_zero_hold.end(), 0.0);
                     int reinit_flag = impl_->reinit_cvode(cvode_mem, t_ret, y);
                     if (reinit_flag != CV_SUCCESS) {
                         throw std::runtime_error("CVodeReInit after event failed: " +
                                                  std::to_string(reinit_flag));
+                    }
+                    if (slide_from_here >= 0) {
+                        start_slide(slide_from_here, static_cast<double>(t_ret));
                     }
                 } else {
                     // Stepping on past the roots: each residual stays on the
@@ -21564,10 +22090,10 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         // Issue #1548: a state come to rest on a switch's surface, its branch
         // set by rounding.
         if (!rest_switches.empty()) {
-            impl_->refuse_rest_on_state_switch(t_row, t_out[i - 1], t_out.back(),
-                                               ar_copyback.empty() && !model.uses_rateof(), y_data,
-                                               ns, rest_switches, rtol, atol, atol_v,
-                                               user_data.atol_tracking, state_switch_rest);
+            impl_->refuse_rest_on_state_switch(
+                t_row, t_out[i - 1], t_out.back(), ar_copyback.empty() && !model.uses_rateof(),
+                y_data, ns, rest_switches, rtol, atol, atol_v, user_data.atol_tracking,
+                state_switch_rest, slid_residual());
             rest_output_t = t_out[i];
             CVodeGetNumSteps(cvode_mem, &rest_steps_asked);
         }
