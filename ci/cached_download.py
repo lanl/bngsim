@@ -40,10 +40,18 @@ def sha256_of(path: Path) -> str:
 
 
 def _download_once(url: str, part: Path) -> None:
+    """One request into ``part``. A body shorter than its Content-Length raises:
+    http.client returns what arrived when the connection drops partway, and that
+    is a failed request to retry, not a file with the wrong bytes."""
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=TIMEOUT) as resp, open(part, "wb") as out:
+        length = resp.headers.get("Content-Length")
+        got = 0
         while chunk := resp.read(1 << 20):
             out.write(chunk)
+            got += len(chunk)
+    if length is not None and got != int(length):
+        raise OSError(f"the connection closed after {got} of {length} bytes")
 
 
 def download(url: str, dest: Path, sha256: str, delays=RETRY_DELAYS) -> None:

@@ -9,8 +9,8 @@ Each test pins one rule:
 * a copy with other bytes is replaced by a fresh download;
 * a missing copy is downloaded and checked;
 * a download with other bytes fails, and leaves nothing at the path;
-* a request that fails is retried, and a run of failures longer than the
-  retries fails with nothing left behind;
+* a request that fails is retried, a download cut short included, and a run
+  of failures longer than the retries fails with nothing left behind;
 * the action reads ``downloaded=`` from $GITHUB_OUTPUT, and a malformed sha256
   is refused before anything is fetched.
 """
@@ -49,11 +49,13 @@ NO_WAIT = (0, 0, 0, 0)
 
 @pytest.fixture
 def server():
-    """A local server that answers 504 to its first ``fail`` requests, then
-    serves ``body``. Counts the requests it saw."""
+    """A local server that answers 504 to its first ``fail`` requests, cuts the
+    next ``cut`` short (half the body, then the connection closes), then serves
+    ``body``. Counts the requests it saw."""
 
     class State:
         fail = 0
+        cut = 0
         body = PAYLOAD
         requests = 0
 
@@ -66,6 +68,10 @@ def server():
             self.send_response(200)
             self.send_header("Content-Length", str(len(State.body)))
             self.end_headers()
+            if State.requests <= State.fail + State.cut:
+                self.wfile.write(State.body[: len(State.body) // 2])
+                self.close_connection = True
+                return
             self.wfile.write(State.body)
 
         def log_message(self, *args):
@@ -122,6 +128,26 @@ def test_failed_requests_are_retried(tmp_path, server):
     assert cd.ensure(server.url, SHA256, dest, NO_WAIT) is True
     assert server.requests == 5
     assert dest.read_bytes() == PAYLOAD
+
+
+def test_a_download_cut_short_is_retried_not_judged(tmp_path, server):
+    """A connection that drops partway is a failed request: http.client hands
+    back the half that arrived, and its sha256 must not decide anything."""
+    server.cut = 2
+    dest = tmp_path / "sundials-7.2.1.tar.gz"
+    assert cd.ensure(server.url, SHA256, dest, NO_WAIT) is True
+    assert server.requests == 3
+    assert dest.read_bytes() == PAYLOAD
+    assert _left(dest) == [dest.name]
+
+
+def test_downloads_all_cut_short_fail_with_nothing_left(tmp_path, server):
+    server.cut = 5
+    dest = tmp_path / "sundials-7.2.1.tar.gz"
+    with pytest.raises(SystemExit, match="could not download"):
+        cd.ensure(server.url, SHA256, dest, NO_WAIT)
+    assert server.requests == 5
+    assert _left(dest) == []
 
 
 def test_more_failures_than_retries_fail_with_nothing_left(tmp_path, server):
