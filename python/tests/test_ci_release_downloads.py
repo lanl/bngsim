@@ -42,7 +42,7 @@ REPO_ROOT = WORKFLOWS.parent.parent
 ACTIONS = REPO_ROOT / ".github" / "actions"
 
 pytestmark = pytest.mark.skipif(
-    not WORKFLOWS.is_dir(), reason="no .github/workflows in this checkout (installed package)"
+    not WORKFLOWS.is_dir(), reason=".github/workflows is not in this checkout (installed package)"
 )
 
 SUNDIALS_STEP = "uses: ./.github/actions/sundials-archive"
