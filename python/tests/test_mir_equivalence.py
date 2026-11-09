@@ -435,8 +435,8 @@ def test_a_compile_at_a_cap_on_the_address_space_raises(tmp_path):
 # third_party/mir/mir-gen-aarch64.c relaxes such a branch into the opposite
 # condition over a b, and refuses by name an insn that even so cannot reach.
 #
-# BIG is n statements r = r * 0.9999 + x: about 22 bytes of code each at MIR
-# levels 0 and 1, so 80,000 come to about 1.7 MiB. That is the premise of the
+# BIG is n statements r = r * 0.9999 + x: 24 bytes of code each at MIR levels
+# 0 and 1, so 80,000 come to 1,920,000 bytes (1.83 MiB). That is the premise of the
 # branch test, and the address-taken label test checks it: its label sits past
 # the same BIG, and it is refused only when that is more than a megabyte away.
 # Level 2 compiles a function that size in about a minute, and emits the same
@@ -534,7 +534,8 @@ def test_a_conditional_branch_over_more_than_a_megabyte_of_code_reaches_its_labe
     as a branch more than a megabyte of code forward and backward of its label:
     all ten b.cond conditions MIR emits from C, cbz and cbnz. On main the first
     call at either level died with SIGILL; a lone if (p) over 100,000 statements
-    returned 4999.1987... for p == 0, which must skip them and return 1."""
+    returned 4999.2 for p == 0 (the digits depend on where the wrapped offset
+    lands), which must skip them and return 1."""
     done = subprocess.run(
         [sys.executable, "-c", _FAR_BRANCH_PROBE, str(level), str(_FAR_BRANCH_STATEMENTS)],
         capture_output=True,
@@ -676,8 +677,11 @@ def test_a_branch_the_relaxed_ones_push_toward_its_reach_still_reaches():
 # no case takes the switch's range check to the end of the function. In a model
 # of 9,000 reactions that is more than a megabyte away (the source is over 4 MB,
 # so MIR level 0), and on main a sensitivity to such a parameter died with
-# SIGSEGV; at 16,000 reactions it returned 63.3 where 0 is exact. BIOMD0000000471
-# took the same branch: its first parameter, `cell`, reaches no rate law.
+# SIGSEGV; at 16,000 reactions it returned 72.4 where 0 is exact, with no error.
+# BIOMD0000000471 took the same branch: its switch starts at case 2, and its
+# first parameter, `cell`, has no case. Every kinetic law there is cell * v(...),
+# which the division by the compartment's volume cancels, so 0 is right there
+# too (libRoadRunner's central difference through init(cell): at most 6e-11).
 _UNUSED_PARAMETER_PROBE = r"""
 import json, random, sys
 import numpy as np
@@ -748,8 +752,10 @@ def test_a_sensitivity_to_a_parameter_without_a_dfdp_case_is_zero_under_mir(tmp_
 # and the prologue saves it and the epilogue restores it. But a leaf function
 # that needs neither a callee-saved register nor a stack slot gets no prologue,
 # so with x30 allocated it returned to whatever value x30 held last (SIGBUS on
-# main). It takes just enough live integers: on macOS 14 put x30 in use with no
-# callee-saved register (Linux, where x18 is not reserved, needs one more), and
+# main). It takes integer values that fill every caller-saved register, x30
+# included, without needing a callee-saved one: on macOS the probe's 14 do (16
+# live longs and a compare constant), 15 bring in x19 and the prologue with it,
+# and Linux, where x18 is not reserved, needs one more. And
 # at levels 2 and 3 the compared constants must be ones no compare immediate can
 # hold, or combine folds them and x30 is never written. So N sweeps 12 to 20.
 _LEAF_LINK_REGISTER_PROBE = r"""
@@ -776,6 +782,7 @@ def want(n, ip):
 out = []
 for level in map(int, sys.argv[1:]):
     for n in range(12, 21):
+        print(json.dumps(["at level, n", level, n]), flush=True)  # names a crash
         jit = _MirJit(source(n), level)
         f = ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_double)(jit.address("f"))
         for ip in (-3, 0, 5, 130000, 200000):
@@ -796,5 +803,5 @@ def test_a_leaf_function_that_uses_the_link_register_returns_to_its_caller():
         text=True,
         timeout=600,
     )
-    assert done.returncode == 0, (done.returncode, done.stderr[-2000:])
+    assert done.returncode == 0, (done.returncode, done.stdout[-200:], done.stderr[-2000:])
     assert json.loads(done.stdout.strip().splitlines()[-1]) == []
