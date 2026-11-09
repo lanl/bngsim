@@ -1405,7 +1405,7 @@ def test_a_rung_past_the_most_replicates_is_not_walked(monkeypatch, tmp_path, mo
 
 def test_a_slow_runner_walks_the_same_rungs(monkeypatch, tmp_path):
     """#1555: the escalation budget was 300 wall seconds, so a runner slow
-    enough left a rung unwalked. IL7_Carmen's 30-replicate rung took 186-340 s
+    enough left a rung unwalked. IL7_Carmen's 30-replicate rung took 174-334 s
     across runners and read DIFF on the slowest. The limit counts replicates
     now, so clocks that jump 1000 s at every reading walk the same rungs to the
     same verdict. All three the harness could read: perf_counter (the old

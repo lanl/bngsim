@@ -1778,7 +1778,7 @@ def _ssa_verdict(job, interp, comp, no_compiler, differ, oracles) -> Verdict:
 #: walked, and the row says so. 30 walks the 30-replicate rung and not the 100
 #: one, whatever the base. It's a count, not seconds (#1555). The budget was 300
 #: wall seconds, which made the runner decide: IL7_Carmen's 30-replicate rung
-#: took 186-340 s across runners, so it read PASS on most nights and DIFF on the
+#: took 174-334 s across runners, so it read PASS on most nights and DIFF on the
 #: slowest. No row walked to 100 in eleven nightly-parity runs to 2026-11-08,
 #: and the slowest rows' 70 more replicates (about 58 s each for
 #: population_scaling) would be past any cap. The per-model cap (the NF arm's
