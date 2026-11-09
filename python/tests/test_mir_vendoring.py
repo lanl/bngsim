@@ -81,9 +81,10 @@ def test_mir_vendor_metadata_shape():
 def test_mir_local_carries_are_still_applied():
     """Every declared local carry must still be present in the vendored file.
 
-    Four carries today: issue #1215's two (in mir.c and c2mir/c2mir.c), issue
-    #1216's loop-padding NOPs in mir-gen-x86_64.c, and issue #1575's far
-    branches in mir-gen-aarch64.c. Issue #413's was
+    Five carries today: issue #1215's two (in mir.c and c2mir/c2mir.c), issue
+    #1216's loop-padding NOPs in mir-gen-x86_64.c, and issue #1575's two in
+    mir-gen-aarch64.c (far branches; the link register in leaf functions).
+    Issue #413's was
     dropped when upstream merged it (vnmakarov/mir#468). Checksum anchors cannot
     guard a carry — a refresh rewrites the file from upstream AND re-anchors it,
     so the patch vanishes with the tree still matching its own metadata. Each

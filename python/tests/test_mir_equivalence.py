@@ -660,9 +660,134 @@ def test_a_branch_the_relaxed_ones_push_toward_its_reach_still_reaches():
     layout in the window compiles and gives the closed form, where a margin of 4
     bytes a relaxed branch refused n = 262,093."""
     if not _AARCH64:
-        pytest.skip("the layout is aarch64's: x86-64 relaxes no branch")
+        pytest.skip("aarch64 only: the layout is placed in its code, and x86-64 relaxes no branch")
     done = subprocess.run(
         [sys.executable, "-c", _CROSSING_PROBE, *map(str, range(262_090, 262_097))],
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    assert done.returncode == 0, (done.returncode, done.stderr[-2000:])
+    assert json.loads(done.stdout.strip().splitlines()[-1]) == []
+
+
+# The codegen path itself. bngsim_dfdp is a switch over the parameters with a
+# case for each one a rate law reads, compiled to a jump table; a parameter with
+# no case takes the switch's range check to the end of the function. In a model
+# of 9,000 reactions that is more than a megabyte away (the source is over 4 MB,
+# so MIR level 0), and on main a sensitivity to such a parameter died with
+# SIGSEGV; at 16,000 reactions it returned 63.3 where 0 is exact. BIOMD0000000471
+# took the same branch: its first parameter, `cell`, reaches no rate law.
+_UNUSED_PARAMETER_PROBE = r"""
+import json, random, sys
+import numpy as np
+from bngsim import Model, Simulator
+
+path = sys.argv[1]
+rng = random.Random(1575)
+n_species, n_reactions, n_rates = 200, 9000, 4
+lines = ["begin parameters"]
+for p in range(n_rates):
+    lines.append(f"  {p + 1} k{p} {rng.uniform(0.0005, 0.005):.6g}")
+lines.append(f"  {n_rates + 1} k_unused 0.3")
+lines.append("end parameters\nbegin species")
+for s in range(n_species):
+    lines.append(f"  {s + 1} S{s}() {rng.uniform(0.5, 2.0):.6g}")
+lines.append("end species\nbegin reactions")
+seen, r = set(), 0
+while r < n_reactions:
+    a, b = rng.randrange(n_species), rng.randrange(n_species)
+    reactants = f"{a + 1}" if rng.random() < 0.5 else f"{a + 1},{rng.randrange(n_species) + 1}"
+    key = (reactants, b, rng.randrange(n_rates))
+    if key in seen:
+        continue
+    seen.add(key)
+    r += 1
+    lines.append(f"  {r} {reactants} {b + 1} k{key[2]}")
+lines.append("end reactions\nbegin groups\n  1 S0_tot 1\nend groups")
+open(path, "w").write("\n".join(lines) + "\n")
+
+m = Model.from_net(path)
+sim = Simulator(m, method="ode", sensitivity_params=list(m.primary_param_names))
+res = sim.run(t_span=(0, 20), n_points=5)
+sens = np.asarray(res.sensitivities)
+print(json.dumps({
+    "backend": sim.codegen_backend,
+    "params": list(res.sensitivity_params),
+    "unused": float(np.abs(sens[:, :, -1]).max()),
+    "used": float(np.abs(sens[:, :, :-1]).max()),
+    "finite": bool(np.isfinite(sens).all()),
+}))
+"""
+
+
+def test_a_sensitivity_to_a_parameter_without_a_dfdp_case_is_zero_under_mir(tmp_path):
+    """Forward sensitivity under BNGSIM_CODEGEN_JIT=mir to a parameter no rate
+    law reads: exactly 0, the closed form. On main the run died with SIGSEGV.
+    (The cc backend gives the same numbers bit for bit, but compiling this
+    source takes it half a minute.)"""
+    env = {**os.environ, "BNGSIM_CODEGEN_JIT": "mir"}
+    done = subprocess.run(
+        [sys.executable, "-c", _UNUSED_PARAMETER_PROBE, str(tmp_path / "unused.net")],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=600,
+    )
+    assert done.returncode == 0, (done.returncode, done.stderr[-2000:])
+    out = json.loads(done.stdout.strip().splitlines()[-1])
+    assert out["backend"] == "mir", out
+    assert out["params"][-1] == "k_unused", out
+    assert out["finite"], out
+    assert out["unused"] == 0.0, out
+    assert out["used"] > 1.0, out  # the run computed real sensitivities
+
+
+# Found in #1575's review, and fixed beside it. MIR's aarch64 register
+# allocator may give x30, the link register, to a value: it is caller-saved,
+# and the prologue saves it and the epilogue restores it. But a leaf function
+# that needs neither a callee-saved register nor a stack slot gets no prologue,
+# so with x30 allocated it returned to whatever value x30 held last. Fourteen
+# live longs are enough at MIR levels 0 and 1 (SIGBUS on main); level 2
+# allocates differently.
+_LEAF_LINK_REGISTER_PROBE = r"""
+import ctypes, json, sys
+from bngsim._bngsim_core import _MirJit
+
+N = 14
+SOURCE = (
+    "double f(double pd) {\n  long ip = (long) pd;\n"
+    + "".join(f"  long a{i} = ip * {i + 3} + {i};\n" for i in range(N))
+    + "  long k = 0;\n"
+    + "".join(f"  if (ip > {i}) k += a{i};\n" for i in range(N))
+    + "  k += " + " ^ ".join(f"a{i}" for i in range(N)) + ";\n  return (double) k;\n}\n"
+)
+def want(ip):
+    a = [ip * (i + 3) + i for i in range(N)]
+    k = sum(a[i] for i in range(N) if ip > i)
+    x = 0
+    for v in a:
+        x ^= v
+    return float(k + x)
+
+out = []
+for level in map(int, sys.argv[1:]):
+    jit = _MirJit(SOURCE, level)
+    f = ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_double)(jit.address("f"))
+    for ip in (-3, 0, 5, 20):
+        got = f(float(ip))
+        if got != want(ip):
+            out.append((level, ip, got, want(ip)))
+print(json.dumps(out))
+"""
+
+
+def test_a_leaf_function_that_uses_the_link_register_returns_to_its_caller():
+    """x30 allocated in a leaf function: every call returns, with the closed
+    form, at levels 0, 1 and 2. On main the first call at level 0 died with
+    SIGBUS."""
+    done = subprocess.run(
+        [sys.executable, "-c", _LEAF_LINK_REGISTER_PROBE, "0", "1", "2"],
         capture_output=True,
         text=True,
         timeout=600,

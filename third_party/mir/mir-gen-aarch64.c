@@ -716,6 +716,7 @@ struct target_ctx {
   VARR (uint64_t) * abs_address_locs;
   VARR (MIR_code_reloc_t) * relocs;
   bitmap_t far_label_refs; /* BNGsim local carry (lanl/bngsim#1575): see target_translate */
+  VARR (uint64_t) * far_need_counts; /* BNGsim local carry (lanl/bngsim#1575) */
 };
 
 #define alloca_p gen_ctx->target_ctx->alloca_p
@@ -732,6 +733,7 @@ struct target_ctx {
 #define abs_address_locs gen_ctx->target_ctx->abs_address_locs
 #define relocs gen_ctx->target_ctx->relocs
 #define far_label_refs gen_ctx->target_ctx->far_label_refs
+#define far_need_counts gen_ctx->target_ctx->far_need_counts
 
 static MIR_disp_t target_get_stack_slot_offset (gen_ctx_t gen_ctx, MIR_type_t type MIR_UNUSED,
                                                 MIR_reg_t slot) {
@@ -1037,8 +1039,13 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
       else
         saved_fregs_num++;
     }
+  /* BNGsim local carry (lanl/bngsim#1575, the link register): x30 is
+     allocatable and caller-saved, so a leaf function the register allocator
+     gave it to returned to whatever value it held last.  Only the prologue
+     saves it and the epilogue restores it.  */
   if (leaf_p && !alloca_p && saved_iregs_num == 0 && saved_fregs_num == 0 && !func->vararg_p
-      && stack_slots_num == 0 && !block_arg_func_p && small_aggregate_save_area == 0)
+      && stack_slots_num == 0 && !block_arg_func_p && small_aggregate_save_area == 0
+      && !bitmap_bit_p (used_hard_regs, LINK_HARD_REG))
     return;
   sp_reg_op = _MIR_new_var_op (ctx, SP_HARD_REG);
   fp_reg_op = _MIR_new_var_op (ctx, FP_HARD_REG);
@@ -2508,32 +2515,47 @@ static int label_ref_reach_p (const label_ref_t *lr, int64_t offset, int64_t gro
   return -reach + growth <= offset && offset < reach - growth;
 }
 
-/* BNGsim local carry (lanl/bngsim#1575): mark in far_label_refs each short branch
-   that cannot reach its label, or could not once the marked ones each take one
-   insn more, and return whether any is marked.  An adr (MIR_LADDR) has no longer
-   form; check_label_refs_reach reports it.
+/* BNGsim local carry (lanl/bngsim#1575): how many relaxed branches it takes to
+   push label ref LR out of reach: 0 if it is out already, N + 1 if no N can or
+   it is no short branch.  An adr (MIR_LADDR) has no longer form and is never
+   relaxed; check_label_refs_reach reports it.
 
-   Each marked branch moves the code after it by 4 bytes, and a MIR_SWITCH's
+   Each relaxed branch moves the code after it by 4 bytes, and a MIR_SWITCH's
    table, which out_insn aligns to 8 bytes, can turn that into 8 or 0 past it.
-   So past any point the code moves by 0 to 8 bytes per marked branch, and an
+   So past any point the code moves by 0 to 8 bytes per relaxed branch, and an
    offset changes by at most that much.  */
-static int mark_far_label_refs (gen_ctx_t gen_ctx) {
-  size_t far_n = 0, prev_far_n;
+static size_t far_label_ref_need (gen_ctx_t gen_ctx, const label_ref_t *lr, size_t n) {
+  if (lr->abs_addr_p || !lr->short_p) return n + 1;
+  uint32_t insn = *(uint32_t *) (VARR_ADDR (uint8_t, result_code) + lr->label_val_disp);
+  if ((insn & 0x9f000000) == 0x10000000) return n + 1; /* adr */
+  int64_t offset = label_ref_offset (gen_ctx, lr), reach = (int64_t) 1 << 20;
+  /* The most growth with which it still reaches (see label_ref_reach_p): */
+  int64_t slack = offset + reach < reach - 1 - offset ? offset + reach : reach - 1 - offset;
+  if (slack < 0) return 0;
+  uint64_t need = (uint64_t) slack / 8 + 1; /* the fewest m with 8m > slack */
+  return need > n ? n + 1 : (size_t) need;
+}
 
-  do {
-    int64_t growth = 8 * (int64_t) far_n;
-    prev_far_n = far_n;
-    for (size_t i = 0; i < VARR_LENGTH (label_ref_t, label_refs); i++) {
-      const label_ref_t *lr = &VARR_ADDR (label_ref_t, label_refs)[i];
-      if (lr->abs_addr_p || !lr->short_p || bitmap_bit_p (far_label_refs, i)) continue;
-      uint32_t insn = *(uint32_t *) (VARR_ADDR (uint8_t, result_code) + lr->label_val_disp);
-      if ((insn & 0x9f000000) == 0x10000000) continue; /* adr */
-      if (label_ref_reach_p (lr, label_ref_offset (gen_ctx, lr), growth)) continue;
+/* BNGsim local carry (lanl/bngsim#1575): mark in far_label_refs the fewest short
+   branches whose relaxation leaves every other one in reach, and return whether
+   any is marked: the least m such that exactly m branches need m or fewer.  */
+static int mark_far_label_refs (gen_ctx_t gen_ctx) {
+  size_t n = VARR_LENGTH (label_ref_t, label_refs), i, m;
+  uint64_t *count;
+
+  VARR_TRUNC (uint64_t, far_need_counts, 0);
+  for (i = 0; i <= n + 1; i++) VARR_PUSH (uint64_t, far_need_counts, 0);
+  count = VARR_ADDR (uint64_t, far_need_counts);
+  for (i = 0; i < n; i++)
+    count[far_label_ref_need (gen_ctx, &VARR_ADDR (label_ref_t, label_refs)[i], n)]++;
+  for (i = 1; i <= n; i++) count[i] += count[i - 1]; /* count[m]: how many need <= m */
+  for (m = count[0]; count[m] != m; m = count[m]) /* nondecreasing, at most n */
+    ;
+  if (m == 0) return FALSE;
+  for (i = 0; i < n; i++)
+    if (far_label_ref_need (gen_ctx, &VARR_ADDR (label_ref_t, label_refs)[i], n) <= m)
       bitmap_set_bit_p (far_label_refs, i);
-      far_n++;
-    }
-  } while (far_n != prev_far_n);
-  return far_n != 0;
+  return TRUE;
 }
 
 /* BNGsim local carry (lanl/bngsim#1575): report through MIR's error function an
@@ -2764,6 +2786,7 @@ static void target_init (gen_ctx_t gen_ctx) {
   VARR_CREATE (uint64_t, abs_address_locs, alloc, 0);
   VARR_CREATE (MIR_code_reloc_t, relocs, alloc, 0);
   far_label_refs = bitmap_create (alloc);
+  VARR_CREATE (uint64_t, far_need_counts, alloc, 0);
   patterns_init (gen_ctx);
   temp_jump = MIR_new_insn (ctx, MIR_JMP, MIR_new_label_op (ctx, NULL));
   temp_jump_replacement = find_insn_pattern_replacement (gen_ctx, temp_jump);
@@ -2778,6 +2801,7 @@ static void target_finish (gen_ctx_t gen_ctx) {
   VARR_DESTROY (uint64_t, abs_address_locs);
   VARR_DESTROY (MIR_code_reloc_t, relocs);
   bitmap_destroy (far_label_refs);
+  VARR_DESTROY (uint64_t, far_need_counts);
   MIR_free (alloc, gen_ctx->target_ctx);
   gen_ctx->target_ctx = NULL;
 }

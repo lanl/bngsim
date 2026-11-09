@@ -213,10 +213,11 @@ These behaviors are required by `mir_jit.hpp` and recorded under
   `MIR_get_global_item`, the scan still works — but verify before relying on it.
 - **Single-maintainer upstream.** MIR is effectively single-maintainer and pinned
   to an immutable commit. Refresh deliberately.
-- **Local carries: four** (see "Current carries" below): two for issue
+- **Local carries: five** (see "Current carries" below): two for issue
   #1215, in `mir.c` and `c2mir/c2mir.c`, one for issue #1216,
-  `mir-gen-x86_64.c`'s 3- and 4-byte loop-padding NOPs, and one for issue
-  #1575, `mir-gen-aarch64.c`'s branches to labels out of reach. `VENDOR.json` →
+  `mir-gen-x86_64.c`'s 3- and 4-byte loop-padding NOPs, and two for issue
+  #1575 in `mir-gen-aarch64.c`: branches to labels out of reach, and the link
+  register in leaf functions. `VENDOR.json` →
   `local_carries` records each deliberate BNGsim edit, and both
   `vendor_mir.py --check` and `test_mir_vendoring.py` verify every recorded
   carry is *still applied* — see "Local Carries" below.
@@ -298,7 +299,9 @@ The third is issue #1216's, marked `BNGsim local carry (lanl/bngsim#1216)`.
   `test_mir_vendoring.py::test_mir_x86_64_loop_padding_is_intels_recommended_nops`
   holds the table to Intel's list, and stays when upstream takes the fix.
 
-The fourth is issue #1575's, marked `BNGsim local carry (lanl/bngsim#1575)`.
+The fourth and fifth are issue #1575's, marked
+`BNGsim local carry (lanl/bngsim#1575)` and
+`BNGsim local carry (lanl/bngsim#1575, the link register)`.
 
 - **`mir-gen-aarch64.c` — branches to labels out of reach (issue #1575),
   carried from 2026-11-09.** `target_translate` encodes each function in one
@@ -309,9 +312,11 @@ The fourth is issue #1575's, marked `BNGsim local carry (lanl/bngsim#1575)`.
   25.8 MB of C at MIR level 0, died with a bus error; an `if` over 100,000
   statements skipped to the middle of them and returned a wrong number without
   an error. The carry translates a second time when a short branch is that far,
-  emitting each such branch, and each that their growth could push out of reach,
-  as the opposite condition over a `b`, so a function under a megabyte of code
-  translates once as before. Then it checks every label offset against its
+  emitting each such branch as the opposite condition over a `b`. It also
+  relaxes each branch that their growth could push out of reach, allowing 8
+  bytes per relaxed branch: its extra insn, plus up to 4 bytes of a jump
+  table's 8-byte alignment. A counting pass finds that set in linear time. A
+  function under a megabyte of code translates once, as before. Then it checks every label offset against its
   insn's reach and reports one still out of it (an `adr`, which has no longer
   form, or a `b` past 128 MiB) through MIR's error function, which `MirJit`
   turns into a `RuntimeError`. x86-64 needs nothing: it picks a short or a
@@ -321,6 +326,18 @@ The fourth is issue #1575's, marked `BNGsim local carry (lanl/bngsim#1575)`.
   and backward, against the closed form on the macOS arm64 MIR leg, and
   `test_mir_vendoring.py::test_mir_aarch64_label_insns_are_ones_the_far_branch_carry_handles`
   fails if a refresh encodes a label on an insn the carry does not know.
+- **`mir-gen-aarch64.c` — the link register in leaf functions (found in
+  issue #1575's review), carried from 2026-11-09.** The register allocator may
+  give x30 to a value, because it is caller-saved and the prologue and
+  epilogue save and restore it. But `target_make_prolog_epilog` skips both for
+  a leaf function that needs no callee-saved register and no stack slot. A
+  leaf function the allocator gave x30 to therefore returned to whatever value
+  x30 held last: fourteen live `long`s were enough at MIR levels 0 and 1
+  (SIGBUS). The carry keeps the prologue and epilogue when x30 is used, so a
+  function that does not use it is unchanged. Upstream master (`dc2c763f`) has
+  the same shortcut; not reported upstream as of 2026-11-09.
+  `test_mir_equivalence.py::test_a_leaf_function_that_uses_the_link_register_returns_to_its_caller`
+  holds it at levels 0 to 2.
 
 ### Past carries
 
