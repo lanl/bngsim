@@ -149,6 +149,15 @@ Current local carries inside the fetched SUNDIALS source: one, listed in
   block has moved: re-derive the carry against the new `cvStep`, or drop it
   once upstream fixes the defect (lanl/bngsim#1410).
 
+A build normally downloads the archive `VENDOR.json` pins. With
+`BNGSIM_SUNDIALS_ARCHIVE` set to a copy of that archive in the environment, it
+reads the copy instead and downloads nothing
+(`third_party/sundials/source_archive.cmake`, lanl/bngsim#1607). The copy is
+still checked against the pinned sha256, and unpacked and patched like the
+download. CI sets it through `.github/actions/sundials-archive`, which keeps the
+archive in the Actions cache under its sha256, so a refresh's first run on main
+downloads the new archive once and every run after reads the cache.
+
 ### 3. Validate Inside BNGsim
 
 Use the repo-supported build flow:

@@ -12,6 +12,8 @@ from __future__ import annotations
 import io
 import json
 import re
+import subprocess
+import sys
 import tarfile
 from pathlib import Path
 
@@ -228,6 +230,77 @@ def test_fetch_writes_no_member_outside_its_own_entries(tmp_path):
     assert not (tmp_path / "escaped.npz").exists()
 
 
+def _no_download(monkeypatch):
+    def refuse(url, tmp):
+        raise AssertionError(f"downloaded {url}")
+
+    monkeypatch.setattr(ra, "_download", refuse)
+
+
+def test_locate_names_the_pinned_asset(tmp_path):
+    """What .github/actions/reference-side hands cached-download (#1607)."""
+    manifest = _published(tmp_path)
+    rec = {r["id"]: r for r in json.loads(manifest.read_text())["records"]}["bng_ode"]
+    assert ra.locate("bng_ode", manifest) == [
+        f"url={rec['origin']['url']}",
+        f"sha256={rec['sha256']}",
+        "name=reference-bng_ode.tar.gz",
+    ]
+
+
+def test_fetch_reads_a_local_copy_checked_like_a_download(tmp_path, monkeypatch):
+    """A copy of the asset is unpacked with no download, and only if its sha256
+    is the one the manifest pins (#1607)."""
+    manifest = _published(tmp_path)
+    _no_download(monkeypatch)
+    asset = tmp_path / "assets" / "reference-bng_ode.tar.gz"
+    assert ra.fetch("bng_ode", tmp_path / "replay", manifest, archive=asset) == 2
+    other = tmp_path / "other.tar.gz"
+    other.write_bytes(asset.read_bytes() + b"\0")
+    with pytest.raises(
+        SystemExit, match=f"{re.escape(str(other))} has sha256 .*the manifest pins"
+    ):
+        ra.fetch("bng_ode", tmp_path / "again", manifest, archive=other)
+    assert not (tmp_path / "again").exists()
+    with pytest.raises(SystemExit, match="is not a file"):
+        ra.fetch("bng_ode", tmp_path / "again", manifest, archive=tmp_path / "absent.tar.gz")
+
+
+def test_the_command_line_locates_and_replays_from_a_local_copy(tmp_path):
+    """The two calls reference-side makes, as it makes them."""
+    manifest = _published(tmp_path)
+    script = Path(ra.__file__)
+
+    def run(*args):
+        done = subprocess.run(
+            [sys.executable, str(script), *args, "--manifest", str(manifest)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return dict(line.split("=", 1) for line in done.stdout.split("\n") if line)
+
+    pin = run("locate", "bng_ode")
+    assert pin["name"] == "reference-bng_ode.tar.gz"
+    copy = tmp_path / "download" / pin["name"]
+    copy.parent.mkdir()
+    copy.write_bytes((tmp_path / "assets" / pin["name"]).read_bytes())
+    # Downloading is impossible from here on, so a replay that tried would fail.
+    (tmp_path / "assets" / pin["name"]).unlink()
+    env = run(
+        "prepare",
+        "bng_ode",
+        "--mode",
+        "replay",
+        "--root",
+        str(tmp_path / "ref"),
+        "--archive",
+        str(copy),
+    )
+    assert env["ARCHIVE_DIR"] == str(tmp_path / "ref" / "bng_ode")
+    assert len(list((tmp_path / "ref" / "bng_ode").glob("*.npz"))) == 2
+
+
 def test_fetch_refuses_a_suite_the_manifest_does_not_hold(tmp_path):
     with pytest.raises(SystemExit, match="no reference archive manifest"):
         ra.fetch("rr_ode", tmp_path / "d", tmp_path / "absent.json")
@@ -253,7 +326,10 @@ def test_the_workflow_prepares_every_suite_and_plans_from_its_own_schedules():
     """Every suite the script knows is prepared, packed and uploaded by the
     nightly, and the cron string the plan job tests is one the workflow has."""
     text = _WORKFLOW.read_text()
-    prepared = set(re.findall(r"reference_archive\.py prepare (\S+)", text))
+    # Each replay leg prepares through .github/actions/reference-side (#1607).
+    prepared = set(
+        re.findall(r"uses: \./\.github/actions/reference-side\n\s+with:\n\s+suite: (\S+)", text)
+    )
     packed = set(re.findall(r"reference_archive\.py pack (\S+)", text))
     expand = {"bng_${{": {"bng_ssa", "bng_nf"}}
     norm = lambda names: set().union(*(expand.get(n, {n}) for n in names))  # noqa: E731

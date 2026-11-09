@@ -64,6 +64,9 @@ on:
   pull_request:
     paths:
       - ".github/workflows/sanitizers.yml"
+      - ".github/actions/sundials-archive/**"
+      - ".github/actions/cached-download/**"
+      - "ci/cached_download.py"
 
 permissions:
   contents: read
@@ -79,6 +82,7 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/sundials-archive
 
       - name: Install Ninja and reference LAPACK
         run: |
@@ -168,10 +172,12 @@ jobs:
         shard: [1, 2]
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/sundials-archive
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10.3.3
         with:
+          prune-cache: true
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 

@@ -117,6 +117,9 @@ on:
       # column). All four are already triggers above; this adds the test.
       - "python/tests/test_compartment_size_write.py"
       - ".github/workflows/windows-tail.yml"
+      - ".github/actions/sundials-archive/**"
+      - ".github/actions/cached-download/**"
+      - "ci/cached_download.py"
   pull_request:
     paths: *tail_paths
 
@@ -130,6 +133,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/sundials-archive
 
       - uses: actions/setup-python@v5
         with:

@@ -1,0 +1,45 @@
+name: SUNDIALS source archive
+description: >-
+  Put the pinned SUNDIALS source archive in the runner's temp directory, from
+  the Actions cache when it has it, and point the build at it.
+# lanl/bngsim#1607. Every from-source build fetched SUNDIALS from its GitHub
+# release URL, so a release-download outage failed every leg at once. This puts
+# the archive VENDOR.json pins at $RUNNER_TEMP/sundials/<name> through
+# cached-download and exports BNGSIM_SUNDIALS_ARCHIVE. CMake then reads that file
+# (third_party/sundials/source_archive.cmake), still checks it against URL_HASH,
+# and unpacks and patches it as it would the download.
+#
+# Use it after actions/checkout and before the step that builds. The export
+# reaches `uv sync`, `pip install` and `cmake` alike, since each passes the
+# environment on to CMake. cibuildwheel's Linux containers do not see the
+# runner's temp directory, so wheels.yml and release.yml still download.
+runs:
+  using: composite
+  steps:
+    - name: Read the pin from VENDOR.json
+      id: pin
+      shell: bash
+      run: |
+        set -euo pipefail
+        py=python3; [ "$RUNNER_OS" = Windows ] && py=python
+        "$py" - <<'PY'
+        import json, os
+        vendor = json.load(open("third_party/sundials/VENDOR.json", encoding="utf-8"))
+        url = vendor["source"]["authoritative_release_asset_url"]
+        sha256 = vendor["files"]["source_archive"]["sha256"]
+        dest = os.path.join(os.environ["RUNNER_TEMP"], "sundials", url.rsplit("/", 1)[1])
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8", newline="\n") as f:
+            f.write(f"url={url}\nsha256={sha256}\npath={dest}\n")
+        PY
+
+    - uses: ./.github/actions/cached-download
+      with:
+        url: ${{ steps.pin.outputs.url }}
+        sha256: ${{ steps.pin.outputs.sha256 }}
+        path: ${{ steps.pin.outputs.path }}
+
+    - name: Point the build at it
+      shell: bash
+      env:
+        ARCHIVE: ${{ steps.pin.outputs.path }}
+      run: echo "BNGSIM_SUNDIALS_ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"

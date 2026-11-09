@@ -105,6 +105,10 @@ on:
   pull_request:
     paths:
       - ".github/workflows/nightly-parity.yml"
+      - ".github/actions/sundials-archive/**"
+      - ".github/actions/cached-download/**"
+      - "ci/cached_download.py"
+      - ".github/actions/reference-side/**"
       - "parity_checks/nightly/**"
       # Each leg's own code, and what they share (#1387). The plan job runs
       # only the legs a PR's files feed (parity_checks/nightly/pr_legs.py).
@@ -286,8 +290,10 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: ./.github/actions/sundials-archive
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
+          prune-cache: true
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - name: Provision from uv.lock
@@ -377,6 +383,7 @@ jobs:
       MODE: ${{ needs.plan.outputs.mode }}
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/sundials-archive
       # A 16 GB runner is enough for one model at a time, not for several giant
       # compiles at once; extra swap turns a near-miss into a slow step instead of a
       # killed runner (the first run lost rr-ode and amici-sens that way).
@@ -392,8 +399,9 @@ jobs:
           path: parity_checks/rr_parity/models
           key: ${{ needs.corpus.outputs.key }}
           fail-on-cache-miss: true
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
+          prune-cache: true
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - name: Provision from uv.lock
@@ -419,7 +427,11 @@ jobs:
           python3 parity_checks/nightly/present_models.py parity_checks/rr_parity/ode_jobs.json --min-bytes 1000001 > "$RUNNER_TEMP/heavy.txt"
       # Sets ARCHIVE_FLAGS for both passes; on a replay, fetches and checks the archive.
       - name: Reference side (${{ env.MODE }})
-        run: python3 parity_checks/nightly/reference_archive.py prepare rr_ode --mode "$MODE" --root "$RUNNER_TEMP/reference" >> "$GITHUB_ENV"
+        uses: ./.github/actions/reference-side
+        with:
+          suite: rr_ode
+          mode: ${{ env.MODE }}
+          root: ${{ runner.temp }}/reference
       - name: Run rr_run.py
         env:
           BNGSIM_CODEGEN_CACHE_DIR: ${{ runner.temp }}/codegen
@@ -493,8 +505,10 @@ jobs:
             expect: "--expect-backend cc"
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: ./.github/actions/sundials-archive
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
+          prune-cache: true
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - name: Provision from uv.lock
@@ -510,17 +524,26 @@ jobs:
       # A replay needs neither BNG2.pl nor run_network: the archive holds the .net.
       - name: Fetch BioNetGen 2.9.3
         if: env.MODE != 'replay'
+        uses: ./.github/actions/cached-download
+        with:
+          url: ${{ env.BNG_URL }}
+          sha256: ${{ env.BNG_SHA256 }}
+          path: ${{ runner.temp }}/bng.tgz
+      - name: Unpack BioNetGen 2.9.3
+        if: env.MODE != 'replay'
         run: |
           set -euxo pipefail
-          curl -fsSL --retry 3 -o "$RUNNER_TEMP/bng.tgz" "$BNG_URL"
-          echo "$BNG_SHA256  $RUNNER_TEMP/bng.tgz" | sha256sum -c -
           mkdir -p "$RUNNER_TEMP/bng"
           tar -xzf "$RUNNER_TEMP/bng.tgz" -C "$RUNNER_TEMP/bng"
           root=$(dirname "$(find "$RUNNER_TEMP/bng" -name BNG2.pl | head -n 1)")
           test -x "$root/bin/run_network"
           echo "BNGPATH=$root" >> "$GITHUB_ENV"
       - name: Reference side (${{ env.MODE }})
-        run: python3 parity_checks/nightly/reference_archive.py prepare bng_ode --mode "$MODE" --root "$RUNNER_TEMP/reference" >> "$GITHUB_ENV"
+        uses: ./.github/actions/reference-side
+        with:
+          suite: bng_ode
+          mode: ${{ env.MODE }}
+          root: ${{ runner.temp }}/reference
       # An explicit --timeout also retires the per-job timeout overrides, which were
       # sized for parity_sweep's 180 s budget. A fresh codegen cache per run: its key
       # covers the Python emitters, not the C++ core.
@@ -569,6 +592,7 @@ jobs:
       MODE: ${{ needs.plan.outputs.mode }}
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/sundials-archive
       - name: Add swap
         run: |
           sudo fallocate -l 8G /mnt/nightly.swap
@@ -581,8 +605,9 @@ jobs:
           path: parity_checks/rr_parity/models
           key: ${{ needs.corpus.outputs.key }}
           fail-on-cache-miss: true
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
+          prune-cache: true
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - name: Provision from uv.lock
@@ -596,7 +621,11 @@ jobs:
       - name: Build identity
         run: uv run --no-sync python -c "import bngsim, bngsim._build_provenance as bp, roadrunner; print('bngsim', bngsim.__version__, 'roadrunner', roadrunner.__version__); bp.print_identity()"
       - name: Reference side (${{ env.MODE }})
-        run: python3 parity_checks/nightly/reference_archive.py prepare rr_ssa --mode "$MODE" --root "$RUNNER_TEMP/reference" >> "$GITHUB_ENV"
+        uses: ./.github/actions/reference-side
+        with:
+          suite: rr_ssa
+          mode: ${{ env.MODE }}
+          root: ${{ runner.temp }}/reference
       - name: Run ssa_screen.py
         env:
           BNGSIM_CODEGEN_CACHE_DIR: ${{ runner.temp }}/codegen
@@ -642,8 +671,10 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: ./.github/actions/sundials-archive
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
+          prune-cache: true
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - name: Provision from uv.lock
@@ -688,6 +719,7 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/sundials-archive
       - uses: actions/cache/restore@v4
         with:
           path: parity_checks/rr_parity/models
@@ -697,8 +729,9 @@ jobs:
         run: |
           sudo locale-gen de_DE.UTF-8
           locale -a | grep -i '^de_DE'
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
+          prune-cache: true
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - name: Provision from uv.lock
@@ -756,8 +789,10 @@ jobs:
     timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: ./.github/actions/sundials-archive
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
+          prune-cache: true
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - name: Provision from uv.lock
@@ -820,6 +855,7 @@ jobs:
             workers: 3
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/sundials-archive
       # A 16 GB runner is enough for one model at a time, not for several giant
       # compiles at once; extra swap turns a near-miss into a slow step instead of a
       # killed runner (the first run lost rr-ode and amici-sens that way).
@@ -830,8 +866,9 @@ jobs:
           sudo mkswap /mnt/nightly.swap
           sudo swapon /mnt/nightly.swap
           free -h
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
+          prune-cache: true
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - name: Provision from uv.lock
@@ -848,10 +885,15 @@ jobs:
       # .net / BNG-XML and every legacy ensemble.
       - name: Fetch BioNetGen 2.9.3
         if: env.MODE != 'replay'
+        uses: ./.github/actions/cached-download
+        with:
+          url: ${{ env.BNG_URL }}
+          sha256: ${{ env.BNG_SHA256 }}
+          path: ${{ runner.temp }}/bng.tgz
+      - name: Unpack BioNetGen 2.9.3
+        if: env.MODE != 'replay'
         run: |
           set -euxo pipefail
-          curl -fsSL --retry 3 -o "$RUNNER_TEMP/bng.tgz" "$BNG_URL"
-          echo "$BNG_SHA256  $RUNNER_TEMP/bng.tgz" | sha256sum -c -
           mkdir -p "$RUNNER_TEMP/bng"
           tar -xzf "$RUNNER_TEMP/bng.tgz" -C "$RUNNER_TEMP/bng"
           root=$(dirname "$(find "$RUNNER_TEMP/bng" -name BNG2.pl | head -n 1)")
@@ -859,7 +901,11 @@ jobs:
           test -x "$root/bin/NFsim"
           echo "BNGPATH=$root" >> "$GITHUB_ENV"
       - name: Reference side (${{ env.MODE }})
-        run: python3 parity_checks/nightly/reference_archive.py prepare bng_${{ matrix.track }} --mode "$MODE" --root "$RUNNER_TEMP/reference" >> "$GITHUB_ENV"
+        uses: ./.github/actions/reference-side
+        with:
+          suite: bng_${{ matrix.track }}
+          mode: ${{ env.MODE }}
+          root: ${{ runner.temp }}/reference
       - name: Run bng_stoch_run.py
         env:
           BNGSIM_CODEGEN_CACHE_DIR: ${{ runner.temp }}/codegen
@@ -900,6 +946,7 @@ jobs:
       MODE: ${{ needs.plan.outputs.mode }}
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/sundials-archive
       # A 16 GB runner is enough for one model at a time, not for several giant
       # compiles at once; extra swap turns a near-miss into a slow step instead of a
       # killed runner (the first run lost rr-ode and amici-sens that way).
@@ -915,8 +962,9 @@ jobs:
           path: parity_checks/rr_parity/models
           key: ${{ needs.corpus.outputs.key }}
           fail-on-cache-miss: true
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
+          prune-cache: true
           enable-cache: true
           cache-dependency-glob: "uv.lock"
           cache-suffix: amici # keeps the from-source AMICI wheel out of the other jobs' cache
@@ -953,7 +1001,11 @@ jobs:
       - name: Select the models the corpus holds
         run: python3 parity_checks/nightly/present_models.py parity_checks/amici_parity/amici_ode_jobs.json --skip BIOMD0000000496,BIOMD0000000497 > "$RUNNER_TEMP/models.txt"
       - name: Reference side (${{ env.MODE }})
-        run: python3 parity_checks/nightly/reference_archive.py prepare amici_sens --mode "$MODE" --root "$RUNNER_TEMP/reference" >> "$GITHUB_ENV"
+        uses: ./.github/actions/reference-side
+        with:
+          suite: amici_sens
+          mode: ${{ env.MODE }}
+          root: ${{ runner.temp }}/reference
       - name: Run amici_sens_run.py
         env:
           BNGSIM_CODEGEN_CACHE_DIR: ${{ runner.temp }}/codegen
