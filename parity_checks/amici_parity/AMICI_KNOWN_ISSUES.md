@@ -67,7 +67,10 @@ Both engines ran but disagree, and **RoadRunner sides with bngsim** (max_rel_err
 - **4** — mild divergence.
 - **42 of 44** confirmed AMICI-outlier (bngsim == RoadRunner exactly). The remaining 2
   (`BIOMD339`, `MODEL2003200002`) are inconclusive: RoadRunner refused them too, so there
-  is no third oracle — but bngsim ran cleanly.
+  is no third oracle — but bngsim ran cleanly. `BIOMD339` has one since #1304:
+  XIIa = K = CA = 0 is its exact, unstable solution, which bngsim keeps and other
+  engines leave by rounding, and RoadRunner with those three species held at 0
+  matches bngsim on every species. So its DIFF is AMICI's as well.
 
 ## Class 3 — AMICI's sensitivity RHS goes non-finite (2, forward-sensitivity sweep)
 
