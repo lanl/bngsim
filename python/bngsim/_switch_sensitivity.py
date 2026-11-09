@@ -3884,9 +3884,10 @@ def _held_schedule(
         at = rises + delay
         if at < t_end:
             from_trigger = delay > 0 and ev["use_values_from_trigger_time"]
-            # Taken on its double where it holds from its threshold on, with
-            # no delay: the run stops there (`time >= c`).
-            exact = delay == 0 and (true_at_start or op in (">=", "<="))
+            # On the double its threshold is, where `time >= c` holds from (the
+            # run stops there), or that plus its delay, which the engine adds
+            # as this does; `time > c` holds only from a root a little after.
+            exact = true_at_start or op in (">=", "<=")
             fires.append(_Fire(at, rises, label, writes, from_trigger, exact))
     fires.sort(key=lambda f: f.at)
     for a, b in zip(fires, fires[1:], strict=False):
@@ -4223,7 +4224,7 @@ def _schedule_with_writers(
                     for name, text in writer.writes
                 }
             pending.append(
-                (at + writer.delay, at, writer.label, writer.writes, False, frozen, False, k)
+                (at + writer.delay, at, writer.label, writer.writes, False, frozen, True, k)
             )
             pending.sort(key=lambda p: p[0])
 

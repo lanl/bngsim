@@ -160,6 +160,12 @@ _CASES = {
         "var c = 100; F: at (time >= 5): c = 5; E: at (time == c): n = n + 1, c = c + 1;",
         6,
     ),
+    # F executes at 4 + 1, on that double, and sets c to it: E's trigger rises
+    # there, and the engine fires E at 5, then 6, ..., 10.
+    "a_delayed_fixed_event_sets_the_instant_now": (
+        "var c = 100; F: at 1 after (time >= 4): c = 5; E: at (time == c): n = n + 1, c = c + 1;",
+        6,
+    ),
     # E sets d to the instant it fires on, and G's trigger rises on it, so G
     # fires there too and sets the next instant.
     "a_cascade_on_the_instant": (
@@ -304,6 +310,18 @@ def test_a_parameter_that_changes_after_it_is_read_leaves_the_schedule_known():
     names = list(r.species_names)
     assert x[names.index("n")] == 1.0
     assert x[names.index("Y")] == pytest.approx(0.01, rel=1e-6)
+
+
+def test_a_counter_beside_two_writers_at_one_instant():
+    """W1 and W2 both set on1 at 5.25, in an order not known; that leaves
+    on1 not known from 5.25 on, and nothing else. The counter beside them
+    gives its 10. Main gave 0."""
+    body = (
+        "var c = 0.5; var on1 = 0; " + _COUNTER + " W1: at (time == 5.25): on1 = 1; "
+        "W2: at (time == 5.25): on1 = 2; species Y = 0; Y' = piecewise(1, time > 9 && on1 > 0, 0);"
+    )
+    for method, span in (("ode", _SPAN), ("ssa", _SSA_SPAN)):
+        assert _count(body, method, t_span=span, n_points=2) == 10
 
 
 def test_an_amount_is_read_as_an_amount():
@@ -506,6 +524,13 @@ def test_biomd0000000628_ends_every_pulse():
             "var c = 0.5; E: at (time == c): n = n + 1, c = c*0.7 + 1.1;",
             "closer than a stop tells apart",
         ),
+        # `time > 5` holds from a root a little after 5 (5.00000000000008 at
+        # two points), where c = 5 has passed, so E does not fire there; the
+        # schedule, which reads F at 5, cannot tell.
+        (
+            "var c = 100; F: at (time > 5): c = 5; E: at (time == c): n = n + 1, c = c + 1;",
+            "known only to within the tolerance",
+        ),
         # E sets d to the instant it fires on, and two events on that instant
         # set c, so which sets it last is not known.
         (
@@ -526,6 +551,7 @@ def test_biomd0000000628_ends_every_pulse():
         "a-guard-on-a-flag-a-state-trigger-raises",
         "a-fixed-value-from-a-parameter-a-state-trigger-sets",
         "instants-closer-than-a-stop",
+        "a-strict-trigger-sets-its-own-threshold",
         "a-cascade-of-two-writers",
     ],
 )
