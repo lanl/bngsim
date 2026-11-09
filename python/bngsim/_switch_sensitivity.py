@@ -3490,11 +3490,19 @@ _TIME_TRIGGER = re.compile(r"^time\(\)\s*(>=|>)\s*(.+)$|^(.+?)\s*(<=|<)\s*time\(
 _HELD_STRETCHES_MOST = 512
 
 
+class InstantsMoveWithAnEvent(StopsMoveWithAnEvent):
+    """An event's trigger holds at an instant (``time == c``) that reads a
+    species only events write, at times or to values not known before the run
+    (issue #1519): no stop can be placed on the instant, and no root finds
+    one, so the event would fire only where an output sample lands on it."""
+
+
 def _event_held_species(core, conditions=None) -> dict[str, int]:
     """The species events assign and nothing else moves: no reaction, rate rule
-    or rescale reads them as a reactant or a product. Between two of those
-    events each holds its value. Name to 0-based index; of those *conditions*
-    read, where they are given."""
+    or rescale reads them as a reactant or a product, except a rate rule whose
+    rate is the number 0 (``c' = 0``, issue #1519). Between two of those events
+    each holds its value. Name to 0-based index; of those *conditions* read,
+    where they are given."""
     assigned = set(core.event_assigned_species)
     if not assigned:
         return {}
@@ -3505,9 +3513,102 @@ def _event_held_species(core, conditions=None) -> dict[str, int]:
         if not assigned:
             return {}  # the model as a dict is not built for a run that asks nothing of it
     data = core.codegen_data()
+    zero = {f["name"] for f in data["functions"] if _is_literal_zero(f["expression"])}
     for rxn in data["reactions"]:
+        if rxn.get("type") == "functional" and rxn.get("function_name") in zero:
+            continue  # moves nothing
         assigned -= set(rxn["reactants"]) | set(rxn["products"])
     return {names[i]: i for i in sorted(assigned)}
+
+
+def _with_what_their_writers_read(core, held, bodies) -> dict[str, int]:
+    """*held*, and each species events alone set that an event setting one of
+    them reads, in its trigger, its delay or a value it sets, and so on: the
+    schedule of one is known only with theirs (issue #1519). A dose on
+    ``time == c && on == 1`` is known where ``on``'s events are."""
+    every = _event_held_species(core)
+    names = list(core.species_names)
+    read = set(held)
+    events = core.events_as_written()
+    grew = True
+    while grew:
+        grew = False
+        for ev in events:
+            if not any(names[sp] in read for sp, _ in ev["assignments"]):
+                continue
+            texts = [ev["trigger"], ev["delay_expr"] or ""]
+            texts += [text for sp, text in ev["assignments"] if names[sp] in read]
+            more = {
+                name
+                for text in texts
+                for name in _IDENTIFIER.findall(_inline_function_slots(text, bodies))
+            } & every.keys()
+            if more - read:
+                read |= more
+                grew = True
+    return {name: every[name] for name in sorted(read, key=lambda name: every[name])}
+
+
+def _is_literal_zero(text) -> bool:
+    """Whether *text* is the number 0 written out, in any parentheses."""
+    try:
+        return float(_strip_redundant_parens(str(text).strip())) == 0.0
+    except ValueError:
+        return False
+
+
+def _is_instant_atom(cond: str) -> bool:
+    """Whether *cond* is an equality (``==`` or ``!=``) of two things that move
+    smoothly: true at an instant, which no root brackets (as
+    :func:`_resolve_flat` reads it). Over a call that holds its value it is a
+    window instead (``floor(time()/0.5) == 240``)."""
+    return (
+        _EQUALITY_OP.search(cond) is not None
+        and is_equality_atom(_strip_redundant_parens(cond.strip()))
+        and not (_STEP_CALL.search(cond) or _BEND_CALL.search(cond))
+    )
+
+
+def _top_level_conjuncts(text: str) -> list[str] | None:
+    """The parts of *text* joined by ``and`` (or ``&&``) at paren depth 0, or
+    ``None`` where any other logical operator joins them there."""
+    parts: list[str] = []
+    depth = start = i = 0
+    while i < len(text):
+        c = text[i]
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+        elif depth == 0:
+            m = _LOGICAL.match(text, i)
+            if m is not None:
+                if m.group(0) not in ("and", "&&"):
+                    return None
+                parts.append(text[start : m.start()])
+                start = i = m.end()
+                continue
+        i += 1
+    parts.append(text[start:])
+    return [_strip_redundant_parens(p.strip()) for p in parts]
+
+
+def _instant_trigger_atom(flat: str, scope: SwitchConditionScope) -> str | None:
+    """The ``==`` on the clock a trigger holds at an instant through, where the
+    trigger (*flat*, its functions written in) is that equality alone or joined
+    to others by ``and``: it is true then only on that equality's instants, and
+    rises on each one at which the rest holds. ``None`` for any other trigger."""
+    parts = _top_level_conjuncts(_strip_redundant_parens(flat.strip()))
+    for atom in parts or ():
+        split = _relational_split_op(atom)
+        if (
+            split is not None
+            and split[1] == "=="
+            and _is_instant_atom(atom)
+            and not _clock_free(atom, scope.clock_symbols)
+        ):
+            return atom
+    return None
 
 
 def _reads_run_constants_alone(text: str, scope: SwitchConditionScope) -> bool:
@@ -3581,9 +3682,19 @@ def _held_schedule(
                     "sensitivity parameter moves"
                 )
 
-    def value_of(text: str, at: float) -> tuple[float | None, str]:
-        """The number *text* reads, or None and why not."""
-        if not _reads_run_constants_alone(text, scope):
+    def value_of(text: str, at: float, clock: bool = False) -> tuple[float | None, str]:
+        """The number *text* reads, or None and why not. With *clock*, the
+        time read is *at*, the instant an equality holds at (issue #1519): a
+        trigger true on one double is executed on that double, where a
+        crossing's root is located only to within the tolerance."""
+        known = _reads_run_constants_alone(text, scope) or (
+            clock
+            and _clock_free(text, frozenset(scope.clocks))  # literal time alone
+            and _reads_clock_and_run_constants(
+                _inline_derived_param_refs(text, scope.derived_exprs) or text, scope
+            )
+        )
+        if not known:
             return None, "which is not known before the run"
         hit = moved(text)
         if hit:
@@ -3614,6 +3725,9 @@ def _held_schedule(
 
     # (execution time, trigger time, label, [(species, value text)], from trigger)
     fires: list[tuple[float, float, str, list[tuple[str, str]], bool]] = []
+    # Events that fire on the instants of an equality (issue #1519).
+    instants: list[_InstantWriter] = []
+    bodies: dict[str, str] | None = None
     if continued:
         for i, at, frozen in carry[2]:
             ev = events[i]
@@ -3641,7 +3755,16 @@ def _held_schedule(
         label = f"event {ev['id'] or '?'} on {trigger}"
         m = _TIME_TRIGGER.match(trigger.replace(" ", ""))
         threshold, why = None, "a trigger that is no fixed time"
-        if m is not None and ev["delay_expr"]:
+        if m is None:
+            if bodies is None:
+                bodies = _function_slot_bodies(core.functional_jacobian_context())
+            writer, why = _instant_writer(ev, trigger, label, writes, scope, bodies, start, moved)
+            if writer is not None:
+                if continued:
+                    writer = writer._replace(true_before=bool(was_true[i]))
+                instants.append(writer)
+                continue
+        elif ev["delay_expr"]:
             why = f"after a delay of {ev['delay_expr']}, not a constant"
         elif m is not None:
             op, c = (m.group(1), m.group(2)) if m.group(1) else (m.group(4), m.group(3))
@@ -3669,6 +3792,11 @@ def _held_schedule(
         for f in fires:
             for name, _ in f[3]:
                 unknown.setdefault(name, f"events set it {len(fires)} times in the run")
+    if instants:
+        schedule = _schedule_with_instants(
+            core, start, fires, instants, t_start, t_end, unknown, sets, value_of
+        )
+        return schedule, unknown, sets
 
     values = dict(start)
     schedule = [(t_start, dict(values))]
@@ -3696,6 +3824,186 @@ def _held_schedule(
             for name, v in new.items():
                 sets.setdefault(name, set()).add(v)
     return schedule, unknown, sets
+
+
+class _InstantWriter(NamedTuple):
+    """An event that sets a held species and fires on the instants of an
+    equality on the clock (issue #1519): ``time == c && c < 91``, which then
+    sets ``c = c + 1``."""
+
+    label: str
+    # [(held species, value text)]
+    writes: list[tuple[str, str]]
+    # The trigger, and its equality on the clock, with functions written in.
+    trigger: str
+    atom: str
+    delay: float
+    from_trigger: bool
+    # Whether the trigger read true before the run started.
+    true_before: bool
+
+
+def _instant_writer(
+    ev, trigger: str, label: str, writes, scope, bodies, start, moved
+) -> tuple[_InstantWriter | None, str]:
+    """*ev* as an :class:`_InstantWriter`, or ``None`` and why it is not one.
+
+    One: its trigger is an equality on the clock, alone or joined by ``and``
+    (:func:`_instant_trigger_atom`), that reads only the clock, run constants
+    and held species, and a requested sensitivity parameter in none of them;
+    after a constant delay, if any, and persistent. (A trigger true at one
+    instant is false again before a delay ends, and a fire that is not
+    persistent is not taken.)"""
+    flat = _inline_function_slots(trigger, bodies)
+    atom = _instant_trigger_atom(flat, scope)
+    # On literal time alone: no stop is placed on an equality on a counter.
+    if atom is None or not _clock_free(flat, frozenset(scope.clocks)):
+        return None, "a trigger that is no fixed time"
+    if ev["delay_expr"]:
+        return None, f"after a delay of {ev['delay_expr']}, not a constant"
+    delay = float(ev["delay"])
+    if delay > 0 and not ev["persistent"]:
+        return None, "after a delay, on an instant, and it is not persistent"
+    hit = moved(flat)
+    if hit:
+        return None, f"on an instant a requested sensitivity parameter moves ({', '.join(hit)})"
+    probe = _with_values(flat, start)
+    if not _reads_clock_and_run_constants(
+        _inline_derived_param_refs(probe, scope.derived_exprs) or probe, scope
+    ):
+        return None, "on an instant that reads more than the clock and what events alone set"
+    from_trigger = delay > 0 and bool(ev["use_values_from_trigger_time"])
+    writer = _InstantWriter(
+        label, list(writes), flat, atom, delay, from_trigger, bool(ev["initial_value"])
+    )
+    return writer, ""
+
+
+def _schedule_with_instants(
+    core, start, fires, instants, t_start, t_end, unknown, sets, value_of
+) -> list[tuple[float, dict[str, float]]]:
+    """:func:`_held_schedule`'s schedule where some of the events fire on the
+    instants of an equality (:class:`_InstantWriter`, issue #1519).
+
+    Such an event's next instant reads what the events before it set: a dose
+    counter ``time == c`` that sets ``c = c + 1`` fires at c, c + 1, c + 2 and
+    so on. So the run is taken in time order: the next instant of each such
+    trigger is placed with the values that hold since the last execution, by
+    :func:`_resolve_flat` as the run's stops are, and the earliest of those and
+    of the executions *fires* lists is taken next. Not known, and every species
+    such an event sets is put in *unknown*: two of these at one instant, which
+    are not ordered here; an execution that makes a trigger rise on its own
+    instant; and more of them than :data:`_HELD_STRETCHES_MOST`."""
+    values = dict(start)
+    schedule = [(t_start, dict(values))]
+    # (execution time, trigger time, label, writes, from trigger, values frozen at the trigger)
+    pending = [(*f, None) for f in fires]
+    # The times executions were taken at, for a fixed fire that reads its
+    # values at its trigger.
+    taken: list[float] = []
+
+    def close(a: float, b: float) -> bool:
+        return abs(a - b) <= 1e-12 * max(1.0, abs(a))
+
+    def holds(writer: _InstantWriter, at: float) -> bool:
+        v = float(core.evaluate_over_times(_with_values(writer.trigger, values), [at], 0.0)[0])
+        return v != 0.0
+
+    def next_instant(writer: _InstantWriter, after: float) -> float | None:
+        atom = _with_values(writer.atom, values)
+        _, _, crossings = _resolve_flat(
+            core,
+            after,
+            t_end,
+            [atom],
+            periodic=True,
+            touches=frozenset({atom}),
+            written={atom: atom},
+        )
+        for stop in sorted(crossings, key=lambda s: s.time):
+            if after < stop.time < t_end and holds(writer, stop.time):
+                return float(stop.time)
+        return None
+
+    def give_up(why: str) -> None:
+        for writer in instants:
+            for name, _ in writer.writes:
+                unknown.setdefault(name, f"{writer.label} sets it, {why}")
+        for f in pending:
+            for name, _ in f[3]:
+                unknown.setdefault(name, f"{f[2]} sets it, {why}")
+
+    def execute(label, writes, at, frozen, clock=False) -> None:
+        nonlocal values
+        new = {}
+        for name, text in writes:
+            v, why = frozen[name] if frozen else value_of(_with_values(text, values), at, clock)
+            if v is None:
+                unknown.setdefault(name, f"{label} sets it to {text}, {why}")
+            else:
+                new[name] = v
+        taken.append(at)
+        if new:
+            values = {**values, **new}
+            if at > t_start:
+                schedule.append((at, dict(values)))
+            else:
+                schedule[0] = (t_start, dict(values))
+            for name, v in new.items():
+                sets.setdefault(name, set()).add(v)
+
+    nxt = [
+        t_start if holds(w, t_start) and not w.true_before else next_instant(w, t_start)
+        for w in instants
+    ]
+    count = 0
+    while True:
+        # Each candidate: (time, an instant's index or -1 for the next execution).
+        cands = [(t, k) for k, t in enumerate(nxt) if t is not None]
+        cands += [(f[0], -1) for f in pending]
+        if not cands:
+            break
+        at, k = min(cands)
+        group = [c for c in cands if close(c[0], at)]
+        if len(group) > 1 and any(c[1] >= 0 for c in group):
+            give_up(f"with another event at t={at!r}, in an order not known before the run")
+            break
+        count += 1
+        if count > _HELD_STRETCHES_MOST:
+            give_up(f"more than {_HELD_STRETCHES_MOST} times in the run (run it in shorter legs)")
+            break
+        before = [holds(w, at) for w in instants]
+        if k >= 0:
+            writer = instants[k]
+            if writer.delay == 0:
+                execute(writer.label, writer.writes, at, None, clock=True)
+            elif at + writer.delay < t_end:
+                frozen = None
+                if writer.from_trigger:
+                    frozen = {
+                        name: value_of(_with_values(text, values), at, True)
+                        for name, text in writer.writes
+                    }
+                pending.append((at + writer.delay, at, writer.label, writer.writes, False, frozen))
+                pending.sort(key=lambda f: f[0])
+            nxt[k] = next_instant(writer, at)
+            if writer.delay > 0:
+                continue  # nothing set at the trigger
+        else:
+            at, rises, label, writes, from_trigger, frozen = pending.pop(0)
+            if from_trigger and any(rises < other < at for other in [f[0] for f in fires] + taken):
+                for name, _ in writes:
+                    unknown.setdefault(
+                        name,
+                        f"{label} reads its value at its trigger, before another event sets it",
+                    )
+                continue
+            execute(label, writes, at, frozen)
+        if any(holds(w, at) and not was for w, was in zip(instants, before, strict=True)):
+            give_up(f"which makes an equality hold on its own instant, t={at!r}")
+            break
+        nxt = [next_instant(w, at) for w in instants]
+    return schedule
 
 
 def _past_budget_in_both(a: StopsOverBudget, b: StopsOverBudget) -> StopsOverBudget:
@@ -3757,13 +4065,25 @@ def _resolve_crossings(
         before_the_flip=before_the_flip,
         by_tread=by_tread,
     )
-    held = _event_held_species(core, [c for c in conditions if c not in touches])
+    # Each condition as it is read for the species events hold: as the model
+    # spells it, and an event trigger's equality on an instant (issue #1519)
+    # with the model's functions written in, so that a side read through an
+    # assignment rule (`b := c`) is seen. No root finds an instant, so the
+    # trigger's stops are all that make it fire.
+    texts = {cond: cond for cond in conditions if cond not in touches}
+    instants = [cond for cond in conditions if cond in touches and _is_instant_atom(cond)]
+    bodies: dict[str, str] = {}
+    if instants and len(core.event_assigned_species):
+        bodies = _function_slot_bodies(core.functional_jacobian_context())
+        for cond in instants:
+            texts[cond] = _inline_function_slots(_strip_redundant_parens(cond.strip()), bodies)
+    held = _event_held_species(core, list(texts.values()))
     reads = {
-        cond: sorted(set(_IDENTIFIER.findall(cond)) & held.keys())
-        for cond in conditions
-        if cond not in touches
+        cond: sorted(set(_IDENTIFIER.findall(text)) & held.keys()) for cond, text in texts.items()
     }
     reads = {cond: names for cond, names in reads.items() if names}
+    if any(cond in reads for cond in instants):
+        held = _with_what_their_writers_read(core, held, bodies)
     if not reads:
         return _resolve_flat(core, t_start, t_end, conditions, touches=touches, **kw)
     ctx = core.functional_jacobian_context()
@@ -3773,6 +4093,20 @@ def _resolve_crossings(
     # What is not known is read as before: given no stop, or refused below.
     rest = [cond for cond in conditions if cond not in known]
     unplaced = [cond for cond in reads if cond not in known]
+    for cond in unplaced:
+        if cond not in touches:
+            continue
+        name = next(n for n in reads[cond] if n in unknown)
+        raise InstantsMoveWithAnEvent(
+            f"An event fires at the instant {_strip_redundant_parens(cond.strip())!r} holds, "
+            f"which reads {name}, and only events set {name}: {unknown[name]}. So the "
+            "instants cannot be placed before the run, and no root finds an instant: the "
+            "event would fire only where an output sample lands on one (issue #1519). "
+            f"bngsim refuses rather than miss it. An event that sets {name} at a fixed "
+            "time (`time >= c`) or on such an instant (`time == c`) to a value known before "
+            "the run, with no requested sensitivity parameter in either, has the instants "
+            "placed stretch by stretch."
+        )
     # Only where a rate law reads it: a step across a window of a condition
     # that only an output reads moves nothing (as past the budget,
     # :func:`conditions_a_rate_law_reads`).
@@ -3841,14 +4175,14 @@ def _resolve_crossings(
         for (lo, values), hi in zip(schedule, ends, strict=True):
             if hi <= lo:
                 continue
-            asked = {_with_values(cond, values): cond for cond in known}
+            asked = {_with_values(texts[cond], values): cond for cond in known}
             here: list[StopsOverBudget] = []
             part = _resolve_flat(
                 core,
                 lo,
                 hi,
                 list(asked),
-                touches=touches,
+                touches=touches | {text for text, cond in asked.items() if cond in touches},
                 written={**written, **asked},
                 placed_before=placed,
                 **{**kw, "over_budget": here},
@@ -4073,7 +4407,10 @@ def _resolve_flat(
                         _strip_redundant_parens(src).replace(" ", "")
                         for src in core.event_trigger_sources()
                     }
-                alone = _strip_redundant_parens(cond).replace(" ", "") in whole_triggers
+                # As the model spells it: a stretch's is written with a held
+                # species as its number (issue #1519).
+                spelling = spelled.get(cond, cond)
+                alone = _strip_redundant_parens(spelling).replace(" ", "") in whole_triggers
                 for at in _equality_stops(
                     core, cond, text, asked, scope, bodies, t_start, t_end, alone
                 ):
