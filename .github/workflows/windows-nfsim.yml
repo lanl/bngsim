@@ -61,6 +61,9 @@ on:
       - "ci/check_test_count.sh"
       - "ci/test_floors.env"
       - ".github/workflows/windows-nfsim.yml"
+      - ".github/actions/sundials-archive/**"
+      - ".github/actions/cached-download/**"
+      - "ci/cached_download.py"
   pull_request:
     paths: *nfsim_paths
 
@@ -74,6 +77,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/sundials-archive
 
       - uses: actions/setup-python@v5
         with:

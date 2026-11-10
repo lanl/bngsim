@@ -13,11 +13,18 @@ entry that no longer describes its job is refused, never compared
     the ``KEY=value`` lines a nightly job appends to ``$GITHUB_ENV``:
     ``ARCHIVE_FLAGS`` for the runner and ``ARCHIVE_DIR``. ``replay`` fetches the
     suite's asset into ``DIR/SUITE`` first; ``record`` hands the runner that
-    empty directory to write; ``live`` passes nothing.
-``fetch SUITE --dest DIR``
+    empty directory to write; ``live`` passes nothing. ``--archive FILE`` has a
+    replay read the asset from FILE instead of downloading it.
+``fetch SUITE --dest DIR [--archive FILE]``
     download the suite's asset from the release the committed manifest
-    (``reference_archive.json``) names, check its sha256 against that manifest,
-    and write its entries into DIR. Nothing else in the asset becomes a file.
+    (``reference_archive.json``) names, or read it from FILE, check its sha256
+    against that manifest, and write its entries into DIR. Nothing else in the
+    asset becomes a file.
+``locate SUITE``
+    the suite's asset as ``url=``, ``sha256=`` and ``name=`` lines, for
+    ``$GITHUB_OUTPUT``: what ``.github/actions/reference-side`` hands
+    ``cached-download``, so a replay reads the asset from the Actions cache and a
+    GitHub release-download outage does not stop it (issue #1607).
 ``pack SUITE --dir DIR --report R[,R...] --out-dir OUT``
     pack a recorded directory into ``OUT/reference-SUITE.tar.gz`` (deterministic:
     fixed order, times, owners and modes) and a ``.json`` sidecar describing it.
@@ -144,20 +151,46 @@ def _record(manifest: Path, suite: str) -> dict:
 # ─── fetch ──────────────────────────────────────────────────────────────────
 
 
-def fetch(suite: str, dest: Path, manifest: Path = MANIFEST) -> int:
-    """Download, check and unpack the suite's asset into ``dest``. Returns the
-    number of entries written; any shortfall or mismatch is a SystemExit, so a
-    night that cannot replay fails instead of comparing nothing."""
+def locate(suite: str, manifest: Path = MANIFEST) -> list[str]:
+    """The suite's asset as ``$GITHUB_OUTPUT`` lines: its URL, sha256 and file name."""
     rec = _record(manifest, suite)
     url = rec["origin"]["url"]
+    return [f"url={url}", f"sha256={rec['sha256']}", f"name={url.rsplit('/', 1)[1]}"]
+
+
+def _read(path: Path, tmp) -> str:
+    """Copy ``path`` into ``tmp``; the sha256 of what was copied."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(1 << 20):
+            digest.update(chunk)
+            tmp.write(chunk)
+    return digest.hexdigest()
+
+
+def fetch(suite: str, dest: Path, manifest: Path = MANIFEST, archive: Path | None = None) -> int:
+    """Download, check and unpack the suite's asset into ``dest``, or read it
+    from ``archive``, a copy of it, checked the same way. Returns the number of
+    entries written; any shortfall or mismatch is a SystemExit, so a night that
+    cannot replay fails instead of comparing nothing."""
+    rec = _record(manifest, suite)
+    url = rec["origin"]["url"]
+    source = url if archive is None else str(archive)
     prefix = f"reference-{suite}/"
     n = 0
     with tempfile.TemporaryFile() as tmp:
-        got = _download(url, tmp)
-        if got is None:
-            raise SystemExit(f"{suite}: could not download {url}")
+        if archive is None:
+            got = _download(url, tmp)
+            if got is None:
+                raise SystemExit(f"{suite}: could not download {url}")
+        elif not archive.is_file():
+            raise SystemExit(f"{suite}: {archive} is not a file")
+        else:
+            got = _read(archive, tmp)
         if got != rec["sha256"]:
-            raise SystemExit(f"{suite}: {url} has sha256 {got}; the manifest pins {rec['sha256']}")
+            raise SystemExit(
+                f"{suite}: {source} has sha256 {got}; the manifest pins {rec['sha256']}"
+            )
         tmp.seek(0)
         dest.mkdir(parents=True, exist_ok=True)
         # Only an entry's own file name, checked against the pattern every runner
@@ -175,12 +208,15 @@ def fetch(suite: str, dest: Path, manifest: Path = MANIFEST) -> int:
         raise SystemExit(
             f"{suite}: {n} entries unpacked; the manifest records {rec.get('n_entries')}"
         )
-    print(f"{suite}: {n} reference entries from {url}, sha256 checked", file=sys.stderr)
+    print(f"{suite}: {n} reference entries from {source}, sha256 checked", file=sys.stderr)
     return n
 
 
-def prepare(suite: str, mode: str, root: Path, manifest: Path = MANIFEST) -> list[str]:
-    """The ``$GITHUB_ENV`` lines that point a nightly job's runner at its archive."""
+def prepare(
+    suite: str, mode: str, root: Path, manifest: Path = MANIFEST, archive: Path | None = None
+) -> list[str]:
+    """The ``$GITHUB_ENV`` lines that point a nightly job's runner at its archive.
+    A replay reads the asset from ``archive`` when one is given."""
     d = root / suite
     if mode == "live":
         return ["ARCHIVE_FLAGS=", "ARCHIVE_DIR="]
@@ -188,7 +224,7 @@ def prepare(suite: str, mode: str, root: Path, manifest: Path = MANIFEST) -> lis
         d.mkdir(parents=True, exist_ok=True)
         return [f"ARCHIVE_FLAGS=--write-reference-archive {d}", f"ARCHIVE_DIR={d}"]
     if mode == "replay":
-        fetch(suite, d, manifest)
+        fetch(suite, d, manifest, archive)
         return [f"ARCHIVE_FLAGS=--reference-archive {d}", f"ARCHIVE_DIR={d}"]
     raise SystemExit(f"unknown mode {mode!r}: replay, live or record")
 
@@ -442,9 +478,14 @@ def main() -> int:
     p.add_argument("--mode", required=True, choices=("replay", "live", "record"))
     p.add_argument("--root", type=Path, required=True)
     p.add_argument("--manifest", type=Path, default=MANIFEST)
+    p.add_argument("--archive", type=Path, help="a replay reads the asset from this copy")
     p = sub.add_parser("fetch", help="download, check and unpack a suite's asset")
     p.add_argument("suite", choices=sorted(SUITES))
     p.add_argument("--dest", type=Path, required=True)
+    p.add_argument("--manifest", type=Path, default=MANIFEST)
+    p.add_argument("--archive", type=Path, help="read the asset from this copy")
+    p = sub.add_parser("locate", help="a suite's asset URL, sha256 and file name")
+    p.add_argument("suite", choices=sorted(SUITES))
     p.add_argument("--manifest", type=Path, default=MANIFEST)
     p = sub.add_parser("pack", help="pack a recorded directory into an asset")
     p.add_argument("suite", choices=sorted(SUITES))
@@ -461,9 +502,11 @@ def main() -> int:
     args = ap.parse_args()
 
     if args.cmd == "prepare":
-        print("\n".join(prepare(args.suite, args.mode, args.root, args.manifest)))
+        print("\n".join(prepare(args.suite, args.mode, args.root, args.manifest, args.archive)))
     elif args.cmd == "fetch":
-        fetch(args.suite, args.dest, args.manifest)
+        fetch(args.suite, args.dest, args.manifest, args.archive)
+    elif args.cmd == "locate":
+        print("\n".join(locate(args.suite, args.manifest)))
     elif args.cmd == "pack":
         reports = [Path(r) for r in args.report.split(",") if r]
         pack(args.suite, args.dir, args.out_dir, reports, args.baseline)

@@ -390,7 +390,11 @@ else()
         "Using pinned SUNDIALS release ${BNGSIM_SUNDIALS_RELEASE_TAG} "
         "(${BNGSIM_SUNDIALS_TAG_COMMIT})"
     )
-    message(STATUS "SUNDIALS source archive: ${BNGSIM_SUNDIALS_SOURCE_URL}")
+    # BNGSIM_SUNDIALS_ARCHIVE in the environment names a local copy to read
+    # instead (lanl/bngsim#1607); URL_HASH below checks either one.
+    include("${BNGSIM_SUNDIALS_DIR}/source_archive.cmake")
+    bngsim_sundials_source_url(_bngsim_sundials_url "${BNGSIM_SUNDIALS_SOURCE_URL}")
+    message(STATUS "SUNDIALS source archive: ${_bngsim_sundials_url}")
 
     set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
     set(BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
@@ -494,7 +498,7 @@ else()
         "${FETCHCONTENT_SOURCE_DIR_SUNDIALS}" "${FETCHCONTENT_FULLY_DISCONNECTED}")
     FetchContent_Declare(
         sundials
-        URL "${BNGSIM_SUNDIALS_SOURCE_URL}"
+        URL "${_bngsim_sundials_url}"
         URL_HASH "SHA256=${BNGSIM_SUNDIALS_SOURCE_SHA256}"
         DOWNLOAD_EXTRACT_TIMESTAMP FALSE
         PATCH_COMMAND "${CMAKE_COMMAND}" -DSUNDIALS_SOURCE_DIR=<SOURCE_DIR>
@@ -523,6 +527,7 @@ else()
     endif()
 
     unset(_bngsim_sundials_vendor_json)
+    unset(_bngsim_sundials_url)
 endif()
 
 # ─── ExprTk (vendored header-only) ────────────────────────────────────────────

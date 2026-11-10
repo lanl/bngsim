@@ -1,0 +1,50 @@
+name: Reference side
+description: >-
+  Point a nightly-parity job's runner at its reference archive
+  (reference_archive.py prepare). On a replay, the suite's asset comes from the
+  Actions cache when it has it.
+# lanl/bngsim#1607. A replay downloaded its suite's asset from the
+# reference-data release on every run, so a GitHub release-download outage
+# stopped every replay leg. The asset is pinned by sha256 in
+# parity_checks/nightly/reference_archive.json; `locate` reads that pin,
+# cached-download puts the asset in the runner's temp directory, and `prepare`
+# checks it against the same pin before unpacking it.
+inputs:
+  suite:
+    description: The suite, as reference_archive.py names it (rr_ode, bng_nf, ...).
+    required: true
+  mode:
+    description: replay, live or record.
+    required: true
+  root:
+    description: The directory the suite's entries go under, as prepare's --root.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Find ${{ inputs.suite }}'s asset
+      id: pin
+      if: inputs.mode == 'replay'
+      shell: bash
+      env:
+        SUITE: ${{ inputs.suite }}
+      run: python3 parity_checks/nightly/reference_archive.py locate "$SUITE" >> "$GITHUB_OUTPUT"
+
+    - if: inputs.mode == 'replay'
+      uses: ./.github/actions/cached-download
+      with:
+        url: ${{ steps.pin.outputs.url }}
+        sha256: ${{ steps.pin.outputs.sha256 }}
+        path: ${{ runner.temp }}/reference-download/${{ steps.pin.outputs.name }}
+
+    - name: Point the runner at it (${{ inputs.mode }})
+      shell: bash
+      env:
+        SUITE: ${{ inputs.suite }}
+        MODE: ${{ inputs.mode }}
+        ROOT: ${{ inputs.root }}
+        ARCHIVE: ${{ inputs.mode == 'replay' && format('{0}/reference-download/{1}', runner.temp, steps.pin.outputs.name) || '' }}
+      run: |
+        set -euo pipefail
+        python3 parity_checks/nightly/reference_archive.py prepare "$SUITE" --mode "$MODE" --root "$ROOT" \
+          ${ARCHIVE:+--archive "$ARCHIVE"} >> "$GITHUB_ENV"
