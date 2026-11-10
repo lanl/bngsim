@@ -84,6 +84,9 @@ class _NativeError(Exception):
 #   ('neg', a)                unary minus
 #   ('+'|'-'|'*'|'/'|'^', a, b)   binary op
 #   ('call', name, (arg,))    exp/log/sqrt (canonical name)
+#   ('guard', s, h, a)        if((s > 0) or (h <= 0) or (h >= 1), a, 0) — the
+#                             zero guard the .net loader writes around its Hill
+#                             body (#1497)
 
 _ZERO = ("num", 0.0)
 _ONE = ("num", 1.0)
@@ -197,12 +200,22 @@ _IDENT_RE = re.compile(r"[A-Za-z_]\w*")
 def _tokenize(s: str):
     """Split an ExprTk arithmetic string into tokens. Raises ``_NativeError`` on
     any character outside the recognized subset (so comparison / logical
-    operators, ``%``, ``&``, ``|``, ``!`` etc. all defer to the SymPy path)."""
+    operators, ``%``, ``&``, ``|``, ``!`` etc. all defer to the SymPy path).
+    ``>``, ``<=`` and ``>=`` are tokens only so the parser can read the loader's
+    Hill guard (:meth:`_Parser._guard`); anywhere else the parser refuses them."""
     toks: list[tuple[str, object]] = []
     i, n = 0, len(s)
     while i < n:
         c = s[i]
         if c.isspace():
+            i += 1
+            continue
+        if s.startswith(("<=", ">="), i):
+            toks.append((s[i : i + 2], s[i : i + 2]))
+            i += 2
+            continue
+        if c == ">":
+            toks.append((">", ">"))
             i += 1
             continue
         if c in "+-*/^(),":
@@ -306,9 +319,53 @@ class _Parser:
         if kind == "ident":
             name = tok[1]
             if self._peek()[0] == "(":
+                if name == "if":
+                    return self._guard()
                 return self._call(name)
             return ("var", name)
         raise _NativeError(f"unexpected token {kind!r}")
+
+    def _zero(self):
+        tok = self._expect("num")
+        if tok[1] != 0.0:
+            raise _NativeError("expected 0")
+
+    def _guard(self):
+        """``if((s > 0) or (h <= 0) or (h >= 1), a, 0)``, the guard the ``.net``
+        loader writes around its Hill body, and no other ``if`` (issue #1497).
+
+        The body is ``Vmax*s^(h-1)/(Kh^h + s^h)``, and the reaction multiplies
+        it by ``s``. For ``0 < h < 1`` it is ``inf`` at ``s = 0``, where the law's
+        own value is 0, and NaN below, so the loader gives the function 0 for
+        ``s <= 0`` there. Where the guard is true the function is the body, so
+        its derivative is the body's derivative under the same guard (the rule
+        SymPy applies to a Piecewise). A guard of any other shape is outside the
+        family and defers to SymPy, as every ``if`` did."""
+        self._expect("(")
+        self._expect("(")
+        state = ("var", self._expect("ident")[1])
+        self._expect(">")
+        self._zero()
+        self._expect(")")
+        h = None
+        for op, bound in (("<=", 0.0), (">=", 1.0)):
+            if self._expect("ident")[1] != "or":
+                raise _NativeError("expected 'or'")
+            self._expect("(")
+            exponent = self._add()
+            self._expect(op)
+            if self._expect("num")[1] != bound:
+                raise _NativeError("expected the bounds of 0 < h < 1")
+            self._expect(")")
+            if h is not None and exponent != h:
+                raise _NativeError("the two bounds are on different exponents")
+            h = exponent
+        self._expect(",")
+        body = self._add()
+        self._expect(",")
+        self._zero()
+        self._expect(")")
+        return ("guard", state, h, body)
 
     def _call(self, name: str):
         self._expect("(")
@@ -375,6 +432,9 @@ def _diff(node, target: str):
         return _diff_pow(node[1], node[2], target)
     if tag == "call":
         return _diff_call(node, target)
+    if tag == "guard":
+        d = _diff(node[3], target)
+        return _ZERO if _is_zero(d) else ("guard", node[1], node[2], d)
     raise _NativeError(f"cannot differentiate {tag!r}")
 
 
@@ -431,6 +491,9 @@ def _var_names(node, out: set[str]):
         _var_names(node[2], out)
     elif tag == "call":
         _var_names(node[2][0], out)
+    elif tag == "guard":
+        for part in node[1:]:
+            _var_names(part, out)
     # num / time carry no variable names
     return out
 
@@ -472,6 +535,8 @@ def _takes_log_of_state(node, state_names: AbstractSet[str]) -> bool:
         return _takes_log_of_state(node[1], state_names) or _takes_log_of_state(
             node[2], state_names
         )
+    if tag == "guard":
+        return any(_takes_log_of_state(part, state_names) for part in node[1:])
     return False
 
 
@@ -515,6 +580,8 @@ def _synthesizes_log_of_state(node, state_names: AbstractSet[str]) -> bool:
         return _synthesizes_log_of_state(node[1], state_names) or _synthesizes_log_of_state(
             node[2], state_names
         )
+    if tag == "guard":
+        return any(_synthesizes_log_of_state(part, state_names) for part in node[1:])
     return False
 
 
@@ -529,6 +596,8 @@ def _contains(node, target) -> bool:
         return _contains(node[1], target) or _contains(node[2], target)
     if tag == "call":
         return _contains(node[2][0], target)
+    if tag == "guard":
+        return any(_contains(part, target) for part in node[1:])
     return False
 
 
@@ -679,6 +748,9 @@ def rewrite_saturating_ratio(node):
         return _mk_neg(rewrite_saturating_ratio(node[1]))
     if tag == "call":
         return _mk_call(node[1], rewrite_saturating_ratio(node[2][0]))
+    if tag == "guard":
+        # Inside, the body reads as it did unguarded, so it is rewritten as it was.
+        return ("guard", node[1], node[2], rewrite_saturating_ratio(node[3]))
     if tag not in ("+", "-", "*", "/", "^"):
         return node
 
@@ -762,6 +834,9 @@ def _emit_exprtk(node) -> str:
         return f"(({_emit_exprtk(b)})^({_emit_exprtk(e)}))"
     if tag == "call":
         return f"{node[1]}({_emit_exprtk(node[2][0])})"
+    if tag == "guard":
+        s, h, a = (_emit_exprtk(part) for part in node[1:])
+        return f"if(({s} > 0) or ({h} <= 0) or ({h} >= 1), {a}, 0)"
     raise _NativeError(f"cannot emit {tag!r}")
 
 
@@ -788,6 +863,9 @@ def _emit_c(node, resolve_symbol) -> str:
     if tag == "call":
         # exp/log/sqrt map 1:1 to C math.h.
         return f"{node[1]}({_emit_c(node[2][0], resolve_symbol)})"
+    if tag == "guard":
+        s, h, a = (_emit_c(part, resolve_symbol) for part in node[1:])
+        return f"((({s} > 0.0) || ({h} <= 0.0) || ({h} >= 1.0)) ? ({a}) : 0.0)"
     raise _NativeError(f"cannot emit {tag!r}")
 
 
