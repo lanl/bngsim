@@ -101,8 +101,8 @@ KNOWN_ARTIFACT: dict[str, dict] = {
     # That triage's ledger and notes were never committed to this repository, so
     # the entries it left are re-derived here from evidence that runs from it.
     # BIOMD0000000879 and MODEL7908934508 survive, each now settled by RoadRunner
-    # run so that it cannot step over a pulse (a bounded step, and for 879 a
-    # restart at every pulse edge). BIOMD0000000373, 376, 682 and MODEL2310250001
+    # run so that it cannot step over a pulse (a fine output grid for 879, a
+    # bounded step for MODEL7908934508). BIOMD0000000373, 376, 682 and MODEL2310250001
     # moved to NO_GROUND_TRUTH on 2026-11-10: no tolerance makes either engine
     # agree with itself over their horizons, so their PASS checked nothing.
     # parity_checks/tests/test_rr_known_artifact_evidence.py runs all six.
@@ -122,20 +122,20 @@ KNOWN_ARTIFACT: dict[str, dict] = {
             "oracle-confirmed). Rodrigues2019 chemoimmunotherapy of CLL: "
             "Chemotherapy_Input, a piecewise-in-time assignment rule, is 8640 during "
             "seven infusions 0.125 wide (t = 0, 21, 42, 63, 84, 105, 126) and 0 "
-            "otherwise. bngsim registers each threshold as a root (GH #72) and "
-            "resolves every pulse: N(42) = 5.11805e9 at every rtol from 1e-9 to "
-            "1e-12. RoadRunner as rr_run runs it gives N(42) = 1.1795e10 at the "
-            "same tolerances (max_rel_err 0.334); a wrong value that tightening "
-            "does not move is a feature never sampled. Oracle: RoadRunner restarted "
-            "at every pulse edge, so no pulse falls inside one integration, with "
-            "maximum_time_step 0.05 and 0.01 at the suite's tolerance. Each "
-            "segment ends one ulp short of its edge: `time >= 21` already holds AT "
-            "21, and a bounded RoadRunner that must end a step there stalls "
-            "(CV_TOO_MUCH_WORK). The two references agree (err/movement 5.0e-7), "
-            "bngsim passes against both (1.2e-6 and 7.9e-7), and RoadRunner's own "
-            "run fails against them. parity_checks/tests/"
-            "test_rr_known_artifact_evidence.py runs this. The entry's earlier "
-            "evidence was a triage note never committed to this repository."
+            "otherwise. bngsim registers each threshold as a root (GH #72) and resolves "
+            "every pulse: N(42) = 5.11805e9 at every rtol from 1e-9 to 1e-12. "
+            "RoadRunner as rr_run runs it gives N(42) = 1.1795e10 at the same "
+            "tolerances (max_rel_err 0.334); a wrong value that tightening does not "
+            "move is a feature never sampled. Oracle: RoadRunner at the suite's "
+            "tolerance sampled every 0.025 and every 0.01, which it must stop at, so no "
+            "step crosses a pulse, then thinned to the job's grid. The two agree "
+            "(err/movement 2.5e-9), bngsim passes against both (8.0e-9 and 5.6e-9), and "
+            "RoadRunner's own run fails against them. A bounded maximum_time_step is no "
+            "use here: with it RoadRunner stalls (CV_TOO_MUCH_WORK) near some dose "
+            "onsets at some tolerances. "
+            "parity_checks/tests/test_rr_known_artifact_evidence.py runs this. The "
+            "entry's earlier evidence was a triage note never committed to this "
+            "repository."
         ),
     },
     "MODEL7908934508:ode": {
@@ -579,51 +579,47 @@ NO_GROUND_TRUTH: dict[str, dict] = {
     "BIOMD0000000373:ode": {
         "issue": None,
         "reason": (
-            "Bertram2004 pancreatic beta cell (model B), 7 rate rules, bursting "
-            "with glycolytic oscillations, over the SED-ML figure's t_end = 7e5. "
-            "Neither engine agrees with itself as the tolerance tightens: run at "
-            "rtol 1e-12, atol 1e-18 and at 1e-13, 1e-20, bngsim's two runs DIFF "
-            "(err/movement 0.79) and so do RoadRunner's (0.82), as far apart as "
-            "the engines are from each other. Each tenfold tightening from 1e-9 "
-            "moves the time where successive runs first part by 1% of a range "
-            "only from 1.26e4 to 2.94e4, so no tolerance a double can hold pins "
-            "the phase out to 7e5. Over the first 1.19e4 the engines agree at the "
-            "suite's tolerance, and every species' min and max agree within 0.9% "
-            "of its range: the amplitudes are pinned, the phase is not. Formerly "
-            "a KNOWN_ARTIFACT, 'long-horizon oscillator phase drift'. parity_checks/"
-            "tests/test_rr_known_artifact_evidence.py runs this study."
+            "Bertram2004 pancreatic beta cell (model B), 7 rate rules, bursting with "
+            "glycolytic oscillations, over the SED-ML figure's t_end = 7e5. Neither "
+            "engine agrees with itself at any tolerance it accepts: bngsim's runs at "
+            "rtol 1e-14 and 1e-15 (atol 1e-20) DIFF (err/movement 0.69), RoadRunner's "
+            "at 1e-13 and 1e-14 DIFF (0.74), and the engines' 1e-15 runs DIFF (0.52); "
+            "both refuse 1e-16. Each tenfold tightening from 1e-9 to 1e-13 moves the "
+            "time where successive runs first part by 1% of a range only from 1.26e4 to "
+            "2.94e4, so the phase out to 7e5 is pinned by no tolerance a double can "
+            "hold. The engines agree at the suite's tolerance up to t = 1.19e4. "
+            "Formerly a KNOWN_ARTIFACT, 'long-horizon oscillator phase drift'. "
+            "parity_checks/tests/test_rr_known_artifact_evidence.py runs this study."
         ),
     },
     "BIOMD0000000376:ode": {
         "issue": None,
         "reason": (
             "Bertram2007 islet cell oscillations, 11 rate rules, over the SED-ML "
-            "figure's t_end = 6e5. Neither engine agrees with itself as the "
-            "tolerance tightens: at rtol 1e-12, atol 1e-18 against 1e-13, 1e-20, "
-            "bngsim's two runs DIFF (err/movement 0.63) and so do RoadRunner's "
-            "(0.63). Tightening from 1e-9 to 1e-13 moves the time where "
-            "successive runs first part by 1% of a range only from 7.2e3 to about "
-            "1e5. Over the first 6.6e3 the engines agree at the suite's "
-            "tolerance, and every species' min and max agree within 1.7% of its "
-            "range: the amplitudes are pinned, the phase out to 6e5 is not. "
-            "Formerly a KNOWN_ARTIFACT, 'long-horizon oscillator phase drift'. "
+            "figure's t_end = 6e5. Neither engine agrees with itself at any tolerance "
+            "it accepts: bngsim's runs at rtol 1e-14 and 1e-15 (atol 1e-20) DIFF "
+            "(err/movement 0.034), and RoadRunner's at 1e-13 and 1e-14 (0.16) and at "
+            "1e-14 and 1e-15 (0.018); both refuse 1e-16. The runs close in as the "
+            "tolerance tightens, and the engines' 1e-15 runs agree (8.7e-5), but that "
+            "moves to 2.6e-3 at atol 1e-24, and both engines are CVODE BDF, so it is "
+            "not independent evidence; under the suite's verdict nothing has converged. "
+            "The engines agree at the suite's tolerance up to t = 6.6e3. Formerly a "
+            "KNOWN_ARTIFACT, 'long-horizon oscillator phase drift'. "
             "parity_checks/tests/test_rr_known_artifact_evidence.py runs this study."
         ),
     },
     "BIOMD0000000682:ode": {
         "issue": None,
         "reason": (
-            "Wierschem2004 electrical bursting in pancreatic islets, 5 rate rules, "
-            "over the SED-ML figure's t_end = 6e5. Neither engine agrees with "
-            "itself as the tolerance tightens: at rtol 1e-12, atol 1e-18 against "
-            "1e-13, 1e-20, bngsim's two runs DIFF (err/movement 0.76) and so do "
-            "RoadRunner's (0.89). Successive runs first part by 1% of a range "
-            "near t = 2.2e5 at every rtol from 1e-9 to 1e-13. Up to t = 2.18e5 "
-            "the engines agree at the suite's tolerance, and every species' min "
-            "and max agree within 0.5% of its range: the amplitudes are pinned, "
-            "the phase past 2.2e5 is not. Formerly a KNOWN_ARTIFACT, 'oscillator "
-            "phase drift'. parity_checks/tests/test_rr_known_artifact_evidence.py "
-            "runs this study."
+            "Wierschem2004 electrical bursting in pancreatic islets, 5 rate rules, over "
+            "the SED-ML figure's t_end = 6e5. Neither engine agrees with itself at any "
+            "tolerance it accepts: bngsim's runs at rtol 1e-14 and 1e-15 (atol 1e-20) "
+            "DIFF (err/movement 0.97), RoadRunner's at 1e-13 and 1e-14 DIFF (0.87; it "
+            "fails at 1e-15), and the engines' 1e-14 runs DIFF (0.92). Successive runs "
+            "first part by 1% of a range near t = 2.2e5 at every rtol from 1e-9 to "
+            "1e-13, and the engines agree at the suite's tolerance up to t = 2.18e5. "
+            "Formerly a KNOWN_ARTIFACT, 'oscillator phase drift'. "
+            "parity_checks/tests/test_rr_known_artifact_evidence.py runs this study."
         ),
     },
     "MODEL2310250001:ode": {

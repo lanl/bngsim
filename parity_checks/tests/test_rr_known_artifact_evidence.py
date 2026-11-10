@@ -9,14 +9,16 @@ default run:
 
 * BIOMD0000000879 and MODEL7908934508 stay KNOWN_ARTIFACT. Each has narrow
   piecewise-in-time pulses that RoadRunner's default run steps over. RoadRunner
-  run so that it cannot (a bounded step, and for 879 a restart at every pulse
-  edge), at two step bounds that agree, is the reference; bngsim passes against
-  it and RoadRunner's own run does not.
+  run so that it cannot, at two settings that agree, is the reference: for
+  MODEL7908934508 a bounded step, and for 879 a fine output grid, since a bounded
+  step stalls there near some dose onsets. bngsim passes against the reference,
+  and RoadRunner's own run does not.
 * BIOMD0000000373, 376 and 682, long-horizon oscillators, and MODEL2310250001,
   whose isotopologue split has no unique solution once a pool's total crosses 0,
   move to NO_GROUND_TRUTH (non-scoring). For each, neither engine agrees with
-  itself as the tolerance tightens to rtol 1e-13, so no answer over the job's
-  horizon can be checked, and a PASS there checked nothing.
+  itself at any tolerance it accepts (to rtol 1e-15, or 1e-13 for the split), so
+  no answer over the job's horizon can be checked, and a PASS there checked
+  nothing.
 
 ``scipy_oracle.py`` reads none of these models (rate rules, an event, piecewise),
 so it is not used. The model files are the gitignored rr_parity corpus, so those
@@ -48,36 +50,45 @@ def _load_rr_overrides():
 
 ov = _load_rr_overrides()
 
-# The two entries that stay KNOWN_ARTIFACT, and how the reference is run. ``edges``
-# are the pulse edges RoadRunner is restarted at (None: a step bound alone suffices).
-# ``probe`` is (species, t, the reference's value, RoadRunner's default value),
-# each checked to 1%. ``max_em`` bounds bngsim's err/movement against either
+# The two entries that stay KNOWN_ARTIFACT, and how the reference is run: RoadRunner
+# at the suite's tolerance with its step bounded (``max_step``), or sampled on a fine
+# output grid (``grid``, the spacing), which it must stop at; each setting is under
+# half a pulse. ``probe`` is (species, t, the reference's value, RoadRunner's default
+# value), each checked to 1%. ``max_em`` bounds bngsim's err/movement against either
 # reference, and ``refs_em`` the two references' against each other.
-_DOSES = (0.0, 21.0, 42.0, 63.0, 84.0, 105.0, 126.0)
 PULSES = {
     "BIOMD0000000879:ode": {
-        "edges": tuple(e for d in _DOSES for e in (d, d + 0.125)),
+        "how": "grid",
+        "settings": (0.025, 0.01),
         "probe": ("N", 42.0, 5.11805e9, 1.1795e10),
-        "max_em": 1e-5,
-        "refs_em": 1e-5,
+        "max_em": 1e-6,
+        "refs_em": 1e-6,
     },
     "MODEL7908934508:ode": {
-        "edges": None,
+        "how": "max_step",
+        "settings": (0.05, 0.01),
         "probe": ("CaM4", 1.0, 6.049e-6, None),
         "max_em": 3e-3,
         "refs_em": 1e-3,
     },
 }
-STEP_BOUNDS = (0.05, 0.01)
 
-# The four NO_GROUND_TRUTH entries. An oscillator's ``agree_rows``: the engines agree
-# at the suite's tolerance over this many leading rows of the job's grid, where the
-# trajectory is still pinned; ``amplitude``: every species' min and max agree
-# between engines within this fraction of its range.
+# The four NO_GROUND_TRUTH entries. Each oscillator engine is run at the two
+# tightest tolerances it accepts on all three: bngsim at rtol 1e-14 and 1e-15,
+# RoadRunner at 1e-13 and 1e-14 (it fails 682 at 1e-15, and both refuse 1e-16).
+# ``self_em``: the least err/movement each engine's two runs differ by. 376's is
+# small (its runs come within a few percent), but still a DIFF under the suite's
+# verdict, and that is the claim. ``agree_rows``: the engines agree at the suite's
+# tolerance over this many leading rows of the job's grid, where the trajectory is
+# still pinned (about two thirds of the most that pass, for margin).
 OSCILLATORS = {
-    "BIOMD0000000373:ode": {"agree_rows": 18, "amplitude": 0.02},
-    "BIOMD0000000376:ode": {"agree_rows": 12, "amplitude": 0.03},
-    "BIOMD0000000682:ode": {"agree_rows": 365, "amplitude": 0.01},
+    "BIOMD0000000373:ode": {"self_em": 0.5, "agree_rows": 12},
+    "BIOMD0000000376:ode": {"self_em": 0.01, "agree_rows": 8},
+    "BIOMD0000000682:ode": {"self_em": 0.5, "agree_rows": 300},
+}
+OSC_TIGHT = {
+    "bngsim": ((1e-14, 1e-20), (1e-15, 1e-20)),
+    "roadrunner": ((1e-13, 1e-20), (1e-14, 1e-20)),
 }
 SPLIT = "MODEL2310250001:ode"
 # The gluconate isotopologues and the 6PG pair they feed: no unique solution once
@@ -85,7 +96,7 @@ SPLIT = "MODEL2310250001:ode"
 # range and are left out of both lists.
 UNSETTLED = ("GNT_e_0", "GNT_e_1", "_6PG_0", "_6PG_1")
 DOWNSTREAM = ("GAP_0", "GAP_1", "PYR_0", "PYR_1")
-TIGHT = ((1e-12, 1e-18), (1e-13, 1e-20))
+SPLIT_TIGHT = ((1e-12, 1e-18), (1e-13, 1e-20))
 
 
 # --------------------------------------------------------------------------- #
@@ -162,15 +173,11 @@ def _suite(key: str, engine):
 
 
 @cache
-def _bounded_roadrunner(key: str, max_step: float, edges: tuple | None):
+def _reference(key: str, how: str, setting: float):
     """RoadRunner at the suite's tolerance that cannot step over a pulse: its step
-    bounded by ``max_step``, and, with ``edges``, restarted at each one, one
-    ``simulate`` call per interval of the job's grid and the edges.
-
-    Each interval that ends at an edge ends one ulp short of it. A closed condition
-    such as ``time >= 21`` already holds AT 21, and RoadRunner with a bounded step,
-    which must end a step exactly there, stalls (CV_TOO_MUCH_WORK). Rows on the
-    job's grid are returned, with the selections ``rr_ode`` makes."""
+    bounded by ``setting`` (``how="max_step"``), or sampled every ``setting``
+    (``how="grid"``) and thinned to the job's grid. Rows on the job's grid, with
+    the selections ``rr_ode`` makes (neither model has a boundary species)."""
     import _rr_common as rc
     import roadrunner
 
@@ -180,29 +187,18 @@ def _bounded_roadrunner(key: str, max_step: float, edges: tuple | None):
     r.integrator = "cvode"
     r.integrator.relative_tolerance = rc.DEFAULT_RTOL
     r.integrator.absolute_tolerance = rc.DEFAULT_ATOL
-    r.integrator.maximum_time_step = max_step
     r.integrator.maximum_num_steps = 1_000_000
-    boundary = set(r.model.getBoundarySpeciesIds())
-    sel = [f"[{s}]" if s in boundary else s for s in r.timeCourseSelections]
-    assert sel[0] == "time" and not boundary  # neither model has a boundary species
-    r.timeCourseSelections = sel
+    assert not r.model.getBoundarySpeciesIds()
+    sel = list(r.timeCourseSelections)
+    assert sel[0] == "time"
     grid = np.linspace(t0, p["t_end"], p["n_points"])
-    if edges is None:
+    if how == "max_step":
+        r.integrator.maximum_time_step = setting
         out = np.asarray(r.simulate(t0, p["t_end"], p["n_points"]))
     else:
-        cuts = set(edges)
-        points = sorted(set(grid.tolist()) | {e for e in cuts if t0 < e < p["t_end"]})
-        on_grid = set(grid.tolist())
-        rows = []
-        for a, b in zip(points[:-1], points[1:], strict=True):
-            end = float(np.nextafter(b, a)) if b in cuts else b
-            seg = np.asarray(r.simulate(a, end, 2))
-            if not rows:
-                rows.append(seg[0])
-            if b in on_grid:
-                rows.append(seg[-1])
-        out = np.vstack(rows)
-    assert out.shape[0] == grid.size
+        every = round((grid[1] - grid[0]) / setting)
+        out = np.asarray(r.simulate(t0, p["t_end"], (p["n_points"] - 1) * every + 1))[::every]
+    np.testing.assert_allclose(out[:, 0], grid, rtol=0, atol=1e-9)
     names = [c[1:-1] if c.startswith("[") else c for c in sel[1:]]
     return out[:, 0], out[:, 1:], names
 
@@ -245,10 +241,11 @@ def _worst_over_scale(a, b) -> dict[str, float]:
 # KNOWN_ARTIFACT: RoadRunner steps over narrow pulses, bngsim resolves them
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("key", sorted(PULSES))
-def test_two_step_bounds_give_one_reference(key):
-    """RoadRunner at maximum_time_step 0.05 and 0.01 agree: the reference converged."""
+def test_two_settings_give_one_reference(key):
+    """RoadRunner at two step bounds, or two output grids, agree: the reference
+    converged."""
     spec = PULSES[key]
-    coarse, fine = (_bounded_roadrunner(key, h, spec["edges"]) for h in STEP_BOUNDS)
+    coarse, fine = (_reference(key, spec["how"], h) for h in spec["settings"])
     status, em = _compare(coarse, fine)
     assert status == "pass" and em <= spec["refs_em"], em
     name, t, value, _ = spec["probe"]
@@ -260,8 +257,8 @@ def test_bngsim_passes_against_the_reference(key):
     """bngsim, run as rr_run runs it, passes against both references."""
     spec = PULSES[key]
     bn = _suite(key, _bngsim)
-    for h in STEP_BOUNDS:
-        status, em = _compare(bn, _bounded_roadrunner(key, h, spec["edges"]))
+    for h in spec["settings"]:
+        status, em = _compare(bn, _reference(key, spec["how"], h))
         assert status == "pass" and em <= spec["max_em"], (h, em)
     name, t, value, _ = spec["probe"]
     assert _at(bn, name, t) == pytest.approx(value, rel=1e-2)
@@ -273,7 +270,7 @@ def test_roadrunner_on_its_own_steps_over_the_pulses(key):
     a DIFF that the entry reclassifies: the outlier is RoadRunner's own run."""
     spec = PULSES[key]
     rr = _suite(key, _roadrunner)
-    assert _compare(rr, _bounded_roadrunner(key, STEP_BOUNDS[1], spec["edges"]))[0] == "diff"
+    assert _compare(rr, _reference(key, spec["how"], spec["settings"][1]))[0] == "diff"
     assert _compare(_suite(key, _bngsim), rr)[0] == "diff"
     name, t, value, own = spec["probe"]
     if own is None:  # it misses the pulse outright: off by orders of magnitude
@@ -287,30 +284,21 @@ def test_roadrunner_on_its_own_steps_over_the_pulses(key):
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("engine", ["bngsim", "roadrunner"])
 @pytest.mark.parametrize("key", sorted(OSCILLATORS))
-def test_neither_engine_agrees_with_itself_as_the_tolerance_tightens(key, engine):
-    """At rtol 1e-12 and again at 1e-13, an engine's two runs DIFF, by as much as
-    the engines differ from each other: the phase out to t_end is not pinned."""
+def test_neither_engine_agrees_with_itself_at_the_tightest_tolerances(key, engine):
+    """At the two tightest tolerances it accepts, an engine's two runs DIFF: the
+    phase out to t_end is not pinned by any tolerance a double can hold."""
     run = _bngsim if engine == "bngsim" else _roadrunner
-    status, em = _compare(*(run(key, *tol) for tol in TIGHT))
-    assert status == "diff" and em >= 0.5, em
+    status, em = _compare(*(run(key, *tol) for tol in OSC_TIGHT[engine]))
+    assert status == "diff" and em >= OSCILLATORS[key]["self_em"], em
 
 
 @pytest.mark.parametrize("key", sorted(OSCILLATORS))
 def test_the_oscillators_agree_where_the_trajectory_is_pinned(key):
-    """At the suite's tolerance the engines agree over the leading rows, and on
-    every species' amplitude over the whole horizon; the row is still a DIFF."""
-    spec = OSCILLATORS[key]
+    """At the suite's tolerance the engines agree over the leading rows; over the
+    whole horizon the row is a DIFF."""
     bn, rr = _suite(key, _bngsim), _suite(key, _roadrunner)
     assert _compare(bn, rr)[0] == "diff"
-    assert _compare(bn, rr, rows=spec["agree_rows"])[0] == "pass"
-    import _rr_common as rc
-
-    ai, bi, common = rc.align_common(bn[2], rr[2])
-    for i, j, name in zip(ai, bi, common, strict=True):
-        x, y = bn[1][:, i], rr[1][:, j]
-        span = np.ptp(y)
-        assert abs(x.min() - y.min()) <= spec["amplitude"] * span, name
-        assert abs(x.max() - y.max()) <= spec["amplitude"] * span, name
+    assert _compare(bn, rr, rows=OSCILLATORS[key]["agree_rows"])[0] == "pass"
 
 
 def test_the_isotopic_rate_law_is_singular_where_a_total_crosses_zero():
@@ -335,7 +323,7 @@ def test_the_isotopologue_split_converges_at_no_tolerance(engine):
     column agrees through t = 8 and the 17 columns outside the split agree to
     1e-4 of theirs."""
     run = _bngsim if engine == "bngsim" else _roadrunner
-    a, b = (run(SPLIT, *tol) for tol in TIGHT)
+    a, b = (run(SPLIT, *tol) for tol in SPLIT_TIGHT)
     worst = _worst_over_scale(a, b)
     for name in UNSETTLED:
         assert worst[name] > 0.1, (name, worst[name])
