@@ -1498,6 +1498,190 @@ def test_a_slide_moves_as_its_chatter_averages(tmp_path, up, dn, c, rtol):
         assert units.max() <= 1.0, units.max()
 
 
+# Two slides in one run, apart: S1 rises at 2 to S1 = 1 and is pushed back at
+# 1 above it, S2 rises at 1 to S2 = 2 and is pushed back at 3. Each Y gains 1
+# for each unit of time its S spends below its surface (issue #1623).
+_TWO_SLIDES_NET = """\
+begin parameters
+    1 up1 2.0
+    2 dn1 1.0
+    3 up2 1.0
+    4 dn2 3.0
+end parameters
+begin functions
+    1 f1() if(S1obs<1,up1,-dn1)
+    2 r1() if(S1obs<1,1,0)
+    3 f2() if(S2obs<2,up2,-dn2)
+    4 r2() if(S2obs<2,1,0)
+end functions
+begin species
+    1 S1() 0
+    2 Y1() 0
+    3 S2() 0
+    4 Y2() 0
+end species
+begin reactions
+    1 0 1 f1
+    2 0 2 r1
+    3 0 3 f2
+    4 0 4 r2
+end reactions
+begin groups
+    1 S1obs 1
+    2 S2obs 3
+end groups
+"""
+
+
+@pytest.mark.parametrize("rtol", [1e-4, 1e-6, 1e-8])
+def test_two_slides_in_one_run_are_both_stepped_along(tmp_path, rtol):
+    """One residual was slid along at a time (#1608), and a second was held
+    as before #1608: its rate law turned on every side of its surface a
+    Newton iterate landed on. The run took 500,716 steps at rtol 1e-4 and did
+    not finish in 60 s at 1e-6, or at bngsim's default. Each slide is now
+    blended on its own where neither's jump moves the other's flow, and the
+    run takes under a hundred steps at any tolerance. S1 reaches its surface
+    at t = 0.5 and S2 at t = 2; below, they spend 1/3 and 3/4 of the time."""
+    model = _write(tmp_path, _TWO_SLIDES_NET)
+    ts = np.linspace(0.0, 10.0, 21)
+    result = bngsim.Simulator(model).run(sample_times=ts, rtol=rtol, atol=rtol, timeout=60)
+    assert result.solver_stats["n_steps"] < 500
+    exact = {
+        0: np.minimum(2.0 * ts, 1.0),
+        1: np.where(ts <= 0.5, ts, 0.5 + (ts - 0.5) / 3.0),
+        2: np.minimum(ts, 2.0),
+        3: np.where(ts <= 2.0, ts, 2.0 + 0.75 * (ts - 2.0)),
+    }
+    x = np.asarray(result.species)
+    for k, want in exact.items():
+        units = np.abs(x[:, k] - want) / (rtol * np.abs(want) + rtol)
+        assert units.max() <= 1.0, (k, units.max())
+
+
+# Two slides on thresholds that both rise with one counter clock C: S1 rises at
+# 4.19 to 1 + 2.08*C and is pushed back at 0.80, S2 rises at 2.76 to 1 + 0.78*C
+# and is pushed back at 0.34 (a random pair of the two-slide sweep, case 80).
+_SLIDES_ON_ONE_CLOCK_NET = """\
+begin parameters
+    1 up1 4.192
+    2 dn1 0.802
+    3 c1  2.08
+    4 up2 2.758
+    5 dn2 0.338
+    6 c2  0.777
+    7 one 1.0
+end parameters
+begin functions
+    1 f1() if(S1obs<1+c1*Cobs,up1,-dn1)
+    2 r1() if(S1obs<1+c1*Cobs,1,0)
+    3 f2() if(S2obs<1+c2*Cobs,up2,-dn2)
+    4 r2() if(S2obs<1+c2*Cobs,1,0)
+end functions
+begin species
+    1 S1() 0
+    2 Y1() 0
+    3 S2() 0
+    4 Y2() 0
+    5 C() 0
+end species
+begin reactions
+    1 0 1 f1
+    2 0 2 r1
+    3 0 3 f2
+    4 0 4 r2
+    5 0 5 one
+end reactions
+begin groups
+    1 S1obs 1
+    2 S2obs 3
+    3 Cobs 5
+end groups
+"""
+
+
+def test_two_slides_on_one_counter_clock_are_both_stepped_along(tmp_path):
+    """Both thresholds read the counter C, and each S's rate is one constant
+    on either side of its surface, so the probes read S1 as a constant-rate
+    species like C itself, and S1's slide was moved onto its surface along
+    C. The second slide, whose threshold reads C too, was then never apart
+    from the first, was held, and chattered: 295,230 steps in the sweep's
+    run, whose slides alone take 48 and 22, and main takes 190,794 on this
+    pair at rtol 1e-4 and times out on the sweep's. A species whose rate reads a
+    species is no clock (Impl::exact_species), and a slide's axis is one the
+    switch's flows move."""
+    model = _write(tmp_path, _SLIDES_ON_ONE_CLOCK_NET)
+    ts = np.linspace(0.0, 10.0, 21)
+    rtol = 1e-4
+    result = bngsim.Simulator(model).run(sample_times=ts, rtol=rtol, atol=rtol, timeout=60)
+    assert result.solver_stats["n_steps"] < 500
+    x = np.asarray(result.species)
+    for k, (up, dn, c) in enumerate(((4.192, 0.802, 2.08), (2.758, 0.338, 0.777))):
+        t_on = 1.0 / (up - c)
+        s_exact = np.where(ts <= t_on, up * ts, 1.0 + c * ts)
+        y_exact = np.where(ts <= t_on, ts, t_on + (dn + c) / (up + dn) * (ts - t_on))
+        for got, want in ((x[:, 2 * k], s_exact), (x[:, 2 * k + 1], y_exact)):
+            units = np.abs(got - want) / (rtol * np.abs(want) + rtol)
+            assert units.max() <= 1.0, (k, units.max())
+
+
+# #1608's random slide 547: S rises at up*e^(-lam*t) to S = 1 on a counter
+# clock's threshold, and is pushed back at dn above it, beside two idle species.
+_ARRIVING_SLIDE_NET = """\
+begin parameters
+    1 up  0.8673051550745029
+    2 dn  1.3842548308836475
+    3 lam 0.7887791623816267
+    4 one 1.0
+end parameters
+begin functions
+    1 thr() 1+0.0*Cobs
+    2 u() up*exp(-lam*time())
+    3 f() if(Sobs<thr(),u(),-dn)
+    4 r() if(Sobs<thr(),1,0)
+end functions
+begin species
+    1 S() 0
+    2 Y() 0
+    3 C() 0
+    4 P() 1
+    5 Q() 0
+end species
+begin reactions
+    1 0 1 f
+    2 0 2 r
+    3 0 3 one
+end reactions
+begin groups
+    1 Sobs 1
+    2 Cobs 3
+end groups
+"""
+
+
+@pytest.mark.parametrize("rtol", [1e-3, 1e-4])
+def test_a_slide_arriving_at_a_loose_tolerance_stays_on_its_surface(tmp_path, rtol):
+    """S reaches its surface at t = 3.0452. At rtol 1e-3 the step that
+    arrived crossed and came back, each crossing declined, and the run
+    stepped on: CVODE's history carried the push back past the surface, and
+    S fell to 0.98886 at t = 3.1193, 11 units below it, before the fourth
+    decline in a row that #1608 waited for came. A slide is now asked at
+    the first crossing declined. At rtol 1e-4 no step's end crossed: the
+    Newton iterates of the arriving steps landed past the surface, the push
+    back got into the steps, and S fell 8.3 units below it before the 64th
+    step that slide_from_a_crawl's counts wait for. A residual that turns
+    away from its nearest approach by more than its band is now asked about
+    at once. Either way S stays on its surface from its arrival."""
+    model = _write(tmp_path, _ARRIVING_SLIDE_NET)
+    ts = np.linspace(0.0, 14.17854469474545, 401)
+    result = bngsim.Simulator(model).run(sample_times=ts, rtol=rtol, atol=rtol * 1e-2)
+    up, lam = 0.8673051550745029, 0.7887791623816267
+    t_on = -math.log(1.0 - lam / up) / lam
+    s_exact = np.where(ts < t_on, up / lam * (1.0 - np.exp(-lam * ts)), 1.0)
+    got = np.asarray(result.species)[:, 0]
+    units = np.abs(got - s_exact) / (rtol * s_exact + rtol * 1e-2)
+    assert units[ts > t_on].max() <= 2.0, units[ts > t_on].max()
+
+
 # A threshold that falls past S = 1.2, from 1.5 to 1 around tp, closes the
 # window S < thr() at t_close = tp + sig*atanh(0.2). Y integrates a Gaussian
 # pulse while the window is open; the pulse is centred half its width after

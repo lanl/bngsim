@@ -325,6 +325,13 @@ class NetworkModel {
     // holds it across either takes a copy.
     const ReadPlan &trigger_read_plan() const;
 
+    // read_plan() over `expr_ids`, found once and kept on the model under those
+    // ids, and dropped where trigger_read_plan()'s is (issue #1623: the plan of
+    // a run's state-switch residuals, found on every run, was a third of a
+    // short run). The reference holds until the plans are dropped, so a
+    // caller that holds it across a change to a function body takes a copy.
+    const ReadPlan &kept_read_plan(const std::vector<int> &expr_ids) const;
+
     // At time `t`, with the species as the caller wrote them (`conc`): the
     // observables and function groups of `plan`, as update_observables(conc)
     // and evaluate_functions(t) leave them. Every other slot keeps its value.

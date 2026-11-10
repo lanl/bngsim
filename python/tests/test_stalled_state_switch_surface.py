@@ -260,6 +260,33 @@ def test_a_threshold_on_a_counter_whose_crossing_stop_is_stood_down():
     )
 
 
+def test_a_stall_the_look_watches_is_left_to_cvodes_batches():
+    """The same fixture at rtol = atol = 1e-8. The step collapses at t =
+    68.3718 to h = 2.3e-15, so t + h == t, while the look (#998) watches the
+    stretch a step a call. A watched call ends no batch, and a spent batch is
+    what puts a pinned state across (#928): the run was stepped in place 2,000
+    times (kLookWatchMost), 12,193 steps in all, before the look let the
+    stretch go. A step that does not move the time now ends the watch, as it
+    did in a run with sensitivities (#1610), and the batch after it carries
+    the state across: 10,407 steps, the batch of max_steps among them, and the
+    same states as the run as written (issue #1623)."""
+    from pathlib import Path
+
+    net = Path(__file__).resolve().parent.parent.parent / "tests" / "data"
+    net = net / "switch_discontinuity_stall.net"
+    kw = dict(t_span=(0.0, 100.0), n_points=11, rtol=1e-8, atol=1e-8)
+    as_written = bngsim.Simulator(bngsim.Model.from_net(str(net)), method="ode").run(**kw)
+    model = bngsim.Model.from_net(str(net))
+    assert model.time_discontinuity_conditions() == ("t>=sigma",)
+    model._derived_time_disc_conditions = ()
+    stood_down = bngsim.Simulator(model, method="ode").run(**kw)
+    assert stood_down.solver_stats["n_steps"] < 11_000
+    want = np.asarray(as_written.species)
+    np.testing.assert_allclose(
+        np.asarray(stood_down.species), want, rtol=1e-9, atol=1e-9 * np.abs(want).max()
+    )
+
+
 SUM = """begin parameters
     1 eps {eps!r}
     2 thr {thr!r}

@@ -446,3 +446,49 @@ def test_a_plain_sbml_run_resting_on_its_gate_is_refused(times):
     with pytest.raises(bngsim.SimulationError, match=REFUSED) as info:
         sim.run(sample_times=times, rtol=1e-8, atol=1e-8)
     assert "'(B)-(1e-09)'" in str(info.value)
+
+
+# S never moves (it is made and used by nothing), and thr() falls past nothing:
+# from 1.01 to 1 around t = 30.03, settling 0.0022 above S. Y's rate is 10
+# while S < thr(), so the whole run (#1597's stiff sweep, case 308).
+STILL_BESIDE = """begin parameters
+    1 k   10.0
+    2 tp  30.028149168667564
+    3 kf  1000000.0
+    4 kr  500000.0
+end parameters
+begin functions
+    1 thr() 1+0.005*(1+tanh(-(time()-tp)/0.0005))
+    2 r() if(Sobs<thr(),k,0)
+end functions
+begin species
+    1 S() 0.9977951597346537
+    2 Y() 0
+    3 P() 1.0
+    4 Q() 0.0
+end species
+begin reactions
+    1 0 2 r
+    2 3 4 kf
+    3 4 3 kr
+end reactions
+begin groups
+    1 Sobs 1
+end groups
+"""
+
+
+def test_a_species_that_never_moves_beside_a_settled_threshold_runs(tmp_path):
+    """At rtol 1e-3, S is 0.0022 below thr() once it settles, inside the bar
+    of 0.009 the tolerance leaves the residual, and neither side's flow moves
+    it: the run was refused as at rest on the surface. But S never moves, and
+    BDF integrates a species at one constant rate exactly, so its side is the
+    model's to say and not rounding's. Such a species is read at its rounding
+    in the bar (Impl::rate_constant, issue #1623), and the run returns Y =
+    10.5. A species the run does move, resting there, is refused as before."""
+    path = tmp_path / "still.net"
+    path.write_text(STILL_BESIDE)
+    result = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode").run(
+        sample_times=[30.0, 31.05], rtol=1e-3, atol=1e-5
+    )
+    assert float(result.species[-1][1]) == pytest.approx(10.5, rel=1e-6)
