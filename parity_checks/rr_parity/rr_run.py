@@ -41,11 +41,14 @@ the first raise), so a failure is attributed to the engine that caused it:
 REFERENCE_FAILED and BAD_TEST are auto-derived (never a manual list), so a model
 *leaving* either bucket — because RoadRunner gained support, or bngsim/the
 loader was fixed — is a visible win on the next run. EXCEPTION now means *only*
-"bngsim raised but the reference succeeded" = a real bngsim defect. The one
-authored way into BAD_TEST is an INVALID_REFERENCE override, for the case the
-raised-vs-not taxonomy cannot see: a reference that *ran* and answered NaN. It
-self-stales the moment that stops being true, so it cannot pin a row there
-either (``overrides.py``, ``_apply_invalid_reference``).
+"bngsim raised but the reference succeeded" = a real bngsim defect. Two
+authored overrides lead into BAD_TEST, each for a case the raised-vs-not
+taxonomy cannot see. INVALID_REFERENCE: a reference that *ran* and answered
+NaN. It self-stales the moment that stops being true, so it cannot pin a row
+there either (``overrides.py``, ``_apply_invalid_reference``). NO_GROUND_TRUTH:
+both engines ran, and neither agrees with itself as the tolerance tightens, so
+the comparison checks nothing; a non-finite DIFF keeps scoring
+(``_apply_no_ground_truth``).
 
 Each REFERENCE_FAILED row is further sub-classified by WHY RoadRunner refused
 (``JobResult.reference_refusal``, via ``classify_reference_refusal``), because
@@ -78,6 +81,7 @@ import datetime as _dt
 import gc
 import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -153,6 +157,66 @@ def _job_overrides(
             v = o.value if isinstance(o.value, dict) else {}
             adjudication = (v.get("verdict") or "confirm", o.reason, v.get("issue"))
     return tol, artifact, invalid_ref, adjudication
+
+
+def _job_no_ground_truth(job) -> tuple[str, str | None] | None:
+    """``(reason, issue)`` from a job's ``no_ground_truth`` Override, or None.
+
+    Read apart from ``_job_overrides`` so that reader's four-tuple, which other
+    code unpacks and stubs, stays as it is. See ``overrides.NO_GROUND_TRUTH``.
+    """
+    for o in job.overrides:
+        if o.field == "no_ground_truth":
+            issue = (o.value or {}).get("issue") if isinstance(o.value, dict) else None
+            return o.reason, issue
+    return None
+
+
+# How a NO_GROUND_TRUTH row's comment begins; generate_matrix.py reads it to draw
+# such a BAD_TEST as what it is rather than as two engines that refused the model.
+NO_GROUND_TRUTH_LABEL = "no ground truth"
+
+
+def _apply_no_ground_truth(
+    outcome, value, reason: str, issue, comment: str
+) -> tuple[Outcome, str, bool]:
+    """Resolve a NO_GROUND_TRUTH entry against one job's natural result.
+
+    Returns ``(outcome, comment, applied)``. Both engines ran and no tolerance
+    makes either agree with itself over the horizon, so neither is an oracle: a
+    ``DIFF`` or a ``PASS`` becomes ``BAD_TEST`` (non-scoring), with the reason and
+    the natural verdict in the comment.
+
+    Not applied, and the row kept as it is with a note, when:
+
+      * the row is a ``DIFF`` whose metric is not finite. That is not two answers
+        drifting apart but a grid or species mismatch, or non-finite output: what
+        a loader regression on this model would look like, so it keeps scoring
+        (#1565's rule, from the AMICI suite);
+      * the engines were not compared at all (EXCEPTION, REFERENCE_FAILED,
+        TIMEOUT, BAD_TEST): a bngsim raise stays a visible, scoring row, and a
+        timeout falsifies nothing, so the entry is inapplicable, not stale.
+    """
+    tag = f" ({issue})" if issue else ""
+    finite = value is None or math.isfinite(value)
+    if outcome in (Outcome.DIFF, Outcome.PASS) and (outcome == Outcome.PASS or finite):
+        note = f"{NO_GROUND_TRUTH_LABEL}{tag}: {reason} | was {outcome}"
+        if value is not None:
+            note += f" at max_rel={value:.4g}"
+        return Outcome.BAD_TEST, note + (f" | {comment}" if comment else ""), True
+    if outcome == Outcome.DIFF:
+        why = (
+            f"max_rel={value} is not two answers drifting apart (grid or species "
+            "mismatch, or non-finite output); re-triage"
+        )
+    else:
+        why = f"natural={outcome}, no comparison was made"
+    return (
+        outcome,
+        (f"{comment} | " if comment else "")
+        + f"{NO_GROUND_TRUTH_LABEL} entry{tag} did not apply: {why}",
+        False,
+    )
 
 
 # The shared tight integration tolerance (rc.DEFAULT_RTOL/ATOL) is forced on BOTH
@@ -712,7 +776,9 @@ _OUTCOME = {
 }
 
 
-def _make_progress(artifacts: dict[str, tuple[str, str | None]]):
+def _make_progress(
+    artifacts: dict[str, tuple[str, str | None]], no_truth: frozenset[str] = frozenset()
+):
     """Progress printer that flags a known-artifact DIFF as it will be reclassified.
 
     The worker reports the raw cross-engine verdict (it knows nothing about the
@@ -735,6 +801,8 @@ def _make_progress(artifacts: dict[str, tuple[str, str | None]]):
         }.get(st, st)
         if st == "diff" and res.get("key") in artifacts:
             tag = "DIFF→PASS*"  # known artifact; reclassified in the report
+        elif st in ("pass", "diff") and res.get("key") in no_truth:
+            tag = f"{tag}→BADTEST*"  # no ground truth; reclassified in the report
         extra = ""
         if st in ("pass", "diff") and res.get("value") is not None:
             extra = f" {res['metric']}={res['value']:.3g}"
@@ -903,6 +971,7 @@ def main() -> int:
     artifacts: dict[str, tuple[str, str | None]] = {}  # key -> (reason, issue)
     invalid_refs: dict[str, tuple[str, str | None]] = {}  # key -> (reason, issue)
     adjudications: dict[str, tuple[str, str, str | None]] = {}  # key -> (verdict, reason, issue)
+    no_truth: dict[str, tuple[str, str | None]] = {}  # key -> (reason, issue)
     n_tol_ov = 0
     # The selected combo's overrides, threaded onto every spec so each spawned
     # worker applies them itself (env + force_dense kwarg) — see _CONFIG_COMBOS.
@@ -932,6 +1001,9 @@ def main() -> int:
             invalid_refs[key] = invalid_ref
         if adjudication:
             adjudications[key] = adjudication
+        ngt = _job_no_ground_truth(j)
+        if ngt:
+            no_truth[key] = ngt
         specs.append(
             {
                 "key": key,
@@ -974,7 +1046,7 @@ def main() -> int:
         _worker,
         workers=args.workers,
         timeout_of=_kill_after,
-        on_done=_make_progress(artifacts),
+        on_done=_make_progress(artifacts, frozenset(no_truth)),
     )
     elapsed = time.perf_counter() - t0
 
@@ -985,6 +1057,8 @@ def main() -> int:
     n_stale_invalid_ref = 0
     n_adjudicated = 0
     n_stale_adjudication = 0
+    n_no_truth = 0
+    n_no_truth_inapplicable = 0
     now = _dt.datetime.now().isoformat(timespec="seconds")
     for r in raw:
         outcome = _OUTCOME.get(r.get("status"), Outcome.EXCEPTION)
@@ -1039,6 +1113,18 @@ def main() -> int:
             )
             n_stale_invalid_ref += int(stale)
             n_invalid_ref += int(not stale)
+        # No ground truth: both engines ran, and neither agrees with itself as the
+        # tolerance tightens, so a DIFF or PASS here checked nothing -> BAD_TEST.
+        # A non-finite DIFF and an uncompared row are left as they are (see
+        # _apply_no_ground_truth); so is an archive-refused row, like the two above.
+        ngt = None if archive_refused else no_truth.get(r.get("key"))
+        if ngt:
+            reason, issue = ngt
+            outcome, comment, applied = _apply_no_ground_truth(
+                outcome, r.get("value"), reason, issue, comment
+            )
+            n_no_truth += int(applied)
+            n_no_truth_inapplicable += int(not applied)
         # Sub-classify a REFERENCE_FAILED row by WHY the reference refused, so a
         # later run skips the settled cases (RR over-strict on a valueless param
         # bngsim correctly accepts) and only re-triages the unverified ones
@@ -1168,12 +1254,16 @@ def main() -> int:
             "stale_invalid_reference": n_stale_invalid_ref,
             "no_oracle_adjudicated": n_adjudicated,
             "stale_no_oracle_adjudication": n_stale_adjudication,
+            "no_ground_truth_reclassified": n_no_truth,
+            "no_ground_truth_inapplicable": n_no_truth_inapplicable,
             "note": (
                 "Overrides are read from Job.overrides (baked by build_*_jobs.py "
                 "from overrides.py). A tol override applies a per-model rtol/atol "
                 "to BOTH engines; a known_artifact reclassifies a DIFF to PASS, an "
                 "invalid_reference reclassifies an EXCEPTION/BAD_TEST to BAD_TEST "
-                "(reference ran but non-finite), and a no_oracle_adjudicated marks a "
+                "(reference ran but non-finite), a no_ground_truth reclassifies a "
+                "DIFF/PASS to BAD_TEST (no tolerance pins either engine over the "
+                "horizon), and a no_oracle_adjudicated marks a "
                 "REFERENCE_FAILED row's refusal class SETTLED (verdict confirm/"
                 "uncoverable, independent oracle, #1559) without changing the "
                 "non-scoring outcome — all with the reason in JobResult.comment. "
@@ -1220,6 +1310,8 @@ def main() -> int:
         or n_stale_invalid_ref
         or n_adjudicated
         or n_stale_adjudication
+        or n_no_truth
+        or n_no_truth_inapplicable
     ):
         bits = []
         if n_tol_ov:
@@ -1244,6 +1336,10 @@ def main() -> int:
                 f"{n_stale_adjudication} STALE no-oracle-adjudication "
                 f"entr{'y' if n_stale_adjudication == 1 else 'ies'}"
             )
+        if n_no_truth:
+            bits.append(f"{n_no_truth} no-ground-truth →BAD_TEST")
+        if n_no_truth_inapplicable:
+            bits.append(f"{n_no_truth_inapplicable} no-ground-truth not applied")
         print("  overrides: " + ", ".join(bits))
     if refusal_breakdown:
         parts = [

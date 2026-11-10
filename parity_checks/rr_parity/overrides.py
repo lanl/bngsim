@@ -1,6 +1,6 @@
 """Per-model parity overrides for the rr_parity (bngsim-vs-RoadRunner) suite.
 
-The SBML analog of ``bng_parity/overrides.py``. Three kinds of authored
+The SBML analog of ``bng_parity/overrides.py``. Five kinds of authored
 deviation-from-default, each keyed by the suite's job key ``"model_id:method"``
 (a model can be both an ODE and an SSA job, and an override usually scopes to
 one regime — BIOMD19's ODE divergence is unrelated to its SSA behaviour, a
@@ -49,6 +49,23 @@ sub-particle SSA artifact says nothing about the ODE run):
                     ``parity_checks/tests/test_no_oracle_adjudications.py``
                     (#1559), and an ``uncoverable`` one by its own test.
 
+  NO_GROUND_TRUTH — both engines ran, and over the job's horizon the model has no
+                    solution that a double-precision integrator can follow: no
+                    tolerance makes either engine agree with ITSELF, so neither
+                    answer is an oracle and their agreement or disagreement says
+                    nothing about either. A DIFF or a PASS on this key is
+                    reclassified to ``Outcome.BAD_TEST`` (non-scoring), with the
+                    reason in ``JobResult.comment`` under the label "no ground
+                    truth". Not a KNOWN_ARTIFACT, which scores PASS and so claims
+                    bngsim was checked; not a DIFF, which claims it diverged from
+                    a valid oracle. A DIFF whose metric is not finite (a grid or
+                    species mismatch, or non-finite output: what a loader
+                    regression looks like) keeps its scoring DIFF, and any other
+                    outcome is left as it is (#1565's rule, from the AMICI suite's
+                    NO_GROUND_TRUTH). Each entry MUST cite the convergence study
+                    that shows it, run from this repository by
+                    ``parity_checks/tests/test_rr_known_artifact_evidence.py``.
+
   TOL_OVERRIDES   — a per-model integration tolerance (rtol/atol) applied
                     IDENTICALLY to both engines, for an ill-conditioned IVP where
                     the two engines diverge from *each other* at the shared
@@ -62,8 +79,9 @@ to a specific engine stays a DIFF (honestly flagged) and goes on the triage
 list, NOT here. (Example handled this way: BIOMD0000000019 ODE — all-hOSU=true
 across V≠1 compartments with cross-compartment bimolecular reactions; the
 v0.9.10 hOSU/V≠1 fix only covered the single-compartment Elementary path, so
-this is a *suspected bngsim loader bug*, not an accepted artifact. See
-``dev/notes/rr_parity_triage.md``.)
+it was held as a *suspected bngsim loader bug*, not an accepted artifact. It
+passes on its own on the nightly now. The triage note this paragraph used to
+cite was never in this repository.)
 
 build_ode_jobs.py / build_ssa_jobs.py bake ``overrides_for(model_id, method)``
 into each ``Job.overrides`` (first-class ``Override`` records, so the committed
@@ -80,8 +98,14 @@ from __future__ import annotations
 # --------------------------------------------------------------------------- #
 KNOWN_ARTIFACT: dict[str, dict] = {
     # ── ODE artifacts attributed during the 2026-05-29 rr_parity DIFF triage ──
-    # (28-REAL ledger, dev/notes/rr_parity_diff_resolution.md §🅰). Each was
-    # third-oracle attributed to a non-bngsim cause; none masks a bngsim defect.
+    # That triage's ledger and notes were never committed to this repository, so
+    # the entries it left are re-derived here from evidence that runs from it.
+    # BIOMD0000000879 and MODEL7908934508 survive, each now settled by RoadRunner
+    # run so that it cannot step over a pulse (a fine output grid for 879, a
+    # bounded step for MODEL7908934508). BIOMD0000000373, 376, 682 and MODEL2310250001
+    # moved to NO_GROUND_TRUTH on 2026-11-10: no tolerance makes either engine
+    # agree with itself over their horizons, so their PASS checked nothing.
+    # parity_checks/tests/test_rr_known_artifact_evidence.py runs all six.
     #
     # BIOMD0000000342:ode and MODEL2012040002:ode — RETIRED 2026-11-02 (GH #1288),
     # stale since libRoadRunner 2.11.0 (#1349) and the reference-data-v4 record
@@ -91,88 +115,48 @@ KNOWN_ARTIFACT: dict[str, dict] = {
     # init([TGF_beta_ex]) = 0 in BIOMD342 despite initialConcentration=0.05 (bngsim
     # honored the literal SBML), and ignored constant=true on MODEL2012040002's
     # species mw8449...0055ce, depleting it to ~155 where bngsim held it at 1000.
-    "BIOMD0000000373:ode": {
-        "issue": None,
-        "reason": (
-            "Long-horizon oscillator phase drift (no engine attributable). "
-            "reldiv 0.0 at t=5000; only at the full t=7e5 horizon do the curves "
-            "separate, and there the bn/rr amplitude ranges match — only the "
-            "phase differs (worst 'n', relmax 0.987). A property of a sensitive "
-            "limit-cycle IVP, not a loader divergence."
-        ),
-    },
-    "BIOMD0000000376:ode": {
-        "issue": None,
-        "reason": (
-            "Long-horizon oscillator phase drift (no engine attributable). "
-            "reldiv 0.0 at t=5000; at full t=6e5 the amplitude ranges match and "
-            "only the phase differs (worst 'n', relmax 0.830). Sensitive "
-            "limit-cycle IVP, same class as BIOMD0000000373."
-        ),
-    },
-    "BIOMD0000000682:ode": {
-        "issue": None,
-        "reason": (
-            "Oscillator phase drift (no engine attributable). Beta-cell bursting "
-            "(HH-style); reldiv 0.0 at t=5000, and at full t=6e5 the min/max are "
-            "*identical* [0.00011, 0.1139] between engines — pure phase offset "
-            "(worst 'n', relmax 0.755). Not a loader divergence."
-        ),
-    },
-    "MODEL2310250001:ode": {
-        "issue": None,
-        "reason": (
-            "Unstable IVP / integrator behaviour (no engine attributable). BOTH "
-            "engines blow up to ~-5e16 and agree within 6% (relmax 0.061, barely "
-            "over the 0.05 ceiling, worst _6PG_0). This is integrator behaviour "
-            "on an exploding solution, not a loader defect."
-        ),
-    },
     "BIOMD0000000879:ode": {
         "issue": 72,
         "reason": (
-            "RoadRunner grid/tol-dependent on a narrow-pulse forcing (bngsim "
-            "correct, oracle-confirmed). Rodrigues2019 chemoimmunotherapy of "
-            "CLL: the chemo schedule is a piecewise-in-time assignment rule with "
-            "7 infusions each only 0.125 t-units wide (t=0,21,42,63,84,105,126) — "
-            "narrow RHS discontinuities an adaptive integrator can step over at a "
-            "coarse output grid. bngsim now registers each time threshold as a "
-            "root (GH #72) so it resolves every pulse and is grid-independent. "
-            "RoadRunner's result at the dt=2 sweep grid instead diverges and "
-            "converges to bngsim's when its grid is refined or tol tightened "
-            "(OBSERVED behavior — RR source not inspected, so no mechanism is "
-            "asserted). Worst cell N at t=42: bngsim 5.118e9 vs RR 1.18e10 (reld "
-            "0.334, invariant across rtol 1e-9..1e-11 — NOT a tolerance "
-            "artifact). Third-oracle attribution: (1) a segmented SciPy LSODA "
-            "integration with the pulse edges as exact breakpoints gives "
-            "N(2000)~2.49 / N(42)~5.18e9, the immune-controlled branch bngsim "
-            "reproduces; (2) RoadRunner ON A FINE GRID (dt=0.1) matches bngsim to "
-            "4+ sig figs (N(42)=5.118e9 both) — i.e. RR's coarse-grid value is "
-            "the outlier. bngsim's pre-#72 escape to N~9.6e11 (carrying capacity "
-            "k=1e12) was the real defect, now fixed. Tolerance override cannot "
-            "help (the RR divergence is grid-, not purely tol-, sensitive). See "
-            "dev/notes/rr_parity_triage.md."
+            "RoadRunner steps over narrow dose pulses (bngsim correct, "
+            "oracle-confirmed). Rodrigues2019 chemoimmunotherapy of CLL: "
+            "Chemotherapy_Input, a piecewise-in-time assignment rule, is 8640 during "
+            "seven infusions 0.125 wide (t = 0, 21, 42, 63, 84, 105, 126) and 0 "
+            "otherwise. bngsim registers each threshold as a root (GH #72) and resolves "
+            "every pulse: N(42) = 5.11805e9 at every rtol from 1e-9 to 1e-12. "
+            "RoadRunner as rr_run runs it gives N(42) = 1.1795e10 at the same "
+            "tolerances (max_rel_err 0.334); a wrong value that tightening does not "
+            "move is a feature never sampled. Oracle: RoadRunner at the suite's "
+            "tolerance sampled every 0.025 and every 0.01, which it must stop at, so no "
+            "step crosses a pulse, then thinned to the job's grid. The two agree "
+            "(err/movement 2.5e-9), bngsim passes against both (8.0e-9 and 5.6e-9), and "
+            "RoadRunner's own run fails against them. A bounded maximum_time_step is no "
+            "use here: with it RoadRunner stalls (CV_TOO_MUCH_WORK) near some dose "
+            "onsets at some tolerances. "
+            "parity_checks/tests/test_rr_known_artifact_evidence.py runs this. The "
+            "entry's earlier evidence was a triage note never committed to this "
+            "repository."
         ),
     },
     "MODEL7908934508:ode": {
         "issue": 72,
         "reason": (
-            "RoadRunner tol/grid-dependent on a narrow stimulus pulse (bngsim "
-            "correct). Reisert2003 olfactory CNG/Ca-CaM model; `kp_act` is a "
-            "piecewise-in-time stimulus = 5.5 during (0.1,0.2) and (4.1,4.2), "
-            "else 1.6e-5 — two 0.1-wide activation pulses, far narrower than the "
-            "invented-horizon dt=1 output grid. With the #72 discontinuity roots "
-            "bngsim resolves both pulses at any tol/grid (tol-stable: "
-            "CaM4(t=1)=6.05e-6, identical at rtol 1e-9 and 1e-10). RoadRunner at "
-            "the dt=2/sweep tol instead returns CaM4(t=1)=2e-17 (worst reld 1.0 "
-            "on the near-zero CNG channel) but recovers the SAME 6.05e-6 when its "
-            "tol is tightened to 1e-10/1e-16 OR the grid is refined — i.e. RR's "
-            "coarse/loose value is the outlier and bngsim matches "
-            "RR-at-higher-resolution (OBSERVED; RR source not inspected). Pre-#72 "
-            "bngsim also did not resolve the pulses and so PASSed by matching "
-            "RR's coarse result; resolving them is the correctness improvement. "
-            "TOL_OVERRIDE not used (the DIFF is RR grid-, not purely tol-, "
-            "sensitive). See dev/notes/rr_parity_triage.md."
+            "RoadRunner steps over narrow stimulus pulses (bngsim correct, "
+            "oracle-confirmed). Reidl2006 calcium oscillation in olfactory cilia: "
+            "kp_act, a piecewise-in-time assignment rule, is 5.5 during (0.1, 0.2) "
+            "and (4.1, 4.2) and 1.6e-5 otherwise, on an invented dt = 1 output "
+            "grid. bngsim registers the thresholds as roots (GH #72) and resolves "
+            "both pulses. RoadRunner as rr_run runs it steps over them: CaM4(1) = "
+            "2.0e-17 where the solution is 6.05e-6 (max_rel_err 1.0). Oracle: "
+            "RoadRunner with maximum_time_step 0.05 and 0.01, each under half a "
+            "pulse, at the suite's tolerance. The two agree (err/movement 7.2e-5), "
+            "bngsim passes against both (1.1e-3 and 9.8e-4; CaM4(1) = 6.0487e-6 "
+            "against 6.0492e-6), and RoadRunner's own run fails against them. At "
+            "rtol 1e-12, atol 1e-18 the bounds 0.01, 0.002 and 0.0005 agree to "
+            "1e-5 (CaM4(1) = 6.04919e-6), and bngsim at that tolerance matches. "
+            "parity_checks/tests/test_rr_known_artifact_evidence.py runs this. The "
+            "entry's earlier evidence was a triage note never committed to this "
+            "repository."
         ),
     },
     "BIOMD0000000627:ode": {
@@ -577,21 +561,127 @@ NO_ORACLE_ADJUDICATED: dict[str, dict] = {
 }
 
 
+# --------------------------------------------------------------------------- #
+# No ground truth over the job's horizon -> a DIFF or PASS becomes BAD_TEST.
+# Keyed "model_id:method". `issue` is optional.
+# --------------------------------------------------------------------------- #
+# Both engines ran, and no tolerance makes either one agree with itself, so
+# neither trajectory is an oracle: a PASS would claim bngsim was checked, and a
+# DIFF that it diverged from a valid reference. Mirrors the AMICI suite's
+# NO_GROUND_TRUTH (amici_dispositions.py), including #1565's rule that a DIFF
+# whose metric is not finite keeps scoring. Each entry MUST cite a convergence
+# study that runs from this repository: parity_checks/tests/
+# test_rr_known_artifact_evidence.py runs one for every key here.
+#
+# All four were KNOWN_ARTIFACT entries until 2026-11-10, scored PASS with "no
+# engine attributable", on a triage note never committed to this repository.
+NO_GROUND_TRUTH: dict[str, dict] = {
+    "BIOMD0000000373:ode": {
+        "issue": None,
+        "reason": (
+            "Bertram2004 pancreatic beta cell (model B), 7 rate rules, bursting with "
+            "glycolytic oscillations, over the SED-ML figure's t_end = 7e5. Neither "
+            "engine agrees with itself at any tolerance it accepts: bngsim's runs at "
+            "rtol 1e-14 and 1e-15 (atol 1e-20) DIFF (err/movement 0.69), RoadRunner's "
+            "at 1e-13 and 1e-14 DIFF (0.74), and the engines' 1e-15 runs DIFF (0.52); "
+            "both refuse 1e-16. Each tenfold tightening from 1e-9 to 1e-13 moves the "
+            "time where successive runs first part by 1% of a range only from 1.26e4 to "
+            "2.94e4, so the phase out to 7e5 is pinned by no tolerance a double can "
+            "hold. The engines agree at the suite's tolerance up to t = 1.19e4. "
+            "Formerly a KNOWN_ARTIFACT, 'long-horizon oscillator phase drift'. "
+            "parity_checks/tests/test_rr_known_artifact_evidence.py runs this study."
+        ),
+    },
+    "BIOMD0000000376:ode": {
+        "issue": None,
+        "reason": (
+            "Bertram2007 islet cell oscillations, 11 rate rules, over the SED-ML "
+            "figure's t_end = 6e5. Neither engine agrees with itself at any tolerance "
+            "it accepts: bngsim's runs at rtol 1e-14 and 1e-15 (atol 1e-20) DIFF "
+            "(err/movement 0.034), and RoadRunner's at 1e-13 and 1e-14 (0.16) and at "
+            "1e-14 and 1e-15 (0.018); both refuse 1e-16. The runs close in as the "
+            "tolerance tightens, and the engines' 1e-15 runs agree (8.7e-5), but that "
+            "moves to 2.6e-3 at atol 1e-24, and both engines are CVODE BDF, so it is "
+            "not independent evidence; under the suite's verdict nothing has converged. "
+            "The engines agree at the suite's tolerance up to t = 6.6e3. Formerly a "
+            "KNOWN_ARTIFACT, 'long-horizon oscillator phase drift'. "
+            "parity_checks/tests/test_rr_known_artifact_evidence.py runs this study."
+        ),
+    },
+    "BIOMD0000000682:ode": {
+        "issue": None,
+        "reason": (
+            "Wierschem2004 electrical bursting in pancreatic islets, 5 rate rules, over "
+            "the SED-ML figure's t_end = 6e5. Neither engine agrees with itself at any "
+            "tolerance it accepts: bngsim's runs at rtol 1e-14 and 1e-15 (atol 1e-20) "
+            "DIFF (err/movement 0.97), RoadRunner's at 1e-13 and 1e-14 DIFF (0.87; it "
+            "fails at 1e-15), and the engines' 1e-14 runs DIFF (0.92). Successive runs "
+            "first part by 1% of a range near t = 2.2e5 at every rtol from 1e-9 to "
+            "1e-13, and the engines agree at the suite's tolerance up to t = 2.18e5. "
+            "Formerly a KNOWN_ARTIFACT, 'oscillator phase drift'. "
+            "parity_checks/tests/test_rr_known_artifact_evidence.py runs this study."
+        ),
+    },
+    "MODEL2310250001:ode": {
+        "issue": None,
+        "reason": (
+            "Millard2023 gluconolactone-gluconate bypass in E. coli, over an "
+            "invented t_end = 100. Every rate is isotopic_irreversible(v, S, "
+            "Stot) = v*S/Stot, and uptake is zero-order, so while biomass X grows "
+            "exponentially (to 2.3e16) the extracellular glucose and gluconate "
+            "totals are driven through 0 between t = 8 and 9 and on to -4.9e17 "
+            "and -7.3e32. S/Stot is singular where Stot crosses 0, and past that "
+            "the gluconate isotopologue split is repelled from its source's at a "
+            "rate that grows as 1/|Stot|: it has no unique solution. So GNT_e_0/1 "
+            "and _6PG_0/1, which it feeds, converge at no tolerance in either "
+            "engine (at rtol 1e-12 against 1e-13 they move by 0.23 to 11 times "
+            "their range; GNT_e_0(100) is -6.5e31 in bngsim at 1e-9, +4.9e31 at "
+            "1e-11), "
+            "and GAP_0/1 and PYR_0/1 downstream by up to 10%. The other 17 "
+            "columns, the totals among them, converge in both engines and agree "
+            "(within 2.1e-5 of their range), and every column agrees through t = "
+            "8. Formerly a KNOWN_ARTIFACT, 'both engines blow up to ~-5e16 and "
+            "agree within 6%' (max_rel_err is 0.34 now). parity_checks/tests/"
+            "test_rr_known_artifact_evidence.py runs this study."
+        ),
+    },
+}
+
+
 def overrides_for(model_id: str, method: str) -> list[dict]:
     """All overrides authored for ``model_id:method`` as {field, value, reason} dicts.
 
     ``field="tol"`` -> ``value={"rtol":..,"atol":..}`` (both engines);
     ``field="known_artifact"`` -> ``value={"issue":..}`` (reason in ``reason``);
     ``field="invalid_reference"`` -> ``value={"issue":..}`` (reason in ``reason``);
+    ``field="no_ground_truth"`` -> ``value={"issue":..}`` (reason in ``reason``) —
+    a DIFF or PASS with no ground truth over the horizon, reclassified BAD_TEST;
     ``field="no_oracle_adjudicated"`` -> ``value={"issue":..,"verdict":..}`` (reason
     in ``reason``) — annotates a REFERENCE_FAILED row settled by an independent
     oracle (verdict confirm/uncoverable), marking its refusal class SETTLED.
     The order is tol-first so a tol override is applied before the run and a
-    post-run reclassification (known_artifact -> PASS, invalid_reference ->
-    BAD_TEST) after it. The reclassifiers never co-occur with each other or with
-    tol today, but the ordering keeps the contract unambiguous.
+    post-run reclassification (known_artifact -> PASS, invalid_reference /
+    no_ground_truth -> BAD_TEST) after it. A key in more than one reclassifier
+    raises ValueError: a row has one disposition. None co-occurs with tol today,
+    but the ordering keeps the contract unambiguous.
     """
     key = f"{model_id}:{method}"
+    reclassifiers = [
+        name
+        for name, src in (
+            ("KNOWN_ARTIFACT", KNOWN_ARTIFACT),
+            ("INVALID_REFERENCE", INVALID_REFERENCE),
+            ("NO_GROUND_TRUTH", NO_GROUND_TRUTH),
+            ("NO_ORACLE_ADJUDICATED", NO_ORACLE_ADJUDICATED),
+        )
+        if key in src
+    ]
+    if len(reclassifiers) > 1:
+        raise ValueError(
+            f"{key} is authored in {' and '.join(reclassifiers)}; a row has one "
+            "disposition (bngsim checked and right, no usable reference, no ground "
+            "truth, or settled by an independent oracle)"
+        )
     out: list[dict] = []
     if key in TOL_OVERRIDES:
         d = TOL_OVERRIDES[key]
@@ -616,6 +706,11 @@ def overrides_for(model_id: str, method: str) -> list[dict]:
                 "reason": d["reason"],
             }
         )
+    if key in NO_GROUND_TRUTH:
+        d = NO_GROUND_TRUTH[key]
+        out.append(
+            {"field": "no_ground_truth", "value": {"issue": d.get("issue")}, "reason": d["reason"]}
+        )
     if key in NO_ORACLE_ADJUDICATED:
         d = NO_ORACLE_ADJUDICATED[key]
         out.append(
@@ -631,7 +726,11 @@ def overrides_for(model_id: str, method: str) -> list[dict]:
 # Every key any override touches — build scripts use this to detect a stale
 # entry (a key matching no vendored job).
 ALL_KEYS = (
-    set(KNOWN_ARTIFACT) | set(INVALID_REFERENCE) | set(TOL_OVERRIDES) | set(NO_ORACLE_ADJUDICATED)
+    set(KNOWN_ARTIFACT)
+    | set(INVALID_REFERENCE)
+    | set(TOL_OVERRIDES)
+    | set(NO_ORACLE_ADJUDICATED)
+    | set(NO_GROUND_TRUTH)
 )
 
 

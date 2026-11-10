@@ -599,3 +599,19 @@ def test_a_recordings_own_timeout_note_is_dropped_like_a_kill():
     note; like "killed at", the per-engine footnote already says it."""
     comment = "ran past the 300.0s wall cap (a recording runs to 600.0s to save its reference)"
     assert gm.humanize_comment({"comment": comment, "outcome": "TIMEOUT"}) == ""
+
+
+def test_a_no_ground_truth_row_is_drawn_as_that():
+    """rr_run's NO_GROUND_TRUTH BAD_TEST is not two engines that rejected the model."""
+    import rr_run
+
+    assert gm.NO_GROUND_TRUTH_LABEL == rr_run.NO_GROUND_TRUTH_LABEL
+    comment = (
+        f"{rr_run.NO_GROUND_TRUTH_LABEL}: no tolerance pins the phase | was DIFF at max_rel=0.52"
+    )
+    row = {"outcome": "BAD_TEST", "comment": comment}
+    assert gm.is_no_ground_truth(row)
+    assert not gm.is_no_ground_truth({"outcome": "BAD_TEST", "comment": "invalid reference: x"})
+    assert not gm.is_no_ground_truth({"outcome": "DIFF", "comment": comment})
+    note = gm.humanize_comment(row)
+    assert note.startswith("No ground truth — non-scoring: no tolerance pins the phase")
