@@ -29,14 +29,21 @@ _job_overrides (runner side)
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 
-import overrides as ov
 import pytest
 from _core import Job, Oracle, Override, read_manifest
 from rr_run import _job_overrides
 
 RR_PARITY = Path(__file__).resolve().parents[1] / "rr_parity"
+
+# rr_parity's overrides.py, by path: bng_parity has an ``overrides`` module too, and
+# a bare import resolves to whichever directory reached ``sys.path`` first, which
+# depends on the order pytest collects the test modules in.
+_spec = importlib.util.spec_from_file_location("rr_parity_overrides", RR_PARITY / "overrides.py")
+ov = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(ov)
 
 
 # --------------------------------------------------------------------------- #
@@ -178,14 +185,14 @@ def test_job_overrides_reads_no_oracle_adjudicated():
         [
             Override(
                 field="no_oracle_adjudicated",
-                value={"issue": "GH #117", "verdict": "confirm"},
+                value={"issue": "GH #1559", "verdict": "confirm"},
                 reason="scipy BDF reproduces to max_rel=0",
             )
         ]
     )
     tol, artifact, invalid_ref, adjudication = _job_overrides(job)
     assert tol is None and artifact is None and invalid_ref is None
-    assert adjudication == ("confirm", "scipy BDF reproduces to max_rel=0", "GH #117")
+    assert adjudication == ("confirm", "scipy BDF reproduces to max_rel=0", "GH #1559")
 
 
 # --------------------------------------------------------------------------- #

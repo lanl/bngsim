@@ -258,6 +258,14 @@ def _worker(spec: dict, q) -> None:
         status, value, comment, metric, m_tol = _compare_ode(bn, co, atol=p["atol"])
         res["status"], res["value"], res["comment"] = status, value, comment
         res["metric"], res["tol"] = metric, m_tol
+        # Said on the row, so the SBML-core reading COPASI was given is never silent.
+        dropped = (co_timing or {}).get("distribution_annotations_dropped") or []
+        if dropped:
+            note = (
+                f"COPASI evaluated the SBML math of {', '.join(dropped)}, not its "
+                "distribution annotation, as the other engines do (#1563)"
+            )
+            res["comment"] = f"{comment} | {note}" if comment else note
     except Exception as exc:
         res["status"] = "exception"
         res["exception"] = f"compare: {type(exc).__name__}: {exc}"[:400]
