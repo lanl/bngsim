@@ -17191,10 +17191,135 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     long crawl_steps_seen = 0;
     long crawl_fails_seen = 0;
     double crawl_t_seen = times.t_start;
+    // A residual pushed back from its surface (issue #1623). Where the Newton
+    // iterates of an arriving slide's steps land past the surface and no
+    // step's end does, the far side's rate gets into the steps and carries
+    // the state back, with no crossing to decline: #1608's case 547 arrived
+    // at t = 3.0452 at rtol 1e-4, and S fell 8.3 units below its surface
+    // before the 64th step the counts wait for came. So a residual is asked
+    // about at once where it has turned away from its nearest approach on
+    // the side it is on, by more than the band its tolerance leaves it,
+    // with that approach inside its bar, and its own flow still carries it
+    // toward the surface (flows_toward): a turn the state's own flow makes
+    // is no push back. A smaller turn is left to the first crossing
+    // declined, as before. Asked at every turn, slides started a little
+    // before their crossings, and 12 of 239 random pairs came out more than
+    // 2 units the worse for 5 better; asked every 16 steps, 16 of 600 random
+    // slides did. Per residual: what it read where this was last asked, its
+    // nearest approach since it last came to this side, the band last read
+    // for it, whether it has been asked about since, and whether it is to be
+    // asked about now.
+    const auto n_ss = static_cast<std::size_t>(n_state_switch);
+    std::vector<double> crawl_g_seen(n_ss, std::numeric_limits<double>::quiet_NaN());
+    std::vector<double> crawl_nearest(n_ss, std::numeric_limits<double>::quiet_NaN());
+    std::vector<double> crawl_band(n_ss, std::numeric_limits<double>::quiet_NaN());
+    std::vector<char> crawl_asked(n_ss, 0);
+    std::vector<char> crawl_turned(n_ss, 0);
+    std::vector<double> crawl_f(static_cast<std::size_t>(ns), 0.0);
+    std::vector<double> crawl_x(static_cast<std::size_t>(ns), 0.0);
+    // The band the tolerance leaves residual j at (t, y), from central
+    // differences of the residual alone (sync_residuals_at), for the turn
+    // to be measured against before anything dearer is read. The species and
+    // what the residuals read are left at (t, y).
+    auto residual_band = [&](int j, double t) {
+        const NetworkModel::StateSwitch &sw = *state_switches[static_cast<std::size_t>(j)];
+        auto &eval = model.evaluator();
+        std::copy(y_data, y_data + ns, crawl_x.begin());
+        const double band = state_switch_band(sw.species.size(), [&](std::size_t k) {
+            const int sp = sw.species[k];
+            const auto sx = static_cast<std::size_t>(sp);
+            const double xj = crawl_x[sx];
+            const double h = 1e-7 * std::max(std::fabs(xj), 1.0);
+            crawl_x[sx] = xj + h;
+            impl_->sync_residuals_at(t, crawl_x.data(), ns);
+            const double g_hi = eval.evaluate(sw.residual_expr_idx);
+            crawl_x[sx] = xj - h;
+            impl_->sync_residuals_at(t, crawl_x.data(), ns);
+            const double g_lo = eval.evaluate(sw.residual_expr_idx);
+            crawl_x[sx] = xj;
+            const double gj = (g_hi - g_lo) / (2.0 * h);
+            return std::isfinite(gj)
+                       ? std::fabs(gj) * tolerance_unit(user_data.atol_tracking, rtol,
+                                                        atol_v.empty() ? atol : atol_v[sx], sx,
+                                                        y_data[sp])
+                       : 0.0;
+        });
+        impl_->sync_residuals_at(t, y_data, ns);
+        return band;
+    };
+    // Whether the rate law at (t, y) carries residual j, of value g there,
+    // toward its surface: dg/dt along the flow, a difference in time over
+    // the state the flow carries it to. A turn the state's own flow makes
+    // carries it away; a push back from the far side leaves its flow coming
+    // in. The species and what the residuals read are left at (t, y).
+    auto flows_toward = [&](int j, double t, double g) {
+        model.compute_derivs(t, y_data, crawl_f.data());
+        const double dt = 1e-7 * std::max(std::fabs(t), 1.0);
+        for (int i = 0; i < ns; ++i) {
+            const auto ui = static_cast<std::size_t>(i);
+            crawl_x[ui] = y_data[i] + dt * crawl_f[ui];
+        }
+        impl_->sync_residuals_at(t + dt, crawl_x.data(), ns);
+        const double ahead =
+            model.evaluator().evaluate(state_switch_roots[static_cast<std::size_t>(j)]);
+        impl_->sync_residuals_at(t, y_data, ns);
+        return std::isfinite(ahead) && std::fabs(ahead) < std::fabs(g);
+    };
     auto slide_from_a_crawl = [&](double t, double t_to) {
-        if (!hold_allowed || state_switch_hold.slide.body == nullptr ||
-            state_switch_hold.slides.size() >=
-                std::min(kMostSlides, static_cast<std::size_t>(n_state_switch))) {
+        if (!hold_allowed || state_switch_hold.slide.body == nullptr) {
+            return false;
+        }
+        auto &eval = model.evaluator();
+        bool turned = false;
+        // What the root search read where it last read the residuals, at t
+        // as a rule (the end of the step or the row a return is for); where
+        // it read them elsewhere, every approach is read afresh from the next
+        // asking. Read here, they cost sp_fourier_synthesizer 12%.
+        const bool read_here = user_data.switch_g_seen != nullptr && user_data.switch_g_seen_t == t;
+        for (int j = 0; j < n_state_switch; ++j) {
+            const auto uj = static_cast<std::size_t>(j);
+            // Slid along or held, a residual's approach is forgotten, and
+            // read afresh once it is let go: a slide's end is no turn.
+            if (state_switch_hold.held[uj] != 0 || !read_here) {
+                crawl_g_seen[uj] = std::numeric_limits<double>::quiet_NaN();
+                crawl_turned[uj] = 0;
+                continue;
+            }
+            const double g = (*user_data.switch_g_seen)[uj];
+            const double was = crawl_g_seen[uj];
+            const double a = std::fabs(g);
+            crawl_g_seen[uj] = g;
+            crawl_turned[uj] = 0;
+            if (!std::isfinite(g) || !std::isfinite(was) || g == 0.0 || was == 0.0 ||
+                (g > 0.0) != (was > 0.0)) {
+                crawl_nearest[uj] = a;
+                crawl_asked[uj] = 0;
+                continue;
+            }
+            if (a < crawl_nearest[uj]) {
+                crawl_nearest[uj] = a; // closing in again
+                crawl_asked[uj] = 0;
+                continue;
+            }
+            // The band last read for it, read once from the residual alone and
+            // again where the slide test reads it: a residual whose nearest
+            // approach was past its bar is no slide arriving, and one that
+            // turns inside its band has not been pushed back. Without it,
+            // each wobble of a residual whose band was not yet read was a
+            // turn, and each paid the flow it is asked for.
+            if (crawl_asked[uj] == 0 && a > crawl_nearest[uj] && !std::isfinite(crawl_band[uj])) {
+                crawl_band[uj] = residual_band(j, t);
+            }
+            const double band = crawl_band[uj];
+            if (crawl_asked[uj] == 0 && a > crawl_nearest[uj] && !(a - crawl_nearest[uj] <= band) &&
+                !(crawl_nearest[uj] > state_switch_resolve_factor(ns) * band)) {
+                crawl_asked[uj] = 1; // asked once a turn, below or here
+                crawl_turned[uj] = flows_toward(j, t, g) ? 1 : 0;
+            }
+            turned = turned || crawl_turned[uj] != 0;
+        }
+        if (state_switch_hold.slides.size() >=
+            std::min(kMostSlides, static_cast<std::size_t>(n_state_switch))) {
             return false;
         }
         long steps = 0;
@@ -17203,20 +17328,20 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         CVodeGetNumNonlinSolvConvFails(cvode_mem, &fails);
         steps += impl_->closed_segments.steps;
         fails += impl_->closed_segments.nonlin_conv_fails;
-        if (steps - crawl_steps_seen < kHeldSlideCheckSteps) {
+        bool counted = steps - crawl_steps_seen >= kHeldSlideCheckSteps;
+        if (counted) {
+            const double taken = static_cast<double>(steps - crawl_steps_seen);
+            const double failed = static_cast<double>(fails - crawl_fails_seen);
+            const double t_from = crawl_t_seen;
+            crawl_steps_seen = steps;
+            crawl_fails_seen = fails;
+            crawl_t_seen = t;
+            counted = kHeldSlideFailShare * taken <= failed ||
+                      t - t_from < kHeldSlideCrawl * (t_to - t_from);
+        }
+        if (!counted && !turned) {
             return false;
         }
-        const double taken = static_cast<double>(steps - crawl_steps_seen);
-        const double failed = static_cast<double>(fails - crawl_fails_seen);
-        const double t_from = crawl_t_seen;
-        crawl_steps_seen = steps;
-        crawl_fails_seen = fails;
-        crawl_t_seen = t;
-        if (!(kHeldSlideFailShare * taken <= failed) &&
-            !(t - t_from < kHeldSlideCrawl * (t_to - t_from))) {
-            return false;
-        }
-        auto &eval = model.evaluator();
         impl_->sync_model_at(t, y_data, ns);
         std::vector<double> g_at(static_cast<std::size_t>(n_state_switch));
         for (int j = 0; j < n_state_switch; ++j) {
@@ -17228,7 +17353,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         for (int j = 0; j < n_state_switch; ++j) {
             const NetworkModel::StateSwitch &sw = *state_switches[static_cast<std::size_t>(j)];
             const double g = g_at[static_cast<std::size_t>(j)];
-            if (!std::isfinite(g)) {
+            if (!std::isfinite(g) || (!counted && crawl_turned[static_cast<std::size_t>(j)] == 0)) {
                 continue;
             }
             std::fill(grad.begin(), grad.end(), 0.0);
@@ -17252,6 +17377,16 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                                                             atol_v.empty() ? atol : atol_v[sx], sx,
                                                             y_data[sx]);
             });
+            const auto uj = static_cast<std::size_t>(j);
+            if (!counted) {
+                // Turned away: by more than its band from its nearest approach,
+                // inside the bar, or it waits to be asked as it turns on.
+                crawl_band[uj] = band;
+                if (!(std::fabs(g) - crawl_nearest[uj] > band)) {
+                    crawl_asked[uj] = 0;
+                    continue;
+                }
+            }
             if (!(std::fabs(g) <= state_switch_resolve_factor(ns) * band) ||
                 !takes_a_slide(j, t, y_data, grad)) {
                 continue;
