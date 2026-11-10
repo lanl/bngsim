@@ -1498,6 +1498,117 @@ def test_a_slide_moves_as_its_chatter_averages(tmp_path, up, dn, c, rtol):
         assert units.max() <= 1.0, units.max()
 
 
+# Two slides in one run, apart: S1 rises at 2 to S1 = 1 and is pushed back at
+# 1 above it, S2 rises at 1 to S2 = 2 and is pushed back at 3. Each Y gains 1
+# for each unit of time its S spends below its surface (issue #1623).
+_TWO_SLIDES_NET = """\
+begin parameters
+    1 up1 2.0
+    2 dn1 1.0
+    3 up2 1.0
+    4 dn2 3.0
+end parameters
+begin functions
+    1 f1() if(S1obs<1,up1,-dn1)
+    2 r1() if(S1obs<1,1,0)
+    3 f2() if(S2obs<2,up2,-dn2)
+    4 r2() if(S2obs<2,1,0)
+end functions
+begin species
+    1 S1() 0
+    2 Y1() 0
+    3 S2() 0
+    4 Y2() 0
+end species
+begin reactions
+    1 0 1 f1
+    2 0 2 r1
+    3 0 3 f2
+    4 0 4 r2
+end reactions
+begin groups
+    1 S1obs 1
+    2 S2obs 3
+end groups
+"""
+
+
+@pytest.mark.parametrize("rtol", [1e-4, 1e-6, 1e-8])
+def test_two_slides_in_one_run_are_both_stepped_along(tmp_path, rtol):
+    """One residual was slid along at a time (#1608), and a second was held
+    as before #1608: its rate law turned on every side of its surface a
+    Newton iterate landed on. The run took 500,716 steps at rtol 1e-4 and did
+    not finish in 60 s at 1e-6, or at bngsim's default. Each slide is now
+    blended on its own where neither's jump moves the other's flow, and the
+    run takes under a hundred steps at any tolerance. S1 reaches its surface
+    at t = 0.5 and S2 at t = 2; below, they spend 1/3 and 3/4 of the time."""
+    model = _write(tmp_path, _TWO_SLIDES_NET)
+    ts = np.linspace(0.0, 10.0, 21)
+    result = bngsim.Simulator(model).run(sample_times=ts, rtol=rtol, atol=rtol, timeout=60)
+    assert result.solver_stats["n_steps"] < 500
+    exact = {
+        0: np.minimum(2.0 * ts, 1.0),
+        1: np.where(ts <= 0.5, ts, 0.5 + (ts - 0.5) / 3.0),
+        2: np.minimum(ts, 2.0),
+        3: np.where(ts <= 2.0, ts, 2.0 + 0.75 * (ts - 2.0)),
+    }
+    x = np.asarray(result.species)
+    for k, want in exact.items():
+        units = np.abs(x[:, k] - want) / (rtol * np.abs(want) + rtol)
+        assert units.max() <= 1.0, (k, units.max())
+
+
+# #1608's random slide 547: S rises at up*e^(-lam*t) to S = 1 on a counter
+# clock's threshold, and is pushed back at dn above it, beside two idle species.
+_ARRIVING_SLIDE_NET = """\
+begin parameters
+    1 up  0.8673051550745029
+    2 dn  1.3842548308836475
+    3 lam 0.7887791623816267
+    4 one 1.0
+end parameters
+begin functions
+    1 thr() 1+0.0*Cobs
+    2 u() up*exp(-lam*time())
+    3 f() if(Sobs<thr(),u(),-dn)
+    4 r() if(Sobs<thr(),1,0)
+end functions
+begin species
+    1 S() 0
+    2 Y() 0
+    3 C() 0
+    4 P() 1
+    5 Q() 0
+end species
+begin reactions
+    1 0 1 f
+    2 0 2 r
+    3 0 3 one
+end reactions
+begin groups
+    1 Sobs 1
+    2 Cobs 3
+end groups
+"""
+
+
+def test_a_slide_arriving_at_a_loose_tolerance_stays_on_its_surface(tmp_path):
+    """S reaches its surface at t = 3.0452. At rtol 1e-3 the step that
+    arrived crossed and came back, each crossing declined, and the run
+    stepped on: CVODE's history carried the push back past the surface, and
+    S fell to 0.98886 at t = 3.1193, 11 units below it, before the fourth
+    decline in a row that #1608 waited for came. A slide is now asked at
+    the first crossing declined, and S stays on its surface from there."""
+    model = _write(tmp_path, _ARRIVING_SLIDE_NET)
+    ts = np.linspace(0.0, 14.17854469474545, 401)
+    result = bngsim.Simulator(model).run(sample_times=ts, rtol=1e-3, atol=1e-5)
+    up, lam = 0.8673051550745029, 0.7887791623816267
+    t_on = -math.log(1.0 - lam / up) / lam
+    s_exact = np.where(ts < t_on, up / lam * (1.0 - np.exp(-lam * ts)), 1.0)
+    units = np.abs(np.asarray(result.species)[:, 0] - s_exact) / (1e-3 * s_exact + 1e-5)
+    assert units[ts > t_on].max() <= 2.0, units[ts > t_on].max()
+
+
 # A threshold that falls past S = 1.2, from 1.5 to 1 around tp, closes the
 # window S < thr() at t_close = tp + sig*atanh(0.2). Y integrates a Gaussian
 # pulse while the window is open; the pulse is centred half its width after

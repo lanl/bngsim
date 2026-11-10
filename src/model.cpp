@@ -2218,6 +2218,14 @@ const NetworkModel::ReadPlan &NetworkModel::trigger_read_plan() const {
     return *impl_->trigger_read_plan_memo;
 }
 
+const NetworkModel::ReadPlan &NetworkModel::kept_read_plan(const std::vector<int> &expr_ids) const {
+    auto it = impl_->kept_read_plans.find(expr_ids);
+    if (it == impl_->kept_read_plans.end()) {
+        it = impl_->kept_read_plans.emplace(expr_ids, read_plan(expr_ids)).first;
+    }
+    return it->second;
+}
+
 void NetworkModel::evaluate_read_plan(double t, const double *conc, const ReadPlan &plan) {
     impl_->current_time = t;
     for (int oi : plan.observables) {
@@ -4267,6 +4275,7 @@ bool NetworkModel::set_function_eval_expression(const std::string &name,
         // follows the same references (issue #1278).
         impl_->expression_support_cache.clear();
         impl_->trigger_read_plan_memo.reset();
+        impl_->kept_read_plans.clear();
         return true;
     }
     return false;
@@ -5394,6 +5403,7 @@ void NetworkModel::keep_table_function_(std::unique_ptr<TableFunction> tf, bool 
     // A table reads its index out of sight of the references, so the triggers'
     // read plan, found without one, no longer holds (issue #1278).
     impl_->trigger_read_plan_memo.reset();
+    impl_->kept_read_plans.clear();
 }
 
 void NetworkModel::add_table_function(const std::string &name, const std::string &filepath,
