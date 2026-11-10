@@ -15,11 +15,13 @@ These tests pin:
   * CLEAN / FAILING partition the whole taxonomy, so a future Outcome added to
     ALL must be deliberately classified as scoring or not (this test breaks
     until it is), and the new buckets land on the non-scoring side;
-  * `_apply_invalid_reference` — the one authored way into BAD_TEST — holds only
+  * `_apply_invalid_reference` — one of two authored ways into BAD_TEST — holds only
     while the reference is genuinely unusable, and `_reference_nonfinite_covers`,
     the per-cell guard the relaxed #485 premise rests on: a DIFF is reclassified
     only when every surviving failure lies in a column the reference left
     non-finite, so a real bngsim divergence beside the NaN cannot be buried.
+  * `_apply_no_ground_truth` — the other — turns a DIFF or PASS into BAD_TEST, and
+    leaves a non-finite DIFF and an uncompared row as they are.
 """
 
 from __future__ import annotations
@@ -325,3 +327,46 @@ def test_compare_ode_flags_nothing_on_a_disjoint_species_set():
     status, _value, comment, _metric, _tol, covers = rr_run._compare_ode(bn, rr)
     assert status == "diff" and "disjoint" in comment
     assert covers is False
+
+
+# --------------------------------------------------------------------------- #
+# _apply_no_ground_truth — the "neither engine agrees with itself" -> BAD_TEST path
+# --------------------------------------------------------------------------- #
+def test_no_ground_truth_reclassifies_a_diff_to_bad_test():
+    outcome, comment, applied = rr_run._apply_no_ground_truth(
+        Outcome.DIFF, 0.52, "no tolerance pins the phase", None, "7 sp; fail 3819/7007"
+    )
+    assert (outcome, applied) == (Outcome.BAD_TEST, True)
+    assert comment.startswith(f"{rr_run.NO_GROUND_TRUTH_LABEL}: no tolerance pins the phase")
+    assert "was DIFF at max_rel=0.52" in comment and comment.endswith("7 sp; fail 3819/7007")
+
+
+def test_no_ground_truth_reclassifies_a_pass_too():
+    """Agreement over a horizon with no answer checks nothing either."""
+    outcome, comment, applied = rr_run._apply_no_ground_truth(Outcome.PASS, 0.0, "r", "GH #1", "")
+    assert (outcome, applied) == (Outcome.BAD_TEST, True)
+    assert comment.startswith(f"{rr_run.NO_GROUND_TRUTH_LABEL} (GH #1): r | was PASS")
+
+
+def test_no_ground_truth_keeps_a_nonfinite_diff_scoring():
+    """A grid or species mismatch, or non-finite output, is what a loader regression
+    on the model looks like, not two answers drifting apart (#1565's rule)."""
+    for value in (float("inf"), float("nan")):
+        outcome, comment, applied = rr_run._apply_no_ground_truth(
+            Outcome.DIFF, value, "r", None, "time grid mismatch"
+        )
+        assert (outcome, applied) == (Outcome.DIFF, False)
+        assert comment.startswith("time grid mismatch | ") and "did not apply" in comment
+
+
+def test_no_ground_truth_leaves_an_uncompared_row_alone():
+    """A bngsim raise stays a visible, scoring row; a timeout falsifies nothing."""
+    for natural in (
+        Outcome.EXCEPTION,
+        Outcome.REFERENCE_FAILED,
+        Outcome.TIMEOUT,
+        Outcome.BAD_TEST,
+    ):
+        outcome, comment, applied = rr_run._apply_no_ground_truth(natural, None, "r", None, "")
+        assert (outcome, applied) == (natural, False)
+        assert f"natural={natural}" in comment

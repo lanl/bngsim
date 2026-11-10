@@ -92,6 +92,20 @@ def get_verdict_badge(outcome: str, engine: str, succeeded: bool) -> tuple[str, 
         return outcome, "verdict-refused"
 
 
+# How rr_run begins a NO_GROUND_TRUTH row's comment (rr_run.NO_GROUND_TRUTH_LABEL;
+# restated rather than imported, as rr_run pulls in the engines).
+NO_GROUND_TRUTH_LABEL = "no ground truth"
+
+
+def is_no_ground_truth(result: dict) -> bool:
+    """A BAD_TEST that an authored NO_GROUND_TRUTH override reached: both engines
+    ran, and neither agrees with itself over the horizon. Drawn as that, not as
+    the default BAD_TEST reading of two engines that rejected the model."""
+    return result.get("outcome") == "BAD_TEST" and (result.get("comment") or "").startswith(
+        NO_GROUND_TRUTH_LABEL
+    )
+
+
 def exception_kind(result: dict) -> str:
     """Sub-classify an EXCEPTION row by what actually failed, from the recorded
     ``exception`` (rr_run formats each source with a distinct prefix).
@@ -362,6 +376,10 @@ def humanize_comment(result: dict) -> str:
         m = re.match(r"known artifact([^:]*): (.+)", part)
         if m:
             out.append(f"Known artifact{m.group(1)} — reclassified to PASS: {m.group(2)}")
+            continue
+        m = re.match(NO_GROUND_TRUTH_LABEL + r"([^:]*): (.+)", part)
+        if m:
+            out.append(f"No ground truth{m.group(1)} — non-scoring: {m.group(2)}")
             continue
         m = re.match(r"adjudicated (\w+)([^:]*): (.+)", part)
         if m:
@@ -1701,6 +1719,8 @@ def generate_html(report_path: Path, output_path: Path) -> None:
             bn_badge, bn_badge_color = "DIED", "verdict-refused"
         elif exc_kind == "compare":
             bn_badge, bn_badge_color = "COMPARE-ERR", "verdict-exception"
+        if is_no_ground_truth(result):
+            bn_badge, bn_badge_color = "NO TRUTH", "verdict-refused"
 
         # Config rows via the shared display normalizers (one canonical label per
         # concept; RR architectural defaults shown even on a failed run; bngsim
@@ -1761,6 +1781,12 @@ def generate_html(report_path: Path, output_path: Path) -> None:
                 bn_footnote = '<div class="footnote">An engine raised an exception</div>'
             if exception:
                 bn_footnote += f'<div class="error-msg">{_escape(exception)}</div>'
+        elif is_no_ground_truth(result):
+            bn_footnote = (
+                '<div class="footnote">Both engines ran; neither agrees with itself as '
+                "the tolerance tightens, so there is no answer over this horizon to "
+                "check either against</div>"
+            )
         elif outcome == "BAD_TEST":
             bn_footnote = '<div class="footnote">Both engines rejected this model</div>'
         elif outcome == "TIMEOUT":
@@ -1803,6 +1829,8 @@ def generate_html(report_path: Path, output_path: Path) -> None:
         # did produce a trajectory; only the comparison step failed.)
         if exc_kind == "dead":
             rr_badge, rr_badge_color = "DIED", "verdict-refused"
+        if is_no_ground_truth(result):
+            rr_badge, rr_badge_color = "NO TRUTH", "verdict-refused"
 
         # Config rows — RoadRunner's are architectural constants (always FD Jacobian,
         # CVODE dense, LLVM JIT), shown even on a failed/refused run; item 2 fixes the
@@ -1844,6 +1872,8 @@ def generate_html(report_path: Path, output_path: Path) -> None:
             elif exc_kind == "dead":
                 rr_footnote = '<div class="footnote">Worker crashed — which engine failed is unattributable</div>'
             # else: "other" (legacy non-prefixed raise) — leave RR footnote empty
+        elif is_no_ground_truth(result):
+            rr_footnote = '<div class="footnote">Ran; no ground truth to check it against</div>'
         elif outcome == "BAD_TEST":
             rr_footnote = '<div class="footnote">Both engines rejected this model</div>'
 

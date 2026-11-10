@@ -34,7 +34,7 @@ from pathlib import Path
 
 import pytest
 from _core import Job, Oracle, Override, read_manifest
-from rr_run import _job_overrides
+from rr_run import _job_no_ground_truth, _job_overrides
 
 RR_PARITY = Path(__file__).resolve().parents[1] / "rr_parity"
 
@@ -81,6 +81,17 @@ def test_seeded_invalid_reference_round_trips():
     assert len(inval) == 1
     assert inval[0]["reason"]  # non-empty rationale
     assert "value" in inval[0] and "issue" in inval[0]["value"]
+
+
+def test_seeded_no_ground_truth_round_trips():
+    """A committed NO_GROUND_TRUTH key surfaces as one no_ground_truth record with
+    its reason, and as nothing else: it is not also a known artifact."""
+    key = next(iter(ov.NO_GROUND_TRUTH))
+    recs = ov.overrides_for(*key.rsplit(":", 1))
+    assert [r["field"] for r in recs] == ["no_ground_truth"]
+    assert recs[0]["reason"] == ov.NO_GROUND_TRUTH[key]["reason"]
+    assert recs[0]["value"] == {"issue": ov.NO_GROUND_TRUTH[key].get("issue")}
+    assert key in ov.ALL_KEYS
 
 
 def test_tol_override_emitted_first_and_for_both_engines(monkeypatch):
@@ -193,6 +204,14 @@ def test_job_overrides_reads_no_oracle_adjudicated():
     tol, artifact, invalid_ref, adjudication = _job_overrides(job)
     assert tol is None and artifact is None and invalid_ref is None
     assert adjudication == ("confirm", "scipy BDF reproduces to max_rel=0", "GH #1559")
+
+
+def test_job_no_ground_truth_reads_its_override_and_leaves_the_four_tuple_alone():
+    reason = "neither engine agrees with itself"
+    job = _job([Override(field="no_ground_truth", value={"issue": None}, reason=reason)])
+    assert _job_no_ground_truth(job) == (reason, None)
+    assert _job_overrides(job) == (None, None, None, None)
+    assert _job_no_ground_truth(_job([])) is None
 
 
 # --------------------------------------------------------------------------- #
