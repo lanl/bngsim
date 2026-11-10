@@ -54,6 +54,36 @@ evaluator's own rounding of `tau/7`, and `time == pi` or `time^2 == 4` is found
 the same way. An equality of things that hold their values, such as
 `floor(time/24) == 3`, is true for a stretch and is an ordinary window.
 
+The other side may be a parameter that events set, as in a dose counter:
+
+```
+var c = 0.5;
+E: at (time == c && c < 91): dose = dose + 100, c = c + 1;
+```
+
+Between two executions of the events that set `c`, it holds its value, so the
+run stops on each instant in turn: 0.5, 1.5, 2.5 and so on. The same holds
+where `c` is read through an assignment rule, after a delay, for `!=`, and
+for a first dose or a later one (`time == t0 || (time == c + t0 && time <
+t_end)`). The events that set `c` are followed in time order. Each must fire
+at a fixed time (`time >= t1`), on such an instant itself, or on a flag that
+only events set (`on == 1`), in the instant another event raises it; and set
+a value known before the run: numbers, constants, the parameters events set,
+or the time of the instant. Several such events at one instant are taken
+together where none reads or sets what another sets. In a stochastic run, a
+value within rounding of a whole number is kept on the number, as the
+engine stores it. Otherwise the run is refused with an error that names the
+parameter and why: when an event on the state sets it, or reads such a
+parameter; when two events at one instant set what the other reads, or a
+third reads what both set; when a value is frozen at a trigger on the instant
+another event sets what it reads; when an event on `time > t1`, which fires
+at a root a little after t1, makes a trigger rise, or executes beside an
+instant whose order with it matters; in an ODE run, when an instant comes
+within a rounding of another instant's stop, or of a fixed-time event's that
+reads or sets what it does, which the integrator merges with it (every 8 h beside every 12 h, in days, puts 1/3 + 1/3 + ... at
+1.9999999999999998 beside 2.0; a stochastic run takes both); or when the
+events execute more than 10,000 times in one run (run it in shorter legs).
+
 Two cases are outside this:
 
 - An equality that no time satisfies in double arithmetic, such as

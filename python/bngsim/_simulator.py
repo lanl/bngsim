@@ -2784,6 +2784,7 @@ class Simulator:
                         conditions,
                         touches=getattr(model, "_event_disc_conditions", frozenset()),
                         over_budget=over_budget,
+                        ssa=True,
                     )
                     times = [float(stop.time) for stop in merge_crossing_stops(crossings)]
                     # ...and the crossings of a sinusoid or a polynomial in time,
