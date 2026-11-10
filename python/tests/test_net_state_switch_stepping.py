@@ -1658,20 +1658,27 @@ end groups
 """
 
 
-def test_a_slide_arriving_at_a_loose_tolerance_stays_on_its_surface(tmp_path):
+@pytest.mark.parametrize("rtol", [1e-3, 1e-4])
+def test_a_slide_arriving_at_a_loose_tolerance_stays_on_its_surface(tmp_path, rtol):
     """S reaches its surface at t = 3.0452. At rtol 1e-3 the step that
     arrived crossed and came back, each crossing declined, and the run
     stepped on: CVODE's history carried the push back past the surface, and
     S fell to 0.98886 at t = 3.1193, 11 units below it, before the fourth
     decline in a row that #1608 waited for came. A slide is now asked at
-    the first crossing declined, and S stays on its surface from there."""
+    the first crossing declined. At rtol 1e-4 no step's end crossed: the
+    Newton iterates of the arriving steps landed past the surface, the push
+    back got into the steps, and S fell 8.3 units below it before the 64th
+    step that slide_from_a_crawl's counts wait for. A residual that turns
+    away from its nearest approach by more than its band is now asked about
+    at once. Either way S stays on its surface from its arrival."""
     model = _write(tmp_path, _ARRIVING_SLIDE_NET)
     ts = np.linspace(0.0, 14.17854469474545, 401)
-    result = bngsim.Simulator(model).run(sample_times=ts, rtol=1e-3, atol=1e-5)
+    result = bngsim.Simulator(model).run(sample_times=ts, rtol=rtol, atol=rtol * 1e-2)
     up, lam = 0.8673051550745029, 0.7887791623816267
     t_on = -math.log(1.0 - lam / up) / lam
     s_exact = np.where(ts < t_on, up / lam * (1.0 - np.exp(-lam * ts)), 1.0)
-    units = np.abs(np.asarray(result.species)[:, 0] - s_exact) / (1e-3 * s_exact + 1e-5)
+    got = np.asarray(result.species)[:, 0]
+    units = np.abs(got - s_exact) / (rtol * s_exact + rtol * 1e-2)
     assert units[ts > t_on].max() <= 2.0, units[ts > t_on].max()
 
 
