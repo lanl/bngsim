@@ -3915,6 +3915,11 @@ def _held_schedule(
             value_of,
             stored,
             reads_at,
+            # The integrator merges two stops within a rounding into one; the
+            # SSA keeps both.
+            merge_floor=None
+            if ssa
+            else (1.0 if sensitivity_params is not None else _PLAIN_INSTANT_FLOOR),
         )
     else:
         values = dict(start)
@@ -4079,7 +4084,19 @@ _HELD_EXECUTIONS_MOST = 10_000
 
 
 def _schedule_with_writers(
-    core, scope, start, fires, writers, t_start, t_end, mark, sets, value_of, stored, reads_at
+    core,
+    scope,
+    start,
+    fires,
+    writers,
+    t_start,
+    t_end,
+    mark,
+    sets,
+    value_of,
+    stored,
+    reads_at,
+    merge_floor=None,
 ) -> list[tuple[float, dict[str, float]]]:
     """:func:`_held_schedule`'s schedule where some of the events that set held
     species are :class:`_TriggerWriter`s (issue #1519).
@@ -4099,11 +4116,18 @@ def _schedule_with_writers(
     executes beside one, in an order that matters; and, for all of them, more
     executions than
     :data:`_HELD_EXECUTIONS_MOST`. What each execution reads goes in
-    *reads_at*."""
+    *reads_at*.
+
+    *merge_floor*, in a run whose integrator merges two stops within a
+    rounding of each other (:func:`merge_crossing_stops`), as it measures
+    them. A fixed fire's stop just before a writer's next instant is merged
+    into the instant's, and the engine executes the two together, in an order
+    not known here: where they read or set what the other sets, the writer is
+    not followed. One just after an instant's is found by its root, a little
+    late, and is taken as such a fire."""
     values = dict(start)
     schedule = [(t_start, dict(values))]
     # (execution time, trigger time, label, writes, from trigger, values frozen
-    # at the trigger or None, exact, from a writer)
     # at the trigger or None, exact, the writer it is delayed from or -1)
     pending: list[tuple] = [
         (f.at, f.rises, f.label, f.writes, f.from_trigger, None, f.exact, -1) for f in fires
@@ -4113,6 +4137,12 @@ def _schedule_with_writers(
     fixed = [(f.at, {n for n, _ in f.writes}) for f in fires]
     alive = [True] * len(writers)
     state = {"executions": 0}
+    # The instants writers were taken on, for the integrator's merges.
+    instants_done: list[float] = []
+
+    def merged(a: float, b: float) -> bool:
+        return merge_floor is not None and a != b and _same_instant(a, b, merge_floor)
+
     names_read = set(start)
 
     def truth(writer: _TriggerWriter, at: float) -> bool:
@@ -4282,7 +4312,15 @@ def _schedule_with_writers(
 
         # A fire on `time > c` executes at a root a little after its threshold:
         # after the instant's other executions and what they set off, alone.
-        doubles = [c[1] >= 0 or at == t_start or bool(pending[-1 - c[1]][6]) for c in group]
+        doubles = [
+            c[1] >= 0
+            or at == t_start
+            or (
+                bool(pending[-1 - c[1]][6])
+                and not (pending[-1 - c[1]][7] < 0 and any(merged(t, at) for t in instants_done))
+            )
+            for c in group
+        ]
         if any(doubles):
             group = [c for c, d in zip(group, doubles, strict=True) if d]
         exact = any(doubles)
@@ -4333,6 +4371,22 @@ def _schedule_with_writers(
                         "in an order not known before the run",
                         at,
                     )
+        if group_due and merge_floor is not None:
+            # A fixed fire just before a writer's next instant: the integrator
+            # merges its stop into the instant's.
+            ahead = [k for t, k in cands if k >= 0 and t > at and merged(at, t)]
+            fixed_due = [p for p in group_due if p[7] < 0]
+            if ahead and fixed_due:
+                members = members_of([(at, k) for k in ahead], fixed_due)
+                mixed = between([names for names, _ in members])
+                if not apart(members) or mixed:
+                    give_up(
+                        sorted(set(ahead + mixed)),
+                        f"on an instant a double or so after a fixed-time event at t={at!r}, "
+                        "which the integrator merges its stop into: the two execute "
+                        "together, in an order not known before the run",
+                        at,
+                    )
         due = [p for p in group_due if any(p is q for q in pending)]
         pending[:] = [q for q in pending if not any(q is p for p in due)]
         before = [truth(w, at) if alive[k] else False for k, w in enumerate(writers)]
@@ -4356,9 +4410,12 @@ def _schedule_with_writers(
                     continue
                 prior = [held for t, held in schedule if t < rises]
                 read_values = prior[-1] if prior else schedule[0][1]
-            execute(label, writes, p_at, frozen, p_exact, read_at, read_values)
+            # On its double unless the integrator found it by its root (`exact`).
+            execute(label, writes, p_at, frozen, p_exact and exact, read_at, read_values)
         for k in triggers:
             take(k, at, True)
+        if triggers:
+            instants_done.append(at)
         if state["executions"] > _HELD_EXECUTIONS_MOST:
             give_up(
                 [k for k in range(len(writers)) if alive[k]],

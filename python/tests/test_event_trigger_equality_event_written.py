@@ -485,6 +485,51 @@ def test_instants_a_double_apart_run_in_the_ssa_and_are_refused_in_the_ode(body,
     assert tuple(x[names.index(k)] for k in ("n", "g")[: len(fires)]) == fires
 
 
+@pytest.mark.parametrize(
+    ("body", "names", "ssa"),
+    [
+        # Stop dosing at 0.3, a double before the counter's 0.30000000000000004:
+        # F first, so E fires at 0.1 and 0.2 alone.
+        (
+            "var c = 0.1; var on = 1; E: at (time == c && on == 1): n = n + 1, c = c + 0.1; "
+            "F: at (time >= 0.3): on = 0;",
+            ("n",),
+            (2,),
+        ),
+        # Change the interval at 0.3: 0.1 to 0.2 from the third dose on.
+        (
+            "var c = 0.1; var step = 0.1; E: at (time == c): n = n + 1, c = c + step; "
+            "F: at (time >= 0.3): step = 0.2;",
+            ("n",),
+            (51,),
+        ),
+        # F, a few doubles after the counter's instant, is found by its root
+        # where the two stops merge: 30 doubles late, so the d it sets from
+        # the clock, and H's instant on it, are not known.
+        (
+            "var c = 0.1; var d = 100; E: at (time == c): n = n + 1, c = c + 0.1; "
+            "F: at (time >= 0.1*3 + 1e-16): d = 10*time + 0.55; species h = 0; "
+            "H: at (time == d): h = h + 1;",
+            ("n", "h"),
+            (100, 1),
+        ),
+    ],
+    ids=["stop-dosing", "change-the-interval", "a-switch-a-few-doubles-after"],
+)
+def test_a_switch_a_double_from_an_instant_is_refused_in_the_ode(body, names, ssa):
+    """The integrator merges a fixed-time event's stop with an instant's a
+    double or so from it and executes the two in an order of its own (the
+    instant first, at 0.30000000000000004: 3 doses for 2, and 7 for 51), or
+    finds the later one by its root. The ODE run is refused; the SSA keeps
+    both stops, each on its own double."""
+    with pytest.raises(bngsim.SimulationError, match="issue #1519"):
+        _count(body, t_span=_SPAN, n_points=2)
+    r = bngsim.Simulator(_model(body), method="ssa").run(t_span=_SPAN, n_points=2, seed=1)
+    x = np.asarray(r.species)[-1]
+    got = tuple(x[list(r.species_names).index(k)] for k in names)
+    assert got == ssa
+
+
 def test_an_amount_is_read_as_an_amount():
     """c is an amount in a compartment of 3, and the trigger reads the amount:
     0.1, 0.2, ..., 10. Read as its concentration, the instants were a third

@@ -79,8 +79,8 @@ third reads what both set; when a value is frozen at a trigger on the instant
 another event sets what it reads; when an event on `time > t1`, which fires
 at a root a little after t1, makes a trigger rise, or executes beside an
 instant whose order with it matters; in an ODE run, when an instant comes
-within a rounding of another instant's stop, which the integrator merges
-with it (every 8 h beside every 12 h, in days, puts 1/3 + 1/3 + ... at
+within a rounding of another instant's stop, or of a fixed-time event's that
+reads or sets what it does, which the integrator merges with it (every 8 h beside every 12 h, in days, puts 1/3 + 1/3 + ... at
 1.9999999999999998 beside 2.0; a stochastic run takes both); or when the
 events execute more than 10,000 times in one run (run it in shorter legs).
 
