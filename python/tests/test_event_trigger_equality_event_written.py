@@ -25,6 +25,7 @@ the count does not depend on the output grid or the engine.
 from __future__ import annotations
 
 import math
+import re
 from pathlib import Path
 
 import bngsim
@@ -194,6 +195,35 @@ _CASES = {
         "c = time + 0.75;",
         10,
     ),
+    # F's value is read at its trigger, 2, with what holds then (c = 2.5,
+    # from E at 1.5), and set at 3: c = 7.5, and E fires at 7.5, 8.5, 9.5.
+    "a_value_frozen_at_its_trigger": (
+        "var c = 0.5; F: at 1 after (time >= 2): c = c + 5; "
+        "E: at (time == c): n = n + 1, c = c + 1;",
+        6,
+    ),
+    # Frozen at 1 (x = 1), before G sets x = 5 at 1.2: c = 3.
+    "a_value_frozen_before_a_later_write": (
+        "var c = 100; var x = 1; var w = 0.25; W: at (time == w): w = w + 100; "
+        "F: at 0.5 after (time >= 1): c = x + 2; G: at (time >= 1.2): x = 5; "
+        "E: at (time == c): n = n + 1;",
+        1,
+    ),
+    # The clock frozen at the trigger, 1/3: c = 4/3, not the 1.4333 of the
+    # execution's time.
+    "a_clock_frozen_at_its_trigger": (
+        "var c = 100; var w = 0.25; W: at (time == w): w = w + 100; "
+        "F: at 0.1 after (time >= 1/3): c = time + 1; E: at (time == c): n = n + 1;",
+        1,
+    ),
+    # A counter one double after a stop on `time >= 0.3`, which is no instant
+    # of its own: the instant's stop is kept where the two merge.
+    "beside_a_switch_one_double_before": (
+        "var c = 0.1; E: at (time == c): n = n + 1, c = c + 0.1; species D = 0; "
+        "F: at (time >= 0.3): D = D + 1;",
+        100,
+        103,
+    ),
     # A reaction beside it: the SSA's probe windows start at random times.
     "beside_a_reaction": ("species X = 0; J: -> X; 5; var c = 0.5; " + _COUNTER, 10),
     # A rate law that reads c, stiffly: c stays the double the event set.
@@ -215,6 +245,8 @@ _ON_THE_GRID = [
         "hourly_in_days",
         "a_flag_set_on_an_instant",
         "a_delayed_value_from_the_clock",
+        "a_clock_frozen_at_its_trigger",
+        "beside_a_switch_one_double_before",
     )
 ]
 
@@ -337,6 +369,49 @@ def test_a_counter_beside_two_writers_at_one_instant():
     )
     for method, span in (("ode", _SPAN), ("ssa", _SSA_SPAN)):
         assert _count(body, method, t_span=span, n_points=2) == 10
+
+
+@pytest.mark.parametrize("method", ["ode", "ssa"])
+def test_two_fixed_executions_at_one_instant_beside_a_delayed_one(method):
+    """E's delayed execution and F both set c at 1.5: their order is not
+    known, so c is not, but d, which K sets at 2 and W reads, is, and so are
+    W's instants: 1.75 sets e = 2.75, and 5.5 sets e = 6.5. The schedule read
+    the instant's executions by their places in a list a give-up had just
+    rewritten, and took K's in place of W's: 1 for 2. Main gave 0."""
+    body = (
+        "var c = 100; var d = 1.75; var e = 100; E: at 1 after (time == 0.5): c = 7; "
+        "F: at (time >= 1.5): c = 9; K: at (time >= 2): d = 5.5; W: at (time == d): "
+        "e = time + 1; H: at (time == e): n = n + 1; species Y = 0; "
+        "Y' = piecewise(1, time > c, 0);"
+    )
+    assert _count(body, method, t_span=_SPAN, n_points=2) == 2
+
+
+@pytest.mark.parametrize("method", ["ode", "ssa"])
+def test_control_an_instant_on_a_constant_beside_that_give_up(method):
+    """Control: H fires at 2.25, a constant, as on main. The same give-up
+    read a list index past its end, and the run went on with no stops at
+    all and a warning: 0."""
+    body = (
+        "var c = 100; var d = 2.25; E: at 1 after (time == 0.5): c = 7; "
+        "F: at (time >= 1.5): c = 9; H: at (time == d): n = n + 1; species Y = 0; "
+        "Y' = piecewise(1, time > c, 0);"
+    )
+    assert _count(body, method, t_span=_SPAN, n_points=2) == 1
+
+
+def test_an_instant_a_double_after_another_is_refused_where_the_stops_merge():
+    """A counter by 0.1 reaches 0.30000000000000004, one double after G's
+    `time == 0.3`. The integrator merges two such stops into the earlier,
+    and the counter, never stopped on, fired 2 times for 100: refused. The
+    SSA keeps both stops, and gives 100."""
+    body = (
+        "var c = 0.1; E: at (time == c): n = n + 1, c = c + 0.1; species g = 0; "
+        "G: at (time == 0.3): g = g + 1;"
+    )
+    with pytest.raises(bngsim.SimulationError, match="within a rounding of another stop"):
+        _count(body, t_span=_SPAN, n_points=2)
+    assert _count(body, "ssa", t_span=_SSA_SPAN, n_points=2) == 103
 
 
 def test_an_amount_is_read_as_an_amount():
@@ -490,13 +565,6 @@ def test_biomd0000000628_ends_every_pulse():
             "var c = 0.5; E: at (time != c): n = n + 1, c = c + 1;",
             "a trigger that is no fixed time",
         ),
-        # F's value is read at its trigger, 2, and E sets c at 2.5, before F
-        # executes at 3.
-        (
-            "var c = 0.5; F: at 1 after (time >= 2): c = c + 5; "
-            "E: at (time == c): n = n + 1, c = c + 1;",
-            "reads its value at its trigger, before another event sets it",
-        ),
         # E's guard reads X = 2t, which moves: whether E fires at 0.5 is not
         # known before the run (it does not; F then sets c = 2.5, and E fires
         # at 2.5, 3.5, ..., 9.5).
@@ -546,6 +614,29 @@ def test_biomd0000000628_ends_every_pulse():
             "var c = 100; F: at (time > 5): c = 5; E: at (time == c): n = n + 1, c = c + 1;",
             "known only to within the tolerance",
         ),
+        # F (`time > 2`) executes at a root a little after E's instant at 2,
+        # so G, on the flag F raises, reads the clock where the schedule does
+        # not know it.
+        (
+            "var c = 0.5; var d = 0; var e = 100; E: at (time == c): c = c + 1.5; "
+            "F: at (time > 2): d = 1; G: at (d == 1): e = time + 1; H: at (time == e): n = n + 1;",
+            "known only to within the tolerance",
+        ),
+        # F's value is read at its trigger, 1, the instant E sets x: which the
+        # engine does first is not known here.
+        (
+            "var c = 1; var x = 0; var y = 100; E: at (time == c): x = x + 10, c = c + 100; "
+            "F: at 0.5 after (time >= 1): y = x + 3; H: at (time == y): n = n + 1;",
+            "reads its value at its trigger, where another event sets it",
+        ),
+        # E1 and P set a and b at 1, apart, but G reads both: it fires between
+        # them in one order and not in the other.
+        (
+            "var c1 = 1; var a = 0; var b = 0; var c = 100; var w = 0.5; "
+            "E1: at (time == c1): a = 1, c1 = c1 + 100; P: at 0.5 after (time == w): b = 1, "
+            "w = w + 100; G: at (a == 1 && b == 0): c = 5; H: at (time == c): n = n + 1;",
+            "and its trigger reads what events set at t=1.0",
+        ),
         # E sets d to the instant it fires on, and two events on that instant
         # set c, so which sets it last is not known.
         (
@@ -559,7 +650,6 @@ def test_biomd0000000628_ends_every_pulse():
         "a-value-of-the-state",
         "two-writers-at-one-instant",
         "a-writer-on-not-equal",
-        "a-value-frozen-before-an-instant",
         "a-guard-on-the-state",
         "a-writer-on-a-counter-equality",
         "a-value-from-a-parameter-a-state-trigger-sets",
@@ -567,6 +657,9 @@ def test_biomd0000000628_ends_every_pulse():
         "a-fixed-value-from-a-parameter-a-state-trigger-sets",
         "instants-closer-than-a-stop",
         "a-strict-trigger-sets-its-own-threshold",
+        "a-root-beside-an-instant",
+        "a-value-frozen-where-another-event-sets-it",
+        "an-order-a-third-trigger-reads",
         "a-cascade-of-two-writers",
     ],
 )
@@ -575,7 +668,7 @@ def test_a_schedule_not_known_before_the_run_is_refused(body, why, method):
     with pytest.raises(bngsim.SimulationError, match="issue #1519") as e:
         _count(body, method, t_span=_SPAN, n_points=2)
     assert why in str(e.value)
-    assert "and only events set c" in str(e.value)
+    assert re.search(r"and only events set \w+:", str(e.value))
 
 
 def test_past_the_execution_budget_it_is_refused_and_legs_are_not(monkeypatch):

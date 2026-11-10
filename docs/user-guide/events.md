@@ -74,9 +74,13 @@ together where none reads or sets what another sets. In a stochastic run, a
 value within rounding of a whole number is kept on the number, as the
 engine stores it. Otherwise the run is refused with an error that names the
 parameter and why: when an event on the state sets it, or reads such a
-parameter; when two events at one instant set what the other reads; when
-two instants come within a rounding of each other; or when the events
-execute more than 10,000 times in one run (run it in shorter legs).
+parameter; when two events at one instant set what the other reads, or a
+third reads what both set; when a value is frozen at a trigger on the instant
+another event sets what it reads; when an event on `time > t1`, which fires
+at a root a little after t1, makes a trigger rise; when an instant comes
+within a rounding of another instant's stop, which the integrator merges
+with it; or when the events execute more than 10,000 times in one run (run
+it in shorter legs).
 
 Two cases are outside this:
 

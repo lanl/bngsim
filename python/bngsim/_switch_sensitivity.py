@@ -3861,7 +3861,9 @@ def _held_schedule(
             if writer is not None:
                 if continued:
                     writer = writer._replace(true_before=bool(was_true[i]))
-                writer = writer._replace(reads=reads_of(writer.trigger) | values_read)
+                writer = writer._replace(
+                    reads=reads_of(writer.trigger) | values_read, watches=reads_of(writer.trigger)
+                )
                 trigger_reads.append((label, [n for n, _ in writes], reads_of(writer.trigger)))
                 writers.append(writer)
                 continue
@@ -3918,7 +3920,12 @@ def _held_schedule(
         values = dict(start)
         schedule = [(t_start, dict(values))]
         for f in fires:
-            if f.from_trigger and any(f.rises < other.at < f.at for other in fires):
+            f_reads = reads_of(*(t for _, t in f.writes))
+            if f.from_trigger and any(
+                f.rises <= other.at < f.at and {n for n, _ in other.writes} & f_reads
+                for other in fires
+                if other is not f
+            ):
                 # Its value is read at its trigger, before a fire it would read.
                 for name, _ in f.writes:
                     mark(
@@ -4011,8 +4018,9 @@ class _TriggerWriter(NamedTuple):
     from_trigger: bool
     # Whether the trigger read true before the run started.
     true_before: bool
-    # The held species its trigger and its values read.
+    # The held species its trigger and its values read, and its trigger alone.
     reads: frozenset[str] = frozenset()
+    watches: frozenset[str] = frozenset()
 
 
 def _trigger_writer(
@@ -4099,8 +4107,9 @@ def _schedule_with_writers(
     pending: list[tuple] = [
         (f.at, f.rises, f.label, f.writes, f.from_trigger, None, f.exact, -1) for f in fires
     ]
-    taken: list[float] = []
-    fixed_times = [f.at for f in fires]
+    # Each execution taken: (time, the names it sets).
+    taken: list[tuple[float, set[str]]] = []
+    fixed = [(f.at, {n for n, _ in f.writes}) for f in fires]
     alive = [True] * len(writers)
     state = {"executions": 0}
     names_read = set(start)
@@ -4173,19 +4182,22 @@ def _schedule_with_writers(
         # Executions delayed from them set species no longer known.
         pending[:] = [p for p in pending if p[7] < 0 or alive[p[7]]]
 
-    def execute(label, writes, at, frozen, clock, read_at) -> None:
+    def execute(label, writes, at, frozen, clock, read_at, read_values=None) -> None:
         nonlocal values
         new = {}
         if not frozen:
             reads = {n for _, t in writes for n in _IDENTIFIER.findall(t)} & names_read
             reads_at.append((read_at, label, [n for n, _ in writes], frozenset(reads)))
+        held_then = values if read_values is None else read_values
         for name, text in writes:
-            v, why = frozen[name] if frozen else value_of(_with_values(text, values), at, clock)
+            v, why = (
+                frozen[name] if frozen else value_of(_with_values(text, held_then), read_at, clock)
+            )
             if v is None:
                 mark(name, f"{label} sets it to {text}, {why}", at)
             else:
                 new[name] = stored(name, v)
-        taken.append(at)
+        taken.append((at, {n for n, _ in writes}))
         state["executions"] += 1
         if new:
             values = {**values, **new}
@@ -4234,6 +4246,32 @@ def _schedule_with_writers(
             nxt.append(t_start)
         else:
             nxt.append(next_instant(w, t_start))
+
+    def members_of(group, due) -> list[tuple[set[str], frozenset[str]]]:
+        """What each member of *group* sets at its instant, and reads."""
+        out = []
+        for _, k in group:
+            if k >= 0:
+                w = writers[k]
+                out.append(({n for n, _ in w.writes} if w.delay == 0 else set(), w.reads))
+        for p in due:
+            reads = (
+                frozenset()
+                if p[5]
+                else frozenset(n for _, t in p[3] for n in _IDENTIFIER.findall(t)) & names_read
+            )
+            out.append(({n for n, _ in p[3]}, reads))
+        return out
+
+    def between(sets: list[set[str]]) -> list[int]:
+        """The writers whose trigger reads what two or more of *sets* set: in
+        between their executions, in an order not known, it reads a mix."""
+        return [
+            k
+            for k, w in enumerate(writers)
+            if alive[k] and sum(1 for names in sets if names & w.watches) > 1
+        ]
+
     last: float | None = None
     while True:
         cands = [(t, k) for k, t in enumerate(nxt) if t is not None and alive[k]]
@@ -4242,55 +4280,67 @@ def _schedule_with_writers(
             break
         at = min(c[0] for c in cands)
         group = sorted(c for c in cands if close(c[0], at))
+
+        # A fire on `time > c` executes at a root a little after its threshold:
+        # after the instant's other executions and what they set off, alone.
+        doubles = [c[1] >= 0 or at == t_start or bool(pending[-1 - c[1]][6]) for c in group]
+        if any(doubles):
+            group = [c for c, d in zip(group, doubles, strict=True) if d]
+        exact = any(doubles)
         triggers = [k for _, k in group if k >= 0]
+        # The pending executions of the instant, as themselves: a give-up below
+        # rewrites the list they are in.
+        group_due = [pending[-1 - k] for _, k in group if k < 0]
         if triggers and last is not None and at != last and _same_instant(last, at, 1.0):
             give_up(triggers, f"at t={last!r} and t={at!r}, closer than a stop tells apart", at)
             continue
-        exact = bool(triggers) or at == t_start
         if len(group) > 1:
-            members = []
-            for _, k in group:
-                if k >= 0:
-                    w = writers[k]
-                    names = {n for n, _ in w.writes} if w.delay == 0 else set()
-                    members.append((names, w.reads))
-                else:
-                    p = pending[-1 - k]
-                    reads = (
-                        frozenset()
-                        if p[5]
-                        else frozenset(n for _, t in p[3] for n in _IDENTIFIER.findall(t))
-                    )
-                    members.append(({n for n, _ in p[3]}, reads))
+            members = members_of(group, group_due)
             if not apart(members):
-                ks = triggers + [pending[-1 - k][7] for _, k in group if k < 0]
-                give_up(
-                    [k for k in ks if k >= 0],
-                    f"with another event at t={at!r}, in an order not known before the run",
-                    at,
-                )
-                if triggers:
+                ks = triggers + [p[7] for p in group_due]
+                ks = [k for k in ks if k >= 0]
+                if ks:
+                    give_up(
+                        ks,
+                        f"with another event at t={at!r}, in an order not known before the run",
+                        at,
+                    )
                     continue
                 # Fixed fires alone at one instant are taken in turn, as
                 # before; what they set was marked as their schedule was read.
+            else:
+                mixed = between([names for names, _ in members])
+                if mixed:
+                    give_up(
+                        mixed,
+                        f"and its trigger reads what events set at t={at!r}, "
+                        "in an order not known before the run",
+                        at,
+                    )
+        due = [p for p in group_due if any(p is q for q in pending)]
+        pending[:] = [q for q in pending if not any(q is p for p in due)]
         before = [truth(w, at) if alive[k] else False for k, w in enumerate(writers)]
         # The executions of the instant, in time order, then its triggers.
-        js = sorted(-1 - k for _, k in group if k < 0)
-        due = [pending[j] for j in js]
-        for j in reversed(js):
-            pending.pop(j)
-        exact = exact or any(p[6] for p in due)
         for p in due:
             p_at, rises, label, writes, from_trigger, frozen, p_exact, _ = p
-            if from_trigger and any(rises < other < p_at for other in fixed_times + taken):
-                for name, _ in writes:
-                    mark(
-                        name,
-                        f"{label} reads its value at its trigger, before another event sets it",
-                        p_at,
-                    )
-                continue
-            execute(label, writes, p_at, frozen, p_exact, p_at)
+            read_at = rises if from_trigger else p_at
+            read_values = None
+            if from_trigger:
+                # Its values are read at its trigger, with what holds just
+                # before it: the engine reads them before it executes what
+                # else fires on that instant, which is not known here.
+                p_reads = frozenset(n for _, t in writes for n in _IDENTIFIER.findall(t))
+                if any(t == rises and names & p_reads for t, names in fixed + taken):
+                    for name, _ in writes:
+                        mark(
+                            name,
+                            f"{label} reads its value at its trigger, where another event sets it",
+                            p_at,
+                        )
+                    continue
+                prior = [held for t, held in schedule if t < rises]
+                read_values = prior[-1] if prior else schedule[0][1]
+            execute(label, writes, p_at, frozen, p_exact, read_at, read_values)
         for k in triggers:
             take(k, at, True)
         if state["executions"] > _HELD_EXECUTIONS_MOST:
@@ -4322,8 +4372,17 @@ def _schedule_with_writers(
                     at,
                 )
                 break
+            mixed = between([names for names, _ in members]) if len(rose) > 1 else []
+            if mixed:
+                give_up(
+                    mixed,
+                    f"and its trigger reads what events set at t={at!r}, "
+                    "in an order not known before the run",
+                    at,
+                )
             for k in rose:
-                take(k, at, True)
+                if alive[k]:
+                    take(k, at, True)
             before = now
         else:
             give_up(rose, f"in executions at t={at!r} that go on rising", at)
@@ -4514,33 +4573,64 @@ def _resolve_crossings(
         # every stop placed before them.
         placed = [stop.time for stop in (*found[0], *found[1])]
         ends = [at for at, _ in schedule[1:]] + [t_end]
+        # Each instant placed for a trigger, and its condition (issue #1519).
+        instant_at: list[tuple[float, str]] = []
         for (lo, values), hi in zip(schedule, ends, strict=True):
             if hi <= lo:
                 continue
-            asked = {_with_values(texts[cond], values): cond for cond in known}
-            here: list[StopsOverBudget] = []
-            part = _resolve_flat(
-                core,
-                lo,
-                hi,
-                list(asked),
-                touches=touches | {text for text, cond in asked.items() if cond in touches},
-                written={**written, **asked},
-                placed_before=placed,
-                **{**kw, "over_budget": here},
-            )
-            for k in range(3):
-                found[k] = [*found[k], *part[k]]
-            placed.extend(stop.time for stop in (*part[0], *part[1]))
-            for item in here:
-                cond = asked.get(item.condition, item.condition)
-                item = item._replace(condition=cond)
-                past[cond] = item if cond not in past else _past_budget_in_both(past[cond], item)
+            # The instants one by one, so that each stop's own is known.
+            calls = [[c for c in known if c not in instants]] + [
+                [c] for c in known if c in instants
+            ]
+            for conds in calls:
+                if not conds:
+                    continue
+                asked = {_with_values(texts[cond], values): cond for cond in conds}
+                here: list[StopsOverBudget] = []
+                part = _resolve_flat(
+                    core,
+                    lo,
+                    hi,
+                    list(asked),
+                    touches=touches | {text for text, cond in asked.items() if cond in touches},
+                    written={**written, **asked},
+                    placed_before=placed,
+                    **{**kw, "over_budget": here},
+                )
+                for k in range(3):
+                    found[k] = [*found[k], *part[k]]
+                placed.extend(stop.time for stop in (*part[0], *part[1]))
+                if conds[0] in instants:
+                    instant_at += [(stop.time, conds[0]) for stop in (*part[1], *part[2])]
+                for item in here:
+                    cond = asked.get(item.condition, item.condition)
+                    item = item._replace(condition=cond)
+                    past[cond] = (
+                        item if cond not in past else _past_budget_in_both(past[cond], item)
+                    )
         for item in past.values():
             if over_budget is None:
                 _warn_over_budget(item.condition, item.changes, t_start, t_end)
             else:
                 over_budget.append(item)
+        # The integrator merges two touches within a rounding of each other
+        # into the earlier (merge_crossing_stops), and the event that holds at
+        # the later instant does not fire: a dose counter one double after
+        # `time == 0.3` lost every dose from there. The SSA keeps both.
+        times = sorted({stop.time for stop in found[1] if stop.touch})
+        floor = 1.0 if sensitivity_params is not None else _PLAIN_INSTANT_FLOOR
+        for at, cond in [] if ssa else instant_at:
+            i = bisect.bisect_left(times, at)
+            for other in times[max(0, i - 1) : i + 2]:
+                if other != at and _same_instant(at, other, floor):
+                    raise InstantsMoveWithAnEvent(
+                        f"An event fires at the instant {_strip_redundant_parens(cond.strip())!r} "
+                        f"holds, which reads {', '.join(reads[cond])}, which only events set: "
+                        f"at t={at!r}, within a rounding of another stop of the run, at "
+                        f"t={other!r}. A stop cannot tell the two apart, and the event at one "
+                        "of them would not fire (issue #1519). bngsim refuses rather than miss "
+                        "it."
+                    )
     fixed, stops, crossings = (sorted(f, key=lambda stop: stop.time) for f in found)
     return fixed, stops, crossings
 
