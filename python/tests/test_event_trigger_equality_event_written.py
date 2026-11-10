@@ -224,6 +224,23 @@ _CASES = {
         100,
         103,
     ),
+    # The counter's 0.30000000000000004 is a double after F's 0.3, and F sets
+    # d, which a rate law reads: each executes on its own double. Taken
+    # together at 0.3, the counter's instant got no stop: 2 for 100.
+    "beside_a_held_switch_one_double_before": (
+        "var c = 0.1; var d = 0; E: at (time == c): n = n + 1, c = c + 0.1; "
+        "F: at (time >= 0.3): d = 1; species Y = 0; Y' = piecewise(1, time > d + 5, 0);",
+        100,
+        103,
+    ),
+    # F (`time > 0.3`) fires at a root a little after 0.3, beside the
+    # counter's instant, but neither reads what the other sets.
+    "beside_a_strict_switch_one_double_before": (
+        "var c = 0.1; var d = 0; E: at (time == c): n = n + 1, c = c + 0.1; "
+        "F: at (time > 0.3): d = 1; species Y = 0; Y' = piecewise(1, time > d + 5, 0);",
+        100,
+        103,
+    ),
     # A reaction beside it: the SSA's probe windows start at random times.
     "beside_a_reaction": ("species X = 0; J: -> X; 5; var c = 0.5; " + _COUNTER, 10),
     # A rate law that reads c, stiffly: c stays the double the event set.
@@ -247,6 +264,8 @@ _ON_THE_GRID = [
         "a_delayed_value_from_the_clock",
         "a_clock_frozen_at_its_trigger",
         "beside_a_switch_one_double_before",
+        "beside_a_held_switch_one_double_before",
+        "beside_a_strict_switch_one_double_before",
     )
 ]
 
@@ -429,6 +448,41 @@ def test_an_instant_a_double_after_another_is_refused_where_the_stops_merge():
     with pytest.raises(bngsim.SimulationError, match="within a rounding of another stop"):
         _count(body, t_span=_SPAN, n_points=2)
     assert _count(body, "ssa", t_span=_SSA_SPAN, n_points=2) == 103
+
+
+@pytest.mark.parametrize(
+    ("body", "fires"),
+    [
+        # c*0.7 + 1.1 closes in on 11/3, its instants a double apart at last.
+        ("var c = 0.5; E: at (time == c): n = n + 1, c = c*0.7 + 1.1;", (103,)),
+        # Every 8 h and every 12 h, in days: 1/3 + 1/3 + ... reaches
+        # 1.9999999999999998 beside 0.5 + ... = 2.0.
+        (
+            "var c1 = 1/3; var c2 = 0.5; species g = 0; E1: at (time == c1): n = n + 1, "
+            "c1 = c1 + 1/3; E2: at (time == c2): g = g + 1, c2 = c2 + 0.5;",
+            (30, 20),
+        ),
+        # Every hour and every 6 h: 0.24999999999999997 beside 0.25. Taken at
+        # the group's first double, the SSA gave 29 and 0 for 240 and 40,
+        # where main gave the 40.
+        (
+            "var c1 = 1/24; var c2 = 0.25; species g = 0; E1: at (time == c1): n = n + 1, "
+            "c1 = c1 + 1/24; E2: at (time == c2): g = g + 1, c2 = c2 + 0.25;",
+            (240, 40),
+        ),
+    ],
+    ids=["converging", "every-8-and-12-hours", "every-hour-and-6-hours"],
+)
+def test_instants_a_double_apart_run_in_the_ssa_and_are_refused_in_the_ode(body, fires):
+    """Two instants a double or a few apart are two stops the integrator
+    merges into the earlier, so the ODE run is refused; the SSA keeps both,
+    and fires each on its own double."""
+    with pytest.raises(bngsim.SimulationError, match="within a rounding of another stop"):
+        _count(body, t_span=_SPAN, n_points=2)
+    r = bngsim.Simulator(_model(body), method="ssa").run(t_span=_SPAN, n_points=2, seed=1)
+    x = np.asarray(r.species)[-1]
+    names = list(r.species_names)
+    assert tuple(x[names.index(k)] for k in ("n", "g")[: len(fires)]) == fires
 
 
 def test_an_amount_is_read_as_an_amount():
@@ -618,12 +672,6 @@ def test_biomd0000000628_ends_every_pulse():
             "F: at (time >= 2): c = 3 + on; E: at (time == c): n = n + 1;",
             "which is not known then",
         ),
-        # c*0.7 + 1.1 closes in on 11/3: its instants come within a rounding
-        # of each other, and a stop cannot tell two such apart.
-        (
-            "var c = 0.5; E: at (time == c): n = n + 1, c = c*0.7 + 1.1;",
-            "closer than a stop tells apart",
-        ),
         # `time > 5` holds from a root a little after 5 (5.00000000000008 at
         # two points), where c = 5 has passed, so E does not fire there; the
         # schedule, which reads F at 5, cannot tell.
@@ -662,6 +710,14 @@ def test_biomd0000000628_ends_every_pulse():
             "H: at (time == c): n = n + 1;",
             "and its trigger reads what events set at t=1.0",
         ),
+        # F (`time > 0.3`) moves the counter, at a root a little after 0.3:
+        # before or after the counter's instant 0.30000000000000004, which
+        # sets where every later instant is.
+        (
+            "var c = 0.1; E: at (time == c): n = n + 1, c = c + 0.1; "
+            "F: at (time > 0.3): c = c + 0.05;",
+            "whose time is known only to within the tolerance",
+        ),
         # E sets d to the instant it fires on, and two events on that instant
         # set c, so which sets it last is not known.
         (
@@ -680,8 +736,8 @@ def test_biomd0000000628_ends_every_pulse():
         "a-value-from-a-parameter-a-state-trigger-sets",
         "a-guard-on-a-flag-a-state-trigger-raises",
         "a-fixed-value-from-a-parameter-a-state-trigger-sets",
-        "instants-closer-than-a-stop",
         "a-strict-trigger-sets-its-own-threshold",
+        "a-root-moves-a-counter-beside-its-instant",
         "a-root-beside-an-instant",
         "a-value-frozen-where-another-event-sets-it",
         "an-order-a-third-trigger-reads",

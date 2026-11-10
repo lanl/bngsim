@@ -4095,8 +4095,9 @@ def _schedule_with_writers(
     there too, as the engine fires it. Not known from that instant (*mark*),
     and the writers no longer followed while the rest are: two at one instant
     that read or set what the other sets; a trigger that rises on the instant
-    of a fire whose time is known only to within the tolerance; instants
-    closer than a stop tells apart; and, for all of them, more executions than
+    of a fire whose time is known only to within the tolerance, or that
+    executes beside one, in an order that matters; and, for all of them, more
+    executions than
     :data:`_HELD_EXECUTIONS_MOST`. What each execution reads goes in
     *reads_at*."""
     values = dict(start)
@@ -4113,9 +4114,6 @@ def _schedule_with_writers(
     alive = [True] * len(writers)
     state = {"executions": 0}
     names_read = set(start)
-
-    def close(a: float, b: float) -> bool:
-        return abs(a - b) <= 1e-12 * max(1.0, abs(a))
 
     def truth(writer: _TriggerWriter, at: float) -> bool:
         v = float(core.evaluate_over_times(_with_values(writer.trigger, values), [at], 0.0)[0])
@@ -4272,14 +4270,15 @@ def _schedule_with_writers(
             if alive[k] and sum(1 for names in sets if names & w.watches) > 1
         ]
 
-    last: float | None = None
     while True:
         cands = [(t, k) for k, t in enumerate(nxt) if t is not None and alive[k]]
         cands += [(p[0], -1 - j) for j, p in enumerate(pending)]
         if not cands:
             break
         at = min(c[0] for c in cands)
-        group = sorted(c for c in cands if close(c[0], at))
+        # The executions on this double; one a double later is taken there,
+        # as the engine takes it.
+        group = sorted(c for c in cands if c[0] == at)
 
         # A fire on `time > c` executes at a root a little after its threshold:
         # after the instant's other executions and what they set off, alone.
@@ -4291,9 +4290,26 @@ def _schedule_with_writers(
         # The pending executions of the instant, as themselves: a give-up below
         # rewrites the list they are in.
         group_due = [pending[-1 - k] for _, k in group if k < 0]
-        if triggers and last is not None and at != last and _same_instant(last, at, 1.0):
-            give_up(triggers, f"at t={last!r} and t={at!r}, closer than a stop tells apart", at)
-            continue
+        if not exact:
+            # Where its root falls among what executes just after its
+            # threshold is not known: refused where the order matters.
+            reach = 1e-12 * max(1.0, abs(at))
+            near = [c for c in cands if at < c[0] <= at + reach]
+            if near:
+                near_due = [pending[-1 - k] for _, k in near if k < 0]
+                members = members_of(group + near, group_due + near_due)
+                involved = [k for _, k in near if k >= 0]
+                involved += [p[7] for p in group_due + near_due if p[7] >= 0]
+                mixed = between([names for names, _ in members])
+                if not apart(members):
+                    mixed += involved
+                if mixed:
+                    give_up(
+                        sorted(set(mixed)),
+                        f"beside an execution at t={at!r} whose time is known only to "
+                        "within the tolerance, in an order not known before the run",
+                        at,
+                    )
         if len(group) > 1:
             members = members_of(group, group_due)
             if not apart(members):
@@ -4386,8 +4402,6 @@ def _schedule_with_writers(
             before = now
         else:
             give_up(rose, f"in executions at t={at!r} that go on rising", at)
-        if triggers:
-            last = at
         nxt = [next_instant(w, at) if alive[k] else None for k, w in enumerate(writers)]
     return schedule
 
