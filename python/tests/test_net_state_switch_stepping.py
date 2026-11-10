@@ -1558,6 +1558,72 @@ def test_two_slides_in_one_run_are_both_stepped_along(tmp_path, rtol):
         assert units.max() <= 1.0, (k, units.max())
 
 
+# Two slides on thresholds that both rise with one counter clock C: S1 rises at
+# 4.19 to 1 + 2.08*C and is pushed back at 0.80, S2 rises at 2.76 to 1 + 0.78*C
+# and is pushed back at 0.34 (a random pair of the two-slide sweep, case 80).
+_SLIDES_ON_ONE_CLOCK_NET = """\
+begin parameters
+    1 up1 4.192
+    2 dn1 0.802
+    3 c1  2.08
+    4 up2 2.758
+    5 dn2 0.338
+    6 c2  0.777
+    7 one 1.0
+end parameters
+begin functions
+    1 f1() if(S1obs<1+c1*Cobs,up1,-dn1)
+    2 r1() if(S1obs<1+c1*Cobs,1,0)
+    3 f2() if(S2obs<1+c2*Cobs,up2,-dn2)
+    4 r2() if(S2obs<1+c2*Cobs,1,0)
+end functions
+begin species
+    1 S1() 0
+    2 Y1() 0
+    3 S2() 0
+    4 Y2() 0
+    5 C() 0
+end species
+begin reactions
+    1 0 1 f1
+    2 0 2 r1
+    3 0 3 f2
+    4 0 4 r2
+    5 0 5 one
+end reactions
+begin groups
+    1 S1obs 1
+    2 S2obs 3
+    3 Cobs 5
+end groups
+"""
+
+
+def test_two_slides_on_one_counter_clock_are_both_stepped_along(tmp_path):
+    """Both thresholds read the counter C, and each S's rate is one constant
+    on either side of its surface, so the probes read S1 as a constant-rate
+    species like C itself, and S1's slide was moved onto its surface along
+    C. The second slide, whose threshold reads C too, was then never apart
+    from the first, was held, and chattered: 295,230 steps in the sweep's
+    run, whose slides alone take 48 and 22, and main takes 190,794 on this
+    pair at rtol 1e-4 and times out on the sweep's. A species whose rate reads a
+    species is no clock (Impl::exact_species), and a slide's axis is one the
+    switch's flows move."""
+    model = _write(tmp_path, _SLIDES_ON_ONE_CLOCK_NET)
+    ts = np.linspace(0.0, 10.0, 21)
+    rtol = 1e-4
+    result = bngsim.Simulator(model).run(sample_times=ts, rtol=rtol, atol=rtol, timeout=60)
+    assert result.solver_stats["n_steps"] < 500
+    x = np.asarray(result.species)
+    for k, (up, dn, c) in enumerate(((4.192, 0.802, 2.08), (2.758, 0.338, 0.777))):
+        t_on = 1.0 / (up - c)
+        s_exact = np.where(ts <= t_on, up * ts, 1.0 + c * ts)
+        y_exact = np.where(ts <= t_on, ts, t_on + (dn + c) / (up + dn) * (ts - t_on))
+        for got, want in ((x[:, 2 * k], s_exact), (x[:, 2 * k + 1], y_exact)):
+            units = np.abs(got - want) / (rtol * np.abs(want) + rtol)
+            assert units.max() <= 1.0, (k, units.max())
+
+
 # #1608's random slide 547: S rises at up*e^(-lam*t) to S = 1 on a counter
 # clock's threshold, and is pushed back at dn above it, beside two idle species.
 _ARRIVING_SLIDE_NET = """\

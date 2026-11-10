@@ -4543,13 +4543,20 @@ struct CvodeSimulator::Impl {
     // three probes of the right-hand side at shifted states and times: a
     // counter clock, BNGL's `Time` species, a species nothing makes or uses.
     // BDF integrates such a species exactly, so its tolerance blurs nothing a
-    // residual reads (kExactSpeciesUlps). Read where a declined crossing is
-    // asked whether its flow carries it across (crossing_step_error), where
-    // the window screen asks whether a dip clears the bar, and where the rest
-    // test asks whether the state is within the bar of a surface (issue
-    // #1623); the restart test's band, which decides slides, keeps every
-    // species' tolerance. Empty where not read.
+    // residual reads (kExactSpeciesUlps). Used where a declined crossing is
+    // asked whether its flow carries it across (crossing_step_error); the
+    // restart test's band, which decides slides, keeps every species'
+    // tolerance. Empty where not read.
     std::vector<char> rate_constant;
+    // Issue #1623: those of them none of whose rates reads a species. A rate a
+    // state switch turns between two constants reads the same at probes on
+    // one side of the switch, and is no clock: S, pushed at 4.19 below a
+    // threshold on a counter clock and back above it, read as a counter of
+    // its own. Used where the window screen asks whether a dip clears the bar
+    // and which residuals read a clock, where the rest test asks whether the
+    // state is within the bar of a surface, and where a slide's axis is
+    // chosen.
+    std::vector<char> exact_species;
     // How many times CVODE has been restarted inside this simulator
     // (reinit_cvode), for a reading kept across returns to tell whether the
     // trajectory it was read on is still the run's.
@@ -11521,10 +11528,10 @@ static constexpr int kCrossingRetakesMost = 3;
 // crosses its thresholds a hundred times sent one step in eight to be read
 // inside, 40 readings each, for 68% on sp_fourier_synthesizer.
 static constexpr double kScreenSpan = 1.0 / 64.0;
-// What a species BDF integrates exactly (Impl::rate_constant: a counter clock,
-// BNGL's `Time`, a species drifting at one constant rate) is held to in a
-// residual's band, in its own ulps: what rounding leaves it, not what the
-// tolerance would allow it.
+// What a species BDF integrates exactly (Impl::rate_constant and
+// Impl::exact_species: a counter clock, BNGL's `Time`, a species drifting at
+// one constant rate) is held to in a residual's band, in its own ulps: what
+// rounding leaves it, not what the tolerance would allow it.
 static constexpr double kExactSpeciesUlps = 64.0;
 // Issue #908 (StateSwitchHold). A residual is held after this many steps in a
 // row, each at most kStateSwitchHoldStepGap steps after the last, have had a
@@ -12519,7 +12526,7 @@ void CvodeSimulator::Impl::refuse_rest_on_state_switch(
         return tolerance_unit(tracking, rtol, atol_v.empty() ? atol : atol_v[uj], uj, xj);
     };
     // The band the tolerance leaves the residual, but a species BDF integrates
-    // exactly (rate_constant) at its rounding (issue #1623): S held still,
+    // exactly (exact_species) at its rounding (issue #1623): S held still,
     // read against a threshold that swept past it and settled 0.005 from it,
     // was refused as at rest within a bar of 0.009 at rtol 1e-3, where its
     // side is the model's to say. `exact` false: every species at its
@@ -12530,7 +12537,7 @@ void CvodeSimulator::Impl::refuse_rest_on_state_switch(
         return state_switch_band(sw.species.size(), [&](std::size_t s) {
             const int j = sw.species[s];
             const auto uj = static_cast<std::size_t>(j);
-            if (exact && uj < rate_constant.size() && rate_constant[uj] != 0) {
+            if (exact && uj < exact_species.size() && exact_species[uj] != 0) {
                 return std::fabs(grad[uj]) * kExactSpeciesUlps *
                        std::numeric_limits<double>::epsilon() * std::max(std::fabs(x[j]), 1.0);
             }
@@ -16996,13 +17003,13 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         }
         const NetworkModel::StateSwitch &sw = *state_switches[static_cast<std::size_t>(j)];
         // The species that moves g most, of those the switch's flows move: a
-        // clock (Impl::rate_constant) only where it is all the residual
+        // clock (Impl::exact_species) only where it is all the residual
         // reads. Moved onto the surface along a counter clock, a second slide
         // read its sides at a clock every other threshold on it reads too,
         // and was never apart from them (issue #1623).
         int axis = -1;
         double most = 0.0;
-        const auto &exact = impl_->rate_constant;
+        const auto &exact = impl_->exact_species;
         for (const bool clocks : {false, true}) {
             for (int sp : sw.species) {
                 const auto us = static_cast<std::size_t>(sp);
@@ -18804,6 +18811,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // Which species change at one constant rate (Impl::rate_constant), read
     // where a crossing can be re-taken.
     impl_->rate_constant.clear();
+    impl_->exact_species.clear();
     if (n_state_switch > 0) {
         const double t0 = static_cast<double>(times.t_start);
         const double *x0 = N_VGetArrayPointer(y);
@@ -18827,9 +18835,30 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     constant[ui] = constant[ui] && std::isfinite(f0[ui]) && fk[ui] == f0[ui];
                 }
             }
-            impl_->rate_constant = std::move(constant);
+            impl_->rate_constant = constant;
+            // And none of whose rates reads a species (Impl::exact_species).
+            std::unordered_map<int, bool> reads_state;
+            std::vector<int> support;
+            for (const StoichEntry &e : model.stoichiometry()) {
+                const auto ui = static_cast<std::size_t>(e.species_index - 1);
+                if (e.coefficient == 0.0 || ui >= constant.size() || constant[ui] == 0) {
+                    continue;
+                }
+                auto [it, fresh] = reads_state.emplace(e.reaction_index - 1, true);
+                if (fresh) {
+                    support.clear();
+                    it->second =
+                        !model.reaction_rate_species_support(e.reaction_index - 1, support) ||
+                        !support.empty();
+                }
+                if (it->second) {
+                    constant[ui] = 0;
+                }
+            }
+            impl_->exact_species = std::move(constant);
         } catch (...) {
             impl_->rate_constant.clear();
+            impl_->exact_species.clear();
         }
         impl_->sync_model_at(t0, x0, ns);
     }
@@ -19853,7 +19882,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // inside it is, and is not taken for a window: a threshold that spans 0.01
     // read against S held to 1e-3 at rtol 1e-3 put a stop on such a dip, and
     // a window CVODE's own steps had nearly right came out 30% long. A species
-    // BDF integrates exactly (Impl::rate_constant) is read at its rounding: a
+    // BDF integrates exactly (Impl::exact_species) is read at its rounding: a
     // threshold on a counter clock, held to 0.03 at rtol 1e-3, read a bar
     // three times the depth of a window it opened over 0.08 (issue #1623).
     auto clears_the_bar = [&](int j, double t, double depth) {
@@ -19881,7 +19910,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             const double gj = (g_hi - g_lo) / (2.0 * h);
             gx[uj] = std::isfinite(gj) ? gj : 0.0;
         }
-        const auto &exact = impl_->rate_constant;
+        const auto &exact = impl_->exact_species;
         const double band = state_switch_band(sw.species.size(), [&](std::size_t q) {
             const int jj = sw.species[q];
             const auto uj = static_cast<std::size_t>(jj);
@@ -19908,7 +19937,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     };
     std::vector<ScreenRead> screen_reads;
     // Which residuals read a clock: the time itself, or a species BDF
-    // integrates exactly (Impl::rate_constant), as a counter clock is. Only
+    // integrates exactly (Impl::exact_species), as a counter clock is. Only
     // these are read inside a step on its middle or its share of what is left
     // alone. A residual whose clock moves it a long way inside a step while
     // its ends stay put is what the two of them are for; read for every
@@ -19917,7 +19946,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     std::vector<char> screen_clocked(static_cast<std::size_t>(n_state_switch), 0);
     for (int j = 0; j < n_state_switch; ++j) {
         const auto uj = static_cast<std::size_t>(j);
-        const auto &exact = impl_->rate_constant;
+        const auto &exact = impl_->exact_species;
         bool clocked = state_switch_hold.reads_time[uj] != 0;
         for (int sp : state_switches[uj]->species) {
             const auto us = static_cast<std::size_t>(sp);
@@ -20039,7 +20068,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             } else if (read) {
                 screen_hi = switch_g_seen;
             }
-            if (read && t_lo == screen_t) {
+            if (read && reference && t_lo == screen_t) {
                 screen_lo = screen_g;
             } else if (read) {
                 read = residuals_at(t_a, screen_lo);
