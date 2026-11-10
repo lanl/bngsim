@@ -592,3 +592,262 @@ def test_a_window_before_the_looks_first_place_is_seen(tmp_path, rtol, rel, sens
     assert exact == pytest.approx(0.467646, rel=1e-5)
     assert float(result.species[-1][1]) == pytest.approx(exact, rel=rel)
     _assert_dy_dk(result, sens, exact, rel)
+
+
+def _edge(open_at, lo, hi):
+    """Where `open_at(t)` turns, by bisection between lo and hi."""
+    was = open_at(lo)
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        if open_at(mid) == was:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
+# S drifts up at 0.01 from 1.008079 at t = 30, and thr() rises past it from 1
+# to 1.01 around 30.0611: S < thr() opens a window there, and S closes it where
+# it passes 1.01, at 30.1921. Y's rate is 10 while it is open. The run has no
+# stop. The window is 12% of the run (issue #1623).
+_SLOW_DRIFT_NET = """begin parameters
+    1 k 10
+    2 dlt 0.01
+end parameters
+begin functions
+    1 thr() 1+0.01*(1+tanh((time()-30.061131)/0.0005))/2
+    2 r() if(Sobs<thr(),k,0)
+end functions
+begin species
+    1 S() 1.008079
+    2 Y() 0
+end species
+begin reactions
+    1 0 1 dlt
+    2 0 2 r
+end reactions
+begin groups
+    1 Sobs 1
+end groups
+"""
+
+
+@pytest.mark.parametrize("sens", [None, ["k"]], ids=["plain", "dY/dk"])
+@pytest.mark.parametrize("rtol", [1e-3, 1e-4, 1e-6, 1e-8])
+def test_a_window_in_a_step_whose_ends_hardly_differ_is_seen(tmp_path, rtol, sens):
+    """The run's second step went from 30.0001 to 30.84 over the whole window.
+    The look read it at a quarter, a half and three quarters, all past the
+    window, and the residual went from 0.0081 to 0.0065 between its ends, less
+    than either end's distance from the surface, so the screen (#1604) passed
+    it by. Y gained 0 where the window gives it 1.3049, at every tolerance.
+    The screen now reads a residual that reads a clock at the step's middle,
+    and there it is 0.0023, off the chord of its ends by 0.005, more than half
+    of the nearer end: a threshold that steps past a drifting S puts the
+    residual off its chord by half the step at the middle wherever the step
+    falls. So the step is read inside, the window is found, and the run goes
+    back and stops in it."""
+    path = tmp_path / "drift.net"
+    path.write_text(_SLOW_DRIFT_NET)
+    result = bngsim.Simulator(bngsim.Model.from_net(str(path)), sensitivity_params=sens).run(
+        t_span=(30.0, 31.05), n_points=2, rtol=rtol, atol=rtol * 1e-2
+    )
+
+    def opened(t):
+        return 1.008079 + 0.01 * (t - 30.0) < 1.0 + 0.005 * (
+            1.0 + math.tanh((t - 30.061131) / 5e-4)
+        )
+
+    exact = 10.0 * (_edge(opened, 30.1, 31.0) - _edge(opened, 30.0, 30.1))
+    assert exact == pytest.approx(1.30495, rel=1e-5)
+    assert float(result.species[-1][1]) == pytest.approx(exact, rel=rtol)
+    _assert_dy_dk(result, sens, exact, rtol)
+
+
+# S falls at 0.1 from 1.06 at t = 30 beneath thr(), which falls from 1.2 to 1
+# around C = 30.0863 on a counter clock C, beside a stiff pair: S < thr() closes
+# there, and opens again where S falls under 1, at 30.6148. Y's rate is 10 while
+# it is open (#1597's stiff sweep, case 566).
+_PAST_A_ROW_NET = """begin parameters
+    1 k    10.0
+    2 A    0.2
+    3 tp   30.086283720244104
+    4 sig  0.0005
+    5 dlt  -0.1
+    6 one  1.0
+    7 kf   1000000.0
+    8 kr   500000.0
+end parameters
+begin functions
+    1 thr() 1+A*(1+tanh((-1*(Cobs-tp))/sig))/2
+    2 r() if(Sobs<thr(),k,0)
+end functions
+begin species
+    1 S() 4.061482138369095
+    2 Y() 0
+    3 C() 0.0
+    4 P() 1.0
+    5 Q() 0.0
+end species
+begin reactions
+    1 0 1 dlt
+    2 0 2 r
+    3 0 3 one
+    4 4 5 kf
+    5 5 4 kr
+end reactions
+begin groups
+    1 Sobs 1
+    2 Cobs 3
+end groups
+"""
+
+
+@pytest.mark.parametrize("rtol", [1e-4, 1e-6, 1e-8])
+def test_a_window_closed_past_a_row_in_the_step_is_seen(tmp_path, rtol):
+    """One step ran from 29.356 to 30.805, over the row at t = 30 and over the
+    stretch from 30.0865 to 30.6148 where the switch is closed. The screen
+    read the step at the return for the row, and only up to the row; the next
+    call took the next step before it returned, and the rest of this one was
+    never read. Y gained 10.5 from t = 30 where it gains 5.2172 at rtol 1e-6
+    and 1e-8. A step is now screened once, whole, past the row the return is
+    for (issue #1623)."""
+    path = tmp_path / "past_a_row.net"
+    path.write_text(_PAST_A_ROW_NET)
+    result = bngsim.Simulator(bngsim.Model.from_net(str(path))).run(
+        sample_times=[0.0, 30.0, 31.05], rtol=rtol, atol=rtol * 1e-2
+    )
+
+    def opened(t):
+        thr = 1.0 + 0.1 * (1.0 + math.tanh(-(t - 30.086283720244104) / 5e-4))
+        return 4.061482138369095 - 0.1 * t < thr
+
+    closes = _edge(opened, 30.0, 30.3)
+    gain = 10.0 * ((closes - 30.0) + (31.05 - _edge(opened, 30.3, 31.0)))
+    y_30 = 10.0 * (30.0 - _edge(opened, 20.0, 30.0))
+    assert gain == pytest.approx(5.2172, rel=1e-4)
+    y = np.asarray(result.species)[:, 1]
+    assert float(y[1]) == pytest.approx(y_30, rel=10 * rtol)
+    assert float(y[2] - y[1]) == pytest.approx(gain, rel=10 * rtol)
+
+
+# #1597's case 107: S drifts up at 0.1 from 1.0337 at t = 30 while thr() rises
+# past it from 1 to 1.05 on a counter clock C, beside a stiff pair; the window
+# closes where S passes 1.05.
+_CLOCK_BAND_NET = """begin parameters
+    1 k    10.0
+    2 A    0.05
+    3 tp   30.079524793084435
+    4 sig  0.001
+    5 dlt  0.1
+    6 one  1.0
+    7 kf   1000000.0
+    8 kr   500000.0
+end parameters
+begin functions
+    1 thr() 1+A*(1+tanh((Cobs-tp)/sig))/2
+    2 r() if(Sobs<thr(),k,0)
+end functions
+begin species
+    1 S() 1.0337143405728795
+    2 Y() 0
+    3 C() 30.0
+    4 P() 1.0
+    5 Q() 0.0
+end species
+begin reactions
+    1 0 1 dlt
+    2 0 2 r
+    3 0 3 one
+    4 4 5 kf
+    5 5 4 kr
+end reactions
+begin groups
+    1 Sobs 1
+    2 Cobs 3
+end groups
+"""
+
+
+def test_a_window_on_a_counter_clock_clears_the_bar_at_a_loose_tolerance(tmp_path):
+    """The screen found the window, 0.0079 deep, and declined it: its bar read
+    C at its tolerance, 0.03 at C = 30 and rtol 1e-3, times the steep
+    threshold's dg/dC, three times the window's depth. Y gained 0 of 0.8252.
+    C and S both move at one constant rate, which BDF integrates exactly, so
+    the bar reads them at their rounding (Impl::rate_constant, issue #1623),
+    as #1602's re-take already did."""
+    path = tmp_path / "clock_band.net"
+    path.write_text(_CLOCK_BAND_NET)
+    result = bngsim.Simulator(bngsim.Model.from_net(str(path))).run(
+        sample_times=[30.0, 31.05], rtol=1e-3, atol=1e-5
+    )
+
+    def opened(t):
+        return 1.0337143405728795 + 0.1 * (t - 30.0) < 1.0 + 0.025 * (
+            1.0 + math.tanh((t - 30.079524793084435) / 1e-3)
+        )
+
+    exact = 10.0 * (_edge(opened, 30.12, 30.5) - _edge(opened, 30.0, 30.12))
+    assert exact == pytest.approx(0.82521, rel=1e-4)
+    assert float(result.species[-1][1]) == pytest.approx(exact, rel=2e-3)
+
+
+# #1597's case 1907: S rises from -1.99 at 0.1 + 0.05 sin(t) past 1 at t =
+# 29.0521, and thr() steps up to 1.05 after S has passed it, so Y, whose rate
+# is 10 while S < thr(), gains 290.5208 by t = 29.0521 and nothing after.
+_DECLINED_CROSSING_NET = """begin parameters
+    1 k    10.0
+    2 A    0.05
+    3 tp   30.088791819161347
+    4 sig  0.0005
+    5 dlt  0.1
+    6 one  1.0
+    7 b    0.05
+end parameters
+begin functions
+    1 thr() 1+A*(1+tanh((time()-tp)/sig))/2
+    2 up() dlt+b*sin(time())
+    3 r() if(Sobs<thr(),k,0)
+end functions
+begin species
+    1 S() -1.990832687059039
+    2 Y() 0
+    3 C() 0.0
+    4 P() 1.0
+    5 Q() 0.0
+end species
+begin reactions
+    1 0 1 up
+    2 0 2 r
+    3 0 3 one
+end reactions
+begin groups
+    1 Sobs 1
+    2 Cobs 3
+end groups
+"""
+
+
+def test_a_species_that_only_grows_is_not_recorded_falling(tmp_path):
+    """At rtol 1e-3 the restart test declined S's crossing at t = 29.15: the
+    step went 0.004 past the surface, under its bar of 0.009. The run stepped
+    on from a polynomial whose slope in Y at the step's end was still 10
+    where Y's rate is 0, and the steps after it carried that on: Y(30) came
+    out 296.13, 19 units over, and Y(31.05) 295.75, below it, though Y can
+    only grow. #1602's re-take read only the far side's rate carried before
+    the crossing, of which there was none. It now reads the near side's
+    carried past it too, and the stretch is taken again (issue #1623). What
+    is left at rtol 1e-3 is S's own error, a few of its units by t = 30."""
+    path = tmp_path / "declined.net"
+    path.write_text(_DECLINED_CROSSING_NET)
+    result = bngsim.Simulator(bngsim.Model.from_net(str(path))).run(
+        sample_times=[0.0, 30.0, 31.05], rtol=1e-3, atol=1e-5
+    )
+    y = np.asarray(result.species)[:, 1]
+
+    def opened(t):
+        return -1.990832687059039 + 0.1 * t + 0.05 * (1.0 - math.cos(t)) < 1.0
+
+    exact = 10.0 * _edge(opened, 28.0, 30.0)
+    assert exact == pytest.approx(290.5208, rel=1e-6)
+    assert y[2] >= y[1]
+    assert abs(y[1] - exact) <= 4.0 * 1e-3 * exact

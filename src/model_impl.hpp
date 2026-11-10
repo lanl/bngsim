@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <deque>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -476,6 +477,10 @@ struct NetworkModel::Impl {
     // var_param_bindings or the events must reset it too. Indices only, but
     // recomputable, so clone() leaves it empty like expression_support_cache.
     std::optional<NetworkModel::ReadPlan> trigger_read_plan_memo;
+    // Memo for NetworkModel::kept_read_plan() (issue #1623), by the expression
+    // ids asked for: the same walk, reset wherever trigger_read_plan_memo is,
+    // and left empty by clone() as it is.
+    std::map<std::vector<int>, NetworkModel::ReadPlan> kept_read_plans;
 
     // ── Rate-law state-switch residuals (issue #150) ─────────────────────
     // Memo for NetworkModel::state_switch(), keyed by the condition's SOURCE
