@@ -5144,6 +5144,53 @@ class _FastSbmlModel:
         return getattr(self._m, name)
 
 
+def _fold_stoichiometry_denominators(doc) -> None:
+    """Write each species-reference stoichiometry with a denominator as the one
+    number it means.
+
+    Two ways put a denominator on a reference, and every reader in this module
+    takes ``getStoichiometry()``, the numerator alone, so both ran with the wrong
+    stoichiometry and no warning:
+
+    * SBML Level 1 gives a reactant or product an integer ``stoichiometry`` and a
+      positive integer ``denominator``: ``stoichiometry="1" denominator="2"`` is
+      1/2. ``1/2 A -> 3/2 B`` at ``k*A`` gave A(1) = 1.1036 for the closed form's
+      1.8196.
+    * At Level 2, libSBML (5.21.0 and 5.21.2) reads a ``<stoichiometryMath>``
+      whose math is a bare rational, ``<cn type="rational"> 1 <sep/> 2 </cn>``,
+      into the reference's stoichiometry and denominator (1 and 2) and keeps no
+      stoichiometryMath, with nothing logged. It is the form libSBML itself writes
+      when it converts a Level 1 denominator to Level 2.
+
+    The denominator is folded into the stoichiometry here, once, before anything
+    reads it; one that is not positive is refused. A reference that kept its
+    stoichiometryMath is left to that math. Mutates *doc* in place.
+    """
+    model = doc.getModel()
+    if model is None:
+        return
+    for reaction in model.getListOfReactions():
+        for refs in (reaction.getListOfReactants(), reaction.getListOfProducts()):
+            for ref in refs:
+                denominator = ref.getDenominator()
+                if denominator == 1 or ref.isSetStoichiometryMath():
+                    continue
+                if denominator <= 0:
+                    raise ValueError(
+                        f"SBML reaction '{reaction.getId()}': species '{ref.getSpecies()}' has "
+                        f"stoichiometry denominator {denominator}; it must be a positive integer"
+                    )
+                if (
+                    ref.setStoichiometry(ref.getStoichiometry() / denominator)
+                    != libsbml.LIBSBML_OPERATION_SUCCESS
+                    or ref.setDenominator(1) != libsbml.LIBSBML_OPERATION_SUCCESS
+                ):  # pragma: no cover - libsbml accepts both on a reference it read
+                    raise RuntimeError(
+                        f"SBML reaction '{reaction.getId()}': could not fold the "
+                        f"stoichiometry denominator of species '{ref.getSpecies()}'"
+                    )
+
+
 def _build_model_from_sbml_doc(doc):
     """Build a BNGsim Model from a parsed libsbml Document."""
     # In a context of its own: what the build sets for the emitter
@@ -5165,6 +5212,10 @@ def _build_model_from_sbml_doc_in_context(doc):
     sbml_model = doc.getModel()
     if sbml_model is None:
         raise RuntimeError("SBML document contains no model")
+    # A reference's stoichiometry can be numerator/denominator (Level 1, or a
+    # Level 2 rational libSBML read that way); every reader below takes
+    # getStoichiometry(), the numerator alone.
+    _fold_stoichiometry_denominators(doc)
     # O(1) id→object lookups for getSpecies/getParameter/getCompartment by id;
     # without this the per-reaction/per-parameter interpret loops are O(n²) and
     # genome-scale models hang for minutes (GH #164).

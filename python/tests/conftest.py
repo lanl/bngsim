@@ -313,6 +313,11 @@ _DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
         _ANYWHERE,
         "the test needs a small model to run interpreted, which a forced threshold undoes",
     ),
+    (
+        "libSBML was built without zlib",
+        _ANYWHERE,
+        "libSBML reads .gz and .zip SBML files only when built with zlib, as its wheels are",
+    ),
     ("KLU not compiled", _ANYWHERE, "KLU-off builds are a supported configuration"),
     (
         "KLU sparse solver not built",
