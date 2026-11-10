@@ -400,6 +400,23 @@ def test_control_an_instant_on_a_constant_beside_that_give_up(method):
     assert _count(body, method, t_span=_SPAN, n_points=2) == 1
 
 
+@pytest.mark.parametrize("method", ["ode", "ssa"])
+def test_a_give_up_on_the_instant_keeps_the_rest_of_the_schedule(method):
+    """At 1, E1 sets a and P's delayed execution sets b, apart; Q, whose own
+    delayed execution is due then too, watches both, and is given up (w is
+    not known from 1). The instant's other executions were read by their
+    places in the list Q's had just left, past its end: the resolver
+    crashed and the run went on with no stops, so H's instant at 2.25 (c,
+    which Z sets at 9.5) did not fire. Main did not fire it either."""
+    body = (
+        "var a = 0; var b = 0; var w = 0; var c = 2.25; E1: at (time == 1): a = 1; "
+        "P: at 0.5 after (time == 0.5): b = 1; Q: at 0.5 after (time == 0.5 && a + b < 5): w = 1; "
+        "Z: at (time == 9.5): c = 100; H: at (time == c): n = n + 1; species Y = 0; "
+        "Y' = piecewise(1, time > 9 + w, 0);"
+    )
+    assert _count(body, method, t_span=_SPAN, n_points=2) == 1
+
+
 def test_an_instant_a_double_after_another_is_refused_where_the_stops_merge():
     """A counter by 0.1 reaches 0.30000000000000004, one double after G's
     `time == 0.3`. The integrator merges two such stops into the earlier,
@@ -637,6 +654,14 @@ def test_biomd0000000628_ends_every_pulse():
             "w = w + 100; G: at (a == 1 && b == 0): c = 5; H: at (time == c): n = n + 1;",
             "and its trigger reads what events set at t=1.0",
         ),
+        # E raises f at 1; A and B, on f, rise together and set a and b, apart,
+        # but G reads both: it fires between them in one order alone.
+        (
+            "var f = 0; var a = 0; var b = 0; var c = 100; E: at (time == 1): f = 1; "
+            "A: at (f == 1): a = 1; B: at (f == 1): b = 1; G: at (a == 1 && b == 0): c = 5; "
+            "H: at (time == c): n = n + 1;",
+            "and its trigger reads what events set at t=1.0",
+        ),
         # E sets d to the instant it fires on, and two events on that instant
         # set c, so which sets it last is not known.
         (
@@ -660,6 +685,7 @@ def test_biomd0000000628_ends_every_pulse():
         "a-root-beside-an-instant",
         "a-value-frozen-where-another-event-sets-it",
         "an-order-a-third-trigger-reads",
+        "an-order-a-third-trigger-reads-in-a-cascade",
         "a-cascade-of-two-writers",
     ],
 )
