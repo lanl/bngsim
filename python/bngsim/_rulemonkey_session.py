@@ -168,7 +168,8 @@ class RuleMonkeySession:
         ----------
         seed : int, optional
             RNG seed. ``None`` (default) draws a fresh seed; pass an
-            integer for reproducibility. The actual seed used is
+            integer from 0 to 2**64 - 1 for reproducibility (a seed outside
+            that range raises ``ValueError``). The actual seed used is
             exposed via the :attr:`seed` property and stamped onto every
             ``Result`` returned by :meth:`simulate`.
         t_start : float, optional

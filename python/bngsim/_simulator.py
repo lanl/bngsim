@@ -81,7 +81,7 @@ from bngsim._sample_times import (
     require_finite_time,
     validate_time_span,
 )
-from bngsim._seed import _DEFAULT_EVENT_SEED, _resolve_seed, derived_seeds
+from bngsim._seed import _DEFAULT_EVENT_SEED, _check_seed, _resolve_seed, derived_seeds
 from bngsim._ssa_validation import validate_for_ssa
 
 logger = logging.getLogger("bngsim")
@@ -5279,9 +5279,12 @@ class Simulator:
             Random seed for stochastic methods. When omitted (or
             ``None``), bngsim draws a fresh seed from system entropy
             so consecutive ``run()`` calls produce independent
-            trajectories. Pass an explicit integer for reproducibility.
-            The actual seed used is exposed via ``Result.seed``.
-            Ignored for ``method="ode"``.
+            trajectories. Pass an explicit integer for reproducibility,
+            from 0 to 2**64 - 1, or to 2**32 - 1 under NFsim, whose
+            generators read 32 bits (issue #1515); a seed outside its
+            range raises ``ValueError``. The actual seed used is exposed
+            via ``Result.seed``. For ``method="ode"`` it orders only
+            simultaneous equal-priority events (GH #242).
         rtol : float, optional
             Relative tolerance for ODE solver. Default ``1e-8``.
         atol : float, array_like, ``"auto"``, ``"tracking"``, TrackingAtol, or ExactAtol, optional
@@ -5513,7 +5516,7 @@ class Simulator:
         # honors an explicit seed for an independent event-ordering realization.
         used_seed: int
         if self._method == "ode":
-            used_seed = _DEFAULT_EVENT_SEED if seed is None else int(seed)
+            used_seed = _DEFAULT_EVENT_SEED if seed is None else _check_seed(seed)
         else:
             used_seed = _resolve_seed(seed)
 

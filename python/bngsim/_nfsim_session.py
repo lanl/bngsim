@@ -305,12 +305,16 @@ class NfsimSession:
             Random number generator seed. When omitted (or ``None``),
             bngsim draws a fresh seed from system entropy so consecutive
             session lifetimes produce independent trajectories. Pass an
-            explicit integer for reproducibility. The actual seed used
-            is exposed via the :attr:`seed` property and stamped onto
-            every ``Result`` returned by :meth:`simulate`.
+            explicit integer for reproducibility, from 0 to 2**32 - 1:
+            NFsim seeds its generators from 32 bits (issue #1515). The
+            actual seed used is exposed via the :attr:`seed` property and
+            stamped onto every ``Result`` returned by :meth:`simulate`.
 
         Raises
         ------
+        ValueError
+            If ``seed`` is negative or past 2**32 - 1. A live session is
+            left as it was.
         SimulationError
             If initialization fails.
         """

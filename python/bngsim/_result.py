@@ -600,7 +600,10 @@ class Result:
         (SSA, PSA, NFsim, RuleMonkey), this is the integer that was
         passed down to the backend — equal to the ``seed=`` keyword
         when the caller supplied one, or the freshly drawn integer
-        when the caller passed ``seed=None`` (or omitted it).
+        when the caller passed ``seed=None`` (or omitted it). A seed is
+        from 0 to 2**64 - 1, and under NFsim from 0 to 2**32 - 1, the
+        width its generators read, so the seed passed is the seed used
+        (issue #1515).
 
         For squeezed batch results, this is the single seed if every
         underlying sim used the same one, otherwise ``None``; the

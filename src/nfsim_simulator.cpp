@@ -1117,9 +1117,28 @@ static void require_finite_span(const char *where, double t_from, double t_to) {
     }
 }
 
+// NFsim seeds both its generators, the System's NfsimRNG and the process-wide
+// MTRand, as reference MT19937's init_genrand does: from the seed's low 32
+// bits. A seed past 2**32 - 1 ran the trajectory of its low word, bit for bit,
+// while Result.seed and session.seed reported the value passed, so two runs
+// that read as independent were one (issue #1515). Such a seed is refused, as
+// numpy's legacy MT19937 refuses it; NFsim's own command line reads `-seed` as
+// an int. Checked before the XML is read, and before initialize() drops a
+// live session.
+static void require_nfsim_seed(uint64_t seed) {
+    constexpr uint64_t kMaxSeed = 0xFFFFFFFFull;
+    if (seed > kMaxSeed) {
+        throw std::invalid_argument("NFsim seeds its generators from 32 bits, so seed " +
+                                    std::to_string(seed) + " would run as seed " +
+                                    std::to_string(seed & kMaxSeed) +
+                                    ": an NFsim seed must be from 0 to 4294967295 (2**32 - 1)");
+    }
+}
+
 // ─── run() — stateless simulation (re-parses XML each call) ──────────────────
 
 Result NfsimSimulator::run(const TimeSpec &times, uint64_t seed, double timeout_seconds) {
+    require_nfsim_seed(seed);
     // GH #570 — every row below is written into a Result sized by this count,
     // and the initial row is recorded unconditionally: t_out[0] is read and
     // record(0, ...) writes before the loop is ever entered. With no output
@@ -1229,6 +1248,7 @@ Result NfsimSimulator::run(const TimeSpec &times, uint64_t seed, double timeout_
 // ─── Session API — stateful, multi-action workflows ──────────────────────────
 
 void NfsimSimulator::initialize(uint64_t seed) {
+    require_nfsim_seed(seed);
     // Destroy any existing session
     if (impl_->session_system) {
         delete impl_->session_system;
