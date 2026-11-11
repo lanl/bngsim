@@ -522,7 +522,9 @@ class Model:
 
         Antimony is a human-readable model description language.
         Internally converts to SBML via libantimony, then loads
-        via libsbml for correct SBML semantics.
+        via libsbml for correct SBML semantics. A text with more than one
+        module is loaded at its main module, as libantimony names it (issue
+        #1508); see the user guide's "Antimony and SBML model loading".
 
         Requires: ``pip install antimony python-libsbml``
 
@@ -564,6 +566,9 @@ class Model:
         cls, text: str, *, compartment_sizes: dict[str, float] | None = None
     ) -> Model:
         """Load a model from an Antimony string.
+
+        A text with more than one module is loaded at its main module, as
+        :meth:`from_antimony` loads a file (issue #1508).
 
         Parameters
         ----------

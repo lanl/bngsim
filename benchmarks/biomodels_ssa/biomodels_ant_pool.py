@@ -211,11 +211,12 @@ def convert_sbml_to_ant_file(sbml_path: Path, ant_path: Path, antimony_mod) -> b
         err = antimony_mod.getLastError()
         logger.warning("loadSBMLFile failed %s: %s", sbml_path.name, (err or "")[:200])
         return False
-    module_names = antimony_mod.getModuleNames()
-    if not module_names:
-        logger.warning("No module names for %s", sbml_path.name)
+    # The main module: an SBML document with comp submodels defines several,
+    # and the last is not the model (issue #1508).
+    mod = antimony_mod.getMainModuleName()
+    if not mod:
+        logger.warning("No main module for %s", sbml_path.name)
         return False
-    mod = module_names[-1]
     ant_str = antimony_mod.getAntimonyString(mod)
     if not ant_str:
         logger.warning("Empty antimony string for %s", sbml_path.name)

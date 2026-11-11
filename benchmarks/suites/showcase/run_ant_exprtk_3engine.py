@@ -114,10 +114,11 @@ def ant_to_sbml(ant_path: Path) -> str:
     rc = antimony.loadAntimonyFile(str(ant_path))
     if rc < 0:
         raise RuntimeError(antimony.getLastError())
-    module_names = antimony.getModuleNames()
-    if not module_names:
-        raise RuntimeError("antimony did not return module names")
-    sbml = antimony.getSBMLString(module_names[-1])
+    # The main module, as tellurium's loada reads it (issue #1508).
+    main = antimony.getMainModuleName()
+    if not main:
+        raise RuntimeError("antimony did not return a main module")
+    sbml = antimony.getSBMLString(main)
     if not sbml:
         raise RuntimeError("empty SBML returned from antimony")
     return sbml

@@ -43,7 +43,7 @@ def main():
         # Load in RoadRunner
         ant.clearPreviousLoads()
         ant.loadFile(path)
-        mod = ant.getModuleNames()[-1]
+        mod = ant.getMainModuleName()
         sbml = ant.getSBMLString(mod)
         rr = roadrunner.RoadRunner(sbml)
         sp_rr = list(rr.model.getFloatingSpeciesIds())
@@ -107,7 +107,7 @@ def main():
         # Show canonical Antimony for context
         ant.clearPreviousLoads()
         ant.loadFile(path)
-        mod = ant.getModuleNames()[-1]
+        mod = ant.getMainModuleName()
         s = ant.getAntimonyString(mod)
         # Show just assignment rules and key sections
         has_assign = False

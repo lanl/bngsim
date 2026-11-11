@@ -60,7 +60,7 @@ def legacy_main(src: str, dst: str) -> int:
             fail += 1
             continue
 
-        mod = ant.getModuleNames()[-1]
+        mod = ant.getMainModuleName()
         ant_str = ant.getAntimonyString(mod)
         if not ant_str:
             print(f"  FAIL {name}: empty antimony string")
