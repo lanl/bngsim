@@ -25,6 +25,10 @@ import pytest
 from bngsim.convert import net_to_sbml
 
 E1 = math.exp(-1.0)
+# CLOSED_FORM: Aobs(1) against e^-1, at rtol 1e-10 and atol 1e-12: measured 3.0e-09
+# for every control and the round trip (macOS arm64). 1e-7 leaves room for
+# another platform, and a species read on the wrong line is 400% off (1.839397).
+CLOSED_FORM = 1e-7
 REFUSAL = "reactions and groups name a species by its index"
 
 
@@ -138,7 +142,7 @@ def test_an_index_that_is_its_line_reads_as_before(tmp_path, case):
     """Control: loaded on main too, to the closed form both referees give."""
     model = bngsim.Model.from_net(str(_write(tmp_path, _net(READ[case]))))
     assert list(model.species_names) == ["A()", "B()"]
-    assert _aobs(model) == pytest.approx(E1, rel=1e-7)
+    assert _aobs(model) == pytest.approx(E1, rel=CLOSED_FORM)
 
 
 def test_a_written_network_loads_back(tmp_path):
@@ -151,4 +155,4 @@ def test_a_written_network_loads_back(tmp_path):
     write_net(model, out)
     back = bngsim.Model.from_net(str(out))
     assert list(back.species_names) == ["A()", "B()"]
-    assert _aobs(back) == pytest.approx(E1, rel=1e-7)
+    assert _aobs(back) == pytest.approx(E1, rel=CLOSED_FORM)
