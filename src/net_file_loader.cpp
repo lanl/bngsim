@@ -321,6 +321,29 @@ parse_species(std::ifstream &file, std::unordered_map<std::string, int> &param_n
             throw std::runtime_error("species line '" + stripped +
                                      "' has an index but no species pattern");
         }
+        // Reactions and groups name a species by its index, and the loader
+        // reads that index as the species' line. An index that is not its line
+        // is refused: run_network places the species at the index it declares,
+        // BNG2.pl's readFile at its line (SpeciesList.pm strips the index), so
+        // `2 B()` above `1 A()` was read as one of BioNetGen's two readings with
+        // no word, and a reaction on species 1 ran on B() (issue #1512). The
+        // index is compared as a number, so `01` on the first line is read as
+        // both referees read it; an unindexed line keeps its place (#600).
+        if (field == 1) {
+            const std::string position = std::to_string(species.size() + 1);
+            const auto first = tokens[0].find_first_not_of('0');
+            const std::string index =
+                first == std::string::npos ? std::string("0") : tokens[0].substr(first);
+            if (index != position)
+                throw std::runtime_error(
+                    "species line '" + stripped + "' has index " + tokens[0] + " on the " + block +
+                    " block's line " + position +
+                    ": reactions and groups name a species by its index, and BioNetGen's "
+                    "two readers place a species differently when its index is not its "
+                    "line (run_network at its index, BNG2.pl's readFile at its line). "
+                    "Number the species 1, 2, 3, ... in the order they are listed, or "
+                    "leave the index off");
+        }
 
         ParsedSpecies s;
         s.name = tokens[field++];

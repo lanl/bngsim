@@ -263,6 +263,14 @@ parameter's value. An initial concentration written as an expression comes back
 as a synthetic `_InitialConc<N>` parameter, as BNG2.pl writes one, named by the
 species.
 
+A species line is `[<index>] <species> [<concentration>]`. The index may be
+left off, and when it is there it must be the line's own number, 1, 2, 3, ...
+in the order the species are listed (issue #1512). Reactions and groups name a
+species by that number, and BioNetGen's two readers disagree on a file whose
+index is not its line: run_network places the species at its index, BNG2.pl's
+`readFile` at its line. `parse_net_file` and `Model.from_net` refuse such a
+file rather than pick one reading.
+
 The deprecated `Sat` and `Hill` rate-law tokens come back rewritten, as
 `Model.from_net` rewrites them, with the same warning: the reaction is
 `"functional"`, driven by an explicit function, and a single-species observable
