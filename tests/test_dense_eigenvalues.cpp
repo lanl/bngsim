@@ -98,7 +98,8 @@ void set_rows(std::vector<double> &a, int n, std::initializer_list<double> rows)
     a.assign(static_cast<std::size_t>(n) * n, 0.0);
     int k = 0;
     for (double v : rows) {
-        a[static_cast<std::size_t>(k % n) * n + (k / n)] = v; // row-major input → column-major store
+        a[static_cast<std::size_t>(k % n) * n + (k / n)] =
+            v; // row-major input → column-major store
         ++k;
     }
 }
@@ -204,6 +205,123 @@ int test_zero_rows_and_columns() {
     return 0;
 }
 
+// Issue #1529's Jacobian: a $-fixed source S (a zero row) feeds X at k, X decays
+// at 1 and is read by nothing, and S also feeds a pair Y <-> Z. Block lower
+// triangular, so the spectrum is exactly 0 (S), -1 (X) and (-3 +- sqrt 5)/2.
+// The zero is isolated, but its condition number is k: left inside the QR
+// iteration it came back as +6.9e-05 at k = 1e7 (+3.1e-05 on another libm),
+// and -1 as -1.000069, so a stable root was certified unstable.
+std::vector<double> isolated_source_jacobian(double k, double s_diag) {
+    const int n = 4; // S, X, Y, Z
+    std::vector<double> a(static_cast<std::size_t>(n) * n, 0.0);
+    auto at = [&](int i, int j) -> double & {
+        return a[static_cast<std::size_t>(j) * n + static_cast<std::size_t>(i)];
+    };
+    at(0, 0) = s_diag; // 0 for the $-fixed S; a slow decay for a free one
+    at(1, 0) = k;
+    at(1, 1) = -1.0;
+    at(2, 0) = 1.0;
+    at(2, 2) = -1.0;
+    at(2, 3) = 1.0;
+    at(3, 2) = 1.0;
+    at(3, 3) = -2.0;
+    return a;
+}
+
+bool spectrum_is_exactly(const Spectrum &s, double s_diag, double tol) {
+    const double golden_lo = (-3.0 - std::sqrt(5.0)) / 2.0;
+    const double golden_hi = (-3.0 + std::sqrt(5.0)) / 2.0;
+    return has_real(s, s_diag, tol) && has_real(s, -1.0, tol) && has_real(s, golden_lo, tol) &&
+           has_real(s, golden_hi, tol);
+}
+
+int test_an_isolated_zero_feeding_an_unread_species() {
+    const auto a = isolated_source_jacobian(1e7, 0.0);
+    Spectrum s = spectrum_of(a, 4);
+    CHECK(s.ok, "eigensolver declined the isolated-source Jacobian");
+    CHECK(spectrum_is_exactly(s, 0.0, 1e-12 * s.radius), "spectrum is not the closed form");
+    CHECK(s.max_re == 0.0, "the isolated zero must come back exactly zero");
+    CHECK(!(s.max_re > 1e-6 * s.radius), "a stable root must not read as unstable");
+    return 0;
+}
+
+// Over the issue's scan, k from 1e3 to 1e12: the error grew with k, and where
+// the label flipped depended on the sign of the roundoff.
+int test_an_isolated_zero_over_twelve_decades_of_k() {
+    for (int e = 3; e <= 12; ++e) {
+        const double k = std::pow(10.0, e);
+        Spectrum s = spectrum_of(isolated_source_jacobian(k, 0.0), 4);
+        CHECK(s.ok, "eigensolver declined k = 1e" << e);
+        CHECK(spectrum_is_exactly(s, 0.0, 1e-12 * s.radius), "spectrum off at k = 1e" << e);
+        CHECK(s.max_re == 0.0, "isolated zero not exact at k = 1e" << e);
+    }
+    return 0;
+}
+
+// The sibling with no fixed species: S free, decaying at 1e-9. Its row is still
+// isolated, and its eigenvalue, nine decades under the radius, comes back as
+// the diagonal it is.
+int test_an_isolated_slow_decay_is_read_exactly() {
+    Spectrum s = spectrum_of(isolated_source_jacobian(1e7, -1e-9), 4);
+    CHECK(s.ok, "eigensolver declined the slow-decay sibling");
+    CHECK(has_real(s, -1e-9, 1e-21), "the isolated -1e-9 must be the diagonal it is");
+    CHECK(spectrum_is_exactly(s, -1e-9, 1e-12 * s.radius), "spectrum is not the closed form");
+    CHECK(s.max_re < 0.0, "every eigenvalue is negative");
+    return 0;
+}
+
+// Isolation in every place: the same matrix under each of the 24 orderings of
+// its species gives the same exact spectrum, so a row or column found at any
+// index is swapped out correctly.
+int test_isolation_in_every_ordering() {
+    const int n = 4;
+    const auto base = isolated_source_jacobian(1e7, 0.0);
+    std::vector<int> perm = {0, 1, 2, 3};
+    int orderings = 0;
+    do {
+        std::vector<double> a(static_cast<std::size_t>(n) * n, 0.0);
+        for (int i = 0; i < n; ++i)
+            for (int j = 0; j < n; ++j)
+                a[static_cast<std::size_t>(j) * n + static_cast<std::size_t>(i)] =
+                    base[static_cast<std::size_t>(perm[j]) * n + static_cast<std::size_t>(perm[i])];
+        Spectrum s = spectrum_of(a, n);
+        CHECK(s.ok, "eigensolver declined an ordering");
+        CHECK(spectrum_is_exactly(s, 0.0, 1e-12 * s.radius), "spectrum off in an ordering");
+        CHECK(s.max_re == 0.0, "isolated zero not exact in an ordering");
+        ++orderings;
+    } while (std::next_permutation(perm.begin(), perm.end()));
+    CHECK(orderings == 24, "expected 24 orderings");
+    return 0;
+}
+
+// The column half of the isolation: X is read by nothing (an isolated column)
+// but reads a coupled pair S <-> Y strongly, so no row is isolated. Its
+// eigenvalue, 0, is not ill-conditioned the way the row case is: without the
+// column step it came back at the roundoff level, but on either side of zero
+// (+2.3e-16 at k = 1e9). Isolated, it is the diagonal, exactly.
+int test_an_isolated_column_is_read_exactly() {
+    const int n = 3; // S, Y, X
+    for (int e = 3; e <= 12; e += 3) {
+        const double k = std::pow(10.0, e);
+        std::vector<double> a(static_cast<std::size_t>(n) * n, 0.0);
+        auto at = [&](int i, int j) -> double & {
+            return a[static_cast<std::size_t>(j) * n + static_cast<std::size_t>(i)];
+        };
+        at(0, 0) = -1.0;
+        at(0, 1) = 1.0;
+        at(1, 0) = 1.0;
+        at(1, 1) = -2.0;
+        at(2, 0) = k;
+        at(2, 1) = k;
+        Spectrum s = spectrum_of(a, n);
+        CHECK(s.ok, "eigensolver declined the isolated-column matrix at k = 1e" << e);
+        CHECK(has_real(s, (-3.0 - std::sqrt(5.0)) / 2.0, 1e-12 * s.radius), "lower root off");
+        CHECK(has_real(s, (-3.0 + std::sqrt(5.0)) / 2.0, 1e-12 * s.radius), "upper root off");
+        CHECK(s.max_re == 0.0, "the isolated column's zero must be exact at k = 1e" << e);
+    }
+    return 0;
+}
+
 // Rate constants spanning eight decades — what balancing is there for. The slow
 // mode is what a stability verdict turns on and it must survive the fast one's
 // roundoff: at a spectral radius of 1e6, an eigenvalue at -1e-2 sits eight
@@ -216,8 +334,8 @@ int test_badly_scaled() {
     const int n = 3;
     std::vector<double> a;
     set_rows(a, n,
-             {-1e6, 1e6, 0.0,    //
-              1e-2, -1e-2, 0.0,  //
+             {-1e6, 1e6, 0.0,   //
+              1e-2, -1e-2, 0.0, //
               0.0, 5e2, -1e-2});
     Spectrum s = spectrum_of(a, n);
     CHECK(s.ok, "eigensolver declined a badly scaled matrix");
@@ -285,9 +403,11 @@ int test_similarity_invariance() {
         const double m = 1.0 + 0.5 * k;
         // Row_{k+1} += m·Row_k, then Col_k -= m·Col_{k+1} (the inverse operation).
         for (int j = 0; j < n; ++j)
-            a[static_cast<std::size_t>(j) * n + (k + 1)] += m * a[static_cast<std::size_t>(j) * n + k];
+            a[static_cast<std::size_t>(j) * n + (k + 1)] +=
+                m * a[static_cast<std::size_t>(j) * n + k];
         for (int i = 0; i < n; ++i)
-            a[static_cast<std::size_t>(k) * n + i] -= m * a[static_cast<std::size_t>(k + 1) * n + i];
+            a[static_cast<std::size_t>(k) * n + i] -=
+                m * a[static_cast<std::size_t>(k + 1) * n + i];
     }
     Spectrum s = spectrum_of(a, n);
     CHECK(s.ok, "eigensolver declined a similarity-transformed diagonal matrix");
@@ -307,6 +427,11 @@ int main() {
     RUN_TEST(test_complex_pair_is_stable);
     RUN_TEST(test_unstable_focus);
     RUN_TEST(test_zero_rows_and_columns);
+    RUN_TEST(test_an_isolated_zero_feeding_an_unread_species);
+    RUN_TEST(test_an_isolated_zero_over_twelve_decades_of_k);
+    RUN_TEST(test_an_isolated_slow_decay_is_read_exactly);
+    RUN_TEST(test_isolation_in_every_ordering);
+    RUN_TEST(test_an_isolated_column_is_read_exactly);
     RUN_TEST(test_badly_scaled);
     RUN_TEST(test_repeated_eigenvalues);
     RUN_TEST(test_edge_sizes);
