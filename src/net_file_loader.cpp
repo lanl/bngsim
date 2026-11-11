@@ -1220,6 +1220,18 @@ static std::string parenthesize_product(const std::vector<std::string> &terms) {
     return expr;
 }
 
+// The value a rate-law constant has at load, when its parameter's value column
+// is a number; nullopt for an expression parameter. (The reader refuses a
+// constant that is not a parameter name, so there is no literal to read.)
+static std::optional<double> value_at_load(const std::string &token,
+                                           const std::vector<ParsedParam> &params) {
+    for (const auto &param : params) {
+        if (param.name == token)
+            return param.is_expression ? std::nullopt : std::optional<double>(param.value);
+    }
+    return std::nullopt;
+}
+
 static std::vector<std::string> rewrite_legacy_sat_hill_rate_laws(
     std::vector<ParsedReaction> &reactions, const std::vector<ParsedParam> &params,
     std::vector<ParsedFunction> &functions, std::vector<ParsedObservable> &observables) {
@@ -1315,8 +1327,39 @@ static std::vector<std::string> rewrite_legacy_sat_hill_rate_laws(
             std::string obs_name = make_single_species_observable(
                 reaction_index, unique_reactants[0].first, 1, observables, used_observable_names);
 
-            func.expression = vmax + " * (" + obs_name + " ^ (" + h + " - 1)) / ((" + kh + " ^ " +
-                              h + ") + (" + obs_name + " ^ " + h + "))";
+            // The reaction multiplies this function by S, so it stands for the
+            // law Vmax*S^h/(Kh^h + S^h). For 0 < h < 1 the body is S^(h-1): inf
+            // at S = 0, where inf*0 is NaN and the law, and run_network's HILL,
+            // give 0 (issue #1497); and a negative base to a non-integer power
+            // below 0, where a step that overshoots 0 lands. The guard gives the
+            // function 0 for S <= 0 at those h, and changes nothing else: every
+            // S > 0 reads the body, and so does every S at h >= 1, where the body
+            // is finite at 0 and is the slope the Jacobian's product rule reads
+            // there (Vmax/Kh at h = 1), and at h <= 0, which run_network does not
+            // read as 0 either (at h = 0 its law is Vmax/2).
+            //
+            // `S > 0` and not `S == 0`: the core roots an inequality over state
+            // (issue #897) and holds a run that slides along it, where an
+            // equality is not rooted, and a run pinned at S = 0 by an influx
+            // ground there without end. BNG2.pl's parser has no `!=`, and
+            // write_bngl refuses it. _saturable_jacobian reads this guard in
+            // exactly this form.
+            //
+            // A root costs every step it is watched: 300 Hill reactions with
+            // h >= 1, where the guard is always true, ran 10x slower with it.
+            // So an h known at load to be >= 1 or <= 0 keeps the bare body, as
+            // before; an h in (0, 1), or one not known until the run (an
+            // expression parameter), takes the guard. A set_param that later
+            // moves a bare h into (0, 1) reads the body there, as before #1497.
+            const std::string body = vmax + " * (" + obs_name + " ^ (" + h + " - 1)) / ((" + kh +
+                                     " ^ " + h + ") + (" + obs_name + " ^ " + h + "))";
+            const std::optional<double> h_value = value_at_load(h, params);
+            if (h_value && (*h_value >= 1.0 || *h_value <= 0.0)) {
+                func.expression = body;
+            } else {
+                func.expression = "if((" + obs_name + " > 0) or (" + h + " <= 0) or (" + h +
+                                  " >= 1), " + body + ", 0)";
+            }
         } else {
             throw std::runtime_error("Unsupported legacy .net rate law '" +
                                      rxn.legacy_rate_law_type + "'");
@@ -1351,7 +1394,9 @@ static std::vector<std::string> rewrite_legacy_sat_hill_rate_laws(
                    "For a unit-stoichiometry reaction, use Sat k K as "
                    "f() = k/(K+S), not k*S/(K+S), because BNGL functional rates "
                    "multiply reactants separately. Use Hill Vmax Kh h as "
-                   "f() = Vmax*S^(h-1)/(Kh^h+S^h).";
+                   "f() = Vmax*S^(h-1)/(Kh^h+S^h), and for 0 < h < 1 as "
+                   "f() = if(S > 0, Vmax*S^(h-1)/(Kh^h+S^h), 0): unguarded, that "
+                   "one is inf*0 at S = 0, where the law is 0.";
         warnings.push_back(std::move(warning));
     }
     return warnings;
