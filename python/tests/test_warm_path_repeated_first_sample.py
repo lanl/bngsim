@@ -145,6 +145,37 @@ def test_a_row_taken_as_reached_carries_the_time_asked_for():
     assert np.asarray(r.expressions["tt"])[1] == 3.0 * t1 != 15.0
 
 
+@pytest.mark.parametrize(
+    "times",
+    [
+        [-2.0, -2.0, -2.0, 3.0, 3.0],
+        [-5.0, float(np.nextafter(-5.0, 0.0)), 0.0],
+        [-1e6, -1e6, -1e6 + 1.0],
+    ],
+    ids=["replicates at -2", "a double after -5", "replicates at -1e6"],
+)
+def test_a_run_that_starts_below_zero(times):
+    """CVODE's distance is relative to |t0|, and so is the test that takes an
+    output as reached: a run that starts before t = 0 (#1538 measured one)
+    reads its replicates as one that starts at 0 does. CV_TOO_CLOSE on main."""
+    r = _run(times)
+    x = np.asarray(r.species)[:, 0]
+    np.testing.assert_allclose(x, _closed_form(times), rtol=0, atol=1e-6)
+    assert np.asarray(r.time).tolist() == times
+
+
+def test_a_uniform_grid_that_ends_below_zero():
+    """The uniform-grid case, mirrored: t_span=(-1e6 - 1e-9, -1e6)."""
+    with contextlib.redirect_stderr(io.StringIO()):
+        r = bngsim.Simulator(bngsim.Model.from_antimony_string(DECAY), method="ode").run(
+            t_span=(-1e6 - 1e-9, -1e6), n_points=101
+        )
+    x = np.asarray(r.species)[:, 0]
+    assert len(x) == 101
+    t = np.asarray(r.time)
+    np.testing.assert_allclose(x, _closed_form(t, t0=t[0]), rtol=0, atol=1e-9)
+
+
 def test_a_uniform_grid_whose_first_step_rounds_onto_the_start():
     """t_span=(1e6, 1e6 + 1e-9) with 101 points: the first outputs round onto
     the start, and run, run_batch and parameter_scan all reach run_warm."""
