@@ -3262,10 +3262,21 @@ class Result:
     def to_cdat(self, path: str | Path) -> None:  # noqa: F821
         """Export species in BNG ``.cdat`` format.
 
+        The columns are :attr:`species`, the values this Result reports.
+
         Parameters
         ----------
         path : str or Path
             Output file path.
+
+        Raises
+        ------
+        ValueError
+            For a squeezed ``run_batch`` or ``run_replicates`` Result, which
+            holds one trajectory per row: write each row's ``.cdat`` from the
+            unsqueezed results (``squeeze=False``).
+        RuntimeError
+            If the file cannot be opened for writing.
         """
         # The species this Result reports, which the solve's post-processing
         # corrects after the core's copy is written (an assignment-rule species,

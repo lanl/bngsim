@@ -51,6 +51,15 @@ RESIZE_SSA = """
 """
 
 
+# Against each closed form: the ODE cases run at rtol = 1e-10 and the SSA case
+# is exact (no reaction touches X), so 1e-6 is room, not error. A stale column
+# is 0.6 or more out, relative, after its first row.
+CLOSED_FORM_RTOL = 1e-6
+# Against Result.species and to_csv: a .cdat holds 13 significant digits (12
+# after the point), so it rounds a value by at most 5e-13, relative.
+CDAT_DIGITS_RTOL = 1e-11
+
+
 def _sim(ant, method="ode"):
     return bngsim.Simulator(bngsim.Model.from_antimony_string(ant), method=method)
 
@@ -104,9 +113,13 @@ def test_the_cdat_column_is_the_reported_species(tmp_path, ant, method, name, or
     r.to_cdat(tmp_path / "a.cdat")
     r.to_csv(tmp_path / "a.csv", kind="species")
     got = _column(tmp_path / "a.cdat", name)
-    np.testing.assert_allclose(got, oracle(np.asarray(r.time)), rtol=1e-6)
-    np.testing.assert_allclose(got, r.species[:, r.species_names.index(name)], rtol=1e-11)
-    np.testing.assert_allclose(got, _column(tmp_path / "a.csv", name, sep=","), rtol=1e-11)
+    np.testing.assert_allclose(got, oracle(np.asarray(r.time)), rtol=CLOSED_FORM_RTOL)
+    np.testing.assert_allclose(
+        got, r.species[:, r.species_names.index(name)], rtol=CDAT_DIGITS_RTOL
+    )
+    np.testing.assert_allclose(
+        got, _column(tmp_path / "a.csv", name, sep=","), rtol=CDAT_DIGITS_RTOL
+    )
 
 
 @pytest.mark.parametrize(("ant", "method", "name", "oracle", "kw"), CASES)
@@ -163,7 +176,7 @@ def test_every_route_with_a_core_writes_the_reported_species(tmp_path):
         np.testing.assert_allclose(
             _column(tmp_path / f"{i}.cdat", "S"),
             r.species[:, r.species_names.index("S")],
-            rtol=1e-11,
+            rtol=CDAT_DIGITS_RTOL,
         )
 
 
@@ -178,3 +191,36 @@ def test_a_squeezed_result_is_refused_by_name(tmp_path):
         )
     with pytest.raises(ValueError, match=r"to_cdat writes one trajectory; this Result holds 2"):
         r.to_cdat(tmp_path / "s.cdat")
+
+
+def test_the_layout_is_the_one_main_wrote(tmp_path):
+    """A change detector for the file format, not a numerical check. Every byte
+    comparison above compares two files from the one writer, so a change to its
+    widths, precision or header would pass them all. These are the header and
+    the t = 0 row main wrote (0b2055a9), whose values are the initial conditions
+    exactly; B's three-digit exponent overruns its 18-wide field."""
+    r = _run(
+        "species A = 10; species B = 1e-100; species C = 0; R1: A -> B; 0.3*A\n",
+        t_span=(0, 5),
+        n_points=11,
+    )
+    r.to_cdat(tmp_path / "a.cdat")
+    lines = (tmp_path / "a.cdat").read_text().splitlines()
+    assert lines[0] == "#          time          A          B          C"
+    assert (
+        lines[1] == " 0.000000000000e+00 1.000000000000e+01 1.000000000000e-100 0.000000000000e+00"
+    )
+    assert len(lines) == 12
+
+
+def test_a_path_that_cannot_be_opened_is_refused_alike(tmp_path):
+    """One writer, one refusal. A run's Result raised RuntimeError naming the
+    path; a loaded one, which had a writer of its own, raised FileNotFoundError.
+    Both now raise the run's."""
+    pytest.importorskip("h5py")
+    r = _run(RULE, t_span=(0, 1), n_points=2)
+    r.save(tmp_path / "a.h5")
+    bad = tmp_path / "no" / "such" / "dir" / "a.cdat"
+    for result in (r, bngsim.Result.load(tmp_path / "a.h5")):
+        with pytest.raises(RuntimeError, match=r"Cannot open file for writing: .*a\.cdat"):
+            result.to_cdat(bad)
