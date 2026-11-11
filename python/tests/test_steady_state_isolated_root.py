@@ -2604,15 +2604,21 @@ def _biomodel(name: str) -> str:
     return str(path)
 
 
-def test_biomd599_is_refused_on_its_condition_number():
+def test_biomd599_is_refused_as_not_an_isolated_root():
     """A group of species that exchange among themselves, with what fed them
     gone: their total is where the run left it, and the Jacobian has an
-    eigenvalue of 2e-18. No pivot of its factorization is under 4% of the
-    terms it was computed from, and one Newton step leaves the determinant and
-    the columns where they were. The condition number is 3e16. Every small
-    model built to be refused on it was refused on a pivot first."""
+    eigenvalue of 2e-18. Its determinant is close to what rounding leaves of a
+    zero, so which check refuses it turns on the last bits. Built with fused
+    multiply-adds (Apple Clang's default), no pivot was under 4% of the terms
+    it was computed from, one Newton step left the determinant where it was,
+    and the condition number, 3e16, refused it. Built without them, as every
+    build has been since #1582, the same step takes the determinant to -2.2 of
+    itself, and that refuses it first (issue #1647). Either is #995's refusal."""
     sim = bngsim.Simulator(bngsim.Model.from_sbml(_biomodel("BIOMD0000000599")), method="ode")
-    with pytest.raises(bngsim.SimulationError, match=r"#995.*magnified \d\.\de\+1[5-9] times"):
+    with pytest.raises(
+        bngsim.SimulationError,
+        match=r"#995.*(a determinant that is -?\d|magnified \d\.\de\+1[5-9] times)",
+    ):
         sim.steady_state(sensitivity_params=["parameter_1", "parameter_2", "parameter_3"])
 
 
@@ -2790,8 +2796,9 @@ def test_a_newton_step_that_is_no_number_is_said_as_a_rate_with_no_value(tmp_pat
 
 def test_a_condition_number_above_the_limit_is_refused_and_one_under_it_is_not(tmp_path):
     """The limit on the condition number, on a result that has everything
-    else in order: the corpus models that only it refuses are not in the
-    repository (BIOMD0000000599 below)."""
+    else in order. No model in the repository reaches it on its own, and the
+    corpus model that did, BIOMD0000000599 below, meets the determinant check
+    first in a build without fused multiply-adds (issue #1647)."""
     sim = bngsim.Simulator(_net(tmp_path, BESIDE_A_FAST_EXCHANGE.format(F=10.0)), method="ode")
     out = sim.steady_state(sensitivity_params=["s", "k"])
     out.sens_root_condition = 0.9e13
