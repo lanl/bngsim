@@ -3267,15 +3267,31 @@ class Result:
         path : str or Path
             Output file path.
         """
-        if self._core is not None:
-            self._core.to_cdat(str(path))
-        else:
-            _write_bng_file(
-                path,
-                self._time,
-                self._species,
-                self._species_names,
+        # The species this Result reports, which the solve's post-processing
+        # corrects after the core's copy is written (an assignment-rule species,
+        # a resized compartment's concentrations). Written from the core's copy,
+        # the .cdat disagreed with Result.species, to_csv(kind="species") and
+        # the .cdat the same Result wrote after save/load (issue #1505). The
+        # core's writer keeps the layout: one .cdat format, with or without a
+        # core.
+        from bngsim._bngsim_core import _write_cdat
+
+        if np.ndim(self._species) != 2:
+            # A squeezed run_batch / run_replicates Result holds one trajectory
+            # per row; a .cdat file holds one. (It used to fail inside string
+            # formatting, with a TypeError that named neither.)
+            raise ValueError(
+                f"to_cdat writes one trajectory; this Result holds "
+                f"{np.shape(self._species)[0]} (species of shape "
+                f"{np.shape(self._species)}). Write each row's .cdat from the "
+                f"unsqueezed results (squeeze=False)."
             )
+        _write_cdat(
+            str(path),
+            np.ascontiguousarray(self._time, dtype=float),
+            np.ascontiguousarray(self._species, dtype=float),
+            list(self._species_names),
+        )
 
     def to_csv(
         self,

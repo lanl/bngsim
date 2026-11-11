@@ -361,6 +361,19 @@ class Result {
     SsaDiagnostics ssa_diag_;
 };
 
+// The BNG .cdat writer, over arrays (`species` row-major [time][species],
+// `n_times` rows of `n_species` columns, the columns `cols` written in that
+// order). Pointers, so a caller's buffer is read where it lies.
+// Result::to_cdat calls it with its own stored species. Python calls it with
+// the species a run reports, which the solve's post-processing corrects after
+// the core's copy is written (an assignment-rule species, a resized
+// compartment's concentrations): written from the core's copy, the .cdat
+// disagreed with Result.species (issue #1505).
+void write_cdat(const std::string &path, const double *time, std::size_t n_times,
+                const double *species, std::size_t n_species,
+                const std::vector<std::string> &species_names,
+                const std::vector<std::size_t> &cols);
+
 // ─── Non-finite forward sensitivities (issue #384) ───────────────────────────
 //
 // CVODES can return CV_SUCCESS with NaN in the sensitivity vectors. The error
