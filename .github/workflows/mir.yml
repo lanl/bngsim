@@ -121,6 +121,10 @@ on:
       # In _CODEGEN_SOURCE_MODULES alongside the two above, i.e. it decides what
       # gets emitted (the derivation budgets and every symbolic derivative).
       - "python/bngsim/_jacobian.py"
+      # The rest of _codegen._CODEGEN_SOURCE_MODULES, the modules the codegen
+      # source digest hashes: each decides the C a compiled model is built from.
+      - "python/bngsim/_saturable_jacobian.py"
+      - "python/bngsim/_term_order.py"
       - "python/bngsim/__init__.py"
       - "python/tests/test_mir_equivalence.py"
       - "python/tests/test_codegen*.py"

@@ -91,6 +91,11 @@ on:
       # and _simulator.py is the gate that hands the model to codegen at all.
       - "python/bngsim/_codegen.py"
       - "python/bngsim/_jacobian.py"
+      # The rest of _codegen._CODEGEN_SOURCE_MODULES, the modules the codegen
+      # source digest hashes: each decides the C a compiled model is built from.
+      - "python/bngsim/_saturable_jacobian.py"
+      - "python/bngsim/_switch_sensitivity.py"
+      - "python/bngsim/_term_order.py"
       - "python/bngsim/_simulator.py"
       # The resolve side: both call sites that pull the symbol out of the built
       # DLL by name, the interpreted assembly the compiled emit mirrors, and the
