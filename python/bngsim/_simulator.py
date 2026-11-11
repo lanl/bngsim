@@ -3975,6 +3975,7 @@ class Simulator:
         # NaN to put there.
         ar_map, ar_blocked = self._ar_sensitivity_metadata(model)
         self._apply_ar_report_map(result, ar_map)
+        self._write_ar_targets_back(result, ar_map, model)
         self._apply_ar_sensitivity_map(result, ar_map)
         self._apply_varvol_conc_map(result, model)
         self._apply_varvol_ar_conc_map(result, model)
@@ -4085,6 +4086,41 @@ class Simulator:
             changed = True
         if changed:
             result._species = sp
+
+    def _write_ar_targets_back(
+        self, result: Result, amap: dict[str, tuple[str, str, float, str]], model: Model | None
+    ) -> None:
+        """Leave each AssignmentRule-target species in the model at the value
+        the run reports for it at its last row (issue #1505's twin, #1510).
+
+        The target is a ``fixed`` slot the integrator does not move, and only
+        the report (:meth:`_apply_ar_report_map`) reads the rule. A rule linear
+        in species is read as an observable, which nothing copies back into the
+        slot, and an SSA run copies back neither kind. So after a run,
+        ``Model.get_concentration``, ``get_state`` and ``ReactionKernel`` read
+        the slot's t=0 value: ``S := 2*A`` read 20 for 2.706706.
+
+        The value is the report's, in the model's storage convention (it runs
+        before the variable-volume passes). The slot is inert, read by no rate
+        law and no event, so the write moves no dynamics. It goes through the
+        core's ``set_concentration``, which also drops a pending carry-over
+        sensitivity seed, so the carry-over state is put back around it: a
+        write the model did not ask for must not end a pre-equilibration.
+        """
+        if not amap or result._species.ndim != 2 or result._species.shape[0] == 0:
+            return
+        core = (self._model if model is None else model)._core
+        last = result._species[-1]
+        idx = {n: i for i, n in enumerate(result._species_names)}
+        writes = [(name, float(last[idx[name]])) for name in amap if name in idx]
+        if not writes:
+            return
+        snapshot = self._capture_carryover_state(core)
+        try:
+            for name, value in writes:
+                core.set_concentration(name, value)
+        finally:
+            self._restore_carryover_state(snapshot, core)
 
     def _ar_report_vdiv(self, entry: tuple, model: Model | None = None) -> float:
         """The ``vdiv`` an ``_ar_report_map`` entry reports its rule's value through.
