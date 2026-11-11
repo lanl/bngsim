@@ -5274,6 +5274,9 @@ class Simulator:
             Explicit output time points. When provided, overrides
             ``t_span`` and ``n_points``. Must contain at least 2
             values, all finite. Values are sorted automatically.
+            A time may repeat, as replicate measurements do
+            (``[0, 0, 0, 5, 5, 5]``): each copy is a row of its own,
+            and the copies are equal.
 
             The override covers the interval, not just the output
             grid: the run starts at the first sample time and ends at

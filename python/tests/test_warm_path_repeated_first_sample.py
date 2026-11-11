@@ -37,6 +37,16 @@ DECAY = "species x; x = 1; k = 0.1; J1: x -> ; k*x;\n"
 RULES = DECAY + "species y; y := 2*x; tt := time*3;\n"
 TRIPLICATE = [0.0, 0.0, 0.0, 5.0, 5.0, 5.0, 10.0, 10.0, 10.0]
 
+# Against exp(-k (t - t0)): the integration's own error. At the default
+# rtol = atol = 1e-8 the rows come back within 6.0e-08 of it on every grid here,
+# and 1e-6 leaves room for other platforms and Jacobian routes. A row read at
+# another of a grid's distinct times (1 or more apart here) is off by 0.09 or
+# more.
+CLOSED_FORM_ATOL = 1e-6
+# The two loops take different steps, each within that error of the closed
+# form, so they agree to well inside 1e-6 of each other.
+LOOPS_RTOL = 1e-6
+
 _CC = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
 needs_cc = pytest.mark.skipif(_CC is None, reason="no C compiler on PATH for the codegen leg")
 
@@ -54,6 +64,20 @@ def _run(times, text=DECAY, *, cold=False, monkeypatch=None, **kw):
 def _closed_form(times, k=0.1, t0=None):
     t = np.asarray(times, dtype=float)
     return np.exp(-k * (t - (t[0] if t0 is None else t0)))
+
+
+def _held_start_bound(k, t0):
+    """How far a row of a 1e-9-long grid at |t0| = 1e6 may be from the closed
+    form. A row taken as reached holds the start state over less than CVODE's
+    roundoff distance, 2·eps·|t0| (4.4e-10 here), so it is off by less than k
+    times that; the rows CVode integrates to are nearer (within 3.1e-12). The
+    largest error measured is a reached row three doubles from the start,
+    3.5e-11 to 1.05e-10 for k = 0.1 to 0.3: 0.63 of this bound, a ratio set by
+    the grid's rounding alone. A quarter over, for roundoff in the closed form.
+    A run that held the start state on every row is off by k·1e-9 at the last,
+    1.9 times this bound, so the test can tell the two apart; a fixed 1e-9
+    could not, since x moves by only k·1e-9 over the whole grid."""
+    return 1.25 * k * 2.0 * np.finfo(float).eps * abs(t0)
 
 
 @pytest.fixture(autouse=True)
@@ -75,7 +99,7 @@ def _warm(monkeypatch):
 def test_replicates_at_the_start_are_the_closed_form(kw):
     """The issue's grid: CV_TOO_CLOSE on main, on every route of the warm path."""
     x = np.asarray(_run(TRIPLICATE, **kw).species)[:, 0]
-    np.testing.assert_allclose(x, _closed_form(TRIPLICATE), rtol=0, atol=1e-6)
+    np.testing.assert_allclose(x, _closed_form(TRIPLICATE), rtol=0, atol=CLOSED_FORM_ATOL)
     assert np.all(x[:3] == x[0])
 
 
@@ -95,7 +119,7 @@ def test_repeats_after_the_first_step_are_read_as_before():
     interpolating it, and its rows are left as they were."""
     times = [0.0, 5.0, 5.0, 5.0, 10.0, 10.0]
     x = np.asarray(_run(times).species)[:, 0]
-    np.testing.assert_allclose(x, _closed_form(times), rtol=0, atol=1e-6)
+    np.testing.assert_allclose(x, _closed_form(times), rtol=0, atol=CLOSED_FORM_ATOL)
     assert np.all(x[1:4] == x[1]) and x[4] == x[5]
 
 
@@ -104,7 +128,7 @@ def test_the_same_rows_as_the_event_capable_loop(monkeypatch):
     integration tolerance (they take different steps)."""
     warm = np.asarray(_run(TRIPLICATE, monkeypatch=monkeypatch).species)
     cold = np.asarray(_run(TRIPLICATE, cold=True, monkeypatch=monkeypatch).species)
-    np.testing.assert_allclose(warm, cold, rtol=1e-6, atol=1e-9)
+    np.testing.assert_allclose(warm, cold, rtol=LOOPS_RTOL, atol=1e-9)
 
 
 @pytest.mark.parametrize(
@@ -132,7 +156,7 @@ def test_a_time_within_roundoff_of_the_start(times):
     t0, and the test that takes it as reached is the event-capable loop's own
     (with its denormal floor, for 5e-324)."""
     x = np.asarray(_run(times).species)[:, 0]
-    np.testing.assert_allclose(x, _closed_form(times), rtol=0, atol=1e-6)
+    np.testing.assert_allclose(x, _closed_form(times), rtol=0, atol=CLOSED_FORM_ATOL)
 
 
 def test_a_row_taken_as_reached_carries_the_time_asked_for():
@@ -160,7 +184,7 @@ def test_a_run_that_starts_below_zero(times):
     reads its replicates as one that starts at 0 does. CV_TOO_CLOSE on main."""
     r = _run(times)
     x = np.asarray(r.species)[:, 0]
-    np.testing.assert_allclose(x, _closed_form(times), rtol=0, atol=1e-6)
+    np.testing.assert_allclose(x, _closed_form(times), rtol=0, atol=CLOSED_FORM_ATOL)
     assert np.asarray(r.time).tolist() == times
 
 
@@ -173,7 +197,9 @@ def test_a_uniform_grid_that_ends_below_zero():
     x = np.asarray(r.species)[:, 0]
     assert len(x) == 101
     t = np.asarray(r.time)
-    np.testing.assert_allclose(x, _closed_form(t, t0=t[0]), rtol=0, atol=1e-9)
+    np.testing.assert_allclose(
+        x, _closed_form(t, t0=t[0]), rtol=0, atol=_held_start_bound(0.1, t[0])
+    )
 
 
 def test_a_uniform_grid_whose_first_step_rounds_onto_the_start():
@@ -193,7 +219,10 @@ def test_a_uniform_grid_whose_first_step_rounds_onto_the_start():
         x = np.asarray(r.species)[:, 0]
         assert len(x) == 101
         np.testing.assert_allclose(
-            x, _closed_form(np.asarray(r.time), k=k, t0=1e6), rtol=0, atol=1e-9
+            x,
+            _closed_form(np.asarray(r.time), k=k, t0=1e6),
+            rtol=0,
+            atol=_held_start_bound(k, 1e6),
         )
 
 
@@ -205,10 +234,11 @@ def test_a_rule_species_and_a_clock_function_at_the_repeats(monkeypatch):
     names = list(r.species_names)
     y = np.asarray(r.species)[:, names.index("y")]
     tt = np.asarray(r.expressions["tt"])
-    np.testing.assert_allclose(y, 2 * _closed_form(TRIPLICATE), rtol=0, atol=2e-6)
+    # y is twice x, and so is its error.
+    np.testing.assert_allclose(y, 2 * _closed_form(TRIPLICATE), rtol=0, atol=2 * CLOSED_FORM_ATOL)
     assert tt.tolist() == [3.0 * t for t in TRIPLICATE]
     cold = _run(TRIPLICATE, RULES, cold=True, monkeypatch=monkeypatch)
-    np.testing.assert_allclose(np.asarray(r.species), np.asarray(cold.species), rtol=1e-6)
+    np.testing.assert_allclose(np.asarray(r.species), np.asarray(cold.species), rtol=LOOPS_RTOL)
     assert tt.tolist() == np.asarray(cold.expressions["tt"]).tolist()
 
 
@@ -226,7 +256,7 @@ def test_a_net_model(tmp_path):
             sample_times=TRIPLICATE
         )
     np.testing.assert_allclose(
-        np.asarray(r.species)[:, 0], _closed_form(TRIPLICATE), rtol=0, atol=1e-6
+        np.asarray(r.species)[:, 0], _closed_form(TRIPLICATE), rtol=0, atol=CLOSED_FORM_ATOL
     )
 
 
@@ -242,3 +272,23 @@ def test_a_sensitivity_run_keeps_cvode_s_refusal_without_blaming_the_rate_law(ca
     ):
         _run([5.0, float(np.nextafter(5.0, 6.0)), 10.0], sensitivity_params=["k"])
     assert not [r for r in caplog.records if "GH#176" in r.getMessage()]
+
+
+def test_a_steady_state_stop_on_a_replicate_at_the_start(monkeypatch):
+    """``steady_state=True`` tests ||f(t, y)|| after each row it records, a row
+    taken as reached at the start among them (the rule TimeSpec states, and
+    run_network -c's). A model at rest, x = 0, has f = 0 exactly, so the first
+    row after row 0 settles: on this grid that is the second sample at t = 0,
+    and the run stops there, as the event-capable loop stops. Exact equality,
+    no tolerance: the rows are the initial state, and f is 0, not small."""
+    rest = "species x; x = 0; k = 0.1; J1: x -> ; k*x;\n"
+    for cold in (False, True):
+        if cold:
+            monkeypatch.setenv("BNGSIM_NO_WARM_CVODE", "1")
+        with contextlib.redirect_stderr(io.StringIO()):
+            r = bngsim.Simulator(bngsim.Model.from_antimony_string(rest), method="ode").run(
+                sample_times=[0.0, 0.0, 0.0, 5.0], steady_state=True
+            )
+        assert np.asarray(r.time).tolist() == [0.0, 0.0]
+        assert np.asarray(r.species)[:, 0].tolist() == [0.0, 0.0]
+        assert r.solver_stats["steady_state_reached"]
