@@ -1359,7 +1359,52 @@ static std::vector<std::string> rewrite_legacy_sat_hill_rate_laws(
 
 // ─── Main loader ─────────────────────────────────────────────────────────────
 
+// Whether the file holds a carriage return that ends no CRLF line. BNG2.pl and
+// run_network read one as a blank inside its line, not as a line end, and so
+// does this loader: a file whose lines end in a bare CR (classic Mac OS) is one
+// line, and a CR in place of one newline joins two lines (issue #1511).
+static bool holds_bare_cr(const std::string &path) {
+    std::ifstream file(path, std::ios::binary);
+    char c;
+    while (file.get(c)) {
+        if (c == '\r' && file.peek() != '\n')
+            return true;
+    }
+    return false;
+}
+
+static NetFileStructure read_net_file_blocks(const std::string &path);
+
 NetFileStructure parse_net_file_structure(const std::string &path) {
+    try {
+        return read_net_file_blocks(path);
+    } catch (const std::exception &e) {
+        // Read only on the way out: a refusal of such a file names the line
+        // the CR made, which is not a line the file's author sees. That line
+        // can run to the whole file, and its CRs, printed, return the cursor
+        // over the message, so they are shown as `\r` and the reading's own
+        // words are cut short.
+        if (!holds_bare_cr(path))
+            throw;
+        constexpr std::size_t kMaxShown = 300;
+        std::string what;
+        for (const char *p = e.what(); *p != '\0' && what.size() < kMaxShown; ++p) {
+            if (*p == '\r')
+                what += "\\r";
+            else
+                what += *p;
+        }
+        if (what.size() >= kMaxShown)
+            what += " ...";
+        throw std::runtime_error(
+            what + ". The file holds a carriage return that is not followed by a newline, which "
+                   "BioNetGen reads as a blank inside its line rather than as a line end, so the "
+                   "lines on either side of it are one line; save the file with LF or CRLF line "
+                   "endings");
+    }
+}
+
+static NetFileStructure read_net_file_blocks(const std::string &path) {
     std::error_code ec;
     if (std::filesystem::is_directory(path, ec)) {
         // An ifstream opens a directory and reads nothing, which loaded as an
@@ -1490,6 +1535,17 @@ NetFileStructure parse_net_file_structure(const std::string &path) {
                                      "functions, reactions and groups");
         }
     }
+    // A file with none of the blocks this loader reads used to load as a model
+    // of 0 species and 0 reactions, with no error: a 0-byte file, one of blank
+    // or comment lines only, and one whose lines end in a bare CR behind the
+    // `# Created by BioNetGen` line BNG2.pl writes first, which is then one
+    // comment line (issue #1511). run_network refuses each ("Couldn't read
+    // rates array"). A block that is there and empty still loads.
+    if (blocks_seen.empty())
+        throw std::runtime_error(
+            "the .net file has no parameters, species, functions, reactions or groups "
+            "block: it is empty, or holds only comments, actions or blocks this loader "
+            "passes over");
 
     out.load_warnings = rewrite_legacy_sat_hill_rate_laws(parsed_reactions, parsed_params,
                                                           parsed_functions, parsed_observables);

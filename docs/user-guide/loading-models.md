@@ -277,6 +277,13 @@ bngsim reads no per-reaction modifiers, such as a delay (issue #505). A stat
 factor ahead of the rate law's type (`2*MM kcat Km`) is read off the first
 token before the type is matched, as run_network reads it.
 
+A file with none of the parameters, species, functions, reactions and groups
+blocks is refused, as run_network refuses it: a 0-byte file, one of comments or
+actions only (issue #1511). A block that is there and empty still loads. Lines
+end at a newline, LF or CRLF. A bare carriage return is read as BNG2.pl and
+run_network read it, as a blank inside its line, so a file saved with classic
+Mac OS line endings is one line, and is refused, with a word on why.
+
 **Use with BNGsim** (fastest path — C++ CVODE/SSA):
 
 ```python

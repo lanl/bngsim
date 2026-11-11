@@ -733,7 +733,10 @@ class Model:
         Raises
         ------
         ModelError
-            If the file cannot be parsed.
+            If the file cannot be parsed, or holds none of the parameters,
+            species, functions, reactions and groups blocks, as a 0-byte file,
+            one of comments only, or one whose lines end in a bare carriage
+            return does (issue #1511).
         FileNotFoundError
             If the file does not exist.
         """
@@ -3163,12 +3166,16 @@ def _unit_conversions_in(path: Path) -> list[tuple[str, str]]:
     The block is found line by line, by the first two words of a line with
     its comment taken off, so a ``reactions_text`` block, a commented-out line
     and a comment that says ``end reactions`` are none of them read for one.
-    Lines end where the loader's end, at a newline and nowhere else. The loader
-    finds a marker the same way, by the words of the comment-stripped line
-    (issue #1498), so the two agree on which lines are the block's.
+    Lines end where the loader's end, at a newline and nowhere else: the file
+    is read with ``newline=""``, because ``read_text`` would end a line at a
+    bare carriage return too, which the loader, BNG2.pl and run_network read as
+    a blank inside the line (issue #1511). The loader finds a marker the same
+    way, by the words of the comment-stripped line (issue #1498), so the two
+    agree on which lines are the block's.
     """
     try:
-        text = Path(path).read_text(errors="replace")
+        with open(path, errors="replace", newline="") as f:
+            text = f.read()
     except OSError:  # pragma: no cover - the core has just read it
         return []
     if "unit_conversion" not in text:

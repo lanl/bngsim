@@ -226,6 +226,13 @@ EDITED = {
     "a-second-comment-after-it": lambda net: net.replace(
         "unit_conversion=1/Ve", "unit_conversion=1/Ve # checked against Sm"
     ),
+    # A bare CR is a blank inside its line to the loader, BNG2.pl and
+    # run_network (issue #1511). It was read as a line end here, which left the
+    # volume on a line of its own, outside any comment.
+    "a-carriage-return-in-the-comment": lambda net: net.replace(
+        "#_R1 unit_conversion=1/Ve", "#_R1\runit_conversion=1/Ve"
+    ),
+    "crlf-line-endings": lambda net: net.replace("\n", "\r\n"),
     "a-reactions-text-block-first": lambda net: net.replace(
         "begin reactions\n",
         "begin reactions_text\n    1 L + R -> LR #_R1 unit_conversion=1/Sm\n"
