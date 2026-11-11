@@ -3747,6 +3747,18 @@ constexpr long kLookWatchMost = 2000;
 // `reached_stop` in CvodeSimulator::run; `_PLAIN_INSTANT_FLOOR` in
 // _switch_sensitivity.py is the same number).
 constexpr double kPlainInstantFloor = 1e-125;
+// How near an output point counts as reached, from the time a run stands at:
+// CVODE's own measure of a distance it will not integrate over ("tout too close
+// to t0": less than 2 ulp-scale of the time), and nothing narrower than the
+// least distance two instants of a plain run are told apart by. Both output
+// loops read it: CvodeSimulator::run's (see `reached_output` there) and
+// Impl::run_warm's before its first step (issue #1501).
+static double near_output(sunrealtype t, double out) {
+    return std::max(2.0 * std::numeric_limits<double>::epsilon() *
+                        std::max(std::fabs(static_cast<double>(t)), std::fabs(out)),
+                    kSwitchInstantUlps * std::numeric_limits<double>::epsilon() *
+                        kPlainInstantFloor);
+}
 // How far short of the next crossing, as a part of the stretch from the last
 // restart to it, the run stops for its comoving columns (issue #760): a frame
 // entered at a crossing is left there, and a column that enters ahead of its
@@ -5651,16 +5663,31 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
         if (budget.active())
             budget.check();
 
+        // An output within CVODE's roundoff of the start is reached, as
+        // CvodeSimulator::run's loop takes it (reached_output). Asked for it on
+        // its first call after the (re)init, CVODE refuses a tout that close to
+        // t0 (CV_TOO_CLOSE), or one so close the step underflows (CV_ILL_INPUT):
+        // replicate samples at t = 0, `[0, 0, 0, 5, ...]`, were refused on this
+        // path alone (issue #1501). Its row is the start state, read at the time
+        // asked for, as that loop records it. The outputs ascend, so these are
+        // the ones before the first step; after it, CVODE interpolates a
+        // repeated time, and those rows are what they were.
         sunrealtype t_ret;
-        int flag = CVode(cvode_mem, t_out[i], w.y, &t_ret, CV_NORMAL);
-        retry_while_advancing(cvode_mem, t_out[i], w.y, &t_ret, flag,
-                              "while integrating to the next output point", w.user_data, [&budget] {
-                                  if (budget.active())
-                                      budget.check();
-                              });
-        if (flag < 0) {
-            rethrow_pending_callback_error(w.user_data);
-            throw std::runtime_error(cvode_failure_message(t_out[i], flag, w.user_data));
+        if (t_out[i] <= times.t_start ||
+            t_out[i] - times.t_start < near_output(times.t_start, t_out[i])) {
+            t_ret = static_cast<sunrealtype>(t_out[i]);
+        } else {
+            int flag = CVode(cvode_mem, t_out[i], w.y, &t_ret, CV_NORMAL);
+            retry_while_advancing(cvode_mem, t_out[i], w.y, &t_ret, flag,
+                                  "while integrating to the next output point", w.user_data,
+                                  [&budget] {
+                                      if (budget.active())
+                                          budget.check();
+                                  });
+            if (flag < 0) {
+                rethrow_pending_callback_error(w.user_data);
+                throw std::runtime_error(cvode_failure_message(t_out[i], flag, w.user_data));
+            }
         }
 
         const double *fvals = fill_row(t_ret);
@@ -19667,13 +19694,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // run are told apart by (`reached_stop`): from t = 0 the integrator's
     // first step to a stop at 1e-310 underflows, it reports the output as
     // reached with no step taken, and two events came back never fired with
-    // no error.
-    auto near_output = [](sunrealtype t, double out) {
-        return std::max(2.0 * std::numeric_limits<double>::epsilon() *
-                            std::max(std::fabs(static_cast<double>(t)), std::fabs(out)),
-                        kSwitchInstantUlps * std::numeric_limits<double>::epsilon() *
-                            kPlainInstantFloor);
-    };
+    // no error. (The measure is the file-scope near_output, which run_warm
+    // reads too.)
     // The comparison is CVODE's own, the difference taken first: written as
     // `t > out - near`, the subtraction rounded a sample two doubles ahead onto
     // the time the run stood at, the test failed by a tie, and CVODE refused

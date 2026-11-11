@@ -5222,6 +5222,12 @@ class Simulator:
             # RHS (issue #874), which is what sensitivity runs mostly use.
             if not any(prefix in str(e) for prefix in _CVODE_FAILURES):
                 raise
+            # Nor is an output time CVODE will not integrate to, within its
+            # roundoff of the start (CV_TOO_CLOSE): a property of the time grid,
+            # which the FD retry refuses the same way, after a warning that
+            # blamed the rate law (issue #1501).
+            if "(CV_TOO_CLOSE)" in str(e):
+                raise
             logger.warning(
                 "GH#176 analytical Jacobian: CVODE integration failed (%s); "
                 "retrying with the finite-difference Jacobian. The rate law is "
