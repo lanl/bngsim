@@ -5222,6 +5222,12 @@ class Simulator:
             # RHS (issue #874), which is what sensitivity runs mostly use.
             if not any(prefix in str(e) for prefix in _CVODE_FAILURES):
                 raise
+            # Nor is an output time CVODE will not integrate to, within its
+            # roundoff of the start (CV_TOO_CLOSE): a property of the time grid,
+            # which the FD retry refuses the same way, after a warning that
+            # blamed the rate law (issue #1501).
+            if "(CV_TOO_CLOSE)" in str(e):
+                raise
             logger.warning(
                 "GH#176 analytical Jacobian: CVODE integration failed (%s); "
                 "retrying with the finite-difference Jacobian. The rate law is "
@@ -5268,6 +5274,9 @@ class Simulator:
             Explicit output time points. When provided, overrides
             ``t_span`` and ``n_points``. Must contain at least 2
             values, all finite. Values are sorted automatically.
+            A time may repeat, as replicate measurements do
+            (``[0, 0, 0, 5, 5, 5]``): each copy is a row of its own,
+            and the copies are equal.
 
             The override covers the interval, not just the output
             grid: the run starts at the first sample time and ends at
