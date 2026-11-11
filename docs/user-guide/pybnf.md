@@ -28,8 +28,9 @@ Python side, is a memo of the analysis of their functions, which is the same for
 all of them: an entry is read-only once made, and the memo is changed under a lock. `run_batch` clones the model per row, so many
 threads — or many processes — evaluate concurrently against the **one** read-only
 compiled `.so` without interfering. For a fixed `(model, θ, sensitivity set,
-solver options)` the result is deterministic, and batch rows are returned in input
-order regardless of worker count.
+solver options)`, and a `seed` for a stochastic method, the result is
+deterministic, and batch rows are returned in input order regardless of worker
+count.
 
 **Shared compiled artifact.** The codegen cache is content-addressed by model
 hash and updated atomically (compile to a process-unique temp file, then
@@ -136,10 +137,15 @@ has no seeding term to double-count, and `axis="ic"` raises.
 
 **Checkpoint / restart.** `EvaluationSpec` is a frozen, JSON-serializable record
 of one evaluation — model source (+ optional SHA-256 integrity guard), θ vector,
-time grid, sensitivity set, solver options, and output selectors. Ship it to a
-worker or write it to a checkpoint; `evaluate()` reconstructs the simulator and
-runs deterministically. Pair it with the compact `Result.summary()` for cheap
-indexing/logging without re-reading every full HDF5 payload:
+time grid, sensitivity set, solver options, output selectors and, for a
+stochastic method, a `seed`. Ship it to a worker or write it to a checkpoint;
+`evaluate()` reconstructs the simulator and runs deterministically. A
+`method="ssa"` spec without a `seed` draws a fresh one on each `evaluate()`, as
+`Simulator.run` does, and reports it on `Result.seed`, so
+`dataclasses.replace(spec, seed=result.seed)` is the spec that reruns that
+trajectory (issue #1517). SED-ML carries the seed as `KISAO:0000488`. Pair a
+spec with the compact `Result.summary()` for cheap indexing/logging without
+re-reading every full HDF5 payload:
 
 ```python
 spec = bngsim.EvaluationSpec(
