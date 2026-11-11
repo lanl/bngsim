@@ -372,6 +372,11 @@ def test_the_guard_reads_h_as_the_run_has_it(tmp_path):
         "if((S > 1) or (h <= 0) or (h >= 1), k*S^(h-1), 0)",
         "if(S > 0, k*S, 0)",
         "k*(S > 0)",
+        # The same, spelled with `||`, which the parser reads only inside the guard.
+        "if((S > 0) || (h <= 0), k*S^(h-1), 0)",
+        "if((S > 0) || (h <= 0) || (h >= 2), k*S^(h-1), 0)",
+        "k*((S > 0) || (h >= 1))",
+        "if((S > 0) and (h <= 0) and (h >= 1), k*S^(h-1), 0)",
     ],
 )
 def test_no_other_if_enters_the_native_family(law):
@@ -402,12 +407,18 @@ def test_a_power_inside_a_guard_counts_as_in_the_sum():
     assert sat.rewrite_saturating_ratio(node) == node
 
 
-def test_the_guard_differentiates_to_the_guarded_derivative():
-    """d/dS of guard(body) is guard(d/dS body): the same text, inside."""
+@pytest.mark.parametrize("spelling", ["or", "||"], ids=["or (the loader)", "|| (write_net)"])
+def test_the_guard_differentiates_to_the_guarded_derivative(spelling):
+    """d/dS of guard(body) is guard(d/dS body): the same text, inside. The
+    guard spelled with `||`, as write_net writes it (run_network's parser has
+    no `or`), is the same node."""
     body = "k * (S ^ (h - 1)) / ((K ^ h) + (S ^ h))"
     plain = sat.differentiate_rate_law_native(body, {}, {"S"}, {"k", "K", "h"})
     guarded = sat.differentiate_rate_law_native(
-        f"if((S > 0) or (h <= 0) or (h >= 1), {body}, 0)", {}, {"S"}, {"k", "K", "h"}
+        f"if((S > 0) {spelling} (h <= 0) {spelling} (h >= 1), {body}, 0)",
+        {},
+        {"S"},
+        {"k", "K", "h"},
     )
     inner = sat.emit_exprtk(plain["S"])
     assert sat.emit_exprtk(guarded["S"]) == f"if((S > 0) or (h <= 0) or (h >= 1), {inner}, 0)"
@@ -420,7 +431,9 @@ def test_the_guard_differentiates_to_the_guarded_derivative():
 def test_the_writers_carry_it(tmp_path):
     """write_bngl refuses `!=` (BNG2.pl's parser has none), so the guard is
     spelled with `>`, `<=`, `>=` and `or`, which it writes as `||`. write_net
-    reads back to the same run."""
+    writes `||` too, since run_network's parser has no `or`, and reads back to
+    the same run, on the native Jacobian path still: the parser reads the
+    guard in either spelling."""
     from bngsim.convert import write_bngl, write_net
 
     path = _net(tmp_path, kin=1)
@@ -429,6 +442,15 @@ def test_the_writers_carry_it(tmp_path):
     out = tmp_path / "rt.net"
     write_net(m, str(out))
     np.testing.assert_allclose(_ode(str(out), 5.0)[:2], [2.7960281, 2.2039719], rtol=0, atol=6e-7)
+    reloaded = _hill_function(_load(str(out)))
+    assert reloaded.startswith("if((__bngsim_net_rewrite_obs_r1_1>0)||(h<=0)||(h>=1),")
+    native = sat.differentiate_rate_law_native(
+        reloaded, {}, {"__bngsim_net_rewrite_obs_r1_1"}, {"Vmax", "Kh", "h", "k", "kin"}
+    )
+    assert native is not None
+    assert sat.emit_exprtk(native["__bngsim_net_rewrite_obs_r1_1"]).startswith(
+        "if((__bngsim_net_rewrite_obs_r1_1 > 0) or (h <= 0) or (h >= 1), "
+    )
 
 
 def test_the_load_warning_writes_the_law_as_it_is_defined(tmp_path):

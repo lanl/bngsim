@@ -200,9 +200,11 @@ _IDENT_RE = re.compile(r"[A-Za-z_]\w*")
 def _tokenize(s: str):
     """Split an ExprTk arithmetic string into tokens. Raises ``_NativeError`` on
     any character outside the recognized subset (so comparison / logical
-    operators, ``%``, ``&``, ``|``, ``!`` etc. all defer to the SymPy path).
-    ``>``, ``<=`` and ``>=`` are tokens only so the parser can read the loader's
-    Hill guard (:meth:`_Parser._guard`); anywhere else the parser refuses them."""
+    operators, ``%``, ``&``, ``!`` etc. all defer to the SymPy path).
+    ``>``, ``<=``, ``>=`` and ``||`` are tokens only so the parser can read the
+    loader's Hill guard (:meth:`_Parser._guard`), as the loader spells it with
+    ``or`` and as ``write_net`` spells it with ``||`` (run_network's parser has
+    no ``or``); anywhere else the parser refuses them."""
     toks: list[tuple[str, object]] = []
     i, n = 0, len(s)
     while i < n:
@@ -210,7 +212,7 @@ def _tokenize(s: str):
         if c.isspace():
             i += 1
             continue
-        if s.startswith(("<=", ">="), i):
+        if s.startswith(("<=", ">=", "||"), i):
             toks.append((s[i : i + 2], s[i : i + 2]))
             i += 2
             continue
@@ -332,7 +334,8 @@ class _Parser:
 
     def _guard(self):
         """``if((s > 0) or (h <= 0) or (h >= 1), a, 0)``, the guard the ``.net``
-        loader writes around its Hill body, and no other ``if`` (issue #1497).
+        loader writes around its Hill body, also with ``||`` for ``or`` as
+        ``write_net`` writes it, and no other ``if`` (issue #1497).
 
         The body is ``Vmax*s^(h-1)/(Kh^h + s^h)``, and the reaction multiplies
         it by ``s``. For ``0 < h < 1`` it is ``inf`` at ``s = 0``, where the law's
@@ -349,7 +352,10 @@ class _Parser:
         self._expect(")")
         h = None
         for op, bound in (("<=", 0.0), (">=", 1.0)):
-            if self._expect("ident")[1] != "or":
+            # `or` as the loader writes it; `||` as write_net writes it back,
+            # which is what run_network reads (its parser has no `or`).
+            tok = self._advance()
+            if tok[0] != "||" and not (tok[0] == "ident" and tok[1] == "or"):
                 raise _NativeError("expected 'or'")
             self._expect("(")
             exponent = self._add()
