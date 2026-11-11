@@ -45,6 +45,17 @@ end groups
 """
 
 CR_HINT = "carriage return that is not followed by a newline"
+# Tolerances and bounds, each with its reason (measured on macOS arm64):
+#
+# CLOSED_FORM: a run at the default tolerances against A(0.4) = 2 + 5 e^-1, the
+# closed form for A <-> B: measured 7.7e-09. 1e-6 leaves room for another
+# platform, and is far from the 3.145 a dropped reaction gave.
+CLOSED_FORM = 1e-6
+# MESSAGE_ROOM: what a refusal holds past its path: the reading's own words cut
+# at 300 characters, the "Failed to load" prefixes, and the CR hint; measured
+# 583. 1000 leaves room for a longer hint, and an uncut quote, the whole file,
+# runs to 33,000 to 41,000 (main, on the 2,000-parameter file below).
+MESSAGE_ROOM = 1000
 NO_BLOCK = "has no parameters, species, functions, reactions or groups block"
 
 
@@ -123,7 +134,7 @@ def test_the_refusal_of_a_large_cr_file_stays_readable(tmp_path, shape):
     assert "\r" not in message
     assert "k1 1.5" in message and " ..." in message
     assert CR_HINT in message
-    assert len(message) < len(str(path)) + 1000
+    assert len(message) < len(str(path)) + MESSAGE_ROOM
 
 
 NOTHING_READ = {
@@ -171,7 +182,7 @@ def test_a_cr_inside_a_line_is_a_blank(tmp_path, edit):
     model = bngsim.Model.from_net(str(_write(tmp_path, READ_AS_LF[edit](NET))))
     assert (model.n_species, model.n_reactions) == (2, 2)
     np.testing.assert_array_equal(_a_at(model), lf)
-    assert lf[0] == pytest.approx(2 + 5 * np.exp(-2.5 * 0.4), rel=1e-6)
+    assert lf[0] == pytest.approx(2 + 5 * np.exp(-2.5 * 0.4), rel=CLOSED_FORM)
 
 
 EMPTY_BLOCKS = {
@@ -181,6 +192,11 @@ EMPTY_BLOCKS = {
         "begin species\n    1 A() 7\nend species\nbegin reactions\nend reactions\n",
         1,
     ),
+    # Every one of the five blocks counts, not only those that hold species:
+    # a check that counted parameters, species and reactions passed every
+    # other case. run_network refuses both ("Couldn't read rates array").
+    "an-empty-functions-block": ("begin functions\nend functions\n", 0),
+    "an-empty-groups-block": ("begin groups\nend groups\n", 0),
 }
 
 

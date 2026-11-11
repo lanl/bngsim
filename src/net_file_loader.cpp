@@ -1383,7 +1383,10 @@ NetFileStructure parse_net_file_structure(const std::string &path) {
         // the CR made, which is not a line the file's author sees. That line
         // can run to the whole file, and its CRs, printed, return the cursor
         // over the message, so they are shown as `\r` and the reading's own
-        // words are cut short.
+        // words are cut short: 300 characters keep its refusal and the start
+        // of the line it quotes, which is where the author looks, with the
+        // hint after them on one screen. Uncut, a CR file of 2,000 parameters
+        // was quoted whole: 33,000 to 41,000 characters.
         if (!holds_bare_cr(path))
             throw;
         constexpr std::size_t kMaxShown = 300;
