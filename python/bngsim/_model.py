@@ -1999,7 +1999,12 @@ class Model:
         Returns
         -------
         float
-            Current concentration.
+            Current concentration. For an assignment-rule species after a run,
+            the value the run reports for its last row, in the model's storage
+            convention (amount over the compartment's size at load), before a
+            variable-volume ``Result`` rescales it to the live size (issue
+            #1510). :meth:`Simulator.steady_state`
+            writes no species, so it leaves a rule species as the last run did.
 
         Raises
         ------

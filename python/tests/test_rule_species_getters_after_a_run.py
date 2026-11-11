@@ -48,6 +48,20 @@ end
 A4 = 10 * math.exp(-2.0)
 RULES = {"S": lambda a: 2 * a, "N": lambda a: a * a / (5 + a)}
 
+# Tolerances, each with its reason. The errors were measured on macOS arm64.
+#
+# CLOSED_FORM: a run at rtol = 1e-10 drifts from its closed form by the
+# integrator's global error, which grows over the run: up to 4.2e-09 at t = 4
+# here. 1e-7 leaves 20x room, and still tells the rule's value (2.71 at t = 4)
+# from the t = 0 slot main read (20).
+CLOSED_FORM = 1e-7
+# SAME_COUNTS: under SSA the getter and the rule are both the rule at the
+# model's own integer A, so only rounding separates them (measured: 0).
+SAME_COUNTS = 1e-12
+# CARRIED: a sensitivity column carried across two CVODES legs, against the one
+# a single run solves, each to its own error test (measured: 1.5e-10).
+CARRIED = 1e-6
+
 _CC = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
 needs_cc = pytest.mark.skipif(_CC is None, reason="no C compiler on PATH for the codegen leg")
 
@@ -80,7 +94,7 @@ def test_the_getters_read_the_rule_after_an_ode_run(kw):
     sim_state = dict(zip(m.species_names, sim.get_state(), strict=True))
     for name, rule in RULES.items():
         want = r.species[-1, r.species_names.index(name)]
-        assert want == pytest.approx(rule(A4), rel=1e-8)
+        assert want == pytest.approx(rule(A4), rel=CLOSED_FORM)
         assert m.get_concentration(name) == want
         assert state[name] == want and sim_state[name] == want
 
@@ -93,7 +107,7 @@ def test_the_getters_read_the_rule_after_an_ssa_run():
         r = bngsim.Simulator(m, method="ssa").run(t_span=(0, 4), n_points=5, seed=1)
     a = m.get_concentration("A")
     for name, rule in RULES.items():
-        assert m.get_concentration(name) == pytest.approx(rule(a), rel=1e-12)
+        assert m.get_concentration(name) == pytest.approx(rule(a), rel=SAME_COUNTS)
         assert m.get_concentration(name) == r.species[-1, r.species_names.index(name)]
 
 
@@ -106,7 +120,7 @@ def test_a_kernel_and_what_reads_through_it():
             k.advance(1.0, rtol=1e-10, atol=1e-12)
         last = k.advance(1.0, rtol=1e-10, atol=1e-12)
     i = list(k.state_names).index("S")
-    assert last[i] == pytest.approx(2 * A4, rel=1e-8)
+    assert last[i] == pytest.approx(2 * A4, rel=CLOSED_FORM)
     assert k.get_state()[i] == last[i]
     assert CouplingMap(k.state_names, ["S"]).read(k)[0] == last[i]
 
@@ -116,7 +130,7 @@ def test_a_snapshot_taken_after_run_until():
     with _quiet():
         sim = bngsim.Simulator(m, method="ode")
         sim.run_until(4.0, rtol=1e-10, atol=1e-12)
-    assert sim.snapshot()["species"]["S"] == pytest.approx(2 * A4, rel=1e-8)
+    assert sim.snapshot()["species"]["S"] == pytest.approx(2 * A4, rel=CLOSED_FORM)
 
 
 def test_an_amount_valued_target_in_a_sized_compartment():
@@ -131,6 +145,36 @@ def test_an_amount_valued_target_in_a_sized_compartment():
             t_span=(0, 4), n_points=5, rtol=1e-10, atol=1e-12
         )
     assert m.get_concentration("T") == r.species[-1, r.species_names.index("T")]
+
+
+def test_a_target_in_a_growing_compartment_keeps_the_storage_convention():
+    """The write comes before the variable-volume pass, so the slot holds the
+    rule in the model's storage convention, amount over the size at load:
+    2*A(2) = 20 e^-1 for an amount A in a compartment grown from 1 to 2.
+    ``Result.species`` reports it over the live size, 2. Written after the
+    pass, the slot took the live value, and every other test still passed."""
+    m = _model(
+        """
+model m
+  compartment c = 1
+  c' = 0.5
+  species A in c = 10
+  species S in c
+  substanceOnly species A, S
+  A => ; k*A
+  k = 0.5
+  S := 2*A
+end
+"""
+    )
+    with _quiet():
+        r = bngsim.Simulator(m, method="ode").run(
+            t_span=(0, 2), n_points=3, rtol=1e-10, atol=1e-12
+        )
+    stored = 20 * math.exp(-1.0)
+    assert m.get_concentration("S") == pytest.approx(stored, rel=CLOSED_FORM)
+    live = r.species[-1, r.species_names.index("S")]
+    assert live == pytest.approx(stored / 2.0, rel=CLOSED_FORM)
 
 
 def test_the_net_written_from_the_sbml(tmp_path):
@@ -153,7 +197,7 @@ def test_the_net_written_from_the_sbml(tmp_path):
         sbml_to_net(str(xml), str(tmp_path / "m.net"), validate=None)
         m = bngsim.Model.from_net(str(tmp_path / "m.net"))
         bngsim.Simulator(m, method="ode").run(t_span=(0, 4), n_points=5, rtol=1e-10, atol=1e-12)
-    assert m.get_concentration("S") == pytest.approx(2 * A4, rel=1e-8)
+    assert m.get_concentration("S") == pytest.approx(2 * A4, rel=CLOSED_FORM)
 
 
 def test_the_state_round_trips_and_a_continuation_reads_on():
@@ -168,8 +212,8 @@ def test_the_state_round_trips_and_a_continuation_reads_on():
         assert np.array_equal(m.get_state(), before)
         r = sim.run(t_span=(4, 8), n_points=5, rtol=1e-10, atol=1e-12)
     a8 = 10 * math.exp(-4.0)
-    assert r.species[-1, r.species_names.index("A")] == pytest.approx(a8, rel=1e-7)
-    assert m.get_concentration("S") == pytest.approx(2 * a8, rel=1e-7)
+    assert r.species[-1, r.species_names.index("A")] == pytest.approx(a8, rel=CLOSED_FORM)
+    assert m.get_concentration("S") == pytest.approx(2 * a8, rel=CLOSED_FORM)
 
 
 def test_a_pre_equilibration_carries_its_sensitivities_through_the_write():
@@ -191,7 +235,7 @@ def test_a_pre_equilibration_carries_its_sensitivities_through_the_write():
     ia = whole.species_names.index("A")
     want = np.asarray(whole.sensitivities)[-1, ia, 0]
     assert np.asarray(leg.sensitivities)[-1, leg.species_names.index("A"), 0] == pytest.approx(
-        want, rel=1e-6
+        want, rel=CARRIED
     )
     assert want != 0.0
 
@@ -201,4 +245,4 @@ def test_a_run_on_a_model_without_rules_is_left_as_it_was():
     m = _model("species X = 3; R1: X -> ; 0.2*X\n")
     with _quiet():
         bngsim.Simulator(m, method="ode").run(t_span=(0, 2), n_points=3, rtol=1e-10, atol=1e-12)
-    assert m.get_concentration("X") == pytest.approx(3 * math.exp(-0.4), rel=1e-8)
+    assert m.get_concentration("X") == pytest.approx(3 * math.exp(-0.4), rel=CLOSED_FORM)
