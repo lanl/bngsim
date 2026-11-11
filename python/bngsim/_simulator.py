@@ -511,6 +511,31 @@ def _log_auto_codegen_skip(key: tuple) -> None:
 _FLIP_LOOSEST_RTOL = 1e-4
 
 
+def _warn_if_rows_start_off_the_current_state(model, what, remedy, *, stacklevel):
+    """Warn that the rows of a call start from ``model``'s initial conditions,
+    where its current state differs from them (issues #1362, #1521).
+
+    ``run_batch``, ``steady_state_batch`` and ``bngsim.jax.differentiable_solve``
+    each run a clone after ``Model.reset()``, which restores the initial
+    conditions (or a ``save_concentrations`` snapshot). The reset is what
+    re-resolves an initial-condition parameter a row writes (#129), so it
+    stays; a write the caller made before the call is what it drops.
+    ``get_initial_state()`` is the vector ``reset()`` restores, read without
+    cloning the model.
+    """
+    core = model._core
+    if np.array_equal(core.get_initial_state(), core.get_state(), equal_nan=True):
+        return
+    warnings.warn(
+        f"{what} from the model's initial conditions (Model.reset), not from its "
+        "current state, which differs from them (a set_concentration, or the end of "
+        f"a run). {remedy} Call Model.reset() first where the initial conditions are "
+        "the start you want.",
+        UserWarning,
+        stacklevel=stacklevel,
+    )
+
+
 class Simulator:
     """Unified simulation interface for ODE, SSA, PSA, and network-free methods.
 
@@ -6086,21 +6111,14 @@ class Simulator:
         # Every row starts from the initial conditions (a clone's reset()), as
         # documented. Where the model is elsewhere, from a set_concentration or
         # a run, that is not where a caller who wrote it expects the rows to
-        # start, and they did with no word (issue #1362). get_initial_state()
-        # is the vector reset() restores, read without cloning the model.
-        core = self._model._core
-        if not np.array_equal(core.get_initial_state(), core.get_state(), equal_nan=True):
-            warnings.warn(
-                "run_batch starts every point from the model's initial conditions "
-                "(Model.reset), not from its current state, which differs from them "
-                "(a set_concentration, or the end of a run). To start each point "
-                "from the current state, use parameter_scan, or call "
-                "Model.save_concentrations() first, which makes it the state reset "
-                "returns to. Call Model.reset() first where the initial conditions "
-                "are the start you want.",
-                UserWarning,
-                stacklevel=2,
-            )
+        # start, and they did with no word (issue #1362).
+        _warn_if_rows_start_off_the_current_state(
+            self._model,
+            "run_batch starts every point",
+            "To start each point from the current state, use parameter_scan, or call "
+            "Model.save_concentrations() first, which makes it the state reset returns to.",
+            stacklevel=3,
+        )
 
         if self._method == "ode":
             # Every row runs on a clone, and a clone inherits these scans only
@@ -9997,7 +10015,12 @@ class Simulator:
         ----------
         params : sequence of dict[str, float], optional
             Parameter sets. Omitted with ``states``: every entry runs at this
-            model's parameters.
+            model's parameters. Without ``states``, each entry starts from the
+            model's initial conditions (:meth:`Model.reset`), as
+            :meth:`run_batch`'s points do, not from its current state, and the
+            batch warns where the two differ (issue #1521): pass
+            ``states=[model.get_state()] * len(params)``, or call
+            :meth:`Model.save_concentrations` first, to start from it.
         states : array-like, optional
             Starting states, shape ``(n_entries, n_species)`` ordered like
             :attr:`Model.species_names` (issue #524). Entry ``i`` resets its
@@ -10109,6 +10132,22 @@ class Simulator:
             where="steady_state_batch(atol=...)",
         )
         eff_max_steps = max_steps if max_steps is not None else self._max_steps
+
+        # Each entry starts from the initial conditions (a clone's reset()), as
+        # run_batch's rows do. A set_concentration before the call was dropped
+        # with no word, and the batch answered for another total, or another
+        # branch of a bistable model (issue #1521). States given start where
+        # they say.
+        if states is None:
+            _warn_if_rows_start_off_the_current_state(
+                self._model,
+                "steady_state_batch starts every entry",
+                "To start each entry from the current state, pass "
+                "states=[model.get_state()] * len(params), or call "
+                "Model.save_concentrations() first, which makes it the state reset "
+                "returns to.",
+                stacklevel=3,
+            )
 
         # The laws are found here, once, and each entry's clone starts from
         # them; an entry that writes a compartment size finds its own. Nothing

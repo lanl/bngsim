@@ -1967,8 +1967,10 @@ class Model:
         replicate of :meth:`Simulator.run_replicates`, and of
         :meth:`Simulator.parameter_scan`, whose default reset target is the
         model's state at the call. :meth:`reset` does not keep it, and
-        neither does :meth:`Simulator.run_batch`, which starts every point from
-        the initial conditions, and warns that it does (issue #1362). Call
+        neither do :meth:`Simulator.run_batch` (issue #1362),
+        :meth:`Simulator.steady_state_batch` without ``states=`` (issue #1521)
+        or ``bngsim.jax.differentiable_solve``, which start every row from the
+        initial conditions and warn that they do. Call
         :meth:`save_concentrations` after it to make it the state :meth:`reset`
         returns to.
 

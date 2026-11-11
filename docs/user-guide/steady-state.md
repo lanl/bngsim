@@ -654,9 +654,21 @@ plt.ylabel("Bound receptor at steady state")
 ```
 
 Each batch entry clones the model (thread-safe deep copy), applies the
-parameter set, and runs an independent steady-state solve. The GIL is
-released during C++ KINSOL/CVODE integration, so threads achieve real
-parallelism.
+parameter set, resets the clone to its initial conditions, and runs an
+independent steady-state solve. The GIL is released during C++ KINSOL/CVODE
+integration, so threads achieve real parallelism.
+
+An entry without `states=` starts from the model's initial conditions
+(`Model.reset`), as `run_batch` starts its points, not from the state
+`steady_state()` would solve from. A `set_concentration` before the call is not
+where it starts, and with a conservation law, or more than one stable state, it
+answers for another total or another branch. The batch warns where the current
+state differs from the initial conditions (issue #1521). To start every entry
+from the current state, pass `states=[model.get_state()] * len(params)`, or call
+`Model.save_concentrations()` first, which makes it the state the reset
+returns to. The reset stays because it is what moves an initial-condition
+parameter's species to the value an entry writes (issue #129): a dose scan over
+`L_0` after a `run()` depends on it.
 
 ### Steady-state sensitivity
 
