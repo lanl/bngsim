@@ -200,6 +200,46 @@ def test_a_stochastic_run_reaches_the_absorbing_state(tmp_path, method):
     assert np.asarray(r.species)[-1][:2].tolist() == [0.0, 20.0]
 
 
+@needs_cc
+def test_forward_sensitivities_from_zero(tmp_path):
+    """Forward sensitivities of S and P at t = 5 to h, Vmax and kin, from S = 0
+    with the influx. They differentiate the guarded function by parameter, where
+    d/dh of the body carries log(S), -inf at S = 0. On main the run refused the
+    NaN at t = 0.
+
+    Two oracles. The Hill reaction only turns S into P, and only the influx
+    makes either, so S + P = kin*t: its sensitivity is exactly 0 to h and Vmax
+    and exactly t = 5 to kin. And each column against a central difference of
+    two runs with the parameter moved by 1e-5 of itself. At rtol 1e-12 a run's
+    error over that step is about 1e-7 of a column, and the truncation error is
+    about 1e-10, so the columns are held to 1e-6. Measured: 7e-8 at most, and
+    the sums within 1e-9."""
+    sens_params = ["h", "Vmax", "kin"]
+    tol = {"rtol": 1e-12, "atol": 1e-14, "timeout": 60}
+
+    def run(model, **kw):
+        with contextlib.redirect_stderr(io.StringIO()):
+            sim = bngsim.Simulator(model, method="ode", **kw)
+            return sim.run(t_span=(0.0, 5.0), n_points=2, **tol)
+
+    path = _net(tmp_path, kin=1)
+    r = run(_load(path), sensitivity_params=sens_params)
+    sens = np.asarray(r.sensitivities)[-1][:2]  # rows S, P; columns as sens_params
+    assert np.all(np.isfinite(sens))
+    np.testing.assert_allclose(sens.sum(axis=0), [0.0, 0.0, 5.0], rtol=0, atol=1e-8)
+
+    base = {"h": 0.5, "Vmax": 1.0, "kin": 1.0}
+    for j, name in enumerate(sens_params):
+        step = 1e-5 * base[name]
+        ends = []
+        for value in (base[name] + step, base[name] - step):
+            m = _load(path)
+            m.set_param(name, value)
+            ends.append(np.asarray(run(m).species)[-1][:2])
+        central = (ends[0] - ends[1]) / (2 * step)
+        np.testing.assert_allclose(sens[:, j], central, rtol=0, atol=1e-6, err_msg=name)
+
+
 def test_rhs_and_the_parsed_dict_read_zero(tmp_path):
     """Model.rhs at S = 0, and the model `parse_net_file` hands to
     `build_model_from_parsed`, which reads the same C++ rewrite."""

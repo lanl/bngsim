@@ -269,6 +269,19 @@ The deprecated `Sat` and `Hill` rate-law tokens come back rewritten, as
 is added for each reactant the function reads. A factor ahead of the type
 (`2*Sat k K`, `2*Hill V K h`) stays the reaction's `"stat_factor"`.
 
+`Hill Vmax Kh h` is the law `Vmax*S^h/(Kh^h + S^h)`, and the reaction
+multiplies its function by S, so the function is
+`Vmax*S^(h-1)/(Kh^h + S^h)`. For 0 < h < 1 that is infinite at S = 0, where
+the law is 0. So when h is in (0, 1) at load, or is an expression parameter,
+the function is written `if((S > 0) or (h <= 0) or (h >= 1), ..., 0)`. It is 0
+for S <= 0 while h is in (0, 1), and the run roots on `S > 0`. An h of 1 or
+more, or of 0 or less, at load keeps the unguarded function and adds no root.
+A model whose h is moved into (0, 1) after loading still fails at S = 0. That
+includes `set_param`, and a BNGL `setParameter` or `parameter_scan` after
+`generate_network`. Give h a value in (0, 1) before the network is loaded: the
+guard reads h when the model runs, so later values of 1 or more keep the
+unguarded function's values.
+
 A reaction line is `<index> <reactants> <products> <rate law>`, and only a
 `Sat`, `Hill` or `MM` rate law takes more tokens: its constants.
 `parse_net_file` and `Model.from_net` refuse a line with anything else after
