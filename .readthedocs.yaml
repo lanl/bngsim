@@ -11,21 +11,20 @@ build:
   os: ubuntu-24.04
   tools:
     python: "3.12"
-  # bngsim is a compiled C++/pybind11 extension. autodoc imports the package,
-  # so the extension is built here. SUNDIALS is fetched+compiled by CMake.
-  apt_packages:
-    - cmake
-    - ninja-build
 
 sphinx:
   configuration: docs/conf.py
 
+# The same build as lint.yml's docs job, which passes `sphinx -W` on every pull
+# request: the pinned requirements, and no bngsim install. conf.py puts
+# python/ on sys.path and mocks only the compiled core, bngsim._bngsim_core.
+# Every public name autodoc documents is defined in Python, and no public class
+# inherits from a compiled one, so the mock costs the reference nothing.
+#
+# This file used to `pip install .` and compile bngsim on Read the Docs. The
+# last builds that did took about 620 s of the 900 s limit. From 2026-07-10 on
+# they failed: pyproject.toml sets BNGSIM_REQUIRE_KLU=ON for every pip build,
+# and the image had no SuiteSparse. Don't bring the compile back.
 python:
   install:
-    - requirements: docs/requirements.txt
-    # Build+install bngsim so autodoc reads real signatures/docstrings.
-    # If the compile ever exceeds the RTD build limit, drop this entry: conf.py
-    # falls back to mocking `bngsim._bngsim_core`, and Sphinx documents the
-    # pure-Python wrappers without compiling the kernel.
-    - method: pip
-      path: .
+    - requirements: docs/requirements-ci.txt
