@@ -108,6 +108,31 @@ def test_two_legs_given_no_runner_are_both_named():
 
 
 @pytest.mark.parametrize(
+    "sign",
+    [
+        pytest.param({"runner_id": 1000129795, "steps": []}, id="a-runner-and-no-step-yet"),
+        pytest.param(
+            {"runner_id": 0, "steps": [{"name": "Set up job"}]}, id="a-step-and-no-runner"
+        ),
+    ],
+)
+def test_either_sign_of_having_run_means_the_leg_ran(sign):
+    """A cancelled leg with a runner, or with a step, was started and stopped:
+    its result is a cancellation of its own, not a missing one."""
+    leg = {**_no_runner(SUITE + "macos-15 · 1/2", 5), **sign}
+    assert _run([leg, _ran(SUITE + "ubuntu-latest · 1/2")]) == (0, "", "")
+
+
+def test_a_skipped_leg_is_no_failure_beside_one_given_no_runner():
+    """A job its ``if:`` skipped has no runner and no steps either, but it is
+    not missing a result, and must not stop the missing leg's re-run."""
+    skipped = {"id": 4, "name": SUITE + "ubuntu-latest · 2/2", "conclusion": "skipped",
+               "runner_id": None, "steps": []}  # fmt: skip
+    code, out, _ = _run([_no_runner(SUITE + "macos-15 · 1/2", 5), skipped])
+    assert (code, out.split("\t")[0]) == (0, "5")
+
+
+@pytest.mark.parametrize(
     "jobs",
     [
         pytest.param(  # 2026-11-07: tests failed on ubuntu-26.04
