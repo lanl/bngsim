@@ -179,15 +179,20 @@ jobs:
       # re-run's Report reports. So a first attempt whose only missing results
       # are jobs that never started leaves the tracking issue alone. GitHub
       # still marks the run failed. When the job listing cannot be read, it
-      # reports as it always did.
+      # reports as it always did; so both steps continue on error, or a failed
+      # checkout would skip the report. A person who cancels a run while legs
+      # wait for a runner takes this path too, and that run is not re-run: its
+      # cancellation is the record.
       - uses: actions/checkout@v4
         if: github.event_name != 'pull_request' && needs.suite.result != 'success' && github.run_attempt == 1
+        continue-on-error: true
         with:
           sparse-checkout: ci/unstarted_jobs.py
           sparse-checkout-cone-mode: false
       - name: Leave jobs GitHub never started to the re-run
         id: unstarted
         if: github.event_name != 'pull_request' && needs.suite.result != 'success' && github.run_attempt == 1
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -196,7 +201,7 @@ jobs:
             | python3 ci/unstarted_jobs.py --prefix "Python suite") || jobs=""
           if [ -n "$jobs" ]; then
             printf '%s\n' "$jobs"
-            echo "::notice::GitHub started no runner for $(printf '%s\n' "$jobs" | wc -l | tr -d ' ') job(s). forced-jit-rerun.yml re-runs them once this run ends, and that attempt reports."
+            echo "::notice::GitHub started no runner for $(printf '%s\n' "$jobs" | wc -l | tr -d ' ') job(s). When this run ends failed, forced-jit-rerun.yml re-runs them once, and that attempt reports."
             echo "rerun=true" >> "$GITHUB_OUTPUT"
           fi
       - name: Open or update the tracking issue

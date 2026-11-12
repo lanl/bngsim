@@ -104,7 +104,8 @@ jobs:
           max-size: 500M
 
       # CMake (3.17+) takes CMAKE_<LANG>_COMPILER_LAUNCHER from the environment
-      # when it configures a new build directory.
+      # when it configures a new build directory and keeps it in the cache, so
+      # the build step below needs no export.
       - name: Configure (sanitizers; tests ON; NFsim ON; KLU / RuleMonkey OFF)
         run: |
           set -euxo pipefail

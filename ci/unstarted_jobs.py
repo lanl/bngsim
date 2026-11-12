@@ -35,8 +35,8 @@ import sys
 from collections.abc import Iterable
 
 #: Conclusions that need no re-run. GitHub reports a job skipped by its ``if:`` as
-#: "skipped", and "neutral" is a check that chose not to pass or fail.
-_FINE = frozenset({"success", "skipped", "neutral"})
+#: "skipped".
+_FINE = frozenset({"success", "skipped"})
 
 
 def never_started(job: dict) -> bool:

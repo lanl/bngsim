@@ -26,6 +26,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from _source_root import bngsim_source_root  # noqa: E402
+from _ci_workflow import strip_comments  # noqa: E402
 
 REPO_ROOT = bngsim_source_root() or Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "ci" / "unstarted_jobs.py"
@@ -218,3 +219,56 @@ def test_the_rerun_follows_forced_jit_by_its_name():
     assert re.search(
         rf"^    workflows: \[{re.escape(name.group(1))}\]$", _text("forced-jit-rerun.yml"), re.M
     )
+
+
+def _steps(name: str, job: str) -> list[str]:
+    """The steps of one job of a workflow, comments dropped, each as its text
+    from its ``- `` line up to the next step's."""
+    text = strip_comments(_text(name))
+    body = re.split(rf"^  {job}:$", text, flags=re.M)[1]
+    body = re.split(r"^  [A-Za-z0-9_-]+:$", body, flags=re.M)[0]  # up to the next job
+    return re.split(r"^      - ", body, flags=re.M)[1:]
+
+
+@pytest.mark.skipif(not WORKFLOWS.is_dir(), reason=".github/workflows is not in this checkout")
+def test_the_rerun_runs_once_and_only_for_a_failed_run_of_its_own():
+    """Without the attempt guard, a re-run that failed would be re-run again;
+    without the event guard, a pull request's run would be re-run; without the
+    conclusion guard, a run a person cancelled would be."""
+    text = strip_comments(_text("forced-jit-rerun.yml"))
+    cond = re.search(r"^    if: >-\n((?:      .+\n)+)", text, re.M)
+    assert cond, "the rerun job's if: is no longer a folded block"
+    for guard in (
+        "github.event.workflow_run.conclusion == 'failure'",
+        "github.event.workflow_run.run_attempt == 1",
+        "github.event.workflow_run.event != 'pull_request'",
+    ):
+        assert guard in cond.group(1), guard
+
+
+@pytest.mark.skipif(not WORKFLOWS.is_dir(), reason=".github/workflows is not in this checkout")
+def test_report_holds_the_issue_only_on_a_first_attempt_and_never_loses_it():
+    """Report leaves the tracking issue to the re-run only on a first attempt
+    (the re-run's own Report must report), never on a pull request, and the
+    steps that decide it cannot fail the job: a failed checkout would skip the
+    issue step, whose condition carries an implicit success()."""
+    steps = _steps("forced-jit.yml", "report")
+    deciding = [s for s in steps if "ci/unstarted_jobs.py" in s]
+    assert len(deciding) == 2  # the sparse checkout and the step that runs it
+    for step in deciding:
+        assert "github.run_attempt == 1" in step
+        assert "github.event_name != 'pull_request'" in step
+        assert "continue-on-error: true" in step
+    gated = [s for s in steps if s.startswith(("name: Open or update", "name: Fail the run"))]
+    assert len(gated) == 2
+    assert all("steps.unstarted.outputs.rerun != 'true'" in s for s in gated)
+
+
+@pytest.mark.skipif(not WORKFLOWS.is_dir(), reason=".github/workflows is not in this checkout")
+def test_both_workflows_report_to_the_same_tracking_issue():
+    """The re-run's fallback comment finds the issue by title, as Report does."""
+    titles = [
+        re.findall(r'^\s+TITLE: "([^"]+)"$', _text(name), re.M)
+        for name in ("forced-jit.yml", "forced-jit-rerun.yml")
+    ]
+    assert titles[0] == titles[1] == ["Nightly forced-JIT suite: failures"]
