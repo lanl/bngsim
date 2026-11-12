@@ -195,8 +195,8 @@ def _reference(key: str, how: str, setting: float, rtol: float = 1e-9, atol: flo
     """RoadRunner, by default at the suite's tolerance, run so that it cannot step
     over a pulse: its step bounded by ``setting`` (``how="max_step"``), or sampled
     every ``setting`` (``how="grid"``) and thinned to the job's grid. Or run plainly
-    with ``setting`` steps of budget (``how="steps"``) where ``rr_ode`` leaves
-    RoadRunner its default 20000. Rows on the job's grid, with the selections
+    with ``setting`` steps of budget (``how="steps"``), for a budget other than
+    ``rr_ode``'s. Rows on the job's grid, with the selections
     ``rr_ode`` makes: boundary species as concentrations, and any the default
     selection drops appended."""
     import _rr_common as rc
@@ -369,7 +369,7 @@ def test_the_engines_agree_outside_the_split():
 
 
 # --------------------------------------------------------------------------- #
-# TOL_OVERRIDES: BIOMD0000000375, held non-PASS at a tolerance RoadRunner cannot run
+# TOL_OVERRIDES: BIOMD0000000375, scored at a tolerance where both engines converge
 # --------------------------------------------------------------------------- #
 def test_neither_engine_has_converged_at_the_sweep_tolerance():
     """At rtol 1e-9, atol 1e-12, bngsim's run is a DIFF against its own at 1e-12, and
@@ -392,15 +392,12 @@ def test_bngsim_converges_at_the_overrides_tolerance():
     assert _compare(_bngsim(HELD, entry["rtol"], entry["atol"]), tight)[0] == "pass"
 
 
-def test_roadrunner_runs_out_of_rr_runs_step_budget_at_the_overrides_tolerance():
-    """At the override's tolerance RoadRunner as rr_run runs it raises, so the row is
-    REFERENCE_FAILED (non-scoring) and nothing is scored PASS. That is its default
-    budget of 20000 steps: given 40000 it completes and passes against bngsim at the
-    same tolerance and at 1e-12."""
+def test_roadrunner_completes_and_agrees_at_the_overrides_tolerance():
+    """At the override's tolerance RoadRunner as rr_run runs it completes and passes
+    against bngsim at the same tolerance and at 1e-12, so the row is a PASS. That
+    takes rr_ode's step budget: with RoadRunner's default of 20000 it raised, which
+    left the row REFERENCE_FAILED until rr_ode raised the budget."""
     entry = ov.TOL_OVERRIDES[HELD]
-    _model(HELD)
-    with pytest.raises(Exception, match="CV_TOO_MUCH_WORK"):
-        _roadrunner(HELD, entry["rtol"], entry["atol"])
-    rr = _reference(HELD, "steps", 40_000, entry["rtol"], entry["atol"])
+    rr = _roadrunner(HELD, entry["rtol"], entry["atol"])
     assert _compare(_bngsim(HELD, entry["rtol"], entry["atol"]), rr)[0] == "pass"
     assert _compare(rr, _bngsim(HELD, 1e-12, 1e-18))[0] == "pass"

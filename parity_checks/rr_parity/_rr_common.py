@@ -44,6 +44,28 @@ import numpy as np
 DEFAULT_RTOL = 1e-9
 DEFAULT_ATOL = 1e-12
 
+# RoadRunner's CVODE step budget per output interval in rr_ode. Its default,
+# 20000, is a hard ceiling: CV_TOO_MUCH_WORK ends the run. bngsim's max_steps is
+# also 20000, but as a batch size: it calls CVode again while the time advances
+# and raises only when a batch makes no progress (cvode_simulator.cpp,
+# retry_while_advancing). So at the same number RoadRunner gave up on runs bngsim
+# completes. BIOMD0000000375 at its TOL_OVERRIDES tolerance needs about 21000
+# steps for one 800-unit interval and was REFERENCE_FAILED only for that.
+#
+# Measured with RoadRunner 2.11.0 on every row that ran out of steps at 20000 (in
+# the 0.15.1 paper reports or the nightly baseline), at 20000, 40000, 100000 and
+# 1000000: 375 passes at each budget above 20000, and no other row changes
+# verdict. The rest are stalls, which stop at the same time at every budget
+# (BIOMD0000000338 at t = 0.0971, MODEL1112050000 at 10.64, MODEL1112050001 at
+# 3.36e-7, MODEL2001310001 at 43.59, MODEL2003050002 at 0.0586, and on x86_64
+# MODEL0995500644 at 0.4029, which on arm64 fails its error test first); a larger
+# budget only makes them fail later in wall time, about 1 s at 100000 against
+# 13 s at 1000000. A run that completes is bit-identical under any larger budget
+# (all 1323 jobs, 20000 against 100000). 100000 is the budget the AMICI
+# sensitivity harness gives both engines (#339, amici_parity/_amici_sens.py).
+# For the reference archive, see rr_run._MXSTEP.
+RR_MAX_STEPS = 100_000
+
 # Integration timing: the first solve is COLD (one-time CVODE workspace +
 # linear-solver alloc + RHS .so/ExprTk page-fault + CPU ramp); subsequent solves
 # reuse the warm solver. We time a cold solve, then up to WARM_REPS warm solves and
@@ -1127,6 +1149,7 @@ def rr_ode(
     rr.integrator = "cvode"
     rr.integrator.relative_tolerance = rtol
     rr.integrator.absolute_tolerance = atol
+    rr.integrator.maximum_num_steps = RR_MAX_STEPS
     # Start from RR's own default timecourse selection (which already includes
     # rate-rule-target parameters that no-species models expose, e.g.
     # MODEL0406553884 with 0 floating/boundary species) and only rewrite the
@@ -1204,6 +1227,7 @@ def rr_ode(
             # configurable — see the #135 method-detection correction.
             "jacobian": "FD (difference-quotient)",
             "linear_solver": "Dense (built-in LU)",
+            "max_steps": RR_MAX_STEPS,
             "cached": bool(load.get("model_cache_hit", 0.0)),
         },
     }

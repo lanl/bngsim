@@ -97,6 +97,33 @@ def test_a_changed_model_file_is_stale(tmp_path):
     assert exc == "archive_stale: the job's model_sha256 changed"
 
 
+_OUT_OF_STEPS = (
+    "roadrunner: RuntimeError: CVODE Error: CV_TOO_MUCH_WORK: The solver took mxstep "
+    "({}) internal steps but could not reach tout.; In virtual double "
+    "rr::CVODEIntegrator::integrate(double, double)"
+)
+
+
+def test_running_out_of_another_step_budget_is_stale(tmp_path):
+    """An entry where RoadRunner ran out of steps under a budget other than
+    rr_ode's is no reference for the job: with rr_ode's, the run may complete, as
+    BIOMD0000000375's does. Recorded under rr_ode's own budget, it replays."""
+    import _rr_common as rc
+
+    spec = _spec(tmp_path)
+    R.archive_save(tmp_path / "arch", spec, None, _OUT_OF_STEPS.format(20000), None)
+    rr, exc, _t, _m = R.archive_load(tmp_path / "arch", spec)
+    assert rr is None and exc == (
+        "archive_stale: RoadRunner ran out of a 20000-step budget when recorded; "
+        f"rr_ode now gives it {rc.RR_MAX_STEPS}"
+    )
+    assert R.classify_reference_refusal(f"roadrunner (archive): {exc}") == "archive_stale"
+
+    own = _OUT_OF_STEPS.format(rc.RR_MAX_STEPS)
+    R.archive_save(tmp_path / "arch", spec, None, own, None)
+    assert R.archive_load(tmp_path / "arch", spec)[:2] == (None, own)
+
+
 def test_a_stale_row_has_its_own_refusal_class():
     exc = "roadrunner (archive): archive_stale: the job's rtol changed"
     assert R.classify_reference_refusal(exc) == "archive_stale"
