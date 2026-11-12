@@ -1,0 +1,93 @@
+name: forced-jit re-run
+
+# Re-runs, once, the forced-jit jobs GitHub never started (#1488).
+#
+# GitHub sometimes has no hosted runner to give a job: the job ends cancelled
+# with "The job was not acquired by Runner of type hosted even after multiple
+# attempts", having run nothing, and the run is marked failed. In November 2026
+# it was a shortage of macOS arm64 runners, and it cost forced-jit a macOS leg on
+# three of the first twelve nights. The suite was not at fault, and the night had
+# no macOS result.
+#
+# When a forced-jit run ends that way, this re-runs its failed jobs: the ones
+# that never started, and the Report job that depends on them (the jobs that
+# passed keep their results). Verified on run 43257949998: `gh run rerun
+# --failed` re-runs a job that never started. forced-jit's Report holds the
+# tracking issue on a first attempt like this one, so the re-run's Report is
+# what reports: green, or a comment on the issue as before.
+#
+# Only once (a first attempt), only scheduled or dispatched runs (a pull
+# request's run reports to the pull request), and only when every job that did
+# not pass never started (ci/unstarted_jobs.py): a run with a real failure is
+# reported as it stands. When this cannot read the run's jobs or cannot re-run
+# it, it comments on the tracking issue itself, since the run's Report may
+# have left that to the re-run.
+#
+# A workflow_run workflow runs from the default branch, so this file takes
+# effect when it is merged, and a pull request that edits it cannot exercise it.
+
+on:
+  workflow_run:
+    workflows: [forced-jit]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  rerun:
+    name: Re-run the jobs GitHub never started
+    if: >-
+      github.event.workflow_run.conclusion == 'failure'
+      && github.event.workflow_run.run_attempt == 1
+      && github.event.workflow_run.event != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write # to re-run the run
+      contents: read
+      issues: write # to say so when it cannot
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: ci/unstarted_jobs.py
+          sparse-checkout-cone-mode: false
+      - name: Re-run them
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          jobs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/attempts/1/jobs?per_page=100" \
+            | python3 ci/unstarted_jobs.py --prefix "Python suite")
+          if [ -z "$jobs" ]; then
+            echo "Run $RUN_ID failed for a reason of its own; nothing to re-run."
+            exit 0
+          fi
+          printf 'Never started:\n%s\n' "$jobs"
+          gh run rerun "$RUN_ID" --failed -R "$GITHUB_REPOSITORY"
+
+      # The run's Report may have left the tracking issue to a re-run that this
+      # could not start, or could not rule out. Then nothing else would report
+      # the night, so this does, the way forced-jit.yml's Report would.
+      - name: Say so on the tracking issue when this fails
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: "Nightly forced-JIT suite: failures"
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          THIS_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Forced-JIT run on \`${HEAD_SHA::8}\`: $RUN_URL"
+            echo
+            echo "- The run failed, and forced-jit-rerun.yml could not check whether its jobs ever started, or could not re-run them: $THIS_URL"
+          } > body.md
+          num=$(gh issue list -R "$GITHUB_REPOSITORY" --state open --search "\"$TITLE\" in:title" \
+            --json number,title --jq "map(select(.title == env.TITLE)) | .[0].number // empty")
+          if [ -n "$num" ]; then
+            gh issue comment "$num" -R "$GITHUB_REPOSITORY" --body-file body.md
+          else
+            gh issue create -R "$GITHUB_REPOSITORY" --title "$TITLE" --body-file body.md
+          fi

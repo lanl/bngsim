@@ -48,17 +48,18 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
+      # A speed-up only: when ccache cannot be installed, the build runs without
+      # it (python-tests.yml says why).
       - name: Set up ccache
+        continue-on-error: true
         uses: hendrikmuhs/ccache-action@v1.2
         with:
           key: golden-verify-build
           max-size: 500M
 
       - name: Provision bngsim, then the parity group
-        env:
-          CMAKE_C_COMPILER_LAUNCHER: ccache
-          CMAKE_CXX_COMPILER_LAUNCHER: ccache
         run: |
+          if command -v ccache >/dev/null; then export CMAKE_C_COMPILER_LAUNCHER=ccache CMAKE_CXX_COMPILER_LAUNCHER=ccache; fi
           uv sync --extra dev --python 3.12
           uv pip install --python .venv/bin/python pip
           uv sync --extra dev --group parity --python 3.12

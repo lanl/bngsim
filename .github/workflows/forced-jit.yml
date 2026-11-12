@@ -34,6 +34,20 @@ name: forced-jit
 #
 # A failure opens one tracking issue, or comments on it, as sanitizers.yml does.
 #
+# Only the suite decides the result. ccache and the log upload are conveniences,
+# and an outage in either no longer fails a job (#1488): on 2026-11-11 the
+# Ubuntu package servers stopped resolving for ten minutes and both ubuntu legs
+# failed installing ccache, and that evening the artifact service turned two
+# passing macOS legs red.
+#
+# GitHub sometimes gives a job no runner at all ("The job was not acquired by
+# Runner of type hosted even after multiple attempts"): three of the first
+# twelve November nights lost a macOS leg that way. GitHub marks such a run
+# failed, and emails, before anything here can step in. forced-jit-rerun.yml
+# then re-runs the jobs that never started, once, and Report leaves the
+# tracking issue to that attempt (ci/unstarted_jobs.py decides what never
+# started).
+#
 # Scheduled workflows run only from the default branch, and GitHub disables them
 # after 60 days without repository activity.
 
@@ -84,8 +98,11 @@ jobs:
           cache-dependency-glob: "uv.lock"
 
       # One cache per platform, written by shard 1 only, as in python-tests.yml.
-      # The key ends in -build because the action restores by prefix.
+      # The key ends in -build because the action restores by prefix. A speed-up
+      # only: when ccache cannot be installed, the build runs without it, as in
+      # python-tests.yml.
       - name: Set up ccache
+        continue-on-error: true
         uses: hendrikmuhs/ccache-action@v1.2
         with:
           key: forced-jit-${{ matrix.os }}-build
@@ -94,13 +111,12 @@ jobs:
 
       - name: Build bngsim (the default configuration, and MIR on)
         env:
-          CMAKE_C_COMPILER_LAUNCHER: ccache
-          CMAKE_CXX_COMPILER_LAUNCHER: ccache
           SKBUILD_CMAKE_DEFINE: BNGSIM_ENABLE_MIR=ON
         run: |
           set -euxo pipefail
+          if command -v ccache >/dev/null; then export CMAKE_C_COMPILER_LAUNCHER=ccache CMAKE_CXX_COMPILER_LAUNCHER=ccache; fi
           uv sync --extra dev --python 3.12 --reinstall-package bngsim
-          ccache --show-stats
+          if command -v ccache >/dev/null; then ccache --show-stats; fi
 
       # libroadrunner's wheel links libpython by name; ubuntu-26.04 has no system
       # 3.12 to satisfy it. See ci/libpython_on_loader_path.sh.
@@ -134,8 +150,11 @@ jobs:
             -q --tb=short -rfE --durations=15 $PYTEST_ARGS \
             2>&1 | tee forced-jit-${{ matrix.os }}-${{ matrix.shard }}.log
 
+      # The job's own log holds the same output; an artifact-service outage must
+      # not turn a passing suite red.
       - name: Upload the pytest log
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: forced-jit-${{ matrix.os }}-${{ matrix.shard }}
@@ -149,11 +168,42 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
+      actions: read # to list this run's jobs
       contents: read
       issues: write
     steps:
+      # A job GitHub gave no runner ran nothing, so there is no result to report
+      # yet: forced-jit-rerun.yml re-runs it once this run ends, and the
+      # re-run's Report reports. So a first attempt whose only missing results
+      # are jobs that never started leaves the tracking issue alone. GitHub
+      # still marks the run failed. When the job listing cannot be read, it
+      # reports as it always did; so both steps continue on error, or a failed
+      # checkout would skip the report. A person who cancels a run while legs
+      # wait for a runner takes this path too, and that run is not re-run: its
+      # cancellation is the record.
+      - uses: actions/checkout@v4
+        if: github.event_name != 'pull_request' && needs.suite.result != 'success' && github.run_attempt == 1
+        continue-on-error: true
+        with:
+          sparse-checkout: ci/unstarted_jobs.py
+          sparse-checkout-cone-mode: false
+      - name: Leave jobs GitHub never started to the re-run
+        id: unstarted
+        if: github.event_name != 'pull_request' && needs.suite.result != 'success' && github.run_attempt == 1
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          jobs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/1/jobs?per_page=100" \
+            | python3 ci/unstarted_jobs.py --prefix "Python suite") || jobs=""
+          if [ -n "$jobs" ]; then
+            printf '%s\n' "$jobs"
+            echo "::notice::GitHub started no runner for $(printf '%s\n' "$jobs" | wc -l | tr -d ' ') job(s). When this run ends failed, forced-jit-rerun.yml re-runs them once, and that attempt reports."
+            echo "rerun=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Open or update the tracking issue
-        if: github.event_name != 'pull_request' && needs.suite.result != 'success'
+        if: github.event_name != 'pull_request' && needs.suite.result != 'success' && steps.unstarted.outputs.rerun != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TITLE: "Nightly forced-JIT suite: failures"
@@ -176,5 +226,5 @@ jobs:
             gh issue create -R "$GITHUB_REPOSITORY" --title "$TITLE" --body-file body.md
           fi
       - name: Fail the run on any failure
-        if: needs.suite.result != 'success'
+        if: needs.suite.result != 'success' && steps.unstarted.outputs.rerun != 'true'
         run: exit 1
