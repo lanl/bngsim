@@ -237,7 +237,14 @@ jobs:
       # -build because the action restores by prefix: without it, the
       # ubuntu-latest leg's key is a prefix of the lapack leg's, and it restored
       # whichever of the two was saved last.
+      #
+      # ccache is a speed-up only, so a failure to set it up does not fail the
+      # job: the build compiles through ccache only when it is installed. The
+      # action installs it from apt or Homebrew, and on 2026-11-11 the Ubuntu
+      # package servers stopped resolving for ten minutes, which failed every
+      # Linux build leg here and in four other workflows (#1488).
       - name: Set up ccache
+        continue-on-error: true
         uses: hendrikmuhs/ccache-action@v1.2
         with:
           key: python-tests-${{ matrix.leg.label }}-build
@@ -245,12 +252,10 @@ jobs:
           max-size: 500M
 
       - name: Provision from uv.lock (default build config)
-        env:
-          CMAKE_C_COMPILER_LAUNCHER: ccache
-          CMAKE_CXX_COMPILER_LAUNCHER: ccache
         run: |
+          if command -v ccache >/dev/null; then export CMAKE_C_COMPILER_LAUNCHER=ccache CMAKE_CXX_COMPILER_LAUNCHER=ccache; fi
           uv sync --extra dev --python 3.12
-          ccache --show-stats
+          if command -v ccache >/dev/null; then ccache --show-stats; fi
 
       # libroadrunner's wheel links libpython by name; ubuntu-26.04 has no system
       # 3.12 to satisfy it. See ci/libpython_on_loader_path.sh.

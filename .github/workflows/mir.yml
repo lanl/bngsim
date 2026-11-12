@@ -176,8 +176,11 @@ jobs:
       # the macos-15 (arm64) leg's key is a prefix of the macos-15-intel leg's,
       # and it would restore whichever of the two was saved last: usually the
       # slower Intel leg's x86_64 objects. python-tests.yml's keys end the same way.
+      # A speed-up only: when ccache cannot be installed, the build runs without
+      # it (python-tests.yml says why).
       - name: Set up ccache
         if: runner.os != 'Windows'
+        continue-on-error: true
         uses: hendrikmuhs/ccache-action@v1.2
         with:
           key: mir-${{ matrix.os }}-build
@@ -192,7 +195,7 @@ jobs:
           # and the Windows leg only.
           if [ "$RUNNER_OS" = Windows ]; then
             export CL=-MP
-          else
+          elif command -v ccache >/dev/null; then
             # CMake (3.17+) reads these at configure, inside pip's build too.
             export CMAKE_C_COMPILER_LAUNCHER=ccache CMAKE_CXX_COMPILER_LAUNCHER=ccache
           fi
@@ -205,7 +208,7 @@ jobs:
             --config-settings=cmake.define.BNGSIM_REQUIRE_KLU=OFF \
             --config-settings=cmake.define.BNGSIM_BUILD_TESTS=OFF \
             ".[test]"
-          if [ "$RUNNER_OS" != Windows ]; then ccache --show-stats; fi
+          if [ "$RUNNER_OS" != Windows ] && command -v ccache >/dev/null; then ccache --show-stats; fi
 
       - name: Show build / capability info
         shell: bash
