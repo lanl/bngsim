@@ -57,12 +57,13 @@ DEFAULT_ATOL = 1e-12
 # 1000000: 375 passes at each budget above 20000, and no other row changes
 # verdict. The rest are stalls, which stop at the same time at every budget
 # (BIOMD0000000338 at t = 0.0971, MODEL1112050000 at 10.64, MODEL1112050001 at
-# 3.36e-7, MODEL2001310001 at 43.59, MODEL2003050002 at 0.0586); a larger budget
-# only makes them fail later in wall time, about 1 s at 100000 against 13 s at
-# 1000000. 100000 is the budget the AMICI sensitivity harness gives both engines
-# (#339, amici_parity/_amici_sens.py). The reference archive's identity does not
-# carry it: the budget changes only an entry that raised, and a re-recording
-# picks the change up.
+# 3.36e-7, MODEL2001310001 at 43.59, MODEL2003050002 at 0.0586, and on x86_64
+# MODEL0995500644 at 0.4029, which on arm64 fails its error test first); a larger
+# budget only makes them fail later in wall time, about 1 s at 100000 against
+# 13 s at 1000000. A run that completes is bit-identical under any larger budget
+# (all 1323 jobs, 20000 against 100000). 100000 is the budget the AMICI
+# sensitivity harness gives both engines (#339, amici_parity/_amici_sens.py).
+# For the reference archive, see rr_run._MXSTEP.
 RR_MAX_STEPS = 100_000
 
 # Integration timing: the first solve is COLD (one-time CVODE workspace +
@@ -1226,6 +1227,7 @@ def rr_ode(
             # configurable — see the #135 method-detection correction.
             "jacobian": "FD (difference-quotient)",
             "linear_solver": "Dense (built-in LU)",
+            "max_steps": RR_MAX_STEPS,
             "cached": bool(load.get("model_cache_hit", 0.0)),
         },
     }

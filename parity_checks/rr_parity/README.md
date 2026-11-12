@@ -355,6 +355,12 @@ interval, and was REFERENCE_FAILED only for that. Every other row that ran out
 of steps at 20000 is a stall that stops at the same time at 1000000 steps, so it
 keeps its verdict.
 
+A run that completes comes out bit-identical under any larger budget, so the
+budget is not part of an archive entry's identity. An entry where RoadRunner ran
+out of steps does depend on it, and CVODE names the budget in that message
+(`mxstep (20000)`). Such an entry recorded under another budget replays as
+`archive_stale`, so after the weekly live night it is reported, not alerted.
+
 ### Event instants — RoadRunner runs through them, the job grid is compared
 
 RoadRunner does not fire a `time == c` trigger between its output times. It also

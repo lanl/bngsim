@@ -455,6 +455,13 @@ def _apply_invalid_reference(
 # no longer share a file.
 ARCHIVE_FORMAT = 2
 ARCHIVE_REFUSALS = ("archive_stale", "archive_unreadable")
+# RoadRunner's step budget (_rr_common.RR_MAX_STEPS) is not in the identity: a
+# run that completed comes out the same, bit for bit, under any larger budget
+# (all 1323 jobs, 20000 against 100000), so a completed entry stays good. A run
+# that raised CV_TOO_MUCH_WORK depends on it, and CVODE writes the budget into
+# that message. Such an entry recorded under another budget is stale: under
+# rr_ode's budget the run may complete (BIOMD0000000375 does).
+_MXSTEP = re.compile(r"CV_TOO_MUCH_WORK: The solver took mxstep \((\d+)\)")
 
 
 def _archive_file(directory: str | Path, key: str) -> Path:
@@ -522,6 +529,15 @@ def archive_load(directory: str | Path, spec: dict):
             changed = sorted(k for k in want if meta.get(k) != want[k])
             if changed:
                 return None, f"archive_stale: the job's {', '.join(changed)} changed", None, None
+            budget = _MXSTEP.search(meta.get("exception") or "")
+            if budget and int(budget.group(1)) != rc.RR_MAX_STEPS:
+                return (
+                    None,
+                    f"archive_stale: RoadRunner ran out of a {budget.group(1)}-step "
+                    f"budget when recorded; rr_ode now gives it {rc.RR_MAX_STEPS}",
+                    None,
+                    None,
+                )
             if "time" not in z:
                 return (
                     None,
