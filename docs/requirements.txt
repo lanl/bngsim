@@ -1,11 +1,11 @@
-# Documentation build dependencies (used by Read the Docs and local builds).
-# lint.yml's docs job installs docs/requirements-ci.txt instead: these, pinned.
+# Documentation build dependencies, for local builds. lint.yml's docs job and
+# Read the Docs install docs/requirements-ci.txt instead: these, pinned.
 # After editing this file, regenerate it with the command at its top.
 sphinx>=7.2
 myst-parser>=2.0
 furo>=2024.1
 sphinx-copybutton>=0.5
 sphinx-autodoc-typehints>=2.0
-# autodoc imports bngsim, which imports numpy. Read the Docs gets it as a
-# dependency of bngsim; a build with the compiled core mocked does not.
+# autodoc imports bngsim, which imports numpy. A build with the compiled core
+# mocked (CI, Read the Docs) installs no bngsim, so it gets numpy only here.
 numpy>=1.24

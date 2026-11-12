@@ -44,9 +44,10 @@ myst_enable_extensions = ["colon_fence", "deflist", "substitution", "tasklist"]
 myst_heading_anchors = 4  # auto-anchor h1-h4 so cross-page #links resolve
 
 # -- autodoc -----------------------------------------------------------------
-# On Read the Docs the compiled C++ core is built and installed (see
-# .readthedocs.yaml). If for some reason it is unavailable, mock only the
-# binary so the pure-Python wrappers still import for autodoc.
+# Read the Docs and lint.yml's docs job install no bngsim, so the compiled C++
+# core is absent there and is mocked; only the binary is mocked, so the
+# pure-Python wrappers still import for autodoc (see .readthedocs.yaml). A
+# local build in a venv with bngsim installed imports the real core.
 autodoc_mock_imports = []
 try:
     import bngsim._bngsim_core  # noqa: F401
