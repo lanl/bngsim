@@ -1,0 +1,48 @@
+name: contributors
+
+# Every author of a pull request's commits is listed in CONTRIBUTORS.md, as
+# CONTRIBUTING.md's Credit section promises. Nothing checked that, and Ely F.
+# Miller, with ten merged pull requests from 2026-10-22 on, was missing until
+# the pull request that added this workflow.
+#
+# ci/contributors.py reads the PR's commits from GitHub's API, where each
+# commit's email is already matched to a GitHub account, and checks each
+# author's handle (or, for an email GitHub matches to no account, the name on
+# the commit) against CONTRIBUTORS.md's entries. Bot accounts are passed over.
+# A red run names who is missing; the fix is a line in CONTRIBUTORS.md on the
+# same pull request. GitHub returns at most 250 of a PR's commits, so a longer
+# PR is checked only that far, with a warning. The check is not a required one,
+# so a maintainer who cannot push to a fork can merge and add the line after.
+# `python3 ci/contributors.py check --all` checks every commit on main, locally
+# (it needs `gh`); its docstring says what neither mode sees.
+#
+# No paths filter: whose commits a PR holds does not depend on which files they
+# touch. It takes seconds.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: contributors-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  listed:
+    name: contributors listed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            CONTRIBUTORS.md
+            ci/contributors.py
+          sparse-checkout-cone-mode: false
+
+      - name: Every commit author is in CONTRIBUTORS.md
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 ci/contributors.py check --pr ${{ github.event.pull_request.number }}

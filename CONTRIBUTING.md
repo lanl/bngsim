@@ -540,14 +540,30 @@ enhancement items, which do not block the correctness backlog.
 ## Credit
 
 Everyone whose code is merged is listed in [`CONTRIBUTORS.md`](CONTRIBUTORS.md),
-by name with GitHub handle — `Ada Lovelace (@alovelace)`. You are added when your
-first contribution merges, and we make a best effort to get the name right from
-what you have already made public: the name on your commits, your GitHub profile,
-how you signed the pull request.
+by name with GitHub handle — `Ada Lovelace (@alovelace)`. You are added on the
+pull request that brings your first contribution, by you or by a maintainer, and
+we make a best effort to get the name right from what you have already made
+public: the name on your commits, your GitHub profile, how you signed the pull
+request.
 
 Best effort is not certainty, and it is your name. If you would rather be listed
 differently — another form of your name, handle only, a different handle, or not
 at all — say so on your pull request or open an issue, and it will be changed.
+
+The `contributors listed` check reminds every pull request of this. It reads the
+pull request's commits from GitHub, which has already matched each commit's
+email to an account, and fails if an author's handle is not in the file. Where
+GitHub matched the email to no account, the name on the commit must be a name
+or handle in the file instead. A handle-only entry is written `- @alovelace`.
+The fix for a red run is the missing line, on the same pull request. The check
+is not a required one: where a maintainer cannot push to a contributor's fork,
+they can merge and add the line straight after. GitHub returns at most 250 of a
+pull request's commits, so a longer one is checked only that far, with a
+warning. `python3 ci/contributors.py check --all` checks every commit on `main`
+(it needs `gh`), but not Co-authored-by trailers, which is where the other
+authors of a squash-merged pull request end up. Someone who asked not to be
+listed at all would turn the check red; teach `ci/contributors.py` about them
+rather than listing them.
 
 ## Before opening a PR
 
