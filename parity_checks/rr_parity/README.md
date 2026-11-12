@@ -343,6 +343,18 @@ Schoeberl EGFR — 1855 hard-ceiling cells). A model that genuinely can't integr
 at the tight tol surfaces as `EXCEPTION`; the bng_parity-style per-model
 "tighten/loosen both stacks, with a reason" override is the escape hatch (TODO).
 
+### Step budget — 100000 RoadRunner steps per output interval
+
+`_rr_common.rr_ode` gives RoadRunner `maximum_num_steps = 100000`
+(`RR_MAX_STEPS`). RoadRunner's default of 20000 is a hard ceiling per output
+interval. bngsim's `max_steps` is also 20000, but it is a batch size: bngsim
+calls CVODE again while the time advances and raises only when a batch makes no
+progress. So at the same number RoadRunner gave up on a run bngsim completed.
+BIOMD0000000375 at its tightened tolerance needs about 21000 steps for one output
+interval, and was REFERENCE_FAILED only for that. Every other row that ran out
+of steps at 20000 is a stall that stops at the same time at 1000000 steps, so it
+keeps its verdict.
+
 ### Event instants — RoadRunner runs through them, the job grid is compared
 
 RoadRunner does not fire a `time == c` trigger between its output times. It also

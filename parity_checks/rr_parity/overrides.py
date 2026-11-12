@@ -406,8 +406,8 @@ TOL_OVERRIDES: dict[str, dict] = {
             "defect (bngsim is the tol-stable, oracle-exact engine here)."
         ),
     },
-    # ── Ill-conditioned at the sweep tolerance; RoadRunner runs out of steps at the
-    # tightened one, so the row is REFERENCE_FAILED (see its reason, #1632) ──
+    # ── Ill-conditioned at the sweep tolerance; both engines converge and agree at
+    # the tightened one (see its reason, #1632) ──
     "BIOMD0000000375:ode": {
         "rtol": 1e-11,
         "atol": 1e-16,
@@ -423,15 +423,16 @@ TOL_OVERRIDES: dict[str, dict] = {
             "1e-9 bngsim's is 0.11 and RoadRunner's 0.010, and the two DIFF "
             "(max_rel_err 0.118), so a comparison there checks two unconverged runs. At "
             "this override's 1e-11/1e-16, applied to BOTH engines, bngsim converges "
-            "(against its own run at 1e-12, err/movement 5.8e-4). RoadRunner runs out "
-            "of rr_run's step budget there (its default maximum_num_steps, 20000) and "
-            "raises CV_TOO_MUCH_WORK, so the row is REFERENCE_FAILED (non-scoring). "
-            "Given 40000 steps it completes, and passes against bngsim at the same "
-            "tolerance (err/movement 3.4e-3) and at 1e-12 (2.8e-3): the row is "
-            "non-scoring only because of that budget, and nothing is scored PASS. Not a "
-            "KNOWN_ARTIFACT. Re-checked for #1632 on bngsim 0.17.1 and RoadRunner "
-            "2.11.0; parity_checks/tests/test_rr_known_artifact_evidence.py runs these "
-            "checks. The earlier reason, from the 2026-05-29 triage, had bngsim hitting "
+            "(against its own run at 1e-12, err/movement 5.8e-4), and RoadRunner, given "
+            "rr_ode's budget of 100000 steps per output interval (RR_MAX_STEPS), "
+            "completes and passes against bngsim at the same tolerance (err/movement "
+            "3.4e-3) and at 1e-12 (2.8e-3), so the row is a PASS. Not a KNOWN_ARTIFACT. "
+            "Re-checked for #1632 on bngsim 0.17.1 and RoadRunner 2.11.0; "
+            "parity_checks/tests/test_rr_known_artifact_evidence.py runs these checks. "
+            "Until rr_ode raised that budget, RoadRunner ran with its default of 20000, "
+            "which one output interval here exceeds (it needs about 21000): it raised "
+            "CV_TOO_MUCH_WORK and the row was REFERENCE_FAILED (non-scoring). The "
+            "earlier reason, from the 2026-05-29 triage, had bngsim hitting "
             "CV_TOO_MUCH_WORK at the sweep tolerance with a 1.58% residual a bare gate "
             "would have passed, called the tightened row EXCEPTION, and cited a triage "
             "ledger never committed to this repository."
@@ -518,8 +519,9 @@ NO_ORACLE_ADJUDICATED: dict[str, dict] = {
             "on the SBML text reproduces at t=1e-7. k9 reads x12/PI3K with PI3K = "
             "5e-15 and x12 follows -x9, so x13 and x14 reach -/+2.6e10 by "
             "t=3.363e-7 (scipy BDF; bngsim at atol 1e-24 agrees) and grow "
-            "super-exponentially: RoadRunner's CV_TOO_MUCH_WORK at t~3.36e-7 is "
-            "that. At the sweep's atol of 1e-12, x9 starts at the tolerance, so "
+            "super-exponentially: RoadRunner stopping at t~3.36e-7 is that "
+            "(CV_CONV_FAILURE with rr_ode's 100000-step budget, CV_TOO_MUCH_WORK "
+            "with RoadRunner's default 20000, at the same t). At the sweep's atol of 1e-12, x9 starts at the tolerance, so "
             "bngsim (like AMICI) holds it on its repelling equilibrium and runs on "
             "to t=100 along a trajectory that is not a solution. The earlier "
             "adjudication confirmed bngsim on that trajectory; nothing past "
