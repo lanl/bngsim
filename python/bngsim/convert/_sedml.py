@@ -28,6 +28,7 @@ emitted for interop with other SED-ML tools.
 
 from __future__ import annotations
 
+import math
 import re
 import warnings
 import xml.etree.ElementTree as ET
@@ -87,6 +88,7 @@ _KISAO_TO_METHOD = {
 _KISAO_RTOL = "KISAO:0000209"  # relative tolerance
 _KISAO_ATOL = "KISAO:0000211"  # absolute tolerance
 _KISAO_MAXSTEPS = "KISAO:0000415"  # maximum number of steps
+_KISAO_SEED = "KISAO:0000488"  # random seed (issue #1517)
 
 
 def _q(uri: str, local: str) -> str:
@@ -236,6 +238,8 @@ def write_sedml(
         params.append((_KISAO_ATOL, _num(atol)))
     if spec.max_steps is not None:
         params.append((_KISAO_MAXSTEPS, str(int(spec.max_steps))))
+    if spec.seed is not None:
+        params.append((_KISAO_SEED, str(spec.seed)))
     _algorithm_param_elems(algo, params)
 
     # ── listOfModels / listOfTasks ─────────────────────────────────────────
@@ -452,6 +456,7 @@ def read_sedml(
     method = "ode"
     rtol = atol = None
     max_steps = None
+    seed = None
     algo = _find(utc, "algorithm")
     if algo is not None:
         kid = _kisao_id(algo)
@@ -477,6 +482,7 @@ def read_sedml(
             else:
                 method = mapped
         rtol, atol, max_steps = _algorithm_params(algo)
+        seed = _algorithm_seed(algo)
 
     # Outputs. A document bngsim wrote carries the verbatim bngsim selector in
     # @name, which is the round-trip source of truth and still wins. Every other
@@ -515,6 +521,7 @@ def read_sedml(
         rtol=rtol,
         atol=ExactAtol(atol) if exact_atol and atol is not None else atol,
         max_steps=max_steps,
+        seed=seed,
     )
 
 
@@ -543,6 +550,40 @@ def _algorithm_params(algo: ET.Element) -> tuple[float | None, float | None, int
         elif apk == _KISAO_MAXSTEPS:
             max_steps = int(float(val))
     return rtol, atol, max_steps
+
+
+def _algorithm_seed(algo: ET.Element) -> int | None:
+    """An algorithm's random seed (``KISAO:0000488``), ``None`` if it has none.
+
+    It was dropped with no word, so a seeded document ran on a fresh seed each
+    time (issue #1517). It is read exactly, as an int: a seed past 2**53 does
+    not survive a float. A seed that is not an integer from 0 to 2**64 - 1 is
+    refused. A seed another tool's document names reproduces bngsim's own run
+    of it, not that tool's: the generators differ.
+    """
+    for ap in _findall_local(algo, "algorithmParameter"):
+        if _kisao_id(ap) != _KISAO_SEED:
+            continue
+        raw = (ap.get("value") or "").strip()
+        try:
+            seed = int(raw)
+        except ValueError:
+            try:
+                as_float = float(raw)
+            except ValueError:
+                as_float = math.nan
+            if not as_float.is_integer():
+                raise ConversionError(
+                    f"the algorithm's random seed ({_KISAO_SEED}) is {raw!r}, not an integer"
+                ) from None
+            seed = int(as_float)
+        if not 0 <= seed <= 2**64 - 1:
+            raise ConversionError(
+                f"the algorithm's random seed ({_KISAO_SEED}) is {seed}; a seed is an "
+                "integer from 0 to 2**64 - 1"
+            )
+        return seed
+    return None
 
 
 def _steps_attr(elem: ET.Element) -> str | None:
@@ -737,6 +778,20 @@ def _protocol_algorithm(exp, i: int) -> tuple[str, list[tuple[str, str]]]:
                 lost.append(f"{key}=>{raw}, which cannot be read without the model")
             else:
                 params.append((kid, _num(value)))
+    else:
+        # A stochastic run's seed, as KISAO:0000488 (issue #1517). An int goes
+        # out exactly; a number written as a float only when it is integral.
+        raw = exp.extra.get("seed")
+        if raw is not None:
+            if isinstance(raw, int) and not isinstance(raw, bool):
+                seed: int | None = raw
+            else:
+                value = _num_or(raw, None)
+                seed = int(value) if value is not None and float(value).is_integer() else None
+            if seed is None or not 0 <= seed <= 2**64 - 1:
+                lost.append(f"seed=>{raw}, which is not an integer seed")
+            else:
+                params.append((_KISAO_SEED, str(seed)))
     for key in ("pla_config", "steady_state"):
         if key in exp.extra:
             lost.append(f"{key}=>{exp.extra[key]}")
@@ -1543,6 +1598,12 @@ def read_sedml_protocol(source: str | Path):
                     extra["rtol"] = rtol
                 if atol is not None:
                     extra["atol"] = atol
+            else:
+                # A stochastic run's seed, which run_protocol reads from the
+                # experiment as BNG2.pl's simulate takes it (issue #1517).
+                seed = _algorithm_seed(algo)
+                if seed is not None:
+                    extra["seed"] = seed
         scan = scan_by_sim.get(utc.get("id") or "")
         if scan is not None:
             steps.append(

@@ -14,6 +14,11 @@ and no objective/noise/loss layer (those are the frontend's — bngsim returns t
 raw output + sensitivity *primitives*; see GH #194). ``evaluate()`` reconstructs a
 :class:`~bngsim.Simulator` and runs it; for fixed inputs the result is
 deterministic, so the same spec evaluated on any node yields the same arrays.
+For a stochastic method (``method="ssa"``) the seed is one of those inputs: a
+spec with ``seed`` set runs one trajectory everywhere, and a spec without one
+draws a fresh seed from entropy on each :meth:`~EvaluationSpec.evaluate`, as
+:meth:`bngsim.Simulator.run` does, and reports it on ``Result.seed`` (issue
+#1517).
 
 Pair a spec with :meth:`bngsim.Result.summary` for a compact what-came-back record
 (full arrays persist via :meth:`bngsim.Result.save`).
@@ -33,6 +38,7 @@ Example
 >>> blob = spec.to_json()                 # ship to a worker / checkpoint
 >>> same = bngsim.EvaluationSpec.from_json(blob)
 >>> result = same.evaluate()              # deterministic for fixed inputs
+                                          # (and a seed, for method="ssa")
 >>> grad = result.output_sensitivities(same.outputs)
 """
 
@@ -47,6 +53,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from bngsim._atol import ExactAtol
+from bngsim._seed import _resolve_seed, derived_seeds
 
 if TYPE_CHECKING:  # avoid import cycles at module load
     from bngsim._model import Model
@@ -126,6 +133,21 @@ class EvaluationSpec:
         UTF-8 text for a ``*_string`` format). When set, :meth:`build_model`
         verifies the live source matches and raises on mismatch — a cluster
         integrity guard against a stale/edited model file on a shared filesystem.
+    seed : int, optional
+        The run's random seed, from 0 to 2**64 - 1, passed to
+        :meth:`bngsim.Simulator.run` (issue #1517). A stochastic spec with a
+        seed gives one trajectory on every node; without one, each
+        :meth:`evaluate` draws a fresh seed and reports it on ``Result.seed``,
+        so ``replace(spec, seed=result.seed)`` reruns that trajectory. An ODE
+        spec reads it only to order simultaneous equal-priority events (GH
+        #242). With ``output_start``, the output leg runs at ``seed``, which
+        ``Result.seed`` reports, and the leg up to the output start at the
+        second seed drawn from it, as :meth:`bngsim.Simulator.run_batch` draws
+        its row seeds (issue #1365), so the two legs do not replay one stream.
+        An unseeded stochastic spec draws that seed before the first leg, so
+        its ``Result.seed`` reruns both. Emitted by :meth:`to_dict`
+        only when set, so a spec without one keeps its bytes. SED-ML carries it
+        as ``KISAO:0000488``.
     """
 
     model_source: str
@@ -143,6 +165,7 @@ class EvaluationSpec:
     max_steps: int | None = None
     model_sha256: str | None = None
     output_start: float | None = None
+    seed: int | None = None
 
     def __post_init__(self) -> None:
         # Normalize to canonical, immutable container types so two specs built
@@ -173,6 +196,17 @@ class EvaluationSpec:
         object.__setattr__(self, "sensitivity_params", tuple(self.sensitivity_params))
         object.__setattr__(self, "sensitivity_ic", tuple(self.sensitivity_ic))
         object.__setattr__(self, "outputs", tuple(self.outputs))
+        if self.seed is not None:
+            try:
+                seed = int(self.seed)
+                integral = not isinstance(self.seed, bool) and seed == self.seed
+            except (TypeError, ValueError, OverflowError):  # "abc", nan, inf
+                integral = False
+            if not integral:
+                raise ValueError(f"seed must be an integer, got {self.seed!r}")
+            if not 0 <= seed <= 2**64 - 1:
+                raise ValueError(f"seed must be an integer from 0 to 2**64 - 1, got {seed}")
+            object.__setattr__(self, "seed", seed)
         # A per-species atol (issue #196) arrives as a list from JSON and as a
         # list/array from a caller; canonicalize to a tuple of floats so a spec
         # built either way compares equal and hashes the same. A float or the
@@ -187,8 +221,10 @@ class EvaluationSpec:
 
         ``params`` is emitted sorted by name and sequences as lists, so the dict
         (and :meth:`to_json`) is byte-stable for a fixed spec — usable directly
-        as a content key for caching/deduplication. ``output_start`` is emitted
-        only when set, so a spec without one keeps the bytes it always had.
+        as a content key for caching/deduplication. ``output_start`` and
+        ``seed`` are emitted only when set, so a spec without them keeps the
+        bytes it always had. A stochastic spec without a seed is one key for
+        many trajectories: set ``seed`` for a key that names one run.
         """
         out = {
             "model_source": self.model_source,
@@ -216,6 +252,8 @@ class EvaluationSpec:
         }
         if self.output_start is not None:
             out["output_start"] = self.output_start
+        if self.seed is not None:
+            out["seed"] = self.seed
         return out
 
     @classmethod
@@ -237,6 +275,7 @@ class EvaluationSpec:
             "max_steps",
             "model_sha256",
             "output_start",
+            "seed",
         }
         unknown = set(data) - known
         if unknown:
@@ -335,7 +374,8 @@ class EvaluationSpec:
         """Materialize and run this evaluation, returning the :class:`~bngsim.Result`.
 
         Deterministic for fixed inputs (model, θ, sensitivity set, solver
-        options). Read named outputs via :meth:`Result.outputs` and gradients via
+        options, and :attr:`seed` for a stochastic method). Read named outputs
+        via :meth:`Result.outputs` and gradients via
         :meth:`Result.output_sensitivities` with :attr:`outputs` as selectors.
         """
         if self.output_start is not None and self.sensitivity_ic:
@@ -354,13 +394,23 @@ class EvaluationSpec:
         if self.max_steps is not None:
             solver["max_steps"] = self.max_steps
         if self.output_start is None:
-            return sim.run(t_span=self.t_span, n_points=self.n_points, **solver)
+            return sim.run(t_span=self.t_span, n_points=self.n_points, seed=self.seed, **solver)
         # Issue #1493: integrate up to the output start with nothing returned,
         # then output from there, on the state (and sensitivities) it left.
-        sim.run(t_span=(self.t_span[0], self.output_start), n_points=2, **solver)
+        # Each leg seeds its generator afresh (issue #1517). The output leg runs
+        # at the seed, so Result.seed is the spec's, and the leg before it at
+        # the second seed derived from it. An unseeded stochastic spec draws
+        # its seed first, so the seed it reports reruns both legs; an unseeded
+        # ODE spec keeps the fixed event seed on both.
+        seed = self.seed
+        if seed is None and sim.method != "ode":
+            seed = _resolve_seed(None)
+        before = None if seed is None else derived_seeds(seed, 2)[1]
+        sim.run(t_span=(self.t_span[0], self.output_start), n_points=2, seed=before, **solver)
         return sim.run(
             t_span=(self.output_start, self.t_span[1]),
             n_points=self.n_points,
             carry_sensitivities=bool(self.sensitivity_params),
+            seed=seed,
             **solver,
         )

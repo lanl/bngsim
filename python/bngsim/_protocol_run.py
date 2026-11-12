@@ -52,6 +52,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from bngsim._exceptions import ConversionError, ConversionWarning
+from bngsim._seed import derived_seeds
 
 if TYPE_CHECKING:
     from bngsim._model import Model
@@ -773,6 +774,16 @@ class _Runner:
             raise ConversionError(f"{_describe(exp)}: {key}=>{raw} does not evaluate in the model")
         return v
 
+    def _own_seed(self, exp: Experiment) -> int | None:
+        """The experiment's ``seed``, if it names one. An int is taken as it
+        is: through :meth:`_number`'s float, a seed past 2**53 ran rounded
+        (issue #1517)."""
+        raw = exp.extra.get("seed")
+        if isinstance(raw, int) and not isinstance(raw, bool):
+            return raw
+        value = self._number(exp, "seed")
+        return None if value is None else int(value)
+
     def _simulator(self, exp: Experiment):
         from bngsim._simulator import Simulator
 
@@ -845,9 +856,9 @@ class _Runner:
             if steady:
                 kwargs["steady_state"] = True
         else:
-            seed = self._number(exp, "seed")
+            seed = self._own_seed(exp)
             kwargs["seed"] = (
-                int(seed)
+                seed
                 if seed is not None
                 else int(self._seeds.spawn(1)[0].generate_state(1)[0] >> 1)
             )
@@ -891,8 +902,16 @@ class _Runner:
         if method == "ode":
             kwargs.update(self._tolerances(exp))
         else:
-            # Its own seed: the run that outputs takes the action's.
-            kwargs["seed"] = int(self._seeds.spawn(1)[0].generate_state(1)[0] >> 1)
+            # The run that outputs takes the action's seed. This leg takes the
+            # second seed derived from it, as EvaluationSpec.evaluate does, so
+            # a seeded run is one run on every replay; on a seed of its own,
+            # two runs reported one seed (issue #1517). Unseeded, its own.
+            seed = self._own_seed(exp)
+            kwargs["seed"] = (
+                derived_seeds(seed, 2)[1]
+                if seed is not None
+                else int(self._seeds.spawn(1)[0].generate_state(1)[0] >> 1)
+            )
         self._resolve_symbolic()
         sim.run(t_span=(t0, t1), n_points=2, **kwargs)
         self.symbolic.clear()
