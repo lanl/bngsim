@@ -77,7 +77,7 @@ def _get_sbml_string(ant_path):
     ret = ant.loadFile(str(ant_path))
     if ret == -1:
         raise RuntimeError(f"antimony parse error: {ant.getLastError()}")
-    mod = ant.getModuleNames()[-1]
+    mod = ant.getMainModuleName()
     sbml = ant.getSBMLString(mod)
     if not sbml or len(sbml) < 10:
         raise RuntimeError("antimony produced empty SBML")

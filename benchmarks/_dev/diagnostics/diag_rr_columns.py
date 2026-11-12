@@ -51,7 +51,7 @@ def main():
 
         ant.clearPreviousLoads()
         ant.loadFile(path)
-        mod = ant.getModuleNames()[-1]
+        mod = ant.getMainModuleName()
         sbml = ant.getSBMLString(mod)
 
         rr = roadrunner.RoadRunner(sbml)

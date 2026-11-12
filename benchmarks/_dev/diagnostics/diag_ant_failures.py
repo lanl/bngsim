@@ -51,7 +51,7 @@ for r in g2_fails:
     try:
         ant.clearPreviousLoads()
         ant.loadFile(path)
-        mod = ant.getModuleNames()[-1]
+        mod = ant.getMainModuleName()
         sbml = ant.getSBMLString(mod)
         rr = roadrunner.RoadRunner(sbml)
         rr.integrator.absolute_tolerance = 1e-10
@@ -84,7 +84,7 @@ for r in g3_fails[:5]:
     # RoadRunner: get species names
     ant.clearPreviousLoads()
     ant.loadFile(path)
-    mod = ant.getModuleNames()[-1]
+    mod = ant.getMainModuleName()
     sbml = ant.getSBMLString(mod)
     rr = roadrunner.RoadRunner(sbml)
     sp_names_rr = rr.model.getFloatingSpeciesIds()

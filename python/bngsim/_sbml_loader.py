@@ -3519,6 +3519,82 @@ def _antimony_numbers_in_c_locale():
     return _CNumericLocale()
 
 
+def _changes_over_time(model) -> bool:
+    """Whether an SBML model has anything that moves its state or reads the
+    clock: a reaction, an event, a rate or algebraic rule, or an assignment
+    rule that reads the clock. With none of the others, an assignment rule
+    that does not read the clock is a constant (``y := 2``)."""
+    if model.getNumReactions() + model.getNumEvents() > 0:
+        return True
+    return any(
+        not rule.isAssignment() or _math_names(rule.getMath())[1]
+        for rule in (model.getRule(i) for i in range(model.getNumRules()))
+    )
+
+
+def _antimony_main_module_sbml(ant, what: str) -> str:
+    """The SBML of the module libantimony names main (issue #1508).
+
+    The loader took ``getModuleNames()[-1]``, the last module defined, which
+    is the main one only when nothing stands outside a model and no other
+    model is marked ``*``. Top-level reactions beside a helper ``model``, a
+    ``model *main()`` defined before another, and a module instantiated at top
+    level with an override (``A: sub(); A.k = 0.5``) each loaded the other
+    module, with no word. ``getMainModuleName()`` is the module marked ``*``,
+    else ``__main`` when a statement stands outside every model, else the last
+    one defined, as Antimony defines it.
+
+    A stray top-level line, such as a ``unit`` definition or a constant
+    ``y := 2`` before ``model m() ... end``, makes ``__main`` the main module
+    with nothing in it that changes. That model would never move, and the last
+    module defined is what Antimony names main without the stray line, and
+    what this loader always loaded there, so it is loaded. A
+    ``ConversionWarning`` names what the top level held that is left out: a
+    species, parameter or compartment. A top level of unit definitions alone
+    loads without one.
+    """
+    main = ant.getMainModuleName()
+    sbml = ant.getSBMLString(main)
+    names = list(ant.getModuleNames())
+    if main != "__main" or names[-1] == main or not sbml:
+        return sbml
+    top = libsbml.readSBMLFromString(sbml).getModel()
+    if top is not None and _changes_over_time(top):
+        return sbml
+    chosen = names[-1]
+    left_out = (
+        []
+        if top is None
+        else [top.getSpecies(i).getId() for i in range(top.getNumSpecies())]
+        + [top.getParameter(i).getId() for i in range(top.getNumParameters())]
+        # Antimony makes `default_compartment` for a species written without
+        # one; it is no statement of the author's.
+        + [
+            top.getCompartment(i).getId()
+            for i in range(top.getNumCompartments())
+            if top.getCompartment(i).getId() != "default_compartment"
+        ]
+    )
+    if left_out:
+        import warnings
+
+        from bngsim._exceptions import ConversionWarning
+        from bngsim._simulator import _stacklevel_outside_bngsim
+
+        shown = ", ".join(left_out[:3]) + (
+            f" and {len(left_out) - 3} more" if len(left_out) > 3 else ""
+        )
+        warnings.warn(
+            f"{what}'s top level, Antimony's main module '__main', has nothing that "
+            f"changes over time, so module {chosen!r}, the last defined, is loaded, and "
+            f"the top level's {shown} left out. Mark the model to load as "
+            f"`model *{chosen}()`, or move the top-level statements into it",
+            ConversionWarning,
+            stacklevel=_stacklevel_outside_bngsim(),
+        )
+    return ant.getSBMLString(chosen)
+
+
 def load_antimony_via_sbml(path: str | Path, compartment_sizes: dict | None = None):
     """Load an Antimony .ant file by converting to SBML first."""
     ant = _import_antimony()
@@ -3534,8 +3610,7 @@ def load_antimony_via_sbml(path: str | Path, compartment_sizes: dict | None = No
             err = ant.getLastError()
             raise RuntimeError(f"Failed to parse Antimony file {path}: {err}")
 
-        mod = ant.getModuleNames()[-1]
-        sbml_str = ant.getSBMLString(mod)
+        sbml_str = _antimony_main_module_sbml(ant, f"Antimony file {path}")
     if not sbml_str or len(sbml_str) < 10:
         raise RuntimeError(f"Antimony produced empty SBML for {path}")
 
@@ -3553,8 +3628,7 @@ def load_antimony_string_via_sbml(text: str, compartment_sizes: dict | None = No
             err = ant.getLastError()
             raise RuntimeError(f"Failed to parse Antimony string: {err}")
 
-        mod = ant.getModuleNames()[-1]
-        sbml_str = ant.getSBMLString(mod)
+        sbml_str = _antimony_main_module_sbml(ant, "the Antimony string")
     if not sbml_str or len(sbml_str) < 10:
         raise RuntimeError("Antimony produced empty SBML")
 

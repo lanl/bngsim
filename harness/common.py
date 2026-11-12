@@ -720,7 +720,7 @@ def _ant_to_sbml(ant_path: str) -> str:
     rc = antimony.loadAntimonyFile(str(ant_path))
     if rc < 0:
         raise RuntimeError(antimony.getLastError())
-    mod_name = antimony.getModuleNames()[-1]
+    mod_name = antimony.getMainModuleName()
     sbml = antimony.getSBMLString(mod_name)
     if not sbml:
         raise RuntimeError("Empty SBML from antimony")

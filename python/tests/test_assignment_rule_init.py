@@ -164,7 +164,7 @@ class TestAssignmentRuleInit:
 
         antimony.clearPreviousLoads()
         antimony.loadString(text)
-        mod = antimony.getModuleNames()[-1]
+        mod = antimony.getMainModuleName()
         sbml = antimony.getSBMLString(mod)
         rr = roadrunner.RoadRunner(sbml)
         rr.integrator.absolute_tolerance = 1e-12

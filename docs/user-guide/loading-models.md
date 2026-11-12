@@ -198,6 +198,17 @@ sim = bngsim.Simulator(model, method="ode")
 result = sim.run(t_span=(0, 100), n_points=101)
 ```
 
+An Antimony text with more than one module is loaded at its main module, the one
+libantimony's `getMainModuleName()` names and RoadRunner simulates (issue #1508):
+the model marked `model *m()`, else the top level when a statement stands outside
+every model, else the last model defined. A module instantiated at the top level
+(`A: sub()`) is loaded under its instance's names, `A_S1` for `sub`'s `S1`, as
+RoadRunner names them. Where a stray top-level statement, such as a `unit` line,
+makes the top level the main module with nothing in it that changes over time (no
+reaction, event or rate rule, and no rule that reads the time), the last model
+defined is loaded, and a `ConversionWarning` names any species, parameter or
+compartment the top level held that is left out.
+
 Antimony loading requires `bngsim[antimony]`. Direct SBML loading requires
 `python-libsbml>=5.20` (installed automatically with the base package).
 
