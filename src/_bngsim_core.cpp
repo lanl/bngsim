@@ -2113,6 +2113,14 @@ PYBIND11_MODULE(_bngsim_core, m) {
             },
             py::arg("name"), py::arg("value"), "Set a single species concentration by name")
 
+        .def("set_species_continuous", &bngsim::NetworkModel::set_species_continuous,
+             py::arg("species_idx0"),
+             "Issue #1510: mark a loaded species slot a continuous quantity rather than a "
+             "molecule count, so SSA/PSA do not round it to a whole number (as "
+             "ModelBuilder.set_species_continuous does while a model is built). "
+             "Model.from_net marks an sbml_to_net network's assignment-rule targets. No-op "
+             "if species_idx0 is out of range.")
+
         .def(
             "get_concentration",
             [](const bngsim::NetworkModel &self, const std::string &name) {

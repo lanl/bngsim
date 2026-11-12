@@ -200,6 +200,80 @@ def test_the_net_written_from_the_sbml(tmp_path):
     assert m.get_concentration("S") == pytest.approx(2 * A4, rel=CLOSED_FORM)
 
 
+@pytest.mark.parametrize("route", ["from_net", "build_model_from_parsed"])
+def test_a_net_rule_target_is_a_value_under_ssa(tmp_path, route):
+    """A .net has no line that marks a rule target a value rather than a
+    molecule count, so SSA rounded its slot to a whole number at the start of a
+    run, and warned that it had. With the rule's value written back after each
+    run, every run_until leg rounded it again: S := A/3 warned on legs 2 to 4.
+    Both .net loaders now mark the slot, as the SBML loader does. A(0) = 11
+    makes S(0) = 11/3 fractional too, which main rounded on the first leg."""
+    antimony = pytest.importorskip("antimony")
+    from bngsim.convert import sbml_to_net
+
+    antimony.clearPreviousLoads()
+    assert (
+        antimony.loadAntimonyString(
+            "model m\n compartment c = 1\n species A in c = 11\n species S in c\n"
+            " A => ; k*A\n k = 0.5\n S := A/3\nend\n"
+        )
+        >= 0
+    )
+    xml, net = tmp_path / "m.xml", tmp_path / "m.net"
+    xml.write_text(antimony.getSBMLString("m"))
+    with _quiet():
+        sbml_to_net(str(xml), str(net), validate=None)
+    if route == "from_net":
+        m = bngsim.Model.from_net(str(net))
+    else:
+        m = bngsim.build_model_from_parsed(bngsim.parse_net_file(str(net)))
+    sim = bngsim.Simulator(m, method="ssa")
+    for leg in range(1, 5):
+        with contextlib.redirect_stderr(io.StringIO()), warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            warnings.simplefilter("error", bngsim.SsaRoundingWarning)
+            r = sim.run_until(float(leg), seed=leg)
+        assert r.ssa_diagnostics["n_rounded_populations"] == 0, leg
+        assert m.get_concentration("S") == pytest.approx(
+            m.get_concentration("A") / 3, rel=SAME_COUNTS
+        )
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        pytest.param(
+            lambda m: bngsim.Simulator(m, method="ode").compute_all_sensitivities(
+                t_span=(0, 4), n_points=5, params=["k"], n_workers=2, chunk_size=1
+            ),
+            id="compute_all_sensitivities",
+        ),
+        pytest.param(
+            lambda m: bngsim.Simulator(m, method="ssa").run_replicates(
+                n_replicates=2, t_span=(0, 4), n_points=5, seed=2, num_processors=2
+            ),
+            id="run_replicates-threads",
+        ),
+        pytest.param(
+            lambda m: bngsim.Simulator(m, method="ode").run_batch(
+                t_span=(0, 4), n_points=5, params=[{"k": 0.5}, {"k": 1.0}]
+            ),
+            id="run_batch",
+        ),
+    ],
+)
+def test_a_call_that_runs_on_clones_leaves_the_model_as_it_was(call):
+    """These run on clones and never advance the caller's model, so its rule
+    targets stay where they were too. The sensitivity chunks stamped their
+    results against the caller's model, not their clones, and wrote S's end,
+    2.706706, into a model whose A still read 10."""
+    m = _model()
+    before = np.array(m.get_state())
+    with _quiet():
+        call(m)
+    assert np.array_equal(m.get_state(), before)
+
+
 def test_the_state_round_trips_and_a_continuation_reads_on():
     """set_state(get_state()) gives the state back, and a run continuing from
     it reports the rule, and leaves it, at the new end."""

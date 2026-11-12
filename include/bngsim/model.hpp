@@ -139,6 +139,14 @@ class NetworkModel {
     // Mirrors the BNG setConcentration() action.
     void set_concentration(const std::string &name, double value);
 
+    // Issue #1510: mark a loaded species slot a continuous quantity, not a
+    // molecule count (Species::continuous), so SSA/PSA do not round it to a
+    // whole number. ModelBuilder::set_species_continuous marks a model as it is
+    // built; a .net carries no mark, so Model.from_net marks the
+    // assignment-rule targets of an sbml_to_net network here, after the load.
+    // No-op if species_idx0 is out of range.
+    void set_species_continuous(int species_idx0);
+
     // Get a single species concentration by name.
     double get_concentration(const std::string &name) const;
 

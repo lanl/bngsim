@@ -8180,7 +8180,10 @@ class Simulator:
         except RuntimeError as e:
             raise SimulationError(f"Sensitivity chunk failed (params={sens_params}): {e}") from e
 
-        result = self._stamp(Result(core_result), ic_seed=chunk_ic_seed)
+        # Against the clone the chunk ran on: the stamp writes each rule target
+        # back into the model it names (#1510), and this call never advances
+        # the caller's model, which other chunks are cloning meanwhile.
+        result = self._stamp(Result(core_result), ic_seed=chunk_ic_seed, model=clone)
         self._raise_if_nonfinite_sensitivities(result, sens_params)
         return result
 

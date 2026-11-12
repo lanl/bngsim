@@ -749,6 +749,7 @@ class Model:
         m = cls(_core=core)
         m._net_path = str(path)
         m._ar_report_map = _ar_report_map_from_net(core)
+        _mark_ar_targets_continuous(core, m._ar_report_map)
         m._frozen_params = _unit_conversion_folds(_unit_conversions_in(path), core)
         # GH #145: the analytical Functional Jacobian (GH #76) is consumed only by
         # ODE solves, so it is no longer derived here at load — it is deferred to
@@ -2001,10 +2002,10 @@ class Model:
         float
             Current concentration. For an assignment-rule species after a run,
             the value the run reports for its last row, in the model's storage
-            convention (amount over the compartment's size at load), before a
+            convention (amount over the compartment's static size), before a
             variable-volume ``Result`` rescales it to the live size (issue
-            #1510). :meth:`Simulator.steady_state`
-            writes no species, so it leaves a rule species as the last run did.
+            #1510). :meth:`Simulator.steady_state` writes no species, so it
+            leaves a rule species as the last run did.
 
         Raises
         ------
@@ -3320,6 +3321,24 @@ def _ar_report_map_from_net(
         elif entries.get(name) not in (None, [(i, 1.0)]):
             out[name] = ("observable", name, 1.0)
     return out
+
+
+def _mark_ar_targets_continuous(core: Any, amap: dict[str, tuple[str, str, float]]) -> None:
+    """Mark each species the ``.net`` report map names a value, not a count.
+
+    The SBML loader marks an assignment-rule target continuous as it builds the
+    model (issue #718); a ``.net`` has no line for the mark, so SSA and PSA
+    rounded the slot to a whole number at the start of every run. A run writes
+    the rule's value into the slot (#1510), so each run after the first rounded
+    it again and warned that it had: ``S := A/3`` warned on every ``run_until``
+    leg. Marked here, the slot is the value the SBML route holds.
+    """
+    if not amap:
+        return
+    index = {name: i for i, name in enumerate(core.species_names)}
+    for name in amap:
+        if name in index:
+            core.set_species_continuous(index[name])
 
 
 def _warn_dropped_state_changes(model: Model, path: str | Path) -> None:

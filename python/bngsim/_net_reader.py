@@ -191,7 +191,12 @@ def build_model_from_parsed(parsed: dict[str, Any]):
         net_function_tables,
         net_refuse_parameters_that_read_state,
     )
-    from bngsim._model import Model, _ar_report_map_from_net, _unit_conversion_folds
+    from bngsim._model import (
+        Model,
+        _ar_report_map_from_net,
+        _mark_ar_targets_continuous,
+        _unit_conversion_folds,
+    )
 
     # The loader's own refusal, which phase 2 makes before its first call: a
     # parameter that reads an observable or a function would build as 0 (#844).
@@ -286,5 +291,6 @@ def build_model_from_parsed(parsed: dict[str, Any]):
     # The output columns of species an assignment rule defines (sbml_to_net's
     # networks), rebuilt as Model.from_net rebuilds them.
     model._ar_report_map = _ar_report_map_from_net(core)
+    _mark_ar_targets_continuous(core, model._ar_report_map)
     model._frozen_params = _unit_conversion_folds(parsed.get("unit_conversions"), core)
     return model
