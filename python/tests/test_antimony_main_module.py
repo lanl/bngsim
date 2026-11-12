@@ -118,6 +118,9 @@ def test_a_file_that_imports_a_library_builds_its_own_top_level(tmp_path):
 AS_BEFORE = {
     "one-model": (f"model m()\n  {MAIN}\nend", ["S1", "S2"]),
     "top-level-only": (MAIN, ["S1", "S2"]),
+    # A top level with nothing that changes, and no other module: it is the
+    # model, and nothing is left out, so there is nothing to warn of.
+    "top-level-only-and-constant": ("species S1 = 10; k = 1", ["S1"]),
     "two-models-the-model-last": (f"{HELPER}\nmodel m()\n  {MAIN}\nend", ["S1", "S2"]),
     # With no star and nothing at the top level, the main module is the last
     # one defined, as Antimony defines it: here the helper.
@@ -157,6 +160,52 @@ def test_a_stray_statement_s_symbol_is_named_as_left_out(stray, name):
         model = bngsim.Model.from_antimony_string(text)
     assert "model *m()" in str(caught[0].message)
     assert _first_at_2(model) == pytest.approx(S1_AT_2, rel=1e-6)
+
+
+@pytest.mark.parametrize("before", [False, True], ids=["after-the-model", "before-the-model"])
+def test_a_constant_top_level_rule_is_a_stray_statement(before):
+    """``y := 2`` moves nothing and reads no clock, so the top level it makes
+    the main module has nothing that changes, as a ``const q = 3`` has: the
+    model is loaded, as on main, and y is named as left out. Counting every
+    rule as a change loaded a model with no species and no word."""
+    model_text = f"model m()\n  {MAIN}\nend"
+    text = f"y := 2\n{model_text}" if before else f"{model_text}\ny := 2"
+    with pytest.warns(bngsim.ConversionWarning, match=r"top level's y left out"):
+        model = bngsim.Model.from_antimony_string(text)
+    assert list(model.species_names) == ["S1", "S2"]
+    assert _first_at_2(model) == pytest.approx(S1_AT_2, rel=1e-6)
+
+
+def test_a_long_stray_block_is_named_in_part():
+    """The warning names three left-out symbols and counts the rest, as
+    ``from_bngl``'s warning of dropped actions does."""
+    stray = "\n".join(f"const q{i} = {i}" for i in range(1, 6))
+    with pytest.warns(
+        bngsim.ConversionWarning, match=r"top level's q1, q2, q3 and 2 more left out\."
+    ):
+        bngsim.Model.from_antimony_string(f"model m()\n  {MAIN}\nend\n{stray}")
+
+
+def test_the_warning_names_the_caller_s_line_on_every_route(tmp_path):
+    """Each entry point puts the warning on its caller's line, not on a line of
+    bngsim's own: a fixed stack level was right from ``from_antimony`` and
+    ``from_antimony_string`` only, and ``Model.load`` and an ``EvaluationSpec``
+    named ``_model.py`` and ``_eval_spec.py``."""
+    path = tmp_path / "m.ant"
+    path.write_text(f"model m()\n  {MAIN}\nend\nspecies Z = 1\n")
+    routes = {
+        "from_antimony_string": lambda: bngsim.Model.from_antimony_string(path.read_text()),
+        "from_antimony": lambda: bngsim.Model.from_antimony(str(path)),
+        "Model.load": lambda: bngsim.Model.load(str(path)),
+        "EvaluationSpec": lambda: bngsim.EvaluationSpec(
+            model_source=str(path), model_format="antimony"
+        ).build_model(),
+    }
+    for route, load in routes.items():
+        with pytest.warns(bngsim.ConversionWarning, match="left out") as caught:
+            load()
+        where = [w.filename for w in caught if issubclass(w.category, bngsim.ConversionWarning)]
+        assert where == [__file__], route
 
 
 def test_the_roadrunner_oracle_reads_the_main_module_too(tmp_path):

@@ -3519,18 +3519,17 @@ def _antimony_numbers_in_c_locale():
     return _CNumericLocale()
 
 
-def _sbml_model(sbml: str):
-    """The ``Model`` of an SBML string, ``None`` if it has none."""
-    return libsbml.readSBMLFromString(sbml).getModel()
-
-
-def _changes_over_time(sbml: str) -> bool:
-    """Whether an SBML model has a reaction, a rule or an event: anything that
-    moves its state or reads the clock."""
-    model = _sbml_model(sbml)
-    if model is None:
-        return False
-    return model.getNumReactions() + model.getNumRules() + model.getNumEvents() > 0
+def _changes_over_time(model) -> bool:
+    """Whether an SBML model has anything that moves its state or reads the
+    clock: a reaction, an event, a rate or algebraic rule, or an assignment
+    rule that reads the clock. With none of the others, an assignment rule
+    that does not read the clock is a constant (``y := 2``)."""
+    if model.getNumReactions() + model.getNumEvents() > 0:
+        return True
+    return any(
+        not rule.isAssignment() or _math_names(rule.getMath())[1]
+        for rule in (model.getRule(i) for i in range(model.getNumRules()))
+    )
 
 
 def _antimony_main_module_sbml(ant, what: str) -> str:
@@ -3545,21 +3544,24 @@ def _antimony_main_module_sbml(ant, what: str) -> str:
     else ``__main`` when a statement stands outside every model, else the last
     one defined, as Antimony defines it.
 
-    A stray top-level line, such as a ``unit`` definition before
-    ``model m() ... end``, makes ``__main`` the main module with nothing in it
-    that changes. That model would never move, and the last module defined is
-    what Antimony names main without the stray line, and what this loader
-    always loaded there, so it is loaded. A ``ConversionWarning`` names what
-    the top level held that is left out: a species, parameter or compartment.
-    A top level of unit definitions alone loads without one.
+    A stray top-level line, such as a ``unit`` definition or a constant
+    ``y := 2`` before ``model m() ... end``, makes ``__main`` the main module
+    with nothing in it that changes. That model would never move, and the last
+    module defined is what Antimony names main without the stray line, and
+    what this loader always loaded there, so it is loaded. A
+    ``ConversionWarning`` names what the top level held that is left out: a
+    species, parameter or compartment. A top level of unit definitions alone
+    loads without one.
     """
     main = ant.getMainModuleName()
     sbml = ant.getSBMLString(main)
     names = list(ant.getModuleNames())
-    if main != "__main" or not sbml or _changes_over_time(sbml) or names[-1] == main:
+    if main != "__main" or names[-1] == main or not sbml:
+        return sbml
+    top = libsbml.readSBMLFromString(sbml).getModel()
+    if top is not None and _changes_over_time(top):
         return sbml
     chosen = names[-1]
-    top = _sbml_model(sbml)
     left_out = (
         []
         if top is None
@@ -3577,14 +3579,18 @@ def _antimony_main_module_sbml(ant, what: str) -> str:
         import warnings
 
         from bngsim._exceptions import ConversionWarning
+        from bngsim._simulator import _stacklevel_outside_bngsim
 
+        shown = ", ".join(left_out[:3]) + (
+            f" and {len(left_out) - 3} more" if len(left_out) > 3 else ""
+        )
         warnings.warn(
-            f"{what}'s top level, Antimony's main module '__main', has no reaction, rule "
-            f"or event, so module {chosen!r}, the last defined, is loaded, and the top "
-            f"level's {', '.join(left_out)} left out. Mark the model to load as "
+            f"{what}'s top level, Antimony's main module '__main', has nothing that "
+            f"changes over time, so module {chosen!r}, the last defined, is loaded, and "
+            f"the top level's {shown} left out. Mark the model to load as "
             f"`model *{chosen}()`, or move the top-level statements into it",
             ConversionWarning,
-            stacklevel=4,
+            stacklevel=_stacklevel_outside_bngsim(),
         )
     return ant.getSBMLString(chosen)
 
