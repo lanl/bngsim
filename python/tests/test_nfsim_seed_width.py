@@ -91,19 +91,20 @@ def test_a_session_refuses_it(nfsim_xml):
 def test_a_refused_reinitialize_leaves_the_live_session(nfsim_xml):
     """The seed is checked before the session is torn down. On main a second
     ``initialize(seed=2**32)`` replaced the session with seed 0's and
-    reported 4294967296."""
-    with (
-        bngsim.NfsimSession(str(nfsim_xml)) as session,
-        bngsim.NfsimSession(str(nfsim_xml)) as fresh,
-    ):
+    reported 4294967296. Refused halfway through, the session goes on from
+    where it was, as a seed-7 session that was never refused does; one put
+    back at t = 0 would run its first half again. The two run one after the
+    other, since every ``initialize`` reseeds NFsim's process-wide generator."""
+    with bngsim.NfsimSession(str(nfsim_xml)) as session:
         session.initialize(seed=7)
+        session.simulate(0.0, 5.0, n_points=6)
         with pytest.raises(ValueError, match="would run as seed 0"):
             session.initialize(seed=2**32)
         assert session.seed == 7
+        kept = session.simulate(5.0, 10.0, n_points=6)
+    with bngsim.NfsimSession(str(nfsim_xml)) as fresh:
         fresh.initialize(seed=7)
-        kept = session.simulate(0.0, 10.0, n_points=6)
-        expected = fresh.simulate(0.0, 10.0, n_points=6)
-        assert kept.seed == 7
-        np.testing.assert_array_equal(
-            np.asarray(kept.observables), np.asarray(expected.observables)
-        )
+        fresh.simulate(0.0, 5.0, n_points=6)
+        expected = fresh.simulate(5.0, 10.0, n_points=6)
+    assert kept.seed == 7
+    np.testing.assert_array_equal(np.asarray(kept.observables), np.asarray(expected.observables))

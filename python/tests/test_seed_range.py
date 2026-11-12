@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import bngsim
+import numpy as np
 import pytest
 
 RUN = {"t_span": (0.0, 1.0), "n_points": 2}
@@ -57,6 +58,18 @@ def test_a_seed_in_range_runs_and_is_reported(model, method, seed):
     assert result.seed == seed
 
 
+@pytest.mark.parametrize("method", ["ssa", "psa"])
+def test_a_seed_past_32_bits_is_a_run_of_its_own(model, method):
+    """Control: ``2**32 + 12345`` is not ``12345`` run again, as it was under
+    NFsim, which reported the one seed and ran the other. A ``Result.seed``
+    check cannot see that; the trajectories can. Measured: A_tot = 95 against
+    87 at t = 1."""
+    low = _simulator(model.clone(), method).run(seed=12345, **RUN)
+    wide = _simulator(model.clone(), method).run(seed=2**32 + 12345, **RUN)
+    assert wide.seed == 2**32 + 12345
+    assert not np.array_equal(np.asarray(low.observables), np.asarray(wide.observables))
+
+
 def _has(flag: str) -> bool:
     try:
         from bngsim import _bngsim_core
@@ -89,7 +102,10 @@ def test_a_rulemonkey_session_refuses_a_seed_out_of_range(nfsim_xml, seed):
 @pytest.mark.skipif(not _has("HAS_RULEMONKEY"), reason="RuleMonkey not compiled in")
 def test_rulemonkey_keeps_all_64_bits(dummy_model, nfsim_xml):
     """Control: RuleMonkey's generator reads all 64 bits, so 2**32 + 12345 is
-    a seed of its own there."""
+    a seed of its own there, not 12345 run again. Measured: X_p_total = 296
+    against 262 at t = 1."""
     sim = bngsim.Simulator(dummy_model, method="rm", xml_path=str(nfsim_xml))
-    result = sim.run(seed=2**32 + 12345, t_span=(0.0, 1.0), n_points=2)
-    assert result.seed == 2**32 + 12345
+    low = sim.run(seed=12345, t_span=(0.0, 1.0), n_points=2)
+    wide = sim.run(seed=2**32 + 12345, t_span=(0.0, 1.0), n_points=2)
+    assert wide.seed == 2**32 + 12345
+    assert not np.array_equal(np.asarray(low.observables), np.asarray(wide.observables))
