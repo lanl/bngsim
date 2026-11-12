@@ -101,6 +101,8 @@ jobs:
       # The key ends in -build because the action restores by prefix. A speed-up
       # only: when ccache cannot be installed, the build runs without it, as in
       # python-tests.yml.
+      - name: TEMPORARY, reverted before merge - block the package servers ccache installs from (#1488)
+        run: bash ci/TEMP_block_package_servers.sh
       - name: Set up ccache
         continue-on-error: true
         uses: hendrikmuhs/ccache-action@v1.2
@@ -157,7 +159,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: forced-jit-${{ matrix.os }}-${{ matrix.shard }}
+          name: forced-jit/${{ matrix.os }}-${{ matrix.shard }} # TEMPORARY, reverted before merge: an invalid name, so the upload fails (#1488)
           path: forced-jit-${{ matrix.os }}-${{ matrix.shard }}.log
           if-no-files-found: ignore
 
