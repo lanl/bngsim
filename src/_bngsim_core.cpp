@@ -1777,6 +1777,38 @@ PYBIND11_MODULE(_bngsim_core, m) {
 
     // ─── The non-finite forward-sensitivity guard, on a tensor of your own ───
     //
+    // Result::to_cdat's writer, over the species a Python Result reports
+    // (issue #1505). The solve's post-processing corrects those after the
+    // core's copy is written, so Result.to_cdat hands them here, and every
+    // .cdat bngsim writes has the one layout. `species` holds exactly the
+    // columns to write, in order. Internal, as the leading underscore says.
+    m.def(
+        "_write_cdat",
+        [](const std::string &path,
+           py::array_t<double, py::array::c_style | py::array::forcecast> time,
+           py::array_t<double, py::array::c_style | py::array::forcecast> species,
+           std::vector<std::string> names) {
+            if (time.ndim() != 1 || species.ndim() != 2) {
+                throw py::value_error("_write_cdat expects a 1-D time and a 2-D "
+                                      "(n_times, n_species) array");
+            }
+            const auto n_rows = static_cast<std::size_t>(species.shape(0));
+            const auto n_cols = static_cast<std::size_t>(species.shape(1));
+            if (n_rows != static_cast<std::size_t>(time.shape(0)) || n_cols != names.size()) {
+                throw py::value_error("_write_cdat: " + std::to_string(time.shape(0)) +
+                                      " times and " + std::to_string(names.size()) +
+                                      " names for a " + std::to_string(n_rows) + " x " +
+                                      std::to_string(n_cols) + " array");
+            }
+            std::vector<std::size_t> cols(n_cols);
+            for (std::size_t j = 0; j < n_cols; ++j) {
+                cols[j] = j;
+            }
+            bngsim::write_cdat(path, time.data(), n_rows, species.data(), n_cols, names, cols);
+        },
+        py::arg("path"), py::arg("time"), py::arg("species"), py::arg("names"),
+        "Write a BNG .cdat file from arrays, in Result::to_cdat's layout.");
+
     // The guard every ODE run passes through (issue #384), reachable without an
     // ODE run. It exists because the guard's real-model witnesses are all
     // floating-point events: BIOMD0000000480's blow-up is a knife edge that does

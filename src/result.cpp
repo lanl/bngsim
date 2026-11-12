@@ -419,7 +419,10 @@ void Result::to_gdat(const std::string &path, bool print_functions, bool print_r
     }
 }
 
-void Result::to_cdat(const std::string &path) const {
+void write_cdat(const std::string &path, const double *time, std::size_t n_times,
+                const double *species, std::size_t n_species,
+                const std::vector<std::string> &species_names,
+                const std::vector<std::size_t> &cols) {
     std::ofstream out(path);
     if (!out.is_open()) {
         throw std::runtime_error("Cannot open file for writing: " + path);
@@ -427,6 +430,24 @@ void Result::to_cdat(const std::string &path) const {
 
     out << std::setprecision(12) << std::scientific;
 
+    // Header line
+    out << "#          time";
+    for (std::size_t j : cols) {
+        out << "          " << species_names[j];
+    }
+    out << "\n";
+
+    // Data lines
+    for (std::size_t t = 0; t < n_times; ++t) {
+        out << " " << std::setw(18) << time[t];
+        for (std::size_t j : cols) {
+            out << " " << std::setw(18) << species[t * n_species + j];
+        }
+        out << "\n";
+    }
+}
+
+void Result::to_cdat(const std::string &path) const {
     // GH #71: project to the reported species subset. Empty ⇒ all species
     // (every existing model — byte-identical column set and ordering).
     std::vector<std::size_t> cols = reported_species_indices_;
@@ -436,22 +457,8 @@ void Result::to_cdat(const std::string &path) const {
             cols.push_back(static_cast<std::size_t>(j));
         }
     }
-
-    // Header line
-    out << "#          time";
-    for (std::size_t j : cols) {
-        out << "          " << species_names_[j];
-    }
-    out << "\n";
-
-    // Data lines
-    for (int t = 0; t < n_times_; ++t) {
-        out << " " << std::setw(18) << time_[t];
-        for (std::size_t j : cols) {
-            out << " " << std::setw(18) << species_[static_cast<size_t>(t) * n_species_ + j];
-        }
-        out << "\n";
-    }
+    write_cdat(path, time_.data(), static_cast<std::size_t>(n_times_), species_.data(),
+               static_cast<std::size_t>(n_species_), species_names_, cols);
 }
 
 // ─── Non-finite forward sensitivities (issue #384) ───────────────────────────
