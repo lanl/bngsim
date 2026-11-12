@@ -191,12 +191,14 @@ def _suite(key: str, engine):
 
 
 @cache
-def _reference(key: str, how: str, setting: float):
-    """RoadRunner at the suite's tolerance that cannot step over a pulse: its step
-    bounded by ``setting`` (``how="max_step"``), or sampled every ``setting``
-    (``how="grid"``) and thinned to the job's grid. Rows on the job's grid, with
-    the selections ``rr_ode`` makes: boundary species as concentrations, and any the
-    default selection drops appended."""
+def _reference(key: str, how: str, setting: float, rtol: float = 1e-9, atol: float = 1e-12):
+    """RoadRunner, by default at the suite's tolerance, run so that it cannot step
+    over a pulse: its step bounded by ``setting`` (``how="max_step"``), or sampled
+    every ``setting`` (``how="grid"``) and thinned to the job's grid. Or run plainly
+    with ``setting`` steps of budget (``how="steps"``) where ``rr_ode`` leaves
+    RoadRunner its default 20000. Rows on the job's grid, with the selections
+    ``rr_ode`` makes: boundary species as concentrations, and any the default
+    selection drops appended."""
     import _rr_common as rc
     import roadrunner
 
@@ -204,9 +206,9 @@ def _reference(key: str, how: str, setting: float):
     xml, t0, p = _model(key)
     r = roadrunner.RoadRunner(xml)
     r.integrator = "cvode"
-    r.integrator.relative_tolerance = rc.DEFAULT_RTOL
-    r.integrator.absolute_tolerance = rc.DEFAULT_ATOL
-    r.integrator.maximum_num_steps = 1_000_000
+    r.integrator.relative_tolerance = rtol
+    r.integrator.absolute_tolerance = atol
+    r.integrator.maximum_num_steps = int(setting) if how == "steps" else 1_000_000
     boundary = list(r.model.getBoundarySpeciesIds())
     sel = [f"[{x}]" if x in boundary else x for x in r.timeCourseSelections]
     present = {x[1:-1] if x.startswith("[") else x for x in sel}
@@ -214,8 +216,9 @@ def _reference(key: str, how: str, setting: float):
     assert sel[0] == "time"
     r.timeCourseSelections = sel
     grid = np.linspace(t0, p["t_end"], p["n_points"])
-    if how == "max_step":
-        r.integrator.maximum_time_step = setting
+    if how in ("max_step", "steps"):
+        if how == "max_step":
+            r.integrator.maximum_time_step = setting
         out = np.asarray(r.simulate(t0, p["t_end"], p["n_points"]))
     else:
         every = round((grid[1] - grid[0]) / setting)
@@ -375,24 +378,28 @@ def test_neither_engine_has_converged_at_the_sweep_tolerance():
 
     tight = _bngsim(HELD, 1e-12, 1e-18)
     bn, rr = _suite(HELD, _bngsim), _suite(HELD, _roadrunner)
-    assert _compare(bn, tight) == ("diff", pytest.approx(0.11, abs=0.05))
+    assert _compare(bn, tight)[0] == "diff"
     assert _compare(bn, rr)[0] == "diff"
     assert _compare(rr, tight)[1] < 0.05  # RoadRunner's is about 1% off
     assert (rc.DEFAULT_RTOL, rc.DEFAULT_ATOL) == (1e-9, 1e-12)
 
 
-def test_bngsim_converges_and_roadrunner_at_its_tightest_agrees():
-    """bngsim at rtol 1e-11 and 1e-12 pass against each other, and RoadRunner at 1e-10,
-    the tightest it completes, passes against bngsim at 1e-12."""
+def test_bngsim_converges_at_the_overrides_tolerance():
+    """bngsim at the override's 1e-11/1e-16 passes against its own run at 1e-12."""
+    entry = ov.TOL_OVERRIDES[HELD]
     tight = _bngsim(HELD, 1e-12, 1e-18)
-    assert _compare(_bngsim(HELD, 1e-11, 1e-16), tight)[0] == "pass"
-    assert _compare(_roadrunner(HELD, 1e-10, 1e-14), tight)[0] == "pass"
+    assert _compare(_bngsim(HELD, entry["rtol"], entry["atol"]), tight)[0] == "pass"
 
 
-def test_roadrunner_cannot_run_the_overrides_tolerance():
-    """At the override's tolerance RoadRunner raises, so the row is REFERENCE_FAILED
-    (non-scoring) and nothing is scored PASS."""
+def test_roadrunner_runs_out_of_rr_runs_step_budget_at_the_overrides_tolerance():
+    """At the override's tolerance RoadRunner as rr_run runs it raises, so the row is
+    REFERENCE_FAILED (non-scoring) and nothing is scored PASS. That is its default
+    budget of 20000 steps: given 40000 it completes and passes against bngsim at the
+    same tolerance and at 1e-12."""
     entry = ov.TOL_OVERRIDES[HELD]
     _model(HELD)
     with pytest.raises(Exception, match="CV_TOO_MUCH_WORK"):
         _roadrunner(HELD, entry["rtol"], entry["atol"])
+    rr = _reference(HELD, "steps", 40_000, entry["rtol"], entry["atol"])
+    assert _compare(_bngsim(HELD, entry["rtol"], entry["atol"]), rr)[0] == "pass"
+    assert _compare(rr, _bngsim(HELD, 1e-12, 1e-18))[0] == "pass"

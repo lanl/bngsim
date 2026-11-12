@@ -406,27 +406,31 @@ TOL_OVERRIDES: dict[str, dict] = {
             "defect (bngsim is the tol-stable, oracle-exact engine here)."
         ),
     },
-    # ── Ill-conditioned IVP held non-PASS through the peak-relative gate ──
+    # ── Ill-conditioned at the sweep tolerance; RoadRunner runs out of steps at the
+    # tightened one, so the row is REFERENCE_FAILED (see its reason, #1632) ──
     "BIOMD0000000375:ode": {
         "rtol": 1e-11,
         "atol": 1e-16,
         "reason": (
-            "Stiff, ill-conditioned IVP, held non-PASS; not an accepted divergence. "
+            "Ill-conditioned at the sweep tolerance; not an accepted divergence. "
             "Mears1997 CRAC current in pancreatic beta cells, over the SED-ML figure's "
             "t_end = 8e5. At the shared sweep tolerance (rtol 1e-9, atol 1e-12) neither "
             "engine has converged: bngsim's run is 0.11 (err/movement) off its own at "
             "rtol 1e-12, RoadRunner's 0.010, and the two DIFF (max_rel_err 0.118), so a "
-            "comparison there checks two unconverged runs. bngsim converges as the "
-            "tolerance tightens (1e-11 against 1e-12 passes, err/movement 5.8e-4), and "
-            "RoadRunner at 1e-10, the tightest it completes, passes against bngsim at "
-            "1e-12 (2.4e-3). At this override's 1e-11/1e-16, applied to BOTH engines, "
-            "RoadRunner raises CV_TOO_MUCH_WORK, so the row is REFERENCE_FAILED "
-            "(non-scoring): no engine is attributed as correct, and nothing is scored "
-            "PASS. Not a KNOWN_ARTIFACT. Re-checked for #1632 on bngsim 0.17.1 and "
-            "RoadRunner 2.11.0; parity_checks/tests/test_rr_known_artifact_evidence.py "
-            "runs these checks. The earlier reason, from the 2026-05-29 triage, had bngsim hitting CV_TOO_MUCH_WORK at the sweep tolerance with a 1.58% "
-            "residual a bare gate would have passed, called the tightened row "
-            "EXCEPTION, and cited a triage ledger never committed to this repository."
+            "comparison there checks two unconverged runs. At this override's "
+            "1e-11/1e-16, applied to BOTH engines, bngsim converges (against its own "
+            "run at 1e-12, err/movement 5.8e-4). RoadRunner runs out of rr_run's step "
+            "budget there (its default maximum_num_steps, 20000) and raises "
+            "CV_TOO_MUCH_WORK, so the row is REFERENCE_FAILED (non-scoring). Given "
+            "40000 steps it completes, and passes against bngsim at the same tolerance "
+            "(err/movement 3.4e-3) and at 1e-12 (2.8e-3): the row is non-scoring only "
+            "because of that budget, and nothing is scored PASS. Not a KNOWN_ARTIFACT. "
+            "Re-checked for #1632 on bngsim 0.17.1 and RoadRunner 2.11.0; "
+            "parity_checks/tests/test_rr_known_artifact_evidence.py runs these checks. "
+            "The earlier reason, from the 2026-05-29 triage, had bngsim hitting "
+            "CV_TOO_MUCH_WORK at the sweep tolerance with a 1.58% residual a bare gate "
+            "would have passed, called the tightened row EXCEPTION, and cited a triage "
+            "ledger never committed to this repository."
         ),
     },
 }

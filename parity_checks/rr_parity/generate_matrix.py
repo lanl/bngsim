@@ -6,7 +6,8 @@ Color scheme:
   - Green: PASSED
   - Red: FAILED (DIFF or TIMEOUT)
   - Yellow: TRIAGED (REFERENCE_FAILED or EXCEPTION)
-  - Gray: REFUSED (BAD_TEST - both engines rejected)
+  - Gray: REFUSED (BAD_TEST - both engines rejected, or a run with no usable
+    reference or no ground truth to check it against)
 
 Both engine columns have the same color per row. Within each cell, verdict badges
 show specific outcomes (PASS, DIFF, EXCEPTION, etc.).
@@ -111,12 +112,21 @@ INVALID_REFERENCE_LABEL = "invalid reference"
 
 
 def is_invalid_reference(result: dict) -> bool:
-    """A BAD_TEST that an authored INVALID_REFERENCE override reached: RoadRunner ran
-    but returned a non-finite trajectory (#485), which is no reference to check bngsim
-    against. Drawn as that, not as two engines that rejected the model (#1632)."""
-    return result.get("outcome") == "BAD_TEST" and (result.get("comment") or "").startswith(
-        INVALID_REFERENCE_LABEL
+    """A BAD_TEST that an authored INVALID_REFERENCE override reached where RoadRunner
+    ran but returned a non-finite trajectory (#485), which is no reference to check
+    bngsim against. Drawn as that, not as two engines that rejected the model (#1632).
+    The override also confirms a row where both engines raised; RoadRunner did not run
+    there, so that row keeps the plain BAD_TEST reading."""
+    return (
+        result.get("outcome") == "BAD_TEST"
+        and (result.get("comment") or "").startswith(INVALID_REFERENCE_LABEL)
+        and not _ROADRUNNER_RAISED.search(result.get("exception") or "")
     )
+
+
+# rr_run prefixes RoadRunner's raise with ``roadrunner:`` (``roadrunner (archive):`` on
+# a replay), alone or after ``||`` beside bngsim's.
+_ROADRUNNER_RAISED = re.compile(r"(?:^|\|\|\s*)roadrunner[^:]*:")
 
 
 def _bngsim_raised(result: dict) -> bool:
@@ -2031,7 +2041,7 @@ def generate_html(report_path: Path, output_path: Path) -> None:
             </div>
             <div class="legend-item">
                 <div class="legend-color" style="background: linear-gradient(to right, #6c757d 4px, #f8f9fa 4px);"></div>
-                <div class="legend-desc"><strong>Gray (REFUSED):</strong> BAD_TEST (both engines rejected the model) or a worker crash (unattributable — either engine may have died)</div>
+                <div class="legend-desc"><strong>Gray (REFUSED):</strong> BAD_TEST (both engines rejected the model, or a run with no usable reference or no ground truth to check it against) or a worker crash (unattributable — either engine may have died)</div>
             </div>
         </div>
         <h3 style="margin-top: 25px;">Verdict Badges (within cells)</h3>
