@@ -96,6 +96,9 @@ REFUSED = {
     "three-species-permuted": ["1 A() 1", "3 C() 2", "2 B() 5"],
     # Stricter than both: run_network's int wraps 2**32 + 1 to 1.
     "an-index-past-2-to-the-32": ["4294967297 A() 1", "2 B() 5"],
+    # A gap past a comment line, which is no species: run_network SIGSEGV;
+    # BNG2.pl 0.367879.
+    "a-gap-after-a-comment": ["1 A() 1", "# a note", "3 B() 5"],
 }
 
 
@@ -118,7 +121,6 @@ def test_an_offset_block_is_refused(tmp_path):
 def test_a_seed_species_block_is_held_to_it_too(tmp_path):
     """BNG2.pl reads ``seed species`` as the species block, and so does the loader."""
     text = _net(["2 B() 5", "1 A() 1"]).replace("species\n", "seed species\n", 2)
-    text = text.replace("begin seed species\n    1 k", "begin species\n    1 k")
     path = _write(tmp_path, text)
     with pytest.raises(bngsim.ModelError, match="on the seed species block's line 1"):
         bngsim.Model.from_net(str(path))
@@ -134,6 +136,9 @@ READ = {
     "leading-zeros": ["01 A() 1", "02 B() 5"],
     "leading-zeros-on-one": ["001 A() 1", "2 B() 5"],
     "a-tab-after-the-index": ["1\tA() 1", "2\tB() 5"],
+    # The index counts species, not the block's text lines: a comment line and
+    # a blank line between two species are neither, as both referees read them.
+    "a-comment-and-a-blank-line-between": ["1 A() 1", "# a note", "", "2 B() 5"],
 }
 
 
