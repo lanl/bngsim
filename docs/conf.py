@@ -2,7 +2,7 @@
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 from __future__ import annotations
 
-import importlib.metadata
+import importlib.util
 import os
 import sys
 
@@ -17,10 +17,17 @@ project = "bngsim"
 author = "William S. Hlavacek"
 copyright = "Los Alamos National Laboratory"
 
-try:
-    release = importlib.metadata.version("bngsim")
-except importlib.metadata.PackageNotFoundError:
-    release = "0.0.0"
+# bngsim's own _version.py, loaded by path: it asks the installed package's
+# metadata and falls back to pyproject.toml, which is where Read the Docs and
+# lint.yml's docs job find it, since neither installs bngsim. Importing the
+# bngsim package here instead would import the compiled core, which neither
+# builds. Without the fallback the title read "bngsim 0.0".
+_version_spec = importlib.util.spec_from_file_location(
+    "_bngsim_version", os.path.abspath(os.path.join("..", "python", "bngsim", "_version.py"))
+)
+_version_module = importlib.util.module_from_spec(_version_spec)
+_version_spec.loader.exec_module(_version_module)
+release = _version_module.__version__
 version = ".".join(release.split(".")[:2])
 
 # -- General configuration ---------------------------------------------------
