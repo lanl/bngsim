@@ -37,6 +37,10 @@ _spec.loader.exec_module(contributors)
 
 Commit = contributors.Commit
 
+_POSIX_ONLY = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-specific: the stand-in gh is a /bin/sh script"
+)
+
 LISTING = """\
 # Contributors
 
@@ -153,7 +157,7 @@ def _fake_gh(tmp_path: Path, monkeypatch, body: str) -> Path:
     return log
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="the stand-in gh is a POSIX shell script")
+@_POSIX_ONLY
 def test_a_pull_request_is_read_from_its_commits_endpoint(tmp_path, monkeypatch, capsys):
     rows = (
         '["1111111111111111111111111111111111111111","alovelace","User","Ada","a@x"]\n'
@@ -175,7 +179,7 @@ def test_a_pull_request_is_read_from_its_commits_endpoint(tmp_path, monkeypatch,
     assert log.read_text().splitlines()[2] == "repos/o/r/commits?per_page=100"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="the stand-in gh is a POSIX shell script")
+@_POSIX_ONLY
 def test_a_pull_request_at_githubs_commit_limit_is_warned_about(tmp_path, monkeypatch, capsys):
     row = '["1111111111111111111111111111111111111111","alovelace","User","Ada","a@x"]'
     loop = f"i=0; while [ $i -lt 250 ]; do echo '{row}'; i=$((i+1)); done"
@@ -199,7 +203,7 @@ def test_without_gh_the_check_is_an_error_not_a_pass(tmp_path, monkeypatch):
     assert raised.value.code == 2
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="the stand-in gh is a POSIX shell script")
+@_POSIX_ONLY
 def test_a_github_that_cannot_be_read_is_an_error_not_a_pass(tmp_path, monkeypatch):
     _fake_gh(tmp_path, monkeypatch, "echo 'HTTP 404: Not Found' >&2; exit 1")
     with pytest.raises(SystemExit) as raised:
