@@ -6,7 +6,8 @@ Color scheme:
   - Green: PASSED
   - Red: FAILED (DIFF or TIMEOUT)
   - Yellow: TRIAGED (REFERENCE_FAILED or EXCEPTION)
-  - Gray: REFUSED (BAD_TEST - both engines rejected)
+  - Gray: REFUSED (BAD_TEST - both engines rejected, or a run with no usable
+    reference or no ground truth to check it against)
 
 Both engine columns have the same color per row. Within each cell, verdict badges
 show specific outcomes (PASS, DIFF, EXCEPTION, etc.).
@@ -104,6 +105,33 @@ def is_no_ground_truth(result: dict) -> bool:
     return result.get("outcome") == "BAD_TEST" and (result.get("comment") or "").startswith(
         NO_GROUND_TRUTH_LABEL
     )
+
+
+# How rr_run begins an INVALID_REFERENCE row's comment (rr_run._apply_invalid_reference).
+INVALID_REFERENCE_LABEL = "invalid reference"
+
+
+def is_invalid_reference(result: dict) -> bool:
+    """A BAD_TEST that an authored INVALID_REFERENCE override reached where RoadRunner
+    ran but returned a non-finite trajectory (#485), which is no reference to check
+    bngsim against. Drawn as that, not as two engines that rejected the model (#1632).
+    The override also confirms a row where both engines raised; RoadRunner did not run
+    there, so that row keeps the plain BAD_TEST reading."""
+    return (
+        result.get("outcome") == "BAD_TEST"
+        and (result.get("comment") or "").startswith(INVALID_REFERENCE_LABEL)
+        and not _ROADRUNNER_RAISED.search(result.get("exception") or "")
+    )
+
+
+# rr_run prefixes RoadRunner's raise with ``roadrunner:`` (``roadrunner (archive):`` on
+# a replay), alone or after ``||`` beside bngsim's.
+_ROADRUNNER_RAISED = re.compile(r"(?:^|\|\|\s*)roadrunner[^:]*:")
+
+
+def _bngsim_raised(result: dict) -> bool:
+    """Did bngsim itself raise on this row? (rr_run prefixes its raise with ``bngsim:``.)"""
+    return "bngsim:" in (result.get("exception") or "")
 
 
 def exception_kind(result: dict) -> str:
@@ -380,6 +408,10 @@ def humanize_comment(result: dict) -> str:
         m = re.match(NO_GROUND_TRUTH_LABEL + r"([^:]*): (.+)", part)
         if m:
             out.append(f"No ground truth{m.group(1)} — non-scoring: {m.group(2)}")
+            continue
+        m = re.match(INVALID_REFERENCE_LABEL + r"([^:]*): (.+)", part)
+        if m:
+            out.append(f"Invalid reference{m.group(1)} — non-scoring: {m.group(2)}")
             continue
         m = re.match(r"adjudicated (\w+)([^:]*): (.+)", part)
         if m:
@@ -1721,6 +1753,8 @@ def generate_html(report_path: Path, output_path: Path) -> None:
             bn_badge, bn_badge_color = "COMPARE-ERR", "verdict-exception"
         if is_no_ground_truth(result):
             bn_badge, bn_badge_color = "NO TRUTH", "verdict-refused"
+        elif is_invalid_reference(result) and not _bngsim_raised(result):
+            bn_badge, bn_badge_color = "NO REF", "verdict-refused"
 
         # Config rows via the shared display normalizers (one canonical label per
         # concept; RR architectural defaults shown even on a failed run; bngsim
@@ -1787,6 +1821,19 @@ def generate_html(report_path: Path, output_path: Path) -> None:
                 "the tolerance tightens, so there is no answer over this horizon to "
                 "check either against</div>"
             )
+        elif is_invalid_reference(result):
+            if _bngsim_raised(result):
+                bn_footnote = (
+                    '<div class="footnote">Raised, and RoadRunner returned a non-finite '
+                    "trajectory</div>"
+                )
+                if exception:
+                    bn_footnote += f'<div class="error-msg">{_escape(exception)}</div>'
+            else:
+                bn_footnote = (
+                    '<div class="footnote">Ran; RoadRunner\'s trajectory is non-finite, so '
+                    "there is no reference to check it against</div>"
+                )
         elif outcome == "BAD_TEST":
             bn_footnote = '<div class="footnote">Both engines rejected this model</div>'
         elif outcome == "TIMEOUT":
@@ -1831,6 +1878,8 @@ def generate_html(report_path: Path, output_path: Path) -> None:
             rr_badge, rr_badge_color = "DIED", "verdict-refused"
         if is_no_ground_truth(result):
             rr_badge, rr_badge_color = "NO TRUTH", "verdict-refused"
+        elif is_invalid_reference(result):
+            rr_badge, rr_badge_color = "NON-FINITE", "verdict-reffail"
 
         # Config rows — RoadRunner's are architectural constants (always FD Jacobian,
         # CVODE dense, LLVM JIT), shown even on a failed/refused run; item 2 fixes the
@@ -1874,6 +1923,11 @@ def generate_html(report_path: Path, output_path: Path) -> None:
             # else: "other" (legacy non-prefixed raise) — leave RR footnote empty
         elif is_no_ground_truth(result):
             rr_footnote = '<div class="footnote">Ran; no ground truth to check it against</div>'
+        elif is_invalid_reference(result):
+            rr_footnote = (
+                '<div class="footnote">Ran, but its trajectory is non-finite: not a usable '
+                "reference</div>"
+            )
         elif outcome == "BAD_TEST":
             rr_footnote = '<div class="footnote">Both engines rejected this model</div>'
 
@@ -1987,7 +2041,7 @@ def generate_html(report_path: Path, output_path: Path) -> None:
             </div>
             <div class="legend-item">
                 <div class="legend-color" style="background: linear-gradient(to right, #6c757d 4px, #f8f9fa 4px);"></div>
-                <div class="legend-desc"><strong>Gray (REFUSED):</strong> BAD_TEST (both engines rejected the model) or a worker crash (unattributable — either engine may have died)</div>
+                <div class="legend-desc"><strong>Gray (REFUSED):</strong> BAD_TEST (both engines rejected the model, or a run with no usable reference or no ground truth to check it against) or a worker crash (unattributable — either engine may have died)</div>
             </div>
         </div>
         <h3 style="margin-top: 25px;">Verdict Badges (within cells)</h3>

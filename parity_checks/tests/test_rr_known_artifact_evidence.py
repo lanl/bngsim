@@ -1,5 +1,5 @@
-"""The evidence behind six rr_parity dispositions that used to cite notes never in
-this repository.
+"""The evidence behind rr_parity dispositions that used to cite notes never in this
+repository, or quoted an oracle no test ran.
 
 Six KNOWN_ARTIFACT entries, from a 2026-05-29 triage, scored their DIFF rows as
 PASS on the strength of a ledger and notes under a directory that never existed
@@ -19,6 +19,12 @@ default run:
   itself at any tolerance it accepts (to rtol 1e-15, or 1e-13 for the split), so
   no answer over the job's horizon can be checked, and a PASS there checked
   nothing.
+
+Two more were added for #1632. BIOMD0000000627's KNOWN_ARTIFACT quoted RoadRunner
+at a bounded step as its oracle (#482) without a test that ran it; it joins 879
+and MODEL7908934508 below. BIOMD0000000375's TOL_OVERRIDES entry quoted the same
+triage's ledger, and its claims had gone stale; the claims it makes now are
+checked here.
 
 ``scipy_oracle.py`` reads none of these models (rate rules, an event, piecewise),
 so it is not used. The model files are the gitignored rr_parity corpus, so those
@@ -50,7 +56,7 @@ def _load_rr_overrides():
 
 ov = _load_rr_overrides()
 
-# The two entries that stay KNOWN_ARTIFACT, and how the reference is run: RoadRunner
+# The KNOWN_ARTIFACT entries, and how the reference is run: RoadRunner
 # at the suite's tolerance with its step bounded (``max_step``), or sampled on a fine
 # output grid (``grid``, the spacing), which it must stop at; each setting is under
 # half a pulse. ``probe`` is (species, t, the reference's value, RoadRunner's default
@@ -70,6 +76,15 @@ PULSES = {
         "probe": ("CaM4", 1.0, 6.049e-6, None),
         "max_em": 3e-3,
         "refs_em": 1e-3,
+    },
+    # A smooth ramp, not a pulse: f_CBF_dyn rises over t = 196..200, a second before
+    # the stimulus switches on, and RoadRunner's own run steps over it.
+    "BIOMD0000000627:ode": {
+        "how": "max_step",
+        "settings": (0.05, 0.01),
+        "probe": ("species_24", 199.6, 1.9434505, 2.2084924),
+        "max_em": 1e-5,
+        "refs_em": 1e-5,
     },
 }
 
@@ -97,6 +112,8 @@ SPLIT = "MODEL2310250001:ode"
 UNSETTLED = ("GNT_e_0", "GNT_e_1", "_6PG_0", "_6PG_1")
 DOWNSTREAM = ("GAP_0", "GAP_1", "PYR_0", "PYR_1")
 SPLIT_TIGHT = ((1e-12, 1e-18), (1e-13, 1e-20))
+# The TOL_OVERRIDES entry whose claims are checked here (#1632).
+HELD = "BIOMD0000000375:ode"
 
 
 # --------------------------------------------------------------------------- #
@@ -107,15 +124,16 @@ def test_no_entry_cites_a_note_that_is_not_in_this_repository():
     assert "dev/" not in (_RR / "overrides.py").read_text()
 
 
-def test_the_six_entries_are_where_their_evidence_puts_them():
+def test_the_entries_are_where_their_evidence_puts_them():
     assert set(PULSES) <= set(ov.KNOWN_ARTIFACT)
+    assert HELD in ov.TOL_OVERRIDES
     assert set(ov.NO_GROUND_TRUTH) == {*OSCILLATORS, SPLIT}
     assert not set(ov.NO_GROUND_TRUTH) & set(ov.KNOWN_ARTIFACT)
 
 
-@pytest.mark.parametrize("key", sorted({*PULSES, *OSCILLATORS, SPLIT}))
+@pytest.mark.parametrize("key", sorted({*PULSES, *OSCILLATORS, SPLIT, HELD}))
 def test_each_reason_names_the_test_that_runs_its_evidence(key):
-    entry = ov.KNOWN_ARTIFACT.get(key) or ov.NO_GROUND_TRUTH[key]
+    entry = ov.KNOWN_ARTIFACT.get(key) or ov.NO_GROUND_TRUTH.get(key) or ov.TOL_OVERRIDES[key]
     assert f"parity_checks/tests/{_THIS}" in entry["reason"]
 
 
@@ -173,11 +191,14 @@ def _suite(key: str, engine):
 
 
 @cache
-def _reference(key: str, how: str, setting: float):
-    """RoadRunner at the suite's tolerance that cannot step over a pulse: its step
-    bounded by ``setting`` (``how="max_step"``), or sampled every ``setting``
-    (``how="grid"``) and thinned to the job's grid. Rows on the job's grid, with
-    the selections ``rr_ode`` makes (neither model has a boundary species)."""
+def _reference(key: str, how: str, setting: float, rtol: float = 1e-9, atol: float = 1e-12):
+    """RoadRunner, by default at the suite's tolerance, run so that it cannot step
+    over a pulse: its step bounded by ``setting`` (``how="max_step"``), or sampled
+    every ``setting`` (``how="grid"``) and thinned to the job's grid. Or run plainly
+    with ``setting`` steps of budget (``how="steps"``) where ``rr_ode`` leaves
+    RoadRunner its default 20000. Rows on the job's grid, with the selections
+    ``rr_ode`` makes: boundary species as concentrations, and any the default
+    selection drops appended."""
     import _rr_common as rc
     import roadrunner
 
@@ -185,15 +206,19 @@ def _reference(key: str, how: str, setting: float):
     xml, t0, p = _model(key)
     r = roadrunner.RoadRunner(xml)
     r.integrator = "cvode"
-    r.integrator.relative_tolerance = rc.DEFAULT_RTOL
-    r.integrator.absolute_tolerance = rc.DEFAULT_ATOL
-    r.integrator.maximum_num_steps = 1_000_000
-    assert not r.model.getBoundarySpeciesIds()
-    sel = list(r.timeCourseSelections)
+    r.integrator.relative_tolerance = rtol
+    r.integrator.absolute_tolerance = atol
+    r.integrator.maximum_num_steps = int(setting) if how == "steps" else 1_000_000
+    boundary = list(r.model.getBoundarySpeciesIds())
+    sel = [f"[{x}]" if x in boundary else x for x in r.timeCourseSelections]
+    present = {x[1:-1] if x.startswith("[") else x for x in sel}
+    sel.extend(f"[{x}]" for x in boundary if x not in present)
     assert sel[0] == "time"
+    r.timeCourseSelections = sel
     grid = np.linspace(t0, p["t_end"], p["n_points"])
-    if how == "max_step":
-        r.integrator.maximum_time_step = setting
+    if how in ("max_step", "steps"):
+        if how == "max_step":
+            r.integrator.maximum_time_step = setting
         out = np.asarray(r.simulate(t0, p["t_end"], p["n_points"]))
     else:
         every = round((grid[1] - grid[0]) / setting)
@@ -341,3 +366,41 @@ def test_the_engines_agree_outside_the_split():
     rest = set(bn[2]) - set(UNSETTLED) - set(DOWNSTREAM)
     assert len(rest) == 17
     assert _compare(bn, rr, columns=rest)[0] == "pass"
+
+
+# --------------------------------------------------------------------------- #
+# TOL_OVERRIDES: BIOMD0000000375, held non-PASS at a tolerance RoadRunner cannot run
+# --------------------------------------------------------------------------- #
+def test_neither_engine_has_converged_at_the_sweep_tolerance():
+    """At rtol 1e-9, atol 1e-12, bngsim's run is a DIFF against its own at 1e-12, and
+    against RoadRunner's: that comparison would check two unconverged runs. (How far
+    each engine is off swings from 1% to 17% with the exact tolerance, with the same
+    mean in both, so no one tolerance's figure is pinned here.)"""
+    import _rr_common as rc
+
+    tight = _bngsim(HELD, 1e-12, 1e-18)
+    bn, rr = _suite(HELD, _bngsim), _suite(HELD, _roadrunner)
+    assert _compare(bn, tight)[0] == "diff"
+    assert _compare(bn, rr)[0] == "diff"
+    assert (rc.DEFAULT_RTOL, rc.DEFAULT_ATOL) == (1e-9, 1e-12)
+
+
+def test_bngsim_converges_at_the_overrides_tolerance():
+    """bngsim at the override's 1e-11/1e-16 passes against its own run at 1e-12."""
+    entry = ov.TOL_OVERRIDES[HELD]
+    tight = _bngsim(HELD, 1e-12, 1e-18)
+    assert _compare(_bngsim(HELD, entry["rtol"], entry["atol"]), tight)[0] == "pass"
+
+
+def test_roadrunner_runs_out_of_rr_runs_step_budget_at_the_overrides_tolerance():
+    """At the override's tolerance RoadRunner as rr_run runs it raises, so the row is
+    REFERENCE_FAILED (non-scoring) and nothing is scored PASS. That is its default
+    budget of 20000 steps: given 40000 it completes and passes against bngsim at the
+    same tolerance and at 1e-12."""
+    entry = ov.TOL_OVERRIDES[HELD]
+    _model(HELD)
+    with pytest.raises(Exception, match="CV_TOO_MUCH_WORK"):
+        _roadrunner(HELD, entry["rtol"], entry["atol"])
+    rr = _reference(HELD, "steps", 40_000, entry["rtol"], entry["atol"])
+    assert _compare(_bngsim(HELD, entry["rtol"], entry["atol"]), rr)[0] == "pass"
+    assert _compare(rr, _bngsim(HELD, 1e-12, 1e-18))[0] == "pass"

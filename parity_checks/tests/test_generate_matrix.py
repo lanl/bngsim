@@ -615,3 +615,42 @@ def test_a_no_ground_truth_row_is_drawn_as_that():
     assert not gm.is_no_ground_truth({"outcome": "DIFF", "comment": comment})
     note = gm.humanize_comment(row)
     assert note.startswith("No ground truth — non-scoring: no tolerance pins the phase")
+
+
+def test_an_invalid_reference_row_is_drawn_as_that():
+    """rr_run's INVALID_REFERENCE BAD_TEST: RoadRunner ran and answered NaN, which is
+    not two engines that rejected the model (#1632)."""
+    import rr_run
+    from _core import Outcome
+
+    outcome, comment, stale = rr_run._apply_invalid_reference(
+        Outcome.DIFF, False, "RR all-NaN here", "485", "", rr_covers_diff=True
+    )
+    assert (outcome, stale) == (Outcome.BAD_TEST, False)
+    row = {"outcome": "BAD_TEST", "comment": comment}
+    assert gm.is_invalid_reference(row)
+    assert not gm.is_no_ground_truth(row)
+    assert not gm.is_invalid_reference({"outcome": "BAD_TEST", "comment": "x"})
+    assert not gm.is_invalid_reference({"outcome": "DIFF", "comment": comment})
+    note = gm.humanize_comment(row)
+    assert note.startswith("Invalid reference (485) — non-scoring: RR all-NaN here")
+
+
+def test_an_invalid_reference_row_where_both_engines_raised_keeps_the_plain_reading():
+    """The override also confirms a natural BAD_TEST, where RoadRunner raised too: it
+    did not run, so that row is not drawn as a non-finite reference."""
+    import rr_run
+    from _core import Outcome
+
+    status, exception = rr_run._classify_failure("bngsim: SimulationError: x", "roadrunner: y")
+    assert status == "bad_test"
+    outcome, comment, stale = rr_run._apply_invalid_reference(
+        Outcome.BAD_TEST, None, "RR all-NaN here", "485", ""
+    )
+    assert (outcome, stale) == (Outcome.BAD_TEST, False)
+    row = {"outcome": "BAD_TEST", "comment": comment, "exception": exception}
+    assert not gm.is_invalid_reference(row)
+    archived = dict(row, exception="roadrunner (archive): archive_stale: z")
+    assert not gm.is_invalid_reference(archived)
+    ran = dict(row, exception="bngsim: SimulationError: x")
+    assert gm.is_invalid_reference(ran)
