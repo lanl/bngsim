@@ -20,6 +20,7 @@ keep loading here, as a block was read.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import bngsim
@@ -135,6 +136,68 @@ def test_the_refusal_of_a_large_cr_file_stays_readable(tmp_path, shape):
     assert "k1 1.5" in message and " ..." in message
     assert CR_HINT in message
     assert len(message) < len(str(path)) + MESSAGE_ROOM
+
+
+# What parse_net_file shows of the reading's own words: between the binding's
+# prefix and the hint.
+_SHOWN = re.compile(r"^Failed to load \.net file: (.*)\. The file holds a carriage return", re.S)
+
+
+def _shown_words(path: Path) -> str:
+    with pytest.raises(ValueError) as caught:
+        bngsim.parse_net_file(str(path))
+    match = _SHOWN.match(str(caught.value))
+    assert match, str(caught.value)
+    return match.group(1)
+
+
+def _write_cr_parameters(tmp_path: Path, first: str, names: list[str]) -> Path:
+    lines = [f"    1 {first} 1"] + [f"    {i} {n} {i}.5" for i, n in enumerate(names, start=2)]
+    text = "\r".join(["begin parameters", *lines, "end parameters", ""])
+    path = tmp_path / "m.net"
+    # Bytes, so a name's UTF-8 is what the file holds on every platform.
+    path.write_bytes(text.encode("utf-8"))
+    return path
+
+
+def test_the_cut_ends_on_a_whole_character(tmp_path):
+    """The words are cut at 300 bytes. A cut inside a character of two bytes
+    left one Python cannot decode, and the refusal arrived as a
+    UnicodeDecodeError that named neither the refusal nor the CR. Each shift
+    of one byte moves the cut along the names, inside an é on half of them."""
+    names = [f"kéééé{i}" for i in range(2, 60)]
+    for shift in range(16):
+        words = _shown_words(_write_cr_parameters(tmp_path, "k" + "a" * shift, names))
+        assert words.startswith("Could not process block type"), shift
+        assert words.endswith(" ..."), shift
+
+
+def test_words_of_300_characters_are_shown_whole(tmp_path):
+    """' ...' marks words left unshown. The words grow by one character with
+    each one added to the first name, so their length is the first file's plus
+    the shift. Words of exactly 300 characters were marked cut too."""
+    base = _shown_words(_write_cr_parameters(tmp_path, "k", []))
+    at_300 = 300 - len(base)
+    assert at_300 > 1
+    for shift in (at_300 - 1, at_300, at_300 + 1):
+        words = _shown_words(_write_cr_parameters(tmp_path, "k" + "a" * shift, []))
+        whole = len(base) + shift
+        if whole <= 300:
+            assert len(words) == whole and not words.endswith(" ..."), shift
+        else:
+            assert len(words) == 300 + len(" ...") and words.endswith(" ..."), shift
+
+
+def test_a_cr_inside_a_line_is_not_said_to_join_two(tmp_path):
+    """With \\r\\r\\n line endings each CR sits inside its line, and the file
+    loads. Refused for another reason, it is still named as holding a CR, as
+    the reader cannot tell which CR did what, but the hint says where a CR
+    joins two lines rather than that this one did."""
+    text = NET.replace("1 1 2 kf #_R1", "1 1 2 kf 7 extra #_R1").replace("\n", "\r\r\n")
+    with pytest.raises(bngsim.ModelError, match="after its rate law") as caught:
+        bngsim.Model.from_net(str(_write(tmp_path, text)))
+    assert CR_HINT in str(caught.value)
+    assert "where one stands in place of a newline" in str(caught.value)
 
 
 NOTHING_READ = {

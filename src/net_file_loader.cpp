@@ -1389,21 +1389,32 @@ NetFileStructure parse_net_file_structure(const std::string &path) {
         // was quoted whole: 33,000 to 41,000 characters.
         if (!holds_bare_cr(path))
             throw;
+        //
+        // The cut ends on a whole UTF-8 character: one cut inside a character
+        // left a byte Python cannot decode, and the refusal arrived as a
+        // UnicodeDecodeError that said nothing of it. " ..." marks text left
+        // unshown, not a length: words of exactly 300 characters are whole.
         constexpr std::size_t kMaxShown = 300;
         std::string what;
-        for (const char *p = e.what(); *p != '\0' && what.size() < kMaxShown; ++p) {
+        const char *p = e.what();
+        for (; *p != '\0' &&
+               (what.size() < kMaxShown || (static_cast<unsigned char>(*p) & 0xC0) == 0x80);
+             ++p) {
             if (*p == '\r')
                 what += "\\r";
             else
                 what += *p;
         }
-        if (what.size() >= kMaxShown)
+        if (*p != '\0')
             what += " ...";
+        // Not every refusal of such a file comes of the CR: one inside a line,
+        // as in \r\r\n line endings, changes nothing, so the hint says where a
+        // CR joins two lines rather than that this one did.
         throw std::runtime_error(
-            what + ". The file holds a carriage return that is not followed by a newline, which "
-                   "BioNetGen reads as a blank inside its line rather than as a line end, so the "
-                   "lines on either side of it are one line; save the file with LF or CRLF line "
-                   "endings");
+            what + ". The file holds a carriage return that is not followed by a newline. "
+                   "BioNetGen reads one as a blank inside its line rather than as a line end, so "
+                   "where one stands in place of a newline the lines on either side of it are one "
+                   "line; save the file with LF or CRLF line endings");
     }
 }
 
