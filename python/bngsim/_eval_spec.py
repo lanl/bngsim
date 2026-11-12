@@ -53,7 +53,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from bngsim._atol import ExactAtol
-from bngsim._seed import derived_seeds
+from bngsim._seed import _resolve_seed, derived_seeds
 
 if TYPE_CHECKING:  # avoid import cycles at module load
     from bngsim._model import Model
@@ -140,10 +140,12 @@ class EvaluationSpec:
         :meth:`evaluate` draws a fresh seed and reports it on ``Result.seed``,
         so ``replace(spec, seed=result.seed)`` reruns that trajectory. An ODE
         spec reads it only to order simultaneous equal-priority events (GH
-        #242). With ``output_start``, the leg up to the output start runs at
-        ``seed`` and the output leg at the second seed drawn from it, as
-        :meth:`bngsim.Simulator.run_batch` draws its row seeds (issue #1365),
-        so the two legs do not replay one stream. Emitted by :meth:`to_dict`
+        #242). With ``output_start``, the output leg runs at ``seed``, which
+        ``Result.seed`` reports, and the leg up to the output start at the
+        second seed drawn from it, as :meth:`bngsim.Simulator.run_batch` draws
+        its row seeds (issue #1365), so the two legs do not replay one stream.
+        An unseeded stochastic spec draws that seed before the first leg, so
+        its ``Result.seed`` reruns both. Emitted by :meth:`to_dict`
         only when set, so a spec without one keeps its bytes. SED-ML carries it
         as ``KISAO:0000488``.
     """
@@ -195,9 +197,13 @@ class EvaluationSpec:
         object.__setattr__(self, "sensitivity_ic", tuple(self.sensitivity_ic))
         object.__setattr__(self, "outputs", tuple(self.outputs))
         if self.seed is not None:
-            if isinstance(self.seed, bool) or int(self.seed) != self.seed:
+            try:
+                seed = int(self.seed)
+                integral = not isinstance(self.seed, bool) and seed == self.seed
+            except (TypeError, ValueError, OverflowError):  # "abc", nan, inf
+                integral = False
+            if not integral:
                 raise ValueError(f"seed must be an integer, got {self.seed!r}")
-            seed = int(self.seed)
             if not 0 <= seed <= 2**64 - 1:
                 raise ValueError(f"seed must be an integer from 0 to 2**64 - 1, got {seed}")
             object.__setattr__(self, "seed", seed)
@@ -391,14 +397,20 @@ class EvaluationSpec:
             return sim.run(t_span=self.t_span, n_points=self.n_points, seed=self.seed, **solver)
         # Issue #1493: integrate up to the output start with nothing returned,
         # then output from there, on the state (and sensitivities) it left.
-        # Each leg seeds its generator afresh, so a seeded spec gives the
-        # output leg the second seed derived from its own (issue #1517).
-        first, second = (None, None) if self.seed is None else derived_seeds(self.seed, 2)
-        sim.run(t_span=(self.t_span[0], self.output_start), n_points=2, seed=first, **solver)
+        # Each leg seeds its generator afresh (issue #1517). The output leg runs
+        # at the seed, so Result.seed is the spec's, and the leg before it at
+        # the second seed derived from it. An unseeded stochastic spec draws
+        # its seed first, so the seed it reports reruns both legs; an unseeded
+        # ODE spec keeps the fixed event seed on both.
+        seed = self.seed
+        if seed is None and sim.method != "ode":
+            seed = _resolve_seed(None)
+        before = None if seed is None else derived_seeds(seed, 2)[1]
+        sim.run(t_span=(self.t_span[0], self.output_start), n_points=2, seed=before, **solver)
         return sim.run(
             t_span=(self.output_start, self.t_span[1]),
             n_points=self.n_points,
             carry_sensitivities=bool(self.sensitivity_params),
-            seed=second,
+            seed=seed,
             **solver,
         )

@@ -121,9 +121,11 @@ def test_an_unseeded_stochastic_spec_reports_the_seed_it_drew(net):
     np.testing.assert_array_equal(first.species, again.species)
 
 
-@pytest.mark.parametrize("bad", [-1, 2**64, 1.5, True, "7"])
+@pytest.mark.parametrize("bad", [-1, 2**64, 1.5, True, "7", "abc", float("inf"), float("nan")])
 def test_a_seed_that_is_no_seed_is_refused(net, bad):
-    """By name. (Main refused every ``seed=`` with a ``TypeError``.)"""
+    """By name. (Main refused every ``seed=`` with a ``TypeError``.) ``inf``
+    raised ``OverflowError``, as JSON's ``Infinity`` did, and ``"abc"`` and
+    ``nan`` gave ``int()``'s message."""
     with pytest.raises(ValueError, match="seed must be an integer"):
         _spec(net, seed=bad)
 
@@ -133,13 +135,56 @@ def test_a_64_bit_seed_is_kept_exactly(net):
     assert _spec(net, seed=2**64 - 1).seed == 2**64 - 1
 
 
+def _by_hand(net: str, before: int, seed: int) -> bngsim.Result:
+    """An output_start=5 spec's two legs, run by hand on one simulator."""
+    sim = bngsim.Simulator(bngsim.Model.from_net(net), method="ssa")
+    sim.run(t_span=(0.0, 5.0), n_points=2, seed=before)
+    return sim.run(t_span=(5.0, 10.0), n_points=6, seed=seed)
+
+
+# An output_start spec's seed. Its first leg ends at another state run at the
+# seed itself than at the second seed drawn from it, so a test can tell which
+# leg ran at which; 42's two first legs both end at C = 17, so it cannot.
+LEG_SEED = 7
+
+
+def test_the_seed_tells_the_legs_apart(net):
+    """Guard for the two tests below: run at ``LEG_SEED`` or at the seed
+    drawn from it, the leg before the output start ends elsewhere."""
+    other = derived_seeds(LEG_SEED, 2)[1]
+    assert not np.array_equal(
+        _by_hand(net, LEG_SEED, LEG_SEED).species, _by_hand(net, other, LEG_SEED).species
+    )
+
+
 def test_the_two_legs_of_an_output_start_spec_do_not_share_a_stream(net):
-    """The leg up to the output start runs at the seed, the output leg at the
-    second seed drawn from it, so the output leg is not a replay of the first."""
-    spec = _spec(net, seed=SEED, t_span=(0.0, 10.0), output_start=5.0)
+    """The output leg runs at the spec's seed, which ``Result.seed`` reports,
+    and the leg up to the output start at the second seed drawn from it, so
+    the output leg is not a replay of the first. Oracle: the two legs by hand."""
+    spec = _spec(net, seed=LEG_SEED, t_span=(0.0, 10.0), output_start=5.0)
     a, b = spec.evaluate(), spec.evaluate()
+    assert a.seed == b.seed == LEG_SEED
     np.testing.assert_array_equal(a.species, b.species)
-    assert a.seed == derived_seeds(SEED, 2)[1] != SEED
+    expected = _by_hand(net, derived_seeds(LEG_SEED, 2)[1], LEG_SEED)
+    np.testing.assert_array_equal(a.species, expected.species)
+
+
+def test_an_unseeded_output_start_spec_reruns_from_the_seed_it_reports(net, monkeypatch):
+    """``replace(spec, seed=result.seed)`` is the documented rerun. With an
+    output start the result reported the output leg's fresh seed, and the
+    first leg's was nowhere, so the rerun was another trajectory.
+
+    The entropy draw is pinned to ``LEG_SEED``. Left fresh, two first legs of
+    this model end at one state 9.5% of the time (2000 seeds: 20 end states),
+    and a wrong rerun then passes."""
+    import secrets
+
+    monkeypatch.setattr(secrets, "randbits", lambda bits: LEG_SEED)
+    spec = _spec(net, t_span=(0.0, 10.0), output_start=5.0)
+    first = spec.evaluate()
+    again = replace(spec, seed=first.seed).evaluate()
+    assert first.seed == LEG_SEED
+    np.testing.assert_array_equal(first.species, again.species)
 
 
 def test_an_ode_spec_reads_the_seed_too(net):
@@ -154,7 +199,10 @@ def test_an_ode_spec_reads_the_seed_too(net):
 
 
 def _sedml(
-    seed_value: str | None, kisao: str = "KISAO:0000029", seed_id: str = "KISAO:0000488"
+    seed_value: str | None,
+    kisao: str = "KISAO:0000029",
+    seed_id: str = "KISAO:0000488",
+    output_start: str = "0",
 ) -> str:
     params = (
         ""
@@ -164,7 +212,8 @@ def _sedml(
     )
     return (
         '<sedML xmlns="http://sed-ml.org/sed-ml/level1/version3" level="1" version="3">'
-        '<listOfSimulations><uniformTimeCourse id="s" initialTime="0" outputStartTime="0" '
+        '<listOfSimulations><uniformTimeCourse id="s" initialTime="0" '
+        f'outputStartTime="{output_start}" '
         f'outputEndTime="10" numberOfPoints="5"><algorithm kisaoID="{kisao}">{params}</algorithm>'
         "</uniformTimeCourse></listOfSimulations>"
         '<listOfModels><model id="m" language="urn:sedml:language:sbml" source="m.xml"/>'
@@ -228,6 +277,31 @@ def test_read_sedml_protocol_takes_a_stochastic_run_s_seed():
     proto = read_sedml_protocol(_sedml("42"))
     [exp] = [s for s in proto.steps if isinstance(s, Experiment)]
     assert exp.method == "ssa" and exp.extra.get("seed") == SEED
+
+
+def _protocol_run(net: str, doc: str) -> bngsim.Result:
+    return bngsim.run_protocol(bngsim.Model.from_net(net), read_sedml_protocol(doc))[0].result
+
+
+def test_a_seeded_document_with_an_output_start_is_one_run_on_either_reader(net):
+    """``run_protocol`` ran the leg before the output start on a fresh seed,
+    so two runs of one seeded document differed, each reporting its seed.
+    Oracle: the two legs by hand, which the spec route,
+    ``read_sedml(...).evaluate()``, also gives."""
+    doc = _sedml(str(LEG_SEED), output_start="5")
+    runs = [_protocol_run(net, doc) for _ in range(2)]
+    spec = read_sedml(doc, model_source=net, model_format="net").evaluate()
+    expected = _by_hand(net, derived_seeds(LEG_SEED, 2)[1], LEG_SEED)
+    assert runs[0].seed == runs[1].seed == spec.seed == LEG_SEED
+    for got in (*runs, spec):
+        np.testing.assert_array_equal(got.species, expected.species)
+
+
+def test_the_protocol_route_runs_a_seed_past_2_to_the_53(net):
+    """``run_protocol`` read the seed through a float: 2**60 + 1 ran as 2**60."""
+    run = _protocol_run(net, _sedml(str(2**60 + 1)))
+    assert run.seed == 2**60 + 1
+    np.testing.assert_array_equal(run.species, _run(net, 2**60 + 1).species)
 
 
 def test_write_sedml_protocol_writes_a_stochastic_run_s_seed():
