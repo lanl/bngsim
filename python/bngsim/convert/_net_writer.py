@@ -714,5 +714,8 @@ def write_net(
 
     text = "\n".join(lines)
     if out_path is not None:
-        Path(out_path).write_text(text)
+        # UTF-8, which the loader reads, whatever the locale: in the locale's
+        # encoding a Latin-1 or cp1252 locale (Windows) wrote `Aµ()` as a byte
+        # the loader refuses, and could not write `AΩ()` at all (issue #1653).
+        Path(out_path).write_text(text, encoding="utf-8")
     return text

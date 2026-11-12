@@ -736,7 +736,8 @@ class Model:
             If the file cannot be parsed, or holds none of the parameters,
             species, functions, reactions and groups blocks, as a 0-byte file,
             one of comments only, or one whose lines end in a bare carriage
-            return does (issue #1511).
+            return does (issue #1511); or if a line the loader reads is not
+            UTF-8 (issue #1653).
         FileNotFoundError
             If the file does not exist.
         """
