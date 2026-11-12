@@ -97,9 +97,15 @@ The `seed=` keyword on every stochastic entry point follows one contract:
 - `seed=None` (the default, or omitting `seed=`): bngsim draws a fresh
   31-bit seed from system entropy on each call. Two consecutive calls
   produce independent trajectories.
-- `seed=N` (any integer): bngsim passes `N` down to the backend
-  verbatim. A fresh `Simulator` (or `NfsimSession` / `RuleMonkeySession`)
-  initialized with the same `seed=N` reproduces the same trajectory.
+- `seed=N` (an integer from 0 to 2**64 - 1): bngsim passes `N` down to
+  the backend verbatim. A fresh `Simulator` (or `NfsimSession` /
+  `RuleMonkeySession`) initialized with the same `seed=N` reproduces the
+  same trajectory. A seed outside that range raises `ValueError`.
+- NFsim (`method="nf"`, `NfsimSession`) seeds its generators from 32 bits,
+  so it takes a seed from 0 to 2**32 - 1 and raises `ValueError` on a
+  larger one (issue #1515). It used to run such a seed as its low 32 bits,
+  `seed=2**32 + 12345` repeating `seed=12345`, while `Result.seed` reported
+  the value passed. SSA, PSA and RuleMonkey use all 64 bits.
 
 `Result.seed` exposes the integer that was actually used, so
 caller-generated and bngsim-drawn seeds are equally inspectable:

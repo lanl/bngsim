@@ -25,19 +25,38 @@ import secrets
 _DEFAULT_EVENT_SEED = 0x9E3779B97F4A7C15
 
 
+# The bindings take a seed as ``uint64_t``. NFsim seeds its generators from 32
+# bits and refuses a larger seed itself (issue #1515).
+_MAX_SEED = 2**64 - 1
+
+
+def _check_seed(seed: int) -> int:
+    """``seed`` as an int, refused by name outside 0 to 2**64 - 1.
+
+    A negative seed or one past 2**64 - 1 reached the bindings, which raised
+    pybind11's ``TypeError: run(): incompatible function arguments`` (issue
+    #1515).
+    """
+    value = int(seed)
+    if not 0 <= value <= _MAX_SEED:
+        raise ValueError(f"seed must be an integer from 0 to 2**64 - 1, got {value}")
+    return value
+
+
 def _resolve_seed(seed: int | None) -> int:
     """Return a usable integer seed.
 
     ``None`` → a fresh non-negative seed drawn from system entropy.
-    An integer → returned as-is via ``int(...)``.
+    An integer → returned as-is via ``int(...)``, refused outside 0 to
+    2**64 - 1 (:func:`_check_seed`).
 
-    The fresh draw is 31 bits so the result always fits in a signed
-    32-bit C int. The bindings take ``uint64_t``, but NFsim narrows a seed
-    to ``unsigned long``, which is 32 bits on Windows.
+    The fresh draw is 31 bits, so it is the same number on every backend:
+    NFsim seeds its generators from 32 bits, and refuses a seed past
+    2**32 - 1 (issue #1515).
     """
     if seed is None:
         return secrets.randbits(31)
-    return int(seed)
+    return _check_seed(seed)
 
 
 # The width _resolve_seed draws to, and every seed derived_seeds draws keeps, so
