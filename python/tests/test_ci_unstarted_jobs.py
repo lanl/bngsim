@@ -25,8 +25,8 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _source_root import bngsim_source_root  # noqa: E402
 from _ci_workflow import strip_comments  # noqa: E402
+from _source_root import bngsim_source_root  # noqa: E402
 
 REPO_ROOT = bngsim_source_root() or Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "ci" / "unstarted_jobs.py"
@@ -272,3 +272,25 @@ def test_both_workflows_report_to_the_same_tracking_issue():
         for name in ("forced-jit.yml", "forced-jit-rerun.yml")
     ]
     assert titles[0] == titles[1] == ["Nightly forced-JIT suite: failures"]
+
+
+@pytest.mark.skipif(not WORKFLOWS.is_dir(), reason=".github/workflows is not in this checkout")
+def test_the_fallback_comment_and_the_hold_are_wired_up():
+    """The re-run's comment on the tracking issue is for when it could not
+    re-run; unconditioned, it would post after every re-run that worked. Its
+    job needs the permissions to re-run and to comment. Report's hold needs the
+    step id the issue and fail steps read, and the output it reads; without
+    them the hold is silently dead."""
+    rerun_text = strip_comments(_text("forced-jit-rerun.yml"))
+    assert re.search(r"^      actions: write\b", rerun_text, re.M)
+    assert re.search(r"^      issues: write\b", rerun_text, re.M)
+    comment = [s for s in _steps("forced-jit-rerun.yml", "rerun") if "gh issue comment" in s]
+    assert len(comment) == 1
+    assert re.search(r"^        if: failure\(\)$", comment[0], re.M)
+
+    report_text = strip_comments(_text("forced-jit.yml")).split("\n  report:\n", 1)[1]
+    assert re.search(r"^      actions: read\b", report_text, re.M)
+    hold = [s for s in _steps("forced-jit.yml", "report") if "--prefix" in s]
+    assert len(hold) == 1
+    assert re.search(r"^        id: unstarted$", hold[0], re.M)
+    assert 'echo "rerun=true" >> "$GITHUB_OUTPUT"' in hold[0]
