@@ -50,8 +50,6 @@ jobs:
 
       # A speed-up only: when ccache cannot be installed, the build runs without
       # it (python-tests.yml says why).
-      - name: TEMPORARY, reverted before merge - block the package servers ccache installs from (#1488)
-        run: bash ci/TEMP_block_package_servers.sh
       - name: Set up ccache
         continue-on-error: true
         uses: hendrikmuhs/ccache-action@v1.2

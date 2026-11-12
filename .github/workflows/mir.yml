@@ -178,9 +178,6 @@ jobs:
       # slower Intel leg's x86_64 objects. python-tests.yml's keys end the same way.
       # A speed-up only: when ccache cannot be installed, the build runs without
       # it (python-tests.yml says why).
-      - name: TEMPORARY, reverted before merge - block the package servers ccache installs from (#1488)
-        if: runner.os != 'Windows'
-        run: bash ci/TEMP_block_package_servers.sh
       - name: Set up ccache
         if: runner.os != 'Windows'
         continue-on-error: true
