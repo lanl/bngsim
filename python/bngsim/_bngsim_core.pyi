@@ -347,6 +347,10 @@ class NetworkModel:
         """
         Install a carry-over forward-sensitivity seed dx/dθ from an (n_species, n_params) ndarray whose columns are ``param_names``, as a subsequent carry_sensitivities=True run would consume. This is the write half of pending_sensitivity_seed(): it lets a protocol primitive restore a species state TOGETHER WITH its θ-derivative — set_state()/restore_concentrations() alone drop the derivative, which is what blocked carrying sensitivities from a pre-equilibration into a parameter scan (GH #81). An empty array with empty param_names clears the pending seed.
         """
+    def set_species_continuous(self, species_idx0: typing.SupportsInt | typing.SupportsIndex) -> None:
+        """
+        Issue #1510: mark a loaded species slot a continuous quantity rather than a molecule count, so SSA/PSA do not round it to a whole number (as ModelBuilder.set_species_continuous does while a model is built). Model.from_net marks an sbml_to_net network's assignment-rule targets. No-op if species_idx0 is out of range.
+        """
     def set_state(self, state: typing.Annotated[numpy.typing.ArrayLike, numpy.float64]) -> None:
         """
         Bulk-assign all species concentrations from a 1-D float64 ndarray, ordered like species_names(). O(n_species), one Python call (GH #102).

@@ -751,6 +751,12 @@ void NetworkModel::set_concentration(const std::string &name, double value) {
     clear_pending_sens_seed();
 }
 
+void NetworkModel::set_species_continuous(int species_idx0) {
+    if (species_idx0 < 0 || species_idx0 >= static_cast<int>(impl_->species.size()))
+        return;
+    impl_->species[species_idx0].continuous = true;
+}
+
 double NetworkModel::get_concentration(const std::string &name) const {
     auto it = impl_->shared->species_name_to_idx.find(name);
     if (it == impl_->shared->species_name_to_idx.end()) {
