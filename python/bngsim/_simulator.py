@@ -6566,6 +6566,91 @@ class Simulator:
             )
         return np.array(seed, dtype=np.float64), names
 
+    def _warn_if_the_scan_drops_a_dose(self, parameter: str, value: float) -> None:
+        """Warn where a scan over a parameter that seeds a species' initial
+        condition cannot move that species, asked at a point's start.
+
+        A point starts from the state at the call (or the ``reset_to``
+        snapshot), and a parameter write moves a species only while it sits on
+        its initial condition (:meth:`Model.set_param`). After a run it does
+        not: a scan over A0 = 5 and 40 started both points at the run's
+        A = 6.07, for totals 10 and 10 where a fresh model gives 5 and 40, with
+        no word. After :meth:`Model.save_concentrations` with no label the
+        saved state is the baseline, and no write moves it at all. The scan
+        keeps both, which is what a pre-equilibrated protocol relies on, and
+        says so here: one warning, naming the species.
+
+        Which species the parameter seeds is asked of the model, by writing it
+        once to another value and reading which initial conditions moved, so a
+        derived one (``A = A0*s``) counts as the core resolves it; where the
+        baseline is a saved state, which no write moves, from the parameter
+        graph. The write is left for the scan's reset to put back.
+        """
+        core = self._model._core
+        species = self._model.species_names
+        if core.ic_baseline_saved:
+            stuck = self._species_seeded_through_the_graph(parameter)
+            why = (
+                "after Model.save_concentrations() with no label the saved state is the "
+                "baseline, which no parameter write moves"
+            )
+        else:
+            state = np.asarray(core.get_state(), dtype=float)
+            before = np.asarray(core.get_initial_state(), dtype=float)
+            self._model.set_param(parameter, 2.0 * value if value != 0.0 else 1.0)
+            after = np.asarray(core.get_initial_state(), dtype=float)
+            seeded = ~((before == after) | (np.isnan(before) & np.isnan(after)))
+            off = seeded & ~((state == before) | (np.isnan(state) & np.isnan(before)))
+            stuck = [species[i] for i in np.flatnonzero(off)]
+            why = (
+                "each point starts from the state at the call (or the reset_to snapshot), "
+                "where a run or a write has moved them off their initial condition, and a "
+                "parameter write leaves such a species where it is"
+            )
+        if not stuck:
+            return
+        shown = ", ".join(repr(n) for n in stuck[:3]) + (
+            f" and {len(stuck) - 3} more" if len(stuck) > 3 else ""
+        )
+        warnings.warn(
+            f"parameter_scan over {parameter!r} does not move the species it seeds "
+            f"({shown}): {why}, so every point starts them at that state's values and "
+            "the dose is dropped. For a dose scan from the initial conditions, call "
+            "Model.reset() first. To dose them from this state, set them in on_point: "
+            "on_point=lambda model, value: model.set_concentration(name, value).",
+            UserWarning,
+            stacklevel=_stacklevel_outside_bngsim(),
+        )
+
+    def _species_seeded_through_the_graph(self, parameter: str) -> list[str]:
+        """The species whose initial condition names ``parameter``, directly or
+        through the derived parameters between (``A() U``, ``U = T``,
+        ``T = 2*A0``): read from the parameter graph, for a model whose saved
+        baseline no write moves."""
+        names = list(self._model.param_names)
+        expressions = list(self._model.param_expressions)
+        index_of = {name: i for i, name in enumerate(names)}
+        reads: dict[int, bool] = {}
+
+        def reads_parameter(index: int, seen: frozenset[int] = frozenset()) -> bool:
+            if index in reads:
+                return reads[index]
+            hit = names[index] == parameter
+            if not hit:
+                for token in set(re.findall(r"[A-Za-z_][A-Za-z_0-9]*", expressions[index] or "")):
+                    if token == parameter:
+                        hit = True
+                    elif token in index_of and index_of[token] not in seen | {index}:
+                        hit = reads_parameter(index_of[token], seen | {index})
+                    if hit:
+                        break
+            reads[index] = hit
+            return hit
+
+        species = self._model.species_names
+        refs = self._model._core.species_ic_param_refs
+        return sorted({species[i] for i, p in refs if 0 <= p < len(names) and reads_parameter(p)})
+
     def _pending_scan_sens_seed(self, names: list[str], point_index: int) -> np.ndarray:
         """The dx/dθ a continuation point inherits from the previous point's run."""
         core = self._model._core
@@ -6988,7 +7073,15 @@ class Simulator:
         reset_conc : bool
             BNG ``reset_conc``. When ``True`` (default), every point resets to
             the snapshot before applying the scanned parameter — points are
-            independent. When ``False``, points are *not* reset between values;
+            independent. A parameter that seeds a species' initial condition
+            (``A = A0``, or ``A = A0*s`` scanning either) moves that species
+            only while it sits on that condition (:meth:`Model.set_param`):
+            from a state a run has advanced, or after
+            :meth:`Model.save_concentrations` with no label, every point starts
+            it at the snapshot's value and the dose is dropped, and the scan
+            warns, naming the species. Call :meth:`Model.reset` first for a dose
+            scan from the initial conditions, or set the species in
+            ``on_point``. When ``False``, points are *not* reset between values;
             each continues from the previous point's end-state (a continuation
             scan — see :meth:`bifurcate`).
         reset_to : str, optional
@@ -7173,6 +7266,9 @@ class Simulator:
 
         results: list[Result] = []
         try:
+            if reset_conc and on_point is None:  # a hook may be what doses them
+                _reset_point()
+                self._warn_if_the_scan_drops_a_dose(parameter, original_value)
             for i, value in enumerate(values):
                 if reset_conc:
                     _reset_point()
