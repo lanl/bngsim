@@ -264,3 +264,26 @@ def test_a_sensitivity_row_dosed_below_the_model_is_right():
     exact = DOSE * (1 - DOSE) * T * e / (1 + DOSE * (e - 1)) ** 2
     assert _rel(row.species[-1, 0], _logistic(DOSE, T)) < 1e-5
     assert _rel(np.asarray(row.sensitivities)[-1, 0, 0], exact) < 1e-4
+
+
+def test_the_starts_auto_reads_are_each_rows_own():
+    """Each row's start is read on one scratch clone with the row's writes put
+    back after it. X = a*b: a row writing a alone and one writing b alone each
+    start X at 1e-6; had the first row's a stayed behind, the second would read
+    X = 1e-12, smaller than any row's start, and the batch's "auto" with it."""
+    pytest.importorskip("antimony")
+    src = "model m\n a = 1; b = 1; species X; X = a*b;\n J: X -> ; X;\nend"
+    sim = bngsim.Simulator(bngsim.Model.from_antimony_string(src), method="ode")
+    rows = [{"a": 1e-6}, {"b": 1e-6}, {}, {"a": 2.0, "b": 3.0}]
+    expected = []
+    for row in rows:
+        clone = sim.model.clone()
+        clone.set_params(row)
+        clone.reset()
+        expected.append(list(clone.get_state()))
+    assert (
+        [list(s) for s in sim._batch_row_starts(rows)]
+        == expected
+        == [[1e-6], [1e-6], [1.0], [6.0]]
+    )
+    assert list(sim.model.get_state()) == [1.0]  # the batch's model is untouched

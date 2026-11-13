@@ -6240,13 +6240,7 @@ class Simulator:
         # row dosed far below it was held above its own scale. A row's start is
         # its clone's, after its writes and the reset (_run_single_batch).
         def row_starts() -> list[np.ndarray]:
-            starts = []
-            for pset in params:
-                clone = self._model.clone()
-                clone.set_params(pset)
-                clone.reset()
-                starts.append(np.asarray(clone.get_state(), dtype=float))
-            return starts
+            return self._batch_row_starts(params)
 
         batch_reading = None
         with self._auto_from(row_starts):
@@ -7499,6 +7493,29 @@ class Simulator:
             steady_state_tol=steady_state_tol,
             squeeze=squeeze,
         )
+
+    def _batch_row_starts(self, params: Sequence[dict[str, float]]) -> list[np.ndarray]:
+        """The state each row of a batch starts from: the initial conditions
+        after the row's writes, as its clone's reset() leaves them (issue
+        #1660). Read on one scratch clone, each row's writes put back after it,
+        not on a clone per row: a clone per row cost a 2,000-row batch of a
+        one-species model 59% of its run time, and a 622-species one 27%. A
+        row with no writes starts at the model's initial conditions."""
+        base = np.asarray(self._model._core.get_initial_state(), dtype=float)
+        scratch: Model | None = None
+        starts: list[np.ndarray] = []
+        for pset in params:
+            if not pset:
+                starts.append(base)
+                continue
+            if scratch is None:
+                scratch = self._model.clone()
+            held = {name: scratch.get_param(name) for name in pset}
+            scratch.set_params(pset)
+            scratch.reset()
+            starts.append(np.asarray(scratch.get_state(), dtype=float))
+            scratch.set_params(held)
+        return starts
 
     def _run_single_batch(
         self,
