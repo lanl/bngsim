@@ -175,13 +175,16 @@ consequence of guessing is species *i* held to the number written for species
 `steady_state`, `steady_state_batch`, and `EvaluationSpec`. Anything that runs
 many points (a batch, a scan, a chunked sensitivity job) resolves a vector,
 `"auto"` or a tracking `atol` **once** up front: every point is held to the same
-tolerance, so the points can be compared with each other. In a `run_batch`, and
-in a `parameter_scan` that resets each point, `"auto"` takes each species'
+tolerance, so the points can be compared with each other. In a `run_batch`, a
+`parameter_scan` and a `steady_state_batch`, `"auto"` takes each species'
 smallest scale over the points' starts, so no point is held above a species' size
-where it starts. A scalar, the default
+where it starts; a continuation scan's later points start where the last ended,
+and a scan point whose `on_point` hook writes a species lower holds it tighter
+still. A scalar, the default
 `1e-8` or one you pass, is a ceiling under which each species takes `rtol` of its
-scale in the state the run starts from. A `run_batch` row or a `parameter_scan`
-point reads that both from the model's state and from its own start, and each
+scale in the state the run starts from. A `run_batch` row reads that both from the
+model's initial conditions and from its own start, a `parameter_scan` point both
+from the state at the call and from its own start, and each
 species takes the tighter of the two. A row that doses a growing species decades
 below the model's value is then held to that species' scale, as a `run()` from
 there would be: read from the model alone, a logistic grower declared at 1 and

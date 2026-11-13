@@ -593,6 +593,45 @@ def test_a_batch_entry_marches_at_its_own_auto_atol(tmp_path, method):
         assert out.concentrations[0] / 1e-9 == pytest.approx(1.0, rel=1e-6)
 
 
+@pytest.mark.parametrize(
+    ("entry", "states"),
+    [
+        ({"s": 1e-9}, None),
+        # Written over its expression, X0 puts the reset at 0.5; the state given
+        # is where the entry starts, and what sets its "auto".
+        ({"s": 1e-9, "X0": 0.5}, [[0.5e-9]]),
+    ],
+)
+@pytest.mark.parametrize("method", ["integration", "newton"])
+def test_an_auto_asked_for_is_taken_from_the_entrys_start(tmp_path, method, entry, states):
+    # Issue #1660: the "auto" a caller asks for was derived from the model at
+    # s = 1, and the entry at s = 1e-9 ended unconverged, at -0.08 and -3.7 of
+    # its root. The entries' starts now set it, at the reset or as given.
+    sim = bngsim.Simulator(_cubic(tmp_path, 1.0, 0.5), method="ode")
+    (out,) = sim.steady_state_batch(
+        params=[entry], states=states, criterion="scaled", method=method, atol="auto"
+    )
+    assert out.converged
+    assert out.concentrations[0] / 1e-9 == pytest.approx(1.0, rel=1e-6)
+
+
+@pytest.mark.parametrize("atol", [1e-8, "auto", "tracking"])
+@pytest.mark.parametrize("method", ["integration", "newton"])
+def test_an_entry_is_the_steady_state_of_its_own_start(tmp_path, method, atol):
+    # The entry at s = 1e-9 is steady_state() of the model declared there, given
+    # the same atol, to the bit (issue #1660). A scalar is as given, not run()'s
+    # ceiling: under "scaled" it is also the run test's tolerance, and this
+    # case passed before. "auto" and a tracking ceiling of it were taken from
+    # the model at s = 1, where steady_state() takes them from its start.
+    sim = bngsim.Simulator(_cubic(tmp_path, 1.0, 0.5), method="ode")
+    (entry,) = sim.steady_state_batch([{"s": 1e-9}], criterion="scaled", method=method, atol=atol)
+    alone = bngsim.Simulator(_cubic(tmp_path, 1e-9, 0.5), method="ode").steady_state(
+        criterion="scaled", method=method, atol=atol
+    )
+    assert entry.converged == alone.converged
+    assert np.array_equal(entry.concentrations, alone.concentrations)
+
+
 # A -> S1 at 1, A + S1 -> S2 + S1 at 1e9 (S1 speeds A's loss to S2); one law
 # A + S1 + S2, and only A kept. A's one steady state is 0.
 CATALYZED_NET = """begin parameters

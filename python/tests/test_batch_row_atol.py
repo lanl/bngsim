@@ -54,11 +54,12 @@ def test_a_row_dosed_below_the_model_follows_its_own_ode(n_points):
 
 def test_a_scalar_the_caller_chose_is_read_from_the_row_too():
     """A caller's scalar is a ceiling as the default is (#1420): at rtol 1e-10,
-    atol 1e-12, main held the row to 1e-12 and was 2.3e-3 off."""
+    atol 1e-12, main held the row to 1e-12 and was 2.3e-3 off. run() from the
+    row's start is 4.7e-8 off; 1e-5 leaves room for another platform's steps."""
     row = _sim().run_batch(
         t_span=(0, T), n_points=2, params=[{"X0": DOSE}], rtol=1e-10, atol=1e-12
     )[0]
-    assert _rel(row.species[-1, 0], _logistic(DOSE, T)) < 1e-6
+    assert _rel(row.species[-1, 0], _logistic(DOSE, T)) < 1e-5
 
 
 def test_a_row_after_a_run_is_read_from_its_own_start_not_where_the_run_ended():
@@ -287,3 +288,160 @@ def test_the_starts_auto_reads_are_each_rows_own():
         == [[1e-6], [1e-6], [1.0], [6.0]]
     )
     assert list(sim.model.get_state()) == [1.0]  # the batch's model is untouched
+
+
+# X -> 2X at k from X() = Xt, a derived parameter 2*X0: X(t) = Xt e^(kt).
+DERIVED = """begin parameters
+ 1 X0 1
+ 2 sc 2
+ 3 Xt X0*sc
+ 4 k 1
+end parameters
+begin species
+ 1 X() Xt
+end species
+begin reactions
+ 1 1 1,1 k
+end reactions
+"""
+
+
+def test_a_derived_initial_condition_a_row_overrode_is_put_back(tmp_path):
+    """Row 0 writes Xt, overriding its expression, and X0 under it. Put back in
+    one write, Xt stayed pinned at 2, row 1's start read 2 for its 2e-9, and
+    under "auto" row 1 returned -9.2e-7 for 0.97. Growth is exponential; the
+    bound is the logistic's, run() from 2e-9 being 3.1e-6 off."""
+    path = tmp_path / "derived.net"
+    path.write_text(DERIVED)
+    sim = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode")
+    rows = [{"Xt": 3.0, "X0": 7.0}, {"X0": DOSE}]
+    assert [list(s) for s in sim._batch_row_starts(rows)] == [[3.0], [2 * DOSE]]
+    out = sim.run_batch(t_span=(0, T), n_points=2, params=rows, atol="auto")
+    assert _rel(out[1].species[-1, 0], 2 * DOSE * math.exp(T)) < 1e-5
+
+
+# ── A dose a hook writes, a continuation's first point, after a run ──────────
+
+
+def _dose_x(model, value):
+    model.set_concentration("X", DOSE)
+
+
+@pytest.mark.parametrize("atol", [None, "auto"])
+def test_a_dose_an_on_point_hook_writes_is_read_at_the_point(atol):
+    """The hook writes the point's start after the scan has read its own. Each
+    point reads the default from there, as run() would; ``"auto"``, read from
+    the points' starts before any hook ran, returned the issue's -4.6e-7."""
+    kw = {} if atol is None else {"atol": atol}
+    point = _sim().parameter_scan("k", [1.0], t_span=(0, T), n_points=2, on_point=_dose_x, **kw)[0]
+    assert _rel(point.species[-1, 0], _logistic(DOSE, T)) < 1e-5
+
+
+def test_a_point_its_hook_doses_is_judged_by_its_own_tolerance():
+    """At k = 0.01 X stays near the hook's 1e-9 (1.2e-9 at t = 20). The point
+    runs at 1e-17 for it, and the scale warning reads the point's tolerance,
+    not the model's 1e-8, below which X stays throughout."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", bngsim.AtolScaleWarning)
+        point = _sim().parameter_scan("k", [0.01], t_span=(0, T), n_points=2, on_point=_dose_x)[0]
+    assert _rel(point.species[-1, 0], _logistic(DOSE, T, k=0.01)) < 1e-5
+
+
+@pytest.mark.parametrize("atol", [None, "auto"])
+@pytest.mark.parametrize("call", ["bifurcate", "parameter_scan"])
+def test_a_continuations_first_point_is_read_where_the_value_puts_it(call, atol):
+    """A continuation's later points carry on from the one before; its first
+    starts where the scanned value puts it. ``"auto"`` read from the state at
+    the call returned -4.6e-7."""
+    kw = {} if atol is None else {"atol": atol}
+    sim = _sim()
+    if call == "bifurcate":
+        (point,) = sim.bifurcate("X0", [DOSE], t_span=(0, T), n_points=2, **kw)
+    else:
+        (point,) = sim.parameter_scan(
+            "X0", [DOSE], t_span=(0, T), n_points=2, reset_conc=False, **kw
+        )
+    assert _rel(point.species[-1, 0], _logistic(DOSE, T)) < 1e-5
+
+
+def test_a_batch_after_a_run_is_the_batch_on_a_fresh_model():
+    """Rows start from the initial conditions, run or no run. The model's side
+    of the tighter-of-two was read from its live state: after X -> Y was run to
+    t = 30 (X near 1e-13), rows over k took 309 and 429 steps for 153 and 176,
+    and gave other numbers."""
+    pytest.importorskip("antimony")
+    src = "model m\n X0 = 1; k = 1; species X, Y; X = X0; Y = 0;\n J: X -> Y; k*X;\nend"
+
+    def sim():
+        return bngsim.Simulator(bngsim.Model.from_antimony_string(src), method="ode")
+
+    rows = [{"k": 0.5}, {"k": 2.0}]
+    fresh = sim().run_batch(t_span=(0, 30), n_points=31, params=rows)
+    ran = sim()
+    ran.run(t_span=(0, 30), n_points=2)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)  # #1362's: the model is not at its start
+        after = ran.run_batch(t_span=(0, 30), n_points=31, params=rows)
+    for a, b in zip(fresh, after, strict=True):
+        assert a.solver_stats["n_steps"] == b.solver_stats["n_steps"]
+        assert np.array_equal(np.asarray(a.species), np.asarray(b.species))
+
+
+# ── What the rows are held to, not what they compute ─────────────────────────
+
+
+def test_a_wrong_length_vector_is_refused_before_any_row_or_point():
+    """Refused by name up front: a threaded batch raises the ValueError, not a
+    row's "Batch simulation 0 failed", and a scan's hook never runs."""
+    sim = _sim()
+
+    def a_point_started(*args, **kwargs):
+        raise AssertionError("a point started before the refusal")
+
+    with pytest.raises(ValueError, match=r"^run_batch\(atol=\.\.\.\)"):
+        sim.run_batch(
+            t_span=(0, T), n_points=2, params=[{"X0": DOSE}], atol=[1e-8] * 2, num_processors=2
+        )
+    with pytest.raises(ValueError, match=r"parameter_scan\(atol=\.\.\.\)"):
+        sim.parameter_scan(
+            "X0", [DOSE], t_span=(0, T), n_points=2, atol=[1e-8] * 2, on_point=a_point_started
+        )
+
+
+# k2 follows 2*k1 until a write pins it (issue #188); A -> B at k2.
+ATTACHED = """begin parameters
+ 1 k1 1
+ 2 k2 2*k1
+end parameters
+begin species
+ 1 A() 10
+ 2 B() 0
+end species
+begin reactions
+ 1 1 2 k2
+end reactions
+"""
+
+
+def test_a_row_run_by_a_simulator_built_for_its_attachment_reads_the_batchs_tolerances(
+    tmp_path,
+):
+    """A row that pins k2 needs other sensitivity code and runs on a Simulator
+    built for it (issue #961), which has none of the batch's set_tolerances. It
+    reads the batch's: the row is the run() of its model at them, to the bit,
+    where the built one's default 1e-8 moves it."""
+    path = tmp_path / "attached.net"
+    path.write_text(ATTACHED)
+
+    def sensitive(model):
+        sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k1", "k2"])
+        sim.set_tolerances(rtol=1e-6, atol=1e-4)
+        return sim
+
+    span = {"t_span": (0.0, 1.0), "n_points": 11}
+    (row,) = sensitive(bngsim.Model.from_net(str(path))).run_batch(params=[{"k2": 5.0}], **span)
+    alone = bngsim.Model.from_net(str(path))
+    alone.set_param("k2", 5.0)
+    run = sensitive(alone).run(**span)
+    assert run.solver_stats["n_steps"] == row.solver_stats["n_steps"]
+    assert np.array_equal(np.asarray(run.species), np.asarray(row.species))

@@ -5118,6 +5118,20 @@ class Simulator:
             return None
         return _Ceiling(scalar, [float(v) for v in own])
 
+    @staticmethod
+    def _tighter_frozen(frozen: object, other: object) -> object:
+        """Each species the tighter of two vectors :meth:`_freeze_atol` gave
+        for one request from two starts: an ``"auto"`` list, or a tracking
+        ceiling of it (issue #1660). A vector or a ceiling the caller gave is
+        the same from both, so it comes back as given; anything else is
+        ``frozen``."""
+        if isinstance(frozen, list) and isinstance(other, list):
+            return [min(a, b) for a, b in zip(frozen, other, strict=True)]
+        if isinstance(frozen, TrackingAtol) and isinstance(other, TrackingAtol):
+            ceiling = [min(a, b) for a, b in zip(frozen.ceiling, other.ceiling, strict=True)]  # type: ignore[arg-type]
+            return TrackingAtol(decades=frozen.decades, ceiling=ceiling)
+        return frozen
+
     def _scalar_atol_of(self, atol: AtolLike | None) -> float | None:
         """The scalar an ODE call given ``atol`` reads as a ceiling, or ``None``
         where it integrates at a vector, ``"auto"``, a tracking tolerance or an
@@ -5237,14 +5251,20 @@ class Simulator:
         compare across. That applies to a tracking ceiling too — the rule is
         state-dependent *within* a run by design, but the ceiling it tracks
         below must be the same one for every row.
+
+        A scalar read as a ceiling is the exception (issue #1660): what this
+        returns for one is the scan's reading, and each point that starts
+        elsewhere takes the tighter of it and its own
+        (:meth:`_tighter_ceiling`), as does a point whose ``on_point`` hook
+        writes below an ``"auto"`` vector (:meth:`_tighter_frozen`).
         """
         if isinstance(atol, _Ceiling):
             return atol  # resolved already, scalar and vector both
         resolved = self._resolve_atol(atol, rtol, where=where)
         if resolved.decades:
             return TrackingAtol(decades=resolved.decades, ceiling=resolved.vector or [])
-        # A scalar goes to each point as an ExactAtol: as a float, every point's
-        # run() would read it as a ceiling again, from that point's own start.
+        # A scalar goes to a point as an ExactAtol: as a float, its run() would
+        # read it as a ceiling again, and warn where the scan warns.
         return ExactAtol(resolved.scalar) if resolved.vector is None else resolved.vector
 
     # ─── Run ────────────────────────────────────────────────────────
@@ -6093,11 +6113,13 @@ class Simulator:
             gives, take each species' smallest scale over the rows' starts, so
             no row is held above a species' size where it starts. A scalar, the
             default or the caller's, is a ceiling that :meth:`run` reads from
-            the state it starts from. Each row reads it from the model's live
-            state and from its own start, and each species takes the tighter of
-            the two: a row that starts below the model is the :meth:`run` from
-            there, and no row is held looser than the model's own reading
-            (issue #1660).
+            the state it starts from. Each row reads it from the model's
+            initial conditions (where a row that writes none starts) and from
+            its own start, and each species takes the tighter of the two: a row
+            that starts below the model is the :meth:`run` from there, and no
+            row is held looser than the model's start holds it (issue #1660).
+            The model's live state is no row's start, and after a run, read
+            from there, it held every row to where that run ended.
         max_steps : int, optional
             Maximum internal solver steps per output point.
         num_processors : int, optional
@@ -6242,9 +6264,17 @@ class Simulator:
         def row_starts() -> list[np.ndarray]:
             return self._batch_row_starts(params)
 
+        # The model's own reading is taken where its rows start, its initial
+        # conditions (what a row that writes none starts from), not its live
+        # state: after a run, that is the run's end, no row's start, and every
+        # row was held to it. X -> Y at 1 run to t = 30 first, then batched over
+        # k, took 309 and 429 steps for the 153 and 176 the same rows take on a
+        # fresh model, and other numbers.
+        rows_reset = self._model.clone()
+        rows_reset.reset()
         batch_reading = None
         with self._auto_from(row_starts):
-            batch_reading = self._run_atol(atol, effective_rtol)
+            batch_reading = self._run_atol(atol, effective_rtol, start=rows_reset)
             effective_atol_spec = self._resolve_atol(
                 batch_reading, effective_rtol, where="run_batch(atol=...)"
             )
@@ -6256,18 +6286,18 @@ class Simulator:
         # X(20) = -4.6e-7 for 0.327, and one after a run, from the state that
         # run left. Each species takes the tighter of this model's reading and
         # the row's own, so a row below the model is the run() from its start,
-        # and none is held looser than it was: rows that shrink a compartment
+        # and none is held looser than the model's start holds it: rows that shrink a compartment
         # by 1e-6 start 1e6 above the model, and read from their own start,
         # BIOMD0000000407's ran 6.5 of a species' peak off its reference for
         # 0.13. A row at this model's start takes the tolerance it took before.
         row_atols: list[list[float] | None] = [effective_atol_spec.vector] * n_sims
         atol_of: Callable[[int, Model], _ResolvedAtol] | None = None
         if self._ceiling_of(atol) is not None:
-            # A row that starts where this model stands reads what the batch
-            # read, so it takes the batch's tolerance without reading again: a
-            # read is about 23 us, and on a 2,000-row scan of a rate constant it
-            # cost a one-species model 21% of its run time.
-            batch_start = np.asarray(self._model.get_state(), dtype=float)
+            # A row that starts where the model's reading was taken reads what
+            # the batch read, so it takes the batch's tolerance without reading
+            # again: a read is about 23 us, and on a 2,000-row scan of a rate
+            # constant it cost a one-species model 21% of its run time.
+            batch_start = np.asarray(rows_reset.get_state(), dtype=float)
 
             def atol_of(i: int, clone: Model) -> _ResolvedAtol:
                 if np.array_equal(
@@ -7156,10 +7186,12 @@ class Simulator:
             tolerance rather than to one derived from its own initial
             conditions. With ``reset_conc=True``, ``"auto"`` (and a tracking
             ceiling it gives) takes each species' smallest scale over the
-            points' starts, the reset with the scanned value written; what an
-            ``on_point`` hook writes is not seen. A continuation scan's points
-            start where the last ended, and ``"auto"`` is read from the state
-            at the call. A scalar, the default or the caller's, is a ceiling
+            points' starts, the reset with the scanned value written; a point
+            whose ``on_point`` hook writes a species lower holds that species
+            tighter still. A continuation scan's later points start where the
+            last ended, and its ``"auto"`` is read from its first point's start,
+            the state at the call with the first value written. A scalar, the
+            default or the caller's, is a ceiling
             that :meth:`run` reads from the state it starts from; each point
             reads it from the invocation state and from its own start, and each
             species takes the tighter of the two (issue #1660).
@@ -7326,16 +7358,22 @@ class Simulator:
 
         results: list[Result] = []
         try:
-            if reset_conc and self._method == "ode":
+            if self._method == "ode":
                 # Issue #1660 — "auto" (and a tracking ceiling it gives) is read
                 # from the points' starts, the tightest any asks for, not from the
                 # invocation state alone: a point that doses a species far below
                 # it was held above that species' scale. A point starts from the
                 # reset with the scanned parameter written; what an on_point hook
-                # writes after that is not seen. A continuation scan's points
-                # start where the last ended, which no call can know first, and
-                # keep the invocation state's.
+                # writes after that is read at the point, below. A continuation
+                # scan's later points start where the last ended, which no call
+                # can know first; its first starts from the invocation state with
+                # the first value written, and bifurcate("X0", [1e-9],
+                # atol="auto") read from the invocation state returned -4.6e-7.
                 def point_starts() -> list[np.ndarray]:
+                    if not reset_conc:
+                        first = self._model.clone()
+                        first.set_param(parameter, float(values[0]))
+                        return [np.asarray(first.get_state(), dtype=float)]
                     starts = []
                     for value in values:
                         _reset_point()
@@ -7391,6 +7429,15 @@ class Simulator:
                     )
                     if tighter is not None:
                         point_atol = tighter
+                elif on_point is not None and isinstance(scan_atol, (list, TrackingAtol)):
+                    # Issue #1660 — an "auto" read from the points' starts does not
+                    # see what the hook wrote: each species takes the tighter of
+                    # the scan's and this point's own, as the ceiling above does.
+                    # A hook dosing X = 1e-9 under a model at 1 returned -4.6e-7.
+                    point_atol = self._tighter_frozen(
+                        scan_atol,
+                        self._freeze_atol(atol, scan_rtol, where="parameter_scan(atol=...)"),
+                    )
                 point_seed = None if self._method == "ode" else scan_seeds[i]
                 try:
                     result = self.run(
@@ -7500,8 +7547,17 @@ class Simulator:
         #1660). Read on one scratch clone, each row's writes put back after it,
         not on a clone per row: a clone per row cost a 2,000-row batch of a
         one-species model 59% of its run time, and a 622-species one 27%. A
-        row with no writes starts at the model's initial conditions."""
+        row with no writes starts at the model's initial conditions.
+
+        A derived parameter a row wrote goes back after the primaries, where
+        the value it held is its expression's again, which lifts the override
+        the row's write made (issue #188). Put back with them in one write, it
+        could stay pinned: rows {Xt: 3, X0: 7} then {X0: 1e-9}, with Xt =
+        2*X0, read the second row's start as 2 for its 2e-9, and under
+        atol="auto" that row returned -9.2e-7 for 0.97."""
         base = np.asarray(self._model._core.get_initial_state(), dtype=float)
+        flags = zip(self._model.param_names, self._model.param_is_expression, strict=True)
+        derived = {name for name, is_expression in flags if is_expression}
         scratch: Model | None = None
         starts: list[np.ndarray] = []
         for pset in params:
@@ -7514,7 +7570,8 @@ class Simulator:
             scratch.set_params(pset)
             scratch.reset()
             starts.append(np.asarray(scratch.get_state(), dtype=float))
-            scratch.set_params(held)
+            scratch.set_params({n: v for n, v in held.items() if n not in derived})
+            scratch.set_params({n: v for n, v in held.items() if n in derived})
         return starts
 
     def _run_single_batch(
@@ -10404,11 +10461,23 @@ class Simulator:
         # this model, an entry whose parameters put it at 1e-9 of this one
         # marched at this one's tolerance and ran through zero (x = -3.7).
         own_auto = atol is None and criterion == "scaled" and not self._atol_set
-        eff_atol_spec = self._resolve_atol(
-            None if own_auto else atol,
-            eff_rtol,
-            where="steady_state_batch(atol=...)",
-        )
+
+        # Issue #1660 — an "auto" asked for (and a tracking ceiling it gives) is
+        # read from the entries' starts, as run_batch reads it from its rows',
+        # not from this model's live state: from the cubic at s = 1, the entry
+        # at s = 1e-9 ended unconverged at -3.7 of its root by Newton. A scalar
+        # stays as given, as steady_state() takes it.
+        def entry_starts() -> list[np.ndarray]:
+            if states is not None:
+                return [np.asarray(state, dtype=float) for state in states]
+            return self._batch_row_starts(params)
+
+        with self._auto_from(entry_starts):
+            eff_atol_spec = self._resolve_atol(
+                None if own_auto else atol,
+                eff_rtol,
+                where="steady_state_batch(atol=...)",
+            )
         eff_max_steps = max_steps if max_steps is not None else self._max_steps
 
         # Each entry starts from the initial conditions (a clone's reset()), as
