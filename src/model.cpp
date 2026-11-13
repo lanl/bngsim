@@ -2232,7 +2232,8 @@ const NetworkModel::ReadPlan &NetworkModel::kept_read_plan(const std::vector<int
     return it->second;
 }
 
-void NetworkModel::evaluate_read_plan(double t, const double *conc, const ReadPlan &plan) {
+void NetworkModel::evaluate_read_plan(double t, const double *conc, const ReadPlan &plan,
+                                      bool with_deferred) {
     impl_->current_time = t;
     for (int oi : plan.observables) {
         update_observable_(static_cast<size_t>(oi), conc);
@@ -2246,7 +2247,7 @@ void NetworkModel::evaluate_read_plan(double t, const double *conc, const ReadPl
         cache.assign(impl_->functions.size(), 0.0);
     }
     for (int g : plan.groups) {
-        evaluate_function_group_(static_cast<size_t>(g), /*with_deferred=*/true);
+        evaluate_function_group_(static_cast<size_t>(g), with_deferred);
     }
 }
 

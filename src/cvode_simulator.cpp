@@ -864,6 +864,15 @@ struct CvodeUserData {
     // surface (or reaching it). Null, and the root set unchanged, wherever the
     // run has no such equality. Owned by run().
     const std::vector<int> *held_equality_roots = nullptr;
+    // Issue #1669: what the root function reads of the model, found for the
+    // expressions it evaluates (root_plan_ids: every event trigger, then the
+    // discontinuity triggers, the state-switch residuals and the held
+    // equalities) and kept until that list changes. root_ids_now is the list
+    // read at a call, to compare against it.
+    std::vector<int> root_plan_ids;
+    std::vector<int> root_ids_now;
+    NetworkModel::ReadPlan root_plan;
+    bool root_plan_found = false;
     // Per held equality, the last time and state the root function read it
     // exactly 0 at, `ns` doubles each: the state on the surface a root
     // tolerance before the root of its leaving, where CVODE's interpolant read
@@ -3188,6 +3197,35 @@ static int cvode_colored_jac(sunrealtype t, N_Vector y, N_Vector fy, SUNMatrix J
 // discontinuity-trigger condition, subtracting 0.5 so a false→true (or
 // true→false) flip is a sign change. Event roots occupy gout[0,n_events)
 // and discontinuity roots gout[n_events, n_roots).
+// What the root function reads of the model (issue #1669): the observables and
+// function groups its expressions read, through NetworkModel::read_plan. Null
+// where that is everything (a table function, a slot nothing models). Found
+// once for a list of root expressions and kept on `data` until the list
+// changes: a run's state-switch residuals and held equalities are set before
+// CVODE is first asked, and a restart may set others.
+static const NetworkModel::ReadPlan *root_read_plan(CvodeUserData *data) {
+    const NetworkModel &mdl = *data->model;
+    std::vector<int> &ids = data->root_ids_now;
+    ids.clear();
+    for (const Event &ev : mdl.events()) {
+        ids.push_back(ev.trigger_expr_idx);
+    }
+    const auto &disc = mdl.discontinuity_triggers();
+    ids.insert(ids.end(), disc.begin(), disc.end());
+    if (data->state_switch_roots != nullptr) {
+        ids.insert(ids.end(), data->state_switch_roots->begin(), data->state_switch_roots->end());
+    }
+    if (data->held_equality_roots != nullptr) {
+        ids.insert(ids.end(), data->held_equality_roots->begin(), data->held_equality_roots->end());
+    }
+    if (!data->root_plan_found || ids != data->root_plan_ids) {
+        data->root_plan = mdl.kept_read_plan(ids); // a copy: the model's may be dropped
+        data->root_plan_ids = ids;
+        data->root_plan_found = true;
+    }
+    return data->root_plan.full ? nullptr : &data->root_plan;
+}
+
 static int cvode_event_root_fn_body(sunrealtype t, N_Vector y, sunrealtype *gout, void *user_data) {
     auto *data = static_cast<CvodeUserData *>(user_data);
     auto *mdl = data->model;
@@ -3199,9 +3237,19 @@ static int cvode_event_root_fn_body(sunrealtype t, N_Vector y, sunrealtype *gout
     for (int i = 0; i < nsp; ++i) {
         sp_vec[i].concentration = y_ptr[i];
     }
-    mdl->update_observables(y_ptr);
-    // Without the deferred functions: no trigger reads one (issue #1186).
-    mdl->evaluate_functions(static_cast<double>(t), /*with_deferred=*/false);
+    // Only what the roots read (issue #1669): the observables and function
+    // groups their expressions read, directly or through one another. Every
+    // function evaluated on every call was a fifth to two fifths of a run of
+    // the BioModels the issue lists, where most triggers read the clock alone.
+    // A rateOf reader takes the whole model, as below. Without the deferred
+    // functions either way: no trigger reads one (issue #1186).
+    const NetworkModel::ReadPlan *plan = mdl->uses_rateof() ? nullptr : root_read_plan(data);
+    if (plan != nullptr) {
+        mdl->evaluate_read_plan(static_cast<double>(t), y_ptr, *plan, /*with_deferred=*/false);
+    } else {
+        mdl->update_observables(y_ptr);
+        mdl->evaluate_functions(static_cast<double>(t), /*with_deferred=*/false);
+    }
 
     // GH #106: refresh the live rateOf buffer, and re-evaluate the functions
     // against it, so triggers reading rateOf(species) — directly or via a
