@@ -1336,7 +1336,8 @@ const NetworkModel::StateSwitch *NetworkModel::state_switch(const std::string &c
                 trigger_residual_source(pre, reason, ResidualUse::SwitchSurface);
             if (src) {
                 try {
-                    sw.residual_expr_idx = impl_->evaluator->compile_preprocessed(*src);
+                    // Its repeated subexpressions computed once (issue #1669).
+                    sw.residual_expr_idx = impl_->evaluator->compile_preprocessed_shared(*src);
                     sw.residual_source = *src;
                 } catch (const std::exception &e) {
                     reason = std::string("its residual '") + *src + "' did not compile (" +

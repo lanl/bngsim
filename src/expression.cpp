@@ -1277,6 +1277,9 @@ struct ExprTkEvaluator::Impl {
     // Cached preprocessed expression strings for efficient clone().
     // Indexed in parallel with `expressions`.
     std::vector<std::string> preprocessed_strings;
+    // What compile_preprocessed_shared() compiled in place of the string, by
+    // expression id (issue #1669).
+    std::unordered_map<int, std::string> shared_programs;
 
     // Owned custom function objects (must outlive the symbol table)
     MratioFunction<double> mratio_func;
@@ -1722,6 +1725,308 @@ int ExprTkEvaluator::compile_preprocessed(const std::string &preprocessed_expr) 
     impl_->expressions.push_back(std::move(expression));
     impl_->preprocessed_strings.push_back(preprocessed_expr);
     return id;
+}
+
+// ─── Repeated subexpressions, computed once (issue #1669) ───────────────────
+//
+// A state switch's residual is its condition with every function it reads
+// written in, so a rule read four times is written four times, and one that
+// reads another is written in each copy. BIOMD0000000385's ten residuals came
+// to 64,746 nodes, of 183 different subexpressions, and reading them was three
+// quarters of every run: CVODE reads every residual at every step and at every
+// output row.
+//
+// Each parenthesised group that is an expression of its own (not a call's
+// argument list) and occurs more than once is computed once, into a local
+// variable, in the order its readers need: `var c0 := a*b; var c1 := (c0)+1;
+// (c1)*(c1)`. Only for plain arithmetic: a conditional (if, and, or, a ternary)
+// computes one branch, and computed ahead of it, a group in the other could
+// warn of a value nothing reads. Anything else this does not read as such, and
+// a text with nothing to share, compiles as it is.
+namespace {
+
+class GroupSharer {
+  public:
+    explicit GroupSharer(const std::string &text) : text_(text) {}
+
+    // The program, or "" where the text compiles as it is. `taken` says
+    // whether a name is the model's.
+    template <class Taken> std::string program(const Taken &taken) {
+        if (!plain()) {
+            return {};
+        }
+        size_t i = 0;
+        std::string root;
+        if (!parse(i, root, /*depth=*/0) || i != text_.size()) {
+            return {};
+        }
+        bool any = false;
+        for (size_t id = 0; id < bodies_.size(); ++id) {
+            if (count_[id] > 1 && !single_token(bodies_[id])) {
+                any = true;
+                break;
+            }
+        }
+        if (!any) {
+            return {};
+        }
+        prefix_ = "bngsim_cse";
+        while (prefix_taken(taken)) {
+            prefix_ += "x";
+        }
+        defined_.assign(bodies_.size(), 0);
+        std::string out;
+        const std::string tail = expand(root, out);
+        out += tail;
+        return out;
+    }
+
+  private:
+    const std::string &text_;
+    std::vector<std::string> bodies_; // canonical texts, by id
+    std::vector<int> count_;          // occurrences, by id
+    std::unordered_map<std::string, size_t> ids_;
+    std::vector<std::string> names_; // identifiers in the text
+    std::vector<char> defined_;
+    std::string prefix_;
+
+    static constexpr char kOpen = '\x01';
+    static constexpr char kClose = '\x02';
+
+    static bool ident_start(char c) {
+        return std::isalpha(static_cast<unsigned char>(c)) != 0 || c == '_';
+    }
+    static bool ident_char(char c) {
+        return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_' || c == '.';
+    }
+
+    // Plain arithmetic: no character a statement, string, vector or logical
+    // operator is spelled with, and no keyword.
+    bool plain() {
+        for (char c : text_) {
+            if (c == kOpen || c == kClose || std::strchr("?;:[]{}\"'~$&|!#@\\", c) != nullptr) {
+                return false;
+            }
+        }
+        static const std::unordered_set<std::string> keywords = {
+            "if",    "else",  "while",    "for",    "switch", "case", "default", "repeat",
+            "until", "break", "continue", "return", "var",    "and",  "or",      "nand",
+            "nor",   "xor",   "xnor",     "not",    "mand",   "mor",  "in",      "like",
+            "ilike", "true",  "false",    "null",   "swap",   "const"};
+        for (size_t i = 0; i < text_.size();) {
+            const char c = text_[i];
+            if (std::isdigit(static_cast<unsigned char>(c)) != 0 ||
+                (c == '.' && i + 1 < text_.size() &&
+                 std::isdigit(static_cast<unsigned char>(text_[i + 1])) != 0)) {
+                i = skip_number_at(i);
+                continue;
+            }
+            if (ident_start(c)) {
+                size_t j = i;
+                while (j < text_.size() && ident_char(text_[j])) {
+                    ++j;
+                }
+                std::string word = text_.substr(i, j - i);
+                if (keywords.count(word) != 0) {
+                    return false;
+                }
+                names_.push_back(std::move(word));
+                i = j;
+                continue;
+            }
+            ++i;
+        }
+        return true;
+    }
+
+    size_t skip_number_at(size_t i) const {
+        const auto digit = [&](size_t k) {
+            return k < text_.size() && std::isdigit(static_cast<unsigned char>(text_[k])) != 0;
+        };
+        while (i < text_.size() && (digit(i) || text_[i] == '.')) {
+            ++i;
+        }
+        if (i < text_.size() && (text_[i] == 'e' || text_[i] == 'E')) {
+            size_t j = i + 1;
+            if (j < text_.size() && (text_[j] == '+' || text_[j] == '-')) {
+                ++j;
+            }
+            if (digit(j)) {
+                i = j;
+                while (digit(i)) {
+                    ++i;
+                }
+            }
+        }
+        return i;
+    }
+
+    template <class Taken> bool prefix_taken(const Taken &taken) const {
+        for (const std::string &n : names_) {
+            if (n.compare(0, prefix_.size(), prefix_) == 0) {
+                return true;
+            }
+        }
+        for (size_t k = 0; k < bodies_.size(); ++k) {
+            if (taken(prefix_ + std::to_string(k))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static bool single_token(const std::string &body) {
+        for (char c : body) {
+            if (!ident_char(c)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Reads text_ from i up to the bracket that closes the one before i (or to
+    // the end at depth 0), into `out`: each group that is
+    // an expression of its own as kOpen id kClose. False on a bracket that
+    // does not match, or a group with a comma at its top (no expression of
+    // its own, read as a call's arguments).
+    bool parse(size_t &i, std::string &out, int depth) {
+        bool after_name = false; // the token before a bracket is a name: a call
+        while (i < text_.size()) {
+            const char c = text_[i];
+            if (std::isspace(static_cast<unsigned char>(c)) != 0) {
+                out += c; // kept: it may part two names, or a name and a number
+                ++i;
+                continue;
+            }
+            if (c == ')') {
+                if (depth == 0) {
+                    return false;
+                }
+                ++i;
+                return true;
+            }
+            if (c == '(') {
+                ++i;
+                std::string inner;
+                if (!parse(i, inner, depth + 1)) {
+                    return false;
+                }
+                bool comma = false;
+                int nest = 0;
+                for (char k : inner) {
+                    if (k == '(') {
+                        ++nest;
+                    } else if (k == ')') {
+                        --nest;
+                    } else if (k == ',' && nest == 0) {
+                        comma = true;
+                    }
+                }
+                if (after_name || comma || inner.empty()) {
+                    out += '(';
+                    out += inner;
+                    out += ')';
+                } else {
+                    auto [it, fresh] = ids_.emplace(inner, bodies_.size());
+                    if (fresh) {
+                        bodies_.push_back(inner);
+                        count_.push_back(0);
+                    }
+                    ++count_[it->second];
+                    out += kOpen;
+                    out += std::to_string(it->second);
+                    out += kClose;
+                }
+                after_name = false;
+                continue;
+            }
+            if (std::isdigit(static_cast<unsigned char>(c)) != 0 ||
+                (c == '.' && i + 1 < text_.size() &&
+                 std::isdigit(static_cast<unsigned char>(text_[i + 1])) != 0)) {
+                const size_t j = skip_number_at(i);
+                out.append(text_, i, j - i);
+                i = j;
+                after_name = false;
+                continue;
+            }
+            if (ident_start(c)) {
+                size_t j = i;
+                while (j < text_.size() && ident_char(text_[j])) {
+                    ++j;
+                }
+                out.append(text_, i, j - i);
+                i = j;
+                after_name = true;
+                continue;
+            }
+            out += c;
+            ++i;
+            after_name = false;
+        }
+        return depth == 0;
+    }
+
+    // `body` with each group written back: a shared one as its variable
+    // (defined into `defs` first, after the groups it reads), the others in
+    // brackets as they were.
+    std::string expand(const std::string &body, std::string &defs) {
+        std::string out;
+        out.reserve(body.size());
+        for (size_t i = 0; i < body.size(); ++i) {
+            if (body[i] != kOpen) {
+                out += body[i];
+                continue;
+            }
+            const size_t end = body.find(kClose, i);
+            const size_t id = std::stoul(body.substr(i + 1, end - i - 1));
+            i = end;
+            if (count_[id] > 1 && !single_token(bodies_[id])) {
+                const std::string name = prefix_ + std::to_string(id);
+                if (defined_[id] == 0) {
+                    const std::string value = expand(bodies_[id], defs);
+                    defs += "var " + name + " := " + value + ";\n";
+                    defined_[id] = 1;
+                }
+                out += '(';
+                out += name;
+                out += ')';
+            } else {
+                out += '(';
+                out += expand(bodies_[id], defs);
+                out += ')';
+            }
+        }
+        return out;
+    }
+};
+
+} // namespace
+
+int ExprTkEvaluator::compile_preprocessed_shared(const std::string &preprocessed_expr) {
+    GroupSharer sharer(preprocessed_expr);
+    const std::string program = sharer.program(
+        [this](const std::string &name) { return impl_->symbol_table.symbol_exists(name); });
+    if (program.empty()) {
+        return compile_preprocessed(preprocessed_expr);
+    }
+    Impl::Expression expression;
+    expression.register_symbol_table(impl_->symbol_table);
+    Impl::Parser &parser = impl_->acquire_parser();
+    if (!parser.compile(program, expression)) {
+        // Not one this reads as it does: compiled as it is, which raises
+        // where the text itself does not compile.
+        return compile_preprocessed(preprocessed_expr);
+    }
+    const int id = static_cast<int>(impl_->expressions.size());
+    impl_->expressions.push_back(std::move(expression));
+    impl_->preprocessed_strings.push_back(preprocessed_expr);
+    impl_->shared_programs.emplace(id, program);
+    return id;
+}
+
+std::string ExprTkEvaluator::shared_program(int expr_id) const {
+    auto it = impl_->shared_programs.find(expr_id);
+    return it != impl_->shared_programs.end() ? it->second : std::string();
 }
 
 const std::string &ExprTkEvaluator::preprocessed_expr(int expr_id) const {
