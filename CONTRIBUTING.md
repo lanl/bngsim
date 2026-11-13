@@ -565,6 +565,13 @@ authors of a squash-merged pull request end up. Someone who asked not to be
 listed at all would turn the check red; teach `ci/contributors.py` about them
 rather than listing them.
 
+## Claiming an issue
+
+Before you start on an issue, comment on it to say you are working on it and
+name your branch, so that two people do not fix the same thing. If you drop it,
+say so on the issue. A claim with no linked PR and no update for about two
+weeks lapses, and anyone may take the issue.
+
 ## Before opening a PR
 
 - Keep new code consistent with the surrounding style (`.clang-format` for C++,
