@@ -20,6 +20,36 @@ release commit, so no two branches ever edit this file (issue #668). Add a
 fragment — see [`changelog.d/README.md`](changelog.d/README.md) — rather than
 an entry here.
 
+## [0.17.2] - 2026-11-12
+
+### Deprecated
+
+- **`block_same_complex_binding=False` with `method="rm"` or a
+  `RuleMonkeySession`.** RuleMonkey 3.13.0 deprecates the mode: it prints one
+  warning to stderr per process, and RuleMonkey 4.0 removes it. Results are
+  unchanged. The NFsim methods are not affected.
+
+### Fixed
+
+- **An `EvaluationSpec` with `method="ssa"` could not name its seed, and SED-ML's random seed was dropped ([#1517](https://github.com/lanl/bngsim/issues/1517)).** The spec had no seed field, so each `evaluate()` of one SSA spec, and of its JSON round trip to a worker, drew a fresh seed, under one byte-identical `to_json()` key. `read_sedml` dropped a document's `KISAO:0000488`, and the writers wrote none, so `read_omex(...).load_protocol()` ran a seeded BNGL `simulate` on fresh seeds. A spec now has `seed`, carried through JSON and SED-ML both ways, and through `read_sedml_protocol` and `write_sedml_protocol` for a stochastic run. It is emitted only when set, so an unseeded spec keeps its bytes. An unseeded stochastic spec still draws a fresh seed, and reports it on `Result.seed`. A run with an output start runs its output leg at the seed, which `Result.seed` reports, and the leg before it at a seed derived from it, under `evaluate()` and `run_protocol` alike; `run_protocol` had run that leg on a fresh seed, and read a seed past 2**53 through a float.
+
+- **NFsim ran a seed past 2**32 - 1 as its low 32 bits, and reported the seed passed ([#1515](https://github.com/lanl/bngsim/issues/1515)).** NFsim seeds its generators from 32 bits, so `seed=2**32 + 12345` returned the `seed=12345` trajectory bit for bit while `Result.seed` and `session.seed` read 4294979641: two runs that read as independent were one. `method="nf"` and `NfsimSession.initialize` now raise `ValueError` on such a seed, naming the seed it would have run as, and a refused `initialize` leaves a live session as it was. Seeds up to 2**32 - 1 run as before. A seed below 0 or past 2**64 - 1 now raises a `ValueError` that names the range on every method and session, where it raised pybind11's `TypeError: incompatible function arguments`.
+
+- **A `.net` species line whose index was not its line was read by its line, with no word ([#1512](https://github.com/lanl/bngsim/issues/1512)).** With `2 B() 5` above `1 A() 1`, the reaction `1 1 0 k` degraded B(), and `Aobs` read 1.839397 where the file declares species 1 to be A() and gives 0.367879. BioNetGen's two readers disagree on such a file: run_network places a species at its index, BNG2.pl's `readFile` at its line. `Model.from_net`, `parse_net_file` and `net_to_sbml` now refuse a species index that is not its 1-based line. An unindexed line keeps its place, and the index is compared as a number, so `01` on the first line still loads.
+
+- **A `.net` file from which no block is read loaded as an empty model, with no error ([#1511](https://github.com/lanl/bngsim/issues/1511)).** A 0-byte file, one of blank or comment lines only, and one whose lines end in a bare carriage return (classic Mac OS) behind BNG2.pl's `# Created by BioNetGen` line gave 0 species and 0 reactions, and a run returned a trajectory of no columns. `Model.from_net` and `parse_net_file` now refuse such a file, as run_network does. A bare CR stays a blank inside its line, as BNG2.pl and run_network read it, and a refusal of a file that holds one says so. The `unit_conversion` reading of the same file now ends lines where the loader does: it ended one at a bare CR too.
+
+- **After a run, an assignment-rule species read its starting value through the model ([#1510](https://github.com/lanl/bngsim/issues/1510)).** `Model.get_concentration`, `Model.get_state`, `Simulator.get_state`, `ReactionKernel.get_state`, `CouplingMap.read` and `Simulator.snapshot` returned a rule target at its t=0 value when the rule was linear in species (`S := 2*A` read 20 where the rule gives 2.706706), and for every rule under SSA, while `Result.species` reported the live value. A run now leaves each rule target in the model at the value it reports for the last row. The slot is read by no rate law and no event, so what follows does not move: a continuation run and a `carry_sensitivities` pre-equilibration give the results they gave. On a `.net` from `sbml_to_net`, SSA and PSA now hold a rule target as a value, as on the SBML route, where they rounded its slot to a whole number and warned that they had.
+
+- **The Antimony loaders built the last module defined, not the main one ([#1508](https://github.com/lanl/bngsim/issues/1508)).** `Model.from_antimony`, `Model.from_antimony_string`, `Model.load` on a `.ant` and an Antimony `EvaluationSpec` took `getModuleNames()[-1]`. Top-level reactions beside a helper `model`, a `model *main()` defined before another, and a module instantiated at top level with an override (`A: sub(); A.k = 0.5`) each loaded the other module, with no word: S1(2) = 0 or 8.187 for 3.679. They now load the module libantimony names main, as RoadRunner does, so a module instantiated at top level loads under its instance's names (`A_S1`, `A_k`), where its bare `S1` and `k` loaded before. Where a stray top-level statement, such as a `unit` line, a `const` or a constant `y := 2`, makes the top level the main module with nothing in it that changes over time, the model still loads, with a `ConversionWarning` naming any symbol left out. The RoadRunner reference side of the comparisons, which took the last module too, now reads the main one.
+
+- **`Result.to_cdat()` wrote species from before the solve's corrections ([#1505](https://github.com/lanl/bngsim/issues/1505)).** A linear assignment-rule species (`S := 2*A`) was written at its starting value at every sample, and a species in a compartment an event resizes kept amount over the starting volume, under ODE and SSA. So the `.cdat` disagreed with `Result.species`, with `to_csv(kind="species")`, and with the `.cdat` the same Result wrote after `save`/`Result.load`. `to_cdat` now writes `Result.species`, in the layout it always had. A Result with no corrected species writes the same bytes as before, and a loaded Result writes the bytes the run wrote; before, it used a second layout. A squeezed `run_batch` Result, which holds a trajectory per row, is refused by name (`ValueError`), where it used to fail inside string formatting (`TypeError`). A loaded Result now raises the run's `RuntimeError` for a path it cannot open, where it raised `FileNotFoundError`.
+
+- **`method="rm"` runs on RuleMonkey 3.13.0.** A rate that counts the
+  complexes matching a reactant pattern now follows a bond made or broken far
+  from the rule's own molecules at once; it lagged until the rule next fired,
+  so a chain cut and rejoined fast read 233 against BNG2's 259.
+
 ## [0.17.1] - 2026-11-11
 
 ### Added
