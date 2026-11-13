@@ -1736,13 +1736,12 @@ int ExprTkEvaluator::compile_preprocessed(const std::string &preprocessed_expr) 
 // quarters of every run: CVODE reads every residual at every step and at every
 // output row.
 //
-// Each parenthesised group that is an expression of its own (not a call's
-// argument list) and occurs more than once is computed once, into a local
-// variable, in the order its readers need: `var c0 := a*b; var c1 := (c0)+1;
-// (c1)*(c1)`. Only for plain arithmetic: a conditional (if, and, or, a ternary)
-// computes one branch, and computed ahead of it, a group in the other could
-// warn of a value nothing reads. Anything else this does not read as such, and
-// a text with nothing to share, compiles as it is.
+// Each parenthesised group and each call that occurs more than once is computed
+// once, into a local variable, in the order its readers need: `var c0 := (a*b);
+// var c1 := sqrt((c0)+1); (c1)*(c1)`. Only for plain arithmetic: a conditional
+// (if, and, or, a ternary) computes one branch, and computed ahead of it, a
+// group in the other could warn of a value nothing reads. Anything else this
+// does not read as such, and a text with nothing to share, compiles as it is.
 namespace {
 
 class GroupSharer {
@@ -1762,7 +1761,7 @@ class GroupSharer {
         }
         bool any = false;
         for (size_t id = 0; id < bodies_.size(); ++id) {
-            if (count_[id] > 1 && !single_token(bodies_[id])) {
+            if (shared(id)) {
                 any = true;
                 break;
             }
@@ -1783,7 +1782,7 @@ class GroupSharer {
 
   private:
     const std::string &text_;
-    std::vector<std::string> bodies_; // canonical texts, by id
+    std::vector<std::string> bodies_; // each group or call as written, by id
     std::vector<int> count_;          // occurrences, by id
     std::unordered_map<std::string, size_t> ids_;
     std::vector<std::string> names_; // identifiers in the text
@@ -1875,22 +1874,26 @@ class GroupSharer {
         return false;
     }
 
-    static bool single_token(const std::string &body) {
-        for (char c : body) {
-            if (!ident_char(c)) {
-                return false;
+    // Computed once: read more than once, and more than a name or a number in
+    // brackets.
+    bool shared(size_t id) const {
+        if (count_[id] < 2) {
+            return false;
+        }
+        const std::string &body = bodies_[id];
+        for (size_t k = 1; k + 1 < body.size(); ++k) {
+            if (!ident_char(body[k])) {
+                return true;
             }
         }
-        return true;
+        return body.front() != '(';
     }
 
     // Reads text_ from i up to the bracket that closes the one before i (or to
-    // the end at depth 0), into `out`: each group that is
-    // an expression of its own as kOpen id kClose. False on a bracket that
-    // does not match, or a group with a comma at its top (no expression of
-    // its own, read as a call's arguments).
+    // the end at depth 0), into `out`, with each group and each call as
+    // kOpen id kClose. False on a bracket that does not match.
     bool parse(size_t &i, std::string &out, int depth) {
-        bool after_name = false; // the token before a bracket is a name: a call
+        size_t name_at = std::string::npos; // where `out` holds the name a bracket follows
         while (i < text_.size()) {
             const char c = text_[i];
             if (std::isspace(static_cast<unsigned char>(c)) != 0) {
@@ -1911,38 +1914,44 @@ class GroupSharer {
                 if (!parse(i, inner, depth + 1)) {
                     return false;
                 }
-                bool comma = false;
-                int nest = 0;
+                const size_t call_at = name_at;
+                const bool call = call_at != std::string::npos;
+                name_at = std::string::npos;
+                bool blank = true;
                 for (char k : inner) {
-                    if (k == '(') {
-                        ++nest;
-                    } else if (k == ')') {
-                        --nest;
-                    } else if (k == ',' && nest == 0) {
-                        comma = true;
-                    }
+                    blank = blank && std::isspace(static_cast<unsigned char>(k)) != 0;
                 }
-                if (after_name || comma || inner.empty()) {
+                if (blank) {
+                    // `time()`: as written.
                     out += '(';
                     out += inner;
                     out += ')';
-                } else if (inner.front() == kOpen && inner.find(kOpen, 1) == std::string::npos &&
-                           inner.back() == kClose) {
+                    continue;
+                }
+                if (!call && inner.front() == kOpen && inner.back() == kClose &&
+                    inner.find(kOpen, 1) == std::string::npos) {
                     // A group of one group, `((a+b))`: that group, already
                     // counted.
                     out += inner;
-                } else {
-                    auto [it, fresh] = ids_.emplace(inner, bodies_.size());
-                    if (fresh) {
-                        bodies_.push_back(inner);
-                        count_.push_back(0);
-                    }
-                    ++count_[it->second];
-                    out += kOpen;
-                    out += std::to_string(it->second);
-                    out += kClose;
+                    continue;
                 }
-                after_name = false;
+                std::string body;
+                if (call) {
+                    body = out.substr(call_at); // the name, and any space after it
+                    out.erase(call_at);
+                }
+                body += '(';
+                body += inner;
+                body += ')';
+                auto [it, fresh] = ids_.emplace(body, bodies_.size());
+                if (fresh) {
+                    bodies_.push_back(body);
+                    count_.push_back(0);
+                }
+                ++count_[it->second];
+                out += kOpen;
+                out += std::to_string(it->second);
+                out += kClose;
                 continue;
             }
             if (std::isdigit(static_cast<unsigned char>(c)) != 0 ||
@@ -1951,7 +1960,7 @@ class GroupSharer {
                 const size_t j = skip_number_at(i);
                 out.append(text_, i, j - i);
                 i = j;
-                after_name = false;
+                name_at = std::string::npos;
                 continue;
             }
             if (ident_start(c)) {
@@ -1959,21 +1968,21 @@ class GroupSharer {
                 while (j < text_.size() && ident_char(text_[j])) {
                     ++j;
                 }
+                name_at = out.size();
                 out.append(text_, i, j - i);
                 i = j;
-                after_name = true;
                 continue;
             }
             out += c;
             ++i;
-            after_name = false;
+            name_at = std::string::npos;
         }
         return depth == 0;
     }
 
-    // `body` with each group written back: a shared one as its variable
-    // (defined into `defs` first, after the groups it reads), the others in
-    // brackets as they were.
+    // `body` with each group and call written back: a shared one as its
+    // variable (defined into `defs` first, after the ones it reads), the others
+    // as they were.
     std::string expand(const std::string &body, std::string &defs) {
         std::string out;
         out.reserve(body.size());
@@ -1985,7 +1994,7 @@ class GroupSharer {
             const size_t end = body.find(kClose, i);
             const size_t id = std::stoul(body.substr(i + 1, end - i - 1));
             i = end;
-            if (count_[id] > 1 && !single_token(bodies_[id])) {
+            if (shared(id)) {
                 const std::string name = prefix_ + std::to_string(id);
                 if (defined_[id] == 0) {
                     const std::string value = expand(bodies_[id], defs);
@@ -1996,9 +2005,7 @@ class GroupSharer {
                 out += name;
                 out += ')';
             } else {
-                out += '(';
                 out += expand(bodies_[id], defs);
-                out += ')';
             }
         }
         return out;

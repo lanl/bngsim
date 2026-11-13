@@ -27,62 +27,66 @@ import numpy as np
 import pytest
 
 
-def _final(text: str, name: str, grid=(0.0, 10.0), **kw) -> float:
+# ─── The root function's read plan: controls ─────────────────────────────────
+#
+# S' = -S from 10 crosses 5 at t = ln 2, between the rows at 0 and 3, so CVODE's
+# root search finds the crossing. The condition reads S itself, or a chain of
+# functions d2 := d := S, or S through a function that also reads parameters;
+# the plan has to follow each. Closed forms at t = 3. (A clock, q' = 1, would
+# not do: a crossing of the clock is a stop the run schedules, not a root.)
+
+_TIGHT = dict(rtol=1e-10, atol=1e-14)
+_READS = [
+    pytest.param("S", "", id="the species"),
+    pytest.param("d2", "d := S; d2 := d;", id="a chain of functions"),
+    pytest.param("2*h - 5", "h := (S + 5)/2;", id="a function of a parameter"),
+]
+
+
+def _at3(text: str, name: str) -> float:
     model = bngsim.Model.from_antimony_string(text)
-    r = bngsim.Simulator(model, method="ode").run(
-        sample_times=list(grid), rtol=1e-10, atol=1e-12, **kw
-    )
+    r = bngsim.Simulator(model, method="ode").run(sample_times=[0.0, 3.0], **_TIGHT)
     return float(np.asarray(r.species)[-1, list(r.species_names).index(name)])
 
 
-# ─── The root function's read plan: controls ─────────────────────────────────
+@pytest.mark.parametrize(("x", "defs"), _READS)
+def test_an_event_fires_at_its_crossing(x, defs):
+    """Control. A' = on, and the event turns on on where S reaches 5:
+    A(3) = 3 - ln 2."""
+    text = f"species S = 10; J1: S -> ; S; {defs} A = 0; A' = on; on = 0; E1: at ({x} <= 5): on = 1;"
+    assert _at3(text, "A") == pytest.approx(3.0 - math.log(2.0), rel=1e-8)
 
 
-@pytest.mark.parametrize(
-    "trigger",
-    [
-        pytest.param("q >= 2.5", id="the state itself"),
-        pytest.param("g >= 5", id="a chain of functions"),
-        pytest.param("2*h >= 5", id="one function"),
-        pytest.param("q + 0*rateOf(q) >= 2.5", id="rateOf (the whole model)"),
-    ],
-)
-def test_a_crossing_between_rows_fires_at_its_time(trigger):
-    """Control. q = t crosses 2.5 between the rows at 0 and 10, so CVODE's root
-    search finds it, reading the trigger through what it reads. A turns on
-    there: A(10) = 10 - 2.5. Unrelated functions (pad1, pad2) are left out of
-    the plan."""
-    text = (
-        "species S = 3; q = 0; q' = 1; h := q; g := 2*h; pad1 := 7*S; pad2 := pad1 + 1;"
-        f" A = 0; A' = on; on = 0; E1: at ({trigger}): on = 1;"
-    )
-    assert _final(text, "A") == pytest.approx(7.5, rel=1e-8)
+@pytest.mark.parametrize(("x", "defs"), _READS)
+def test_a_rate_law_switches_at_its_crossing(x, defs):
+    """Control. B is made at rate 1 once S is below 5: B(3) = 3 - ln 2."""
+    text = f"species S = 10; species B = 0; J1: S -> ; S; {defs} J2: -> B; piecewise(1, {x} < 5, 0)"
+    assert _at3(text, "B") == pytest.approx(3.0 - math.log(2.0), rel=1e-8)
 
 
-def test_a_crossing_read_through_an_observable():
-    """Control. Q is fed by a reaction, so in the SBML model its token is the
-    same-named observable's total: the plan has to sum that observable for the
-    root search to see Q reach 2.5 at t = 2.5."""
-    text = "species Q = 0; J1: -> Q; 1; A = 0; A' = on; on = 0; E1: at (Q >= 2.5): on = 1;"
-    assert _final(text, "A") == pytest.approx(7.5, rel=1e-8)
+@pytest.mark.parametrize(("x", "defs"), _READS)
+def test_a_state_switch_bends_at_its_crossing(x, defs):
+    """Control. S' = -S (1 + |x - 5|) bends where S reaches 5, at
+    t1 = ln(3)/4 (above it S = 4/(1 - 0.6 exp(-4t))); below it
+    S = 6/(1 + 0.2 exp(6 (t - t1)))."""
+    text = f"species S = 10; {defs} J1: S -> ; S*(1 + abs({x} - 5))"
+    t1 = math.log(3.0) / 4.0
+    assert _at3(text, "S") == pytest.approx(6.0 / (1.0 + 0.2 * math.exp(6.0 * (3.0 - t1))), rel=1e-6)
 
 
 def test_an_assignment_reads_what_the_trigger_does_not():
     """Control. ``S = w`` reads w := 10*q, which the trigger does not, so the
-    root function no longer evaluates it. The event fires between rows, at
-    t = 2.5, and reads w there (25), not where the plan left it."""
-    text = "species S = 3; q = 0; q' = 1; w := 10*q; E1: at (q >= 2.5): S = w;"
-    assert _final(text, "S") == pytest.approx(25.0, rel=1e-10)
+    root function no longer evaluates it. The event fires at t = ln 2, and
+    reads w there (10 ln 2), not where the plan left it."""
+    text = "species S = 10; species T = 3; J1: S -> ; S; q = 0; q' = 1; w := 10*q; E1: at (S <= 5): T = w;"
+    assert _at3(text, "T") == pytest.approx(10.0 * math.log(2.0), rel=1e-8)
 
 
-def test_a_state_switch_read_through_a_function():
-    """Control. S' = -(1 + |d|) with d := S - 5: the residual's crossing at
-    S = 5 is found by the root search, at t = ln 6. Closed form after it:
-    S(t) = 6 - exp(t - ln 6)."""
-    text = "species S = 10; k = 1; d := S - 5; J1: S -> ; k*(1 + abs(d))"
-    assert _final(text, "S", grid=(0.0, 1.0, 3.0)) == pytest.approx(
-        6.0 - math.exp(3.0) / 6.0, rel=1e-7
-    )
+def test_a_trigger_read_through_rate_of():
+    """Control. A trigger that reads rateOf takes the whole model: S' = -S
+    reaches -5 where S reaches 5."""
+    text = "species S = 10; J1: S -> ; S; A = 0; A' = on; on = 0; E1: at (rateOf(S) >= -5): on = 1;"
+    assert _at3(text, "A") == pytest.approx(3.0 - math.log(2.0), rel=1e-8)
 
 
 # ─── A state switch's residual, its repeats computed once ────────────────────
