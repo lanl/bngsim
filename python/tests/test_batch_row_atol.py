@@ -21,38 +21,8 @@ import bngsim
 import numpy as np
 import pytest
 
+ANT = "model m\n X0 = {x0}; k = 1; species X; X = X0;\n J: -> X; k*X*(1 - X);\nend"
 DOSE, T = 1e-9, 20.0
-
-
-def _net(parameters, species, reactions):
-    """A ``.net`` model's text. Every model here is one, so the file runs on
-    each leg, the ones with no Antimony extra among them."""
-
-    def block(name, items):
-        rows = "".join(f" {i} {item}\n" for i, item in enumerate(items, start=1))
-        return f"begin {name}\n{rows}end {name}\n"
-
-    return (
-        block("parameters", parameters) + block("species", species) + block("reactions", reactions)
-    )
-
-
-@pytest.fixture(autouse=True)
-def _models_dir(tmp_path):
-    """Where this test's models are written."""
-    global _DIR
-    _DIR = tmp_path
-
-
-def _load(text, **kw):
-    path = _DIR / f"model_{len(list(_DIR.glob('model_*.net')))}.net"
-    path.write_text(text)
-    return bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode", **kw)
-
-
-# Logistic growth, X' = k X (1 - X): X -> 2X and 2X -> X, each at k.
-def _logistic_net(x0):
-    return _net([f"X0 {x0}", "k 1"], ["X() X0"], ["1 1,1 k", "1,1 1 k"])
 
 
 def _logistic(x0, t, k=1.0):
@@ -61,7 +31,9 @@ def _logistic(x0, t, k=1.0):
 
 
 def _sim(declared=1, **kw):
-    return _load(_logistic_net(declared), **kw)
+    pytest.importorskip("antimony")
+    model = bngsim.Model.from_antimony_string(ANT.format(x0=declared))
+    return bngsim.Simulator(model, method="ode", **kw)
 
 
 def _rel(x, exact):
@@ -187,14 +159,15 @@ def test_a_continuation_point_reads_the_tolerance_from_where_it_starts():
     the last ended. X' = -X from 1, four points of t = 10: X = e^(-10 n). Held
     to the tolerance of the first start, main returned -1.25e-8 for 2.06e-9 at
     the second point and 2.97e-11 for 4.25e-18 at the fourth."""
-    sim = _load(_net(["k 1"], ["X() 1"], ["1 0 k"]))
+    pytest.importorskip("antimony")
+    src = "model m\n species X; X = 1; k = 1;\n J: X -> ; k*X;\nend"
+    sim = bngsim.Simulator(bngsim.Model.from_antimony_string(src), method="ode")
     points = sim.bifurcate("k", [1.0] * 4, t_span=(0, 10), n_points=11)
     for n, point in enumerate(points, start=1):
         assert _rel(point.species[-1, 0], math.exp(-10 * n)) < 1e-2, n
 
 
-# X' = -X from X0.
-DECAY = _net(["X0 1", "kd 1"], ["X() X0"], ["1 0 kd"])
+DECAY = "model m\n X0 = {x0}; species X; X = X0;\n J: X -> ; X;\nend"
 
 
 @pytest.mark.parametrize("call", ["run_batch", "parameter_scan"])
@@ -202,7 +175,8 @@ def test_a_row_held_to_its_own_scale_is_not_warned_about(call):
     """AtolScaleWarning is asked against the tolerance each row ran at: a row
     at X0 = 1e-12 runs at 1e-20, and its X is not below that. Asked against the
     model's own, 1e-8, it warned of a species the row did hold."""
-    sim = _load(DECAY)
+    pytest.importorskip("antimony")
+    sim = bngsim.Simulator(bngsim.Model.from_antimony_string(DECAY.format(x0=1)), method="ode")
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         if call == "run_batch":
@@ -268,7 +242,9 @@ def test_auto_for_rows_at_the_models_start_is_the_vector_it_was(call):
 def test_auto_reads_the_tightest_start_species_by_species():
     """Two species, each smallest in a different row: the batch's vector takes
     each species' own smallest, rtol of it."""
-    sim = _load(_net(["a 1", "b 1", "kd 1"], ["X() a", "Y() b"], ["1 0 kd", "2 0 kd"]))
+    pytest.importorskip("antimony")
+    src = "model m\n a = 1; b = 1; species X, Y; X = a; Y = b;\n J1: X -> ; X; J2: Y -> ; Y;\nend"
+    sim = bngsim.Simulator(bngsim.Model.from_antimony_string(src), method="ode")
     rows = [{"a": 1e-6, "b": 1.0}, {"a": 1.0, "b": 1e-9}]
     with sim._auto_from(lambda: [np.array([1e-6, 1.0]), np.array([1.0, 1e-9])]):
         vector = sim._atol_vector_from("auto", 1e-6, where="t")
@@ -296,7 +272,9 @@ def test_the_starts_auto_reads_are_each_rows_own():
     back after it. X = a*b: a row writing a alone and one writing b alone each
     start X at 1e-6; had the first row's a stayed behind, the second would read
     X = 1e-12, smaller than any row's start, and the batch's "auto" with it."""
-    sim = _load(_net(["a 1", "b 1", "ab a*b", "kd 1"], ["X() ab"], ["1 0 kd"]))
+    pytest.importorskip("antimony")
+    src = "model m\n a = 1; b = 1; species X; X = a*b;\n J: X -> ; X;\nend"
+    sim = bngsim.Simulator(bngsim.Model.from_antimony_string(src), method="ode")
     rows = [{"a": 1e-6}, {"b": 1e-6}, {}, {"a": 2.0, "b": 3.0}]
     expected = []
     for row in rows:
@@ -346,7 +324,7 @@ def test_a_derived_initial_condition_a_row_overrode_is_put_back(tmp_path):
 
 
 def _dose_x(model, value):
-    model.set_concentration("X()", DOSE)
+    model.set_concentration("X", DOSE)
 
 
 @pytest.mark.parametrize("atol", [None, "auto"])
@@ -391,10 +369,11 @@ def test_a_batch_after_a_run_is_the_batch_on_a_fresh_model():
     of the tighter-of-two was read from its live state: after X -> Y was run to
     t = 30 (X near 1e-13), rows over k took 309 and 429 steps for 153 and 176,
     and gave other numbers."""
-    src = _net(["X0 1", "k 1"], ["X() X0", "Y() 0"], ["1 2 k"])
+    pytest.importorskip("antimony")
+    src = "model m\n X0 = 1; k = 1; species X, Y; X = X0; Y = 0;\n J: X -> Y; k*X;\nend"
 
     def sim():
-        return _load(src)
+        return bngsim.Simulator(bngsim.Model.from_antimony_string(src), method="ode")
 
     rows = [{"k": 0.5}, {"k": 2.0}]
     fresh = sim().run_batch(t_span=(0, 30), n_points=31, params=rows)
