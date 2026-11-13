@@ -13,9 +13,10 @@ land it upstream in RuleMonkey first and then re-run `vendor_rulemonkey.py`.
 ## Current Baseline
 
 - `bngsim/third_party/rulemonkey/VENDOR.json` currently records authoritative
-  branch `main`, resolved source ref `v3.12.0`, and commit
-  `9df2984e53f6c76cc28199b0b6e8e8cb6ee1b8bc` (RuleMonkey 3.12.0, the merge
-  of its release branch, which the `v3.12.0` tag names).
+  branch `main`, resolved source ref `origin/main`, and commit
+  `db7d1dfff60d52dedd8dd1e04742de2f5f579c5c`: RuleMonkey 3.13.0 plus the
+  merge of richardposner/RuleMonkey#144, which re-synced its standalone copy
+  of bngsim's expression layer. Its vendored surface is 3.13.0's.
 - **Refreshing this pin can be a two-repo, ordered job.** The `EXPRTK_SYNC_FILES`
   guard compares RuleMonkey's standalone `third_party/bngsim_expr` copy against
   this tree's `expression.cpp` and friends, and it fails closed. So when
@@ -30,7 +31,12 @@ land it upstream in RuleMonkey first and then re-run `vendor_rulemonkey.py`.
   matched this tree. 3.11.0 → 3.12.0 did: this tree's `expression.hpp` and
   `expression.cpp` had moved past 3.11.0's pin (`6ce2276`), so
   richardposner/RuleMonkey#120 re-synced RuleMonkey's copy to bngsim
-  `4361958` before the release was cut.
+  `4361958` before the release was cut. 3.12.0 → 3.13.0 did too, after the
+  release: 3.13.0 still carried `4361958`, so richardposner/RuleMonkey#144
+  re-synced the copy to bngsim `e527f6c`, and this tree vendors that merge
+  rather than the `v3.13.0` tag. It also grew the copy from four files to
+  eight, because `expression.cpp` had come to include four more bngsim
+  headers (below).
 - Vendoring metadata records canonical upstream remote
   `https://github.com/richardposner/RuleMonkey.git`.
 - The preferred disposable checkout is `/tmp/rulemonkey-vendor-candidate`.
@@ -168,12 +174,19 @@ Editable-build reminder:
   exporting into BNGsim, because BNGsim does not vendor RuleMonkey's
   `third_party/` tree.
 - `vendor_rulemonkey.py` checks that RuleMonkey's standalone
-  `third_party/bngsim_expr` / `third_party/exprtk` copies still match BNGsim's
-  current `expression.hpp`, `expr_compat.hpp`, `expression.cpp`, and
-  `exprtk.hpp` (the `EXPRTK_SYNC_FILES` set). `expr_compat.hpp` was added to the
-  set after GH #49, where `expression.cpp` began `#include`-ing it; a drift in
-  it would otherwise pass the guard while breaking RuleMonkey's standalone
-  `bngsim_expr` build.
+  `third_party/bngsim_expr` / `third_party/exprtk` copies, as the commit being
+  vendored has them (not as the candidate checkout has them), still match
+  BNGsim's current `expression.cpp` and every bngsim file it reaches by
+  `#include`:
+  `exprtk.hpp`, `expression.hpp`, `expr_compat.hpp`, `dual.hpp`,
+  `c_locale_numbers.hpp`, `exprtk_dual_pre.hpp` and `exprtk_dual.hpp` (the
+  `EXPRTK_SYNC_FILES` set). A file left out would pass the guard while
+  RuleMonkey's copy of it kept old text: `expr_compat.hpp` was added after
+  GH #49, and the last four after GH #1330 and GH #1235.
+  `python/tests/test_rulemonkey_exprtk_sync_closure.py` walks the includes and
+  fails when the set is not exactly what they reach, so a new include in
+  `expression.cpp` names the file to add here and to the `FILES` table of
+  RuleMonkey's `scripts/vendor_exprtk.py`.
 - `bngsim/CMakeLists.txt` must declare `bngsim::expression` before
   `add_subdirectory(third_party/rulemonkey)` and fails configure if vendored
   RuleMonkey stops linking that host target.

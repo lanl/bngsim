@@ -76,7 +76,7 @@ installed locally. The rest are local-only.
 `rm_driver` runs a single trajectory:
 
 ```bash
-build/release/rm_driver <model.xml> <t_end> <n_steps> [seed] [-no-bscb] \
+build/release/rm_driver <model.xml> <t_end> <n_steps> [seed] \
     [--ignore-unsupported] [--save-state <path>] [--load-state <path>] \
     [--t-start <time>] [--print-functions] \
     [--reps <n> [--threads <n>] [--sd-out <path>]]
@@ -100,7 +100,7 @@ value — the RuleMonkey equivalent of BioNetGen's `parameter_scan` and
 build/release/rm_scan <model.xml> --param <name> \
     (--values v1,v2,... | --min <m> --max <x> --n-points <n> [--log]) \
     --t-end <t> [--t-start <t>] [--n-steps <k>] [--seed <s>] \
-    [--bifurcate] [--reset-conc 0|1] [--print-functions] [-no-bscb] \
+    [--bifurcate] [--reset-conc 0|1] [--print-functions] \
     [--ignore-unsupported]
 ```
 
@@ -108,18 +108,30 @@ Output is tab-separated `.scan` on stdout (one row per swept value).
 See [`docs/scan_format.md`](docs/scan_format.md) for the format and the
 BNG-semantics mapping.
 
-RuleMonkey defaults to strict BNGL semantics (`block_same_complex_binding`,
-equivalent to NFsim's `-bscb` flag). Pass `-no-bscb` for compatibility with
-NFsim runs that disabled this check.
+RuleMonkey applies BNGL's `+` as BioNetGen's network does: a bimolecular
+rule takes its reactants from different complexes, and molecules written
+into different product patterns end in different complexes. NFsim blocks
+same-complex binding when run with `-cb` or `-bscb`, and BioNetGen's
+`simulate_nf` passes `-cb` by default. Both CLIs still accept `-no-bscb`,
+which drops both checks to copy NFsim run with neither flag, a mode without
+complex bookkeeping that BNGL does not define. `-no-bscb` is deprecated and
+will be removed in 4.0 (issue #139).
 
 ## Behavior differences vs NFsim
 
 Three intentional differences are worth knowing about when comparing RM
 and NFsim runs of the same BNGL model:
 
-1. **Strict BNGL semantics on by default.** `block_same_complex_binding`
-   is enabled (equivalent to NFsim's `-bscb`). Pass `-no-bscb` to match
-   an NFsim run that disabled the check. See
+1. **Strict BNGL semantics.** RM enforces the `+` on both sides of a rule,
+   as BioNetGen's network does (`block_same_complex_binding`). NFsim
+   blocks same-complex binding only with `-cb` or `-bscb` (`simulate_nf`
+   passes `-cb` by default), and even then it does not always test the `+`
+   between product patterns: a unimolecular `+` rule breaks a ring bond
+   whose molecules stay connected, where BioNetGen generates no reaction
+   (RuleWorld/nfsim#61). Run with neither flag (directly, or `simulate_nf`
+   with `complex=>0`), NFsim also binds within a complex, a mode BNGL does
+   not define. To reproduce such a run, run NFsim. RM's `-no-bscb` copies
+   that mode, but it is deprecated and will be removed in 4.0. See
    [`docs/model_semantics.md`](docs/model_semantics.md) § "Strict BNGL
    semantics" for the precise LHS-`+` / RHS-`+` rules and
    [`docs/troubleshooting.md`](docs/troubleshooting.md) § "Differs from
@@ -169,6 +181,7 @@ tests/
                      parameter_scan/bifurcate)
   models/            BNGL test corpora (feature_coverage, real-world, basicModels)
   reference/         Gold-standard reference trajectories from NFsim and earlier RM
+  bng_oracle/        BNG2-oracle suite: models, BioNetGen network references, scorer
 harness/             Python benchmarking + validation drivers
 ```
 
@@ -189,121 +202,57 @@ The public surface is two headers — `include/rulemonkey/simulator.hpp`
 and `include/rulemonkey/types.hpp` — and one library target,
 `rulemonkey` (built by this project's CMake).
 
-Stateless one-shot simulation:
-
 ```cpp
 #include <rulemonkey/simulator.hpp>
 
 rulemonkey::RuleMonkeySimulator sim("model.xml");
-sim.set_block_same_complex_binding(true);
 sim.set_param("kf", 0.5);
 
-rulemonkey::TimeSpec ts{ /*t_start=*/0.0, /*t_end=*/10.0, /*n_points=*/101 };
+rulemonkey::TimeSpec ts{ /*t_start=*/0.0, /*t_end=*/10.0, /*n_points=*/100 };
 auto result = sim.run(ts, /*seed=*/42);
-
-for (size_t t = 0; t < result.n_times(); ++t) {
-  // result.time[t], result.observable_data[obs_idx][t]
-  // result.function_data[fn_idx][t] — BNGL global-function values
-}
+// result.observable_data[obs_idx][t], result.function_data[fn_idx][t]
 ```
 
-`set_param` follows the model's own derivations, so a dose scan reuses
-one loaded simulator: overriding a base parameter re-derives everything
-downstream of it, including the seed-species amounts a
-`<Species concentration="...">` expression names.  For amounts no
-parameter drives, `initial_species()` / `set_initial_amount()` set the
-starting population directly.
+[`docs/embedding.md`](docs/embedding.md) is the guide to the API:
+- building against the library (`add_subdirectory` or `find_package`);
+- load diagnostics;
+- parameter and seed-amount overrides;
+- replicate ensembles (`run_ensemble`);
+- parameter scans and bifurcation;
+- live sessions with mid-run changes, species queries and checkpoints;
+- cooperative cancellation.
 
-```cpp
-for (double dose : {1.0, 7.0, 68.0}) {
-  sim.set_param("AT_nM", dose);              // seed counts follow the derivation
-  auto r = sim.run(ts, /*seed=*/42);
-}
-sim.set_initial_amount("L(r1,r2)", 5000);    // or state the count outright
-```
-
-Stateful session for multi-segment workflows (initialize → simulate →
-mutate → simulate → save state):
-
-```cpp
-sim.initialize(/*seed=*/42);
-auto seg1 = sim.simulate(0.0, 100.0, 101);
-sim.add_molecules("L", 500);                     // mid-run perturbation
-auto seg2 = sim.simulate(100.0, 200.0, 101);
-sim.save_state("checkpoint.bin");
-sim.destroy_session();
-```
-
-Replicate ensembles for error bars — `run_ensemble` runs replicates on
-worker threads and returns the mean and sample SD per time point.
-Replicate `i` is seeded `base_seed + i`, bit-identical to
-`run(ts, base_seed + i)`, and the statistics are the same for any
-thread count:
-
-```cpp
-rulemonkey::EnsembleSpec es;
-es.n_reps = 100;
-es.n_threads = 0;                       // one per hardware thread
-auto ens = sim.run_ensemble(ts, es, /*base_seed=*/42);
-// ens.observable_mean[obs_idx][t], ens.observable_sd[obs_idx][t]
-```
-
-Call `run_ensemble` rather than `run()` from several threads: `run()`
-must not be called concurrently on one simulator instance.
-
-Cooperative cancellation for long runs — `run`, `simulate`, and
-`step_to` each take an optional `rulemonkey::CancelCallback`.  The SSA
-loop polls it every ~1024 events; returning `false` raises
-`rulemonkey::Cancelled` (a `std::runtime_error` subclass) at a safe
-between-event point, leaving any active session at the last completed
-event's time so the caller can inspect, resume, or `destroy_session()`:
-
-```cpp
-auto t0 = std::chrono::steady_clock::now();
-auto budget = std::chrono::seconds(30);
-try {
-  auto r = sim.run(ts, /*seed=*/42,
-                   [&]() { return std::chrono::steady_clock::now() - t0 < budget; });
-} catch (const rulemonkey::Cancelled&) {
-  // wall-clock budget exceeded — no partial Result; embedder decides what to do
-}
-```
-
-Wall-clock budgets, signal handlers, and `request_cancel`-style atomic
-flags all compose on top of this single callback shape.  An empty
-(default-constructed) callback disables polling — there is no
-per-event cost in the common case.
-
-See `include/rulemonkey/simulator.hpp` for the complete contract,
-`include/rulemonkey/types.hpp` for the result/time-spec/feature-warning
-structs, and `examples/embed.cpp` for a minimal compilable example
-(its doc-comment header carries `find_package` / `add_subdirectory`
-CMake snippets for both consumption modes).
+The header comments are the complete contract, and `examples/embed.cpp` is a
+minimal program that compiles against the library.
 
 ## Documentation
 
 - [`docs/quickstart.md`](docs/quickstart.md) — shortest path from a
   BNGL model to RuleMonkey trajectories.
+- [`docs/embedding.md`](docs/embedding.md) — the C++ API by task: one-shot
+  runs, overrides, ensembles, scans, live sessions, checkpoints and
+  cancellation.
 - [`docs/model_semantics.md`](docs/model_semantics.md) — reference for
   "will my BNGL model run on RM?".  Lists every supported BNGL
-  construct, every Tier-0 refusal (compartments, Sat / Hill rate laws,
-  non-binding Arrhenius energy rules, population types, multi-molecule
-  fixed species), and the best-effort warnings the engine emits at
-  load time.
+  construct, every Tier-0 refusal (compartments, Sat and Hill rate laws,
+  Arrhenius rules in shapes RM cannot run, population types and
+  multi-molecule fixed species, among others), and the best-effort
+  warnings the engine emits at load time.
 - [`docs/gdat_format.md`](docs/gdat_format.md) — the `.gdat` output
   format spec, including precision and parsing recipes.
 - [`docs/troubleshooting.md`](docs/troubleshooting.md) — FAQ covering
   unsupported features, `set_param` gotchas, save/load schema
-  fingerprints, and the `-bscb` default difference vs NFsim.
-- [`docs/test_corpora.md`](docs/test_corpora.md) — the three BNGL
-  parity suites (`feature_coverage`, `corpus`, `nfsim_basicmodels`),
-  what each catches, and how to run them.  Separate from the C++
+  fingerprints, and how RM's strict `+` compares with NFsim's flags.
+- [`docs/test_corpora.md`](docs/test_corpora.md) — the four BNGL
+  suites (`feature_coverage`, `corpus` and `nfsim_basicmodels` against
+  NFsim, and `bng_oracle` against BioNetGen's own network), what each
+  catches, and how to run them.  Separate from the C++
   unit tests in `tests/cpp/`, which run via `ctest --preset release`
   and pin down internal API contracts (set_param, save/load,
   homodimer rate vs CME, public-surface coverage).
-- [`docs/timing_comparison.md`](docs/timing_comparison.md) — a
-  173-model RM-vs-NFsim wall-time comparison with a "where does
-  each engine win?" breakdown.
+- [`docs/timing_comparison.md`](docs/timing_comparison.md) — an
+  RM-vs-NFsim wall-time comparison over 169 models, measured
+  2026-05-02 on what became 3.1.2 and not regenerated since.
 - [`docs/internals.md`](docs/internals.md) — engine-internals reading
   guide for contributors about to modify `cpp/rulemonkey/engine.cpp`:
   SSA loop, pattern matching layers, complex tracking, the

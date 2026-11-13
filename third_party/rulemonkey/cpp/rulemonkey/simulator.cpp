@@ -1,5 +1,6 @@
 #include "rulemonkey/simulator.hpp"
 
+#include "c_number.hpp"
 #include "energy_expand.hpp"
 #include "engine.hpp"
 #include "ensemble.hpp"
@@ -22,6 +23,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -1306,7 +1308,7 @@ try_expand_arrhenius(Rule& base, const XmlNode& rl_node, const EnergyFunction& e
   return ArrheniusPath::Consumed;
 }
 
-// Parse TFUN CSV values
+// Parse TFUN CSV values, in the "C" locale whatever the host's (issue #122).
 std::vector<double> parse_csv_doubles(const std::string& s, const std::string& ctx) {
   std::vector<double> vals;
   std::istringstream iss(s);
@@ -1315,7 +1317,7 @@ std::vector<double> parse_csv_doubles(const std::string& s, const std::string& c
     tok = trim(tok);
     if (tok.empty())
       throw std::runtime_error(ctx + ": empty value in CSV");
-    vals.push_back(std::stod(tok));
+    vals.push_back(parse_c_double(tok, ctx));
   }
   return vals;
 }
@@ -2167,9 +2169,9 @@ Model load_model(const std::string& xml_path,
       if (rule.name.empty())
         rule.name = rule.id;
 
-      auto sym = opt_attr(rrn, "symmetry_factor");
+      auto sym = trim(opt_attr(rrn, "symmetry_factor"));
       if (!sym.empty())
-        rule.symmetry_factor = std::stod(sym);
+        rule.symmetry_factor = parse_c_double(sym, "Rule '" + rule.id + "' symmetry_factor");
 
       // ID map for component resolution across patterns
       std::unordered_map<std::string, std::pair<int, int>> reactant_id_map;
@@ -4383,6 +4385,20 @@ void RuleMonkeySimulator::set_molecule_limit(int limit) {
 void RuleMonkeySimulator::set_block_same_complex_binding(bool value) {
   if (impl_->session)
     throw std::runtime_error("Cannot set_block_same_complex_binding during active session");
+  // `false` is deprecated, and the method goes in 4.0 (issue #139).  Say so
+  // once per process: a host that builds many simulators, such as a fitting
+  // loop, would otherwise repeat the line for every one.
+  if (!value) {
+    static std::once_flag warned;
+    std::call_once(warned, [] {
+      std::fprintf(stderr,
+                   "Warning: set_block_same_complex_binding(false) (-no-bscb) is deprecated and "
+                   "will be removed in RuleMonkey 4.0. It runs NFsim's loose mode without "
+                   "complex bookkeeping, which is not a BNGL semantics: a bimolecular rule may "
+                   "take both reactants from one complex, and a rule's products need not come "
+                   "apart. See issue #139.\n");
+    });
+  }
   impl_->model.block_same_complex_binding = value;
 }
 

@@ -6209,13 +6209,16 @@ struct Engine::Impl {
 
   // A molecule the pool moved between complexes, for every context slot its
   // type can seed on this rule.  The n-ary half of percx_sync_all_slots.
-  void nary_percx_moved(int rule_idx, int slot, int mid) {
+  // Returns whether any slot count moved, which is when the propensity can.
+  bool nary_percx_moved(int rule_idx, int slot, int mid) {
     auto& ns = rule_states[rule_idx].nary;
     nary_moved_scratch_.clear();
     nary_percx_sync(ns, slot, mid, nary_moved_scratch_);
+    bool const moved = !nary_moved_scratch_.empty();
     for (int const m : nary_moved_scratch_)
       nary_refold_context(ns, m);
     nary_moved_scratch_.clear();
+    return moved;
   }
 
   std::vector<int> nary_moved_scratch_;
@@ -6690,17 +6693,18 @@ struct Engine::Impl {
   }
 
   // Bring the tally's record for (rule slot, molecule) in line with the pool.
-  void percx_sync(int ri, int slot, int mid) {
+  // Returns whether the record moved.
+  bool percx_sync(int ri, int slot, int mid) {
     auto& rs = rule_states[ri];
     if (mid < 0 || mid >= static_cast<int>(rs.mol_data.size()) ||
         mid >= static_cast<int>(rs.mol_aux.size()))
-      return;
+      return false;
     auto& md = rs.mol_data[mid];
     int& cur = percx_cx_of(rs.mol_aux[mid], slot);
     bool const live = mid < pool.molecule_count() && pool.molecule(mid).active;
     int const want = (live && count_of(md, slot) > 0) ? pool.complex_of(mid) : -1;
     if (cur == want)
-      return;
+      return false;
     if (cur >= 0) {
       // Retire the molecule's own membership record BEFORE the tally
       // re-derives the representative.  percx_find_rep decides who is
@@ -6719,10 +6723,21 @@ struct Engine::Impl {
     cur = want;
     if (want >= 0)
       percx_add(rs, slot, want, mid);
+    return true;
   }
 
   // A molecule whose complex membership changed, for every pure-context slot
   // its type can seed.
+  //
+  // A rule whose tally moves here is marked needed, so incremental_update
+  // recomputes its propensity this event.  Nothing else would: the rule is
+  // otherwise marked only when a molecule of one of its own types is in the
+  // event's affected set, and a merge or split changes the complex of every
+  // molecule on one side of the bond, however far from it they are.  On
+  // E-A-B-B-A-E, breaking B-B takes the E-complex count from 1 to 2 while
+  // the affected set, `max_pattern_depth` = 1 bond out from the B's, holds
+  // no E.  The propensity then kept the old count until an E was next
+  // touched (tests/bng_oracle/models/context_remote_move.bngl).
   void percx_sync_all_slots(int mid) {
     if (mid < 0 || mid >= pool.molecule_count())
       return;
@@ -6732,15 +6747,16 @@ struct Engine::Impl {
     if (ti < 0 || ti >= static_cast<int>(percx_slots_by_type.size()))
       return;
     for (auto& [ri, slot] : percx_slots_by_type[ti]) {
-      if (rule_states[ri].nary.enabled)
-        nary_percx_moved(ri, slot, mid);
-      else
-        percx_sync(ri, slot, mid);
+      bool const moved = rule_states[ri].nary.enabled ? nary_percx_moved(ri, slot, mid)
+                                                      : percx_sync(ri, slot, mid);
+      if (moved)
+        rule_needed_buf[ri] = 1;
     }
   }
 
   // Drain the pool's complex-move side-channel.  Runs once per event, before
-  // any propensity is read.
+  // any propensity is read, and after incremental_update has cleared
+  // rule_needed_buf, which it marks.
   void percx_drain_moves() {
     if (!any_percx) {
       pool.cx_moves_.clear();
@@ -8938,6 +8954,9 @@ struct Engine::Impl {
     // its every component and still lands in a different complex.  Draining
     // before any count is touched means the rest of this routine only ever
     // sees a tally that already agrees with the pool about who is where.
+    // The drain marks the rules whose tally it moved, so the needed-rule
+    // buffer is cleared before it rather than with the rest of the dispatch.
+    std::memset(rule_needed_buf.data(), 0, rule_needed_buf.size());
     percx_drain_moves();
 
     // issue #10 spike: each incremental_update is one event.  Advance the
@@ -9005,7 +9024,6 @@ struct Engine::Impl {
     // --- Type→rule index: only process rules relevant to affected types ---
     int const n_rules = static_cast<int>(model.rules.size());
     int const n_types = static_cast<int>(type_to_rules.size());
-    std::memset(rule_needed_buf.data(), 0, rule_needed_buf.size());
 
     // Collect unique types from affected molecules, then mark relevant rules
     {
@@ -12060,8 +12078,10 @@ struct Engine::Impl {
       //
       // This enforces the RHS-`+` half of strict BNGL semantics.  It is
       // gated on `block_same_complex_binding` so that both halves of the
-      // `+` check (LHS binding and RHS unbinding) toggle together, matching
-      // NFsim's `-bscb` (which implies `-cb` and enables both checks).
+      // `+` check (LHS binding and RHS unbinding) toggle together; off is
+      // the deprecated loose mode (issue #139).  NFsim's `-bscb` blocks
+      // same-complex binding but does not always make this test
+      // (RuleWorld/nfsim#61).
       if (model.block_same_complex_binding &&
           !products_stay_apart(model.rules[selected], match, selected)) {
         timing_sample += std::chrono::duration<double>(t1 - t0).count();

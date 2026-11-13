@@ -1,20 +1,31 @@
 # Test corpora
 
-RuleMonkey's correctness story rests on three independent test suites
-totalling 190 BNGL models. Every parity check compares the RM
-trajectory against a gold-standard reference (NFsim ensemble, BNG2
-ODE, or hand-rolled Gillespie SSA) using a per-model time-integrated
-z-score threshold.
+RuleMonkey's correctness story rests on four independent test suites
+totalling 203 BNGL models. Every check compares the RM trajectory
+against a gold-standard reference:
+
+- an NFsim ensemble, BNG2 ODE or a hand-rolled Gillespie SSA for the first
+  three suites;
+- BioNetGen's own reaction network, integrated by its ODE or SSA solver, for
+  `bng_oracle`.
+
+A reference with a spread is scored by a z-score threshold. A
+`feature_coverage` model whose reference is a deterministic BNG2 ODE is
+scored by relative error instead.
 
 | Suite | Models | Reference | Driver | Wall time |
 |---|---:|---|---|---|
 | `feature_coverage` | 90 | NFsim 20-rep + BNG2 ODE | `harness/benchmark_feature_coverage.py` | ~3 min |
 | `corpus` | 71 | NFsim 100-rep ensemble (with 2 SSA exceptions) | `harness/benchmark_full.py` | smoke 2 min / guard 15 min / full 3 h |
 | `nfsim_basicmodels` | 29 | NFsim 100-rep ensemble | `harness/basicmodels.py` | ~5 min |
+| `bng_oracle` | 13 | BNG2 network: ODE, or an SSA ensemble | `tests/bng_oracle/check.py` (ctest `bng_oracle`) | ~40 s |
 
-Current health (2026-08-06): **182 / 182 PASS** at the canonical
-verdict thresholds. The CI job runs `feature_coverage` on every push
-to `main`.
+Last full sweep of the three NFsim suites (2026-08-06): **182 / 182
+PASS** at the canonical verdict thresholds. CI runs `feature_coverage`
+on every pull request into `main` and every push to it. `bng_oracle`
+runs as part of `ctest` in the release builds on Ubuntu, macOS and
+Windows and in the ASan builds; it is registered only when CMake finds
+`python3`.
 
 ## `feature_coverage` — the BNGL feature matrix
 
@@ -46,7 +57,7 @@ python3 harness/benchmark_feature_coverage.py ft_bond_wildcards combo_strict_pro
 ```
 
 This is the suite to run when iterating on a fix.  CI runs it on
-every push.
+every pull request into `main` and every push to it.
 
 ## `corpus` — real-world rule-based models
 
@@ -98,7 +109,7 @@ flat `T = 5` threshold with a warning.
 NFsim's own `validate/basicModels/` regression suite — small,
 purpose-built tests that NFsim used to verify specific behaviours of
 its rule engine. The suite was inherited when RuleMonkey was forked
-from NFsim and is preserved here as one of three test corpora.
+from NFsim and is preserved here as one of four test corpora.
 
 The 29 models cover: simple binding / unbinding / phosphorylation,
 multiple identical sites and dimerisation, ring closure, explicit
@@ -124,6 +135,48 @@ python3 harness/basicmodels.py --reps 10      # more RM reps
 points the same verdict logic at the basicmodels reference
 directory.
 
+## `bng_oracle` — BioNetGen's own answer
+
+13 models (`tests/bng_oracle/models/*.bngl`) whose expected behaviour comes
+from BNG2.pl's `generate_network()` expansion rather than from an NFsim
+ensemble. A model belongs here when NFsim is wrong about it. An NFsim
+reference would then be permanently red for the wrong reason, and would pull
+RuleMonkey back onto the defect a fix just removed. A model that merely agrees
+with NFsim belongs in the other suites.
+
+Each model records one of two reference kinds:
+
+- **`ode`**: the network integrated by BioNetGen's ODE solver. This is the
+  default, and valid when populations are large enough for the ODE to be the
+  mean of the SSA.
+- **`ssa`**: a committed mean and SEM from an ensemble of BioNetGen network
+  SSA runs. Used for models that run at a handful of complexes, where the ODE
+  answers a different question, or where fluctuations feed back into the rate.
+
+The models pin:
+
+- per-complex counting of context patterns (#33, #42, #52), including the
+  propensity following that count in the same event when a bond forms or
+  breaks out of the event's own reach;
+- whole-species deletes, and partial deletes without `DeleteMolecules`;
+- the `+` and `.` between product patterns (#102, #104), and rules whose
+  products can never form (#105);
+- the Arrhenius rate law as BNG2's network builds it (#107, #109).
+
+The per-model table, with what each column pins, is in the suite's
+[README](https://github.com/richardposner/RuleMonkey/blob/main/tests/bng_oracle/README.md).
+
+```bash
+ctest --preset release -R bng_oracle                        # as CI runs it
+python3 tests/bng_oracle/check.py --driver build/release/rm_driver
+BNG2=~/path/to/BNG2.pl python3 tests/bng_oracle/generate_references.py   # regenerate
+```
+
+Scoring is a z on the difference of two means: RuleMonkey's ensemble SEM is
+combined with the reference's own in quadrature, so an SSA reference is not
+treated as exact. Each model failed by more than ten standard errors
+against the engine before its fix.
+
 ## C++ smoke tests
 
 A ctest suite runs as part of every build.  The ones covering the
@@ -138,7 +191,7 @@ model-configuration surface:
 | `save_load_test` | A save/load continuation matches the same session continued in process, sample for sample; XML mismatch is refused via the schema fingerprint; pre-V2 state files are refused |
 
 ```bash
-ctest --preset release       # whole suite, ~20s
+ctest --preset release       # whole suite, ~80 s; bng_oracle is half of it
 ctest --preset asan          # same tests under AddressSanitizer + UBSan
 ```
 
@@ -157,6 +210,8 @@ Both presets are wired into CI (`.github/workflows/ci.yml`).
 - **Adding a new feature**: write a `feature_coverage/ft_*` model
   for it and a `combo_*` or `edg_*` if it interacts with an
   existing feature in a non-obvious way.
+- **Fixing behaviour where NFsim is wrong**: add a `bng_oracle`
+  model, with BioNetGen's network as the reference.
 
 ## Reference data layout
 
@@ -185,13 +240,21 @@ tests/
       PROVENANCE.md
     rm/
       summary.tsv                                    # RM wall times for the timing comparison
+  bng_oracle/
+    models/*.bngl                                    # 13 BNGL sources
+    xml/*.xml                                        # BNG2-written XML
+    reference/{model}.{mean,sem}.tsv                 # BNG2 network ODE or SSA reference
+    check.py                                         # scorer (ctest bng_oracle)
+    generate_references.py                           # regenerates xml/ and reference/
 ```
 
 The `.tsv` aggregates are the canonical artifacts; the `replicates/`
 directories are disposable scratch held locally only when actively
 regenerating references.
 
-Each root carries a `MANIFEST.tsv` of SHA-256 hashes, and the harness
+Each NFsim reference root (`nfsim`, `basicmodels`, and
+`feature_coverage/reference`) carries a `MANIFEST.tsv` of SHA-256
+hashes, and the harness
 verifies the tree against it before running anything — a hand-edited
 reference would otherwise shift a parity verdict with nothing to say it
 had.  The manifest covers the vendored files only: `replicates/` is

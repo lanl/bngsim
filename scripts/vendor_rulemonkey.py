@@ -72,7 +72,11 @@ PRUNED_PATHS = ("cpp/cli",)
 # diverge. expr_compat.hpp is a dependency of expression.cpp since GH #49
 # (expression.cpp #includes it and defines the expr_compat:: free functions it
 # declares), so it must be tracked here too — a drift in it would otherwise slip
-# the guard while breaking RuleMonkey's standalone bngsim_expr build.
+# the guard while breaking RuleMonkey's standalone bngsim_expr build. The same
+# holds for every bngsim header expression.cpp reaches by #include: dual.hpp and
+# the two exprtk_dual headers since GH #1330, c_locale_numbers.hpp since GH #1235.
+# test_rulemonkey_exprtk_sync_closure.py fails when an include adds one that is
+# not listed here.
 EXPRTK_SYNC_FILES = {
     "third_party/exprtk/exprtk.hpp": BNGSIM_ROOT / "third_party" / "exprtk" / "exprtk.hpp",
     "third_party/bngsim_expr/include/bngsim/expression.hpp": (
@@ -81,6 +85,16 @@ EXPRTK_SYNC_FILES = {
     "third_party/bngsim_expr/include/bngsim/expr_compat.hpp": (
         BNGSIM_ROOT / "include" / "bngsim" / "expr_compat.hpp"
     ),
+    "third_party/bngsim_expr/include/bngsim/dual.hpp": (
+        BNGSIM_ROOT / "include" / "bngsim" / "dual.hpp"
+    ),
+    "third_party/bngsim_expr/include/bngsim/c_locale_numbers.hpp": (
+        BNGSIM_ROOT / "include" / "bngsim" / "c_locale_numbers.hpp"
+    ),
+    "third_party/bngsim_expr/src/exprtk_dual_pre.hpp": (
+        BNGSIM_ROOT / "src" / "exprtk_dual_pre.hpp"
+    ),
+    "third_party/bngsim_expr/src/exprtk_dual.hpp": BNGSIM_ROOT / "src" / "exprtk_dual.hpp",
     "third_party/bngsim_expr/src/expression.cpp": BNGSIM_ROOT / "src" / "expression.cpp",
 }
 
@@ -213,27 +227,59 @@ def working_tree_changes(rulemonkey_repo: Path) -> list[str]:
     return git_lines(rulemonkey_repo, ["status", "--short"])
 
 
-def read_exprtk_vendor_pin(rulemonkey_repo: Path) -> str:
-    vendor_note = rulemonkey_repo / RULEMONKEY_EXPRTK_VENDOR_NOTE
-    if not vendor_note.exists():
-        raise RuntimeError(f"Missing RuleMonkey vendor note: {vendor_note}")
-    for line in vendor_note.read_text().splitlines():
+def file_at_commit(rulemonkey_repo: Path, commit: str, rel_path: str) -> bytes | None:
+    """``rel_path`` as ``commit`` has it, or None where the commit has no such file."""
+    try:
+        return run(
+            ["git", "-C", str(rulemonkey_repo), "show", f"{commit}:{rel_path}"], text=False
+        ).stdout
+    except subprocess.CalledProcessError:
+        return None
+
+
+# The ExprTk guard reads the commit being vendored, not the candidate's working
+# tree: with the checkout on one branch and --ref naming another, reading the
+# tree would judge (and record the pin of) a commit other than the one exported.
+
+
+def read_exprtk_vendor_pin(rulemonkey_repo: Path, commit: str) -> str:
+    rel_path = RULEMONKEY_EXPRTK_VENDOR_NOTE.as_posix()
+    data = file_at_commit(rulemonkey_repo, commit, rel_path)
+    if data is None:
+        raise RuntimeError(f"Missing RuleMonkey vendor note {rel_path} at {commit}")
+    for line in data.decode("utf-8", errors="replace").splitlines():
         if line.startswith(PIN_PREFIX):
             return line[len(PIN_PREFIX) :].strip()
-    raise RuntimeError(f"Could not find '{PIN_PREFIX}' in {vendor_note}")
+    raise RuntimeError(f"Could not find '{PIN_PREFIX}' in {rel_path} at {commit}")
 
 
-def exprtk_sync_drift(rulemonkey_repo: Path) -> list[str]:
+def exprtk_sync_drift(rulemonkey_repo: Path, commit: str) -> list[str]:
     drift: list[str] = []
     for rulemonkey_rel, bngsim_path in EXPRTK_SYNC_FILES.items():
-        rulemonkey_path = rulemonkey_repo / rulemonkey_rel
-        if not rulemonkey_path.exists():
-            raise RuntimeError(f"Missing RuleMonkey ExprTk sync file: {rulemonkey_path}")
         if not bngsim_path.exists():
             raise RuntimeError(f"Missing BNGsim ExprTk sync file: {bngsim_path}")
-        if rulemonkey_path.read_bytes() != bngsim_path.read_bytes():
+        rulemonkey_bytes = file_at_commit(rulemonkey_repo, commit, rulemonkey_rel)
+        if rulemonkey_bytes is None:
+            drift.append(f"{rulemonkey_rel} is missing at {commit}")
+        elif rulemonkey_bytes != bngsim_path.read_bytes():
             drift.append(f"{rulemonkey_rel} != {display_path(bngsim_path)}")
     return drift
+
+
+def verify_exprtk_sync(rulemonkey_repo: Path, commit: str) -> str:
+    """The commit's ExprTk sync pin, after checking its copy matches this tree."""
+    exprtk_pin = read_exprtk_vendor_pin(rulemonkey_repo, commit)
+    drift = exprtk_sync_drift(rulemonkey_repo, commit)
+    if drift:
+        drift_preview = "\n  ".join(drift)
+        raise RuntimeError(
+            "RuleMonkey standalone ExprTk/bngsim_expr vendoring has drifted from this BNGsim tree.\n"
+            f"  RuleMonkey commit: {commit}\n"
+            f"  Pinned BNGsim commit: {exprtk_pin}\n"
+            f"  Drifted files:\n  {drift_preview}\n"
+            "Refresh upstream RuleMonkey's third_party/bngsim_expr pin before vendoring it into BNGsim."
+        )
+    return exprtk_pin
 
 
 def verify_source_checkout(rulemonkey_repo: Path) -> dict[str, str]:
@@ -273,17 +319,6 @@ def verify_source_checkout(rulemonkey_repo: Path) -> dict[str, str]:
             f"RuleMonkey checkout is missing {canonical_main_ref}. Fetch/prune the canonical remote first."
         ) from exc
 
-    exprtk_pin = read_exprtk_vendor_pin(rulemonkey_repo)
-    drift = exprtk_sync_drift(rulemonkey_repo)
-    if drift:
-        drift_preview = "\n  ".join(drift)
-        raise RuntimeError(
-            "RuleMonkey standalone ExprTk/bngsim_expr vendoring has drifted from this BNGsim tree.\n"
-            f"  Pinned BNGsim commit: {exprtk_pin}\n"
-            f"  Drifted files:\n  {drift_preview}\n"
-            "Refresh upstream RuleMonkey's third_party/bngsim_expr pin before vendoring it into BNGsim."
-        )
-
     return {
         "canonical_remote": canonical_remote,
         "canonical_remote_url": canonical_remote_url,
@@ -291,7 +326,6 @@ def verify_source_checkout(rulemonkey_repo: Path) -> dict[str, str]:
         "canonical_main_commit": canonical_main_commit,
         "head_ref": git(rulemonkey_repo, ["rev-parse", "--abbrev-ref", "HEAD"]),
         "head_commit": git(rulemonkey_repo, ["rev-parse", "HEAD"]),
-        "exprtk_pin": exprtk_pin,
     }
 
 
@@ -740,6 +774,7 @@ def main() -> int:
             f"{checkout_info['canonical_main_ref']} @ {checkout_info['canonical_main_commit']}. "
             "Fetch/prune the candidate checkout and retry."
         )
+    checkout_info["exprtk_pin"] = verify_exprtk_sync(rulemonkey_repo, commit)
 
     resolution_note = f" (resolved from {args.ref})" if resolved_ref != args.ref else ""
 
