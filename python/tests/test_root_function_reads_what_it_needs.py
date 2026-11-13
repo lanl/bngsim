@@ -26,7 +26,6 @@ import bngsim
 import numpy as np
 import pytest
 
-
 # ─── The root function's read plan: controls ─────────────────────────────────
 #
 # S' = -S from 10 crosses 5 at t = ln 2, between the rows at 0 and 3, so CVODE's
@@ -53,14 +52,18 @@ def _at3(text: str, name: str) -> float:
 def test_an_event_fires_at_its_crossing(x, defs):
     """Control. A' = on, and the event turns on on where S reaches 5:
     A(3) = 3 - ln 2."""
-    text = f"species S = 10; J1: S -> ; S; {defs} A = 0; A' = on; on = 0; E1: at ({x} <= 5): on = 1;"
+    text = (
+        f"species S = 10; J1: S -> ; S; {defs} A = 0; A' = on; on = 0; E1: at ({x} <= 5): on = 1;"
+    )
     assert _at3(text, "A") == pytest.approx(3.0 - math.log(2.0), rel=1e-8)
 
 
 @pytest.mark.parametrize(("x", "defs"), _READS)
 def test_a_rate_law_switches_at_its_crossing(x, defs):
     """Control. B is made at rate 1 once S is below 5: B(3) = 3 - ln 2."""
-    text = f"species S = 10; species B = 0; J1: S -> ; S; {defs} J2: -> B; piecewise(1, {x} < 5, 0)"
+    text = (
+        f"species S = 10; species B = 0; J1: S -> ; S; {defs} J2: -> B; piecewise(1, {x} < 5, 0)"
+    )
     assert _at3(text, "B") == pytest.approx(3.0 - math.log(2.0), rel=1e-8)
 
 
@@ -71,21 +74,27 @@ def test_a_state_switch_bends_at_its_crossing(x, defs):
     S = 6/(1 + 0.2 exp(6 (t - t1)))."""
     text = f"species S = 10; {defs} J1: S -> ; S*(1 + abs({x} - 5))"
     t1 = math.log(3.0) / 4.0
-    assert _at3(text, "S") == pytest.approx(6.0 / (1.0 + 0.2 * math.exp(6.0 * (3.0 - t1))), rel=1e-6)
+    exact = 6.0 / (1.0 + 0.2 * math.exp(6.0 * (3.0 - t1)))
+    assert _at3(text, "S") == pytest.approx(exact, rel=1e-6)
 
 
 def test_an_assignment_reads_what_the_trigger_does_not():
     """Control. ``S = w`` reads w := 10*q, which the trigger does not, so the
     root function no longer evaluates it. The event fires at t = ln 2, and
     reads w there (10 ln 2), not where the plan left it."""
-    text = "species S = 10; species T = 3; J1: S -> ; S; q = 0; q' = 1; w := 10*q; E1: at (S <= 5): T = w;"
+    text = (
+        "species S = 10; species T = 3; J1: S -> ; S;"
+        " q = 0; q' = 1; w := 10*q; E1: at (S <= 5): T = w;"
+    )
     assert _at3(text, "T") == pytest.approx(10.0 * math.log(2.0), rel=1e-8)
 
 
 def test_a_trigger_read_through_rate_of():
     """Control. A trigger that reads rateOf takes the whole model: S' = -S
     reaches -5 where S reaches 5."""
-    text = "species S = 10; J1: S -> ; S; A = 0; A' = on; on = 0; E1: at (rateOf(S) >= -5): on = 1;"
+    text = (
+        "species S = 10; J1: S -> ; S; A = 0; A' = on; on = 0; E1: at (rateOf(S) >= -5): on = 1;"
+    )
     assert _at3(text, "A") == pytest.approx(3.0 - math.log(2.0), rel=1e-8)
 
 
@@ -94,7 +103,9 @@ def test_a_trigger_read_through_rate_of():
 
 def _chain(n: int, law: str) -> str:
     """r_i reads r_(i-1) three times, so r_n written in reads S 3**n times."""
-    rules = "; ".join(f"r{i} := (r{i - 1} + r{i - 1}*r{i - 1} + 1/(1 + r{i - 1}))/3" for i in range(1, n + 1))
+    rules = "; ".join(
+        f"r{i} := (r{i - 1} + r{i - 1}*r{i - 1} + 1/(1 + r{i - 1}))/3" for i in range(1, n + 1)
+    )
     return f"species S = 10; k = 1; r0 := S/10; {rules}; J1: S -> ; k*S*(1 + {law})"
 
 
@@ -133,7 +144,7 @@ def test_the_residual_reads_as_it_is_written(law):
     exact = 0
     total = 0
     for cond in conds:
-        for t, y in zip(r.time, np.asarray(r.species, float)):
+        for t, y in zip(r.time, np.asarray(r.species, float), strict=True):
             for scale in (1.0, 1.0 + 0.3 * rng.standard_normal()):
                 compiled, written = model._core._state_switch_residual_values(
                     cond, float(t), (y * scale).tolist()
