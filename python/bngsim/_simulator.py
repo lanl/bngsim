@@ -511,7 +511,7 @@ def _log_auto_codegen_skip(key: tuple) -> None:
 _FLIP_LOOSEST_RTOL = 1e-4
 
 
-def _warn_if_rows_start_off_the_current_state(model, what, remedy, *, stacklevel):
+def _warn_if_rows_start_off_the_current_state(model, what, remedy):
     """Warn that the rows of a call start from ``model``'s initial conditions,
     where its current state differs from them (issues #1362, #1521).
 
@@ -522,6 +522,12 @@ def _warn_if_rows_start_off_the_current_state(model, what, remedy, *, stacklevel
     stays; a write the caller made before the call is what it drops.
     ``get_initial_state()`` is the vector ``reset()`` restores, read without
     cloning the model.
+
+    The warning also fires on a dose over an initial-condition parameter after
+    a run, which the reset gets right, and each ``remedy`` starts from the
+    current state, which drops that dose: after a run, a batch over ``A0`` = 5
+    and 40 gave totals 5 and 40, and 10 and 10 from either remedy, with no
+    word. So the message says so, and names ``Model.reset()`` for that case.
     """
     core = model._core
     if np.array_equal(core.get_initial_state(), core.get_state(), equal_nan=True):
@@ -529,10 +535,12 @@ def _warn_if_rows_start_off_the_current_state(model, what, remedy, *, stacklevel
     warnings.warn(
         f"{what} from the model's initial conditions (Model.reset), not from its "
         "current state, which differs from them (a set_concentration, or the end of "
-        f"a run). {remedy} Call Model.reset() first where the initial conditions are "
-        "the start you want.",
+        f"a run). {remedy} Such a start does not follow an initial-condition "
+        "parameter the call writes, which only the reset applies: a dose over it is "
+        "dropped, and its derivative is 0. Call Model.reset() first where the initial "
+        "conditions are the start you want, as they are for such a dose.",
         UserWarning,
-        stacklevel=stacklevel,
+        stacklevel=_stacklevel_outside_bngsim(),
     )
 
 
@@ -6117,7 +6125,6 @@ class Simulator:
             "run_batch starts every point",
             "To start each point from the current state, use parameter_scan, or call "
             "Model.save_concentrations() first, which makes it the state reset returns to.",
-            stacklevel=3,
         )
 
         if self._method == "ode":
@@ -10020,7 +10027,10 @@ class Simulator:
             :meth:`run_batch`'s points do, not from its current state, and the
             batch warns where the two differ (issue #1521): pass
             ``states=[model.get_state()] * len(params)``, or call
-            :meth:`Model.save_concentrations` first, to start from it.
+            :meth:`Model.save_concentrations` first, to start from it. Either
+            start drops a dose an entry writes to an initial-condition
+            parameter, which only the reset applies; for a dose scan after a
+            run, call :meth:`Model.reset` first.
         states : array-like, optional
             Starting states, shape ``(n_entries, n_species)`` ordered like
             :attr:`Model.species_names` (issue #524). Entry ``i`` resets its
@@ -10146,7 +10156,6 @@ class Simulator:
                 "states=[model.get_state()] * len(params), or call "
                 "Model.save_concentrations() first, which makes it the state reset "
                 "returns to.",
-                stacklevel=3,
             )
 
         # The laws are found here, once, and each entry's clone starts from

@@ -668,7 +668,10 @@ from the current state, pass `states=[model.get_state()] * len(params)`, or call
 `Model.save_concentrations()` first, which makes it the state the reset
 returns to. The reset stays because it is what moves an initial-condition
 parameter's species to the value an entry writes (issue #129): a dose scan over
-`L_0` after a `run()` depends on it.
+`L_0` after a `run()` depends on it. That scan warns too, and either start from
+the current state drops its doses: every entry then starts at the run's total.
+Call `Model.reset()` first instead, which keeps the doses and leaves nothing to
+warn of.
 
 ### Steady-state sensitivity
 
