@@ -72,7 +72,11 @@ PRUNED_PATHS = ("cpp/cli",)
 # diverge. expr_compat.hpp is a dependency of expression.cpp since GH #49
 # (expression.cpp #includes it and defines the expr_compat:: free functions it
 # declares), so it must be tracked here too — a drift in it would otherwise slip
-# the guard while breaking RuleMonkey's standalone bngsim_expr build.
+# the guard while breaking RuleMonkey's standalone bngsim_expr build. The same
+# holds for every bngsim header expression.cpp reaches by #include: dual.hpp and
+# the two exprtk_dual headers since GH #1330, c_locale_numbers.hpp since GH #1235.
+# test_rulemonkey_exprtk_sync_closure.py fails when an include adds one that is
+# not listed here.
 EXPRTK_SYNC_FILES = {
     "third_party/exprtk/exprtk.hpp": BNGSIM_ROOT / "third_party" / "exprtk" / "exprtk.hpp",
     "third_party/bngsim_expr/include/bngsim/expression.hpp": (
@@ -81,6 +85,16 @@ EXPRTK_SYNC_FILES = {
     "third_party/bngsim_expr/include/bngsim/expr_compat.hpp": (
         BNGSIM_ROOT / "include" / "bngsim" / "expr_compat.hpp"
     ),
+    "third_party/bngsim_expr/include/bngsim/dual.hpp": (
+        BNGSIM_ROOT / "include" / "bngsim" / "dual.hpp"
+    ),
+    "third_party/bngsim_expr/include/bngsim/c_locale_numbers.hpp": (
+        BNGSIM_ROOT / "include" / "bngsim" / "c_locale_numbers.hpp"
+    ),
+    "third_party/bngsim_expr/src/exprtk_dual_pre.hpp": (
+        BNGSIM_ROOT / "src" / "exprtk_dual_pre.hpp"
+    ),
+    "third_party/bngsim_expr/src/exprtk_dual.hpp": BNGSIM_ROOT / "src" / "exprtk_dual.hpp",
     "third_party/bngsim_expr/src/expression.cpp": BNGSIM_ROOT / "src" / "expression.cpp",
 }
 
