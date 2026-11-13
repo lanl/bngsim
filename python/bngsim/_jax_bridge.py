@@ -252,6 +252,14 @@ def differentiable_solve(
     **Thread safety**: Each call clones the model internally, so
     concurrent ``jax.grad`` calls are safe.
 
+    **Start state**: each call starts from the model's initial conditions
+    (:meth:`Model.reset`, after θ is written), not its current state, and
+    warns where the two differ (issue #1521). Call
+    :meth:`Model.save_concentrations` first to make the current state the one
+    a solve starts from; the start is then a constant, so an initial-condition
+    parameter in θ no longer moves it, and its derivative is 0. After a run,
+    call :meth:`Model.reset` first to keep the start a function of θ.
+
     **The model's analytical Jacobian**: the first call derives it on
     ``model``, as a first ``Simulator(model).run()`` would, so that each
     call's clone inherits it rather than deriving it again.
@@ -298,6 +306,19 @@ def differentiable_solve(
         int(n_workers),
         diff_param_names,
         bool(flat),
+    )
+
+    # Each call's clone is reset to the initial conditions after θ is written,
+    # as run_batch's rows are. A set_concentration before the call was dropped
+    # with no word: row 0 read [10, 0] where Simulator.run starts at [20, 0]
+    # (issue #1521).
+    from bngsim._simulator import _warn_if_rows_start_off_the_current_state
+
+    _warn_if_rows_start_off_the_current_state(
+        model,
+        "differentiable_solve starts every solve",
+        "To start from the current state, call Model.save_concentrations() first, "
+        "which makes it the state reset returns to.",
     )
 
     return _solve_core(model, params, t_span, n_points, opts)
