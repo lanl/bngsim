@@ -412,6 +412,13 @@ _DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
     ),
     ("tomllib is 3.11+", _ANYWHERE, "stdlib module absent on 3.10, which is still supported"),
     (
+        "C locale is UTF-8",
+        _ANYWHERE,
+        "issue #1653's write_net test needs a locale whose encoding is not UTF-8; the "
+        "C locale with coercion off is ASCII on Linux and macOS, and Windows reads "
+        "its ANSI code page, so only a platform whose C locale is UTF-8 skips it",
+    ),
+    (
         "gcc/clang only",
         _ANYWHERE,
         "the sharded compile path, where MSVC takes the other branch, and the stack "

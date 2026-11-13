@@ -327,6 +327,14 @@ end at a newline, LF or CRLF. A bare carriage return is read as BNG2.pl and
 run_network read it, as a blank inside its line, so a file saved with classic
 Mac OS line endings is one line, and is refused, with a word on why.
 
+The file is read as UTF-8, as its names and expressions become Python strings.
+A line of the five blocks that is not UTF-8, such as a species name saved in
+Latin-1 (`Aµ()` as the byte 0xb5), is refused, quoting the line with the byte
+shown as `\xb5`; save the file as UTF-8. A byte nothing reads, in a comment,
+a block passed over or an action line, still loads (issue #1653). A refusal
+of a table file a `tfun` reads shows such a byte the same way. `write_net`
+writes UTF-8 whatever the locale.
+
 **Use with BNGsim** (fastest path — C++ CVODE/SSA):
 
 ```python

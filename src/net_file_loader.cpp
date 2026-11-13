@@ -12,6 +12,7 @@
 #include "bngsim/c_locale_numbers.hpp"
 #include "bngsim/model_builder.hpp"
 #include "bngsim/types.hpp"
+#include "bngsim/utf8.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -102,6 +103,27 @@ static bool is_function_name_token(const std::string &tok) {
     if (bare.size() >= 2 && bare.compare(bare.size() - 2, 2, "()") == 0)
         bare.erase(bare.size() - 2);
     return is_bare_identifier(bare);
+}
+
+// ─── UTF-8 ───────────────────────────────────────────────────────────────────
+// Refuses a line of a block the loader reads, its comment off, that is not
+// UTF-8: its names and expressions reach Python, whose strict decoder raised a
+// bare UnicodeDecodeError on them (issue #1653, bngsim/utf8.hpp). Only that
+// text does: a comment, a block passed over and an action line do not, and a
+// byte in one still loads, as run_network reads it.
+static void require_utf8(const std::string &stripped, const char *what) {
+    for (size_t i = 0; i < stripped.size();) {
+        const size_t n = utf8_char_length(stripped, i);
+        if (n == 0) {
+            throw std::runtime_error(std::string(what) + " line '" + shown_as_utf8(stripped) +
+                                     "' holds the byte 0x" +
+                                     hex_byte(static_cast<unsigned char>(stripped[i])) +
+                                     ", which is not UTF-8: bngsim reads the names and "
+                                     "expressions of a .net file as UTF-8 text, so save the "
+                                     "file as UTF-8");
+        }
+        i += n;
+    }
 }
 
 // Strip trailing #comment. Returns trimmed content, optionally extracts comment.
@@ -228,6 +250,7 @@ static std::vector<ParsedParam> parse_parameters(std::ifstream &file) {
             got_end = true;
             break;
         }
+        require_utf8(stripped, "parameter");
         auto tokens = split_ws(stripped);
         if (tokens.empty())
             continue;
@@ -297,6 +320,7 @@ parse_species(std::ifstream &file, std::unordered_map<std::string, int> &param_n
             got_end = true;
             break;
         }
+        require_utf8(stripped, "species");
         auto tokens = split_ws(stripped);
         if (tokens.empty())
             continue;
@@ -524,6 +548,7 @@ static std::vector<ParsedFunction> parse_functions(std::ifstream &file) {
             got_end = true;
             break;
         }
+        require_utf8(stripped, "functions");
         auto tokens = split_ws(stripped);
         if (tokens.empty())
             continue;
@@ -674,6 +699,7 @@ static std::vector<ParsedReaction> parse_reactions(std::ifstream &file) {
             got_end = true;
             break;
         }
+        require_utf8(stripped, "reaction");
         auto tokens = split_ws(stripped);
         if (tokens.empty())
             continue;
@@ -791,6 +817,7 @@ static std::vector<ParsedObservable> parse_groups(std::ifstream &file) {
             got_end = true;
             break;
         }
+        require_utf8(stripped, "group");
         auto tokens = split_ws(stripped);
         if (tokens.empty())
             continue;
@@ -1447,6 +1474,12 @@ NetFileStructure parse_net_file_structure(const std::string &path) {
     try {
         return read_net_file_blocks(path);
     } catch (const std::exception &e) {
+        // A refusal can quote a line no block reads (one outside any block, a
+        // block's name), which require_utf8 never saw. A byte in it that is
+        // not UTF-8 is shown as `\xhh`, so the refusal reaches Python rather
+        // than a UnicodeDecodeError in its place (issue #1653).
+        const std::string words = e.what();
+        //
         // Read only on the way out: a refusal of such a file names the line
         // the CR made, which is not a line the file's author sees. That line
         // can run to the whole file, and its CRs, printed, return the cursor
@@ -1455,25 +1488,36 @@ NetFileStructure parse_net_file_structure(const std::string &path) {
         // of the line it quotes, which is where the author looks, with the
         // hint after them on one screen. Uncut, a CR file of 2,000 parameters
         // was quoted whole: 33,000 to 41,000 characters.
-        if (!holds_bare_cr(path))
-            throw;
+        if (!holds_bare_cr(path)) {
+            const std::string shown = shown_as_utf8(words);
+            if (shown == words)
+                throw;
+            throw std::runtime_error(shown);
+        }
         //
-        // The cut ends on a whole UTF-8 character: one cut inside a character
-        // left a byte Python cannot decode, and the refusal arrived as a
-        // UnicodeDecodeError that said nothing of it. " ..." marks text left
+        // The cut ends between whole units: a UTF-8 character, a CR shown as
+        // `\r`, or a byte that is not UTF-8 shown as `\xhh`. One cut inside a
+        // character left a byte Python cannot decode, and the refusal arrived
+        // as a UnicodeDecodeError that said nothing of it; one cut inside a
+        // `\xhh` showed a byte the file does not hold. " ..." marks text left
         // unshown, not a length: words of exactly 300 characters are whole.
         constexpr std::size_t kMaxShown = 300;
         std::string what;
-        const char *p = e.what();
-        for (; *p != '\0' &&
-               (what.size() < kMaxShown || (static_cast<unsigned char>(*p) & 0xC0) == 0x80);
-             ++p) {
-            if (*p == '\r')
+        std::size_t i = 0;
+        while (i < words.size() && what.size() < kMaxShown) {
+            const std::size_t n = utf8_char_length(words, i);
+            if (n == 0) {
+                what += "\\x" + hex_byte(static_cast<unsigned char>(words[i]));
+                ++i;
+            } else if (words[i] == '\r') {
                 what += "\\r";
-            else
-                what += *p;
+                ++i;
+            } else {
+                what.append(words, i, n);
+                i += n;
+            }
         }
-        if (*p != '\0')
+        if (i < words.size())
             what += " ...";
         // Not every refusal of such a file comes of the CR: one inside a line,
         // as in \r\r\n line endings, changes nothing, so the hint says where a
