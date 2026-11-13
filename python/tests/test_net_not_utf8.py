@@ -143,6 +143,19 @@ def test_a_cr_file_s_cut_stays_short_across_a_run_of_such_bytes(tmp_path, run):
     assert len(message) < 700
 
 
+@pytest.mark.parametrize("pad", [0, 1, 2, 3])
+def test_a_cr_file_s_cut_ends_on_a_whole_escape(tmp_path, pad):
+    """The cut lands at each of the four places a ``\\xb5`` can straddle it.
+    Cut over the shown text, it left ``\\xb``, ``\\x`` or ``\\`` before the
+    " ...", a byte the file does not hold."""
+    data = b"begin parameters\n 1 k" + b"a" * pad + b"\xb5" * 400 + b" 1\nend parameters\n"
+    path = _write(tmp_path, data.replace(b"\n", b"\r"))
+    with pytest.raises(ValueError, match="carriage return") as caught:
+        bngsim.parse_net_file(str(path))
+    shown = str(caught.value).split(" ....")[0]
+    assert shown.endswith("\\xb5"), shown[-12:]
+
+
 # Bytes at every edge of the Unicode Standard's Table 3-7, which is what
 # Python's strict decoder takes: overlong forms (C0, C1, E0 80, F0 80),
 # surrogates (ED A0), past U+10FFFF (F4 90, F5), and the valid sequences on

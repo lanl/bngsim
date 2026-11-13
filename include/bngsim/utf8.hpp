@@ -55,19 +55,21 @@ inline std::size_t utf8_char_length(const std::string &s, std::size_t i) {
     return n;
 }
 
+// The byte `b` as two lowercase hex digits, `b5`.
+inline std::string hex_byte(unsigned char b) {
+    static const char kHex[] = "0123456789abcdef";
+    return std::string{kHex[b >> 4], kHex[b & 0xF]};
+}
+
 // `s`, with each byte that is not part of a UTF-8 character shown as `\xhh`,
 // as Python's "backslashreplace" shows it. UTF-8 text comes back unchanged.
 inline std::string shown_as_utf8(const std::string &s) {
-    static const char kHex[] = "0123456789abcdef";
     std::string out;
     out.reserve(s.size());
     for (std::size_t i = 0; i < s.size();) {
         const std::size_t n = utf8_char_length(s, i);
         if (n == 0) {
-            const auto b = static_cast<unsigned char>(s[i]);
-            out += "\\x";
-            out += kHex[b >> 4];
-            out += kHex[b & 0xF];
+            out += "\\x" + hex_byte(static_cast<unsigned char>(s[i]));
             ++i;
         } else {
             out.append(s, i, n);

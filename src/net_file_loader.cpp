@@ -115,10 +115,9 @@ static void require_utf8(const std::string &stripped, const char *what) {
     for (size_t i = 0; i < stripped.size();) {
         const size_t n = utf8_char_length(stripped, i);
         if (n == 0) {
-            static const char kHex[] = "0123456789abcdef";
-            const auto b = static_cast<unsigned char>(stripped[i]);
             throw std::runtime_error(std::string(what) + " line '" + shown_as_utf8(stripped) +
-                                     "' holds the byte 0x" + kHex[b >> 4] + kHex[b & 0xF] +
+                                     "' holds the byte 0x" +
+                                     hex_byte(static_cast<unsigned char>(stripped[i])) +
                                      ", which is not UTF-8: bngsim reads the names and "
                                      "expressions of a .net file as UTF-8 text, so save the "
                                      "file as UTF-8");
@@ -1479,7 +1478,7 @@ NetFileStructure parse_net_file_structure(const std::string &path) {
         // block's name), which require_utf8 never saw. A byte in it that is
         // not UTF-8 is shown as `\xhh`, so the refusal reaches Python rather
         // than a UnicodeDecodeError in its place (issue #1653).
-        const std::string words = shown_as_utf8(e.what());
+        const std::string words = e.what();
         //
         // Read only on the way out: a refusal of such a file names the line
         // the CR made, which is not a line the file's author sees. That line
@@ -1490,29 +1489,35 @@ NetFileStructure parse_net_file_structure(const std::string &path) {
         // hint after them on one screen. Uncut, a CR file of 2,000 parameters
         // was quoted whole: 33,000 to 41,000 characters.
         if (!holds_bare_cr(path)) {
-            if (words == e.what())
+            const std::string shown = shown_as_utf8(words);
+            if (shown == words)
                 throw;
-            throw std::runtime_error(words);
+            throw std::runtime_error(shown);
         }
         //
-        // The cut ends on a whole UTF-8 character: one cut inside a character
-        // left a byte Python cannot decode, and the refusal arrived as a
-        // UnicodeDecodeError that said nothing of it. " ..." marks text left
+        // The cut ends between whole units: a UTF-8 character, a CR shown as
+        // `\r`, or a byte that is not UTF-8 shown as `\xhh`. One cut inside a
+        // character left a byte Python cannot decode, and the refusal arrived
+        // as a UnicodeDecodeError that said nothing of it; one cut inside a
+        // `\xhh` showed a byte the file does not hold. " ..." marks text left
         // unshown, not a length: words of exactly 300 characters are whole.
-        // `words` is UTF-8 throughout, so a continuation byte is always one
-        // of a character's at most three.
         constexpr std::size_t kMaxShown = 300;
         std::string what;
-        const char *p = words.c_str();
-        for (; *p != '\0' &&
-               (what.size() < kMaxShown || (static_cast<unsigned char>(*p) & 0xC0) == 0x80);
-             ++p) {
-            if (*p == '\r')
+        std::size_t i = 0;
+        while (i < words.size() && what.size() < kMaxShown) {
+            const std::size_t n = utf8_char_length(words, i);
+            if (n == 0) {
+                what += "\\x" + hex_byte(static_cast<unsigned char>(words[i]));
+                ++i;
+            } else if (words[i] == '\r') {
                 what += "\\r";
-            else
-                what += *p;
+                ++i;
+            } else {
+                what.append(words, i, n);
+                i += n;
+            }
         }
-        if (*p != '\0')
+        if (i < words.size())
             what += " ...";
         // Not every refusal of such a file comes of the CR: one inside a line,
         // as in \r\r\n line endings, changes nothing, so the hint says where a
