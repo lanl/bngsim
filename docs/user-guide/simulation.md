@@ -55,6 +55,12 @@ results = sim.parameter_scan(
         "L(r,label~cold)", v * NA * Vecf
     ),
 )
+# The hook is what doses here: a scanned parameter that seeds a species'
+# initial condition moves it only while the species still sits on that
+# condition, so from a pre-equilibrated state the scan would leave it where
+# the run put it, and warn that the dose is dropped. For a dose scan from the
+# initial conditions, call model.reset() first.
+#
 # Each Result carries custom_attrs["scan_value"]; the bound-hot readout starts
 # near the pre-wash amount and falls as cold competes it off.
 
