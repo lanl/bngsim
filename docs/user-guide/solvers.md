@@ -173,9 +173,20 @@ consequence of guessing is species *i* held to the number written for species
 `atol=` accepts the same three forms on `set_tolerances`, `run_batch`,
 `parameter_scan`, `bifurcate`, `run_until`, `compute_all_sensitivities`,
 `steady_state`, `steady_state_batch`, and `EvaluationSpec`. Anything that runs
-many points (a batch, a scan, a chunked sensitivity job) resolves `atol` **once**
-up front, including `"auto"` — every point is held to the same tolerance, so the
-points can be compared with each other.
+many points (a batch, a scan, a chunked sensitivity job) resolves a vector,
+`"auto"` or a tracking `atol` **once** up front: every point is held to the same
+tolerance, so the points can be compared with each other. In a `run_batch`, and
+in a `parameter_scan` that resets each point, `"auto"` takes each species'
+smallest scale over the points' starts, so no point is held above a species' size
+where it starts. A scalar, the default
+`1e-8` or one you pass, is a ceiling under which each species takes `rtol` of its
+scale in the state the run starts from. A `run_batch` row or a `parameter_scan`
+point reads that both from the model's state and from its own start, and each
+species takes the tighter of the two. A row that doses a growing species decades
+below the model's value is then held to that species' scale, as a `run()` from
+there would be: read from the model alone, a logistic grower declared at 1 and
+dosed at 1e-9 returned X(20) = -4.6e-7 for 0.327 (issue #1660). A row that starts
+above the model keeps the model's tighter reading.
 
 ## Tracking absolute tolerance
 

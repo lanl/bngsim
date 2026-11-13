@@ -848,6 +848,9 @@ class Simulator:
         # Issue #1420 — (rtol, the scalar, the per-species atol they gave) at the
         # start of the stored trajectory, which the run_until steps after it keep.
         "_trajectory_atol",
+        # Issue #1660 — where a batch or scan reads "auto" from its rows' starts:
+        # a callable giving them, set by _auto_from for the call's resolution.
+        "_auto_starts",
         "_max_steps",
         "_stop_conditions",
         # Interactive simulation state
@@ -1248,6 +1251,7 @@ class Simulator:
         self._atol_set = False
         self._atol_exact = False
         self._trajectory_atol: tuple[float, float, list[float] | None] | None = None
+        self._auto_starts: Callable[[], list[np.ndarray]] | None = None
         self._max_steps = 10000
         self._jacobian = jacobian
         self._ode_jacobian_fell_back = False
@@ -4905,6 +4909,9 @@ class Simulator:
                     f'"{_ATOL_TRACKING}" / bngsim.TrackingAtol(...) for one that '
                     f"follows the trajectory (issue #213)."
                 )
+            starts = self._auto_starts() if self._auto_starts is not None else None
+            if starts:
+                return self._auto_atol_over(starts, rtol)
             return [float(v) for v in self.auto_atol(rtol=rtol)]
         return normalize_atol_vector(
             requested,  # type: ignore[arg-type]
@@ -4912,6 +4919,33 @@ class Simulator:
             self._model.species_names,
             where=where,
         )
+
+    @staticmethod
+    def _auto_atol_over(starts: Sequence[np.ndarray], rtol: float) -> list[float]:
+        """``"auto"`` for a call whose runs start from ``starts``: each species
+        the smallest :func:`derive_atol` gives it from any of them (issue #1660).
+        One vector, as #196 asks of a batch, that holds no run above the scale
+        of a species at its own start."""
+        own = np.min([derive_atol(start, rtol) for start in starts], axis=0)
+        return [float(v) for v in own]
+
+    @contextlib.contextmanager
+    def _auto_from(self, starts: Callable[[], list[np.ndarray]]):
+        """Read ``"auto"`` from ``starts()`` (the states a batch's rows or a
+        scan's points start from), not from the model's live state, within the
+        block. ``starts`` is called only where ``"auto"`` is asked for."""
+        cached: list[list[np.ndarray]] = []
+
+        def once() -> list[np.ndarray]:
+            if not cached:
+                cached.append(starts())
+            return cached[0]
+
+        self._auto_starts = once
+        try:
+            yield
+        finally:
+            self._auto_starts = None
 
     def _tracking_ceiling(self, spec: TrackingAtol, rtol: float, *, where: str) -> list[float]:
         """Resolve and check a :class:`TrackingAtol` ceiling into a list.
@@ -4982,6 +5016,7 @@ class Simulator:
         *,
         trajectory: bool = False,
         sensitivities: bool | None = None,
+        start: Model | None = None,
     ) -> AtolLike | _Ceiling | None:
         """The ``atol`` an ODE call integrates at (issue #1420).
 
@@ -5028,25 +5063,60 @@ class Simulator:
         ``sensitivities`` says whether the call integrates them, where that is
         not this Simulator's own ``sensitivity_params`` (a
         :meth:`compute_all_sensitivities` chunk).
+
+        ``start`` is the model whose state the call starts from, where that is
+        not this Simulator's own: a :meth:`run_batch` row's clone (issue #1660).
         """
         if trajectory and not self._continues_trajectory:
             self._trajectory_atol = None  # a new trajectory starts here
-        scalar = self._scalar_atol_of(atol)
+        scalar = self._ceiling_of(atol, sensitivities)
         if scalar is None:
-            return atol
-        if sensitivities is None:
-            sensitivities = bool(self._sensitivity_params or self._sensitivity_ic)
-        if sensitivities and not self._codegen_provides_sens_rhs():
             return atol
         kept = self._trajectory_atol if trajectory else None
         if kept is not None and kept[:2] == (rtol, scalar):
             own = kept[2]
         else:
-            state = self._model.get_state()
-            own = self._atol_from_scale(state, rtol, self._ATOL_SCALE_RELEVANT, scalar)
+            model = self._model if start is None else start
+            own = self._atol_from_scale(model.get_state(), rtol, self._ATOL_SCALE_RELEVANT, scalar)
             if trajectory:
                 self._trajectory_atol = (rtol, scalar, own)
         return atol if own is None else _Ceiling(scalar, own)
+
+    def _ceiling_of(
+        self, atol: AtolLike | None, sensitivities: bool | None = None
+    ) -> float | None:
+        """The scalar :meth:`_run_atol` reads ``atol`` as a ceiling over, from
+        the state the call starts from, or ``None`` where it hands ``atol`` on
+        as given: a vector, ``"auto"``, a tracking tolerance or an
+        :class:`ExactAtol`, or a run whose sensitivities come from CVODES'
+        difference quotient. ``sensitivities`` is as in :meth:`_run_atol`."""
+        scalar = self._scalar_atol_of(atol)
+        if scalar is None:
+            return None
+        if sensitivities is None:
+            sensitivities = bool(self._sensitivity_params or self._sensitivity_ic)
+        if sensitivities and not self._codegen_provides_sens_rhs():
+            return None
+        return scalar
+
+    def _tighter_ceiling(self, atol: AtolLike | None, *readings: object) -> _Ceiling | None:
+        """Each species the smallest tolerance any of ``readings`` gives it
+        (:meth:`_run_atol`'s answers for ``atol`` from several starts: a
+        :class:`_Ceiling`'s vector, else the scalar), under the scalar ``atol``
+        is read as a ceiling over (issue #1660). ``None`` where every species
+        takes the scalar, or ``atol`` is no such scalar."""
+        scalar = self._ceiling_of(atol)
+        if scalar is None:
+            return None
+        n = self._model.n_species
+        vectors = [
+            np.asarray(r.vector, dtype=float) if isinstance(r, _Ceiling) else np.full(n, scalar)
+            for r in readings
+        ]
+        own = np.min(vectors, axis=0)
+        if np.all(own == scalar):
+            return None
+        return _Ceiling(scalar, [float(v) for v in own])
 
     def _scalar_atol_of(self, atol: AtolLike | None) -> float | None:
         """The scalar an ODE call given ``atol`` reads as a ceiling, or ``None``
@@ -5875,7 +5945,12 @@ class Simulator:
         )
 
     def _warn_atol_above_scale(
-        self, results: Iterable[Result], call: str, atol: Sequence[float] | None = None
+        self,
+        results: Iterable[Result],
+        call: str,
+        atol: Sequence[float] | None = None,
+        *,
+        per_result: Sequence[Sequence[float] | None] | None = None,
     ) -> None:
         """Warn when the default ``atol`` is above species that matter in the
         ODE runs of one call (issue #1361).
@@ -5897,6 +5972,9 @@ class Simulator:
         target (``species_is_fixed`` both) is no such species: its value is not
         integrated, so no tolerance makes it wrong.
 
+        ``per_result`` is one such tolerance per result, in place of ``atol``,
+        where each run took its own from its own start (issue #1660).
+
         One warning per call, naming the species of every run: a scan or batch
         of 100 rows is one hazard, not 100. The text carries nothing that moves
         from run to run, so the warnings module shows it once per call site, and
@@ -5908,9 +5986,12 @@ class Simulator:
             for name, fixed in zip(model.species_names, model.species_is_fixed, strict=True)
             if fixed
         }
-        own = dict(zip(model.species_names, atol, strict=True)) if atol is not None else {}
+        results = list(results)
+        if per_result is None:
+            per_result = [atol] * len(results)
         found: dict[str, None] = {}  # ordered, and no list scan per species
-        for result in results:
+        for result, vector in zip(results, per_result, strict=True):
+            own = dict(zip(model.species_names, vector, strict=True)) if vector is not None else {}
             species = np.asarray(result._species, dtype=np.float64)
             if species.ndim != 2 or species.size == 0:
                 continue
@@ -6005,10 +6086,18 @@ class Simulator:
         atol : float or array_like or ``"auto"``, optional
             Absolute tolerance for the ODE solver — scalar, or one value per
             species ordered like :attr:`Model.species_names` (issue #196). See
-            :meth:`run` for the full contract, and for the default, which reads
-            the model's live state. Resolved **once** for the whole batch,
-            including ``"auto"`` and the default: every point integrates at the
-            same tolerance, so the results are comparable across the sweep.
+            :meth:`run` for the full contract. A vector, ``"auto"`` or a
+            tracking tolerance is resolved **once** for the whole batch: every
+            point integrates at the same tolerance, so the results are
+            comparable across the sweep. ``"auto"``, and a tracking ceiling it
+            gives, take each species' smallest scale over the rows' starts, so
+            no row is held above a species' size where it starts. A scalar, the
+            default or the caller's, is a ceiling that :meth:`run` reads from
+            the state it starts from. Each row reads it from the model's live
+            state and from its own start, and each species takes the tighter of
+            the two: a row that starts below the model is the :meth:`run` from
+            there, and no row is held looser than the model's own reading
+            (issue #1660).
         max_steps : int, optional
             Maximum internal solver steps per output point.
         num_processors : int, optional
@@ -6141,12 +6230,67 @@ class Simulator:
         )
 
         effective_rtol = rtol if rtol is not None else self._rtol
-        # Issue #196 — scalar or per-species, resolved once for the batch (see
+
+        # Issue #196 — a vector, "auto" or tracking, resolved once for the batch (see
         # _freeze_atol: a per-row "auto" would hold each row to a tolerance
         # derived from that row's own initial conditions).
-        effective_atol_spec = self._resolve_atol(
-            self._run_atol(atol, effective_rtol), effective_rtol, where="run_batch(atol=...)"
-        )
+        # Issue #1660 — "auto" (and a tracking ceiling it gives) is read from the
+        # starts of the rows, the tightest any of them asks for, not from this
+        # model's live state: after a run, that is where the run ended, and a
+        # row dosed far below it was held above its own scale. A row's start is
+        # its clone's, after its writes and the reset (_run_single_batch).
+        def row_starts() -> list[np.ndarray]:
+            starts = []
+            for pset in params:
+                clone = self._model.clone()
+                clone.set_params(pset)
+                clone.reset()
+                starts.append(np.asarray(clone.get_state(), dtype=float))
+            return starts
+
+        batch_reading = None
+        with self._auto_from(row_starts):
+            batch_reading = self._run_atol(atol, effective_rtol)
+            effective_atol_spec = self._resolve_atol(
+                batch_reading, effective_rtol, where="run_batch(atol=...)"
+            )
+        # Issue #1660 — except a scalar read as a ceiling (the default, or a
+        # caller's scalar), which run() takes from the state it starts from
+        # (#1420). Taken from this model alone, a row that starts a growing
+        # species decades below it was held to a tolerance above that species:
+        # a dose at X0 = 1e-9 of a logistic grower declared at 1 returned
+        # X(20) = -4.6e-7 for 0.327, and one after a run, from the state that
+        # run left. Each species takes the tighter of this model's reading and
+        # the row's own, so a row below the model is the run() from its start,
+        # and none is held looser than it was: rows that shrink a compartment
+        # by 1e-6 start 1e6 above the model, and read from their own start,
+        # BIOMD0000000407's ran 6.5 of a species' peak off its reference for
+        # 0.13. A row at this model's start takes the tolerance it took before.
+        row_atols: list[list[float] | None] = [effective_atol_spec.vector] * n_sims
+        atol_of: Callable[[int, Model], _ResolvedAtol] | None = None
+        if self._ceiling_of(atol) is not None:
+            # A row that starts where this model stands reads what the batch
+            # read, so it takes the batch's tolerance without reading again: a
+            # read is about 23 us, and on a 2,000-row scan of a rate constant it
+            # cost a one-species model 21% of its run time.
+            batch_start = np.asarray(self._model.get_state(), dtype=float)
+
+            def atol_of(i: int, clone: Model) -> _ResolvedAtol:
+                if np.array_equal(
+                    np.asarray(clone.get_state(), dtype=float), batch_start, equal_nan=True
+                ):
+                    return effective_atol_spec
+                tighter = self._tighter_ceiling(
+                    atol, batch_reading, self._run_atol(atol, effective_rtol, start=clone)
+                )
+                spec = self._resolve_atol(
+                    atol if tighter is None else tighter,
+                    effective_rtol,
+                    where="run_batch(atol=...)",
+                )
+                row_atols[i] = spec.vector
+                return spec
+
         effective_max_steps = max_steps if max_steps is not None else self._max_steps
         # Integrator step bound (GH #88): an explicit max_step, else the
         # per-model periodic-dosing bound. None ⇒ unconstrained. Resolved once
@@ -6215,6 +6359,7 @@ class Simulator:
                 steady_state_tol=ss_tol_value,
                 max_step=effective_max_step,
                 model=self._model,
+                atol_of=atol_of,
             )
 
         if num_processors is not None and num_processors > 1:
@@ -6237,7 +6382,7 @@ class Simulator:
 
         logger.info("Batch complete: %d results", len(results))
         if self._atol_is_default(atol):
-            self._warn_atol_above_scale(results, "ODE batch", effective_atol_spec.vector)
+            self._warn_atol_above_scale(results, "ODE batch", per_result=row_atols)
 
         # Each row meets the stop conditions as run() does, and one that meets
         # one comes back cut there, beside the rest (issue #1369).
@@ -7012,10 +7157,18 @@ class Simulator:
             ``Result.seed`` reruns the whole scan). Ignored for ODE.
         rtol, atol, max_steps, max_step, timeout, steady_state, steady_state_tol
             Per-simulation solver options, forwarded to :meth:`run`. ``atol``
-            may be a per-species vector or ``"auto"`` (issue #196); it is
-            resolved once, at the invocation state, so every point of the scan
-            is held to the same tolerance rather than to one derived from its
-            own initial conditions.
+            may be a per-species vector or ``"auto"`` (issue #196); that is
+            resolved once, so every point of the scan is held to the same
+            tolerance rather than to one derived from its own initial
+            conditions. With ``reset_conc=True``, ``"auto"`` (and a tracking
+            ceiling it gives) takes each species' smallest scale over the
+            points' starts, the reset with the scanned value written; what an
+            ``on_point`` hook writes is not seen. A continuation scan's points
+            start where the last ended, and ``"auto"`` is read from the state
+            at the call. A scalar, the default or the caller's, is a ceiling
+            that :meth:`run` reads from the state it starts from; each point
+            reads it from the invocation state and from its own start, and each
+            species takes the tighter of the two (issue #1660).
         squeeze : bool
             When ``True``, stack the per-point results into a single
             :class:`Result` with 3-D arrays (like :meth:`run_batch`); otherwise
@@ -7124,9 +7277,15 @@ class Simulator:
         # conditions happen to be — a sweep whose points are error-controlled
         # differently is not one whose points can be compared.
         scan_rtol = rtol if rtol is not None else self._rtol
-        scan_atol = self._freeze_atol(
-            self._run_atol(atol, scan_rtol), scan_rtol, where="parameter_scan(atol=...)"
-        )
+        scan_reading = self._run_atol(atol, scan_rtol)
+        scan_atol = self._freeze_atol(scan_reading, scan_rtol, where="parameter_scan(atol=...)")
+        # Issue #1660 — except a scalar read as a ceiling (the default, or a
+        # caller's scalar), which each point also reads from its own start, as
+        # a run() from there would, each species taking the tighter of the two
+        # (see run_batch): a point that sets a growing species decades below the
+        # invocation state was held to a tolerance above it.
+        point_reads_ceiling = self._ceiling_of(atol) is not None
+        point_atols: list[list[float] | None] = []
 
         # Each point's forward-sensitivity seed ∂x(0)/∂θ (issue #81). A scan point
         # starts from the snapshot, not the model seed, so re-seeding it fresh
@@ -7173,6 +7332,29 @@ class Simulator:
 
         results: list[Result] = []
         try:
+            if reset_conc and self._method == "ode":
+                # Issue #1660 — "auto" (and a tracking ceiling it gives) is read
+                # from the points' starts, the tightest any asks for, not from the
+                # invocation state alone: a point that doses a species far below
+                # it was held above that species' scale. A point starts from the
+                # reset with the scanned parameter written; what an on_point hook
+                # writes after that is not seen. A continuation scan's points
+                # start where the last ended, which no call can know first, and
+                # keep the invocation state's.
+                def point_starts() -> list[np.ndarray]:
+                    starts = []
+                    for value in values:
+                        _reset_point()
+                        self._model.set_param(parameter, float(value))
+                        starts.append(np.asarray(self._model.get_state(), dtype=float))
+                    return starts
+
+                with self._auto_from(point_starts):
+                    scan_atol = self._freeze_atol(
+                        self._run_atol(atol, scan_rtol),
+                        scan_rtol,
+                        where="parameter_scan(atol=...)",
+                    )
             for i, value in enumerate(values):
                 if reset_conc:
                     _reset_point()
@@ -7204,6 +7386,17 @@ class Simulator:
                 # rate-constant change) is picked up; run() then seeds from the
                 # model's current live concentrations.
                 self._recreate_interactive_sim()
+                point_atol = scan_atol
+                if point_reads_ceiling and not np.array_equal(
+                    np.asarray(self._model.get_state(), dtype=float),
+                    np.asarray(invocation_state, dtype=float),
+                    equal_nan=True,
+                ):  # a point at the invocation state reads what the scan read
+                    tighter = self._tighter_ceiling(
+                        atol, scan_reading, self._run_atol(atol, scan_rtol)
+                    )
+                    if tighter is not None:
+                        point_atol = tighter
                 point_seed = None if self._method == "ode" else scan_seeds[i]
                 try:
                     result = self.run(
@@ -7212,7 +7405,7 @@ class Simulator:
                         seed=point_seed,
                         rtol=rtol,
                         # A _Ceiling is run()'s own resolved form, passed back.
-                        atol=scan_atol,  # type: ignore[arg-type]
+                        atol=point_atol,  # type: ignore[arg-type]
                         max_steps=max_steps,
                         max_step=max_step,
                         timeout=timeout,
@@ -7231,6 +7424,7 @@ class Simulator:
                 result.custom_attrs["scan_parameter"] = parameter
                 result.custom_attrs["scan_value"] = float(value)
                 results.append(result)
+                point_atols.append(point_atol.vector if isinstance(point_atol, _Ceiling) else None)
         finally:
             # Leave the persistent model + simulator as we found them.
             self._model.set_param(parameter, original_value)
@@ -7239,14 +7433,10 @@ class Simulator:
             self._restore_carryover_state(invocation_sens)
             self._recreate_interactive_sim()
 
-        # Every point ran at the frozen scan_atol, which run() cannot tell from
-        # an atol the caller chose; the call's own atol says (issue #1361).
+        # Every point ran at a resolved atol, which run() cannot tell from an
+        # atol the caller chose; the call's own atol says (issue #1361).
         if self._atol_is_default(atol):
-            self._warn_atol_above_scale(
-                results,
-                "ODE parameter scan",
-                scan_atol.vector if isinstance(scan_atol, _Ceiling) else None,
-            )
+            self._warn_atol_above_scale(results, "ODE parameter scan", per_result=point_atols)
 
         # Every row is stamped already; stamping the stack again would replace
         # the rows' own report metadata with the parent's (issue #743).
@@ -7325,12 +7515,16 @@ class Simulator:
         steady_state_tol: float = 0.0,
         max_step: float | None = None,
         model: Model | None = None,
+        atol_of: Callable[[int, Model], _ResolvedAtol] | None = None,
     ) -> Result:
         """Run a single simulation in a batch (thread-safe).
 
         *model* is the batch's model, where this Simulator is one built for the
         row's attachment (issue #961): its own model holds the writes of the
         row it was built for, and a row cut from it ran at that row's values.
+
+        *atol_of* gives the row's tolerance from its index and its clone, where
+        that is the row's own and not *atol_spec* (issue #1660).
         """
         from bngsim._bngsim_core import TimeSpec
 
@@ -7361,7 +7555,10 @@ class Simulator:
                 # has the same species in the same order, so it applies row for
                 # row. A tracking depth rides along with the ceiling: the rule
                 # is state-dependent within each row, but the ceiling it tracks
-                # below is the batch's, not the row's.
+                # below is the batch's, not the row's. A scalar read as a
+                # ceiling is read from the row's own start (issue #1660).
+                if atol_of is not None:
+                    atol_spec = atol_of(index, clone)
                 atol_spec.apply_to(opts)
                 opts.max_steps = max_steps
                 opts.jacobian = self._jacobian
