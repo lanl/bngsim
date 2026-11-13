@@ -3,10 +3,12 @@
 //
 // The sequence is the standard one:
 //
-//   balance      a diagonal similarity that equalizes row and column norms.
-//                Not cosmetic here: a reaction-network Jacobian mixes rate
-//                constants spanning many decades, and the QR iteration's
-//                accuracy is governed by the norm of the matrix it runs on.
+//   balance      isolate the eigenvalues a row or column holds alone, by an
+//                exact permutation, then a diagonal similarity that equalizes
+//                row and column norms over the rest. Not cosmetic here: a
+//                reaction-network Jacobian mixes rate constants spanning many
+//                decades, and the QR iteration's accuracy is governed by the
+//                norm of the matrix it runs on (issue #1529).
 //   hessenberg   Householder reflectors, similarity, no Q accumulated (only
 //                eigenvalues are wanted).
 //   francis_qr   the double-shift implicit QR iteration on the Hessenberg
@@ -21,6 +23,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <utility>
 #include <vector>
 
 namespace bngsim {
@@ -34,26 +37,92 @@ inline double &el(double *a, int n, int i, int j) {
              static_cast<std::size_t>(i)];
 }
 
-// Diagonal similarity D⁻¹AD with D a power of the radix, so it introduces no
-// rounding error at all. Iterates until no row/column pair is improved by more
-// than 5%, the EISPACK `balanc` criterion.
+// Swap row and column i with row and column j: a permutation similarity,
+// exact, which moves an eigenvalue's row and column without changing any value.
+void swap_index(double *a, int n, int i, int j) {
+    if (i == j)
+        return;
+    for (int c = 0; c < n; ++c)
+        std::swap(el(a, n, i, c), el(a, n, j, c));
+    for (int r = 0; r < n; ++r)
+        std::swap(el(a, n, r, i), el(a, n, r, j));
+}
+
+// Balance, as LAPACK's dgebal (job "B") and EISPACK's balanc do it, in two
+// steps (issue #1529).
+//
+// First, isolate. A row whose off-diagonal entries in the active block are all
+// zero holds an eigenvalue, its diagonal, that no other row reaches: it is
+// swapped to the block's bottom and the block shrinks above it. A column with
+// the same property is swapped to the block's top. Repeated until none is left,
+// this leaves the matrix block upper triangular around the active block
+// [lo, hi], with each isolated eigenvalue on the diagonal outside it. The
+// Hessenberg reduction and the QR iteration then read those eigenvalues
+// exactly: a reflector is zero over every isolated row and column, so the
+// structure survives the reduction, and the QR iteration deflates each one on
+// an exactly zero subdiagonal.
+//
+// The scaling step used to skip such a row or column ("nothing to scale") and
+// leave it in place. A zero eigenvalue in a row that feeds a species nothing
+// reads then has a condition number of |df_X/dS| / |df_X/dX|, which scaling
+// cannot reduce. At 1e7 the QR iteration's O(eps·||A||) backward error came
+// out as a +6.9e-05 eigenvalue for an exact 0, and a stable root was certified
+// unstable.
+//
+// Second, scale: a diagonal similarity D⁻¹AD over the active block, with D a
+// power of the radix so it introduces no rounding error at all. Iterates until
+// no row/column pair is improved by more than 5%, the EISPACK `balanc`
+// criterion.
 void balance(double *a, int n) {
+    int lo = 0;
+    int hi = n - 1;
+    // Rows isolating an eigenvalue: off-diagonal zero over columns 0..hi.
+    for (bool found = true; found && hi > 0;) {
+        found = false;
+        for (int j = hi; j >= 0; --j) {
+            bool isolated = true;
+            for (int c = 0; c <= hi && isolated; ++c)
+                isolated = c == j || el(a, n, j, c) == 0.0;
+            if (isolated) {
+                swap_index(a, n, j, hi);
+                --hi;
+                found = true;
+                break;
+            }
+        }
+    }
+    // Columns isolating an eigenvalue: off-diagonal zero over rows lo..hi.
+    for (bool found = true; found && lo < hi;) {
+        found = false;
+        for (int j = lo; j <= hi; ++j) {
+            bool isolated = true;
+            for (int r = lo; r <= hi && isolated; ++r)
+                isolated = r == j || el(a, n, r, j) == 0.0;
+            if (isolated) {
+                swap_index(a, n, j, lo);
+                ++lo;
+                found = true;
+                break;
+            }
+        }
+    }
+
     constexpr double radix = 2.0;
     constexpr double radix2 = radix * radix;
     bool converged = false;
     while (!converged) {
         converged = true;
-        for (int i = 0; i < n; ++i) {
-            double col = 0.0; // ||A[:,i]||_1 off the diagonal
-            double row = 0.0; // ||A[i,:]||_1 off the diagonal
-            for (int j = 0; j < n; ++j) {
+        for (int i = lo; i <= hi; ++i) {
+            double col = 0.0; // ||A[lo:hi,i]||_1 off the diagonal
+            double row = 0.0; // ||A[i,lo:hi]||_1 off the diagonal
+            for (int j = lo; j <= hi; ++j) {
                 if (j == i)
                     continue;
                 col += std::abs(el(a, n, j, i));
                 row += std::abs(el(a, n, i, j));
             }
             if (col == 0.0 || row == 0.0)
-                continue; // an isolated eigenvalue; nothing to scale
+                continue; // a zero across the block; nothing to scale
             double g = row / radix;
             double f = 1.0;
             const double s = col + row;
