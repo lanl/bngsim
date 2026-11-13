@@ -327,6 +327,10 @@ class OmexArchive:
         from bngsim.convert._protocol import ProtocolSpec, combine_protocols
         from bngsim.convert._sedml import read_sedml_protocol
 
+        # The master SBML, for a species change written in its compartment's
+        # amount (issue #1662).
+        master = self.master_model_entry()
+        sbml = self.path_of(master) if master is not None and master.kind == "sbml" else None
         specs = []
         for entry in self.sedml_entries():
             path = self.path_of(entry)
@@ -334,7 +338,7 @@ class OmexArchive:
                 raise ConversionError(
                     f"manifest lists SED-ML {entry.location!r} but it is not in the archive"
                 )
-            specs.append(read_sedml_protocol(path))
+            specs.append(read_sedml_protocol(path, sbml=sbml if sbml and sbml.is_file() else None))
         if not specs:
             return ProtocolSpec()
         return combine_protocols(specs)
