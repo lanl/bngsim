@@ -56,6 +56,7 @@
 #include <cstring>
 #include <functional>
 #include <iomanip>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <numeric>
@@ -864,6 +865,16 @@ struct CvodeUserData {
     // surface (or reaching it). Null, and the root set unchanged, wherever the
     // run has no such equality. Owned by run().
     const std::vector<int> *held_equality_roots = nullptr;
+    // Issue #1669: what the root function reads of the model, found for the
+    // expressions it evaluates (every event trigger, then the discontinuity
+    // triggers, the state-switch residuals and the held equalities) and kept
+    // while the two lists a run sets stay the ones it was found for.
+    NetworkModel::ReadPlan root_plan;
+    bool root_plan_found = false;
+    const std::vector<int> *root_plan_switches = nullptr;
+    std::size_t root_plan_n_switches = 0;
+    const std::vector<int> *root_plan_held = nullptr;
+    std::size_t root_plan_n_held = 0;
     // Per held equality, the last time and state the root function read it
     // exactly 0 at, `ns` doubles each: the state on the surface a root
     // tolerance before the root of its leaving, where CVODE's interpolant read
@@ -3188,6 +3199,65 @@ static int cvode_colored_jac(sunrealtype t, N_Vector y, N_Vector fy, SUNMatrix J
 // discontinuity-trigger condition, subtracting 0.5 so a false→true (or
 // true→false) flip is a sign change. Event roots occupy gout[0,n_events)
 // and discontinuity roots gout[n_events, n_roots).
+// What the root function reads of the model (issue #1669): the observables and
+// function groups its expressions read, through NetworkModel::read_plan. Null
+// where that is everything (a table function, a slot nothing models), and for
+// a model with no functions, where refreshing every observable is no dearer
+// than finding which. Found once a run, and again only if the run sets its
+// state-switch or held-equality roots after a first call: the event and
+// discontinuity triggers are the model's.
+static const NetworkModel::ReadPlan *root_read_plan(CvodeUserData *data) {
+    const NetworkModel &mdl = *data->model;
+    if (mdl.n_functions() == 0) {
+        return nullptr;
+    }
+    const std::vector<int> *switches = data->state_switch_roots;
+    const std::vector<int> *held = data->held_equality_roots;
+    const std::size_t n_switches = switches != nullptr ? switches->size() : 0;
+    const std::size_t n_held = held != nullptr ? held->size() : 0;
+    if (!data->root_plan_found || switches != data->root_plan_switches ||
+        n_switches != data->root_plan_n_switches || held != data->root_plan_held ||
+        n_held != data->root_plan_n_held) {
+        // The events' part is the model's trigger plan, which the read-ahead
+        // at each output row has found already (finding it again over 800
+        // triggers was a tenth of a first run); the rest is found here. A
+        // plan over two lists is the union of their plans. Copies: the
+        // model's may be dropped.
+        std::vector<int> ids(mdl.discontinuity_triggers());
+        if (switches != nullptr) {
+            ids.insert(ids.end(), switches->begin(), switches->end());
+        }
+        if (held != nullptr) {
+            ids.insert(ids.end(), held->begin(), held->end());
+        }
+        NetworkModel::ReadPlan plan =
+            mdl.events().empty() ? NetworkModel::ReadPlan{} : mdl.trigger_read_plan();
+        if (!ids.empty() && !plan.full) {
+            const NetworkModel::ReadPlan &rest = mdl.kept_read_plan(ids);
+            if (rest.full) {
+                plan = rest;
+            } else {
+                const auto join = [](std::vector<int> &into, const std::vector<int> &from) {
+                    std::vector<int> both;
+                    std::set_union(into.begin(), into.end(), from.begin(), from.end(),
+                                   std::back_inserter(both));
+                    into.swap(both);
+                };
+                join(plan.observables, rest.observables);
+                join(plan.groups, rest.groups);
+                join(plan.functions, rest.functions);
+            }
+        }
+        data->root_plan = std::move(plan);
+        data->root_plan_found = true;
+        data->root_plan_switches = switches;
+        data->root_plan_n_switches = n_switches;
+        data->root_plan_held = held;
+        data->root_plan_n_held = n_held;
+    }
+    return data->root_plan.full ? nullptr : &data->root_plan;
+}
+
 static int cvode_event_root_fn_body(sunrealtype t, N_Vector y, sunrealtype *gout, void *user_data) {
     auto *data = static_cast<CvodeUserData *>(user_data);
     auto *mdl = data->model;
@@ -3199,9 +3269,19 @@ static int cvode_event_root_fn_body(sunrealtype t, N_Vector y, sunrealtype *gout
     for (int i = 0; i < nsp; ++i) {
         sp_vec[i].concentration = y_ptr[i];
     }
-    mdl->update_observables(y_ptr);
-    // Without the deferred functions: no trigger reads one (issue #1186).
-    mdl->evaluate_functions(static_cast<double>(t), /*with_deferred=*/false);
+    // Only what the roots read (issue #1669): the observables and function
+    // groups their expressions read, directly or through one another. Every
+    // function evaluated on every call was a fifth to two fifths of a run of
+    // the BioModels the issue lists, where most triggers read the clock alone.
+    // A rateOf reader takes the whole model, as below. Without the deferred
+    // functions either way: no trigger reads one (issue #1186).
+    const NetworkModel::ReadPlan *plan = mdl->uses_rateof() ? nullptr : root_read_plan(data);
+    if (plan != nullptr) {
+        mdl->evaluate_read_plan(static_cast<double>(t), y_ptr, *plan, /*with_deferred=*/false);
+    } else {
+        mdl->update_observables(y_ptr);
+        mdl->evaluate_functions(static_cast<double>(t), /*with_deferred=*/false);
+    }
 
     // GH #106: refresh the live rateOf buffer, and re-evaluate the functions
     // against it, so triggers reading rateOf(species) — directly or via a

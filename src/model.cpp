@@ -1336,7 +1336,8 @@ const NetworkModel::StateSwitch *NetworkModel::state_switch(const std::string &c
                 trigger_residual_source(pre, reason, ResidualUse::SwitchSurface);
             if (src) {
                 try {
-                    sw.residual_expr_idx = impl_->evaluator->compile_preprocessed(*src);
+                    // Its repeated subexpressions computed once (issue #1669).
+                    sw.residual_expr_idx = impl_->evaluator->compile_preprocessed_shared(*src);
                     sw.residual_source = *src;
                 } catch (const std::exception &e) {
                     reason = std::string("its residual '") + *src + "' did not compile (" +
@@ -2232,7 +2233,8 @@ const NetworkModel::ReadPlan &NetworkModel::kept_read_plan(const std::vector<int
     return it->second;
 }
 
-void NetworkModel::evaluate_read_plan(double t, const double *conc, const ReadPlan &plan) {
+void NetworkModel::evaluate_read_plan(double t, const double *conc, const ReadPlan &plan,
+                                      bool with_deferred) {
     impl_->current_time = t;
     for (int oi : plan.observables) {
         update_observable_(static_cast<size_t>(oi), conc);
@@ -2246,7 +2248,7 @@ void NetworkModel::evaluate_read_plan(double t, const double *conc, const ReadPl
         cache.assign(impl_->functions.size(), 0.0);
     }
     for (int g : plan.groups) {
-        evaluate_function_group_(static_cast<size_t>(g), /*with_deferred=*/true);
+        evaluate_function_group_(static_cast<size_t>(g), with_deferred);
     }
 }
 

@@ -2989,6 +2989,57 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "surface (issue #381). This is the one authority: the codegen gate "
             "and the run-time detector both ask it, so neither can classify a "
             "condition the other would not.")
+        .def(
+            "_state_switch_residual_program",
+            [](bngsim::NetworkModel &self, const std::string &condition_src) {
+                const auto *sw = self.state_switch(condition_src, nullptr);
+                if (sw == nullptr) {
+                    return py::make_tuple(std::string(), std::string());
+                }
+                auto *exprtk = dynamic_cast<bngsim::ExprTkEvaluator *>(&self.evaluator());
+                return py::make_tuple(std::string(sw->residual_source),
+                                      exprtk != nullptr
+                                          ? exprtk->shared_program(sw->residual_expr_idx)
+                                          : std::string());
+            },
+            py::arg("condition_src"),
+            "Testing hook (issue #1669): (residual_source, program) for a condition that "
+            "state_switch_residual resolves, where program is what was compiled for the "
+            "residual with its repeated subexpressions computed once, '' where it was "
+            "compiled as written; ('', '') where the condition is no state switch.")
+        .def(
+            "_state_switch_residual_values",
+            [](bngsim::NetworkModel &self, const std::string &condition_src, double t,
+               const std::vector<double> &conc) {
+                const auto *sw = self.state_switch(condition_src, nullptr);
+                if (sw == nullptr) {
+                    throw py::value_error("not a state switch: " + condition_src);
+                }
+                if (static_cast<int>(conc.size()) != self.n_species()) {
+                    throw py::value_error("_state_switch_residual_values: expected " +
+                                          std::to_string(self.n_species()) + " species");
+                }
+                auto *exprtk = dynamic_cast<bngsim::ExprTkEvaluator *>(&self.evaluator());
+                if (exprtk == nullptr) {
+                    throw py::value_error("_state_switch_residual_values: no ExprTk evaluator");
+                }
+                auto &sp = const_cast<std::vector<bngsim::Species> &>(self.species());
+                for (size_t i = 0; i < conc.size(); ++i) {
+                    sp[i].concentration = conc[i];
+                }
+                self.update_observables(conc.data());
+                self.evaluate_functions(t);
+                // The residual's text compiled as it is (a new expression on
+                // each call: a testing hook).
+                const int plain = exprtk->compile_preprocessed(sw->residual_source);
+                return py::make_tuple(exprtk->evaluate(sw->residual_expr_idx),
+                                      exprtk->evaluate(plain));
+            },
+            py::arg("condition_src"), py::arg("t"), py::arg("conc"),
+            "Testing hook (issue #1669): (compiled, as written) values of a state switch's "
+            "residual at time t and species concentrations conc, the model synced there "
+            "whole: what the run reads, and the residual's text compiled as it is. It "
+            "leaves the model's species at conc, and compiles a new expression on each call.")
         .def_property_readonly("load_warnings", &bngsim::NetworkModel::load_warnings)
 
         // Named lists
