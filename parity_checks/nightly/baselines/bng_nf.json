@@ -4,7 +4,7 @@
   "kind": "core",
   "source": {"config": {"bngsim_method": "nf", "n_rep": 10, "nf_block_same_complex_binding": true, "reference_source": "archive:/home/runner/work/_temp/reference/bng_nf", "rep_timeout_sec": null, "rep_timeout_source": "derived per job", "seed_base": 1, "timeout_overridden_jobs": 0, "track": "nf"}, "cpu": "AMD EPYC 9V45 96-Core Processor", "elapsed_sec": 2050.72, "event": "pull_request", "generated": "2026-11-07T00:04:41", "git_rev": "fab767e", "regime": "nf", "run_id": "42311880046", "sha": "fab767e8cfc73d91f873291ff13f373050c59717", "suite": "bng_parity", "versions": {"bng": "2.9.3", "bngsim": "0.17.0", "platform": "Linux-7.0.0-1017-azure-x86_64-with-glibc2.39", "python": "3.12.3"}},
   "n_cases": 235,
-  "tally": {"DIFF": 10, "PASS": 221, "REFERENCE_FAILED": 3, "TIMEOUT": 1},
+  "tally": {"DIFF": 10, "PASS": 222, "REFERENCE_FAILED": 2, "TIMEOUT": 1},
   "bngsim_phases": ["io_sec", "parse_sec", "interpret_sec", "load_sec", "jac_derive_sec", "codegen_sec", "integrate_cold_sec", "ensemble_sec", "setup_sec"],
   "bngsim_phases_seen": ["ensemble_sec", "io_sec", "load_sec", "setup_sec"],
   "cases": {
@@ -71,7 +71,7 @@
     "original/bngl_models/my_models/nf/xlink_v4_1.bngl|stochastic": {"bngsim_sec": 105.449694, "outcome": "PASS", "subclass": null},
     "original/bngl_models/my_models/nf/zeroOrderRxn.bngl|stochastic": {"bngsim_sec": 0.06921, "outcome": "PASS", "subclass": null},
     "original/bngl_models/my_models/ode/AD 3 State FREE Expanding nfs.bngl|stochastic": {"bngsim_sec": 292.029862, "outcome": "PASS", "subclass": null},
-    "original/bngl_models/my_models/ode/AMPK_MTORC1_ULK1_v2.bngl|stochastic": {"bngsim_sec": 44.134092, "note": "NFsim (archive): archive_unreplayable: the replay needs the legacy:20:11 ensemble, which the recorded run never ran", "outcome": "REFERENCE_FAILED", "subclass": null},
+    "original/bngl_models/my_models/ode/AMPK_MTORC1_ULK1_v2.bngl|stochastic": {"bngsim_sec": 48.26831, "outcome": "PASS", "subclass": null},
     "original/bngl_models/my_models/ode/AZD8055.bngl|stochastic": {"bngsim_sec": 0.309134, "outcome": "PASS", "subclass": null},
     "original/bngl_models/my_models/ode/BSA_v4.bngl|stochastic": {"bngsim_sec": 10.431519, "outcome": "PASS", "subclass": null},
     "original/bngl_models/my_models/ode/BSA_v6.bngl|stochastic": {"bngsim_sec": 32.705214, "outcome": "PASS", "subclass": null},
