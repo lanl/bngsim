@@ -254,3 +254,17 @@ def test_a_scan_over_a_derived_parameter_leaves_its_expression_live(tmp_path, sc
     assert found() == before
     model.set_param("A0", 3.0)
     assert (model.get_param("T"), model.get_param("U")) == (6.0, 6.0)
+
+
+def test_asking_does_not_change_what_the_scan_runs():
+    """The warning writes the scanned parameter once to ask what it seeds. The
+    scan's tolerance is read before that, from the model as the scan found it:
+    a fresh model at A0 = 1e-9, scanned at that value, is the run() of that
+    model, bit for bit. Read after, the tolerance would be A's at twice its
+    value, 2e-17 for 1e-17. (From A0 = 10 both are the scalar, and tell
+    nothing.)"""
+    src = ANT.replace("A0 = 10;", "A0 = 1e-9;")
+    span = {"t_span": (0, 20), "n_points": 21}
+    point = _quiet(lambda: _sim(src).parameter_scan("A0", [1e-9], **span))[0]
+    alone = _sim(src).run(**span)
+    assert np.array_equal(np.asarray(point.species), np.asarray(alone.species))
