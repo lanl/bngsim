@@ -142,17 +142,31 @@ def test_fewer_than_two_reactants_still_load_at_a_rate_of_0(tmp_path, reactants)
     assert _p_at_1(model) == 0.0
 
 
-def test_the_functional_rewrite_the_refusal_asks_for_is_run_network_s_reading(tmp_path):
-    """Control: loads on main too. ``S -> P`` at the tQSSA rate over the
-    enzymes' total gives the 3.318492 run_network gives the three-reactant
-    line, and run_network gives this file the same."""
-    text = (
-        "begin parameters\n 1 kcat 1\n 2 Km 1\nend parameters\n" + SPECIES + "begin functions\n"
-        " 1 sFree() 0.5*((Sobs-Km-Etot)+sqrt((Sobs-Km-Etot)^2+4*Km*Sobs))\n"
-        " 2 f() kcat*sFree()*Etot/(Km+sFree())/Sobs\n"
+def _rewrite(species: str) -> str:
+    """``S -> P`` at the tQSSA rate over the enzymes' total, as the loading
+    guide writes it: over ``r()``, the free fraction of the substrate, since
+    the free substrate over ``Sobs`` is 0/0 while S is 0."""
+    return (
+        "begin parameters\n 1 kcat 1\n 2 Km 1\nend parameters\n" + species + "begin functions\n"
+        " 1 r() 2*Km/(sqrt((Sobs-Km-Etot)^2+4*Km*Sobs)-(Sobs-Km-Etot))\n"
+        " 2 f() kcat*Etot*r()/(Km+r()*Sobs)\n"
         "end functions\n"
         "begin reactions\n 1 1 4 f\nend reactions\n"
         "begin groups\n 1 Pobs 4\n 2 Sobs 1\n 3 Etot 2,3\nend groups\n"
     )
-    model = bngsim.Model.from_net(str(_write(tmp_path, text)))
+
+
+def test_the_functional_rewrite_the_refusal_asks_for_is_run_network_s_reading(tmp_path):
+    """Control: loads on main too. The rewrite gives the 3.318492 run_network
+    gives the three-reactant line; run_network gives this file 3.318492133913."""
+    model = bngsim.Model.from_net(str(_write(tmp_path, _rewrite(SPECIES))))
     assert _p_at_1(model) == pytest.approx(RN_THREE, rel=RUN_NETWORK)
+
+
+def test_the_functional_rewrite_runs_from_no_substrate(tmp_path):
+    """The rewrite written as the free substrate over ``Sobs`` was refused at
+    t = 0 with S = 0, a non-finite rate. Over the free fraction it is 0 there,
+    as run_network gives it."""
+    species = SPECIES.replace(" 1 S() 10\n", " 1 S() 0\n")
+    model = bngsim.Model.from_net(str(_write(tmp_path, _rewrite(species))))
+    assert _p_at_1(model) == 0.0
