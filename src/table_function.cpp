@@ -5,6 +5,7 @@
 // Supports both file-based tfuns and inline tfun array syntax.
 
 #include "bngsim/table_function.hpp"
+#include "bngsim/utf8.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -180,7 +181,7 @@ TableFunction TableFunction::from_file(const std::string &name, const std::strin
                     throw std::runtime_error("TableFunction '" + name +
                                              "': header line must have "
                                              "two column names (got: '" +
-                                             line + "')");
+                                             shown_as_utf8(line) + "')");
                 }
 
                 // Validate column 1: must match index name.
@@ -195,9 +196,9 @@ TableFunction TableFunction::from_file(const std::string &name, const std::strin
                     col1_ok = (strip_paren_suffix(col1) == strip_paren_suffix(index_name));
                 }
                 if (!col1_ok) {
-                    throw std::runtime_error("TableFunction '" + name + "': header column 1 '" +
-                                             col1 + "' does not match expected index name '" +
-                                             index_name + "'");
+                    throw std::runtime_error(
+                        "TableFunction '" + name + "': header column 1 '" + shown_as_utf8(col1) +
+                        "' does not match expected index name '" + index_name + "'");
                 }
 
                 // Validate column 2: must match the expected header label
@@ -208,12 +209,12 @@ TableFunction TableFunction::from_file(const std::string &name, const std::strin
                 if (strip_paren_suffix(col2) != strip_paren_suffix(expected_header) &&
                     (also_header.empty() ||
                      strip_paren_suffix(col2) != strip_paren_suffix(also_header))) {
-                    throw std::runtime_error("TableFunction '" + name + "': header column 2 '" +
-                                             col2 + "' does not match expected function name '" +
-                                             expected_header + "'" +
-                                             (also_header.empty() || also_header == expected_header
-                                                  ? std::string()
-                                                  : " or '" + also_header + "'"));
+                    throw std::runtime_error(
+                        "TableFunction '" + name + "': header column 2 '" + shown_as_utf8(col2) +
+                        "' does not match expected function name '" + expected_header + "'" +
+                        (also_header.empty() || also_header == expected_header
+                             ? std::string()
+                             : " or '" + also_header + "'"));
                 }
 
                 header_found = true;
@@ -221,12 +222,14 @@ TableFunction TableFunction::from_file(const std::string &name, const std::strin
             continue; // skip all comment lines
         }
 
-        // Data line: two whitespace-separated numbers
+        // Data line: two whitespace-separated numbers. The refusals quote
+        // the file's text shown as UTF-8, which is how it reaches Python
+        // (issue #1653).
         std::istringstream dss(line);
         double x, y;
         if (!(dss >> x >> y)) {
-            throw std::runtime_error("TableFunction '" + name + "': invalid data line: '" + line +
-                                     "'");
+            throw std::runtime_error("TableFunction '" + name + "': invalid data line: '" +
+                                     shown_as_utf8(line) + "'");
         }
 
         xs.push_back(x);

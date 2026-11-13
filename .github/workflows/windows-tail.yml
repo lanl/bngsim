@@ -124,6 +124,10 @@ on:
       # _model.py (compartment_sizes=) and _simulator.py (the sensitivity
       # column). All four are already triggers above; this adds the test.
       - "python/tests/test_compartment_size_write.py"
+      # Issue #1653 — write_net wrote the locale's encoding, cp1252 here, so
+      # this is the leg where its test runs on the platform it is about.
+      # src/net_file_loader.cpp, the loader half, is a trigger above.
+      - "python/tests/test_net_not_utf8.py"
       - ".github/workflows/windows-tail.yml"
       - ".github/actions/sundials-archive/**"
       - ".github/actions/cached-download/**"
@@ -276,6 +280,7 @@ jobs:
             python/tests/test_ic_sensitivity_seed.py \
             python/tests/test_model_load_dispatch.py \
             python/tests/test_compartment_size_write.py \
+            python/tests/test_net_not_utf8.py \
             python/tests/test_codegen_cache_key.py \
             python/tests/test_codegen_structural_key.py \
             python/tests/test_codegen_key_stream.py \
