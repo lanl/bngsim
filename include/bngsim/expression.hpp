@@ -171,8 +171,11 @@ class ExprTkEvaluator : public ExpressionEvaluator {
     // subexpression in more than one place, it is computed once (issue
     // #1669): the expression compiled is shared_program() of the text. The
     // text kept for preprocessed_expr() and referenced_variable_addresses() is
-    // the one given, and the value is that text's. Where the text is not
-    // plain arithmetic, or shares nothing, it compiles as it is.
+    // the one given. The value is the same arithmetic, rounded as ExprTk's
+    // nodes for the program round it: to the last bit as a rule, a few units
+    // in the last place off where a shared group changes which node computes
+    // it. Where the text is not plain arithmetic, or shares nothing, it
+    // compiles as it is.
     int compile_preprocessed_shared(const std::string &preprocessed_expr);
 
     // The program compile_preprocessed_shared() compiled for `expr_id`: the

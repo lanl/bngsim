@@ -3038,7 +3038,8 @@ PYBIND11_MODULE(_bngsim_core, m) {
             py::arg("condition_src"), py::arg("t"), py::arg("conc"),
             "Testing hook (issue #1669): (compiled, as written) values of a state switch's "
             "residual at time t and species concentrations conc, the model synced there "
-            "whole: what the run reads, and the residual's text compiled as it is.")
+            "whole: what the run reads, and the residual's text compiled as it is. It "
+            "leaves the model's species at conc, and compiles a new expression on each call.")
         .def_property_readonly("load_warnings", &bngsim::NetworkModel::load_warnings)
 
         // Named lists

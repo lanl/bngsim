@@ -157,7 +157,7 @@ class NetworkModel:
         """
     def _state_switch_residual_values(self, condition_src: str, t: typing.SupportsFloat | typing.SupportsIndex, conc: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex]) -> tuple[float, float]:
         """
-        Testing hook (issue #1669): (compiled, as written) values of a state switch's residual at time t and species concentrations conc, the model synced there whole: what the run reads, and the residual's text compiled as it is.
+        Testing hook (issue #1669): (compiled, as written) values of a state switch's residual at time t and species concentrations conc, the model synced there whole: what the run reads, and the residual's text compiled as it is. It leaves the model's species at conc, and compiles a new expression on each call.
         """
     def _trigger_read_plan(self) -> dict:
         """
