@@ -27,6 +27,9 @@ concentration a hair below 0, and that one must keep the rescue.
 
 from __future__ import annotations
 
+import math
+import warnings
+
 import bngsim
 import numpy as np
 import pytest
@@ -138,3 +141,158 @@ def test_a_saved_depleted_concentration_keeps_the_rescue(codegen):
     r = sim.run(t_span=(0, 10), n_points=11)
     np.testing.assert_allclose(_col(r, "S"), 0.0, atol=1e-6)
     np.testing.assert_allclose(_col(r, "N"), -3.0)
+
+
+# Issue #1661: a species negative where the model has it so, but not declared
+# negative. V reads no other species, dV/dt = g (E - V), so
+# V(t) = E + (V(0) - E) exp(-g t) whatever S does; S is the sink above. The
+# retry read V at 0 too, though no non-finite law reads V: from t = 2, where S
+# parks below 0, V followed dV/dt = g E = -7. Now the retry first clamps only
+# the slots a non-finite row of f (or of the Jacobian) reads.
+_V_BESIDE_SINK = """model m
+  species S, V; S = 1; V = %s;
+  k = 1; g = 0.1; E = -70;
+  R1: S -> ; k*sqrt(S);
+  R2: -> V; g*(E - V);
+end"""
+
+_ROUTES = [
+    pytest.param(False, False, id="interp-dense"),
+    pytest.param(True, False, id="codegen-dense"),
+    pytest.param(
+        False,
+        True,
+        id="interp-klu",
+        marks=pytest.mark.skipif(not bngsim._bngsim_core.HAS_KLU, reason="KLU not compiled"),
+    ),
+    pytest.param(
+        True,
+        True,
+        id="codegen-klu",
+        marks=pytest.mark.skipif(not bngsim._bngsim_core.HAS_KLU, reason="KLU not compiled"),
+    ),
+]
+
+
+def _run_v(model, codegen, sparse):
+    sim = bngsim.Simulator(
+        model,
+        method="ode",
+        codegen=codegen,
+        jacobian="fd",
+        force_sparse_linear_solver=sparse,
+    )
+    r = sim.run(t_span=(0, 40), n_points=41)
+    # The route the run took: a codegen leg that fell back to the interpreter
+    # would test the interpreted retry twice.
+    assert (sim.codegen_backend != "exprtk") == codegen
+    assert (r.solver_stats["linear_solver"] == 1) == sparse
+    return r
+
+
+def _check_v(r, v0):
+    t = np.asarray(r.time)
+    np.testing.assert_allclose(_col(r, "V"), -70.0 + (v0 + 70.0) * np.exp(-0.1 * t), rtol=1e-6)
+
+
+@pytest.mark.parametrize(("codegen", "sparse"), _ROUTES)
+def test_a_species_written_negative_follows_its_own_ode(codegen, sparse):
+    # Main: V(40) = -328.63 for -69.8352.
+    model = bngsim.Model.from_antimony_string(_V_BESIDE_SINK % "0")
+    model.set_concentration("V", -61.0)
+    r = _run_v(model, codegen, sparse)
+    _check_v(r, -61.0)
+    _check_s(r)
+
+
+@pytest.mark.parametrize(("codegen", "sparse"), _ROUTES)
+def test_a_species_its_own_law_takes_below_zero_follows_its_own_ode(codegen, sparse):
+    # Declared at 10, V crosses 0 at t = 2.5 on its own. Main: V(40) = -270.50
+    # for -68.5347.
+    r = _run_v(bngsim.Model.from_antimony_string(_V_BESIDE_SINK % "10"), codegen, sparse)
+    _check_v(r, 10.0)
+    _check_s(r)
+
+
+def test_a_batch_row_whose_species_crosses_zero_follows_its_own_ode():
+    # A row's dose of V0 = 10 sets V's declared value at 10, so the row is the
+    # crossing case above. Main: -270.50 for -68.5347. (V0 = -61 was right on
+    # main: a dose through a parameter re-declares V negative, #706.)
+    model = bngsim.Model.from_antimony_string(
+        (_V_BESIDE_SINK % "V0").replace("k = 1;", "k = 1; V0 = 0;")
+    )
+    rows = bngsim.Simulator(model, method="ode", jacobian="fd").run_batch(
+        (0, 40), 41, params=[{"V0": 10.0}, {"V0": -61.0}]
+    )
+    for row, v0 in zip(rows, (10.0, -61.0), strict=True):
+        _check_v(row, v0)
+        _check_s(row)
+
+
+@pytest.mark.parametrize(("codegen", "sparse"), _ROUTES)
+@pytest.mark.parametrize(
+    "declared, set_to", [("0", -61.0), ("10", None)], ids=["written", "crosses"]
+)
+def test_a_law_that_reads_the_negative_species_too_leaves_it_in_place(
+    declared, set_to, codegen, sparse
+):
+    # The non-finite law reads V as well, so its row reads S and V both, and
+    # V was read at 0 with S even once the clamp is narrowed to the rows. Each
+    # slot the narrowed reading moves from outside its band is now put back
+    # where the reading stays finite without it: V is, S (below 0 by far more
+    # than its atol, and NaN under sqrt there) is not. Main: V(40) = -328.63
+    # and -270.50, as for the law that does not read V.
+    model = bngsim.Model.from_antimony_string(
+        (_V_BESIDE_SINK % declared).replace("k*sqrt(S);", "k*sqrt(S)*(1 + 0*V);")
+    )
+    if set_to is not None:
+        model.set_concentration("V", set_to)
+    r = _run_v(model, codegen, sparse)
+    _check_v(r, set_to if set_to is not None else float(declared))
+    _check_s(r)
+
+
+@pytest.mark.parametrize("order", ["S, V", "V, S"])
+def test_a_slot_the_nan_law_needs_moved_stays_moved(order):
+    # S written to -1e-3, far past any rounding of 0: k*sqrt(S) is NaN there,
+    # so S, tried back at its value, keeps the reading NaN and is read at 0
+    # again (dS/dt = 0, S stays), while V is put back. In the order "V, S" the
+    # last slot tried is S, so the reading is taken once more at the state kept.
+    model = bngsim.Model.from_antimony_string(
+        f"model m\n  species {order}; S = 1; V = 0;\n  k = 1; g = 0.1; E = -70;\n"
+        "  R1: S -> ; k*sqrt(S)*(1 + 0*V);\n  R2: -> V; g*(E - V);\nend"
+    )
+    model.set_concentration("S", -1e-3)
+    model.set_concentration("V", -61.0)
+    r = _run_v(model, False, False)
+    _check_v(r, -61.0)
+    np.testing.assert_array_equal(_col(r, "S"), -1e-3)
+
+
+@pytest.mark.parametrize("codegen", [False, True])
+@pytest.mark.parametrize(
+    "law", ["k*A*P^1.5", "k*A*f", "k*A*h"], ids=["direct", "one function", "two functions"]
+)
+def test_the_rows_a_function_reads_through_count_as_read(law, codegen):
+    """The NaN is in f() = P^1.5, which J reads directly, through one function,
+    or through two (h = 2*f2, f2 = 0.5*f). The slots J reads come from the
+    Jacobian's pattern, which follows the functions: P is clamped, V is not, and
+    V relaxes to E from -61, V(40) = -70 + 9 e^-4. Main read V at 0 too: -341."""
+    pytest.importorskip("antimony")
+    src = f"""model m
+  species A = 1, P = 0, V = 0;
+  k = 0.1; c = 1e-30; g = 0.1; E = -70;
+  f := P^1.5; h := 2*f2; f2 := 0.5*f;
+  P' = -c;
+  J: A -> ; {law};
+  R2: -> V; g*(E - V);
+end"""
+    model = bngsim.Model.from_antimony_string(src)
+    model.set_concentration("V", -61.0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        result = bngsim.Simulator(model, method="ode", codegen=codegen).run(
+            t_span=(0, 40), n_points=5, atol=bngsim.ExactAtol(1e-9), rtol=1e-8
+        )
+    v = dict(zip(result.species_names, np.asarray(result.species)[-1], strict=True))["V"]
+    assert v == pytest.approx(-70 + 9 * math.exp(-4), abs=1e-4)

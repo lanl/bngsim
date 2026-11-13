@@ -248,3 +248,207 @@ def test_model1812040005_runs_in_either_order(data_dir: Path, tmp_path: Path):
     for name, x in out[0].items():
         bound = 1e-8 * float(np.abs(x).max()) + run["atol"]
         assert np.abs(x - out[1][name]).max() <= bound, name
+
+
+# Issue #1661: the band reading is narrowed as the clamp is. V, negative where
+# the model has it so but not declared negative, reads no other species, and
+# A's law reads P only; f is finite once P alone is read at 0. The clamp and
+# the band were both taken over every slot, so V was read at 0 on the second
+# reading as on the first, and V' = g E = -7 from t = 0.
+def _v_beside_sinking(v0: float, law: str = "k*A*P^0.5") -> bngsim.Model:
+    model = bngsim.Model.from_antimony_string(
+        "model m\n  species A = 1, P = 0, V = 0;\n  k = 0.1; c = 1e-30; g = 0.1; E = -70;\n"
+        f"  P' = -c;\n  J: A -> ; {law};\n  R2: -> V; g*(E - V);\nend"
+    )
+    model.set_concentration("V", v0)
+    return model
+
+
+@pytest.mark.parametrize("codegen", [False, pytest.param(True, marks=_needs_cc)])
+@pytest.mark.parametrize("jacobian", ["auto", "fd"])
+def test_a_negative_species_beside_the_band_follows_its_own_ode(codegen, jacobian):
+    # Main: V(10) = -131 for -66.689.
+    sim = bngsim.Simulator(
+        _v_beside_sinking(-61.0), method="ode", codegen=codegen, jacobian=jacobian
+    )
+    r = sim.run(**_EXACT)
+    assert (sim.codegen_backend != "exprtk") == codegen
+    names = list(r.species_names)
+    x = {n: np.asarray(r.species)[:, names.index(n)] for n in names}
+    t = np.asarray(r.time)
+    np.testing.assert_allclose(x["V"], -70.0 + 9.0 * np.exp(-0.1 * t), rtol=1e-6)
+    np.testing.assert_array_equal(x["A"], 1.0)  # sqrt(P) read at P = 0
+    assert x["P"][-1] == pytest.approx(-1e-29)
+
+
+@pytest.mark.parametrize("jacobian", ["auto", "fd"])
+@pytest.mark.parametrize("sparse", [False, pytest.param(True, marks=_needs_klu)])
+def test_the_run_test_leaves_a_negative_species_beside_the_band_alone(jacobian, sparse):
+    # V at its equilibrium -70. Main: not converged, the run test moved V by
+    # 7 per unit time (continued_run_distance 9.9e12).
+    ss = bngsim.Simulator(
+        _v_beside_sinking(-70.0),
+        method="ode",
+        jacobian=jacobian,
+        force_sparse_linear_solver=sparse,
+    ).steady_state(method="integration")
+    assert (ss.linear_solver == "klu") == sparse
+    assert ss.converged
+    assert ss.continued_run_distance <= 1.0
+    v = float(np.asarray(ss.concentrations)[list(ss.species_names).index("V")])
+    assert v == pytest.approx(-70.0, rel=1e-9)
+
+
+def test_a_band_slot_no_nan_law_reads_is_left_in_place():
+    # Q, a rate-rule target inside its band at -1e-12, is read by W's law
+    # log(-Q): finite there, -inf at 0. Only A's law P^0.5 is NaN. The band
+    # reading moved Q to 0 as well, so the retry read -inf, and main refused
+    # the run (CV_REPTD_RHSFUNC_ERR); now only P, which the NaN law reads, is
+    # moved. W(10) = 1e-3 ln(1e-12) (10 - 0.001), since Q' = -1e-30.
+    model = bngsim.Model.from_antimony_string(
+        "model m\n  species A = 1, P = 0, Q = -1e-12, W = 0;\n  k = 0.1; c = 1e-30;\n"
+        "  P' = -c; Q' = -c;\n  J: A -> ; k*A*P^0.5;\n  JW: -> W; 1e-3*log(-Q);\nend"
+    )
+    r = bngsim.Simulator(model, method="ode", jacobian="fd").run(
+        t_span=(0.001, 10), n_points=11, atol=bngsim.ExactAtol(1e-9), rtol=1e-8
+    )
+    x = dict(zip(r.species_names, np.asarray(r.species)[-1], strict=True))
+    assert x["W"] == pytest.approx(1e-3 * np.log(1e-12) * (10 - 0.001), rel=1e-6)
+    assert x["A"] == 1.0
+    assert x["Q"] == pytest.approx(-1e-12, rel=1e-12)
+
+
+@pytest.mark.parametrize("codegen", [False, pytest.param(True, marks=_needs_cc)])
+def test_the_closed_form_jacobian_reads_the_narrowed_state(codegen):
+    # P^1.5 is NaN below 0 and its derivative 1.5 P^0.5 is 0 at 0, so the
+    # closed-form Jacobian survives its retry and is used. V is nonlinear,
+    # u' = -g u + q u^2 for u = V + 70 (Bernoulli), so the Jacobian's V entry
+    # depends on V. Main read V at 0 in f and J both: V(10) = -82 for -66.48936.
+    model = bngsim.Model.from_antimony_string(
+        "model m\n  species A = 1, P = 0, V = 0;\n"
+        "  k = 0.1; c = 1e-30; g = 0.1; E = -70; q = 1e-3;\n  P' = -c;\n"
+        "  J: A -> ; k*A*P^1.5;\n  R2: -> V; g*(E - V) + q*(V + 70)^2;\nend"
+    )
+    model.set_concentration("V", -61.0)
+    sim = bngsim.Simulator(model, method="ode", jacobian="analytical", codegen=codegen)
+    r = sim.run(t_span=(0, 10), n_points=11, atol=bngsim.ExactAtol(1e-9), rtol=1e-8)
+    assert (sim.codegen_backend != "exprtk") == codegen
+    t = np.asarray(r.time)
+    g, q, u0 = 0.1, 1e-3, 9.0
+    u = 1.0 / ((1.0 / u0 - q / g) * np.exp(g * t) + q / g)
+    v = np.asarray(r.species)[:, list(r.species_names).index("V")]
+    np.testing.assert_allclose(v, u - 70.0, rtol=1e-6)
+
+
+# The Jacobian's retry narrowed too (issue #1661): W reads V through log(-V),
+# whose derivative 1/V is infinite at V = 0. Only A's law P^1.5 is NaN, so only
+# P is moved; read with V at 0 as well, the closed-form Jacobian had no finite
+# value, and jacobian="analytical" has no difference quotient to fall back to.
+# Main refused the run (CV_REPTD_RHSFUNC_ERR) and the run test (distance inf).
+_LOG_V = (
+    "model m\n  species A = 1, P = 0, V = 0, W = 0;\n  k = 0.1; c = 1e-30; g = 0.1; E = -70;\n"
+    "  P' = -c;\n  J: A -> ; k*A*P^1.5;\n  R2: -> V; g*(E - V);\n"
+    "  JW: -> W; 1e-3*log(-V) - W;\nend"
+)
+
+
+@pytest.mark.parametrize("codegen", [False, pytest.param(True, marks=_needs_cc)])
+@pytest.mark.parametrize("sparse", [False, pytest.param(True, marks=_needs_klu)])
+def test_the_closed_form_jacobian_leaves_a_slot_no_nan_law_reads(codegen, sparse):
+    model = bngsim.Model.from_antimony_string(_LOG_V)
+    model.set_concentration("V", -61.0)
+    sim = bngsim.Simulator(
+        model,
+        method="ode",
+        jacobian="analytical",
+        codegen=codegen,
+        force_sparse_linear_solver=sparse,
+    )
+    r = sim.run(t_span=(0, 10), n_points=11, atol=bngsim.ExactAtol(1e-9), rtol=1e-8)
+    assert (sim.codegen_backend != "exprtk") == codegen
+    assert (r.solver_stats["linear_solver"] == 1) == sparse
+    t = np.asarray(r.time)
+    v = np.asarray(r.species)[:, list(r.species_names).index("V")]
+    np.testing.assert_allclose(v, -70.0 + 9.0 * np.exp(-0.1 * t), rtol=1e-6)
+
+
+@pytest.mark.parametrize("sparse", [False, pytest.param(True, marks=_needs_klu)])
+def test_the_run_test_jacobian_leaves_a_slot_no_nan_law_reads(sparse):
+    model = bngsim.Model.from_antimony_string(_LOG_V)
+    model.set_concentration("V", -70.0)
+    model.set_concentration("W", 1e-3 * np.log(70.0))
+    ss = bngsim.Simulator(
+        model, method="ode", jacobian="analytical", force_sparse_linear_solver=sparse
+    ).steady_state(method="integration")
+    assert (ss.linear_solver == "klu") == sparse
+    assert ss.converged
+    assert ss.continued_run_distance <= 1.0
+    c = dict(zip(ss.species_names, np.asarray(ss.concentrations), strict=True))
+    assert c["W"] == pytest.approx(1e-3 * np.log(70.0), rel=1e-9)
+
+
+@_needs_cc
+@_needs_klu
+def test_the_compiled_sparse_jacobian_leaves_a_slot_no_nan_law_reads():
+    # The compiled sparse Jacobian (GH #162) is emitted only for a model the
+    # routing sends to KLU itself (at least 50 species, density under 0.10), so
+    # _LOG_V is widened with 60 species that decay on their own.
+    pad = "".join(f"  species X{i} = 1;\n  D{i}: X{i} -> ; 0.01*X{i};\n" for i in range(60))
+    model = bngsim.Model.from_antimony_string(_LOG_V.replace("end", pad + "end"))
+    model.set_concentration("V", -61.0)
+    sim = bngsim.Simulator(model, method="ode", jacobian="analytical", codegen=True)
+    r = sim.run(t_span=(0, 10), n_points=11, atol=bngsim.ExactAtol(1e-9), rtol=1e-8)
+    assert sim.codegen_backend != "exprtk"
+    assert r.solver_stats["linear_solver"] == 1  # KLU, chosen by the routing
+    t = np.asarray(r.time)
+    v = np.asarray(r.species)[:, list(r.species_names).index("V")]
+    np.testing.assert_allclose(v, -70.0 + 9.0 * np.exp(-0.1 * t), rtol=1e-6)
+
+
+_P15_V = (
+    "model m\n  species A = 1, P = 0, V = 0;\n  k = 0.1; c = 1e-30; g = 0.1; E = -70;\n"
+    "  P' = -c;\n  J: A -> ; k*A*P^1.5;\n  R2: -> V; g*(E - V);\nend"
+)
+
+
+@_needs_cc
+@pytest.mark.parametrize("jacobian", ["auto", "fd"])
+@pytest.mark.parametrize("ant", [_P15_V, _LOG_V], ids=["P^1.5", "log(-V)"])
+def test_sensitivities_read_the_narrowed_state(ant, jacobian):
+    # The sensitivity RHS reads its columns at the state the value RHS read f
+    # at (#1298), now the narrowed one. dV/dE = 1 - exp(-g t) and
+    # dV/dg = -(V0 - E) t exp(-g t). Main: V(10) = -131 and dV/dg 7x off on
+    # P^1.5; refused on log(-V) (CV_REPTD_RHSFUNC_ERR).
+    model = bngsim.Model.from_antimony_string(ant)
+    model.set_concentration("V", -61.0)
+    sim = bngsim.Simulator(
+        model, method="ode", codegen=True, jacobian=jacobian, sensitivity_params=["g", "E"]
+    )
+    r = sim.run(t_span=(0, 10), n_points=11, atol=bngsim.ExactAtol(1e-9), rtol=1e-8)
+    iv = list(r.species_names).index("V")
+    t = np.asarray(r.time)
+    s = np.asarray(r.sensitivities)
+    np.testing.assert_allclose(
+        np.asarray(r.species)[:, iv], -70.0 + 9.0 * np.exp(-0.1 * t), rtol=1e-6
+    )
+    np.testing.assert_allclose(s[:, iv, 1], 1.0 - np.exp(-0.1 * t), rtol=1e-5, atol=1e-7)
+    np.testing.assert_allclose(s[:, iv, 0], -9.0 * t * np.exp(-0.1 * t), rtol=1e-5, atol=1e-7)
+
+
+@pytest.mark.parametrize("jacobian", ["auto", "fd"])
+@pytest.mark.parametrize("sparse", [False, pytest.param(True, marks=_needs_klu)])
+def test_the_run_test_puts_back_a_slot_the_nan_law_reads_but_does_not_need(jacobian, sparse):
+    # A's law reads V too, so V is among the slots its NaN row reads; only P
+    # needs moving. The run test puts V back at -70 where f stays finite
+    # without it at 0 (restore_where_finite). Main: not converged.
+    ss = bngsim.Simulator(
+        _v_beside_sinking(-70.0, law="k*A*P^0.5*(1 + 0*V)"),
+        method="ode",
+        jacobian=jacobian,
+        force_sparse_linear_solver=sparse,
+    ).steady_state(method="integration")
+    assert (ss.linear_solver == "klu") == sparse
+    assert ss.converged
+    assert ss.continued_run_distance <= 1.0
+    v = float(np.asarray(ss.concentrations)[list(ss.species_names).index("V")])
+    assert v == pytest.approx(-70.0, rel=1e-9)

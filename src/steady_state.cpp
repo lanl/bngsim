@@ -405,6 +405,12 @@ struct SteadyStateUserData {
     std::vector<char> nonneg_mask;
     std::vector<double> nonneg_scratch;
     std::vector<double> nonneg_atol;
+    // The narrowed readings (issue #1661, ss_read_narrowed): the slots each row
+    // of f reads, the rows the reading retried has NaN, the slots they read.
+    SlotsReadByRow nonneg_rows;
+    bool nonneg_rows_built = false;
+    std::vector<char> nonneg_bad_rows;
+    std::vector<char> nonneg_read;
     // What a callback threw, if one did (issue #589). SUNDIALS is C, so an
     // exception must not unwind through its frames; guard_ss_callback parks the
     // first one here and returns the unrecoverable-failure code, and the solve
@@ -871,6 +877,32 @@ static const double *ss_near_zero_state(SteadyStateUserData *data, const double 
     return data->nonneg_scratch.data();
 }
 
+// The time course's narrowed readings (read_narrowed, issue #1661), taken
+// before ss_clamped_state and ss_near_zero_state: only the slots a row in
+// data->nonneg_bad_rows reads put at 0, then the band slots such a row reads
+// too, and the slots restore_where_finite can put back. True where one is
+// finite (`read_at` left it where the callback keeps it); false where neither
+// is, and the callback then reads as before.
+template <class ReadAt>
+static bool ss_read_narrowed(SteadyStateUserData *data, const double *y, ReadAt &&read_at) {
+    if (data->nonneg_mask.size() != static_cast<std::size_t>(data->model->n_species()))
+        data->nonneg_mask = nonneg_clamp_mask_of(*data->model);
+    if (!data->nonneg_rows_built) {
+        data->nonneg_rows =
+            slots_read_by_row(data->model->jacobian_sparsity(), data->model->n_species());
+        data->nonneg_rows_built = true;
+    }
+    clamp_read_nonneg_into(data->nonneg_mask, data->nonneg_rows, data->nonneg_bad_rows, y,
+                           data->nonneg_scratch, data->nonneg_read);
+    if (read_at(data->nonneg_scratch.data()) != ClampReading::finite &&
+        !(read_near_zero_read_into(data->nonneg_mask, data->nonneg_read, y, data->nonneg_atol,
+                                   data->nonneg_scratch) &&
+          read_at(data->nonneg_scratch.data()) == ClampReading::finite))
+        return false;
+    restore_where_finite(y, data->nonneg_scratch, data->nonneg_atol, read_at);
+    return true;
+}
+
 // A NaN, and no infinity, in v: the reading the run test retries
 // (bngsim/nonneg_clamp.hpp's read_values, which the time course reads too).
 static bool ss_reads_nan_only(const double *v, std::size_t n) {
@@ -895,6 +927,13 @@ static void ss_eval_rhs(SteadyStateUserData *data, double t, const double *y, do
     data->rhs->eval(t, y, ydot);
     const auto un = static_cast<std::size_t>(data->model->n_species());
     if (data->clamp_nonfinite && ss_reads_nan_only(ydot, un)) {
+        nonfinite_rows_of_f(ydot, un, data->nonneg_bad_rows);
+        auto read_at = [&](const double *x) {
+            data->rhs->eval(t, x, ydot);
+            return read_values(ydot, un);
+        };
+        if (ss_read_narrowed(data, y, read_at))
+            return; // issue #1661
         data->rhs->eval(t, ss_clamped_state(data, y), ydot);
         if (ss_reads_nan_only(ydot, un)) {
             if (const double *z = ss_near_zero_state(data, y))
@@ -935,6 +974,13 @@ static int cvode_ss_dense_jac_body(sunrealtype t, N_Vector y, N_Vector /*fy*/, S
     data->rhs->fill_dense_jacobian(static_cast<double>(t), N_VGetArrayPointer(y),
                                    SUNDenseMatrix_Data(J));
     if (data->clamp_nonfinite && ss_reads_nan_only(SUNDenseMatrix_Data(J), un * un)) {
+        nonfinite_rows_of_dense(SUNDenseMatrix_Data(J), un, data->nonneg_bad_rows);
+        auto read_at = [&](const double *x) {
+            data->rhs->fill_dense_jacobian(static_cast<double>(t), x, SUNDenseMatrix_Data(J));
+            return read_values(SUNDenseMatrix_Data(J), un * un);
+        };
+        if (ss_read_narrowed(data, N_VGetArrayPointer(y), read_at))
+            return 0; // issue #1661
         data->rhs->fill_dense_jacobian(static_cast<double>(t),
                                        ss_clamped_state(data, N_VGetArrayPointer(y)),
                                        SUNDenseMatrix_Data(J));
@@ -1020,6 +1066,15 @@ static int cvode_ss_sparse_jac_body(sunrealtype t, N_Vector y, N_Vector /*fy*/, 
                                     SUNSparseMatrix_Data(J));
     const auto nnz = static_cast<std::size_t>(sp.nnz);
     if (data->clamp_nonfinite && ss_reads_nan_only(SUNSparseMatrix_Data(J), nnz)) {
+        nonfinite_rows_of_pattern(SUNSparseMatrix_Data(J), sp,
+                                  static_cast<std::size_t>(data->model->n_species()),
+                                  data->nonneg_bad_rows);
+        auto read_at = [&](const double *x) {
+            data->rhs->fill_sparse_jacobian(static_cast<double>(t), x, SUNSparseMatrix_Data(J));
+            return read_values(SUNSparseMatrix_Data(J), nnz);
+        };
+        if (ss_read_narrowed(data, N_VGetArrayPointer(y), read_at))
+            return 0; // issue #1661
         data->rhs->fill_sparse_jacobian(static_cast<double>(t),
                                         ss_clamped_state(data, N_VGetArrayPointer(y)),
                                         SUNSparseMatrix_Data(J));
