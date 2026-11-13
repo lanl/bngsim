@@ -6768,7 +6768,14 @@ class Simulator:
         else:
             state = np.asarray(core.get_state(), dtype=float)
             before = np.asarray(core.get_initial_state(), dtype=float)
-            self._model.set_param(parameter, 2.0 * value if value != 0.0 else 1.0)
+            try:
+                self._model.set_param(parameter, 2.0 * value if value != 0.0 else 1.0)
+            except Exception:
+                # The warning is advice. Where the model refuses the value it is
+                # asked with, there is nothing to say, and the scan runs as it
+                # would have: a scan that writes only the value a parameter
+                # already holds must not fail on a write it never asked for.
+                return
             after = np.asarray(core.get_initial_state(), dtype=float)
             seeded = ~((before == after) | (np.isnan(before) & np.isnan(after)))
             off = seeded & ~((state == before) | (np.isnan(state) & np.isnan(before)))

@@ -268,3 +268,91 @@ def test_asking_does_not_change_what_the_scan_runs():
     point = _quiet(lambda: _sim(src).parameter_scan("A0", [1e-9], **span))[0]
     alone = _sim(src).run(**span)
     assert np.array_equal(np.asarray(point.species), np.asarray(alone.species))
+
+
+# ── Shapes the warning has to read right, each also run on main ──────────────
+
+
+def test_a_stochastic_scan_is_asked_the_same_way():
+    """Counts are rounded: a fresh model seeded at 10.5 is not "off its initial
+    condition", and is dosed with no word; after a run the scan warns. SSA and
+    PSA, in one case (the suite's count is near its bound)."""
+    pytest.importorskip("antimony")
+    src = ANT.replace("A0 = 10;", "A0 = 10.5;")
+    for method, kw in (("ssa", {}), ("psa", {"poplevel": 100})):
+        fresh = bngsim.Simulator(bngsim.Model.from_antimony_string(src), method=method, **kw)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            points = fresh.parameter_scan("A0", [5.0, 40.0], seed=1, **SCAN)
+        assert not [w for w in caught if "does not move" in str(w.message)], method
+        assert [p.species[0, 0] for p in points] == [5.0, 40.0], method
+        ran = bngsim.Simulator(bngsim.Model.from_antimony_string(ANT), method=method, **kw)
+        ran.run(t_span=(0, 5), n_points=2, seed=1)
+        with pytest.warns(UserWarning, match=DROPS.format("A0", "'A'")):
+            ran.parameter_scan("A0", [5.0, 40.0], seed=1, **SCAN)
+
+
+def test_a_fixed_species_and_a_rule_target_are_not_named():
+    """A $-fixed species seeded by A0 is not integrated, so it still sits on
+    its initial condition after a run and the write moves it; a rule's target
+    follows its rule. Neither is a dose the scan dropped."""
+    fixed = ANT.replace("species A, B;", "species $F, A, B;").replace("B = 0;", "B = 0; F = A0;")
+    sim, _ = _after_a_run(fixed.replace("A = A0*s;", "A = 10;"))
+    points = _quiet(lambda: sim.parameter_scan("A0", [5.0, 40.0], **SCAN))
+    assert [p.species[0, 0] for p in points] == [5.0, 40.0]
+    rule = ANT.replace("species A, B;", "species A, B, R;").replace(
+        "A = A0*s;", "A = 10; R := A0*B;"
+    )
+    sim, _ = _after_a_run(rule)
+    _quiet(lambda: sim.parameter_scan("A0", [5.0, 40.0], **SCAN))
+
+
+def test_the_value_the_warning_asks_with():
+    """A dose not yet given is 0, and twice 0 moves nothing: it is asked with
+    1. A is made during the run, so it sits off its initial condition, and the
+    scan over A0 warns. And a value the initial condition cannot take does not
+    stop the scan: A = 1/(20 - A0) is asked with 2*A0 = 20, runs as on main,
+    and warns of the dose it dropped."""
+    made = (
+        "model m\n A0 = 0; k = 0.1; species A, B; A = A0; B = 0;\n"
+        " J0: -> A; 2; J: A -> B; k*A;\nend"
+    )
+    pole = ANT.replace("A = A0*s;", "A = 1/(20 - A0);")
+    for src, values in ((made, [5.0, 40.0]), (pole, [5.0, 12.0])):
+        sim, snap = _after_a_run(src)
+        with pytest.warns(UserWarning, match=DROPS.format("A0", "'A'")):
+            points = sim.parameter_scan("A0", values, **SCAN)
+        assert [p.species[0, 0] for p in points] == [snap[0], snap[0]]
+
+
+def test_a_write_the_model_refuses_is_no_reason_to_stop_the_scan(monkeypatch):
+    """The warning is advice: where the model refuses the value it asks with,
+    it says nothing, and a scan that writes only the value the parameter holds
+    runs as it did."""
+    sim, snap = _after_a_run()
+    write = type(sim.model).set_param
+
+    def refuses_20(model, name, value, **kw):
+        if name == "A0" and value == 20.0:
+            raise ValueError("this model does not take A0 = 20")
+        return write(model, name, value, **kw)
+
+    monkeypatch.setattr(type(sim.model), "set_param", refuses_20)
+    points = _quiet(lambda: sim.parameter_scan("A0", [10.0], **SCAN))
+    _expect(points[0], snap[0], snap[1])
+
+
+def test_a_sensitivity_scan_carries_what_it_carried():
+    """Scan a rate constant after a run that leaves dx/ds pending. The warning
+    asks its question before the first point and the reset puts the model
+    back: the carried dA/ds at each point's start is the run's own."""
+    sim = bngsim.Simulator(
+        bngsim.Model.from_antimony_string(ANT), method="ode", sensitivity_params=["s"]
+    )
+    if not sim._codegen_provides_sens_rhs():
+        pytest.skip("codegen compile unavailable: no compiled sensitivity RHS on this install")
+    run = sim.run(t_span=(0, 5), n_points=2)
+    carried = np.asarray(run.sensitivities)[-1, :, 0]
+    points = _quiet(lambda: sim.parameter_scan("k", [0.2, 0.3], **SCAN))
+    for point in points:
+        assert np.array_equal(np.asarray(point.sensitivities)[0, :, 0], carried)
