@@ -151,6 +151,14 @@ class NetworkModel:
         """
         Evaluate dy/dt at (t, conc), leaving the model as it was. Test/diagnostic hook.
         """
+    def _state_switch_residual_program(self, condition_src: str) -> tuple[str, str]:
+        """
+        Testing hook (issue #1669): (residual_source, program) for a condition that state_switch_residual resolves, where program is what was compiled for the residual with its repeated subexpressions computed once, '' where it was compiled as written; ('', '') where the condition is no state switch.
+        """
+    def _state_switch_residual_values(self, condition_src: str, t: typing.SupportsFloat | typing.SupportsIndex, conc: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex]) -> tuple[float, float]:
+        """
+        Testing hook (issue #1669): (compiled, as written) values of a state switch's residual at time t and species concentrations conc, the model synced there whole: what the run reads, and the residual's text compiled as it is.
+        """
     def _trigger_read_plan(self) -> dict:
         """
         The observables and functions the read-ahead refreshes to read the event triggers, or full=True where it syncs the model whole (issue #1278).
