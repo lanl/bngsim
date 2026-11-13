@@ -61,6 +61,10 @@ class RuleMonkeySession:
     class takes or reports is model time. A model with a table function
     indexed by time runs on model time itself (see
     ``bngsim/_rulemonkey_clock.py``).
+
+    ``block_same_complex_binding`` is as for ``Simulator``. RuleMonkey 3.13.0
+    deprecates ``False``: it prints a warning to stderr the first time in a
+    process, and RuleMonkey 4.0 removes the mode.
     """
 
     __slots__ = (

@@ -174,8 +174,10 @@ Editable-build reminder:
   exporting into BNGsim, because BNGsim does not vendor RuleMonkey's
   `third_party/` tree.
 - `vendor_rulemonkey.py` checks that RuleMonkey's standalone
-  `third_party/bngsim_expr` / `third_party/exprtk` copies still match BNGsim's
-  current `expression.cpp` and every bngsim file it reaches by `#include`:
+  `third_party/bngsim_expr` / `third_party/exprtk` copies, as the commit being
+  vendored has them (not as the candidate checkout has them), still match
+  BNGsim's current `expression.cpp` and every bngsim file it reaches by
+  `#include`:
   `exprtk.hpp`, `expression.hpp`, `expr_compat.hpp`, `dual.hpp`,
   `c_locale_numbers.hpp`, `exprtk_dual_pre.hpp` and `exprtk_dual.hpp` (the
   `EXPRTK_SYNC_FILES` set). A file left out would pass the guard while

@@ -15,10 +15,14 @@ carried the four headers, a later edit to any one of them would have passed the
 guard while RuleMonkey's copy kept the old text. ``expr_compat.hpp`` was added to
 the list after GH #49 for the same reason.
 
-So this test walks ``#include`` from ``src/expression.cpp`` the way the compiler
-does and asks for the list to be exactly the bngsim files it reaches. It also
-checks that each file's place in RuleMonkey's tree mirrors its place here, so a
-quoted include finds the same file in both builds.
+So this test follows ``#include "..."`` and ``#include <...>`` lines from
+``src/expression.cpp``, resolving each as the compiler does for the
+``bngsim_expression`` target, and asks for the list to be exactly the bngsim
+files they reach. It reads every include line, so one under ``#if 0`` or in a
+comment counts (and fails loudly), while a computed ``#include MACRO`` is not
+seen. It also checks that each listed RuleMonkey path mirrors its file's place
+here, the layout RuleMonkey's ``rm_bngsim_expr`` include paths rely on; it
+checks the table, not RuleMonkey's tree.
 """
 
 from __future__ import annotations

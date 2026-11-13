@@ -580,8 +580,11 @@ class Simulator:
         attempt on one is refused. With ``method="rm"``, ``False`` also stops
         RuleMonkey making that test, so on a model with rings such a rule can
         break a bond inside a ring, which gives wrong counts with no error.
-        Complex bookkeeping for ``Species``-typed observables is enabled
-        whenever the model declares one, whatever this setting.
+        RuleMonkey 3.13.0 deprecates ``False`` with ``method="rm"``: it prints
+        a warning to stderr the first time in a process, and RuleMonkey 4.0
+        removes the mode. Complex bookkeeping for ``Species``-typed
+        observables is enabled whenever the model declares one, whatever this
+        setting.
 
     traversal_limit : int, optional
         Only used for ``method="nf"`` / ``"nf_reject"`` / ``"nfsim"``.
