@@ -298,6 +298,15 @@ bngsim reads no per-reaction modifiers, such as a delay (issue #505). A stat
 factor ahead of the rate law's type (`2*MM kcat Km`) is read off the first
 token before the type is matched, as run_network reads it.
 
+An `MM` reaction reads two reactants, an enzyme and a substrate, and one with
+more is refused (issue #1502): bngsim left the others out of its rate, so the
+answer changed with the order the enzymes were listed in. BNG2.pl refuses such a
+rule, and run_network reads the first reactant as the substrate and the total of
+the others as the enzyme. To run that, write the reaction with a functional rate
+law over the enzymes' total, such as `S -> P` at
+`kcat*sFree()*Etot/(Km+sFree())/Sobs`, with `sFree()` the free substrate
+`0.5*((Sobs-Km-Etot)+sqrt((Sobs-Km-Etot)^2+4*Km*Sobs))`.
+
 A file with none of the parameters, species, functions, reactions and groups
 blocks is refused, as run_network refuses it: a 0-byte file, one of comments or
 actions only (issue #1511). A block that is there and empty still loads. Lines
