@@ -1926,6 +1926,11 @@ class GroupSharer {
                     out += '(';
                     out += inner;
                     out += ')';
+                } else if (inner.front() == kOpen && inner.find(kOpen, 1) == std::string::npos &&
+                           inner.back() == kClose) {
+                    // A group of one group, `((a+b))`: that group, already
+                    // counted.
+                    out += inner;
                 } else {
                     auto [it, fresh] = ids_.emplace(inner, bodies_.size());
                     if (fresh) {
