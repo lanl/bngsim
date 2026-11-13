@@ -5119,7 +5119,9 @@ class Simulator:
         return _Ceiling(scalar, [float(v) for v in own])
 
     @staticmethod
-    def _tighter_frozen(frozen: object, other: object) -> object:
+    def _tighter_frozen(
+        frozen: AtolLike | _Ceiling, other: AtolLike | _Ceiling
+    ) -> AtolLike | _Ceiling:
         """Each species the tighter of two vectors :meth:`_freeze_atol` gave
         for one request from two starts: an ``"auto"`` list, or a tracking
         ceiling of it (issue #1660). A vector or a ceiling the caller gave is
