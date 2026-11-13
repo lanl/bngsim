@@ -180,6 +180,7 @@ SUMMARY_CASES: dict[str, dict[str, object]] = {
                 "canonical_remote": "origin",
             },
             "resolve_ref": ("origin/main", COMMIT),
+            "verify_exprtk_sync": COMMIT,
             "export_rulemonkey_tree": "{repo_path}",
             "compare_trees": [],
         },
