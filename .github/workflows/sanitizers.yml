@@ -394,8 +394,12 @@ jobs:
           echo "::error::${#reports[@]} sanitizer report(s) in shard ${{ matrix.shard }}; each is above, and uploaded with the log."
           exit 1
 
+      # The job's own log holds the same output: the suite's is teed into it, and
+      # the step above prints every report in full. An artifact-service outage
+      # must not turn a passing shard red.
       - name: Upload the log and reports
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: python-sanitizers-${{ matrix.shard }}
