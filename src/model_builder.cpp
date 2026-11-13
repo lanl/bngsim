@@ -1989,6 +1989,26 @@ NetworkModel ModelBuilder::build() {
                                              " (MichaelisMenten) has unresolved kcat/Km "
                                              "parameters (expected 'kcat_name,km_name')");
                 }
+                // Issue #1502 — every engine reads an MM reaction's first two
+                // reactants, the enzyme and the substrate, and nothing after
+                // them: given `1,2,3`, the third was kept in the stoichiometry
+                // and left out of the rate, and the answer changed with the
+                // order the enzymes were listed in. BNG2.pl refuses such a rule
+                // ("Michaelis-Menton type ratelaw require exactly 2
+                // reactants"); run_network reads the first as the substrate
+                // and sums the rest into the total enzyme. Fewer than two
+                // reactants give a rate of 0 here and in run_network alike.
+                if (rxn.reactant_indices.size() > 2) {
+                    throw std::runtime_error(
+                        "ModelBuilder::validate: reaction " + std::to_string(ri) +
+                        " (MichaelisMenten) has " + std::to_string(rxn.reactant_indices.size()) +
+                        " reactants: a Michaelis-Menten rate law reads two, an enzyme and a "
+                        "substrate, and bngsim left the others out of its rate. BNG2.pl "
+                        "refuses such a rule (\"require exactly 2 reactants\"), and "
+                        "run_network reads the first as the substrate and the total of the "
+                        "others as the enzyme (issue #1502). Write the reaction with a "
+                        "functional rate law over the enzymes' total");
+                }
                 // Issue #931 — kcat and Km are read as parameters, by every
                 // engine. A parameter that a function of the same name writes
                 // is a slot the interpreted right-hand side refreshes before
