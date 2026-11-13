@@ -1,5 +1,13 @@
 # RuleMonkey vs NFsim — wall-time comparison
 
+!!! warning "Measured on 2026-05-02 and not regenerated since"
+    These timings were taken on 2026-05-02, on the code that shipped as
+    RuleMonkey 3.1.2 that afternoon. Most releases since, through 3.13.0,
+    have changed the engine, so read the numbers as a snapshot of 3.1.2 rather
+    than of the current release. They will be regenerated after the efficiency work
+    tracked in [#124](https://github.com/richardposner/RuleMonkey/issues/124),
+    which is expected to move them again.
+
 Single-machine, sequential, end-to-end subprocess wall time.  3 reps per engine per model; median reported.  Both engines invoked from a fresh process per rep (no warm caches).  Same XML, same t_end, same n_steps, same seed sequence.
 
 **This is an efficiency report, not a correctness report.**  Models where NFsim runs but produces incorrect observables (e.g. `ft_tfun` due to NFsim's TFUN handler returning zero rate) are still included in the timing table; correctness is covered separately by `feature_coverage`, `benchmark_full`, and `basicmodels` suites.
@@ -17,7 +25,7 @@ Generated: `2026-05-02 12:51:38 MDT` (`benchmark_rm_vs_nfsim_timing.py`)
 ## Caveats
 
 - Wall time, not CPU time.  Includes process startup, XML load, and result write — same for both engines, so the ratio is fair, but absolute numbers shift across machines.
-- Speedup depends on workload: long-horizon, high-event-rate models show RM's biggest wins; short-horizon trivial models are near parity or NFsim-favored due to RM's slightly heavier per-process startup.
+- Speedup depends on workload.  Ranked by the slower engine's median wall time, the cheapest quarter of the scored models (42) has a median speedup of 1.24× (RM faster on 40), and the costliest quarter 0.44× (RM faster on 5).
 - Single-replicate timings can be noisy.  See min/max columns for spread; the median column is what to quote.
 - N/A in the NFsim column means NFsim refused or errored on at least one of the 3 reps.  The reason column gives the captured diagnostic.
 

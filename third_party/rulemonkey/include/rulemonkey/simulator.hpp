@@ -458,9 +458,19 @@ public:
   // Throws std::runtime_error if a session is currently active.
   void set_molecule_limit(int limit);
 
-  // When true, bimolecular rules only fire between molecules in different
-  // complexes (equivalent to NFsim's -bscb flag).  Default: true (strict
-  // BNGL semantics).
+  // DEPRECATED (issue #139): passing `false` is deprecated, and the method
+  // itself is removed in RuleMonkey 4.0, after which RuleMonkey always runs
+  // the default.  A call with `true` sets the default and can be deleted.
+  //
+  // `true`, the default, applies BNGL's `+` as BNG2.pl's network does: the
+  // reactant patterns of a bimolecular rule come from different complexes,
+  // and the molecules a rule writes into different product patterns end in
+  // different complexes.  `false` drops both checks for nearly every rule
+  // (docs/model_semantics.md lists the exceptions), which is NFsim's loose
+  // mode without complex bookkeeping (NFsim run without `-cb` or `-bscb`).
+  // It is not a BNGL semantics: a ring closes through a `+` rule, and a
+  // `+` rule opens it without the products coming apart.  The first call
+  // with `false` in a process prints a deprecation warning to stderr.
   // Throws std::runtime_error if a session is currently active.
   void set_block_same_complex_binding(bool value);
 

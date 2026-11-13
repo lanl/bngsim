@@ -51,9 +51,12 @@ build/release/rm_driver my_model.xml 10 100 7 > traj.gdat
 
 ### Strict BNGL semantics (default)
 
-`rm_driver` enables `block_same_complex_binding` by default, matching
-NFsim's `-bscb` flag.  Pass `-no-bscb` for parity with NFsim runs that
-omitted `-bscb`.  See [`model_semantics.md`](model_semantics.md).
+`rm_driver` applies BNGL's `+` as BioNetGen's network does
+(`block_same_complex_binding`): a bimolecular rule takes its reactants
+from different complexes, and molecules written into different product
+patterns end in different complexes.  The `-no-bscb` flag, which turns
+this off, is deprecated and will be removed in 4.0.  See
+[`model_semantics.md`](model_semantics.md) § "Strict BNGL semantics".
 
 ### State save / restore
 
@@ -180,18 +183,26 @@ try {
 An empty (default-constructed) callback disables polling, so callers
 that don't want cancellation pay no per-event overhead.
 
+[Embedding (C++ API)](embedding.md) covers the rest of the API by task:
+
+- building against the library;
+- replicate ensembles;
+- parameter scans and bifurcation;
+- live sessions with mid-run changes, species queries and checkpoints.
+
 See [`examples/embed.cpp`](https://github.com/richardposner/RuleMonkey/blob/main/examples/embed.cpp) for a complete
 compilable example, and [`include/rulemonkey/simulator.hpp`](https://github.com/richardposner/RuleMonkey/blob/main/include/rulemonkey/simulator.hpp)
 for the full contract.
 
 ## What's next
 
+- [`embedding.md`](embedding.md) — the C++ API by task.
 - [`model_semantics.md`](model_semantics.md) — what BNGL features RM
   supports, and the Tier-0 refusals.
 - [`gdat_format.md`](gdat_format.md) — output format spec.
 - [`troubleshooting.md`](troubleshooting.md) — common errors and
   fixes.
-- [`test_corpora.md`](test_corpora.md) — the three test suites and
+- [`test_corpora.md`](test_corpora.md) — the four test suites and
   how to run them.
 - [`timing_comparison.md`](timing_comparison.md) — RM vs NFsim wall
-  time on 173 models.
+  time on 169 models, measured 2026-05-02.

@@ -681,22 +681,21 @@ struct Model {
 
   std::string xml_path;
 
-  // When true, bimolecular rules only fire between molecules in
-  // DIFFERENT complexes (equivalent to NFsim's -bscb flag).
+  // When true (the default), the engine applies BNGL's `+` as BNG2.pl's
+  // network does, on both sides of a rule.  Reactant side: `A + B` takes
+  // its reactants from two distinct complexes, so binding inside a complex
+  // needs a ring-closure rule written with a `.` (`A(x).B(y) ->
+  // A(x!1).B(y!1)`).  Product side: molecules the rule writes into
+  // different product patterns must end in different complexes, so
+  // breaking one bond of a ring is a null event (products_stay_apart in
+  // run_ssa, products_split_as_written, and products_never_split).
   //
-  // Default TRUE to match strict BNGL semantics: the `+` separator in a
-  // reversible rule has strict meaning in both directions.  For binding
-  // (L->R), `A + B` means the reactants come from two distinct complexes
-  // — intramolecular binding requires an explicit ring-closure rule of
-  // the form `A(x).B(y) -> A(x!1).B(y!1)` (dot on LHS).  For unbinding
-  // (R->L), `A + B` means the products end up in two distinct complexes,
-  // so the bond being broken must not leave the molecules connected
-  // through another path (the product molecularity check handles that
-  // on the unbinding side).
-  //
-  // NFsim without -bscb/-cb runs in a loose mode that violates these
-  // strict semantics in exchange for speed; RuleMonkey defaults to the
-  // strict behaviour so it is always BNGL-correct.
+  // False is NFsim's loose mode without complex bookkeeping (NFsim run
+  // without -cb or -bscb): it drops both checks, except for a delete without
+  // DeleteMolecules (products_split_as_written) and a binding on the
+  // Arrhenius exact path, which test the `+` whatever its value.  It is not
+  // a BNGL semantics, and setting it is deprecated; the member goes in 4.0
+  // (issue #139).
   bool block_same_complex_binding = true;
 
   int mol_type_index(const std::string& name) const {

@@ -1,5 +1,7 @@
 #include "table_function.hpp"
 
+#include "c_number.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <fstream>
@@ -47,14 +49,18 @@ TableFunction TableFunction::from_file(const std::string& name, const std::strin
       continue;
     }
 
+    // The two columns as text, then each in the "C" locale (issue #122):
+    // `iss >> x` would read them in the C++ global locale, where a host's
+    // decimal-comma locale can take the `.` for a thousands separator.
     std::istringstream iss(line);
-    double x, y;
-    if (!(iss >> x >> y))
+    std::string x_text;
+    std::string y_text;
+    if (!(iss >> x_text >> y_text))
       // Error path; one-time allocation cost is irrelevant.
       // NOLINTNEXTLINE(performance-inefficient-string-concatenation)
       throw std::runtime_error("tfun '" + name + "': malformed data line: " + line);
-    xs.push_back(x);
-    ys.push_back(y);
+    xs.push_back(parse_c_double(x_text, "tfun '" + name + "'"));
+    ys.push_back(parse_c_double(y_text, "tfun '" + name + "'"));
   }
 
   return {name, std::move(xs), std::move(ys), counter_name, method};

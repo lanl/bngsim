@@ -308,6 +308,7 @@ The runtime severity model is two-level:
   both patterns' factors. RM applies it to the substrate, which reproduces
   BNG2 for the ordinary shape and anywhere the law is linear, and runs up to
   2x fast against BNG2 in saturation otherwise. Also warned at load.
+
 - **`TFUN`** — table-function rate laws backed by external `.tfun`
   files. RM searches both the XML directory and one level up to handle
   both author-side and harness-side layouts. Counter sources may be
@@ -354,12 +355,12 @@ The runtime severity model is two-level:
 
 ### Strict BNGL semantics
 
-- `block_same_complex_binding` is **on by default** (matches NFsim's
-  `-bscb` flag). Bimolecular rules only fire across distinct complexes;
+- `block_same_complex_binding` is **on by default**, and from 4.0 it is
+  always on. Bimolecular rules only fire across distinct complexes;
   intramolecular ring-closure must be written as an explicit
-  `A(x).B(y) -> A(x!1).B(y!1)` rule. Disable via
-  `set_block_same_complex_binding(false)` or the CLI `-no-bscb` flag for
-  parity with NFsim runs that omitted `-bscb`.
+  `A(x).B(y) -> A(x!1).B(y!1)` rule. NFsim blocks same-complex binding
+  with `-bscb`, and in NFsim 1.14.3 with `-cb` alone, which BNG2.pl's
+  `simulate_nf` passes by default.
 - The same flag enforces the `+` between product patterns. Take a bond the
   rule deletes between two molecules its map sends into different product
   patterns. Once all of the rule's operations apply (every bond it breaks
@@ -402,6 +403,21 @@ The runtime severity model is two-level:
   fires, as a deleted bond's would. Either way the load reports the rule as
   a warning, not an error: BNG2 runs the model, and the rule is almost
   surely a mistake.
+- **Deprecated: turning the flag off** (`set_block_same_complex_binding(false)`,
+  CLI `-no-bscb`; issue #139). Off, neither half of the `+` is tested, apart
+  from a delete without `DeleteMolecules` (above) and a binding on the
+  Arrhenius exact path (below), which are tested whatever the flag: a
+  bimolecular rule may take both reactants from one complex, and a rule's
+  products need not come apart. That is NFsim run with neither `-cb` nor
+  `-bscb`, a mode without complex bookkeeping, and not a reading of BNGL:
+  BNG2's network never lets one complex supply both reactant patterns of a
+  `+`, and generates no reaction for a `+` that cannot hold. On one
+  `A(x,y!1).B(x,y!1)` dimer under `A(x) + B(x) <-> A(x!1).B(x!1)` at
+  kf = kr = 1, the x ring is closed about half the time with the flag off,
+  as in NFsim with no flags, and never with it on, as in BNG2's network and
+  in NFsim with `-cb` or `-bscb`. The first call with `false` in a process
+  prints a deprecation warning, and 4.0 removes the setting. To reproduce
+  an NFsim run made with neither `-cb` nor `-bscb`, run NFsim.
 
 ### Parameter overrides
 
@@ -437,6 +453,7 @@ The runtime severity model is two-level:
   Consequence worth stating plainly: a derived parameter *is*
   overridable even though BNG2 emitted its `value` as a literal. That
   was not true before 3.7.0 — see the issue #23 entry in the changelog.
+
 - Cascade order is the parameter declaration order in the XML, iterated
   to fixed point (capped at `parameter_count + 4` passes) both at load
   time and at `set_param` time.  An arbitrarily-deep chain of forward
@@ -478,10 +495,15 @@ The runtime severity model is two-level:
 
 ### Functional surface
 
+[Embedding (C++ API)](embedding.md) is the guide to the whole API by task,
+including `run_ensemble`, `parameter_scan` and `bifurcate`, which this
+section does not list.
+
 - `set_param`, `clear_param_overrides`, `set_initial_amount`,
   `clear_initial_amount_overrides`, `set_molecule_limit`,
-  `set_block_same_complex_binding` — applied at the next `run()` /
-  `initialize()` (throw if a session is currently active).
+  `set_block_same_complex_binding` (deprecated, removed in 4.0) — applied
+  at the next `run()` / `initialize()` (throw if a session is currently
+  active).
 - `get_parameter`, `get_initial_amount`, `initial_species` — read the
   configuration the next run would use; callable with or without a live
   session, since they describe the initial state rather than the pool.

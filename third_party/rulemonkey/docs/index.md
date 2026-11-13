@@ -19,6 +19,11 @@ through the file system.
 
     Build the simulator, turn a `.bngl` file into XML, run it, read the output.
 
+- **[Embedding (C++ API)](embedding.md)**
+
+    Drive RuleMonkey in process: runs, overrides, ensembles, scans, live
+    sessions and checkpoints.
+
 - **[BNGL coverage and semantics](model_semantics.md)**
 
     What RM supports, what it refuses, and how each construct is interpreted.
@@ -57,8 +62,9 @@ ctest --preset release
 ```
 
 Linux (GCC/Clang), macOS (AppleClang) and Windows (MSVC) are built and tested
-in CI. Full build notes, embedding instructions and the CLI reference are in
-the [repository README](https://github.com/richardposner/RuleMonkey#readme).
+in CI. Full build notes and the CLI reference are in the
+[repository README](https://github.com/richardposner/RuleMonkey#readme); the
+C++ API is under [Embedding](embedding.md).
 
 ## Citing
 
