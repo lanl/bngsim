@@ -269,10 +269,16 @@ def net2sbml_main(argv: list[str] | None = None) -> int:
                 sidecar_path = Path(out).with_suffix(".sedml")
                 if report.protocol is not None and not report.protocol.is_empty:
                     # The real .bngl protocol (every simulate/scan).
+                    from bngsim._model import Model
                     from bngsim.convert import write_sedml_protocol
 
+                    # The network names what each experiment reports (issue #1686).
                     write_sedml_protocol(
-                        report.protocol, sidecar_path, model_source=str(out), sbml=Path(out)
+                        report.protocol,
+                        sidecar_path,
+                        model_source=str(out),
+                        sbml=Path(out),
+                        model=Model.from_net(args.net),
                     )
                 else:
                     # No real protocol — fabricate a default, but warn + mark it.

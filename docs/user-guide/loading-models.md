@@ -106,9 +106,20 @@ index the result by position, or by a run's `suffix`. A scan's points are in
   `t_start`, 0 by default.
 - **Values.** A species whose amount is a parameter or an expression follows it
   until a run makes it a number. `setParameter`, `setConcentration` and
-  `addConcentration` change the live model.
+  `addConcentration` change the live model. A parameter set to an expression of
+  other parameters, `setParameter("k2","k1*3")`, stays that expression: it
+  follows `k1` through later actions, scans and resets until it is set to a
+  number. One defined through itself, directly or through the network's own
+  expressions, is refused, as BNG2.pl refuses it.
 - **Saved states.** `saveConcentrations`/`resetConcentrations` and
-  `saveParameters`/`resetParameters` keep one saved state per label.
+  `saveParameters`/`resetParameters` keep one saved state per label. A save made
+  before `generate_network` holds the network with the actions that made the
+  saved values applied again; a reset to a value as the model declares it,
+  which an action before generation changed, is refused, since the network no
+  longer holds it.
+- **An actions block alone.** A text with no model block, such as the actions
+  file `omex_to_net` writes beside its `.net`, runs every action on the network
+  you give it; its first run generates nothing.
 - **Scans.** `parameter_scan` resets to its starting state before each point when
   `reset_conc` is on (the default), and again at the end. The scanned parameter
   keeps its last value. `bifurcate` never resets.

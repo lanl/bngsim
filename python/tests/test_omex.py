@@ -599,10 +599,12 @@ def test_net_to_omex_carries_bngl_protocol(data_dir: Path, tmp_path: Path) -> No
     assert report.protocol is not None and len(report.protocol.experiments) == 2
     # The gate ran over the bngl horizon.
     assert report.validation.level("L3").metrics["t_span"] == [0.0, 500.0]
-    # The archived SED-ML is the multi-experiment protocol, recovered exactly.
+    # The archived SED-ML is the multi-experiment protocol, recovered exactly,
+    # with its source named by file name alone (issue #1678).
     sedml = zipfile.ZipFile(out).read("simulation.sedml").decode()
     back = read_sedml_protocol(sedml)
-    assert back.to_dict() == report.protocol.to_dict()
+    assert back.to_dict() == {**report.protocol.to_dict(), "source": "decay.bngl"}
+    assert str(tmp_path) not in sedml
 
 
 def test_net_to_omex_without_bngl_falls_back_to_default(data_dir: Path, tmp_path: Path) -> None:
