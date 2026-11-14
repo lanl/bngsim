@@ -1090,7 +1090,8 @@ class _Change(NamedTuple):
     size for an amount-valued species (the SBML writer's ``initialAmount``),
     else 1. ``follows`` marks a parameter set to an expression that BNG2.pl
     keeps as that expression, so it is set again when what it reads moves
-    (issue #1682). ``initial`` is the MathML of the SBML's initialAssignment
+    (issue #1682), and a species set to one, which BNG2.pl keeps as that
+    expression until a run. ``initial`` is the MathML of the SBML's initialAssignment
     of the element, where the change sets it to what that computes from the
     model as it stands (issue #1733)."""
 
@@ -1105,14 +1106,6 @@ class _Change(NamedTuple):
     # A resetParameters back to the value the SBML gives (issue #1668).
     restores: bool = False
     initial: str | None = None
-
-
-def _ordered(changes: list[_Change]) -> list[_Change]:
-    """*changes* in the order SED-ML applies them for one step: the parameters
-    as written, then each species' own changes. BNG2.pl reads a species set to
-    an expression at the run that follows, after every parameter set before it
-    (the replay's ``symbolic`` amounts), so the species come last."""
-    return [c for c in changes if c.kind == "param"] + [c for c in changes if c.kind == "species"]
 
 
 # ─── Multi-experiment writer ─────────────────────────────────────────────────
@@ -1175,6 +1168,9 @@ class _ProtocolWriter:
         self._noted: set[str] = set()
         # Per experiment: the parameters the protocol had replaced when it ran.
         self._replaced_at: dict[int, frozenset[str]] = {}
+        # Per sweep from the initial state: the species the protocol set to an
+        # expression, which BNG2.pl keeps as one until a run.
+        self._live: dict[int, list[_Change]] = {}
         # What each initialAssignment of the SBML sets its element to, as a
         # change: what BNG2.pl's derived parameter follows, and a species
         # whose seed names a parameter until a run (issue #1733).
@@ -1424,8 +1420,11 @@ class _ProtocolWriter:
             add=step.kind == "add_concentration",
             scale=scale,
             action=action,
-            # BNG2.pl keeps a parameter set to an expression as that expression.
-            follows=kind == "param" and expr is not None and not step.evaluated_once,
+            # BNG2.pl keeps a parameter set to an expression as that expression,
+            # and a species set to one until a run.
+            follows=(
+                expr is not None and step.kind != "add_concentration" and not step.evaluated_once
+            ),
         )
 
     def original(self, pid: str) -> _Change | None:
@@ -1483,18 +1482,23 @@ class _ProtocolWriter:
             if change.kind == "species" and sid not in kept and self._reads(change) & moved
         ]
 
-    def _first_point(self, i: int, exp, kept: frozenset[str]) -> list[_Change]:
+    def _first_point(self, i: int, exp, changes: list[_Change], *, fresh: bool) -> list[_Change]:
         """The swept parameter at its first value, with what follows it, for a
-        sweep from the initial state whose points go on from each other: a
-        species whose seed follows it takes its value from the first point in
-        BNG2.pl, and SED-ML sets the species once, before the sweep (issue
-        #1733). None where no seed follows it."""
+        sweep whose points go on from each other, after *changes*: a species
+        that is still an expression of it there (its seed, from the initial
+        state, which is *fresh*; or one the changes set it to) takes its value
+        from the first point in BNG2.pl, and SED-ML sets the species once,
+        before the sweep (issue #1733). None where no species follows it."""
         pid = self.targets.param_id(exp.scan_parameter or "")
         first = _first_value(exp)
         if pid is None or first is None:
             return []
         following = self._following.get(i, [])
-        if not self._seeds({pid} | {f.sid for f in following}, kept):
+        moved = {pid} | {f.sid for f in following}
+        _, live, kept = self._sequence(changes, fresh=fresh)
+        if not any(self._reads(c) & moved for c in live) and not (
+            fresh and self._seeds(moved, kept)
+        ):
             return []
         start = _Change("param", pid, first, None, False, 1.0, "the sweep's first point")
         return [start, *following]
@@ -1532,6 +1536,57 @@ class _ProtocolWriter:
                 done.add(pid)
         return out
 
+    def _sequence(
+        self, changes: list[_Change], *, fresh: bool, say: bool = False
+    ) -> tuple[list[_Change], list[_Change], frozenset[str]]:
+        """*changes* in the order SED-ML applies them for one step, which
+        evaluates each where it stands; the species changes among them that
+        are still expressions at the run that follows; and the species that no
+        longer follow their seed.
+
+        BNG2.pl keeps a species set to an expression as that expression until
+        a run, and so the seed of one that names a parameter, from the initial
+        state (*fresh*). So a species' last ``setConcentration`` to an
+        expression goes after every parameter change. An ``addConcentration``
+        to a species that is still an expression adds to the species' declared
+        seed, at the parameters as they stand (BNGModel.pm, addConcentration:
+        it evaluates ``$spec->Concentration``), and makes it a number: from
+        the initial state the model holds that seed, set again here where a
+        parameter it reads has moved (issue #1733)."""
+        out: list[_Change] = []
+        live: dict[str, _Change] = {}
+        numbers: set[str] = set()
+        moved: set[str] = set()
+        for change in changes:
+            if change.kind == "param":
+                moved.add(change.sid)
+                out.append(change)
+                continue
+            sid = change.sid
+            if change.follows:
+                live[sid] = change
+                numbers.discard(sid)
+                continue
+            if change.add and sid not in numbers and (fresh or sid in live):
+                if sid in live and not fresh:
+                    # After a run the model holds the run's amount, not the seed.
+                    if say:
+                        self._say(
+                            f"SED-ML's standard elements add {change.action} to the amount "
+                            f"{live[sid].action} set, where BNG2.pl adds to the species' "
+                            "declared amount; the bngsim annotation holds the protocol"
+                        )
+                    out.append(live[sid])
+                elif fresh:
+                    seed = self._assigned.get(sid)
+                    if seed is not None and self._reads(seed) & moved:
+                        out.append(seed)
+            live.pop(sid, None)
+            numbers.add(sid)
+            out.append(change)
+        out.extend(live.values())
+        return out, list(live.values()), frozenset(numbers | live.keys())
+
     def _moved(self, changes: list[_Change], params: dict[str, _Change]) -> list[_Change]:
         """*changes*, then the expressions in *params* they move."""
         moved = {c.sid for c in changes if c.kind == "param"}
@@ -1558,13 +1613,38 @@ class _ProtocolWriter:
         # So is one whose last change sets it to what its initialAssignment
         # computes (issue #1733); and the model is loaded after its changes,
         # so the assignment computes it from them.
+        changes, _, _ = self._sequence(changes, fresh=True)
         last = {c.sid: c for c in changes}
         back = {
             sid
             for sid, c in last.items()
             if (c.restores or c.initial is not None) and sid in self.targets.initially_assigned
         }
-        changes = [c for c in changes if c.sid not in back and c.initial is None]
+        # But an expression among the changes reads the value the element
+        # holds, which the assignment has not computed yet: a parameter it
+        # reads, or one that one reads, is set to what its assignment computes
+        # from the changes before it, and keeps the assignment.
+        kept = [
+            c for c in changes if c.sid not in back and (c.initial is None or c.kind == "species")
+        ]
+        needed: set[str] = set()
+        for c in kept:
+            if c.value is None:
+                needed |= self._reads(c)
+        grew = True
+        while grew:
+            grew = False
+            for c in changes:
+                if c.kind == "param" and c.initial is not None and c.sid in needed:
+                    more = self._reads(c) - needed
+                    if more:
+                        needed |= more
+                        grew = True
+        changes = [
+            c
+            for c in changes
+            if c in kept or (c.kind == "param" and c.initial is not None and c.sid in needed)
+        ]
         if not changes:
             return "model0"
         model_ref = f"model_{i}"
@@ -1578,14 +1658,14 @@ class _ProtocolWriter:
         # a parameter, by an initialAssignment, which overrides a change to the
         # value the element holds: setParameter("k2",7) on `k2 k1*3` ran k2 = 3.
         # BNG2.pl's action replaces that expression, and so does removing it.
-        for sid in dict.fromkeys(c.sid for c in changes):
+        for sid in dict.fromkeys(c.sid for c in kept):
             if sid in self.targets.initially_assigned:
                 ET.SubElement(
                     loc,
                     _q(_SEDML_NS, "removeXML"),
                     {"target": _initial_assignment_path(sid)},
                 )
-        for change in _ordered(changes):
+        for change in changes:
             self._model_change(loc, change, model_ref)
         return model_ref
 
@@ -1598,7 +1678,8 @@ class _ProtocolWriter:
         parameter set to an expression of the swept one is set at each point
         too, from the range (issue #1682), and so is one the SBML computes from
         it by an initialAssignment, and, at each point of a *fresh* sweep that
-        resets, a species whose seed the SBML computes from it (issue #1733).
+        resets, a species whose seed the SBML computes from it, or that the
+        protocol set to an expression of it (issue #1733).
         A *fresh* sweep that goes on from point to point starts from a model
         that :meth:`_first_point` has set."""
         values = _sweep_values(exp)
@@ -1663,7 +1744,10 @@ class _ProtocolWriter:
             self._math(fv, follower, model_ref, ranged={pid: rng_id})
         if fresh and reset:
             moved = {pid} | {f.sid for f in self._following.get(i, [])}
-            for seed in self._seeds(moved, replaced):
+            # A species the protocol set to an expression is that expression
+            # at each point too, and one whose seed the SBML computes.
+            exprs = [c for c in self._live.get(i, []) if self._reads(c) & moved]
+            for seed in exprs + self._seeds(moved, replaced):
                 sv = ET.SubElement(
                     loc,
                     _q(_SEDML_NS, "setValue"),
@@ -1702,10 +1786,10 @@ class _ProtocolWriter:
         *fresh* step runs from the initial state, before any run, where a
         species whose seed the SBML computes from a parameter follows it, in
         BNG2.pl (issue #1733)."""
+        changes, _, kept = self._sequence(changes, fresh=fresh, say=True)
         if fresh:
-            kept = frozenset(c.sid for c in changes if c.kind == "species")
             moved = {c.sid for c in changes if c.kind == "param"}
-            changes = list(changes) + self._seeds(moved, kept)
+            changes = changes + self._seeds(moved, kept)
         if not changes:
             return body
         rt = ET.SubElement(
@@ -1715,7 +1799,7 @@ class _ProtocolWriter:
         )
         self._once(rt)
         loc = ET.SubElement(rt, _q(_SEDML_NS, "listOfChanges"))
-        for change in _ordered(changes):
+        for change in changes:
             self._set_value(loc, change, "model0", replaced, fresh=fresh)
         self._subtasks(rt, [body])
         return rt.get("id") or ""
@@ -1736,10 +1820,10 @@ class _ProtocolWriter:
         """Experiment *i* from the model's initial state with *changes*."""
         if _scans(exp):
             # A species the changes set no longer follows its seed's parameter.
-            set_here = frozenset(c.sid for c in changes if c.kind == "species")
+            _, self._live[i], set_here = self._sequence(changes, fresh=True)
             self._replaced_at[i] = self._replaced_at.get(i, frozenset()) | set_here
             if _sweeps(exp):
-                changes = list(changes) + self._first_point(i, exp, self._replaced_at[i])
+                changes = list(changes) + self._first_point(i, exp, changes, fresh=True)
         model_ref = self.derived_model(i, changes)
         task_id = f"task_{i}"
         ET.SubElement(
@@ -1944,6 +2028,10 @@ class _ProtocolWriter:
                 )
                 self.standalone(i, exp, self._moved(list(params.values()), params))
             else:
+                if _sweeps(exp):
+                    # A species set to an expression since the last run reads
+                    # the sweep's first point.
+                    pending = pending + self._first_point(i, exp, pending, fresh=False)
                 self.chain(
                     i, exp, self._lead(lead), self.step(pending, self.run(i, exp), replaced)
                 )
@@ -1984,8 +2072,7 @@ class _ProtocolWriter:
             _, i, changes, replaced = lead
             exp = self.protocol.experiments[i]
             if _sweeps(exp):
-                kept = frozenset(c.sid for c in changes if c.kind == "species")
-                changes = list(changes) + self._first_point(i, exp, kept)
+                changes = list(changes) + self._first_point(i, exp, changes, fresh=True)
             return self.step(changes, self.run(i, exp), replaced, fresh=True)
         return str(lead)
 
@@ -2187,10 +2274,12 @@ def read_sedml_protocol(source: str | Path, *, sbml: str | Path | None = None):
     (issue #1664). A change's math is evaluated once, where it applies, as
     SED-ML evaluates it; a ``setValue`` beside a sweep that reads the range
     the swept parameter is set to is that parameter's expression, which
-    follows it through the scan. One that sets a species to what the SBML's
-    initialAssignment of it computes is the model's own seed, which a
-    replay's scan follows, as :func:`write_sedml_protocol` writes a seed that
-    names the swept parameter (issue #1733).
+    follows it through the scan. Beside a sweep that resets the model, one
+    that sets a species to what the SBML's initialAssignment of it computes is
+    the model's own seed, which a replay's scan follows, and one that sets a
+    species from the range is that species set to an expression before the
+    scan, as :func:`write_sedml_protocol` writes a seed, or an amount set to
+    an expression, that follows the swept parameter (issue #1733).
 
     A change the replay cannot apply (a compartment's size, an ``addXML``, a
     species change with no SBML to give its compartment's size, a ``setValue``
@@ -2585,11 +2674,18 @@ class _TaskReader:
             # which a scan does not do.
             ranges, swept = _range_bound(rt)
             on = sweep.get("swept")
+            # A species set at each point of a sweep that resets the model is
+            # one a replay's scan follows from its start state: the model's
+            # own seed, or an amount set to an expression (issue #1733). One
+            # set at each point of a sweep that goes on is set per point.
+            resets = (rt.get("resetModel") or "true").lower() == "true"
             for sv in _findall_local(rt, "setValue"):
                 if sv is swept[0]:
                     continue
-                if on is not None and self._seed_again(
-                    sv, f"repeatedTask {rid}", {on: str(sweep["parameter"])}
+                if (
+                    on is not None
+                    and resets
+                    and self._seed_again(sv, f"repeatedTask {rid}", {on: str(sweep["parameter"])})
                 ):
                     # The model's own seed, which a replay's scan follows.
                     continue
@@ -2603,6 +2699,16 @@ class _TaskReader:
                             set_values.append(step)
                             frozen.append(dataclasses.replace(step, evaluated_once=True))
                         continue
+                    if on is not None and read == {on} and resets:
+                        said = len(self.lossy)
+                        step = self._change(
+                            sv, f"repeatedTask {rid}", names={on: str(sweep["parameter"])}
+                        )
+                        if step is not None and step.kind == "set_concentration":
+                            set_values.append(step)
+                            continue
+                        if len(self.lossy) > said:
+                            continue
                     self._unread(
                         f"repeatedTask {rid} sets {sv.get('target')!r} from its range beside "
                         "the swept parameter, which a scan does not do"

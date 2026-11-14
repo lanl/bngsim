@@ -1212,6 +1212,11 @@ SEED_OF_DERIVED_NET = NET.replace(
 SEED_OF_DERIVED_MODEL = MODEL.replace("  k2 1\n", "  k2 1\n  Ab 50\n  A0 Ab*2\n").replace(
     "A() 100", "A() A0"
 )
+# A <-> B at k1, kr, beside k2 = k1*3, which no reaction reads.
+BESIDE_NET = NET.replace("    2 k2 1\n", "    2 k2 k1*3\n    3 kr 1\n").replace(
+    "2 2 1 k2", "2 2 1 kr"
+)
+BESIDE_MODEL = MODEL.replace("  k2 1\n", "  k2 k1*3\n  kr 1\n").replace("k1, k2", "k1, kr")
 _A1 = _eq(1, 3)  # the first run with k2 = k1*3 declared
 # Each case: the network, its model, the actions after generate_network, and
 # A at the end of each run of the last experiment, as BNG2.pl 2.9.3 gives it
@@ -1346,8 +1351,69 @@ INITIAL_ASSIGNMENT_CASES = {
         SCAN.format(p="Ab", v="25,50,75", extra=""),
         [_eq(1, 1, a0=2 * ab) for ab in (25, 50, 75)],
     ),
+    # 85.7143: kr = k2*2 reads k2 = k1*3 at k1 = 5; the number the SBML holds
+    # for k2 is 3 (54.5462)
+    "an-expression-of-a-derived-parameter-after-what-it-reads-moved": (
+        "beside",
+        'setParameter("k1",5)\nsetParameter("kr","k2*2")\n' + RUN,
+        [_eq(5, 30)],
+    ),
+    # 45.0000: A = k2*4 reads k2 = 15 (41.2500 from A = 12)
+    "an-amount-of-a-derived-parameter-after-what-it-reads-moved": (
+        "declared",
+        'setParameter("k1",5)\nsetConcentration("A()","k2*4")\n' + RUN,
+        [_eq(5, 15, a0=60)],
+    ),
+    # 34.0601: addConcentration adds to the seed A0 = 50; the amount the SBML
+    # holds for A is 100 (62.4434)
+    "add-to-a-seed-after-its-parameter-moved": (
+        "seeded",
+        'setParameter("A0",50)\naddConcentration("A()",10)\n' + RUN,
+        [_eq(1, 1, a0=60)],
+    ),
+    # 30.5495: and the run a second continues, replayed on the base model
+    "add-to-a-seed-after-its-parameter-moved-continued": (
+        "seeded",
+        'setParameter("A0",50)\naddConcentration("A()",10)\n' + RUN + RUN,
+        [_from(_eq(1, 1, a0=60), 1, 1, total=60)],
+    ),
+    # 34.0601: the add made A a number, which A0 = 70 after it does not move
+    "add-to-a-seed-between-two-values-of-its-parameter": (
+        "seeded",
+        'setParameter("A0",50)\naddConcentration("A()",10)\nsetParameter("A0",70)\n' + RUN,
+        [_eq(1, 1, a0=60)],
+    ),
+    # 62.4434: an add to an amount that is an expression adds to the seed, 100
+    "add-to-an-expression": (
+        "seeded",
+        'setConcentration("A()","A0*2")\naddConcentration("A()",10)\nsetParameter("A0",30)\n'
+        + RUN,
+        [_eq(1, 1, a0=110)],
+    ),
+    # 11.3534, 22.7067, 34.0601; the standard elements gave 113.53 at each
+    "scan-of-what-an-amount-set-to-an-expression-reads": (
+        "seeded",
+        'setConcentration("A()","A0*2")\n' + SCAN.format(p="A0", v="10,20,30", extra=""),
+        [_eq(1, 1, a0=2 * a) for a in (10, 20, 30)],
+    ),
+    # 11.3534, 10.1832, 10.0248: A reads A0 at the first point only
+    "scan-without-reset-of-what-an-amount-set-to-an-expression-reads": (
+        "seeded",
+        'setConcentration("A()","A0*2")\n'
+        + SCAN.format(p="A0", v="10,20,30", extra="reset_conc=>0,"),
+        _continued(20, [(1, 1)] * 3, total=20),
+    ),
+    # 30.0445, 31.4039, 31.5878: so does one set after a run
+    "scan-that-continues-a-run-of-what-an-amount-set-to-an-expression-reads": (
+        "seeded",
+        RUN
+        + 'setConcentration("A()","A0*2")\n'
+        + SCAN.format(p="A0", v="10,20,30", extra="reset_conc=>0,"),
+        _continued(20, [(1, 1)] * 3, total=20 + 100 - _eq(1, 1)),
+    ),
 }
 _NETWORKS = {
+    "beside": (BESIDE_NET, BESIDE_MODEL),
     "declared": (DECLARED_NET, DECLARED_MODEL),
     "chained": (CHAINED_NET, CHAINED_MODEL),
     "seeded": (SEEDED_NET, SEEDED_MODEL),
@@ -1455,3 +1521,44 @@ def test_a_derived_model_keeps_the_assignments_the_protocol_does_not_replace(
     changes = [c for m in sed.iter(f"{{{SED}}}model") for c in m.iterfind("s:listOfChanges/*", NS)]
     assert any(c.tag.endswith("removeXML") for c in changes) == removed
     assert not [c for c in changes if c.tag.endswith("computeChange")]
+
+
+def test_an_add_to_an_expression_after_a_run_is_recorded(tmp_path):
+    """After a run the model holds the run's amount, and BNG2.pl's
+    addConcentration to an amount set to an expression adds to the species'
+    declared seed (81.1346 for the 137.9013 the standard elements run)."""
+    report, said = _pack(
+        tmp_path,
+        "generate_network({overwrite=>1})\n"
+        + RUN
+        + 'setConcentration("A()","A0*2")\naddConcentration("A()",10)\n'
+        + RUN,
+        net=SEEDED_NET,
+        model=SEEDED_MODEL,
+    )
+    (note,) = [n for n in report.sedml_lossy if "declared amount" in n]
+    assert note in said
+
+
+def test_a_species_set_at_each_point_of_a_sweep_that_goes_on_is_not_a_seed(tmp_path):
+    """A sweep that resets sets a species whose seed follows the swept
+    parameter at each point, which a replay's scan does itself. One that goes
+    on from point to point and sets it at each is no scan a replay runs."""
+    _pack(
+        tmp_path,
+        "generate_network({overwrite=>1})\n" + SCAN.format(p="A0", v="50,100,150", extra=""),
+        net=SEEDED_NET,
+        model=SEEDED_MODEL,
+    )
+    with read_omex(tmp_path / "m.omex") as archive:
+        sbml = Path(archive.path_of(archive.master_model_entry())).read_text()
+    sed = zipfile.ZipFile(tmp_path / "m.omex").read("simulation.sedml").decode()
+    bare = re.sub(r"<annotation>.*?</annotation>", "", sed, flags=re.S)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", ConversionWarning)
+        assert read_sedml_protocol(bare, sbml=sbml).lossy == ()
+    going_on = bare.replace('id="rtask_0" resetModel="true"', 'id="rtask_0" resetModel="false"')
+    assert going_on != bare
+    with pytest.warns(ConversionWarning, match="from its range beside the swept parameter"):
+        spec = read_sedml_protocol(going_on, sbml=sbml)
+    assert len(spec.lossy) == 1

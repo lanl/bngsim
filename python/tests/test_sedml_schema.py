@@ -242,6 +242,16 @@ SHAPES = {
     + "resetParameters()\n"
     + RUN,
     "ssa": GEN + 'simulate({method=>"ssa",t_end=>1,n_steps=>2})\n',
+    # computeChange of what an assignment computes, before an expression that reads it
+    "expression-of-a-derived-parameter": GEN
+    + 'setParameter("k1",5)\nsetConcentration("B()","k2*2")\n'
+    + RUN,
+    # a species set to its seed before an addition, in a model and in a step
+    "add-to-a-seed": GEN + 'setParameter("A0",50)\naddConcentration("A()",10)\n' + RUN + RUN,
+    # setValue of a species from a range
+    "scan-of-an-amount-set-to-an-expression": GEN
+    + 'setConcentration("B()","A0*2")\n'
+    + SCAN.format(p="A0", x=""),
 }
 
 

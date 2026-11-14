@@ -190,7 +190,17 @@ each point of a scan, from the range. A species whose seed names the
 parameter (a dose scan of `A0`, with the seed `A() A0`) follows it the same
 way until a run has made its amount a number, as in BNG2.pl: at each point of
 a scan that resets, from the initial state; at the first point only of one
-that goes on from point to point. An assignment SED-ML math cannot say again,
+that goes on from point to point. So does a species an action set to an
+expression, `setConcentration("A()","A0*2")`, which BNG2.pl keeps as that
+expression until a run. The changes before a run are written in the order the
+actions made them, with such a species last, so each reads the model as the
+actions before it left it: an expression that reads a derived parameter is
+written after a change that sets that parameter to what its assignment
+computes, and an `addConcentration` to a species whose seed names a parameter
+that an action has moved, after one that sets the species to that seed. An
+`addConcentration` after a run, to a species set to an expression since, adds
+in BNG2.pl to the species' declared seed, not to that expression: the export
+says so, and records it in `sedml_lossy`. An assignment SED-ML math cannot say again,
 one that calls a function of the SBML's or reads its time, is left as the
 simulator computed it: the export says so, and records it in `sedml_lossy`.
 The bngsim annotation holds the protocol as parsed, with the `.bngl` named by
