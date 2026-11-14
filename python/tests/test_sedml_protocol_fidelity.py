@@ -13,6 +13,7 @@ same files are in the issues.
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 import re
@@ -1687,6 +1688,153 @@ def test_an_add_to_an_expression_whose_seed_the_network_lost_is_recorded(tmp_pat
     )
     (note,) = [n for n in report.sedml_lossy if "declared amount" in n]
     assert note in said
+
+
+def _bare_and_sbml(omex: Path) -> tuple[str, str]:
+    """The archive's SED-ML without its bngsim annotation, and its SBML."""
+    sed = zipfile.ZipFile(omex).read("simulation.sedml").decode()
+    with read_omex(omex) as archive:
+        sbml = Path(archive.path_of(archive.master_model_entry())).read_text()
+    return re.sub(r"<annotation>.*?</annotation>", "", sed, flags=re.S), sbml
+
+
+@pytest.mark.parametrize(
+    ("network", "actions", "want"),
+    [
+        # k2 = k1*3 declared: the chain sets k2 again after k1, as the model runs.
+        (
+            "declared",
+            'setParameter("k1",5)\n' + RUN + RUN,
+            [_eq(5, 15), _from(_eq(5, 15), 5, 15)],
+        ),
+        # The seed A() A0: the chain sets A to it after A0.
+        (
+            "seeded",
+            'setParameter("A0",50)\n' + RUN + RUN,
+            [_eq(1, 1, a0=50), _from(_eq(1, 1, a0=50), 1, 1, total=50)],
+        ),
+        # kx = k1*3 and k2 = kx/3*2, and two changes to k1: each sets both again.
+        (
+            "chained",
+            'setParameter("k1",5)\nsetParameter("k1",2)\n' + RUN + RUN,
+            [_eq(2, 4), _from(_eq(2, 4), 2, 4)],
+        ),
+        # A dose scan that goes on, as the first run of a chain, with the seed
+        # A() A0 and A0 = Ab*2: A0 and A are set at the first point, and A0 at
+        # each point.
+        (
+            "seed-of-derived",
+            SCAN.format(p="Ab", v="25,50", extra="reset_conc=>0,") + RUN,
+            _continued(50, [(1, 1)] * 3, total=50)[1:],
+        ),
+        # k2 = k1*3 is said again after k1, then the action sets k2 itself.
+        (
+            "declared",
+            'setParameter("k1",5)\nsetParameter("k2","k1*2")\n' + RUN + RUN,
+            [_eq(5, 10), _from(_eq(5, 10), 5, 10)],
+        ),
+        # kx = k1*3 and k2 = kx/3*2: with kx set, k2 no longer reads k1.
+        (
+            "chained",
+            'setParameter("kx",6)\nsetParameter("k1",5)\n' + RUN + RUN,
+            [_eq(5, 4), _from(_eq(5, 4), 5, 4)],
+        ),
+    ],
+    ids=["derived", "seed", "derived-of-derived", "sweep", "replaced", "cut-off"],
+)
+def test_a_chain_read_back_runs_its_first_run_once(tmp_path, network, actions, want):
+    """A run that continues the first replays it in a chain, on the model as
+    it runs, where what an initialAssignment computes is set again after what
+    it reads. The first run's own task has no such changes: its model's
+    assignments compute them. Read back, the two are one run from one state,
+    not the first run twice."""
+    net, model = _NETWORKS[network]
+    _pack(tmp_path, "generate_network({overwrite=>1})\n" + actions, net=net, model=model)
+    bare, sbml = _bare_and_sbml(tmp_path / "m.omex")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", ConversionWarning)
+        spec = read_sedml_protocol(bare, sbml=sbml)
+    assert spec.lossy == ()
+    assert len(spec.experiments) == 2
+    with read_omex(tmp_path / "m.omex") as archive:
+        runs = bngsim.run_protocol(archive.load_model(), spec, rtol=1e-10, atol=1e-12)
+    assert [_replay_points(run)[-1] for run in runs] == pytest.approx(want, rel=1e-6)
+
+
+def _before(changes: list[ET.Element]) -> list[ET.Element]:
+    """k2 = k1*3 before k1 = 5, not after: the run is at k2 = 3."""
+    k1, k2 = changes
+    return [k2, k1]
+
+
+def _read_between(changes: list[ET.Element]) -> list[ET.Element]:
+    """k2 = k1*3 before k1 = 5 and again after the addition of k2 to B, which
+    reads k2 = 3."""
+    k1, k2, add = changes
+    return [k2, k1, add, copy.deepcopy(k2)]
+
+
+def _behind(changes: list[ET.Element]) -> list[ET.Element]:
+    """kx = k1*3 and k2 = kx/3*2, then k1 = 5, then k2 before kx: k2 is
+    computed from the kx of k1 = 1."""
+    k1, kx, k2 = changes
+    return [copy.deepcopy(kx), copy.deepcopy(k2), k1, k2, kx]
+
+
+@pytest.mark.parametrize(
+    ("network", "actions", "edit"),
+    [
+        ("declared", 'setParameter("k1",5)\n', _before),
+        ("declared", 'setParameter("k1",5)\naddConcentration("B()","k2")\n', _read_between),
+        ("chained", 'setParameter("k1",5)\n', _behind),
+    ],
+    ids=["before", "read-between", "behind"],
+)
+def test_a_chain_whose_first_run_is_not_the_first_task_is_read_as_its_own_run(
+    tmp_path, network, actions, edit
+):
+    """A chain as written is read as two runs. With its setValues in an order
+    that leaves a value an initialAssignment computes behind what it reads,
+    where the run or another change reads it, its first run is not the first
+    task's run, and is read as a run of its own."""
+    net, model = _NETWORKS[network]
+    _pack(
+        tmp_path, "generate_network({overwrite=>1})\n" + actions + RUN + RUN, net=net, model=model
+    )
+    bare, sbml = _bare_and_sbml(tmp_path / "m.omex")
+    assert len(read_sedml_protocol(bare, sbml=sbml).experiments) == 2
+    root = ET.fromstring(bare)
+    changes = next(
+        rt.find("s:listOfChanges", NS)
+        for rt in root.iter(f"{{{SED}}}repeatedTask")
+        if rt.find("s:listOfChanges", NS) is not None
+    )
+    changes[:] = edit(list(changes))
+    spec = read_sedml_protocol(ET.tostring(root, encoding="unicode"), sbml=sbml)
+    assert len(spec.experiments) == 3
+
+
+def test_a_chain_that_resets_before_its_first_run_is_read(tmp_path):
+    """A chain that sets k2, then resets the model in the repeatedTask it
+    runs first: its changes before the first run are read as they are."""
+    _pack(
+        tmp_path,
+        "generate_network({overwrite=>1})\n" + 'setParameter("k1",5)\n' + RUN + RUN,
+        net=DECLARED_NET,
+        model=DECLARED_MODEL,
+    )
+    bare, sbml = _bare_and_sbml(tmp_path / "m.omex")
+    root = ET.fromstring(bare)
+    step, chain = root.iter(f"{{{SED}}}repeatedTask")
+    assert step.get("resetModel") == "false" and chain.get("resetModel") == "true"
+    step.set("resetModel", "true")
+    k2 = copy.deepcopy(step.find("s:listOfChanges", NS))
+    k2.remove(k2[0])
+    chain.insert(1, k2)
+    spec = read_sedml_protocol(ET.tostring(root, encoding="unicode"), sbml=sbml)
+    assert len(spec.experiments) == 3
+    kinds = [getattr(s, "kind", None) for s in spec.steps]
+    assert kinds.count("reset_concentrations") == 2
 
 
 def test_a_species_set_at_each_point_of_a_sweep_that_goes_on_is_not_a_seed(tmp_path):

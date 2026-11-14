@@ -2561,6 +2561,20 @@ _INITIAL_LABEL = "sedml_initial"
 #: A ``repeatedTask``'s ``resetModel="true"``, where it falls in an expansion.
 _RESET = object()
 
+
+class _Restated(NamedTuple):
+    """A step that sets an element to what the SBML's initialAssignment of it
+    computes (:meth:`_TaskReader._start`)."""
+
+    step: Any
+
+
+class _PerPoint(NamedTuple):
+    """A step a sweep makes at each of its points, beside the swept parameter."""
+
+    step: Any
+
+
 _TARGET_SPECIES = re.compile(
     r"""species\[\s*@id\s*=\s*['"]([^'"]+)['"]\s*\](?:/@(initialConcentration|initialAmount))?\s*$"""
 )
@@ -2663,11 +2677,16 @@ class _TaskReader:
         # the same state: write_sedml_protocol writes a run that continues an
         # earlier one as a repeatedTask that replays the runs before it, and
         # the task of the first run alone beside it.
+        # Compared without the steps that say again, before the first run,
+        # what an initialAssignment computes: write_sedml_protocol writes those
+        # in the chain, on the model as it runs, and not in the first run's own
+        # model, whose assignments compute them (issue #1733).
+        starts = [self._start(steps) for steps in expansions]
         kept = [
             steps
-            for i, steps in enumerate(expansions)
+            for steps, start in zip(expansions, starts, strict=True)
             if not any(
-                len(other) > len(steps) and other[: len(steps)] == steps for other in expansions
+                len(other) > len(start) and other[: len(start)] == start for other in starts
             )
         ]
         reset = (
@@ -2679,10 +2698,77 @@ class _TaskReader:
             if i:
                 out.extend(reset)
             for step in steps:
+                if isinstance(step, (_Restated, _PerPoint)):
+                    step = step.step
                 out.extend(reset if step is _RESET else (step,))
         if any(isinstance(s, StateChange) and s.kind == "reset_parameters" for s in out):
             out.insert(0, StateChange(kind="save_parameters", label=_INITIAL_LABEL))
         return ProtocolSpec(steps=tuple(out), source=None, dropped=(), lossy=tuple(self.lossy))
+
+    def _start(self, steps: list[object]) -> list[object]:
+        """*steps* without those before its first run that set an element to
+        what the SBML's initialAssignment of it computes, where a replay,
+        whose model computes it, holds the same without them: nothing else
+        sets the element before that run, and whatever sets something the
+        assignment reads is followed by such a step again, before any other
+        step and before the run. Else *steps* as they are."""
+        from bngsim.convert._protocol import Experiment
+
+        first = next((k for k, s in enumerate(steps) if isinstance(s, Experiment)), len(steps))
+        head: list[Any] = steps[:first]
+        if any(s is _RESET for s in head):
+            return steps
+        # A step that says an assignment again, where the next step that is
+        # not one is to the same element: nothing between the two read it.
+        superseded: set[int] = set()
+        for k, s in enumerate(head):
+            if isinstance(s, _Restated):
+                after = next(
+                    (o for o in head[k:] if not isinstance(o, (_Restated, _PerPoint))), None
+                )
+                if after is not None and after.target == s.step.target:
+                    superseded.add(k)
+        set_otherwise = {s.target for s in head if not isinstance(s, (_Restated, _PerPoint))}
+        replaced: set[str] = set()  # set to something else so far
+        restated: set[str] = set()
+        stale: set[str] = set()  # restated, and behind what they read since
+        for k, s in enumerate(head):
+            if isinstance(s, _PerPoint) or k in superseded:
+                continue  # a _PerPoint is set with the swept parameter, as the run goes
+            name = s.step.target if isinstance(s, _Restated) else s.target
+            if isinstance(s, _Restated) and name not in set_otherwise:
+                restated.add(name)
+                stale.discard(name)
+                if self._assignment_reads(name, replaced) & stale:
+                    stale.add(name)  # computed from a value that is behind
+                continue
+            if stale:
+                return steps
+            replaced.add(name)
+            stale |= {r for r in restated if name in self._assignment_reads(r, replaced)}
+        if stale:
+            return steps
+        return [
+            s
+            for k, s in enumerate(head)
+            if k not in superseded and not (isinstance(s, _Restated) and s.step.target in restated)
+        ] + steps[first:]
+
+    def _assignment_reads(self, symbol: str, replaced: set[str]) -> set[str]:
+        """Everything the SBML's initialAssignment of *symbol* reads, through
+        the assignments of what it reads that are not *replaced*."""
+        targets = self.targets
+        assert targets is not None  # a step is marked as restated from the SBML
+        reads: set[str] = set()
+        todo = [symbol]
+        while todo:
+            symbol = todo.pop()
+            for name, symbols in targets.assignment_reads.items():
+                if symbol in symbols and name not in reads:
+                    reads.add(name)
+                    if name not in replaced:
+                        todo.append(name)
+        return reads
 
     def _after_a_reset_scan(self, tid: str, steps: list[object]) -> None:
         """Say where a run in *steps* starts from the state a sweep that resets
@@ -2737,9 +2823,10 @@ class _TaskReader:
             for k, change in enumerate(changes):
                 if _overridden_assignment(change, changes[k + 1 :]):
                     continue  # the change after it sets the value, as write_sedml_protocol writes
-                step = self._change(change, f"model {model.get('id')!r}")
+                where = f"model {model.get('id')!r}"
+                step = self._change(change, where)
                 if step is not None:
-                    steps.append(step)
+                    steps.append(self._restated(change, where, step))
         steps.append(_experiment_of(utc, sweep))
         return steps
 
@@ -2792,7 +2879,7 @@ class _TaskReader:
                             sv, f"repeatedTask {rid}", names={on: str(sweep["parameter"])}
                         )
                         if step is not None:
-                            set_values.append(step)
+                            set_values.append(_PerPoint(step))
                             frozen.append(dataclasses.replace(step, evaluated_once=True))
                         continue
                     if on is not None and read == {on} and resets:
@@ -2801,7 +2888,7 @@ class _TaskReader:
                             sv, f"repeatedTask {rid}", names={on: str(sweep["parameter"])}
                         )
                         if step is not None and step.kind == "set_concentration":
-                            set_values.append(step)
+                            set_values.append(_PerPoint(step))
                             continue
                         if len(self.lossy) > said:
                             continue
@@ -2840,7 +2927,7 @@ class _TaskReader:
                     continue
                 step = self._change(sv, f"repeatedTask {rid}", values)
                 if step is not None:
-                    steps.append(step)
+                    steps.append(self._restated(sv, f"repeatedTask {rid}", step))
         subs = sorted(
             _findall_local(rt, "subTask"), key=lambda s: _number_or_none(s.get("order")) or 0.0
         )
@@ -3009,14 +3096,29 @@ class _TaskReader:
             formula,
         )
 
+    def _restated(self, elem: ET.Element, where: str, step):
+        """*step*, marked where *elem* sets its element to what the SBML's
+        initialAssignment of it computes."""
+        if _local(elem.tag) != "changeAttribute" and self._assigned_again(elem, where, {}):
+            return _Restated(step)
+        return step
+
     def _seed_again(self, sv: ET.Element, where: str, names: dict[str, str]) -> bool:
         """Whether *sv*, beside a sweep, sets a species to what the SBML's
         initialAssignment of it computes, as write_sedml_protocol writes a
         species whose seed follows the swept parameter at each point (issue
         #1733)."""
         named = _target_name(sv.get("target") or "")
+        return (
+            named is not None and named[0] == "species" and self._assigned_again(sv, where, names)
+        )
+
+    def _assigned_again(self, sv: ET.Element, where: str, names: dict[str, str]) -> bool:
+        """Whether *sv* sets a species or a parameter to what the SBML's
+        initialAssignment of it computes."""
+        named = _target_name(sv.get("target") or "")
         targets = self.targets
-        if named is None or named[0] != "species" or targets is None:
+        if named is None or targets is None:
             return False
         assigned = targets.assignments.get(named[1])
         if assigned is None:
