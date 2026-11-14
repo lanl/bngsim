@@ -159,7 +159,10 @@ actions, is a task on a derived model that makes those changes. A run that start
 where earlier runs left the model, such as the stimulation after an equilibration,
 is a `repeatedTask` that resets the model once and then runs the earlier runs and
 this one as ordered subtasks on one model state, with the actions between them as
-`setValue` changes. In SED-ML, model state is not reset between subtasks unless
+`setValue` changes. Its first subtask is the task of the run it starts from,
+the one that run's report reads, and its other tasks run that task's model: the
+changes before that first run are that model's, made once, when it is loaded,
+and the SBML's `initialAssignment`s compute from them. In SED-ML, model state is not reset between subtasks unless
 `resetModel="true"` asks for it. A bifurcate is its sweep up and back down, each
 point continuing from the last. A parameter set to an expression of others,
 `setParameter("k2","k1*3")`, is set again after each change to what it reads,
@@ -180,12 +183,39 @@ rows first and its own last, and its name says so. A change to a parameter the
 SBML computes by an `initialAssignment` (a derived parameter, or a species
 whose seed amount names a parameter) is written after a `removeXML` of that
 assignment, which would otherwise override it, as BNG2.pl's action replaces
-the expression. A `setValue` that sets, as the model runs, a parameter such an
-assignment reads (a scan of `k1` beside a derived `k2 = k1*3`) leaves that
-value as the simulator computed it when it loaded the model, where BNG2.pl's
-follows: the export says so, and records it in `sedml_lossy`. The bngsim annotation holds the protocol as
-parsed, with the `.bngl` named by its file name alone, not the path it was
-read from.
+the expression. A simulator evaluates such an assignment when it loads the
+model, not when a parameter it reads is set as the model runs, where BNG2.pl's
+derived parameter follows that parameter. So a `setValue` that sets, as the
+model runs, a parameter an assignment reads (a scan of `k1` beside a derived
+`k2 = k1*3`, or `setParameter("k1",5)` between runs) is followed by a
+`setValue` of what the assignment computes, with the assignment's own math; at
+each point of a scan, from the range. A species whose seed names the
+parameter (a dose scan of `A0`, with the seed `A() A0`) follows it the same
+way until a run has made its amount a number, as in BNG2.pl: at each point of
+a scan that resets, from the initial state; at the first point only of one
+that goes on from point to point. So does a species an action set to an
+expression, `setConcentration("A()","A0*2")`, which BNG2.pl keeps as that
+expression until a run. The changes before a run are written in the order the
+actions made them, with such a species last, so each reads the model as the
+actions before it left it: an expression that reads a derived parameter is
+written after a change that sets that parameter to what its assignment
+computes, and an `addConcentration` to a species whose seed names a parameter
+that an action has moved, after one that sets the species to that seed. An
+`addConcentration` to a species that is still an expression adds, in BNG2.pl,
+to the species' declared seed, not to that expression, and the species is set
+to that seed first. Where an action before `generate_network` changed the
+species, the SBML does not hold that seed: the export says so, and records it
+in `sedml_lossy`. An assignment SED-ML math cannot say again,
+one that calls a function of the SBML's, reads its time, or uses an operator
+SED-ML L1V3's MathML does not have (`rem`, `quotient`, `implies`), is left as
+the simulator computed it when a parameter it reads is set as the model runs:
+the export says so, and records it in `sedml_lossy`. A change before the run
+that reads such an assignment reads the value the SBML holds, without a note;
+none comes from a `.bngl` BNG2.pl accepts, which has no such operators, and
+whose parameters call no functions and do not read time. A `min` or `max`, which that MathML does not have either, is
+written as the `piecewise` it is.
+The bngsim annotation holds the protocol as parsed, with the `.bngl` named by
+its file name alone, not the path it was read from.
 
 **Starting from a `.bngl` model (the full export pipeline).** The converter's model
 input is the flattened **`.net`**, so a rule-based model is first expanded to a
@@ -309,7 +339,11 @@ parameter is a `parameter_scan`, with a constant `setValue` beside the sweep as
 a step before it, and one that does not sweep runs its subtasks in order on one
 model state, resetting it first where `resetModel` says so. Tasks are
 independent, so the state is reset between them, and a time course no task runs
-is not run. A change the replay cannot apply (a compartment's size, an
+is not run. A model's changes are steps where the model is loaded: before the
+first task of a chain that runs it, and again after a reset, not before each
+task that runs it. A task whose steps are the start of a longer chain's is that
+chain's first runs, read once: `write_sedml_protocol`'s chain names the task of
+its first run as its first subtask. A change the replay cannot apply (a compartment's size, an
 `addXML`, a species' `initialAmount` without the SBML's compartment sizes, a
 `setValue` that reads the range beside the swept parameter other than as an
 expression of it, a sweep whose math reads the model's values, a task on a
