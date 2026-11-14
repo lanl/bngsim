@@ -582,10 +582,34 @@ weeks lapses, and anyone may take the issue.
   ([Checking performance and parity](#checking-performance-and-parity)).
 - Stage a changelog fragment (below) and, where user-facing, update the relevant
   page under [`docs/`](docs/).
+- Say how the PR was reviewed, under the "Review" heading the PR template gives
+  you ([Saying how a PR was reviewed](#saying-how-a-pr-was-reviewed)).
+- Begin the PR's title with the part of bngsim it changes, then say what
+  changes, and end with every issue it clears: `simulator: read each batch
+  row's default atol from its own start (#1660)`. Leave the numbers out only
+  when no issue is involved.
 
 See the [development docs](docs/development/) for building and testing, and for the
 guide to adding built-in functions. `scripts/LOCAL_CI.md` covers building the wheel
 matrix locally.
+
+## Saying how a PR was reviewed
+
+Every PR says how it was reviewed, under a "Review" heading, so that whoever
+merges it knows what has been checked. A review is independent when the
+reviewer did not write the change and read the whole branch. Name the reviewer
+in one of three forms:
+
+- **A person:** their name and handle. A careful read by a maintainer is enough
+  for a small change to documentation.
+- **An AI model:** the model, the effort level, how many rounds the review took,
+  which round came back clean, and any commits made after the last round, with
+  what they change.
+- **Not reviewed:** say so. A maintainer then runs `/code-review` before the PR
+  merges.
+
+For a reviewed PR, list what each round found and how it was fixed (see
+[Fix review findings in the PR](#fix-review-findings-in-the-pr-do-not-file-them)).
 
 ## Changelog entries
 
