@@ -7360,6 +7360,12 @@ class Simulator:
             # Every point starts from the events' state at invocation too, not
             # from where the previous point's run left them (issue #693).
             self._model._core.set_event_carry_state(invocation_sens[3])
+            if use_named:
+                # The carry above brings the invocation's storage flag; the
+                # snapshot's is the one that goes with its state (issue #1463).
+                self._model._core.ssa_counts_stored = (
+                    str(reset_to) in self._model._named_ssa_counts
+                )
 
         base_seed = _resolve_seed(seed) if self._method != "ode" else 0
         # Point i's seed, derived from the base (issue #1365). An ODE point reads none.
