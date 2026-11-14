@@ -11,12 +11,12 @@ pushes to `main` that touch the build inputs (`pyproject.toml`, `CMakeLists.txt`
 `workflow_dispatch`. Those runs upload artifacts only; `release.yml` publishes to
 PyPI on a `v*` tag. The matrix is:
 
-| Runner OS      | Architecture | Deployment target  | Python versions       |
-|----------------|--------------|--------------------|-----------------------|
-| ubuntu-latest  | x86_64       | manylinux_2_28     | 3.10, 3.11, 3.12, 3.13|
-| macos-15       | arm64        | macOS 11           | 3.10, 3.11, 3.12, 3.13|
-| macos-15-intel | x86_64       | macOS 10.15        | 3.10, 3.11, 3.12, 3.13|
-| windows-latest | AMD64        | Windows Server 2025| 3.10, 3.11, 3.12, 3.13|
+| Runner OS      | Architecture | Deployment target  | Python versions                    |
+|----------------|--------------|--------------------|------------------------------------|
+| ubuntu-latest  | x86_64       | manylinux_2_28     | 3.10, 3.11, 3.12, 3.13, 3.14, 3.15 |
+| macos-15       | arm64        | macOS 11           | 3.10, 3.11, 3.12, 3.13, 3.14, 3.15 |
+| macos-15-intel | x86_64       | macOS 10.15        | 3.10, 3.11, 3.12, 3.13, 3.14, 3.15 |
+| windows-latest | AMD64        | Windows Server 2025| 3.10, 3.11, 3.12, 3.13, 3.14, 3.15 |
 
 Source distributions (sdist) are published alongside; sdist users will
 build from source and need a C++17 compiler, CMake ≥ 3.20, and Ninja.
@@ -187,7 +187,7 @@ assert r.n_times == 11
    `TRUNCATED_ON_PURPOSE` in `python/tests/test_changelog_fragments.py`. The pull request carrying steps 1–2
    is the one thing that may edit `CHANGELOG.md`, so label it `changelog exempt`.
 3. Merge the release pull request into `main`; verify all four wheel legs are
-   green on cp310–cp313.
+   green on cp310–cp315.
 4. Tag `git tag v<x.y.z> && git push origin v<x.y.z>` — `release.yml` builds and
    publishes to PyPI via Trusted Publishing. Rehearse first with a manual
    `workflow_dispatch` run targeting `testpypi`.

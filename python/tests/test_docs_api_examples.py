@@ -11,8 +11,10 @@ project's front page through a release.
 Two guards, cheap and complementary:
 
 * :func:`test_front_door_example_runs` EXECUTES the first Python block of each
-  front-door page against a real ``model.net``, so those blocks are as tested as
-  any other code path.
+  front-door page as a reader would paste it: in an empty directory, with the
+  optional extras' modules blocked, so the block must write its own model and
+  must not need pandas or any other extra (issue #1691). It then checks the
+  block's answer against the closed form of the model the three pages share.
 * :func:`test_documented_api_names_exist` STATICALLY resolves every ``bngsim.…``
   attribute chain, method name and keyword argument in every Python block under
   ``docs/`` — pages whose examples need corpora, XML side files or optional
@@ -29,7 +31,9 @@ from __future__ import annotations
 
 import ast
 import inspect
+import math
 import re
+import sys
 from pathlib import Path
 
 import bngsim
@@ -51,25 +55,25 @@ _SCANNED = ("README.md", "SUPPORT_MATRIX.md")
 # conscripted into the executed set.
 _FRONT_DOOR = ("README.md", "docs/index.md", "docs/quickstart.md")
 
-# One decaying species, observed as "A" — matches what the front-door blocks
-# read (``result.observables["A"]``) with no corpus and no fixture file.
-_MODEL_NET = """\
-begin parameters
-    1 k  1.0
-end parameters
-begin species
-    1 A() 5.7
-end species
-begin observables
-    1 Molecules A A()
-end observables
-begin reactions
-    1 1 0 k  #A->0
-end reactions
-begin groups
-    1 A 1
-end groups
-"""
+# The top-level modules of pyproject's optional extras (and the test extra). A
+# bare `pip install bngsim` brings numpy, python-libsbml, sympy and mpmath only,
+# so a front-door block may import none of these (issue #1691).
+_EXTRA_MODULES = (
+    "pandas",
+    "antimony",
+    "h5py",
+    "xarray",
+    "bionetgen",
+    "jax",
+    "jaxlib",
+    "diffrax",
+    "vivarium",
+    "roadrunner",
+    "bioservices",
+    "scipy",
+    "jsonschema",
+    "lxml",
+)
 
 # Calls that hand back a Result, whatever the receiver: Simulator.run,
 # NfsimSession.simulate, ReactionKernel.run_until.
@@ -251,10 +255,25 @@ def test_front_door_example_runs(
     assert blocks, f"{page} has no Python example to run"
     code = blocks[0][1]
     assert "model.net" in code, f"{page}'s first Python block is not the load-and-run example"
-    if "dataframe" in code:
-        pytest.importorskip("pandas")
 
-    (tmp_path / "model.net").write_text(_MODEL_NET, encoding="utf-8")
+    # As pasted after `pip install bngsim` (issue #1691): an empty directory, so
+    # the block has to write the model it loads, and none of the extras, which
+    # the base install does not bring (None in sys.modules makes an import raise).
     monkeypatch.chdir(tmp_path)
+    for name in _EXTRA_MODULES:
+        monkeypatch.setitem(sys.modules, name, None)
     namespace: dict[str, object] = {"__name__": "__docs_example__"}
     exec(compile(code, f"{page} (first python block)", "exec"), namespace)  # noqa: S102
+
+    # Oracle: the three pages share one model, A -> B at k = 0.5 from A(0) =
+    # 100, so A(t) = 100 e^(-0.5 t) at whatever t_end the block chose. Pinned,
+    # not read from the model, so a page whose k drifts from the 0.6738 it
+    # prints fails too. rel 1e-4: the run uses the solver's default tolerances,
+    # far looser than the closed form; a wrong model or k is off by far more.
+    result = namespace["result"]
+    t_end = float(result.time[-1])  # type: ignore[attr-defined]
+    a_end = float(result.observables["A"][-1])  # type: ignore[attr-defined]
+    assert a_end == pytest.approx(100.0 * math.exp(-0.5 * t_end), rel=1e-4)
+    # Each page prints 0.6738 = 100 e^(-5), its value at t = 10: a block that
+    # runs to another time while keeping that comment is wrong too.
+    assert t_end == pytest.approx(10.0), f"{page}'s example prints A(10) but runs to t = {t_end:g}"

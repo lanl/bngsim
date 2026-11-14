@@ -12,9 +12,12 @@ Prebuilt wheels are available for:
 
 | Platform | Architectures | Python |
 |----------|---------------|--------|
-| Linux | x86_64 | 3.10–3.13 |
-| macOS | arm64, x86_64 | 3.10–3.13 |
-| Windows | x86_64 | 3.10–3.13 |
+| Linux | x86_64 | 3.10–3.15 |
+| macOS | arm64, x86_64 | 3.10–3.15 |
+| Windows | x86_64 | 3.10–3.15 |
+
+Wheels for Python 3.14 and 3.15 start with the release after 0.17.2; on those
+versions an earlier release installs from the source distribution.
 
 See [`SUPPORT_MATRIX.md`](https://github.com/lanl/bngsim/blob/HEAD/SUPPORT_MATRIX.md) for the full platform × Python ×
 backend matrix, what each optional extra activates, and the release checklist.

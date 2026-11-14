@@ -12,7 +12,7 @@ identical and the report is comparable.
 - **Docker** — only for the Linux-via-Docker leg (`local_ci_linux_docker.sh`).
   - On macOS: `brew install colima docker && colima start`.
 
-Everything else (Python 3.10–3.13, build deps, test deps) is provisioned by
+Everything else (Python 3.10–3.15, build deps, test deps) is provisioned by
 uv from inside the script.
 
 ## Coverage map
@@ -21,7 +21,7 @@ uv from inside the script.
 |---|---|---|---|
 | macOS x86_64 | Intel mac | the project | `uv run python scripts/local_ci.py matrix` |
 | macOS arm64 | M4 Max | (Bill / you) | same command |
-| Linux x86_64 | Docker on Intel mac | the project | `scripts/local_ci_linux_docker.sh` (or `MATRIX=1 ...` for cp310-cp313) |
+| Linux x86_64 | Docker on Intel mac | the project | `scripts/local_ci_linux_docker.sh` (or `MATRIX=1 ...` for cp310-cp313; its pinned cibuildwheel predates 3.14, see #1492) |
 | Windows AMD64 | efm46's box | efm46 | same command as macOS, run from PowerShell or cmd |
 
 ## Subcommands

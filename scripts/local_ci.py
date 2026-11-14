@@ -49,7 +49,7 @@ SCRIPTS_DIR = BNGSIM_DIR / "scripts"
 SMOKE_SCRIPT = SCRIPTS_DIR / "local_ci_smoke.py"
 WHEELHOUSE = REPO_ROOT / "wheelhouse-local"
 
-PYTHONS = ("3.10", "3.11", "3.12", "3.13")
+PYTHONS = ("3.10", "3.11", "3.12", "3.13", "3.14", "3.15")
 
 
 @dataclass
@@ -395,7 +395,7 @@ def main() -> int:
     p_wheel = sub.add_parser("wheel", help="build + smoke one wheel")
     p_wheel.add_argument("--python", help="target Python, e.g. 3.12")
     p_wheel.set_defaults(func=cmd_wheel)
-    p_matrix = sub.add_parser("matrix", help="build + smoke cp310-cp313")
+    p_matrix = sub.add_parser("matrix", help="build + smoke cp310-cp315")
     p_matrix.set_defaults(func=cmd_matrix)
     p_smoke = sub.add_parser("smoke", help="smoke-test an existing wheel")
     p_smoke.add_argument("--wheel", required=True)
