@@ -336,7 +336,10 @@ parameter is a `parameter_scan`, with a constant `setValue` beside the sweep as
 a step before it, and one that does not sweep runs its subtasks in order on one
 model state, resetting it first where `resetModel` says so. Tasks are
 independent, so the state is reset between them, and a time course no task runs
-is not run. A change the replay cannot apply (a compartment's size, an
+is not run. A task whose steps are the start of a longer chain's is that
+chain's first runs, read once; with `sbml=`, a chain's `setValue`s of what an
+`initialAssignment` computes, which `write_sedml_protocol` writes after a
+change to what it reads, do not make its first run another run. A change the replay cannot apply (a compartment's size, an
 `addXML`, a species' `initialAmount` without the SBML's compartment sizes, a
 `setValue` that reads the range beside the swept parameter other than as an
 expression of it, a sweep whose math reads the model's values, a task on a
