@@ -1682,10 +1682,17 @@ class _ProtocolWriter:
                     if more:
                         needed |= more
                         grew = True
+        # A parameter with a change kept under its assignment takes its last
+        # change too, which says what the assignment computes: a reader of the
+        # changes alone does not know the assignment is there, and would leave
+        # the parameter at the value the kept change set.
+        said_again = {c.sid for c in kept if c.sid in back}
         changes = [
             c
-            for c in changes
-            if c in kept or (c.kind == "param" and c.initial is not None and c.sid in needed)
+            for k, c in enumerate(changes)
+            if c in kept
+            or (c.kind == "param" and c.initial is not None and c.sid in needed)
+            or (c.sid in said_again and k == last_at[c.sid])
         ]
         if not changes:
             return "model0"

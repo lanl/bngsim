@@ -1640,6 +1640,39 @@ def test_a_parameter_a_reset_puts_back_keeps_its_assignment_under_an_earlier_cha
     assert first.get("target").endswith("[@id='k2']/@value")
 
 
+def test_a_change_kept_under_an_assignment_is_followed_by_what_the_assignment_computes(tmp_path):
+    """kx = k1*3 and k2 = kx/3*2 declared; kx = 9, then a reset back. k2,
+    which reads kx, is set again between the two, so kx = 9 stays in the
+    derived model, under kx's initialAssignment. Alone, it left a reader of
+    the changes with kx = 9 for the run (A(1) = 85.7273), where BNG2.pl's kx
+    is back at k1*3 (A(1) = 68.3262). kx's last change, to what the
+    assignment computes, is written after it."""
+    _pack(
+        tmp_path,
+        "generate_network({overwrite=>1})\nsaveParameters()\n"
+        'setParameter("kx",9)\nresetParameters()\n' + RUN,
+        net=CHAINED_NET,
+        model=CHAINED_MODEL,
+    )
+    want = _eq(1, 2)
+    assert _run_report(tmp_path / "m.omex")["report_0"]["observable:Atot"] == pytest.approx(
+        want, rel=1e-6
+    )
+    sed = zipfile.ZipFile(tmp_path / "m.omex").read("simulation.sedml").decode()
+    bare = re.sub(r"<annotation>.*?</annotation>", "", sed, flags=re.S)
+    changes = list(ET.fromstring(bare).iterfind("s:listOfModels/s:model/s:listOfChanges/*", NS))
+    assert [c.tag.rsplit("}", 1)[1] for c in changes] == ["changeAttribute", "computeChange"]
+    assert all(c.get("target").endswith("[@id='kx']/@value") for c in changes)
+    with read_omex(tmp_path / "m.omex") as archive:
+        sbml = archive.path_of(archive.master_model_entry())
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", ConversionWarning)
+            specs = [read_sedml_protocol(bare, sbml=sbml), read_sedml_protocol(bare)]
+        for spec in specs:
+            (run,) = bngsim.run_protocol(archive.load_model(), spec, rtol=1e-10, atol=1e-12)
+            assert _end(run.result) == pytest.approx(want, rel=1e-6)
+
+
 def test_an_add_to_an_expression_whose_seed_the_network_lost_is_recorded(tmp_path):
     """BNG2.pl's addConcentration to an amount set to an expression adds to
     the species' declared seed (A = 110, with A(1) = 101.4103 beside
