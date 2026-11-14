@@ -174,7 +174,13 @@ one.
 Each experiment has a report: the time and the model's observables (its
 species where it has none), read from the task that runs it. That task is the
 experiment; any other task in the document is a part of one, such as the
-earlier runs a chain replays. The bngsim annotation holds the protocol as
+earlier runs a chain replays. SED-ML reads a `repeatedTask`'s results as all of
+its subtasks', so the report of a run that continues earlier ones holds their
+rows first and its own last, and its name says so. A change to a parameter the
+SBML computes by an `initialAssignment` (a derived parameter, or a species
+whose seed amount names a parameter) is written after a `removeXML` of that
+assignment, which would otherwise override it, as BNG2.pl's action replaces
+the expression. The bngsim annotation holds the protocol as
 parsed, with the `.bngl` named by its file name alone, not the path it was
 read from.
 
@@ -280,7 +286,11 @@ The actions block is for the `.net` beside it, which holds what the protocol's
 actions before `generate_network` did: it starts at that point, with any save
 made before it made again, and names each species as the `.net` does
 (`L_r` for the BNGL `L(r)`). BNG2.pl runs the pair with
-`readFile({file=>"model.net"})` before the actions. An archive's
+`readFile({file=>"model.net"})` before the actions. A reset to a state saved
+before generation whose values were the model's as declared cannot be made on
+that `.net`, which holds the changed values: `omex_to_net` refuses it, and with
+`strict=False` writes the block with a `# bngsim:` comment and a note in
+`lossy`. An archive's
 `load_full_protocol()` likewise names species and parameters by the master
 SBML's ids, so it runs on `load_model()`; `load_full_protocol(entry)` names them
 as another model entry does, the bundled `.net` by their BNGL names.

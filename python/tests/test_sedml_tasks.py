@@ -588,9 +588,11 @@ def test_a_set_value_that_reads_the_swept_range_follows_the_swept_parameter():
         warnings.simplefilter("error", ConversionWarning)
         spec = read_sedml_protocol(_swept(changes))
     assert spec.lossy == ()
-    set_k2, scan = spec.steps
+    set_k2, scan, held = spec.steps
     assert (set_k2.kind, set_k2.target, set_k2.evaluated_once) == ("set_parameter", "k2", False)
     assert scan.scan_values == (1.0, 2.0)
+    # After the scan k2 holds its last point's value, as SED-ML leaves it.
+    assert (held.target, held.value_expr, held.evaluated_once) == ("k2", set_k2.value_expr, True)
     (run,) = bngsim.run_protocol(bngsim.Model.from_sbml_string(SBML), spec, rtol=1e-10, atol=1e-12)
     got = [float(r.species[-1, r.species_names.index("A")]) for r in run.scan_results]
     assert got == pytest.approx([_closed_a(1, 2), _closed_a(2, 4)], rel=1e-7)

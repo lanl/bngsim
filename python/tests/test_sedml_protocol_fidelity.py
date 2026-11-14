@@ -166,6 +166,10 @@ def _run_report(omex: Path) -> dict[str, dict[str, float]]:
         for model in reversed(chain):
             for change in model.iterfind("s:listOfChanges/*", NS):
                 target = change.get("target")
+                if change.tag.endswith("removeXML"):
+                    parent = doc.find(target.rsplit("/", 1)[0].replace("/sbml:sbml/", "./"), NS)
+                    parent.remove(doc.find(target.replace("/sbml:sbml/", "./"), NS))
+                    continue
                 if change.tag.endswith("changeAttribute"):
                     value = float(change.get("newValue"))
                 else:
@@ -386,6 +390,14 @@ def test_a_parameter_defined_through_itself_is_refused(tmp_path, sets):
     protocol = parse_bngl_protocol(sets + "\n" + RUN)
     with pytest.raises(ConversionError, match="defined recursively"):
         _replay(NET, protocol, tmp_path)
+
+
+def test_a_parameter_defined_through_the_networks_own_expression_is_refused(tmp_path):
+    """k3 = 2 k1 in the network, then setParameter("k1","k3"): BNG2.pl stops
+    ("Max recursion depth"); the replay ran k1 = 8, k3 = 16 (A(1) = 11.12)."""
+    net = NET.replace("    2 k2 1\n", "    2 k2 1\n    3 k3 2*k1\n")
+    with pytest.raises(ConversionError, match="defined recursively"):
+        _replay(net, parse_bngl_protocol('setParameter("k1","k3")\n' + RUN), tmp_path)
 
 
 def test_the_sedml_sets_the_expression_again_after_what_it_reads(tmp_path):
@@ -836,3 +848,144 @@ def test_a_state_change_records_evaluated_once_only_when_set():
     assert "evaluated_once" not in StateChange("set_parameter", "k", value_expr="2*j").to_dict()
     once = StateChange("set_parameter", "k", value_expr="2*j", evaluated_once=True)
     assert StateChange.from_dict(once.to_dict()) == once
+
+
+# ─── found in review: the export after a reset, a value the SBML computes ───
+
+
+@pytest.mark.parametrize("before", ["", "saveConcentrations()\n"], ids=["declared", "saved"])
+def test_a_reset_sets_a_followed_expression_after_what_it_reads(tmp_path, before):
+    """k2 = k1*3, k1 = 5, a run, resetConcentrations(), a run: both at k2 = 15
+    (75.00). The second run's model set k2 = k1*3 before k1 = 5 (37.52)."""
+    actions = (
+        "generate_network({overwrite=>1})\n"
+        + before
+        + 'setParameter("k2","k1*3")\nsetParameter("k1",5)\n'
+        + RUN
+        + "resetConcentrations()\n"
+        + RUN
+    )
+    report, _ = _pack(tmp_path, actions)
+    values = _run_report(tmp_path / "m.omex")
+    for rid in ("report_0", "report_1"):
+        assert values[rid]["observable:Atot"] == pytest.approx(_eq(5, 15), rel=1e-5), rid
+
+
+@pytest.mark.parametrize(
+    ("net", "model", "actions", "want"),
+    [
+        (
+            NET.replace("2 k2 1", "2 k2 k1*3"),
+            MODEL.replace("  k2 1", "  k2 k1*3"),
+            'setParameter("k2",7)\n',
+            _eq(1, 7),
+        ),
+        (
+            NET.replace("    2 k2 1\n", "    2 k2 1\n    3 A0 100\n").replace(
+                "1 A() 100", "1 A() A0"
+            ),
+            MODEL.replace("  k2 1\n", "  k2 1\n  A0 100\n").replace("A() 100", "A() A0"),
+            'setConcentration("A()",50)\n',
+            _eq(1, 1, a0=50),
+        ),
+    ],
+    ids=["derived-parameter", "seed-names-a-parameter"],
+)
+def test_a_change_to_a_value_the_sbml_computes_takes(tmp_path, net, model, actions, want):
+    """The SBML computes k2 = k1*3, and A from A0, by an initialAssignment,
+    which overrode the exported changeAttribute: k2 ran 3 (75.46 for 87.50).
+    BNG2.pl's action replaces the expression; so does the removeXML now
+    written before the change."""
+    _pack(tmp_path, "generate_network({overwrite=>1})\n" + actions + RUN, net=net, model=model)
+    (values,) = _run_report(tmp_path / "m.omex").values()
+    assert values["observable:Atot"] == pytest.approx(want, rel=1e-5)
+    sed = zipfile.ZipFile(tmp_path / "m.omex").read("simulation.sedml").decode()
+    assert "removeXML" in sed
+    bare = re.sub(r"<annotation>.*?</annotation>", "", sed, flags=re.S)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", ConversionWarning)
+        spec = read_sedml_protocol(bare)
+    with read_omex(tmp_path / "m.omex") as archive:
+        (run,) = bngsim.run_protocol(archive.load_model(), spec, rtol=1e-10, atol=1e-12)
+    assert _end(run.result) == pytest.approx(want, rel=RTOL)
+
+
+SWEEP_SBML = DECAY_SBML.replace(
+    '<parameter id="k" value="1" constant="true"/>',
+    '<parameter id="k" value="1" constant="true"/><parameter id="k2" value="1" constant="true"/>',
+).replace("<ci>k</ci><ci>A</ci>", "<ci>k2</ci><ci>A</ci>")
+
+
+def test_a_sweep_follower_holds_its_last_value_after_the_scan():
+    """A chain: a sweep of k = x, k2 = 3x over x = 0.1, 0.2, each point on from
+    the last, then k = 1 and a run. SED-ML leaves k2 = 0.6, so A ends at
+    e^-0.9 e^-0.6 = 0.2231; k2 kept following k, to 3 (0.0202)."""
+    k, k2 = (
+        f"/sbml:sbml/sbml:model/sbml:listOfParameters/sbml:parameter[@id='{p}']"
+        for p in ["k", "k2"]
+    )
+    sv = '<setValue modelReference="m"{r} target="{t}"><math xmlns="{m}">{x}</math></setValue>'
+    sweep = sv.format(r=' range="x"', t=k, m=MATHML, x="<ci>x</ci>") + sv.format(
+        r=' range="x"', t=k2, m=MATHML, x="<apply><times/><cn>3</cn><ci>x</ci></apply>"
+    )
+    step = sv.format(r="", t=k, m=MATHML, x="<cn>1</cn>")
+    a = "/sbml:sbml/sbml:model/sbml:listOfSpecies/sbml:species[@id='A']"
+    doc = f"""<sedML xmlns="{SED}" xmlns:sbml="{DECAY_SBML_NS}" level="1" version="3">
+ <listOfSimulations><uniformTimeCourse id="s" initialTime="0" outputStartTime="0"
+   outputEndTime="1" numberOfPoints="1"><algorithm kisaoID="KISAO:0000019"/></uniformTimeCourse>
+ </listOfSimulations>
+ <listOfModels><model id="m" language="urn:sedml:language:sbml" source="model.xml"/></listOfModels>
+ <listOfTasks><task id="t" modelReference="m" simulationReference="s"/>
+  <repeatedTask id="sweep" resetModel="false" range="x">
+   <listOfRanges>{_vector("x", [0.1, 0.2])}</listOfRanges><listOfChanges>{sweep}</listOfChanges>
+   <listOfSubTasks><subTask order="1" task="t"/></listOfSubTasks></repeatedTask>
+  <repeatedTask id="step" resetModel="false" range="o">
+   <listOfRanges>{_vector("o", [0])}</listOfRanges><listOfChanges>{step}</listOfChanges>
+   <listOfSubTasks><subTask order="1" task="t"/></listOfSubTasks></repeatedTask>
+  <repeatedTask id="chain" resetModel="true" range="c"><listOfRanges>{_vector("c", [0])}
+   </listOfRanges><listOfSubTasks><subTask order="1" task="sweep"/>
+   <subTask order="2" task="step"/></listOfSubTasks></repeatedTask>
+ </listOfTasks>
+ <listOfDataGenerators><dataGenerator id="g"><listOfVariables>
+   <variable id="a" taskReference="chain" target="{a}"/></listOfVariables>
+   <math xmlns="{MATHML}"><ci>a</ci></math></dataGenerator></listOfDataGenerators>
+</sedML>"""
+    spec = read_sedml_protocol(doc)
+    assert spec.lossy == ()
+    runs = bngsim.run_protocol(
+        bngsim.Model.from_sbml_string(SWEEP_SBML), spec, rtol=1e-10, atol=1e-14
+    )
+    assert float(runs[-1].result.species[-1, 0]) == pytest.approx(math.exp(-1.5), rel=1e-6)
+
+
+def test_the_bngl_writer_marks_where_the_network_was_generated():
+    """A model file's addConcentration before its first run is in the network:
+    written as a bare block, it read back as after generation, and ran twice."""
+    p = parse_bngl_protocol(MODEL + 'addConcentration("A()",50)\n' + RUN)
+    assert p.generation_step == 1
+    again = parse_bngl_protocol(write_bngl_protocol(p))
+    assert (again.generation_step, again.steps) == (1, p.steps)
+
+
+UNKNOWN_SAVE = (
+    'saveConcentrations()\nsetConcentration("A()",50)\ngenerate_network({overwrite=>1})\n'
+    "resetConcentrations()\n" + RUN
+)
+
+
+def test_omex_to_net_refuses_actions_it_cannot_write(tmp_path):
+    """Saved at A = 100 as declared, then A = 50 before generation: the .net
+    holds 50, so its actions cannot go back to 100. BNG2.pl on the .bngl gives
+    56.77; on the .net and the block, 28.38."""
+    _pack(tmp_path, UNKNOWN_SAVE, net=NET.replace("1 A() 100", "1 A() 50"))
+    with pytest.raises(ConversionError, match="cannot make that state"):
+        omex_to_net(tmp_path / "m.omex", tmp_path / "back.net", gate="none")
+    with pytest.warns(ConversionWarning, match="cannot make that state"):
+        report = omex_to_net(tmp_path / "m.omex", tmp_path / "back.net", gate="none", strict=False)
+    assert any(note.startswith("actions: ") for note in report.lossy)
+    assert "# bngsim: the actions block goes back" in Path(report.bngl_out).read_text()
+
+
+def test_a_computed_generator_names_its_variables():
+    with pytest.warns(ConversionWarning, match=r"of a = species:A, b = species:B"):
+        read_sedml(_generator_doc("AB", "<apply><plus/><ci>a</ci><ci>b</ci></apply>"))

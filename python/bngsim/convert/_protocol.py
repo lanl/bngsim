@@ -594,7 +594,7 @@ def _saved_before_generation(steps: Sequence[object]) -> _SavedBeforeGeneration:
 _NETWORK_LABEL = "bngsim_network"
 
 
-def _on_its_network(protocol: ProtocolSpec) -> ProtocolSpec:
+def _on_its_network(protocol: ProtocolSpec) -> tuple[ProtocolSpec, list[str]]:
     """*protocol* as an actions block for the network it generated, loaded on
     its own: what :func:`~bngsim.convert.omex_to_net` writes beside its
     ``.net`` (issue #1687).
@@ -604,13 +604,13 @@ def _on_its_network(protocol: ProtocolSpec) -> ProtocolSpec:
     every action of the block: written again, an ``addConcentration`` before
     generation was added twice. A save among them is made again on the
     network, with the actions that made what it saved (issue #1668). One whose
-    values were as declared, which the network does not hold, cannot be, and
-    is said where a later reset goes back to it."""
+    values were as declared, which the network does not hold, cannot be: each
+    reset the block makes to such a state is returned as a note."""
     from bngsim._protocol_run import _DEFAULT_LABEL
 
     generation = protocol.generation_step or 0
     if not generation:
-        return protocol
+        return protocol, []
     before = _saved_before_generation(protocol.steps[:generation])
     after = protocol.steps[generation:]
     prelude: list[object] = []
@@ -636,20 +636,19 @@ def _on_its_network(protocol: ProtocolSpec) -> ProtocolSpec:
     if not before.declared and _DEFAULT_LABEL not in before.conc:
         # An unsaved resetConcentrations() goes to the seed as declared.
         unknown.append(("reset_concentrations", _DEFAULT_LABEL))
+    notes: list[str] = []
     for reset, label in unknown:
         if _goes_back_to(after, reset, label):
             what = "concentrations" if reset == "reset_concentrations" else "parameters"
             saved = label in (before.conc if what == "concentrations" else before.params)
             state = f"saved under {label!r}" if saved else "as declared"
-            warnings.warn(
+            notes.append(
                 f"the actions block goes back to the {what} {state} before the network was "
                 "generated, whose values are the model's as declared; the network holds what "
                 "an action before generation changed them to, so the block cannot make that "
-                "state, and BNG2.pl, run on the network, goes back to another",
-                ConversionWarning,
-                stacklevel=3,
+                "state, and BNG2.pl, run on the network, goes back to another"
             )
-    return ProtocolSpec(
+    spec = ProtocolSpec(
         steps=tuple(prelude) + tuple(after),
         source=protocol.source,
         dropped=protocol.dropped[protocol.dropped_before_generation :],
@@ -657,6 +656,7 @@ def _on_its_network(protocol: ProtocolSpec) -> ProtocolSpec:
         network_gen=protocol.network_gen,
         generation_step=0,
     )
+    return spec, notes
 
 
 def _goes_back_to(steps: Sequence[object], reset: str, label: str) -> bool:
@@ -1100,9 +1100,11 @@ def write_bngl_protocol(protocol: ProtocolSpec, out_path: str | Path | None = No
     ``set*``/``resetConcentrations``/``saveConcentrations`` call, in order. The
     round-trip ``parse_bngl_protocol(write_bngl_protocol(p))`` recovers an equal
     spec (modulo the dropped build/IO directives, which a protocol never carries).
-    No ``generate_network`` is emitted — that is a build directive the model-block
-    writer prepends when it needs the network materialized (see
-    :func:`bngsim.convert._bngl_writer.write_bngl`).
+    A protocol whose network was generated after its first step gets a
+    ``generate_network`` there (the source's own call, ``network_gen``), so the
+    block reads back with the steps before it in the network; any other gets
+    none — that is a build directive the model-block writer prepends when it
+    needs the network materialized (see :func:`bngsim.convert._bngl_writer.write_bngl`).
 
     Parameters
     ----------
@@ -1118,8 +1120,14 @@ def write_bngl_protocol(protocol: ProtocolSpec, out_path: str | Path | None = No
     str
         The ``begin actions`` … ``end actions`` block (trailing newline included).
     """
+    from bngsim.convert._bngl_writer import _generate_network_line
+
     lines = ["begin actions", ""]
     for k, step in enumerate(protocol.steps):
+        if k == protocol.generation_step and k:
+            # Where the source generated its network, so the block reads back
+            # with the actions before it in the network (issue #1687).
+            lines.append(_generate_network_line(protocol.network_gen))
         if isinstance(step, StateChange) and step.evaluated_once and step.value_expr:
             moved = _moved_later(protocol.steps[k + 1 :], step.value_expr)
             if moved:
@@ -1148,6 +1156,8 @@ def write_bngl_protocol(protocol: ProtocolSpec, out_path: str | Path | None = No
             lines.append(_state_change_action(step))
         else:  # pragma: no cover — ProtocolSpec only holds the two step types
             raise ConversionError(f"unserializable protocol step: {step!r}")
+    if protocol.generation_step and protocol.generation_step >= len(protocol.steps):
+        lines.append(_generate_network_line(protocol.network_gen))
     lines.append("")
     lines.append("end actions")
     text = "\n".join(lines) + "\n"

@@ -1406,6 +1406,10 @@ def omex_to_net(
     strict : bool
         Passed through to the SBML→``.net`` conversion (refuse vs. best-effort on
         constructs plain ``.net`` cannot carry — events, live/AR volumes, MM).
+        Also refuses an actions block that cannot go back to a state the
+        protocol saved before its network was generated (a value as declared,
+        which the network no longer holds); ``False`` writes it with the note
+        as a comment and in ``lossy``.
     t_span, n_points : tuple[float, float], int
         Fallback L3 grid when the archive carries no SED-ML horizon.
     actions_out : str | Path | None
@@ -1481,7 +1485,21 @@ def omex_to_net(
 
                 # For the .net written here, which holds what the actions
                 # before the protocol's generation point did (issue #1687).
-                write_bngl_protocol(_on_its_network(full_protocol), dest)
+                actions, notes = _on_its_network(full_protocol)
+                if notes and strict:
+                    raise ConversionError(
+                        f"{omex_path.name}: {notes[0]}. Pass strict=False to write the "
+                        "actions block with a note of it"
+                    )
+                text = write_bngl_protocol(actions)
+                for note in notes:
+                    warnings.warn(note, ConversionWarning, stacklevel=2)
+                    report.lossy.append(f"actions: {note}")
+                if notes:
+                    # The note travels with the file, for whoever runs it.
+                    comment = "".join(f"# bngsim: {n}\n" for n in notes)
+                    text = text.replace("begin actions\n", "begin actions\n" + comment, 1)
+                Path(dest).write_text(text)
                 report.bngl_out = str(dest)
 
     # Re-label the source so the report reads as an OMEX unpack, not a bare SBML.

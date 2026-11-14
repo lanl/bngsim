@@ -617,7 +617,19 @@ class _Runner:
     def _defines_recursively(self, name: str, text: str) -> bool:
         """Whether setting *name* to *text* defines it through itself, directly
         or through the expressions it reads, which BNG2.pl refuses ("Parameter
-        k2 is defined recursively")."""
+        k2 is defined recursively"): those an action set, and those the
+        network declares, ``k3 2*k1`` (BNG2.pl: "Max recursion depth")."""
+        names = list(self.model.param_names)
+        declared = {
+            n: e
+            for n, e, live in zip(
+                names,
+                self.model.param_expressions,
+                self.model.param_is_expression,
+                strict=True,
+            )
+            if live and e
+        }
         seen: set[str] = set()
         stack = self._param_reads(text)
         while stack:
@@ -629,6 +641,8 @@ class _Runner:
             seen.add(read)
             if read in self.param_exprs:
                 stack.extend(self._param_reads(self.param_exprs[read]))
+            elif read in declared:
+                stack.extend(self._param_reads(declared[read]))
         return False
 
     def _follow(self) -> None:
@@ -638,7 +652,7 @@ class _Runner:
         reads itself, which :meth:`_change` refuses."""
         from bngsim._bngl_loader import _value
 
-        for _ in range(len(self.param_exprs) + 1):
+        for _ in range(len(self.param_exprs) + 2):
             moved = False
             for name, text in self.param_exprs.items():
                 value = _value(self.model, text)
@@ -652,6 +666,12 @@ class _Runner:
                     moved = True
             if not moved:
                 return
+        # A chain settles in one pass per expression; one that does not reads
+        # itself, which the check at the setParameter is meant to have refused.
+        raise ConversionError(
+            f"the parameters {sorted(self.param_exprs)} set to expressions do not settle: "
+            "they are defined through each other, which BNG2.pl refuses"
+        )
 
     # ── steps ─────────────────────────────────────────────────────────────
     def run(self) -> list[ProtocolRun]:

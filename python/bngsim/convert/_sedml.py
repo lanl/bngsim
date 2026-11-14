@@ -28,6 +28,7 @@ emitted for interop with other SED-ML tools.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import re
 import warnings
@@ -556,7 +557,8 @@ def read_sedml(
         warnings.warn(
             f"the document's data generators {computed} compute a value from their "
             "variables, which no output selector names; they are not among the spec's "
-            "outputs. Compute each from the outputs of its variables (issue #1663)",
+            "outputs. Add the selectors of their variables to the outputs to compute "
+            "them from (issue #1663)",
             ConversionWarning,
             stacklevel=2,
         )
@@ -619,20 +621,27 @@ def _generator_variable(dg: ET.Element) -> ET.Element | None:
 
 
 def _generator_text(dg: ET.Element) -> str:
-    """A data generator, named for a warning: its id and its math as a formula
-    over its variables, where libsbml can write it."""
+    """A data generator, named for a warning: its id, its math as a formula
+    over its variables where libsbml can write it, and the selector each
+    variable names where it names one."""
     gid = dg.get("id") or "?"
     math = _find(dg, "math")
-    if math is None:
-        return gid
-    try:
-        import libsbml
+    formula = None
+    if math is not None:
+        try:
+            import libsbml
 
-        node = libsbml.readMathMLFromString(ET.tostring(math, encoding="unicode"))
-        formula = libsbml.formulaToL3String(node) if node is not None else None
-    except ImportError:  # pragma: no cover - the SBML extra is installed with the readers
-        formula = None
-    return f"{gid} = {formula}" if formula else gid
+            node = libsbml.readMathMLFromString(ET.tostring(math, encoding="unicode"))
+            formula = libsbml.formulaToL3String(node) if node is not None else None
+        except ImportError:  # pragma: no cover - the SBML extra is installed with the readers
+            formula = None
+    named = [
+        f"{v.get('id')} = {sel}"
+        for v in _findall_local(dg, "variable")
+        if (sel := _selector_from_var(v)) is not None
+    ]
+    text = f"{gid} = {formula}" if formula else gid
+    return text + (f" (of {', '.join(named)})" if named else "")
 
 
 def _kisao_id(elem: ET.Element) -> str:
@@ -956,6 +965,9 @@ class _SbmlTargets:
         self.compartment_size: dict[str, float | None] = {}  # species id → its size, if a number
         self.params: dict[str, str] = {}
         self.param_values: dict[str, float] = {}  # parameter id → its value
+        # The ids an initialAssignment computes, which a change to the value
+        # the element holds does not move.
+        self.initially_assigned: set[str] = set()
         self.read = False
         text = _sbml_text(sbml)
         if text is None:
@@ -968,6 +980,11 @@ class _SbmlTargets:
             return
         self.ns = root.tag[1:].split("}", 1)[0]
         self.read = True
+        self.initially_assigned = {
+            e.get("symbol") or ""
+            for e in root.iter()
+            if _local(e.tag) == "initialAssignment" and e.get("symbol")
+        }
         # A size the SBML computes (an initial assignment or a rule on the
         # compartment), or leaves out, is no number here (issue #1662).
         computed = {
@@ -1334,13 +1351,16 @@ class _ProtocolWriter:
     def _followers(self, moved: set[str], params: dict[str, _Change]) -> list[_Change]:
         """The expressions in *params* that read a parameter in *moved*, or one
         another of them reads, each after those it reads: what BNG2.pl's
-        parameters hold once *moved* move."""
+        parameters hold once *moved* move. An expression in *moved* that reads
+        another of them is among them, set again after it."""
         affected: dict[str, _Change] = {}
         grew = True
         while grew:
             grew = False
             for pid, change in params.items():
-                if pid in affected or pid in moved or not change.follows:
+                # One of *moved* that reads another of them is set again after
+                # it: a reset applies every parameter at once.
+                if pid in affected or not change.follows:
                     continue
                 if self._reads(change) & (moved | affected.keys()):
                     affected[pid] = change
@@ -1388,6 +1408,17 @@ class _ProtocolWriter:
             {"id": model_ref, "language": _SBML_LANG, "source": "model0"},
         )
         loc = ET.SubElement(dm, _q(_SEDML_NS, "listOfChanges"))
+        # The SBML computes a derived parameter, or a species whose seed names
+        # a parameter, by an initialAssignment, which overrides a change to the
+        # value the element holds: setParameter("k2",7) on `k2 k1*3` ran k2 = 3.
+        # BNG2.pl's action replaces that expression, and so does removing it.
+        for sid in dict.fromkeys(c.sid for c in changes):
+            if sid in self.targets.initially_assigned:
+                ET.SubElement(
+                    loc,
+                    _q(_SEDML_NS, "removeXML"),
+                    {"target": _initial_assignment_path(sid)},
+                )
         for change in _ordered(changes):
             self._model_change(loc, change, model_ref)
         return model_ref
@@ -1533,7 +1564,10 @@ class _ProtocolWriter:
         """A data generator per quantity each experiment reports, over the task
         that runs it, and a report per experiment: a tool that runs only what
         an output reads runs the experiments, and the parts of one are not
-        mistaken for one (issue #1686)."""
+        mistaken for one (issue #1686). An experiment that continues earlier
+        runs is a chain that replays them, and SED-ML reads a repeatedTask's
+        results as all of its subtasks', so its report holds the replayed runs'
+        rows first and its own last; the report's name says so."""
         from bngsim._protocol_run import _describe
 
         if not self._experiments:
@@ -1557,10 +1591,11 @@ class _ProtocolWriter:
         outs = ET.SubElement(self.sed, _q(_SEDML_NS, "listOfOutputs"))
         rows = [("time", {"symbol": _TIME_SYMBOL}), *targeted]
         for i, exp, task in self._experiments:
+            name = f"experiment {i}: {_describe(exp)}"
+            if task.startswith("chain_"):
+                name += "; the earlier runs it continues come first, its own rows last"
             report = ET.SubElement(
-                outs,
-                _q(_SEDML_NS, "report"),
-                {"id": f"report_{i}", "name": f"experiment {i}: {_describe(exp)}"},
+                outs, _q(_SEDML_NS, "report"), {"id": f"report_{i}", "name": name}
             )
             lds = ET.SubElement(report, _q(_SEDML_NS, "listOfDataSets"))
             for k, (label, attrs) in enumerate(rows):
@@ -1750,6 +1785,13 @@ class _ProtocolWriter:
         return out
 
 
+def _initial_assignment_path(sid: str) -> str:
+    return (
+        "/sbml:sbml/sbml:model/sbml:listOfInitialAssignments/"
+        f"sbml:initialAssignment[@symbol='{sid}']"
+    )
+
+
 def _state_change_text(step) -> str:
     from bngsim.convert._protocol import _state_change_action
 
@@ -1758,8 +1800,6 @@ def _state_change_text(step) -> str:
 
 def _shareable(protocol):
     """*protocol* with its source named by file name alone (issue #1678)."""
-    import dataclasses
-
     source = protocol.source
     if not source:
         return protocol
@@ -1997,8 +2037,6 @@ def _on_sbml_ids(spec, targets: _SbmlTargets):
     ``L(r)`` or ``@c:A()``, and a model loaded from the SBML has only its ids,
     ``L_r`` or ``c__A``: replayed on it, ``setConcentration("L(r)",50)``
     named no species. A name the SBML does not give stays as it is."""
-    import dataclasses
-
     from bngsim.convert._protocol import Experiment, StateChange
 
     if not targets.read:
@@ -2258,7 +2296,10 @@ class _TaskReader:
             return []
         steps: list[object] = []
         for model in reversed(chain):
-            for change in _model_changes(model):
+            changes = _model_changes(model)
+            for k, change in enumerate(changes):
+                if _overridden_assignment(change, changes[k + 1 :]):
+                    continue  # the change after it sets the value, as write_sedml_protocol writes
                 step = self._change(change, f"model {model.get('id')!r}")
                 if step is not None:
                     steps.append(step)
@@ -2279,7 +2320,10 @@ class _TaskReader:
             steps.append(_RESET)
         # A sweep's setValues apply at each iteration, to the model its task
         # runs, which its model's own changes have made: they go after those.
+        # One that follows the swept parameter holds its last point's value
+        # after the scan, as SED-ML leaves it: it is evaluated once there.
         set_values: list[object] = []
+        frozen: list[object] = []
         if sweep is not None:
             # A setValue beside the swept one: a constant is a step before the
             # scan. One that reads the range the parameter is set to as it
@@ -2300,6 +2344,7 @@ class _TaskReader:
                         )
                         if step is not None:
                             set_values.append(step)
+                            frozen.append(dataclasses.replace(step, evaluated_once=True))
                         continue
                     self._unread(
                         f"repeatedTask {rid} sets {sv.get('target')!r} from its range beside "
@@ -2345,8 +2390,8 @@ class _TaskReader:
             if ref in self.tasks:
                 run = self._task(self.tasks[ref], sweep)
                 # Before its scan, after its model's changes; the first one only.
-                steps.extend(run[:-1] + set_values + run[-1:] if run else set_values)
-                set_values = []
+                steps.extend(run[:-1] + set_values + run[-1:] + frozen if run else set_values)
+                set_values, frozen = [], []
             elif ref in self.rts:
                 if sweep is not None:
                     self._unread(
@@ -2514,6 +2559,27 @@ class _TaskReader:
             ConversionWarning,
             stacklevel=_outside(),
         )
+
+
+_TARGET_ASSIGNMENT = re.compile(
+    r"""initialAssignment\[\s*@symbol\s*=\s*['"]([^'"]+)['"]\s*\]\s*$"""
+)
+
+
+def _overridden_assignment(change: ET.Element, later: list[ET.Element]) -> bool:
+    """Whether *change* removes an initialAssignment of an element that one of
+    the *later* changes sets: the replay sets the value over the expression,
+    as BNG2.pl's ``setParameter`` does, so the removal says nothing more."""
+    if _local(change.tag) != "removeXML":
+        return False
+    m = _TARGET_ASSIGNMENT.search(change.get("target") or "")
+    if m is None:
+        return False
+    for other in later:
+        named = _target_name(other.get("target") or "")
+        if named is not None and named[1] == m.group(1):
+            return True
+    return False
 
 
 def _iterations(rt: ET.Element) -> int:
