@@ -10598,7 +10598,10 @@ class Simulator:
         (``steady_state_batch(states=..., method="newton",
         newton_burst=False)``), and the roots it reaches are clustered. Each
         distinct root comes with the stability certificate's verdict, so the
-        saddles a run of the dynamics never rests on are reported too.
+        saddles a run of the dynamics never rests on are reported too. A start
+        that KINSOL stops short of its root, under ``tol`` but at a Newton
+        distance above 1, is solved once more from where it stopped before the
+        roots are grouped (issue #1518).
 
         The root one ordinary :meth:`steady_state` solve reaches (with the same
         ``mask``) is solved as one more start, with each held species set as the
@@ -10669,10 +10672,17 @@ class Simulator:
             and 2 found one of its three roots; 4 found all three and lost 52.
         dedupe_rtol : float
             Two roots are the same when every species agrees to within
-            ``dedupe_rtol`` of the larger magnitude (plus ``tol`` as an
-            absolute floor). A species in a conservation law agrees, too,
-            within ``1e-9`` of its smallest law's scale, ``Σ|L·y|``: the solve
-            places it no closer than that.
+            ``dedupe_rtol`` of the larger magnitude, or to within a floor for
+            a species at or near 0, where a root at 0 is reached at 0 or a
+            hair beside it (-5.9e-24 on #1001's cubic at a nanomolar scale):
+            ``1e-9`` of the largest value the species takes at any converged
+            start, or double precision's resolution beside the largest
+            magnitude the solves saw, whichever is larger. A species in a
+            conservation law agrees, too, within ``1e-9`` of its smallest
+            law's scale, ``Σ|L·y|``: the solve places it no closer than that.
+            The residual ``tol`` is no distance in concentration and plays no
+            part: at ``1e-9`` it merged the 0.2 nM and 0.5 nM roots of a
+            nanomolar switch (issue #1518).
         tol, n_workers, mask :
             As in :meth:`steady_state_batch`.
 
@@ -10801,8 +10811,50 @@ class Simulator:
             if from_ordinary is not None and from_ordinary.converged:
                 results = [*results, from_ordinary]
                 seeded = True
+        # A burst-free solve is accepted under `tol` wherever KINSOL ends, and
+        # it can end far short of its root: on a nanomolar switch on a
+        # conservation law, one start of 200 ran its iterations out 0.5% off
+        # its root, at a Newton distance of 3.8e4 where 1 is within tolerance,
+        # and came back as a root of its own beside it once `tol` was no
+        # longer the clustering's floor (issue #1518). Solved again from
+        # there, it reached the root in five steps. So a result whose Newton
+        # distance is above 1, however KINSOL stopped, is solved once more,
+        # and the second answer is kept where it is nearer a root. A model
+        # none stops short on pays nothing. Above 512 unknowns the distance
+        # is NaN and a draw that stopped short is not detected. The second
+        # solve can land on another root than the one the first fell short
+        # of, which moves that start's basin; the root is still a root. Where
+        # it raises, the first answers stand, as the seed's solve does.
+        short = [j for j, r in enumerate(results) if r.converged and r.newton_distance > 1.0]
+        if short:
+            try:
+                again = self.steady_state_batch(
+                    states=[results[j].concentrations for j in short],
+                    method="newton",
+                    newton_burst=False,
+                    certify=False,
+                    tol=tol,
+                    n_workers=n_workers,
+                    mask=solve_mask,
+                )
+            except SimulationError:
+                pass
+            else:
+                for j, r in zip(short, again, strict=True):
+                    if r.converged and r.newton_distance < results[j].newton_distance:
+                        results[j] = r
+        # The absolute floor is a distance in concentration, derived from the
+        # roots' own scale, not the residual `tol`: in molar units at nanomolar
+        # scale, `tol` = 1e-9 as a floor grouped roots 0.3 nM apart as one, and
+        # the seed decided whether the attractor or the saddle survived (#1518).
+        # The starts give the scale the solves ran at: where every species is
+        # at 0 at every root, the results hold nothing but round-off.
         roots = SteadyStates.cluster(
-            results, list(self._model.species_names), dedupe_rtol=dedupe_rtol, atol=tol, laws=L
+            results,
+            list(self._model.species_names),
+            dedupe_rtol=dedupe_rtol,
+            laws=L,
+            scale=float(np.abs(starts).max(initial=0.0)),
         )
         if seeded:
             k = int(roots.basins[-1])
@@ -12495,17 +12547,56 @@ class SteadyStates:
     n_failed: int
     species_names: list[str]
 
+    #: What a solve leaves in a species it places at a root, as a share of the
+    #: scale that species is computed against: its smallest law's for a law
+    #: member, and for every species the largest value it takes at any
+    #: converged start (a root at 0 is reached at 0 or a hair beside it:
+    #: -5.9e-24 on #1001's cubic at a nanomolar scale).
+    ROUNDOFF: float = 1e-9
+
     @classmethod
-    def cluster(cls, results, species_names, *, dedupe_rtol: float, atol: float, laws=None):
+    def cluster(
+        cls,
+        results,
+        species_names,
+        *,
+        dedupe_rtol: float,
+        atol: float | np.ndarray | None = None,
+        laws=None,
+        scale: float = 0.0,
+    ):
         """Group converged ``results`` into distinct roots.
 
+        Two results are one root when every species agrees to ``dedupe_rtol``
+        of the larger magnitude, or to an absolute floor in concentration.
+        ``atol`` is that floor, a scalar or one value per species. ``None``
+        derives it per species as the larger of two terms: ``ROUNDOFF`` of
+        the largest value the species takes in any converged result, the
+        round-off a solve leaves in it at a root where it is zero; or double
+        precision's resolution (ε) beside the largest magnitude the solves
+        saw, the larger of ``scale`` and the largest value any result holds.
+        ``scale`` is the largest magnitude of the starts, 0 to read it from
+        the results alone. The second term is for a species at 0 at every
+        root, where the first is round-off itself: where every species is at
+        0 at every root, the results hold nothing else, and without ``scale``
+        a model whose only root is 0 came back as 108 roots. The first is the
+        species' own scale, not the model's: a switch in a pool of 1e-3
+        beside a pool of 1e8 (#1265) is told apart at its own 1e-3. And it is a
+        distance in concentration, not the solve's residual tolerance:
+        :meth:`Simulator.steady_states` once passed its ``tol``, and at
+        ``1e-9`` in molar units it grouped the 0.2 nM and 0.5 nM roots of a
+        nanomolar switch as one (issue #1518).
+
         ``laws``, shape ``(n_laws, n_species)``: a species in a conservation
-        law is told apart only to ``1e-9`` of the smallest of its laws' scales,
-        ``Σ_j |L_kj·y_j|``, the round-off a solve leaves in it. egfr_path's EGF,
-        5e-8 in a law over 1.8e5, came back from 40 starts at 34 values, and
-        each counted as a root of its own. The floor is not ``dedupe_rtol``'s:
-        at ``1e-6`` of a pool of ``1e8`` it merged the toggle's saddle into an
-        attractor.
+        law is told apart only to ``ROUNDOFF`` of the smallest of its laws'
+        scales, ``Σ_j |L_kj·y_j|``, the round-off a solve leaves in it.
+        egfr_path's EGF, 5e-8 in a law over 1.8e5, came back from 40 starts at
+        34 values, and each counted as a root of its own. The floor is not
+        ``dedupe_rtol``'s: at ``1e-6`` of a pool of ``1e8`` it merged the
+        toggle's saddle into an attractor. It still matters beside the floor
+        above: a member far below its law's total, as EGF is, carries the
+        law's round-off rather than its own, and a coefficient above 1
+        multiplies it.
 
         A result joins a root by agreeing with the first result that reached
         it. The state reported is the member with the smallest residual, and
@@ -12514,11 +12605,21 @@ class SteadyStates:
         """
         L = np.zeros((0, len(species_names))) if laws is None else np.abs(laws)
         member = L != 0
+        if atol is None:
+            found = [
+                np.abs(np.asarray(r.concentrations, dtype=float)) for r in results if r.converged
+            ]
+            if found:
+                own = np.max(found, axis=0)
+                largest = max(float(own.max()), scale)
+                atol = np.maximum(cls.ROUNDOFF * own, np.finfo(float).eps * largest)
+            else:
+                atol = 0.0
 
         def same(y, rep):
             mag = np.maximum(np.abs(y), np.abs(rep))
             floor = np.where(member, (L @ mag)[:, None], np.inf).min(axis=0, initial=np.inf)
-            floor = np.where(np.isfinite(floor), 1e-9 * floor, 0.0)
+            floor = np.where(np.isfinite(floor), cls.ROUNDOFF * floor, 0.0)
             return np.all(np.abs(y - rep) <= dedupe_rtol * mag + floor + atol)
 
         firsts: list[np.ndarray] = []
