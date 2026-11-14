@@ -2290,7 +2290,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
         auto fvals = model.function_values();
         result.record_expressions(0, fvals.data());
     }
-    relive_row(0, times.t_start, conc.data());
+    if (live_tags)
+        relive_row(0, times.t_start, conc.data());
 
     // ─── Initial propensity computation (all reactions) ──────────────────────
     recompute_all_propensities();
@@ -2671,7 +2672,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
                         auto fvals = model.function_values();
                         result.record_expressions(next_output, fvals.data());
                     }
-                    relive_row(next_output, t_out[next_output], conc.data());
+                    if (live_tags)
+                        relive_row(next_output, t_out[next_output], conc.data());
                     ++next_output;
                 }
                 break;
@@ -2711,7 +2713,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
                     auto fvals = model.function_values();
                     result.record_expressions(next_output, fvals.data());
                 }
-                relive_row(next_output, t_out[next_output], conc.data());
+                if (live_tags)
+                    relive_row(next_output, t_out[next_output], conc.data());
                 ++next_output;
             }
             if (next_output >= n_out)
@@ -3101,7 +3104,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
                 auto fvals = model.function_values();
                 result.record_expressions(next_output, fvals.data());
             }
-            relive_row(next_output, tk, conc.data());
+            if (live_tags)
+                relive_row(next_output, tk, conc.data());
             ++next_output;
         };
 
@@ -3610,22 +3614,22 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
                     break;
                 record_at(tk, (tk - tp) / hh);
             }
-            // The hazard is the panel's, in θ: the static rate over the θ the
-            // loop moves on by, and the dynamic quartic's integral to there. A
-            // firing goes on from th_cut, where the solve above put the hazard
-            // at E. A move to a new panel goes on from the clock's double, s_cut
-            // or s1, so the hazard runs to that double's θ, not to th_cut, which
-            // the double is only th_cut rounded: far from 0 the two are up to
-            // half a spacing of the doubles apart. A bisected event sits where
-            // the clock its trigger reads turns over, about half a spacing below
-            // the double s_cut rounds to, and each event's restart lost that
-            // stretch (issue #1436). Counted by the clock instead (A_s·(s_cut -
-            // t)), the static part put a firing's hazard as much as a spacing's
-            // worth off E. Near 0 all of these agree to rounding.
-            const double th_s =
-                fire_first ? th_cut : std::max(th0, ((event_first ? s_cut : s1) - tp) / hh);
+            // The hazard to where the loop goes on from. A firing goes on from
+            // th_cut, in the panel's θ, where the solve above put the hazard at
+            // E: the static part is counted in θ too, as the solve counts it;
+            // by the clock (A_s·(s_cut - t)) it could be a spacing's worth off E
+            // far from 0, and the excess carried below would be that. A move to
+            // a new panel goes on from the clock's double, s_cut or s1, so the
+            // hazard runs to that double, not to th_cut, which the double is
+            // only th_cut rounded, up to half a spacing of the doubles away. A
+            // bisected event sits where the clock its trigger reads turns over,
+            // about half a spacing below the double s_cut rounds to, and each
+            // event's restart lost that stretch of the dynamic hazard (issue
+            // #1436). Near 0 all of these agree to rounding.
+            const double s_end = event_first ? s_cut : s1;
+            const double th_s = fire_first ? th_cut : std::max(th0, (s_end - tp) / hh);
             bank_dyn(th_s);
-            Hz += A_s * hh * (th_s - th0) + (L_at(th_s) - L0);
+            Hz += (fire_first ? A_s * hh * (th_cut - th0) : A_s * (s_end - t)) + (L_at(th_s) - L0);
 
             if (!event_first && !fire_first) {
                 // Nothing discrete in the panel: move to its end.
@@ -3833,7 +3837,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
                                 result.record_expressions(next_output, fvals.data());
                                 pc_guard(t_out[next_output]);
                             }
-                            relive_row(next_output, t_out[next_output], conc.data());
+                            if (live_tags)
+                                relive_row(next_output, t_out[next_output], conc.data());
                             ++next_output;
                         }
                         if (next_output >= n_out)
@@ -3864,7 +3869,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
                         auto fvals = model.function_values();
                         result.record_expressions(next_output, fvals.data());
                         pc_guard(t_out[next_output]);
-                        relive_row(next_output, t_out[next_output], conc.data());
+                        if (live_tags)
+                            relive_row(next_output, t_out[next_output], conc.data());
                         ++next_output;
                     }
                     if (next_output >= n_out)
@@ -3898,7 +3904,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
                         result.record_expressions(next_output, fvals.data());
                         pc_guard(t_out[next_output]);
                     }
-                    relive_row(next_output, t_out[next_output], conc.data());
+                    if (live_tags)
+                        relive_row(next_output, t_out[next_output], conc.data());
                     ++next_output;
                 }
                 break;
@@ -3968,7 +3975,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
                     result.record_expressions(next_output, fvals.data());
                     pc_guard(t_out[next_output]);
                 }
-                relive_row(next_output, t_out[next_output], conc.data());
+                if (live_tags)
+                    relive_row(next_output, t_out[next_output], conc.data());
                 ++next_output;
             }
 
