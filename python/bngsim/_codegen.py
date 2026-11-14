@@ -1846,6 +1846,10 @@ def _rewrite_logicals(expr: str) -> str:
 # target reads as ExprTk does, and runs where text enters the C translator and
 # both sympy parsers. BNG2.pl, SBML and Antimony never write any of them (every
 # relational comes parenthesised), so their text passes through byte-identical.
+# The SBML writer runs it too, and needs more on top: libsbml's parseL3Formula
+# drops the brackets around a relational's relational operand, so the writer
+# also writes each truth value a relational compares as a number,
+# ``piecewise(1, cond, 0)`` (issue #1499).
 
 _EXPRTK_RELATIONALS: tuple[tuple[str, bool], ...] = (
     ("==", False),
