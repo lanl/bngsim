@@ -136,7 +136,9 @@ NetworkModel NetworkModel::clone() const {
     // Carry-over sensitivity state (GH #210): a clone is a faithful snapshot of
     // the live species/current_time state copied just above, so it must carry
     // the same "is this state advanced past the ICs?" flag and pending dx/dθ
-    // seed. (Batch/parallel workers clone() then reset(), which clears both.)
+    // seed. (Batch/parallel workers clone() then reset(), which puts back the
+    // baseline's own flag and seed: clear only for a baseline no run advanced,
+    // issue #1528.)
     copy.impl_->ic_state_dirty = impl_->ic_state_dirty;
     copy.impl_->pending_sens_seed = impl_->pending_sens_seed;
     copy.impl_->pending_sens_seed_param_names = impl_->pending_sens_seed_param_names;
@@ -146,6 +148,7 @@ NetworkModel NetworkModel::clone() const {
     // too or the clone's reset() would forget it.
     copy.impl_->baseline_sens_seed = impl_->baseline_sens_seed;
     copy.impl_->baseline_sens_seed_param_names = impl_->baseline_sens_seed_param_names;
+    copy.impl_->baseline_dirty = impl_->baseline_dirty; // issue #1528
     // ...and the event state that goes with the copied state and clock (issue
     // #693).
     copy.impl_->event_carry = impl_->event_carry;
@@ -593,7 +596,8 @@ void NetworkModel::refresh_derived_params(int skip_param_idx) {
 // and the next setParameter() zeroes an integrated pool mid-protocol. So the
 // live state additionally requires that no run has advanced it —
 // `ic_state_dirty`, GH #210's carry-over marker, which write_final_state_back
-// sets and reset() clears.
+// sets and reset() sets back to the baseline's own (issue #1528). A saved
+// baseline never reaches the rebuild below: ic_baseline_saved returns first.
 //
 // Read, never written, here: setting it from set_param is what issue #79
 // proposed and it is wrong — it makes the next forward-sensitivity run raise
@@ -702,9 +706,12 @@ void NetworkModel::reset() {
     // But save_concentrations() can have redefined the baseline to a
     // pre-equilibrated x_ss(θ), in which case the baseline carries its own
     // dx/dθ — restore that with it rather than silently reverting a
-    // θ-dependent initial condition to fresh-start seeding (GH #81).
+    // θ-dependent initial condition to fresh-start seeding (GH #81). A baseline
+    // saved from a state a run advanced with no dx/dθ tracked has no seed to
+    // restore, but is no fresh start either: it keeps the carried-over mark
+    // (issue #1528).
     if (impl_->baseline_sens_seed.empty()) {
-        impl_->ic_state_dirty = false;
+        impl_->ic_state_dirty = impl_->baseline_dirty;
         clear_pending_sens_seed();
     } else {
         impl_->pending_sens_seed = impl_->baseline_sens_seed;
@@ -723,13 +730,19 @@ void NetworkModel::save_concentrations() {
     // pre-equilibrate → saveConcentrations → scan protocol otherwise loses it
     // and silently re-seeds a θ-dependent IC as a fresh start). Stash it as the
     // baseline's own derivative for reset(), and keep it pending so the next
-    // phase can carry. With no carried derivative the baseline is θ-independent
-    // literal ICs and this is the pre-#81 fresh start.
+    // phase can carry.
+    //
+    // Nor did saving change whether a run advanced the state, so the
+    // carried-over mark stays as it is, and the baseline keeps it for reset()
+    // (issue #1528). With no carried derivative, a state no run advanced (the
+    // declared ICs, set_concentration doses on a fresh model) is θ-independent
+    // literal ICs, as before #81. A state a run advanced is x(θ) with an
+    // unknown dx/dθ: clearing the mark here, as this did, seeded the next
+    // sensitivity run with dx(0)/dθ = 0 and no error, where the live state
+    // raises.
     impl_->baseline_sens_seed = impl_->pending_sens_seed;
     impl_->baseline_sens_seed_param_names = impl_->pending_sens_seed_param_names;
-    if (impl_->baseline_sens_seed.empty()) {
-        impl_->ic_state_dirty = false;
-    }
+    impl_->baseline_dirty = impl_->ic_state_dirty;
     // The baseline is now this state, not the declared IC — so a later
     // set_param() must NOT re-resolve a parameter-named IC over it and discard
     // the equilibration it just captured (issue #79).

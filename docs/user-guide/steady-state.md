@@ -1102,11 +1102,16 @@ derivative with the state:
 * `save_concentrations()` (unlabeled) redefines the IC baseline to the current
   state, so the new baseline **inherits** its `dx/dθ` — the state did not change,
   so neither did its derivative — and `reset()` restores both. A baseline saved
-  with no carried derivative is θ-independent literal ICs: no parameter seeds
-  it, where a fresh start is seeded from the model's own initial-condition
-  expressions (issue #704).
+  with no carried derivative from a state no run has advanced (the initial
+  conditions, or `set_concentration` doses on a fresh model) is θ-independent
+  literal ICs: no parameter seeds it, where a fresh start is seeded from the
+  model's own initial-condition expressions (issue #704). One saved from a
+  state a run advanced without tracking `dx/dθ` is still `x(θ)`, with no
+  derivative to carry: it keeps the carried-over mark, `reset()` restores it,
+  and a sensitivity run from it raises as one from the live state does. It
+  used to start from `dx(0)/dθ = 0`, with no error (issue #1528).
 * `save_concentrations(label=...)` / `restore_concentrations(label)` capture and
-  restore a named snapshot's `dx/dθ` the same way.
+  restore a named snapshot's `dx/dθ`, and its carried-over mark, the same way.
 * `Simulator.parameter_scan` / `bifurcate` restore the reset target's state
   **and** its `dx/dθ` per point and integrate each point with
   `carry_sensitivities=True`, then leave the model (state, parameter, carried

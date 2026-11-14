@@ -987,9 +987,12 @@ Each call starts from the model's initial conditions (`Model.reset`, after the
 parameters are written), not from its current state, and warns where the two
 differ (issue #1521): row 0 after `set_concentration("A()", 20)` is the initial
 `A() = 10`. Call `Model.save_concentrations()` first to start from the current
-state. The start is then a constant: an initial-condition parameter in θ no
-longer moves it, and its derivative is 0. After a `run()`, call `Model.reset()`
-first to keep the start a function of θ.
+state. A state you set on a model no `run()` has advanced (`set_state` or
+`set_concentration`) is then a constant: an initial-condition parameter in θ
+no longer moves it, and its derivative is 0. A state a `run()` advanced is a function of θ that
+nothing carried, so a solve from it refuses rather than seed its derivative as
+0 (issue #1528); after a `run()`, call `Model.reset()` first to keep the start
+a function of θ.
 
 **How it works**: The `@jax.custom_jvp` rule runs CVODES once per JVP call,
 computing the primal solution and forward sensitivities simultaneously (single
