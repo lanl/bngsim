@@ -1748,8 +1748,18 @@ def _bare_and_sbml(omex: Path) -> tuple[str, str]:
             'setParameter("kx",6)\nsetParameter("k1",5)\n' + RUN + RUN,
             [_eq(5, 4), _from(_eq(5, 4), 5, 4)],
         ),
+        # A dose scan from exp(ln(8)) = 7.999999999999998, as BNG2.pl's log
+        # scale runs it: the chain's setValue of it is read to every digit, as
+        # the changeAttribute of the first run's own model is.
+        (
+            "seeded",
+            'parameter_scan({method=>"ode",parameter=>"A0",par_min=>8,par_max=>120,'
+            "n_scan_pts=>3,log_scale=>1,reset_conc=>0,t_end=>1,n_steps=>1,atol=>1e-12,"
+            "rtol=>1e-10})\n" + RUN,
+            _continued(math.exp(math.log(8)), [(1, 1)] * 4, total=math.exp(math.log(8)))[2:],
+        ),
     ],
-    ids=["derived", "seed", "derived-of-derived", "sweep", "replaced", "cut-off"],
+    ids=["derived", "seed", "derived-of-derived", "sweep", "replaced", "cut-off", "digits"],
 )
 def test_a_chain_read_back_runs_its_first_run_once(tmp_path, network, actions, want):
     """A run that continues the first replays it in a chain, on the model as

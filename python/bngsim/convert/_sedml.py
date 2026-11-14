@@ -2995,6 +2995,11 @@ class _TaskReader:
             if m is not None:
                 formula, add = m.group(1), True
         value = _number_or_none(formula)
+        math = _find(elem, "math")
+        if value is not None and math is not None and len(math) == 1 and not add:
+            # A number alone, as written: the formula holds 15 digits of it.
+            exact = _cn_value(math[0]) if _local(math[0].tag) == "cn" else None
+            value = value if exact is None else exact
         return self._state_change(
             what, name, attr, value, None if value is not None else formula, add, once=not names
         )
