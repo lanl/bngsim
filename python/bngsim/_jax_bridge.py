@@ -256,9 +256,13 @@ def differentiable_solve(
     (:meth:`Model.reset`, after θ is written), not its current state, and
     warns where the two differ (issue #1521). Call
     :meth:`Model.save_concentrations` first to make the current state the one
-    a solve starts from; the start is then a constant, so an initial-condition
-    parameter in θ no longer moves it, and its derivative is 0. After a run,
-    call :meth:`Model.reset` first to keep the start a function of θ.
+    a solve starts from. A state the caller set on a model no run has advanced
+    (:meth:`Model.set_state` or :meth:`Model.set_concentration`) is then a
+    constant: an initial-condition parameter in θ no longer moves it, and its
+    derivative is 0. A state a run advanced is a function of θ that nothing
+    carried, so a solve from it refuses rather than seed its derivative as 0
+    (issue #1528); after a run, call :meth:`Model.reset` first to keep the
+    start a function of θ.
 
     **The model's analytical Jacobian**: the first call derives it on
     ``model``, as a first ``Simulator(model).run()`` would, so that each

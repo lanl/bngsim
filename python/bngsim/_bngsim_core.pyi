@@ -439,7 +439,7 @@ class NetworkModel:
     @property
     def ic_state_dirty(self) -> bool:
         """
-        True iff the current species state is carried-over dynamics from a previous run() (not a fresh initial condition). Forward sensitivities requested on a dirty state require carry_sensitivities=True (else they raise). Cleared by reset() — unless the IC baseline carries its own dx/dθ (GH #81) — and by save_concentrations() when there is no carried derivative to hand the new baseline (GH #210). Writable so a protocol primitive that restores a snapshot together with its dx/dθ (Simulator.parameter_scan) can put the flag back as it found it; setting it by hand otherwise just re-arms (or defeats) the raise.
+        True iff the current species state is carried-over dynamics from a previous run() (not a fresh initial condition). Forward sensitivities requested on a dirty state require carry_sensitivities=True (else they raise). reset() sets it to the IC baseline's own: clear for the declared ICs and for a baseline saved from a state no run advanced, set for one that carries its own dx/dθ (GH #81) or was saved from an advanced state (issue #1528). save_concentrations() leaves it as it is. Writable so a protocol primitive that restores a snapshot together with its dx/dθ (Simulator.parameter_scan) can put the flag back as it found it; setting it by hand otherwise just re-arms (or defeats) the raise.
         """
     @ic_state_dirty.setter
     def ic_state_dirty(self, arg1: bool) -> None:

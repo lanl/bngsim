@@ -6280,12 +6280,15 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(
             // silently wrong (∂y(0)/∂θ is dx/dθ of the carried state, not 0).
             throw std::runtime_error(
                 "Output sensitivities were requested on a carried-over species "
-                "state (the model was advanced by a previous run() or set "
-                "manually, with no reset since). Seeding the measurement phase "
-                "as a fresh start would give silently wrong derivatives across "
-                "the pre-equilibration boundary. Pass carry_sensitivities=True "
-                "to seed from the prior phase's steady-state sensitivity, or "
-                "reset() the model for a fresh start. (GH #210)");
+                "state (a previous run() advanced it, or a snapshot of such a "
+                "state was restored). Seeding the measurement phase as a fresh "
+                "start would give silently wrong derivatives across the "
+                "pre-equilibration boundary. Pass "
+                "carry_sensitivities=True to seed from the prior phase's "
+                "steady-state sensitivity (run that phase with the same "
+                "sensitivity_params), or reset() the model for a fresh start. A "
+                "save_concentrations() of such a state keeps it carried-over, and "
+                "so does a reset() back to it (issue #1528). (GH #210)");
         }
     }
     // IC (∂y/∂y_k(0)) sensitivities across a carry-over boundary are out of

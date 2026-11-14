@@ -138,6 +138,7 @@ class Model:
         "_table_function_bindings",
         "_named_conc_states",
         "_named_sens_seeds",
+        "_named_advanced",
         "_declared_ic_sens",
         "_ic_write_log",
         "_guarded_functions",
@@ -371,6 +372,11 @@ class Model:
         # would be re-seeded as a fresh start (∂x(0)/∂θ = 0), which is wrong
         # rather than approximate. Labels with no seed are simply absent.
         self._named_sens_seeds: dict[str, tuple[np.ndarray, list[str]]] = {}
+        # Issue #1528: the labels whose snapshot is a state a run advanced
+        # (ic_state_dirty at save time). One saved with no seed is x(θ) with an
+        # unknown dx/dθ, not literal ICs: restore_concentrations() puts the
+        # carried-over mark back with it, so a sensitivity run from it raises.
+        self._named_advanced: set[str] = set()
         # Issue #111: ∂x_k(0)/∂θ declared by a per-point hook for the initial
         # conditions it assigns, ``{species: {param: value}}``. Written by
         # declare_ic_sensitivity(); read and cleared per point by
@@ -1426,6 +1432,7 @@ class Model:
         m._named_sens_seeds = {
             k: (s.copy(), list(names)) for k, (s, names) in self._named_sens_seeds.items()
         }
+        m._named_advanced = set(self._named_advanced)  # issue #1528
         # Issue #111: pending IC-sensitivity declarations travel with the snapshot
         # they describe. The write log does not: it belongs to whoever armed it on
         # the original, and a clone is not inside that scope.
@@ -1860,6 +1867,14 @@ class Model:
         approximate, since the restored initial condition *is* a function of θ.
         The unlabeled form hands the derivative to the new IC baseline instead,
         so :meth:`reset` restores it too.
+
+        Saving does not change whether a run advanced the state. A state a run
+        advanced without tracking ``dx/dθ`` is still ``x(θ)`` with no derivative
+        to carry, so a sensitivity run from it raises, from the live state, from
+        the baseline after :meth:`reset`, and from a restored snapshot alike.
+        Run the equilibration with the ``sensitivity_params`` and pass
+        ``carry_sensitivities=True`` to measure from it. It used to start from
+        ``dx(0)/dθ = 0``, with no error (issue #1528).
         """
         if label is None:
             self._core.save_concentrations()
@@ -1878,6 +1893,11 @@ class Model:
             )
         else:
             self._named_sens_seeds.pop(key, None)
+        # ...and whether a run advanced it (issue #1528).
+        if core.ic_state_dirty:
+            self._named_advanced.add(key)
+        else:
+            self._named_advanced.discard(key)
 
     def restore_concentrations(self, label: str | None = None) -> None:
         """Restore species concentrations from a saved snapshot.
@@ -1888,7 +1908,10 @@ class Model:
         state — see :meth:`save_concentrations`) restores that ``dx/dθ`` along
         with the concentrations, so a following
         ``run(carry_sensitivities=True)`` measures from the right seed
-        (issue #81).
+        (issue #81). A snapshot of a state a run advanced restores its
+        carried-over mark too, seed or not, so a sensitivity run from it raises
+        without one (issue #1528). Restoring a snapshot never clears a mark the
+        model already carries, as :meth:`set_state` does not.
 
         Parameters
         ----------
@@ -1926,6 +1949,11 @@ class Model:
             self._core.set_pending_sensitivity_seed(seed, names)
             # The restored state is a θ-dependent initial condition: fresh-start
             # seeding would be wrong, so keep the "needs carry_sensitivities" arm.
+            self._core.ic_state_dirty = True
+        elif key in self._named_advanced:
+            # A state a run advanced, saved with no dx/dθ: no seed to restore,
+            # and no fresh start either, so a sensitivity run from it raises
+            # (issue #1528). set_state() above did not mark it.
             self._core.ic_state_dirty = True
 
     def has_saved_concentrations(self, label: str | None = None) -> bool:
@@ -1990,6 +2018,9 @@ class Model:
         (``R() R0``), that parameter no longer reaches this species' IC and its seed
         row is dropped (issue #113). When the value you assign *does* depend on a
         differentiated parameter, say so with :meth:`declare_ic_sensitivity`.
+        On a state a run advanced, the other species are still ``x(θ)``: a
+        sensitivity run from it raises, and saving it does not change that
+        (issue #1528).
         """
         value = float(value)
         name = self._species_call(name, lambda n: self._core.set_concentration(n, value))[0]

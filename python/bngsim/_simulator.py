@@ -537,8 +537,10 @@ def _warn_if_rows_start_off_the_current_state(model, what, remedy):
         "current state, which differs from them (a set_concentration, or the end of "
         f"a run). {remedy} Such a start does not follow an initial-condition "
         "parameter the call writes, which only the reset applies: a dose over it is "
-        "dropped, and its derivative is 0. Call Model.reset() first where the initial "
-        "conditions are the start you want, as they are for such a dose.",
+        "dropped, and its derivative is 0 where the caller set the state; a state a "
+        "run advanced carries no derivative, so a sensitivity call from it refuses "
+        "(issue #1528). Call Model.reset() first where the initial conditions are the "
+        "start you want, as they are for such a dose.",
         UserWarning,
         stacklevel=_stacklevel_outside_bngsim(),
     )
@@ -1951,8 +1953,9 @@ class Simulator:
         if moved:
             raise SensitivityUnsupportedError(
                 "steady_state(sensitivity_params=...) is not supported for "
-                f"{moved} on a carried-over species state (the model was advanced by a "
-                "previous run(), with no reset since). "
+                f"{moved} on a carried-over species state (a previous run() advanced "
+                "it; a save_concentrations() of it, and a reset() back to that, keep "
+                "it so, issue #1528). "
                 f"{'Each sets' if len(moved) != 1 else 'It sets'} the initial amount of a "
                 "species in a conservation law, so the steady state moves with it through "
                 "the conserved total, and the state no longer says by how much: the column "
@@ -7348,7 +7351,10 @@ class Simulator:
             # an IC-naming parameter at the invocation dose from point 1 on: the
             # #79 trap again, one level down. Only the reset_conc=True path lands
             # here; the pre-equilibration carry (#81) is reset_conc=False and must
-            # keep its marker.
+            # keep its marker. restore_concentrations() of a snapshot a run
+            # advanced now sets the marker (issue #1528); it is dropped here on
+            # purpose, for the same reason, and a sensitivity scan installs its
+            # seed and the marker per point below.
             self._model._core.ic_state_dirty = False
             # Every point starts from the events' state at invocation too, not
             # from where the previous point's run left them (issue #693).
@@ -11404,6 +11410,9 @@ class Simulator:
             # The triggers' truth and the pending delayed executions, so that
             # rewinding rewinds the events too (issue #693).
             "events": self._model._core.event_carry_state(),
+            # Whether a run advanced the state, so a restore after reset() does
+            # not take it for a fresh start (issue #1528).
+            "ic_state_dirty": bool(self._model._core.ic_state_dirty),
         }
         self._snapshot_stack.append(copy.deepcopy(snap))
         logger.debug(
@@ -11450,6 +11459,12 @@ class Simulator:
         # ...and the event state the snapshot's run left (issue #693). A
         # snapshot from before that existed has none: a fresh start.
         self._model._core.set_event_carry_state(snapshot.get("events"))
+        # ...and the carried-over mark of a state a run advanced (issue #1528):
+        # set_concentration above leaves the flag as it is, so after a reset()
+        # the restored x(θ) was seeded as a fresh start with dx(0)/dθ = 0. Set
+        # only, as restore_concentrations() does.
+        if snapshot.get("ic_state_dirty", False):
+            self._model._core.ic_state_dirty = True
 
         # Recreate simulator with restored state
         self._recreate_interactive_sim()

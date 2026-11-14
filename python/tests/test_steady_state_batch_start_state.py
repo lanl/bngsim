@@ -196,9 +196,10 @@ def test_run_batch_says_so_through_the_shared_helper(model):
         "end of a run). To start each point from the current state, use parameter_scan, or "
         "call Model.save_concentrations() first, which makes it the state reset returns "
         "to. Such a start does not follow an initial-condition parameter the call writes, "
-        "which only the reset applies: a dose over it is dropped, and its derivative is 0. "
-        "Call Model.reset() first where the initial conditions are the start you want, as "
-        "they are for such a dose."
+        "which only the reset applies: a dose over it is dropped, and its derivative is 0 "
+        "where the caller set the state; a state a run advanced carries no derivative, so "
+        "a sensitivity call from it refuses (issue #1528). Call Model.reset() first where "
+        "the initial conditions are the start you want, as they are for such a dose."
     ) in texts
     assert [w.filename for w in caught if "run_batch starts" in str(w.message)] == [__file__]
 
@@ -241,18 +242,33 @@ def _d_start_d_a0(model):
     return float(np.asarray(jac)[0, 0, names.index("A0")])
 
 
-def test_differentiable_solve_s_remedy_zeroes_an_initial_condition_derivative(model):
+def test_differentiable_solve_s_remedy_after_a_run_refuses_or_starts_from_a_set_state(
+    model, tmp_path
+):
     """theta writes every primary parameter, A0 among them, and the reset makes
     the start follow it: dA(0)/dA0 = 1, exactly, since A() starts at A0. After
-    a run the call warns; the remedy it names, save_concentrations(), makes the
-    start a constant and the derivative 0, which the warning now says."""
+    a run the call warns. save_concentrations() on the state the run left makes
+    it the start, and that state is a function of theta nothing carried, so the
+    solve refuses rather than seed its derivative as 0 (issue #1528). The same
+    values set on a model no run advanced, and saved, are a constant: dA(0)/dA0
+    = 0, with no warning, which is what the remedy means."""
     _after_a_run(model)
     with pytest.warns(UserWarning, match="its derivative is 0"):
         assert _d_start_d_a0(model) == 1.0
+    advanced = model.get_state().copy()
     model.save_concentrations()
+    with pytest.raises(bngsim.SimulationError, match="carried-over species state"):
+        _d_start_d_a0(model)
+    # Once a run advanced the model, nothing but a fresh model makes the same
+    # numbers a literal start: reset() returns to the saved, advanced baseline.
+    model.reset()
+    assert model._core.ic_state_dirty is True
+    fresh = bngsim.Model.from_net(str(tmp_path / "ab.net"))
+    fresh.set_state(advanced)
+    fresh.save_concentrations()
     with warnings.catch_warnings():
         warnings.filterwarnings("error", message="differentiable_solve starts")
-        assert _d_start_d_a0(model) == 0.0
+        assert _d_start_d_a0(fresh) == 0.0
 
 
 def test_differentiable_solve_after_a_reset_keeps_the_derivative_without_a_word(model):
