@@ -20,6 +20,13 @@ derivative there is asked of the whole law, read with each side of the bend put
 in for it, and not of the bend alone: ``10*abs(q)*q`` at q = 0 is smooth, and so
 is a law whose ``abs`` sits in a branch the present values do not take.
 
+A bend written in a derived parameter is judged in that parameter, written
+out in what it is built from, and not in each law that reads it (issue #1530):
+a law written out in every derived parameter it reaches can be too long to
+parse. So a law that reads one where it cancels or is gated off is refused too,
+which is loud; and one too long written out is refused on the bend without
+asking whether the law has a derivative there.
+
 An ``if()`` on its switch is judged for a steady state only, whose policy is to
 refuse where the two sides differ (issue #1330). There the compiled ``∂f/∂p`` is
 the derivative of the branch taken, one side's, and a time course returns it,
@@ -73,9 +80,8 @@ def _rate_law_texts(core) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]
 
 
 #: Past this many characters, a derived parameter written out in what it is
-#: built from is not judged: sympy's parse of it does not finish. One in a
-#: corpus model reached 41,048 from 41 (`synthesis_v3.bngl`). Not judged is
-#: what a bend got everywhere before issue #1530.
+#: built from is read as it is written instead: sympy's parse of it does not
+#: finish. One in a corpus model reached 41,048 from 41 (`synthesis_v3.bngl`).
 _DERIVED_TEXT_LIMIT = 5_000
 
 
@@ -232,6 +238,7 @@ def parameters_on_a_kink(
     groups = [({p for p in asked if p not in derived}, derived)]
     groups += [({p}, {k: v for k, v in derived.items() if k != p}) for p in asked if p in derived]
     capped = set(derived_laws)
+    reach = _reach(derived)
     out: list[str] = []
     for group, exprs in groups:
         if not group:
@@ -239,22 +246,64 @@ def parameters_on_a_kink(
         for where, text in [*laws, *derived_laws]:
             full = _inline_derived_param_refs(text, exprs) or text
             if (where, text) in capped and len(full) > _DERIVED_TEXT_LIMIT:
-                continue
-            law = _parsed(full)
-            if law is None:
-                continue
-            for p, bend in _kinks(law, group, spelled, values, sp, conditions):
+                # Too long to parse written out, so it is read as it is written,
+                # over the derived parameters it names, whose values the engine
+                # has: on a bend that a parameter asked about moves through
+                # them, it is refused without asking whether the law has a
+                # derivative there, which needs the long text.
+                law = _parsed(derived[text])
+                found = (
+                    []
+                    if law is None
+                    else _kinks(law, group, spelled, values, sp, conditions, reach=reach)
+                )
+            else:
+                law = _parsed(full)
+                if law is None:
+                    continue
+                found = _kinks(law, group, spelled, values, sp, conditions)
+            for p, bend in found:
                 out.append(f"{p!r} in {where}: {bend}")
     return out
 
 
-def _kinks(law, asked, spelled, values, sp, conditions) -> list[tuple[str, str]]:
+def _reach(derived: dict[str, str]):
+    """``reach(name)``: *name* and every parameter its value is built from,
+    through any chain of the derived parameters *derived*."""
+    from bngsim._jacobian import _IDENT_RE
+
+    memo: dict[str, frozenset] = {}
+
+    def reach(name: str) -> frozenset:
+        got = memo.get(name)
+        if got is None:
+            memo[name] = frozenset({name})  # a cycle stops here
+            out = {name}
+            if name in derived:
+                for m in set(_IDENT_RE.findall(derived[name])):
+                    out |= reach(m)
+            got = memo[name] = frozenset(out)
+        return got
+
+    return reach
+
+
+def _kinks(law, asked, spelled, values, sp, conditions, *, reach=None) -> list[tuple[str, str]]:
     """``(parameter, description)`` for each bend of *law* that the present
     values sit on, that a parameter of *asked* moves, and where the law's two
     sides differ in that parameter. A bend that reads anything but parameters
-    (the state, the clock) is a crossing in time, and is not judged here."""
+    (the state, the clock) is a crossing in time, and is not judged here.
+
+    With ``reach`` (see :func:`_reach`), *law* is read over derived parameters
+    it has not written out: a parameter of *asked* moves a bend through what it
+    reaches, and a bend the values sit on is reported without the sides being
+    compared, which would need the law written out."""
+
+    def moved(p: str) -> set[str]:
+        return set(reach(p) if reach else {p}) & set(asked)
+
     params = {s: spelled[s.name] for s in law.free_symbols if s.name in spelled}
-    if not any(p in asked for p in params.values()):
+    if not any(moved(p) for p in params.values()):
         return []
     out: list[tuple[str, str]] = []
     for construct, at, node, sides in _bend_points(law, sp):
@@ -262,7 +311,7 @@ def _kinks(law, asked, spelled, values, sp, conditions) -> list[tuple[str, str]]
             continue
         pool = sides if at is None else [at]
         free = set().union(*(e.free_symbols for e in pool))
-        movers = sorted((s for s in free if params.get(s) in asked), key=str)
+        movers = sorted((s for s in free if s in params and moved(params[s])), key=str)
         if not movers or not free <= set(params):
             continue
         try:
@@ -282,6 +331,15 @@ def _kinks(law, asked, spelled, values, sp, conditions) -> list[tuple[str, str]]
                 continue
             on = sides
             bend = None
+        if reach is not None:
+            line = bend or f"{construct}, on its switch"
+            line += (
+                " (the sides were not compared: written out, the law that reads it is too"
+                " long to parse)"
+            )
+            for p in sorted(set().union(*(moved(params[s]) for s in movers))):
+                out.append((p, _as_written(line, params)))
+            continue
         for s in movers:
             p = params[s]
             if _sides_differ(law, node, on, s, params, values, sp):
