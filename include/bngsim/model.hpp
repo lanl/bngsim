@@ -882,10 +882,12 @@ class NetworkModel {
     // True iff the current species state's θ-derivative is NOT the fresh-start
     // seed — i.e. the state was produced by integrating a previous run() (whose
     // dx/dθ is generally nonzero) rather than being a θ-independent initial
-    // condition. The simulator sets it at each run's state write-back; reset()
-    // clears it unless the IC baseline itself carries a derivative (GH #81), and
-    // save_concentrations() clears it only when there is no carried derivative to
-    // hand the new baseline. set_concentration()/set_state_from()
+    // condition. The simulator sets it at each run's state write-back;
+    // save_concentrations() leaves it as it is and records it with the baseline,
+    // and reset() sets it back to that (issue #1528): clear for the declared ICs
+    // and for a baseline saved from a state no run advanced, set for one that
+    // carries a derivative (GH #81) or was saved from an advanced state.
+    // set_concentration()/set_state_from()
     // (literal/external IC assignment, θ-independent) do NOT set it. Forward
     // sensitivities requested on a dirty state without carry_sensitivities would
     // be silently wrong (fresh seeding assumes ∂x(0)/∂θ = 0), so the simulator

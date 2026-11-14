@@ -256,6 +256,82 @@ end reactions
         sim.steady_state(sensitivity_params=["A0"])
 
 
+def test_a_subset_model_keeps_the_mark_of_its_baseline(model):
+    """make_subset_model rebuilds the model and saves its baseline on the new
+    core; it kept the state and dropped the mark, so the subset's sensitivity
+    run gave [0, 0] at t = 0, the literal start's numbers after."""
+    from bngsim.coupling import make_subset_model
+
+    plain_equilibration(model)
+    model.save_concentrations()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        sub = make_subset_model(model, keep_reactions=[0, 1])
+    assert sub.get_concentration("A()") == pytest.approx(KP / KD, rel=1e-9)
+    refuses(sub)
+    sub.reset()
+    refuses(sub)
+
+
+def test_a_label_saved_again_from_a_fresh_state_restores_clean(model):
+    """A label's mark is that of its latest save: saved from an advanced state,
+    then saved again after reset() to the declared ICs, it restores as a
+    fresh start, the closed form from A(0) = 0."""
+    plain_equilibration(model)
+    model.save_concentrations("x")
+    model.reset()
+    model.save_concentrations("x")
+    model.restore_concentrations("x")
+    assert model._core.ic_state_dirty is False
+    np.testing.assert_allclose(
+        dA(sens(model).run(sample_times=TS, **TOL)), from_literal(0.0), rtol=1e-6
+    )
+
+
+# ── Initial-condition sensitivities, ∂A(t)/∂A(0) = e^(-kd t) with B = 0 ─────
+
+
+def ic_sens(model):
+    r = bngsim.Simulator(model, method="ode", sensitivity_ic=["A()"]).run(sample_times=TS, **TOL)
+    return np.asarray(r.sensitivities_ic)[:, 0, 0]
+
+
+def test_ic_sensitivities_from_a_saved_equilibrated_state(model):
+    """The saved state is the model's initial condition, carried over or not,
+    and ∂A(t)/∂A(0) from it is e^(-kd t), as main returned; the mark the save
+    keeps must not refuse it. The same after reset() to that baseline."""
+    want = np.exp(-KD * np.array(TS))
+    plain_equilibration(model)
+    model.save_concentrations()
+    np.testing.assert_allclose(ic_sens(model), want, rtol=1e-6)
+    model.reset()
+    np.testing.assert_allclose(ic_sens(model), want, rtol=1e-6)
+
+
+def test_ic_sensitivities_off_the_saved_baseline_still_refuse(model):
+    """A state that is not the initial condition is refused, as before: after
+    the save, a dose of B and a run move A off the saved baseline."""
+    plain_equilibration(model)
+    model.save_concentrations()
+    model.set_concentration("B()", 1.0)
+    bngsim.Simulator(model, method="ode").run(t_span=(0, 1), n_points=2, **TOL)
+    assert model.get_concentration("A()") < KP / KD
+    with pytest.raises(bngsim.SimulationError, match="sensitivity_ic"):
+        ic_sens(model)
+
+
+def test_ic_sensitivities_from_a_restored_advanced_snapshot_refuse(model):
+    """A named snapshot of an advanced state, restored after reset() to the
+    declared ICs, is not the initial condition, which is still A = 0: refused.
+    Main let it through only because the snapshot lost its mark."""
+    plain_equilibration(model)
+    model.save_concentrations("eq")
+    model.reset()
+    model.restore_concentrations("eq")
+    with pytest.raises(bngsim.SimulationError, match="sensitivity_ic"):
+        ic_sens(model)
+
+
 # ── What was right stays right ────────────────────────────────────────────────
 
 
