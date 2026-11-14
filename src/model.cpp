@@ -149,6 +149,7 @@ NetworkModel NetworkModel::clone() const {
     copy.impl_->baseline_sens_seed = impl_->baseline_sens_seed;
     copy.impl_->baseline_sens_seed_param_names = impl_->baseline_sens_seed_param_names;
     copy.impl_->baseline_dirty = impl_->baseline_dirty; // issue #1528
+    copy.impl_->advanced_since_baseline = impl_->advanced_since_baseline;
     // ...and the event state that goes with the copied state and clock (issue
     // #693).
     copy.impl_->event_carry = impl_->event_carry;
@@ -710,6 +711,9 @@ void NetworkModel::reset() {
     // saved from a state a run advanced with no dx/dθ tracked has no seed to
     // restore, but is no fresh start either: it keeps the carried-over mark
     // (issue #1528).
+    // Either way the state is the baseline again, so on the initial-condition
+    // axis e_k is its seed: no run has advanced it since (issue #1528).
+    impl_->advanced_since_baseline = false;
     if (impl_->baseline_sens_seed.empty()) {
         impl_->ic_state_dirty = impl_->baseline_dirty;
         clear_pending_sens_seed();
@@ -743,6 +747,10 @@ void NetworkModel::save_concentrations() {
     impl_->baseline_sens_seed = impl_->pending_sens_seed;
     impl_->baseline_sens_seed_param_names = impl_->pending_sens_seed_param_names;
     impl_->baseline_dirty = impl_->ic_state_dirty;
+    // On the initial-condition axis, though, this state IS now the initial
+    // condition, whatever advanced it: ∂x(t)/∂x_k(0) from here seeds e_k, as
+    // from the declared ICs, until a run moves the state off it again.
+    impl_->advanced_since_baseline = false;
     // The baseline is now this state, not the declared IC — so a later
     // set_param() must NOT re-resolve a parameter-named IC over it and discard
     // the equilibration it just captured (issue #79).
@@ -808,6 +816,12 @@ void NetworkModel::set_state_from(const double *in) {
 bool NetworkModel::ic_state_dirty() const { return impl_->ic_state_dirty; }
 
 void NetworkModel::set_ic_state_dirty(bool dirty) { impl_->ic_state_dirty = dirty; }
+
+bool NetworkModel::advanced_since_baseline() const { return impl_->advanced_since_baseline; }
+
+void NetworkModel::set_advanced_since_baseline(bool advanced) {
+    impl_->advanced_since_baseline = advanced;
+}
 
 const std::vector<double> &NetworkModel::pending_sens_seed() const {
     return impl_->pending_sens_seed;

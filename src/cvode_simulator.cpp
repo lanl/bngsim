@@ -5841,6 +5841,7 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
         // the state (carry-over) without tracking dx/dθ: mark the state dirty
         // and drop any pending seed left by an earlier sensitivity run.
         model.set_ic_state_dirty(true);
+        model.set_advanced_since_baseline(true);
         model.clear_pending_sens_seed();
     }
 
@@ -6292,29 +6293,23 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(
         }
     }
     // IC (∂y/∂y_k(0)) sensitivities across a carry-over boundary are out of
-    // scope: the carried reference state is no longer the model ICs, so e_k
-    // is not a meaningful seed. Refuse rather than return a wrong matrix.
-    // A state save_concentrations() made the baseline IS the model's initial
-    // condition, carried over or not, and so is one reset() returned to: there
-    // e_k is the seed, as from the declared ICs. Since the save keeps the
-    // carried-over mark (issue #1528), the refusal reads the baseline too, bit
-    // for bit: after a save or a reset the two vectors are the same numbers.
-    if (n_sens_ic > 0 && state_dirty) {
-        bool at_baseline = true;
-        for (const auto &sp : model.species()) {
-            if (sp.concentration != sp.initial_conc) {
-                at_baseline = false;
-                break;
-            }
-        }
-        if (!at_baseline) {
-            throw std::runtime_error(
-                "sensitivity_ic (initial-condition sensitivities) across a "
-                "carried-over / pre-equilibration boundary is not supported: the "
-                "carried state is no longer the model's initial condition. "
-                "reset() for a fresh start, or save_concentrations() to make this "
-                "state the initial condition. (GH #210)");
-        }
+    // scope: a state a run advanced is no longer the model ICs, so e_k is not
+    // a meaningful seed. Refuse rather than return a wrong matrix. The state
+    // save_concentrations() made the baseline IS the model's initial condition,
+    // carried over or not, so is one reset() returned to, and so is either with
+    // literal set_concentration changes on it, as on a fresh model: there e_k
+    // is the seed, as from the declared ICs. The carried-over mark cannot tell
+    // these apart, since the save keeps it (issue #1528), so the refusal reads
+    // whether a run has advanced the state since it was last at the baseline.
+    // (Comparing the two vectors bit for bit read a run that ended where it
+    // started as the baseline, and a dose on the saved baseline as carried.)
+    if (n_sens_ic > 0 && model.advanced_since_baseline()) {
+        throw std::runtime_error(
+            "sensitivity_ic (initial-condition sensitivities) across a "
+            "carried-over / pre-equilibration boundary is not supported: a run() "
+            "has advanced the state since it was last the model's initial "
+            "condition. reset() for a fresh start, or save_concentrations() to "
+            "make this state the initial condition. (GH #210)");
     }
 
     // Allocate sensitivity vectors and seed s(0) = ∂y(0)/∂θ.
@@ -7296,6 +7291,7 @@ void CvodeSimulator::Impl::write_final_state_back(const SolverOptions &opts, int
     // non-sensitivity run still marks the state dirty but drops any stale
     // seed (it advanced the state without tracking dx/dθ).
     model.set_ic_state_dirty(true);
+    model.set_advanced_since_baseline(true);
     if (sens.n_p > 0) {
         std::vector<double> seed(static_cast<size_t>(ns) * sens.n_p);
         for (int iS = 0; iS < sens.n_p; ++iS) {

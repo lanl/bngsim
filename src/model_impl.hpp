@@ -373,6 +373,20 @@ struct NetworkModel::Impl {
     // ICs and for a save of a state no run advanced (set_concentration doses
     // on a fresh model). clone() copies it with the baseline.
     bool baseline_dirty = false;
+    // Whether a run() has advanced the live state since it was last at the IC
+    // baseline (issue #1528, from the review of its fix). Set at each run's
+    // state write-back; cleared by save_concentrations() (the state is now the
+    // baseline) and by reset() (the state is the baseline again); left alone by
+    // set_concentration/set_state_from (literal changes of a state relative to
+    // the baseline); copied by clone(). ic_state_dirty above is about θ: a state
+    // a run ever produced is x(θ) with no known dx/dθ, saved or not. This is
+    // about the initial-condition axis: e_k seeds ∂x(t)/∂x_k(0) while the state
+    // is the baseline plus literal changes, as on a fresh model, and does not
+    // once a run has moved the state off it, so the simulator refuses
+    // sensitivity_ic there. (Comparing the state with the baseline bit for bit
+    // read a run that ended where it started, at a fixed point, as the baseline,
+    // and a literal dose on a saved baseline as a carried state.)
+    bool advanced_since_baseline = false;
 
     // RHS instrumentation counters (T1 — gate ODE RHS observable/function eval).
     // Diagnostics only: rhs_eval_count counts every compute_derivs_core() call;

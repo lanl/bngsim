@@ -259,8 +259,9 @@ def test_differentiable_solve_s_remedy_after_a_run_refuses_or_starts_from_a_set_
     model.save_concentrations()
     with pytest.raises(bngsim.SimulationError, match="carried-over species state"):
         _d_start_d_a0(model)
-    # Once a run advanced the model, nothing but a fresh model makes the same
-    # numbers a literal start: reset() returns to the saved, advanced baseline.
+    # Once the saved baseline is a state a run advanced, nothing on this model
+    # makes the same numbers a literal start: reset() returns to that baseline,
+    # mark and all. (Before such a save, reset() and then set_state() would.)
     model.reset()
     assert model._core.ic_state_dirty is True
     fresh = bngsim.Model.from_net(str(tmp_path / "ab.net"))

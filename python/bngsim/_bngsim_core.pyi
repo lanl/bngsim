@@ -372,6 +372,14 @@ class NetworkModel:
         The StoichEntry list as three parallel arrays — species_index and reaction_index (int64, 1-BASED, as the C++ struct holds them) and coefficient (float64, the NET coefficient: products positive, reactants negative, one entry per (species, reaction) pair). Issue #523.
         """
     @property
+    def advanced_since_baseline(self) -> bool:
+        """
+        True iff a run() has advanced the species state since it was last at the IC baseline: set at each run's state write-back, cleared by reset() and save_concentrations(), left as it is by set_concentration() / set_state(), copied by clone(). Where ic_state_dirty is about θ, this is about the initial-condition axis: sensitivity_ic seeds e_k from the baseline plus literal changes, as on a fresh model, and raises from a state a run moved off the baseline (issue #1528). Writable so a protocol primitive that puts a captured state back can put the flag back with it.
+        """
+    @advanced_since_baseline.setter
+    def advanced_since_baseline(self, arg1: bool) -> None:
+        ...
+    @property
     def analytical_jacobian_complete(self) -> bool:
         """
         True iff the analytical Jacobian covers every reaction (Elementary + attached Functional terms). GH #76.

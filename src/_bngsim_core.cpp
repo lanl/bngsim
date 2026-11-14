@@ -2225,6 +2225,17 @@ PYBIND11_MODULE(_bngsim_core, m) {
                       "protocol primitive that restores a snapshot together with its dx/dθ "
                       "(Simulator.parameter_scan) can put the flag back as it found it; "
                       "setting it by hand otherwise just re-arms (or defeats) the raise.")
+        .def_property("advanced_since_baseline", &bngsim::NetworkModel::advanced_since_baseline,
+                      &bngsim::NetworkModel::set_advanced_since_baseline,
+                      "True iff a run() has advanced the species state since it was last at "
+                      "the IC baseline: set at each run's state write-back, cleared by reset() "
+                      "and save_concentrations(), left as it is by set_concentration() / "
+                      "set_state(), copied by clone(). Where ic_state_dirty is about θ, this "
+                      "is about the initial-condition axis: sensitivity_ic seeds e_k from the "
+                      "baseline plus literal changes, as on a fresh model, and raises from a "
+                      "state a run moved off the baseline (issue #1528). Writable so a "
+                      "protocol primitive that puts a captured state back can put the flag "
+                      "back with it.")
         .def_property_readonly(
             "ic_baseline_saved", &bngsim::NetworkModel::ic_baseline_saved,
             "True once save_concentrations() has redefined the IC baseline "

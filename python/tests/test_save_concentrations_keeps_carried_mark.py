@@ -332,6 +332,115 @@ def test_ic_sensitivities_from_a_restored_advanced_snapshot_refuse(model):
         ic_sens(model)
 
 
+def test_ic_sensitivities_after_a_literal_dose_on_the_saved_baseline(model, tmp_path):
+    """A set_concentration() on the saved baseline is a literal change of the
+    initial condition, as on a fresh model, and ∂A(t)/∂A(0) from it seeds e_A.
+    With B = 1 held by A + B -> B, dA/dt = kp - (kd + kc) A is linear, so
+    ∂A(t)/∂A(0) = e^(-(kd + kc) t). The PR's first form compared the state with
+    the baseline bit for bit and refused this; a fresh model with the same dose
+    gives the same column. A dose undone is the baseline again, e^(-kd t). (A
+    sensitivity run advances the state like any run, hence the reset() between
+    the two measurements.)"""
+    want = np.exp(-(KD + KC) * np.array(TS))
+    plain_equilibration(model)
+    model.save_concentrations()
+    model.set_concentration("B()", 1.0)
+    model.set_concentration("B()", 0.0)
+    np.testing.assert_allclose(ic_sens(model), np.exp(-KD * np.array(TS)), rtol=1e-6)
+    model.reset()
+    model.set_concentration("B()", 1.0)
+    np.testing.assert_allclose(ic_sens(model), want, rtol=1e-6)
+    fresh = bngsim.Model.from_net(str(tmp_path / "catalysed_decay.net"))
+    fresh.set_concentration("B()", 1.0)
+    np.testing.assert_allclose(ic_sens(fresh), want, rtol=1e-6)
+
+
+def test_ic_sensitivities_after_a_run_that_ends_where_it_started_refuse(tmp_path):
+    """A run that advanced the state is refused even where it put the same
+    numbers back: declared at its fixed point A = kp/kd = 4, B = 0, the
+    right-hand side is exactly 0 and a run leaves the state bit-identical to
+    the declared ICs. The bit-for-bit comparison let it through, as if no run
+    had happened; main refused it, and so does the flag. The same numbers set
+    by hand on a fresh model are a literal start."""
+    path = tmp_path / "at_fixed_point.net"
+    path.write_text(NET.replace("1 A() 0", f"1 A() {KP / KD}"))
+    model = bngsim.Model.from_net(str(path))
+    bngsim.Simulator(model, method="ode").run(t_span=(0, 3), n_points=2, **TOL)
+    assert list(model.get_state()) == [KP / KD, 0.0]
+    assert model._core.ic_state_dirty is True
+    with pytest.raises(bngsim.SimulationError, match="sensitivity_ic"):
+        ic_sens(model)
+    model.reset()
+    np.testing.assert_allclose(ic_sens(model), np.exp(-KD * np.array(TS)), rtol=1e-6)
+
+
+def test_a_simulator_snapshot_of_an_advanced_state_refuses_ic_sensitivities(model):
+    """Simulator.snapshot() of a state a run advanced, restored after reset()
+    to the declared ICs, is not the initial condition, like a named snapshot:
+    refused. A snapshot taken at the saved baseline restores as the initial
+    condition, and gives e^(-kd t)."""
+    sim = bngsim.Simulator(model, method="ode")
+    sim.run_until(2000.0, **TOL)
+    snap = sim.snapshot()
+    model.reset()
+    sim.restore(snap)
+    with pytest.raises(bngsim.SimulationError, match="sensitivity_ic"):
+        ic_sens(model)
+    model.save_concentrations()
+    at_baseline = sim.snapshot()
+    model.reset()
+    sim.restore(at_baseline)
+    np.testing.assert_allclose(ic_sens(model), np.exp(-KD * np.array(TS)), rtol=1e-6)
+
+
+def test_a_named_snapshot_saved_at_the_baseline_restores_as_the_initial_condition(model):
+    """The named snapshot is saved after save_concentrations() made the
+    equilibrated state the baseline: no run has moved the state since, so
+    restored after reset() it is the initial condition, and gives e^(-kd t),
+    where the same label saved before the unlabeled save is refused (above)."""
+    plain_equilibration(model)
+    model.save_concentrations()
+    model.save_concentrations("eq")
+    model.reset()
+    model.restore_concentrations("eq")
+    assert model._core.ic_state_dirty is True
+    np.testing.assert_allclose(ic_sens(model), np.exp(-KD * np.array(TS)), rtol=1e-6)
+
+
+def test_a_scan_leaves_the_initial_condition_axis_as_it_found_it(model):
+    """parameter_scan puts the carry-over state back as it found it. From the
+    saved baseline, the axis is open before the scan and after it; from an
+    unsaved advanced state, refused before and after."""
+    plain_equilibration(model)
+    sim = bngsim.Simulator(model, method="ode")
+    with pytest.raises(bngsim.SimulationError, match="sensitivity_ic"):
+        ic_sens(model)
+    sim.parameter_scan("kc", [0.5, 1.0], t_span=(0, 2), n_points=2, **TOL)
+    with pytest.raises(bngsim.SimulationError, match="sensitivity_ic"):
+        ic_sens(model)
+    model.save_concentrations()
+    want = np.exp(-KD * np.array(TS))
+    np.testing.assert_allclose(ic_sens(model), want, rtol=1e-6)
+    model.reset()  # that measurement was a run too
+    sim.parameter_scan("kc", [0.5, 1.0], t_span=(0, 2), n_points=2, **TOL)
+    np.testing.assert_allclose(ic_sens(model), want, rtol=1e-6)
+
+
+def test_a_clone_keeps_the_initial_condition_axis(model):
+    """A clone of a state a run advanced refuses sensitivity_ic as the model
+    does; reset() to the declared ICs opens it. A clone of the saved baseline
+    is at its baseline."""
+    plain_equilibration(model)
+    clone = model.clone()
+    with pytest.raises(bngsim.SimulationError, match="sensitivity_ic"):
+        ic_sens(clone)
+    clone.reset()
+    want = np.exp(-KD * np.array(TS))
+    np.testing.assert_allclose(ic_sens(clone), want, rtol=1e-6)
+    model.save_concentrations()
+    np.testing.assert_allclose(ic_sens(model.clone()), want, rtol=1e-6)
+
+
 # ── What was right stays right ────────────────────────────────────────────────
 
 
@@ -379,6 +488,20 @@ def test_a_carried_equilibration_measures_from_its_seed(model):
     model.reset()
     np.testing.assert_allclose(
         dA(sim.run(sample_times=TS, carry_sensitivities=True, **TOL)), want, rtol=1e-6
+    )
+
+
+def test_reset_then_set_state_is_a_literal_start_while_the_baseline_is_clean(model):
+    """Control, as on main: with no save of the advanced state, reset() to the
+    declared ICs and set_state() of the numbers the run left make them a literal
+    start, from which dA/d(kp, kd) is the closed form from A(0) = kp/kd."""
+    plain_equilibration(model)
+    x = model.get_state().copy()
+    model.reset()
+    model.set_state(x)
+    assert model._core.ic_state_dirty is False
+    np.testing.assert_allclose(
+        dA(sens(model).run(sample_times=TS, **TOL)), from_literal(KP / KD), rtol=1e-6
     )
 
 

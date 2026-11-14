@@ -139,6 +139,7 @@ class Model:
         "_named_conc_states",
         "_named_sens_seeds",
         "_named_advanced",
+        "_named_advanced_since_baseline",
         "_declared_ic_sens",
         "_ic_write_log",
         "_guarded_functions",
@@ -377,6 +378,7 @@ class Model:
         # unknown dx/dθ, not literal ICs: restore_concentrations() puts the
         # carried-over mark back with it, so a sensitivity run from it raises.
         self._named_advanced: set[str] = set()
+        self._named_advanced_since_baseline: set[str] = set()
         # Issue #111: ∂x_k(0)/∂θ declared by a per-point hook for the initial
         # conditions it assigns, ``{species: {param: value}}``. Written by
         # declare_ic_sensitivity(); read and cleared per point by
@@ -1433,6 +1435,7 @@ class Model:
             k: (s.copy(), list(names)) for k, (s, names) in self._named_sens_seeds.items()
         }
         m._named_advanced = set(self._named_advanced)  # issue #1528
+        m._named_advanced_since_baseline = set(self._named_advanced_since_baseline)
         # Issue #111: pending IC-sensitivity declarations travel with the snapshot
         # they describe. The write log does not: it belongs to whoever armed it on
         # the original, and a clone is not inside that scope.
@@ -1898,6 +1901,12 @@ class Model:
             self._named_advanced.add(key)
         else:
             self._named_advanced.discard(key)
+        # ...and whether a run had moved it off the IC baseline, which decides
+        # the initial-condition axis (sensitivity_ic) after a restore.
+        if core.advanced_since_baseline:
+            self._named_advanced_since_baseline.add(key)
+        else:
+            self._named_advanced_since_baseline.discard(key)
 
     def restore_concentrations(self, label: str | None = None) -> None:
         """Restore species concentrations from a saved snapshot.
@@ -1955,6 +1964,13 @@ class Model:
             # and no fresh start either, so a sensitivity run from it raises
             # (issue #1528). set_state() above did not mark it.
             self._core.ic_state_dirty = True
+        if key in self._named_advanced_since_baseline:
+            # A run had moved the snapshot off the IC baseline when it was
+            # saved, so restored it is not the initial condition either, and
+            # sensitivity_ic from it raises. A snapshot saved at the baseline
+            # (after save_concentrations(), or a literal change of it) leaves
+            # the flag as set_state() left it: set only, as above.
+            self._core.advanced_since_baseline = True
 
     def has_saved_concentrations(self, label: str | None = None) -> bool:
         """Whether a named concentration snapshot is available to restore.

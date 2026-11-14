@@ -1088,7 +1088,8 @@ Scope (matching the new-era pre-equilibration surface): the equilibration is a
 (`=`) `setParameter` — the species state carries over, only a parameter
 changes. Finite-time equilibration and initial-condition–axis (`sensitivity_ic`)
 sensitivities across the boundary are out of scope (the latter raises, unless
-`save_concentrations()` has made the carried state the initial condition); a model
+`save_concentrations()` has made the carried state the initial condition and no
+run has moved the state off it since); a model
 with **events** warns, since event-time sensitivity discontinuities are handled
 separately. The carried seed is model-level state alongside the concentrations,
 introspectable via `model._core.ic_state_dirty` /

@@ -895,6 +895,18 @@ class NetworkModel {
     bool ic_state_dirty() const;
     void set_ic_state_dirty(bool dirty);
 
+    // True iff a run() has advanced the species state since it was last at the
+    // IC baseline: set at each run's state write-back, cleared by reset() and
+    // save_concentrations(), untouched by set_concentration()/set_state_from(),
+    // copied by clone(). Where ic_state_dirty is about θ (a derivative no save
+    // forgets), this is about the initial-condition axis: from the baseline plus
+    // literal changes e_k seeds ∂x(t)/∂x_k(0), as on a fresh model; from a state
+    // a run moved off the baseline it does not, and the simulator refuses
+    // sensitivity_ic there (issue #1528). Writable for protocol primitives that
+    // put a captured state back with its flags (Simulator.parameter_scan).
+    bool advanced_since_baseline() const;
+    void set_advanced_since_baseline(bool advanced);
+
     // The prior phase's final species forward-sensitivity matrix dx/dθ, stored
     // row-major as [species_idx * n_params + param_idx] (n_species × n_params),
     // captured by the simulator at the end of a parameter-sensitivity run. The

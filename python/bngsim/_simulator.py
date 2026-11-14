@@ -7068,7 +7068,7 @@ class Simulator:
 
     def _capture_carryover_state(
         self, core: Any = None
-    ) -> tuple[np.ndarray | None, list[str], bool, Any]:
+    ) -> tuple[np.ndarray | None, list[str], bool, Any, bool]:
         """Snapshot the model's carry-over state: the sensitivity seed (issue #81)
         and the event state a continuing run starts from (issue #693). ``core``
         defaults to this Simulator's model; a :meth:`run_batch` row passes its
@@ -7084,19 +7084,23 @@ class Simulator:
             list(core.pending_sensitivity_seed_param_names),
             bool(core.ic_state_dirty),
             core.event_carry_state(),
+            # ...and the initial-condition axis's own flag (issue #1528): whether
+            # a run had moved the state off the IC baseline.
+            bool(core.advanced_since_baseline),
         )
 
     def _restore_carryover_state(
-        self, snapshot: tuple[np.ndarray | None, list[str], bool, Any], core: Any = None
+        self, snapshot: tuple[np.ndarray | None, list[str], bool, Any, bool], core: Any = None
     ) -> None:
         """Put back what :meth:`_capture_carryover_state` captured."""
-        seed, names, dirty, events = snapshot
+        seed, names, dirty, events, advanced = snapshot
         core = self._model._core if core is None else core
         if seed is None:
             core.set_pending_sensitivity_seed(np.zeros((0, 0), dtype=np.float64), [])
         else:
             core.set_pending_sensitivity_seed(seed, names)
         core.ic_state_dirty = dirty
+        core.advanced_since_baseline = advanced
         core.set_event_carry_state(events)
 
     def parameter_scan(
@@ -7356,6 +7360,7 @@ class Simulator:
             # purpose, for the same reason, and a sensitivity scan installs its
             # seed and the marker per point below.
             self._model._core.ic_state_dirty = False
+            self._model._core.advanced_since_baseline = False
             # Every point starts from the events' state at invocation too, not
             # from where the previous point's run left them (issue #693).
             self._model._core.set_event_carry_state(invocation_sens[3])
@@ -11413,6 +11418,9 @@ class Simulator:
             # Whether a run advanced the state, so a restore after reset() does
             # not take it for a fresh start (issue #1528).
             "ic_state_dirty": bool(self._model._core.ic_state_dirty),
+            # ...and whether that run had moved it off the IC baseline, which
+            # decides the initial-condition axis (sensitivity_ic).
+            "advanced_since_baseline": bool(self._model._core.advanced_since_baseline),
         }
         self._snapshot_stack.append(copy.deepcopy(snap))
         logger.debug(
@@ -11465,6 +11473,8 @@ class Simulator:
         # only, as restore_concentrations() does.
         if snapshot.get("ic_state_dirty", False):
             self._model._core.ic_state_dirty = True
+        if snapshot.get("advanced_since_baseline", False):
+            self._model._core.advanced_since_baseline = True
 
         # Recreate simulator with restored state
         self._recreate_interactive_sim()
