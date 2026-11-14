@@ -2732,7 +2732,7 @@ class _TaskReader:
                 if len(other_runs) <= len(runs) or other_runs[: len(runs)] != runs:
                     continue
                 rest = iter(more)
-                if len(more) == len(head) or not all(s in rest for s in head):
+                if not all(s in rest for s in head):
                     continue  # not the task's changes, in order, among the chain's
                 extra = list(more)
                 for s in head:
@@ -2740,7 +2740,7 @@ class _TaskReader:
                 sets = [
                     s for s in extra if isinstance(s, StateChange) and s.kind == "set_parameter"
                 ]
-                if len(sets) != len(extra):
+                if not sets or len(sets) != len(extra):
                     continue
                 names = sorted({s.target or "" for s in sets})
                 warnings.warn(
@@ -3052,7 +3052,7 @@ class _TaskReader:
                 formula, add = m.group(1), True
         value = _number_or_none(formula)
         math = _find(elem, "math")
-        if value is not None and math is not None and len(math) == 1 and not add:
+        if value is not None and math is not None and len(math) == 1:
             # A number alone, as written: the formula holds 15 digits of it.
             exact = _cn_value(math[0]) if _local(math[0].tag) == "cn" else None
             value = value if exact is None else exact

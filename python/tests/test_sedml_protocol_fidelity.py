@@ -1863,14 +1863,41 @@ def _behind(changes: list[ET.Element]) -> list[ET.Element]:
     return [copy.deepcopy(kx), copy.deepcopy(k2), k1, k2, kx]
 
 
+def _behind_what_it_reads_through(changes: list[ET.Element]) -> list[ET.Element]:
+    """kx = k1*3 and k2 = kx/3*2, then k1 = 5, then kx alone: k2, which reads
+    k1 through kx, is left at the kx of k1 = 1."""
+    k1, kx, k2 = changes
+    return [copy.deepcopy(kx), k2, k1, kx]
+
+
+def _read_before_it_is_replaced(changes: list[ET.Element]) -> list[ET.Element]:
+    """k2 = k1*3 before k1 = 5, an addition of k2 to B, which reads k2 = 3,
+    and then k2 = 7."""
+    k1, k2, add, seven = changes
+    return [k2, k1, add, seven]
+
+
+def _added_to_behind(changes: list[ET.Element]) -> list[ET.Element]:
+    """A = A0 before A0 = 50, and then an addition to A, which is 100."""
+    a0, seed, add = changes
+    return [seed, a0, add]
+
+
 @pytest.mark.parametrize(
     ("network", "actions", "edit"),
     [
         ("declared", 'setParameter("k1",5)\n', _before),
         ("declared", 'setParameter("k1",5)\naddConcentration("B()","k2")\n', _read_between),
         ("chained", 'setParameter("k1",5)\n', _behind),
+        ("chained", 'setParameter("k1",5)\n', _behind_what_it_reads_through),
+        (
+            "declared",
+            'setParameter("k1",5)\naddConcentration("B()","k2")\nsetParameter("k2",7)\n',
+            _read_before_it_is_replaced,
+        ),
+        ("seeded", 'setParameter("A0",50)\naddConcentration("A()",10)\n', _added_to_behind),
     ],
-    ids=["before", "read-between", "behind"],
+    ids=["before", "read-between", "behind", "behind-through", "read-then-replaced", "added-to"],
 )
 def test_a_chain_whose_first_run_is_not_the_first_task_is_read_as_its_own_run(
     tmp_path, network, actions, edit
@@ -1894,6 +1921,37 @@ def test_a_chain_whose_first_run_is_not_the_first_task_is_read_as_its_own_run(
     changes[:] = edit(list(changes))
     spec = read_sedml_protocol(ET.tostring(root, encoding="unicode"), sbml=sbml)
     assert len(spec.experiments) == 3
+
+
+@pytest.mark.parametrize(
+    ("cn", "want"),
+    [
+        ('<cn type="e-notation">5<sep/>-1</cn>', 0.5),
+        ('<cn type="integer"> 6 </cn>', 6.0),
+        ("<cn>7.999999999999998</cn>", 7.999999999999998),
+    ],
+    ids=["e-notation", "integer", "every-digit"],
+)
+def test_a_setvalue_of_a_number_alone_is_read_as_the_number_written(tmp_path, cn, want):
+    """A setValue whose math is one cn, of any MathML type, is that number."""
+    _pack(
+        tmp_path,
+        'generate_network({overwrite=>1})\nsetParameter("k1",5)\n' + RUN + RUN,
+        net=NET,
+        model=MODEL,
+    )
+    bare, sbml = _bare_and_sbml(tmp_path / "m.omex")
+    root = ET.fromstring(bare)
+    (math_elem,) = [
+        sv.find(f"{{{MATHML}}}math")
+        for sv in root.iter(f"{{{SED}}}setValue")
+        if sv.get("target").endswith("[@id='k1']")
+    ]
+    math_elem[:] = [ET.fromstring(cn.replace("<cn", f'<cn xmlns="{MATHML}"'))]
+    spec = read_sedml_protocol(ET.tostring(root, encoding="unicode"), sbml=sbml)
+    values = [s.value for s in spec.steps if getattr(s, "target", None) == "k1"]
+    assert values == [5.0, want]
+    assert spec.lossy == ()
 
 
 def test_a_chain_that_resets_before_its_first_run_is_read(tmp_path):
