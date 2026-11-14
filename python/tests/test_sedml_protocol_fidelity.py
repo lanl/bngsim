@@ -1052,9 +1052,9 @@ def test_a_value_that_is_not_a_number_is_refused_as_one(tmp_path):
         _replay(NET, protocol, tmp_path)
 
 
-def _sbml_calling_a_function(tmp_path: Path) -> str:
-    """The SBML of DECLARED_NET with k2's initialAssignment as triple(k1), a
-    call of the SBML's own function, which SED-ML math cannot make."""
+def _sbml_assigning_k2(tmp_path: Path, formula: str) -> str:
+    """The SBML of DECLARED_NET with k2's initialAssignment as *formula*,
+    which may call triple, a function of the SBML's own."""
     import libsbml
 
     (tmp_path / "declared.net").write_text(DECLARED_NET)
@@ -1064,7 +1064,7 @@ def _sbml_calling_a_function(tmp_path: Path) -> str:
     fd = m.createFunctionDefinition()
     fd.setId("triple")
     fd.setMath(libsbml.parseL3Formula("lambda(x, 3*x)"))
-    m.getInitialAssignment("k2").setMath(libsbml.parseL3Formula("triple(k1)"))
+    m.getInitialAssignment("k2").setMath(libsbml.parseL3Formula(formula))
     return libsbml.writeSBMLToString(doc)
 
 
@@ -1081,15 +1081,18 @@ def _sbml_calling_a_function(tmp_path: Path) -> str:
     ],
     ids=["scan", "set-between-runs", "set-before-the-run", "replaced-before"],
 )
+@pytest.mark.parametrize("formula", ["triple(k1)", "k1*3 + 0*time"], ids=["function", "time"])
 def test_an_assignment_sedml_math_cannot_say_is_recorded_where_it_is_lost(
-    tmp_path, actions, noted
+    tmp_path, actions, noted, formula
 ):
-    """k2 = triple(k1): SED-ML math names no SBML function, so the standard
-    elements cannot set k2 again as k1 moves, and say so (issue #1684). A
-    change made before the model is loaded is exact, and says nothing."""
+    """k2 = triple(k1), or one that reads the SBML's time: SED-ML math names no
+    SBML function, and its time is the simulation's, so the standard elements
+    cannot set k2 again as k1 moves, and say so (issue #1684). A change made
+    before the model is loaded is exact, and says nothing."""
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        write_sedml_protocol(parse_bngl_protocol(actions), sbml=_sbml_calling_a_function(tmp_path))
+        sbml = _sbml_assigning_k2(tmp_path, formula)
+        write_sedml_protocol(parse_bngl_protocol(actions), sbml=sbml)
     said = [str(w.message) for w in caught if issubclass(w.category, ConversionWarning)]
     hits = [n for n in said if "set k1 as the model runs" in n and "['k2']" in n]
     assert bool(hits) == noted
@@ -1251,6 +1254,18 @@ INITIAL_ASSIGNMENT_CASES = {
         + RUN,
         [_from(_from(_A1, 1, 7), 5, 15)],
     ),
+    # 75.0000: the reset puts back k2's expression, which reads k1 = 5;
+    # the number the SBML holds for k2 is 3 (37.50)
+    "reset-to-the-networks-expression-after-what-it-reads-moved": (
+        "declared",
+        'setParameter("k1",5)\nsaveParameters()\n'
+        + RUN
+        + 'setParameter("k2",7)\n'
+        + RUN
+        + "resetParameters()\n"
+        + RUN,
+        [_from(_from(_eq(5, 15), 5, 7), 5, 15)],
+    ),
     # 75.0084, 75.0000, 75.0000
     "scan-that-continues-a-run": (
         "declared",
@@ -1306,6 +1321,18 @@ INITIAL_ASSIGNMENT_CASES = {
         "seeded",
         'setParameter("A0",50)\n' + RUN + RUN,
         [_from(_eq(1, 1, a0=50), 1, 1, total=50)],
+    ),
+    # 45.4134 at each point: setConcentration replaced A's seed
+    "dose-scan-after-the-seed-is-replaced": (
+        "seeded",
+        'setConcentration("A()",80)\n' + SCAN.format(p="A0", v="50,100,150", extra=""),
+        [_eq(1, 1, a0=80)] * 3,
+    ),
+    # 40.7326: so did this one, before the seed's parameter was set
+    "seed-set-after-the-seed-is-replaced": (
+        "seeded",
+        'setConcentration("A()",80)\nsetParameter("A0",50)\n' + RUN + RUN,
+        [_from(_eq(1, 1, a0=80), 1, 1, total=80)],
     ),
     # 50.9158: a run has made A a number, which A0 no longer moves
     "seed-set-between-runs": (
@@ -1384,3 +1411,47 @@ def test_the_archive_replays_what_bng2pl_runs(assigned):
             archive.load_model(), archive.load_full_protocol(), rtol=1e-10, atol=1e-12
         )
     assert _replay_points(runs[-1]) == pytest.approx(want, rel=1e-6)
+
+
+def test_a_sweep_sets_what_an_assignment_computes_from_its_range(tmp_path):
+    """k2 = k1*3 at each point of a scan of k1 reads the range k1 is set
+    from, not k1's value, which a simulator may read before the point's
+    changes."""
+    _pack(
+        tmp_path,
+        "generate_network({overwrite=>1})\n" + SCAN.format(p="k1", v="1,3,5", extra=""),
+        net=DECLARED_NET,
+        model=DECLARED_MODEL,
+    )
+    sed = ET.fromstring(zipfile.ZipFile(tmp_path / "m.omex").read("simulation.sedml"))
+    (rt,) = sed.iter(f"{{{SED}}}repeatedTask")
+    swept, k2 = rt.iterfind("s:listOfChanges/s:setValue", NS)
+    assert swept.get("target").endswith("[@id='k1']")
+    assert k2.get("target").endswith("[@id='k2']")
+    assert _formula(k2.find(f"{{{MATHML}}}math")).replace(" ", "") == f"{rt.get('range')}*3"
+    assert k2.find("s:listOfVariables", NS) is None
+
+
+@pytest.mark.parametrize(
+    ("actions", "removed"),
+    [
+        ('setParameter("k1",5)\n' + RUN, False),
+        ('setParameter("k1",5)\nsetParameter("k2",7)\n' + RUN, True),
+    ],
+    ids=["kept", "replaced"],
+)
+def test_a_derived_model_keeps_the_assignments_the_protocol_does_not_replace(
+    tmp_path, actions, removed
+):
+    """Changes made before the model is loaded leave k2's initialAssignment,
+    which computes it from them, unless the protocol sets k2 itself."""
+    _pack(
+        tmp_path,
+        "generate_network({overwrite=>1})\n" + actions,
+        net=DECLARED_NET,
+        model=DECLARED_MODEL,
+    )
+    sed = ET.fromstring(zipfile.ZipFile(tmp_path / "m.omex").read("simulation.sedml"))
+    changes = [c for m in sed.iter(f"{{{SED}}}model") for c in m.iterfind("s:listOfChanges/*", NS)]
+    assert any(c.tag.endswith("removeXML") for c in changes) == removed
+    assert not [c for c in changes if c.tag.endswith("computeChange")]
