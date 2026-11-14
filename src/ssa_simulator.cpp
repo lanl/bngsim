@@ -3123,7 +3123,11 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
         // row at 25 read q = 2.4999999999999933 or 2.5000000000000373 as the
         // grid's end moved, and the row held the state before the event at
         // t_end = 25, 27, 30, 50 and after it at 26, 40 (issue #1658). No
-        // further than the event itself; a trigger on the clock stays exact.
+        // further than the event itself. A trigger on the clock alone reads as
+        // before (`time > 25` holds the row at 25 before its event); one that
+        // compares the state with the clock reads them a tolerance apart, as
+        // the ODE run does, so `q' = 1; at (q > time)` with q == time, never
+        // met exactly, fires at the first row, under ODE as here.
         auto row_before_event = [&](double th, double tk, double th_ev) -> bool {
             if (m > 0) {
                 dense_y(std::min(th_ev, th + bisect_tol(tk) / hh), ytmp.data());

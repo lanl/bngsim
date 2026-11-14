@@ -2217,8 +2217,9 @@ PYBIND11_MODULE(_bngsim_core, m) {
                       "holds a concentration species in a compartment whose size moves as its "
                       "count over the load-time size; otherwise such a species holds its "
                       "concentration, and a run turns it into a count at the size the "
-                      "compartment has at its start (issue #1463). Set by an SSA run, put back "
-                      "by reset() from the baseline save_concentrations() took. Writable so a "
+                      "compartment has at its start (issue #1463). Set by an SSA run, cleared by "
+                      "an ODE run, put back by reset() from the baseline save_concentrations() "
+                      "took. Writable so a "
                       "snapshot of the state can carry it.")
         // ── Pre-equilibration / carry-over sensitivity state (GH #210) ───────
         .def_property("ic_state_dirty", &bngsim::NetworkModel::ic_state_dirty,

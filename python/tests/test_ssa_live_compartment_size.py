@@ -175,6 +175,46 @@ def test_replicates_and_until_legs_keep_the_count(method):
 
 
 @pytest.mark.parametrize("method", STOCHASTIC)
+@pytest.mark.parametrize("saved_after_a_run", [True, False], ids=["counts", "concentrations"])
+def test_a_scan_reset_to_a_snapshot_reads_it_as_saved(method, saved_after_a_run):
+    """parameter_scan(reset_to=label) starts each point from the snapshot, read
+    as it was saved: the counts a run left, or concentrations at c = 3. Both
+    are 150 molecules. The flag the scan's invocation held was put back over
+    the snapshot's, and the points read 300 (counts as concentrations at c =
+    4) or 100 (concentrations as counts)."""
+    m = bngsim.Model.from_antimony_string(RESIZED + "k = 1;\n")
+    m.set_concentration("c", 3.0)
+    if saved_after_a_run:
+        _run(m, method, t_span=(0, 3), n_points=4)
+        m.save_concentrations("start")
+        m.reset()
+    else:
+        m.save_concentrations("start")
+        _run(m, method, t_span=(0, 3), n_points=4)
+    sim_kw = {"poplevel": 100} if method == "psa" else {}
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        sim = bngsim.Simulator(m, method=method, **sim_kw)
+        points = sim.parameter_scan("k", [1.0, 2.0], t_span=(3, 5), n_points=3, reset_to="start")
+    for r in points:
+        np.testing.assert_allclose(_sel(r, "X")[:, 0], 150.0, rtol=1e-9)
+
+
+@pytest.mark.parametrize("method", STOCHASTIC)
+def test_an_ode_run_between_two_ssa_runs_leaves_concentrations(method):
+    """SSA to t = 0.5, ODE to 3 (which leaves [X] = 25 at c = 4), then SSA: the
+    last run counts 25*4 = 100. Read as the counts the first run left, it was
+    50. (The size is not written here: an ODE run that starts from an SSA
+    run's counts in a compartment off its load-time size reads them as
+    concentrations, as it did before this change.)"""
+    m = bngsim.Model.from_antimony_string(RESIZED)
+    _run(m, method, t_span=(0, 0.5), n_points=2)
+    _run(m, "ode", t_span=(0.5, 3), n_points=2)
+    r = _run(m, method, t_span=(3, 5), n_points=3)
+    np.testing.assert_allclose(_sel(r, "X")[:, 0], 100.0, rtol=1e-6)
+
+
+@pytest.mark.parametrize("method", STOCHASTIC)
 def test_an_ode_state_is_a_concentration(method):
     """An ODE run leaves a concentration (37.5 at c = 4): an SSA run that goes
     on from it counts 37.5*4 = 150, as the ODE's amount is."""

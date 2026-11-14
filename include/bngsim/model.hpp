@@ -899,10 +899,12 @@ class NetworkModel {
     // count over the load-time size, volume_factor; everywhere else, at the
     // initial conditions or after an ODE run, the value is a concentration. A
     // run that starts from a concentration turns it into a count at the size
-    // the compartment has then. Set at an SSA run's write-back; reset() puts
-    // back the IC baseline's, which save_concentrations() takes from the state
-    // it saves; clone() copies both. set_concentration()/set_state_from() leave
-    // it, so a get_state/set_state round trip is exact.
+    // the compartment has then. Set at an SSA run's write-back and cleared at
+    // an ODE run's; reset() puts back the IC baseline's, which
+    // save_concentrations() takes from the state it saves; clone() copies
+    // both. set_concentration()/set_state_from() leave it, so a get_state/
+    // set_state round trip is exact (and a concentration written over an SSA
+    // run's state is read as a count, as it was before).
     bool ssa_counts_stored() const;
     void set_ssa_counts_stored(bool stored);
 
