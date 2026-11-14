@@ -11438,6 +11438,12 @@ class Simulator:
             A snapshot from ``snapshot()``. If ``None``, restores
             the most recent snapshot from the internal stack.
 
+        A snapshot of a state a run advanced restores the model's carried-over
+        mark (issue #1528): a sensitivity run from it needs a carried seed, and
+        a later ``set_param`` of an initial-condition parameter leaves the
+        restored species as they are, as after a run; dose them with
+        ``Model.set_concentration``.
+
         Examples
         --------
         >>> snap = sim.snapshot()

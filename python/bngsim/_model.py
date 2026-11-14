@@ -1920,7 +1920,10 @@ class Model:
         (issue #81). A snapshot of a state a run advanced restores its
         carried-over mark too, seed or not, so a sensitivity run from it raises
         without one (issue #1528). Restoring a snapshot never clears a mark the
-        model already carries, as :meth:`set_state` does not.
+        model already carries, as :meth:`set_state` does not. Like the state a
+        run left, a restored snapshot of an advanced state is not re-dosed by a
+        later :meth:`set_param` of an initial-condition parameter; dose it with
+        :meth:`set_concentration`.
 
         Parameters
         ----------

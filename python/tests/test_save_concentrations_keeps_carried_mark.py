@@ -441,6 +441,49 @@ def test_a_clone_keeps_the_initial_condition_axis(model):
     np.testing.assert_allclose(ic_sens(model.clone()), want, rtol=1e-6)
 
 
+def test_an_ic_parameter_write_after_an_advanced_restore_leaves_the_species(tmp_path):
+    """A write to an initial-condition parameter does not re-dose a state a run
+    advanced (#79, #141): set_param("B0") leaves B where the run left it. A
+    snapshot of such a state restored after reset() now carries the run's mark,
+    so it behaves the same, through restore_concentrations() and through
+    Simulator.restore(): B stays 0, and a run from there stays at the saved
+    steady state, A(2) = kp/kd = 4. On main the first such restore let the
+    write move B, and the run gave kp/(kd+kc) + (4 - kp/(kd+kc)) e^(-(kd+kc) 2)
+    = 1.466099; a later one did not, once the reset had moved B's baseline to
+    the dose. On a model no run advanced, the write moves B (control)."""
+    path = tmp_path / "dosed_by_parameter.net"
+    path.write_text(
+        NET.replace("end parameters", "    4 B0 0\nend parameters").replace("2 B() 0", "2 B() B0")
+    )
+    fresh = bngsim.Model.from_net(str(path))
+    fresh.set_param("B0", 1.0)
+    assert fresh.get_concentration("B()") == 1.0
+
+    m = bngsim.Model.from_net(str(path))
+    plain_equilibration(m)
+    m.save_concentrations("eq")
+    m.set_param("B0", 1.0)
+    assert m.get_concentration("B()") == 0.0
+    m.set_param("B0", 0.0)
+    m.reset()
+    m.restore_concentrations("eq")
+    m.set_param("B0", 1.0)
+    assert m.get_concentration("B()") == 0.0
+    a = bngsim.Simulator(m, method="ode").run(sample_times=TS, **TOL).species[:, 0]
+    np.testing.assert_allclose(a, KP / KD, rtol=1e-9)
+
+    m = bngsim.Model.from_net(str(path))
+    sim = bngsim.Simulator(m, method="ode")
+    sim.run_until(2000.0, **TOL)
+    snap = sim.snapshot()
+    m.reset()
+    sim.restore(snap)
+    m.set_param("B0", 1.0)
+    assert m.get_concentration("B()") == 0.0
+    a = bngsim.Simulator(m, method="ode").run(sample_times=TS, **TOL).species[:, 0]
+    np.testing.assert_allclose(a, KP / KD, rtol=1e-9)
+
+
 # ── What was right stays right ────────────────────────────────────────────────
 
 
