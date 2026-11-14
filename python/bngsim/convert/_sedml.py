@@ -2778,11 +2778,11 @@ class _TaskReader:
                         o
                         for o in head[k:]
                         if not isinstance(o, (_Restated, _PerPoint))
-                        and (o.target == name or _names(o, name))
+                        and (o.target == name or _step_reads(o, name))
                     ),
                     None,
                 )
-                if after is not None and after.target == name and not _names(after, name):
+                if after is not None and after.target == name and not _step_reads(after, name):
                     superseded.add(k)
         set_otherwise = {s.target for s in head if not isinstance(s, (_Restated, _PerPoint))}
         replaced: set[str] = set()  # set to something else so far
@@ -2798,7 +2798,7 @@ class _TaskReader:
                 if self._assignment_reads(name, replaced) & stale:
                     stale.add(name)  # computed from a value that is behind
                 continue
-            if any(_names(s.step if isinstance(s, _Restated) else s, r) for r in stale):
+            if any(_step_reads(s.step if isinstance(s, _Restated) else s, r) for r in stale):
                 return steps  # computed from a value that is behind
             replaced.add(name)
             stale |= {r for r in restated if name in self._assignment_reads(r, replaced)}
@@ -3211,7 +3211,7 @@ _TARGET_ASSIGNMENT = re.compile(
 )
 
 
-def _names(step, name: str) -> bool:
+def _step_reads(step, name: str) -> bool:
     """Whether a state change reads the element *name*: its expression names
     it, or it adds to it."""
     if step.kind == "add_concentration" and step.target == name:
