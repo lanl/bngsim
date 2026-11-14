@@ -779,6 +779,9 @@ struct CvodeUserData {
     std::vector<char> clamp_far;
     std::vector<double> clamp_start;
     bool clamp_far_any = false;
+    // Any of them at a pole (kAtPole), which ends the run (followed_below_zero);
+    // one carried to an overflow (kCarriedToOverflow) only cuts the step.
+    bool clamp_at_pole_any = false;
     // Why followed_below_zero ended the run, for its failure message; empty
     // until it does.
     std::string below_zero_refusal;
@@ -1006,6 +1009,7 @@ static void record_clamp_tolerances(CvodeUserData &data, void *cvode_mem, double
                                     const std::vector<double> &atol_v, int ns) {
     data.clamp_cvode_mem = cvode_mem;
     data.clamp_far_any = false;
+    data.clamp_at_pole_any = false;
     data.below_zero_refusal.clear();
     data.off_y_valid = false;
     if (!atol_v.empty()) {
@@ -1286,13 +1290,33 @@ static bool sens_may_read_at(const CvodeUserData *data, const double *y_ptr, con
 // side (`read_at(state)` evaluates at a state and says what it read; it may
 // overwrite `values`, which are scanned first). None otherwise: not where the
 // value is only NaN, not a far slot whose laws are only NaN while another
-// species' law is what is infinite, and not an overflow. Each spared candidate
-// costs one evaluation, and each one infinite on its own two more; none of
-// this runs unless an infinity was read at a step started far below 0.
+// species' law is what is infinite, and not an overflow that reaches up to 0.
+//
+// An overflow the run has carried the slot to is left alone too (issue #1679),
+// marked kCarriedToOverflow and not kAtPole. X' = -(1 + X^2) from X = 1 is
+// tan(pi/4 - t), which has no value from t = 3pi/4 on; near -1e154 X*X
+// overflows, the retry read X at 0, where the law is -1, and the run returned
+// X(3) = -3.5e+286 with no error. That infinity is no edge at 0: the law is
+// finite with the slot one atol below 0, well inside the band the clamp is
+// for, so its value at 0 is not what the law tends to where the run is.
+// exp(-1/S) is the other kind: infinite for every S in (-1/709.8, 0), all the
+// way up to 0, so one atol below 0 too, and it is clamped as before. A slot
+// left alone this way keeps the reading infinite, and the callback hands CVODE
+// its recoverable code: the step is cut, a predictor that only overshot goes
+// on from a shorter one, and a solution that leaves through minus infinity
+// ends as CV_CONV_FAILURE with the non-finite reading named, as it does for a
+// species declared negative or one that leaves through plus infinity.
+//
+// Each spared candidate costs one evaluation, and each one infinite on its own
+// two or three more; none of this runs unless an infinity was read at a step
+// started far below 0.
+constexpr char kAtPole = 1;
+constexpr char kCarriedToOverflow = 2;
 template <class ReadAt>
 static const char *spare_at_pole(CvodeUserData *data, N_Vector y, const double *values,
                                  std::size_t count, ReadAt &&read_at) {
     data->clamp_far_any = false;
+    data->clamp_at_pole_any = false;
     bool infinite = false;
     for (std::size_t k = 0; k < count && !infinite; ++k)
         infinite = std::isinf(values[k]);
@@ -1308,7 +1332,8 @@ static const char *spare_at_pole(CvodeUserData *data, N_Vector y, const double *
             continue;
         double *x = clamp_state_nonneg(data, y);
         x[i] = y_ptr[i];
-        bool pole = read_at(x) == ClampReading::infinite;
+        const bool infinite_here = read_at(x) == ClampReading::infinite;
+        bool pole = infinite_here;
         // A pole the run has landed on is infinite at that one point and finite
         // a hair to either side of it; an overflow is infinite over a stretch:
         // exp(-1/S), 0 at S = 0, overflows for every S in (-1/709.8, 0), where an
@@ -1320,10 +1345,23 @@ static const char *spare_at_pole(CvodeUserData *data, N_Vector y, const double *
             x[i] = y_ptr[i] * side;
             pole = read_at(x) != ClampReading::infinite;
         }
-        if (pole)
-            any = true;
-        else
+        // An overflow, then: one that is finite an atol below 0 does not reach
+        // up to 0, and the run carried the slot to it (issue #1679).
+        bool carried = false;
+        if (infinite_here && !pole) {
+            x = clamp_state_nonneg(data, y);
+            x[i] = -data->clamp_atol[i];
+            carried = read_at(x) == ClampReading::finite;
+        }
+        if (pole) {
+            data->clamp_far[i] = kAtPole;
+            data->clamp_at_pole_any = true;
+        } else if (carried) {
+            data->clamp_far[i] = kCarriedToOverflow;
+        } else {
             data->clamp_far[i] = 0;
+        }
+        any = any || pole || carried;
     }
     data->clamp_far_any = any;
     return any ? data->clamp_far.data() : nullptr;
@@ -1345,13 +1383,13 @@ template <class ReadAt>
 static bool followed_below_zero(CvodeUserData *data, N_Vector y, double t, const char *src,
                                 ReadAt &&read_at) {
     const int ns = data->model->n_species();
-    if (!data->clamp_far_any || read_at(clamp_state_nonneg(data, y)) != ClampReading::finite)
+    if (!data->clamp_at_pole_any || read_at(clamp_state_nonneg(data, y)) != ClampReading::finite)
         return false;
     if (!data->below_zero_refusal.empty())
         return true;
     std::vector<std::pair<double, int>> named_slots; // (depth in atols, slot)
     for (std::size_t i = 0; i < data->clamp_far.size(); ++i) {
-        if (data->clamp_far[i])
+        if (data->clamp_far[i] == kAtPole)
             named_slots.emplace_back(-data->clamp_start[i] / data->clamp_atol[i],
                                      static_cast<int>(i));
     }
