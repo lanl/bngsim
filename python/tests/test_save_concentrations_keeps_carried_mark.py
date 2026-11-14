@@ -142,7 +142,9 @@ def test_a_clone_keeps_the_mark_and_its_baseline(model):
 
 
 def test_a_clone_restores_a_named_advanced_snapshot_with_its_mark(model):
-    """A clone carries the named snapshots, and which of them a run advanced."""
+    """A clone carries the named snapshots, and which of them a run advanced,
+    on both axes: restored after the clone's reset(), the label refuses a
+    sensitivity run and sensitivity_ic, as on the model it was saved on."""
     plain_equilibration(model)
     model.save_concentrations("eq")
     model.reset()
@@ -150,6 +152,8 @@ def test_a_clone_restores_a_named_advanced_snapshot_with_its_mark(model):
     assert clone._core.ic_state_dirty is False
     clone.restore_concentrations("eq")
     refuses(clone)
+    with pytest.raises(bngsim.SimulationError, match="sensitivity_ic"):
+        ic_sens(clone)
 
 
 def test_restoring_a_literal_snapshot_keeps_a_mark_already_set(model):
@@ -276,13 +280,16 @@ def test_a_subset_model_keeps_the_mark_of_its_baseline(model):
 def test_a_label_saved_again_from_a_fresh_state_restores_clean(model):
     """A label's mark is that of its latest save: saved from an advanced state,
     then saved again after reset() to the declared ICs, it restores as a
-    fresh start, the closed form from A(0) = 0."""
+    fresh start on both axes, e^(-kd t) and the closed form from A(0) = 0."""
     plain_equilibration(model)
     model.save_concentrations("x")
     model.reset()
     model.save_concentrations("x")
     model.restore_concentrations("x")
     assert model._core.ic_state_dirty is False
+    np.testing.assert_allclose(ic_sens(model), np.exp(-KD * np.array(TS)), rtol=1e-6)
+    model.reset()  # that measurement was a run
+    model.restore_concentrations("x")
     np.testing.assert_allclose(
         dA(sens(model).run(sample_times=TS, **TOL)), from_literal(0.0), rtol=1e-6
     )
@@ -391,6 +398,24 @@ def test_a_simulator_snapshot_of_an_advanced_state_refuses_ic_sensitivities(mode
     model.reset()
     sim.restore(at_baseline)
     np.testing.assert_allclose(ic_sens(model), np.exp(-KD * np.array(TS)), rtol=1e-6)
+
+
+def test_ic_sensitivities_from_a_baseline_saved_with_its_seed(model):
+    """Sensitivity equilibration -> save keeps the seed (#81) and makes the
+    state the baseline, so it is the initial condition on both axes: a carried
+    run gives dA/d(kp, kd) = [2, -8] from the seed and ∂A(t)/∂A(0) = e^(-kd t)
+    from e_k, and the same after reset() to it. Main refused the
+    initial-condition axis here, since the seed kept the mark."""
+    sens(model).run(**EQ)
+    model.save_concentrations()
+    both = bngsim.Simulator(model, method="ode", sensitivity_params=NAMES, sensitivity_ic=["A()"])
+    want_theta = np.array([[1 / KD, -KP / KD**2]] * len(TS))
+    want_ic = np.exp(-KD * np.array(TS))
+    for _ in range(2):
+        r = both.run(sample_times=TS, carry_sensitivities=True, **TOL)
+        np.testing.assert_allclose(dA(r), want_theta, rtol=1e-6)
+        np.testing.assert_allclose(np.asarray(r.sensitivities_ic)[:, 0, 0], want_ic, rtol=1e-6)
+        model.reset()
 
 
 def test_a_named_snapshot_saved_at_the_baseline_restores_as_the_initial_condition(model):
