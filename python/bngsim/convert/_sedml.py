@@ -2664,6 +2664,7 @@ class _TaskReader:
         # names it (write_sedml_protocol's run_i, beside its chain_i).
         read = {var.get("taskReference") for var in _findall_local(self.root, "variable")}
         expansions: list[list[object]] = []
+        ids: list[str] = []
         for elem in listed:
             if elem.get("id") in inner and elem.get("id") not in read:
                 continue  # run inside the repeatedTask that names it
@@ -2672,7 +2673,8 @@ class _TaskReader:
                 steps = steps[1:]  # an expansion starts from the initial state
             if any(isinstance(s, Experiment) for s in steps):
                 expansions.append(steps)
-                self._after_a_reset_scan(elem.get("id") or "a task", steps)
+                ids.append(elem.get("id") or "a task")
+                self._after_a_reset_scan(ids[-1], steps)
         # A chain that repeats the start of a longer one is the same runs from
         # the same state: write_sedml_protocol writes a run that continues an
         # earlier one as a repeatedTask that replays the runs before it, and
@@ -2689,6 +2691,8 @@ class _TaskReader:
                 len(other) > len(start) and other[: len(start)] == start for other in starts
             )
         ]
+        if self._sbml is None:
+            self._perhaps_a_first_run(ids, expansions, kept)
         reset = (
             StateChange(kind="reset_concentrations"),
             StateChange(kind="reset_parameters", label=_INITIAL_LABEL),
@@ -2705,13 +2709,57 @@ class _TaskReader:
             out.insert(0, StateChange(kind="save_parameters", label=_INITIAL_LABEL))
         return ProtocolSpec(steps=tuple(out), source=None, dropped=(), lossy=tuple(self.lossy))
 
+    def _perhaps_a_first_run(
+        self, ids: list[str], expansions: list[list[object]], kept: list[list[object]]
+    ) -> None:
+        """Say, with no SBML, where a task read as a run of its own is the
+        start of a longer chain but for parameters the chain sets before its
+        first run: write_sedml_protocol writes those where the SBML computes
+        them by an initialAssignment, and the two are then one run, which the
+        SBML would tell (issue #1733). The numbers are the same either way."""
+        from bngsim.convert._protocol import Experiment, StateChange
+
+        def split(steps: list[object]) -> tuple[list[object], list[object]]:
+            first = next(k for k, s in enumerate(steps) if isinstance(s, Experiment))
+            return steps[:first], steps[first:]
+
+        for tid, steps in zip(ids, expansions, strict=True):
+            if not any(steps is k for k in kept):
+                continue
+            head, runs = split(steps)
+            for other_id, other in zip(ids, expansions, strict=True):
+                more, other_runs = split(other)
+                if len(other_runs) <= len(runs) or other_runs[: len(runs)] != runs:
+                    continue
+                rest = iter(more)
+                if len(more) == len(head) or not all(s in rest for s in head):
+                    continue  # not the task's changes, in order, among the chain's
+                extra = list(more)
+                for s in head:
+                    extra.remove(s)
+                sets = [
+                    s for s in extra if isinstance(s, StateChange) and s.kind == "set_parameter"
+                ]
+                if len(sets) != len(extra):
+                    continue
+                names = sorted({s.target or "" for s in sets})
+                warnings.warn(
+                    f"{tid} is read as a run of its own beside {other_id}, which starts "
+                    f"with the same run but sets {names} before it: if the SBML computes "
+                    "those by initialAssignments the two are one run, which sbml= would "
+                    "tell. The numbers are the same either way",
+                    ConversionWarning,
+                    stacklevel=_outside(),
+                )
+                break
+
     def _start(self, steps: list[object]) -> list[object]:
         """*steps* without those before its first run that set an element to
         what the SBML's initialAssignment of it computes, where a replay,
         whose model computes it, holds the same without them: nothing else
         sets the element before that run, and whatever sets something the
-        assignment reads is followed by such a step again, before any other
-        step and before the run. Else *steps* as they are."""
+        assignment reads is followed by such a step again, before any step
+        that reads the element and before the run. Else *steps* as they are."""
         from bngsim.convert._protocol import Experiment
 
         first = next((k for k, s in enumerate(steps) if isinstance(s, Experiment)), len(steps))
@@ -2719,14 +2767,22 @@ class _TaskReader:
         if any(s is _RESET for s in head):
             return steps
         # A step that says an assignment again, where the next step that is
-        # not one is to the same element: nothing between the two read it.
+        # not one and that reads or sets the same element sets it: nothing
+        # between the two read it.
         superseded: set[int] = set()
         for k, s in enumerate(head):
             if isinstance(s, _Restated):
+                name = s.step.target
                 after = next(
-                    (o for o in head[k:] if not isinstance(o, (_Restated, _PerPoint))), None
+                    (
+                        o
+                        for o in head[k:]
+                        if not isinstance(o, (_Restated, _PerPoint))
+                        and (o.target == name or _names(o, name))
+                    ),
+                    None,
                 )
-                if after is not None and after.target == s.step.target:
+                if after is not None and after.target == name and not _names(after, name):
                     superseded.add(k)
         set_otherwise = {s.target for s in head if not isinstance(s, (_Restated, _PerPoint))}
         replaced: set[str] = set()  # set to something else so far
@@ -2742,8 +2798,8 @@ class _TaskReader:
                 if self._assignment_reads(name, replaced) & stale:
                     stale.add(name)  # computed from a value that is behind
                 continue
-            if stale:
-                return steps
+            if any(_names(s.step if isinstance(s, _Restated) else s, r) for r in stale):
+                return steps  # computed from a value that is behind
             replaced.add(name)
             stale |= {r for r in restated if name in self._assignment_reads(r, replaced)}
         if stale:
@@ -3153,6 +3209,16 @@ class _TaskReader:
 _TARGET_ASSIGNMENT = re.compile(
     r"""initialAssignment\[\s*@symbol\s*=\s*['"]([^'"]+)['"]\s*\]\s*$"""
 )
+
+
+def _names(step, name: str) -> bool:
+    """Whether a state change reads the element *name*: its expression names
+    it, or it adds to it."""
+    if step.kind == "add_concentration" and step.target == name:
+        return True
+    return step.value_expr is not None and (
+        re.search(rf"(?<![\w.]){re.escape(name)}(?![\w.])", step.value_expr) is not None
+    )
 
 
 def _l3_formula(math: ET.Element) -> str | None:

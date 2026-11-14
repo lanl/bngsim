@@ -1758,8 +1758,32 @@ def _bare_and_sbml(omex: Path) -> tuple[str, str]:
             "rtol=>1e-10})\n" + RUN,
             _continued(math.exp(math.log(8)), [(1, 1)] * 4, total=math.exp(math.log(8)))[2:],
         ),
+        # k2 = k1*3 is said again after k1, and the action sets k2 itself after
+        # a change that does not read it.
+        (
+            "declared",
+            'setParameter("k1",5)\nsetConcentration("B()",10)\nsetParameter("k2",7)\n' + RUN + RUN,
+            [_from(100, 5, 7, total=110), _from(_from(100, 5, 7, total=110), 5, 7, total=110)],
+        ),
+        # kr = k1*2, which an action set, is said again after each change to
+        # k1, before k2 = k1*3 is: it does not read k2, which is behind then.
+        (
+            "beside",
+            'setParameter("kr","k1*2")\nsetParameter("k1",5)\nsetParameter("k1",2)\n' + RUN + RUN,
+            [_eq(2, 4), _from(_eq(2, 4), 2, 4)],
+        ),
     ],
-    ids=["derived", "seed", "derived-of-derived", "sweep", "replaced", "cut-off", "digits"],
+    ids=[
+        "derived",
+        "seed",
+        "derived-of-derived",
+        "sweep",
+        "replaced",
+        "cut-off",
+        "digits",
+        "replaced-after-another-change",
+        "another-change-while-behind",
+    ],
 )
 def test_a_chain_read_back_runs_its_first_run_once(tmp_path, network, actions, want):
     """A run that continues the first replays it in a chain, on the model as
@@ -1778,6 +1802,45 @@ def test_a_chain_read_back_runs_its_first_run_once(tmp_path, network, actions, w
     with read_omex(tmp_path / "m.omex") as archive:
         runs = bngsim.run_protocol(archive.load_model(), spec, rtol=1e-10, atol=1e-12)
     assert [_replay_points(run)[-1] for run in runs] == pytest.approx(want, rel=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("network", "experiments", "said"),
+    [("declared", 3, True), ("plain", 2, False)],
+    ids=["derived", "plain"],
+)
+def test_a_chain_read_without_the_sbml_says_where_its_first_run_may_be_read_twice(
+    tmp_path, network, experiments, said
+):
+    """Without the SBML the reader cannot tell that the chain's setValue of
+    k2 says again what an initialAssignment computes: the first run's own
+    task is read as a run of its own, with the same numbers, and the reader
+    says so. With no such setValue the two are one run, and it says nothing."""
+    net, model = _NETWORKS[network]
+    _pack(
+        tmp_path,
+        'generate_network({overwrite=>1})\nsetParameter("k1",5)\n' + RUN + RUN,
+        net=net,
+        model=model,
+    )
+    bare, _ = _bare_and_sbml(tmp_path / "m.omex")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        spec = read_sedml_protocol(bare)
+    notes = [str(w.message) for w in caught if issubclass(w.category, ConversionWarning)]
+    assert spec.lossy == ()
+    assert len(spec.experiments) == experiments
+    assert bool(notes) == said
+    if said:
+        (note,) = notes
+        assert "task_0" in note and "chain_1" in note and "['k2']" in note and "sbml=" in note
+    k2 = 15 if network == "declared" else 1
+    with read_omex(tmp_path / "m.omex") as archive:
+        runs = bngsim.run_protocol(archive.load_model(), spec, rtol=1e-10, atol=1e-12)
+    first = _eq(5, k2)
+    assert [_end(run.result) for run in runs] == pytest.approx(
+        [first] * (experiments - 1) + [_from(first, 5, k2)], rel=1e-6
+    )
 
 
 def _before(changes: list[ET.Element]) -> list[ET.Element]:
