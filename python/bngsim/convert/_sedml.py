@@ -1538,12 +1538,9 @@ class _ProtocolWriter:
 
         if not self._experiments:
             return
+        # With neither the model nor its SBML, a report names the time alone,
+        # and still says which task runs each experiment.
         selectors = self._output_selectors()
-        if not selectors:
-            self._say(
-                "SED-ML's reports hold each experiment's time alone: the quantities it "
-                "reports need the model or its SBML (pass model= or sbml=)"
-            )
         targeted = [(sel, _selector_target(sel, self.targets)) for sel in selectors]
         untargeted = [sel for sel, attrs in targeted if not attrs]
         if untargeted:

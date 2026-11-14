@@ -563,18 +563,46 @@ def test_a_constant_set_value_beside_a_sweep_is_a_step_before_it():
     assert ends == pytest.approx([100 * math.exp(-1), 100 * math.exp(-2)], rel=REL)
 
 
-def test_a_set_value_that_reads_the_range_beside_the_sweep_is_lossy():
-    ranges = '<vectorRange id="r"><value>1</value><value>2</value></vectorRange>'
-    changes = _set_value(PARAM.format("k1"), "<ci>r</ci>", rng="r") + _set_value(
-        PARAM.format("k2"), "<apply><times/><cn>2</cn><ci>r</ci></apply>"
-    )
-    doc = _doc(
+def _closed_a(k1, k2, a0=100.0, t=1.0):
+    """A(t) of A <-> B from A = a0, B = 0."""
+    eq = a0 * k2 / (k1 + k2)
+    return eq + (a0 - eq) * math.exp(-(k1 + k2) * t)
+
+
+def _swept(changes, ranges='<vectorRange id="r"><value>1</value><value>2</value></vectorRange>'):
+    return _doc(
         [("s", 1.0)], [("m", "model.xml", "")], [("t", "m", "s")], generators=[("sweep", "A")]
     ).replace(
         "</listOfTasks>", _rt("sweep", "t", ranges=ranges, changes=changes) + "</listOfTasks>"
     )
+
+
+def test_a_set_value_that_reads_the_swept_range_follows_the_swept_parameter():
+    """k1 = r and k2 = 2r over r = (1, 2): k2 is 2*k1 at each point, which a
+    parameter set to that expression is through the scan (issue #1682). It was
+    refused as lossy."""
+    changes = _set_value(PARAM.format("k1"), "<ci>r</ci>", rng="r") + _set_value(
+        PARAM.format("k2"), "<apply><times/><cn>2</cn><ci>r</ci></apply>"
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", ConversionWarning)
+        spec = read_sedml_protocol(_swept(changes))
+    assert spec.lossy == ()
+    set_k2, scan = spec.steps
+    assert (set_k2.kind, set_k2.target, set_k2.evaluated_once) == ("set_parameter", "k2", False)
+    assert scan.scan_values == (1.0, 2.0)
+    (run,) = bngsim.run_protocol(bngsim.Model.from_sbml_string(SBML), spec, rtol=1e-10, atol=1e-12)
+    got = [float(r.species[-1, r.species_names.index("A")]) for r in run.scan_results]
+    assert got == pytest.approx([_closed_a(1, 2), _closed_a(2, 4)], rel=1e-7)
+
+
+def test_a_set_value_that_reads_the_range_beside_a_computed_sweep_is_lossy():
+    """k1 = 10^r beside k2 = 2r: k2 is no expression of k1 a scan holds."""
+    changes = _set_value(
+        PARAM.format("k1"), "<apply><power/><cn>10</cn><ci>r</ci></apply>", rng="r"
+    ) + _set_value(PARAM.format("k2"), "<apply><times/><cn>2</cn><ci>r</ci></apply>")
     with pytest.warns(ConversionWarning, match="from its range beside the swept"):
-        spec = read_sedml_protocol(doc)
+        spec = read_sedml_protocol(_swept(changes))
     assert len(spec.lossy) == 1 and [getattr(s, "kind", None) for s in spec.steps] == ["scan"]
 
 
@@ -670,19 +698,31 @@ def test_a_task_on_a_model_the_document_does_not_define_is_lossy():
 # ── Round two: the combined patch's own review (A, B, D, E, F, G, H6, H7) ─────
 
 
-def test_a_sweep_that_sets_a_function_of_its_range_is_lossy():
-    """k1 = 10^r over r = (1, 2) scanned k1 = 1, 2: 56.77 / 36.65 for 9.09 / 0.99."""
-    ranges = '<vectorRange id="r"><value>1</value><value>2</value></vectorRange>'
+def test_a_sweep_that_sets_a_function_of_its_range_runs_its_values():
+    """k1 = 10^r over r = (1, 2) runs k1 = 10, 100 (issue #1664). It once ran
+    k1 = 1, 2 with no word, and then was refused as lossy."""
     changes = _set_value(
         PARAM.format("k1"), "<apply><power/><cn>10</cn><ci>r</ci></apply>", rng="r"
     )
-    doc = _doc(
-        [("s", 1.0)], [("m", "model.xml", "")], [("t", "m", "s")], generators=[("sweep", "A")]
-    ).replace(
-        "</listOfTasks>", _rt("sweep", "t", ranges=ranges, changes=changes) + "</listOfTasks>"
+    spec = read_sedml_protocol(_swept(changes))
+    assert spec.lossy == ()
+    (scan,) = spec.experiments
+    assert scan.scan_values == (10.0, 100.0)
+    (run,) = bngsim.run_protocol(bngsim.Model.from_sbml_string(SBML), spec, rtol=1e-10, atol=1e-12)
+    got = [float(r.species[-1, r.species_names.index("A")]) for r in run.scan_results]
+    assert got == pytest.approx([_closed_a(10, 1), _closed_a(100, 1)], rel=1e-7)
+
+
+def test_a_sweep_over_the_models_values_is_lossy():
+    """k1 = r*k2 reads the model, which a scan's values do not."""
+    changes = _set_value(
+        PARAM.format("k1"),
+        "<apply><times/><ci>r</ci><ci>v</ci></apply>",
+        rng="r",
+        variables=[("v", PARAM.format("k2").rsplit("/@", 1)[0])],
     )
-    with pytest.warns(ConversionWarning, match="a function of its range"):
-        spec = read_sedml_protocol(doc)
+    with pytest.warns(ConversionWarning, match="from its range and the model's values"):
+        spec = read_sedml_protocol(_swept(changes))
     assert len(spec.lossy) == 1 and spec.experiments == []
 
 

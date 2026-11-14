@@ -589,6 +589,91 @@ def _saved_before_generation(steps: Sequence[object]) -> _SavedBeforeGeneration:
     )
 
 
+#: The label :func:`_on_its_network` saves the network's state under, to come
+#: back to it after making each state the protocol saved before generation.
+_NETWORK_LABEL = "bngsim_network"
+
+
+def _on_its_network(protocol: ProtocolSpec) -> ProtocolSpec:
+    """*protocol* as an actions block for the network it generated, loaded on
+    its own: what :func:`~bngsim.convert.omex_to_net` writes beside its
+    ``.net`` (issue #1687).
+
+    That network holds what the actions before the generation point did, so
+    they are left out, and BNG2.pl, which reads the network whole, applies
+    every action of the block: written again, an ``addConcentration`` before
+    generation was added twice. A save among them is made again on the
+    network, with the actions that made what it saved (issue #1668). One whose
+    values were as declared, which the network does not hold, cannot be, and
+    is said where a later reset goes back to it."""
+    from bngsim._protocol_run import _DEFAULT_LABEL
+
+    generation = protocol.generation_step or 0
+    if not generation:
+        return protocol
+    before = _saved_before_generation(protocol.steps[:generation])
+    after = protocol.steps[generation:]
+    prelude: list[object] = []
+    unknown: list[tuple[str, str]] = []
+    for kind, saves in (("concentrations", before.conc), ("parameters", before.params)):
+        save, reset = (
+            ("save_concentrations", "reset_concentrations")
+            if kind == "concentrations"
+            else ("save_parameters", "reset_parameters")
+        )
+        for label, back in saves.items():
+            if back is None:
+                unknown.append((reset, label))
+                continue
+            name = None if label == _DEFAULT_LABEL else label
+            if not back:
+                prelude.append(StateChange(kind=save, label=name))
+                continue
+            prelude.append(StateChange(kind=save, label=_NETWORK_LABEL))
+            prelude.extend(back)
+            prelude.append(StateChange(kind=save, label=name))
+            prelude.append(StateChange(kind=reset, label=_NETWORK_LABEL))
+    if not before.declared and _DEFAULT_LABEL not in before.conc:
+        # An unsaved resetConcentrations() goes to the seed as declared.
+        unknown.append(("reset_concentrations", _DEFAULT_LABEL))
+    for reset, label in unknown:
+        if _goes_back_to(after, reset, label):
+            what = "concentrations" if reset == "reset_concentrations" else "parameters"
+            saved = label in (before.conc if what == "concentrations" else before.params)
+            state = f"saved under {label!r}" if saved else "as declared"
+            warnings.warn(
+                f"the actions block goes back to the {what} {state} before the network was "
+                "generated, whose values are the model's as declared; the network holds what "
+                "an action before generation changed them to, so the block cannot make that "
+                "state, and BNG2.pl, run on the network, goes back to another",
+                ConversionWarning,
+                stacklevel=3,
+            )
+    return ProtocolSpec(
+        steps=tuple(prelude) + tuple(after),
+        source=protocol.source,
+        dropped=protocol.dropped[protocol.dropped_before_generation :],
+        lossy=protocol.lossy[protocol.lossy_before_generation :],
+        network_gen=protocol.network_gen,
+        generation_step=0,
+    )
+
+
+def _goes_back_to(steps: Sequence[object], reset: str, label: str) -> bool:
+    """Whether *steps* reset to *label* before saving it again."""
+    from bngsim._protocol_run import _DEFAULT_LABEL
+
+    save = "save_concentrations" if reset == "reset_concentrations" else "save_parameters"
+    for step in steps:
+        if not isinstance(step, StateChange) or (step.label or _DEFAULT_LABEL) != label:
+            continue
+        if step.kind == save:
+            return False
+        if step.kind == reset:
+            return True
+    return False
+
+
 #: The label :func:`combine_protocols` saves the first protocol's state under at
 #: its generation point, and resets to at each boundary between the protocols it joins.
 _COMBINE_LABEL = "combined_start"
@@ -1034,7 +1119,19 @@ def write_bngl_protocol(protocol: ProtocolSpec, out_path: str | Path | None = No
         The ``begin actions`` … ``end actions`` block (trailing newline included).
     """
     lines = ["begin actions", ""]
-    for step in protocol.steps:
+    for k, step in enumerate(protocol.steps):
+        if isinstance(step, StateChange) and step.evaluated_once and step.value_expr:
+            moved = _moved_later(protocol.steps[k + 1 :], step.value_expr)
+            if moved:
+                warnings.warn(
+                    f"{_state_change_action(step)} is evaluated once where it runs (a SED-ML "
+                    f"change); BNG2.pl keeps the value as that expression, so the parameter "
+                    f"follows {', '.join(moved)} through the later actions that change "
+                    f"{'it' if len(moved) == 1 else 'them'}, and runs another value there "
+                    "(issue #1682)",
+                    ConversionWarning,
+                    stacklevel=2,
+                )
         if isinstance(step, Experiment):
             if step.output_start is not None:
                 warnings.warn(
@@ -1057,6 +1154,22 @@ def write_bngl_protocol(protocol: ProtocolSpec, out_path: str | Path | None = No
     if out_path is not None:
         Path(out_path).write_text(text)
     return text
+
+
+def _moved_later(steps: Sequence[object], text: str) -> list[str]:
+    """The names *text* reads that a step of *steps* sets: a ``setParameter``
+    of it, a scan over it, or a ``resetParameters``."""
+    names = set(re.findall(r"(?<![\w.])([A-Za-z_]\w*)(?!\w)", text))
+    moved: list[str] = []
+    for step in steps:
+        if isinstance(step, StateChange):
+            if step.kind == "set_parameter" and step.target in names:
+                moved.append(step.target or "")
+            elif step.kind == "reset_parameters":
+                moved.extend(sorted(names))
+        elif isinstance(step, Experiment) and step.is_scan and step.scan_parameter in names:
+            moved.append(step.scan_parameter or "")
+    return list(dict.fromkeys(moved))
 
 
 def _num_list(v: Any) -> list[float] | None:

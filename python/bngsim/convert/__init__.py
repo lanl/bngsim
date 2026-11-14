@@ -1477,9 +1477,11 @@ def omex_to_net(
             if dest is None and out_path is not None:
                 dest = Path(out_path).with_suffix(".bngl")
             if dest is not None:
-                from bngsim.convert._protocol import write_bngl_protocol
+                from bngsim.convert._protocol import _on_its_network, write_bngl_protocol
 
-                write_bngl_protocol(full_protocol, dest)
+                # For the .net written here, which holds what the actions
+                # before the protocol's generation point did (issue #1687).
+                write_bngl_protocol(_on_its_network(full_protocol), dest)
                 report.bngl_out = str(dest)
 
     # Re-label the source so the report reads as an OMEX unpack, not a bare SBML.
