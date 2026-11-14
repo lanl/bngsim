@@ -148,6 +148,15 @@ def _run_report(omex: Path) -> dict[str, dict[str, float]]:
     model as changed, changes applied in order on the model as changed so far;
     a repeatedTask resets where resetModel says so, applies its setValues and
     runs its subtasks in order on one model state)."""
+    return {
+        rid: {label: points[-1] for label, points in values.items()}
+        for rid, values in _run_points(omex).items()
+    }
+
+
+def _run_points(omex: Path) -> dict[str, dict[str, list[float]]]:
+    """:func:`_run_report`, with each data set's value at the end of each
+    iteration of the task it reads (one value for a task)."""
     roadrunner = pytest.importorskip("roadrunner")
     z = zipfile.ZipFile(omex)
     sed = ET.fromstring(z.read("simulation.sedml"))
@@ -182,7 +191,7 @@ def _run_report(omex: Path) -> dict[str, dict[str, float]]:
                 doc.find(path.replace("/sbml:sbml/", "./"), NS).set(attr, repr(value))
         return ET.tostring(doc, encoding="unicode")
 
-    def run(task: ET.Element, rr):
+    def run(task: ET.Element, rr, each=None):
         if task.tag.endswith("}task"):
             if rr is None:
                 rr = roadrunner.RoadRunner(sbml_of(task.get("modelReference")))
@@ -220,18 +229,30 @@ def _run_report(omex: Path) -> dict[str, dict[str, float]]:
                 rr[_rr_key(sv.get("target"))] = _evaluate(sv.find(f"{{{MATHML}}}math"), env)
             for sub in subs:
                 run(tasks[sub.get("task")], rr)
+            if each is not None:
+                each(rr)
         return rr
 
     generators = {g.get("id"): g for g in sed.iter(f"{{{SED}}}dataGenerator")}
-    out: dict[str, dict[str, float]] = {}
+    out: dict[str, dict[str, list[float]]] = {}
     for report in sed.iter(f"{{{SED}}}report"):
-        values: dict[str, float] = {}
+        values: dict[str, list[float]] = {}
         for ds in report.iter(f"{{{SED}}}dataSet"):
             var = generators[ds.get("dataReference")].find(".//s:variable", NS)
-            rr = run(tasks[var.get("taskReference")], None)
-            values[ds.get("label")] = (
-                float(rr.getCurrentTime()) if var.get("symbol") else rr[_rr_key(var.get("target"))]
-            )
+            points: list[float] = []
+
+            def read(rr, var=var, points=points):
+                points.append(
+                    float(rr.getCurrentTime())
+                    if var.get("symbol")
+                    else rr[_rr_key(var.get("target"))]
+                )
+
+            task = tasks[var.get("taskReference")]
+            rr = run(task, None, read)
+            if task.tag.endswith("}task"):
+                read(rr)
+            values[ds.get("label")] = points
         out[report.get("id")] = values
     return out
 
@@ -1031,6 +1052,22 @@ def test_a_value_that_is_not_a_number_is_refused_as_one(tmp_path):
         _replay(NET, protocol, tmp_path)
 
 
+def _sbml_calling_a_function(tmp_path: Path) -> str:
+    """The SBML of DECLARED_NET with k2's initialAssignment as triple(k1), a
+    call of the SBML's own function, which SED-ML math cannot make."""
+    import libsbml
+
+    (tmp_path / "declared.net").write_text(DECLARED_NET)
+    text = bngsim.convert.net_to_sbml(tmp_path / "declared.net", validate=None).sbml_text
+    doc = libsbml.readSBMLFromString(text)
+    m = doc.getModel()
+    fd = m.createFunctionDefinition()
+    fd.setId("triple")
+    fd.setMath(libsbml.parseL3Formula("lambda(x, 3*x)"))
+    m.getInitialAssignment("k2").setMath(libsbml.parseL3Formula("triple(k1)"))
+    return libsbml.writeSBMLToString(doc)
+
+
 @pytest.mark.parametrize(
     ("actions", "noted"),
     [
@@ -1040,26 +1077,22 @@ def test_a_value_that_is_not_a_number_is_refused_as_one(tmp_path):
         ),
         (RUN + 'setParameter("k1",5)\n' + RUN, True),
         ('setParameter("k1",5)\n' + RUN, False),
-        # k2 already a number: the standard elements are exact (87.50, 58.33).
         ('setParameter("k2",7)\n' + RUN + 'setParameter("k1",5)\n' + RUN, False),
     ],
     ids=["scan", "set-between-runs", "set-before-the-run", "replaced-before"],
 )
-def test_a_parameter_set_as_the_model_runs_under_an_assignment_is_recorded(
+def test_an_assignment_sedml_math_cannot_say_is_recorded_where_it_is_lost(
     tmp_path, actions, noted
 ):
-    """A scan of k1, with k2 = k1*3 declared, ran k2 = 3 at every point on
-    libRoadRunner (37.52 for 75.00 at k1 = 5), and nothing said so. A change
-    made before the model is loaded is exact, and says nothing."""
-    report, said = _pack(
-        tmp_path,
-        "generate_network({overwrite=>1})\n" + actions,
-        net=DECLARED_NET,
-        model=DECLARED_MODEL,
-    )
-    hits = [n for n in report.sedml_lossy if "set k1 as the model runs" in n and "['k2']" in n]
+    """k2 = triple(k1): SED-ML math names no SBML function, so the standard
+    elements cannot set k2 again as k1 moves, and say so (issue #1684). A
+    change made before the model is loaded is exact, and says nothing."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        write_sedml_protocol(parse_bngl_protocol(actions), sbml=_sbml_calling_a_function(tmp_path))
+    said = [str(w.message) for w in caught if issubclass(w.category, ConversionWarning)]
+    hits = [n for n in said if "set k1 as the model runs" in n and "['k2']" in n]
     assert bool(hits) == noted
-    assert all(h in said for h in hits)
 
 
 def test_a_reset_sweep_before_more_of_a_chain_is_lossy():
@@ -1107,19 +1140,6 @@ SEEDED_NET = NET.replace("    2 k2 1\n", "    2 k2 1\n    3 A0 100\n").replace(
 SEEDED_MODEL = MODEL.replace("  k2 1\n", "  k2 1\n  A0 100\n").replace("A() 100", "A() A0")
 
 
-def test_a_first_scan_of_a_seeds_parameter_is_recorded(tmp_path):
-    """A scan of A0 with no reset, before any run: BNG2.pl's A follows A0 at
-    the first point (28.38, 25.46, 25.06); the standard elements leave A at
-    100 (50.12 at the last), and nothing said so."""
-    actions = (
-        "generate_network({overwrite=>1})\n"
-        'parameter_scan({method=>"ode",parameter=>"A0",par_scan_vals=>[50,100,150],'
-        "reset_conc=>0,t_end=>1,n_steps=>1})\n"
-    )
-    report, _ = _pack(tmp_path, actions, net=SEEDED_NET, model=SEEDED_MODEL)
-    assert any("set A0 as the model runs" in note for note in report.sedml_lossy)
-
-
 def test_a_reset_sweep_inside_a_chain_inside_a_chain_is_lossy():
     """The sweep ends an inner chain, and the outer one runs a task after it:
     SED-ML continues from the last point (0.3012), a replay from A = 1 (0.5488)."""
@@ -1156,3 +1176,211 @@ def test_a_reset_sweep_inside_a_chain_inside_a_chain_is_lossy():
     with pytest.warns(ConversionWarning, match="a sweep that resets the model at each point"):
         spec = read_sedml_protocol(doc)
     assert len(spec.lossy) == 1
+
+
+# ─── #1733: what the SBML computes by an initialAssignment, as the model runs ─
+
+
+def _from(a: float, k1: float, k2: float, total: float = 100.0, t: float = 1.0) -> float:
+    """A(t) of A <-> B from A = a, B = total - a."""
+    aeq = total * k2 / (k1 + k2)
+    return aeq + (a - aeq) * math.exp(-(k1 + k2) * t)
+
+
+def _continued(a: float, rates, total: float = 100.0) -> list[float]:
+    """A at the end of each run of a sweep that goes on from A = a, at each
+    (k1, k2) in turn."""
+    out = []
+    for k1, k2 in rates:
+        a = _from(a, k1, k2, total)
+        out.append(a)
+    return out
+
+
+SCAN = (
+    'parameter_scan({{method=>"ode",parameter=>"{p}",par_scan_vals=>[{v}],{extra}'
+    "t_end=>1,n_steps=>1,atol=>1e-12,rtol=>1e-10}})\n"
+)
+CHAINED_NET = NET.replace("    2 k2 1\n", "    2 kx k1*3\n    3 k2 kx/3*2\n")
+CHAINED_MODEL = MODEL.replace("  k2 1\n", "  kx k1*3\n  k2 kx/3*2\n")
+SEED_OF_DERIVED_NET = NET.replace(
+    "    2 k2 1\n", "    2 k2 1\n    3 Ab 50\n    4 A0 Ab*2\n"
+).replace("1 A() 100", "1 A() A0")
+SEED_OF_DERIVED_MODEL = MODEL.replace("  k2 1\n", "  k2 1\n  Ab 50\n  A0 Ab*2\n").replace(
+    "A() 100", "A() A0"
+)
+_A1 = _eq(1, 3)  # the first run with k2 = k1*3 declared
+# Each case: the network, its model, the actions after generate_network, and
+# A at the end of each run of the last experiment, as BNG2.pl 2.9.3 gives it
+# (to 4 decimals: the comment after each).
+INITIAL_ASSIGNMENT_CASES = {
+    # 75.4579, 75.0002, 75.0000; the standard elements gave 75.46, 50.12, 37.52
+    "scan-of-what-a-derived-parameter-reads": (
+        "declared",
+        SCAN.format(p="k1", v="1,3,5", extra=""),
+        [_eq(k, 3 * k) for k in (1, 3, 5)],
+    ),
+    # 75.4579, 75.0000, 75.0000
+    "scan-without-reset": (
+        "declared",
+        SCAN.format(p="k1", v="1,3,5", extra="reset_conc=>0,"),
+        _continued(100, [(1, 3), (3, 9), (5, 15)]),
+    ),
+    # 75.0000; the standard elements gave 37.51
+    "set-between-runs": ("declared", RUN + 'setParameter("k1",5)\n' + RUN, [_from(_A1, 5, 15)]),
+    # 75.0000: the run that the second continues sets k1 from the base model
+    "set-before-a-run-that-a-run-continues": (
+        "declared",
+        'setParameter("k1",5)\n' + RUN + RUN,
+        [_from(_eq(5, 15), 5, 15)],
+    ),
+    # 87.5040, 58.3333: k2 set to a number no longer follows k1
+    "a-number-ends-the-assignment": (
+        "declared",
+        'setParameter("k2",7)\n' + RUN + 'setParameter("k1",5)\n' + RUN,
+        [_from(_eq(1, 7), 5, 7)],
+    ),
+    # 75.0000: k2 is back to k1*3, and follows k1
+    "reset-to-the-networks-expression-between-runs": (
+        "declared",
+        "saveParameters()\n"
+        + RUN
+        + 'setParameter("k2",7)\n'
+        + RUN
+        + 'resetParameters()\nsetParameter("k1",5)\n'
+        + RUN,
+        [_from(_from(_A1, 1, 7), 5, 15)],
+    ),
+    # 75.0084, 75.0000, 75.0000
+    "scan-that-continues-a-run": (
+        "declared",
+        RUN + SCAN.format(p="k1", v="1,3,5", extra="reset_conc=>0,"),
+        _continued(_A1, [(1, 3), (3, 9), (5, 15)]),
+    ),
+    # 75.4579, 75.0002, 75.0000 up, then back down from there
+    "bifurcate": (
+        "declared",
+        'bifurcate({method=>"ode",parameter=>"k1",par_min=>1,par_max=>3,n_scan_pts=>3,'
+        "t_end=>1,n_steps=>1,atol=>1e-12,rtol=>1e-10})\n",
+        _continued(100, [(1, 3), (2, 6), (3, 9), (3, 9), (2, 6), (1, 3)]),
+    ),
+    # 68.3262, 66.6708, 66.6667: k2 reads kx, which reads k1
+    "scan-through-two-derived-parameters": (
+        "chained",
+        SCAN.format(p="k1", v="1,3,5", extra=""),
+        [_eq(k, 2 * k) for k in (1, 3, 5)],
+    ),
+    # 28.3834, 56.7668, 85.1501; the standard elements were flat at 56.77
+    "dose-scan": (
+        "seeded",
+        SCAN.format(p="A0", v="50,100,150", extra=""),
+        [_eq(1, 1, a0=a) for a in (50, 100, 150)],
+    ),
+    # 28.3834, 25.4579, 25.0620: A follows A0 at the first point only
+    "dose-scan-without-reset": (
+        "seeded",
+        SCAN.format(p="A0", v="50,100,150", extra="reset_conc=>0,"),
+        _continued(50, [(1, 1)] * 3, total=50),
+    ),
+    # 28.3834, 25.4579, 25.0620 up, then on down
+    "dose-bifurcate": (
+        "seeded",
+        'bifurcate({method=>"ode",parameter=>"A0",par_min=>50,par_max=>150,n_scan_pts=>3,'
+        "t_end=>1,n_steps=>1,atol=>1e-12,rtol=>1e-10})\n",
+        _continued(50, [(1, 1)] * 6, total=50),
+    ),
+    # 25.0084: the chain replays the sweep from A = A0 = 50
+    "run-after-a-dose-scan-without-reset": (
+        "seeded",
+        SCAN.format(p="A0", v="50,100,150", extra="reset_conc=>0,") + RUN,
+        [_from(_continued(50, [(1, 1)] * 3, total=50)[-1], 1, 1, total=50)],
+    ),
+    # 75.0000: k2 follows k1 through the replayed sweep and after it
+    "run-after-a-scan-without-reset": (
+        "declared",
+        SCAN.format(p="k1", v="1,3,5", extra="reset_conc=>0,") + 'setParameter("k1",2)\n' + RUN,
+        [_from(_continued(100, [(1, 3), (3, 9), (5, 15)])[-1], 2, 6)],
+    ),
+    # 25.4579: the run the second continues starts from A = A0 = 50
+    "seed-set-before-a-run-that-a-run-continues": (
+        "seeded",
+        'setParameter("A0",50)\n' + RUN + RUN,
+        [_from(_eq(1, 1, a0=50), 1, 1, total=50)],
+    ),
+    # 50.9158: a run has made A a number, which A0 no longer moves
+    "seed-set-between-runs": (
+        "seeded",
+        RUN + 'setParameter("A0",50)\n' + RUN,
+        [_from(_eq(1, 1), 1, 1)],
+    ),
+    # 28.3834, 56.7668, 85.1501: A0 = Ab*2, and A from A0
+    "dose-scan-through-a-derived-parameter": (
+        "seed-of-derived",
+        SCAN.format(p="Ab", v="25,50,75", extra=""),
+        [_eq(1, 1, a0=2 * ab) for ab in (25, 50, 75)],
+    ),
+}
+_NETWORKS = {
+    "declared": (DECLARED_NET, DECLARED_MODEL),
+    "chained": (CHAINED_NET, CHAINED_MODEL),
+    "seeded": (SEEDED_NET, SEEDED_MODEL),
+    "seed-of-derived": (SEED_OF_DERIVED_NET, SEED_OF_DERIVED_MODEL),
+}
+
+
+def _replay_points(run) -> list[float]:
+    if run.result is not None:
+        return [_end(run.result)]
+    return [_end(r) for r in (*run.scan_results, *run.backward_results)]
+
+
+@pytest.fixture(params=sorted(INITIAL_ASSIGNMENT_CASES))
+def assigned(request, tmp_path):
+    """A case of INITIAL_ASSIGNMENT_CASES packed, with what packing it said."""
+    network, actions, want = INITIAL_ASSIGNMENT_CASES[request.param]
+    net, model = _NETWORKS[network]
+    report, said = _pack(
+        tmp_path, "generate_network({overwrite=>1})\n" + actions, net=net, model=model
+    )
+    return tmp_path / "m.omex", report, said, want
+
+
+def test_the_sedml_sets_what_an_initial_assignment_computes_as_the_model_runs(assigned):
+    """The standard elements, run on libRoadRunner, give BNG2.pl's numbers: at
+    each point of a sweep, or at the end of a chain."""
+    omex, report, said, want = assigned
+    points = _run_points(omex)
+    got = points[sorted(points, key=lambda r: int(r.split("_")[1]))[-1]]["observable:Atot"]
+    assert got == pytest.approx(want if len(got) > 1 else want[-1:], rel=1e-6)
+
+
+def test_following_an_initial_assignment_is_no_loss(assigned):
+    omex, report, said, want = assigned
+    assert report.sedml_lossy == []
+    assert not [s for s in said if "as the model runs" in s]
+
+
+def test_the_standard_elements_read_back_run_what_bng2pl_runs(assigned):
+    """bngsim's reader of the standard elements, with the archive's SBML,
+    reads the setValues that follow an initialAssignment, and the replay
+    runs BNG2.pl's numbers."""
+    omex, report, said, want = assigned
+    sed = zipfile.ZipFile(omex).read("simulation.sedml").decode()
+    bare = re.sub(r"<annotation>.*?</annotation>", "", sed, flags=re.S)
+    with read_omex(omex) as archive:
+        sbml = archive.path_of(archive.master_model_entry())
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", ConversionWarning)
+            spec = read_sedml_protocol(bare, sbml=sbml)
+        assert spec.lossy == ()
+        runs = bngsim.run_protocol(archive.load_model(), spec, rtol=1e-10, atol=1e-12)
+    assert _replay_points(runs[-1]) == pytest.approx(want, rel=1e-6)
+
+
+def test_the_archive_replays_what_bng2pl_runs(assigned):
+    omex, report, said, want = assigned
+    with read_omex(omex) as archive:
+        runs = bngsim.run_protocol(
+            archive.load_model(), archive.load_full_protocol(), rtol=1e-10, atol=1e-12
+        )
+    assert _replay_points(runs[-1]) == pytest.approx(want, rel=1e-6)
