@@ -1101,8 +1101,14 @@ def _sbml_assigning_k2(tmp_path: Path, formula: str) -> str:
 )
 @pytest.mark.parametrize(
     "formula",
-    ["triple(k1)", "k1*3 + 0*time", "rem(k1*3, 7)"],
-    ids=["function", "time", "an-operator-sedml-has-not"],
+    [
+        "triple(k1)",
+        "k1*3 + 0*time",
+        "rem(k1*3, 7)",
+        "quotient(k1*30, 7)",
+        "piecewise(k1*3, implies(k1 > 5, k1 > 6), 1)",
+    ],
+    ids=["function", "time", "rem", "quotient", "implies"],
 )
 def test_an_assignment_sedml_math_cannot_say_is_recorded_where_it_is_lost(
     tmp_path, actions, noted, formula
@@ -1688,6 +1694,9 @@ def test_an_add_to_an_expression_whose_seed_the_network_lost_is_recorded(tmp_pat
     )
     (note,) = [n for n in report.sedml_lossy if "declared amount" in n]
     assert note in said
+    # What the note says they do: 10 added to A0*3 = 300.
+    got = _run_report(tmp_path / "m.omex")["report_0"]["observable:Atot"]
+    assert got == pytest.approx(_eq(1, 1, a0=310), rel=1e-6)
 
 
 def _bare_and_sbml(omex: Path) -> tuple[str, str]:
@@ -1862,6 +1871,20 @@ def test_a_species_set_at_each_point_of_a_sweep_that_goes_on_is_not_a_seed(tmp_p
     with pytest.warns(ConversionWarning, match="from its range beside the swept parameter"):
         spec = read_sedml_protocol(going_on, sbml=sbml)
     assert len(spec.lossy) == 1
+
+
+def test_a_piecewise_of_several_pieces_is_read_as_ifs_in_their_order():
+    """piecewise(10, x < 1, 20, x < 2, 30) takes its first piece whose
+    condition holds: if(x < 1, 10, if(x < 2, 20, 30))."""
+    from bngsim.convert._sedml import _l3_formula
+
+    math = ET.fromstring(
+        f'<math xmlns="{MATHML}"><piecewise>'
+        "<piece><cn>10</cn><apply><lt/><ci>x</ci><cn>1</cn></apply></piece>"
+        "<piece><cn>20</cn><apply><lt/><ci>x</ci><cn>2</cn></apply></piece>"
+        "<otherwise><cn>30</cn></otherwise></piecewise></math>"
+    )
+    assert _l3_formula(math).replace(" ", "") == "if(x<1,10,if(x<2,20,30))"
 
 
 def test_an_expression_with_a_min_and_an_if_is_read_back_and_replays(tmp_path):
