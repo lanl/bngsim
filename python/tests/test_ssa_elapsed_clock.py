@@ -409,6 +409,7 @@ def test_psa_whose_leaps_the_clock_can_place_is_not_refused():
     [
         pytest.param(5e4, 500.0, 2.0, 6, id="500 events a unit"),
         pytest.param(500.0, 100.0, 200.0, 16, id="a slow rate, under the firing refusal's limit"),
+        pytest.param(500.0, 1000.0, 20.0, 16, id="events restart the panels (-2.0%, z = -8)"),
     ],
 )
 def test_recurring_events_far_from_0_keep_the_rate(rate, per_unit, span, seeds):
@@ -420,8 +421,11 @@ def test_recurring_events_far_from_0_keep_the_rate(rate, per_unit, span, seeds):
     of a spacing, and the run came back slow, with no error: -2.27% (z =
     -17.6) at 500 events a unit, and -0.20% at the slow rate, whose firings
     the refusal for #1059's limit passes (z = -2.5 there over 16 seeds, under
-    this bound, so that row guards the regime rather than the bias). Now
-    unbiased: |z| < 5 against the exact rate*span."""
+    this bound, so that row guards the regime rather than the bias). With
+    1000 events a unit at the slow rate, nearly every restart is an event's,
+    and counting the hazard to the event's time rather than to the double the
+    clock moves to lost 2.0% (z = -8). Now unbiased: |z| < 5 against the exact
+    rate*span."""
     t_end = 1e12
     text = (
         "species A = 0; species B = 0;\n"

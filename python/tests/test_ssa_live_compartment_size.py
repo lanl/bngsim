@@ -149,6 +149,19 @@ def test_a_run_that_goes_on_from_an_ssa_state_keeps_its_count(method, go_on):
 
 
 @pytest.mark.parametrize("method", STOCHASTIC)
+def test_reset_to_a_saved_concentration_counts_it_again(method):
+    """A baseline saved before any SSA run is concentrations: after a run, a
+    reset to it is counted at the size again (150), not read as the counts the
+    run left (100 at the load-time size)."""
+    m = bngsim.Model.from_antimony_string(RESIZED)
+    m.set_concentration("c", 3.0)
+    m.save_concentrations()
+    _run(m, method, t_span=(0, 3), n_points=4)
+    m.reset()
+    np.testing.assert_allclose(_sel(_run(m, method, t_span=(0, 3)), "X")[:, 0], 150.0, rtol=1e-9)
+
+
+@pytest.mark.parametrize("method", STOCHASTIC)
 def test_replicates_and_until_legs_keep_the_count(method):
     m = _resized_after_a_run(method)
     sim_kw = {"poplevel": 100} if method == "psa" else {}
