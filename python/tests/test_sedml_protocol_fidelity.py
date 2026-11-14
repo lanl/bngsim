@@ -1444,6 +1444,39 @@ INITIAL_ASSIGNMENT_CASES = {
         'addConcentration("A()",10)\n' + RUN,
         [_eq(1, 1, a0=110)],
     ),
+    # 36.8984: a second add is to the number the first made, not to the seed
+    "two-adds-to-a-seed-after-its-parameter-moved": (
+        "seeded",
+        'setParameter("A0",50)\naddConcentration("A()",10)\naddConcentration("A()",5)\n' + RUN,
+        [_eq(1, 1, a0=65)],
+    ),
+    # 62.4434: the seed, 100, though a change before the expression set A
+    "add-to-an-expression-of-a-seed-set-before": (
+        "seeded",
+        'setConcentration("A()",30)\nsetConcentration("A()","A0*2")\n'
+        'addConcentration("A()",10)\n' + RUN,
+        [_eq(1, 1, a0=110)],
+    ),
+    # 93.3333: B = k2*4 reads k2 = kx/3*2 = 10, which reads kx = k1*3 = 15
+    "an-amount-of-a-parameter-derived-twice-after-what-it-reads-moved": (
+        "chained",
+        'setParameter("k1",5)\nsetConcentration("B()","k2*4")\n' + RUN,
+        [_from(100, 5, 10, total=140)],
+    ),
+    # 47.0745, 46.6786, 46.6250: A = A0 reads A0 = Ab*2 at the first point
+    "scan-that-continues-a-run-of-what-an-amount-reads-through-a-derived-parameter": (
+        "seed-of-derived",
+        RUN
+        + 'setConcentration("A()","A0")\n'
+        + SCAN.format(p="Ab", v="25,50,75", extra="reset_conc=>0,"),
+        _continued(50, [(1, 1)] * 3, total=50 + 100 - _eq(1, 1)),
+    ),
+    # 25.0084: the chain replays the sweep from A = A0 = Ab*2 = 50
+    "run-after-a-dose-scan-without-reset-through-a-derived-parameter": (
+        "seed-of-derived",
+        SCAN.format(p="Ab", v="25,50,75", extra="reset_conc=>0,") + RUN,
+        [_from(_continued(50, [(1, 1)] * 3, total=50)[-1], 1, 1, total=50)],
+    ),
     # 11.3534, 22.7067, 34.0601; the standard elements gave 113.53 at each
     "scan-of-what-an-amount-set-to-an-expression-reads": (
         "seeded",
