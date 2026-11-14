@@ -478,6 +478,11 @@ class ProtocolSpec:
         return cls.from_dict(json.loads(text))
 
 
+#: The label :func:`combine_protocols` saves the first protocol's state under at
+#: its generation point, and resets to at each boundary between the protocols it joins.
+_COMBINE_LABEL = "combined_start"
+
+
 def combine_protocols(
     specs: list[ProtocolSpec] | tuple[ProtocolSpec, ...],
     *,
@@ -529,16 +534,36 @@ def combine_protocols(
     # Only the first spec's steps can come before a network is generated: the
     # rest run on the network it leaves, after the reset that separates them.
     generation_step = non_empty[0].generation_step
-    for spec in non_empty:
-        if (
-            reset_between
-            and steps
-            and not (
-                isinstance(steps[-1], StateChange) and steps[-1].kind == "reset_concentrations"
-            )
-        ):
-            steps.append(StateChange(kind="reset_concentrations"))
-        steps.extend(spec.steps)
+    # The parameters as the first spec found them at its generation point,
+    # after its pre-generation actions (which the network holds, and a replay
+    # skips), for every later spec to start from: one spec's setParameter
+    # stood through the next (issue #1662), where its concentrations alone
+    # went back. Saved before those actions, the split moved by one and an
+    # addConcentration the network held was replayed on it.
+    for i, spec in enumerate(non_empty):
+        if i == 0:
+            # The concentrations too: a reset to nothing saved goes to the seed
+            # species as declared, which a network generated after a
+            # pre-generation action does not hold.
+            split = generation_step or 0
+            steps.extend(spec.steps[:split])
+            if reset_between:
+                steps.append(StateChange(kind="save_concentrations", label=_COMBINE_LABEL))
+                steps.append(StateChange(kind="save_parameters", label=_COMBINE_LABEL))
+            steps.extend(spec.steps[split:])
+        else:
+            if reset_between:
+                # A protocol that already ends by going back to the declared
+                # state needs no second reset of the concentrations.
+                last = steps[-1]
+                if not (
+                    isinstance(last, StateChange)
+                    and last.kind == "reset_concentrations"
+                    and last.label is None
+                ):
+                    steps.append(StateChange(kind="reset_concentrations", label=_COMBINE_LABEL))
+                steps.append(StateChange(kind="reset_parameters", label=_COMBINE_LABEL))
+            steps.extend(spec.steps)
         if spec.source:
             sources.append(spec.source)
         dropped.extend(spec.dropped)

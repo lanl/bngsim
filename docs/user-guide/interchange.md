@@ -169,19 +169,33 @@ differently: tellurium 2.2.13's own SED-ML runner, for one.
 **Starting from a `.bngl` model (the full export pipeline).** The converter's model
 input is the flattened **`.net`**, so a rule-based model is first expanded to a
 network with BioNetGen, then packaged — passing the same `.bngl` so its actions
-become the SED-ML protocol *and* its source rides along. (`Model.from_bngl` runs
-that expansion for you when you only want to *simulate* the model — see
-[Loading models](loading-models.md) — but the packager wants the `.net` on disk,
-so flatten it explicitly here.)
+become the SED-ML protocol *and* its source rides along. The `.net` has to be
+the network as `generate_network` writes it, the state the protocol starts
+from. `Model.from_bngl` writes that file with `net_out=`: it runs BioNetGen on
+the model and the actions before `generate_network`, and stops there.
 
 ```bash
-# 1. Flatten the rule-based model to a network with BioNetGen (the .bngl needs a
-#    generate_network() action — rule-based models you simulate already have one).
-BNG2.pl model.bngl     # → model.net
+# 1. Flatten the rule-based model to its network, as generate_network writes it
+#    (the .bngl needs a generate_network() action; rule-based models you
+#    simulate already have one). bngsim says it leaves the later actions out:
+#    they are the protocol, which step 2 reads from the .bngl.
+python -c "import bngsim; bngsim.Model.from_bngl('model.bngl', net_out='model.net')"
 
 # 2. Package a BioModels-ready, validated OMEX
 bngsim-omex pack model.net --bngl model.bngl --gate full   # → model.omex
 ```
+
+Running the whole file with `BNG2.pl model.bngl` does not give that network
+for every protocol. At a `simulate` with no `suffix`, BNG2.pl writes
+`model.net` again with the state of that moment, once a run or an action such
+as `addConcentration` has moved it (generation, every `set*`, `add*` and
+`reset*` action and every run's end mark it moved), and the protocol would then
+be replayed on
+top of a state it had already reached: `egfr_path.bngl`'s exported first run
+started at Grb2 = 100163 for 100000 (issue #1683). The packer compares the
+`.net`'s parameters and seed species with what the `.bngl` declares, and
+refuses one that differs (`--allow-lossy` packs it with a warning). A `suffix`
+on every `simulate` keeps BNG2.pl's `model.net` as generated too.
 
 ```python
 # Equivalent API call. A validated, runnable deliverable: SBML + the real
@@ -242,6 +256,26 @@ back as runnable BNGL rather than being lost on import.
 # .omex → .net (+ a <stem>.bngl actions block carrying the composed protocol)
 report = bngsim.convert.omex_to_net("model.omex", "model.net")  # gate="full" default
 ```
+
+**Reading a SED-ML document another tool wrote.** `read_sedml_protocol` (and an
+archive's `load_full_protocol`) reads a document without bngsim's annotation by
+its tasks (issue #1662): each `task` is a run of its model from that model's
+initial state, with the model's `changeAttribute` and `computeChange` changes
+(a species' initial value, a parameter's value, a kinetic law's local parameter
+as `_lp_<reaction>_<id>`, an addition of a term to the species as
+`addConcentration`) as the steps before it; a `repeatedTask` that sweeps a
+parameter is a `parameter_scan`, with a constant `setValue` beside the sweep as
+a step before it, and one that does not sweep runs its subtasks in order on one
+model state, resetting it first where `resetModel` says so. Tasks are
+independent, so the state is reset between them, and a time course no task runs
+is not run. A change the replay cannot apply (a compartment's size, an
+`addXML`, a species' `initialAmount` without the SBML's compartment sizes, a
+`setValue` that reads the range beside the swept parameter, a task on a second
+model file) is said with a `ConversionWarning` and recorded in the spec's
+`lossy` list, which `run_protocol` refuses unless `allow_lossy=True`. Pass
+`sbml=` to read a species change written as an amount in its compartment.
+`read_sedml`, the single-run reader, takes its first task's simulation, model
+and outputs the same way and says which tasks it leaves unread (issue #1675).
 
 ```bash
 bngsim-omex to-net model.omex -o model.net   # → model.net + model.bngl

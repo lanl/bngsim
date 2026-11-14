@@ -463,8 +463,17 @@ def test_combine_protocols_concatenates_with_reset_boundary() -> None:
     p2 = ProtocolSpec(steps=(Experiment("simulate", "ode", (0.0, 50.0), 51),), source="b")
     merged = combine_protocols([p1, p2])
     assert len(merged.experiments) == 2
-    assert [type(s).__name__ for s in merged.steps] == ["Experiment", "StateChange", "Experiment"]
-    assert merged.steps[1].kind == "reset_concentrations"
+    # The parameters as the first spec found them are saved first and put back
+    # at the boundary with the concentrations: one spec's setParameter stood
+    # through the next (issue #1662).
+    assert [getattr(s, "kind", type(s).__name__) for s in merged.steps] == [
+        "save_concentrations",
+        "save_parameters",
+        "simulate",
+        "reset_concentrations",
+        "reset_parameters",
+        "simulate",
+    ]
     assert merged.source == "a + b"
 
 
@@ -610,3 +619,39 @@ def test_uneven_scan_values_round_trip_through_sedml_without_the_annotation() ->
     bare = re.sub(r"<annotation>.*?</annotation>", "", x, flags=re.DOTALL)
     (exp,) = read_sedml_protocol(bare).experiments
     assert exp.scan_values == (1.0, 2.0, 7.0)
+
+
+def test_combine_protocols_keeps_the_first_specs_generation_split(tmp_path):
+    """The parameters are saved at the first spec's generation point, after its
+    pre-generation actions, so ``generation_step`` still says where the replay
+    starts: saved before them, the split moved by one and an addConcentration
+    the network already held was replayed on it (A started at 200 for 150)."""
+    import bngsim
+
+    first = parse_bngl_protocol(
+        'begin model\nend model\naddConcentration("A()",50)\ngenerate_network()\n'
+        'simulate({method=>"ode",t_end=>1,n_steps=>1})\n'
+    )
+    second = parse_bngl_protocol(
+        "begin model\nend model\ngenerate_network()\n"
+        'simulate({method=>"ode",t_end=>1,n_steps=>1})\n'
+    )
+    assert first.generation_step == 1
+    merged = combine_protocols([first, second])
+    assert merged.generation_step == 1
+    assert [getattr(s, "kind", None) for s in merged.steps] == [
+        "add_concentration",
+        "save_concentrations",
+        "save_parameters",
+        "simulate",
+        "reset_concentrations",
+        "reset_parameters",
+        "simulate",
+    ]
+    net = tmp_path / "m.net"
+    net.write_text(
+        "begin parameters\n 1 k 0.5\nend parameters\nbegin species\n 1 A() 150\nend species\n"
+        "begin reactions\n 1 1 0 k\nend reactions\n"
+    )
+    runs = bngsim.run_protocol(bngsim.Model.from_net(str(net)), merged)
+    assert [float(r.result.species[0, 0]) for r in runs] == [150.0, 150.0]

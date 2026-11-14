@@ -914,7 +914,7 @@ def test_omex_to_net_composes_multiple_sedml_files(data_dir: Path, tmp_path: Pat
     assert len(report.protocol.experiments) == 2
     actions = Path(report.bngl_out).read_text()
     assert actions.count("simulate(") == 2
-    assert "resetConcentrations()" in actions  # independent-file boundary
+    assert 'resetConcentrations("combined_start")' in actions  # independent-file boundary
 
 
 def test_cli_omex_to_net_actions(data_dir: Path, tmp_path: Path) -> None:

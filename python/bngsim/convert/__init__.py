@@ -30,6 +30,7 @@ True
 
 from __future__ import annotations
 
+import re
 import tempfile
 import warnings
 from dataclasses import dataclass, field
@@ -721,6 +722,155 @@ def validate_roundtrip(
     )
 
 
+def _split_species_line(body: str) -> tuple[str, str]:
+    """A ``.bngl`` seed-species line, its leading index gone: the pattern, up to
+    the first blank outside parentheses, and the amount after it."""
+    depth = 0
+    for i, ch in enumerate(body):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch.isspace() and depth == 0:
+            return body[:i], body[i:].strip()
+    return body, ""
+
+
+def _declared(text: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]] | None:
+    """A ``.bngl``'s parameters, ``(name, value)``, and seed species,
+    ``(pattern, amount)``, as its blocks declare them; ``None`` where a line
+    is continued, which this reading does not join."""
+    params: list[tuple[str, str]] = []
+    seeds: list[tuple[str, str]] = []
+    block: str | None = None
+    for physical in text.splitlines():
+        line = physical.split("#", 1)[0].strip()
+        if not line:
+            continue
+        low = line.lower()
+        if low.startswith("begin "):
+            name = " ".join(low.split()[1:])
+            block = name if name in ("parameters", "seed species", "species") else None
+            continue
+        if low.startswith("end "):
+            block = None
+            continue
+        if block is None:
+            continue
+        if line.endswith("\\"):
+            return None
+        body = re.sub(r"^\d+\s+", "", line)
+        if block == "parameters":
+            m = re.match(r"([A-Za-z_]\w*)\s*(?:=\s*)?(\S.*)$", body)
+            if m is not None:
+                params.append((m.group(1), m.group(2).strip()))
+        else:
+            pattern, amount = _split_species_line(body)
+            if amount:
+                seeds.append((pattern, amount))
+    return params, seeds
+
+
+def _not_as_generated(model: Any, bngl: Path, protocol: ProtocolSpec | None) -> list[str]:
+    """How the ``.net`` *model* was loaded from differs from the network
+    *bngl* generates (issue #1683): each parameter declared as a number, and
+    each seed species, with the actions before the file's ``generate_network``
+    applied, against the ``.net``'s own value. BNG2.pl writes the ``.net``
+    again at a ``simulate`` with no ``suffix`` once a run or an action has
+    moved the state, with the parameters and amounts of that moment; nothing
+    else in the file says so. Empty where they agree, or where the file says
+    something this reading cannot follow (a continued line, a reset or a value
+    that does not evaluate before generation): a ``.net`` is refused only on
+    a difference shown."""
+    from bngsim._bngl_loader import _species_name, _value
+
+    try:
+        text = bngl.read_text()
+    except (OSError, UnicodeDecodeError):
+        return []
+    declared = _declared(text)
+    if declared is None:
+        return []
+    params, seeds = declared
+    # A .bngl with no rules generates no network: it carries a protocol for a
+    # .net made some other way, whose species it declares nothing about.
+    generates = re.search(r"^\s*begin\s+reaction\s+rules\b", text, re.M) is not None
+
+    def close(a: float, b: float) -> bool:
+        # BNG2.pl writes a value it computed to 15 significant digits.
+        return abs(a - b) <= 1e-12 * max(abs(a), abs(b)) or a == b
+
+    before = protocol.steps[: protocol.generation_step or 0] if protocol is not None else ()
+    want_params: dict[str, float] = {}
+    for pname, declared_text in params:
+        try:
+            want_params[pname] = float(declared_text)
+        except ValueError:
+            continue  # an expression: it follows the parameters it reads
+    sets: list[StateChange] = []
+    for step in before:
+        if not isinstance(step, StateChange):
+            continue
+        if step.kind == "set_parameter" and step.value is not None and step.target:
+            want_params[step.target] = float(step.value)
+        elif step.kind in ("set_concentration", "add_concentration") and step.target:
+            sets.append(step)
+        else:
+            return []
+    out: list[str] = []
+    names = set(model.param_names)
+    for name, value in want_params.items():
+        if name in names:
+            held = float(model.get_param(name))
+            if not close(held, value):
+                out.append(f"parameter {name} is {held:.15g} there, {value:.15g} as declared")
+    if out:
+        return out  # the seed amounts read the parameters: judged once they agree
+    want_species: dict[str, float] = {}
+    every_seed_read = True
+    for pattern, amount in seeds:
+        sname = _species_name(model, pattern)
+        declared_value = _value(model, amount)
+        if sname is not None and declared_value is not None:
+            want_species[sname] = declared_value
+        else:
+            every_seed_read = False
+    for step in sets:
+        sname = _species_name(model, step.target or "")
+        set_value = (
+            float(step.value) if step.value is not None else _value(model, step.value_expr or "")
+        )
+        if sname is None or set_value is None:
+            return []
+        base = want_species.get(sname, 0.0) if step.kind == "add_concentration" else 0.0
+        want_species[sname] = base + set_value
+    for sname, want in want_species.items():
+        held = float(model.get_concentration(sname))
+        if not close(held, want):
+            out.append(f"{sname} is {held:.15g} there, {want:.15g} as declared")
+    # A species the network generated holds 0 at generation; one a run filled
+    # says the file was written after it, where the seeds happen to agree.
+    # Judged only where the .bngl generates this network and every seed was
+    # read: a seed this reading could not match would pass for a filled one,
+    # and a .bngl of actions alone, beside a .net made another way, declares
+    # no seed at all.
+    if every_seed_read and seeds and generates:
+        for sname in model.species_names:
+            if sname in want_species:
+                continue
+            held = float(model.get_concentration(sname))
+            if held != 0.0:
+                out.append(f"{sname} is {held:.15g} there, 0 as generated")
+    return out
+
+
+def _not_generated_notes(report: ConversionReport) -> list[str]:
+    """The note :func:`net_to_sbml` leaves where the ``.net`` is not the
+    network its ``.bngl`` generates (issue #1683), for the callers that write
+    a protocol onto the model and refuse it."""
+    return [note for note in report.lossy if "is not the network" in note]
+
+
 def net_to_sbml(
     net_path: str | Path,
     out_path: str | Path | None = None,
@@ -768,6 +918,15 @@ def net_to_sbml(
         comparison runs over the model's *own* horizon (avoiding the blanket-grid
         stiff-hang and exercising the trajectory the modeller actually ran). The
         parsed :class:`~bngsim.convert.ProtocolSpec` is attached to the report.
+        The ``.net`` must be the network as ``generate_network`` wrote it: its
+        parameters and seed species are checked against what the ``.bngl``
+        declares (issue #1683). ``BNG2.pl model.bngl`` rewrites ``model.net``
+        at a ``simulate`` with no ``suffix`` once a run or an action has moved
+        the state, and the protocol, replayed on top of that state, starts
+        from the wrong one; such a ``.net`` is warned of and noted in
+        ``lossy`` here, and refused by :func:`net_to_omex` and
+        ``bngsim-net2sbml --sidecar`` unless ``strict=False`` /
+        ``--allow-lossy``.
     t_span, n_points : tuple[float, float], int
         Fallback time grid for the ``"full"`` gate's L3 comparison when no
         ``bngl`` protocol horizon is available (ignored for other ``validate``
@@ -779,18 +938,41 @@ def net_to_sbml(
     -------
     ConversionReport
     """
+    from bngsim._exceptions import ConversionWarning
     from bngsim._model import Model
 
     net_path = Path(net_path)
     model = Model.from_net(net_path)
 
     protocol = None
+    not_generated: list[str] = []
+    bngl_name = Path(bngl).name if bngl is not None else ""
     if bngl is not None:
         from bngsim.convert._protocol import parse_bngl_protocol
 
         protocol = parse_bngl_protocol(bngl, strict=strict)
+        not_generated = _not_as_generated(model, Path(bngl), protocol)
+        if not_generated:
+            message = (
+                f"{net_path.name} is not the network {bngl_name} generates: "
+                + "; ".join(not_generated[:3])
+                + (f"; and {len(not_generated) - 3} more" if len(not_generated) > 3 else "")
+                + ". BNG2.pl rewrites the .net at a simulate with no suffix once a run "
+                "or an action has moved the state, and the protocol replayed on that "
+                "state starts from the wrong one (issue #1683). Write the network as "
+                "generate_network does with bngsim.Model.from_bngl(bngl, net_out=...), "
+                "or give every simulate a suffix"
+            )
+            # The SBML is the .net as given, which is a model in its own right;
+            # the state matters where a protocol is written onto it, which
+            # net_to_omex and the sidecar refuse under strict (the note below).
+            from bngsim._simulator import _stacklevel_outside_bngsim
+
+            warnings.warn(message, ConversionWarning, stacklevel=_stacklevel_outside_bngsim())
 
     caps = sbml_capability_report(model)
+    if not_generated:
+        caps["lossy"] = list(caps["lossy"]) + [message]
     sbml_text = write_sbml(model, out_path, strict=strict, model_id=net_path.stem)
 
     structural: StructuralReport | None = None
@@ -962,6 +1144,14 @@ def net_to_omex(
         t_span=t_span,
         n_points=n_points,
     )
+    # The protocol is written onto this network's state: a .net BNG2.pl
+    # rewrote after a run is refused here, where net_to_sbml only said so
+    # (issue #1683); strict=False packs it with the warning and the note.
+    if strict:
+        from bngsim._exceptions import ConversionError
+
+        for note in _not_generated_notes(report):
+            raise ConversionError(note)
     sbml_text = report.output_text
     parsed_protocol = report.protocol
 
