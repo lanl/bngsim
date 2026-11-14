@@ -233,8 +233,8 @@ def test_a_bend_too_long_to_write_out_is_still_refused_on_the_tie(model):
     chain = ["e0 q"] + [f"e{i + 1} e{i}*(1 + e{i})/(1 + e{i})" for i in range(9)]
     with pytest.raises(bngsim.SensitivityUnsupportedError, match=REFUSED) as raised:
         _run(model(["q 1.0", *chain, "r 10*min(e9, 1) + s"]), ["q"])
-    assert "min(1, e9), whose arguments [1, e9] tie at 1 (the sides were not compared" in str(
-        raised.value
-    )
+    message = str(raised.value)
+    assert "min(1, e9), whose arguments [1, e9] tie at 1 (the sides were not compared" in message
+    assert "The law differs on the two sides" not in message
     _, res = _run(model(["q 0.5", *chain, "r 10*min(e9, 1) + s"]), ["q"], rtol=1e-10, atol=1e-12)
     np.testing.assert_allclose(np.asarray(res.sensitivities)[-1, 0, 0], 10 / K1, rtol=1e-6)
