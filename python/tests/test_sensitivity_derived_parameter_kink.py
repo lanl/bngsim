@@ -173,3 +173,53 @@ def test_a_tie_in_a_derived_initial_amount_weighs_one(tmp_path):
     res = sim.run(sample_times=[0.0, 5.0], rtol=1e-10, atol=1e-12)
     sens = np.asarray(res.sensitivities)[:, 0, 0]
     np.testing.assert_allclose(sens, [10.0, 10.0 * np.exp(-K1 * 5.0)], rtol=1e-6)
+
+
+def _chain(levels: int) -> list[str]:
+    """``p1 = min(px, py)`` under a chain of derived parameters, each reading the
+    one before three times: written out in what it is built from, the top one is
+    3**levels copies of p1 long."""
+    out = ["px 0.4", "py 0.6", "p1 min(px, py)", "d0 p1"]
+    out += [f"d{i + 1} d{i}*(1 + d{i})/(d{i} + 2)" for i in range(levels)]
+    return out
+
+
+def test_a_bend_deep_in_a_derived_chain_is_judged_where_it_is_written(model):
+    """A law that reads the top of a deep chain was written out in every derived
+    parameter it reaches and handed to sympy, whose parse did not finish: a run
+    of a corpus model (`synthesis_v3.bngl`) did not return in 540 s. The bend
+    is judged in ``p1``, once, and named through it."""
+    import time
+
+    levels = 12
+    start = time.perf_counter()
+    off = model(_chain(levels), functions=[f"r() d{levels} + s"])
+    _run(off, ["px", "py"])
+    assert time.perf_counter() - start < 30.0
+    on = model(_chain(levels), functions=[f"r() d{levels} + s"])
+    on.set_param("py", 0.4)
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match=REFUSED) as raised:
+        _run(on, ["px"])
+    assert "'px' in reaction 1 (r), through p1: min(px, py)" in str(raised.value)
+
+
+def test_a_kink_in_a_derived_initial_amount_is_refused(tmp_path):
+    """``X0 = 10*min(q, 1)`` at q = 1: dX(0)/dq is 10 from below and 0 from above."""
+    path = tmp_path / "ic_kink.net"
+    path.write_text(
+        _net(["q 1.0", "X0 10*min(q, 1)"], reactions=["1 0 k1"]).replace("1 X() 0", "1 X() X0")
+    )
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match=REFUSED) as raised:
+        _run(bngsim.Model.from_net(str(path)), ["q"])
+    assert "'q' in the initial amount of X() (X0)" in str(raised.value)
+
+
+def test_a_rate_constant_many_reactions_share_is_judged_once(model):
+    """One line for the bend, not one per reaction that reads it."""
+    m = model(
+        ["q 1.0", "kd 10*min(q, 1)"],
+        reactions=["0 1 s", "1 0 kd", "2 0 kd", "3 0 kd"],
+    )
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match=REFUSED) as raised:
+        _run(m, ["q"])
+    assert str(raised.value).count("min(1, q)") == 1, str(raised.value)
