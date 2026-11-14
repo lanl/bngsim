@@ -198,9 +198,11 @@ actions before it left it: an expression that reads a derived parameter is
 written after a change that sets that parameter to what its assignment
 computes, and an `addConcentration` to a species whose seed names a parameter
 that an action has moved, after one that sets the species to that seed. An
-`addConcentration` after a run, to a species set to an expression since, adds
-in BNG2.pl to the species' declared seed, not to that expression: the export
-says so, and records it in `sedml_lossy`. An assignment SED-ML math cannot say again,
+`addConcentration` to a species that is still an expression adds, in BNG2.pl,
+to the species' declared seed, not to that expression, and the species is set
+to that seed first. Where an action before `generate_network` changed the
+species, the SBML does not hold that seed: the export says so, and records it
+in `sedml_lossy`. An assignment SED-ML math cannot say again,
 one that calls a function of the SBML's or reads its time, is left as the
 simulator computed it: the export says so, and records it in `sedml_lossy`.
 The bngsim annotation holds the protocol as parsed, with the `.bngl` named by

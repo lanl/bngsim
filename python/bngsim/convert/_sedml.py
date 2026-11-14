@@ -973,6 +973,9 @@ class _SbmlTargets:
         # say again (issue #1733): its MathML, as text, whose names are all
         # parameters of the SBML.
         self.assignments: dict[str, str] = {}
+        # Each species' own initial value, where the SBML holds it as a number
+        # that nothing computes.
+        self.species_values: dict[str, float] = {}
         self.read = False
         text = _sbml_text(sbml)
         if text is None:
@@ -1015,8 +1018,12 @@ class _SbmlTargets:
             comp = sp.get("compartment")
             size = known.get(comp, 1.0) if comp else 1.0
             self.compartment_size[sid] = size
-            if (sp.get("hasOnlySubstanceUnits") or "false").lower() == "true":
+            amount = (sp.get("hasOnlySubstanceUnits") or "false").lower() == "true"
+            if amount:
                 self.amount_scale[sid] = size
+            held = _number_or_none(sp.get("initialAmount" if amount else "initialConcentration"))
+            if held is not None and sid not in computed:
+                self.species_values[sid] = held
         for p in _findall_local(root, "parameter"):
             pid = p.get("id")
             if not pid:
@@ -1171,6 +1178,10 @@ class _ProtocolWriter:
         # Per sweep from the initial state: the species the protocol set to an
         # expression, which BNG2.pl keeps as one until a run.
         self._live: dict[int, list[_Change]] = {}
+        # The species an action changed before the network was generated,
+        # whose seed as the model declares it the SBML does not hold (None:
+        # one the SBML does not name).
+        self._undeclared: set[str | None] = set()
         # What each initialAssignment of the SBML sets its element to, as a
         # change: what BNG2.pl's derived parameter follows, and a species
         # whose seed names a parameter until a run (issue #1733).
@@ -1550,13 +1561,17 @@ class _ProtocolWriter:
         expression goes after every parameter change. An ``addConcentration``
         to a species that is still an expression adds to the species' declared
         seed, at the parameters as they stand (BNGModel.pm, addConcentration:
-        it evaluates ``$spec->Concentration``), and makes it a number: from
-        the initial state the model holds that seed, set again here where a
-        parameter it reads has moved (issue #1733)."""
+        it evaluates ``$spec->Concentration``), and makes it a number. The
+        species is set to that seed first, where the model does not hold it:
+        a parameter the seed reads has moved, a change before this one set the
+        species, or a run did (issue #1733). Where the seed is not known (an
+        action before the network was generated changed the amount the SBML
+        holds), the add is to what the species was set to, *said* here."""
         out: list[_Change] = []
         live: dict[str, _Change] = {}
         numbers: set[str] = set()
         moved: set[str] = set()
+        touched: set[str] = set()
         for change in changes:
             if change.kind == "param":
                 moved.add(change.sid)
@@ -1568,21 +1583,33 @@ class _ProtocolWriter:
                 numbers.discard(sid)
                 continue
             if change.add and sid not in numbers and (fresh or sid in live):
-                if sid in live and not fresh:
-                    # After a run the model holds the run's amount, not the seed.
-                    if say:
-                        self._say(
-                            f"SED-ML's standard elements add {change.action} to the amount "
-                            f"{live[sid].action} set, where BNG2.pl adds to the species' "
-                            "declared amount; the bngsim annotation holds the protocol"
-                        )
-                    out.append(live[sid])
-                elif fresh:
-                    seed = self._assigned.get(sid)
-                    if seed is not None and self._reads(seed) & moved:
+                was = live.get(sid)
+                seed = self._assigned.get(sid)
+                known = sid not in self._undeclared and None not in self._undeclared
+                value = self.targets.species_values.get(sid) if known else None
+                if seed is not None and known:
+                    if not fresh or sid in touched or self._reads(seed) & moved:
                         out.append(seed)
+                elif was is not None and value is not None:
+                    if not fresh or sid in touched:
+                        declared = f"the declared amount of {sid}"
+                        out.append(_Change("species", sid, value, None, False, 1.0, declared))
+                elif was is not None or seed is not None:
+                    onto = f"{was.action} set" if was is not None else "the SBML holds"
+                    note = (
+                        f"SED-ML's standard elements add {change.action} to the amount "
+                        f"{onto}, where BNG2.pl adds to the species' declared amount, "
+                        "which an action before the network was generated changed; the "
+                        "bngsim annotation holds the protocol"
+                    )
+                    if say and note not in self._noted:
+                        self._noted.add(note)
+                        self._say(note)
+                    if was is not None:
+                        out.append(was)
             live.pop(sid, None)
             numbers.add(sid)
+            touched.add(sid)
             out.append(change)
         out.extend(live.values())
         return out, list(live.values()), frozenset(numbers | live.keys())
@@ -1613,7 +1640,7 @@ class _ProtocolWriter:
         # So is one whose last change sets it to what its initialAssignment
         # computes (issue #1733); and the model is loaded after its changes,
         # so the assignment computes it from them.
-        changes, _, _ = self._sequence(changes, fresh=True)
+        changes, _, _ = self._sequence(changes, fresh=True, say=True)
         last = {c.sid: c for c in changes}
         back = {
             sid
@@ -1926,6 +1953,12 @@ class _ProtocolWriter:
         # the protocol has those (issue #1668); `unknown` are the saves it does
         # not, whose values are the model's as declared.
         before = _saved_before_generation(protocol.steps[:generation])
+        self._undeclared = {
+            self.targets.species_id(step.target or "") if self.targets.read else None
+            for step in protocol.steps[:generation]
+            if isinstance(step, StateChange)
+            and step.kind in ("set_concentration", "add_concentration")
+        }
         unknown: set[tuple[str, str]] = set()
         for label, back in before.conc.items():
             changes = self._changes(back)

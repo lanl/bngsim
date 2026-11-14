@@ -1390,6 +1390,19 @@ INITIAL_ASSIGNMENT_CASES = {
         + RUN,
         [_eq(1, 1, a0=110)],
     ),
+    # 81.1346: after a run too, where the model holds the run's amount
+    "add-to-an-expression-after-a-run": (
+        "seeded",
+        RUN + 'setConcentration("A()","A0*2")\naddConcentration("A()",10)\n' + RUN,
+        [_from(110, 1, 1, total=110 + 100 - _eq(1, 1))],
+    ),
+    # 62.4434: and after a change that set the species, to the seed, 100
+    "add-to-an-expression-of-a-species-set-before": (
+        "plain",
+        'setConcentration("A()",30)\nsetConcentration("A()","k1*20")\n'
+        'addConcentration("A()",10)\n' + RUN,
+        [_eq(1, 1, a0=110)],
+    ),
     # 11.3534, 22.7067, 34.0601; the standard elements gave 113.53 at each
     "scan-of-what-an-amount-set-to-an-expression-reads": (
         "seeded",
@@ -1413,6 +1426,7 @@ INITIAL_ASSIGNMENT_CASES = {
     ),
 }
 _NETWORKS = {
+    "plain": (NET, MODEL),
     "beside": (BESIDE_NET, BESIDE_MODEL),
     "declared": (DECLARED_NET, DECLARED_MODEL),
     "chained": (CHAINED_NET, CHAINED_MODEL),
@@ -1523,17 +1537,16 @@ def test_a_derived_model_keeps_the_assignments_the_protocol_does_not_replace(
     assert not [c for c in changes if c.tag.endswith("computeChange")]
 
 
-def test_an_add_to_an_expression_after_a_run_is_recorded(tmp_path):
-    """After a run the model holds the run's amount, and BNG2.pl's
-    addConcentration to an amount set to an expression adds to the species'
-    declared seed (81.1346 for the 137.9013 the standard elements run)."""
+def test_an_add_to_an_expression_whose_seed_the_network_lost_is_recorded(tmp_path):
+    """BNG2.pl's addConcentration to an amount set to an expression adds to
+    the species' declared seed (A = 110, with A(1) = 101.4103 beside
+    k2 = k1*3); an action before generate_network changed the amount the
+    network holds, and the standard elements add to the expression (310)."""
     report, said = _pack(
         tmp_path,
-        "generate_network({overwrite=>1})\n"
-        + RUN
-        + 'setConcentration("A()","A0*2")\naddConcentration("A()",10)\n'
-        + RUN,
-        net=SEEDED_NET,
+        'setConcentration("A()",70)\ngenerate_network({overwrite=>1})\n'
+        'setConcentration("A()","A0*3")\naddConcentration("A()",10)\n' + RUN,
+        net=SEEDED_NET.replace("1 A() A0", "1 A() 70"),
         model=SEEDED_MODEL,
     )
     (note,) = [n for n in report.sedml_lossy if "declared amount" in n]
