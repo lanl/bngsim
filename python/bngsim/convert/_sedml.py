@@ -2277,6 +2277,9 @@ class _TaskReader:
         steps: list[object] = []
         if (rt.get("resetModel") or "true").lower() == "true":
             steps.append(_RESET)
+        # A sweep's setValues apply at each iteration, to the model its task
+        # runs, which its model's own changes have made: they go after those.
+        set_values: list[object] = []
         if sweep is not None:
             # A setValue beside the swept one: a constant is a step before the
             # scan. One that reads the range the parameter is set to as it
@@ -2296,7 +2299,7 @@ class _TaskReader:
                             sv, f"repeatedTask {rid}", names={on: str(sweep["parameter"])}
                         )
                         if step is not None:
-                            steps.append(step)
+                            set_values.append(step)
                         continue
                     self._unread(
                         f"repeatedTask {rid} sets {sv.get('target')!r} from its range beside "
@@ -2305,7 +2308,7 @@ class _TaskReader:
                     continue
                 step = self._change(sv, f"repeatedTask {rid}")
                 if step is not None:
-                    steps.append(step)
+                    set_values.append(step)
         if sweep is None:
             iterations = _iterations(rt)
             if iterations > 1:
@@ -2340,7 +2343,10 @@ class _TaskReader:
         for st in subs:
             ref = st.get("task") or ""
             if ref in self.tasks:
-                steps.extend(self._task(self.tasks[ref], sweep))
+                run = self._task(self.tasks[ref], sweep)
+                # Before its scan, after its model's changes; the first one only.
+                steps.extend(run[:-1] + set_values + run[-1:] if run else set_values)
+                set_values = []
             elif ref in self.rts:
                 if sweep is not None:
                     self._unread(
@@ -2352,7 +2358,7 @@ class _TaskReader:
                 self._unread(
                     f"repeatedTask {rid} runs {ref!r}, which the document does not define"
                 )
-        return steps
+        return steps + set_values
 
     # ── changes ────────────────────────────────────────────────────────────
     def _change(
