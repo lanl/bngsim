@@ -1107,6 +1107,13 @@ def make_subset_model(
         # values from their declarations. The builder resolves each declaration
         # afresh (A() A0 back to A0), so save the model's baseline over it.
         new_core.set_state(np.asarray(init, dtype=np.float64))
+        # ...with its carried-over mark (issue #1528). The probe reset to that
+        # baseline, so its flag is the baseline's (a seeded one is refused
+        # above): a baseline saved from a state a run advanced is x(θ) with no
+        # known dx/dθ, and the subset's sensitivity run from it must raise as
+        # the model's does. The save records the flag with the baseline.
+        if probe._core.ic_state_dirty:
+            new_core.ic_state_dirty = True
         new_core.save_concentrations()
     sub = Model(_core=new_core)
     # What the loader recorded about the model that the engine does not hold:
