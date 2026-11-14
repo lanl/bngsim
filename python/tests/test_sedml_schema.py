@@ -7,7 +7,9 @@ Version 3 schema (issue #1734).
 test that held the order as written into the test passed the same way the
 writer did. This one holds each document to the schema itself, with
 ``lxml.etree.XMLSchema``: the libxml2 validator ``xmllint --schema`` runs, in
-process, so it runs on every leg. By hand it is
+process, so it needs no ``xmllint`` binary and runs wherever the suite runs
+with the ``test`` extra (python-tests.yml's Linux and macOS legs; the Windows
+workflows run curated lists of files without it). By hand it is
 
     xmllint --noout --schema tests/data/sedml_schema/sed-ml-L1-V3.xsd simulation.sedml
 
