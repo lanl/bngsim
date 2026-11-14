@@ -297,7 +297,11 @@ The deprecated `Sat` and `Hill` rate-law tokens come back rewritten, as
 `Model.from_net` rewrites them, with the same warning: the reaction is
 `"functional"`, driven by an explicit function, and a single-species observable
 is added for each reactant the function reads. A factor ahead of the type
-(`2*Sat k K`, `2*Hill V K h`) stays the reaction's `"stat_factor"`.
+(`2*Sat k K`, `2*Hill V K h`) stays the reaction's `"stat_factor"`. A repeated
+reactant is read position by position, as run_network reads it, so the line
+`1 1,1 2 0.5*Sat kcat Km` that BNG2.pl writes for
+`A() + A() -> B() Sat(kcat,Km)` loads and gives run_network's trajectory
+(issue #1527).
 
 `Hill Vmax Kh h` is the law `Vmax*S^h/(Kh^h + S^h)`, and the reaction
 multiplies its function by S, so the function is

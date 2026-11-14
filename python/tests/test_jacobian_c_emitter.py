@@ -135,8 +135,10 @@ def test_unresolvable_symbol_returns_none():
 
 
 def test_special_function_returns_none():
-    # erf has no math.h / emitter mapping → FD fallback, never wrong C.
-    assert sympy_to_c(sp.erf(S), lambda nm: "x0") is None
+    # gamma has no math.h / emitter mapping (C's tgamma is not ExprTk's meaning
+    # for every argument, and its derivative needs digamma) → FD fallback,
+    # never wrong C. erf was the example until issue #1531 gave it C's erf.
+    assert sympy_to_c(sp.gamma(S), lambda nm: "x0") is None
 
 
 def test_resolver_drives_symbol_names():

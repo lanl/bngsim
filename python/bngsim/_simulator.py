@@ -1843,13 +1843,20 @@ class Simulator:
             self._model._core if core is None else core, param_names, conditions=conditions
         )
         if lines:
+            # A bend in a derived parameter too long to write out is refused on
+            # the values alone, with its sides not compared (issue #1530).
+            compared = all("the sides were not compared" not in line for line in lines)
             raise SensitivityUnsupportedError(
                 ("" if row is None else f"run_batch row {row}: ")
                 + "Forward sensitivity is not supported where a parameter sits on a kink of "
                 "a rate law, where the law has no derivative in it: "
                 + "; ".join(lines)
-                + ". The law differs on the two sides, in slope or in value, and the column "
-                "would be one side's, or neither (issue #1332). Move the parameter off the "
+                + (
+                    ". The law differs on the two sides, in slope or in value, and the column "
+                    if compared
+                    else ". Where the sides differ, in slope or in value, the column "
+                )
+                + "would be one side's, or neither (issue #1332). Move the parameter off the "
                 "switch, or difference the run at p +/- h on each side."
             )
 

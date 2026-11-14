@@ -3195,6 +3195,29 @@ def _partial_value(deriv, subs: dict) -> float:
         return float(deriv.subs(subs).evalf())
 
 
+def _tie_weighted(prep):
+    """*prep*'s expression with each ``min`` / ``max`` over a parameter it names
+    in its #1126 twin, so a tie of n arguments weighs 1 in all, as it does in a
+    rate law's ``∂f/∂p``. sympy's d/da Max(a1, …, an) weighs each tied argument
+    a half, so ``kd = 10*max(q, q*a, q*b)`` at a = b = 1 gave dkd/dq = 15 for 10
+    (issue #1530). A tie of two slopes is a kink, whose parameter is refused in
+    :mod:`bngsim._parameter_kinks`. ``abs`` is left as it was: sympy's
+    derivative of it over these plain symbols is unevaluated, and declines."""
+    from bngsim._jacobian import _prepare_kinks
+
+    return _prepare_kinks(prep.sym_expr, set(prep.sym_name_of.values()), abs_twin=False)
+
+
+def _tie_weighted_diff(sym_expr, sym):
+    """∂*sym_expr*/∂*sym* of a :func:`_tie_weighted` expression, each twin back
+    to its call and each tie's step to the ``Piecewise`` the printers spell."""
+    import sympy as sp
+
+    from bngsim._jacobian import _finish_kinks
+
+    return _finish_kinks(sp.diff(sym_expr, sym))
+
+
 def _direct_derived_partials(
     expr: str,
     primary_names: set[str],
@@ -3216,7 +3239,6 @@ def _direct_derived_partials(
     ``(None, None)`` when the expression names no parameter at all (a genuine
     zero), or ``(None, reason)`` when a real partial was lost.
     """
-    import sympy as sp
 
     _check_derivation_deadline(deadline)
 
@@ -3233,9 +3255,10 @@ def _direct_derived_partials(
     }
 
     result: dict[str, str] = {}
+    sym_expr = _tie_weighted(prep)
     for p_name in prep.referenced:
         _check_derivation_deadline(deadline)
-        deriv = sp.diff(prep.sym_expr, prep.sym_map[prep.sym_name_of[p_name]])
+        deriv = _tie_weighted_diff(sym_expr, prep.sym_map[prep.sym_name_of[p_name]])
         if deriv == 0:
             continue
         if _derivative_is_unevaluated(deriv):
@@ -3459,7 +3482,6 @@ def _direct_derived_partials_numeric(
     and issue #56's point is only that a missing one must not pass silently for
     a real zero.
     """
-    import sympy as sp
 
     prep, reason = _prepare_derived_expr(expr, primary_names, derived_names)
     if prep is None:
@@ -3471,8 +3493,9 @@ def _direct_derived_partials_numeric(
         if p in param_idx
     }
     out: dict[str, float] = {}
+    sym_expr = _tie_weighted(prep)
     for p_name in prep.referenced:
-        deriv = sp.diff(prep.sym_expr, prep.sym_map[prep.sym_name_of[p_name]])
+        deriv = _tie_weighted_diff(sym_expr, prep.sym_map[prep.sym_name_of[p_name]])
         if deriv == 0:
             continue
         if _derivative_is_unevaluated(deriv):
