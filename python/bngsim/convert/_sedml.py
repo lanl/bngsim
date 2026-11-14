@@ -28,6 +28,7 @@ emitted for interop with other SED-ML tools.
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import math
 import re
@@ -1040,8 +1041,9 @@ class _SbmlTargets:
                 continue
             # A name SED-ML math reads through a variable of the parameter's
             # value; a csymbol (time, a delay) or a call of the SBML's own
-            # function has none.
-            if any(_local(e.tag) == "csymbol" for e in body.iter()):
+            # function has none. Nor does SED-ML's MathML have every operator
+            # SBML L3V2's does.
+            if any(_local(e.tag) in ("csymbol", *_NOT_IN_SEDML_MATH) for e in body.iter()):
                 continue
             if all((ci.text or "").strip() in param_ids for ci in _findall_local(body, "ci")):
                 self.assignments[symbol] = ET.tostring(body, encoding="unicode")
@@ -1296,7 +1298,7 @@ class _ProtocolWriter:
                     {"id": vid, "target": target, "modelReference": model_ref},
                 )
         math = ET.SubElement(parent, _q(_MATHML_NS, "math"))
-        math.append(_apply("plus", terms) if len(terms) > 1 else terms[0])
+        math.append(_without_min_max(_apply("plus", terms) if len(terms) > 1 else terms[0]))
 
     def _ast(self, text: str):
         """A BNGL value expression as a libSBML AST, and the names it reads."""
@@ -2164,6 +2166,47 @@ def _apply(op: str, args: list[ET.Element]) -> ET.Element:
     return el
 
 
+# SBML L3V2's MathML operators that SED-ML L1V3's, which is SBML Level 2's,
+# does not have, besides min and max (:func:`_without_min_max`).
+_NOT_IN_SEDML_MATH = ("rem", "quotient", "implies")
+
+
+def _without_min_max(node: ET.Element) -> ET.Element:
+    """*node* with each ``min`` and ``max`` as the ``piecewise`` it is: SED-ML
+    L1V3's MathML has neither, and its schema refuses them (issue #1734)."""
+    for k, child in enumerate(list(node)):
+        node[k] = _without_min_max(child)
+    op = _local(node[0].tag) if _local(node.tag) == "apply" and len(node) > 1 else None
+    if op not in ("min", "max"):
+        return node
+    out = node[1]
+    for arg in list(node)[2:]:
+        first = _apply("lt" if op == "min" else "gt", [copy.deepcopy(out), copy.deepcopy(arg)])
+        piecewise = ET.Element(_q(_MATHML_NS, "piecewise"))
+        ET.SubElement(piecewise, _q(_MATHML_NS, "piece")).extend([out, first])
+        ET.SubElement(piecewise, _q(_MATHML_NS, "otherwise")).append(arg)
+        out = piecewise
+    return out
+
+
+def _if_for_piecewise(node: ET.Element) -> ET.Element:
+    """*node* with each ``piecewise`` that has an ``otherwise`` as a call of
+    ``if(condition, value, otherwise)``, which is how BNGL, and so a replay,
+    writes it."""
+    for k, child in enumerate(list(node)):
+        node[k] = _if_for_piecewise(child)
+    pieces = [c for c in node if _local(c.tag) == "piece" and len(c) == 2]
+    otherwise = [c for c in node if _local(c.tag) == "otherwise" and len(c) == 1]
+    if _local(node.tag) != "piecewise" or len(otherwise) != 1 or len(pieces) + 1 != len(node):
+        return node
+    out = otherwise[0][0]
+    for piece in reversed(pieces):
+        call = ET.Element(_q(_MATHML_NS, "apply"))
+        call.extend([_ci("if"), piece[1], piece[0], out])
+        out = call
+    return out
+
+
 def _scaled(expr: ET.Element, scale: float) -> ET.Element:
     return expr if scale == 1.0 else _apply("times", [expr, _cn(scale)])
 
@@ -2909,15 +2952,13 @@ class _TaskReader:
             self._unread(f"{where}: {_local(elem.tag)} with no math")
             return None
         try:
-            import libsbml
+            formula = _l3_formula(math)
         except ImportError:  # pragma: no cover - the SBML extra is installed with the readers
             self._unread(f"{where}: reading {_local(elem.tag)} math needs libsbml")
             return None
-        node = libsbml.readMathMLFromString(ET.tostring(math, encoding="unicode"))
-        if node is None:
+        if formula is None:
             self._unread(f"{where}: {_local(elem.tag)} math that libsbml cannot read")
             return None
-        formula = libsbml.formulaToL3String(node)
         # Each variable id to the name its target names, and each of the
         # element's own parameters to its value, in one pass: substituted one
         # after another, `k2 := k1, k1 := k2` turned `3*k2` into `3*k2`.
@@ -2960,21 +3001,18 @@ class _TaskReader:
         assigned = targets.assignments.get(named[1])
         if assigned is None:
             return False
-        import libsbml
-
+        # The assignment's math as the writer says it again, and as it is read.
         math = ET.Element(_q(_MATHML_NS, "math"))
-        math.append(ET.fromstring(assigned))
-        node = libsbml.readMathMLFromString(ET.tostring(math, encoding="unicode"))
-        if node is None:  # pragma: no cover - the SBML's own math, read once already
+        math.append(_without_min_max(ET.fromstring(assigned)))
+        seed = _l3_formula(math)
+        if seed is None:  # pragma: no cover - the SBML's own math, read once already
             return False
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", ConversionWarning)
             lossy = len(self.lossy)
             formula = self._formula(sv, where, None, names)
             del self.lossy[lossy:]
-        return formula is not None and formula.replace(" ", "") == (
-            libsbml.formulaToL3String(node).replace(" ", "")
-        )
+        return formula is not None and formula.replace(" ", "") == seed.replace(" ", "")
 
     def _unread(self, text: str) -> None:
         self.lossy.append(text)
@@ -2988,6 +3026,16 @@ class _TaskReader:
 _TARGET_ASSIGNMENT = re.compile(
     r"""initialAssignment\[\s*@symbol\s*=\s*['"]([^'"]+)['"]\s*\]\s*$"""
 )
+
+
+def _l3_formula(math: ET.Element) -> str | None:
+    """A ``math`` element as a formula a replay evaluates, or ``None`` where
+    libsbml cannot read it."""
+    import libsbml
+
+    math = _if_for_piecewise(copy.deepcopy(math))
+    node = libsbml.readMathMLFromString(ET.tostring(math, encoding="unicode"))
+    return None if node is None else libsbml.formulaToL3String(node)
 
 
 def _overridden_assignment(change: ET.Element, later: list[ET.Element]) -> bool:

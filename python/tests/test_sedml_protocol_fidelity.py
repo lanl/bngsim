@@ -124,8 +124,21 @@ def _formula(math_elem: ET.Element) -> str:
     return libsbml.formulaToString(node)
 
 
+def _piecewise(*args: float) -> float:
+    """piecewise(value, condition, ..., otherwise)."""
+    return next((v for v, c in zip(args[::2], args[1::2], strict=False) if c), args[-1])
+
+
 def _evaluate(math_elem: ET.Element, env: dict[str, float]) -> float:
-    names = {"pow": pow, "exp": math.exp, "log": math.log, "sqrt": math.sqrt}
+    names = {
+        "pow": pow,
+        "exp": math.exp,
+        "log": math.log,
+        "sqrt": math.sqrt,
+        "lt": lambda a, b: a < b,
+        "gt": lambda a, b: a > b,
+        "piecewise": _piecewise,
+    }
     return float(eval(_formula(math_elem), {"__builtins__": {}}, {**names, **env}))
 
 
@@ -210,7 +223,11 @@ def _run_points(omex: Path) -> dict[str, dict[str, list[float]]]:
                     float(rng.get("start")),
                     float(rng.get("end")),
                 )
-                ranges[rng.get("id")] = [lo + k * (hi - lo) / n for k in range(n + 1)]
+                if rng.get("type") == "log":
+                    points = [lo * (hi / lo) ** (k / n) for k in range(n + 1)]
+                else:
+                    points = [lo + k * (hi - lo) / n for k in range(n + 1)]
+                ranges[rng.get("id")] = points
         subs = sorted(
             task.iterfind("s:listOfSubTasks/s:subTask", NS), key=lambda s: int(s.get("order"))
         )
@@ -1081,14 +1098,20 @@ def _sbml_assigning_k2(tmp_path: Path, formula: str) -> str:
     ],
     ids=["scan", "set-between-runs", "set-before-the-run", "replaced-before"],
 )
-@pytest.mark.parametrize("formula", ["triple(k1)", "k1*3 + 0*time"], ids=["function", "time"])
+@pytest.mark.parametrize(
+    "formula",
+    ["triple(k1)", "k1*3 + 0*time", "rem(k1*3, 7)"],
+    ids=["function", "time", "an-operator-sedml-has-not"],
+)
 def test_an_assignment_sedml_math_cannot_say_is_recorded_where_it_is_lost(
     tmp_path, actions, noted, formula
 ):
-    """k2 = triple(k1), or one that reads the SBML's time: SED-ML math names no
-    SBML function, and its time is the simulation's, so the standard elements
-    cannot set k2 again as k1 moves, and say so (issue #1684). A change made
-    before the model is loaded is exact, and says nothing."""
+    """k2 = triple(k1), one that reads the SBML's time, or one with an operator
+    of SBML L3V2's MathML that SED-ML L1V3's has not: SED-ML math names no
+    SBML function, its time is the simulation's, and its schema refuses the
+    operator, so the standard elements cannot set k2 again as k1 moves, and
+    say so (issue #1684). A change made before the model is loaded is exact,
+    and says nothing."""
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         sbml = _sbml_assigning_k2(tmp_path, formula)
@@ -1217,6 +1240,12 @@ BESIDE_NET = NET.replace("    2 k2 1\n", "    2 k2 k1*3\n    3 kr 1\n").replace(
     "2 2 1 k2", "2 2 1 kr"
 )
 BESIDE_MODEL = MODEL.replace("  k2 1\n", "  k2 k1*3\n  kr 1\n").replace("k1, k2", "k1, kr")
+# k2 = k1*3 up to 6, as a min and as an if: SED-ML L1V3's MathML has no min,
+# and a replay writes a piecewise as BNGL's if.
+CAPPED_NET = NET.replace("2 k2 1", "2 k2 min((k1*3),6)")
+CAPPED_MODEL = MODEL.replace("  k2 1", "  k2 min(k1*3,6)")
+STEPPED_NET = NET.replace("2 k2 1", "2 k2 if((k1>2),6,(k1*3))")
+STEPPED_MODEL = MODEL.replace("  k2 1", "  k2 if(k1>2,6,k1*3)")
 _A1 = _eq(1, 3)  # the first run with k2 = k1*3 declared
 # Each case: the network, its model, the actions after generate_network, and
 # A at the end of each run of the last experiment, as BNG2.pl 2.9.3 gives it
@@ -1289,6 +1318,18 @@ INITIAL_ASSIGNMENT_CASES = {
         "chained",
         SCAN.format(p="k1", v="1,3,5", extra=""),
         [_eq(k, 2 * k) for k in (1, 3, 5)],
+    ),
+    # 75.4579, 66.6708, 54.5462: k2 = min(k1*3, 6), said as a piecewise
+    "scan-of-what-a-min-reads": (
+        "capped",
+        SCAN.format(p="k1", v="1,3,5", extra=""),
+        [_eq(1, 3), _eq(3, 6), _eq(5, 6)],
+    ),
+    # 75.4579, 66.6708, 54.5462: k2 = if(k1>2, 6, k1*3)
+    "scan-of-what-an-if-reads": (
+        "stepped",
+        SCAN.format(p="k1", v="1,3,5", extra=""),
+        [_eq(1, 3), _eq(3, 6), _eq(5, 6)],
     ),
     # 28.3834, 56.7668, 85.1501; the standard elements were flat at 56.77
     "dose-scan": (
@@ -1429,6 +1470,8 @@ _NETWORKS = {
     "plain": (NET, MODEL),
     "beside": (BESIDE_NET, BESIDE_MODEL),
     "declared": (DECLARED_NET, DECLARED_MODEL),
+    "capped": (CAPPED_NET, CAPPED_MODEL),
+    "stepped": (STEPPED_NET, STEPPED_MODEL),
     "chained": (CHAINED_NET, CHAINED_MODEL),
     "seeded": (SEEDED_NET, SEEDED_MODEL),
     "seed-of-derived": (SEED_OF_DERIVED_NET, SEED_OF_DERIVED_MODEL),
@@ -1575,3 +1618,28 @@ def test_a_species_set_at_each_point_of_a_sweep_that_goes_on_is_not_a_seed(tmp_p
     with pytest.warns(ConversionWarning, match="from its range beside the swept parameter"):
         spec = read_sedml_protocol(going_on, sbml=sbml)
     assert len(spec.lossy) == 1
+
+
+def test_an_expression_with_a_min_and_an_if_is_read_back_and_replays(tmp_path):
+    """setParameter("k2","if(k1>2,k1*3,min(k1/2,7))") before a run, then k1 = 3
+    and a run on: BNG2.pl's A(1) is 74.9998 after 48.2087. The standard
+    elements say the min as a piecewise, and the reader says each piecewise
+    as BNGL's if, which a replay evaluates (it refused piecewise(...))."""
+    _pack(
+        tmp_path,
+        "generate_network({overwrite=>1})\n"
+        'setParameter("k2","if(k1>2,k1*3,min(k1/2,7))")\n' + RUN + 'setParameter("k1",3)\n' + RUN,
+    )
+    want = _from(_eq(1, 0.5), 3, 9)
+    points = _run_points(tmp_path / "m.omex")
+    assert points["report_1"]["observable:Atot"] == pytest.approx([want], rel=1e-6)
+    sed = zipfile.ZipFile(tmp_path / "m.omex").read("simulation.sedml").decode()
+    bare = re.sub(r"<annotation>.*?</annotation>", "", sed, flags=re.S)
+    assert "min" not in bare
+    with read_omex(tmp_path / "m.omex") as archive:
+        sbml = archive.path_of(archive.master_model_entry())
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", ConversionWarning)
+            spec = read_sedml_protocol(bare, sbml=sbml)
+        runs = bngsim.run_protocol(archive.load_model(), spec, rtol=1e-10, atol=1e-12)
+    assert _replay_points(runs[-1]) == pytest.approx([want], rel=1e-6)

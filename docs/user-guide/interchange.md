@@ -203,8 +203,11 @@ to the species' declared seed, not to that expression, and the species is set
 to that seed first. Where an action before `generate_network` changed the
 species, the SBML does not hold that seed: the export says so, and records it
 in `sedml_lossy`. An assignment SED-ML math cannot say again,
-one that calls a function of the SBML's or reads its time, is left as the
-simulator computed it: the export says so, and records it in `sedml_lossy`.
+one that calls a function of the SBML's, reads its time, or uses an operator
+SED-ML L1V3's MathML does not have (`rem`, `quotient`, `implies`), is left as
+the simulator computed it: the export says so, and records it in
+`sedml_lossy`. A `min` or `max`, which that MathML does not have either, is
+written as the `piecewise` it is.
 The bngsim annotation holds the protocol as parsed, with the `.bngl` named by
 its file name alone, not the path it was read from.
 

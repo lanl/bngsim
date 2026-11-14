@@ -255,6 +255,29 @@ SHAPES = {
 }
 
 
+def test_a_min_the_sbml_or_an_action_holds_is_valid_sedml(schema, tmp_path):
+    """SED-ML L1V3's MathML is SBML Level 2's, which has no min or max, and
+    SBML L3V2's, which the SBML writer uses, has: a derived k2 = min(k1*3, 6)
+    said again beside a scan of k1, and an action's max, are each written as
+    a piecewise."""
+    pytest.importorskip("libsbml")
+    (tmp_path / "m.net").write_text(NET.replace("k2 k1*3", "k2 min((k1*3),6)"))
+    (tmp_path / "m.bngl").write_text(
+        MODEL.replace("k2 k1*3", "k2 min(k1*3,6)")
+        + GEN
+        + 'setConcentration("B()","max(A0/50,k1,3)")\n'
+        + SCAN.format(p="k1", x="")
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", bngsim.ConversionWarning)
+        net_to_omex(tmp_path / "m.net", tmp_path / "m.omex", bngl=tmp_path / "m.bngl", gate="none")
+    text = zipfile.ZipFile(tmp_path / "m.omex").read("simulation.sedml")
+    doc = etree.fromstring(text)
+    mathml = "{http://www.w3.org/1998/Math/MathML}"
+    assert len(list(doc.iter(f"{mathml}piecewise"))) >= 3  # k2's, and the max of three
+    _assert_valid(schema, text, "min and max")
+
+
 @pytest.mark.parametrize("actions", list(SHAPES.values()), ids=list(SHAPES))
 def test_each_archive_holds_valid_sedml(schema, tmp_path, actions):
     pytest.importorskip("libsbml")
