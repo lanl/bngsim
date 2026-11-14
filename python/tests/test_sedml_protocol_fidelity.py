@@ -1000,3 +1000,100 @@ def test_expressions_that_do_not_settle_are_refused(tmp_path, monkeypatch):
     net = NET.replace("    2 k2 1\n", "    2 k2 1\n    3 k3 2*k1\n")
     with pytest.raises(ConversionError, match="do not settle"):
         _replay(net, parse_bngl_protocol('setParameter("k1","k3")\n' + RUN), tmp_path)
+
+
+# ─── found in the review's second round ─────────────────────────────────────
+
+DECLARED_NET = NET.replace("2 k2 1", "2 k2 k1*3")
+DECLARED_MODEL = MODEL.replace("  k2 1", "  k2 k1*3")
+
+
+def test_a_reset_to_the_networks_expression_keeps_its_assignment(tmp_path):
+    """Declared k2 = k1*3; save, k2 = 7, reset, k1 = 5: BNG2.pl runs k2 = 15
+    (75.00). The export removed k2's assignment and wrote k2 = 3 (37.52)."""
+    actions = (
+        'generate_network({overwrite=>1})\nsaveParameters()\nsetParameter("k2",7)\n'
+        'resetParameters()\nsetParameter("k1",5)\n' + RUN
+    )
+    report, _ = _pack(tmp_path, actions, net=DECLARED_NET, model=DECLARED_MODEL)
+    (values,) = _run_report(tmp_path / "m.omex").values()
+    assert values["observable:Atot"] == pytest.approx(_eq(5, 15), rel=1e-5)
+    assert report.sedml_lossy == []
+    with read_omex(tmp_path / "m.omex") as archive:
+        (run,) = bngsim.run_protocol(archive.load_model(), archive.load_full_protocol())
+    assert _end(run.result) == pytest.approx(_eq(5, 15), rel=1e-6)
+
+
+def test_a_value_that_is_not_a_number_is_refused_as_one(tmp_path):
+    """BNG2.pl stops on k1*0/0; the replay said it was defined recursively."""
+    protocol = parse_bngl_protocol('setParameter("k2","k1*0/0")\n' + RUN)
+    with pytest.raises(ConversionError, match="does not evaluate"):
+        _replay(NET, protocol, tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("actions", "noted"),
+    [
+        (
+            'parameter_scan({method=>"ode",parameter=>"k1",par_scan_vals=>[1,3,5],t_end=>1,n_steps=>1})\n',
+            True,
+        ),
+        (RUN + 'setParameter("k1",5)\n' + RUN, True),
+        ('setParameter("k1",5)\n' + RUN, False),
+    ],
+    ids=["scan", "set-between-runs", "set-before-the-run"],
+)
+def test_a_parameter_set_as_the_model_runs_under_an_assignment_is_recorded(
+    tmp_path, actions, noted
+):
+    """A scan of k1, with k2 = k1*3 declared, ran k2 = 3 at every point on
+    libRoadRunner (37.52 for 75.00 at k1 = 5), and nothing said so. A change
+    made before the model is loaded is exact, and says nothing."""
+    report, said = _pack(
+        tmp_path,
+        "generate_network({overwrite=>1})\n" + actions,
+        net=DECLARED_NET,
+        model=DECLARED_MODEL,
+    )
+    hits = [n for n in report.sedml_lossy if "set k1 as the model runs" in n and "['k2']" in n]
+    assert bool(hits) == noted
+    assert all(h in said for h in hits)
+
+
+def test_a_reset_sweep_before_more_of_a_chain_is_lossy():
+    """A chain runs a sweep that resets at each point, then a task: SED-ML
+    continues from the last point (0.5488 e^-0.6 = 0.3012), and a replay's
+    scan puts its start state back (0.5488 from A = 1)."""
+    k2 = "/sbml:sbml/sbml:model/sbml:listOfParameters/sbml:parameter[@id='k2']"
+    sweep = (
+        f'<setValue modelReference="m" range="x" target="{k2}"><math xmlns="{MATHML}">'
+        "<ci>x</ci></math></setValue>"
+    )
+    doc = f"""<sedML xmlns="{SED}" xmlns:sbml="{DECAY_SBML_NS}" level="1" version="3">
+ <listOfSimulations><uniformTimeCourse id="s" initialTime="0" outputStartTime="0"
+   outputEndTime="1" numberOfPoints="1"><algorithm kisaoID="KISAO:0000019"/></uniformTimeCourse>
+ </listOfSimulations>
+ <listOfModels><model id="m" language="urn:sedml:language:sbml" source="model.xml"/></listOfModels>
+ <listOfTasks><task id="t" modelReference="m" simulationReference="s"/>
+  <repeatedTask id="sweep" resetModel="true" range="x">
+   <listOfRanges>{_vector("x", [0.3, 0.6])}</listOfRanges><listOfChanges>{sweep}</listOfChanges>
+   <listOfSubTasks><subTask order="1" task="t"/></listOfSubTasks></repeatedTask>
+  <repeatedTask id="chain" resetModel="true" range="c"><listOfRanges>{_vector("c", [0])}
+   </listOfRanges><listOfSubTasks><subTask order="1" task="sweep"/>
+   <subTask order="2" task="t"/></listOfSubTasks></repeatedTask>
+ </listOfTasks>
+ <listOfDataGenerators><dataGenerator id="g"><listOfVariables>
+   <variable id="a" taskReference="chain"
+     target="/sbml:sbml/sbml:model/sbml:listOfSpecies/sbml:species[@id='A']"/></listOfVariables>
+   <math xmlns="{MATHML}"><ci>a</ci></math></dataGenerator></listOfDataGenerators>
+</sedML>"""
+    with pytest.warns(ConversionWarning, match="a sweep that resets the model at each point"):
+        spec = read_sedml_protocol(doc)
+    assert len(spec.lossy) == 1
+
+
+def test_a_strict_refusal_leaves_no_net(tmp_path):
+    _pack(tmp_path, UNKNOWN_SAVE, net=NET.replace("1 A() 100", "1 A() 50"))
+    with pytest.raises(ConversionError, match="cannot make that state"):
+        omex_to_net(tmp_path / "m.omex", tmp_path / "back.net", gate="none")
+    assert not (tmp_path / "back.net").exists()

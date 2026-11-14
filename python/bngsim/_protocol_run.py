@@ -656,7 +656,7 @@ class _Runner:
             moved = False
             for name, text in self.param_exprs.items():
                 value = _value(self.model, text)
-                if value is None:
+                if value is None or math.isnan(value):
                     raise ConversionError(
                         f'setParameter("{name}","{text}"): the value does not evaluate '
                         "in the model"

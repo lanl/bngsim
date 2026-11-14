@@ -1451,6 +1451,27 @@ def omex_to_net(
         sed_entry = archive.master_sedml_entry()
         sedml_path = archive.path_of(sed_entry) if sed_entry is not None else None
 
+        # The actions block, decided before anything is written: under strict,
+        # one it cannot write refuses the archive with no .net left behind.
+        dest = actions_out
+        if dest is None and out_path is not None:
+            dest = Path(out_path).with_suffix(".bngl")
+        actions = notes = None
+        sed_entries = archive.sedml_entries()
+        if write_actions and dest is not None and sed_entries:
+            from bngsim.convert._protocol import _on_its_network
+
+            composed = archive.load_full_protocol()
+            if not composed.is_empty:
+                # For the .net written here, which holds what the actions
+                # before the protocol's generation point did (issue #1687).
+                actions, notes = _on_its_network(composed)
+                if notes and strict:
+                    raise ConversionError(
+                        f"{omex_path.name}: {notes[0]}. Pass strict=False to write the "
+                        "actions block with a note of it"
+                    )
+
         report = sbml_to_net(
             sbml_path,
             out_path,
@@ -1463,7 +1484,6 @@ def omex_to_net(
 
         # Compose the WHOLE protocol — every experiment from every SED-ML file —
         # not just the master entry's first run that drove the gate horizon.
-        sed_entries = archive.sedml_entries()
         if len(sed_entries) > 1:
             warnings.warn(
                 f"{omex_path.name}: archive carries {len(sed_entries)} SED-ML files; "
@@ -1476,31 +1496,19 @@ def omex_to_net(
 
     if full_protocol is not None and not full_protocol.is_empty:
         report.protocol = full_protocol
-        if write_actions:
-            dest = actions_out
-            if dest is None and out_path is not None:
-                dest = Path(out_path).with_suffix(".bngl")
-            if dest is not None:
-                from bngsim.convert._protocol import _on_its_network, write_bngl_protocol
+        if actions is not None and dest is not None:
+            from bngsim.convert._protocol import write_bngl_protocol
 
-                # For the .net written here, which holds what the actions
-                # before the protocol's generation point did (issue #1687).
-                actions, notes = _on_its_network(full_protocol)
-                if notes and strict:
-                    raise ConversionError(
-                        f"{omex_path.name}: {notes[0]}. Pass strict=False to write the "
-                        "actions block with a note of it"
-                    )
-                text = write_bngl_protocol(actions)
+            text = write_bngl_protocol(actions)
+            if notes:
                 for note in notes:
                     warnings.warn(note, ConversionWarning, stacklevel=2)
                     report.lossy.append(f"actions: {note}")
-                if notes:
-                    # The note travels with the file, for whoever runs it.
-                    comment = "".join(f"# bngsim: {n}\n" for n in notes)
-                    text = text.replace("begin actions\n", "begin actions\n" + comment, 1)
-                Path(dest).write_text(text)
-                report.bngl_out = str(dest)
+                # The note travels with the file, for whoever runs it.
+                comment = "".join(f"# bngsim: {n}\n" for n in notes)
+                text = text.replace("begin actions\n", "begin actions\n" + comment, 1)
+            Path(dest).write_text(text)
+            report.bngl_out = str(dest)
 
     # Re-label the source so the report reads as an OMEX unpack, not a bare SBML.
     report.source = str(omex_path)

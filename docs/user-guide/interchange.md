@@ -180,7 +180,10 @@ rows first and its own last, and its name says so. A change to a parameter the
 SBML computes by an `initialAssignment` (a derived parameter, or a species
 whose seed amount names a parameter) is written after a `removeXML` of that
 assignment, which would otherwise override it, as BNG2.pl's action replaces
-the expression. The bngsim annotation holds the protocol as
+the expression. A `setValue` that sets, as the model runs, a parameter such an
+assignment reads (a scan of `k1` beside a derived `k2 = k1*3`) leaves that
+value as the simulator computed it when it loaded the model, where BNG2.pl's
+follows: the export says so, and records it in `sedml_lossy`. The bngsim annotation holds the protocol as
 parsed, with the `.bngl` named by its file name alone, not the path it was
 read from.
 
@@ -310,8 +313,9 @@ is not run. A change the replay cannot apply (a compartment's size, an
 `addXML`, a species' `initialAmount` without the SBML's compartment sizes, a
 `setValue` that reads the range beside the swept parameter other than as an
 expression of it, a sweep whose math reads the model's values, a task on a
-second model file) is said with a `ConversionWarning` and recorded in the
-spec's `lossy` list, which `run_protocol` refuses unless `allow_lossy=True`.
+second model file, a sweep that resets the model at each point followed by more of a
+chain, which a replay's scan would start from its start state) is said with a
+`ConversionWarning` and recorded in the spec's `lossy` list, which `run_protocol` refuses unless `allow_lossy=True`.
 A sweep runs the value its `setValue`'s math gives at each iteration, over the
 range it names: `k = 10^x` over x = 0, 1, 2 runs k = 1, 10, 100, and so does a
 `functionalRange` or a second range of those values. A change's math is

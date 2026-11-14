@@ -1099,8 +1099,9 @@ def write_bngl_protocol(protocol: ProtocolSpec, out_path: str | Path | None = No
     ``simulate``/``parameter_scan`` call and each :class:`StateChange` its
     ``set*``/``resetConcentrations``/``saveConcentrations`` call, in order. The
     round-trip ``parse_bngl_protocol(write_bngl_protocol(p))`` recovers an equal
-    spec (modulo the dropped build/IO directives, which a protocol never carries).
-    A protocol whose network was generated after its first step gets a
+    spec, its ``generation_step`` included, modulo the build/IO directives a
+    protocol records but never runs (``dropped``, ``network_gen``). A protocol
+    whose network was generated after its first step gets a
     ``generate_network`` there (the source's own call, ``network_gen``), so the
     block reads back with the steps before it in the network; any other gets
     none — that is a build directive the model-block writer prepends when it

@@ -966,8 +966,9 @@ class _SbmlTargets:
         self.params: dict[str, str] = {}
         self.param_values: dict[str, float] = {}  # parameter id → its value
         # The ids an initialAssignment computes, which a change to the value
-        # the element holds does not move.
+        # the element holds does not move; and for each id one reads, those.
         self.initially_assigned: set[str] = set()
+        self.assignment_reads: dict[str, set[str]] = {}
         self.read = False
         text = _sbml_text(sbml)
         if text is None:
@@ -980,11 +981,12 @@ class _SbmlTargets:
             return
         self.ns = root.tag[1:].split("}", 1)[0]
         self.read = True
-        self.initially_assigned = {
-            e.get("symbol") or ""
-            for e in root.iter()
-            if _local(e.tag) == "initialAssignment" and e.get("symbol")
-        }
+        for e in root.iter():
+            if _local(e.tag) == "initialAssignment" and e.get("symbol"):
+                symbol = e.get("symbol") or ""
+                self.initially_assigned.add(symbol)
+                for ci in _findall_local(e, "ci"):
+                    self.assignment_reads.setdefault((ci.text or "").strip(), set()).add(symbol)
         # A size the SBML computes (an initial assignment or a rule on the
         # compartment), or leaves out, is no number here (issue #1662).
         computed = {
@@ -1079,6 +1081,8 @@ class _Change(NamedTuple):
     scale: float
     action: str
     follows: bool = False
+    # A resetParameters back to the value the SBML gives (issue #1668).
+    restores: bool = False
 
 
 def _ordered(changes: list[_Change]) -> list[_Change]:
@@ -1146,6 +1150,7 @@ class _ProtocolWriter:
         # Per experiment, in order: the task that runs it, which its report reads.
         self._experiments: list[tuple[int, Any, str]] = []
         self._reads_cache: dict[_Change, frozenset[str]] = {}
+        self._noted: set[str] = set()
 
     # ── ids and small elements ─────────────────────────────────────────────
     def _id(self, stem: str) -> str:
@@ -1159,6 +1164,26 @@ class _ProtocolWriter:
         bngsim annotation holds it; :func:`~bngsim.convert.net_to_omex`
         records each in the archive (issue #1684)."""
         warnings.warn(text, ConversionWarning, stacklevel=_outside())
+
+    def _set_as_it_runs(self, pid: str, *, species: bool) -> None:
+        """Say where a setValue sets *pid* as the model runs and the SBML
+        computes another value from it by an initialAssignment: a simulator
+        evaluates that when it loads (or resets) the model, not when *pid* is
+        set, where BNG2.pl's derived parameter follows it (and a species whose
+        amount is an expression of it, until a run). The bngsim annotation
+        holds the protocol (issue #1684)."""
+        reads = self.targets.assignment_reads.get(pid, set())
+        params = set(self.targets.params.values())
+        follow = sorted(r for r in reads if r in params or species)
+        if not follow or pid in self._noted:
+            return
+        self._noted.add(pid)
+        self._say(
+            f"SED-ML's standard elements set {pid} as the model runs, and the SBML computes "
+            f"{follow} from it by an initialAssignment, which a simulator evaluates when it "
+            f"loads the model; BNG2.pl's follow {pid} as it is set. The bngsim annotation "
+            "holds the protocol"
+        )
 
     def _math(
         self,
@@ -1250,6 +1275,8 @@ class _ProtocolWriter:
         self._math(cc, change, model_ref)
 
     def _set_value(self, changes: ET.Element, change: _Change, model_ref: str) -> None:
+        if change.kind == "param":
+            self._set_as_it_runs(change.sid, species=False)
         path = (
             self.targets.param_path(change.sid)
             if change.kind == "param"
@@ -1338,7 +1365,9 @@ class _ProtocolWriter:
                 "goes back to needs the SBML (pass sbml=); the bngsim annotation holds it"
             )
             return None
-        return _Change("param", pid, value, None, False, 1.0, f"resetParameters ({pid})")
+        return _Change(
+            "param", pid, value, None, False, 1.0, f"resetParameters ({pid})", restores=True
+        )
 
     # ── parameters that follow others (issue #1682) ────────────────────────
     def _reads(self, change: _Change) -> frozenset[str]:
@@ -1399,6 +1428,15 @@ class _ProtocolWriter:
         return sim_id
 
     def derived_model(self, i: int, changes: list[_Change]) -> str:
+        # A parameter the SBML computes, whose last change puts it back as the
+        # SBML gives it (a resetParameters to the network's expression), is
+        # what its initialAssignment computes from the model as changed: it
+        # takes no change, and keeps the assignment.
+        last = {c.sid: c for c in changes}
+        back = {
+            sid for sid, c in last.items() if c.restores and sid in self.targets.initially_assigned
+        }
+        changes = [c for c in changes if c.sid not in back]
         if not changes:
             return "model0"
         model_ref = f"model_{i}"
@@ -1472,7 +1510,12 @@ class _ProtocolWriter:
             },
         )
         ET.SubElement(sv, _q(_MATHML_NS, "math")).append(_ci(rng_id))
+        # A sweep from the initial state also moves a species whose seed names
+        # the parameter, in BNG2.pl: no run has made it a number yet.
+        fresh = reset or model_ref != "model0"
+        self._set_as_it_runs(pid, species=fresh)
         for follower in self._following.get(i, []):
+            self._set_as_it_runs(follower.sid, species=fresh)
             fv = ET.SubElement(
                 loc,
                 _q(_SEDML_NS, "setValue"),
@@ -2385,8 +2428,19 @@ class _TaskReader:
         subs = sorted(
             _findall_local(rt, "subTask"), key=lambda s: _number_or_none(s.get("order")) or 0.0
         )
-        for st in subs:
+        for n, st in enumerate(subs):
             ref = st.get("task") or ""
+            if sweep is None and ref in self.rts and n < len(subs) - 1:
+                inner = _sweep_of(self.rts[ref], self.sim_of_task)
+                if inner is not None and inner.get("reset") and "unread" not in inner:
+                    # A replay's scan puts its start state back when it ends,
+                    # as BNG2.pl's does; SED-ML leaves the last point's state
+                    # for the subtasks after it.
+                    self._unread(
+                        f"repeatedTask {rid} runs {ref!r}, a sweep that resets the model at "
+                        "each point, and then more subtasks from where its last point left "
+                        "the model, which a replay's scan does not leave"
+                    )
             if ref in self.tasks:
                 run = self._task(self.tasks[ref], sweep)
                 # Before its scan, after its model's changes; the first one only.
