@@ -1,3 +1,8 @@
+<!--
+Title: the part of bngsim it changes, what changes, and every issue it clears,
+e.g. "simulator: read each batch row's default atol from its own start (#1660)".
+-->
+
 Fixes #
 
 <!-- What was wrong, what changes, and the numbers before and after where there are any. -->

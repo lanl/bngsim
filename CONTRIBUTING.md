@@ -584,6 +584,10 @@ weeks lapses, and anyone may take the issue.
   page under [`docs/`](docs/).
 - Say how the PR was reviewed, under the "Review" heading the PR template gives
   you ([Saying how a PR was reviewed](#saying-how-a-pr-was-reviewed)).
+- Begin the PR's title with the part of bngsim it changes, then say what
+  changes, and end with every issue it clears: `simulator: read each batch
+  row's default atol from its own start (#1660)`. Leave the numbers out only
+  when no issue is involved.
 
 See the [development docs](docs/development/) for building and testing, and for the
 guide to adding built-in functions. `scripts/LOCAL_CI.md` covers building the wheel
