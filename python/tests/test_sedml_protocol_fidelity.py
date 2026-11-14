@@ -354,20 +354,26 @@ def test_a_scan_of_a_parameter_set_to_an_expression_runs_its_values(tmp_path):
 # k0 beside A <-> B, read by nothing but the actions.
 NET0 = NET.replace("    2 k2 1\n", "    2 k2 1\n    3 k0 1\n")
 MODEL0 = MODEL.replace("  k2 1\n", "  k2 1\n  k0 1\n")
-CHAINED = 'setParameter("k2","k1*3")\nsetParameter("k1","k0*2")\nsetParameter("k0",5)\n'
+# k1 = 2 k0 and k2 = 3 k1, then k0 = 5: k1 = 10, k2 = 30. And k2 = k0 + k1,
+# set before k1 = 2 k0, then k0 = 5: k2 is set after k1, k1 = 10, k2 = 15.
+CHAINS = [
+    ('setParameter("k2","k1*3")\nsetParameter("k1","k0*2")\nsetParameter("k0",5)\n', 10, 30),
+    ('setParameter("k2","k0+k1")\nsetParameter("k1","k0*2")\nsetParameter("k0",5)\n', 10, 15),
+]
 
 
-def test_expressions_follow_one_another(tmp_path):
-    """k1 = 2 k0 and k2 = 3 k1, then k0 = 5: k1 = 10, k2 = 30."""
-    out = _replay(NET0, parse_bngl_protocol(CHAINED + RUN), tmp_path)
-    assert (out.model.get_param("k1"), out.model.get_param("k2")) == (10.0, 30.0)
-    assert _end(out[0].result) == pytest.approx(_eq(10, 30), rel=RTOL)
+@pytest.mark.parametrize(("sets", "k1", "k2"), CHAINS, ids=["chained", "crossed"])
+def test_expressions_follow_one_another(tmp_path, sets, k1, k2):
+    out = _replay(NET0, parse_bngl_protocol(sets + RUN), tmp_path)
+    assert (out.model.get_param("k1"), out.model.get_param("k2")) == (k1, k2)
+    assert _end(out[0].result) == pytest.approx(_eq(k1, k2), rel=RTOL)
 
 
-def test_the_sedml_sets_expressions_in_the_order_they_read_one_another(tmp_path):
-    _pack(tmp_path, "generate_network({overwrite=>1})\n" + CHAINED + RUN, net=NET0, model=MODEL0)
+@pytest.mark.parametrize(("sets", "k1", "k2"), CHAINS, ids=["chained", "crossed"])
+def test_the_sedml_sets_expressions_in_the_order_they_read_one_another(tmp_path, sets, k1, k2):
+    _pack(tmp_path, "generate_network({overwrite=>1})\n" + sets + RUN, net=NET0, model=MODEL0)
     (values,) = _run_report(tmp_path / "m.omex").values()
-    assert values["observable:Atot"] == pytest.approx(_eq(10, 30), rel=1e-5)
+    assert values["observable:Atot"] == pytest.approx(_eq(k1, k2), rel=1e-5)
 
 
 @pytest.mark.parametrize(

@@ -752,8 +752,9 @@ class _Runner:
                     "network was generated were changed before it too, so the loaded "
                     "model does not hold them"
                 )
+            # The saved values agree with the saved expressions: every change
+            # brought those up to date before the save.
             self._restore_params(*saved)
-            self._follow()
         else:  # pragma: no cover — the parser makes no other kind
             raise ConversionError(f"unknown protocol step {kind!r}")
 
