@@ -679,7 +679,11 @@ class _Runner:
                     f"{', '.join(self._state_reads(change.value_expr))}, which makes the "
                     "parameter a function of the state in BNG2.pl; bngsim cannot do that"
                 )
-            reads = self._param_reads(change.value_expr) if change.value_expr is not None else []
+            reads = (
+                self._param_reads(change.value_expr)
+                if change.value_expr is not None and not change.evaluated_once
+                else []
+            )
             if reads and self._defines_recursively(name, change.value_expr or ""):
                 raise ConversionError(
                     f"{_action(change)}: the value reads {name} through itself; BNG2.pl "

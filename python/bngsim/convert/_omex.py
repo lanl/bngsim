@@ -306,7 +306,7 @@ class OmexArchive:
             )
         return read_sedml(sed_path, model_source=model_source, model_format=model_format)
 
-    def load_full_protocol(self):
+    def load_full_protocol(self, entry: OmexEntry | None = None):
         """Compose **every** SED-ML entry into one :class:`ProtocolSpec`.
 
         Where :meth:`load_protocol` reads only the master (or first) SED-ML entry
@@ -320,25 +320,48 @@ class OmexArchive:
 
         Returns an empty :class:`ProtocolSpec` when the archive has no SED-ML.
 
+        The protocol names each species and parameter as the model it runs on
+        does (issue #1685): the master model, which :meth:`load_model` loads,
+        unless *entry* names another. An SBML entry names them by its ids
+        (``L_r`` for the BNGL ``L(r)``), a ``.net`` by their BNGL names.
+
+        Parameters
+        ----------
+        entry : OmexEntry | None
+            The model entry the protocol is to run on, from
+            :meth:`model_entries`. Default: the master.
+
         Returns
         -------
         ProtocolSpec
         """
         from bngsim.convert._protocol import ProtocolSpec, combine_protocols
-        from bngsim.convert._sedml import read_sedml_protocol
+        from bngsim.convert._sedml import _read_sedml_protocol
 
-        # The master SBML, for a species change written in its compartment's
-        # amount (issue #1662).
+        # The SBML the protocol runs on, else the master SBML: for a species
+        # change written in its compartment's amount (issue #1662), and for
+        # the ids it names each species and parameter by (issue #1685).
         master = self.master_model_entry()
-        sbml = self.path_of(master) if master is not None and master.kind == "sbml" else None
+        target = entry if entry is not None else master
+        on = next(
+            (e for e in (target, master) if e is not None and e.kind == "sbml"),
+            None,
+        )
+        sbml = self.path_of(on) if on is not None else None
         specs = []
-        for entry in self.sedml_entries():
-            path = self.path_of(entry)
+        for sed in self.sedml_entries():
+            path = self.path_of(sed)
             if not path.is_file():
                 raise ConversionError(
-                    f"manifest lists SED-ML {entry.location!r} but it is not in the archive"
+                    f"manifest lists SED-ML {sed.location!r} but it is not in the archive"
                 )
-            specs.append(read_sedml_protocol(path, sbml=sbml if sbml and sbml.is_file() else None))
+            specs.append(
+                _read_sedml_protocol(
+                    path,
+                    sbml=sbml if sbml and sbml.is_file() else None,
+                    by_sbml_ids=target is not None and target.kind == "sbml",
+                )
+            )
         if not specs:
             return ProtocolSpec()
         return combine_protocols(specs)

@@ -202,9 +202,15 @@ class StateChange:
     # saveParameters / resetParameters twins. None for the default (unlabeled)
     # slot, which BNG2.pl calls "DEFAULT". Only meaningful for the reset/save kinds.
     label: str | None = None
+    # A setParameter's value_expr is kept as an expression, as BNG2.pl keeps
+    # it, so the parameter follows the parameters it reads (issue #1682).
+    # True where the value is evaluated once, where the step runs, and then
+    # holds: a SED-ML computeChange or setValue, read from another tool's
+    # document.
+    evaluated_once: bool = False
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out = {
             "step": "state_change",
             "kind": self.kind,
             "target": self.target,
@@ -212,6 +218,10 @@ class StateChange:
             "value_expr": self.value_expr,
             "label": self.label,
         }
+        # Only where it is set, so a protocol without one serializes as before.
+        if self.evaluated_once:
+            out["evaluated_once"] = True
+        return out
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> StateChange:
@@ -221,6 +231,7 @@ class StateChange:
             value=d.get("value"),
             value_expr=d.get("value_expr"),
             label=d.get("label"),
+            evaluated_once=bool(d.get("evaluated_once", False)),
         )
 
 
