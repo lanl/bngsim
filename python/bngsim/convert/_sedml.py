@@ -2187,7 +2187,10 @@ def read_sedml_protocol(source: str | Path, *, sbml: str | Path | None = None):
     (issue #1664). A change's math is evaluated once, where it applies, as
     SED-ML evaluates it; a ``setValue`` beside a sweep that reads the range
     the swept parameter is set to is that parameter's expression, which
-    follows it through the scan.
+    follows it through the scan. One that sets a species to what the SBML's
+    initialAssignment of it computes is the model's own seed, which a
+    replay's scan follows, as :func:`write_sedml_protocol` writes a seed that
+    names the swept parameter (issue #1733).
 
     A change the replay cannot apply (a compartment's size, an ``addXML``, a
     species change with no SBML to give its compartment's size, a ``setValue``

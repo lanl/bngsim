@@ -180,12 +180,21 @@ rows first and its own last, and its name says so. A change to a parameter the
 SBML computes by an `initialAssignment` (a derived parameter, or a species
 whose seed amount names a parameter) is written after a `removeXML` of that
 assignment, which would otherwise override it, as BNG2.pl's action replaces
-the expression. A `setValue` that sets, as the model runs, a parameter such an
-assignment reads (a scan of `k1` beside a derived `k2 = k1*3`) leaves that
-value as the simulator computed it when it loaded the model, where BNG2.pl's
-follows: the export says so, and records it in `sedml_lossy`. The bngsim annotation holds the protocol as
-parsed, with the `.bngl` named by its file name alone, not the path it was
-read from.
+the expression. A simulator evaluates such an assignment when it loads the
+model, not when a parameter it reads is set as the model runs, where BNG2.pl's
+derived parameter follows that parameter. So a `setValue` that sets, as the
+model runs, a parameter an assignment reads (a scan of `k1` beside a derived
+`k2 = k1*3`, or `setParameter("k1",5)` between runs) is followed by a
+`setValue` of what the assignment computes, with the assignment's own math; at
+each point of a scan, from the range. A species whose seed names the
+parameter (a dose scan of `A0`, with the seed `A() A0`) follows it the same
+way until a run has made its amount a number, as in BNG2.pl: at each point of
+a scan that resets, from the initial state; at the first point only of one
+that goes on from point to point. An assignment SED-ML math cannot say again,
+one that calls a function of the SBML's or reads its time, is left as the
+simulator computed it: the export says so, and records it in `sedml_lossy`.
+The bngsim annotation holds the protocol as parsed, with the `.bngl` named by
+its file name alone, not the path it was read from.
 
 **Starting from a `.bngl` model (the full export pipeline).** The converter's model
 input is the flattened **`.net`**, so a rule-based model is first expanded to a
