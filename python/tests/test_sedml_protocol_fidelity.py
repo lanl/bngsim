@@ -1621,6 +1621,25 @@ def test_a_derived_model_keeps_the_assignments_the_protocol_does_not_replace(
     assert not [c for c in changes if c.tag.endswith("computeChange")]
 
 
+def test_a_parameter_a_reset_puts_back_keeps_its_assignment_under_an_earlier_change(tmp_path):
+    """k2 = 7, an addition that reads it, then a reset back to k2 = k1*3: the
+    derived model sets k2 to 7 for the addition, and leaves k2's
+    initialAssignment, which computes k2 when the model is loaded."""
+    _pack(
+        tmp_path,
+        "generate_network({overwrite=>1})\nsaveParameters()\n"
+        'setParameter("k2",7)\naddConcentration("B()","k2*5")\nresetParameters()\n' + RUN,
+        net=DECLARED_NET,
+        model=DECLARED_MODEL,
+    )
+    sed = ET.fromstring(zipfile.ZipFile(tmp_path / "m.omex").read("simulation.sedml"))
+    changes = [c for m in sed.iter(f"{{{SED}}}model") for c in m.iterfind("s:listOfChanges/*", NS)]
+    assert not [c for c in changes if c.tag.endswith("removeXML")]
+    first = changes[0]
+    assert first.tag.endswith("changeAttribute") and first.get("newValue") == "7"
+    assert first.get("target").endswith("[@id='k2']/@value")
+
+
 def test_an_add_to_an_expression_whose_seed_the_network_lost_is_recorded(tmp_path):
     """BNG2.pl's addConcentration to an amount set to an expression adds to
     the species' declared seed (A = 110, with A(1) = 101.4103 beside
@@ -1653,7 +1672,10 @@ def test_a_species_set_at_each_point_of_a_sweep_that_goes_on_is_not_a_seed(tmp_p
     bare = re.sub(r"<annotation>.*?</annotation>", "", sed, flags=re.S)
     with warnings.catch_warnings():
         warnings.simplefilter("error", ConversionWarning)
-        assert read_sedml_protocol(bare, sbml=sbml).lossy == ()
+        spec = read_sedml_protocol(bare, sbml=sbml)
+    assert spec.lossy == ()
+    # The scan alone: the seed is the model's, not a setConcentration read.
+    assert [type(step).__name__ for step in spec.steps] == ["Experiment"]
     going_on = bare.replace('id="rtask_0" resetModel="true"', 'id="rtask_0" resetModel="false"')
     assert going_on != bare
     with pytest.warns(ConversionWarning, match="from its range beside the swept parameter"):
