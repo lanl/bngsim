@@ -338,6 +338,38 @@ def test_a_number_ends_the_expression(tmp_path):
     assert out.model.get_param("k2") == 2.0
 
 
+def test_a_scan_of_a_parameter_set_to_an_expression_runs_its_values(tmp_path):
+    """BNG2.pl sets each point with a number, which ends k1's expression: the
+    points run k1 = 1, 3, not k2*2 = 2."""
+    protocol = parse_bngl_protocol(
+        'setParameter("k1","k2*2")\nparameter_scan({method=>"ode",parameter=>"k1",'
+        "par_scan_vals=>[1,3],t_end=>1,n_steps=>1,atol=>1e-12,rtol=>1e-10})\n"
+    )
+    out = _replay(NET, protocol, tmp_path)
+    assert [_end(r) for r in out[0].scan_results] == pytest.approx(
+        [_eq(1, 1), _eq(3, 1)], rel=RTOL
+    )
+
+
+# k0 beside A <-> B, read by nothing but the actions.
+NET0 = NET.replace("    2 k2 1\n", "    2 k2 1\n    3 k0 1\n")
+MODEL0 = MODEL.replace("  k2 1\n", "  k2 1\n  k0 1\n")
+CHAINED = 'setParameter("k2","k1*3")\nsetParameter("k1","k0*2")\nsetParameter("k0",5)\n'
+
+
+def test_expressions_follow_one_another(tmp_path):
+    """k1 = 2 k0 and k2 = 3 k1, then k0 = 5: k1 = 10, k2 = 30."""
+    out = _replay(NET0, parse_bngl_protocol(CHAINED + RUN), tmp_path)
+    assert (out.model.get_param("k1"), out.model.get_param("k2")) == (10.0, 30.0)
+    assert _end(out[0].result) == pytest.approx(_eq(10, 30), rel=RTOL)
+
+
+def test_the_sedml_sets_expressions_in_the_order_they_read_one_another(tmp_path):
+    _pack(tmp_path, "generate_network({overwrite=>1})\n" + CHAINED + RUN, net=NET0, model=MODEL0)
+    (values,) = _run_report(tmp_path / "m.omex").values()
+    assert values["observable:Atot"] == pytest.approx(_eq(10, 30), rel=1e-5)
+
+
 @pytest.mark.parametrize(
     "sets",
     ['setParameter("k2","k2*2")', 'setParameter("k1","k2*2")\nsetParameter("k2","k1+1")'],
