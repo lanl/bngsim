@@ -127,6 +127,10 @@ class ModelBuilder:
         """
         Issue #741: under SSA/PSA, an event assignment of a concentration to this species is stored as value * conc[live_idx0] / volume_factor (V_live / V_static). No-op if species_idx0 is out of range.
         """
+    def set_species_ssa_live_volume_param(self, species_idx0: typing.SupportsInt | typing.SupportsIndex, param_idx0: typing.SupportsInt | typing.SupportsIndex) -> None:
+        """
+        Issues #1464/#1659: as set_species_ssa_live_volume, for a species in a compartment an assignment rule sizes, whose size is the value of parameter param_idx0. No-op if species_idx0 is out of range.
+        """
     def set_species_volume_param(self, species_idx0: typing.SupportsInt | typing.SupportsIndex, param_idx0: typing.SupportsInt | typing.SupportsIndex, initial_amount: typing.SupportsFloat | typing.SupportsIndex = ...) -> None:
         """
         Issue #170: bind a species' storage convention to the compartment-size PARAMETER it came from, so set_param re-derives volume_factor (and, when initial_amount is given, the stored IC = amount/V) instead of leaving them at their load-time values. No-op if species_idx0 is out of range.
@@ -225,7 +229,7 @@ class NetworkModel:
         """
     def event_carry_state(self) -> typing.Any:
         """
-        The carry together with the trajectory's leg ends a rollback can return to (issue #693), opaque, for set_event_carry_state: what a protocol primitive that rewinds the state and the clock saves and puts back.
+        The carry together with the trajectory's leg ends a rollback can return to (issue #693), opaque, for set_event_carry_state: what a protocol primitive that rewinds the state and the clock saves and puts back. With it, whether the state is an SSA run's counts (ssa_counts_stored, issue #1463), which goes with the state as the events do.
         """
     def event_sensitivity_unsupported_reason(self, sens_param_names: collections.abc.Sequence[str], event_time_compensated: collections.abc.Sequence[typing.SupportsInt | typing.SupportsIndex] = []) -> str | None:
         """
@@ -551,6 +555,14 @@ class NetworkModel:
         """
     @property
     def species_names(self) -> list[str]:
+        ...
+    @property
+    def ssa_counts_stored(self) -> bool:
+        """
+        True iff the species state is one an SSA/PSA run wrote back, which holds a concentration species in a compartment whose size moves as its count over the load-time size; otherwise such a species holds its concentration, and a run turns it into a count at the size the compartment has at its start (issue #1463). Set by an SSA run, put back by reset() from the baseline save_concentrations() took. Writable so a snapshot of the state can carry it.
+        """
+    @ssa_counts_stored.setter
+    def ssa_counts_stored(self, arg1: bool) -> None:
         ...
     @property
     def ssa_reads_clock(self) -> bool:

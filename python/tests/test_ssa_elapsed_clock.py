@@ -402,3 +402,37 @@ def test_psa_whose_leaps_the_clock_can_place_is_not_refused():
         )
 
     np.testing.assert_allclose(mean(1e12), mean(1e6), rtol=0.02)
+
+
+@pytest.mark.parametrize(
+    "rate, per_unit, span, seeds",
+    [
+        pytest.param(5e4, 500.0, 2.0, 6, id="500 events a unit"),
+        pytest.param(500.0, 100.0, 200.0, 16, id="a slow rate, under the firing refusal's limit"),
+    ],
+)
+def test_recurring_events_far_from_0_keep_the_rate(rate, per_unit, span, seeds):
+    """Issue #1436: a steady rate beside an event every 1/per_unit units that
+    does nothing to A, busy at the far end of one run from 0, where the doubles
+    are 1.2e-4 apart. Each event restarts the panel at a double the clock
+    rounds to, and a firing whose rounded time reaches the double where the
+    event's trigger turns over drains it and restarts too; each dropped part
+    of a spacing, and the run came back slow, with no error: -2.27% (z =
+    -17.6) at 500 events a unit, and -0.20% at the slow rate, whose firings
+    the refusal for #1059's limit passes (z = -2.5 there over 16 seeds, under
+    this bound, so that row guards the regime rather than the bias). Now
+    unbiased: |z| < 5 against the exact rate*span."""
+    t_end = 1e12
+    text = (
+        "species A = 0; species B = 0;\n"
+        f"R: => A; {rate!r}*(1 + 1e-30*time())*piecewise(1, time > {t_end!r} - {span!r}, 0);\n"
+        f"E: at (floor((time - ({t_end!r} - {span!r}))*{per_unit!r}) > B): B = B + 1;\n"
+    )
+    times = [0.0, t_end - span, t_end - span / 2, t_end]
+    ends = [
+        np.asarray(_run(text, sample_times=times, seed=s + 1).species)[-1] for s in range(seeds)
+    ]
+    exact = rate * span
+    assert all(end[1] == span * per_unit for end in ends)  # every event fired
+    z = (np.mean([end[0] for end in ends]) - exact) / np.sqrt(exact / seeds)
+    assert abs(z) < 5.0, z

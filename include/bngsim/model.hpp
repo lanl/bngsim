@@ -893,6 +893,19 @@ class NetworkModel {
     bool ic_state_dirty() const;
     void set_ic_state_dirty(bool dirty);
 
+    // Issue #1463: whether the species state is one an SSA/PSA run wrote back.
+    // Such a run stores a concentration species in a compartment whose size
+    // moves (Species::ssa_live_volume_idx0 / ssa_live_volume_param_idx0) as its
+    // count over the load-time size, volume_factor; everywhere else, at the
+    // initial conditions or after an ODE run, the value is a concentration. A
+    // run that starts from a concentration turns it into a count at the size
+    // the compartment has then. Set at an SSA run's write-back; reset() puts
+    // back the IC baseline's, which save_concentrations() takes from the state
+    // it saves; clone() copies both. set_concentration()/set_state_from() leave
+    // it, so a get_state/set_state round trip is exact.
+    bool ssa_counts_stored() const;
+    void set_ssa_counts_stored(bool stored);
+
     // The prior phase's final species forward-sensitivity matrix dx/dθ, stored
     // row-major as [species_idx * n_params + param_idx] (n_species × n_params),
     // captured by the simulator at the end of a parameter-sensitivity run. The

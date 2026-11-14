@@ -138,6 +138,7 @@ class Model:
         "_table_function_bindings",
         "_named_conc_states",
         "_named_sens_seeds",
+        "_named_ssa_counts",
         "_declared_ic_sens",
         "_ic_write_log",
         "_guarded_functions",
@@ -371,6 +372,11 @@ class Model:
         # would be re-seeded as a fresh start (∂x(0)/∂θ = 0), which is wrong
         # rather than approximate. Labels with no seed are simply absent.
         self._named_sens_seeds: dict[str, tuple[np.ndarray, list[str]]] = {}
+        # Issue #1463: the labels whose snapshot is a state an SSA/PSA run left,
+        # whose concentration species in a moving compartment hold counts over
+        # the load-time size (NetworkModel::ssa_counts_stored), so a restore
+        # tells the next SSA run not to read them as concentrations.
+        self._named_ssa_counts: set[str] = set()
         # Issue #111: ∂x_k(0)/∂θ declared by a per-point hook for the initial
         # conditions it assigns, ``{species: {param: value}}``. Written by
         # declare_ic_sensitivity(); read and cleared per point by
@@ -1426,6 +1432,7 @@ class Model:
         m._named_sens_seeds = {
             k: (s.copy(), list(names)) for k, (s, names) in self._named_sens_seeds.items()
         }
+        m._named_ssa_counts = set(self._named_ssa_counts)  # issue #1463
         # Issue #111: pending IC-sensitivity declarations travel with the snapshot
         # they describe. The write log does not: it belongs to whoever armed it on
         # the original, and a clone is not inside that scope.
@@ -1878,6 +1885,11 @@ class Model:
             )
         else:
             self._named_sens_seeds.pop(key, None)
+        # ...and whether it is an SSA run's counts (issue #1463).
+        if core.ssa_counts_stored:
+            self._named_ssa_counts.add(key)
+        else:
+            self._named_ssa_counts.discard(key)
 
     def restore_concentrations(self, label: str | None = None) -> None:
         """Restore species concentrations from a saved snapshot.
@@ -1918,6 +1930,7 @@ class Model:
         # set_state drops any pending seed (it cannot know an externally supplied
         # state's derivative) — so re-install this snapshot's own, if it has one.
         self._core.set_state(snapshot)
+        self._core.ssa_counts_stored = key in self._named_ssa_counts  # issue #1463
         if self._ic_write_log is not None:
             self._ic_write_log.add("*")
         seeded = self._named_sens_seeds.get(key)
