@@ -48,12 +48,19 @@ Design notes
 
 from __future__ import annotations
 
+import contextlib
 import re
 import warnings
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from bngsim._codegen import (
+    _EXPRTK_BELOW_RELATIONAL,
+    _EXPRTK_RELATIONALS,
+    _depth0_token_spans,
+    _normalize_exprtk_operators,
+)
 from bngsim._exceptions import ConversionError, ConversionWarning
 
 if TYPE_CHECKING:
@@ -346,10 +353,90 @@ def _rewrite_unary_call(expr: str, token: re.Pattern, build: Callable[[str], str
     return expr[: m.start()] + build(inner) + tail
 
 
+# ExprTk's logical connectives: what binds looser than a relational, less the
+# argument comma and the ternary marks.
+_EXPRTK_LOGICALS = tuple(t for t in _EXPRTK_BELOW_RELATIONAL if t[0] not in (",", "?", ":"))
+
+
+def _is_boolean_valued(s: str) -> bool:
+    """Whether ``s`` (one operand, its own brackets gone) is a relational or a
+    logical at its top level: an ExprTk truth value. A ternary's value is a
+    number, whatever its condition."""
+    if _depth0_token_spans(s, (("?", False),)):
+        return False
+    return bool(
+        _depth0_token_spans(s, _EXPRTK_RELATIONALS) or _depth0_token_spans(s, _EXPRTK_LOGICALS)
+    )
+
+
+def _coerce_relational_operands(s: str) -> str:
+    """``s`` with each bracketed truth value that a relational compares written
+    as the number it is, ``piecewise(1, cond, 0)``.
+
+    ExprTk reads ``(0<x)<1`` as a comparison of the truth value of ``0<x``, as
+    BNG2.pl and run_network do. libsbml's ``parseL3Formula`` drops the brackets
+    around a relational's relational operand and reads ``lt(0, x, 1)``, i.e.
+    ``0<x && x<1``, or turns ``(x>1)==0`` into ``(x>1) && (1==0)`` (issue
+    #1499). It keeps the grouping of ``piecewise(1, 0<x, 0) < 1``, which is
+    also the well-typed SBML form. Expects every relational chain already
+    bracketed as ExprTk groups it (``_normalize_exprtk_operators``), so each
+    operand holds at most one relational at its own level. Raises
+    :class:`ConversionError` on unbalanced brackets.
+    """
+    if not re.search(r"[<>=!]", s):
+        return s
+    # Inner brackets first, so a truth value nested deeper is coerced in place.
+    parts: list[str] = []
+    i = 0
+    while i < len(s):
+        if s[i] == "(":
+            close = _match_paren(s, i)
+            parts.append("(" + _coerce_relational_operands(s[i + 1 : close]) + ")")
+            i = close + 1
+        else:
+            parts.append(s[i])
+            i += 1
+    s = "".join(parts)
+
+    def coerce(side: str) -> str:
+        body = side.strip()
+        if not (body.startswith("(") and _match_paren(body, 0) == len(body) - 1):
+            return side
+        inner = body[1:-1]
+        if not _is_boolean_valued(inner):
+            return side
+        lead = side[: len(side) - len(side.lstrip())]
+        trail = side[len(side.rstrip()) :]
+        return f"{lead}piecewise(1, {inner}, 0){trail}"
+
+    out: list[str] = []
+    cursor = 0
+    bounds = _depth0_token_spans(s, _EXPRTK_BELOW_RELATIONAL) + [(len(s), len(s))]
+    for start, end in bounds:
+        operand = s[cursor:start]
+        rel = _depth0_token_spans(operand, _EXPRTK_RELATIONALS)
+        if len(rel) == 1:
+            a, b = rel[0]
+            operand = coerce(operand[:a]) + operand[a:b] + coerce(operand[b:])
+        out.append(operand + s[start:end])
+        cursor = end
+    return "".join(out)
+
+
 def _normalize_exprtk(expr: str, scalar_names: frozenset[str]) -> str:
     """ExprTk infix → L3-parseable infix (pure string transforms)."""
     # 0) obs() → obs for scalar model symbols (BNG zero-arg-call syntax)
     out = _strip_zero_arg_calls(expr, scalar_names)
+    # 0a) ExprTk's grouping of relationals, made explicit and kept through the
+    #     parse (issue #1499): all six relationals sit on one left-associative
+    #     level, so ``0<x<1`` is ``(0<x)<1``, and ``=``/``<>`` are ``==``/``!=``
+    #     (#734); then a bracketed truth value a relational compares is written
+    #     as the number it is, which parseL3Formula does not flatten. Text with
+    #     unbalanced brackets (or a bracket in a quoted tfun file name) is left
+    #     as it is, to fail below with the error it always had.
+    out = _normalize_exprtk_operators(out)
+    with contextlib.suppress(ConversionError):
+        out = _coerce_relational_operands(out)
     # 0b) ExprTk infix booleans → L3 infix: ``and``/``or`` are keyword operators
     #     in ExprTk but parseL3Formula only accepts ``&&``/``||`` (the bareword
     #     ``and``/``or`` is a syntax error). Word-boundary-anchored so a symbol that

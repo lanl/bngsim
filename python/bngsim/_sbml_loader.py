@@ -4593,6 +4593,17 @@ def _classify_mass_action_ast(
             return None
 
         name = f.getName()
+        # A law's local parameter shadows any global of the same id inside the
+        # law (SBML scoping): a compartment, a species, or a model parameter.
+        # Locals are constants, so they carry the rate like any constant
+        # parameter. Tested after the species and the compartments, a local `C`
+        # was cancelled against the storage volume as the compartment, and a
+        # local named like a species outside the reaction was multiplied in as
+        # that species (issue #1503).
+        if name in local_param_map:
+            mangled = local_param_map[name]
+            rate_param_components.append((mangled, local_param_values.get(mangled, 0.0)))
+            continue
         if name in species_idx:
             if name in assignment_targets:
                 # AR-driven species in the rate law must read their computed
@@ -4624,35 +4635,31 @@ def _classify_mass_action_ast(
             compartment_factors[name] += 1
             continue
 
-        # Otherwise the leaf must resolve to a parameter.
-        if name in local_param_map:
-            mangled = local_param_map[name]
-            param_value = local_param_values.get(mangled, 0.0)
-        else:
-            sbml_p = sbml_model.getParameter(name)
-            if sbml_p is None:
-                return None
-            if name in assignment_targets and _rule_reads_no_species(
-                name,
-                sbml_model,
-                species_idx,
-                assignment_targets,
-                rate_rule_targets,
-                event_promoted_params,
-            ):
-                rule_coefficient = True
-                continue
-            if (
-                name in rate_rule_targets
-                or name in event_promoted_params
-                or name in assignment_targets
-            ):
-                # These resolve to a species or function in the BNGsim
-                # model, not a parameter — Elementary's rate_law_param_indices
-                # would be unresolved, breaking codegen.
-                return None
-            mangled = _safe_name(name)
-            param_value = sbml_p.getValue() if sbml_p.isSetValue() else 0.0
+        # Otherwise the leaf must resolve to a model parameter.
+        sbml_p = sbml_model.getParameter(name)
+        if sbml_p is None:
+            return None
+        if name in assignment_targets and _rule_reads_no_species(
+            name,
+            sbml_model,
+            species_idx,
+            assignment_targets,
+            rate_rule_targets,
+            event_promoted_params,
+        ):
+            rule_coefficient = True
+            continue
+        if (
+            name in rate_rule_targets
+            or name in event_promoted_params
+            or name in assignment_targets
+        ):
+            # These resolve to a species or function in the BNGsim
+            # model, not a parameter — Elementary's rate_law_param_indices
+            # would be unresolved, breaking codegen.
+            return None
+        mangled = _safe_name(name)
+        param_value = sbml_p.getValue() if sbml_p.isSetValue() else 0.0
         rate_param_components.append((mangled, param_value))
 
     if numeric_const <= 0:
@@ -4681,7 +4688,11 @@ def _classify_mass_action_ast(
         b = reactants_by_id.get(sid, 0)
         c = products_by_id.get(sid, 0)
         if a == 0 and b > c:
-            return None  # consumption without rate dependence
+            # Consumption without rate dependence. This is also where a law
+            # whose local shadows its own reactant (L3V1, ``k*S`` with a local
+            # ``S``) goes: read in its own scope it has no species factor, and
+            # the Functional path runs it as the constant it is (issue #1503).
+            return None
         p_count = c - b + a
         if p_count < 0:
             return None
@@ -6293,16 +6304,22 @@ def _build_model_from_sbml_doc_in_context(doc):
         ):
             volume_taint[_sp.getId()] = {_cid}
 
-    _taint_edges = list(_ia_math.items())
+    # Each edge: the symbol, the math it is computed from, and the names that
+    # math binds locally. A kinetic law's local parameter shadows the global of
+    # the same id, so a local `C` reads no compartment `C` (issue #1503).
+    _taint_edges: list[tuple[str, object, frozenset[str]]] = [
+        (_s, _m, frozenset()) for _s, _m in _ia_math.items()
+    ]
     for _j in range(sbml_model.getNumRules()):
         _r = sbml_model.getRule(_j)
         if _r.isAssignment() and _r.getMath() is not None:
-            _taint_edges.append((_r.getVariable(), _r.getMath()))
+            _taint_edges.append((_r.getVariable(), _r.getMath(), frozenset()))
     for _j in range(sbml_model.getNumReactions()):
         _rx = sbml_model.getReaction(_j)
         _kl = _rx.getKineticLaw()
         if _rx.getId() and _kl is not None and _kl.isSetMath():
-            _taint_edges.append((_rx.getId(), _kl.getMath()))
+            _locals = frozenset(lp.getId() for lp in _kinetic_law_local_params(_kl))
+            _taint_edges.append((_rx.getId(), _kl.getMath(), _locals))
         for _get, _n in (
             (_rx.getReactant, _rx.getNumReactants()),
             (_rx.getProduct, _rx.getNumProducts()),
@@ -6312,12 +6329,12 @@ def _build_model_from_sbml_doc_in_context(doc):
                 _srid = _sr.getId() if hasattr(_sr, "getId") else ""
                 _sm = _sr.getStoichiometryMath() if hasattr(_sr, "getStoichiometryMath") else None
                 if _srid and _sm is not None and _sm.getMath() is not None:
-                    _taint_edges.append((_srid, _sm.getMath()))
+                    _taint_edges.append((_srid, _sm.getMath(), frozenset()))
     for _ in range(len(_taint_edges) + 1):
         _grew = False
-        for _sym, _m in _taint_edges:
+        for _sym, _m, _local in _taint_edges:
             _deps: set[str] = set()
-            for _n in _ast_name_set(_m):
+            for _n in _ast_name_set(_m) - _local:
                 _deps |= volume_taint.get(_n, set())
             if _deps and not _deps <= volume_taint.get(_sym, set()):
                 volume_taint[_sym] = volume_taint.get(_sym, set()) | _deps
@@ -11617,7 +11634,9 @@ def _build_model_from_sbml_doc_in_context(doc):
         return _out
 
     _reads: dict[str, set[str]] = {}
-    for _sym, _m in _taint_edges:
+    # A law's own locals stay in: below they become `_lp_<reaction>_<id>`, which
+    # a fold through the reaction freezes.
+    for _sym, _m, _ in _taint_edges:
         _reads.setdefault(_sym, set()).update(_names_read(_m))
     for _rxn_i in range(sbml_model.getNumReactions() if _uses_rateof else 0):
         _rxn_f = sbml_model.getReaction(_rxn_i)
