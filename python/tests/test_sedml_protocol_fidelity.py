@@ -1040,8 +1040,10 @@ def test_a_value_that_is_not_a_number_is_refused_as_one(tmp_path):
         ),
         (RUN + 'setParameter("k1",5)\n' + RUN, True),
         ('setParameter("k1",5)\n' + RUN, False),
+        # k2 already a number: the standard elements are exact (87.50, 58.33).
+        ('setParameter("k2",7)\n' + RUN + 'setParameter("k1",5)\n' + RUN, False),
     ],
-    ids=["scan", "set-between-runs", "set-before-the-run"],
+    ids=["scan", "set-between-runs", "set-before-the-run", "replaced-before"],
 )
 def test_a_parameter_set_as_the_model_runs_under_an_assignment_is_recorded(
     tmp_path, actions, noted
@@ -1097,3 +1099,60 @@ def test_a_strict_refusal_leaves_no_net(tmp_path):
     with pytest.raises(ConversionError, match="cannot make that state"):
         omex_to_net(tmp_path / "m.omex", tmp_path / "back.net", gate="none")
     assert not (tmp_path / "back.net").exists()
+
+
+SEEDED_NET = NET.replace("    2 k2 1\n", "    2 k2 1\n    3 A0 100\n").replace(
+    "1 A() 100", "1 A() A0"
+)
+SEEDED_MODEL = MODEL.replace("  k2 1\n", "  k2 1\n  A0 100\n").replace("A() 100", "A() A0")
+
+
+def test_a_first_scan_of_a_seeds_parameter_is_recorded(tmp_path):
+    """A scan of A0 with no reset, before any run: BNG2.pl's A follows A0 at
+    the first point (28.38, 25.46, 25.06); the standard elements leave A at
+    100 (50.12 at the last), and nothing said so."""
+    actions = (
+        "generate_network({overwrite=>1})\n"
+        'parameter_scan({method=>"ode",parameter=>"A0",par_scan_vals=>[50,100,150],'
+        "reset_conc=>0,t_end=>1,n_steps=>1})\n"
+    )
+    report, _ = _pack(tmp_path, actions, net=SEEDED_NET, model=SEEDED_MODEL)
+    assert any("set A0 as the model runs" in note for note in report.sedml_lossy)
+
+
+def test_a_reset_sweep_inside_a_chain_inside_a_chain_is_lossy():
+    """The sweep ends an inner chain, and the outer one runs a task after it:
+    SED-ML continues from the last point (0.3012), a replay from A = 1 (0.5488)."""
+    k2 = "/sbml:sbml/sbml:model/sbml:listOfParameters/sbml:parameter[@id='k2']"
+    sweep = (
+        f'<setValue modelReference="m" range="x" target="{k2}"><math xmlns="{MATHML}">'
+        "<ci>x</ci></math></setValue>"
+    )
+
+    def chain(rid, reset, subtasks):
+        subs = "".join(f'<subTask order="{n}" task="{t}"/>' for n, t in enumerate(subtasks, 1))
+        return (
+            f'<repeatedTask id="{rid}" resetModel="{reset}" range="o{rid}"><listOfRanges>'
+            f"{_vector('o' + rid, [0])}</listOfRanges><listOfSubTasks>{subs}</listOfSubTasks>"
+            "</repeatedTask>"
+        )
+
+    doc = f"""<sedML xmlns="{SED}" xmlns:sbml="{DECAY_SBML_NS}" level="1" version="3">
+ <listOfSimulations><uniformTimeCourse id="s" initialTime="0" outputStartTime="0"
+   outputEndTime="1" numberOfPoints="1"><algorithm kisaoID="KISAO:0000019"/></uniformTimeCourse>
+ </listOfSimulations>
+ <listOfModels><model id="m" language="urn:sedml:language:sbml" source="model.xml"/></listOfModels>
+ <listOfTasks><task id="t" modelReference="m" simulationReference="s"/>
+  <repeatedTask id="sweep" resetModel="true" range="x">
+   <listOfRanges>{_vector("x", [0.3, 0.6])}</listOfRanges><listOfChanges>{sweep}</listOfChanges>
+   <listOfSubTasks><subTask order="1" task="t"/></listOfSubTasks></repeatedTask>
+  {chain("inner", "false", ["sweep"])}{chain("outer", "true", ["inner", "t"])}
+ </listOfTasks>
+ <listOfDataGenerators><dataGenerator id="g"><listOfVariables>
+   <variable id="a" taskReference="outer"
+     target="/sbml:sbml/sbml:model/sbml:listOfSpecies/sbml:species[@id='A']"/></listOfVariables>
+   <math xmlns="{MATHML}"><ci>a</ci></math></dataGenerator></listOfDataGenerators>
+</sedML>"""
+    with pytest.warns(ConversionWarning, match="a sweep that resets the model at each point"):
+        spec = read_sedml_protocol(doc)
+    assert len(spec.lossy) == 1

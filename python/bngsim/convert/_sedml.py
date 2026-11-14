@@ -1151,6 +1151,8 @@ class _ProtocolWriter:
         self._experiments: list[tuple[int, Any, str]] = []
         self._reads_cache: dict[_Change, frozenset[str]] = {}
         self._noted: set[str] = set()
+        # Per experiment: the parameters the protocol had replaced when it ran.
+        self._replaced_at: dict[int, frozenset[str]] = {}
 
     # ── ids and small elements ─────────────────────────────────────────────
     def _id(self, stem: str) -> str:
@@ -1165,16 +1167,18 @@ class _ProtocolWriter:
         records each in the archive (issue #1684)."""
         warnings.warn(text, ConversionWarning, stacklevel=_outside())
 
-    def _set_as_it_runs(self, pid: str, *, species: bool) -> None:
+    def _set_as_it_runs(self, pid: str, *, species: bool, replaced: frozenset[str]) -> None:
         """Say where a setValue sets *pid* as the model runs and the SBML
         computes another value from it by an initialAssignment: a simulator
         evaluates that when it loads (or resets) the model, not when *pid* is
         set, where BNG2.pl's derived parameter follows it (and a species whose
         amount is an expression of it, until a run). The bngsim annotation
-        holds the protocol (issue #1684)."""
+        holds the protocol (issue #1684). One the protocol has *replaced* by
+        then (set to a number, or to an expression, which is set again) is
+        what the standard elements say."""
         reads = self.targets.assignment_reads.get(pid, set())
         params = set(self.targets.params.values())
-        follow = sorted(r for r in reads if r in params or species)
+        follow = sorted(r for r in reads if (r in params or species) and r not in replaced)
         if not follow or pid in self._noted:
             return
         self._noted.add(pid)
@@ -1274,9 +1278,11 @@ class _ProtocolWriter:
         cc = ET.SubElement(changes, _q(_SEDML_NS, "computeChange"), {"target": target})
         self._math(cc, change, model_ref)
 
-    def _set_value(self, changes: ET.Element, change: _Change, model_ref: str) -> None:
+    def _set_value(
+        self, changes: ET.Element, change: _Change, model_ref: str, replaced: frozenset[str]
+    ) -> None:
         if change.kind == "param":
-            self._set_as_it_runs(change.sid, species=False)
+            self._set_as_it_runs(change.sid, species=False, replaced=replaced)
         path = (
             self.targets.param_path(change.sid)
             if change.kind == "param"
@@ -1461,7 +1467,9 @@ class _ProtocolWriter:
             self._model_change(loc, change, model_ref)
         return model_ref
 
-    def sweep(self, rt_id: str, i: int, exp, model_ref: str, task_id: str, *, reset: bool) -> None:
+    def sweep(
+        self, rt_id: str, i: int, exp, model_ref: str, task_id: str, *, reset: bool, fresh: bool
+    ) -> None:
         """A scan or bifurcate as a repeatedTask over its values: every point
         from the start state when *reset*, else each from where the last left
         it. A bifurcate is its sweep up and then back down, in one range. A
@@ -1510,12 +1518,13 @@ class _ProtocolWriter:
             },
         )
         ET.SubElement(sv, _q(_MATHML_NS, "math")).append(_ci(rng_id))
-        # A sweep from the initial state also moves a species whose seed names
-        # the parameter, in BNG2.pl: no run has made it a number yet.
-        fresh = reset or model_ref != "model0"
-        self._set_as_it_runs(pid, species=fresh)
+        # A sweep from the initial state (*fresh*: its first point, or every
+        # point when it resets) also moves a species whose seed names the
+        # parameter, in BNG2.pl: no run has made it a number yet.
+        replaced = self._replaced_at.get(i, frozenset())
+        self._set_as_it_runs(pid, species=fresh, replaced=replaced)
         for follower in self._following.get(i, []):
-            self._set_as_it_runs(follower.sid, species=fresh)
+            self._set_as_it_runs(follower.sid, species=fresh, replaced=replaced)
             fv = ET.SubElement(
                 loc,
                 _q(_SEDML_NS, "setValue"),
@@ -1542,12 +1551,13 @@ class _ProtocolWriter:
             return self._runs[i]
         if i not in self._sweeps:
             self._sweeps[i] = f"sweep_{i}"
-            self.sweep(f"sweep_{i}", i, exp, "model0", self._runs[i], reset=False)
+            self.sweep(f"sweep_{i}", i, exp, "model0", self._runs[i], reset=False, fresh=False)
         return self._sweeps[i]
 
-    def step(self, changes: list[_Change], body: str) -> str:
+    def step(self, changes: list[_Change], body: str, replaced: frozenset[str]) -> str:
         """*body* after *changes*: a one-iteration repeatedTask that sets them
-        and runs it, without resetting the model (or *body*, with none)."""
+        and runs it, without resetting the model (or *body*, with none).
+        *replaced* are the parameters the protocol had replaced then."""
         if not changes:
             return body
         rt = ET.SubElement(
@@ -1558,7 +1568,7 @@ class _ProtocolWriter:
         self._once(rt)
         loc = ET.SubElement(rt, _q(_SEDML_NS, "listOfChanges"))
         for change in _ordered(changes):
-            self._set_value(loc, change, "model0")
+            self._set_value(loc, change, "model0", replaced)
         self._subtasks(rt, [body])
         return rt.get("id") or ""
 
@@ -1585,7 +1595,10 @@ class _ProtocolWriter:
         )
         if _scans(exp):
             resets = exp.kind == "scan" and exp.reset_between
-            self.sweep(f"rtask_{i}", i, exp, model_ref, task_id, reset=resets)
+            # A species the changes set no longer follows its seed's parameter.
+            set_here = frozenset(c.sid for c in changes if c.kind == "species")
+            self._replaced_at[i] = self._replaced_at.get(i, frozenset()) | set_here
+            self.sweep(f"rtask_{i}", i, exp, model_ref, task_id, reset=resets, fresh=True)
             task_id = f"rtask_{i}"
         self._experiments.append((i, exp, task_id))
 
@@ -1762,10 +1775,12 @@ class _ProtocolWriter:
             if _scans(exp):
                 # Set at each point with the swept parameter, from the range.
                 self._following[i] = self._followers({pid or ""}, params)
+            replaced = frozenset(pid_ for pid_, c in params.items() if not c.restores)
+            self._replaced_at[i] = replaced
             if lead is None:
                 self.standalone(i, exp, pending)
                 if not resets:
-                    lead, pending = ("first", i, list(pending)), []
+                    lead, pending = ("first", i, list(pending), replaced), []
             elif resets:
                 # Every point of BNG2.pl's scan starts where the last run left
                 # the model; a repeatedTask's reset goes to the initial state.
@@ -1778,7 +1793,9 @@ class _ProtocolWriter:
                 )
                 self.standalone(i, exp, self._moved(list(params.values()), params))
             else:
-                self.chain(i, exp, self._lead(lead), self.step(pending, self.run(i, exp)))
+                self.chain(
+                    i, exp, self._lead(lead), self.step(pending, self.run(i, exp), replaced)
+                )
                 lead, pending = f"chain_{i}", []
             if exp.is_scan and exp.scan_parameter:
                 last = _last_value(exp)
@@ -1810,8 +1827,8 @@ class _ProtocolWriter:
 
     def _lead(self, lead) -> str:
         if isinstance(lead, tuple):
-            _, i, changes = lead
-            return self.step(changes, self.run(i, self.protocol.experiments[i]))
+            _, i, changes, replaced = lead
+            return self.step(changes, self.run(i, self.protocol.experiments[i]), replaced)
         return str(lead)
 
     def _params_since(self, before: dict[str, _Change], now: dict[str, _Change]) -> list[_Change]:
@@ -2286,6 +2303,7 @@ class _TaskReader:
                 steps = steps[1:]  # an expansion starts from the initial state
             if any(isinstance(s, Experiment) for s in steps):
                 expansions.append(steps)
+                self._after_a_reset_scan(elem.get("id") or "a task", steps)
         # A chain that repeats the start of a longer one is the same runs from
         # the same state: write_sedml_protocol writes a run that continues an
         # earlier one as a repeatedTask that replays the runs before it, and
@@ -2310,6 +2328,27 @@ class _TaskReader:
         if any(isinstance(s, StateChange) and s.kind == "reset_parameters" for s in out):
             out.insert(0, StateChange(kind="save_parameters", label=_INITIAL_LABEL))
         return ProtocolSpec(steps=tuple(out), source=None, dropped=(), lossy=tuple(self.lossy))
+
+    def _after_a_reset_scan(self, tid: str, steps: list[object]) -> None:
+        """Say where a run in *steps* starts from the state a sweep that resets
+        at each point left, at any depth of chains: a replay's scan puts its
+        start state back when it ends, as BNG2.pl's does, and SED-ML leaves
+        the last point's state for what runs after it."""
+        from bngsim.convert._protocol import Experiment
+
+        after = False
+        for step in steps:
+            if step is _RESET:
+                after = False
+            elif isinstance(step, Experiment):
+                if after:
+                    self._unread(
+                        f"{tid} runs a sweep that resets the model at each point and then "
+                        "more from where its last point left the model, which a replay's "
+                        "scan does not leave"
+                    )
+                    return
+                after = step.kind == "scan" and step.reset_between
 
     # ── tasks ──────────────────────────────────────────────────────────────
     def _task(self, task: ET.Element, sweep: dict | None = None) -> list[object]:
@@ -2428,19 +2467,8 @@ class _TaskReader:
         subs = sorted(
             _findall_local(rt, "subTask"), key=lambda s: _number_or_none(s.get("order")) or 0.0
         )
-        for n, st in enumerate(subs):
+        for st in subs:
             ref = st.get("task") or ""
-            if sweep is None and ref in self.rts and n < len(subs) - 1:
-                inner = _sweep_of(self.rts[ref], self.sim_of_task)
-                if inner is not None and inner.get("reset") and "unread" not in inner:
-                    # A replay's scan puts its start state back when it ends,
-                    # as BNG2.pl's does; SED-ML leaves the last point's state
-                    # for the subtasks after it.
-                    self._unread(
-                        f"repeatedTask {rid} runs {ref!r}, a sweep that resets the model at "
-                        "each point, and then more subtasks from where its last point left "
-                        "the model, which a replay's scan does not leave"
-                    )
             if ref in self.tasks:
                 run = self._task(self.tasks[ref], sweep)
                 # Before its scan, after its model's changes; the first one only.
