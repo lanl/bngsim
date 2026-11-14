@@ -40,15 +40,26 @@ _SYMPY_CALL = re.compile(r"\b(Abs|Min|Max|clampval)\(")
 
 def _rate_law_texts(core) -> list[tuple[str, str]]:
     """``(where, text)`` of each functional rate law, with function references
-    inlined, as the switch scanners read it."""
+    inlined, as the switch scanners read it; and of each derived parameter an
+    elementary or MM reaction takes as a rate constant, as its name. BNG2.pl
+    writes an inline BNGL rate law such as ``0 -> X() 10*min(q,1)+s`` as a
+    derived ``_rateLaw1``, and that reaction is elementary: a bend in it is a
+    bend of the rate, which the reaction multiplies by its reactants (or reads
+    as MM's kcat or Km), and it was never judged (issue #1530). The caller
+    inlines derived parameters."""
     from bngsim._jacobian import _inline_functions
     from bngsim._switch_sensitivity import _scan_function_map, _spell_mod
 
     data = core.codegen_data()
     func_map = _scan_function_map(core.functional_jacobian_context())
+    names = list(core.param_names)
+    derived = {n for n, is_e in zip(names, core.param_is_expression, strict=True) if is_e}
     out: list[tuple[str, str]] = []
     for i, rxn in enumerate(data["reactions"]):
         if rxn.get("type") != "functional":
+            for k in rxn.get("rate_param_indices") or ():
+                if 0 <= k < len(names) and names[k] in derived:
+                    out.append((f"reaction {i + 1} (rate constant {names[k]})", names[k]))
             continue
         fname = rxn.get("function_name")
         body = func_map.get(fname) if fname else _spell_mod(rxn.get("rate_expression") or "")
@@ -141,34 +152,15 @@ def parameters_on_a_kink(
     names = list(dict.fromkeys(param_names))
     if not names:
         return []
-    from bngsim._jacobian import has_condition_construct
-    from bngsim._switch_sensitivity import _BEND_CALL
-
-    # A rate law with no bend and no condition has nothing to sit on, and is not parsed.
-    laws = [
-        (w, t)
-        for w, t in _rate_law_texts(core)
-        if _BEND_CALL.search(t) or has_condition_construct(t)
-    ]
-    if not laws:
-        return []
-    try:
-        import sympy as sp
-    except ImportError:
-        return []
     from bngsim._codegen import (
         _PY_KEYWORD_PARAM_NAMES,
         _alias_keyword_param,
         _inline_derived_param_refs,
     )
+    from bngsim._jacobian import has_condition_construct
+    from bngsim._switch_sensitivity import _BEND_CALL
 
     all_names = list(core.param_names)
-    values = {n: float(core.get_param(n)) for n in all_names}
-    # The parser spells a parameter named after a Python keyword (`lambda`) by
-    # an alias, and the laws' symbols are read back through it.
-    spelled = {
-        (_alias_keyword_param(n) if n in _PY_KEYWORD_PARAM_NAMES else n): n for n in all_names
-    }
     # The derived parameters as switch_condition_scope reads them, without its
     # probe of the right-hand side for the clocks.
     derived = {
@@ -177,6 +169,28 @@ def parameters_on_a_kink(
             all_names, core.param_is_expression, core.param_expressions, strict=True
         )
         if is_e and e
+    }
+    # A rate law with no bend and no condition has nothing to sit on, and is not
+    # parsed. Asked with its derived parameters inlined: a law that reads a
+    # derived `kd = 10*min(q, 1)` bends where kd does (issue #1530).
+    laws = [
+        (w, t)
+        for w, t in _rate_law_texts(core)
+        if _BEND_CALL.search(full := _inline_derived_param_refs(t, derived) or t)
+        or has_condition_construct(full)
+    ]
+    if not laws:
+        return []
+    try:
+        import sympy as sp
+    except ImportError:
+        return []
+
+    values = {n: float(core.get_param(n)) for n in all_names}
+    # The parser spells a parameter named after a Python keyword (`lambda`) by
+    # an alias, and the laws' symbols are read back through it.
+    spelled = {
+        (_alias_keyword_param(n) if n in _PY_KEYWORD_PARAM_NAMES else n): n for n in all_names
     }
     asked = [p for p in names if p in values]
     # Every derived parameter but the one asked about is inlined, so a bend

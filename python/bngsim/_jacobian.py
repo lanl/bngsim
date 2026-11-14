@@ -1288,7 +1288,7 @@ def _kink_bindings(sp) -> dict:
     return bindings
 
 
-def _prepare_kinks(expr, targets: set[str]):
+def _prepare_kinks(expr, targets: set[str], *, abs_twin: bool = True):
     """Before differentiation (issue #507): every ``Abs`` over a differentiation
     variable becomes the ``absval`` twin of :func:`_kink_bindings`, and every
     ``Max`` / ``Min`` over one a fold of the binary ``maxval`` / ``minval`` twins
@@ -1297,7 +1297,8 @@ def _prepare_kinks(expr, targets: set[str]):
     prints best as itself. The walk skips the condition half of every
     ``Piecewise`` pair for the reason :func:`_nondifferentiable_over` gives: a
     condition is copied through undifferentiated, so a call inside one is fine
-    as it is.
+    as it is. ``abs_twin=False`` leaves ``Abs`` as it is, for a caller that
+    wants only the tie weights (issue #1530).
     """
     try:
         import sympy as sp
@@ -1318,7 +1319,7 @@ def _prepare_kinks(expr, targets: set[str]):
         new_args = [walk(arg) for arg in node.args]
         if any(n is not o for n, o in zip(new_args, node.args, strict=True)):
             node = node.func(*new_args)
-        if isinstance(node, sp.Abs) and touches(node):
+        if abs_twin and isinstance(node, sp.Abs) and touches(node):
             return absval(node.args[0])
         if type(node) in folds and touches(node):
             # A left fold, since sympy flattens a nested Max: the weights of a
