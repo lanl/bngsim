@@ -258,13 +258,27 @@ def net2sbml_main(argv: list[str] | None = None) -> int:
             )
             sidecar_path = None
             if args.sidecar:
+                from bngsim.convert import _not_generated_notes
+
+                if not args.allow_lossy:
+                    # The sidecar writes the .bngl's protocol onto this model's
+                    # state (issue #1683); the SBML alone is the .net as given.
+                    for note in _not_generated_notes(report):
+                        print(f"error: {note}", file=sys.stderr)
+                        return 1
                 sidecar_path = Path(out).with_suffix(".sedml")
                 if report.protocol is not None and not report.protocol.is_empty:
                     # The real .bngl protocol (every simulate/scan).
+                    from bngsim._model import Model
                     from bngsim.convert import write_sedml_protocol
 
+                    # The network names what each experiment reports (issue #1686).
                     write_sedml_protocol(
-                        report.protocol, sidecar_path, model_source=str(out), sbml=Path(out)
+                        report.protocol,
+                        sidecar_path,
+                        model_source=str(out),
+                        sbml=Path(out),
+                        model=Model.from_net(args.net),
                     )
                 else:
                     # No real protocol — fabricate a default, but warn + mark it.

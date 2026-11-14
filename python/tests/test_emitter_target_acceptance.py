@@ -100,6 +100,7 @@ TIME = sp.Symbol(_TIME_SYM)
 KEYWORD_PARAM = sp.Symbol(jac._alias_keyword_param("lambda"))
 
 mratio = jac.engine_sympy_bindings(sp)["mratio"]
+CLOSED_FORMS = jac.exprtk_closed_form_bindings(sp)
 
 # (time, (x0, x1, x2)). x0 stays positive so a logarithm and a square root are
 # defined on it, x1/10 stays inside asin/acos's domain, and x2 changes sign and
@@ -158,6 +159,18 @@ CASES: tuple[Case, ...] = (
     Case("sinh", sp.sinh(x1), covers=names("sinh")),
     Case("cosh", sp.cosh(x1), covers=names("cosh")),
     Case("tanh", sp.tanh(x2), covers=names("tanh")),
+    # <math.h> calls only the C emitter spells (issue #1531): a derivative that
+    # keeps one, d/dsc of sc*asinh(u), is printed as the call. ExprTk has each
+    # under the same name, but its emitter's table does not, so it declines.
+    Case("asinh", sp.asinh(x2), targets=("c",), covers=names("asinh")),
+    Case("acosh", sp.acosh(1 + x0), targets=("c",), covers=names("acosh")),
+    Case("atanh", sp.atanh(x1 / 10), targets=("c",), covers=names("atanh")),
+    Case("erf", sp.erf(x2), targets=("c",), covers=names("erf")),
+    # The three below as exprtk_closed_form_bindings makes them, which is how
+    # they reach the C emitter.
+    Case("erfc", CLOSED_FORMS["erfc"](x2), targets=("c",), covers=names("erfc")),
+    Case("log1p", CLOSED_FORMS["log1p"](x0), targets=("c",), covers=names("log1p")),
+    Case("expm1", CLOSED_FORMS["expm1"](x2), targets=("c",), covers=names("expm1")),
     Case("floor", sp.floor(x2), covers=names("floor")),
     Case("ceiling", sp.ceiling(x2), covers=names("ceiling")),
     Case("min", sp.Min(x0, x1), covers=names("Min")),

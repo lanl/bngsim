@@ -298,6 +298,7 @@ dev = [
     { name = "libroadrunner", version = "2.8.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "libroadrunner", version = "2.10.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
     { name = "libroadrunner", version = "2.11.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "lxml" },
     { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "pandas", version = "3.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pybind11" },
@@ -335,6 +336,7 @@ roadrunner = [
 test = [
     { name = "antimony" },
     { name = "jsonschema" },
+    { name = "lxml" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-xdist" },
@@ -372,6 +374,7 @@ requires-dist = [
     { name = "jaxlib", marker = "extra == 'jax'", specifier = ">=0.4" },
     { name = "jsonschema", marker = "extra == 'test'", specifier = ">=4.0" },
     { name = "libroadrunner", marker = "extra == 'roadrunner'", specifier = ">=2.7" },
+    { name = "lxml", marker = "extra == 'test'", specifier = ">=5.0" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "pandas", marker = "extra == 'pandas'", specifier = ">=2.0" },
     { name = "pybind11", marker = "extra == 'dev'", specifier = ">=2.13" },

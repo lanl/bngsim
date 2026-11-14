@@ -848,6 +848,8 @@ def _actions_block(
         dropped_before_generation=protocol.dropped_before_generation,
     )
     block = write_bngl_protocol(translated)
+    if translated.generation_step:
+        return block  # it generates the network where the protocol did
     # Materialize the network before simulating (generate_network is a build
     # directive parse_bngl_protocol drops, so the serializer never emits it). Honor the
     # source model's own generate_network verbatim when it carried one -- it may hold a

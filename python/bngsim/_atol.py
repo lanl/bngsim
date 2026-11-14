@@ -128,8 +128,9 @@ class TrackingAtol:
         failing error tests.
     ceiling : float, sequence of float, or ``"auto"``, optional
         The tolerance being tracked below — the same per-species vector the
-        non-tracking path takes. ``"auto"`` (the default) derives it from the
-        model's live state exactly as ``atol="auto"`` does; a float broadcasts
+        non-tracking path takes. ``"auto"`` (the default) derives it exactly as
+        ``atol="auto"`` does: from the model's live state for a run, from the
+        rows' starts in a batch or a scan (issue #1660); a float broadcasts
         to every species; a sequence is used as given. Every entry must be
         strictly positive: a zero ceiling scales to a zero floor, and a species
         then at exactly zero would have an infinite error weight.

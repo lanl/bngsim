@@ -20,6 +20,13 @@ derivative there is asked of the whole law, read with each side of the bend put
 in for it, and not of the bend alone: ``10*abs(q)*q`` at q = 0 is smooth, and so
 is a law whose ``abs`` sits in a branch the present values do not take.
 
+A bend written in a derived parameter is judged in that parameter, written
+out in what it is built from, and not in each law that reads it (issue #1530):
+a law written out in every derived parameter it reaches can be too long to
+parse. So a law that reads one where it cancels or is gated off is refused too,
+which is loud; and one too long written out is refused on the bend without
+asking whether the law has a derivative there.
+
 An ``if()`` on its switch is judged for a steady state only, whose policy is to
 refuse where the two sides differ (issue #1330). There the compiled ``∂f/∂p`` is
 the derivative of the branch taken, one side's, and a time course returns it,
@@ -38,25 +45,68 @@ _AS_WRITTEN = {"Abs": "abs", "Min": "min", "Max": "max", "clampval": "clamp"}
 _SYMPY_CALL = re.compile(r"\b(Abs|Min|Max|clampval)\(")
 
 
-def _rate_law_texts(core) -> list[tuple[str, str]]:
+def _rate_law_texts(core) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
     """``(where, text)`` of each functional rate law, with function references
-    inlined, as the switch scanners read it."""
+    inlined, as the switch scanners read it; and ``(where, name)`` of each
+    parameter the model takes as a value of its own: an elementary or MM
+    reaction's rate constant, and a species' initial amount. BNG2.pl writes an
+    inline BNGL rate law such as ``0 -> X() 10*min(q,1)+s`` as a derived
+    ``_rateLaw1`` on an elementary reaction (issue #1530)."""
     from bngsim._jacobian import _inline_functions
     from bngsim._switch_sensitivity import _scan_function_map, _spell_mod
 
     data = core.codegen_data()
     func_map = _scan_function_map(core.functional_jacobian_context())
-    out: list[tuple[str, str]] = []
+    names = list(core.param_names)
+    laws: list[tuple[str, str]] = []
+    roots: list[tuple[str, str]] = []
     for i, rxn in enumerate(data["reactions"]):
         if rxn.get("type") != "functional":
+            for k in rxn.get("rate_param_indices") or ():
+                if 0 <= k < len(names):
+                    roots.append((f"reaction {i + 1} (rate constant {names[k]})", names[k]))
             continue
         fname = rxn.get("function_name")
         body = func_map.get(fname) if fname else _spell_mod(rxn.get("rate_expression") or "")
         if not body:
             continue
         where = f"reaction {i + 1}" + (f" ({fname})" if fname else "")
-        out.append((where, _inline_functions(body, func_map) or body))
-    return out
+        laws.append((where, _inline_functions(body, func_map) or body))
+    species = [entry.get("name", "") for entry in data["species"]]
+    for s_idx, k in core.species_ic_param_refs:
+        if 0 <= k < len(names) and 0 <= s_idx < len(species):
+            roots.append((f"the initial amount of {species[s_idx]} ({names[k]})", names[k]))
+    return laws, roots
+
+
+#: Past this many characters, a derived parameter written out in what it is
+#: built from is read as it is written instead: sympy's parse of it does not
+#: finish. One in a corpus model reached 41,048 from 41 (`synthesis_v3.bngl`).
+_DERIVED_TEXT_LIMIT = 5_000
+
+
+def _derived_bends(laws, roots, derived, has_bend) -> list[tuple[str, str]]:
+    """``(where, name)`` of each derived parameter that bends in its own
+    expression and that a rate law, a rate constant or an initial amount
+    reaches, through any chain of derived parameters (issue #1530): each once,
+    at the first place that reaches it. A bend is judged where it is written,
+    in a parameter written out in what it is built from, and not in each law
+    that reads it: a law written out in every derived parameter it reaches can
+    be too long to parse, and one shared by many reactions was judged as many
+    times."""
+    from bngsim._jacobian import _IDENT_RE
+
+    own = set(roots)
+    first: dict[str, str] = {}
+    for where, text in [*laws, *roots]:
+        stack = [n for n in _IDENT_RE.findall(text) if n in derived]
+        while stack:
+            n = stack.pop()
+            if n in first:
+                continue
+            first[n] = where if (where, n) in own else f"{where}, through {n}"
+            stack.extend(m for m in _IDENT_RE.findall(derived[n]) if m in derived)
+    return [(w, n) for n, w in first.items() if has_bend(derived[n])]
 
 
 def _bend_points(expr, sp) -> list[tuple[str, Any, Any, list[Any]]]:
@@ -141,34 +191,15 @@ def parameters_on_a_kink(
     names = list(dict.fromkeys(param_names))
     if not names:
         return []
-    from bngsim._jacobian import has_condition_construct
-    from bngsim._switch_sensitivity import _BEND_CALL
-
-    # A rate law with no bend and no condition has nothing to sit on, and is not parsed.
-    laws = [
-        (w, t)
-        for w, t in _rate_law_texts(core)
-        if _BEND_CALL.search(t) or has_condition_construct(t)
-    ]
-    if not laws:
-        return []
-    try:
-        import sympy as sp
-    except ImportError:
-        return []
     from bngsim._codegen import (
         _PY_KEYWORD_PARAM_NAMES,
         _alias_keyword_param,
         _inline_derived_param_refs,
     )
+    from bngsim._jacobian import has_condition_construct
+    from bngsim._switch_sensitivity import _BEND_CALL
 
     all_names = list(core.param_names)
-    values = {n: float(core.get_param(n)) for n in all_names}
-    # The parser spells a parameter named after a Python keyword (`lambda`) by
-    # an alias, and the laws' symbols are read back through it.
-    spelled = {
-        (_alias_keyword_param(n) if n in _PY_KEYWORD_PARAM_NAMES else n): n for n in all_names
-    }
     # The derived parameters as switch_condition_scope reads them, without its
     # probe of the right-hand side for the clocks.
     derived = {
@@ -178,6 +209,27 @@ def parameters_on_a_kink(
         )
         if is_e and e
     }
+
+    def has_bend(text: str) -> bool:
+        return bool(_BEND_CALL.search(text) or has_condition_construct(text))
+
+    # A rate law with no bend and no condition has nothing to sit on, and is not parsed.
+    texts, roots = _rate_law_texts(core)
+    laws = [(w, t) for w, t in texts if has_bend(t)]
+    derived_laws = _derived_bends(texts, roots, derived, has_bend)
+    if not laws and not derived_laws:
+        return []
+    try:
+        import sympy as sp
+    except ImportError:
+        return []
+
+    values = {n: float(core.get_param(n)) for n in all_names}
+    # The parser spells a parameter named after a Python keyword (`lambda`) by
+    # an alias, and the laws' symbols are read back through it.
+    spelled = {
+        (_alias_keyword_param(n) if n in _PY_KEYWORD_PARAM_NAMES else n): n for n in all_names
+    }
     asked = [p for p in names if p in values]
     # Every derived parameter but the one asked about is inlined, so a bend
     # written over a derived parameter is attributed to what it is built from,
@@ -185,26 +237,73 @@ def parameters_on_a_kink(
     # laws for all the primaries, and one more per derived parameter asked about.
     groups = [({p for p in asked if p not in derived}, derived)]
     groups += [({p}, {k: v for k, v in derived.items() if k != p}) for p in asked if p in derived]
+    capped = set(derived_laws)
+    reach = _reach(derived)
     out: list[str] = []
     for group, exprs in groups:
         if not group:
             continue
-        for where, text in laws:
-            law = _parsed(_inline_derived_param_refs(text, exprs) or text)
-            if law is None:
-                continue
-            for p, bend in _kinks(law, group, spelled, values, sp, conditions):
+        for where, text in [*laws, *derived_laws]:
+            full = _inline_derived_param_refs(text, exprs) or text
+            if (where, text) in capped and len(full) > _DERIVED_TEXT_LIMIT:
+                # Too long to parse written out, so it is read as it is written,
+                # over the derived parameters it names, whose values the engine
+                # has: on a bend that a parameter asked about moves through
+                # them, it is refused without asking whether the law has a
+                # derivative there, which needs the long text.
+                law = _parsed(derived[text])
+                found = (
+                    []
+                    if law is None
+                    else _kinks(law, group, spelled, values, sp, conditions, reach=reach)
+                )
+            else:
+                law = _parsed(full)
+                if law is None:
+                    continue
+                found = _kinks(law, group, spelled, values, sp, conditions)
+            for p, bend in found:
                 out.append(f"{p!r} in {where}: {bend}")
     return out
 
 
-def _kinks(law, asked, spelled, values, sp, conditions) -> list[tuple[str, str]]:
+def _reach(derived: dict[str, str]):
+    """``reach(name)``: *name* and every parameter its value is built from,
+    through any chain of the derived parameters *derived*."""
+    from bngsim._jacobian import _IDENT_RE
+
+    memo: dict[str, frozenset] = {}
+
+    def reach(name: str) -> frozenset:
+        got = memo.get(name)
+        if got is None:
+            memo[name] = frozenset({name})  # a cycle stops here
+            out = {name}
+            if name in derived:
+                for m in set(_IDENT_RE.findall(derived[name])):
+                    out |= reach(m)
+            got = memo[name] = frozenset(out)
+        return got
+
+    return reach
+
+
+def _kinks(law, asked, spelled, values, sp, conditions, *, reach=None) -> list[tuple[str, str]]:
     """``(parameter, description)`` for each bend of *law* that the present
     values sit on, that a parameter of *asked* moves, and where the law's two
     sides differ in that parameter. A bend that reads anything but parameters
-    (the state, the clock) is a crossing in time, and is not judged here."""
+    (the state, the clock) is a crossing in time, and is not judged here.
+
+    With ``reach`` (see :func:`_reach`), *law* is read over derived parameters
+    it has not written out: a parameter of *asked* moves a bend through what it
+    reaches, and a bend the values sit on is reported without the sides being
+    compared, which would need the law written out."""
+
+    def moved(p: str) -> set[str]:
+        return set(reach(p) if reach else {p}) & set(asked)
+
     params = {s: spelled[s.name] for s in law.free_symbols if s.name in spelled}
-    if not any(p in asked for p in params.values()):
+    if not any(moved(p) for p in params.values()):
         return []
     out: list[tuple[str, str]] = []
     for construct, at, node, sides in _bend_points(law, sp):
@@ -212,7 +311,7 @@ def _kinks(law, asked, spelled, values, sp, conditions) -> list[tuple[str, str]]
             continue
         pool = sides if at is None else [at]
         free = set().union(*(e.free_symbols for e in pool))
-        movers = sorted((s for s in free if params.get(s) in asked), key=str)
+        movers = sorted((s for s in free if s in params and moved(params[s])), key=str)
         if not movers or not free <= set(params):
             continue
         try:
@@ -232,6 +331,15 @@ def _kinks(law, asked, spelled, values, sp, conditions) -> list[tuple[str, str]]
                 continue
             on = sides
             bend = None
+        if reach is not None:
+            line = bend or f"{construct}, on its switch"
+            line += (
+                " (the sides were not compared: written out, the law that reads it is too"
+                " long to parse)"
+            )
+            for p in sorted(set().union(*(moved(params[s]) for s in movers))):
+                out.append((p, _as_written(line, params)))
+            continue
         for s in movers:
             p = params[s]
             if _sides_differ(law, node, on, s, params, values, sp):

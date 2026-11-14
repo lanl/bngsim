@@ -159,29 +159,94 @@ actions, is a task on a derived model that makes those changes. A run that start
 where earlier runs left the model, such as the stimulation after an equilibration,
 is a `repeatedTask` that resets the model once and then runs the earlier runs and
 this one as ordered subtasks on one model state, with the actions between them as
-`setValue` changes. In SED-ML, model state is not reset between subtasks unless
+`setValue` changes. Its first subtask is the task of the run it starts from,
+the one that run's report reads, and its other tasks run that task's model: the
+changes before that first run are that model's, made once, when it is loaded,
+and the SBML's `initialAssignment`s compute from them. In SED-ML, model state is not reset between subtasks unless
 `resetModel="true"` asks for it. A bifurcate is its sweep up and back down, each
-point continuing from the last. Every target names an id in the archive's SBML,
-under a declared `sbml` prefix. A simulator that resets the model between
-subtasks does not follow that part of the spec, and runs such a protocol
-differently: tellurium 2.2.13's own SED-ML runner, for one.
+point continuing from the last. A parameter set to an expression of others,
+`setParameter("k2","k1*3")`, is set again after each change to what it reads,
+and at each point of a scan of it, since BNG2.pl keeps it as that expression. A
+save made before `generate_network` is the network with the actions that made
+what it saved. Every target names an id in the archive's SBML, under a declared
+`sbml` prefix, and the lists are in the order the L1V3 schema gives. A simulator
+that resets the model between subtasks does not follow that part of the spec,
+and runs such a protocol differently: tellurium 2.2.13's own SED-ML runner, for
+one.
+
+Each experiment has a report: the time and the model's observables (its
+species where it has none), read from the task that runs it. That task is the
+experiment; any other task in the document is a part of one, such as the
+earlier runs a chain replays. SED-ML reads a `repeatedTask`'s results as all of
+its subtasks', so the report of a run that continues earlier ones holds their
+rows first and its own last, and its name says so. A change to a parameter the
+SBML computes by an `initialAssignment` (a derived parameter, or a species
+whose seed amount names a parameter) is written after a `removeXML` of that
+assignment, which would otherwise override it, as BNG2.pl's action replaces
+the expression. A simulator evaluates such an assignment when it loads the
+model, not when a parameter it reads is set as the model runs, where BNG2.pl's
+derived parameter follows that parameter. So a `setValue` that sets, as the
+model runs, a parameter an assignment reads (a scan of `k1` beside a derived
+`k2 = k1*3`, or `setParameter("k1",5)` between runs) is followed by a
+`setValue` of what the assignment computes, with the assignment's own math; at
+each point of a scan, from the range. A species whose seed names the
+parameter (a dose scan of `A0`, with the seed `A() A0`) follows it the same
+way until a run has made its amount a number, as in BNG2.pl: at each point of
+a scan that resets, from the initial state; at the first point only of one
+that goes on from point to point. So does a species an action set to an
+expression, `setConcentration("A()","A0*2")`, which BNG2.pl keeps as that
+expression until a run. The changes before a run are written in the order the
+actions made them, with such a species last, so each reads the model as the
+actions before it left it: an expression that reads a derived parameter is
+written after a change that sets that parameter to what its assignment
+computes, and an `addConcentration` to a species whose seed names a parameter
+that an action has moved, after one that sets the species to that seed. An
+`addConcentration` to a species that is still an expression adds, in BNG2.pl,
+to the species' declared seed, not to that expression, and the species is set
+to that seed first. Where an action before `generate_network` changed the
+species, the SBML does not hold that seed: the export says so, and records it
+in `sedml_lossy`. An assignment SED-ML math cannot say again,
+one that calls a function of the SBML's, reads its time, or uses an operator
+SED-ML L1V3's MathML does not have (`rem`, `quotient`, `implies`), is left as
+the simulator computed it when a parameter it reads is set as the model runs:
+the export says so, and records it in `sedml_lossy`. A change before the run
+that reads such an assignment reads the value the SBML holds, without a note;
+none comes from a `.bngl` BNG2.pl accepts, which has no such operators, and
+whose parameters call no functions and do not read time. A `min` or `max`, which that MathML does not have either, is
+written as the `piecewise` it is.
+The bngsim annotation holds the protocol as parsed, with the `.bngl` named by
+its file name alone, not the path it was read from.
 
 **Starting from a `.bngl` model (the full export pipeline).** The converter's model
 input is the flattened **`.net`**, so a rule-based model is first expanded to a
 network with BioNetGen, then packaged — passing the same `.bngl` so its actions
-become the SED-ML protocol *and* its source rides along. (`Model.from_bngl` runs
-that expansion for you when you only want to *simulate* the model — see
-[Loading models](loading-models.md) — but the packager wants the `.net` on disk,
-so flatten it explicitly here.)
+become the SED-ML protocol *and* its source rides along. The `.net` has to be
+the network as `generate_network` writes it, the state the protocol starts
+from. `Model.from_bngl` writes that file with `net_out=`: it runs BioNetGen on
+the model and the actions before `generate_network`, and stops there.
 
 ```bash
-# 1. Flatten the rule-based model to a network with BioNetGen (the .bngl needs a
-#    generate_network() action — rule-based models you simulate already have one).
-BNG2.pl model.bngl     # → model.net
+# 1. Flatten the rule-based model to its network, as generate_network writes it
+#    (the .bngl needs a generate_network() action; rule-based models you
+#    simulate already have one). bngsim says it leaves the later actions out:
+#    they are the protocol, which step 2 reads from the .bngl.
+python -c "import bngsim; bngsim.Model.from_bngl('model.bngl', net_out='model.net')"
 
 # 2. Package a BioModels-ready, validated OMEX
 bngsim-omex pack model.net --bngl model.bngl --gate full   # → model.omex
 ```
+
+Running the whole file with `BNG2.pl model.bngl` does not give that network
+for every protocol. At a `simulate` with no `suffix`, BNG2.pl writes
+`model.net` again with the state of that moment, once a run or an action such
+as `addConcentration` has moved it (generation, every `set*`, `add*` and
+`reset*` action and every run's end mark it moved), and the protocol would then
+be replayed on
+top of a state it had already reached: `egfr_path.bngl`'s exported first run
+started at Grb2 = 100163 for 100000 (issue #1683). The packer compares the
+`.net`'s parameters and seed species with what the `.bngl` declares, and
+refuses one that differs (`--allow-lossy` packs it with a warning). A `suffix`
+on every `simulate` keeps BNG2.pl's `model.net` as generated too.
 
 ```python
 # Equivalent API call. A validated, runnable deliverable: SBML + the real
@@ -216,6 +281,13 @@ creation date, a description — the channel BioModels/COMBINE tools read) and a
 per-level L0–L4 result, `ok` / `rhs_faithful` / `max_rhs_delta`, and any
 dropped/lossy notes. So the validation verdict is auditable by anyone who
 opens the archive, and a future reader can tell which bngsim version produced it.
+`ok` and `lossy` judge the network. What the SED-ML's standard elements do not
+hold of the protocol, such as a `reset_conc=>1` scan that BNG2.pl starts where
+an earlier run left the model, is warned of at export and recorded as
+`sedml_lossy`, in the report and in `bngsim-conversion.json`, and
+`metadata.rdf` says how many such notes there are. A tool that runs the
+standard elements runs something else there; bngsim reads the protocol from
+its annotation.
 The `created` timestamp is injectable (`created="…"` / `--created`) for byte-reproducible archives:
 it is stamped both into the RDF and onto every zip entry, so two builds from the same
 inputs and the same `created` are byte-identical however far apart they run. It applies
@@ -242,6 +314,54 @@ back as runnable BNGL rather than being lost on import.
 # .omex → .net (+ a <stem>.bngl actions block carrying the composed protocol)
 report = bngsim.convert.omex_to_net("model.omex", "model.net")  # gate="full" default
 ```
+
+The actions block is for the `.net` beside it, which holds what the protocol's
+actions before `generate_network` did: it starts at that point, with any save
+made before it made again, and names each species as the `.net` does
+(`L_r` for the BNGL `L(r)`). BNG2.pl runs the pair with
+`readFile({file=>"model.net"})` before the actions. A reset to a state saved
+before generation whose values were the model's as declared cannot be made on
+that `.net`, which holds the changed values: `omex_to_net` refuses it, and with
+`strict=False` writes the block with a `# bngsim:` comment and a note in
+`lossy`. An archive's
+`load_full_protocol()` likewise names species and parameters by the master
+SBML's ids, so it runs on `load_model()`; `load_full_protocol(entry)` names them
+as another model entry does, the bundled `.net` by their BNGL names.
+
+**Reading a SED-ML document another tool wrote.** `read_sedml_protocol` (and an
+archive's `load_full_protocol`) reads a document without bngsim's annotation by
+its tasks (issue #1662): each `task` is a run of its model from that model's
+initial state, with the model's `changeAttribute` and `computeChange` changes
+(a species' initial value, a parameter's value, a kinetic law's local parameter
+as `_lp_<reaction>_<id>`, an addition of a term to the species as
+`addConcentration`) as the steps before it; a `repeatedTask` that sweeps a
+parameter is a `parameter_scan`, with a constant `setValue` beside the sweep as
+a step before it, and one that does not sweep runs its subtasks in order on one
+model state, resetting it first where `resetModel` says so. Tasks are
+independent, so the state is reset between them, and a time course no task runs
+is not run. A model's changes are steps where the model is loaded: before the
+first task of a chain that runs it, and again after a reset, not before each
+task that runs it. A task whose steps are the start of a longer chain's is that
+chain's first runs, read once: `write_sedml_protocol`'s chain names the task of
+its first run as its first subtask. A change the replay cannot apply (a compartment's size, an
+`addXML`, a species' `initialAmount` without the SBML's compartment sizes, a
+`setValue` that reads the range beside the swept parameter other than as an
+expression of it, a sweep whose math reads the model's values, a task on a
+second model file, a sweep that resets the model at each point followed by more of a
+chain, which a replay's scan would start from its start state) is said with a
+`ConversionWarning` and recorded in the spec's `lossy` list, which `run_protocol` refuses unless `allow_lossy=True`.
+A sweep runs the value its `setValue`'s math gives at each iteration, over the
+range it names: `k = 10^x` over x = 0, 1, 2 runs k = 1, 10, 100, and so does a
+`functionalRange` or a second range of those values. A change's math is
+evaluated once, where it applies, as SED-ML says; a `setValue` beside the sweep
+that reads the range the swept parameter is set to is that parameter's
+expression, and follows it through the scan. Pass `sbml=` to read a species
+change written as an amount in its compartment. `read_sedml`, the single-run
+reader, takes its first task's simulation, model and outputs the same way and
+says which tasks it leaves unread (issue #1675). A data generator is an output
+only where its math is one of its variables as it stands; one that computes a
+value from them, such as `A + B`, is left out with a warning, since no output
+selector names it.
 
 ```bash
 bngsim-omex to-net model.omex -o model.net   # → model.net + model.bngl

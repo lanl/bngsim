@@ -167,6 +167,22 @@ class ExprTkEvaluator : public ExpressionEvaluator {
     // preprocessing steps that compile() performs.
     int compile_preprocessed(const std::string &preprocessed_expr);
 
+    // compile_preprocessed(), but where the text computes one parenthesised
+    // subexpression in more than one place, it is computed once (issue
+    // #1669): the expression compiled is shared_program() of the text. The
+    // text kept for preprocessed_expr() and referenced_variable_addresses() is
+    // the one given. The value is the same arithmetic, rounded as ExprTk's
+    // nodes for the program round it: to the last bit as a rule, a few units
+    // in the last place off where a shared group changes which node computes
+    // it. Where the text is not plain arithmetic, or shares nothing, it
+    // compiles as it is.
+    int compile_preprocessed_shared(const std::string &preprocessed_expr);
+
+    // The program compile_preprocessed_shared() compiled for `expr_id`: the
+    // repeated subexpressions as local variables, then the expression over
+    // them. Empty where it compiled the text as it is.
+    std::string shared_program(int expr_id) const;
+
     // Return the cached preprocessed string for a compiled expression.
     // Useful for model clone: cache strings at build time, re-compile
     // from cached strings on clone.

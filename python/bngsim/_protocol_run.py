@@ -12,7 +12,9 @@ The semantics are BNG2.pl's (``Perl2/BNGModel.pm`` and ``BNGAction.pm``, 2.9.3):
 * ``setParameter`` and ``setConcentration`` change the live model, and
   ``addConcentration`` adds to a species. A species whose amount is a parameter,
   or an expression, follows it until a run makes it a number: BNG2.pl writes the
-  expression into the network each run reads.
+  expression into the network each run reads. A parameter set to an expression
+  of other parameters stays that expression, and follows them through later
+  actions, scans and resets, until it is set to a number (issue #1682).
 * ``saveConcentrations``/``resetConcentrations`` and
   ``saveParameters``/``resetParameters`` keep one saved state per label.
   ``resetConcentrations()`` with nothing saved goes back to the model as
@@ -436,8 +438,12 @@ class _Runner:
         # what the network holds, unless an action before generation changed it.
         self.declared: tuple[np.ndarray, dict] | None = (self._state(), dict(self.symbolic))
         self._weights: dict[str, list[tuple[int, float]]] | None = None
+        # Parameters a setParameter set to an expression of other parameters:
+        # name → the expression. BNG2.pl keeps such a parameter as that
+        # expression, so it follows what it reads (issue #1682).
+        self.param_exprs: dict[str, str] = {}
         self.saved_conc: dict[str, tuple[np.ndarray, dict] | None] = {}
-        self.saved_params: dict[str, tuple[dict[str, float], set[str]] | None] = {}
+        self.saved_params: dict[str, tuple[dict[str, float], set[str], dict[str, str]] | None] = {}
         self._before_generation(protocol.steps[: protocol.generation_step or 0])
 
     # ── bookkeeping ───────────────────────────────────────────────────────
@@ -446,42 +452,42 @@ class _Runner:
 
     def _before_generation(self, steps: Sequence[Any]) -> None:
         """What the actions before generation left saved. The network holds the
-        state they left, so a save among them holds the loaded state when that
-        is the state it saved, and the model as declared is the loaded one when
-        they left the seed as declared. Each state they pass through is followed
-        by name ("declared", or the step that made it), so a reset that undoes a
-        change counts as none; a save or a declared seed the loaded network does
-        not hold is unknown, and a reset to it is refused rather than guessed."""
-        from bngsim.convert._protocol import StateChange
+        state they left, so a save among them holds the loaded state where that
+        is the state it saved. Where an action between the save and generation
+        changed it, the save is the loaded state with the actions that made the
+        saved values applied again (issue #1668): a ``setParameter("k2",0)``
+        saved and then undone is k2 = 0 again. A saved value that is the one
+        declared, which the loaded network no longer holds, is unknown, and so
+        is a declared seed the network does not hold; a reset to either is
+        refused rather than guessed."""
+        from bngsim.convert._protocol import _saved_before_generation
 
-        conc: object = "declared"
-        params: object = "declared"
-        conc_saves: dict[str, object] = {}
-        param_saves: dict[str, object] = {}
-        for i, step in enumerate(steps):
-            if not isinstance(step, StateChange):
-                continue
-            label = step.label or _DEFAULT_LABEL
-            if step.kind in ("set_concentration", "add_concentration"):
-                conc = i
-            elif step.kind == "save_concentrations":
-                conc_saves[label] = conc
-            elif step.kind == "reset_concentrations":
-                # An unsaved default reset is the seed as declared; an unsaved
-                # labeled one is a BNG2.pl error, which leaves nothing to follow.
-                conc = conc_saves.get(label, "declared" if label == _DEFAULT_LABEL else i)
-            elif step.kind == "set_parameter":
-                params = i
-            elif step.kind == "save_parameters":
-                param_saves[label] = params
-            elif step.kind == "reset_parameters":
-                params = param_saves.get(label, i)
-        if conc != "declared":
+        before = _saved_before_generation(steps)
+        if not before.declared:
             self.declared = None
-        for label, held in conc_saves.items():
-            self.saved_conc[label] = (self._state(), dict(self.symbolic)) if held == conc else None
-        for label, held in param_saves.items():
-            self.saved_params[label] = self._param_state() if held == params else None
+        for label, back in before.conc.items():
+            self.saved_conc[label] = self._reached(back, conc=True)
+        for label, back in before.params.items():
+            self.saved_params[label] = self._reached(back, conc=False)
+
+    def _reached(self, back: tuple | None, *, conc: bool) -> Any:
+        """The concentrations (or the parameters) the loaded model reaches with
+        the actions *back* applied, which leaves the model as it was; ``None``
+        where *back* is unknown or cannot be applied."""
+        if back is None:
+            return None
+        state, symbolic = self._state(), dict(self.symbolic)
+        params = self._param_state()
+        try:
+            for step in back:
+                self._change(step)
+            return (self._state(), dict(self.symbolic)) if conc else self._param_state()
+        except ConversionError:
+            return None
+        finally:
+            self._restore_params(*params)
+            self.model.set_state(state)
+            self.symbolic = symbolic
 
     def _value(self, change: StateChange) -> float:
         """A step's value: its number, or its expression in the live model, with
@@ -589,15 +595,83 @@ class _Runner:
         self.model.set_params(values)
         self.model.set_state(state)
 
-    def _param_state(self) -> tuple[dict[str, float], set[str]]:
+    def _param_state(self) -> tuple[dict[str, float], set[str], dict[str, str]]:
         """The parameters a ``saveParameters`` keeps: constants and constant
         expressions (BNG2.pl's ``copyConstant``), not the slots bngsim keeps for
-        a function's or an observable's value."""
+        a function's or an observable's value. An expression an action set
+        is kept as the expression, as BNG2.pl's copy keeps it (issue #1682)."""
         names = list(self.model.param_names)
         derived = {n for n, e in zip(names, self.model.param_is_expression, strict=True) if e}
         computed = set(self.model.function_names) | set(self.model.observable_names)
         kept = [n for n in names if n not in computed]
-        return {n: float(self.model.get_param(n)) for n in kept}, derived
+        values = {n: float(self.model.get_param(n)) for n in kept}
+        return values, derived, dict(self.param_exprs)
+
+    def _param_reads(self, text: str) -> list[str]:
+        """The parameters *text* names, the slots of functions and observables
+        aside (a value that reads those is refused, :meth:`_change`)."""
+        computed = set(self.model.function_names) | set(self.model.observable_names)
+        names = [n for n in self.model.param_names if n not in computed]
+        return [n for n in names if re.search(rf"(?<![\w.]){re.escape(n)}(?!\w)", text)]
+
+    def _defines_recursively(self, name: str, text: str) -> bool:
+        """Whether setting *name* to *text* defines it through itself, directly
+        or through the expressions it reads, which BNG2.pl refuses ("Parameter
+        k2 is defined recursively"): those an action set, and those the
+        network declares, ``k3 2*k1`` (BNG2.pl: "Max recursion depth")."""
+        names = list(self.model.param_names)
+        declared = {
+            n: e
+            for n, e, live in zip(
+                names,
+                self.model.param_expressions,
+                self.model.param_is_expression,
+                strict=True,
+            )
+            if live and e
+        }
+        seen: set[str] = set()
+        stack = self._param_reads(text)
+        while stack:
+            read = stack.pop()
+            if read == name:
+                return True
+            if read in seen:
+                continue
+            seen.add(read)
+            if read in self.param_exprs:
+                stack.extend(self._param_reads(self.param_exprs[read]))
+            elif read in declared:
+                stack.extend(self._param_reads(declared[read]))
+        return False
+
+    def _follow(self) -> None:
+        """Bring each parameter an action set to an expression up to what it
+        reads now, as BNG2.pl evaluates it where it is used (issue #1682). An
+        expression may read another, so this repeats until none moves; none
+        reads itself, which :meth:`_change` refuses."""
+        from bngsim._bngl_loader import _value
+
+        for _ in range(len(self.param_exprs) + 2):
+            moved = False
+            for name, text in self.param_exprs.items():
+                value = _value(self.model, text)
+                if value is None or math.isnan(value):
+                    raise ConversionError(
+                        f'setParameter("{name}","{text}"): the value does not evaluate '
+                        "in the model"
+                    )
+                if float(self.model.get_param(name)) != value:
+                    self._set_params({name: value})
+                    moved = True
+            if not moved:
+                return
+        # A chain settles in one pass per expression; one that does not reads
+        # itself, which the check at the setParameter is meant to have refused.
+        raise ConversionError(
+            f"the parameters {sorted(self.param_exprs)} set to expressions do not settle: "
+            "they are defined through each other, which BNG2.pl refuses"
+        )
 
     # ── steps ─────────────────────────────────────────────────────────────
     def run(self) -> list[ProtocolRun]:
@@ -615,6 +689,7 @@ class _Runner:
         kind = change.kind
         label = change.label or _DEFAULT_LABEL
         if kind == "set_parameter":
+            name = change.target or ""
             if change.value_expr is not None and self._state_reads(change.value_expr):
                 # BNG2.pl makes such a parameter a function of the state, read
                 # anew through every later run (BNGModel.pm, setParameter
@@ -624,7 +699,24 @@ class _Runner:
                     f"{', '.join(self._state_reads(change.value_expr))}, which makes the "
                     "parameter a function of the state in BNG2.pl; bngsim cannot do that"
                 )
-            self._set_params({change.target or "": self._value(change)})
+            reads = (
+                self._param_reads(change.value_expr)
+                if change.value_expr is not None and not change.evaluated_once
+                else []
+            )
+            if reads and self._defines_recursively(name, change.value_expr or ""):
+                raise ConversionError(
+                    f"{_action(change)}: the value reads {name} through itself; BNG2.pl "
+                    f'refuses it too ("Parameter {name} is defined recursively")'
+                )
+            self._set_params({name: self._value(change)})
+            # BNG2.pl keeps a value that reads other parameters as that
+            # expression (BNGModel.pm, setParameter: the .net it writes lists
+            # `k2 k1*3`), so the parameter follows them; a number ends that.
+            self.param_exprs.pop(name, None)
+            if reads:
+                self.param_exprs[name] = change.value_expr or ""
+            self._follow()
         elif kind == "set_concentration":
             i = self._species(change)
             if change.value is None and change.value_expr is not None:
@@ -680,6 +772,8 @@ class _Runner:
                     "network was generated were changed before it too, so the loaded "
                     "model does not hold them"
                 )
+            # The saved values agree with the saved expressions: every change
+            # brought those up to date before the save.
             self._restore_params(*saved)
         else:  # pragma: no cover — the parser makes no other kind
             raise ConversionError(f"unknown protocol step {kind!r}")
@@ -708,7 +802,10 @@ class _Runner:
         self.model.set_state(state.copy())
         self.symbolic = dict(symbolic)
 
-    def _restore_params(self, values: dict[str, float], derived: set[str]) -> None:
+    def _restore_params(
+        self, values: dict[str, float], derived: set[str], exprs: dict[str, str]
+    ) -> None:
+        self.param_exprs = dict(exprs)
         names = list(self.model.param_names)
         now = {n: float(self.model.get_param(n)) for n in names}
         primary = {n: v for n, v in values.items() if n not in derived and now.get(n) != v}
@@ -747,7 +844,11 @@ class _Runner:
         self.saved_conc["SCAN"] = (self._state(), dict(self.symbolic))
         results: list[Result] = []
         for value in values:
+            # BNG2.pl sets each point with setParameter: a number, which ends an
+            # expression the parameter held, and which those that read it follow.
             self._set_params({parameter: float(value)})
+            self.param_exprs.pop(parameter, None)
+            self._follow()
             if reset:
                 self._reset_concentrations("SCAN")
             result = self._run(exp)

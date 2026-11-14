@@ -162,6 +162,7 @@ def test_real_corpus_protocols_round_trip() -> None:
             if p.is_empty:
                 continue
             xml = write_sedml_protocol(p)
-            assert read_sedml_protocol(xml).to_dict() == p.to_dict(), f
+            # The source by file name alone (issue #1678).
+            assert read_sedml_protocol(xml).to_dict() == {**p.to_dict(), "source": f.name}, f
             checked += 1
     assert checked > 0

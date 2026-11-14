@@ -1220,21 +1220,6 @@ static std::string unique_name(const std::string &base, std::unordered_set<std::
     return name;
 }
 
-static std::vector<std::pair<int, int>>
-reactant_multiplicities_preserving_order(const std::vector<int> &reactants_1based) {
-    std::vector<std::pair<int, int>> out;
-    for (int ri : reactants_1based) {
-        auto it = std::find_if(out.begin(), out.end(),
-                               [ri](const auto &entry) { return entry.first == ri; });
-        if (it == out.end()) {
-            out.emplace_back(ri, 1);
-        } else {
-            ++it->second;
-        }
-    }
-    return out;
-}
-
 static std::string make_single_species_observable(int reaction_index, int species_index_1based,
                                                   int reactant_position_1based,
                                                   std::vector<ParsedObservable> &observables,
@@ -1308,18 +1293,13 @@ static std::vector<std::string> rewrite_legacy_sat_hill_rate_laws(
             continue;
 
         const int reaction_index = i + 1;
-        const auto unique_reactants =
-            reactant_multiplicities_preserving_order(rxn.reactant_indices_1based);
-        for (const auto &[species_index, count] : unique_reactants) {
-            if (count != 1) {
-                throw std::runtime_error(
-                    "Legacy " + rxn.legacy_rate_law_type +
-                    " .net rate law rewrite does not yet support repeated/non-unit "
-                    "reactant stoichiometry in reaction " +
-                    std::to_string(reaction_index) +
-                    ". Rewrite this reaction as an explicit Functional rate law.");
-            }
-        }
+        // The rewrite reads reactant POSITIONS, as BNG2.pl and run_network do,
+        // so a repeated reactant (`1 1,1 2 0.5*Sat kcat Km`, which BNG2.pl
+        // writes for A() + A() -> B() Sat(kcat,Km)) is exact: the Functional
+        // reaction multiplies f by every reactant position (the falling
+        // factorial for SSA), as Network3's rxn_rate multiplies the law by
+        // x_i at each position i at or past the saturation constants (#1527).
+        const std::vector<int> &reactants = rxn.reactant_indices_1based;
 
         ParsedFunction func;
         func.name = unique_name("__bngsim_net_rewrite_" + rxn.legacy_rate_law_type + "_" +
@@ -1336,12 +1316,12 @@ static std::vector<std::string> rewrite_legacy_sat_hill_rate_laws(
             }
             const int n_saturation_constants =
                 static_cast<int>(rxn.legacy_rate_law_constants.size()) - 1;
-            if (unique_reactants.empty()) {
+            if (reactants.empty()) {
                 throw std::runtime_error("Legacy Sat .net rate law requires at least one "
                                          "reactant in reaction " +
                                          std::to_string(reaction_index));
             }
-            if (n_saturation_constants > static_cast<int>(unique_reactants.size())) {
+            if (n_saturation_constants > static_cast<int>(reactants.size())) {
                 throw std::runtime_error(
                     "Saturation type .net rate laws cannot have more saturation constants "
                     "than reactants in reaction " +
@@ -1351,9 +1331,8 @@ static std::vector<std::string> rewrite_legacy_sat_hill_rate_laws(
             const std::string &k_name = rxn.legacy_rate_law_constants[0];
             std::vector<std::string> denominator_terms;
             for (int r = 0; r < n_saturation_constants; ++r) {
-                std::string obs_name =
-                    make_single_species_observable(reaction_index, unique_reactants[r].first, r + 1,
-                                                   observables, used_observable_names);
+                std::string obs_name = make_single_species_observable(
+                    reaction_index, reactants[r], r + 1, observables, used_observable_names);
                 denominator_terms.push_back(
                     parenthesize_sum(rxn.legacy_rate_law_constants[r + 1], obs_name));
             }
@@ -1365,7 +1344,7 @@ static std::vector<std::string> rewrite_legacy_sat_hill_rate_laws(
                                          "constants ('Hill Vmax Kh h') in reaction " +
                                          std::to_string(reaction_index));
             }
-            if (unique_reactants.empty()) {
+            if (reactants.empty()) {
                 throw std::runtime_error("Legacy Hill .net rate law requires at least one "
                                          "reactant in reaction " +
                                          std::to_string(reaction_index));
@@ -1375,7 +1354,7 @@ static std::vector<std::string> rewrite_legacy_sat_hill_rate_laws(
             const std::string &kh = rxn.legacy_rate_law_constants[1];
             const std::string &h = rxn.legacy_rate_law_constants[2];
             std::string obs_name = make_single_species_observable(
-                reaction_index, unique_reactants[0].first, 1, observables, used_observable_names);
+                reaction_index, reactants[0], 1, observables, used_observable_names);
 
             // The reaction multiplies this function by S, so it stands for the
             // law Vmax*S^h/(Kh^h + S^h). For 0 < h < 1 the body is S^(h-1): inf
@@ -1441,9 +1420,9 @@ static std::vector<std::string> rewrite_legacy_sat_hill_rate_laws(
                 warning += " (" + std::to_string(hill_count) + ")";
         }
         warning += ". Rewrite the source BNGL as explicit Functional rate laws. "
-                   "For a unit-stoichiometry reaction, use Sat k K as "
-                   "f() = k/(K+S), not k*S/(K+S), because BNGL functional rates "
-                   "multiply reactants separately. Use Hill Vmax Kh h as "
+                   "Use Sat k K as f() = k/(K+S), not k*S/(K+S), because BNGL "
+                   "functional rates multiply in every reactant, a repeated one "
+                   "once per copy. Use Hill Vmax Kh h as "
                    "f() = Vmax*S^(h-1)/(Kh^h+S^h), and for 0 < h < 1 as "
                    "f() = if(S > 0, Vmax*S^(h-1)/(Kh^h+S^h), 0): unguarded, that "
                    "one is inf*0 at S = 0, where the law is 0.";

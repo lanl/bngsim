@@ -342,8 +342,10 @@ class NetworkModel {
 
     // At time `t`, with the species as the caller wrote them (`conc`): the
     // observables and function groups of `plan`, as update_observables(conc)
-    // and evaluate_functions(t) leave them. Every other slot keeps its value.
-    void evaluate_read_plan(double t, const double *conc, const ReadPlan &plan);
+    // and evaluate_functions(t, with_deferred) leave them. Every other slot
+    // keeps its value.
+    void evaluate_read_plan(double t, const double *conc, const ReadPlan &plan,
+                            bool with_deferred = true);
 
     // The species reaction `rxn_idx0`'s SSA propensity reads (issue #719): its
     // reactants, the species its SSA falling factorial is taken over, a live
