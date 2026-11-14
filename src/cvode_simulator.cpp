@@ -5908,6 +5908,7 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
         // the state (carry-over) without tracking dx/dθ: mark the state dirty
         // and drop any pending seed left by an earlier sensitivity run.
         model.set_ic_state_dirty(true);
+        model.set_advanced_since_baseline(true);
         model.clear_pending_sens_seed();
     }
 
@@ -6347,22 +6348,35 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(
             // silently wrong (∂y(0)/∂θ is dx/dθ of the carried state, not 0).
             throw std::runtime_error(
                 "Output sensitivities were requested on a carried-over species "
-                "state (the model was advanced by a previous run() or set "
-                "manually, with no reset since). Seeding the measurement phase "
-                "as a fresh start would give silently wrong derivatives across "
-                "the pre-equilibration boundary. Pass carry_sensitivities=True "
-                "to seed from the prior phase's steady-state sensitivity, or "
-                "reset() the model for a fresh start. (GH #210)");
+                "state (a previous run() advanced it, or a snapshot of such a "
+                "state was restored). Seeding the measurement phase as a fresh "
+                "start would give silently wrong derivatives across the "
+                "pre-equilibration boundary. Pass "
+                "carry_sensitivities=True to seed from the prior phase's "
+                "steady-state sensitivity (run that phase with the same "
+                "sensitivity_params), or reset() the model for a fresh start. A "
+                "save_concentrations() of such a state keeps it carried-over, and "
+                "so does a reset() back to it (issue #1528). (GH #210)");
         }
     }
     // IC (∂y/∂y_k(0)) sensitivities across a carry-over boundary are out of
-    // scope: the carried reference state is no longer the model ICs, so e_k
-    // is not a meaningful seed. Refuse rather than return a wrong matrix.
-    if (n_sens_ic > 0 && state_dirty) {
-        throw std::runtime_error("sensitivity_ic (initial-condition sensitivities) across a "
-                                 "carried-over / pre-equilibration boundary is not supported: the "
-                                 "carried state is no longer the model's initial condition. "
-                                 "reset() for a fresh start. (GH #210)");
+    // scope: a state a run advanced is no longer the model ICs, so e_k is not
+    // a meaningful seed. Refuse rather than return a wrong matrix. The state
+    // save_concentrations() made the baseline IS the model's initial condition,
+    // carried over or not, so is one reset() returned to, and so is either with
+    // literal set_concentration changes on it, as on a fresh model: there e_k
+    // is the seed, as from the declared ICs. The carried-over mark cannot tell
+    // these apart, since the save keeps it (issue #1528), so the refusal reads
+    // whether a run has advanced the state since it was last at the baseline.
+    // (Comparing the two vectors bit for bit read a run that ended where it
+    // started as the baseline, and a dose on the saved baseline as carried.)
+    if (n_sens_ic > 0 && model.advanced_since_baseline()) {
+        throw std::runtime_error(
+            "sensitivity_ic (initial-condition sensitivities) across a "
+            "carried-over / pre-equilibration boundary is not supported: a run() "
+            "has advanced the state since it was last the model's initial "
+            "condition. reset() for a fresh start, or save_concentrations() to "
+            "make this state the initial condition. (GH #210)");
     }
 
     // Allocate sensitivity vectors and seed s(0) = ∂y(0)/∂θ.
@@ -7344,6 +7358,7 @@ void CvodeSimulator::Impl::write_final_state_back(const SolverOptions &opts, int
     // non-sensitivity run still marks the state dirty but drops any stale
     // seed (it advanced the state without tracking dx/dθ).
     model.set_ic_state_dirty(true);
+    model.set_advanced_since_baseline(true);
     if (sens.n_p > 0) {
         std::vector<double> seed(static_cast<size_t>(ns) * sens.n_p);
         for (int iS = 0; iS < sens.n_p; ++iS) {

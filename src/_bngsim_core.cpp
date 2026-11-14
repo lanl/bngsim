@@ -2217,12 +2217,25 @@ PYBIND11_MODULE(_bngsim_core, m) {
                       "True iff the current species state is carried-over dynamics from a "
                       "previous run() (not a fresh initial condition). Forward sensitivities "
                       "requested on a dirty state require carry_sensitivities=True (else "
-                      "they raise). Cleared by reset() — unless the IC baseline carries its "
-                      "own dx/dθ (GH #81) — and by save_concentrations() when there is no "
-                      "carried derivative to hand the new baseline (GH #210). Writable so a "
+                      "they raise). reset() sets it to the IC baseline's own: clear for the "
+                      "declared ICs and for a baseline saved from a state no run advanced, "
+                      "set for one that carries its own dx/dθ (GH #81) or was saved from an "
+                      "advanced state (issue #1528). save_concentrations() leaves it as it "
+                      "is. Writable so a "
                       "protocol primitive that restores a snapshot together with its dx/dθ "
                       "(Simulator.parameter_scan) can put the flag back as it found it; "
                       "setting it by hand otherwise just re-arms (or defeats) the raise.")
+        .def_property("advanced_since_baseline", &bngsim::NetworkModel::advanced_since_baseline,
+                      &bngsim::NetworkModel::set_advanced_since_baseline,
+                      "True iff a run() has advanced the species state since it was last at "
+                      "the IC baseline: set at each run's state write-back, cleared by reset() "
+                      "and save_concentrations(), left as it is by set_concentration() / "
+                      "set_state(), copied by clone(). Where ic_state_dirty is about θ, this "
+                      "is about the initial-condition axis: sensitivity_ic seeds e_k from the "
+                      "baseline plus literal changes, as on a fresh model, and raises from a "
+                      "state a run moved off the baseline (issue #1528). Writable so a "
+                      "protocol primitive that puts a captured state back can put the flag "
+                      "back with it.")
         .def_property_readonly(
             "ic_baseline_saved", &bngsim::NetworkModel::ic_baseline_saved,
             "True once save_concentrations() has redefined the IC baseline "
