@@ -124,6 +124,11 @@ test = [
     # test_new_features.py's TestXarrayAccessor / to_xarray cases sit behind a
     # pytest.importorskip("xarray"); same reasoning as jsonschema above.
     "xarray>=2024.7",
+    # test_sedml_schema.py validates every SED-ML document the writers produce
+    # against the vendored L1V3 XSD with lxml.etree.XMLSchema, the validator
+    # `xmllint --schema` runs (issue #1734). The dev extra reached lxml only
+    # through bioservices; declared here, the check does not hang on that.
+    "lxml>=5.0",
 ]
 jax = [
     "jax>=0.4",
