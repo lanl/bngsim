@@ -159,7 +159,10 @@ actions, is a task on a derived model that makes those changes. A run that start
 where earlier runs left the model, such as the stimulation after an equilibration,
 is a `repeatedTask` that resets the model once and then runs the earlier runs and
 this one as ordered subtasks on one model state, with the actions between them as
-`setValue` changes. In SED-ML, model state is not reset between subtasks unless
+`setValue` changes. Its first subtask is the task of the run it starts from,
+the one that run's report reads, and its other tasks run that task's model: the
+changes before that first run are that model's, made once, when it is loaded,
+and the SBML's `initialAssignment`s compute from them. In SED-ML, model state is not reset between subtasks unless
 `resetModel="true"` asks for it. A bifurcate is its sweep up and back down, each
 point continuing from the last. A parameter set to an expression of others,
 `setParameter("k2","k1*3")`, is set again after each change to what it reads,
@@ -336,12 +339,11 @@ parameter is a `parameter_scan`, with a constant `setValue` beside the sweep as
 a step before it, and one that does not sweep runs its subtasks in order on one
 model state, resetting it first where `resetModel` says so. Tasks are
 independent, so the state is reset between them, and a time course no task runs
-is not run. A task whose steps are the start of a longer chain's is that
-chain's first runs, read once; with `sbml=`, a chain's `setValue`s of what an
-`initialAssignment` computes, which `write_sedml_protocol` writes after a
-change to what it reads, do not make its first run another run. Without
-`sbml=` they do: the first run is read twice, with the same numbers, and the
-reader says so in a `ConversionWarning`. A change the replay cannot apply (a compartment's size, an
+is not run. A model's changes are steps where the model is loaded: before the
+first task of a chain that runs it, and again after a reset, not before each
+task that runs it. A task whose steps are the start of a longer chain's is that
+chain's first runs, read once: `write_sedml_protocol`'s chain names the task of
+its first run as its first subtask. A change the replay cannot apply (a compartment's size, an
 `addXML`, a species' `initialAmount` without the SBML's compartment sizes, a
 `setValue` that reads the range beside the swept parameter other than as an
 expression of it, a sweep whose math reads the model's values, a task on a

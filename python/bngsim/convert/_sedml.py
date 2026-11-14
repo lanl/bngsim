@@ -1128,8 +1128,12 @@ class _ProtocolWriter:
     holds those changes (``changeAttribute``, or ``computeChange`` where the
     value is an expression or an addition). One BNG2.pl starts where earlier
     runs left the model is a ``repeatedTask`` (``resetModel="true"``, one
-    iteration) whose ordered subtasks replay those runs on the base model, with
-    the actions between them as ``setValue`` changes: in SED-ML, unlike tasks,
+    iteration) whose ordered subtasks replay those runs: the first is the task
+    of the run that started from the initial state, itself, and the rest run on
+    that task's model, with the actions between them as ``setValue`` changes.
+    So a chain's first run is its own task by reference, on a model whose
+    initialAssignments compute what they compute from its changes (issue
+    #1733). In SED-ML, unlike tasks,
     "model states are not reset unless explicitly told to reset with the
     resetModel=true attribute" (L1V4; SED-ML/sed-ml#54). A simulator that resets
     between subtasks departs from that, and is not written around here.
@@ -1166,8 +1170,6 @@ class _ProtocolWriter:
         )
         self.tasks = ET.SubElement(self.sed, _q(_SEDML_NS, "listOfTasks"))
         self._ids: dict[str, int] = {}
-        self._runs: dict[int, str] = {}
-        self._sweeps: dict[int, str] = {}
         # Per experiment: the expressions its sweep sets at each point, as they
         # stood when it ran (a sweep written later, as part of a chain, reads these).
         self._following: dict[int, list[_Change]] = {}
@@ -1353,11 +1355,9 @@ class _ProtocolWriter:
         change: _Change,
         model_ref: str,
         replaced: frozenset[str],
-        *,
-        fresh: bool = False,
     ) -> None:
         if change.kind == "param":
-            self._set_as_it_runs(change.sid, species=fresh, replaced=replaced)
+            self._set_as_it_runs(change.sid, species=False, replaced=replaced)
         path = (
             self.targets.param_path(change.sid)
             if change.kind == "param"
@@ -1809,36 +1809,27 @@ class _ProtocolWriter:
                 self._math(sv, seed, model_ref, ranged={pid: rng_id})
         self._subtasks(rt, [task_id])
 
-    def run(self, i: int, exp) -> str:
-        """Experiment *i* on the base model, as a step of a chain: a task, or
-        for a sweep that continues, its repeatedTask."""
-        if i not in self._runs:
-            self._runs[i] = f"run_{i}"
-            ET.SubElement(
-                self.tasks,
-                _q(_SEDML_NS, "task"),
-                {"id": f"run_{i}", "modelReference": "model0", "simulationReference": f"sim_{i}"},
-            )
+    def run(self, i: int, exp, model_ref: str) -> str:
+        """Experiment *i* as a step of a chain, on the model the chain's first
+        run runs: a task, or for a sweep that continues, its repeatedTask."""
+        ET.SubElement(
+            self.tasks,
+            _q(_SEDML_NS, "task"),
+            {"id": f"run_{i}", "modelReference": model_ref, "simulationReference": f"sim_{i}"},
+        )
         if not _sweeps(exp):
-            return self._runs[i]
-        if i not in self._sweeps:
-            self._sweeps[i] = f"sweep_{i}"
-            self.sweep(f"sweep_{i}", i, exp, "model0", self._runs[i], reset=False, fresh=False)
-        return self._sweeps[i]
+            return f"run_{i}"
+        self.sweep(f"sweep_{i}", i, exp, model_ref, f"run_{i}", reset=False, fresh=False)
+        return f"sweep_{i}"
 
     def step(
-        self, changes: list[_Change], body: str, replaced: frozenset[str], *, fresh: bool = False
+        self, changes: list[_Change], body: str, replaced: frozenset[str], model_ref: str
     ) -> str:
         """*body* after *changes*: a one-iteration repeatedTask that sets them
-        and runs it, without resetting the model (or *body*, with none).
-        *replaced* are the parameters the protocol had replaced then. A
-        *fresh* step runs from the initial state, before any run, where a
-        species whose seed the SBML computes from a parameter follows it, in
-        BNG2.pl (issue #1733)."""
-        changes, _, kept = self._sequence(changes, fresh=fresh, say=True)
-        if fresh:
-            moved = {c.sid for c in changes if c.kind == "param"}
-            changes = changes + self._seeds(moved, kept)
+        on the model *body* runs and runs it, without resetting the model (or
+        *body*, with none). *replaced* are the parameters the protocol had
+        replaced then."""
+        changes, _, _ = self._sequence(changes, fresh=False, say=True)
         if not changes:
             return body
         rt = ET.SubElement(
@@ -1849,14 +1840,15 @@ class _ProtocolWriter:
         self._once(rt)
         loc = ET.SubElement(rt, _q(_SEDML_NS, "listOfChanges"))
         for change in changes:
-            self._set_value(loc, change, "model0", replaced, fresh=fresh)
+            self._set_value(loc, change, model_ref, replaced)
         self._subtasks(rt, [body])
         return rt.get("id") or ""
 
     def chain(self, i: int, exp, lead: str, step: str) -> str:
         """Experiment *i* run from where *lead* left the model: a one-iteration
-        repeatedTask that resets the base model once, then runs *lead* and the
-        experiment's own step in order, on one model state."""
+        repeatedTask that resets the model once, then runs *lead* and the
+        experiment's own step in order, on one model state. Both run the model
+        of the first run *lead* replays."""
         rt = ET.SubElement(
             self.tasks, _q(_SEDML_NS, "repeatedTask"), {"id": f"chain_{i}", "resetModel": "true"}
         )
@@ -1865,8 +1857,9 @@ class _ProtocolWriter:
         self._experiments.append((i, exp, f"chain_{i}"))
         return f"chain_{i}"
 
-    def standalone(self, i: int, exp, changes: list[_Change]) -> None:
-        """Experiment *i* from the model's initial state with *changes*."""
+    def standalone(self, i: int, exp, changes: list[_Change]) -> tuple[str, str]:
+        """Experiment *i* from the model's initial state with *changes*: the
+        task that runs it, and the model that task runs."""
         if _scans(exp):
             # A species the changes set no longer follows its seed's parameter.
             _, self._live[i], set_here = self._sequence(changes, fresh=True)
@@ -1885,6 +1878,7 @@ class _ProtocolWriter:
             self.sweep(f"rtask_{i}", i, exp, model_ref, task_id, reset=resets, fresh=True)
             task_id = f"rtask_{i}"
         self._experiments.append((i, exp, task_id))
+        return task_id, model_ref
 
     # ── what each experiment reports (issue #1686) ─────────────────────────
     def _output_selectors(self) -> list[str]:
@@ -1959,15 +1953,17 @@ class _ProtocolWriter:
 
         protocol = self.protocol
         generation = protocol.generation_step or 0
-        # The state BNG2.pl holds, in what SED-ML can say: `lead` is a task that
-        # runs the base model from its initial state to where the last run left
-        # it (None: no run since that state), as ("first", i, changes) until a
-        # chain needs it written; `pending` are the changes since; `params` the
-        # parameters set since the network was generated, by SBML id.
-        lead: object = None
+        # The state BNG2.pl holds, in what SED-ML can say: `lead` is the task
+        # that runs a model from its initial state to where the last run left
+        # it, with that model (None: no run since that state); `pending` are
+        # the changes since; `params` the parameters set since the network was
+        # generated, by SBML id.
+        lead: tuple[str, str] | None = None
         pending: list[_Change] = []
         params: dict[str, _Change] = {}
-        saved_conc: dict[str, tuple[object, list[_Change], dict[str, _Change]]] = {}
+        saved_conc: dict[
+            str, tuple[tuple[str, str] | None, list[_Change], dict[str, _Change]]
+        ] = {}
         saved_params: dict[str, dict[str, _Change]] = {}
         # Steps before the network was generated are in it, so in the SBML. A
         # save among them holds the network, with the actions after the save
@@ -2068,9 +2064,9 @@ class _ProtocolWriter:
             replaced = frozenset(pid_ for pid_, c in params.items() if not c.restores)
             self._replaced_at[i] = replaced
             if lead is None:
-                self.standalone(i, exp, pending)
+                first = self.standalone(i, exp, pending)
                 if not resets:
-                    lead, pending = ("first", i, list(pending), replaced), []
+                    lead, pending = first, []
             elif resets:
                 # Every point of BNG2.pl's scan starts where the last run left
                 # the model; a repeatedTask's reset goes to the initial state.
@@ -2087,10 +2083,10 @@ class _ProtocolWriter:
                     # A species set to an expression since the last run reads
                     # the sweep's first point.
                     pending = pending + self._first_point(i, exp, pending, fresh=False)
-                self.chain(
-                    i, exp, self._lead(lead), self.step(pending, self.run(i, exp), replaced)
-                )
-                lead, pending = f"chain_{i}", []
+                earlier, model_ref = lead
+                run = self.run(i, exp, model_ref)
+                self.chain(i, exp, earlier, self.step(pending, run, replaced, model_ref))
+                lead, pending = (f"chain_{i}", model_ref), []
             if exp.is_scan and exp.scan_parameter:
                 last = _last_value(exp)
                 if last is not None and pid is not None:
@@ -2118,18 +2114,6 @@ class _ProtocolWriter:
                 return None
             out.append(change)
         return out
-
-    def _lead(self, lead) -> str:
-        """The task that runs the model to where *lead* left it. The first run
-        since the initial state replays on the base model with its changes as
-        setValues, from that state (issue #1733)."""
-        if isinstance(lead, tuple):
-            _, i, changes, replaced = lead
-            exp = self.protocol.experiments[i]
-            if _sweeps(exp):
-                changes = list(changes) + self._first_point(i, exp, changes, fresh=True)
-            return self.step(changes, self.run(i, exp), replaced, fresh=True)
-        return str(lead)
 
     def _params_since(self, before: dict[str, _Change], now: dict[str, _Change]) -> list[_Change]:
         """The parameter changes that take *before* to *now*."""
@@ -2562,17 +2546,31 @@ _INITIAL_LABEL = "sedml_initial"
 _RESET = object()
 
 
-class _Restated(NamedTuple):
-    """A step that sets an element to what the SBML's initialAssignment of it
-    computes (:meth:`_TaskReader._start`)."""
+class _Loads(NamedTuple):
+    """The changes a task's model makes to the SBML, as steps. SED-ML applies
+    them when the model is loaded, once: a task that runs a model an earlier
+    task of its chain has run, with no reset between, runs it as that task
+    left it (:func:`_as_loaded`)."""
 
-    step: Any
+    model: str
+    steps: tuple[Any, ...]
 
 
-class _PerPoint(NamedTuple):
-    """A step a sweep makes at each of its points, beside the swept parameter."""
-
-    step: Any
+def _as_loaded(steps: list[object]) -> list[object]:
+    """*steps* with each model's changes where the model is loaded: at the
+    first task that runs it, and at the first after each reset."""
+    out: list[object] = []
+    loaded: str | None = None
+    for step in steps:
+        if isinstance(step, _Loads):
+            if step.model != loaded:
+                out.extend(step.steps)
+                loaded = step.model
+            continue
+        if step is _RESET:
+            loaded = None
+        out.append(step)
+    return out
 
 
 _TARGET_SPECIES = re.compile(
@@ -2664,35 +2662,28 @@ class _TaskReader:
         # names it (write_sedml_protocol's run_i, beside its chain_i).
         read = {var.get("taskReference") for var in _findall_local(self.root, "variable")}
         expansions: list[list[object]] = []
-        ids: list[str] = []
         for elem in listed:
             if elem.get("id") in inner and elem.get("id") not in read:
                 continue  # run inside the repeatedTask that names it
             steps = self._task(elem) if _local(elem.tag) == "task" else self._repeated(elem, 0)
+            steps = _as_loaded(steps)
             while steps and steps[0] is _RESET:
                 steps = steps[1:]  # an expansion starts from the initial state
             if any(isinstance(s, Experiment) for s in steps):
                 expansions.append(steps)
-                ids.append(elem.get("id") or "a task")
-                self._after_a_reset_scan(ids[-1], steps)
+                self._after_a_reset_scan(elem.get("id") or "a task", steps)
         # A chain that repeats the start of a longer one is the same runs from
         # the same state: write_sedml_protocol writes a run that continues an
         # earlier one as a repeatedTask that replays the runs before it, and
-        # the task of the first run alone beside it.
-        # Compared without the steps that say again, before the first run,
-        # what an initialAssignment computes: write_sedml_protocol writes those
-        # in the chain, on the model as it runs, and not in the first run's own
-        # model, whose assignments compute them (issue #1733).
-        starts = [self._start(steps) for steps in expansions]
+        # the task of the first run alone beside it, which the chain names as
+        # its first subtask: the two are the same steps.
         kept = [
             steps
-            for steps, start in zip(expansions, starts, strict=True)
+            for steps in expansions
             if not any(
-                len(other) > len(start) and other[: len(start)] == start for other in starts
+                len(other) > len(steps) and other[: len(steps)] == steps for other in expansions
             )
         ]
-        if self._sbml is None:
-            self._perhaps_a_first_run(ids, expansions, kept)
         reset = (
             StateChange(kind="reset_concentrations"),
             StateChange(kind="reset_parameters", label=_INITIAL_LABEL),
@@ -2702,129 +2693,10 @@ class _TaskReader:
             if i:
                 out.extend(reset)
             for step in steps:
-                if isinstance(step, (_Restated, _PerPoint)):
-                    step = step.step
                 out.extend(reset if step is _RESET else (step,))
         if any(isinstance(s, StateChange) and s.kind == "reset_parameters" for s in out):
             out.insert(0, StateChange(kind="save_parameters", label=_INITIAL_LABEL))
         return ProtocolSpec(steps=tuple(out), source=None, dropped=(), lossy=tuple(self.lossy))
-
-    def _perhaps_a_first_run(
-        self, ids: list[str], expansions: list[list[object]], kept: list[list[object]]
-    ) -> None:
-        """Say, with no SBML, where a task read as a run of its own is the
-        start of a longer chain but for parameters the chain sets before its
-        first run: write_sedml_protocol writes those where the SBML computes
-        them by an initialAssignment, and the two are then one run, which the
-        SBML would tell (issue #1733). The numbers are the same either way."""
-        from bngsim.convert._protocol import Experiment, StateChange
-
-        def split(steps: list[object]) -> tuple[list[object], list[object]]:
-            first = next(k for k, s in enumerate(steps) if isinstance(s, Experiment))
-            return steps[:first], steps[first:]
-
-        for tid, steps in zip(ids, expansions, strict=True):
-            if not any(steps is k for k in kept):
-                continue
-            head, runs = split(steps)
-            for other_id, other in zip(ids, expansions, strict=True):
-                more, other_runs = split(other)
-                if len(other_runs) <= len(runs) or other_runs[: len(runs)] != runs:
-                    continue
-                rest = iter(more)
-                if not all(s in rest for s in head):
-                    continue  # not the task's changes, in order, among the chain's
-                extra = list(more)
-                for s in head:
-                    extra.remove(s)
-                sets = [
-                    s for s in extra if isinstance(s, StateChange) and s.kind == "set_parameter"
-                ]
-                if not sets or len(sets) != len(extra):
-                    continue
-                names = sorted({s.target or "" for s in sets})
-                warnings.warn(
-                    f"{tid} is read as a run of its own beside {other_id}, which starts "
-                    f"with the same run but sets {names} before it: if the SBML computes "
-                    "those by initialAssignments the two are one run, which sbml= would "
-                    "tell. The numbers are the same either way",
-                    ConversionWarning,
-                    stacklevel=_outside(),
-                )
-                break
-
-    def _start(self, steps: list[object]) -> list[object]:
-        """*steps* without those before its first run that set an element to
-        what the SBML's initialAssignment of it computes, where a replay,
-        whose model computes it, holds the same without them: nothing else
-        sets the element before that run, and whatever sets something the
-        assignment reads is followed by such a step again, before any step
-        that reads the element and before the run. Else *steps* as they are."""
-        from bngsim.convert._protocol import Experiment
-
-        first = next((k for k, s in enumerate(steps) if isinstance(s, Experiment)), len(steps))
-        head: list[Any] = steps[:first]
-        if any(s is _RESET for s in head):
-            return steps
-        # A step that says an assignment again, where the next step that is
-        # not one and that reads or sets the same element sets it: nothing
-        # between the two read it.
-        superseded: set[int] = set()
-        for k, s in enumerate(head):
-            if isinstance(s, _Restated):
-                name = s.step.target
-                after = next(
-                    (
-                        o
-                        for o in head[k:]
-                        if not isinstance(o, (_Restated, _PerPoint))
-                        and (o.target == name or _step_reads(o, name))
-                    ),
-                    None,
-                )
-                if after is not None and after.target == name and not _step_reads(after, name):
-                    superseded.add(k)
-        set_otherwise = {s.target for s in head if not isinstance(s, (_Restated, _PerPoint))}
-        replaced: set[str] = set()  # set to something else so far
-        restated: set[str] = set()
-        stale: set[str] = set()  # restated, and behind what they read since
-        for k, s in enumerate(head):
-            if isinstance(s, _PerPoint) or k in superseded:
-                continue  # a _PerPoint is set with the swept parameter, as the run goes
-            name = s.step.target if isinstance(s, _Restated) else s.target
-            if isinstance(s, _Restated) and name not in set_otherwise:
-                restated.add(name)
-                stale.discard(name)
-                if self._assignment_reads(name, replaced) & stale:
-                    stale.add(name)  # computed from a value that is behind
-                continue
-            if any(_step_reads(s.step if isinstance(s, _Restated) else s, r) for r in stale):
-                return steps  # computed from a value that is behind
-            replaced.add(name)
-            stale |= {r for r in restated if name in self._assignment_reads(r, replaced)}
-        if stale:
-            return steps
-        return [
-            s
-            for k, s in enumerate(head)
-            if k not in superseded and not (isinstance(s, _Restated) and s.step.target in restated)
-        ] + steps[first:]
-
-    def _assignment_reads(self, symbol: str, replaced: set[str]) -> set[str]:
-        """Everything the SBML's initialAssignment of *symbol* reads, through
-        the assignments of what it reads that are not *replaced*."""
-        targets = self.targets
-        assert targets is not None  # a step is marked as restated from the SBML
-        reads: set[str] = set()
-        todo = [symbol]
-        while todo:
-            symbol = todo.pop()
-            for name, symbols in targets.assignment_reads.items():
-                if symbol in symbols and name not in reads:
-                    reads.add(name)
-                    if name not in replaced:
-                        todo.append(name)
-        return reads
 
     def _after_a_reset_scan(self, tid: str, steps: list[object]) -> None:
         """Say where a run in *steps* starts from the state a sweep that resets
@@ -2873,18 +2745,16 @@ class _TaskReader:
                 f"the document's {self.file!r}, and a replay runs one model"
             )
             return []
-        steps: list[object] = []
+        loads: list[object] = []
         for model in reversed(chain):
             changes = _model_changes(model)
             for k, change in enumerate(changes):
                 if _overridden_assignment(change, changes[k + 1 :]):
                     continue  # the change after it sets the value, as write_sedml_protocol writes
-                where = f"model {model.get('id')!r}"
-                step = self._change(change, where)
+                step = self._change(change, f"model {model.get('id')!r}")
                 if step is not None:
-                    steps.append(self._restated(change, where, step))
-        steps.append(_experiment_of(utc, sweep))
-        return steps
+                    loads.append(step)
+        return [_Loads(chain[0].get("id") or "", tuple(loads)), _experiment_of(utc, sweep)]
 
     def _repeated(self, rt: ET.Element, depth: int) -> list[object]:
         rid = rt.get("id") or "a repeatedTask"
@@ -2935,7 +2805,7 @@ class _TaskReader:
                             sv, f"repeatedTask {rid}", names={on: str(sweep["parameter"])}
                         )
                         if step is not None:
-                            set_values.append(_PerPoint(step))
+                            set_values.append(step)
                             frozen.append(dataclasses.replace(step, evaluated_once=True))
                         continue
                     if on is not None and read == {on} and resets:
@@ -2944,7 +2814,7 @@ class _TaskReader:
                             sv, f"repeatedTask {rid}", names={on: str(sweep["parameter"])}
                         )
                         if step is not None and step.kind == "set_concentration":
-                            set_values.append(_PerPoint(step))
+                            set_values.append(step)
                             continue
                         if len(self.lossy) > said:
                             continue
@@ -2983,7 +2853,7 @@ class _TaskReader:
                     continue
                 step = self._change(sv, f"repeatedTask {rid}", values)
                 if step is not None:
-                    steps.append(self._restated(sv, f"repeatedTask {rid}", step))
+                    steps.append(step)
         subs = sorted(
             _findall_local(rt, "subTask"), key=lambda s: _number_or_none(s.get("order")) or 0.0
         )
@@ -3157,13 +3027,6 @@ class _TaskReader:
             formula,
         )
 
-    def _restated(self, elem: ET.Element, where: str, step):
-        """*step*, marked where *elem* sets its element to what the SBML's
-        initialAssignment of it computes."""
-        if _local(elem.tag) != "changeAttribute" and self._assigned_again(elem, where, {}):
-            return _Restated(step)
-        return step
-
     def _seed_again(self, sv: ET.Element, where: str, names: dict[str, str]) -> bool:
         """Whether *sv*, beside a sweep, sets a species to what the SBML's
         initialAssignment of it computes, as write_sedml_protocol writes a
@@ -3209,16 +3072,6 @@ class _TaskReader:
 _TARGET_ASSIGNMENT = re.compile(
     r"""initialAssignment\[\s*@symbol\s*=\s*['"]([^'"]+)['"]\s*\]\s*$"""
 )
-
-
-def _step_reads(step, name: str) -> bool:
-    """Whether a state change reads the element *name*: its expression names
-    it, or it adds to it."""
-    if step.kind == "add_concentration" and step.target == name:
-        return True
-    return step.value_expr is not None and (
-        re.search(rf"(?<![\w.]){re.escape(name)}(?![\w.])", step.value_expr) is not None
-    )
 
 
 def _l3_formula(math: ET.Element) -> str | None:
