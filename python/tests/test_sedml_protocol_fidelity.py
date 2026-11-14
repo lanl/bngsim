@@ -989,3 +989,14 @@ def test_omex_to_net_refuses_actions_it_cannot_write(tmp_path):
 def test_a_computed_generator_names_its_variables():
     with pytest.warns(ConversionWarning, match=r"of a = species:A, b = species:B"):
         read_sedml(_generator_doc("AB", "<apply><plus/><ci>a</ci><ci>b</ci></apply>"))
+
+
+def test_expressions_that_do_not_settle_are_refused(tmp_path, monkeypatch):
+    """The backstop behind the recursion check: k1 = k3 with the network's
+    k3 = 2 k1 doubles each pass, and stops with an error, not a number."""
+    from bngsim._protocol_run import _Runner
+
+    monkeypatch.setattr(_Runner, "_defines_recursively", lambda self, name, text: False)
+    net = NET.replace("    2 k2 1\n", "    2 k2 1\n    3 k3 2*k1\n")
+    with pytest.raises(ConversionError, match="do not settle"):
+        _replay(net, parse_bngl_protocol('setParameter("k1","k3")\n' + RUN), tmp_path)
