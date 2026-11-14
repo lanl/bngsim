@@ -159,8 +159,9 @@ def _run_report(omex: Path) -> dict[str, dict[str, float]]:
     """Each report of the archive's SED-ML: its data sets' values at the end of
     the task each reads, by SED-ML L1V3's semantics (a task starts from its
     model as changed, changes applied in order on the model as changed so far;
-    a repeatedTask resets where resetModel says so, applies its setValues and
-    runs its subtasks in order on one model state)."""
+    a repeatedTask resets the models its tasks run where resetModel says so,
+    applies its setValues, each to the model it names, and runs its subtasks
+    in order, each on its own model as the tasks before it left that model)."""
     return {
         rid: {label: points[-1] for label, points in values.items()}
         for rid, values in _run_points(omex).items()
@@ -204,12 +205,26 @@ def _run_points(omex: Path) -> dict[str, dict[str, list[float]]]:
                 doc.find(path.replace("/sbml:sbml/", "./"), NS).set(attr, repr(value))
         return ET.tostring(doc, encoding="unicode")
 
-    def run(task: ET.Element, rr, each=None):
+    def leaves(task: ET.Element) -> list[ET.Element]:
         if task.tag.endswith("}task"):
-            if rr is None:
-                rr = roadrunner.RoadRunner(sbml_of(task.get("modelReference")))
-            rr.integrator.relative_tolerance = 1e-10
-            rr.integrator.absolute_tolerance = 1e-12
+            return [task]
+        subs = task.iterfind("s:listOfSubTasks/s:subTask", NS)
+        return [leaf for sub in subs for leaf in leaves(tasks[sub.get("task")])]
+
+    def run(task: ET.Element, loaded: dict, each=None):
+        """Run *task*. *loaded* holds each SED-ML model that has been loaded,
+        by id: a model's state is its own, so a task, a setValue and a
+        variable each act on the model they name, and on no other."""
+
+        def rr_of(model_id: str):
+            if model_id not in loaded:
+                loaded[model_id] = roadrunner.RoadRunner(sbml_of(model_id))
+                loaded[model_id].integrator.relative_tolerance = 1e-10
+                loaded[model_id].integrator.absolute_tolerance = 1e-12
+            return loaded[model_id]
+
+        if task.tag.endswith("}task"):
+            rr = rr_of(task.get("modelReference"))
             utc = sims[task.get("simulationReference")]
             rr.simulate(float(utc.get("initialTime")), float(utc.get("outputEndTime")), 2)
             return rr
@@ -231,21 +246,20 @@ def _run_points(omex: Path) -> dict[str, dict[str, list[float]]]:
         subs = sorted(
             task.iterfind("s:listOfSubTasks/s:subTask", NS), key=lambda s: int(s.get("order"))
         )
-        first = tasks[subs[0].get("task")]
-        while not first.tag.endswith("}task"):
-            first = tasks[first.find("s:listOfSubTasks/s:subTask", NS).get("task")]
-        if rr is None:
-            rr = roadrunner.RoadRunner(sbml_of(first.get("modelReference")))
+        runs = dict.fromkeys(leaf.get("modelReference") for leaf in leaves(task))
+        rr = None
         for k in range(len(ranges[task.get("range")])):
             if task.get("resetModel") == "true":
-                rr.resetToOrigin()
+                for model_id in runs:
+                    rr_of(model_id).resetToOrigin()
             for sv in task.iterfind("s:listOfChanges/s:setValue", NS):
                 env = {rid: vals[k] for rid, vals in ranges.items()}
                 for v in sv.iterfind("s:listOfVariables/s:variable", NS):
-                    env[v.get("id")] = rr[_rr_key(v.get("target"))]
-                rr[_rr_key(sv.get("target"))] = _evaluate(sv.find(f"{{{MATHML}}}math"), env)
+                    env[v.get("id")] = rr_of(v.get("modelReference"))[_rr_key(v.get("target"))]
+                value = _evaluate(sv.find(f"{{{MATHML}}}math"), env)
+                rr_of(sv.get("modelReference"))[_rr_key(sv.get("target"))] = value
             for sub in subs:
-                run(tasks[sub.get("task")], rr)
+                rr = run(tasks[sub.get("task")], loaded)
             if each is not None:
                 each(rr)
         return rr
@@ -266,7 +280,7 @@ def _run_points(omex: Path) -> dict[str, dict[str, list[float]]]:
                 )
 
             task = tasks[var.get("taskReference")]
-            rr = run(task, None, read)
+            rr = run(task, {}, read)
             if task.tag.endswith("}task"):
                 read(rr)
             values[ds.get("label")] = points
@@ -1367,6 +1381,19 @@ INITIAL_ASSIGNMENT_CASES = {
         "declared",
         SCAN.format(p="k1", v="1,3,5", extra="reset_conc=>0,") + 'setParameter("k1",2)\n' + RUN,
         [_from(_continued(100, [(1, 3), (3, 9), (5, 15)])[-1], 2, 6)],
+    ),
+    # 48.1936, 25.4248, 16.6884: the sweep sets k1 on the model the run before
+    # it ran, which holds k1 = 2
+    "sweep-that-continues-a-run-on-a-derived-model": (
+        "plain",
+        'setParameter("k1",2)\n' + RUN + SCAN.format(p="k1", v="1,3,5", extra="reset_conc=>0,"),
+        _continued(_eq(2, 1), [(1, 1), (3, 1), (5, 1)]),
+    ),
+    # 75.0000: a scan that resets leaves the state it started from, and k1 = 5
+    "run-after-a-scan-that-resets": (
+        "declared",
+        SCAN.format(p="k1", v="1,3,5", extra="") + RUN,
+        [_eq(5, 15)],
     ),
     # 25.4579: the run the second continues starts from A = A0 = 50
     "seed-set-before-a-run-that-a-run-continues": (
