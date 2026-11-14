@@ -1457,6 +1457,14 @@ INITIAL_ASSIGNMENT_CASES = {
         'addConcentration("A()",10)\n' + RUN,
         [_eq(1, 1, a0=110)],
     ),
+    # 101.2271: the add reads k2 = 7 (B = 35), though the reset after it puts
+    # k2 back to k1*3; the change that set k2 was left out (86.5018, B = 15)
+    "an-add-that-reads-a-number-a-reset-puts-back-after-it": (
+        "declared",
+        'saveParameters()\nsetParameter("k2",7)\naddConcentration("B()","k2*5")\n'
+        "resetParameters()\n" + RUN,
+        [_from(100, 1, 3, total=135)],
+    ),
     # 93.3333: B = k2*4 reads k2 = kx/3*2 = 10, which reads kx = k1*3 = 15
     "an-amount-of-a-parameter-derived-twice-after-what-it-reads-moved": (
         "chained",

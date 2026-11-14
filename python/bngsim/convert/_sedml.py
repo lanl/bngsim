@@ -1653,8 +1653,21 @@ class _ProtocolWriter:
         # holds, which the assignment has not computed yet: a parameter it
         # reads, or one that one reads, is set to what its assignment computes
         # from the changes before it, and keeps the assignment.
+        # A change to such a parameter before its last one stays where an
+        # expression between the two reads the value it set: after
+        # setParameter("k2",7), addConcentration("A()","k2") adds 7, though a
+        # resetParameters after it puts k2 back.
+        last_at = {c.sid: k for k, c in enumerate(changes)}
+
+        def read_before_the_last(k: int) -> bool:
+            between = changes[k + 1 : last_at[changes[k].sid]]
+            return any(c.value is None and changes[k].sid in self._reads(c) for c in between)
+
         kept = [
-            c for c in changes if c.sid not in back and (c.initial is None or c.kind == "species")
+            c
+            for k, c in enumerate(changes)
+            if (c.sid not in back or read_before_the_last(k))
+            and (c.initial is None or c.kind == "species")
         ]
         needed: set[str] = set()
         for c in kept:
@@ -1688,7 +1701,7 @@ class _ProtocolWriter:
         # value the element holds: setParameter("k2",7) on `k2 k1*3` ran k2 = 3.
         # BNG2.pl's action replaces that expression, and so does removing it.
         for sid in dict.fromkeys(c.sid for c in kept):
-            if sid in self.targets.initially_assigned:
+            if sid in self.targets.initially_assigned and sid not in back:
                 ET.SubElement(
                     loc,
                     _q(_SEDML_NS, "removeXML"),
