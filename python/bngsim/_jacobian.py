@@ -792,13 +792,21 @@ def _build_local_dict(preprocessed: str, sp):
     return local, alias_of
 
 
-def _exprtk_to_sympy(expr: str, *, bends: bool = False):
+def _exprtk_to_sympy(expr: str, *, bends: bool = False, closed_forms: bool = False):
     """Parse an ExprTk rate-law string into a sympy expression, or ``None``.
 
     ``bends`` binds ``clamp`` to the ``clampval`` twin of :func:`_kink_bindings`
     (issue #1227), for a caller that differentiates bends and turns the twins
     back with :func:`_finish_kinks`. Off, a ``clamp`` call is left unbound, as
-    it always was, for every other reader of this parse."""
+    it always was, for every other reader of this parse.
+
+    ``closed_forms`` binds the smooth calls of
+    :func:`exprtk_closed_form_bindings` (``sum``, ``avg``, ``mul``, ``log1p``,
+    ``erfc``, ``ncdf``, ...), as the derived-parameter parse does, for the
+    expression output sensitivities (issue #1531). Left unbound, ``sum`` ran
+    Python's builtin, which raised, and ``avg`` was an undefined function whose
+    derivative sympy leaves unevaluated. Its ``clamp`` is a ``Piecewise`` and is
+    not bound here: a caller that differentiates a bend asks for ``bends``."""
     try:
         import sympy as sp
         from sympy.parsing.sympy_parser import parse_expr
@@ -814,6 +822,12 @@ def _exprtk_to_sympy(expr: str, *, bends: bool = False):
     local, alias_of = _build_local_dict(s, sp)
     if bends and re.search(r"\bclamp\s*\(", s):
         local["clamp"] = _kink_bindings(sp)["clampval"]
+    if closed_forms:
+        for name, fn in exprtk_closed_form_bindings(sp).items():
+            # A model symbol of the same name wins, as it does for the
+            # derived-parameter parse.
+            if name != "clamp" and name not in alias_of and re.search(rf"\b{name}\s*\(", s):
+                local[name] = fn
 
     # Apply keyword aliases (longest first so e.g. ``lambda`` is replaced before
     # a hypothetical ``lambda2`` substring would be — word-boundary anchored).
@@ -3213,6 +3227,18 @@ _SYMPY_FUNC_TO_C = {
     "sinh": "sinh",
     "cosh": "cosh",
     "tanh": "tanh",
+    # <math.h> calls ExprTk has under the same name, which the MIR JIT's
+    # prelude declares: a derivative that keeps the call (d/dsc of
+    # ``sc*asinh(u)`` is ``asinh(u)``) was refused as not representable in C
+    # (issue #1531). ``erfc``, ``log1p`` and ``expm1`` arrive as the classes of
+    # :func:`exprtk_closed_form_bindings`, whose names these are.
+    "asinh": "asinh",
+    "acosh": "acosh",
+    "atanh": "atanh",
+    "erf": "erf",
+    "erfc": "erfc",
+    "log1p": "log1p",
+    "expm1": "expm1",
     # The engine's own, and the derivative of it (issue #457). Both are helpers
     # the generated source carries — see ``_codegen._SPECIAL_FUNCTION_C_LINES``.
     "mratio": "bngsim_mratio",
@@ -3605,7 +3631,7 @@ def differentiate_expression_output_partials(
     if deadline is not None and time.perf_counter() > deadline:
         raise _DerivationBudgetExceeded
 
-    sym_expr = _exprtk_to_sympy(body)
+    sym_expr = _exprtk_to_sympy(body, closed_forms=True)
     if sym_expr is None:
         return None, "could not parse expression for differentiation"
 
