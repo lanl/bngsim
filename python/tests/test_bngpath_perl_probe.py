@@ -37,7 +37,8 @@ needs_perl = pytest.mark.skipif(
 # the way BNG2.pl fails on perl-base; the name is what the message must relay.
 MISSING = "No::Such::Module::ForBngsim1761"
 
-# What perl-base 5.40.1 prints on python:3.13-slim for BNG2.pl, as the issue has it.
+# What perl-base 5.40.1 printed on python:3.13-slim for BNG2.pl (run 43671106019),
+# with its @INC listing abridged.
 SLIM_STDERR = (
     "Can't locate FindBin.pm in @INC (you may need to install the FindBin module) "
     "(@INC entries checked: /etc/perl /usr/local/lib/x86_64-linux-gnu/perl/5.40.1 "
@@ -89,9 +90,10 @@ def test_a_perl_that_cannot_compile_bng2_pl_is_not_usable(tmp_path, monkeypatch)
     assert r.has_perl is True  # a perl is there; it is the wrong one
     assert r.ok is False
     why = r.why_not()
-    assert "cannot run it" in why
+    assert "cannot compile it" in why
     assert MISSING in why  # Perl's own line, so the reader sees which module
-    assert "apt-get install perl" in why  # the fix
+    assert "apt-get install perl" in why  # the fix for a module of Perl's own
+    assert "$BioNetGenRoot" not in why  # not the advice for one of BioNetGen's own
     assert "(@INC" not in why  # the search-path listing is dropped; "in @INC" stays
     assert bngpath._NOT_FOUND not in why  # the checkout footer must not fire for it
     assert bngpath.skip_reason() == why
@@ -153,6 +155,75 @@ def test_the_probe_runs_perl_once_per_script_and_again_when_it_changes(tmp_path,
     assert len([c for c in calls if c[1:2] == ["-c"]]) == 2
 
 
+# BNG2.pl's own `use lib`: $BNGPATH, else $BioNetGenRoot, else its own folder,
+# then "Perl2"; and one of BioNetGen's modules from there.
+USES_ITS_LIBRARY = (
+    "use strict;\nuse FindBin;\nuse File::Spec;\n"
+    "use lib File::Spec->catdir(exists $ENV{'BNGPATH'} ? $ENV{'BNGPATH'}\n"
+    "    : exists $ENV{'BioNetGenRoot'} ? $ENV{'BioNetGenRoot'} : $FindBin::RealBin, 'Perl2');\n"
+    "use BNGUtils;\n1;\n"
+)
+
+
+def _install_with_library(tmp_path: Path) -> Path:
+    root = _install(tmp_path, USES_ITS_LIBRARY)
+    (root / "Perl2").mkdir()
+    (root / "Perl2" / "BNGUtils.pm").write_text("package BNGUtils;\n1;\n", encoding="utf-8")
+    return root
+
+
+@needs_perl
+@pytest.mark.parametrize("var", ["BNGPATH", "BioNetGenRoot"])
+def test_a_library_variable_pointing_elsewhere_is_named_not_perl(tmp_path, monkeypatch, var):
+    """One of BioNetGen's own modules missing means the library path is wrong, not
+    Perl: the advice is the variable, not `apt-get install perl` (review of #1780)."""
+    root = _install_with_library(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.setenv("BNG2_PL", str(root / "BNG2.pl"))  # found this way, whatever var says
+    monkeypatch.setenv(var, str(elsewhere))
+    r = bngpath.resolve_bng()
+    assert r.bng2_pl == root / "BNG2.pl"
+    assert r.ok is False
+    assert "Can't locate BNGUtils.pm" in r.perl_problem
+    why = r.why_not()
+    assert "BNGUtils.pm is one of BioNetGen's own modules" in why
+    assert "$BNGPATH or $BioNetGenRoot" in why
+    assert "apt-get install perl" not in why
+
+
+@needs_perl
+def test_the_same_bng2_pl_with_its_own_library_compiles(tmp_path, monkeypatch):
+    """Control: with neither variable set, its `use lib` finds Perl2 beside it."""
+    root = _install_with_library(tmp_path)
+    monkeypatch.setenv("BNG2_PL", str(root / "BNG2.pl"))
+    r = bngpath.resolve_bng()
+    assert r.ok is True, r.why_not()
+
+
+@needs_perl
+def test_a_compile_error_that_names_no_module_gets_neither_diagnosis(tmp_path, monkeypatch):
+    monkeypatch.setenv("BNGPATH", str(_install(tmp_path, "use strict;\nif (\n")))
+    r = bngpath.resolve_bng()
+    assert r.ok is False
+    assert "syntax error" in r.perl_problem
+    why = r.why_not()
+    assert "check that BNG2.pl and its Perl2 library are complete" in why
+    assert "apt-get install perl" not in why
+    assert "$BioNetGenRoot" not in why
+
+
+@needs_perl
+def test_a_broken_locale_does_not_hide_the_missing_module(tmp_path, monkeypatch):
+    """On a minimal image that forwards a LANG it has no locale for, perl warns
+    before anything else; the message must still name the module."""
+    monkeypatch.setenv("LC_ALL", "xx_YY.UTF-8")
+    monkeypatch.setenv("BNGPATH", str(_install(tmp_path, DOES_NOT)))
+    problem = bngpath.resolve_bng().perl_problem
+    assert MISSING in problem
+    assert "locale" not in problem
+
+
 # ─── Without a perl: the text handling, with the image's own output ─────────
 
 
@@ -185,6 +256,61 @@ def test_the_message_relays_perls_first_line_without_the_inc_listing(tmp_path, m
     assert "perl-base" in why
     assert "apt-get install perl" in why
     assert "entries checked" not in why and "BEGIN failed" not in why
+
+
+LOCALE_PREAMBLE = (
+    "perl: warning: Setting locale failed.\n"
+    "perl: warning: Please check that your locale settings:\n"
+    "\tLANGUAGE = (unset),\n"
+    '\tLC_ALL = "xx_YY.UTF-8",\n'
+    '\tLANG = "C.UTF-8"\n'
+    "    are supported and installed on your system.\n"
+    'perl: warning: Falling back to the standard locale ("C").\n'
+)
+
+
+@pytest.mark.parametrize(
+    ("stderr", "line"),
+    [
+        (
+            LOCALE_PREAMBLE + SLIM_STDERR,
+            "Can't locate FindBin.pm in @INC (you may need to install the FindBin module)",
+        ),
+        (
+            LOCALE_PREAMBLE + "syntax error at BNG2.pl line 2, at EOF\n",
+            "syntax error at BNG2.pl line 2, at EOF",
+        ),
+        (
+            "Use of uninitialized value in concatenation at BNG2.pl line 12.\n" + SLIM_STDERR,
+            "Can't locate FindBin.pm in @INC (you may need to install the FindBin module)",
+        ),
+    ],
+    ids=["missing-module", "syntax-error", "warning-before-module"],
+)
+def test_perls_locale_warning_does_not_take_the_place_of_its_line(
+    tmp_path, monkeypatch, stderr, line
+):
+    _stub_run(monkeypatch, 2, stderr=stderr)
+    monkeypatch.setenv("BNGPATH", str(_install(tmp_path, "# any\n")))
+    assert bngpath.resolve_bng().perl_problem == f"/usr/bin/perl said: {line}"
+
+
+def test_the_probe_runs_with_perls_locale_warning_off(tmp_path, monkeypatch):
+    envs: list[dict] = []
+
+    def run(args, *a, **k):
+        envs.append(dict(k.get("env") or {}))
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="syntax OK\n")
+
+    monkeypatch.setattr(bngpath.subprocess, "run", run)
+    monkeypatch.setattr(
+        bngpath.shutil, "which", lambda n, *a, **k: "/usr/bin/perl" if n == "perl" else None
+    )
+    monkeypatch.setenv("LC_ALL", "xx_YY.UTF-8")
+    monkeypatch.setenv("BNGPATH", str(_install(tmp_path, "# any\n")))
+    assert bngpath.resolve_bng().ok
+    assert envs[0]["PERL_BADLANG"] == "0"
+    assert envs[0]["LC_ALL"] == "xx_YY.UTF-8"  # otherwise BNG2.pl's own environment
 
 
 def test_a_failure_with_no_output_reports_the_exit_status(tmp_path, monkeypatch):
@@ -340,6 +466,10 @@ def test_a_refusal_is_asked_again_so_a_perl_fixed_in_place_is_seen(tmp_path, mon
     assert bngpath.resolve_bng().ok is True
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-specific: Windows cannot remove a process's working directory",
+)
 def test_the_probe_answers_when_the_working_directory_is_gone(tmp_path, monkeypatch):
     """The environment BNG2.pl runs in reads the working directory only for a
     relative $BNGPATH; a process whose directory was removed still gets an answer

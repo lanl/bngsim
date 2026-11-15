@@ -778,11 +778,11 @@ def capabilities() -> dict[str, Any]:
             "and BNGSIM_CODEGEN_JIT=mir is the opt-in that would use this "
             "in-process JIT instead, for a host with no compiler (GH #78)."
         )
-    if not has_libsbml:
+    if libsbml_problem is not None:
         # What the import itself said: on a slim container image the package is
         # installed and its compiled module cannot load, and the fix is a system
         # package, not pip (issue #1760).
-        libsbml_msg = libsbml_problem or "optional dependency 'python-libsbml' not installed"
+        libsbml_msg = libsbml_problem
         missing["libsbml"] = libsbml_msg
         missing["sbml_import"] = libsbml_msg
         missing["sbml_ssa"] = libsbml_msg

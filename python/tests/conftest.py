@@ -400,7 +400,8 @@ _DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
         "interpreters the pybind11-resolution probe walks (GH #288), the "
         "peak RSS the GH #577 setup-failure probe reads from resource.getrusage, "
         "the /bin/sh stand-in gh the contributors check is tested through, "
-        "and the /bin/sh fake perl the BNG2.pl compile check is tested with (#1761)",
+        "the /bin/sh fake perl the BNG2.pl compile check is tested with, and the "
+        "working directory removed under it, which Windows refuses (#1761)",
     ),
     (
         "RLIMIT_AS",
