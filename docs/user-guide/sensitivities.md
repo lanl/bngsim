@@ -649,7 +649,7 @@ across a threshold while the state's own term carries it back, as in
 `max(0, 1 - abs(3*time() - Tobs - c)/(w/2))` with `Tobs` rising at 2 per unit
 time, the restart moves the state onto the far side of the threshold to take up
 the clock's share of the crossing, and the columns read the restart that way
-(issue #1776). Two things are left:
+(issue #1776). Three things are left:
 
 - **A corner whose root falls at the very end of its step, or a step too long
   or stiff to integrate again** (2 and 4 substeps disagree): the column there is
@@ -663,6 +663,12 @@ the clock's share of the crossing, and the columns read the restart that way
   | triangle, `w = 0.005` | 1e-9 | 5.6e-5 | 5.1e-5 |
   | triangle in a relaxing species, `+ 0.3*time()` in the condition | 1e-9 | 1.4e-4 | 5e-5 |
 
+- **A crossing the clock carries far faster than its species do.** The move
+  above takes at most 16 times what the restart already moves each species,
+  and only species the flow moves. In `3*time() - b*Tobs` with `b` at 0.03 or
+  0.01 the clock outruns `Tobs` 50 to 150 times, and the run still stalls as
+  it did before; at `b = 0` the residual has no species to move. A step in
+  `time() + 1e-10*Tobs` returns its clock-rate column 7% off (issue #1779).
 - **A rate law that reads `time()` far from 0.** The clock is known to an ulp of
   itself, 3.6e-15 at `t = 25`, and a column moving at 5e7 across a narrow pulse
   turns that into a few parts in 1e6 of itself.

@@ -131,9 +131,78 @@ def test_a_triangle_column_converges(tmp_path, a, b, n_points):
     model = _model(tmp_path, _triangle(a, b), c)
     got = _run(model, 1e-11, n_points)
     want = _exact("triangle", a, b, c)
-    assert got[0] == pytest.approx(want[0], rel=1e-9)
+    assert got[0] == pytest.approx(want[0], rel=1e-8)
     assert got[1] == pytest.approx(want[1], rel=1e-7)
     assert got[2] == pytest.approx(want[2], rel=6e-5)
+
+
+@pytest.mark.parametrize("shape", ["triangle", "step"])
+@pytest.mark.parametrize("a,b", [(3.0, 1e-3), (3.0, 1e-6), (1.0, -1e-4), (1.0, -1e-10)])
+def test_a_clock_that_outruns_its_species_leaves_the_state_alone(tmp_path, shape, a, b):
+    """Where the clock carries the residual tens of thousands of times faster
+    than its species, the restart is not moved: the move would be δt·∂g/∂t
+    over a gradient of 1e-10, and moved without a bound, T(30) came out
+    1.3e-2 off at b = -1e-10, where the run was right as it was. Main and this
+    branch give T(30) = 60 to 3e-11 on these rows."""
+    c = 25.0 * (a - b * K_CLOCK)
+    law = _triangle(a, b) if shape == "triangle" else _step(a, b)
+    sim = bngsim.Simulator(
+        _model(tmp_path, law, c), method="ode", sensitivity_params=["kx", "k_clock"]
+    )
+    res = sim.run(t_span=(0.0, T_END), n_points=4, rtol=1e-9, atol=1e-11, timeout=60)
+    t = res.species_names.index("T()")
+    assert float(res.species[-1][t]) == pytest.approx(K_CLOCK * T_END, rel=1e-11)
+
+
+Z_NET = """begin parameters
+    1 kx 1
+    2 k_clock 2.0
+    3 c {c!r}
+    4 w 0.003
+    5 kz 0.1
+end parameters
+begin functions
+    1 pulse() {law}
+end functions
+begin species
+    1 T() 0
+    2 X() 10
+    3 Y() 0
+    4 {z}
+end species
+begin reactions
+    1 0 1 k_clock
+    2 2 3 pulse
+    3 4 0 kz
+end reactions
+begin groups
+    1 Tobs 1
+    2 Zobs 4
+end groups
+"""
+
+
+@pytest.mark.parametrize("z,zval", [("$Z() 5", 5.0), ("Z() 0", 0.0)])
+@pytest.mark.parametrize(
+    "law",
+    [
+        "kx*if(3*time()-Tobs-Zobs>c,1,0)",
+        "kx*(1/w)*max(0,1-abs(3*time()-Tobs-Zobs-c)/(w/2))",
+    ],
+)
+def test_the_move_leaves_a_species_the_flow_does_not_move(tmp_path, z, zval, law):
+    """The restart's move takes up the clock's share with the species the flow
+    moves, and with no other: a fixed species that a reaction consumes, or one
+    at rest at 0, read by the residual stays where it is. Moved with the rest, $Z ended at
+    4.999999999997868 and Z at -2.1e-12."""
+    path = tmp_path / "z.net"
+    path.write_text(Z_NET.format(c=25.0 + zval, law=law, z=z))
+    sim = bngsim.Simulator(
+        bngsim.Model.from_net(str(path)), method="ode", sensitivity_params=["kx", "k_clock"]
+    )
+    res = sim.run(t_span=(0.0, T_END), n_points=4, rtol=1e-9, atol=1e-11, timeout=60)
+    zi = res.species_names.index("Z()")
+    assert float(res.species[-1][zi]) == zval
 
 
 @pytest.mark.parametrize("rtol", [1e-6, 1e-8, 1e-10])

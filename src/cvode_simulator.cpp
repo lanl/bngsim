@@ -11543,6 +11543,11 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
 // (`if(r>0, r, 0)` against `if(r<0, −r, 0)`, continuous where r = 0), so they
 // return with no jump — and no merge decision — before the second check is
 // reached at all.
+// How far the restart past a crossing the clock carries against the state may
+// move a species to take up the clock's share (issue #1776), in units of what
+// x + δt·f already moves it. `3*time() - Tobs` with Tobs at 2·t needs 1.5; a
+// coupling ten times weaker, 15.
+static constexpr double kRestartMoveReach = 16.0;
 static constexpr double kStateSwitchNudgeStart = 256.0; // × ε · max(|t*|, 1)
 static constexpr double kStateSwitchNudgeGrowth = 8.0;
 static constexpr int kStateSwitchNudgeTries = 6; // ⇒ up to ~2e-9 · max(|t*|, 1)
@@ -15140,10 +15145,17 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
     // So where x + δt·f at t* reads a residual of the batch on the side it
     // came from, the state is moved along that residual's gradient until it
     // reads what the trajectory does at t* + δt, which is past by the probe.
-    // That move stands in for the time's δt, and is as small: the residual's
-    // own δt·∂g/∂t, over its gradient. Where the species alone carry it
-    // across, as at every crossing the time does not read, x + δt·f is kept
-    // as it was. Where the move does not bring every residual across, too.
+    // The move stands in for the time's δt: the residual's δt·∂g/∂t over its
+    // gradient. Only the species the flow moves are moved, as the stall carry
+    // (issue #1229) moves them: a fixed species, or one at rest, stays where it
+    // is. And only so far, kRestartMoveReach times what x + δt·f already moved
+    // each one, and never across 0. A residual whose clock outruns its species
+    // by more than that, `time() + 1e-10*Tobs`, would have had a species moved
+    // by 1e10·δt: T came out 1.3e-2 off, where the run had been right as it
+    // was. Where the species alone carry it across, as at every crossing the
+    // time does not read, x + δt·f is kept as it was. Where the move does not
+    // bring every residual across within those bounds, too.
+    //
     // x + δt·f, the trajectory at t* + δt to first order.
     auto plain_restart_state = [&]() {
         std::vector<double> x_r(static_cast<std::size_t>(ns), 0.0);
@@ -15181,7 +15193,11 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                 residual_flow(one.residual_expr_idx, one.species, t_evt, ns, moved, f0, gx, scale);
                 double norm2 = 0.0;
                 for (int j : one.species) {
-                    norm2 += gx[static_cast<std::size_t>(j)] * gx[static_cast<std::size_t>(j)];
+                    const auto uj = static_cast<std::size_t>(j);
+                    if (f0[uj] == 0.0) {
+                        gx[uj] = 0.0;
+                    }
+                    norm2 += gx[uj] * gx[uj];
                 }
                 if (!(norm2 > 0.0) || !std::isfinite(norm2)) {
                     return x_r;
@@ -15195,7 +15211,17 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             }
             left = behind(moved);
         }
-        return left.empty() ? moved : x_r;
+        if (!left.empty()) {
+            return x_r;
+        }
+        for (std::size_t u = 0; u < static_cast<std::size_t>(ns); ++u) {
+            const double by = std::fabs(moved[u] - x_r[u]);
+            if (!std::isfinite(moved[u]) || by > kRestartMoveReach * dt * std::fabs(f0[u]) ||
+                (moved[u] < 0.0) != (x_r[u] < 0.0)) {
+                return x_r;
+            }
+        }
+        return moved;
     };
     std::vector<const NetworkModel::StateSwitch *> jumped; // whose jump is applied here
     auto restart_past_surface = [&](const std::vector<double> &x_restart) {
