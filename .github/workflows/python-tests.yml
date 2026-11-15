@@ -680,3 +680,33 @@ jobs:
           path: test-file-counts.json
           retention-days: 90
           if-no-files-found: error
+
+  # A test file this pull request adds that skipped on every leg above, and
+  # that no other workflow's pytest list names, ran nowhere: every check is
+  # green and none executed it (issue #1764; #1359's MIR check was one, until
+  # review moved it). ci/new_test_coverage.py reads the lists from the workflow
+  # files and posts a warning, not a failure: a new file may skip everywhere for
+  # a reason. All three legs' reports are needed, so this is its own job, and on
+  # a pull request the checkout is the test merge, whose first parent is main.
+  new-test-coverage:
+    name: New test files run somewhere
+    needs: python-tests
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Download every leg's shard logs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: python-tests-log-*
+          path: logs
+
+      - name: Warn on a new test file no check runs
+        run: python3 ci/new_test_coverage.py --reports logs --base HEAD^1 --head HEAD
