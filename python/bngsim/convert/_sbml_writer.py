@@ -84,6 +84,23 @@ _TIME_SENTINEL = "__bngsim_csymbol_time__"
 # we revert back to a name reference. (See :func:`_walk_fix_pi`.)
 _PI_SENTINEL = "__bngsim_const_pi__"
 
+# The same for Euler's number: BNGL spells it ``_e``, and the parser reads the
+# bareword ``exponentiale`` (case-insensitively) as the constant, so genuine e
+# arrives only via this name and any other e constant is a misparsed symbol.
+_E_SENTINEL = "__bngsim_const_e__"
+
+# A model symbol spelled like one of the barewords the parser reads as a
+# constant or csymbol (``exponentiale``, ``avogadro``, ``true``, ``inf``, ...,
+# case-insensitively) is renamed to this prefix plus its name before the parse
+# and back after it (issue #1741). Without it a derived parameter or function
+# that reads a parameter named ``avogadro`` was written with the Avogadro
+# constant in its place, silently. ``time`` is left out: ``time()`` is the
+# clock, handled by its own sentinel.
+_SYMBOL_PREFIX = "__bngsim_symbol__"
+_PARSER_CONSTANT_WORDS = frozenset(
+    {"pi", "exponentiale", "avogadro", "true", "false", "inf", "infinity", "nan", "notanumber"}
+)
+
 # ExprTk function/operator-keyword names we can translate to MathML. Anything
 # else spelled as ``name(`` in an expression is refused (fail-loud) — most
 # importantly ``tfun`` (table-function interpolation), which has no SBML form.
@@ -308,7 +325,12 @@ def _rewrite_if_to_piecewise(expr: str) -> str:
 _CALL_TOKEN = re.compile(r"(?<![A-Za-z0-9_.])([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 # ExprTk natural-log `log(` but NOT log10(/log1p(/log2( ; replace with ln(
 _LOG_TOKEN = re.compile(r"(?<![A-Za-z0-9_])log\s*\(")
-_PI_TOKEN = re.compile(r"(?<![A-Za-z0-9_])_pi(?![A-Za-z0-9_])")
+# BNGL's constants, bare or as the zero-argument call BNG2.pl writes into a
+# .net (``k2 _pi()*k1``, issue #1741). ``_pi(x)`` keeps its argument and is
+# refused as an unknown call.
+_PI_TOKEN = re.compile(r"(?<![A-Za-z0-9_])_pi(?:\s*\(\s*\))?(?![A-Za-z0-9_])")
+_E_TOKEN = re.compile(r"(?<![A-Za-z0-9_])_e(?:\s*\(\s*\))?(?![A-Za-z0-9_])")
+_NAME_TOKEN = re.compile(r"(?<![A-Za-z0-9_.])[A-Za-z_][A-Za-z0-9_]*(?![A-Za-z0-9_])")
 _TIME_CALL = re.compile(r"(?<![A-Za-z0-9_])time\s*\(\s*\)")
 
 
@@ -427,6 +449,9 @@ def _normalize_exprtk(expr: str, scalar_names: frozenset[str]) -> str:
     """ExprTk infix → L3-parseable infix (pure string transforms)."""
     # 0) obs() → obs for scalar model symbols (BNG zero-arg-call syntax)
     out = _strip_zero_arg_calls(expr, scalar_names)
+    # 0') a model symbol the parser would read as a constant, renamed out of its
+    #     way (restored by _walk_restore_symbols after the parse)
+    out = _protect_constant_spelled_symbols(out, scalar_names)
     # 0a) ExprTk's grouping of relationals, made explicit and kept through the
     #     parse (issue #1499): all six relationals sit on one left-associative
     #     level, so ``0<x<1`` is ``(0<x)<1``, and ``=``/``<>`` are ``==``/``!=``
@@ -462,9 +487,40 @@ def _normalize_exprtk(expr: str, scalar_names: frozenset[str]) -> str:
     # 3) _pi → a sentinel name (restored to the π constant after parsing, so the
     #    parser never confuses genuine π with a pi-spelled model symbol).
     out = _PI_TOKEN.sub(_PI_SENTINEL, out)
+    out = _E_TOKEN.sub(_E_SENTINEL, out)
     # 4) time() → sentinel name (converted to the time csymbol after parsing)
     out = _TIME_CALL.sub(_TIME_SENTINEL, out)
     return out
+
+
+def _protect_constant_spelled_symbols(expr: str, scalar_names: frozenset[str]) -> str:
+    """Prefix every model symbol spelled like a parser constant (not a call)."""
+
+    def sub(m: re.Match[str]) -> str:
+        name = m.group(0)
+        if (
+            name in scalar_names
+            and name.lower() in _PARSER_CONSTANT_WORDS
+            and not expr[m.end() :].lstrip().startswith("(")
+        ):
+            return _SYMBOL_PREFIX + name
+        return name
+
+    return _NAME_TOKEN.sub(sub, expr)
+
+
+def _walk_restore_symbols(node: Any) -> None:
+    """Undo :func:`_protect_constant_spelled_symbols` on the parsed AST."""
+    import libsbml
+
+    if node is None:
+        return
+    if node.getType() == libsbml.AST_NAME:
+        name = node.getName() or ""
+        if name.startswith(_SYMBOL_PREFIX):
+            node.setName(name[len(_SYMBOL_PREFIX) :])
+    for i in range(node.getNumChildren()):
+        _walk_restore_symbols(node.getChild(i))
 
 
 def _assert_supported_calls(normalized: str, *, where: str) -> None:
@@ -508,6 +564,9 @@ def _walk_fix_pi(node: Any) -> None:
     * any *other* π-constant node is a misparsed symbol — revert it to an
       ``AST_NAME`` keeping its original spelling (``pI`` → ``<ci>pI</ci>``),
       which the usual SId remapping then resolves to the right parameter.
+
+    Euler's number is reconciled the same way, through :data:`_E_SENTINEL`
+    (from ExprTk's ``_e``) and ``<exponentiale/>`` (issue #1741).
     """
     import libsbml
 
@@ -517,8 +576,11 @@ def _walk_fix_pi(node: Any) -> None:
     if t == libsbml.AST_NAME and node.getName() == _PI_SENTINEL:
         node.setType(libsbml.AST_CONSTANT_PI)
         node.setName("pi")  # canonical spelling; serializes as <pi/>
-    elif t == libsbml.AST_CONSTANT_PI:
-        # Misparsed model symbol (genuine π came through the sentinel above).
+    elif t == libsbml.AST_NAME and node.getName() == _E_SENTINEL:
+        node.setType(libsbml.AST_CONSTANT_E)
+        node.setName("exponentiale")  # serializes as <exponentiale/>
+    elif t in (libsbml.AST_CONSTANT_PI, libsbml.AST_CONSTANT_E):
+        # Misparsed model symbol (genuine π and e came through the sentinels).
         node.setType(libsbml.AST_NAME)
     for i in range(node.getNumChildren()):
         _walk_fix_pi(node.getChild(i))
@@ -547,6 +609,7 @@ def _exprtk_to_ast(expr: str, *, where: str, scalar_names: frozenset[str] = froz
         )
     _walk_set_time(ast)
     _walk_fix_pi(ast)
+    _walk_restore_symbols(ast)
     return ast
 
 
@@ -595,7 +658,7 @@ def _symbol_time_invariant(
         )
         cache[name] = result
         return result
-    if name in params or name in ("_pi", "pi"):
+    if name in params or name in ("_pi", "pi", "_e"):
         cache[name] = True
         return True
     cache[name] = False  # unknown symbol — conservatively varying
