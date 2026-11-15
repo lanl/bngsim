@@ -83,9 +83,11 @@ def _model(tmp_path, law: str, c: float) -> bngsim.Model:
     return bngsim.Model.from_net(str(path))
 
 
-def _exact(shape: str, a: float, b: float, c: float) -> tuple[float, float, float]:
+def _exact(
+    shape: str, a: float, b: float, c: float, k_clock: float = K_CLOCK
+) -> tuple[float, float, float]:
     """Y, dY/dkx and dY/dk_clock at T_END, with kx = 1."""
-    r = a - b * K_CLOCK
+    r = a - b * k_clock
     if shape == "triangle":
         exposure, d_kx, d_k = 1.0 / (2 * r), 1.0 / (2 * r), b / (2 * r * r)
     elif shape == "sawtooth":
@@ -271,6 +273,27 @@ def test_a_weakly_coupled_sawtooth_is_carried_over_its_far_corner(tmp_path, b, r
     c = 25.0 * (a - b * K_CLOCK)
     got = _run(_model(tmp_path, _sawtooth(a, b), c), rtol, 4)
     want = _exact("sawtooth", a, b, c)
+    assert got[0] == pytest.approx(want[0], rel=1e-8)
+    assert got[1] == pytest.approx(want[1], rel=1e-6)
+    assert got[2] == pytest.approx(want[2], rel=3e-4)
+
+
+@pytest.mark.parametrize("k_clock,b", [(1.2, 0.17), (0.6, 0.34)])
+def test_the_stall_reach_and_the_restart_share_one_bound(tmp_path, k_clock, b):
+    """The clock outruns Tobs 14.7 times here, inside the restart's bound of
+    16. Bounded by the ratio of ulps instead, which is that rate times
+    k_clock·ulp(t)/ulp(T), 17.6 here, the stall carry's reach left these out,
+    and the sawtooth stalled at its far corner at rtol 1e-10."""
+    a = 3.0
+    c = 25.0 * (a - b * k_clock)
+    path = tmp_path / "k.net"
+    path.write_text(
+        NET.format(law=_sawtooth(a, b), c=c).replace(
+            "    2 k_clock 2.0\n", f"    2 k_clock {k_clock!r}\n"
+        )
+    )
+    got = _run(bngsim.Model.from_net(str(path)), 1e-10, 4)
+    want = _exact("sawtooth", a, b, c, k_clock)
     assert got[0] == pytest.approx(want[0], rel=1e-8)
     assert got[1] == pytest.approx(want[1], rel=1e-6)
     assert got[2] == pytest.approx(want[2], rel=3e-4)

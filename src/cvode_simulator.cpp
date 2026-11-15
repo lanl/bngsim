@@ -13140,18 +13140,23 @@ bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
         // at the far corner of a sawtooth at t = 25 sat 1.4e-14 short, an ulp
         // of the time's 3·t, where 16 ulp of Tobs at 0.1 a unit reach 1.1e-14,
         // and the run stalled there at rtol 1e-10. The push below moves only
-        // the species, so the time's ulp is counted only up to
-        // kRestartMoveReach times theirs, as the restart's move is bounded: at
+        // the species, so the time's ulp is counted only where the time
+        // carries the residual at most kRestartMoveReach times as fast as the
+        // species do, the rate the restart's move is bounded by: at
         // `3*time() - 1e-6*Tobs` it would have pushed Tobs by 2.5e7 of its
         // ulps, 3.6e-7, where the run had stalled before. Past that the reach
-        // is the species' alone, and the run stalls as it did.
+        // is the species' alone, and the run stalls as it did. (Bounded by the
+        // ratio of ulps instead, the two bounds differed by where t and Tobs
+        // sit among the binades: at k_clock = 1.2 a sawtooth the restart
+        // covered stalled at its far corner.)
         const double t_ulp =
             std::nextafter(std::fabs(t), std::numeric_limits<double>::infinity()) - std::fabs(t);
-        const double time_ulp = std::fabs(flow - carried) * t_ulp;
+        const double time_rate = std::fabs(flow - carried);
         const double reach =
             kStalledSwitchUlps *
-            (ulp +
-             (std::isfinite(time_ulp) && time_ulp <= kRestartMoveReach * ulp ? time_ulp : 0.0));
+            (ulp + (std::isfinite(time_rate) && time_rate <= kRestartMoveReach * std::fabs(carried)
+                        ? time_rate * t_ulp
+                        : 0.0));
         // A residual's sign is its condition's: ExprTk is compiled unfused, so
         // `(Aobs^2)-(thr^2)` is 0 with A on thr and positive only past it, where
         // fused (arm64) it read +5.75e-17 there while `Aobs^2 > thr^2` read false
