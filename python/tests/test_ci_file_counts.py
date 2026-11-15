@@ -166,12 +166,12 @@ BASE = {"t/test_a.py": _c(10, 1), "t/test_b.py": _c(5), "t/test_gone.py": _c(3)}
 
 
 def test_the_same_counts_pass():
-    assert tfc.compare(BASE, BASE, set()) == ([], [])
+    assert tfc.compare(BASE, BASE, set()) == ([], [], [])
 
 
 def test_one_test_lost_in_an_untouched_file_fails():
     head = {**BASE, "t/test_b.py": _c(4)}
-    errors, _ = tfc.compare(BASE, head, set())
+    errors, _, _ = tfc.compare(BASE, head, set())
     assert len(errors) == 1
     assert "t/test_b.py: 5 -> 4" in errors[0]
     assert tfc.DROP_LABEL in errors[0]
@@ -179,27 +179,28 @@ def test_one_test_lost_in_an_untouched_file_fails():
 
 def test_an_untouched_file_that_vanished_fails():
     head = {k: v for k, v in BASE.items() if k != "t/test_gone.py"}
-    errors, _ = tfc.compare(BASE, head, set())
+    errors, _, _ = tfc.compare(BASE, head, set())
     assert errors and "t/test_gone.py: 3 -> 0" in errors[0]
 
 
 @pytest.mark.parametrize("path", ["t/test_b.py", "t/test_gone.py"])
-def test_a_touched_or_deleted_file_may_lose_tests(path):
+def test_a_touched_or_deleted_file_may_lose_tests_with_a_warning(path):
+    # The likeliest accidental loss, so it is an annotation, not a log line.
     head = {**BASE, path: _c(0)}
     del head[path]
-    errors, notes = tfc.compare(BASE, head, {path})
-    assert errors == []
-    assert any(path in n for n in notes)
+    errors, warnings, notes = tfc.compare(BASE, head, {path})
+    assert errors == [] and notes == []
+    assert len(warnings) == 1 and path in warnings[0]
 
 
 def test_a_new_file_and_more_tests_pass_silently():
     head = {**BASE, "t/test_b.py": _c(50), "t/test_new.py": _c(7, 7)}
-    assert tfc.compare(BASE, head, set()) == ([], [])
+    assert tfc.compare(BASE, head, set()) == ([], [], [])
 
 
 def test_the_label_accepts_a_drop_and_says_so():
     head = {**BASE, "t/test_b.py": _c(4)}
-    errors, notes = tfc.compare(BASE, head, set(), drops_allowed=True)
+    errors, _, notes = tfc.compare(BASE, head, set(), drops_allowed=True)
     assert errors == []
     assert any(tfc.DROP_LABEL in n for n in notes)
 
@@ -207,17 +208,17 @@ def test_the_label_accepts_a_drop_and_says_so():
 def test_skips_may_rise_by_the_tolerance_and_not_one_more():
     tol = tfc.SKIP_TOLERANCE
     at = {**BASE, "t/test_a.py": _c(10, 1 + tol)}
-    errors, notes = tfc.compare(BASE, at, set())
+    errors, _, notes = tfc.compare(BASE, at, set())
     assert errors == [] and notes
     past = {**BASE, "t/test_a.py": _c(10, 1 + tol + 1)}
-    errors, _ = tfc.compare(BASE, past, set())
+    errors, _, _ = tfc.compare(BASE, past, set())
     assert len(errors) == 1 and "skip" in errors[0]
 
 
 def test_skips_are_summed_over_untouched_files():
     tol = tfc.SKIP_TOLERANCE
     head = {**BASE, "t/test_a.py": _c(10, 1 + tol), "t/test_b.py": _c(5, 1)}
-    errors, _ = tfc.compare(BASE, head, set())
+    errors, _, _ = tfc.compare(BASE, head, set())
     assert errors
 
 
@@ -230,7 +231,7 @@ def test_the_label_accepts_new_skips_and_says_so():
     # Skips that rise for no reason in the diff (a runner image, an extra) need
     # a way out that is not an edit to every affected test file.
     head = {**BASE, "t/test_a.py": _c(10, 2 + tfc.SKIP_TOLERANCE)}
-    errors, notes = tfc.compare(BASE, head, set(), drops_allowed=True)
+    errors, _, notes = tfc.compare(BASE, head, set(), drops_allowed=True)
     assert errors == []
     assert any(tfc.DROP_LABEL in n and "skips" in n for n in notes)
 
@@ -486,8 +487,11 @@ def test_guard_honours_the_label_on_a_pull_request_merged_since(guard):
     assert guard(api)[0] == 0
 
 
-def test_guard_allows_a_loss_in_a_changed_file(guard):
-    assert guard(_base_api({**HEAD_COUNTS, "t/test_a.py": _c(3)}), changed={"t/test_a.py"})[0] == 0
+def test_guard_allows_a_loss_in_a_changed_file_and_annotates_it(guard, capsys):
+    api = _base_api({**HEAD_COUNTS, "t/test_a.py": _c(3)})
+    assert guard(api, changed={"t/test_a.py"})[0] == 0
+    out = capsys.readouterr().out
+    assert "::warning::t/test_a.py collects 2 tests, 3 on main." in out
 
 
 def test_guard_bootstraps_only_where_the_script_arrives(guard, capsys):

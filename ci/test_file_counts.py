@@ -136,9 +136,16 @@ def compare(
     *,
     drops_allowed: bool = False,
     skip_tolerance: int = SKIP_TOLERANCE,
-) -> tuple[list[str], list[str]]:
-    """``(errors, notes)``: what fails the guard, and what is only reported."""
+) -> tuple[list[str], list[str], list[str]]:
+    """``(errors, warnings, notes)``: what fails the guard, and what is only reported.
+
+    A warning is a loss in a file the change edits. It passes, since the edit is
+    in the diff, but it is the likeliest accidental loss (a class that lost its
+    ``Test`` prefix, a fixture that now skips everything), so the guard makes it
+    an annotation a reviewer sees on the checks page rather than a log line.
+    """
     errors: list[str] = []
+    warnings: list[str] = []
     notes: list[str] = []
     lost: list[str] = []
     skip_rise = 0
@@ -152,8 +159,9 @@ def compare(
         ds = h["skipped"] - b["skipped"]
         if path in changed:
             if dc < 0:
-                notes.append(
-                    f"{path}: {b['collected']} -> {h['collected']} (edited by this change)"
+                warnings.append(
+                    f"{path} collects {h['collected']} tests, {b['collected']} on main. "
+                    "This change edits it, so that passes; check that the loss is meant."
                 )
             continue
         if dc < 0:
@@ -191,7 +199,7 @@ def compare(
             f"{skip_rise} more skips in untouched files, within {skip_tolerance}: "
             + "; ".join(skip_rows)
         )
-    return errors, notes
+    return errors, warnings, notes
 
 
 def totals(counts: Counts) -> tuple[int, int]:
@@ -370,9 +378,11 @@ def cmd_compare(a: argparse.Namespace) -> int:
     base = json.loads(a.base.read_text())["files"]
     head = json.loads(a.head.read_text())["files"]
     changed = set(a.changed.read_text().split()) if a.changed else set()
-    errors, notes = compare(base, head, changed, drops_allowed=a.drops_allowed)
+    errors, warnings, notes = compare(base, head, changed, drops_allowed=a.drops_allowed)
     for n in notes:
         print(f"note: {n}")
+    for w in warnings:
+        print(f"::warning::{w}")
     for e in errors:
         print(f"::error::{e}")
     return 1 if errors else 0
@@ -430,16 +440,18 @@ def cmd_guard(a: argparse.Namespace) -> int:
     base_sha = art["workflow_run"]["head_sha"]
     base = download_counts(api, a.repo, art)
     changed = changed_files(base_sha, a.sha)
-    errors, notes = compare(base, head, changed)
+    errors, warnings, notes = compare(base, head, changed)
     # Every error compare() reports is one the label accepts; ask only then.
     if errors and DROP_LABEL in labels_since(api, a.repo, a.pr, base_sha, a.sha):
-        errors, notes = compare(base, head, changed, drops_allowed=True)
+        errors, warnings, notes = compare(base, head, changed, drops_allowed=True)
 
     b_col, b_skip = totals(base)
     print(f"main at {base_sha[:12]}: {len(base)} test files, {b_col} collected, {b_skip} skipped")
     print(f"{len(changed)} paths differ from it")
     for n in notes:
         print(f"note: {n}")
+    for w in warnings:
+        print(f"::warning::{w}")
     for e in errors:
         print(f"::error::{e}")
     summary(
@@ -450,6 +462,7 @@ def cmd_guard(a: argparse.Namespace) -> int:
             f"{skipped} skipped ({skipped - b_skip:+d}) "
             f"against main at `{base_sha[:12]}`.",
             *(f"- {n}" for n in notes),
+            *(f"- ⚠️ {w}" for w in warnings),
             *(f"- **{e}**" for e in errors),
         ]
     )
