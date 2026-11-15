@@ -97,6 +97,25 @@ Two cases are outside this:
   rate rule `x' = 1`, or on a species). The variable is integrated and does not
   land on the value exactly; use an ordering.
 
+#### A trigger met on an output row
+
+An event whose trigger is first met at the time of an output row fires before
+the row is taken, so the row holds the state after the event (issue #1124). That
+includes a trigger on a counter, a variable whose rate rule is 1 (`x' = 1`):
+bngsim solves the time at which such a trigger is met
+before the run and stops there. The time is the first double at which the
+trigger's residual, as the doubles evaluate it, is 0 (or, where no double makes
+it 0, the one nearest): for `x >= 2.6` from `x = 0.1` that is t = 2.5, because
+`(2.5 + 0.1) - 2.6` is exactly 0 in doubles. A row at t = 2.5 then reads the
+state after the event, for a run of any length (issue #1673; before, it read the
+state before the event for some run lengths and after it for others).
+
+Which side the row falls on there is decided in doubles, where `0.1 + 2.5` is
+the double 2.6, so the trigger is met at t = 2.5. The exact sum of those two
+doubles is 8.3e-17 below the double 2.6, and libRoadRunner, which integrates the
+counter, reports the row before the event. A threshold a hair either side of the
+row (`x >= 2.6 + 1e-9`) does not depend on this, and reads the same in both.
+
 #### Triggers that start on their threshold
 
 A trigger reading false whose *residual* is exactly zero at the start time is

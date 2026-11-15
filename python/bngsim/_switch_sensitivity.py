@@ -2247,6 +2247,14 @@ _TIME_REF = re.compile(r"(?<![A-Za-z0-9_])time(?:\s*\(\s*\))?(?![A-Za-z0-9_(])")
 # in time, whose crossing this cannot claim to know.
 _CROSSING_RESIDUAL_TOL = 1e-9
 
+# How many doubles from the two-point solve's answer the crossing is walked
+# toward a smaller residual, and how far a run of doubles that all evaluate the
+# residual to 0 is followed down (issue #1673). The solve rounds by an ulp or so according
+# to the scale it probes over; the zero of the residual, as it evaluates, does
+# not move with the scale.
+_CROSSING_SNAP_ULPS = 16
+_CROSSING_ZERO_RUN = 64
+
 # Resolved crossing times, keyed on the text actually solved (function slots and
 # derived names inlined), the run window and the values of every parameter that
 # text reads — which is everything the answer depends on. The inlined text, not
@@ -2302,6 +2310,76 @@ def _inline_function_slots(expr: str, bodies: dict[str, str]) -> str:
         if expr == before:
             break
     return expr
+
+
+def _snap_to_residual_zero(
+    at, t_star: float, r_star: float | None = None
+) -> tuple[float, float | None]:
+    """``(t, r)``: the double nearest *t_star* at which the residual, as *at*
+    evaluates it, is closest to 0 (the earliest of them on a tie), and the
+    residual there (issue #1673).
+
+    The two-point solve divides by a slope it measures over the run's scale, so
+    in doubles its answer moves by an ulp with that scale: ``x' = 1`` from 0.1,
+    at ``x >= 2.6``, was stopped at 2.5000000000000004 for a run to t = 3 or 40
+    and at 2.5 for one to 8, and a row at t = 2.5 read the state before the
+    event or after it according to where the run ended. The zero of the residual
+    as the doubles evaluate it is a property of the condition alone: here
+    ``(2.5 + 0.1) - 2.6`` is exactly 0. A residual that is 0 at a run of
+    doubles is placed at the first of them, where a ``>=`` first holds; one
+    that is 0 at none, where it is smallest.
+
+    Each evaluation of the residual costs about a quarter of a millisecond, so
+    the search walks from *t_star* toward the smaller residual, a double at a
+    time, and stops where the next is no smaller: an answer already on the first
+    zero costs one evaluation besides *r_star* (the linearity check's, passed
+    in), the issue's case three. At most ``_CROSSING_SNAP_ULPS`` steps, and
+    ``_CROSSING_ZERO_RUN`` down a run of zeros.
+    """
+
+    def size(t: float) -> float | None:
+        r = at(t)
+        return abs(r) if r is not None and math.isfinite(r) else None
+
+    if not math.isfinite(t_star):
+        return t_star, r_star
+    here = abs(r_star) if r_star is not None and math.isfinite(r_star) else size(t_star)
+    if here is None:
+        return t_star, r_star
+    t = t_star
+    if here == 0.0:
+        # On a zero: follow the run of zeros down to its first double.
+        for _ in range(_CROSSING_ZERO_RUN):
+            before = math.nextafter(t, -math.inf)
+            if size(before) != 0.0:
+                break
+            t = before
+        return t, 0.0
+    down = math.nextafter(t, -math.inf)
+    s_down = size(down)
+    if s_down is not None and s_down <= here:
+        step, t, here = -math.inf, down, s_down  # a tie goes to the earlier double
+    else:
+        up = math.nextafter(t, math.inf)
+        s_up = size(up)
+        if s_up is None or s_up >= here:
+            return t_star, r_star  # already the smallest
+        step, t, here = math.inf, up, s_up
+    for _ in range(_CROSSING_SNAP_ULPS):
+        if here == 0.0:
+            break
+        nxt = math.nextafter(t, step)
+        s_nxt = size(nxt)
+        if s_nxt is None or (s_nxt > here if step < 0 else s_nxt >= here):
+            break
+        t, here = nxt, s_nxt
+    if here == 0.0:
+        for _ in range(_CROSSING_ZERO_RUN):
+            before = math.nextafter(t, -math.inf)
+            if size(before) != 0.0:
+                break
+            t = before
+    return t, at(t)
 
 
 def _crossing_time_of_condition(
@@ -2393,8 +2471,8 @@ def _crossing_time_of_condition(
         slope = (r1 - r0) / scale
         if slope == 0.0 or not (abs(slope) < float("inf")):
             return None  # `time` cancels out: no crossing to stop at
-        t_star = -r0 / slope
-        check = at(t_star)
+        solved = -r0 / slope
+        t_star, check = _snap_to_residual_zero(at, solved, at(solved))
         if check is None or abs(check) > _CROSSING_RESIDUAL_TOL * abs(slope) * scale:
             logger.debug(
                 "crossing stop: %r is not linear in time (residual %r at t=%r); skipping",
