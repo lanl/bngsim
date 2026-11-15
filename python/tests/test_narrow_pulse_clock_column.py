@@ -196,10 +196,10 @@ EXACT_TIME = -10 * math.exp(-1 / 6) * 0.5 / 9
 def test_a_condition_that_reads_the_time(tmp_path, n_points):
     """At t = 25 an ulp of the time is 3.6e-15, and a column moving at 5e7
     turns the clock's rounding into a few 1e-6 of itself, as the counter's
-    does at T = 50 above: up to 9e-6 on these grids. Main was 3.3e-4 off on
-    the 4-, 8- and 16-point grids."""
+    does at T = 50 above: up to 3e-5 on grids and pulse positions near these.
+    Main was 3.3e-4 off on the 4-, 8- and 16-point grids."""
     dkx, dk = _columns(_model(tmp_path, TIME_LAW, c=0.075, t0=-74.925), n_points, 1e-12)
-    assert dk == pytest.approx(EXACT_TIME, rel=4e-5)
+    assert dk == pytest.approx(EXACT_TIME, rel=6e-5)
     assert dkx == pytest.approx(10 * math.exp(-1 / 6) / 6, rel=1e-8)
 
 
@@ -213,29 +213,161 @@ def test_a_condition_that_reads_the_time_near_t0(tmp_path, w):
         assert dk == pytest.approx(EXACT_TIME, rel=2e-8), n_points
 
 
-# ── Issue #1456: a root CVODE places inside a step past a corner ──────────────
+# ── Issue #1456: a root CVODE finds inside a step past a corner ──────────────
 #
-# Filed with the column at the peak's root 8.6e-3 off as CVODE interpolated
-# it, after a step that ran past the corner, and dY/dk_clock 1e-4 to 1e-2 off
-# on some grids. Measured against the exact column at every peak crossing of
-# 456 runs (both spellings, w = 0.005 and 0.1, rtol 1e-8 to 1e-10, 38 grids
-# each), the interpolated column is right to 1.3e-7 at worst, and what is left
-# of the final error falls with the tolerance: the column falls from 2e4 at
-# the peak to 1 at the end, so it carries rtol times its peak. These pin that.
+# CVODE finds a corner's root inside the step that went past it, and reads
+# the columns there from that step. Across the corner the column's rate jumps,
+# and the step's corrector takes the rate past the corner for the whole step:
+# a step of 1.1e-11 that ended 1.1e-13 past a peak passed its error test with
+# the column 5.9e-4 off. The columns at the root are now integrated again over
+# that step from its start (columns_over_root_step).
 
 
 @pytest.mark.parametrize("law", ["max-abs", "if"])
-def test_the_triangle_converges_with_the_tolerance(tmp_path, law):
-    """The issue's triangle, w = 0.1 at c = 50. At rtol 1e-8 its worst over
-    38 grids was 1.1e-4 to 1.4e-4; at 1e-10 it is 1.5e-6 and at 1e-11
-    1.8e-7, on the grids that were worst at 1e-8."""
-    for n_points in (5, 6, 9, 16, 23, 26, 30, 35):
-        _, dk = _columns(_model(tmp_path, LAWS[law], c=50.0, w=0.1), n_points, 1e-11)
-        assert dk == pytest.approx(EXACT, rel=2e-6), n_points
+def test_the_triangle_at_a_loose_tolerance(tmp_path, law):
+    """The issue's triangle, w = 0.1 at c = 50 and rtol 1e-8. Main was 1e-4
+    off on these grids, its worst over 38; every grid is now within 1.6e-5."""
+    for n_points in (5, 6, 18, 21, 28, 30):
+        _, dk = _columns(_model(tmp_path, LAWS[law], c=50.0, w=0.1), n_points, 1e-8)
+        assert dk == pytest.approx(EXACT, rel=4e-5), n_points
 
 
 def test_the_issues_traced_grid(tmp_path):
-    """w = 0.005, rtol 1e-9, 16 points: 7.9e-3 off when filed, 1.5e-4 now,
-    of the size every grid has there (median 7e-5, worst 3.7e-4 over 38)."""
-    _, dk = _columns(_model(tmp_path, LAWS["if"], c=50.0, w=0.005), 16, 1e-9)
-    assert dk == pytest.approx(EXACT, rel=1e-3)
+    """w = 0.005, rtol 1e-9: main 3.7e-4 off on the 9-point grid; every grid
+    is now near 5.2e-5, the same on each."""
+    for n_points in (9, 16, 23):
+        _, dk = _columns(_model(tmp_path, LAWS["if"], c=50.0, w=0.005), n_points, 1e-9)
+        assert dk == pytest.approx(EXACT, rel=1.2e-4), n_points
+
+
+RELAX_U = "(Aobs+a*time())"
+RELAX_LAW = (
+    f"kx*(1/w)*if({RELAX_U}<c-w/2,0,if({RELAX_U}<c,({RELAX_U}-c+w/2)/(w/2),"
+    f"if({RELAX_U}<c+w/2,(c+w/2-{RELAX_U})/(w/2),0)))"
+)
+RELAX_NET = """begin parameters
+    1 kx 1.0
+    2 ka 2.0
+    3 kd 0.4
+    4 c 2.5
+    5 w 0.0005
+    6 a 0.0
+    7 kf 1e4
+    8 kr 1e4
+    9 A0 0.0
+end parameters
+begin functions
+    1 law() {law}
+end functions
+begin species
+    1 A() A0
+    2 X() 10
+    3 Y() 0
+    4 P() 1e7
+    5 Q() 1e7
+end species
+begin reactions
+    1 0 1 ka
+    2 1 0 kd
+    3 2 3 law
+    4 4 5 kf
+    5 5 4 kr
+end reactions
+begin groups
+    1 Aobs 1
+    2 Pobs 4
+    3 Qobs 5
+end groups
+"""
+# E = ∫ p(a) / (ka - kd·a) da over the triangle, to second order in w.
+EXACT_RELAX = 1.21306141756
+
+
+def test_a_triangle_in_a_relaxing_species(tmp_path):
+    """A triangle 5e-4 wide in A, which relaxes towards 5, beside a stiff
+    pair of 1e7 pools that sets the steps (``a = 0``: the law reads the time
+    with a factor 0, which leaves its value and moves the steps it takes as
+    the issue's do). At rtol 1e-11 main was 3.8e-4 off
+    on the 37-point grid, against a median of 8e-7 over grids 3 to 40: the
+    step that found the peak's root ended 1.1e-13 past it. Every grid is now
+    within 3e-6. Which grid lands so is a matter of the steps: an atol of
+    1e-13 rather than 1e-11 * 1e-2, an ulp apart, misses it on main, and
+    another platform's arithmetic may too. The two tests above are the ones
+    that pin it everywhere."""
+    path = tmp_path / "relax.net"
+    path.write_text(RELAX_NET.format(law=RELAX_LAW))
+    params = ["kx", "ka", "kd", "c"]
+    for n_points in (35, 36, 37, 38, 40):
+        run = bngsim.Simulator(
+            bngsim.Model.from_net(str(path)), method="ode", sensitivity_params=params
+        ).run(t_span=(0.0, 20.0), n_points=n_points, rtol=1e-11, atol=1e-11 * 1e-2)
+        dc = float(np.asarray(run.sensitivities)[-1, 2, params.index("c")])
+        assert dc == pytest.approx(EXACT_RELAX, rel=2e-5), n_points
+
+
+# A model beside the pulse: a species W fed through a second switch.
+SIDE_NET = """begin parameters
+    1 kx 1
+    2 k_clock 2.0
+    3 kz 0.3
+    4 c {c!r}
+    5 w {w!r}
+end parameters
+begin functions
+    1 pulse() {law}
+    2 side() {side}
+end functions
+begin species
+    1 T() {t0!r}
+    2 X() 10
+    3 Y() 0
+    4 Z() {z0!r}
+    5 W() 0
+end species
+begin reactions
+    1 0 1 k_clock
+    2 2 3 pulse
+    3 4 5 side
+end reactions
+begin groups
+    1 Tobs 1
+    2 Zobs 4
+end groups
+"""
+
+
+def _side_model(tmp_path, law, side, *, c, t0, w=0.003, z0=7.0):
+    path = tmp_path / f"side_{abs(hash((law, side, c, t0, w, z0)))}.net"
+    path.write_text(SIDE_NET.format(law=law, side=side, c=c, t0=t0, w=w, z0=z0))
+    return bngsim.Model.from_net(str(path))
+
+
+@pytest.mark.parametrize("side", ["kz*if(time()>5,1,0)", "kz*if(time()<5,1,0)"])
+@pytest.mark.parametrize("j", [-8, -6, -5])
+def test_the_clocks_share_is_not_read_across_a_clock_switch(tmp_path, side, j):
+    """A crossing a step or two of δt short of a switch on the time alone,
+    which W reads and the counter never reaches: dW/dk_clock is 0. Reading
+    the clock's share past t* + δt took that switch's jump in, -2.1 or +1.2
+    (review of this change; main is 0)."""
+    dt = 256 * 2.220446049250313e-16 * 5
+    law = "kx*if(Tobs>c,Tobs-c,0)"
+    model = _side_model(tmp_path, law, side, c=2 * (5 + j * 0.25 * dt), t0=0.0)
+    run = bngsim.Simulator(model, method="ode", sensitivity_params=["kx", "k_clock", "kz"]).run(
+        t_span=(0.0, 8.0), n_points=4, rtol=1e-9, atol=1e-11
+    )
+    w_col = np.asarray(run.sensitivities)[-1, 4, 1]
+    assert abs(w_col) < 1e-9
+
+
+@pytest.mark.parametrize("n_points", [4, 8, 16])
+def test_a_switch_parked_at_zero_beside_the_pulse(tmp_path, n_points):
+    """A species at 0 under ``if(Zobs>0, ...)``: its residual is 0 at every
+    crossing, which read as changing sides and left the clock's share out of
+    the whole run, 3.3e-4 off as on main."""
+    law = (
+        "kx*(1/w)*if(Tobs+time()<c-w/2,0,if(Tobs+time()<c,(Tobs+time()-c+w/2)/(w/2),"
+        "if(Tobs+time()<c+w/2,(c+w/2-Tobs-time())/(w/2),0)))"
+    )
+    model = _side_model(tmp_path, law, "0.1*if(Zobs>0,Zobs,0)", c=0.075, t0=-74.925, z0=0.0)
+    _, dk = _columns(model, n_points, 1e-12)
+    assert dk == pytest.approx(EXACT_TIME, rel=6e-5)

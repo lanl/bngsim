@@ -4544,7 +4544,16 @@ struct CvodeSimulator::Impl {
     struct RootStepEnd {
         double t = 0.0;
         std::vector<double> x;
+        // The columns at the root, integrated again over the step from its
+        // start (columns_over_root_step), where that could be done; empty
+        // otherwise.
+        std::vector<std::vector<double>> s_root;
     };
+    // The columns at a root CVODE found inside its last step, integrated
+    // again over that step from its start (issue #1456). See the definition.
+    bool columns_over_root_step(void *cvode_mem, int ns, double t_root, double rtol,
+                                const std::vector<int> &residuals, const SensitivityState &sens,
+                                std::vector<std::vector<double>> &out);
     // `root_step_end` is that step's end, or null.
     void
     apply_state_switch_sensitivity_jump(void *cvode_mem, N_Vector y, int ns, double t_evt,
@@ -13794,8 +13803,10 @@ bool CvodeSimulator::Impl::root_step_ran_past(
 // (`s_before`) and ṡ⁺ with them after it. Left out, a rectangle of width
 // 0.003 in the clock kept dY/dk_clock 4.6e-5 short at every tolerance. It is
 // asked only where the jump was read at the surface, extended to x(t*) or at
-// one state there. A jump read from the raw pair at ±δt holds the move
-// already, to first order: that pair's difference carries −δt·(J⁻ + J⁺)·f.
+// one state there. A jump read from the raw pair at ±δt is left as it was:
+// that pair's difference carries −δt·(J⁻ + J⁺)·f·dt*/dθ, about δt·(ṡ⁻ + ṡ⁺)
+// for a column that shifts the trajectory in time, a move of its own that
+// this one would add to. No run here reads a jump that way.
 void CvodeSimulator::Impl::columns_past_surface(void *cvode_mem, int ns, double t_evt,
                                                 const std::vector<double> &x,
                                                 const std::vector<double> &f0, double dt,
@@ -13870,6 +13881,217 @@ void CvodeSimulator::Impl::columns_past_surface(void *cvode_mem, int ns, double 
     }
 }
 
+// ─── The columns at a root inside a step (issue #1456) ───────────────────────
+//
+// CVODE finds a crossing's root inside the step that went past it, and the
+// columns there are read from that step. Across a bend's corner the column's
+// rate jumps (a narrow triangle in a relaxing species: by about 1.6e9 at its
+// peak), and the step's own corrector takes the rate past the corner for the
+// whole step. A step of 1.1e-11 that ended 1.1e-13 past the peak passed its
+// error test with the column at its end 5.9e-4 off, 4e-8 of itself at rtol
+// 1e-11, where every step before it was right to 1e-10; dY/dc came out
+// 3.8e-4 off on that one output grid of 38.
+//
+// So the columns at the root are integrated again over the step, from its
+// start, which an earlier step left right, along the step's own states (the
+// state does not jump at a bend, and its polynomial is good): classic
+// Runge-Kutta on the analytic sensitivity right-hand side, each stage on the
+// branch its state is on. Taken only where it agrees with itself on half the
+// substep to well inside the tolerance, which a step too long or too stiff for
+// an explicit method does not; the columns CVODE gave are kept otherwise, and
+// where the analytic right-hand side is not to be had, and for a column in its
+// comoving frame (issue #545).
+bool CvodeSimulator::Impl::columns_over_root_step(void *cvode_mem, int ns, double t_root,
+                                                  double rtol, const std::vector<int> &residuals,
+                                                  const SensitivityState &sens,
+                                                  std::vector<std::vector<double>> &out) {
+    const int n_sens = sens.n_total;
+    void *raw = nullptr;
+    sunrealtype tn = 0.0;
+    sunrealtype h_last = 0.0;
+    if (n_sens == 0 || !(rtol > 0.0) || CVodeGetUserData(cvode_mem, &raw) != CV_SUCCESS ||
+        raw == nullptr || CVodeGetCurrentTime(cvode_mem, &tn) != CV_SUCCESS ||
+        CVodeGetLastStep(cvode_mem, &h_last) != CV_SUCCESS) {
+        return false;
+    }
+    const auto *data = static_cast<const CvodeUserData *>(raw);
+    if (data->codegen_sens_fn == nullptr || data->codegen_plist == nullptr ||
+        data->codegen_param_values == nullptr || data->codegen_n_sens != n_sens ||
+        data->comoving_plist != nullptr) {
+        return false;
+    }
+    const double t_end = static_cast<double>(tn);
+    const double t_start = t_end - std::fabs(static_cast<double>(h_last));
+    if (!(t_root > t_start) || !(t_root <= t_end)) {
+        return false;
+    }
+    const auto n = static_cast<std::size_t>(ns);
+    const auto nc = static_cast<std::size_t>(n_sens);
+    NVectorGuard xv(N_VClone(sens.yS[0]));
+    if (xv.v == nullptr || CVodeGetSensDky(cvode_mem, static_cast<sunrealtype>(t_start), 0,
+                                           sens.yS.arr) != CV_SUCCESS) {
+        return false;
+    }
+    std::vector<std::vector<double>> s_start(nc, std::vector<double>(n, 0.0));
+    for (std::size_t c = 0; c < nc; ++c) {
+        const double *col = N_VGetArrayPointer(sens.yS[static_cast<int>(c)]);
+        s_start[c].assign(col, col + n);
+    }
+    CodegenSensUserDataForSO so_data;
+    so_data.param_values = data->codegen_param_values;
+    so_data.plist = data->codegen_plist;
+    so_data.n_sens = data->codegen_n_sens;
+    std::vector<double> xs(n, 0.0);
+    std::vector<double> fs(n, 0.0);
+    std::vector<double> scratch_a(n, 0.0);
+    std::vector<double> scratch_b(n, 0.0);
+    // Every column's rate at t, the state there from the step's polynomial.
+    auto rates = [&](double t, const std::vector<std::vector<double>> &cols,
+                     std::vector<std::vector<double>> &rate) {
+        if (CVodeGetDky(cvode_mem, static_cast<sunrealtype>(t), 0, xv.v) != CV_SUCCESS) {
+            return false;
+        }
+        const double *xp = N_VGetArrayPointer(xv.v);
+        xs.assign(xp, xp + n);
+        sync_model_at(t, xs.data(), ns);
+        model.compute_derivs(t, xs.data(), fs.data());
+        for (std::size_t c = 0; c < nc; ++c) {
+            const int rc =
+                data->codegen_sens_fn(n_sens, t, xs.data(), fs.data(), static_cast<int>(c),
+                                      const_cast<double *>(cols[c].data()), rate[c].data(),
+                                      &so_data, scratch_a.data(), scratch_b.data());
+            if (rc != 0 || !std::all_of(rate[c].begin(), rate[c].end(),
+                                        [](double v) { return std::isfinite(v); })) {
+                return false;
+            }
+        }
+        return true;
+    };
+    using Cols = std::vector<std::vector<double>>;
+    // Where along the step the root's residuals change sides: the corner,
+    // which a substep must not straddle. Found on the step's polynomial.
+    auto &eval = model.evaluator();
+    auto residual_on_step = [&](int gidx, double t) {
+        if (CVodeGetDky(cvode_mem, static_cast<sunrealtype>(t), 0, xv.v) != CV_SUCCESS) {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+        sync_model_at(t, N_VGetArrayPointer(xv.v), ns);
+        return eval.evaluate(gidx);
+    };
+    double t_corner = t_root;
+    for (int gidx : residuals) {
+        double lo = t_start;
+        double hi = t_root;
+        const double g_lo = residual_on_step(gidx, lo);
+        const double g_hi = residual_on_step(gidx, hi);
+        if (!std::isfinite(g_lo) || !std::isfinite(g_hi) || g_lo == 0.0) {
+            return false;
+        }
+        if (g_hi != 0.0 && (g_lo < 0.0) == (g_hi < 0.0)) {
+            continue; // the root is short of this surface
+        }
+        for (int it = 0; it < 200 && hi - lo > 0.0; ++it) {
+            const double mid = lo + 0.5 * (hi - lo);
+            if (!(mid > lo && mid < hi)) {
+                break;
+            }
+            const double g = residual_on_step(gidx, mid);
+            if (!std::isfinite(g)) {
+                return false;
+            }
+            if (g != 0.0 && (g < 0.0) == (g_lo < 0.0)) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        t_corner = std::min(t_corner, lo);
+    }
+    auto integrate = [&](int substeps, Cols &cols) {
+        cols = s_start;
+        const double h = (t_corner - t_start) / substeps;
+        Cols k1(nc, std::vector<double>(n)), k2(k1), k3(k1), k4(k1), tmp(k1);
+        auto axpy = [&](const Cols &base, double a, const Cols &k, Cols &dst) {
+            for (std::size_t c = 0; c < nc; ++c) {
+                for (std::size_t i = 0; i < n; ++i) {
+                    dst[c][i] = base[c][i] + a * k[c][i];
+                }
+            }
+        };
+        for (int m = 0; m < substeps; ++m) {
+            const double t0 = t_start + m * h;
+            const double t1 = m + 1 == substeps ? t_corner : t0 + h;
+            const double hm = t1 - t0;
+            if (!rates(t0, cols, k1)) {
+                return false;
+            }
+            axpy(cols, 0.5 * hm, k1, tmp);
+            if (!rates(t0 + 0.5 * hm, tmp, k2)) {
+                return false;
+            }
+            axpy(cols, 0.5 * hm, k2, tmp);
+            if (!rates(t0 + 0.5 * hm, tmp, k3)) {
+                return false;
+            }
+            axpy(cols, hm, k3, tmp);
+            if (!rates(t1, tmp, k4)) {
+                return false;
+            }
+            for (std::size_t c = 0; c < nc; ++c) {
+                for (std::size_t i = 0; i < n; ++i) {
+                    cols[c][i] +=
+                        hm / 6.0 * (k1[c][i] + 2.0 * k2[c][i] + 2.0 * k3[c][i] + k4[c][i]);
+                }
+            }
+        }
+        return true;
+    };
+    // Past the corner, the few ulp to the root on the far branch: the column's
+    // rate there, read with the columns at the corner.
+    auto beyond = [&](Cols &cols) {
+        if (!(t_root > t_corner)) {
+            return true;
+        }
+        Cols rate(nc, std::vector<double>(n));
+        if (!rates(t_root, cols, rate)) {
+            return false;
+        }
+        for (std::size_t c = 0; c < nc; ++c) {
+            for (std::size_t i = 0; i < n; ++i) {
+                cols[c][i] += (t_root - t_corner) * rate[c][i];
+            }
+        }
+        return true;
+    };
+    Cols coarse;
+    Cols fine;
+    const bool ok = t_corner > t_start && integrate(4, coarse) && integrate(8, fine) &&
+                    beyond(coarse) && beyond(fine);
+    if (CVodeGetDky(cvode_mem, static_cast<sunrealtype>(t_root), 0, xv.v) == CV_SUCCESS) {
+        sync_model_at(t_root, N_VGetArrayPointer(xv.v), ns);
+    }
+    if (!ok) {
+        return false;
+    }
+    for (std::size_t c = 0; c < nc; ++c) {
+        double scale = 0.0;
+        for (std::size_t i = 0; i < n; ++i) {
+            scale = std::max(scale, std::fabs(fine[c][i]));
+        }
+        for (std::size_t i = 0; i < n; ++i) {
+            // Classic Runge-Kutta's error on half the substep is about a
+            // fifteenth of the two readings' difference: a tenth of the
+            // tolerance, at most.
+            const double allowed = 1.5 * rtol * (std::fabs(fine[c][i]) + 1e-3 * scale);
+            if (!(std::fabs(fine[c][i] - coarse[c][i]) <= allowed)) {
+                return false;
+            }
+        }
+    }
+    out = std::move(fine);
+    return true;
+}
+
 // ─── A restart that keeps the time (issue #1455) ────────────────────────────
 //
 // restart_past_surface restarts at (t*, x + δt·f): the state δt on along the
@@ -13879,8 +14101,8 @@ void CvodeSimulator::Impl::columns_past_surface(void *cvode_mem, int ns, double 
 // column: the restart from (τ, x(τ + δt)) is the flow's own solution from τ
 // only to first order, and it moves with τ by Φ·(f(x_r, τ + δt) − f(x_r, τ)).
 // So each column takes
-//     s += (f(x_r, t* + 2δt) − f(x_r, t* + δt))·dt*/dθ,
-// x_r the restart state, δt·∂f/∂t read past the surface. A narrow pulse whose condition reads `Tobs
+//     s += (f(x_r, t* + δt) − f(x_r, t*))·dt*/dθ,
+// x_r the restart state. A narrow pulse whose condition reads `Tobs
 // + time()` came out 3.3e-4 off at rtol 1e-12 on three output grids in seven without it, a third of
 // the δt·ṡ move the columns take with the state, where the clock is a third of the residual's rate.
 //
@@ -13911,23 +14133,28 @@ void CvodeSimulator::Impl::columns_for_kept_time(double t_evt, int ns,
         model.compute_derivs(t, x_restart.data(), f.data());
         model.compute_flux_split(t, x_restart.data(), nullptr, net.data(), gross.data());
     };
-    // Both readings past the surface, where the ladder verified the state at
-    // t* + δt is: at t* itself a condition that reads the time alone, `time()
-    // > k*E`, is still on the branch before, and the difference was the jump,
-    // which cancelled the saltation term (dX/dk 0 for -5). Where any switch's
-    // residual changes sides between the two, the term is left out.
+    // Both readings on one side of every switch. At t* a condition that reads
+    // the time alone, `time() > k*E`, may still be on the branch before, and
+    // the difference is then the jump itself, which cancelled the saltation
+    // term (dX/dk 0 for -5). Read past t* + δt instead, a clock switch the
+    // crossing's own refusal does not cover can flip between the two, and its
+    // whole jump came in (dW/dk_clock -2.1 for 0 a step short of `time() >
+    // 5`). Where a residual changes sides between them the term is left out.
+    // One that reads the same at both, a species parked at 0 under `Z > 0`,
+    // has not.
     auto &eval = model.evaluator();
-    std::vector<double> g_on;
-    read(t_evt + dt, f_kept, gross_kept);
+    std::vector<double> g_kept;
+    read(t_evt, f_kept, gross_kept);
     for (const NetworkModel::StateSwitch *one : state_switch_all) {
-        g_on.push_back(eval.evaluate(one->residual_expr_idx));
+        g_kept.push_back(eval.evaluate(one->residual_expr_idx));
     }
-    read(t_evt + 2.0 * dt, f_on, gross_on);
+    read(t_evt + dt, f_on, gross_on);
     bool one_side = true;
     for (std::size_t k = 0; k < state_switch_all.size() && one_side; ++k) {
         const double g = eval.evaluate(state_switch_all[k]->residual_expr_idx);
-        one_side = std::isfinite(g) && std::isfinite(g_on[k]) && g != 0.0 && g_on[k] != 0.0 &&
-                   (g < 0.0) == (g_on[k] < 0.0);
+        const double g0 = g_kept[k];
+        one_side = g == g0 || (std::isfinite(g) && std::isfinite(g0) && g != 0.0 && g0 != 0.0 &&
+                               (g < 0.0) == (g0 < 0.0));
     }
     sync_model_at(t_evt, x_restart.data(), ns);
     if (!one_side) {
@@ -16208,6 +16435,11 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             }
         }
         const bool ran = root_step_ran_past(root_step_end, ns, t_evt, x, batch);
+        // Issue #1456: the columns at the root from the step integrated again,
+        // where the step went past the corner and over nothing else.
+        if (!ran && root_step_end != nullptr && root_step_end->s_root.size() == s.size()) {
+            s = root_step_end->s_root;
+        }
         // dt*/dθ, read before the columns move: a crossing too near its
         // tangency to divide by leaves the clock's share out.
         std::vector<double> tau_kept;
@@ -20223,12 +20455,20 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             const double *xa = N_VGetArrayPointer(retake_end_x);
             return impl_->residual_at(gidx, t_at, std::vector<double>(xa, xa + ns), ns);
         };
-        const double g_start = residual_on_step(t_a);
-        const double g_stop = residual_on_step(t_stop);
-        impl_->sync_model_at(t_r, N_VGetArrayPointer(y), ns);
-        if (!(t_stop < t_r) || !std::isfinite(g_start) || !std::isfinite(g_stop) ||
-            g_start == 0.0 || g_stop == 0.0 || (g_start < 0.0) != (g_stop < 0.0)) {
-            return false;
+        //
+        // Asked only in a run with sensitivities, whose columns lose the jump.
+        // A plain run has nothing to lose there, and stopping on the far side
+        // keeps the step's error where declining the re-take would take it
+        // over whole: a triangle 1e-8 wide at rtol 1e-6 put Y 2.8e-3 off,
+        // where the re-take leaves it 3.7e-6.
+        if (sens.n_total > 0) {
+            const double g_start = residual_on_step(t_a);
+            const double g_stop = residual_on_step(t_stop);
+            impl_->sync_model_at(t_r, N_VGetArrayPointer(y), ns);
+            if (!(t_stop < t_r) || !std::isfinite(g_start) || !std::isfinite(g_stop) ||
+                g_start == 0.0 || g_stop == 0.0 || (g_start < 0.0) != (g_stop < 0.0)) {
+                return false;
+            }
         }
         if (!go_back_to_step_start(t_a, t_stop, t_r, nested)) {
             return false;
@@ -21873,6 +22113,17 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                                 const double *e = N_VGetArrayPointer(end);
                                 root_step_end.t = static_cast<double>(t_step);
                                 root_step_end.x.assign(e, e + ns);
+                                std::vector<int> crossed;
+                                for (int j = 0; j < n_state_switch; ++j) {
+                                    if (root_info[n_events + n_disc + j] != 0) {
+                                        crossed.push_back(state_switches[j]->residual_expr_idx);
+                                    }
+                                }
+                                if (!crossed.empty()) {
+                                    impl_->columns_over_root_step(
+                                        cvode_mem, ns, static_cast<double>(t_ret), rtol, crossed,
+                                        sens, root_step_end.s_root);
+                                }
                             }
                             N_VDestroy(end);
                         }
