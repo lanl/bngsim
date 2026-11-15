@@ -815,14 +815,13 @@ def _not_as_generated(model: Any, bngl: Path, protocol: ProtocolSpec | None) -> 
             want_params[pname] = float(declared_text)
         except ValueError:
             continue  # an expression: it follows the parameters it reads
-    sets: list[StateChange] = []
     for step in before:
         if not isinstance(step, StateChange):
             continue
         if step.kind == "set_parameter" and step.value is not None and step.target:
             want_params[step.target] = float(step.value)
         elif step.kind in ("set_concentration", "add_concentration") and step.target:
-            sets.append(step)
+            continue  # replayed below, in order with the parameters
         else:
             return []
     out: list[str] = []
@@ -834,24 +833,69 @@ def _not_as_generated(model: Any, bngl: Path, protocol: ProtocolSpec | None) -> 
                 out.append(f"parameter {name} is {held:.15g} there, {value:.15g} as declared")
     if out:
         return out  # the seed amounts read the parameters: judged once they agree
-    want_species: dict[str, float] = {}
+    # The actions replayed in order, each with the parameters as they stand at
+    # that step (issue #1740). A seed, and a setConcentration to an expression,
+    # follow their parameters to generation. An addConcentration makes its
+    # species a number, the amount it held then plus what it adds (BNGModel.pm:
+    # addConcentration evaluates $spec->Concentration), which a later
+    # setParameter does not move. Read at the parameters' final values, a seed
+    # B0 that a later setParameter("B0",20) moved gave 80 for BNG2.pl's 70.
+    work = model.clone()
+    start: dict[str, float] = {}
+    for pname, declared_text in params:
+        try:
+            start[pname] = float(declared_text)
+        except ValueError:
+            continue
+    start = {k: v for k, v in start.items() if k in names}
+    if start:
+        work.set_params(start)
+    held_as: dict[str, tuple[str, Any]] = {}  # species -> ("expr", text) or ("num", value)
     every_seed_read = True
     for pattern, amount in seeds:
         sname = _species_name(model, pattern)
-        declared_value = _value(model, amount)
-        if sname is not None and declared_value is not None:
-            want_species[sname] = declared_value
+        if sname is not None and _value(work, amount) is not None:
+            held_as[sname] = ("expr", amount)
         else:
             every_seed_read = False
-    for step in sets:
+
+    def now(entry: tuple[str, Any]) -> float | None:
+        kind, held = entry
+        return held if kind == "num" else _value(work, held)
+
+    for step in before:
+        if not isinstance(step, StateChange):
+            continue
+        if step.kind == "set_parameter":
+            if step.target in names and step.value is not None:
+                work.set_params({step.target: float(step.value)})
+            continue
         sname = _species_name(model, step.target or "")
-        set_value = (
-            float(step.value) if step.value is not None else _value(model, step.value_expr or "")
-        )
-        if sname is None or set_value is None:
+        if sname is None:
             return []
-        base = want_species.get(sname, 0.0) if step.kind == "add_concentration" else 0.0
-        want_species[sname] = base + set_value
+        if step.value is None and step.kind == "set_concentration":
+            if _value(work, step.value_expr or "") is None:
+                return []
+            held_as[sname] = ("expr", step.value_expr)
+            continue
+        set_value = (
+            float(step.value) if step.value is not None else _value(work, step.value_expr or "")
+        )
+        if set_value is None:
+            return []
+        if step.kind == "add_concentration":
+            base = now(held_as.get(sname, ("num", 0.0)))
+            if base is None:
+                return []
+            held_as[sname] = ("num", base + set_value)
+        else:
+            held_as[sname] = ("num", set_value)
+    want_species: dict[str, float] = {}
+    for sname, entry in held_as.items():
+        reached_amount = now(entry)
+        if reached_amount is None:
+            return []
+        want_species[sname] = reached_amount
     for sname, want in want_species.items():
         held = float(model.get_concentration(sname))
         if not close(held, want):
