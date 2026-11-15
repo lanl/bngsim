@@ -1129,7 +1129,12 @@ def write_bngl_protocol(protocol: ProtocolSpec, out_path: str | Path | None = No
             # Where the source generated its network, so the block reads back
             # with the actions before it in the network (issue #1687).
             lines.append(_generate_network_line(protocol.network_gen))
-        if isinstance(step, StateChange) and step.evaluated_once and step.value_expr:
+        if (
+            isinstance(step, StateChange)
+            and step.evaluated_once
+            and step.value_expr
+            and step.kind == "set_parameter"
+        ):
             moved = _moved_later(protocol.steps[k + 1 :], step.value_expr)
             if moved:
                 warnings.warn(
@@ -1140,6 +1145,25 @@ def write_bngl_protocol(protocol: ProtocolSpec, out_path: str | Path | None = No
                     "(issue #1682)",
                     ConversionWarning,
                     stacklevel=2,
+                )
+        elif (
+            isinstance(step, StateChange)
+            and step.evaluated_once
+            and step.value_expr
+            and step.kind == "set_concentration"
+        ):
+            moved = _moved_before_run(protocol.steps[k + 1 :], step.value_expr)
+            if moved:
+                from bngsim._simulator import _stacklevel_outside_bngsim
+
+                warnings.warn(
+                    f"{_state_change_action(step)} is evaluated once where it runs (a SED-ML "
+                    f"change); BNG2.pl keeps the amount as that expression until the next "
+                    f"run, so the species follows {', '.join(moved)}, which "
+                    f"{'is' if len(moved) == 1 else 'are'} changed before that run or "
+                    "scanned by it, and starts from another amount there (issue #1737)",
+                    ConversionWarning,
+                    stacklevel=_stacklevel_outside_bngsim(),
                 )
         if isinstance(step, Experiment):
             if step.output_start is not None:
@@ -1181,6 +1205,18 @@ def _moved_later(steps: Sequence[object], text: str) -> list[str]:
         elif isinstance(step, Experiment) and step.is_scan and step.scan_parameter in names:
             moved.append(step.scan_parameter or "")
     return list(dict.fromkeys(moved))
+
+
+def _moved_before_run(steps: Sequence[object], text: str) -> list[str]:
+    """The names *text* reads that *steps* set before their first run, or that
+    the first run scans: BNG2.pl's ``setConcentration`` keeps an expression
+    only until a run, so a change after it moves nothing."""
+    upto: list[object] = []
+    for step in steps:
+        upto.append(step)
+        if isinstance(step, Experiment):
+            break
+    return _moved_later(upto, text)
 
 
 def _num_list(v: Any) -> list[float] | None:

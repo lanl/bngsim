@@ -2973,7 +2973,18 @@ class _TaskReader:
                 else:
                     expr = f"({expr})/{size!r}"
         kind = "add_concentration" if add else "set_concentration"
-        return StateChange(kind=kind, target=name, value=value, value_expr=expr)
+        # Evaluated once, where it applies, as SED-ML evaluates a change, and
+        # as for a parameter above (issue #1737): kept as an expression, a
+        # species a computeChange sets from a parameter followed a scan of it.
+        # The per-point setValue a sweep reads as an expression of its
+        # parameter (``names``) is the exception, as for a parameter (#1733).
+        return StateChange(
+            kind=kind,
+            target=name,
+            value=value,
+            value_expr=expr,
+            evaluated_once=once and expr is not None,
+        )
 
     def _formula(
         self,
