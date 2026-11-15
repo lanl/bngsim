@@ -14005,10 +14005,10 @@ void CvodeSimulator::Impl::read_root_step(void *cvode_mem, int ns, double t_root
         double hi = t_root;
         double g_at_lo = g_start;
         double g_at_hi = g_hi;
-        const double near = residual_on_step(gidx, t_root - bracket);
-        if (std::isfinite(near) && near != 0.0 && (near < 0.0) == (g_start < 0.0)) {
+        const double g_near = residual_on_step(gidx, t_root - bracket);
+        if (std::isfinite(g_near) && g_near != 0.0 && (g_near < 0.0) == (g_start < 0.0)) {
             lo = t_root - bracket;
-            g_at_lo = near;
+            g_at_lo = g_near;
             // Within the bracket the residual is a line to its rounding: a few
             // steps of false position put the corner to the double.
             for (int it = 0; it < 4 && g_at_hi != 0.0; ++it) {
