@@ -226,9 +226,13 @@ def test_skips_in_a_touched_file_do_not_count():
     assert tfc.compare(BASE, head, {"t/test_a.py"})[0] == []
 
 
-def test_the_label_does_not_accept_new_skips():
+def test_the_label_accepts_new_skips_and_says_so():
+    # Skips that rise for no reason in the diff (a runner image, an extra) need
+    # a way out that is not an edit to every affected test file.
     head = {**BASE, "t/test_a.py": _c(10, 2 + tfc.SKIP_TOLERANCE)}
-    assert tfc.compare(BASE, head, set(), drops_allowed=True)[0]
+    errors, notes = tfc.compare(BASE, head, set(), drops_allowed=True)
+    assert errors == []
+    assert any(tfc.DROP_LABEL in n and "skips" in n for n in notes)
 
 
 # --- main's baseline -------------------------------------------------------
@@ -262,13 +266,21 @@ class FakeApi:
     """
 
     def __init__(
-        self, artifacts, ahead=None, counts=None, labels=None, merged=(), script_in_parent=True
+        self,
+        artifacts,
+        ahead=None,
+        counts=None,
+        labels=None,
+        merged=(),
+        squashed=(),
+        script_in_parent=True,
     ):
         self.artifacts = artifacts
         self.ahead = dict(ahead or {})
         self.counts = counts or {}
         self.labels = labels or {}
         self.merged = list(merged)
+        self.squashed = list(squashed)
         self.script_in_parent = script_in_parent
         self.calls: list[str] = []
 
@@ -279,10 +291,17 @@ class FakeApi:
         m = re.fullmatch(rf"repos/{REPO}/compare/(\w+)\.\.\.(\w+)", path)
         if m:
             n = self.ahead.get(m.group(1))
-            commits = [
-                {"commit": {"message": f"Merge pull request #{pr} from someone/branch\n\nx"}}
-                for pr in self.merged
-            ] + [{"commit": {"message": "an ordinary commit (#999)"}}]
+            commits = (
+                [
+                    {"commit": {"message": f"Merge pull request #{pr} from someone/branch\n\nx"}}
+                    for pr in self.merged
+                ]
+                + [
+                    {"commit": {"message": f"A squash-merged title (#{pr})\n\nbody"}}
+                    for pr in self.squashed
+                ]
+                + [{"commit": {"message": "an ordinary commit\n\nsee #999 (#998) for why"}}]
+            )
             if n is None:
                 return json.dumps({"status": "diverged", "commits": commits}).encode()
             status = "identical" if n == 0 else "ahead"
@@ -352,10 +371,17 @@ def test_the_bootstrap_is_only_where_the_script_arrives(in_parent, expected):
 
 
 def test_labels_since_reads_this_pr_and_every_pr_merged_since_the_baseline():
-    api = FakeApi([], ahead={"base": 3}, merged=[11, 12], labels={7: ["a"], 12: ["b"]})
-    assert tfc.labels_since(api, REPO, 7, "base", "head") == {"a", "b"}
-    assert f"repos/{REPO}/pulls/999" not in api.calls  # "(#999)" is no merge commit
-    assert tfc.labels_since(api, REPO, 0, "base", "head") == {"b"}  # a push
+    api = FakeApi(
+        [],
+        ahead={"base": 3},
+        merged=[11, 12],
+        squashed=[13],
+        labels={7: ["a"], 12: ["b"], 13: ["c"]},
+    )
+    assert tfc.labels_since(api, REPO, 7, "base", "head") == {"a", "b", "c"}
+    # Only a subject that names a merge counts, not a number in a body.
+    assert not any(c.endswith(("/pulls/999", "/pulls/998")) for c in api.calls)
+    assert tfc.labels_since(api, REPO, 0, "base", "head") == {"b", "c"}  # a push
 
 
 # --- the changed files, on a real repository --------------------------------
@@ -412,13 +438,13 @@ def guard(tmp_path, monkeypatch):
     (tmp_path / "logs" / "shard-1" / "r.xml").write_text(_REPORT)
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path / "summary.md"))
 
-    def run(api, *, changed=(), expect=(4, 1)):
+    def run(api, *, changed=(), expect=(4, 1), pr=7):
         monkeypatch.setattr(tfc, "gh_api", api)
         monkeypatch.setattr(tfc, "changed_files", lambda base, head: set(changed))
         out = tmp_path / "c.json"
         out.unlink(missing_ok=True)
         argv = ["guard", "--leg", "ubuntu-latest", "--reports", "logs", "--out", str(out)]
-        argv += ["--repo", REPO, "--sha", "head", "--pr", "7"]
+        argv += ["--repo", REPO, "--sha", "head", "--pr", str(pr)]
         if expect:
             argv += ["--expect-collected", str(expect[0]), "--expect-skipped", str(expect[1])]
         code = tfc.main(argv)
@@ -470,10 +496,19 @@ def test_guard_bootstraps_only_where_the_script_arrives(guard, capsys):
     assert "::warning::main has no" in capsys.readouterr().out
 
 
-def test_guard_fails_when_the_baselines_were_lost(guard, capsys):
+def test_a_pull_request_with_no_baseline_fails(guard, capsys):
     code, written = guard(FakeApi([], script_in_parent=True))
     assert code == 1 and written is None
-    assert "::error::main has no unexpired" in capsys.readouterr().out
+    assert "::error::main has no" in capsys.readouterr().out
+
+
+def test_main_with_no_baseline_passes_and_makes_one(guard, capsys):
+    # A cancelled or red first run on main must not leave main red for good:
+    # main's next run counts, passes, and uploads what it counted.
+    api = FakeApi([], script_in_parent=True)
+    code, written = guard(api, pr=0)
+    assert code == 0 and written == {"sha": "head", "files": HEAD_COUNTS}
+    assert not any("/contents/" in c for c in api.calls)
 
 
 def test_guard_fails_when_no_baseline_is_an_ancestor(guard, capsys):

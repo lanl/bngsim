@@ -27,23 +27,26 @@ That is finer than the floors were: one lost test in an untouched file fails,
 where the floor let up to its slack (500 for python/tests) go. A deliberate
 drop in an untouched file, for example a parametrize list that shrinks because
 its data in src/ changed, is acknowledged with the pull request label in
-DROP_LABEL, after which the failed job is re-run. The label counts on any pull
-request merged since the baseline as well as on the one under test, so a drop
-labelled where it was made is not charged to the changes merged after it.
+DROP_LABEL, after which the failed job is re-run; so is a rise in skips. The
+label counts on any pull request merged since the baseline as well as on the
+one under test, so a drop labelled where it was made is not charged to the
+changes merged after it.
 
 Main's counts come from the artifact the workflow uploads from a run on main,
-and only when this guard passed there, so a loss main took without a label
-stays red, on main and on every pull request, until someone labels the pull
-request that made it and re-runs. That is what the floors did. The baseline is
-the nearest of main's recent ones that is an ancestor of the commit under test,
-and the files the change touches are ``git diff --no-renames`` between the two,
-so a main that moved on since the baseline was taken is part of "the change"
-and is never misread as a loss. No baseline at all is an error, except on the
-commit that brings this script in.
+and only when this guard passed there, so a loss main took stays red, on main
+and on every pull request, until someone acts: label the pull request that
+made it (or, with none to blame, the pull request that accepts it) and re-run.
+That is what the floors did. The baseline is the nearest of main's recent ones
+that is an ancestor of the commit under test, and the files the change touches
+are ``git diff --no-renames`` between the two, so a main that moved on since the
+baseline was taken is part of "the change" and is never misread as a loss. A
+pull request with no baseline fails, except the one that brings this script in;
+a run on main with none passes and uploads one, so main recovers by itself.
 
-A known limit: the skip tolerance is against a baseline that moves, so skips
-can creep up by SKIP_TOLERANCE per merge in untouched files without failing.
-The ceilings it replaced gave a group of 30 to 56 new skips the same pass.
+A known limit: skips are held to a baseline that moves with main, so each
+merge may add up to SKIP_TOLERANCE skips in untouched files and the next
+baseline takes them in. There is no absolute cap, as the skip ceilings it
+replaced had.
 
 Counts are read from pytest's ``--junitxml`` reports. A test is one
 ``<testcase>``. One that holds a ``<skipped>`` element that is not an xfail is
@@ -74,7 +77,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 #: baseline, so this is headroom for noise, not for platforms.
 SKIP_TOLERANCE = 10
 
-#: The pull request label that accepts lost tests in files the change does not touch.
+#: The pull request label that accepts lost tests, or more skips, in files the
+#: change does not touch.
 DROP_LABEL = "drops tests"
 
 #: The artifact a green run uploads, one per leg: ``ARTIFACT_PREFIX + label``.
@@ -83,8 +87,9 @@ ARTIFACT_PREFIX = "test-file-counts-"
 #: The file inside that artifact.
 COUNTS_FILE = "test-file-counts.json"
 
-#: How many of main's newest baselines to try for the nearest ancestor.
-CANDIDATES = 10
+#: How many of main's newest baselines to try for the nearest ancestor. About
+#: a week of merges, so re-running an old pull request job still finds one.
+CANDIDATES = 30
 
 Counts = dict[str, dict[str, int]]
 
@@ -169,11 +174,17 @@ def compare(
                 f"this change does not touch: {rows}. If that is intended, "
                 f"add the '{DROP_LABEL}' label to the pull request and re-run this job."
             )
-    if skip_rise > skip_tolerance:
+    if skip_rise > skip_tolerance and drops_allowed:
+        notes.append(
+            f"{skip_rise} more skips in untouched files, accepted by the "
+            f"'{DROP_LABEL}' label: " + "; ".join(skip_rows)
+        )
+    elif skip_rise > skip_tolerance:
         errors.append(
             f"{skip_rise} more tests skip than on main in files this change does not touch "
             f"(at most {skip_tolerance} allowed): {'; '.join(skip_rows)}. "
-            "A group of tests turned into skips."
+            "A group of tests turned into skips. If that is intended, add the "
+            f"'{DROP_LABEL}' label to the pull request and re-run this job."
         )
     elif skip_rows:
         notes.append(
@@ -203,9 +214,10 @@ def gh_api(path: str) -> bytes:
 
 
 def main_artifacts(api: Api, repo: str, name: str) -> list[dict]:
-    """Every unexpired artifact called ``name`` from a run on this repository's main.
+    """Main's unexpired artifacts called ``name``, newest first.
 
-    Only main's runs upload one, so the newest page of 100 holds them all.
+    Only main's runs upload one, so the newest page of 100 is all main's, and
+    holds more than the CANDIDATES that are tried.
     """
     listing = json.loads(api(f"repos/{repo}/actions/artifacts?name={name}&per_page=100"))
     found = []
@@ -258,10 +270,9 @@ def pick_baseline(api: Api, repo: str, name: str, head_sha: str) -> dict | None:
 def is_bootstrap(api: Api, repo: str, head_sha: str) -> bool:
     """Whether this commit is where this script arrives: its first parent lacks it.
 
-    That is the pull request that adds it and the main run that merges it, the
-    only runs that can find no baseline because none was ever made. Any later
-    run that finds none means the baselines were lost (expired, deleted, or
-    main never went green), and that is an error, not a pass.
+    On a pull request, that is the one that adds it. Any later pull request that
+    finds no baseline is failed, because main uploads one from each passing
+    run; main itself never is (see cmd_guard).
     """
     parents = json.loads(api(f"repos/{repo}/commits/{head_sha}")).get("parents") or []
     if not parents:
@@ -281,7 +292,8 @@ def download_counts(api: Api, repo: str, art: dict) -> Counts:
         return json.loads(zf.read(COUNTS_FILE))["files"]
 
 
-MERGE_PR = re.compile(r"^Merge pull request #(\d+)\b")
+#: A merge commit's subject, or a squash merge's "Title (#N)".
+MERGE_PR = re.compile(r"^Merge pull request #(\d+)\b|\(#(\d+)\)$")
 
 
 def labels_since(api: Api, repo: str, pr: int, base_sha: str, head_sha: str) -> set[str]:
@@ -294,10 +306,13 @@ def labels_since(api: Api, repo: str, pr: int, base_sha: str, head_sha: str) -> 
     numbers = {pr} if pr else set()
     if base_sha != head_sha:
         cmp = json.loads(api(f"repos/{repo}/compare/{base_sha}...{head_sha}"))
+        # At most 250 commits, the newest: a drop more than ~70 merges back is
+        # missed, and that run is red until a nearer baseline is uploaded.
         for c in cmp.get("commits", []):
-            m = MERGE_PR.match((c.get("commit") or {}).get("message", ""))
+            subject = (c.get("commit") or {}).get("message", "").split("\n", 1)[0]
+            m = MERGE_PR.search(subject)
             if m:
-                numbers.add(int(m.group(1)))
+                numbers.add(int(m.group(1) or m.group(2)))
     labels: set[str] = set()
     for n in sorted(numbers):
         pull = json.loads(api(f"repos/{repo}/pulls/{n}"))
@@ -392,29 +407,32 @@ def cmd_guard(a: argparse.Namespace) -> int:
     name = ARTIFACT_PREFIX + a.leg
     try:
         art = pick_baseline(api, a.repo, name, a.sha)
-        if art is None and not is_bootstrap(api, a.repo, a.sha):
+        if art is None and a.pr and not is_bootstrap(api, a.repo, a.sha):
             raise RuntimeError(
-                f"main has no unexpired '{name}' artifact to compare with. Each green "
-                "run on main uploads one, so main has not been green for 90 days or "
-                "the artifacts were deleted: re-run python-tests on main."
+                f"main has no '{name}' artifact to compare with. A passing run on "
+                "main uploads one: re-run this job once main's latest python-tests "
+                "run has passed."
             )
     except RuntimeError as exc:
         print(f"::error::{exc}")
         return 1
     if art is None:
+        # The pull request that adds this script, or a run on main. Main
+        # uploads what it counted, so the next run has a baseline again; a
+        # missing one cannot leave main red with no way back.
         print(
-            f"::warning::main has no '{name}' artifact yet, so nothing was compared; "
-            "this change adds the guard, and main's first green run with it uploads one."
+            f"::warning::main has no '{name}' artifact, so nothing was compared; "
+            "this run's counts become the baseline if it is on main."
         )
-        summary([f"### Test file counts · {a.leg}", "", "No baseline yet: nothing compared."])
+        summary([f"### Test file counts · {a.leg}", "", "No baseline: nothing compared."])
         write_counts(a.out, head, a.sha)
         return 0
     base_sha = art["workflow_run"]["head_sha"]
     base = download_counts(api, a.repo, art)
     changed = changed_files(base_sha, a.sha)
     errors, notes = compare(base, head, changed)
-    lost = any(DROP_LABEL in e for e in errors)  # only then ask for labels
-    if lost and DROP_LABEL in labels_since(api, a.repo, a.pr, base_sha, a.sha):
+    # Every error compare() reports is one the label accepts; ask only then.
+    if errors and DROP_LABEL in labels_since(api, a.repo, a.pr, base_sha, a.sha):
         errors, notes = compare(base, head, changed, drops_allowed=True)
 
     b_col, b_skip = totals(base)
