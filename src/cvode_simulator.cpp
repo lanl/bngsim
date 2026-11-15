@@ -13057,8 +13057,10 @@ void CvodeSimulator::Impl::note_event_on_state_switch(
 // The residual is then put the few ulp to its far side, by moving each species
 // it reads that the flow moves by the same few ulp of that species' own: one
 // the flow does not move, a fixed species or a static term of a sum, stays
-// where it is, and no species moves by more than rounding moves it, or, where
-// the residual reads the time, by up to kRestartMoveReach times that. (Moved as
+// where it is, and no species moves by more than rounding moves it. Where the
+// residual reads the time, the residual is moved by at most the species' few
+// ulp plus what their flow moves it in kStalledSwitchUlps·kRestartMoveReach
+// ulp of the time (issue #1776). (Moved as
 // the flow would move them, two species of a sum that go opposite ways at 0.1
 // each, 1e-8 apart, each took 1e7 times the residual's own move.) Nothing
 // else moves, and the time does not. The integrator restarts there. Only
