@@ -319,7 +319,7 @@ parameter values already decide, such as `(h <= 0) or (h >= 1)` at h = 2, is rea
 as that constant, and adds no root. (Before #1636 the guard was written only
 where h was in (0, 1) at load, because a root on each of 300 Hill reactions with
 h >= 1 made a run 10x slower.) The comparisons themselves are still evaluated:
-300 Hill reactions at h = 2 take 4.0 ms a run, against 2.7 ms unguarded. A model
+300 Hill reactions at h = 2 take 3.3 ms a run, against 3.0 ms unguarded. A model
 with events keeps every root, since an event may move h during the run.
 
 A reaction line is `<index> <reactants> <products> <rate law>`, and only a
