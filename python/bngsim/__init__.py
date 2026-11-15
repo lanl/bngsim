@@ -171,9 +171,26 @@ def _has_module(name: str) -> bool:
 # Optional Python dependency flags. libsbml is needed for any SBML- or
 # Antimony-loaded model; antimony is additionally needed for .ant input.
 # vivarium-core powers the optional bngsim.vivarium process shell (GH #102).
-HAS_LIBSBML: bool = _has_module("libsbml")
 HAS_ANTIMONY: bool = _has_module("antimony")
 HAS_VIVARIUM: bool = _has_module("vivarium")
+
+
+def _libsbml_status() -> str | None:
+    """``None`` when ``import libsbml`` works here, else why not (issue #1760).
+
+    python-libsbml is a base dependency, so a ``find_spec`` check is almost always
+    ``True``, and it stays ``True`` where the import fails: on a slim container
+    image, libsbml's Linux wheel needs the system expat library, which the image
+    does not ship, and every SBML or Antimony load dies with a bare
+    ``ImportError`` while ``capabilities()`` reported SBML as available. So this
+    tries the import, lazily: ``bngsim.HAS_LIBSBML`` (see ``__getattr__``) is
+    ``_libsbml_status() is None``, and ``capabilities()`` reads the one answer for
+    its flag and its ``missing`` text. ``import bngsim`` does not pay for libsbml,
+    and the flag agrees with what a load does. See :mod:`bngsim._libsbml_import`.
+    """
+    from bngsim._libsbml_import import libsbml_problem
+
+    return libsbml_problem()
 
 
 def _bngl_available() -> bool:
@@ -355,14 +372,18 @@ def _build_summary() -> dict[str, Any]:
 
 
 def __getattr__(name: str) -> object:
-    """Lazily probe ``HAS_BNGL`` (PEP 562); everything else is a normal attribute.
+    """Lazily probe ``HAS_BNGL`` and ``HAS_LIBSBML`` (PEP 562); everything else is
+    a normal attribute.
 
     Re-probed on each access rather than cached, so a caller that exports
     ``$BNGPATH`` at runtime sees the change. That stays cheap: the only expensive
-    step is the first ``import bionetgen``, which ``sys.modules`` memoizes.
+    steps are the first ``import bionetgen`` and the first ``import libsbml``,
+    which ``sys.modules`` memoizes.
     """
     if name == "HAS_BNGL":
         return _bngl_available()
+    if name == "HAS_LIBSBML":
+        return _libsbml_status() is None
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -455,12 +476,13 @@ __all__ = [
     "HAS_KLU",
     "HAS_LAPACK_DENSE",
     "HAS_MIR",
-    "HAS_LIBSBML",
     "HAS_ANTIMONY",
     "HAS_VIVARIUM",
-    # Lazy (see __getattr__ above): a runtime probe for BNG2.pl + perl, not a
-    # module check, and not paid for at import.
+    # Lazy (see __getattr__ above), neither paid for at import: a runtime probe
+    # for BNG2.pl + perl, not a module check; and an import of libsbml, which can
+    # be installed and still not load (issue #1760).
     "HAS_BNGL",
+    "HAS_LIBSBML",
     "capabilities",
     # Codegen
     "prepare_codegen",
@@ -673,20 +695,25 @@ def capabilities() -> dict[str, Any]:
     >>> caps["features"]["lapack_dense"] == bngsim.HAS_LAPACK_DENSE
     True
     """
+    # Tried, not looked up: python-libsbml can be installed and still fail to
+    # load (issue #1760), and the features below have to say what a load does.
+    # One attempt serves the flag and, below, the `missing` text.
+    libsbml_problem = _libsbml_status()
+    has_libsbml = libsbml_problem is None
     features: dict[str, bool] = {
         "nfsim": HAS_NFSIM,
         "rulemonkey": HAS_RULEMONKEY,
         "klu": HAS_KLU,
         "lapack_dense": HAS_LAPACK_DENSE,
         "mir": HAS_MIR,
-        "libsbml": HAS_LIBSBML,
+        "libsbml": has_libsbml,
         "antimony": HAS_ANTIMONY,
         "vivarium": HAS_VIVARIUM,
         "bngl": _bngl_available(),
-        "sbml_import": HAS_LIBSBML,
-        "sbml_ssa": HAS_LIBSBML,
-        "sbml_psa": HAS_LIBSBML,
-        "antimony_import": HAS_ANTIMONY and HAS_LIBSBML,
+        "sbml_import": has_libsbml,
+        "sbml_ssa": has_libsbml,
+        "sbml_psa": has_libsbml,
+        "antimony_import": HAS_ANTIMONY and has_libsbml,
         "codegen": True,
         "output_sensitivities": True,
         "effective_ic_sensitivity": True,
@@ -751,8 +778,11 @@ def capabilities() -> dict[str, Any]:
             "and BNGSIM_CODEGEN_JIT=mir is the opt-in that would use this "
             "in-process JIT instead, for a host with no compiler (GH #78)."
         )
-    if not HAS_LIBSBML:
-        libsbml_msg = "optional dependency 'python-libsbml' not installed"
+    if not has_libsbml:
+        # What the import itself said: on a slim container image the package is
+        # installed and its compiled module cannot load, and the fix is a system
+        # package, not pip (issue #1760).
+        libsbml_msg = libsbml_problem or "optional dependency 'python-libsbml' not installed"
         missing["libsbml"] = libsbml_msg
         missing["sbml_import"] = libsbml_msg
         missing["sbml_ssa"] = libsbml_msg
@@ -770,7 +800,7 @@ def capabilities() -> dict[str, Any]:
 
         missing["bngl"] = f"BNGL loading unavailable — {resolve_bng().why_not()}"
     if not features["antimony_import"]:
-        if not HAS_ANTIMONY and not HAS_LIBSBML:
+        if not HAS_ANTIMONY and not has_libsbml:
             missing["antimony_import"] = (
                 "requires optional dependencies 'antimony' and 'python-libsbml'"
             )
