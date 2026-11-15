@@ -186,6 +186,46 @@ _COSMETIC_SETOPTIONS = frozenset({"specieslabel"})
 # ─── IR ─────────────────────────────────────────────────────────────────────
 
 
+def _plain(value: Any) -> Any:
+    """*value* with each numpy scalar and array as the Python number, bool or
+    list it holds, through mappings, lists and tuples (issue #1750).
+
+    A step may be given numpy values (a seed from ``rng.integers()``, a count,
+    a sweep's ``np.linspace``). Held as they were, ``json.dumps`` refused them,
+    so a protocol that ran could not be written, to JSON or to the SED-ML that
+    embeds it; the actions block quoted an int64 seed as a string and wrote a
+    numpy bool as "True" or "False"; the SED-ML left out a uint64 seed it read
+    as a float; and a scan's float32 bounds made float32 points. A step holds
+    the Python values instead (:meth:`StateChange.__post_init__`,
+    :meth:`Experiment.__post_init__`). ``item()`` is exact: an ``int64`` is the
+    int it holds, a ``float32`` the double it widens to."""
+    import numpy as np
+
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, Mapping):
+        return {k: _plain(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_plain(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_plain(v) for v in value)
+    return value
+
+
+def _hold_plain(step: Any) -> None:
+    """Replace each field of a frozen *step* that holds a numpy value with the
+    Python value it holds (:func:`_plain`)."""
+    import dataclasses
+
+    for f in dataclasses.fields(step):
+        value = getattr(step, f.name)
+        plain = _plain(value)
+        if plain is not value:
+            object.__setattr__(step, f.name, plain)
+
+
 @dataclass(frozen=True)
 class StateChange:
     """A model-state action between experiments (the BNG ``set*`` family)."""
@@ -208,6 +248,9 @@ class StateChange:
     # holds: a SED-ML computeChange or setValue, read from another tool's
     # document.
     evaluated_once: bool = False
+
+    def __post_init__(self) -> None:
+        _hold_plain(self)
 
     def to_dict(self) -> dict[str, Any]:
         out = {
@@ -275,6 +318,7 @@ class Experiment:
     output_start: float | None = None
 
     def __post_init__(self) -> None:
+        _hold_plain(self)
         if self.output_start is None:
             return
         start = float(self.output_start)
@@ -993,7 +1037,11 @@ def _flag_lossy(
 
 def _action_num(v: float | int) -> str:
     """Render a numeric action argument: an integral value as a bare int, else
-    a ``float()``-round-tripping repr (BNG re-parses every value)."""
+    a ``float()``-round-tripping repr (BNG re-parses every value). An int is
+    written as it is: through a float, a seed above 2**53 changed, and 2**64 - 1
+    was written as 2**64, out of a seed's range (issue #1750)."""
+    if isinstance(v, int) and not isinstance(v, bool):
+        return str(v)
     f = float(v)
     return str(int(f)) if f.is_integer() else repr(f)
 
@@ -1664,6 +1712,10 @@ def _scalar(tok: str) -> Any:
     tok = tok.strip()
     if len(tok) >= 2 and tok[0] in ("'", '"') and tok[-1] == tok[0]:
         return tok[1:-1]
+    if re.fullmatch(r"[+-]?\d+", tok):
+        # The integer it spells: through a float, a seed above 2**53 changed
+        # (issue #1750). Perl holds a 64-bit integer exactly too.
+        return int(tok)
     try:
         f = float(tok)
         return int(f) if f.is_integer() and "." not in tok and "e" not in tok.lower() else f
