@@ -2625,6 +2625,92 @@ def _model_changes(model: ET.Element) -> list[ET.Element]:
     return list(loc) if loc is not None else []
 
 
+#: The label a chain's start is saved under, numbered (issue #1739).
+_CHAIN_LABEL = "__sedml_chain_{}"
+
+
+def _sequence(expansions: list[list[object]]) -> list[object]:
+    """The protocol steps that run *expansions* in order, each from the state
+    it starts from, with each experiment once (issue #1739).
+
+    Each expansion is one task's steps from the initial state: a run of its
+    own, or a chain write_sedml_protocol writes for a run that continues
+    earlier ones, which replays them first. Its new part is what follows its
+    second-to-last experiment; the rest is the replay, which names the state
+    it continues from. Where that is the state the steps so far are in, the
+    new part continues it. Where the steps reached it before, it is saved
+    there and reset to here. Where it is the initial state, the steps reset to
+    that. A replay the steps never reached (a document another tool wrote) is
+    run in full from the initial state, as written.
+
+    A state is named by the steps since the last reset to the initial state.
+    The dedupe this replaced kept every expansion that was no prefix of
+    another: it dropped a run that repeated a chain's first run, ran a shared
+    replay twice, and put a chain after an unrelated run before it."""
+    from bngsim.convert._protocol import Experiment, StateChange
+
+    to_initial = (
+        StateChange(kind="reset_concentrations"),
+        StateChange(kind="reset_parameters", label=_INITIAL_LABEL),
+    )
+    out: list[object] = []
+    history: list[object] = []  # the steps since the last reset to the initial state
+    reached: list[tuple[tuple[object, ...], int]] = [((), 0)]  # (state, len(out) there)
+    saves: dict[int, str] = {}  # len(out) where a save goes -> its label
+
+    def emit(steps: list[object]) -> None:
+        for step in steps:
+            if step is _RESET:
+                out.extend(to_initial)
+                history.clear()
+            else:
+                out.append(step)
+                history.append(step)
+            reached.append((tuple(history), len(out)))
+
+    def since_reset(steps: list[object]) -> tuple[object, ...]:
+        cut = max((i + 1 for i, s in enumerate(steps) if s is _RESET), default=0)
+        return tuple(steps[cut:])
+
+    for steps in expansions:
+        runs = [i for i, s in enumerate(steps) if isinstance(s, Experiment)]
+        split = runs[-2] + 1 if len(runs) > 1 else 0
+        replay, new = steps[:split], steps[split:]
+        state = since_reset(replay)
+        if state == tuple(history):
+            emit(new)  # it continues where the steps are
+            continue
+        at = next((n for key, n in reversed(reached) if key == state), None)
+        if at is None:
+            if out:
+                out.extend(to_initial)
+                history.clear()
+                reached.append(((), len(out)))
+            emit(steps)  # a replay never reached: run it as written
+        elif not state:
+            out.extend(to_initial)
+            history.clear()
+            reached.append(((), len(out)))
+            emit(new)
+        else:
+            label = saves.setdefault(at, _CHAIN_LABEL.format(len(saves)))
+            out.extend(
+                (
+                    StateChange(kind="reset_concentrations", label=label),
+                    StateChange(kind="reset_parameters", label=label),
+                )
+            )
+            history[:] = state
+            reached.append((tuple(history), len(out)))
+            emit(new)
+    for at in sorted(saves, reverse=True):
+        out[at:at] = [
+            StateChange(kind="save_concentrations", label=saves[at]),
+            StateChange(kind="save_parameters", label=saves[at]),
+        ]
+    return out
+
+
 class _TaskReader:
     """The standard elements of a document, read by task (issue #1662)."""
 
@@ -2672,28 +2758,7 @@ class _TaskReader:
             if any(isinstance(s, Experiment) for s in steps):
                 expansions.append(steps)
                 self._after_a_reset_scan(elem.get("id") or "a task", steps)
-        # A chain that repeats the start of a longer one is the same runs from
-        # the same state: write_sedml_protocol writes a run that continues an
-        # earlier one as a repeatedTask that replays the runs before it, and
-        # the task of the first run alone beside it, which the chain names as
-        # its first subtask: the two are the same steps.
-        kept = [
-            steps
-            for steps in expansions
-            if not any(
-                len(other) > len(steps) and other[: len(steps)] == steps for other in expansions
-            )
-        ]
-        reset = (
-            StateChange(kind="reset_concentrations"),
-            StateChange(kind="reset_parameters", label=_INITIAL_LABEL),
-        )
-        out: list[object] = []
-        for i, steps in enumerate(kept):
-            if i:
-                out.extend(reset)
-            for step in steps:
-                out.extend(reset if step is _RESET else (step,))
+        out = _sequence(expansions)
         if any(isinstance(s, StateChange) and s.kind == "reset_parameters" for s in out):
             out.insert(0, StateChange(kind="save_parameters", label=_INITIAL_LABEL))
         return ProtocolSpec(steps=tuple(out), source=None, dropped=(), lossy=tuple(self.lossy))
