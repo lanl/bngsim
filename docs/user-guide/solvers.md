@@ -805,3 +805,34 @@ import logging
 bngsim.configure_logging(logging.DEBUG)
 # Now all bngsim operations produce log output
 ```
+
+### SUNDIALS' own lines
+
+The ODE and steady-state solvers are SUNDIALS', and SUNDIALS writes lines of its
+own, straight to the process's streams: they do not pass through `sys.stdout`,
+`sys.stderr`, `warnings` or the `bngsim` logger, so `contextlib.redirect_stdout`,
+a warnings filter and a logging level do not catch them.
+
+```
+[WARNING][rank 0][...cvodes.c:3482][CVode] Internal t = 1e+06 and h = 1.49012e-13
+are such that t + h = t on the next step. The solver will continue anyway.
+```
+
+Both kinds go to **standard error**: an `[ERROR]` line beside the
+`SimulationError` a failed run raises, and a `[WARNING]` line from a run that
+may well be right (the one above is from `A -> 0` at `k = 1e9` started at
+`t = 1e6`, which returns the right answer). Standard output is left to your
+script. Before issue #1680 the warnings went to standard output.
+
+SUNDIALS reads two environment variables when a run starts, and bngsim leaves
+them in charge where they are set:
+
+```bash
+SUNLOGGER_WARNING_FILENAME=/dev/null python script.py   # drop the warnings (NUL on Windows)
+SUNLOGGER_WARNING_FILENAME=stdout    python script.py   # where they went before
+SUNLOGGER_ERROR_FILENAME=sundials.log python script.py  # the errors, to a file
+```
+
+A model whose rate laws switch on time or on state restarts the integrator at
+each switch, which draws the warning above at every restart; bngsim drops the
+warnings of such a run itself.

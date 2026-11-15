@@ -12,9 +12,11 @@
 #include <kinsol/kinsol.h>
 #include <nvector/nvector_serial.h>
 #include <sundials/sundials_context.h>
+#include <sundials/sundials_logger.h>
 #include <sunlinsol/sunlinsol_dense.h>
 #include <sunmatrix/sunmatrix_dense.h>
 
+#include <cstdlib> // std::getenv
 #include <utility> // std::exchange
 
 namespace bngsim {
@@ -27,6 +29,25 @@ struct SunContextGuard {
     SunContextGuard() {
         if (SUNContext_Create(SUN_COMM_NULL, &ctx) != 0) {
             ctx = nullptr;
+            return;
+        }
+        // SUNDIALS' default logger writes its warnings to the process's
+        // standard output (issue #1680). A run that is right can draw one:
+        // A -> 0 at k = 1e9 from t = 1e6 put eleven "[WARNING] ... t + h = t
+        // on the next step" lines into the stdout of the script that called
+        // it, past sys.stdout, so into whatever that script prints or pipes.
+        // They go to standard error here, where SUNDIALS already sends its
+        // errors (#447 kept those). SUNLOGGER_WARNING_FILENAME, which SUNDIALS
+        // reads when it creates the logger, is the caller's own choice of
+        // where they go and is left as set: "stdout" puts them back, the null
+        // device drops them. Every context bngsim makes is made here, so the
+        // time course, the steady-state march and KINSOL all follow; the runs
+        // that send a context's warnings to the null device still do.
+        const char *own = std::getenv("SUNLOGGER_WARNING_FILENAME");
+        if (own == nullptr || *own == '\0') {
+            SUNLogger logger = nullptr;
+            if (SUNContext_GetLogger(ctx, &logger) == SUN_SUCCESS && logger != nullptr)
+                SUNLogger_SetWarningFilename(logger, "stderr");
         }
     }
     ~SunContextGuard() {
