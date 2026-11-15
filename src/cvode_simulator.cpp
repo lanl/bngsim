@@ -5842,6 +5842,7 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
         // and drop any pending seed left by an earlier sensitivity run.
         model.set_ic_state_dirty(true);
         model.set_advanced_since_baseline(true);
+        model.set_ssa_counts_stored(false); // concentrations again (issue #1463)
         model.clear_pending_sens_seed();
     }
 
@@ -7292,6 +7293,9 @@ void CvodeSimulator::Impl::write_final_state_back(const SolverOptions &opts, int
     // seed (it advanced the state without tracking dx/dθ).
     model.set_ic_state_dirty(true);
     model.set_advanced_since_baseline(true);
+    // What an ODE run writes back is concentrations, whatever an SSA run left
+    // before it, and the next SSA run counts them at the size (issue #1463).
+    model.set_ssa_counts_stored(false);
     if (sens.n_p > 0) {
         std::vector<double> seed(static_cast<size_t>(ns) * sens.n_p);
         for (int iS = 0; iS < sens.n_p; ++iS) {

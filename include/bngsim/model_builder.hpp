@@ -159,6 +159,11 @@ class ModelBuilder {
     /// No-op if species_idx0 is out of range.
     void set_species_ssa_live_volume(int species_idx0, int live_idx0);
 
+    /// Issues #1464/#1659: the same, for a species in a compartment an
+    /// assignment rule sizes: V_live is the value of parameter param_idx0, which
+    /// the rule's function writes. No-op if species_idx0 is out of range.
+    void set_species_ssa_live_volume_param(int species_idx0, int param_idx0);
+
     /// GH #231 (rateOf sub-cluster 3): mark a hasOnlySubstanceUnits=true species
     /// in a CONSTANT-volume compartment so its rateOf csymbol reports the
     /// amount-rate (volume_factor·d(conc)/dt) instead of the stored d(conc)/dt.
