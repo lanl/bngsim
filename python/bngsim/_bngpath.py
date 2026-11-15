@@ -179,19 +179,23 @@ def _perl_problem_reason(bng2_pl: Path, problem: str) -> str:
         return f"{head} — check that BNG2.pl and its Perl2 library are complete and match"
     module = missing.group(1)
     try:
-        own = (bng2_pl.parent / "Perl2" / f"{module}.pm").is_file()
+        # Beside the real file, as BNG2.pl's own $FindBin::RealBin is: conda and
+        # others put a symlink to it on PATH, with no Perl2 folder beside the link.
+        folder = bng2_pl.resolve().parent
+        own = (folder / "Perl2" / f"{module}.pm").is_file()
     except OSError:
         own = False
     if own:
         return (
             f"{head} — {module}.pm is one of BioNetGen's own modules, in the Perl2 folder "
-            "beside BNG2.pl, so $BNGPATH or $BioNetGenRoot points BNG2.pl at another "
-            "library: unset them, or point them at the folder that holds BNG2.pl"
+            f"in {folder}, so $BNGPATH or $BioNetGenRoot points BNG2.pl at another "
+            f"library: unset them, or point them at {folder}"
         )
+    name = module.replace("/", "::")  # as Perl spells it in `use`
     return (
-        f"{head} — {module} is not one of BioNetGen's own modules but part of Perl's "
-        "library, which Debian's perl-base, the only Perl on slim container images, "
-        "leaves out (FindBin first). Install the full Perl: `apt-get install perl` "
+        f"{head} — {name} is not one of BioNetGen's own modules, so it is probably part "
+        "of Perl's own library, which Debian's perl-base, the only Perl on slim "
+        "container images, leaves out. Install the full Perl: `apt-get install perl` "
         "(Debian/Ubuntu)"
     )
 

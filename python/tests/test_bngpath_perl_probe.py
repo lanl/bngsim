@@ -93,6 +93,8 @@ def test_a_perl_that_cannot_compile_bng2_pl_is_not_usable(tmp_path, monkeypatch)
     assert "cannot compile it" in why
     assert MISSING in why  # Perl's own line, so the reader sees which module
     assert "apt-get install perl" in why  # the fix for a module of Perl's own
+    assert f"{MISSING} is not one of BioNetGen's own modules" in why  # as Perl spells it
+    assert "probably part of Perl's own library" in why  # a guess, said as one
     assert "$BioNetGenRoot" not in why  # not the advice for one of BioNetGen's own
     assert "(@INC" not in why  # the search-path listing is dropped; "in @INC" stays
     assert bngpath._NOT_FOUND not in why  # the checkout footer must not fire for it
@@ -199,6 +201,33 @@ def test_the_same_bng2_pl_with_its_own_library_compiles(tmp_path, monkeypatch):
     monkeypatch.setenv("BNG2_PL", str(root / "BNG2.pl"))
     r = bngpath.resolve_bng()
     assert r.ok is True, r.why_not()
+
+
+symlinks_posix = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-specific: creating a symlink needs privileges"
+)
+
+
+@needs_perl
+@symlinks_posix
+def test_a_bng2_pl_reached_through_a_symlink_finds_its_own_modules(tmp_path, monkeypatch):
+    """Conda puts a symlink to BNG2.pl on PATH, with no Perl2 folder beside the link.
+    BNG2.pl finds its library from the real file ($FindBin::RealBin), so the check
+    for one of its own modules must look there too (review of #1780)."""
+    root = _install_with_library(tmp_path)
+    on_path = tmp_path / "bin"
+    on_path.mkdir()
+    (on_path / "BNG2.pl").symlink_to(root / "BNG2.pl")
+    monkeypatch.setenv("BNG2_PL", str(on_path / "BNG2.pl"))
+    assert bngpath.resolve_bng().ok is True  # control: the link compiles, from RealBin
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.setenv("BioNetGenRoot", str(elsewhere))
+    why = bngpath.resolve_bng().why_not()
+    assert "BNGUtils.pm is one of BioNetGen's own modules" in why
+    assert f"point them at {root.resolve()}" in why  # the real folder, not the link's
+    assert "apt-get install perl" not in why
 
 
 @needs_perl
