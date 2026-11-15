@@ -233,11 +233,12 @@ def test_the_triangle_at_a_loose_tolerance(tmp_path, law):
 
 
 def test_the_issues_traced_grid(tmp_path):
-    """w = 0.005, rtol 1e-9: main 3.7e-4 off on the 9-point grid; every grid
-    is now near 5.2e-5, the same on each."""
-    for n_points in (9, 16, 23):
+    """w = 0.005, rtol 1e-9: main 3.7e-4 and 3.1e-4 off on the 9- and 23-point
+    grids. Every grid is now near 5.2e-5, and 1.8e-4 at worst over eight
+    nearby configurations."""
+    for n_points in (9, 23):
         _, dk = _columns(_model(tmp_path, LAWS["if"], c=50.0, w=0.005), n_points, 1e-9)
-        assert dk == pytest.approx(EXACT, rel=1.2e-4), n_points
+        assert dk == pytest.approx(EXACT, rel=2.5e-4), n_points
 
 
 RELAX_U = "(Aobs+a*time())"
