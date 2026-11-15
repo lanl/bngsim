@@ -6289,11 +6289,11 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(
                 "carry_sensitivities=True to seed from the prior phase's "
                 "steady-state sensitivity (run that phase with the same "
                 "sensitivity_params; an SSA or PSA run leaves none, issue #1749), "
-                "or reset() the model for a fresh start. To take the state as "
-                "fixed data, with dx(0)/dtheta = 0, reset() and then set_state() "
-                "it. A save_concentrations() of such a state keeps it "
-                "carried-over, and so does a reset() back to it (issue #1528). "
-                "(GH #210)");
+                "or reset() the model for a fresh start. A save_concentrations() "
+                "of such a state keeps it carried-over, and so does a reset() "
+                "back to it (issue #1528). To take the state as fixed data, with "
+                "dx(0)/dtheta = 0, set_state() it after a reset() to a baseline "
+                "no run advanced, or on a fresh Model (issue #1735). (GH #210)");
         }
     }
     // IC (∂y/∂y_k(0)) sensitivities across a carry-over boundary are out of
