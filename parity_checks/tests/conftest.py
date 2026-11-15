@@ -25,3 +25,25 @@ for p in (
     s = str(p)
     if s not in sys.path:
         sys.path.insert(0, s)
+
+
+def pytest_terminal_summary(terminalreporter: object) -> None:
+    """Say how a checkout gets BNG2.pl when tests skipped for want of it (GH #1692).
+
+    The skip reason is the resolver's ``why_not()``, which names the fix for a
+    wheel install; this suite is the one ``--group parity`` exists for.
+    """
+    try:
+        from bngsim._bngpath import _checkout_remedy
+    except Exception:  # a broken build: its collection errors are the report
+        return
+
+    reasons = [
+        str(getattr(report, "longrepr", ""))
+        for report in getattr(terminalreporter, "stats", {}).get("skipped", [])
+    ]
+    lines = _checkout_remedy(reasons)
+    if lines:
+        terminalreporter.write_sep("─", "BNG2.pl")  # type: ignore[attr-defined]
+        for line in lines:
+            terminalreporter.write_line(line)  # type: ignore[attr-defined]

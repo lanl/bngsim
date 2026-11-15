@@ -11385,6 +11385,21 @@ def _build_model_from_sbml_doc_in_context(doc):
             and species_idx.get(_cid) is not None
         ):
             builder.set_species_ssa_live_volume(species_idx[_sid], species_idx[_cid])
+    # (#1464, #1659) The same species in a compartment an assignment rule sizes,
+    # which has no state slot: its size is the parameter the rule's function
+    # writes. Without it an event's concentration was stored over the load-time
+    # size, and the reported observables and expressions read the stored count
+    # over it, under SSA (S = 50 at t = 2 in c := 1 + time read 12.5 for 37.5).
+    for _sid in sorted(ar_dilution_species):
+        _cid = species_comp.get(_sid)
+        if (
+            _cid in comp_param_idx
+            and _sid in species_idx
+            and not species_hosu.get(_sid, False)
+            and _sid not in rate_rule_targets
+            and _sid not in assignment_targets
+        ):
+            builder.set_species_ssa_live_volume_param(species_idx[_sid], comp_param_idx[_cid])
     for _sp_idx, _comp_id in ode_xcomp_species_fixups:
         _live_idx0 = species_idx.get(_comp_id)
         if _live_idx0 is None:

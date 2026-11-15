@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import os
 import shutil
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -54,6 +55,38 @@ ENV_BNGPATH = "$BNGPATH"
 ON_PATH = "BNG2.pl on $PATH"
 BUNDLED = "PyBioNetGen bundled"
 EXPLICIT = "explicit argument"
+
+#: Opens every "nothing found" reason from :meth:`BngResolution.why_not`, so the
+#: repository's test summaries can recognise a BNG2.pl skip by this constant
+#: rather than by matching prose that may drift.
+_NOT_FOUND = "no usable BNG2.pl"
+
+#: How a bngsim *checkout* gets BNG2.pl (CONTRIBUTING.md). Kept out of
+#: :meth:`BngResolution.why_not` on purpose (GH #1692): ``Model.from_bngl`` and
+#: ``capabilities()`` show that text to wheel users, who have no uv project and
+#: no ``parity_checks/``. ``parity_checks/_core/bngpath.require_bng`` and the
+#: skip summaries of both test suites print it via :func:`_checkout_remedy`.
+_CHECKOUT_REMEDY = (
+    "In a bngsim checkout, get BNG2.pl with `uv sync --extra dev --group parity` "
+    "or $BNGPATH rather than `pip install 'bngsim[bngl]'`, which the next "
+    "`uv sync` removes."
+)
+
+
+def _checkout_remedy(reasons: Iterable[str]) -> list[str]:
+    """Skip-summary lines for a checkout, or ``[]`` if no reason is a BNG2.pl miss.
+
+    For the test suites' terminal summaries only; nothing in the library calls it.
+    A found BNG2.pl with no ``perl`` is not a miss: it needs perl, not this.
+    """
+    n = sum(1 for reason in reasons if _NOT_FOUND in reason)
+    if not n:
+        return []
+    return [
+        f" {n} test(s) did not run because no BNG2.pl was found. The reason names",
+        " the fix for a wheel install; this checkout needs a different one:",
+        f"   {_CHECKOUT_REMEDY}",
+    ]
 
 
 @dataclass(frozen=True)
@@ -89,11 +122,9 @@ class BngResolution:
             )
         trail = "; ".join(f"{name}: {detail}" for name, detail in self.tried)
         return (
-            f"no usable BNG2.pl — tried {trail}. "
+            f"{_NOT_FOUND} — tried {trail}. "
             "Fix: `pip install 'bngsim[bngl]'` (PyBioNetGen bundles BNG2.pl), or "
-            "point $BNGPATH at a BioNetGen folder containing BNG2.pl. For the "
-            "parity_checks/ suite use `uv sync --extra dev --group parity` "
-            "instead — it pins the exact PyBioNetGen commit that suite requires."
+            "point $BNGPATH at a BioNetGen folder containing BNG2.pl."
         )
 
 
