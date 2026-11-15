@@ -306,15 +306,21 @@ reactant is read position by position, as run_network reads it, so the line
 `Hill Vmax Kh h` is the law `Vmax*S^h/(Kh^h + S^h)`, and the reaction
 multiplies its function by S, so the function is
 `Vmax*S^(h-1)/(Kh^h + S^h)`. For 0 < h < 1 that is infinite at S = 0, where
-the law is 0. So when h is in (0, 1) at load, or is an expression parameter,
-the function is written `if((S > 0) or (h <= 0) or (h >= 1), ..., 0)`. It is 0
-for S <= 0 while h is in (0, 1), and the run roots on `S > 0`. An h of 1 or
-more, or of 0 or less, at load keeps the unguarded function and adds no root.
-A model whose h is moved into (0, 1) after loading still fails at S = 0. That
-includes `set_param`, and a BNGL `setParameter` or `parameter_scan` after
-`generate_network`. Give h a value in (0, 1) before the network is loaded: the
-guard reads h when the model runs, so later values of 1 or more keep the
-unguarded function's values.
+the law is 0. So the function is written
+`if((S > 0) or (h <= 0) or (h >= 1), ..., 0)`, whatever h is at load: 0 for
+S <= 0 while h is in (0, 1), and the unguarded function otherwise. A model
+whose h is moved into (0, 1) after loading, by `set_param`, a `run_batch` row,
+`parameter_scan`, or a BNGL `setParameter` or `parameter_scan` after
+`generate_network`, reads the law as 0 at S = 0 too (issue #1636).
+
+Where the guard cannot act, its root is not watched. A run without sensitivities
+roots on `S > 0` only while h is in (0, 1): at its start, a condition its
+parameter values already decide, such as `(h <= 0) or (h >= 1)` at h = 2, is read
+as that constant, and adds no root. (Before #1636 the guard was written only
+where h was in (0, 1) at load, because a root on each of 300 Hill reactions with
+h >= 1 made a run 10x slower.) The comparisons themselves are still evaluated:
+300 Hill reactions at h = 2 take 4.0 ms a run, against 2.7 ms unguarded. A model
+with events keeps every root, since an event may move h during the run.
 
 A reaction line is `<index> <reactants> <products> <rate law>`, and only a
 `Sat`, `Hill` or `MM` rate law takes more tokens: its constants.

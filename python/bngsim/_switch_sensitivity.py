@@ -10408,6 +10408,182 @@ def state_switch_reactions(core, conditions: Sequence[str], ctx=None) -> list[li
     return out
 
 
+def fold_parameter_decided(text: str, constants: frozenset[str], value_of) -> str:
+    """*text* with each ``if()`` condition its parameter terms decide written as
+    ``1`` or ``0`` (issue #1636).
+
+    ``(S > 0) or (h <= 0) or (h >= 1)`` at h = 2 is true whatever S is, so the
+    atom ``S > 0`` switches nothing there, and a root on it costs every step it
+    is watched: 300 Hill reactions ran 10x slower with it. A condition whose
+    top level joins its parts by ``or`` is decided where one part that reads
+    only *constants* is true, and one joined by ``and`` where such a part is
+    false. A part counts only as one comparison over constants, each side read
+    by *value_of* (a number, or ``None`` where it cannot be read, which leaves
+    the condition as it is). Nested ``if()`` calls are folded too, inside out;
+    nothing else in *text* changes.
+    """
+    out: list[str] = []
+    cursor = 0
+    while True:
+        m = _IF_CALL.search(text, cursor)
+        if m is None:
+            out.append(text[cursor:])
+            return "".join(out)
+        open_paren = m.end() - 1
+        close_paren = _find_close_paren_strict(text, open_paren)
+        if close_paren < 0:
+            out.append(text[cursor:])
+            return "".join(out)
+        args = _split_top_level_commas(text[open_paren + 1 : close_paren])
+        if len(args) != 3:
+            out.append(text[cursor : close_paren + 1])
+            cursor = close_paren + 1
+            continue
+        cond, yes, no = (fold_parameter_decided(a, constants, value_of) for a in args)
+        decided = _decided_by_constants(cond, constants, value_of)
+        if decided is not None:
+            cond = "1" if decided else "0"
+        out.append(text[cursor : m.start()])
+        out.append(f"if({cond},{yes},{no})")
+        cursor = close_paren + 1
+
+
+def _decided_by_constants(cond: str, constants: frozenset[str], value_of) -> bool | None:
+    """True or False where *cond*'s parameter-only parts decide it, else None."""
+    top = _top_level_parts(_strip_redundant_parens(cond.strip()))
+    if top is None or top[0] not in ("or", "and") or len(top[1]) < 2:
+        return None
+    kind, parts = top
+    for part in parts:
+        split = _relational_split_op(_strip_redundant_parens(part))
+        if split is None:
+            continue
+        lhs, op, rhs = split
+        names = set(_IDENTIFIER.findall(f"{lhs} {rhs}"))
+        if _TIME_REF.search(part) or not names <= constants:
+            continue
+        a, b = value_of(lhs), value_of(rhs)
+        if a is None or b is None:
+            continue
+        truth = _compare(a, op, b)
+        if truth is None:
+            continue
+        if kind == "or" and truth:
+            return True
+        if kind == "and" and not truth:
+            return False
+    return None
+
+
+def _constants_and_values(core):
+    """The names a run cannot move (parameters, less the slots a function owns,
+    which move with the state) and a reader of an expression over them at the
+    model's current values."""
+    names = list(core.param_names)
+    function_names = frozenset(core.function_names)
+    constants = frozenset(n for n in names if n not in function_names)
+    param_idx = {n: i for i, n in enumerate(names)}
+    values = tuple(core.get_param(n) for n in names)
+
+    def value_of(side: str) -> float | None:
+        try:
+            return _evaluate_threshold(side, param_idx, values, {})
+        except Exception:  # pragma: no cover - an unreadable side decides nothing
+            return None
+
+    return constants, value_of
+
+
+def parameter_decidable_parts(core) -> tuple[tuple[str, str, str], ...]:
+    """The comparisons over parameters alone that stand as a part of an
+    ``if()`` condition joined by ``or`` or ``and`` at the top, in the model's
+    functions: the parts some parameter values decide such a condition by
+    (:func:`_decided_by_constants`). Each spelling once, ``(lhs, op, rhs)``.
+    Structural, so a model reads it once; empty for one with none, which then
+    never folds (issue #1636). 300 Hill guards share their two parts."""
+    texts = [*core.function_expressions]
+    if not any(_IF_CALL.search(t) for t in texts):
+        return ()
+    constants = frozenset(n for n in core.param_names if n not in frozenset(core.function_names))
+    found: dict[tuple[str, str, str], None] = {}
+    seen: set[str] = set()
+    for text in texts:
+        for cond in _iter_if_conditions(text):
+            if cond in seen:
+                continue
+            seen.add(cond)
+            top = _top_level_parts(_strip_redundant_parens(cond.strip()))
+            if top is None or top[0] not in ("or", "and") or len(top[1]) < 2:
+                continue
+            for part in top[1]:
+                split = _relational_split_op(_strip_redundant_parens(part))
+                if split is None or _TIME_REF.search(part):
+                    continue
+                if set(_IDENTIFIER.findall(f"{split[0]} {split[2]}")) <= constants:
+                    found[(split[0].strip(), split[1], split[2].strip())] = None
+    return tuple(found)
+
+
+def part_truths_at_values(core, parts: Sequence[tuple[str, str, str]]) -> tuple[bool | None, ...]:
+    """Each of *parts* at the model's current values (None where a side cannot be
+    read): the key a run's folded roots are kept by, since every decision a fold
+    makes follows from these."""
+    _constants, value_of = _constants_and_values(core)
+    out: list[bool | None] = []
+    for lhs, op, rhs in parts:
+        a, b = value_of(lhs), value_of(rhs)
+        out.append(None if a is None or b is None else _compare(a, op, b))
+    return tuple(out)
+
+
+def _compare(a: float, op: str, b: float) -> bool | None:
+    return {"<": a < b, "<=": a <= b, ">": a > b, ">=": a >= b, "==": a == b, "!=": a != b}.get(op)
+
+
+def state_switch_roots_at_values(core, covered: Sequence[str] = ()):
+    """``(conditions, guards)`` of :func:`state_switch_root_conditions` for a
+    plain run at the model's current parameter values, or ``None`` where no
+    condition is decided by them, so the structural set stands (issue #1636).
+
+    The rate laws and the functions they read are folded by
+    :func:`fold_parameter_decided` before the roots are read from them, so an
+    atom that switches nothing at these values is not rooted. A model with
+    events is left alone: an event may assign a parameter mid-run, and with it
+    turn a decided condition into an open one.
+    """
+    if core.n_events:
+        return None
+    constants, value_of = _constants_and_values(core)
+    if not constants:
+        return None
+    ctx = core.functional_jacobian_context()
+    folded_any = False
+    reactions = []
+    for rxn in ctx["functional_reactions"]:
+        text = str(rxn.get("rate_expr", ""))
+        folded = (
+            fold_parameter_decided(text, constants, value_of) if _IF_CALL.search(text) else text
+        )
+        folded_any = folded_any or folded != text
+        reactions.append({**rxn, "rate_expr": folded})
+    bodies = {}
+    for name, body in dict(ctx["function_map"]).items():
+        if isinstance(body, str) and _IF_CALL.search(body):
+            folded = fold_parameter_decided(body, constants, value_of)
+            folded_any = folded_any or folded != body
+            bodies[name] = folded
+        else:
+            bodies[name] = body
+    if not folded_any:
+        return None
+    return state_switch_root_conditions(
+        core,
+        covered=covered,
+        ctx={**ctx, "functional_reactions": reactions, "function_map": bodies},
+        with_guards=True,
+    )
+
+
 def state_switch_root_conditions(
     core,
     covered: Sequence[str] = (),

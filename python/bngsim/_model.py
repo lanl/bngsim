@@ -1135,6 +1135,50 @@ class Model:
             self._state_switch_root_covered = covered
         return self._state_switch_root_conditions
 
+    def _state_switch_roots_at_values(
+        self, covered: tuple[str, ...]
+    ) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+        """``(conditions, guards)`` for a plain run at the current parameter
+        values, where some condition is decided by them, or ``None`` where none
+        is and :meth:`_state_switch_roots_beside` stands (issue #1636). Kept by
+        what the values decide, so a fit or a scan that leaves those decisions
+        alone folds once."""
+        if self._core.n_events:
+            return None
+        from bngsim._switch_sensitivity import (
+            parameter_decidable_parts,
+            part_truths_at_values,
+            state_switch_roots_at_values,
+        )
+
+        parts = self._state_switch_root_memo.get("decidable parts")
+        if parts is None:
+            parts = parameter_decidable_parts(self._core)
+            _remember(self._state_switch_root_memo, "decidable parts", parts)
+        if not parts:
+            return None
+        decided = part_truths_at_values(self._core, parts)
+        if all(d is None for d in decided):
+            return None
+        key = ("at values", covered, decided)
+        if key in self._state_switch_root_memo:
+            kept: tuple[tuple[str, ...], tuple[str, ...]] | None = self._state_switch_root_memo[
+                key
+            ]
+            return kept
+        try:
+            got = state_switch_roots_at_values(self._core, covered)
+        except Exception as e:  # pragma: no cover - defensive, as for the roots
+            logger.warning(
+                "Folding the conditions parameters decide failed (%s); the run "
+                "roots on every state switch, as it would without it (issue #1636).",
+                e,
+            )
+            got = None
+        kept = None if got is None else (tuple(got[0]), tuple(got[1]))
+        _remember(self._state_switch_root_memo, key, kept)
+        return kept
+
     def _state_switch_guards_beside(self, covered: tuple[str, ...]) -> tuple[str, ...]:
         """Parallel to :meth:`_state_switch_roots_beside`: for each root, the
         ``if()`` branches it switches a rate law in, as an expression that reads

@@ -3266,6 +3266,14 @@ class Simulator:
         if covered is None:
             covered = model.time_discontinuity_conditions()
         conditions = model._state_switch_roots_beside(covered)
+        guards: tuple[str, ...] | None = None
+        if conditions:
+            # Issue #1636: a condition this run's parameter values decide, such
+            # as a Hill guard's `(S > 0) or (h <= 0) or (h >= 1)` at h = 2,
+            # switches nothing, and its atoms are not rooted.
+            at_values = model._state_switch_roots_at_values(covered)
+            if at_values is not None:
+                conditions, guards = at_values
         if conditions:
             logger.debug(
                 "State-switch roots for a plain run (issue #897): %s",
@@ -3273,7 +3281,8 @@ class Simulator:
             )
             opts.set_state_switch_conditions(list(conditions))
             # Issue #1147: the if() branches each root switches a rate law in.
-            guards = model._state_switch_guards_beside(covered)
+            if guards is None:
+                guards = model._state_switch_guards_beside(covered)
             if any(guards):
                 opts.set_state_switch_guards(list(guards))
         # Issue #959: an SBML model's thresholds are rooted by the loader's

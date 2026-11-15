@@ -1255,18 +1255,6 @@ static std::string parenthesize_product(const std::vector<std::string> &terms) {
     return expr;
 }
 
-// The value a rate-law constant has at load, when its parameter's value column
-// is a number; nullopt for an expression parameter. (The reader refuses a
-// constant that is not a parameter name, so there is no literal to read.)
-static std::optional<double> value_at_load(const std::string &token,
-                                           const std::vector<ParsedParam> &params) {
-    for (const auto &param : params) {
-        if (param.name == token)
-            return param.is_expression ? std::nullopt : std::optional<double>(param.value);
-    }
-    return std::nullopt;
-}
-
 static std::vector<std::string> rewrite_legacy_sat_hill_rate_laws(
     std::vector<ParsedReaction> &reactions, const std::vector<ParsedParam> &params,
     std::vector<ParsedFunction> &functions, std::vector<ParsedObservable> &observables) {
@@ -1374,21 +1362,20 @@ static std::vector<std::string> rewrite_legacy_sat_hill_rate_laws(
             // write_bngl refuses it. _saturable_jacobian reads this guard in
             // exactly this form.
             //
-            // A root costs every step it is watched: 300 Hill reactions with
-            // h >= 1, where the guard is always true, ran 10x slower with it.
-            // So an h known at load to be >= 1 or <= 0 keeps the bare body, as
-            // before; an h in (0, 1), or one not known until the run (an
-            // expression parameter), takes the guard. A set_param that later
-            // moves a bare h into (0, 1) reads the body there, as before #1497.
+            // Every Hill law takes the guard (issue #1636). Its h is a
+            // parameter (the reader refuses a constant that is not one), and
+            // set_param, a BNGL setParameter or a parameter_scan can move it
+            // into (0, 1) after the network is loaded, where the bare body
+            // fails at S = 0. Written only for an h in (0, 1) at load, as #1497
+            // first did, it missed those. A root costs every step it is
+            // watched (300 Hill reactions with h >= 1 ran 10x slower with it),
+            // so a plain run folds the condition to true where (h <= 0) or
+            // (h >= 1) holds at its parameter values, and roots nothing for it
+            // (_switch_sensitivity.fold_parameter_decided).
             const std::string body = vmax + " * (" + obs_name + " ^ (" + h + " - 1)) / ((" + kh +
                                      " ^ " + h + ") + (" + obs_name + " ^ " + h + "))";
-            const std::optional<double> h_value = value_at_load(h, params);
-            if (h_value && (*h_value >= 1.0 || *h_value <= 0.0)) {
-                func.expression = body;
-            } else {
-                func.expression = "if((" + obs_name + " > 0) or (" + h + " <= 0) or (" + h +
-                                  " >= 1), " + body + ", 0)";
-            }
+            func.expression = "if((" + obs_name + " > 0) or (" + h + " <= 0) or (" + h +
+                              " >= 1), " + body + ", 0)";
         } else {
             throw std::runtime_error("Unsupported legacy .net rate law '" +
                                      rxn.legacy_rate_law_type + "'");
