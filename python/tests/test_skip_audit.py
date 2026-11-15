@@ -419,3 +419,27 @@ class TestTheGateScannerReadsPlacementNotSpelling:
             )
             is None
         )
+
+
+class TestTheBng2Footer:
+    """A BNG2.pl skip gets the checkout's remedy in the summary (GH #1692).
+
+    The skip reason is the resolver's ``why_not()``, which since #1692 names only
+    the wheel user's fix. The footer is where a contributor still learns about
+    ``--group parity``.
+    """
+
+    @staticmethod
+    def _miss() -> str:
+        from bngsim._bngpath import BngResolution
+
+        r = BngResolution(None, None, None, (("$BNGPATH", "unset"),), has_perl=True)
+        return f"BNG2.pl unavailable: {r.why_not()}"
+
+    def test_a_bng2_miss_brings_the_checkout_remedy(self, skip_audit):
+        lines = skip_audit.bng2_remedy({self._miss(): 16, "could not import h5py": 1})
+        assert lines[0].startswith(" 16 test(s) did not run")
+        assert any("uv sync --extra dev --group parity" in line for line in lines)
+
+    def test_no_bng2_miss_no_footer(self, skip_audit):
+        assert skip_audit.bng2_remedy({"could not import h5py": 3}) == []

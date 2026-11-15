@@ -598,6 +598,22 @@ def _tier_of(reason: str) -> str | None:
     return None
 
 
+def _bng2_remedy(counts: dict[str, int]) -> list[str]:
+    """How this checkout gets BNG2.pl, if any skip was for want of one (GH #1692).
+
+    Every test needing BNG2.pl skips with the resolver's ``why_not()``, which names
+    the fix for a *wheel* install (``pip install 'bngsim[bngl]'``). In a uv venv
+    that is the wrong fix, since ``uv sync`` prunes it, so the summary adds the
+    checkout's remedy once. The text lives beside the resolver, so it is not
+    restated here.
+    """
+    try:
+        from bngsim._bngpath import _checkout_remedy
+    except Exception:  # a broken build has bigger problems than this footer
+        return []
+    return _checkout_remedy(r for r, n in counts.items() for _ in range(n))
+
+
 def _audit_skips(
     terminalreporter: object,
 ) -> tuple[dict[str, int], dict[str, int], dict[str, int]]:
@@ -663,6 +679,11 @@ def pytest_terminal_summary(
         write(" parametrized over the corpus contributes one skip however many models it")
         write(" would have covered. CI never has the corpus and neither does a worktree,")
         write(" so a green run from either says nothing about these paths (GH #192).")
+    bng2_lines = _bng2_remedy(counts)
+    if bng2_lines:
+        write("")
+        for line in bng2_lines:
+            write(line)
     if undeclared:
         write("")
         write(f" {len(undeclared)} undeclared skip reason(s), marked ?? above.")
@@ -829,6 +850,7 @@ def skip_audit() -> SimpleNamespace:
     """
     return SimpleNamespace(
         is_corpus_absence=_is_corpus_absence,
+        bng2_remedy=_bng2_remedy,
         declared_skips=_DECLARED_SKIPS,
         corpus_remedies=_CORPUS_REMEDIES,
         tier_of=_tier_of,
