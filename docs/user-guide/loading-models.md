@@ -109,7 +109,9 @@ index the result by position, or by a run's `suffix`. A scan's points are in
   `addConcentration` change the live model. A parameter set to an expression of
   other parameters, `setParameter("k2","k1*3")`, stays that expression: it
   follows `k1` through later actions, scans and resets until it is set to a
-  number. One defined through itself, directly or through the network's own
+  number. A number ends an expression, the network's own included, even the
+  number the expression gives: with `k2 k1*0.5` declared, `setParameter("k2",0.5)`
+  keeps k2 at 0.5 when `k1` moves, as BNG2.pl does. One defined through itself, directly or through the network's own
   expressions, is refused, as BNG2.pl refuses it.
 - **Saved states.** `saveConcentrations`/`resetConcentrations` and
   `saveParameters`/`resetParameters` keep one saved state per label. A save made
