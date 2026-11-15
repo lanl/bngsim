@@ -11,19 +11,21 @@ pushes to `main` that touch the build inputs (`pyproject.toml`, `CMakeLists.txt`
 `workflow_dispatch`. Those runs upload artifacts only; `release.yml` publishes to
 PyPI on a `v*` tag. The matrix is:
 
-| Runner OS      | Architecture | Deployment target  | Python versions                    |
-|----------------|--------------|--------------------|------------------------------------|
-| ubuntu-latest  | x86_64       | manylinux_2_28     | 3.10, 3.11, 3.12, 3.13, 3.14, 3.15 |
-| macos-15       | arm64        | macOS 11           | 3.10, 3.11, 3.12, 3.13, 3.14, 3.15 |
-| macos-15-intel | x86_64       | macOS 10.15        | 3.10, 3.11, 3.12, 3.13, 3.14, 3.15 |
-| windows-latest | AMD64        | Windows Server 2025| 3.10, 3.11, 3.12, 3.13, 3.14, 3.15 |
+| Runner OS        | Architecture | Deployment target  | Python versions                    |
+|------------------|--------------|--------------------|------------------------------------|
+| ubuntu-latest    | x86_64       | manylinux_2_28     | 3.10, 3.11, 3.12, 3.13, 3.14, 3.15 |
+| ubuntu-24.04-arm | aarch64      | manylinux_2_28     | 3.10, 3.11, 3.12, 3.13, 3.14, 3.15 |
+| macos-15         | arm64        | macOS 11           | 3.10, 3.11, 3.12, 3.13, 3.14, 3.15 |
+| macos-15-intel   | x86_64       | macOS 10.15        | 3.10, 3.11, 3.12, 3.13, 3.14, 3.15 |
+| windows-latest   | AMD64        | Windows Server 2025| 3.10, 3.11, 3.12, 3.13, 3.14, 3.15 |
 
 Source distributions (sdist) are published alongside; sdist users will
 build from source and need a C++17 compiler, CMake ≥ 3.20, and Ninja.
 
-Not covered: Linux ARM64, macOS x86_64 < 10.15, Windows ARM64, musllinux,
-PyPy. These fall out of the `build` / `skip` selectors in
-`[tool.cibuildwheel]`.
+Not covered: macOS x86_64 < 10.15, Windows ARM64, musllinux, PyPy. These
+fall out of the `build` / `skip` selectors in `[tool.cibuildwheel]`. On Linux
+aarch64 the `antimony` extra cannot be installed: antimony publishes no wheel
+for it.
 
 ## Bundled vs optional features
 
@@ -86,11 +88,11 @@ network size, so it is on wherever the ODE backend is.
 the table above whose availability differs across published wheels. It reports
 whether CMake linked a BLAS/LAPACK for the optimized dense factorization:
 
-| Wheel               | Backend                | `HAS_LAPACK_DENSE` |
-|---------------------|------------------------|--------------------|
-| macOS arm64 / x86_64| Accelerate (system)    | `True`             |
-| manylinux x86_64    | none found             | `False`            |
-| Windows AMD64       | none found             | `False`            |
+| Wheel                      | Backend                | `HAS_LAPACK_DENSE` |
+|----------------------------|------------------------|--------------------|
+| macOS arm64 / x86_64       | Accelerate (system)    | `True`             |
+| manylinux x86_64 / aarch64 | none found             | `False`            |
+| Windows AMD64              | none found             | `False`            |
 
 Nothing is missing on `False`: dense factorizations use the built-in LU, which
 is what runs by default *everywhere* — the BLAS path is opt-in via

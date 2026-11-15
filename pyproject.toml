@@ -406,9 +406,11 @@ test-command = "python {project}/ci/wheel_smoke_klu.py && python {project}/ci/wh
 [tool.cibuildwheel.linux]
 # manylinux_2_28 = AlmaLinux 8 (has dnf); SuiteSparse/KLU comes from EPEL. Its
 # klu.h lands in /usr/include/suitesparse — covered by the CMake find_path
-# suffix. x86_64 only for now (aarch64 via QEMU is slow; add later).
-archs = ["x86_64"]
+# suffix. "native" builds each runner's own architecture, x86_64 on
+# ubuntu-latest and aarch64 on ubuntu-24.04-arm, with no emulation (#1491).
+archs = ["native"]
 manylinux-x86_64-image = "manylinux_2_28"
+manylinux-aarch64-image = "manylinux_2_28"
 before-all = "dnf install -y epel-release && dnf install -y suitesparse-devel"
 
 [tool.cibuildwheel.macos]

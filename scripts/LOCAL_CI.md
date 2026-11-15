@@ -90,6 +90,8 @@ scripts/local_ci_report-darwin-arm64-cp310.md
 scripts/local_ci_report-darwin-arm64-cp311.md
 scripts/local_ci_report-darwin-arm64-cp312.md
 scripts/local_ci_report-darwin-arm64-cp313.md
+scripts/local_ci_report-darwin-arm64-cp314.md
+scripts/local_ci_report-darwin-arm64-cp315.md
 scripts/local_ci_report-darwin-arm64-matrix.md
 ```
 

@@ -7,7 +7,7 @@ reporter's run is byte-comparable.
 Subcommands:
     wheel        Build one wheel for a target Python (default: current uv
                  interpreter) and smoke-test it.
-    matrix       Build wheels for Python 3.10, 3.11, 3.12, 3.13 in sequence
+    matrix       Build wheels for Python 3.10 to 3.15 in sequence
                  and smoke-test each. Skips Python versions that uv cannot
                  provision on this platform.
     smoke        Smoke-test an already-built wheel against a target Python.

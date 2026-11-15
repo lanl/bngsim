@@ -41,7 +41,7 @@ model = bngsim.Model.from_net("model.net")
 sim = bngsim.Simulator(model, method="ode")
 result = sim.run(t_span=(0.0, 10.0), n_points=101)
 
-print(result.time.shape)          # (101,) NumPy array of time points
+print(result.time.shape)          # (101,): one entry per time point
 print(result.observables["A"])    # trajectory of observable "A"
 print(round(float(result.observables["A"][-1]), 4))  # 0.6738, which is 100 * exp(-5)
 ```

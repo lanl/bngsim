@@ -12,12 +12,14 @@ Prebuilt wheels are available for:
 
 | Platform | Architectures | Python |
 |----------|---------------|--------|
-| Linux | x86_64 | 3.10–3.15 |
+| Linux | x86_64, aarch64 | 3.10–3.15 |
 | macOS | arm64, x86_64 | 3.10–3.15 |
 | Windows | x86_64 | 3.10–3.15 |
 
-Wheels for Python 3.14 and 3.15 start with the release after 0.17.2; on those
-versions an earlier release installs from the source distribution.
+Wheels for Python 3.14 and 3.15, and for Linux aarch64, start with the release
+after 0.17.2; there an earlier release installs from the source distribution.
+On Linux aarch64 the `antimony` extra cannot be installed, since antimony
+publishes no wheel for it (see the Antimony version note below).
 
 See [`SUPPORT_MATRIX.md`](https://github.com/lanl/bngsim/blob/HEAD/SUPPORT_MATRIX.md) for the full platform × Python ×
 backend matrix, what each optional extra activates, and the release checklist.

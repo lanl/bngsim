@@ -14,7 +14,10 @@ Two guards, cheap and complementary:
   front-door page as a reader would paste it: in an empty directory, with the
   optional extras' modules blocked, so the block must write its own model and
   must not need pandas or any other extra (issue #1691). It then checks the
-  block's answer against the closed form of the model the three pages share.
+  block's answer against the closed form of the model the three pages share,
+  and that each print line whose comment states a value prints that value.
+  :func:`test_quickstart_sweep_block_runs_on_the_first_blocks_model` runs the
+  quickstart's sweep block after its first block, as the page reads.
 * :func:`test_documented_api_names_exist` STATICALLY resolves every ``bngsim.…``
   attribute chain, method name and keyword argument in every Python block under
   ``docs/`` — pages whose examples need corpora, XML side files or optional
@@ -54,6 +57,13 @@ _SCANNED = ("README.md", "SUPPORT_MATRIX.md")
 # sniffed, so a later page that happens to look self-contained is not silently
 # conscripted into the executed set.
 _FRONT_DOOR = ("README.md", "docs/index.md", "docs/quickstart.md")
+
+# A front-door print line whose comment starts with the value it prints:
+# `print(result.time.shape)  # (101,)` or `print(...)  # 0.6738, which is ...`.
+# A comment that starts with words ("# trajectory of ...") states no value.
+_PRINTED_VALUE = re.compile(
+    r"^print\((?P<expr>.+?)\)\s+#\s*(?P<value>\([^)]*\)|[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)"
+)
 
 # The top-level modules of pyproject's optional extras (and the test extra). A
 # bare `pip install bngsim` brings numpy, python-libsbml, sympy and mpmath only,
@@ -277,3 +287,49 @@ def test_front_door_example_runs(
     # Each page prints 0.6738 = 100 e^(-5), its value at t = 10: a block that
     # runs to another time while keeping that comment is wrong too.
     assert t_end == pytest.approx(10.0), f"{page}'s example prints A(10) but runs to t = {t_end:g}"
+
+    # What the block says it prints: each print line whose comment states a
+    # value must print that value, so a comment and the code under it cannot
+    # drift apart (n_points=11 under "# (101,)", or "# 0.9999" over A(10)).
+    # The printed expression is evaluated again on the finished namespace; the
+    # front-door prints only read the result.
+    stated = [m for m in map(_PRINTED_VALUE.match, code.splitlines()) if m]
+    assert stated, f"{page}'s first block has no print line whose comment states its value"
+    for m in stated:
+        got = eval(m["expr"], namespace)  # noqa: S307
+        assert got == ast.literal_eval(m["value"]), (
+            f"{page}: print({m['expr']}) gives {got!r}, but its comment says {m['value']}"
+        )
+
+
+def test_quickstart_sweep_block_runs_on_the_first_blocks_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The quickstart's "Parameter sweeps" block runs on the model its first block made.
+
+    The page reads top to bottom, and the sweep block uses that block's ``model``
+    and ``sim``, so it may set only the parameter that model has, ``k``. It set
+    ``kf``, ``kr`` and ``kcat``, so pasted next it raised ParameterError.
+    """
+    _docs_present()
+    path = _ROOT / "docs" / "quickstart.md"
+    if not path.exists():
+        pytest.skip("docs/quickstart.md is not present in this checkout")
+    heading = path.read_text(encoding="utf-8").splitlines().index("## Parameter sweeps") + 1
+    blocks = _python_blocks(path)
+    sweep = next(code for start, code in blocks if start > heading)
+
+    monkeypatch.chdir(tmp_path)
+    for name in _EXTRA_MODULES:
+        monkeypatch.setitem(sys.modules, name, None)
+    namespace: dict[str, object] = {"__name__": "__docs_example__"}
+    exec(compile(blocks[0][1], "docs/quickstart.md (first python block)", "exec"), namespace)  # noqa: S102
+    exec(compile(sweep, "docs/quickstart.md (Parameter sweeps)", "exec"), namespace)  # noqa: S102
+
+    # Oracle: A -> B is first order, so on result2's grid (101 points to t = 100,
+    # dt = 1) A falls by e^(-k) per step at the k = 1.0 the block sets, wherever
+    # the run starts. rel 1e-4 for the solver's default tolerances, as above. The
+    # block ends by setting k = 0.25.
+    a = namespace["result2"].observables["A"]  # type: ignore[attr-defined]
+    assert float(a[1]) == pytest.approx(float(a[0]) * math.exp(-1.0), rel=1e-4)
+    assert namespace["model"].get_param("k") == 0.25  # type: ignore[attr-defined]

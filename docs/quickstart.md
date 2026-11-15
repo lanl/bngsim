@@ -72,15 +72,14 @@ See [Loading models](user-guide/loading-models.md) for the full picture.
 
 ```python
 # Update parameters in-memory (no file I/O)
-model.set_param("kf", 0.5)
-model.set_param("kr", 0.1)
+model.set_param("k", 1.0)
 result2 = sim.run(t_span=(0, 100), n_points=101)
 
 # Reset species to initial conditions
 model.reset()
 
-# Set multiple parameters at once
-model.set_params({"kf": 1.0, "kr": 0.2, "kcat": 5.0})
+# Set several parameters at once from a dict (this model has one, k)
+model.set_params({"k": 0.25})
 ```
 
 ## Stochastic simulation (SSA)
