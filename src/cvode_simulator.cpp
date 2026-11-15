@@ -13879,11 +13879,10 @@ void CvodeSimulator::Impl::columns_past_surface(void *cvode_mem, int ns, double 
 // column: the restart from (τ, x(τ + δt)) is the flow's own solution from τ
 // only to first order, and it moves with τ by Φ·(f(x_r, τ + δt) − f(x_r, τ)).
 // So each column takes
-//     s += (f(x_r, t* + δt) − f(x_r, t*))·dt*/dθ,
-// x_r the restart state. A narrow pulse whose condition reads `Tobs + time()`
-// came out 3.3e-4 off at rtol 1e-12 on three output grids in seven without
-// it, a third of the δt·ṡ move the columns take with the state, where the
-// clock is a third of the residual's rate.
+//     s += (f(x_r, t* + 2δt) − f(x_r, t* + δt))·dt*/dθ,
+// x_r the restart state, δt·∂f/∂t read past the surface. A narrow pulse whose condition reads `Tobs
+// + time()` came out 3.3e-4 off at rtol 1e-12 on three output grids in seven without it, a third of
+// the δt·ṡ move the columns take with the state, where the clock is a third of the residual's rate.
 //
 // Exactly 0 where f does not read the time: the two readings are one
 // evaluation. A species whose two readings differ by no more than the
@@ -13912,9 +13911,28 @@ void CvodeSimulator::Impl::columns_for_kept_time(double t_evt, int ns,
         model.compute_derivs(t, x_restart.data(), f.data());
         model.compute_flux_split(t, x_restart.data(), nullptr, net.data(), gross.data());
     };
-    read(t_evt, f_kept, gross_kept);
-    read(t_evt + dt, f_on, gross_on);
+    // Both readings past the surface, where the ladder verified the state at
+    // t* + δt is: at t* itself a condition that reads the time alone, `time()
+    // > k*E`, is still on the branch before, and the difference was the jump,
+    // which cancelled the saltation term (dX/dk 0 for -5). Where any switch's
+    // residual changes sides between the two, the term is left out.
+    auto &eval = model.evaluator();
+    std::vector<double> g_on;
+    read(t_evt + dt, f_kept, gross_kept);
+    for (const NetworkModel::StateSwitch *one : state_switch_all) {
+        g_on.push_back(eval.evaluate(one->residual_expr_idx));
+    }
+    read(t_evt + 2.0 * dt, f_on, gross_on);
+    bool one_side = true;
+    for (std::size_t k = 0; k < state_switch_all.size() && one_side; ++k) {
+        const double g = eval.evaluate(state_switch_all[k]->residual_expr_idx);
+        one_side = std::isfinite(g) && std::isfinite(g_on[k]) && g != 0.0 && g_on[k] != 0.0 &&
+                   (g < 0.0) == (g_on[k] < 0.0);
+    }
     sync_model_at(t_evt, x_restart.data(), ns);
+    if (!one_side) {
+        return;
+    }
     const double eps = std::numeric_limits<double>::epsilon();
     for (std::size_t i = 0; i < n; ++i) {
         const double change = f_on[i] - f_kept[i];

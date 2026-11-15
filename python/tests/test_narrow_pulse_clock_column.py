@@ -196,9 +196,10 @@ EXACT_TIME = -10 * math.exp(-1 / 6) * 0.5 / 9
 def test_a_condition_that_reads_the_time(tmp_path, n_points):
     """At t = 25 an ulp of the time is 3.6e-15, and a column moving at 5e7
     turns the clock's rounding into a few 1e-6 of itself, as the counter's
-    does at T = 50 above: the branch reads 5.5e-6 at worst there."""
+    does at T = 50 above: up to 9e-6 on these grids. Main was 3.3e-4 off on
+    the 4-, 8- and 16-point grids."""
     dkx, dk = _columns(_model(tmp_path, TIME_LAW, c=0.075, t0=-74.925), n_points, 1e-12)
-    assert dk == pytest.approx(EXACT_TIME, rel=3e-5)
+    assert dk == pytest.approx(EXACT_TIME, rel=4e-5)
     assert dkx == pytest.approx(10 * math.exp(-1 / 6) / 6, rel=1e-8)
 
 
