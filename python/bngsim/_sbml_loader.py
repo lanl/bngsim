@@ -3449,7 +3449,7 @@ def load_sbml(path: str | Path, compartment_sizes: dict | None = None):
 
     t0 = time.perf_counter()
     doc = libsbml.readSBMLFromFile(str(path))
-    _check_sbml_errors(doc, str(path))
+    _check_sbml_errors(doc, str(path), lambda: _head(path))
     with open(path, "rb") as stream:  # read as bytes, so the XML declaration names the encoding
         _check_required_packages(doc, str(path), raw_xml=stream)
     if _doc_uses_comp(doc):
@@ -3469,7 +3469,7 @@ def load_sbml_string(text: str, compartment_sizes: dict | None = None):
     # analytical-Jacobian derivation are timed separately inside _build (T-instr).
     t0 = time.perf_counter()
     doc = libsbml.readSBMLFromString(text)
-    _check_sbml_errors(doc, "<string>")
+    _check_sbml_errors(doc, "<string>", lambda: text[:_HEAD_CHARS])
     _check_required_packages(doc, "<string>", raw_xml=io.StringIO(text))
     if _doc_uses_comp(doc):
         # No file context for a string load, so ExternalModelDefinitions cannot
@@ -5155,11 +5155,61 @@ def _collect_local_params(kl, rid, builder):
     return local_param_map, local_param_values
 
 
-def _check_sbml_errors(doc, source):
-    """Check for fatal SBML parsing errors."""
+#: How much of a document is read to tell BioNetGen's XML from SBML.
+_HEAD_CHARS = 65536
+
+# BioNetGen's writeXML output (the file NFsim and RuleMonkey read): an <sbml>
+# root in a namespace that is no SBML namespace, and elements SBML has not.
+_BNG_XML = re.compile(r"Created by BioNetGen|<ListOfMoleculeTypes\b|<ListOfReactionRules\b")
+_ROOT_XMLNS = re.compile(r"<(?:\w+:)?sbml\b[^>]*?\sxmlns=[\"']([^\"']*)[\"']", re.S)
+
+
+def _head(path) -> str:
+    """The start of a file, as text, for :func:`_check_sbml_errors`."""
+    try:
+        with open(path, "rb") as stream:
+            return stream.read(_HEAD_CHARS).decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _check_sbml_errors(doc, source, head=None):
+    """Refuse a document libSBML cannot read as SBML.
+
+    A fatal error, and a root element in a namespace that is no SBML namespace
+    (libSBML error 20101, at severity Error). libSBML reads no model from such
+    a document, so loading it gave an empty model with no error, which ran and
+    returned nothing (issue #1712). BioNetGen's XML, the file NFsim and
+    RuleMonkey read, is one: its root is ``<sbml>`` in
+    ``http://www.sbml.org/sbml/level3``. *head* gives the start of the text, so
+    such a file can be named for what it is.
+    """
     if doc.getNumErrors(libsbml.LIBSBML_SEV_FATAL) > 0:
         msg = doc.getError(0).getMessage()
         raise RuntimeError(f"Fatal SBML error in {source}: {msg}")
+    if not any(
+        doc.getError(i).getErrorId() == libsbml.InvalidNamespaceOnSBML
+        for i in range(doc.getNumErrors())
+    ):
+        return
+    text = head() if head is not None else ""
+    m = _ROOT_XMLNS.search(text)
+    namespace = f" {m.group(1)!r}" if m else ""
+    if _BNG_XML.search(text):
+        raise RuntimeError(
+            f"{source} is BioNetGen's XML (what BNG2.pl's writeXML writes for NFsim and "
+            f"RuleMonkey), not SBML: its <sbml> root is in the namespace{namespace}, "
+            "which is no SBML namespace, and libSBML reads no model from it (error "
+            "20101). Loaded as SBML it gave an empty model (issue #1712). Run it "
+            "network-free: bngsim.NfsimSession(path) or bngsim.RuleMonkeySession(path), "
+            "or bngsim.Simulator(Model.from_net(...), method='nfsim', xml_path=path) "
+            "beside the .net it was written with; or load the .bngl or .net it came from."
+        )
+    raise RuntimeError(
+        f"{source} is not SBML: its root element is in the namespace{namespace or ' it names'}, "
+        "which is no SBML namespace, and libSBML reads no model from it (error 20101; "
+        "issue #1712)."
+    )
 
 
 def _walk_species_refs(node, species_id_set, out):
