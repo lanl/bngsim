@@ -252,14 +252,24 @@ def _art(art_id, sha, created, *, branch="main", fork=False, expired=False):
 
 
 class FakeApi:
-    """``gh api`` with canned answers; records what was asked."""
+    """``gh api`` with canned answers; records what was asked.
 
-    def __init__(self, artifacts, ancestors=(), counts=None, labels=(), push_labels=()):
+    ``ahead`` maps a base sha to how many commits the head is ahead of it (an
+    ancestor); any other base has diverged. ``merged`` lists the pull requests
+    whose merge commits lie between any base and the head. ``labels`` maps a
+    pull request to its labels. ``script_in_parent`` is whether the head's
+    first parent already has ci/test_file_counts.py.
+    """
+
+    def __init__(
+        self, artifacts, ahead=None, counts=None, labels=None, merged=(), script_in_parent=True
+    ):
         self.artifacts = artifacts
-        self.ancestors = set(ancestors)
+        self.ahead = dict(ahead or {})
         self.counts = counts or {}
-        self.labels = list(labels)
-        self.push_labels = list(push_labels)
+        self.labels = labels or {}
+        self.merged = list(merged)
+        self.script_in_parent = script_in_parent
         self.calls: list[str] = []
 
     def __call__(self, path: str) -> bytes:
@@ -268,68 +278,114 @@ class FakeApi:
             return json.dumps({"artifacts": self.artifacts}).encode()
         m = re.fullmatch(rf"repos/{REPO}/compare/(\w+)\.\.\.(\w+)", path)
         if m:
-            return json.dumps(
-                {"status": "ahead" if m.group(1) in self.ancestors else "diverged"}
-            ).encode()
+            n = self.ahead.get(m.group(1))
+            commits = [
+                {"commit": {"message": f"Merge pull request #{pr} from someone/branch\n\nx"}}
+                for pr in self.merged
+            ] + [{"commit": {"message": "an ordinary commit (#999)"}}]
+            if n is None:
+                return json.dumps({"status": "diverged", "commits": commits}).encode()
+            status = "identical" if n == 0 else "ahead"
+            return json.dumps({"status": status, "ahead_by": n, "commits": commits}).encode()
         m = re.fullmatch(rf"repos/{REPO}/actions/artifacts/(\d+)/zip", path)
         if m:
             buf = io.BytesIO()
             with zipfile.ZipFile(buf, "w") as zf:
-                zf.writestr(
-                    tfc.COUNTS_FILE,
-                    json.dumps({"sha": "x", "files": self.counts[int(m.group(1))]}),
-                )
+                files = self.counts[int(m.group(1))]
+                zf.writestr(tfc.COUNTS_FILE, json.dumps({"sha": "x", "files": files}))
             return buf.getvalue()
-        if re.fullmatch(rf"repos/{REPO}/pulls/\d+", path):
-            return json.dumps({"labels": [{"name": n} for n in self.labels]}).encode()
-        if re.fullmatch(rf"repos/{REPO}/commits/\w+/pulls", path):
-            return json.dumps([{"labels": [{"name": n} for n in self.push_labels]}]).encode()
+        m = re.fullmatch(rf"repos/{REPO}/pulls/(\d+)", path)
+        if m:
+            names = self.labels.get(int(m.group(1)), [])
+            return json.dumps({"labels": [{"name": n} for n in names]}).encode()
+        if re.fullmatch(rf"repos/{REPO}/commits/\w+", path):
+            return json.dumps({"parents": [{"sha": "parent"}]}).encode()
+        if path == f"repos/{REPO}/contents/ci/test_file_counts.py?ref=parent":
+            if self.script_in_parent:
+                return b"{}"
+            raise RuntimeError(f"gh api {path}: HTTP 404: Not Found")
         raise AssertionError(f"unexpected gh api {path}")
 
 
-def test_no_artifact_on_main_ever_is_the_bootstrap_case():
+def test_no_artifact_on_main_is_none():
     assert tfc.pick_baseline(FakeApi([]), REPO, NAME, "head") is None
 
 
-def test_a_forks_main_and_a_branch_are_not_main():
-    arts = [_art(1, "aaa", "2026-11-14", fork=True), _art(2, "bbb", "2026-11-14", branch="fix/x")]
-    assert tfc.pick_baseline(FakeApi(arts, ancestors={"aaa", "bbb"}), REPO, NAME, "head") is None
-
-
-def test_the_newest_ancestor_is_chosen():
+def test_a_forks_main_a_branch_and_an_expired_one_are_not_baselines():
     arts = [
-        _art(1, "old", "2026-11-12"),
-        _art(2, "newer", "2026-11-13"),
-        _art(3, "newest", "2026-11-14"),  # main moved on after the merge ref was made
+        _art(1, "aaa", "2026-11-14", fork=True),
+        _art(2, "bbb", "2026-11-14", branch="fix/x"),
+        _art(3, "ccc", "2026-11-14", expired=True),
     ]
-    api = FakeApi(arts, ancestors={"old", "newer"})
-    assert tfc.pick_baseline(api, REPO, NAME, "head")["id"] == 2
+    api = FakeApi(arts, ahead={"aaa": 1, "bbb": 1, "ccc": 1})
+    assert tfc.pick_baseline(api, REPO, NAME, "head") is None
 
 
-def test_the_head_itself_is_its_own_ancestor():
-    arts = [_art(1, "head", "2026-11-14")]
-    api = FakeApi(arts)
+def test_the_nearest_ancestor_is_chosen_not_the_newest_upload():
+    arts = [
+        _art(1, "rerun_of_old", "2026-11-15"),  # an old main run re-run today
+        _art(2, "newest_main", "2026-11-14"),  # main moved on past the merge ref
+        _art(3, "near", "2026-11-13"),
+    ]
+    api = FakeApi(arts, ahead={"rerun_of_old": 9, "near": 2})
+    assert tfc.pick_baseline(api, REPO, NAME, "head")["id"] == 3
+
+
+@pytest.mark.parametrize("same_sha", [True, False])
+def test_identical_is_nearest_and_stops_the_search(same_sha):
+    arts = [_art(1, "head" if same_sha else "twin", "2026-11-14"), _art(2, "x", "2026-11-13")]
+    api = FakeApi(arts, ahead={"twin": 0, "x": 5})
     assert tfc.pick_baseline(api, REPO, NAME, "head")["id"] == 1
-    assert not any("/compare/" in c for c in api.calls)
-
-
-def test_expired_artifacts_are_skipped_and_all_expired_fails():
-    arts = [_art(1, "a", "2026-11-14", expired=True), _art(2, "b", "2026-11-13")]
-    assert tfc.pick_baseline(FakeApi(arts, ancestors={"a", "b"}), REPO, NAME, "head")["id"] == 2
-    with pytest.raises(RuntimeError, match="expired"):
-        tfc.pick_baseline(FakeApi([arts[0]], ancestors={"a"}), REPO, NAME, "head")
+    assert not any("/compare/x..." in c for c in api.calls)
 
 
 def test_no_ancestor_among_mains_baselines_fails():
-    arts = [_art(1, "a", "2026-11-14")]
+    arts = [_art(1, "a", "2026-11-14")]  # diverged: main moved past the merge ref
     with pytest.raises(RuntimeError, match="merge main"):
         tfc.pick_baseline(FakeApi(arts), REPO, NAME, "head")
 
 
-def test_labels_of_a_pull_request_and_of_a_push():
-    api = FakeApi([], labels=["drops tests"], push_labels=["bug"])
-    assert tfc.labels_of(api, REPO, 12, "sha") == {"drops tests"}
-    assert tfc.labels_of(api, REPO, 0, "sha") == {"bug"}
+@pytest.mark.parametrize("in_parent, expected", [(False, True), (True, False)])
+def test_the_bootstrap_is_only_where_the_script_arrives(in_parent, expected):
+    api = FakeApi([], script_in_parent=in_parent)
+    assert tfc.is_bootstrap(api, REPO, "head") is expected
+
+
+def test_labels_since_reads_this_pr_and_every_pr_merged_since_the_baseline():
+    api = FakeApi([], ahead={"base": 3}, merged=[11, 12], labels={7: ["a"], 12: ["b"]})
+    assert tfc.labels_since(api, REPO, 7, "base", "head") == {"a", "b"}
+    assert f"repos/{REPO}/pulls/999" not in api.calls  # "(#999)" is no merge commit
+    assert tfc.labels_since(api, REPO, 0, "base", "head") == {"b"}  # a push
+
+
+# --- the changed files, on a real repository --------------------------------
+
+
+def _git(cwd, *args):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    return subprocess.run(
+        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True, env=env
+    ).stdout.strip()
+
+
+def test_changed_files_lists_both_sides_of_a_rename(tmp_path, monkeypatch):
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "user.email", "t@example.com")
+    _git(tmp_path, "config", "user.name", "t")
+    (tmp_path / "test_old.py").write_text("def test_a():\n    pass\n" * 3)
+    (tmp_path / "test_keep.py").write_text("x = 1\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "base")
+    base = _git(tmp_path, "rev-parse", "HEAD")
+    _git(tmp_path, "mv", "test_old.py", "test_new.py")
+    _git(tmp_path, "commit", "-qm", "rename")
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    monkeypatch.chdir(tmp_path)
+    for k in [k for k in os.environ if k.startswith("GIT_")]:
+        monkeypatch.delenv(k)
+    # Without --no-renames, git would list only test_new.py, and the old path
+    # would read as an untouched file that lost every test.
+    assert tfc.changed_files(base, head) == {"test_old.py", "test_new.py"}
 
 
 # --- the guard end to end --------------------------------------------------
@@ -341,10 +397,12 @@ _REPORT = """<?xml version="1.0"?><testsuites><testsuite>
 <testcase classname="t.test_b" name="test_2"><skipped type="pytest.xfail" message="x"/></testcase>
 </testsuite></testsuites>"""
 
+HEAD_COUNTS = {"t/test_a.py": _c(2), "t/test_b.py": _c(2, 1)}
+
 
 @pytest.fixture
 def guard(tmp_path, monkeypatch):
-    """Run ``guard`` against a fake GitHub; return (exit code, stdout, counts written)."""
+    """Run ``guard`` against a fake GitHub; return (exit code, counts written or None)."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(tfc, "REPO_ROOT", tmp_path)
     (tmp_path / "t").mkdir()
@@ -357,65 +415,76 @@ def guard(tmp_path, monkeypatch):
     def run(api, *, changed=(), expect=(4, 1)):
         monkeypatch.setattr(tfc, "gh_api", api)
         monkeypatch.setattr(tfc, "changed_files", lambda base, head: set(changed))
-        argv = ["guard", "--leg", "ubuntu-latest", "--reports", "logs", "--out", "c.json"]
+        out = tmp_path / "c.json"
+        out.unlink(missing_ok=True)
+        argv = ["guard", "--leg", "ubuntu-latest", "--reports", "logs", "--out", str(out)]
         argv += ["--repo", REPO, "--sha", "head", "--pr", "7"]
         if expect:
             argv += ["--expect-collected", str(expect[0]), "--expect-skipped", str(expect[1])]
         code = tfc.main(argv)
-        return code, json.loads((tmp_path / "c.json").read_text())
+        return code, json.loads(out.read_text()) if out.exists() else None
 
     return run
 
 
+def _base_api(base_counts, **kw):
+    return FakeApi(
+        [_art(1, "base", "2026-11-14")], ahead={"base": 1}, counts={1: base_counts}, **kw
+    )
+
+
 def test_guard_passes_and_writes_its_counts(guard, capsys):
-    base = {"t/test_a.py": _c(2), "t/test_b.py": _c(2, 1)}
-    api = FakeApi([_art(1, "base", "2026-11-14")], ancestors={"base"}, counts={1: base})
-    code, written = guard(api)
+    code, written = guard(_base_api(HEAD_COUNTS))
     assert code == 0, capsys.readouterr().out
-    assert written == {"sha": "head", "files": base}
+    assert written == {"sha": "head", "files": HEAD_COUNTS}
 
 
-def test_guard_fails_on_a_lost_test(guard, capsys):
-    base = {"t/test_a.py": _c(3), "t/test_b.py": _c(2, 1)}
-    api = FakeApi([_art(1, "base", "2026-11-14")], ancestors={"base"}, counts={1: base})
-    code, _ = guard(api)
+def test_guard_fails_on_a_lost_test_and_writes_no_baseline(guard, capsys):
+    code, written = guard(_base_api({**HEAD_COUNTS, "t/test_a.py": _c(3)}))
     out = capsys.readouterr().out
     assert code == 1
     assert "::error::tests stopped being collected" in out and "t/test_a.py: 3 -> 2" in out
+    # A failed run's counts must never become main's next baseline.
+    assert written is None
 
 
-def test_guard_honours_the_label(guard, capsys):
-    base = {"t/test_a.py": _c(3), "t/test_b.py": _c(2, 1)}
-    api = FakeApi(
-        [_art(1, "base", "2026-11-14")],
-        ancestors={"base"},
-        counts={1: base},
-        labels=[tfc.DROP_LABEL],
+def test_guard_honours_the_label_on_this_pull_request(guard):
+    api = _base_api({**HEAD_COUNTS, "t/test_a.py": _c(3)}, labels={7: [tfc.DROP_LABEL]})
+    assert guard(api)[0] == 0
+
+
+def test_guard_honours_the_label_on_a_pull_request_merged_since(guard):
+    api = _base_api(
+        {**HEAD_COUNTS, "t/test_a.py": _c(3)}, merged=[5], labels={5: [tfc.DROP_LABEL]}
     )
     assert guard(api)[0] == 0
 
 
 def test_guard_allows_a_loss_in_a_changed_file(guard):
-    base = {"t/test_a.py": _c(3), "t/test_b.py": _c(2, 1)}
-    api = FakeApi([_art(1, "base", "2026-11-14")], ancestors={"base"}, counts={1: base})
-    assert guard(api, changed={"t/test_a.py"})[0] == 0
+    assert guard(_base_api({**HEAD_COUNTS, "t/test_a.py": _c(3)}), changed={"t/test_a.py"})[0] == 0
 
 
-def test_guard_bootstraps_with_a_warning(guard, capsys):
-    code, _ = guard(FakeApi([]))
-    assert code == 0
+def test_guard_bootstraps_only_where_the_script_arrives(guard, capsys):
+    code, written = guard(FakeApi([], script_in_parent=False))
+    assert code == 0 and written is not None
     assert "::warning::main has no" in capsys.readouterr().out
 
 
-def test_guard_fails_when_no_baseline_is_usable(guard, capsys):
+def test_guard_fails_when_the_baselines_were_lost(guard, capsys):
+    code, written = guard(FakeApi([], script_in_parent=True))
+    assert code == 1 and written is None
+    assert "::error::main has no unexpired" in capsys.readouterr().out
+
+
+def test_guard_fails_when_no_baseline_is_an_ancestor(guard, capsys):
     code, _ = guard(FakeApi([_art(1, "a", "2026-11-14")]))
     assert code == 1
-    assert "::error::" in capsys.readouterr().out
+    assert "merge main" in capsys.readouterr().out
 
 
 def test_guard_fails_when_the_reports_disagree_with_the_summaries(guard, capsys):
-    code, _ = guard(FakeApi([]), expect=(5, 1))
-    assert code == 1
+    code, written = guard(_base_api(HEAD_COUNTS), expect=(5, 1))
+    assert code == 1 and written is None
     assert "JUnit reports hold 4 tests" in capsys.readouterr().out
 
 
@@ -442,10 +511,12 @@ def test_the_counts_job_runs_the_guard_and_uploads_mains_baseline(workflow):
     assert "--expect-collected" in job and "--expect-skipped" in job
     assert f"name: {tfc.ARTIFACT_PREFIX}${{{{ matrix.label }}}}" in job
     assert "path: test-file-counts.json" in job
-    # Main's runs only: pull requests' uploads would crowd main's out of the
-    # listing (100 per page, every branch) that pick_baseline searches.
-    assert "github.ref == 'refs/heads/main'" in job
     assert "actions: read" in job and "pull-requests: read" in job
+    assert "GH_TOKEN: ${{ github.token }}" in job
+    assert "PR_NUMBER: ${{ github.event.pull_request.number }}" in job
+    assert '--pr "${PR_NUMBER:-0}"' in job
+    # Uploaded only from a passing run: the guard writes the file only then.
+    assert "if: ${{ success() && github.ref == 'refs/heads/main' }}" in job
 
 
 def test_the_guard_reads_both_suites_reports(workflow):

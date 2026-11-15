@@ -27,13 +27,23 @@ That is finer than the floors were: one lost test in an untouched file fails,
 where the floor let up to its slack (500 for python/tests) go. A deliberate
 drop in an untouched file, for example a parametrize list that shrinks because
 its data in src/ changed, is acknowledged with the pull request label in
-DROP_LABEL, after which the failed job is re-run.
+DROP_LABEL, after which the failed job is re-run. The label counts on any pull
+request merged since the baseline as well as on the one under test, so a drop
+labelled where it was made is not charged to the changes merged after it.
 
-Main's counts come from the artifact a green run on main uploads (``guard``
-uploads nothing itself; the workflow does). The baseline is the newest one whose
-commit is an ancestor of the commit under test, and the files the change touches
-are ``git diff --no-renames`` between the two, so a main that moved on since the
-baseline was taken is part of "the change" and is never misread as a loss.
+Main's counts come from the artifact the workflow uploads from a run on main,
+and only when this guard passed there, so a loss main took without a label
+stays red, on main and on every pull request, until someone labels the pull
+request that made it and re-runs. That is what the floors did. The baseline is
+the nearest of main's recent ones that is an ancestor of the commit under test,
+and the files the change touches are ``git diff --no-renames`` between the two,
+so a main that moved on since the baseline was taken is part of "the change"
+and is never misread as a loss. No baseline at all is an error, except on the
+commit that brings this script in.
+
+A known limit: the skip tolerance is against a baseline that moves, so skips
+can creep up by SKIP_TOLERANCE per merge in untouched files without failing.
+The ceilings it replaced gave a group of 30 to 56 new skips the same pass.
 
 Counts are read from pytest's ``--junitxml`` reports. A test is one
 ``<testcase>``. One that holds a ``<skipped>`` element that is not an xfail is
@@ -49,6 +59,7 @@ import argparse
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -72,8 +83,8 @@ ARTIFACT_PREFIX = "test-file-counts-"
 #: The file inside that artifact.
 COUNTS_FILE = "test-file-counts.json"
 
-#: How many of main's newest baselines to try before giving up on an ancestor.
-CANDIDATES = 30
+#: How many of main's newest baselines to try for the nearest ancestor.
+CANDIDATES = 10
 
 Counts = dict[str, dict[str, int]]
 
@@ -192,47 +203,76 @@ def gh_api(path: str) -> bytes:
 
 
 def main_artifacts(api: Api, repo: str, name: str) -> list[dict]:
-    """Every artifact called ``name`` from a run on this repository's main, newest first."""
+    """Every unexpired artifact called ``name`` from a run on this repository's main.
+
+    Only main's runs upload one, so the newest page of 100 holds them all.
+    """
     listing = json.loads(api(f"repos/{repo}/actions/artifacts?name={name}&per_page=100"))
     found = []
     for art in listing.get("artifacts", []):
         run = art.get("workflow_run") or {}
-        if run.get("head_branch") == "main" and run.get("head_repository_id") == run.get(
-            "repository_id"
-        ):
+        same_repo = run.get("head_repository_id") == run.get("repository_id")
+        if run.get("head_branch") == "main" and same_repo and not art.get("expired"):
             found.append(art)
     return sorted(found, key=lambda a: a.get("created_at", ""), reverse=True)
 
 
-def is_ancestor(api: Api, repo: str, base_sha: str, head_sha: str) -> bool:
+def commits_ahead(api: Api, repo: str, base_sha: str, head_sha: str) -> int | None:
+    """How many commits ``head_sha`` is ahead of ``base_sha``; None if base is no ancestor."""
     if base_sha == head_sha:
-        return True
-    status = json.loads(api(f"repos/{repo}/compare/{base_sha}...{head_sha}")).get("status")
-    return status in ("ahead", "identical")
+        return 0
+    cmp = json.loads(api(f"repos/{repo}/compare/{base_sha}...{head_sha}"))
+    if cmp.get("status") == "identical":
+        return 0
+    if cmp.get("status") == "ahead":
+        return int(cmp.get("ahead_by", 0))
+    return None
 
 
 def pick_baseline(api: Api, repo: str, name: str, head_sha: str) -> dict | None:
-    """The newest unexpired main artifact whose commit is an ancestor of ``head_sha``.
+    """Of main's newest artifacts, the one nearest ``head_sha`` among its ancestors.
 
-    None when main has never uploaded one: the run that adds this guard, before
-    it has merged. RuntimeError when it has, but none is usable.
+    Nearest, not newest: re-running an old main run uploads a new artifact for
+    an old commit, which would widen the diff and exempt more files. None when
+    main has none at all; the caller decides whether that is the bootstrap.
+    RuntimeError when it has some but none is an ancestor.
     """
-    arts = main_artifacts(api, repo, name)
+    arts = main_artifacts(api, repo, name)[:CANDIDATES]
     if not arts:
         return None
-    live = [a for a in arts if not a.get("expired")][:CANDIDATES]
-    for art in live:
-        if is_ancestor(api, repo, art["workflow_run"]["head_sha"], head_sha):
-            return art
-    if not live:
+    best: tuple[int, dict] | None = None
+    for art in arts:
+        ahead = commits_ahead(api, repo, art["workflow_run"]["head_sha"], head_sha)
+        if ahead is not None and (best is None or ahead < best[0]):
+            best = (ahead, art)
+            if ahead == 0:
+                break
+    if best is None:
         raise RuntimeError(
-            f"every '{name}' artifact on main has expired; re-run python-tests on main"
+            f"none of main's {len(arts)} newest '{name}' artifacts is from an ancestor "
+            f"of {head_sha[:12]}; merge main into this branch"
         )
-    raise RuntimeError(
-        f"none of main's {len(live)} newest '{name}' artifacts is from an ancestor "
-        f"of {head_sha[:12]}; "
-        "merge main into this branch"
-    )
+    return best[1]
+
+
+def is_bootstrap(api: Api, repo: str, head_sha: str) -> bool:
+    """Whether this commit is where this script arrives: its first parent lacks it.
+
+    That is the pull request that adds it and the main run that merges it, the
+    only runs that can find no baseline because none was ever made. Any later
+    run that finds none means the baselines were lost (expired, deleted, or
+    main never went green), and that is an error, not a pass.
+    """
+    parents = json.loads(api(f"repos/{repo}/commits/{head_sha}")).get("parents") or []
+    if not parents:
+        return False
+    try:
+        api(f"repos/{repo}/contents/ci/test_file_counts.py?ref={parents[0]['sha']}")
+    except RuntimeError as exc:
+        if "404" in str(exc) or "Not Found" in str(exc):
+            return True
+        raise
+    return False
 
 
 def download_counts(api: Api, repo: str, art: dict) -> Counts:
@@ -241,13 +281,28 @@ def download_counts(api: Api, repo: str, art: dict) -> Counts:
         return json.loads(zf.read(COUNTS_FILE))["files"]
 
 
-def labels_of(api: Api, repo: str, pr: int, sha: str) -> set[str]:
-    """The labels of ``pr``; on a push, of the merged pull requests that carry ``sha``."""
-    if pr:
-        pulls = [json.loads(api(f"repos/{repo}/pulls/{pr}"))]
-    else:
-        pulls = json.loads(api(f"repos/{repo}/commits/{sha}/pulls"))
-    return {label["name"] for p in pulls for label in p.get("labels", [])}
+MERGE_PR = re.compile(r"^Merge pull request #(\d+)\b")
+
+
+def labels_since(api: Api, repo: str, pr: int, base_sha: str, head_sha: str) -> set[str]:
+    """The labels of this pull request and of every one merged since the baseline.
+
+    A drop labelled on the pull request that made it is accepted for every run
+    whose baseline predates it, so a main run that was cancelled or red before
+    it could upload newer counts does not charge that drop to the next change.
+    """
+    numbers = {pr} if pr else set()
+    if base_sha != head_sha:
+        cmp = json.loads(api(f"repos/{repo}/compare/{base_sha}...{head_sha}"))
+        for c in cmp.get("commits", []):
+            m = MERGE_PR.match((c.get("commit") or {}).get("message", ""))
+            if m:
+                numbers.add(int(m.group(1)))
+    labels: set[str] = set()
+    for n in sorted(numbers):
+        pull = json.loads(api(f"repos/{repo}/pulls/{n}"))
+        labels |= {label["name"] for label in pull.get("labels", [])}
+    return labels
 
 
 def changed_files(base_sha: str, head_sha: str) -> set[str]:
@@ -318,7 +373,6 @@ def cmd_guard(a: argparse.Namespace) -> int:
             "the suites did not report."
         )
         return 1
-    write_counts(a.out, head, a.sha)
     collected, skipped = totals(head)
     print(
         f"{a.leg}: {len(head)} test files, {collected} collected, {skipped} skipped "
@@ -338,27 +392,30 @@ def cmd_guard(a: argparse.Namespace) -> int:
     name = ARTIFACT_PREFIX + a.leg
     try:
         art = pick_baseline(api, a.repo, name, a.sha)
+        if art is None and not is_bootstrap(api, a.repo, a.sha):
+            raise RuntimeError(
+                f"main has no unexpired '{name}' artifact to compare with. Each green "
+                "run on main uploads one, so main has not been green for 90 days or "
+                "the artifacts were deleted: re-run python-tests on main."
+            )
     except RuntimeError as exc:
         print(f"::error::{exc}")
         return 1
     if art is None:
         print(
             f"::warning::main has no '{name}' artifact yet, so nothing was compared; "
-            "main's next green run uploads one."
+            "this change adds the guard, and main's first green run with it uploads one."
         )
-        summary(
-            [
-                f"### Test file counts · {a.leg}",
-                "",
-                "No baseline on main yet: nothing was compared.",
-            ]
-        )
+        summary([f"### Test file counts · {a.leg}", "", "No baseline yet: nothing compared."])
+        write_counts(a.out, head, a.sha)
         return 0
     base_sha = art["workflow_run"]["head_sha"]
     base = download_counts(api, a.repo, art)
     changed = changed_files(base_sha, a.sha)
-    drops_allowed = DROP_LABEL in labels_of(api, a.repo, a.pr, a.sha)
-    errors, notes = compare(base, head, changed, drops_allowed=drops_allowed)
+    errors, notes = compare(base, head, changed)
+    lost = any(DROP_LABEL in e for e in errors)  # only then ask for labels
+    if lost and DROP_LABEL in labels_since(api, a.repo, a.pr, base_sha, a.sha):
+        errors, notes = compare(base, head, changed, drops_allowed=True)
 
     b_col, b_skip = totals(base)
     print(f"main at {base_sha[:12]}: {len(base)} test files, {b_col} collected, {b_skip} skipped")
@@ -378,7 +435,12 @@ def cmd_guard(a: argparse.Namespace) -> int:
             *(f"- **{e}**" for e in errors),
         ]
     )
-    return 1 if errors else 0
+    if errors:
+        return 1
+    # Written only when the counts passed: the workflow uploads this file as
+    # main's next baseline, and a failed run's counts must not become one.
+    write_counts(a.out, head, a.sha)
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

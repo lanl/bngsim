@@ -306,7 +306,7 @@ jobs:
 
       # BNGSIM_SKIP_AUDIT=strict turns any skip whose reason is not in conftest's
       # _DECLARED_SKIPS into a failure. That is the second half of the false-green
-      # guard below: the count floor catches tests that vanish from collection,
+      # guard below: the per-file counts catch tests that vanish from collection,
       # strict catches tests that quietly turn into skips for a reason nobody
       # signed off on.
       #
@@ -570,12 +570,12 @@ jobs:
             coverage.xml
           if-no-files-found: ignore
 
-  # The false-green guard for a whole leg: the sum of its two shards' summaries.
-  # conftest collects each test file in exactly one shard, so the sum is what
-  # one unsharded job reported. The labels here are the legs' labels above;
-  # test_ci_shards.py holds the two lists together. Like the per-job guard it
-  # replaces, it runs only when every shard passed: a failed test is not in the
-  # collected count, and the floor would add a misleading second error.
+  # The false-green guard for a whole leg: both shards' reports and shard 1's
+  # parity report, held per test file to the same leg on main. conftest collects
+  # each test file in exactly one shard, so the shards' sum is what one unsharded
+  # job reported. The labels here are the legs' labels above; test_ci_shards.py
+  # holds the two lists together. It runs only when every shard passed: a
+  # failed test is not in the counts, and would read as a lost one.
   python-tests-counts:
     name: Python suite counts · ${{ matrix.label }}
     needs: python-tests
@@ -670,11 +670,10 @@ jobs:
 
       # The baselines the guard above reads: main's runs only, so that pull
       # requests' uploads cannot crowd main's out of the artifact listing the
-      # guard searches. Uploaded when the guard failed too, so that a loss main
-      # has already taken is held against main's next commits rather than
-      # charged to every open pull request.
+      # guard searches. The guard writes the file only when it passed, so a
+      # failed run's counts never become a baseline.
       - name: Upload this leg's test file counts
-        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && hashFiles('test-file-counts.json') != '' }}
+        if: ${{ success() && github.ref == 'refs/heads/main' }}
         uses: actions/upload-artifact@v4
         with:
           name: test-file-counts-${{ matrix.label }}
