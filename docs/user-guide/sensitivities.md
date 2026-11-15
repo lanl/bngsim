@@ -670,7 +670,9 @@ the clock's share of the crossing, and the columns read the restart that way
   return columns that are wrong with no error: a step at `b = 0.05` returns
   its clock-rate column 100% off at rtol 1e-9, and a sawtooth at `b = 0.05`
   is off by a factor of 5e4 at rtol 1e-6. Issue #1779 lists the cases. Check
-  such a model against a finite difference of plain runs, which are right.
+  such a model against a finite difference of runs without sensitivities.
+  Those are right wherever they finish in the cases measured, but a sawtooth
+  of this kind at rtol 1e-11 can fail without sensitivities too.
 - **A rate law that reads `time()` far from 0.** The clock is known to an ulp of
   itself, 3.6e-15 at `t = 25`, and a column moving at 5e7 across a narrow pulse
   turns that into a few parts in 1e6 of itself.
