@@ -3251,7 +3251,7 @@ def _unit_conversions_in(path: Path) -> list[tuple[str, str]]:
     agree on which lines are the block's.
     """
     try:
-        with open(path, errors="replace", newline="") as f:
+        with open(path, errors="replace", newline="", encoding="utf-8") as f:
             text = f.read()
     except OSError:  # pragma: no cover - the core has just read it
         return []
@@ -3428,7 +3428,7 @@ def _warn_dropped_state_changes(model: Model, path: str | Path) -> None:
     from bngsim._simulator import _stacklevel_outside_bngsim
 
     try:
-        text = Path(path).read_text(errors="replace")
+        text = Path(path).read_text(errors="replace", encoding="utf-8")
     except OSError:
         return
     changes = dropped_state_changes(model, text)

@@ -5131,7 +5131,7 @@ def _read_int_file(path: str) -> int | None:
     """Read a single integer from ``path``; None if missing/unparsable. cgroup
     memory files use the literal ``max`` for "no limit" — treated as None."""
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             raw = f.read().strip()
     except OSError:
         return None
@@ -5165,7 +5165,7 @@ def _available_memory_bytes() -> int | None:
         if v is not None and 0 < v < (1 << 62):
             candidates.append(v)
     try:
-        with open("/proc/meminfo") as f:
+        with open("/proc/meminfo", encoding="utf-8") as f:
             for line in f:
                 if line.startswith("MemAvailable:"):
                     candidates.append(int(line.split()[1]) * 1024)
@@ -5191,7 +5191,14 @@ def _macos_available_memory_bytes() -> int | None:
     back to the CPU cap alone.
     """
     try:
-        out = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=5).stdout
+        out = subprocess.run(
+            ["vm_stat"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            encoding="utf-8",
+            errors="replace",
+        ).stdout
     except (OSError, subprocess.SubprocessError):
         return None
     m = re.search(r"page size of (\d+) bytes", out)
@@ -5564,6 +5571,8 @@ def _run_compile(
             text=True,
             start_new_session=True,
             pass_fds=(watch_r,),
+            encoding="utf-8",
+            errors="replace",
         )
     except BaseException:
         os.close(watch_w)
@@ -5617,6 +5626,8 @@ def _run_compile_unsupervised(
         stderr=subprocess.PIPE,
         text=True,
         **popen_kwargs,
+        encoding="utf-8",
+        errors="replace",
     )
     try:
         stdout, stderr = proc.communicate(timeout=timeout)

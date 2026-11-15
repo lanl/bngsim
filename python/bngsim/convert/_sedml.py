@@ -308,7 +308,7 @@ def write_sedml(
     if not text.endswith("\n"):
         text += "\n"
     if out_path is not None:
-        Path(out_path).write_text(text)
+        Path(out_path).write_text(text, encoding="utf-8")
     return text
 
 
@@ -766,11 +766,11 @@ def _selector_from_var(var: ET.Element) -> str | None:
 
 def _read_text(source: str | Path) -> str:
     if isinstance(source, Path):
-        return source.read_text()
+        return source.read_text(encoding="utf-8")
     s = str(source)
     if s.lstrip().startswith("<"):  # inline XML (well-formed or not), not a path
         return s
-    return Path(s).read_text()
+    return Path(s).read_text(encoding="utf-8")
 
 
 def _float_attr(elem: ET.Element, name: str, default: float) -> float:
@@ -943,12 +943,12 @@ def _sbml_text(sbml) -> str | None:
     if sbml is None:
         return None
     if isinstance(sbml, Path):
-        return sbml.read_text() if sbml.is_file() else None
+        return sbml.read_text(encoding="utf-8") if sbml.is_file() else None
     text = str(sbml)
     if text.lstrip().startswith("<"):
         return text
     path = Path(text)
-    return path.read_text() if path.is_file() else None
+    return path.read_text(encoding="utf-8") if path.is_file() else None
 
 
 class _SbmlTargets:
@@ -2323,7 +2323,7 @@ def write_sedml_protocol(
     targets = _SbmlTargets(sbml if sbml is not None else model_source, model)
     text = _ProtocolWriter(protocol, targets, model_source).write()
     if out_path is not None:
-        Path(out_path).write_text(text)
+        Path(out_path).write_text(text, encoding="utf-8")
     return text
 
 

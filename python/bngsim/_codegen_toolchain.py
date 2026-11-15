@@ -248,7 +248,15 @@ def _run(cmd: list[str], *, timeout: float = 10.0) -> str:
     """stdout and stderr of a short diagnostic command (``ld -v`` prints to
     stderr), or ``""`` when it cannot run or fails."""
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+        out = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            encoding="utf-8",
+            errors="replace",
+        )
     except (OSError, subprocess.SubprocessError, ValueError):
         return ""
     if out.returncode != 0:

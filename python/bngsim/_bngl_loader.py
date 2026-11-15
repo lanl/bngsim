@@ -587,7 +587,7 @@ def bngl_to_net(
     # this process's names nothing (issue #1494).
     env = _bng2_env()
     bng2 = Path(resolve_bng2(bng2_pl)).absolute()
-    source = path.read_text()
+    source = path.read_text(encoding="utf-8")
     effective = generation_source(source) + "\n" + generate_network_call(source) + "\n"
     # The network depends on a file the model reads, which the key cannot see:
     # an edited parameter file was served the first network (issue #1494).
@@ -606,7 +606,7 @@ def bngl_to_net(
     workdir = Path(tempfile.mkdtemp(prefix="bngsim-bngl-"))
     try:
         scratch = workdir / f"{stem}.bngl"
-        scratch.write_text(effective)
+        scratch.write_text(effective, encoding="utf-8")
         net = _run_bng2(
             bng2,
             scratch,
@@ -668,6 +668,8 @@ def _run_bng2(
             timeout=timeout,
             cwd=str(cwd),
             env=env,
+            encoding="utf-8",
+            errors="replace",
         )
     except subprocess.TimeoutExpired as e:
         raise ModelError(
