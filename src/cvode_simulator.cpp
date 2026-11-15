@@ -4544,15 +4544,25 @@ struct CvodeSimulator::Impl {
     struct RootStepEnd {
         double t = 0.0;
         std::vector<double> x;
-        // The columns at the root, integrated again over the step from its
-        // start (columns_over_root_step), where that could be done; empty
-        // otherwise.
-        std::vector<std::vector<double>> s_root;
+        // Where the root's crossing was found inside the step (issue #1456):
+        // the step's start and its columns there, the corner, and the step's
+        // states at kRootStepGrid + 1 even points from the start to the
+        // corner and at the root. Empty where it was not read.
+        double t_start = 0.0;
+        double t_corner = 0.0;
+        double t_root = 0.0;
+        std::vector<std::vector<double>> s_start;
+        std::vector<std::vector<double>> x_grid;
+        std::vector<double> x_root;
     };
-    // The columns at a root CVODE found inside its last step, integrated
-    // again over that step from its start (issue #1456). See the definition.
-    bool columns_over_root_step(void *cvode_mem, int ns, double t_root, double rtol,
-                                const std::vector<int> &residuals, const SensitivityState &sens,
+    // Read what columns_over_root_step needs from the step CVODE found a root
+    // in, before the restart rewinds it (issue #1456). See the definition.
+    void read_root_step(void *cvode_mem, int ns, double t_root, const std::vector<int> &residuals,
+                        SensitivityState &sens, RootStepEnd &out);
+    // The columns at that root, integrated again over the step from its start.
+    // See the definition.
+    bool columns_over_root_step(void *cvode_mem, int ns, double rtol, const RootStepEnd &step,
+                                const SensitivityState &sens,
                                 std::vector<std::vector<double>> &out);
     // `root_step_end` is that step's end, or null.
     void
@@ -4638,6 +4648,17 @@ struct CvodeSimulator::Impl {
     // The tolerances of the run under way, which say how well a state
     // crossing's time is known.
     double run_rtol = 0.0;
+    // Whether the right-hand side reads the clock, for this run (issue #1455):
+    // where it does not, a restart that keeps the time moves nothing. Walked
+    // at the first crossing that asks, not at every run's start, where the
+    // walk cost a run with no crossing 1.3 ms of its first call.
+    int run_reads_clock_known = -1;
+    bool run_reads_clock() {
+        if (run_reads_clock_known < 0) {
+            run_reads_clock_known = model.state_reads_clock() ? 1 : 0;
+        }
+        return run_reads_clock_known != 0;
+    }
     double run_atol = 0.0;
     std::vector<double> run_atol_vec;
     // Where the run under way started: its time so far is counted from here,
@@ -13901,103 +13922,126 @@ void CvodeSimulator::Impl::columns_past_surface(void *cvode_mem, int ns, double 
 // an explicit method does not; the columns CVODE gave are kept otherwise, and
 // where the analytic right-hand side is not to be had, and for a column in its
 // comoving frame (issue #545).
-bool CvodeSimulator::Impl::columns_over_root_step(void *cvode_mem, int ns, double t_root,
-                                                  double rtol, const std::vector<int> &residuals,
-                                                  const SensitivityState &sens,
-                                                  std::vector<std::vector<double>> &out) {
+// Even pieces of the stretch from the step's start to the corner: classic
+// Runge-Kutta's stages on 2 and on 4 substeps all fall on them.
+static constexpr int kRootStepGrid = 8;
+
+// Read in the main loop, where the step is still CVODE's: whether the crossing
+// is continuous, and the columns wanted, is known only after the restart, and
+// a crossing that jumps pays for no more than these readings. On a run that
+// crosses 2,000 times in 3,000 units and does little else, they and the
+// integration below cost 2% to 3% of its time; 4 and 8 substeps cost 7%.
+void CvodeSimulator::Impl::read_root_step(void *cvode_mem, int ns, double t_root,
+                                          const std::vector<int> &residuals, SensitivityState &sens,
+                                          RootStepEnd &out) {
+    out.x_grid.clear();
     const int n_sens = sens.n_total;
-    void *raw = nullptr;
     sunrealtype tn = 0.0;
     sunrealtype h_last = 0.0;
-    if (n_sens == 0 || !(rtol > 0.0) || CVodeGetUserData(cvode_mem, &raw) != CV_SUCCESS ||
-        raw == nullptr || CVodeGetCurrentTime(cvode_mem, &tn) != CV_SUCCESS ||
+    if (n_sens == 0 || residuals.empty() || CVodeGetCurrentTime(cvode_mem, &tn) != CV_SUCCESS ||
         CVodeGetLastStep(cvode_mem, &h_last) != CV_SUCCESS) {
-        return false;
+        return;
+    }
+    // Nothing is read where the columns cannot be integrated again.
+    void *raw = nullptr;
+    if (CVodeGetUserData(cvode_mem, &raw) != CV_SUCCESS || raw == nullptr) {
+        return;
     }
     const auto *data = static_cast<const CvodeUserData *>(raw);
-    if (data->codegen_sens_fn == nullptr || data->codegen_plist == nullptr ||
-        data->codegen_param_values == nullptr || data->codegen_n_sens != n_sens ||
+    if (data->codegen_sens_fn == nullptr || data->codegen_n_sens != n_sens ||
         data->comoving_plist != nullptr) {
-        return false;
+        return;
     }
     const double t_end = static_cast<double>(tn);
     const double t_start = t_end - std::fabs(static_cast<double>(h_last));
     if (!(t_root > t_start) || !(t_root <= t_end)) {
-        return false;
+        return;
     }
     const auto n = static_cast<std::size_t>(ns);
-    const auto nc = static_cast<std::size_t>(n_sens);
     NVectorGuard xv(N_VClone(sens.yS[0]));
-    if (xv.v == nullptr || CVodeGetSensDky(cvode_mem, static_cast<sunrealtype>(t_start), 0,
-                                           sens.yS.arr) != CV_SUCCESS) {
-        return false;
+    if (xv.v == nullptr) {
+        return;
     }
-    std::vector<std::vector<double>> s_start(nc, std::vector<double>(n, 0.0));
-    for (std::size_t c = 0; c < nc; ++c) {
-        const double *col = N_VGetArrayPointer(sens.yS[static_cast<int>(c)]);
-        s_start[c].assign(col, col + n);
-    }
-    CodegenSensUserDataForSO so_data;
-    so_data.param_values = data->codegen_param_values;
-    so_data.plist = data->codegen_plist;
-    so_data.n_sens = data->codegen_n_sens;
-    std::vector<double> xs(n, 0.0);
-    std::vector<double> fs(n, 0.0);
-    std::vector<double> scratch_a(n, 0.0);
-    std::vector<double> scratch_b(n, 0.0);
-    // Every column's rate at t, the state there from the step's polynomial.
-    auto rates = [&](double t, const std::vector<std::vector<double>> &cols,
-                     std::vector<std::vector<double>> &rate) {
+    auto state_at = [&](double t, std::vector<double> &x) {
         if (CVodeGetDky(cvode_mem, static_cast<sunrealtype>(t), 0, xv.v) != CV_SUCCESS) {
             return false;
         }
         const double *xp = N_VGetArrayPointer(xv.v);
-        xs.assign(xp, xp + n);
-        sync_model_at(t, xs.data(), ns);
-        model.compute_derivs(t, xs.data(), fs.data());
-        for (std::size_t c = 0; c < nc; ++c) {
-            const int rc =
-                data->codegen_sens_fn(n_sens, t, xs.data(), fs.data(), static_cast<int>(c),
-                                      const_cast<double *>(cols[c].data()), rate[c].data(),
-                                      &so_data, scratch_a.data(), scratch_b.data());
-            if (rc != 0 || !std::all_of(rate[c].begin(), rate[c].end(),
-                                        [](double v) { return std::isfinite(v); })) {
-                return false;
-            }
-        }
+        x.assign(xp, xp + n);
         return true;
     };
-    using Cols = std::vector<std::vector<double>>;
     // Where along the step the root's residuals change sides: the corner,
     // which a substep must not straddle. Found on the step's polynomial.
     auto &eval = model.evaluator();
+    std::vector<double> xs;
     auto residual_on_step = [&](int gidx, double t) {
-        if (CVodeGetDky(cvode_mem, static_cast<sunrealtype>(t), 0, xv.v) != CV_SUCCESS) {
+        if (!state_at(t, xs)) {
             return std::numeric_limits<double>::quiet_NaN();
         }
-        sync_model_at(t, N_VGetArrayPointer(xv.v), ns);
+        sync_model_at(t, xs.data(), ns);
         return eval.evaluate(gidx);
     };
     double t_corner = t_root;
-    for (int gidx : residuals) {
-        double lo = t_start;
-        double hi = t_root;
-        const double g_lo = residual_on_step(gidx, lo);
-        const double g_hi = residual_on_step(gidx, hi);
-        if (!std::isfinite(g_lo) || !std::isfinite(g_hi) || g_lo == 0.0) {
-            return false;
+    bool ok = true;
+    // CVODE puts the root within 100·ε·(|t| + |h|) of the surface: the search
+    // starts from a bracket a little wider than that, and from the step's
+    // start only where the bracket does not hold the change of sides.
+    const double bracket =
+        std::min(t_root - t_start, 1024.0 * std::numeric_limits<double>::epsilon() *
+                                       (std::fabs(t_root) + std::fabs(t_end - t_start)));
+    for (std::size_t r = 0; r < residuals.size() && ok; ++r) {
+        const int gidx = residuals[r];
+        const double g_start = residual_on_step(gidx, t_start);
+        const double g_hi = residual_on_step(gidx, t_root);
+        if (!std::isfinite(g_start) || !std::isfinite(g_hi) || g_start == 0.0) {
+            ok = false;
+            break;
         }
-        if (g_hi != 0.0 && (g_lo < 0.0) == (g_hi < 0.0)) {
+        if (g_hi != 0.0 && (g_start < 0.0) == (g_hi < 0.0)) {
             continue; // the root is short of this surface
         }
-        for (int it = 0; it < 200 && hi - lo > 0.0; ++it) {
+        const double g_lo = g_start;
+        double lo = t_start;
+        double hi = t_root;
+        double g_at_lo = g_start;
+        double g_at_hi = g_hi;
+        const double near = residual_on_step(gidx, t_root - bracket);
+        if (std::isfinite(near) && near != 0.0 && (near < 0.0) == (g_start < 0.0)) {
+            lo = t_root - bracket;
+            g_at_lo = near;
+            // Within the bracket the residual is a line to its rounding: a few
+            // steps of false position put the corner to the double.
+            for (int it = 0; it < 4 && g_at_hi != 0.0; ++it) {
+                const double mid = lo + (hi - lo) * g_at_lo / (g_at_lo - g_at_hi);
+                if (!(mid > lo && mid < hi)) {
+                    break;
+                }
+                const double g = residual_on_step(gidx, mid);
+                if (!std::isfinite(g)) {
+                    break;
+                }
+                if (g != 0.0 && (g < 0.0) == (g_lo < 0.0)) {
+                    lo = mid;
+                    g_at_lo = g;
+                } else {
+                    hi = mid;
+                    g_at_hi = g;
+                }
+                if (std::nextafter(lo, hi) >= hi) {
+                    break;
+                }
+            }
+        }
+        // To the double: no more halvings than a double has bits.
+        for (int it = 0; it < 64 && std::nextafter(lo, hi) < hi; ++it) {
             const double mid = lo + 0.5 * (hi - lo);
             if (!(mid > lo && mid < hi)) {
                 break;
             }
             const double g = residual_on_step(gidx, mid);
             if (!std::isfinite(g)) {
-                return false;
+                ok = false;
+                break;
             }
             if (g != 0.0 && (g < 0.0) == (g_lo < 0.0)) {
                 lo = mid;
@@ -14007,10 +14051,116 @@ bool CvodeSimulator::Impl::columns_over_root_step(void *cvode_mem, int ns, doubl
         }
         t_corner = std::min(t_corner, lo);
     }
+    std::vector<std::vector<double>> grid(static_cast<std::size_t>(kRootStepGrid) + 1);
+    std::vector<double> x_root;
+    ok = ok && t_corner > t_start && state_at(t_root, x_root);
+    for (int k = 0; ok && k <= kRootStepGrid; ++k) {
+        const double t =
+            k == kRootStepGrid ? t_corner : t_start + (t_corner - t_start) * k / kRootStepGrid;
+        ok = state_at(t, grid[static_cast<std::size_t>(k)]);
+    }
+    ok = ok && CVodeGetSensDky(cvode_mem, static_cast<sunrealtype>(t_start), 0, sens.yS.arr) ==
+                   CV_SUCCESS;
+    if (ok) {
+        out.s_start.assign(static_cast<std::size_t>(n_sens), std::vector<double>());
+        for (int c = 0; c < n_sens; ++c) {
+            const double *col = N_VGetArrayPointer(sens.yS[c]);
+            out.s_start[static_cast<std::size_t>(c)].assign(col, col + n);
+        }
+        out.t_start = t_start;
+        out.t_corner = t_corner;
+        out.t_root = t_root;
+        out.x_grid = std::move(grid);
+        out.x_root = std::move(x_root);
+    }
+}
+
+// ─── The columns at a root inside a step (issue #1456) ───────────────────────
+//
+// CVODE finds a crossing's root inside the step that went past it, and the
+// columns there are read from that step. Across a bend's corner the column's
+// rate jumps (a narrow triangle in a relaxing species: by about 1.6e9 at its
+// peak), and the step's own corrector takes the rate past the corner for the
+// whole step. A step of 1.1e-11 that ended 1.1e-13 past the peak passed its
+// error test with the column at its end 5.9e-4 off, 4e-8 of itself at rtol
+// 1e-11, where every step before it was right to 1e-10; dY/dc came out
+// 3.8e-4 off on that one output grid of 38.
+//
+// So the columns at the root are integrated again over the step, from its
+// start, which an earlier step left right, along the step's own states (the
+// state does not jump at a bend, and its polynomial is good): classic
+// Runge-Kutta on the analytic sensitivity right-hand side to the corner, each
+// stage on the branch its state is on, and the few ulp past it on the far
+// branch. Taken only where 2 and 4 substeps agree to well inside the
+// tolerance, which a step too long or too stiff for an explicit method does
+// not; the columns CVODE gave are kept otherwise, and where the analytic
+// right-hand side is not to be had, and for a column in its comoving frame
+// (issue #545).
+bool CvodeSimulator::Impl::columns_over_root_step(void *cvode_mem, int ns, double rtol,
+                                                  const RootStepEnd &step,
+                                                  const SensitivityState &sens,
+                                                  std::vector<std::vector<double>> &out) {
+    const int n_sens = sens.n_total;
+    const auto n = static_cast<std::size_t>(ns);
+    const auto nc = static_cast<std::size_t>(n_sens);
+    void *raw = nullptr;
+    if (n_sens == 0 || !(rtol > 0.0) ||
+        step.x_grid.size() != static_cast<std::size_t>(kRootStepGrid) + 1 ||
+        step.s_start.size() != nc || CVodeGetUserData(cvode_mem, &raw) != CV_SUCCESS ||
+        raw == nullptr) {
+        return false;
+    }
+    const auto *data = static_cast<const CvodeUserData *>(raw);
+    if (data->codegen_sens_fn == nullptr || data->codegen_plist == nullptr ||
+        data->codegen_param_values == nullptr || data->codegen_n_sens != n_sens ||
+        data->comoving_plist != nullptr) {
+        return false;
+    }
+    CodegenSensUserDataForSO so_data;
+    so_data.param_values = data->codegen_param_values;
+    so_data.plist = data->codegen_plist;
+    so_data.n_sens = data->codegen_n_sens;
+    std::vector<double> scratch_a(n, 0.0);
+    std::vector<double> scratch_b(n, 0.0);
+    using Cols = std::vector<std::vector<double>>;
+    const double span = step.t_corner - step.t_start;
+    auto grid_t = [&](int k) {
+        return k == kRootStepGrid ? step.t_corner : step.t_start + span * k / kRootStepGrid;
+    };
+    // f at each grid point and at the root, once: both substep counts read it.
+    std::vector<std::vector<double>> f_grid(static_cast<std::size_t>(kRootStepGrid) + 1);
+    for (int k = 0; k <= kRootStepGrid; ++k) {
+        const auto uk = static_cast<std::size_t>(k);
+        f_grid[uk].assign(n, 0.0);
+        sync_model_at(grid_t(k), step.x_grid[uk].data(), ns);
+        model.compute_derivs(grid_t(k), step.x_grid[uk].data(), f_grid[uk].data());
+    }
+    std::vector<double> f_root(n, 0.0);
+    sync_model_at(step.t_root, step.x_root.data(), ns);
+    model.compute_derivs(step.t_root, step.x_root.data(), f_root.data());
+    // Every column's rate at (t, x, f).
+    auto rates = [&](double t, const std::vector<double> &x, const std::vector<double> &f,
+                     const Cols &cols, Cols &rate) {
+        for (std::size_t c = 0; c < nc; ++c) {
+            const int rc = data->codegen_sens_fn(
+                n_sens, t, const_cast<double *>(x.data()), const_cast<double *>(f.data()),
+                static_cast<int>(c), const_cast<double *>(cols[c].data()), rate[c].data(), &so_data,
+                scratch_a.data(), scratch_b.data());
+            if (rc != 0 || !std::all_of(rate[c].begin(), rate[c].end(),
+                                        [](double v) { return std::isfinite(v); })) {
+                return false;
+            }
+        }
+        return true;
+    };
+    Cols k1(nc, std::vector<double>(n)), k2(k1), k3(k1), k4(k1), tmp(k1);
+    auto at = [&](int k, const Cols &cols, Cols &rate) {
+        const auto uk = static_cast<std::size_t>(k);
+        return rates(grid_t(k), step.x_grid[uk], f_grid[uk], cols, rate);
+    };
     auto integrate = [&](int substeps, Cols &cols) {
-        cols = s_start;
-        const double h = (t_corner - t_start) / substeps;
-        Cols k1(nc, std::vector<double>(n)), k2(k1), k3(k1), k4(k1), tmp(k1);
+        cols = step.s_start;
+        const int per = kRootStepGrid / substeps;
         auto axpy = [&](const Cols &base, double a, const Cols &k, Cols &dst) {
             for (std::size_t c = 0; c < nc; ++c) {
                 for (std::size_t i = 0; i < n; ++i) {
@@ -14019,22 +14169,21 @@ bool CvodeSimulator::Impl::columns_over_root_step(void *cvode_mem, int ns, doubl
             }
         };
         for (int m = 0; m < substeps; ++m) {
-            const double t0 = t_start + m * h;
-            const double t1 = m + 1 == substeps ? t_corner : t0 + h;
-            const double hm = t1 - t0;
-            if (!rates(t0, cols, k1)) {
+            const int k0 = m * per;
+            const double hm = grid_t(k0 + per) - grid_t(k0);
+            if (!at(k0, cols, k1)) {
                 return false;
             }
             axpy(cols, 0.5 * hm, k1, tmp);
-            if (!rates(t0 + 0.5 * hm, tmp, k2)) {
+            if (!at(k0 + per / 2, tmp, k2)) {
                 return false;
             }
             axpy(cols, 0.5 * hm, k2, tmp);
-            if (!rates(t0 + 0.5 * hm, tmp, k3)) {
+            if (!at(k0 + per / 2, tmp, k3)) {
                 return false;
             }
             axpy(cols, hm, k3, tmp);
-            if (!rates(t1, tmp, k4)) {
+            if (!at(k0 + per, tmp, k4)) {
                 return false;
             }
             for (std::size_t c = 0; c < nc; ++c) {
@@ -14049,27 +14198,23 @@ bool CvodeSimulator::Impl::columns_over_root_step(void *cvode_mem, int ns, doubl
     // Past the corner, the few ulp to the root on the far branch: the column's
     // rate there, read with the columns at the corner.
     auto beyond = [&](Cols &cols) {
-        if (!(t_root > t_corner)) {
+        if (!(step.t_root > step.t_corner)) {
             return true;
         }
-        Cols rate(nc, std::vector<double>(n));
-        if (!rates(t_root, cols, rate)) {
+        if (!rates(step.t_root, step.x_root, f_root, cols, k1)) {
             return false;
         }
         for (std::size_t c = 0; c < nc; ++c) {
             for (std::size_t i = 0; i < n; ++i) {
-                cols[c][i] += (t_root - t_corner) * rate[c][i];
+                cols[c][i] += (step.t_root - step.t_corner) * k1[c][i];
             }
         }
         return true;
     };
     Cols coarse;
     Cols fine;
-    const bool ok = t_corner > t_start && integrate(4, coarse) && integrate(8, fine) &&
-                    beyond(coarse) && beyond(fine);
-    if (CVodeGetDky(cvode_mem, static_cast<sunrealtype>(t_root), 0, xv.v) == CV_SUCCESS) {
-        sync_model_at(t_root, N_VGetArrayPointer(xv.v), ns);
-    }
+    const bool ok = integrate(2, coarse) && integrate(4, fine) && beyond(coarse) && beyond(fine);
+    sync_model_at(step.t_root, step.x_root.data(), ns);
     if (!ok) {
         return false;
     }
@@ -16437,19 +16582,25 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         const bool ran = root_step_ran_past(root_step_end, ns, t_evt, x, batch);
         // Issue #1456: the columns at the root from the step integrated again,
         // where the step went past the corner and over nothing else.
-        if (!ran && root_step_end != nullptr && root_step_end->s_root.size() == s.size()) {
-            s = root_step_end->s_root;
+        std::vector<std::vector<double>> s_root;
+        if (!ran && root_step_end != nullptr &&
+            columns_over_root_step(cvode_mem, ns, run_rtol, *root_step_end, sens, s_root) &&
+            s_root.size() == s.size()) {
+            s = std::move(s_root);
+            sync(x, t_evt);
         }
         // dt*/dθ, read before the columns move: a crossing too near its
         // tangency to divide by leaves the clock's share out.
         std::vector<double> tau_kept;
-        try {
-            residual_dtstar(sw.residual_expr_idx, sw.species,
-                            "the state-dependent rate-law condition with residual '" +
-                                sw.residual_source + "' crosses",
-                            t_evt, ns, x, f0, s, sens, tau_kept);
-        } catch (const std::exception &) {
-            tau_kept.clear();
+        if (run_reads_clock()) {
+            try {
+                residual_dtstar(sw.residual_expr_idx, sw.species,
+                                "the state-dependent rate-law condition with residual '" +
+                                    sw.residual_source + "' crosses",
+                                t_evt, ns, x, f0, s, sens, tau_kept);
+            } catch (const std::exception &) {
+                tau_kept.clear();
+            }
         }
         const double past = ran ? -surface_at : 0.0;
         columns_past_surface(cvode_mem, ns, t_evt, x, f0, dt, past, s, sens);
@@ -16794,7 +16945,9 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         for (std::size_t u = 0; u < n_sp; ++u) {
             x_restart[u] = x[u] + dt * f0[u];
         }
-        columns_for_kept_time(t_evt, ns, x_restart, dt, tau, s, sens);
+        if (run_reads_clock()) {
+            columns_for_kept_time(t_evt, ns, x_restart, dt, tau, s, sens);
+        }
         sync(x, t_evt);
     }
     // Issue #760: the stops of the stretch this crossing begins.
@@ -16881,6 +17034,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     const std::vector<double> &atol_v = impl_->resolve_atol_vec(opts);
     int max_steps = (opts.max_steps > 0) ? opts.max_steps : impl_->max_steps;
     impl_->run_rtol = rtol;
+    impl_->run_reads_clock_known = -1;
     impl_->run_atol = atol;
     impl_->run_atol_vec = atol_v;
     impl_->run_t_start = times.t_start;
@@ -22119,11 +22273,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                                         crossed.push_back(state_switches[j]->residual_expr_idx);
                                     }
                                 }
-                                if (!crossed.empty()) {
-                                    impl_->columns_over_root_step(
-                                        cvode_mem, ns, static_cast<double>(t_ret), rtol, crossed,
-                                        sens, root_step_end.s_root);
-                                }
+                                impl_->read_root_step(cvode_mem, ns, static_cast<double>(t_ret),
+                                                      crossed, sens, root_step_end);
                             }
                             N_VDestroy(end);
                         }
