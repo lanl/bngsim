@@ -111,11 +111,12 @@ rather than relying on the macOS legs alone.
 
 ## Validation
 
-GitHub Actions is the source of truth for the four-platform matrix. The
+GitHub Actions is the source of truth for the wheel matrix above. The
 per-platform wheel legs (`wheels.yml`) each build with `BNGSIM_REQUIRE_KLU=ON`
 and run the `cibuildwheel` `test-command` against the repaired wheel, so a leg
 that is green is a wheel that imports and reports `HAS_KLU=True` in a clean
-environment. `lint.yml`, `native-tests.yml`, `mir.yml`, `windows-nfsim.yml` and
+environment. On Linux aarch64 that is the only check: no test suite runs on
+that platform. `lint.yml`, `native-tests.yml`, `mir.yml`, `windows-nfsim.yml` and
 `windows-tail.yml` cover the pre-commit hooks, the C++ unit suite, the MIR JIT
 backend, and the Windows NFsim/RuleMonkey paths respectively.
 
@@ -188,8 +189,8 @@ assert r.n_times == 11
    end in a pointer back at `CHANGELOG.md`, and name the version in
    `TRUNCATED_ON_PURPOSE` in `python/tests/test_changelog_fragments.py`. The pull request carrying steps 1–2
    is the one thing that may edit `CHANGELOG.md`, so label it `changelog exempt`.
-3. Merge the release pull request into `main`; verify all four wheel legs are
-   green on cp310–cp315.
+3. Merge the release pull request into `main`; verify that all five wheel legs
+   in the table at the top of this file are green on cp310–cp315.
 4. Tag `git tag v<x.y.z> && git push origin v<x.y.z>` — `release.yml` builds and
    publishes to PyPI via Trusted Publishing. Rehearse first with a manual
    `workflow_dispatch` run targeting `testpypi`.

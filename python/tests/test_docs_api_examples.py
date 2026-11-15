@@ -15,7 +15,8 @@ Two guards, cheap and complementary:
   optional extras' modules blocked, so the block must write its own model and
   must not need pandas or any other extra (issue #1691). It then checks the
   block's answer against the closed form of the model the three pages share,
-  and that each print line whose comment states a value prints that value.
+  and that each line whose comment states a value has it: what a print line
+  prints, or the shape of an array a bare expression shows.
   :func:`test_quickstart_sweep_block_runs_on_the_first_blocks_model` runs the
   quickstart's sweep block after its first block, as the page reads.
 * :func:`test_documented_api_names_exist` STATICALLY resolves every ``bngsim.…``
@@ -58,11 +59,14 @@ _SCANNED = ("README.md", "SUPPORT_MATRIX.md")
 # conscripted into the executed set.
 _FRONT_DOOR = ("README.md", "docs/index.md", "docs/quickstart.md")
 
-# A front-door print line whose comment starts with the value it prints:
-# `print(result.time.shape)  # (101,)` or `print(...)  # 0.6738, which is ...`.
-# A comment that starts with words ("# trajectory of ...") states no value.
-_PRINTED_VALUE = re.compile(
-    r"^print\((?P<expr>.+?)\)\s+#\s*(?P<value>\([^)]*\)|[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)"
+# A front-door line whose comment starts with a value: a print line, which must
+# print it (`print(result.time.shape)  # (101,)`, `print(...)  # 0.6738, which
+# is ...`), or a bare expression, as the README writes them, whose comment gives
+# the shape of the array it shows (`result.species  # (101, 2) array`). A comment
+# that starts with words ("# trajectory of ...") states no value.
+_STATED_VALUE = re.compile(
+    r"^(?:print\((?P<printed>.+?)\)|(?P<shown>[A-Za-z_][\w.]*(?:\[[^\]]*\])*))"
+    r"\s+#\s*(?P<value>\([^)]*\)|[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)"
 )
 
 # The top-level modules of pyproject's optional extras (and the test extra). A
@@ -288,18 +292,25 @@ def test_front_door_example_runs(
     # runs to another time while keeping that comment is wrong too.
     assert t_end == pytest.approx(10.0), f"{page}'s example prints A(10) but runs to t = {t_end:g}"
 
-    # What the block says it prints: each print line whose comment states a
-    # value must print that value, so a comment and the code under it cannot
-    # drift apart (n_points=11 under "# (101,)", or "# 0.9999" over A(10)).
-    # The printed expression is evaluated again on the finished namespace; the
-    # front-door prints only read the result.
-    stated = [m for m in map(_PRINTED_VALUE.match, code.splitlines()) if m]
-    assert stated, f"{page}'s first block has no print line whose comment states its value"
+    # What the block says it shows: each line whose comment states a value must
+    # have it, so a comment and the code under it cannot drift apart
+    # (n_points=11 under "# (101,)", or "# 0.9999" over A(10)). The expression
+    # is evaluated again on the finished namespace; these lines only read the
+    # result.
+    stated = [m for m in map(_STATED_VALUE.match, code.splitlines()) if m]
+    assert stated, f"{page}'s first block has no line whose comment states its value"
     for m in stated:
-        got = eval(m["expr"], namespace)  # noqa: S307
-        assert got == ast.literal_eval(m["value"]), (
-            f"{page}: print({m['expr']}) gives {got!r}, but its comment says {m['value']}"
-        )
+        try:
+            claim = ast.literal_eval(m["value"])
+        except (ValueError, SyntaxError):
+            pytest.fail(f"{page}: the comment {m['value']!r} starts like a value but is not one")
+        if m["printed"] is not None:
+            shown, got = f"print({m['printed']})", eval(m["printed"], namespace)  # noqa: S307
+        else:
+            shown, got = m["shown"], eval(m["shown"], namespace)  # noqa: S307
+        if isinstance(claim, tuple) and hasattr(got, "shape"):
+            got = tuple(got.shape)  # an array, printed or shown: its comment gives the shape
+        assert got == claim, f"{page}: {shown} gives {got!r}, but its comment says {m['value']}"
 
 
 def test_quickstart_sweep_block_runs_on_the_first_blocks_model(

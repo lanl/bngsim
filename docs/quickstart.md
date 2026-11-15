@@ -71,7 +71,8 @@ See [Loading models](user-guide/loading-models.md) for the full picture.
 ## Parameter sweeps
 
 ```python
-# Update parameters in-memory (no file I/O)
+# Update parameters in-memory (no file I/O). The next run goes on from the
+# state the last one ended in, not from the initial conditions.
 model.set_param("k", 1.0)
 result2 = sim.run(t_span=(0, 100), n_points=101)
 
