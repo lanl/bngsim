@@ -755,6 +755,35 @@ nothing knows before the run. Its residual is a CVODE root instead; see
 [Events](events.md) and the sensitivities guide for what that does and does
 not resolve.
 
+## A run that starts far from t = 0
+
+The integrator advances its clock by `t + h`, and far from 0 the doubles are
+coarse: 1.2e-4 apart at `t = 1e12`, 0.125 apart at `1e15`. A step shorter than
+that spacing is rounded, and the trajectory goes wrong with it.
+
+A model that reads no clock cannot tell where its run starts, so bngsim runs it
+on the time elapsed since the end of the run nearer 0, wherever that end is at
+2^20 (1,048,576) or beyond, and reports the times you asked for (issue #1681).
+Such a run is the run from 0, to the bit:
+
+```python
+far = sim.run(t_span=(1e15, 1e15 + 10), n_points=11)    # the same numbers as
+near = sim.run(t_span=(0, 10), n_points=11)             # this run, at far.time
+```
+
+A run nearer 0 than that is integrated on the clock you gave it, as it always
+was. If a far run fails, the times in its message are on the run's own clock,
+and the message ends by saying which time to add to them.
+
+A model that **reads the clock** keeps the absolute one, far or not: a function
+of `time()`, a table function indexed by time, or any event. Its laws are
+evaluated at `t`, so the run cannot be moved, and from a far start its steps are
+only as fine as the doubles there. A decay whose rate reads `time()` is 1.8e-3
+off at `t = 1e12` and wrong by a factor of 11 at `1e15`, with no error. Run such
+a model from a time near 0, with the offset written into the model, if it has
+to start far out. SSA and PSA count their own clock from a far start for every
+model (issue #1059).
+
 ## When a solve fails on a rate law's domain
 
 bngsim evaluates a rate law literally. A logarithm, a `sqrt` or a fractional

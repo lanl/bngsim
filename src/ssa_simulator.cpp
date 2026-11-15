@@ -587,29 +587,9 @@ template <class Run> static Result restoring_on_raise(NetworkModel &model, Run &
     }
 }
 
-// Issue #1059: where a run's clock starts. At the end of the run nearer 0,
-// t_start or (for a run at negative times) t_end: counted from there the run's
-// own time is nowhere coarser than the absolute one. Counted from a far negative
-// t_start, the half of a run toward 0 was, and lost its waiting times as a far
-// start had (z = -289 at -2 to 0 from -1e12). That end is rounded toward 0 to a
-// multiple of an ulp at the run's far end, so every time x in the run is on the
-// run's clock exactly, x - origin, and origin + (x - origin) is x: from t_start
-// itself, a row past 2*t_start was read an ulp from the time it reported. A run
-// across 0 keeps 0, as does one whose near end is within 2^20, where the doubles
-// are 1.2e-10 apart: every such run is the one it always was.
-static double ssa_clock_origin(const TimeSpec &times) {
-    constexpr double kElapsedFrom = 1048576.0; // 2^20
-    // (Not `near` and `far`: <windows.h> defines both as empty macros.)
-    const double t_near = times.t_start >= 0.0 ? times.t_start
-                          : times.t_end <= 0.0 ? times.t_end
-                                               : 0.0;
-    if (!(std::fabs(t_near) >= kElapsedFrom) || !std::isfinite(times.t_start) ||
-        !std::isfinite(times.t_end))
-        return 0.0;
-    const double t_far = std::max(std::fabs(times.t_start), std::fabs(times.t_end));
-    const double ulp = std::nextafter(t_far, std::numeric_limits<double>::infinity()) - t_far;
-    return t_near - std::fmod(t_near, ulp);
-}
+// Issue #1059: where a run's clock starts (elapsed_clock_origin, bngsim/types.hpp,
+// which the ODE run of a model that reads no clock shares, issue #1681).
+static double ssa_clock_origin(const TimeSpec &times) { return elapsed_clock_origin(times); }
 
 Result SsaSimulator::run(const TimeSpec &times, uint64_t seed, double timeout_seconds) {
     // poplevel = 0.0 means no scaling (exact SSA)
