@@ -4583,7 +4583,8 @@ struct CvodeSimulator::Impl {
     // definition.
     void columns_for_kept_time(double t_evt, int ns, const std::vector<double> &x_restart,
                                double dt, const std::vector<double> &tau,
-                               std::vector<std::vector<double>> &s, const SensitivityState &sens);
+                               std::vector<std::vector<double>> &s, const SensitivityState &sens,
+                               const std::vector<double> *x_on = nullptr);
     // Whether the step CVODE found a root of `batch` in ran on across another
     // switch's surface too (issue #1285). See the definition.
     bool root_step_ran_past(const RootStepEnd *root_step_end, int ns, double t_evt,
@@ -13133,8 +13134,16 @@ bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
         // fused (arm64) it read +5.75e-17 there while `Aobs^2 > thr^2` read false
         // (issue #963; BNGSIM_EXPRTK_COMPILE_OPTIONS in CMakeLists.txt). So any
         // residual past zero is across.
+        //
+        // The species' part of the flow need not point the way the whole of it
+        // does (issue #1776): `3*time() - Tobs` with Tobs at 2·t is carried
+        // across by the time, against Tobs. Its push below still moves the
+        // species toward the far side, a few ulp against their own flow, which
+        // stands in for the time the steps can no longer move. Required here
+        // to point the same way, the foot of such a pulse was never carried,
+        // and a sensitivity run stalled there at every tolerance.
         const bool pinned = std::isfinite(g) && std::isfinite(flow) && std::isfinite(carried) &&
-                            ulp > 0.0 && carried * flow > 0.0 && std::fabs(g) <= reach &&
+                            ulp > 0.0 && carried != 0.0 && flow != 0.0 && std::fabs(g) <= reach &&
                             h * std::fabs(flow) <= reach      // or the steps still move it
                             && !(g != 0.0 && g * flow > 0.0); // or it is past, and leaving
         if (!pinned) {
@@ -13206,8 +13215,14 @@ bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
                 // goes by their part of the flow: by the whole of it, which
                 // holds ∂g/∂t too, the probe of a residual that reads the time
                 // can stop short of the surface and read a jump there as none.
+                //
+                // Where the species' part runs against the whole (issue
+                // #1776), a probe along it moves away from the surface and
+                // reads nothing there: the crossing is taken to jump, and waits
+                // to be refused as one (issue #952).
                 const double step = (one.size + reach) / std::fabs(carried);
-                one.jumps = jumps_across_surface(sw->species, x_own, f_own, step, x, t, rxns);
+                one.jumps = carried * flow < 0.0 ||
+                            jumps_across_surface(sw->species, x_own, f_own, step, x, t, rxns);
             }
         }
         // A run is ended for it only once it has stayed there. A crossing the
@@ -14251,8 +14266,17 @@ bool CvodeSimulator::Impl::columns_over_root_step(void *cvode_mem, int ns, doubl
 // + time()` came out 3.3e-4 off at rtol 1e-12 on three output grids in seven without it, a third of
 // the δt·ṡ move the columns take with the state, where the clock is a third of the residual's rate.
 //
-// Exactly 0 where f does not read the time: the two readings are one
-// evaluation. A species whose two readings differ by no more than the
+// Where the restart state was moved to put a residual the clock carries
+// across on its far side (issue #1776), x_r is no longer x(τ + δt): it is
+// x(τ + δt) + Δ, with Δ the residual's own lag behind the clock taken up by
+// the species. Then the restart moves with τ by Φ·(f(x(τ + δt), τ + δt) −
+// f(x_r, τ)), and the first reading is taken at x(τ + δt), `x_on`. Read at
+// x_r instead, the lag the move had already taken up was counted again: the
+// clock-rate column of `2.5*time() - 0.5*Tobs`'s pulse came out 4e-4 off at
+// rtol 1e-10 to 1e-11, the size of δt, which moves with where the root lands.
+//
+// Exactly 0 where f does not read the time and nothing was moved: the two
+// readings are one evaluation. A species whose two readings differ by no more than the
 // rounding of its own terms takes nothing, as a rate law that cancels
 // between two large pools would put that rounding, times dt*/dθ, into a
 // species the clock never moves. A column in its comoving frame (issue #545)
@@ -14261,11 +14285,16 @@ void CvodeSimulator::Impl::columns_for_kept_time(double t_evt, int ns,
                                                  const std::vector<double> &x_restart, double dt,
                                                  const std::vector<double> &tau,
                                                  std::vector<std::vector<double>> &s,
-                                                 const SensitivityState &sens) {
+                                                 const SensitivityState &sens,
+                                                 const std::vector<double> *x_on) {
     const int n_sens = sens.n_total;
     const auto n = static_cast<std::size_t>(ns);
+    if (x_on == nullptr) {
+        x_on = &x_restart;
+    }
     if (n_sens == 0 || s.size() != static_cast<std::size_t>(n_sens) ||
-        tau.size() < static_cast<std::size_t>(n_sens) || !(dt > 0.0) || x_restart.size() != n) {
+        tau.size() < static_cast<std::size_t>(n_sens) || !(dt > 0.0) || x_restart.size() != n ||
+        x_on->size() != n) {
         return;
     }
     std::vector<double> f_kept(n, 0.0);
@@ -14273,10 +14302,11 @@ void CvodeSimulator::Impl::columns_for_kept_time(double t_evt, int ns,
     std::vector<double> net(n, 0.0);
     std::vector<double> gross_kept(n, 0.0);
     std::vector<double> gross_on(n, 0.0);
-    auto read = [&](double t, std::vector<double> &f, std::vector<double> &gross) {
-        sync_model_at(t, x_restart.data(), ns);
-        model.compute_derivs(t, x_restart.data(), f.data());
-        model.compute_flux_split(t, x_restart.data(), nullptr, net.data(), gross.data());
+    auto read = [&](double t, const std::vector<double> &at, std::vector<double> &f,
+                    std::vector<double> &gross) {
+        sync_model_at(t, at.data(), ns);
+        model.compute_derivs(t, at.data(), f.data());
+        model.compute_flux_split(t, at.data(), nullptr, net.data(), gross.data());
     };
     // Both readings on one side of every switch. At t* a condition that reads
     // the time alone, `time() > k*E`, may still be on the branch before, and
@@ -14289,11 +14319,11 @@ void CvodeSimulator::Impl::columns_for_kept_time(double t_evt, int ns,
     // has not.
     auto &eval = model.evaluator();
     std::vector<double> g_kept;
-    read(t_evt, f_kept, gross_kept);
+    read(t_evt, x_restart, f_kept, gross_kept);
     for (const NetworkModel::StateSwitch *one : state_switch_all) {
         g_kept.push_back(eval.evaluate(one->residual_expr_idx));
     }
-    read(t_evt + dt, f_on, gross_on);
+    read(t_evt + dt, *x_on, f_on, gross_on);
     bool one_side = true;
     for (std::size_t k = 0; k < state_switch_all.size() && one_side; ++k) {
         const double g = eval.evaluate(state_switch_all[k]->residual_expr_idx);
@@ -15099,10 +15129,81 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
     // but is standing on exactly the same surface, so it restarts the same way.
     // That is the whole of issue #187 — the continuous return below used to skip
     // this and leave the state on the root.
+    //
+    // ── A crossing the clock carries against the state (issue #1776) ─────────
+    // The restart keeps the time, so it is x + δt·f read at t*, where the probe
+    // read x + δt·f at t* + δt. The two agree on the side of a residual its
+    // species carry across. Not on one the clock carries: `3*time() - Tobs`
+    // with Tobs at 2·t crosses its pulse's foot because the time runs, and
+    // Tobs moving along its flow with the time held lowers it. The restart
+    // then put the state back on the side it came from, a hair short of a
+    // corner whose root had been taken; CVODE stalled there at t + h == t,
+    // and no sensitivity was to be had for the model at any tolerance.
+    //
+    // So where x + δt·f at t* reads a residual of the batch on the side it
+    // came from, the state is moved along that residual's gradient until it
+    // reads what the trajectory does at t* + δt, which is past by the probe.
+    // That move stands in for the time's δt, and is as small: the residual's
+    // own δt·∂g/∂t, over its gradient. Where the species alone carry it
+    // across, as at every crossing the time does not read, x + δt·f is kept
+    // as it was. Where the move does not bring every residual across, too.
+    // x + δt·f, the trajectory at t* + δt to first order.
+    auto plain_restart_state = [&]() {
+        std::vector<double> x_r(static_cast<std::size_t>(ns), 0.0);
+        for (std::size_t u = 0; u < static_cast<std::size_t>(ns); ++u) {
+            x_r[u] = x[u] + dt * f0[u];
+        }
+        return x_r;
+    };
+    auto restart_state = [&]() {
+        const std::vector<double> x_r = plain_restart_state();
+        std::vector<double> g_on(nb, 0.0);
+        probe(+dt, g_on);
+        auto behind = [&](const std::vector<double> &state) {
+            sync(state, t_evt);
+            std::vector<std::size_t> out;
+            for (std::size_t k = 0; k < nb; ++k) {
+                const double g = eval.evaluate(batch[k]->residual_expr_idx);
+                if (std::isfinite(g_on[k]) && g_on[k] != 0.0 &&
+                    !(std::isfinite(g) && g != 0.0 && (g < 0.0) == (g_on[k] < 0.0))) {
+                    out.push_back(k);
+                }
+            }
+            return out;
+        };
+        std::vector<std::size_t> left = behind(x_r);
+        if (left.empty()) {
+            return x_r;
+        }
+        std::vector<double> moved = x_r;
+        std::vector<double> gx;
+        for (int pass = 0; pass < 4 && !left.empty(); ++pass) {
+            for (std::size_t k : left) {
+                const NetworkModel::StateSwitch &one = *batch[k];
+                double scale = 0.0;
+                residual_flow(one.residual_expr_idx, one.species, t_evt, ns, moved, f0, gx, scale);
+                double norm2 = 0.0;
+                for (int j : one.species) {
+                    norm2 += gx[static_cast<std::size_t>(j)] * gx[static_cast<std::size_t>(j)];
+                }
+                if (!(norm2 > 0.0) || !std::isfinite(norm2)) {
+                    return x_r;
+                }
+                sync(moved, t_evt);
+                const double g = eval.evaluate(one.residual_expr_idx);
+                for (int j : one.species) {
+                    const auto uj = static_cast<std::size_t>(j);
+                    moved[uj] += (g_on[k] - g) * gx[uj] / norm2;
+                }
+            }
+            left = behind(moved);
+        }
+        return left.empty() ? moved : x_r;
+    };
     std::vector<const NetworkModel::StateSwitch *> jumped; // whose jump is applied here
-    auto restart_past_surface = [&]() {
+    auto restart_past_surface = [&](const std::vector<double> &x_restart) {
         for (int i = 0; i < ns; ++i) {
-            y_data[i] = x[static_cast<std::size_t>(i)] + dt * f0[static_cast<std::size_t>(i)];
+            y_data[i] = x_restart[static_cast<std::size_t>(i)];
         }
         // The evaluator (and everything reading concentrations downstream) must
         // see the state the integration resumes from.
@@ -16602,17 +16703,16 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                 tau_kept.clear();
             }
         }
+        const std::vector<double> x_restart = restart_state();
+        const std::vector<double> x_on = plain_restart_state();
+        sync(x, t_evt);
         const double past = ran ? -surface_at : 0.0;
         columns_past_surface(cvode_mem, ns, t_evt, x, f0, dt, past, s, sens);
         if (!tau_kept.empty()) {
-            std::vector<double> x_restart(n_sp, 0.0);
-            for (std::size_t u = 0; u < n_sp; ++u) {
-                x_restart[u] = x[u] + dt * f0[u];
-            }
-            columns_for_kept_time(t_evt, ns, x_restart, dt, tau_kept, s, sens);
+            columns_for_kept_time(t_evt, ns, x_restart, dt, tau_kept, s, sens, &x_on);
         }
         sync(x, t_evt);
-        restart_past_surface();
+        restart_past_surface(x_restart);
         return;
     }
 
@@ -16935,24 +17035,23 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             }
         }
     }
+    const std::vector<double> x_restart = restart_state();
+    const std::vector<double> x_on = plain_restart_state();
+    sync(x, t_evt);
     // Issue #1454: the restart below moves the state δt on along the flow, as
     // at a continuous crossing, and the columns go with it.
     if (read_at_surface) {
         const bool ran = root_step_ran_past(root_step_end, ns, t_evt, x, batch);
         const double past = ran ? -surface_at : 0.0;
         columns_past_surface(cvode_mem, ns, t_evt, x, f0, dt, past, s, sens, &s_jump_before);
-        std::vector<double> x_restart(n_sp, 0.0);
-        for (std::size_t u = 0; u < n_sp; ++u) {
-            x_restart[u] = x[u] + dt * f0[u];
-        }
         if (run_reads_clock()) {
-            columns_for_kept_time(t_evt, ns, x_restart, dt, tau, s, sens);
+            columns_for_kept_time(t_evt, ns, x_restart, dt, tau, s, sens, &x_on);
         }
         sync(x, t_evt);
     }
     // Issue #760: the stops of the stretch this crossing begins.
     comoving_ask(sens, t_evt);
-    restart_past_surface();
+    restart_past_surface(x_restart);
 }
 
 // ─── Public interface ────────────────────────────────────────────────────────

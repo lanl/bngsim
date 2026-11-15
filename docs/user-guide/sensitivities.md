@@ -644,7 +644,12 @@ surface (issue #1454); a corner by integrating the columns again over the step
 that went past it, because the solver's own step smears the column's change of
 slope across that step (issues #1285, #1456); and, where the rate law reads
 `time()`, by the clock's share of the restart, which keeps the time while the
-state moves on (issue #1455). Three things are left:
+state moves on (issue #1455). Where the clock carries the pulse's argument
+across a threshold while the state's own term carries it back, as in
+`max(0, 1 - abs(3*time() - Tobs - c)/(w/2))` with `Tobs` rising at 2 per unit
+time, the restart moves the state onto the far side of the threshold to take up
+the clock's share of the crossing, and the columns read the restart that way
+(issue #1776). Two things are left:
 
 - **A corner whose root falls at the very end of its step, or a step too long
   or stiff to integrate again** (2 and 4 substeps disagree): the column there is
@@ -661,10 +666,6 @@ state moves on (issue #1455). Three things are left:
 - **A rate law that reads `time()` far from 0.** The clock is known to an ulp of
   itself, 3.6e-15 at `t = 25`, and a column moving at 5e7 across a narrow pulse
   turns that into a few parts in 1e6 of itself.
-- **A pulse whose argument reads the clock species with a minus sign**,
-  `max(0, 1 - abs(3*time() - Tobs - c)/(w/2))`, stalls at its near foot with
-  "CVODE made no progress" in a run with sensitivities at any tolerance; the
-  same pulse written `Tobs - time()` runs (issue #1776).
 
 These are relative errors of a column at the end of a run, and past a narrow
 pulse that column can be 1e4 times smaller than at the pulse's peak, so a small
