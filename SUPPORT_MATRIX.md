@@ -11,19 +11,21 @@ pushes to `main` that touch the build inputs (`pyproject.toml`, `CMakeLists.txt`
 `workflow_dispatch`. Those runs upload artifacts only; `release.yml` publishes to
 PyPI on a `v*` tag. The matrix is:
 
-| Runner OS      | Architecture | Deployment target  | Python versions       |
-|----------------|--------------|--------------------|-----------------------|
-| ubuntu-latest  | x86_64       | manylinux_2_28     | 3.10, 3.11, 3.12, 3.13|
-| macos-15       | arm64        | macOS 11           | 3.10, 3.11, 3.12, 3.13|
-| macos-15-intel | x86_64       | macOS 10.15        | 3.10, 3.11, 3.12, 3.13|
-| windows-latest | AMD64        | Windows Server 2025| 3.10, 3.11, 3.12, 3.13|
+| Runner OS        | Architecture | Deployment target  | Python versions                    |
+|------------------|--------------|--------------------|------------------------------------|
+| ubuntu-latest    | x86_64       | manylinux_2_28     | 3.10, 3.11, 3.12, 3.13, 3.14, 3.15 |
+| ubuntu-24.04-arm | aarch64      | manylinux_2_28     | 3.10, 3.11, 3.12, 3.13, 3.14, 3.15 |
+| macos-15         | arm64        | macOS 11           | 3.10, 3.11, 3.12, 3.13, 3.14, 3.15 |
+| macos-15-intel   | x86_64       | macOS 10.15        | 3.10, 3.11, 3.12, 3.13, 3.14, 3.15 |
+| windows-latest   | AMD64        | Windows Server 2025| 3.10, 3.11, 3.12, 3.13, 3.14, 3.15 |
 
 Source distributions (sdist) are published alongside; sdist users will
 build from source and need a C++17 compiler, CMake ≥ 3.20, and Ninja.
 
-Not covered: Linux ARM64, macOS x86_64 < 10.15, Windows ARM64, musllinux,
-PyPy. These fall out of the `build` / `skip` selectors in
-`[tool.cibuildwheel]`.
+Not covered: macOS x86_64 < 10.15, Windows ARM64, musllinux, PyPy. These
+fall out of the `build` / `skip` selectors in `[tool.cibuildwheel]`. On Linux
+aarch64 the `antimony` extra cannot be installed: antimony publishes no wheel
+for it.
 
 ## Bundled vs optional features
 
@@ -86,11 +88,11 @@ network size, so it is on wherever the ODE backend is.
 the table above whose availability differs across published wheels. It reports
 whether CMake linked a BLAS/LAPACK for the optimized dense factorization:
 
-| Wheel               | Backend                | `HAS_LAPACK_DENSE` |
-|---------------------|------------------------|--------------------|
-| macOS arm64 / x86_64| Accelerate (system)    | `True`             |
-| manylinux x86_64    | none found             | `False`            |
-| Windows AMD64       | none found             | `False`            |
+| Wheel                      | Backend                | `HAS_LAPACK_DENSE` |
+|----------------------------|------------------------|--------------------|
+| macOS arm64 / x86_64       | Accelerate (system)    | `True`             |
+| manylinux x86_64 / aarch64 | none found             | `False`            |
+| Windows AMD64              | none found             | `False`            |
 
 Nothing is missing on `False`: dense factorizations use the built-in LU, which
 is what runs by default *everywhere* — the BLAS path is opt-in via
@@ -109,11 +111,12 @@ rather than relying on the macOS legs alone.
 
 ## Validation
 
-GitHub Actions is the source of truth for the four-platform matrix. The
+GitHub Actions is the source of truth for the wheel matrix above. The
 per-platform wheel legs (`wheels.yml`) each build with `BNGSIM_REQUIRE_KLU=ON`
 and run the `cibuildwheel` `test-command` against the repaired wheel, so a leg
 that is green is a wheel that imports and reports `HAS_KLU=True` in a clean
-environment. `lint.yml`, `native-tests.yml`, `mir.yml`, `windows-nfsim.yml` and
+environment. On Linux aarch64 that is the only check: no test suite runs on
+that platform. `lint.yml`, `native-tests.yml`, `mir.yml`, `windows-nfsim.yml` and
 `windows-tail.yml` cover the pre-commit hooks, the C++ unit suite, the MIR JIT
 backend, and the Windows NFsim/RuleMonkey paths respectively.
 
@@ -186,8 +189,8 @@ assert r.n_times == 11
    end in a pointer back at `CHANGELOG.md`, and name the version in
    `TRUNCATED_ON_PURPOSE` in `python/tests/test_changelog_fragments.py`. The pull request carrying steps 1–2
    is the one thing that may edit `CHANGELOG.md`, so label it `changelog exempt`.
-3. Merge the release pull request into `main`; verify all four wheel legs are
-   green on cp310–cp313.
+3. Merge the release pull request into `main`; verify that all five wheel legs
+   in the table at the top of this file are green on cp310–cp315.
 4. Tag `git tag v<x.y.z> && git push origin v<x.y.z>` — `release.yml` builds and
    publishes to PyPI via Trusted Publishing. Rehearse first with a manual
    `workflow_dispatch` run targeting `testpypi`.

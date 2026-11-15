@@ -11,8 +11,14 @@ project's front page through a release.
 Two guards, cheap and complementary:
 
 * :func:`test_front_door_example_runs` EXECUTES the first Python block of each
-  front-door page against a real ``model.net``, so those blocks are as tested as
-  any other code path.
+  front-door page as a reader would paste it: in an empty directory, with the
+  optional extras' modules blocked, so the block must write its own model and
+  must not need pandas or any other extra (issue #1691). It then checks the
+  block's answer against the closed form of the model the three pages share,
+  and that each line whose comment states a value has it: what a print line
+  prints, or the shape of an array a bare expression shows.
+  :func:`test_quickstart_sweep_block_runs_on_the_first_blocks_model` runs the
+  quickstart's sweep block after its first block, as the page reads.
 * :func:`test_documented_api_names_exist` STATICALLY resolves every ``bngsim.…``
   attribute chain, method name and keyword argument in every Python block under
   ``docs/`` — pages whose examples need corpora, XML side files or optional
@@ -29,7 +35,9 @@ from __future__ import annotations
 
 import ast
 import inspect
+import math
 import re
+import sys
 from pathlib import Path
 
 import bngsim
@@ -51,25 +59,35 @@ _SCANNED = ("README.md", "SUPPORT_MATRIX.md")
 # conscripted into the executed set.
 _FRONT_DOOR = ("README.md", "docs/index.md", "docs/quickstart.md")
 
-# One decaying species, observed as "A" — matches what the front-door blocks
-# read (``result.observables["A"]``) with no corpus and no fixture file.
-_MODEL_NET = """\
-begin parameters
-    1 k  1.0
-end parameters
-begin species
-    1 A() 5.7
-end species
-begin observables
-    1 Molecules A A()
-end observables
-begin reactions
-    1 1 0 k  #A->0
-end reactions
-begin groups
-    1 A 1
-end groups
-"""
+# A front-door line whose comment starts with a value: a print line, which must
+# print it (`print(result.time.shape)  # (101,)`, `print(...)  # 0.6738, which
+# is ...`), or a bare expression, as the README writes them, whose comment gives
+# the shape of the array it shows (`result.species  # (101, 2) array`). A comment
+# that starts with words ("# trajectory of ...") states no value.
+_STATED_VALUE = re.compile(
+    r"^(?:print\((?P<printed>.+?)\)|(?P<shown>[A-Za-z_][\w.]*(?:\[[^\]]*\])*))"
+    r"\s+#\s*(?P<value>\([^)]*\)|[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)"
+)
+
+# The top-level modules of pyproject's optional extras (and the test extra). A
+# bare `pip install bngsim` brings numpy, python-libsbml, sympy and mpmath only,
+# so a front-door block may import none of these (issue #1691).
+_EXTRA_MODULES = (
+    "pandas",
+    "antimony",
+    "h5py",
+    "xarray",
+    "bionetgen",
+    "jax",
+    "jaxlib",
+    "diffrax",
+    "vivarium",
+    "roadrunner",
+    "bioservices",
+    "scipy",
+    "jsonschema",
+    "lxml",
+)
 
 # Calls that hand back a Result, whatever the receiver: Simulator.run,
 # NfsimSession.simulate, ReactionKernel.run_until.
@@ -251,10 +269,78 @@ def test_front_door_example_runs(
     assert blocks, f"{page} has no Python example to run"
     code = blocks[0][1]
     assert "model.net" in code, f"{page}'s first Python block is not the load-and-run example"
-    if "dataframe" in code:
-        pytest.importorskip("pandas")
 
-    (tmp_path / "model.net").write_text(_MODEL_NET, encoding="utf-8")
+    # As pasted after `pip install bngsim` (issue #1691): an empty directory, so
+    # the block has to write the model it loads, and none of the extras, which
+    # the base install does not bring (None in sys.modules makes an import raise).
     monkeypatch.chdir(tmp_path)
+    for name in _EXTRA_MODULES:
+        monkeypatch.setitem(sys.modules, name, None)
     namespace: dict[str, object] = {"__name__": "__docs_example__"}
     exec(compile(code, f"{page} (first python block)", "exec"), namespace)  # noqa: S102
+
+    # Oracle: the three pages share one model, A -> B at k = 0.5 from A(0) =
+    # 100, so A(t) = 100 e^(-0.5 t) at whatever t_end the block chose. Pinned,
+    # not read from the model, so a page whose k drifts from the 0.6738 it
+    # prints fails too. rel 1e-4: the run uses the solver's default tolerances,
+    # far looser than the closed form; a wrong model or k is off by far more.
+    result = namespace["result"]
+    t_end = float(result.time[-1])  # type: ignore[attr-defined]
+    a_end = float(result.observables["A"][-1])  # type: ignore[attr-defined]
+    assert a_end == pytest.approx(100.0 * math.exp(-0.5 * t_end), rel=1e-4)
+    # Each page prints 0.6738 = 100 e^(-5), its value at t = 10: a block that
+    # runs to another time while keeping that comment is wrong too.
+    assert t_end == pytest.approx(10.0), f"{page}'s example prints A(10) but runs to t = {t_end:g}"
+
+    # What the block says it shows: each line whose comment states a value must
+    # have it, so a comment and the code under it cannot drift apart
+    # (n_points=11 under "# (101,)", or "# 0.9999" over A(10)). The expression
+    # is evaluated again on the finished namespace; these lines only read the
+    # result.
+    stated = [m for m in map(_STATED_VALUE.match, code.splitlines()) if m]
+    assert stated, f"{page}'s first block has no line whose comment states its value"
+    for m in stated:
+        try:
+            claim = ast.literal_eval(m["value"])
+        except (ValueError, SyntaxError):
+            pytest.fail(f"{page}: the comment {m['value']!r} starts like a value but is not one")
+        if m["printed"] is not None:
+            shown, got = f"print({m['printed']})", eval(m["printed"], namespace)  # noqa: S307
+        else:
+            shown, got = m["shown"], eval(m["shown"], namespace)  # noqa: S307
+        if isinstance(claim, tuple) and hasattr(got, "shape"):
+            got = tuple(got.shape)  # an array, printed or shown: its comment gives the shape
+        assert got == claim, f"{page}: {shown} gives {got!r}, but its comment says {m['value']}"
+
+
+def test_quickstart_sweep_block_runs_on_the_first_blocks_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The quickstart's "Parameter sweeps" block runs on the model its first block made.
+
+    The page reads top to bottom, and the sweep block uses that block's ``model``
+    and ``sim``, so it may set only the parameter that model has, ``k``. It set
+    ``kf``, ``kr`` and ``kcat``, so pasted next it raised ParameterError.
+    """
+    _docs_present()
+    path = _ROOT / "docs" / "quickstart.md"
+    if not path.exists():
+        pytest.skip("docs/quickstart.md is not present in this checkout")
+    heading = path.read_text(encoding="utf-8").splitlines().index("## Parameter sweeps") + 1
+    blocks = _python_blocks(path)
+    sweep = next(code for start, code in blocks if start > heading)
+
+    monkeypatch.chdir(tmp_path)
+    for name in _EXTRA_MODULES:
+        monkeypatch.setitem(sys.modules, name, None)
+    namespace: dict[str, object] = {"__name__": "__docs_example__"}
+    exec(compile(blocks[0][1], "docs/quickstart.md (first python block)", "exec"), namespace)  # noqa: S102
+    exec(compile(sweep, "docs/quickstart.md (Parameter sweeps)", "exec"), namespace)  # noqa: S102
+
+    # Oracle: A -> B is first order, so on result2's grid (101 points to t = 100,
+    # dt = 1) A falls by e^(-k) per step at the k = 1.0 the block sets, wherever
+    # the run starts. rel 1e-4 for the solver's default tolerances, as above. The
+    # block ends by setting k = 0.25.
+    a = namespace["result2"].observables["A"]  # type: ignore[attr-defined]
+    assert float(a[1]) == pytest.approx(float(a[0]) * math.exp(-1.0), rel=1e-4)
+    assert namespace["model"].get_param("k") == 0.25  # type: ignore[attr-defined]

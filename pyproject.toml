@@ -33,6 +33,8 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
     "Topic :: Scientific/Engineering :: Chemistry",
 ]
@@ -371,7 +373,7 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 # auditwheel/delocate/delvewheel then vendor the KLU shared libs into the wheel.
 # SUNDIALS is fetched + statically linked by CMake (no runtime dependency).
 [tool.cibuildwheel]
-build = "cp310-* cp311-* cp312-* cp313-*"
+build = "cp310-* cp311-* cp312-* cp313-* cp314-* cp315-*"
 # Skip musllinux (SuiteSparse on musl needs a source build — add later) and
 # 32-bit targets. PyPy is already excluded by the cpXY-only `build` selector
 # above (an explicit `pp*` skip trips a cibuildwheel v4 "invalid selector" warning).
@@ -397,16 +399,18 @@ environment = { BNGSIM_ENABLE_KLU = "ON", BNGSIM_REQUIRE_KLU = "ON" }
 #
 # ci/wheel_smoke_stop_condition.py runs a stop condition that meets 0/0 (issue
 # #1556): on Python 3.13 and later a numpy warning inside a condition refused the
-# run, and the pull-request suites run 3.12 only, so the wheels are where 3.13 is
-# exercised. Same constraints: bngsim and numpy only.
+# run, and the pull-request suites run 3.12 only, so the wheels are where 3.13
+# and later are exercised. Same constraints: bngsim and numpy only.
 test-command = "python {project}/ci/wheel_smoke_klu.py && python {project}/ci/wheel_smoke_stop_condition.py"
 
 [tool.cibuildwheel.linux]
 # manylinux_2_28 = AlmaLinux 8 (has dnf); SuiteSparse/KLU comes from EPEL. Its
 # klu.h lands in /usr/include/suitesparse — covered by the CMake find_path
-# suffix. x86_64 only for now (aarch64 via QEMU is slow; add later).
-archs = ["x86_64"]
+# suffix. "native" builds each runner's own architecture, x86_64 on
+# ubuntu-latest and aarch64 on ubuntu-24.04-arm, with no emulation (#1491).
+archs = ["native"]
 manylinux-x86_64-image = "manylinux_2_28"
+manylinux-aarch64-image = "manylinux_2_28"
 before-all = "dnf install -y epel-release && dnf install -y suitesparse-devel"
 
 [tool.cibuildwheel.macos]
@@ -426,7 +430,7 @@ environment = { BNGSIM_ENABLE_KLU = "ON", BNGSIM_REQUIRE_KLU = "ON", SUITESPARSE
 # See ci/build_suitesparse.ps1.
 before-all = "powershell -ExecutionPolicy Bypass -File ci/build_suitesparse.ps1 -Prefix C:/suitesparse"
 before-build = "pip install delvewheel"
-# CL=-MP: MSBuild compiles one source at a time without it, so each of the four
+# CL=-MP: MSBuild compiles one source at a time without it, so each of the
 # wheels was a serial build and the job took 50 minutes; see windows-tail.yml's
 # build step. cibuildwheel applies `environment` to before-all as well, so the
 # SuiteSparse build compiles in parallel too.
