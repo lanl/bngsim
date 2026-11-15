@@ -665,10 +665,12 @@ the clock's share of the crossing, and the columns read the restart that way
 
 - **A crossing the clock carries far faster than its species do.** The move
   above takes at most 16 times what the restart already moves each species,
-  and only species the flow moves. In `3*time() - b*Tobs` with `b` at 0.03 or
-  0.01 the clock outruns `Tobs` 50 to 150 times, and the run still stalls as
-  it did before; at `b = 0` the residual has no species to move. A step in
-  `time() + 1e-10*Tobs` returns its clock-rate column 7% off (issue #1779).
+  which in `3*time() - b*Tobs` covers `b` down to about 0.094. Below that the
+  restart is the one it was before, and some of these runs still stall, or
+  return columns that are wrong with no error: a step at `b = 0.05` returns
+  its clock-rate column 100% off at rtol 1e-9, and a sawtooth at `b = 0.05`
+  is off by a factor of 5e4 at rtol 1e-6. Issue #1779 lists the cases. Check
+  such a model against a finite difference of plain runs, which are right.
 - **A rate law that reads `time()` far from 0.** The clock is known to an ulp of
   itself, 3.6e-15 at `t = 25`, and a column moving at 5e7 across a narrow pulse
   turns that into a few parts in 1e6 of itself.
