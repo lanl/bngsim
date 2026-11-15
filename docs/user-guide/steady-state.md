@@ -1079,9 +1079,13 @@ state *without* `carry_sensitivities=True` **raises** (fresh seeding would
 silently assume `∂x(0)/∂θ = 0`). So does `carry_sensitivities=True` when no
 matching seed is available — e.g. the equilibration phase was not run with the
 same `sensitivity_params`, a plain (non-sensitivity) run advanced the state
-without tracking `dx/dθ`, or a `reset()` (as an SBML/RoadRunner every-action
-reset would do) returned to a θ-independent IC baseline and so wiped the
-carry-over. A fresh single sensitivity run is unaffected.
+without tracking `dx/dθ`, an SSA or PSA run advanced it (a stochastic sample has
+no pathwise `dx/dθ` to carry, issue #1749), or a `reset()` (as an SBML/RoadRunner
+every-action reset would do) returned to a θ-independent IC baseline and so wiped
+the carry-over. A fresh single sensitivity run is unaffected. To take a carried
+state as fixed data instead, with `∂x(0)/∂θ = 0`, as one might a stochastic
+sample, `reset()` the model and then `set_state()` that state: a state set by
+hand is not carried over.
 
 Scope (matching the new-era pre-equilibration surface): the equilibration is a
 **steady state** (PEtab `time = -inf`) and the perturbation is an **absolute**
