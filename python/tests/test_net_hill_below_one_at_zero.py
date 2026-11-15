@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import logging
 import math
 import shutil
 import warnings
@@ -318,16 +319,34 @@ def _hill_function(model) -> str:
 
 
 @pytest.mark.parametrize("h", ["2", "1", "3.5", "0", "-1"])
-def test_an_h_known_outside_the_interval_keeps_main_s_body(tmp_path, h):
-    """An h whose value at load is >= 1 or <= 0 can never meet the guard, and
-    the guard is a root the core watches every step: 300 such reactions ran 10x
-    slower with it. So the loader writes main's bare body, and no root."""
+def test_an_h_known_outside_the_interval_is_guarded_but_not_rooted(tmp_path, h):
+    """An h whose value is >= 1 or <= 0 can never meet the guard, and the guard
+    is a root the core watches every step: 300 such reactions ran 10x slower
+    with it. The guard is written for every h (#1636: h can be moved into
+    (0, 1) after load), and a plain run at such an h folds it, so is handed no
+    root for it."""
     m = _load(_net(tmp_path, h=h))
     assert _hill_function(m) == (
+        "if((__bngsim_net_rewrite_obs_r1_1 > 0) or (h <= 0) or (h >= 1), "
         "Vmax * (__bngsim_net_rewrite_obs_r1_1 ^ (h - 1)) / "
-        "((Kh ^ h) + (__bngsim_net_rewrite_obs_r1_1 ^ h))"
+        "((Kh ^ h) + (__bngsim_net_rewrite_obs_r1_1 ^ h)), 0)"
     )
-    assert m.state_switch_root_conditions() == ()
+    seen: list[str] = []
+    handler = logging.Handler()
+    handler.emit = lambda record: seen.append(record.getMessage())
+    log = logging.getLogger("bngsim")
+    old = log.level
+    log.addHandler(handler)
+    log.setLevel(logging.DEBUG)
+    try:
+        # At h <= 0 the law itself is infinite at S = 0, so the run fails at
+        # its first step; its roots are handed to it before that.
+        with contextlib.suppress(bngsim.SimulationError):
+            bngsim.Simulator(m, "ode").run(t_span=(0, 1), n_points=3)
+    finally:
+        log.removeHandler(handler)
+        log.setLevel(old)
+    assert not [s for s in seen if s.startswith("State-switch roots for a plain run")]
 
 
 @pytest.mark.parametrize(
