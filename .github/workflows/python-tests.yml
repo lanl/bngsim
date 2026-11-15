@@ -387,18 +387,16 @@ jobs:
         run: |
           set -o pipefail
           uv run --no-sync python -m pytest -p no:cacheprovider parity_checks/tests \
+            --junitxml=parity-tests-${{ matrix.leg.label }}-${{ matrix.shard }}.xml \
             -q --tb=short 2>&1 | tee parity-tests-${{ matrix.leg.label }}-${{ matrix.shard }}.log
 
+      # Only that the suite finished. Its counts are held per test file by the
+      # python-tests-counts job below, against main's (issue #1757), from this
+      # step's JUnit report on shard 1; both shards run the whole parity suite.
       - name: Guard against a false green (parity harness)
         if: ${{ !github.event.inputs.pytest_args }}
         run: |
           set -euo pipefail
-          # Same two counts as the guard above, for the same two reasons, with
-          # bounds in the same file. COLLECTED is environment-independent here
-          # for a structural reason: every skip in this suite is function- or
-          # class-level, so a missing engine moves tests between columns without
-          # changing the total — 443 both fully provisioned and with amici,
-          # roadrunner and BNG2.pl all absent, when this guard was added.
           LOG="parity-tests-${{ matrix.leg.label }}-${{ matrix.shard }}.log"
           summary="$(grep -E '[0-9]+ (passed|failed).* in [0-9.]+s' "$LOG" | tail -1 || true)"
           if [ -z "$summary" ]; then
@@ -406,14 +404,6 @@ jobs:
             exit 1
           fi
           echo "summary: $summary"
-
-          count() { echo "$summary" | grep -oE "[0-9]+ $1" | grep -oE '^[0-9]+' || echo 0; }
-          passed="$(count passed)"
-          skipped="$(count skipped)"
-          collected=$(( passed + skipped + $(count xfailed) + $(count xpassed) ))
-
-          bash ci/check_test_count.sh PARITY_COLLECTED "$collected" "parity tests stopped being collected rather than failing"
-          bash ci/check_test_count.sh PARITY_SKIPPED "$skipped" "a group of parity tests turned into skips"
 
       # The SBML semantic test suite as a per-PR gate (issue #700). Before this
       # it ran on no pull request: the nightly (#702) alerts on a regression but
@@ -487,7 +477,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: parity-tests-log-${{ matrix.leg.label }}-${{ matrix.shard }}
-          path: parity-tests-${{ matrix.leg.label }}-${{ matrix.shard }}.log
+          path: |
+            parity-tests-${{ matrix.leg.label }}-${{ matrix.shard }}.log
+            parity-tests-${{ matrix.leg.label }}-${{ matrix.shard }}.xml
           if-no-files-found: error
 
       - name: Upload coverage data
@@ -590,6 +582,12 @@ jobs:
     if: ${{ !github.event.inputs.pytest_args }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # actions: read for main's counts artifact; pull-requests: read for the
+    # pull request's labels (the guard's DROP_LABEL).
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     strategy:
       fail-fast: false
       matrix:
@@ -606,7 +604,18 @@ jobs:
           pattern: python-tests-log-${{ matrix.label }}-?
           path: logs
 
+      # Shard 1's only: both shards run the whole parity suite, so both reports
+      # would count it twice.
+      - name: Download this leg's parity report
+        uses: actions/download-artifact@v4
+        with:
+          name: parity-tests-log-${{ matrix.label }}-1
+          path: logs/parity-tests-log-${{ matrix.label }}-1
+
       - name: Guard against a false green
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
           # A directory-scoped pytest cannot drift out of sync with a file list,
@@ -614,48 +623,61 @@ jobs:
           # collection, a rename orphans a file, a bad conftest deselects. None of
           # those is a failure — the run stays green with a smaller denominator,
           # which is the #28/#36 shape native-tests.yml guards with its own
-          # floors. Two counts here, because there are two ways to shrink:
+          # floors. There are two ways to shrink: tests stop being collected, or
+          # a group of them turns into skips for a *declared* reason that
+          # BNGSIM_SKIP_AUDIT=strict accepts, e.g. an extra silently failing to
+          # install.
           #
-          #   1. COLLECTED (passed + skipped + xfailed + xpassed) has a floor. A
-          #      drop means tests stopped being collected. Every leg reports the
-          #      same number, because a CI checkout has no gitignored corpora (a
-          #      developer checkout that has them collects more; see
-          #      ci/test_floors.env).
-          #   2. SKIPPED has a ceiling. Crossing it means a group of tests turned
-          #      into skips for a *declared* reason that BNGSIM_SKIP_AUDIT=strict
-          #      accepts, e.g. an extra silently failing to install, provided
-          #      the group is larger than the ceiling's headroom on that leg
-          #      (30 to 56 tests; see ci/test_floors.env). This used to be a
-          #      floor on PASSED, which had to keep moving as the suite grew; a
-          #      skip count does not move when tests are added.
+          # ci/test_file_counts.py holds both, per test file, to this leg's
+          # counts on main (issue #1757): a file this change does not touch may
+          # not lose tests, and the untouched files may not gain more than a few
+          # skips. It replaced a collected floor and a skip ceiling per suite in
+          # ci/test_floors.env, which every pull request that added tests had to
+          # raise by hand, and which two such pull requests conflicted over. The
+          # script's docstring has the rules and the label that accepts a drop.
           #
-          # The bounds live in ci/test_floors.env and ci/check_test_count.sh
-          # holds each count to its own (issue #584). The check fails in both
-          # directions: past the bound, and so far inside it that the bound has
-          # gone stale. The second is what used to be missing. These floors had
-          # sat untouched at 3480 and 3380 while the suite grew past 11000, so
-          # two thirds of it could have vanished and this step stayed green.
-          # "3 xpassed" cannot match "[0-9]+ passed", so the categories stay disjoint.
+          # A shard whose log has no summary did not finish, and its report would
+          # be short: fail on that rather than on the counts it would trip.
           #
-          # A shard whose log has no summary did not finish, and the sum would be
-          # short by a shard: fail on that rather than on the floor it would trip.
+          # The summaries' totals are passed on as --expect-*: the per-file
+          # counts come from the JUnit reports, and a report that lost test
+          # cases would otherwise read as a smaller, still-green suite.
           collected=0
           skipped=0
-          for shard in 1 2; do
-            LOG="logs/python-tests-log-${{ matrix.label }}-$shard/python-tests-${{ matrix.label }}-$shard.log"
-            summary="$(grep -E '[0-9]+ (passed|failed).* in [0-9.]+s' "$LOG" 2>/dev/null | tail -1 || true)"
+          L="${{ matrix.label }}"
+          add_summary() {
+            local summary
+            summary="$(grep -E '[0-9]+ (passed|failed).* in [0-9.]+s' "$1" 2>/dev/null | tail -1 || true)"
             if [ -z "$summary" ]; then
-              echo "::error::No pytest summary line for shard $shard/2 — it did not run to completion."
+              echo "::error::No pytest summary line in $1 — that run did not finish."
               exit 1
             fi
-            echo "shard $shard/2: $summary"
-
+            echo "$(basename "$1"): $summary"
             # "3 xpassed" cannot match "[0-9]+ passed", so the categories stay disjoint.
             count() { echo "$summary" | grep -oE "[0-9]+ $1" | grep -oE '^[0-9]+' || echo 0; }
             skipped=$(( skipped + $(count skipped) ))
             collected=$(( collected + $(count passed) + $(count skipped) + $(count xfailed) + $(count xpassed) ))
+          }
+          for shard in 1 2; do
+            add_summary "logs/python-tests-log-$L-$shard/python-tests-$L-$shard.log"
           done
-          echo "leg total: $collected collected, $skipped skipped"
+          add_summary "logs/parity-tests-log-$L-1/parity-tests-$L-1.log"
+          echo "leg total (python/tests + parity_checks/tests): $collected collected, $skipped skipped"
 
-          bash ci/check_test_count.sh PYTEST_COLLECTED "$collected" "tests stopped being collected rather than failing"
-          bash ci/check_test_count.sh PYTEST_SKIPPED "$skipped" "a group of tests turned into skips"
+          python3 ci/test_file_counts.py guard --leg "$L" --reports logs \
+            --out test-file-counts.json --pr "${PR_NUMBER:-0}" \
+            --expect-collected "$collected" --expect-skipped "$skipped"
+
+      # The baselines the guard above reads: main's runs only, so that pull
+      # requests' uploads cannot crowd main's out of the artifact listing the
+      # guard searches. Uploaded when the guard failed too, so that a loss main
+      # has already taken is held against main's next commits rather than
+      # charged to every open pull request.
+      - name: Upload this leg's test file counts
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && hashFiles('test-file-counts.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-file-counts-${{ matrix.label }}
+          path: test-file-counts.json
+          retention-days: 90
+          if-no-files-found: error
