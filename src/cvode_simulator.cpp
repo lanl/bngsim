@@ -13215,14 +13215,11 @@ bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
                 // goes by their part of the flow: by the whole of it, which
                 // holds ∂g/∂t too, the probe of a residual that reads the time
                 // can stop short of the surface and read a jump there as none.
-                //
-                // Where the species' part runs against the whole (issue
-                // #1776), a probe along it moves away from the surface and
-                // reads nothing there: the crossing is taken to jump, and waits
-                // to be refused as one (issue #952).
+                // The probe reads both sides, x ± step·f, so one of them is
+                // past the surface whichever way the species' part points
+                // (issue #1776).
                 const double step = (one.size + reach) / std::fabs(carried);
-                one.jumps = carried * flow < 0.0 ||
-                            jumps_across_surface(sw->species, x_own, f_own, step, x, t, rxns);
+                one.jumps = jumps_across_surface(sw->species, x_own, f_own, step, x, t, rxns);
             }
         }
         // A run is ended for it only once it has stayed there. A crossing the

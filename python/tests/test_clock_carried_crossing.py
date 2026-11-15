@@ -68,6 +68,13 @@ def _step(a: float, b: float) -> str:
     return f"kx*if({_u(a, b)}>c,1,0)"
 
 
+def _sawtooth(a: float, b: float) -> str:
+    # A jump up at c, then down to 0 over w: a jump the restart takes, and a
+    # far corner, continuous but read by the rate law, that the run stalls at.
+    u = _u(a, b)
+    return f"kx*(2/w)*if({u}>c,if({u}<c+w,1-({u}-c)/w,0),0)"
+
+
 def _model(tmp_path, law: str, c: float) -> bngsim.Model:
     path = tmp_path / f"m_{abs(hash((law, c)))}.net"
     path.write_text(NET.format(law=law, c=c))
@@ -79,6 +86,8 @@ def _exact(shape: str, a: float, b: float, c: float) -> tuple[float, float, floa
     r = a - b * K_CLOCK
     if shape == "triangle":
         exposure, d_kx, d_k = 1.0 / (2 * r), 1.0 / (2 * r), b / (2 * r * r)
+    elif shape == "sawtooth":
+        exposure, d_kx, d_k = 1.0 / r, 1.0 / r, b / (r * r)
     else:
         exposure = T_END - c / r
         d_kx, d_k = exposure, -c * b / (r * r)
@@ -138,6 +147,24 @@ def test_a_step_the_clock_carries_is_right(tmp_path, a, b, rtol):
     want = _exact("step", a, b, c)
     for g, w in zip(got, want, strict=False):
         assert g == pytest.approx(w, rel=200 * rtol)
+
+
+@pytest.mark.parametrize("n_points", [4, 7, 31])
+@pytest.mark.parametrize("a,b", [(3.0, 1.0), (2.5, 0.5), (5.5, 2.0)])
+def test_a_sawtooth_the_clock_carries_is_right(tmp_path, a, b, n_points):
+    """Against the clock it ran to the timeout on main. Its far corner is
+    reached by the stall carry, whose probe for a jump reads both sides of the
+    surface. Within 2.3e-5 of the closed form at rtol 1e-10 to 1e-12 on these
+    grids (macOS arm64), as close as the same sawtooth with the clock behind
+    the state comes; with the restart's kept-time term read at the moved state
+    on the jump path, up to 2.5e-4."""
+    c = 25.0 * (a - b * K_CLOCK)
+    want = _exact("sawtooth", a, b, c)
+    for rtol in (1e-10, 1e-11, 1e-12):
+        got = _run(_model(tmp_path, _sawtooth(a, b), c), rtol, n_points)
+        assert got[0] == pytest.approx(want[0], rel=1e-8)
+        assert got[1] == pytest.approx(want[1], rel=1e-6)
+        assert got[2] == pytest.approx(want[2], rel=6e-5)
 
 
 def test_the_plain_run_is_unchanged(tmp_path):
