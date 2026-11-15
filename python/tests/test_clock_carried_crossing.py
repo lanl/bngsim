@@ -196,13 +196,16 @@ def test_the_move_leaves_a_species_the_flow_does_not_move(tmp_path, z, zval, law
     at rest at 0, read by the residual stays where it is. Moved with the rest, $Z ended at
     4.999999999997868 and Z at -2.1e-12."""
     path = tmp_path / "z.net"
-    path.write_text(Z_NET.format(c=25.0 + zval, law=law, z=z))
+    # The pulse sits at t = 25: 3t - 2t - Z = c.
+    path.write_text(Z_NET.format(c=25.0 - zval, law=law, z=z))
     sim = bngsim.Simulator(
         bngsim.Model.from_net(str(path)), method="ode", sensitivity_params=["kx", "k_clock"]
     )
     res = sim.run(t_span=(0.0, T_END), n_points=4, rtol=1e-9, atol=1e-11, timeout=60)
     zi = res.species_names.index("Z()")
     assert float(res.species[-1][zi]) == zval
+    # The switch fired: a test whose pulse lay past T_END read Z untouched.
+    assert float(res.species[-1][res.species_names.index("Y()")]) > 1.0
 
 
 @pytest.mark.parametrize("rtol", [1e-6, 1e-8, 1e-10])
@@ -234,6 +237,113 @@ def test_a_sawtooth_the_clock_carries_is_right(tmp_path, a, b, n_points):
         assert got[0] == pytest.approx(want[0], rel=1e-8)
         assert got[1] == pytest.approx(want[1], rel=1e-6)
         assert got[2] == pytest.approx(want[2], rel=6e-5)
+
+
+@pytest.mark.parametrize("rtol", [1e-10, 1e-11])
+@pytest.mark.parametrize("b", [0.1, 0.12])
+def test_a_weakly_coupled_sawtooth_is_carried_over_its_far_corner(tmp_path, b, rtol):
+    """At `3*time() - 0.1*Tobs` the far corner sat 1.4e-14 short of its
+    surface, an ulp of the time's 3·t, where the stall carry's reach, 16 ulp
+    of Tobs at 0.1 a unit, was 1.1e-14: the run stalled there at rtol 1e-10 and
+    1e-11. The reach now counts the time's ulp too."""
+    a = 3.0
+    c = 25.0 * (a - b * K_CLOCK)
+    got = _run(_model(tmp_path, _sawtooth(a, b), c), rtol, 4)
+    want = _exact("sawtooth", a, b, c)
+    assert got[0] == pytest.approx(want[0], rel=1e-8)
+    assert got[1] == pytest.approx(want[1], rel=1e-6)
+    assert got[2] == pytest.approx(want[2], rel=3e-4)
+
+
+MULTI_NET = """begin parameters
+    1 kx 1
+    2 k_clock 2.0
+    3 w 0.003
+    4 kw {kw!r}
+    5 kd {kd!r}
+end parameters
+begin functions
+    1 pulse() {law}
+end functions
+begin species
+    1 T() 0
+    2 X() 10
+    3 Y() 0
+    4 W() 0
+    5 Z() {z0!r}
+end species
+begin reactions
+    1 0 1 k_clock
+    2 2 3 pulse
+    3 0 4 kw
+    4 5 0 kd
+end reactions
+begin groups
+    1 Tobs 1
+    2 Wobs 4
+    3 Zobs 5
+end groups
+"""
+
+MULTI = {
+    # A second species W the residual reads, rising 400 times slower than T.
+    "step-W": ("step", "3*time()-Tobs-Wobs", 25 * 0.995, dict(kw=5e-3, kd=0.0, z0=0.0)),
+    "triangle-W": ("triangle", "3*time()-Tobs-Wobs", 25 * 0.995, dict(kw=5e-3, kd=0.0, z0=0.0)),
+    # Z decaying to nearly 0 by the crossing, and slowly.
+    "step-Z-fast": ("step", "3*time()-Tobs-Zobs", 25.0, dict(kw=0.0, kd=1.0, z0=1.0)),
+    "triangle-Z-slow": (
+        "triangle",
+        "3*time()-Tobs-Zobs",
+        25.0 - math.exp(-0.25),
+        dict(kw=0.0, kd=0.01, z0=1.0),
+    ),
+    "step-half-W": (
+        "step",
+        "3*time()-0.5*Tobs-0.5*Wobs",
+        25 * 1.9975,
+        dict(kw=5e-3, kd=0.0, z0=0.0),
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(MULTI))
+def test_a_residual_reading_a_slow_second_species(tmp_path, case):
+    """The move is shared out by each species' own flow, so a second species
+    the residual reads steeply and the flow moves slowly takes little of it.
+    Shared by the gradient alone, that species took most of the move, the
+    bound refused it, and all five stalled or timed out, as on main. The
+    columns are checked against central differences of plain runs, which were
+    right on main."""
+    shape, u, c, kv = MULTI[case]
+    law = (
+        f"kx*(1/w)*max(0,1-abs({u}-{c!r})/(w/2))"
+        if shape == "triangle"
+        else f"kx*if({u}>{c!r},1,0)"
+    )
+
+    def model(kx=1.0, k_clock=K_CLOCK):
+        text = MULTI_NET.format(law=law, **kv)
+        text = text.replace("    1 kx 1\n", f"    1 kx {kx!r}\n").replace(
+            "    2 k_clock 2.0\n", f"    2 k_clock {k_clock!r}\n"
+        )
+        path = tmp_path / f"multi_{abs(hash((kx, k_clock)))}.net"
+        path.write_text(text)
+        return bngsim.Model.from_net(str(path))
+
+    def y_plain(**kw):
+        res = bngsim.Simulator(model(**kw), method="ode").run(
+            t_span=(0.0, T_END), n_points=4, rtol=1e-12, atol=1e-14, timeout=60
+        )
+        return float(res.species[-1][res.species_names.index("Y()")])
+
+    h = 1e-5
+    fd = (
+        (y_plain(kx=1 + h) - y_plain(kx=1 - h)) / (2 * h),
+        (y_plain(k_clock=K_CLOCK + h) - y_plain(k_clock=K_CLOCK - h)) / (2 * h),
+    )
+    got = _run(model(), 1e-10, 4)
+    assert got[1] == pytest.approx(fd[0], rel=1e-5)
+    assert got[2] == pytest.approx(fd[1], rel=1e-4)
 
 
 def test_the_plain_run_is_unchanged(tmp_path):

@@ -11543,6 +11543,7 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
 // (`if(r>0, r, 0)` against `if(r<0, −r, 0)`, continuous where r = 0), so they
 // return with no jump — and no merge decision — before the second check is
 // reached at all.
+
 // How far the restart past a crossing the clock carries against the state may
 // move a species to take up the clock's share (issue #1776), in units of what
 // x + δt·f already moves it. `3*time() - Tobs` with Tobs at 2·t needs 1.5; a
@@ -13133,7 +13134,17 @@ bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
                    (std::nextafter(size, std::numeric_limits<double>::infinity()) - size);
             carried += gx[uj] * f0[uj];
         }
-        const double reach = kStalledSwitchUlps * ulp;
+        // And what one ulp of the time moves it by, where it reads the time
+        // (issue #1776): its flow less the species' part. `3*time() - 0.1*Tobs`
+        // at the far corner of a sawtooth at t = 25 sat 1.4e-14 short, an ulp
+        // of the time's 3·t, where 16 ulp of Tobs at 0.1 a unit reach 1.1e-14,
+        // and the run stalled there at rtol 1e-10. The push below still moves
+        // only the species, by what their own ulp moves the residual.
+        const double t_ulp =
+            std::nextafter(std::fabs(t), std::numeric_limits<double>::infinity()) - std::fabs(t);
+        const double time_part = std::fabs(flow - carried);
+        const double reach =
+            kStalledSwitchUlps * (ulp + (std::isfinite(time_part) ? time_part * t_ulp : 0.0));
         // A residual's sign is its condition's: ExprTk is compiled unfused, so
         // `(Aobs^2)-(thr^2)` is 0 with A on thr and positive only past it, where
         // fused (arm64) it read +5.75e-17 there while `Aobs^2 > thr^2` read false
@@ -15143,8 +15154,9 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
     // and no sensitivity was to be had for the model at any tolerance.
     //
     // So where x + δt·f at t* reads a residual of the batch on the side it
-    // came from, the state is moved along that residual's gradient until it
-    // reads what the trajectory does at t* + δt, which is past by the probe.
+    // came from, the species the residual reads are moved until it reads what
+    // the trajectory does at t* + δt, which is past by the probe, each by its
+    // share weighted with its own flow (below).
     // The move stands in for the time's δt: the residual's δt·∂g/∂t over its
     // gradient. Only the species the flow moves are moved, as the stall carry
     // (issue #1229) moves them: a fixed species, or one at rest, stays where it
@@ -15191,13 +15203,16 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                 const NetworkModel::StateSwitch &one = *batch[k];
                 double scale = 0.0;
                 residual_flow(one.residual_expr_idx, one.species, t_evt, ns, moved, f0, gx, scale);
+                // Each species takes the share of the move that keeps its
+                // move over its own δt·f as small as the others': ∝ g_j·f_j²,
+                // the least Σ(Δx_j/f_j)² that moves the residual by what is
+                // left. Spread by the gradient alone, a species the residual
+                // reads steeply and the flow moves slowly took most of it, and
+                // the bound below refused the whole move.
                 double norm2 = 0.0;
                 for (int j : one.species) {
                     const auto uj = static_cast<std::size_t>(j);
-                    if (f0[uj] == 0.0) {
-                        gx[uj] = 0.0;
-                    }
-                    norm2 += gx[uj] * gx[uj];
+                    norm2 += gx[uj] * gx[uj] * f0[uj] * f0[uj];
                 }
                 if (!(norm2 > 0.0) || !std::isfinite(norm2)) {
                     return x_r;
@@ -15206,7 +15221,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                 const double g = eval.evaluate(one.residual_expr_idx);
                 for (int j : one.species) {
                     const auto uj = static_cast<std::size_t>(j);
-                    moved[uj] += (g_on[k] - g) * gx[uj] / norm2;
+                    moved[uj] += (g_on[k] - g) * gx[uj] * f0[uj] * f0[uj] / norm2;
                 }
             }
             left = behind(moved);
