@@ -17,8 +17,10 @@ pulse stalled at its near foot at every tolerance (the plain run was right):
   4e-4 off at rtol 1e-10 to 1e-11 on some output grids.
 
 Whatever the pulse's shape, the exposure is kx·(area)/r, so the columns at
-t_end have a closed form. The rows with b <= 0 are controls: the species carry
-those crossings, and nothing here changes them.
+t_end have a closed form. The rows with b < 0 are controls: the species carry
+those crossings with the clock, and their columns are as on main (their state
+can differ from main's in the last bits, where the stall carry's reach now
+counts the time's ulp).
 """
 
 from __future__ import annotations
@@ -150,6 +152,25 @@ def test_a_clock_that_outruns_its_species_leaves_the_state_alone(tmp_path, shape
         _model(tmp_path, law, c), method="ode", sensitivity_params=["kx", "k_clock"]
     )
     res = sim.run(t_span=(0.0, T_END), n_points=4, rtol=1e-9, atol=1e-11, timeout=60)
+    t = res.species_names.index("T()")
+    assert float(res.species[-1][t]) == pytest.approx(K_CLOCK * T_END, rel=1e-11)
+
+
+@pytest.mark.parametrize("a,b", [(3.0, 1e-4), (3.0, 1e-5), (3.0, 1e-6), (1.0, -1e-5)])
+def test_a_stall_carry_never_pushes_a_weakly_coupled_species_far(tmp_path, a, b):
+    """The stall carry's reach counts the time's ulp only up to 16 times the
+    species' own, as the restart's move is bounded. Counted without that cap,
+    at rtol 1e-12 these rows returned T(30) off by up to 3.6e-7, where main
+    stalls with "CVODE made no progress". A stall is still what such a run may
+    do (issue #1779); a run that returns has the clock species right."""
+    c = 25.0 * (a - b * K_CLOCK)
+    sim = bngsim.Simulator(
+        _model(tmp_path, _triangle(a, b), c), method="ode", sensitivity_params=["kx", "k_clock"]
+    )
+    try:
+        res = sim.run(t_span=(0.0, T_END), n_points=4, rtol=1e-12, atol=1e-14, timeout=60)
+    except bngsim.SimulationError:
+        return
     t = res.species_names.index("T()")
     assert float(res.species[-1][t]) == pytest.approx(K_CLOCK * T_END, rel=1e-11)
 

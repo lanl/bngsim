@@ -13057,7 +13057,8 @@ void CvodeSimulator::Impl::note_event_on_state_switch(
 // The residual is then put the few ulp to its far side, by moving each species
 // it reads that the flow moves by the same few ulp of that species' own: one
 // the flow does not move, a fixed species or a static term of a sum, stays
-// where it is, and no species moves by more than rounding moves it. (Moved as
+// where it is, and no species moves by more than rounding moves it, or, where
+// the residual reads the time, by up to kRestartMoveReach times that. (Moved as
 // the flow would move them, two species of a sum that go opposite ways at 0.1
 // each, 1e-8 apart, each took 1e7 times the residual's own move.) Nothing
 // else moves, and the time does not. The integrator restarts there. Only
@@ -13138,13 +13139,19 @@ bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
         // (issue #1776): its flow less the species' part. `3*time() - 0.1*Tobs`
         // at the far corner of a sawtooth at t = 25 sat 1.4e-14 short, an ulp
         // of the time's 3·t, where 16 ulp of Tobs at 0.1 a unit reach 1.1e-14,
-        // and the run stalled there at rtol 1e-10. The push below still moves
-        // only the species, by what their own ulp moves the residual.
+        // and the run stalled there at rtol 1e-10. The push below moves only
+        // the species, so the time's ulp is counted only up to
+        // kRestartMoveReach times theirs, as the restart's move is bounded: at
+        // `3*time() - 1e-6*Tobs` it would have pushed Tobs by 2.5e7 of its
+        // ulps, 3.6e-7, where the run had stalled before. Past that the reach
+        // is the species' alone, and the run stalls as it did.
         const double t_ulp =
             std::nextafter(std::fabs(t), std::numeric_limits<double>::infinity()) - std::fabs(t);
-        const double time_part = std::fabs(flow - carried);
+        const double time_ulp = std::fabs(flow - carried) * t_ulp;
         const double reach =
-            kStalledSwitchUlps * (ulp + (std::isfinite(time_part) ? time_part * t_ulp : 0.0));
+            kStalledSwitchUlps *
+            (ulp +
+             (std::isfinite(time_ulp) && time_ulp <= kRestartMoveReach * ulp ? time_ulp : 0.0));
         // A residual's sign is its condition's: ExprTk is compiled unfused, so
         // `(Aobs^2)-(thr^2)` is 0 with A on thr and positive only past it, where
         // fused (arm64) it read +5.75e-17 there while `Aobs^2 > thr^2` read false
