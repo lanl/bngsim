@@ -191,9 +191,12 @@ pip install bngsim[dev]      # all of the above except bngl, + pytest + ruff
   [Loading models](user-guide/loading-models.md). `bngsim[bngl]` supplies it via
   PyBioNetGen, but `$BNG2_PL` / `$BNGPATH` pointing at a BioNetGen you already
   have works just as well and takes precedence.
-- BNG2.pl is Perl, so `perl` must be on `PATH` too. macOS and most Linux
-  distributions ship one; stock Windows does not, and BNGL loading reports
-  itself unavailable there rather than failing at load time.
+- BNG2.pl is Perl, so `perl` must be on `PATH` too, with Perl's core library.
+  macOS and most Linux distributions ship one; stock Windows does not, and slim
+  container images ship only Debian's `perl-base`, which lacks the library (see
+  [Minimal container images](#minimal-container-images)). In both cases BNGL
+  loading reports itself unavailable rather than failing at load time; on slim
+  images it names the fix.
 - The extra is deliberately **not** a base dependency and is **not** folded into
   `dev`. `bionetgen` is a 12.8 MB wheel that requires `libroadrunner`, `seaborn`
   and `networkx`, so promoting it would put RoadRunner into every install —
@@ -206,6 +209,23 @@ pip install bngsim[dev]      # all of the above except bngl, + pytest + ruff
   PyBioNetGen commit for engine-routing provenance; loading a BNGL file needs
   BNG2.pl, not that commit. Keeping them separate is why `dev` omits `bngl` — a
   developer environment gets BNG2.pl from `--group parity` or `$BNGPATH`.
+
+## Minimal container images
+
+Debian-based slim images such as `python:3.13-slim` leave out two system
+packages a full install has. `pip install bngsim` succeeds on them, and
+`import bngsim` and `.net` models work; these two loaders do not until the
+package is installed:
+
+- **`libexpat1`**, for SBML and Antimony. python-libsbml's Linux wheel reads the
+  system expat library instead of carrying a copy, so `Model.from_sbml`,
+  `Model.from_antimony_string` and every other load that goes through libSBML
+  fail with `ImportError: libexpat.so.1` until `apt-get install libexpat1` has
+  run. The error says so, and `bngsim.HAS_LIBSBML` and
+  `capabilities()["missing"]["libsbml"]` report it.
+- **The full Perl**, for BNGL. The image's `perl` is Debian's `perl-base`, without
+  the core library BNG2.pl loads (`FindBin` and more), so BNGL loading reports
+  itself unavailable, naming the fix: `apt-get install perl`.
 
 ## Antimony version note
 
@@ -235,17 +255,21 @@ bngsim.HAS_NFSIM         # compiled C++ NFsim backend
 bngsim.HAS_RULEMONKEY    # compiled C++ RuleMonkey backend
 bngsim.HAS_KLU           # compiled SuiteSparse/KLU sparse linear solver
 bngsim.HAS_LAPACK_DENSE  # compiled BLAS/LAPACK dense factor (opt-in, speed only)
-bngsim.HAS_LIBSBML       # optional Python dependency 'python-libsbml'
+bngsim.HAS_LIBSBML       # `import libsbml` works — tried when read, see below
 bngsim.HAS_ANTIMONY      # optional Python dependency 'antimony'
-bngsim.HAS_BNGL          # BNG2.pl *and* perl are reachable — see below
+bngsim.HAS_BNGL          # BNG2.pl *and* a perl that can run it — see below
 ```
 
-`HAS_BNGL` is the one flag that is not an import check. BNGL loading needs an
-external Perl toolchain, which can arrive from the `bngl` extra, from
-`$BNGPATH`, or from a `BNG2.pl` on `PATH` — and a machine with `bionetgen`
-importable but no `perl` cannot load BNGL at all. So it is probed when you read
-it, not fixed at import (which also keeps `import bngsim` from ever pulling in
+Two flags are probed when you read them rather than fixed at import. `HAS_BNGL`
+is not an import check at all: BNGL loading needs an external Perl toolchain,
+which can arrive from the `bngl` extra, from `$BNGPATH`, or from a `BNG2.pl` on
+`PATH` — and a machine with `bionetgen` importable but no `perl`, or a `perl`
+without the core library BNG2.pl loads, cannot load BNGL at all. So it is probed
+when you read it (which also keeps `import bngsim` from ever pulling in
 `bionetgen`), and it tracks an environment variable you export at runtime.
+`HAS_LIBSBML` tries `import libsbml`, because python-libsbml can be installed and
+still fail to load (see [Minimal container images](#minimal-container-images));
+a lookup of the package would say yes where a load says no.
 
 `HAS_LAPACK_DENSE` is the one flag that is `True` on the macOS wheels
 (Accelerate) and `False` on the manylinux and Windows ones. When it is `False`,
