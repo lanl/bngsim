@@ -129,3 +129,112 @@ def test_a_carry_over_a_steep_corner_takes_the_columns_along(tmp_path):
         for n in (3, 4, 5, 6, 8, 11, 16, 31)
     ]
     assert abs(float(np.mean(errors))) < 8e-6, errors
+
+
+# ── Issue #1454: the same restart at a jump ─────────────────────────────────
+#
+# A rectangle of height 0.5/w, and a jump into a slope, written with if() so
+# that the rate law jumps at each edge. The crossing applies its saltation
+# term and then restarts δt along the flow, as a continuous one does, and the
+# columns were left δt behind the state there: 4.6e-5 at w = 0.003 for the
+# rectangle and 6.1e-5 for the slope, at every tolerance.
+
+JUMPS = {
+    # Area 0.5 in T: dY/dk_clock as above.
+    "rectangle": ("kx*(1/w)*if(Tobs<c-w/2,0,if(Tobs<c+w/2,0.5,0))", 0.5),
+    # Area 1.5 in T.
+    "jump-into-slope": ("kx*(1/w)*if(Tobs<c-w/2,0,if(Tobs<c+w/2,1.5+(Tobs-c)/w,0))", 1.5),
+}
+
+
+def _exact_clock_column(area: float, rate: float = 2.0) -> float:
+    """dY/dk for Y = 10(1 - exp(-area/rate)), the exposure area/rate."""
+    return -10 * math.exp(-area / rate) * area / rate**2
+
+
+@pytest.mark.parametrize("n_points", [3, 4, 5, 6, 8, 11, 16, 31])
+@pytest.mark.parametrize("law", list(JUMPS))
+def test_a_jump_moves_the_columns_with_the_state(tmp_path, law, n_points):
+    """The counter at 0.05 across the pulse, as above. Main was 4e-6 to 6e-5
+    off on every grid; the branch is within 1.1e-7. The 8-point grid of the
+    rectangle is also the one whose crossing re-take stopped on the far edge
+    itself (see the next test)."""
+    text, area = JUMPS[law]
+    _, dk = _columns(_model(tmp_path, text, c=0.05, t0=-49.95), n_points, 1e-12)
+    assert dk == pytest.approx(_exact_clock_column(area), rel=1e-6)
+
+
+def test_a_re_take_does_not_stop_on_the_crossing(tmp_path):
+    """A re-take of the step a crossing was found in integrates again from
+    the step's start to a stop short of the crossing. At the end of a step of
+    5e-14 that crept up on a jump, the stop's shortfall was below an ulp of t:
+    it stopped on the crossing itself, past the surface, where CVODE never
+    reports it, and the edge's jump in the columns was lost. dY/dk_clock came
+    out 1.6e4 for -0.97, with no error. A stop not on the near side is not
+    taken, and the crossing is restarted at as any other is."""
+    text, area = JUMPS["rectangle"]
+    for n_points in (8, 9, 10, 12):
+        dkx, dk = _columns(_model(tmp_path, text, c=0.05, t0=-49.95), n_points, 1e-12)
+        assert dk == pytest.approx(_exact_clock_column(area), rel=1e-6), n_points
+        assert dkx == pytest.approx(EXACT_KX, rel=1e-8), n_points
+
+
+# ── Issue #1455: a condition that reads the time ─────────────────────────────
+#
+# The triangle in u = Tobs + time(), the counter started at -74.925 so that u
+# crosses the pulse at t = 25, where it is small. The exposure is
+# 0.5/(k_clock + 1). The restart past a crossing moves the state δt along the
+# flow and keeps the time, and where the rate law reads the time that restart
+# moves with the crossing time, which moves with the columns. Left out, three
+# grids in seven were 3.3e-4 off at rtol 1e-12.
+
+TIME_LAW = "kx*(1/w)*max(0,1-abs(Tobs+time()-c)/(w/2))"
+EXACT_TIME = -10 * math.exp(-1 / 6) * 0.5 / 9
+
+
+@pytest.mark.parametrize("n_points", [3, 4, 5, 6, 8, 11, 16])
+def test_a_condition_that_reads_the_time(tmp_path, n_points):
+    """At t = 25 an ulp of the time is 3.6e-15, and a column moving at 5e7
+    turns the clock's rounding into a few 1e-6 of itself, as the counter's
+    does at T = 50 above: the branch reads 5.5e-6 at worst there."""
+    dkx, dk = _columns(_model(tmp_path, TIME_LAW, c=0.075, t0=-74.925), n_points, 1e-12)
+    assert dk == pytest.approx(EXACT_TIME, rel=3e-5)
+    assert dkx == pytest.approx(10 * math.exp(-1 / 6) / 6, rel=1e-8)
+
+
+@pytest.mark.parametrize("w", [0.003, 0.03])
+def test_a_condition_that_reads_the_time_near_t0(tmp_path, w):
+    """The same pulse at t = 0.25, where the time rounds by 3e-17 and the
+    restart's δt is small: right to 1e-8 on main and on the branch, which is
+    what tells the clock's rounding above from an error in the columns."""
+    for n_points in (3, 4, 8, 16):
+        _, dk = _columns(_model(tmp_path, TIME_LAW, c=0.075, t0=-0.675, w=w), n_points, 1e-12)
+        assert dk == pytest.approx(EXACT_TIME, rel=2e-8), n_points
+
+
+# ── Issue #1456: a root CVODE places inside a step past a corner ──────────────
+#
+# Filed with the column at the peak's root 8.6e-3 off as CVODE interpolated
+# it, after a step that ran past the corner, and dY/dk_clock 1e-4 to 1e-2 off
+# on some grids. Measured against the exact column at every peak crossing of
+# 456 runs (both spellings, w = 0.005 and 0.1, rtol 1e-8 to 1e-10, 38 grids
+# each), the interpolated column is right to 1.3e-7 at worst, and what is left
+# of the final error falls with the tolerance: the column falls from 2e4 at
+# the peak to 1 at the end, so it carries rtol times its peak. These pin that.
+
+
+@pytest.mark.parametrize("law", ["max-abs", "if"])
+def test_the_triangle_converges_with_the_tolerance(tmp_path, law):
+    """The issue's triangle, w = 0.1 at c = 50. At rtol 1e-8 its worst over
+    38 grids was 1.1e-4 to 1.4e-4; at 1e-10 it is 1.5e-6 and at 1e-11
+    1.8e-7, on the grids that were worst at 1e-8."""
+    for n_points in (5, 6, 9, 16, 23, 26, 30, 35):
+        _, dk = _columns(_model(tmp_path, LAWS[law], c=50.0, w=0.1), n_points, 1e-11)
+        assert dk == pytest.approx(EXACT, rel=2e-6), n_points
+
+
+def test_the_issues_traced_grid(tmp_path):
+    """w = 0.005, rtol 1e-9, 16 points: 7.9e-3 off when filed, 1.5e-4 now,
+    of the size every grid has there (median 7e-5, worst 3.7e-4 over 38)."""
+    _, dk = _columns(_model(tmp_path, LAWS["if"], c=50.0, w=0.005), 16, 1e-9)
+    assert dk == pytest.approx(EXACT, rel=1e-3)

@@ -4551,12 +4551,20 @@ struct CvodeSimulator::Impl {
                                         const std::vector<const NetworkModel::StateSwitch *> &batch,
                                         std::vector<std::vector<double>> &s, SensitivityState &sens,
                                         const RootStepEnd *root_step_end = nullptr);
-    // Move `s` with the state where a continuous crossing restarts past its
-    // surface, from x(t*) `past` along the flow beyond it (issue #1285). See
-    // the definition.
+    // Move `s` with the state where a crossing restarts past its surface, from
+    // x(t*) `past` along the flow beyond it (issues #1285, #1454). `s_before`
+    // is the columns before a jump's saltation term, null where there is
+    // none. See the definition.
     void columns_past_surface(void *cvode_mem, int ns, double t_evt, const std::vector<double> &x,
                               const std::vector<double> &f0, double dt, double past,
-                              std::vector<std::vector<double>> &s, const SensitivityState &sens);
+                              std::vector<std::vector<double>> &s, const SensitivityState &sens,
+                              const std::vector<std::vector<double>> *s_before = nullptr);
+    // The columns' share of a restart past a crossing that keeps the time
+    // where the right-hand side reads the time (issue #1455). See the
+    // definition.
+    void columns_for_kept_time(double t_evt, int ns, const std::vector<double> &x_restart,
+                               double dt, const std::vector<double> &tau,
+                               std::vector<std::vector<double>> &s, const SensitivityState &sens);
     // Whether the step CVODE found a root of `batch` in ran on across another
     // switch's surface too (issue #1285). See the definition.
     bool root_step_ran_past(const RootStepEnd *root_step_end, int ns, double t_evt,
@@ -13780,15 +13788,28 @@ bool CvodeSimulator::Impl::root_step_ran_past(
 // without the analytic right-hand side the columns are left as they were (on
 // it a run on the triangle above stalls at the pulse's foot regardless). A
 // column in its comoving frame (issue #545) is left too.
+//
+// A crossing that jumps restarts the same way (issue #1454), after its
+// saltation term: ṡ⁻ is then read with the columns before that term
+// (`s_before`) and ṡ⁺ with them after it. Left out, a rectangle of width
+// 0.003 in the clock kept dY/dk_clock 4.6e-5 short at every tolerance. It is
+// asked only where the jump was read at the surface, extended to x(t*) or at
+// one state there. A jump read from the raw pair at ±δt holds the move
+// already, to first order: that pair's difference carries −δt·(J⁻ + J⁺)·f.
 void CvodeSimulator::Impl::columns_past_surface(void *cvode_mem, int ns, double t_evt,
                                                 const std::vector<double> &x,
                                                 const std::vector<double> &f0, double dt,
                                                 double past, std::vector<std::vector<double>> &s,
-                                                const SensitivityState &sens) {
+                                                const SensitivityState &sens,
+                                                const std::vector<std::vector<double>> *s_before) {
     const int n_sens = sens.n_total;
     void *raw = nullptr;
-    if (n_sens == 0 || s.size() != static_cast<std::size_t>(n_sens) || !(dt > 0.0) ||
-        !std::isfinite(past) || CVodeGetUserData(cvode_mem, &raw) != CV_SUCCESS || raw == nullptr) {
+    if (s_before == nullptr) {
+        s_before = &s;
+    }
+    if (n_sens == 0 || s.size() != static_cast<std::size_t>(n_sens) ||
+        s_before->size() != s.size() || !(dt > 0.0) || !std::isfinite(past) ||
+        CVodeGetUserData(cvode_mem, &raw) != CV_SUCCESS || raw == nullptr) {
         return;
     }
     const auto *data = static_cast<const CvodeUserData *>(raw);
@@ -13823,8 +13844,10 @@ void CvodeSimulator::Impl::columns_past_surface(void *cvode_mem, int ns, double 
                 continue;
             }
             auto &out = rate[side][static_cast<std::size_t>(c)];
+            const auto &col = side == 0 ? (*s_before)[static_cast<std::size_t>(c)]
+                                        : s[static_cast<std::size_t>(c)];
             const int rc = data->codegen_sens_fn(n_sens, t_evt + at, xs.data(), fs.data(), c,
-                                                 s[static_cast<std::size_t>(c)].data(), out.data(),
+                                                 const_cast<double *>(col.data()), out.data(),
                                                  &so_data, scratch_a.data(), scratch_b.data());
             // A column CVODES could not read here either: it asks again on its
             // first step and refuses there with its own account.
@@ -13843,6 +13866,72 @@ void CvodeSimulator::Impl::columns_past_surface(void *cvode_mem, int ns, double 
         const auto uc = static_cast<std::size_t>(c);
         for (std::size_t i = 0; i < n; ++i) {
             s[uc][i] += past * (rate[1][uc][i] - rate[0][uc][i]) + dt * rate[1][uc][i];
+        }
+    }
+}
+
+// ─── A restart that keeps the time (issue #1455) ────────────────────────────
+//
+// restart_past_surface restarts at (t*, x + δt·f): the state δt on along the
+// flow, the time where it was. That is the trajectory at t* + δt where f does
+// not read the time. Where it does, the run goes on from a state δt ahead of
+// its clock, and how far ahead it is moves with t*, which moves with every
+// column: the restart from (τ, x(τ + δt)) is the flow's own solution from τ
+// only to first order, and it moves with τ by Φ·(f(x_r, τ + δt) − f(x_r, τ)).
+// So each column takes
+//     s += (f(x_r, t* + δt) − f(x_r, t*))·dt*/dθ,
+// x_r the restart state. A narrow pulse whose condition reads `Tobs + time()`
+// came out 3.3e-4 off at rtol 1e-12 on three output grids in seven without
+// it, a third of the δt·ṡ move the columns take with the state, where the
+// clock is a third of the residual's rate.
+//
+// Exactly 0 where f does not read the time: the two readings are one
+// evaluation. A species whose two readings differ by no more than the
+// rounding of its own terms takes nothing, as a rate law that cancels
+// between two large pools would put that rounding, times dt*/dθ, into a
+// species the clock never moves. A column in its comoving frame (issue #545)
+// is left.
+void CvodeSimulator::Impl::columns_for_kept_time(double t_evt, int ns,
+                                                 const std::vector<double> &x_restart, double dt,
+                                                 const std::vector<double> &tau,
+                                                 std::vector<std::vector<double>> &s,
+                                                 const SensitivityState &sens) {
+    const int n_sens = sens.n_total;
+    const auto n = static_cast<std::size_t>(ns);
+    if (n_sens == 0 || s.size() != static_cast<std::size_t>(n_sens) ||
+        tau.size() < static_cast<std::size_t>(n_sens) || !(dt > 0.0) || x_restart.size() != n) {
+        return;
+    }
+    std::vector<double> f_kept(n, 0.0);
+    std::vector<double> f_on(n, 0.0);
+    std::vector<double> net(n, 0.0);
+    std::vector<double> gross_kept(n, 0.0);
+    std::vector<double> gross_on(n, 0.0);
+    auto read = [&](double t, std::vector<double> &f, std::vector<double> &gross) {
+        sync_model_at(t, x_restart.data(), ns);
+        model.compute_derivs(t, x_restart.data(), f.data());
+        model.compute_flux_split(t, x_restart.data(), nullptr, net.data(), gross.data());
+    };
+    read(t_evt, f_kept, gross_kept);
+    read(t_evt + dt, f_on, gross_on);
+    sync_model_at(t_evt, x_restart.data(), ns);
+    const double eps = std::numeric_limits<double>::epsilon();
+    for (std::size_t i = 0; i < n; ++i) {
+        const double change = f_on[i] - f_kept[i];
+        const double rounding =
+            kStateSwitchAgreeRoundoff * eps *
+            std::max({gross_kept[i], gross_on[i], std::fabs(f_kept[i]), std::fabs(f_on[i])});
+        if (!std::isfinite(change) || !(std::fabs(change) > rounding)) {
+            continue;
+        }
+        for (int c = 0; c < n_sens; ++c) {
+            const auto uc = static_cast<std::size_t>(c);
+            if (c < sens.n_p && sens.comoving.enabled && sens.comoving.plist[uc] >= 0) {
+                continue;
+            }
+            if (std::isfinite(tau[uc])) {
+                s[uc][i] += change * tau[uc];
+            }
         }
     }
 }
@@ -16100,9 +16189,28 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                 comoving_ask(sens, t_evt);
             }
         }
-        const double past =
-            root_step_ran_past(root_step_end, ns, t_evt, x, batch) ? -surface_at : 0.0;
+        const bool ran = root_step_ran_past(root_step_end, ns, t_evt, x, batch);
+        // dt*/dθ, read before the columns move: a crossing too near its
+        // tangency to divide by leaves the clock's share out.
+        std::vector<double> tau_kept;
+        try {
+            residual_dtstar(sw.residual_expr_idx, sw.species,
+                            "the state-dependent rate-law condition with residual '" +
+                                sw.residual_source + "' crosses",
+                            t_evt, ns, x, f0, s, sens, tau_kept);
+        } catch (const std::exception &) {
+            tau_kept.clear();
+        }
+        const double past = ran ? -surface_at : 0.0;
         columns_past_surface(cvode_mem, ns, t_evt, x, f0, dt, past, s, sens);
+        if (!tau_kept.empty()) {
+            std::vector<double> x_restart(n_sp, 0.0);
+            for (std::size_t u = 0; u < n_sp; ++u) {
+                x_restart[u] = x[u] + dt * f0[u];
+            }
+            columns_for_kept_time(t_evt, ns, x_restart, dt, tau_kept, s, sens);
+        }
+        sync(x, t_evt);
         restart_past_surface();
         return;
     }
@@ -16151,6 +16259,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
     for (std::size_t u = 0; u < n_sp; ++u) {
         change[u] = f_minus[u] - f_plus[u];
     }
+    bool read_at_surface = far_whole;
     if (far_whole) {
         std::vector<double> g_far(nb, 0.0);
         std::vector<double> f_far(n_sp, 0.0);
@@ -16192,6 +16301,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             }
             if (beside) {
                 change = only->at_one_state;
+                read_at_surface = true;
             }
         }
     }
@@ -16375,7 +16485,8 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
     // Issue #545: a column this crossing moves at an emitted c enters V = S⁻ + c·f⁻,
     // which does not jump, before the others take theirs. With the frames off
     // for the run's events, a column that needed one is refused (issue #958).
-    comoving_refuse_without_a_case(sens, t_evt, tau); // issue #1003
+    const std::vector<std::vector<double>> s_jump_before(s); // issue #1454
+    comoving_refuse_without_a_case(sens, t_evt, tau);        // issue #1003
     if (sens.comoving.enabled || sens.comoving.off_for_events) {
         comoving_enter(sens, ns, comoving_cols.data(), t_evt, f_minus, f_plus, f_plus, tau,
                        kComovingStateSwitchRelTol);
@@ -16422,6 +16533,19 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                 jumped.push_back(r.sw);
             }
         }
+    }
+    // Issue #1454: the restart below moves the state δt on along the flow, as
+    // at a continuous crossing, and the columns go with it.
+    if (read_at_surface) {
+        const bool ran = root_step_ran_past(root_step_end, ns, t_evt, x, batch);
+        const double past = ran ? -surface_at : 0.0;
+        columns_past_surface(cvode_mem, ns, t_evt, x, f0, dt, past, s, sens, &s_jump_before);
+        std::vector<double> x_restart(n_sp, 0.0);
+        for (std::size_t u = 0; u < n_sp; ++u) {
+            x_restart[u] = x[u] + dt * f0[u];
+        }
+        columns_for_kept_time(t_evt, ns, x_restart, dt, tau, s, sens);
+        sync(x, t_evt);
     }
     // Issue #760: the stops of the stretch this crossing begins.
     comoving_ask(sens, t_evt);
@@ -20064,7 +20188,31 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         // crossing opens was read from 4.5e-5 before it, and Y, held to its
         // atol of 1e-5, gained 1.3e-5 it does not have.
         const double shortfall = std::min(0.25, 0.25 * kCrossingStepShare / err) * (t_r - t_a);
-        if (!go_back_to_step_start(t_a, t_r - shortfall, t_r, nested)) {
+        // And only to a stop the step's polynomial puts on the near side, where
+        // the step started. A stop that rounds onto the crossing, or past it,
+        // restarts the run on its far side, where CVODE never reports it: a
+        // root at the end of a step of 5e-14 that crept up on a pulse's far
+        // edge took a shortfall below an ulp of t, stopped on the root itself,
+        // and the edge's jump in the columns was lost, dY/dk_clock 1.6e4 for
+        // -0.97 with no error.
+        const double t_stop = t_r - shortfall;
+        const int gidx = state_switches[static_cast<size_t>(j)]->residual_expr_idx;
+        auto residual_on_step = [&](double t_at) {
+            if (CVodeGetDky(cvode_mem, static_cast<sunrealtype>(t_at), 0, retake_end_x) !=
+                CV_SUCCESS) {
+                return std::numeric_limits<double>::quiet_NaN();
+            }
+            const double *xa = N_VGetArrayPointer(retake_end_x);
+            return impl_->residual_at(gidx, t_at, std::vector<double>(xa, xa + ns), ns);
+        };
+        const double g_start = residual_on_step(t_a);
+        const double g_stop = residual_on_step(t_stop);
+        impl_->sync_model_at(t_r, N_VGetArrayPointer(y), ns);
+        if (!(t_stop < t_r) || !std::isfinite(g_start) || !std::isfinite(g_stop) ||
+            g_start == 0.0 || g_stop == 0.0 || (g_start < 0.0) != (g_stop < 0.0)) {
+            return false;
+        }
+        if (!go_back_to_step_start(t_a, t_stop, t_r, nested)) {
             return false;
         }
         retake_chain_j = j;
