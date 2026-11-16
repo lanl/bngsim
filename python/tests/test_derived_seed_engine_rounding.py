@@ -56,6 +56,8 @@ CASES = [
     ("mod(p,-2)*k", 3.0, 1.0, -1.0),
     ("frac(p)*k", -0.5, -0.5, 0.5),  # x - trunc(x), not x - floor(x)
     ("frac(p)*k", -1.25, -0.25, 0.75),
+    ("(p % 2)*k", -0.5, -0.5, 1.5),  # ExprTk's % is fmod too, not sympy's floored Mod
+    ("frac(-2.5)*k", 0.0, -0.5, 0.5),  # a constant argument: sympy folded it at the parse
 ]
 
 
@@ -102,6 +104,10 @@ def test_a_partial_without_these_calls_is_unchanged(tmp_path):
         ("rint(p)", 2.5, 0.0, 3.0),
         ("mod(p,q)+5", -3.0, 2.0, 4.0),
         ("mod(p,q)", 3.0, -2.0, 1.0),
+        # fmod is exact where a - b*trunc(a/b) is not: 1.0/0.1 rounds to 10.
+        ("mod(p,q)", 1.0, 0.1, math.fmod(1.0, 0.1)),
+        ("p % q", -0.5, 2.0, -0.5),
+        ("frac(-2.5) + p", 0.0, 0.0, -0.5),
     ],
 )
 def test_a_derived_value_reads_them_as_the_engine_does(expr, p, q, value):
@@ -158,3 +164,13 @@ def test_the_kink_check_reads_mod_as_fmod():
 
     x, y = sp.symbols("x y")
     assert _values([sp.Function("mod")(x, y)], {x: -3.0, y: 2.0}, sp) == [-1.0]
+
+
+def test_the_switch_analysis_reads_a_non_finite_frac_as_nan_not_a_raise():
+    # x % 1 gave nan here; a truncation through int() would raise instead.
+    import sympy as sp
+    from bngsim._switch_sensitivity import _lambdify_doubles
+
+    x = sp.Symbol("x")
+    f = _lambdify_doubles([x], sp.frac(x))
+    assert all(math.isnan(f(v)) for v in (math.inf, -math.inf, math.nan))

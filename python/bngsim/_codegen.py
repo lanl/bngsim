@@ -3085,6 +3085,8 @@ def _prepare_derived_expr(
     # builds three of its parameters out of ``mratio`` — so this path needs the
     # same binding the rate-law path gets.
     local_dict.update(engine_sympy_bindings(sp))
+    # rint, mod and frac as the engine reads them, before sympy can fold them (#1800).
+    local_dict.update(engine_rounding_bindings())
     # Every other bare name is a model symbol that is not a parameter — a
     # species or observable reached through a threshold — and must stay a
     # free symbol so the check below refuses it. Left unbound, parse_expr
@@ -3169,53 +3171,128 @@ def _guard_zero_base(deriv):
 # The engine's rint, mod and frac, which numpy and sympy each define otherwise
 # (issue #1800). ``rint`` is BNG's floor(x + 0.5), a half rounded up
 # (expr_compat::rint in src/expression.cpp, issue #771), where numpy's rint
-# rounds a half to even; ``mod`` is ExprTk's std::fmod, whose sign follows the
-# first argument, where numpy's mod is floored; ``frac`` is ExprTk's
-# x - trunc(x), where sympy's frac is x - floor(x). The C twin and the JAX RHS
-# already read them so; a derived parameter's value and partials read them
-# here, so a seed takes the value the run starts from.
-_ENGINE_ROUNDING_NUMPY = {
-    "__bngsim_rint__": lambda x: __import__("numpy").floor(x + 0.5),
-    "__bngsim_fmod__": lambda a, b: __import__("numpy").fmod(a, b),
-    "__bngsim_frac__": lambda x: x - __import__("numpy").trunc(x),
-}
+# rounds a half to even; ``mod`` and the ``%`` operator are ExprTk's std::fmod,
+# whose sign follows the first argument, where numpy's mod and sympy's Mod are
+# floored; ``frac`` is ExprTk's x - trunc(x), where sympy's frac is
+# x - floor(x). The C twin and the JAX RHS already read them so; a derived
+# parameter's value and partials read them here, so a seed takes the value the
+# run starts from.
+_ENGINE_ROUNDING_NAMES = ("__bngsim_rint__", "__bngsim_fmod__", "__bngsim_frac__")
 
 
-def _engine_rounding(expr, *, closed_form: bool):
-    """*expr* with each ``rint``, ``mod`` and ``frac`` read as the engine reads it.
+def _engine_rint(x):
+    import numpy as np
 
-    ``closed_form`` writes them out in sympy's own functions, for ``evalf``;
-    otherwise they become calls :data:`_ENGINE_ROUNDING_NUMPY` binds, for
-    ``lambdify``, where numpy computes ``fmod`` exactly as C does."""
+    return np.floor(x + 0.5)
+
+
+def _engine_fmod(a, b):
+    import numpy as np
+
+    return np.fmod(a, b)
+
+
+def _engine_frac(x):
+    import numpy as np
+
+    return x - np.trunc(x)
+
+
+# For lambdify: each class below prints as its name, which this binds.
+_ENGINE_ROUNDING_NUMPY = dict(
+    zip(_ENGINE_ROUNDING_NAMES, (_engine_rint, _engine_fmod, _engine_frac), strict=True)
+)
+
+
+@functools.cache
+def _engine_rounding_classes():
+    """sympy functions for the engine's rint, mod and frac.
+
+    Each folds a numeric argument at once, in IEEE doubles, as the engine does:
+    ``math.fmod`` is exact, as C's is, where ``a - b*trunc(a/b)`` is not when
+    ``a/b`` rounds to a whole number (1.0 mod 0.1 read 0). None has a
+    derivative, so ``diff`` leaves each unevaluated, as sympy left the names
+    they replace: the callers' handling of a step is unchanged."""
+    import math
+
     import sympy as sp
 
-    def trunc(z):
-        return sp.sign(z) * sp.floor(sp.Abs(z))
+    def number(v):
+        return sp.Float(v) if math.isfinite(v) else sp.nan
 
-    def name_of(node):
-        if isinstance(node, sp.frac):
-            return "frac"
-        func = getattr(node, "func", None)
-        name = getattr(func, "__name__", None) if isinstance(node, sp.Function) else None
-        return name if name in ("rint", "mod") else None
+    class Rint(sp.Function):
+        nargs = 1
+
+        @classmethod
+        def eval(cls, x):
+            if x.is_Number:
+                v = float(x)
+                return number(math.floor(v + 0.5)) if math.isfinite(v) else sp.nan
+            return None
+
+    class Fmod(sp.Function):
+        nargs = 2
+
+        @classmethod
+        def eval(cls, a, b):
+            if a.is_Number and b.is_Number:
+                fa, fb = float(a), float(b)
+                if fb == 0 or not math.isfinite(fa) or math.isnan(fb):
+                    return sp.nan
+                return number(math.fmod(fa, fb))
+            return None
+
+    class Frac(sp.Function):
+        nargs = 1
+
+        @classmethod
+        def eval(cls, x):
+            if x.is_Number:
+                v = float(x)
+                return number(v - math.trunc(v)) if math.isfinite(v) else sp.nan
+            return None
+
+    for cls, name in zip((Rint, Fmod, Frac), _ENGINE_ROUNDING_NAMES, strict=True):
+        cls.__name__ = name
+    return Rint, Fmod, Frac
+
+
+def engine_rounding_bindings() -> dict:
+    """``{name: sympy function}`` for a ``parse_expr`` ``local_dict``, bound before
+    the parse so sympy never folds a constant ``frac(-2.5)`` its own way."""
+    rint, fmod, frac = _engine_rounding_classes()
+    return {"rint": rint, "mod": fmod, "frac": frac}
+
+
+def _engine_rounding(expr):
+    """*expr* with each ``rint``, ``mod``, ``%`` and ``frac`` read as the engine reads it.
+
+    For an expression parsed without :func:`engine_rounding_bindings`: ``rint``
+    and ``mod`` as unnamed functions, ``frac`` as sympy's, ``%`` as sympy's
+    floored ``Mod``. An expression with none of them comes back as it is."""
+    import sympy as sp
+
+    rint, fmod, frac = _engine_rounding_classes()
+
+    def target(node):
+        if isinstance(node, (sp.frac, sp.Mod)):
+            return True
+        if not isinstance(node, sp.Function):
+            return False
+        name, n = type(node).__name__, len(node.args)
+        return (name == "rint" and n == 1) or (name == "mod" and n == 2)
+
+    if not any(target(n) for n in sp.preorder_traversal(expr)):
+        return expr
 
     def rewrite(node):
-        name, args = name_of(node), node.args
-        if name == "rint" and len(args) == 1:
-            if closed_form:
-                return sp.floor(args[0] + sp.S.Half)
-            return sp.Function("__bngsim_rint__")(args[0])
-        if name == "mod" and len(args) == 2:
-            if closed_form:
-                return args[0] - args[1] * trunc(args[0] / args[1])
-            return sp.Function("__bngsim_fmod__")(*args)
-        if name == "frac" and len(args) == 1:
-            if closed_form:
-                return args[0] - trunc(args[0])
-            return sp.Function("__bngsim_frac__")(args[0])
-        return node
+        if isinstance(node, sp.frac):
+            return frac(*node.args)
+        if isinstance(node, sp.Mod) or type(node).__name__ == "mod":
+            return fmod(*node.args)
+        return rint(*node.args)
 
-    return expr.replace(lambda node: name_of(node) is not None, rewrite)
+    return expr.replace(target, rewrite)
 
 
 def _partial_value(deriv, subs: dict) -> float:
@@ -3240,7 +3317,7 @@ def _partial_value(deriv, subs: dict) -> float:
     try:
         fn = sp.lambdify(
             syms,
-            _engine_rounding(deriv, closed_form=False),
+            _engine_rounding(deriv),
             modules=[_ENGINE_ROUNDING_NUMPY, "numpy"],
         )
         with np.errstate(all="ignore"):
@@ -3248,7 +3325,7 @@ def _partial_value(deriv, subs: dict) -> float:
             # and is inf in numpy, as in C.
             return float(fn(*[np.float64(subs[s]) for s in syms]))
     except Exception:  # noqa: BLE001 - the sympy route below says why, if it fails
-        return float(_engine_rounding(deriv, closed_form=True).subs(subs).evalf())
+        return float(_engine_rounding(deriv).subs(subs).evalf())
 
 
 def _tie_weighted(prep):
@@ -3638,7 +3715,7 @@ def _derived_expr_value_numeric(
         # `sympify` of a sympy expression is the identity; it is here so the
         # `.subs` below type-checks against `_PreparedDerivedExpr.sym_expr`,
         # which the other two callers only ever hand to `sp.diff`.
-        value = _engine_rounding(sympy.sympify(prep.sym_expr), closed_form=True).subs(subs).evalf()
+        value = _engine_rounding(sympy.sympify(prep.sym_expr)).subs(subs).evalf()
         try:
             return float(value)
         except TypeError:

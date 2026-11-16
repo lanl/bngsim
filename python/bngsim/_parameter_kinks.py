@@ -176,7 +176,7 @@ def _values(exprs, subs, sp) -> list[float]:
     # rint, mod and frac as the engine reads them (issue #1800).
     f = sp.lambdify(
         list(subs),
-        [_engine_rounding(e, closed_form=False) for e in exprs],
+        [_engine_rounding(e) for e in exprs],
         modules=[{"clampval": _clamp, **_ENGINE_ROUNDING_NUMPY}, "math"],
         printer=printer,
     )
