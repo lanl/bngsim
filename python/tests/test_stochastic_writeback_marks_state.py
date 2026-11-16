@@ -10,8 +10,11 @@ a seed an earlier sensitivity run left was still there for
 ``carry_sensitivities=True`` to pick up, though the SSA run had moved the state
 on. The SSA/PSA write-back now sets both marks and drops the seed.
 
-A state taken as fixed data, with dx(0)/dθ = 0, is still one call away, and the
-refusal says so: ``reset()``, then ``set_state()`` the sample. Oracle for that:
+A state taken as fixed data, with dx(0)/dθ = 0, is still a call away, and the
+refusal says so: ``set_state()`` the sample after a ``reset()`` to a baseline no
+run advanced, or on a fresh ``Model`` once ``save_concentrations()`` has made an
+advanced state the baseline, since ``reset()`` then returns to that carried-over
+state (issue #1735). Oracle for that:
 0 -> A (kp), A -> 0 (kd) from a fixed A(0) = a has
 A(t) = a e^(-kd t) + (kp/kd)(1 - e^(-kd t)).
 """
@@ -37,6 +40,9 @@ begin reactions
 end reactions
 """
 KP, KD = 200.0, 0.5
+# Tight solver tolerances, so the closed forms below can be compared at rel 1e-7
+# (rel 1e-8 for the state): three orders above rtol leaves room for the error the
+# integrator accumulates over t = 1, and a wrong seed or rate is off by far more.
 SENS = {"rtol": 1e-10, "atol": 1e-12}
 
 
@@ -79,14 +85,15 @@ def test_an_ic_sensitivity_run_after_a_stochastic_run_is_refused(model, method):
         sim.run(sample_times=[0.0, 1.0], **SENS)
 
 
-def test_a_seed_left_before_a_stochastic_run_is_not_carried_past_it(model):
-    # An ODE sensitivity run leaves its dx/dθ for carry_sensitivities. An SSA run
-    # then moves the state: that seed no longer describes it.
+@pytest.mark.parametrize("method", ["ssa", "psa"])
+def test_a_seed_left_before_a_stochastic_run_is_not_carried_past_it(model, method):
+    # An ODE sensitivity run leaves its dx/dθ for carry_sensitivities. A stochastic
+    # run then moves the state: that seed no longer describes it.
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["kp", "kd"])
     sim.run(t_span=(0, 5), n_points=2, **SENS)
     assert model._core.has_pending_sensitivity_seed
     assert list(model._core.pending_sensitivity_seed_param_names) == ["kp", "kd"]
-    _stochastic(model, "ssa")
+    _stochastic(model, method)
     assert not model._core.has_pending_sensitivity_seed
     assert np.asarray(model._core.pending_sensitivity_seed()).size == 0
     with pytest.raises(
@@ -102,7 +109,8 @@ def test_the_refusal_names_the_fixed_data_route(model):
     with pytest.raises(bngsim.SimulationError) as raised:
         _sens(model)
     message = str(raised.value)
-    assert "reset() and then set_state()" in message
+    assert "set_state() it after a reset() to a baseline no run advanced" in message
+    assert "or on a fresh Model" in message
     assert "an SSA or PSA run leaves none" in message
     assert "the run's last result row" in message
 
@@ -128,6 +136,29 @@ def test_reset_then_set_state_takes_the_sample_as_fixed_data(model, method):
     assert sens[0, 0, :].tolist() == [0.0, 0.0]
     assert sens[-1, 0, 0] == pytest.approx(want_dkp, rel=1e-7)
     assert sens[-1, 0, 1] == pytest.approx(want_dkd, rel=1e-7)
+
+
+def test_after_an_advanced_save_the_fixed_data_route_is_a_fresh_model(model, tmp_path):
+    # A saved baseline a run advanced (an SSA run here) keeps its mark through
+    # reset() (issue #1528), and set_state() never clears it, so on this model
+    # reset() then set_state() is refused again; a fresh Model takes the numbers.
+    _stochastic(model, "ssa")
+    model.save_concentrations()
+    _stochastic(model, "ssa")
+    state = np.asarray(model.get_state(), dtype=float).copy()
+    model.reset()
+    model.set_state(state)
+    assert model._core.ic_state_dirty
+    with pytest.raises(bngsim.SimulationError, match="or on a fresh Model"):
+        _sens(model)
+    path = tmp_path / "m.net"
+    path.write_text(NET)
+    fresh = bngsim.Model.from_net(str(path))
+    fresh.set_state(state)
+    sens = np.asarray(_sens(fresh).sensitivities)
+    e = math.exp(-KD)
+    assert sens[0, 0, :].tolist() == [0.0, 0.0]
+    assert sens[-1, 0, 0] == pytest.approx((1 - e) / KD, rel=1e-7)
 
 
 def test_reset_alone_is_a_fresh_start(model):

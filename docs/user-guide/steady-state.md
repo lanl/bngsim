@@ -1084,14 +1084,16 @@ no pathwise `dx/dθ` to carry, issue #1749), or a `reset()` (as an SBML/RoadRunn
 every-action reset would do) returned to a θ-independent IC baseline and so wiped
 the carry-over. A fresh single sensitivity run is unaffected. To take a carried
 state as fixed data instead, with `∂x(0)/∂θ = 0`, as one might a stochastic
-sample, `reset()` the model and then `set_state()` that state: a state set by
-hand after a `reset()` is not carried over (a `set_state()` alone keeps the mark
-a run left). After an SSA or PSA run, set the run's last result row,
-`result.species[-1]`: in a compartment whose size a rule or event moves, the
-model holds that run's counts over the load-time size (issue #1463), which
-`set_state()` would read as concentrations. The `reset()` also rewinds the clock
-to 0 and drops any event execution still pending, so the run is a fresh start
-from that state at the `t_span` it is given.
+sample, `set_state()` that state after a `reset()` to a baseline no run advanced:
+a state set by hand there is not carried over (a `set_state()` alone keeps the
+mark a run left). Once `save_concentrations()` has made an advanced state the
+baseline (after an SSA run too), `reset()` returns to that carried-over state, so
+set the numbers on a fresh `Model` instead (issue #1735). After an SSA or PSA
+run, set the run's last result row, `result.species[-1]`: in a compartment whose
+size a rule or event moves, the model holds that run's counts over the load-time
+size (issue #1463), which `set_state()` would read as concentrations. The
+`reset()` also rewinds the clock to 0 and drops any event execution still
+pending, so the run is a fresh start from that state at the `t_span` it is given.
 
 The same mark decides two more things after an SSA or PSA run, as after an ODE
 run (issue #1749): `set_param()` of a parameter that names an initial condition
