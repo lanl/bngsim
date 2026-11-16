@@ -17,28 +17,40 @@ file the change adds, asks two things:
 * Did every test in it skip on every leg? A file not collected at all counts:
   nothing in it ran. A file with any test that ran is left alone; partly
   skipped files are out of scope.
-* Does any workflow other than python-tests name it in a pytest command? The
-  lists are read from the workflow files, globs and plain paths alike, with
-  ``--deselect`` and ``--ignore`` arguments left out. A workflow that runs the
-  whole of python/tests (forced-jit.yml and sanitizers.yml, both nightly) does
-  not count as naming it: it runs the file only after the merge.
+* Does another workflow that runs on this pull request run it? A workflow runs
+  on it when its ``on: pull_request`` trigger fires for the files the change
+  touches (its ``paths:`` or ``paths-ignore:`` filter, read in order, ``!``
+  entries included). It runs the file when one of its pytest commands names
+  it, by a glob, a directory or as written, or runs the whole of python/tests,
+  and no ``--deselect``/``--ignore`` argument leaves it out. forced-jit.yml and
+  sanitizers.yml run the whole suite nightly, and on a pull request only when
+  their own files change.
 
-A file that skipped everywhere and that no list names gets a ``::warning::``,
-which says which workflows run hand-picked lists, and which run the whole
-suite nightly. A warning, not a failure: a new file may skip everywhere for a
-reason (a quarantine, an optional dependency no leg installs).
+What a text read cannot settle never counts as running the file: a pytest
+argument that is a shell variable or array or a matrix value, a ``-k``/``-m``
+expression, a trigger filter this does not read (``branches:``, or ``types:``
+without ``synchronize``). The warning names such a workflow as one it could not
+read. Dispatch inputs (``inputs.pytest_args``, and an env var set from one) are
+empty on a pull request, so they are read as nothing.
 
-Stdlib only, like the rest of ci/, plus ``git`` for the added files.
+A file that skipped everywhere and that no running workflow runs gets a
+``::warning::``. A warning, not a failure: a new file may skip everywhere for a
+reason (a quarantine, an optional dependency no leg installs). Nothing here
+fails the job: a missing or unreadable report is itself a warning.
+
+Stdlib only, like the rest of ci/, plus ``git`` for the changed files.
 """
 
 from __future__ import annotations
 
 import argparse
-import fnmatch
 import re
+import shlex
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from collections.abc import Iterable
+from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -57,11 +69,81 @@ SHARD_DIR = re.compile(r"^python-tests-log-(?P<leg>.+)-(?P<shard>\d+)$")
 
 #: pytest options whose argument is a path or node id it does not run.
 _EXCLUDING = frozenset({"--deselect", "--ignore", "--ignore-glob"})
+#: pytest options that narrow a run by an expression this does not evaluate.
+_NARROWING = frozenset({"-k", "-m"})
+#: Other pytest options that take a separate argument, which is not a test path.
+_TAKES_ARG = frozenset(
+    {"-p", "-c", "-o", "-n", "-W", "--rootdir", "--confcutdir", "--basetemp", "--junitxml"}
+    | {"--dist", "--tb", "--durations", "--maxfail", "--max-worker-restart", "--cov"}
+    | {"--cov-report", "--override-ini", "--config-file", "--log-file", "--import-mode"}
+)
+#: Shell words that end a command: what follows is another command.
+_COMMAND_ENDS = frozenset({"|", "||", "&&", ";", "&", "|&"})
 
-_TEST_FILE = re.compile(r"^python/tests/(?:.+/)?test_[^/]*\.py$")
+#: pytest's default ``python_files`` (pyproject.toml sets none; a test pins it).
+_TEST_FILE = re.compile(r"^python/tests/(?:.+/)?(?:test_[^/]*|[^/]*_test)\.py$")
+
+#: A ``${{ ... }}`` expression, swapped for one word before the shell split.
+_EXPR = re.compile(r"\$\{\{\s*(.*?)\s*\}\}")
+#: A dispatch input: empty on a pull request.
+_INPUT = re.compile(r"^(?:github\.event\.)?inputs\.[\w-]+$")
 
 
-# --- the workflows' lists ---------------------------------------------------
+def glob_re(pattern: str) -> re.Pattern[str]:
+    """A path glob as GitHub's filters and bash read it: ``*`` and ``?`` stay
+    within one directory, ``**`` crosses them."""
+    out = []
+    i = 0
+    while i < len(pattern):
+        if pattern.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+        elif pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif pattern[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif pattern[i] == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(pattern[i]))
+            i += 1
+    return re.compile("".join(out) + r"\Z")
+
+
+def matches(path: str, pattern: str) -> bool:
+    return bool(glob_re(pattern).match(path))
+
+
+# --- the workflows ----------------------------------------------------------
+
+
+@dataclass
+class Workflow:
+    """What one workflow other than python-tests runs, as far as its text says."""
+
+    name: str
+    selectors: list[str] = field(default_factory=list)  # globs over file paths
+    node_ids: list[str] = field(default_factory=list)  # files a node id names
+    whole: bool = False  # a command runs the whole of python/tests
+    excluded: list[str] = field(default_factory=list)  # --deselect/--ignore files
+    unreadable: list[str] = field(default_factory=list)  # why its commands are unknown
+    #: Whether it runs on this pull request: True, False, or None (cannot tell).
+    fires: bool | None = None
+    why_not: str = ""  # why it does not (or may not) run on this pull request
+
+    def names(self, path: str) -> bool:
+        return path in self.node_ids or any(matches(path, g) for g in self.selectors)
+
+    def runs(self, path: str) -> bool:
+        """It runs on the pull request, its commands read in full, and they run ``path``."""
+        if self.fires is not True or self.unreadable:
+            return False
+        if any(matches(path, g) for g in self.excluded):
+            return False
+        return self.whole or self.names(path)
 
 
 def _strip_comments(text: str) -> str:
@@ -70,89 +152,260 @@ def _strip_comments(text: str) -> str:
     return "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
 
 
-def pytest_commands(text: str) -> list[list[str]]:
-    """Each pytest command in a workflow, as its tokens, continuation lines joined."""
+def pytest_commands(text: str) -> list[str]:
+    """Each pytest command in a workflow, continuation lines joined."""
     lines = _strip_comments(text).splitlines()
-    out: list[list[str]] = []
+    out: list[str] = []
     for i, line in enumerate(lines):
-        # Only ``python/tests`` tokens are kept, so a line that merely mentions
-        # pytest (a step name, an input's description) contributes nothing.
-        if not re.search(r"-m\s+pytest\b|(?:^|\s)pytest\s", line):
+        # ``python -m pytest``, or ``pytest`` as the line's first word: not a
+        # step name or an input's description that mentions pytest.
+        if not re.search(r"-m\s+pytest\b|^\s*(?:-\s*run:\s*)?pytest\s", line):
             continue
         block = [line]
         while block[-1].rstrip().endswith("\\") and i + len(block) < len(lines):
             block.append(lines[i + len(block)])
-        out.append(" ".join(ln.rstrip().rstrip("\\") for ln in block).split())
+        out.append(" ".join(ln.rstrip().rstrip("\\") for ln in block))
     return out
 
 
-def selectors(tokens: list[str]) -> tuple[list[str], bool]:
-    """``(file selectors, runs the whole suite)`` of one pytest command.
+def dispatch_env(text: str) -> set[str]:
+    """Env vars the workflow sets from a dispatch input: empty on a pull request."""
+    pat = r"^\s*(\w+):\s*\$\{\{\s*(?:github\.event\.)?inputs\.[\w-]+\s*\}\}\s*$"
+    return set(re.findall(pat, text, re.M))
 
-    A node id (``file.py::test``) selects its file. An argument to
-    ``--deselect`` or ``--ignore`` selects nothing. ``python/tests`` itself, or
-    a directory under it, is the whole suite there.
+
+def _selector(path: str) -> str:
+    """A path argument as a glob over file paths: a file or glob as written, a
+    directory as everything under it."""
+    path = path.rstrip("/")
+    if path.endswith(".py") or any(c in path for c in "*?["):
+        return path
+    return f"{path}/**"
+
+
+def read_command(command: str, wf: Workflow, empty: Iterable[str] = ()) -> None:
+    """Add one pytest command's selectors, exclusions and unknowns to ``wf``.
+
+    ``empty`` names the shell variables that are empty on a pull request.
+    ``python/tests`` is the whole suite; a node id selects its file.
     """
-    out: list[str] = []
-    whole = False
-    skip_next = False
-    for tok in tokens:
-        tok = tok.strip("\"'")
-        if skip_next:
-            skip_next = False
+    empty = set(empty)
+
+    def word(m: re.Match[str]) -> str:
+        return " @@input@@ " if _INPUT.match(m[1]) else f"@@expr:{m[1].replace(' ', '')}@@"
+
+    lex = shlex.shlex(_EXPR.sub(word, command), posix=True, punctuation_chars=";&|<>")
+    lex.whitespace_split = True
+    try:
+        tokens = list(lex)
+    except ValueError as e:  # an unclosed quote
+        wf.unreadable.append(f"it does not split as shell words ({e})")
+        return
+    start = next((i for i, t in enumerate(tokens) if t == "pytest" or t.endswith("/pytest")), None)
+    if start is None:
+        return
+    it = iter(tokens[start + 1 :])
+    for tok in it:
+        if tok in _COMMAND_ENDS:
+            break
+        if tok in {">", ">>", ">&", "<"}:
+            next(it, None)
             continue
-        opt, eq, _ = tok.partition("=")
+        if tok == "@@input@@" or tok.lstrip("$").strip("{}") in empty:
+            continue
+        opt, eq, val = tok.partition("=")
         if opt in _EXCLUDING:
-            skip_next = not eq
+            arg = val if eq else next(it, "")
+            if "$" in arg or "@@expr" in arg:
+                wf.unreadable.append(f"`{opt} {arg}` is not read")
+            elif arg.startswith("python/tests") and "::" not in arg:
+                # A node id deselects one test, not the file.
+                wf.excluded.append(_selector(arg))
+            continue
+        if opt in _NARROWING:
+            if not eq:
+                next(it, None)
+            wf.unreadable.append(f"it narrows the run with `{opt}`, which is not evaluated")
+            continue
+        if opt in _TAKES_ARG:
+            if not eq:
+                next(it, None)
+            continue
+        if tok.startswith("-"):
+            continue
+        if "$" in tok or "@@expr" in tok:
+            shown = tok.replace("@@expr:", "${{ ").replace("@@", " }}")
+            wf.unreadable.append(f"it passes `{shown}`, which is not read")
             continue
         if not tok.startswith("python/tests"):
             continue
         path = tok.split("::", 1)[0].rstrip("/")
-        if path.endswith(".py"):
-            out.append(path)
-        elif path == "python/tests" or "*" not in path:
-            whole = True
+        if path == "python/tests":
+            wf.whole = True
+        elif "::" in tok:
+            wf.node_ids.append(path)
         else:
-            out.append(path)
-    return out, whole
+            wf.selectors.append(_selector(path))
 
 
-def workflow_lists(root: Path = WORKFLOWS) -> dict[str, tuple[list[str], bool]]:
-    """Per workflow other than python-tests: its file selectors over every pytest
-    command, and whether one of them runs the whole suite."""
-    lists: dict[str, tuple[list[str], bool]] = {}
-    for wf in sorted(root.glob("*.yml")):
-        if wf.name == SUITE_WORKFLOW:
+# --- does a workflow run on this pull request -------------------------------
+
+
+def _block(lines: list[str], i: int) -> list[str]:
+    """The lines nested under ``lines[i]``."""
+    indent = len(lines[i]) - len(lines[i].lstrip())
+    out = []
+    for nxt in lines[i + 1 :]:
+        if nxt.strip() and len(nxt) - len(nxt.lstrip()) <= indent:
+            break
+        out.append(nxt)
+    return out
+
+
+def _items(lines: list[str], i: int, every: list[str]) -> list[str]:
+    """The list under key ``lines[i]``: block items, a flow list, or an alias
+    to a list anchored anywhere in ``every``."""
+    rest = lines[i].split(":", 1)[1].strip()
+    alias = re.fullmatch(r"\*([\w-]+)", rest)
+    if alias:
+        for j, ln in enumerate(every):
+            if re.match(rf"^\s*[\w-]+:\s*&{re.escape(alias[1])}\s*$", ln):
+                return _items(every, j, every)
+        return []
+    rest = re.sub(r"^&[\w-]+\s*", "", rest)
+    if rest.startswith("["):
+        return [s.strip().strip("\"'") for s in rest.strip("[]").split(",") if s.strip()]
+    out = []
+    for ln in _block(lines, i):
+        m = re.match(r"""^\s*-\s*["']?([^"'#]+?)["']?\s*(?:#.*)?$""", ln)
+        if m:
+            out.append(m[1])
+    return out
+
+
+def pull_request_trigger(text: str) -> dict[str, list[str]] | None:
+    """``None`` when the workflow has no ``pull_request`` trigger, else its
+    filters by key (``paths``, ``paths-ignore``, ``branches``, ``types`` ...),
+    empty when it fires on every pull request."""
+    lines = _strip_comments(text).splitlines()
+    on = next((i for i, ln in enumerate(lines) if re.match(r"^[\"']?on[\"']?:", ln)), None)
+    if on is None:
+        return None
+    inline = lines[on].split(":", 1)[1].strip()
+    if inline:
+        return {} if re.search(r"\bpull_request\b(?!_)", inline) else None
+    block = _block(lines, on)
+    for j, ln in enumerate(block):
+        if not re.match(r"^\s+pull_request:", ln):
             continue
-        sel: list[str] = []
-        whole = False
-        for tokens in pytest_commands(wf.read_text(encoding="utf-8")):
-            s, w = selectors(tokens)
-            sel += s
-            whole = whole or w
-        if sel or whole:
-            lists[wf.name] = (sel, whole)
-    return lists
+        depth = len(ln) - len(ln.lstrip())
+        sub = _block(block, j)
+        filters = {}
+        for k, s in enumerate(sub):
+            key = re.match(r"^\s*([\w-]+):", s)
+            if key and len(s) - len(s.lstrip()) > depth:
+                filters[key[1]] = _items(sub, k, lines)
+        return filters
+    return None
 
 
-def named_by(path: str, lists: dict[str, tuple[list[str], bool]]) -> list[str]:
-    """The workflows whose lists name ``path``, by a glob or as written."""
-    return sorted(
-        name for name, (sel, _) in lists.items() if any(fnmatch.fnmatchcase(path, g) for g in sel)
-    )
+def fires_on(text: str, changed: list[str]) -> tuple[bool | None, str]:
+    """Whether a workflow's ``pull_request`` trigger fires for ``changed``, and
+    if not (or not knowably), why."""
+    trig = pull_request_trigger(text)
+    if trig is None:
+        return False, "it has no pull_request trigger"
+    if "branches" in trig or "branches-ignore" in trig:
+        return None, "its pull_request trigger has a branches filter, which is not read"
+    if "types" in trig and "synchronize" not in trig["types"]:
+        return None, "its pull_request types leave out synchronize"
+    if "paths" in trig:
+        for f in changed:
+            on = False
+            for p in trig["paths"]:  # in order: a later ``!`` entry takes a file back out
+                negated = p.startswith("!")
+                if matches(f, p[1:] if negated else p):
+                    on = not negated
+            if on:
+                return True, ""
+        return False, "its paths filter matches no file the pull request changes"
+    if "paths-ignore" in trig:
+        if any(not any(matches(f, p) for p in trig["paths-ignore"]) for f in changed):
+            return True, ""
+        return False, "its paths-ignore filter covers every file the pull request changes"
+    return True, ""
+
+
+def read_workflows(changed: list[str], root: Path = WORKFLOWS) -> dict[str, Workflow]:
+    """Every workflow but python-tests that has a pytest command over python/tests."""
+    out: dict[str, Workflow] = {}
+    for path in sorted(root.glob("*.yml")):
+        if path.name == SUITE_WORKFLOW:
+            continue
+        text = path.read_text(encoding="utf-8")
+        wf = Workflow(path.name)
+        for command in pytest_commands(text):
+            read_command(command, wf, dispatch_env(text))
+        if not (wf.selectors or wf.node_ids or wf.whole or wf.unreadable):
+            continue
+        wf.fires, wf.why_not = fires_on(text, changed)
+        out[wf.name] = wf
+    return out
 
 
 # --- the legs' reports ------------------------------------------------------
 
 
-def counts_per_leg(reports: Path, root: Path | None = None) -> dict[str, Counts]:
-    """Each python-tests leg's per-file counts, its shards' reports summed."""
-    by_leg: dict[str, list[Path]] = {}
+def read_reports(
+    reports: Path, root: Path | None = None
+) -> tuple[dict[str, Counts], list[tuple[str, str]]]:
+    """Each python-tests leg's per-file counts, its shards' reports summed, and
+    ``(shard, reason)`` for each report that could not be read. A missing
+    directory is no reports, not an error."""
+    legs: dict[str, Counts] = {}
+    unread: list[tuple[str, str]] = []
+    if not reports.is_dir():
+        return legs, unread
     for d in sorted(p for p in reports.iterdir() if p.is_dir()):
         m = SHARD_DIR.match(d.name)
-        if m:
-            by_leg.setdefault(m["leg"], []).extend(sorted(d.rglob("*.xml")))
-    return {leg: count_reports(xmls, root) for leg, xmls in by_leg.items()}
+        if not m:
+            continue
+        counts = legs.setdefault(m["leg"], {})
+        for xml in sorted(d.rglob("*.xml")):
+            try:
+                one = count_reports([xml], root)
+            except (ET.ParseError, OSError) as e:
+                unread.append((f"{m['leg']} {m['shard']}", f"{xml.name}: {e}"))
+                continue
+            for f, c in one.items():
+                entry = counts.setdefault(f, {"collected": 0, "skipped": 0})
+                entry["collected"] += c["collected"]
+                entry["skipped"] += c["skipped"]
+    return legs, unread
+
+
+def expected_shards(text: str) -> set[str]:
+    """``"<leg label> <shard>"`` for every job of python-tests.yml's suite matrix."""
+    body = _strip_comments(text)
+    job = re.search(r"^  python-tests:\n(.*?)(?=^  [\w-]+:\s*$|\Z)", body, re.M | re.S)
+    if not job:
+        return set()
+    shards = re.search(r"^\s+shard:\s*\[([^\]]*)\]", job[1], re.M)
+    labels = re.findall(r"^\s+label:\s*[\"']?([\w.-]+)", job[1], re.M)
+    if not shards:
+        return set()
+    return {f"{lab} {s.strip()}" for lab in labels for s in shards[1].split(",") if s.strip()}
+
+
+def missing_shards(reports: Path, expected: set[str], unread: Iterable[str] = ()) -> list[str]:
+    """The expected shards with no report read: none downloaded, or unreadable."""
+    present = set()
+    if reports.is_dir():
+        for d in reports.iterdir():
+            m = SHARD_DIR.match(d.name)
+            if m and d.is_dir() and any(d.rglob("*.xml")):
+                present.add(f"{m['leg']} {m['shard']}")
+    return sorted((expected - present) | set(unread))
 
 
 def ran_nothing(path: str, legs: dict[str, Counts]) -> bool:
@@ -167,54 +420,86 @@ def ran_nothing(path: str, legs: dict[str, Counts]) -> bool:
 # --- the check --------------------------------------------------------------
 
 
-def added_test_files(base: str, head: str, cwd: Path = REPO_ROOT) -> list[str]:
-    """The python/tests test files ``head`` adds over ``base``. A rename is a
-    deletion and an addition (``--no-renames``), so a renamed file is checked
-    as new: whatever ran it under its old name will not under the new one."""
+def changed_files(base: str, head: str, cwd: Path = REPO_ROOT) -> list[tuple[str, str]]:
+    """``(status, path)`` for each file ``head`` changes over ``base``. A rename
+    is a deletion and an addition (``--no-renames``), so a renamed file is
+    checked as new: whatever ran it under its old name will not under the new
+    one. ``-z``, so a path with a space or a non-ASCII name comes back whole."""
     out = subprocess.run(
-        ["git", "diff", "--no-renames", "--diff-filter=A", "--name-only", base, head],
+        ["git", "diff", "--no-renames", "--name-status", "-z", base, head],
         check=True,
         capture_output=True,
-        text=True,
         cwd=cwd,
-    ).stdout
-    return sorted(f for f in out.split() if _TEST_FILE.match(f))
+    ).stdout.decode("utf-8", "surrogateescape")
+    fields = out.split("\0")
+    return [(fields[i], fields[i + 1]) for i in range(0, len(fields) - 1, 2)]
+
+
+def added_test_files(base: str, head: str, cwd: Path = REPO_ROOT) -> list[str]:
+    """The python/tests test files ``head`` adds over ``base``."""
+    return sorted(f for s, f in changed_files(base, head, cwd) if s == "A" and _TEST_FILE.match(f))
+
+
+def _what_ran(path: str, legs: dict[str, Counts]) -> str:
+    per = {leg: legs[leg].get(path, {}).get("collected", 0) for leg in sorted(legs)}
+    names = ", ".join(per)
+    if len(set(per.values())) == 1:
+        n = next(iter(per.values()))
+        if n == 0:
+            return f"no python-tests leg ({names}) collects it"
+        tests = "its one test skips" if n == 1 else f"all {n} of its tests skip"
+        return f"{tests} on every python-tests leg ({names})"
+    each = "; ".join(
+        f"{leg}: {f'{n} skipped' if n else 'not collected'}" for leg, n in per.items()
+    )
+    return f"nothing in it runs on any python-tests leg ({each})"
+
+
+def _note(w: Workflow, path: str) -> str:
+    """Why workflow ``w`` does not count as running ``path``, or ``""``."""
+    if w.fires is None:
+        return f"Whether {w.name} runs on this pull request is not known: {w.why_not}."
+    if w.fires is False:
+        if w.whole or w.names(path):
+            what = "runs the whole suite" if w.whole else "names it"
+            return f"{w.name} {what}, but not on this pull request: {w.why_not}."
+        return ""
+    if w.unreadable:
+        return (
+            f"{w.name} runs on this pull request, but its pytest list could not be read: "
+            f"{w.unreadable[0]}."
+        )
+    if w.whole or w.names(path):
+        return (
+            f"{w.name} runs on this pull request, but leaves it out with --deselect or --ignore."
+        )
+    return ""
 
 
 def warnings_for(
     added: Iterable[str],
     legs: dict[str, Counts],
-    lists: dict[str, tuple[list[str], bool]],
+    workflows: dict[str, Workflow],
+    missing: Iterable[str] = (),
 ) -> list[tuple[str, str]]:
     """``(file, message)`` for each added file that no check on the change runs."""
-    listed = sorted(name for name, (sel, _) in lists.items() if sel)
-    nightly = sorted(name for name, (_, whole) in lists.items() if whole)
-    leg_names = ", ".join(sorted(legs)) or "none reported"
+    listed = sorted(w.name for w in workflows.values() if w.selectors or w.node_ids)
+    missing = list(missing)
     out = []
     for path in added:
-        if not ran_nothing(path, legs) or named_by(path, lists):
+        if not ran_nothing(path, legs) or any(w.runs(path) for w in workflows.values()):
             continue
-        n = max((c.get(path, {}).get("collected", 0) for c in legs.values()), default=0)
-        if n == 0:
-            what = "it is not collected"
-        elif n == 1:
-            what = "its one test skips"
-        else:
-            what = f"all {n} of its tests skip"
-        after = (
-            f" {' and '.join(nightly)} run the whole suite, but not on this pull request."
-            if nightly
-            else ""
-        )
-        out.append(
-            (
-                path,
-                f"{path} is new, {what} on every python-tests leg ({leg_names}), "
-                "and no workflow's pytest list names it, so no check on this pull "
-                f"request runs it.{after} If it needs what one of these legs builds, "
-                f"add it to that workflow's list: {', '.join(listed)}.",
+        first = f"{path} is new, and {_what_ran(path, legs)}"
+        if missing:
+            first += f" (no report was read from {', '.join(missing)})"
+        parts = [first + ".", "No workflow that runs on this pull request runs it."]
+        parts += [n for n in (_note(w, path) for w in workflows.values()) if n]
+        if listed:
+            parts.append(
+                "If it needs what one of these workflows builds, add it to that workflow's "
+                f"pytest list and paths filter: {', '.join(listed)}."
             )
-        )
+        out.append((path, " ".join(parts)))
     return out
 
 
@@ -225,12 +510,23 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--head", default="HEAD")
     a = ap.parse_args(argv)
 
-    added = added_test_files(a.base, a.head)
-    legs = counts_per_leg(a.reports)
+    changed = changed_files(a.base, a.head)
+    added = sorted(f for s, f in changed if s == "A" and _TEST_FILE.match(f))
+    legs, unread = read_reports(a.reports)
+    for shard, why in unread:
+        print(f"::warning::the python-tests report of {shard} could not be read: {why}")
     if not legs:
         print(f"::warning::no python-tests reports under {a.reports}; nothing checked")
         return 0
-    found = warnings_for(added, legs, workflow_lists())
+    suite = WORKFLOWS / SUITE_WORKFLOW
+    expected = expected_shards(suite.read_text(encoding="utf-8")) if suite.is_file() else set()
+    missing = missing_shards(a.reports, expected, (s for s, _ in unread))
+    if missing:
+        print(
+            f"::warning::no python-tests report was read from {', '.join(missing)}; "
+            "a new file in those shards may be warned about wrongly"
+        )
+    found = warnings_for(added, legs, read_workflows([f for _, f in changed]), missing)
     print(f"{len(added)} test file(s) added; {len(found)} that no check on this change runs")
     for path, msg in found:
         print(f"::warning file={path}::{msg}")
