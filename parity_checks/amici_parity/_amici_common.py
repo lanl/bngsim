@@ -650,23 +650,35 @@ def amici_volume_of(model, rdata, sbml_str: str, x: np.ndarray):
     :func:`amici_value_of`). None when none of these gives it."""
     import libsbml
 
-    states = {n: i for i, n in enumerate(normalize_amici_names(list(rdata.state_ids)))}
+    # Raw AMICI ids, looked up as amici_value_of does: ``cid`` itself, else
+    # AMICI's rename ``amici_<cid>`` only when the SBML has no element of that
+    # id. Stripping every column instead would read a species whose own id is
+    # ``amici_c`` as compartment ``c``'s size.
+    states = {n: i for i, n in enumerate(rdata.state_ids)}
     try:
-        expr_ids = normalize_amici_names(list(model.get_expression_ids()))
+        expr_ids = list(model.get_expression_ids())
         w = np.asarray(rdata.w, dtype=float)
     except Exception:
         expr_ids, w = [], np.empty((0, 0))
     usable = w.ndim == 2 and w.shape == (x.shape[0], len(expr_ids))
     exprs = {n: i for i, n in enumerate(expr_ids)} if usable else {}
     value_of = amici_value_of(model, sbml_str)
-    sbml = libsbml.readSBMLFromString(sbml_str).getModel()
+    doc = libsbml.readSBMLFromString(sbml_str)
+    sbml = doc.getModel()
+    sbml_ids = set() if sbml is None else {e.getId() for e in doc.getListOfAllElements()}
     constant = _rc._effectively_constant(sbml) if sbml is not None else set()
 
+    def column(cols: dict, cid: str):
+        if cid in cols:
+            return cols[cid]
+        renamed = AMICI_ID_PREFIX + cid
+        return cols[renamed] if renamed in cols and renamed not in sbml_ids else None
+
     def volume_of(cid: str):
-        if cid in states:
-            return x[:, states[cid]]
-        if cid in exprs:
-            return w[:, exprs[cid]]
+        if (j := column(states, cid)) is not None:
+            return x[:, j]
+        if (j := column(exprs, cid)) is not None:
+            return w[:, j]
         return constant_size(cid, sbml, value_of, constant)
 
     return volume_of
@@ -715,6 +727,17 @@ def amount_states_as_concentrations(
     for j, size in sizes.items():
         x[:, j] = x[:, j] / size
     return x[:, keep], [names[j] for j in keep], dropped
+
+
+def nothing_compared(bn_names: list[str], am_names: list[str], dropped: list[str]) -> str | None:
+    """A BAD_TEST message when dropping amount species left no species in common,
+    else None. Without it such a row read as a ``disjoint species sets`` DIFF at
+    inf: a verdict against bngsim on a row where nothing was compared."""
+    if not dropped or align_common(bn_names, am_names) is not None:
+        return None
+    return "no species left to compare: amount species with no certain compartment size: " + (
+        ", ".join(dropped)
+    )
 
 
 def amici_literal_of(sbml_str: str):

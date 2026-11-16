@@ -294,3 +294,30 @@ def test_the_sensitivity_job_converts_x_and_sx_from_the_sbml():
     assert kept == ["A", "B"] and dropped == ["C", "D", "E"]
     _, _, kept, dropped = asens.amount_states_as_concentrations(x, sx, names, SBML, ["amici_c"])
     assert "A" in dropped
+
+
+def test_a_species_named_amici_c_is_not_read_as_compartment_c():
+    """AMICI renames a colliding id ``c`` to ``amici_c``; a species whose own
+    SBML id is ``amici_c`` is not that rename, and must not size ``c``."""
+    sbml = SBML.replace(
+        "</listOfSpecies>",
+        '<species id="amici_c" compartment="c" initialConcentration="9" '
+        'hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>'
+        "</listOfSpecies>",
+    )
+    x = np.column_stack([np.full(2, 4.0), np.full(2, 9.0)])
+    model = _FakeModel(fixed={"k": 0.5, "c": 2.0})
+    assert ac.amici_volume_of(model, _FakeRdata(["A", "amici_c"]), sbml, x)("c") == 2.0
+    # Where the SBML has no amici_c, the column is AMICI's rename of c.
+    np.testing.assert_array_equal(
+        ac.amici_volume_of(_FakeModel(fixed={"k": 0.5}), _FakeRdata(["A", "amici_c"]), SBML, x)(
+            "c"
+        ),
+        9.0,
+    )
+
+
+def test_a_row_with_every_species_dropped_is_not_a_diff():
+    assert ac.nothing_compared(["A"], [], ["A"]).startswith("no species left to compare")
+    assert ac.nothing_compared(["A", "B"], ["B"], ["A"]) is None
+    assert ac.nothing_compared(["A"], [], []) is None  # disjoint for another reason

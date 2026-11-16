@@ -940,6 +940,15 @@ def _worker(spec: dict, q) -> None:
             am[1], am[2], list(am[3]), _src, shared_ids
         )
         am = (am[0], am_x, am_sx, am_names)
+        # Over the species compared, as the ODE job's is.
+        res["am_finite"] = bool(np.isfinite(am_sx).all())
+        empty = asens.ac.nothing_compared(list(bn[3]), am_names, not_compared)
+        if empty:
+            res["status"], res["exception"] = "bad_test", empty[:400]
+            res["exception_class"] = "amount-species:none-sizable"
+            res["not_compared"] = list(not_compared)
+            q.put(res)
+            return
         res.update(
             _compare(
                 bn,

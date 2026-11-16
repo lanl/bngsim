@@ -377,6 +377,13 @@ def _worker(spec: dict, q) -> None:
         return
 
     # --- both ran: compare (shared _core.differ protocol) ---
+    empty = ac.nothing_compared(list(bn[2]), list(am[2]), not_compared)
+    if empty:
+        res["status"], res["exception"] = "bad_test", empty[:400]
+        res["exception_class"] = "amount-species:none-sizable"
+        res["not_compared"] = list(not_compared)
+        q.put(res)
+        return
     try:
         n_instants = (am_timing or {}).get("event_instants", 0)
         status, value, comment, metric, m_tol = _compare_ode(
