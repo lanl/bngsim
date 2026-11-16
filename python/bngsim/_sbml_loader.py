@@ -21,7 +21,17 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import IO
 
-import libsbml
+try:
+    import libsbml
+except ImportError as _exc:
+    # python-libsbml is a base dependency, so this is a package that is present
+    # and whose compiled module did not load: on a slim container image, its
+    # Linux wheel's system expat library is missing (issue #1760). Say so, and
+    # what fixes it, instead of the bare "libexpat.so.1: cannot open shared
+    # object file" from inside libsbml.
+    from bngsim._libsbml_import import libsbml_import_failure
+
+    raise libsbml_import_failure(_exc) from _exc
 
 from bngsim import _sbml_unsupported
 from bngsim._switch_sensitivity import _ATOMIC_TOKEN, _condition_key, _fully_parenthesised
@@ -3494,11 +3504,20 @@ def _import_antimony():
     """
     try:
         import antimony as ant
-    except ImportError:
+    except ImportError as exc:
+        if isinstance(exc, ModuleNotFoundError) and exc.name == "antimony":
+            raise ImportError(
+                "The 'antimony' package is required to load Antimony models. "
+                "Install with: pip install 'bngsim[antimony]'"
+            ) from None
+        # The package is there and did not load (a shared library it needs is
+        # missing, say). Telling the caller to install it would send them to
+        # something they have; relay the cause instead (issue #1760).
         raise ImportError(
-            "The 'antimony' package is required to load Antimony models. "
-            "Install with: pip install 'bngsim[antimony]'"
-        ) from None
+            f"antimony is installed, but its compiled module could not be loaded: {exc}. "
+            "A shared library it needs is missing from this system, or the module was "
+            "built for another Python; `python -c 'import antimony'` shows the same failure."
+        ) from exc
     return ant
 
 
