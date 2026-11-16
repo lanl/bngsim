@@ -1117,6 +1117,60 @@ static void require_finite_span(const char *where, double t_from, double t_to) {
     }
 }
 
+// A total propensity that is not finite (issues #1818, #1788). NFsim keeps its
+// total as a running sum, a_tot - old + new, so one non-finite propensity makes
+// it NaN for the rest of the run; `a_tot > 1e-9` is then false, stepTo() takes
+// the system to have nothing left to fire, and every later row repeats the
+// state it stopped in, with no error. The NaN may be the model's own (a rate
+// law of sqrt(-1), #1788, which ssa and ode refuse), or NFsim's: it reads a
+// rate law while a firing has its molecules out of the observables, where
+// 1+9*Xp/Xtot with one X is 0/0 although every state the model reaches is
+// finite (#1818, RuleWorld/nfsim#115). In the second case each propensity is
+// finite again once the firing is done and only the total stays NaN, which is
+// why the reactions are listed and may be none.
+//
+// System::get_A_tot() is protected in NFsim, and the vendored tree is changed
+// only through its carry queue (scripts/NFSIM_VENDORING.md). A using-declaration
+// in a derived class names it publicly, and a pointer to member formed through
+// that name is a pointer to System's own member: no object of the derived class
+// exists or is needed. A public accessor upstream would replace this.
+namespace {
+struct NfsimTotalPropensity : ::NFcore::System {
+    using ::NFcore::System::get_A_tot;
+};
+} // namespace
+
+static void require_finite_propensity(::NFcore::System *system, const char *where) {
+    const double a_tot = (system->*(&NfsimTotalPropensity::get_A_tot))();
+    if (std::isfinite(a_tot))
+        return;
+    std::ostringstream os;
+    os << where << ": NFsim's total propensity is " << a_tot << " by t = " << std::setprecision(17)
+       << system->getCurrentTime()
+       << ", so no further reaction can fire and the rest of the run would repeat the state it "
+          "stopped in. ";
+    std::string named;
+    int n_named = 0;
+    for (::NFcore::ReactionClass *rxn : system->getAllReactions()) {
+        if (rxn == nullptr || std::isfinite(rxn->get_a()))
+            continue;
+        if (++n_named <= 5)
+            named += (named.empty() ? "'" : ", '") + rxn->getName() + "'";
+    }
+    if (n_named > 0) {
+        os << "Non-finite propensity in " << n_named << " reaction(s): " << named
+           << (n_named > 5 ? ", ..." : "")
+           << ". A rate law evaluates to a non-finite value in this state.";
+    } else {
+        os << "Every reaction's propensity is finite now, so a rate law was non-finite partway "
+              "through a reaction firing, where NFsim reads it with the firing molecules out of "
+              "the observables (RuleWorld/nfsim#115): a rate law that divides by an observable "
+              "one molecule keeps nonzero does this. method=\"rulemonkey\" and network \"ssa\" "
+              "run such a model.";
+    }
+    throw std::runtime_error(os.str());
+}
+
 // NFsim seeds both its generators, the System's NfsimRNG and the process-wide
 // MTRand, as reference MT19937's init_genrand does: from the seed's low 32
 // bits. A seed past 2**32 - 1 ran the trajectory of its low word, bit for bit,
@@ -1229,6 +1283,7 @@ Result NfsimSimulator::run(const TimeSpec &times, uint64_t seed, double timeout_
             if (budget.active())
                 budget.check();
             system->stepTo(clock0 + (t_out[i] - t_out[0]));
+            require_finite_propensity(system, "NfsimSimulator::run");
             for (int j = 0; j < n_obs; ++j) {
                 obs_buf[j] = static_cast<double>(system->getObsForOutput(j)->getCount());
             }
@@ -1268,6 +1323,7 @@ void NfsimSimulator::step_to(double time) {
     require_finite_span("NfsimSimulator::step_to", impl_->session_logical_time, time);
     StreamSuppressor suppress;
     impl_->session_system->stepTo(time);
+    require_finite_propensity(impl_->session_system, "NfsimSimulator::step_to");
     impl_->session_logical_time = time;
 }
 
@@ -1365,6 +1421,7 @@ Result NfsimSimulator::simulate(double t_start, double t_end, int n_points, doub
             if (budget.active())
                 budget.check();
             system->stepTo(abs_targets[i]);
+            require_finite_propensity(system, "NfsimSimulator::simulate");
 
             for (int j = 0; j < n_obs; ++j) {
                 obs_buf[j] = static_cast<double>(system->getObsForOutput(j)->getCount());

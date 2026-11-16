@@ -1,0 +1,26 @@
+begin model
+begin parameters
+  k1 1
+  k  -1
+end parameters
+begin molecule types
+  A()
+  B()
+end molecule types
+begin seed species
+  A() 100
+  B() 10
+end seed species
+begin observables
+  Molecules A A()
+  Molecules B B()
+end observables
+begin functions
+  g() sqrt(k)
+end functions
+begin reaction rules
+  A() -> 0 k1
+  B() -> 0 g()
+end reaction rules
+end model
+writeXML()
