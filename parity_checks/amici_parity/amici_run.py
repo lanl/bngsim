@@ -386,6 +386,8 @@ def _worker(spec: dict, q) -> None:
             comment += "; not compared (amount species, compartment size unknown): " + ", ".join(
                 not_compared
             )
+            # Structured too: a PASS over the rest says nothing about these.
+            res["not_compared"] = list(not_compared)
         res["status"], res["value"], res["comment"] = status, value, comment
         res["metric"], res["tol"] = metric, m_tol
     except Exception as exc:
