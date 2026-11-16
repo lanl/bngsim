@@ -171,14 +171,8 @@ def _values(exprs, subs, sp) -> list[float]:
     printer = _double_printer()(
         {"fully_qualified_modules": False, "inline": True, "allow_unknown_functions": True}
     )
-    from bngsim._codegen import _ENGINE_ROUNDING_NUMPY, _engine_rounding
-
-    # rint, mod and frac as the engine reads them (issue #1800).
     f = sp.lambdify(
-        list(subs),
-        [_engine_rounding(e) for e in exprs],
-        modules=[{"clampval": _clamp, **_ENGINE_ROUNDING_NUMPY}, "math"],
-        printer=printer,
+        list(subs), list(exprs), modules=[{"clampval": _clamp}, "math"], printer=printer
     )
     return [float(v) for v in f(*subs.values())]
 

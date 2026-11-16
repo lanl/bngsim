@@ -3305,8 +3305,19 @@ def _engine_rounding_classes():
     Frac._ccode = lambda self, printer: (
         f"(({printer._print(self.args[0])}) - trunc({printer._print(self.args[0])}))"
     )
+
+    def _eval_evalf(self, prec):
+        # An argument that is a number but no sympy Number (_pi*2, sqrt(2)):
+        # evalf gives its digits, and the fold above takes it from there. Left
+        # to sympy, frac(_pi) evaluated its own way and rint and mod not at all.
+        args = [a if a.is_Number else a._eval_evalf(prec) for a in self.args]
+        if any(a is None or not a.is_Number for a in args):
+            return None
+        return self.func(*args)
+
     for cls, name in zip((Rint, Fmod, Frac), _ENGINE_ROUNDING_NAMES, strict=True):
         cls.__name__ = name
+        cls._eval_evalf = _eval_evalf
     return Rint, Fmod, Frac
 
 
@@ -3315,40 +3326,6 @@ def engine_rounding_bindings() -> dict:
     the parse so sympy never folds a constant ``frac(-2.5)`` its own way."""
     rint, fmod, frac = _engine_rounding_classes()
     return {"rint": rint, "mod": fmod, "frac": frac, fmod.__name__: fmod}
-
-
-def _engine_rounding(expr):
-    """*expr* with each ``rint``, ``mod``, ``%`` and ``frac`` read as the engine reads it.
-
-    The derived-parameter parse binds them already (:func:`engine_rounding_bindings`,
-    and ``%`` spelled as ``mod`` before it); this is for an expression parsed
-    elsewhere, the kink check's. A constant one that parse folded is past
-    reaching here. For an expression parsed without the bindings: ``rint``
-    and ``mod`` as unnamed functions, ``frac`` as sympy's, ``%`` as sympy's
-    floored ``Mod``. An expression with none of them comes back as it is."""
-    import sympy as sp
-
-    rint, fmod, frac = _engine_rounding_classes()
-
-    def target(node):
-        if isinstance(node, sp.frac):
-            return True
-        if not isinstance(node, sp.Function):
-            return False
-        name, n = type(node).__name__, len(node.args)
-        return (name == "rint" and n == 1) or (name == "mod" and n == 2)
-
-    if not any(target(n) for n in sp.preorder_traversal(expr)):
-        return expr
-
-    def rewrite(node):
-        if isinstance(node, sp.frac):
-            return frac(*node.args)
-        if type(node).__name__ == "mod":
-            return fmod(*node.args)
-        return rint(*node.args)
-
-    return expr.replace(target, rewrite)
 
 
 def _partial_value(deriv, subs: dict) -> float:

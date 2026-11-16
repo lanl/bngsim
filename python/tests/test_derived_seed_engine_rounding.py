@@ -115,67 +115,6 @@ def test_a_derived_value_reads_them_as_the_engine_does(expr, p, q, value):
     assert got == value
 
 
-# The other two numeric routes. The switch analysis's double-exact lambdify
-# wrote sympy's frac as x % 1 (0.5 for -0.5); it now writes x - trunc(x). The
-# kink check reads all three as the engine does.
-@pytest.mark.parametrize(
-    "make,args,value",
-    [
-        (lambda sp, x, y: sp.frac(x), (-0.5, 0.0), -0.5),
-        (lambda sp, x, y: sp.frac(x), (-1.25, 0.0), -0.25),
-        (lambda sp, x, y: sp.frac(x), (2.75, 0.0), 0.75),
-        (lambda sp, x, y: x / 24 + 1, (1.0, 0.0), 1.0 / 24 + 1),  # unchanged
-    ],
-)
-def test_the_switch_analysis_reads_them_as_the_engine_does(make, args, value):
-    import sympy as sp
-    from bngsim._parameter_kinks import _values
-    from bngsim._switch_sensitivity import _lambdify_doubles
-
-    x, y = sp.symbols("x y")
-    assert _lambdify_doubles([x, y], make(sp, x, y))(*args) == value
-    assert _values([make(sp, x, y)], dict(zip((x, y), args, strict=True)), sp) == [value]
-
-
-def test_the_kink_check_reads_rint_as_the_engine_does():
-    import sympy as sp
-    from bngsim._parameter_kinks import _values
-
-    x = sp.Symbol("x")
-    assert _values([sp.Function("rint")(x)], {x: 2.5}, sp) == [3.0]
-    assert _values([sp.Function("rint")(x)], {x: -1.5}, sp) == [-1.0]
-
-
-def test_the_switch_analysis_still_refuses_what_it_cannot_read():
-    # rint, mod and round stay calls this route cannot print, as on main: it
-    # reads only what it can read exactly as the engine does.
-    import sympy as sp
-    from bngsim._switch_sensitivity import _lambdify_doubles
-
-    x, y = sp.symbols("x y")
-    for expr in (sp.Function("rint")(x), sp.Function("mod")(x, y), sp.Function("round")(x)):
-        with pytest.raises(Exception, match="(?i)unsupported|not.*print"):
-            _lambdify_doubles([x, y], expr)
-
-
-def test_the_kink_check_reads_mod_as_fmod():
-    import sympy as sp
-    from bngsim._parameter_kinks import _values
-
-    x, y = sp.symbols("x y")
-    assert _values([sp.Function("mod")(x, y)], {x: -3.0, y: 2.0}, sp) == [-1.0]
-
-
-def test_the_switch_analysis_reads_a_non_finite_frac_as_nan_not_a_raise():
-    # x % 1 gave nan here; a truncation through int() would raise instead.
-    import sympy as sp
-    from bngsim._switch_sensitivity import _lambdify_doubles
-
-    x = sp.Symbol("x")
-    f = _lambdify_doubles([x], sp.frac(x))
-    assert all(math.isnan(f(v)) for v in (math.inf, -math.inf, math.nan))
-
-
 # From the review of 9cd18bd3.
 
 
@@ -216,20 +155,10 @@ def test_rint_of_an_infinity_is_that_infinity():
     assert _derived_expr_value_numeric("rint(p)", {"p"}, set(), {"p": 0}, [-math.inf]) == -math.inf
 
 
-def test_the_switch_printer_prints_a_nested_frac_once_per_level():
-    import sympy as sp
-    from bngsim._switch_sensitivity import _double_printer
-
-    x = sp.Symbol("x")
-    text = _double_printer()().doprint(sp.frac(sp.frac(sp.frac(x))))
-    assert text.count("x") == 1  # was 27: each level printed its argument three times
-
-
-def test_the_kink_check_keeps_mains_reading_of_a_percent_the_rate_law_parse_simplified():
-    # The rate-law parse reads % as sympy's Mod and simplifies (p + 2) % 2 to
-    # Mod(p, 2) before the kink check sees it. Rewritten to fmod after that, it
-    # read fmod(-0.5, 2) = -0.5 where the engine has fmod(1.5, 2) = 1.5, and main
-    # 1.5: a regression. The kink check leaves sympy's Mod as main does (#1815).
+def test_the_kink_check_reads_a_percent_as_main_does():
+    # The kink check is not this change's: it reads the rate-law parse's
+    # expressions (#1815), where (p + 2) % 2 is sympy's Mod(p, 2), 1.5 at -0.5.
+    # A rewrite of that to fmod after the parse read -0.5 there.
     import sympy as sp
     from bngsim._jacobian import _exprtk_to_sympy
     from bngsim._parameter_kinks import _values
@@ -280,3 +209,22 @@ def test_the_compiled_chain_rule_names_no_private_function():
     for expr in ("k*rint(p)", "k*(p % 2)", "k*frac(p)"):
         _, why = _codegen._direct_derived_partials(expr, {"p", "k"}, set(), {"p": 0, "k": 1}, None)
         assert why and "__bngsim" not in why, why
+
+
+# An argument that is a number but no sympy Number: it keeps an exact constant.
+# Main's sympy frac evaluated these through evalf; the engine's must too, or a
+# threshold has partials and no value, and its crossing is dropped.
+@pytest.mark.parametrize(
+    "expr,p,value",
+    [
+        ("frac(_pi*p)", 1.0, math.pi - 3),
+        ("frac(p*sqrt(2))", 1.0, math.sqrt(2) - 1),
+        ("frac(_pi) + p", 0.0, math.pi - 3),
+        ("frac(-_pi*p)", 1.0, -(math.pi - 3)),  # x - trunc(x): main read 0.858
+        ("mod(p, 2*_pi)", 7.0, math.fmod(7.0, 2 * math.pi)),  # the usual phase wrap
+        ("rint(_e) + p", 0.0, 3.0),
+    ],
+)
+def test_an_argument_with_an_exact_constant_evaluates(expr, p, value):
+    got = _derived_expr_value_numeric(expr, {"p"}, set(), {"p": 0}, [p])
+    assert got == pytest.approx(value, abs=1e-12)
