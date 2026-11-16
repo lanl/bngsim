@@ -634,6 +634,55 @@ and returns 0 on a counter.
 See the [PyBNF guide](pybnf.md#ask-each-model-whether-its-gradient-is-analytic)
 for using this to triage a fit.
 
+### How close a column comes at a narrow pulse
+
+A narrow pulse on a counter species or on a state, a triangle
+`kx*(1/w)*max(0, 1 - abs(Tobs - c)/(w/2))` or a rectangle written with `if()`,
+has edges and corners that the solver roots as state switches. Each one moves
+the columns: an edge by its saltation jump, carried with the state past the
+surface (issue #1454); a corner by integrating the columns again over the step
+that went past it, because the solver's own step smears the column's change of
+slope across that step (issues #1285, #1456); and, where the rate law reads
+`time()`, by the clock's share of the restart, which keeps the time while the
+state moves on (issue #1455). Where the clock carries the pulse's argument
+across a threshold while the state's own term carries it back, as in
+`max(0, 1 - abs(3*time() - Tobs - c)/(w/2))` with `Tobs` rising at 2 per unit
+time, the restart moves the state onto the far side of the threshold to take up
+the clock's share of the crossing, and the columns read the restart that way
+(issue #1776). Three things are left:
+
+- **A corner whose root falls at the very end of its step, or a step too long
+  or stiff to integrate again** (2 and 4 substeps disagree): the column there is
+  the solver's, as it was before. It is off on some output grids and not
+  others, because the grid decides the steps. Worst relative error of
+  dY/dk_clock over 38 grids (issue #1777):
+
+  | pulse | `rtol` | worst | median |
+  |---|---|---|---|
+  | triangle, `w = 0.1` | 1e-8 | 1.5e-5 | not measured |
+  | triangle, `w = 0.005` | 1e-9 | 5.6e-5 | 5.1e-5 |
+  | triangle in a relaxing species, `+ 0.3*time()` in the condition | 1e-9 | 1.4e-4 | 5e-5 |
+
+- **A crossing the clock carries far faster than its species do.** The move
+  above takes at most 16 times what the restart already moves each species,
+  which in `3*time() - b*Tobs` covers `b` down to about 0.094. Below that the
+  restart is the one it was before, and some of these runs still stall, or
+  return columns that are wrong with no error: a step at `b = 0.05` returns
+  its clock-rate column 100% off at rtol 1e-9, and a sawtooth at `b = 0.05`
+  is off by a factor of 5e4 at rtol 1e-6. Issue #1779 lists the cases. Check
+  such a model against a finite difference of runs without sensitivities.
+  Those are right wherever they finish in the cases measured, but a sawtooth
+  of this kind at rtol 1e-11 can fail without sensitivities too.
+- **A rate law that reads `time()` far from 0.** The clock is known to an ulp of
+  itself, 3.6e-15 at `t = 25`, and a column moving at 5e7 across a narrow pulse
+  turns that into a few parts in 1e6 of itself.
+
+These are relative errors of a column at the end of a run, and past a narrow
+pulse that column can be 1e4 times smaller than at the pulse's peak, so a small
+error at a corner shows up large. To check a run, compare it with one on a
+different output grid or at a tighter `rtol`: a column that moves by more than
+the tolerance between them is one of these.
+
 ## Parallel sensitivity computation
 
 For models with many parameters (Np), computing all sensitivities serially
