@@ -217,9 +217,9 @@ def test_one_species_overflow_does_not_get_another_refused():
 # has no value from t* = 3 pi/4 on. Near -1e154 X*X overflows; the retry read X
 # at 0 there, where the law is -1, and the run returned X(3) = -3.5e+286 with
 # no error. The same run was refused with X declared negative, and where it
-# leaves through plus infinity. An overflow that is finite one atol below 0 is
-# no edge at 0, so the slot is left where it is and CVODE cuts the step: the run
-# ends at t*, with the non-finite reading named.
+# leaves through plus infinity. An overflow in the slot's own law that is finite
+# one atol below 0 is no edge at 0, so the slot is left where it is and CVODE
+# cuts the step: the run ends at t*.
 #
 # The models are .net text, so the file needs no Antimony for these.
 
@@ -275,6 +275,8 @@ def test_a_species_run_to_minus_infinity_is_refused_at_its_blowup(tmp_path, kw):
     with pytest.raises(bngsim.SimulationError) as info:
         sim.run((0.0, 3.0), 4)
     assert abs(_refused_at(info) - T_STAR) < 1e-4
+    # The failure names the law and the way it left.
+    assert "f() = -(k+Xtot*Xtot) -> -inf" in str(info.value), str(info.value)
 
 
 def test_it_is_refused_where_the_same_law_declared_negative_is(tmp_path):
@@ -381,3 +383,33 @@ def test_an_overflow_with_an_edge_at_0_is_clamped_as_before(tmp_path, law, start
     species = np.asarray(sim.run((0.0, 5.0), 6, rtol=1e-6, atol=1e-12).species, dtype=float)
     assert np.all(species[:, 0] == start)
     assert np.all(species[:, 1] == 0.0)
+
+
+@pytest.mark.parametrize(
+    "kw",
+    [{}, {"jacobian": "analytical"}, {"jacobian": "fd"}, {"codegen": False}],
+    ids=["default", "analytical", "fd", "interpreted"],
+)
+def test_another_species_overflow_at_an_undershoot_is_clamped_as_before(tmp_path, kw):
+    # W at -8e-5 is 8e7 atols below 0 at atol 1e-12, but inside the tolerance of
+    # a species emptied from 1 at rtol 1e-5 (the extinction case above).
+    # exp(-W/1e-7), which feeds Z, is exp(800) = inf there and finite one atol
+    # below 0. W's own law (nothing moves it) is finite, so this is no solution
+    # carried out through minus infinity: W is read at 0, where the law is 1, and
+    # the run returns Z = t, as on main. Kept at -8e-5 it was refused at its
+    # first step.
+    net = tmp_path / "undershoot.net"
+    net.write_text(
+        "begin parameters\n    1 W0 1\nend parameters\n"
+        "begin functions\n    1 source() exp(-Wtot/1e-7)\nend functions\n"
+        "begin species\n    1 W() W0\n    2 Z() 0\nend species\n"
+        "begin reactions\n    1 0 2 source\nend reactions\n"
+        "begin groups\n    1 Wtot 1\nend groups\n"
+    )
+    model = bngsim.Model.from_net(str(net))
+    model.set_concentration("W()", -8e-5)
+    sim = bngsim.Simulator(model, "ode", **kw)
+    result = sim.run((0.0, 1.0), 3, rtol=1e-6, atol=1e-12)
+    species = np.asarray(result.species, dtype=float)
+    assert np.all(species[:, 0] == -8e-5)
+    assert np.abs(species[:, 1] - np.asarray(result.time)).max() < 1e-6

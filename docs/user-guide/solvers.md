@@ -790,12 +790,15 @@ interpreted evaluator — so a model's own instrumentation
 message, even for a compiled run that never touched the interpreted right-hand
 side.
 
-A solution that leaves through infinity in finite time ends this way too,
-whichever way it leaves. `X' = -(1 + X^2)` from `X = 1` is `tan(pi/4 - t)`,
-which crosses 0 and has no value from `t = 3*pi/4` on: the run fails there,
-naming the law as `-> -inf`, as a run that leaves through plus infinity does
+A species whose own law carries it out through minus infinity in finite time
+ends this way too, as one that leaves through plus infinity does.
+`X' = -(1 + X^2)` from `X = 1` is `tan(pi/4 - t)`, which crosses 0 and has no
+value from `t = 3*pi/4` on: the run fails there, naming the law as `-> -inf`
 (issue #1679). Before, a species declared at 0 or above was read at 0 once its
-own law overflowed, and the run went on to return `X(3) = -3.5e+286`.
+own law overflowed, and the run went on to return `X(3) = -3.5e+286`. Not every
+such failure names a law: for `X' = -(1 + exp(-X))` it can name only the state.
+And an overflow in another species' law, at a species far below 0, still reads
+that species at 0, as an undershoot inside the run's tolerance needs.
 
 The fix is in the model: constrain the species, or write the law so it is
 defined where the solver will look. `ln(abs(S))` — identical to `ln(S)` for
