@@ -117,7 +117,8 @@ def _write(tmp_path, kr: str, actions: list[str]):
         xml = write_sedml_protocol(
             protocol, model_source="model.xml", sbml=sbml, model=bngsim.Model.from_net(str(net))
         )
-    lossy = [w for w in seen if "lossy" in str(w.message).lower()]
+    # Every warning the writer gives says what the document does not hold.
+    lossy = [w for w in seen if issubclass(w.category, ConversionWarning)]
     return net, protocol, sbml, xml, lossy
 
 
@@ -158,9 +159,19 @@ def test_the_issues_protocols_read_back_as_written(tmp_path, case):
     assert sig == [(e.kind, e.t_span[1]) for e in protocol.experiments]
 
 
+def test_a_protocol_the_writer_cannot_hold_is_seen_as_lossy(tmp_path):
+    """The guard the other tests lean on: a scan that resets at each point,
+    after a run, is one the writer warns it cannot hold, and ``_write`` says
+    so. It filtered on the word "lossy", which no writer warning has."""
+    actions = [run(), SCAN.replace("reset_conc=>0", "reset_conc=>1"), run()]
+    *_, lossy = _write(tmp_path, "0.5", actions)
+    assert lossy
+
+
 def test_the_sequence_saves_where_a_later_chain_continues(tmp_path):
     kr, actions = CASES["a chain after an unrelated run"]
-    net, _, sbml, xml, _ = _write(tmp_path, kr, actions)
+    net, _, sbml, xml, lossy = _write(tmp_path, kr, actions)
+    assert not lossy
     bare = re.sub(r"<annotation>.*?</annotation>", "", xml, flags=re.S)
     steps = read_sedml_protocol(bare, sbml=sbml).steps
     kinds = [getattr(s, "kind", None) for s in steps]
