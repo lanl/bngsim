@@ -51,7 +51,7 @@ import math
 import re
 import warnings
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, NamedTuple, overload
 
@@ -186,6 +186,9 @@ _COSMETIC_SETOPTIONS = frozenset({"specieslabel"})
 # ─── IR ─────────────────────────────────────────────────────────────────────
 
 
+_PYTHON_SCALARS = frozenset({str, int, float, bool, type(None)})
+
+
 def _plain(value: Any) -> Any:
     """*value* with each numpy scalar and array as the Python number, bool or
     list it holds, through mappings, lists and tuples (issue #1750).
@@ -197,31 +200,50 @@ def _plain(value: Any) -> Any:
     numpy bool as "True" or "False"; the SED-ML left out a uint64 seed it read
     as a float; and a scan's float32 bounds made float32 points. A step holds
     the Python values instead (:meth:`StateChange.__post_init__`,
-    :meth:`Experiment.__post_init__`). ``item()`` is exact: an ``int64`` is the
-    int it holds, a ``float32`` the double it widens to."""
+    :meth:`Experiment.__post_init__`), and so does the protocol, whose fields
+    go to the same ``json.dumps`` (:meth:`ProtocolSpec.__post_init__`).
+    ``item()`` is exact: an ``int64`` is the int it holds, a ``float32`` the
+    double it widens to. Only a ``longdouble`` wider than a double is rounded,
+    to the double the engine would run."""
+    if type(value) in _PYTHON_SCALARS:  # most of what a step holds; no subclass
+        return value
     import numpy as np
 
     if isinstance(value, np.generic):
-        return value.item()
+        # A longdouble's item() is the longdouble: the double nearest it.
+        item = value.item()
+        return float(item) if isinstance(item, np.floating) else item
     if isinstance(value, np.ndarray):
-        return value.tolist()
+        # Through the list too: an object array's elements, and a longdouble
+        # array's, are what they were.
+        return _plain(value.tolist())
+    # A container with no numpy value in it is returned as it is, not a copy:
+    # the step holds the caller's own ``extra``, of the caller's type, as it
+    # did, and a step with Python values costs one pass and no allocation.
     if isinstance(value, Mapping):
-        return {k: _plain(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_plain(v) for v in value]
-    if isinstance(value, tuple):
-        return tuple(_plain(v) for v in value)
+        pairs = [(_plain(k), _plain(v)) for k, v in value.items()]
+        if all(p[0] is k and p[1] is v for p, (k, v) in zip(pairs, value.items(), strict=True)):
+            return value
+        return dict(pairs)
+    if isinstance(value, (list, tuple)):
+        items = [_plain(v) for v in value]
+        if all(p is v for p, v in zip(items, value, strict=True)):
+            return value
+        return items if isinstance(value, list) else tuple(items)
     return value
 
 
 def _hold_plain(step: Any) -> None:
     """Replace each field of a frozen *step* that holds a numpy value with the
-    Python value it holds (:func:`_plain`)."""
-    import dataclasses
-
-    for f in dataclasses.fields(step):
+    Python value it holds (:func:`_plain`). An array given as a field is held
+    as a tuple, which is what every sequence field of a step is: as a list, the
+    step did not equal the one given the tuple, nor the one its JSON reads back
+    as."""
+    for f in fields(step):
         value = getattr(step, f.name)
         plain = _plain(value)
+        if isinstance(plain, list) and not isinstance(value, list):
+            plain = tuple(plain)
         if plain is not value:
             object.__setattr__(step, f.name, plain)
 
@@ -448,6 +470,9 @@ class ProtocolSpec:
     generation_step: int | None = None
     lossy_before_generation: int = 0
     dropped_before_generation: int = 0
+
+    def __post_init__(self) -> None:
+        _hold_plain(self)
 
     @property
     def experiments(self) -> list[Experiment]:
@@ -1714,8 +1739,16 @@ def _scalar(tok: str) -> Any:
         return tok[1:-1]
     if re.fullmatch(r"[+-]?\d+", tok):
         # The integer it spells: through a float, a seed above 2**53 changed
-        # (issue #1750). Perl holds a 64-bit integer exactly too.
-        return int(tok)
+        # (issue #1750). Perl holds a 64-bit integer exactly too. One past a
+        # double's range stays the inf it was: as an int it raised at the next
+        # float(). And int() refuses more than 4300 digits, zeros or not.
+        f = float(tok)
+        if not math.isfinite(f):
+            return f
+        try:
+            return int(tok)
+        except ValueError:
+            return int(f)
     try:
         f = float(tok)
         return int(f) if f.is_integer() and "." not in tok and "e" not in tok.lower() else f
