@@ -51,7 +51,7 @@ def a_at(t: float, k1: float, k2: float) -> float:
 
 def _model(tmp_path: Path, k2: str) -> bngsim.Model:
     net = tmp_path / "m.net"
-    net.write_text(NET.format(k2=k2))
+    net.write_text(NET.format(k2=k2), encoding="utf-8")
     return bngsim.Model.from_net(str(net))
 
 
@@ -200,10 +200,134 @@ def test_a_setparameter_to_an_expression_after_the_number(tmp_path):
     assert _end(run.result) == pytest.approx(a_at(0.25, 3, 6.0), rel=1e-8)
 
 
+# --- a parameter a number ended, read by others -------------------------------
+
+# A <-> B at kf, kr, each of which the network derives.
+NET3 = """begin parameters
+    1 k1 1
+    2 k2 k1*0.5
+    3 kf {kf}
+    4 kr {kr}
+end parameters
+begin species
+    1 A() 100
+    2 B() 0
+end species
+begin reactions
+    1 1 2 kf
+    2 2 1 kr
+end reactions
+begin groups
+    1 Atot 1
+end groups
+"""
+
+
+def _model3(tmp_path: Path, kf: str, kr: str) -> bngsim.Model:
+    net = tmp_path / "m3.net"
+    net.write_text(NET3.format(kf=kf, kr=kr), encoding="utf-8")
+    return bngsim.Model.from_net(str(net))
+
+
+@pytest.mark.parametrize("number", [0.5, 0.7])
+def test_an_expression_may_read_a_parameter_a_number_ended(tmp_path, number):
+    # k2 k1*0.5; setParameter("k2",number) makes k2 a constant, so k1 = k2*2
+    # reads k1 through nothing. BNG2.pl 2.9.3 takes both alike: the .net it
+    # writes lists `k1 k2*2 # ConstantExpression` and `k2 0.5 # Constant`.
+    # The number the expression gives (0.5) was refused as "defined
+    # recursively", where 0.7 ran.
+    model = _model(tmp_path, "k1*0.5")
+    (run,) = _replay(model, _set("k2", number), _set("k1", "k2*2"), _run(0.25))
+    assert _end(run.result) == pytest.approx(a_at(0.25, 2 * number, number), rel=1e-8)
+
+
+def test_the_number_holds_where_an_expression_that_reads_it_moves_what_it_read(tmp_path):
+    # k1 = k2*4 = 2 moves what k2's network expression reads: k2 stays 0.5
+    # (its expression would give 1), and k1 stays 2.
+    model = _model(tmp_path, "k1*0.5")
+    (run,) = _replay(model, _set("k2", 0.5), _set("k1", "k2*4"), _run(0.25))
+    assert _end(run.result) == pytest.approx(a_at(0.25, 2, 0.5), rel=1e-8)
+
+
+def test_a_parameter_defined_through_itself_is_still_refused(tmp_path):
+    # With no number set, k2 is k1*0.5, and k1 = k2*2 reads itself.
+    with pytest.raises(bngsim.ConversionError, match="through itself"):
+        _replay(_model(tmp_path, "k1*0.5"), _set("k1", "k2*2"), _run(0.25))
+    # An expression after the number is one again.
+    with pytest.raises(bngsim.ConversionError, match="through itself"):
+        _replay(
+            _model(tmp_path, "k1*0.5"),
+            _set("k2", 0.5),
+            _set("k2", "k1*0.5"),
+            _set("k1", "k2*2"),
+            _run(0.25),
+        )
+    # And so is the network's own after a reset to before the number.
+    save = StateChange(kind="save_parameters")
+    reset = StateChange(kind="reset_parameters")
+    with pytest.raises(bngsim.ConversionError, match="through itself"):
+        _replay(
+            _model(tmp_path, "k1*0.5"),
+            save,
+            _set("k2", 0.5),
+            reset,
+            _set("k1", "k2*2"),
+            _run(0.25),
+        )
+
+
+def test_a_derived_parameter_reads_the_number_not_the_ended_expression(tmp_path):
+    # kr k2*2 reads k2, which a number ended at 0.5: kr stays 1 when k1 moves
+    # (3 if k2 followed k1), and kf k1 follows it.
+    model = _model3(tmp_path, "k1", "k2*2")
+    (run,) = _replay(model, _set("k2", 0.5), _set("k1", 3), _run(0.25))
+    assert _end(run.result) == pytest.approx(a_at(0.25, 3, 1.0), rel=1e-8)
+
+
+def test_two_parameters_numbers_ended_hold_through_one_write(tmp_path):
+    # kf k1*2 and kr k1*0.5, each set to the number it gives; k1 = 3 would
+    # make them 6 and 1.5.
+    model = _model3(tmp_path, "k1*2", "k1*0.5")
+    (run,) = _replay(model, _set("kf", 2), _set("kr", 0.5), _set("k1", 3), _run(0.25))
+    assert _end(run.result) == pytest.approx(a_at(0.25, 2, 0.5), rel=1e-8)
+    # One of the two set to an expression again follows; the other holds.
+    model = _model3(tmp_path, "k1*2", "k1*0.5")
+    (run,) = _replay(
+        model, _set("kf", 2), _set("kr", 0.5), _set("kf", "k1*2"), _set("k1", 3), _run(0.25)
+    )
+    assert _end(run.result) == pytest.approx(a_at(0.25, 6, 0.5), rel=1e-8)
+
+
+def test_a_parameter_overridden_before_the_replay(tmp_path):
+    # The caller's set_param made k2 0.7; the model still holds k1*0.5, and
+    # the number it gives would bring it back (#188) without the hold.
+    model = _model(tmp_path, "k1*0.5")
+    model.set_param("k2", 0.7)
+    assert not dict(zip(model.param_names, model.param_is_expression, strict=True))["k2"]
+    (run,) = _replay(model, _set("k2", 0.5), _set("k1", 3), _run(0.25))
+    assert _end(run.result) == pytest.approx(a_at(0.25, 3, 0.5), rel=1e-8)
+
+
+def test_only_a_parameter_with_an_expression_is_held(tmp_path):
+    # A .net keeps a primary's number as its expression text (`k1 1`); that is
+    # no expression to end, and the replay holds nothing for it.
+    from bngsim._protocol_run import _Runner
+
+    model = _model3(tmp_path, "k1*2", "k1*0.5")
+    assert dict(zip(model.param_names, model.param_expressions, strict=True))["k1"] == "1"
+    steps = (_set("k1", 1), _set("kr", 0.5), _scan("k1", [1, 2]))
+    runner = _Runner(model.clone(), ProtocolSpec(steps=steps), seed=None, **TOL)
+    assert runner.declared_exprs == {"k2", "kf", "kr"}
+    runner.run()
+    assert runner.pinned == {"kr": 0.5}
+
+
 # --- against BNG2.pl, where it is installed ----------------------------------
 
+# Absolute: BNG2.pl runs from the test's own directory.
 BNGPATH = os.environ.get("BNGPATH", "")
-HAS_BNG2 = bool(BNGPATH) and (Path(BNGPATH) / "BNG2.pl").is_file() and shutil.which("perl")
+BNG2 = (Path(BNGPATH).resolve() / "BNG2.pl") if BNGPATH else None
+HAS_BNG2 = BNG2 is not None and BNG2.is_file() and bool(shutil.which("perl"))
 
 BNGL = """begin model
 begin parameters
@@ -248,10 +372,12 @@ CASES = {
 def test_run_bngl_agrees_with_bng2pl(tmp_path, case):
     k2, actions, out = CASES[case]
     bngl = tmp_path / "m.bngl"
-    bngl.write_text(BNGL.format(k2=k2, actions=actions))
+    bngl.write_text(BNGL.format(k2=k2, actions=actions), encoding="utf-8")
     subprocess.run(
-        ["perl", str(Path(BNGPATH) / "BNG2.pl"), "m.bngl"],
+        ["perl", str(BNG2), "m.bngl"],
         cwd=tmp_path,
+        # BNG2.pl finds run_network through BNGPATH, from that directory too.
+        env={**os.environ, "BNGPATH": str(BNG2.parent)},
         check=True,
         capture_output=True,
         timeout=300,

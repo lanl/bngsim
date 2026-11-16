@@ -173,6 +173,12 @@ class ProtocolResult(Sequence[ProtocolRun]):
 
     Index it by position, or by a run's ``suffix``. ``model`` is the model in
     the state the protocol left it; ``protocol`` is the spec that ran.
+
+    ``model`` holds the values the protocol left, not what the replay kept
+    beside it: a parameter a ``setParameter`` set to an expression is a number
+    there, and one it set to the very number its network expression gives
+    still follows that expression under :meth:`Model.set_param` (issue #188).
+    Running a further protocol on it starts from the values alone.
     """
 
     def __init__(self, runs: Sequence[ProtocolRun], model: Model, protocol: ProtocolSpec):
@@ -449,10 +455,20 @@ class _Runner:
         # (#188), so a number equal to it left the expression live. Each write
         # holds these at their numbers (:meth:`_hold_pinned`).
         self.pinned: dict[str, float] = {}
+        # The parameters with an expression a number could leave live: those
+        # derived now, and those a write before the replay overrode, whose
+        # expression a number equal to it would bring back (#188). A primary
+        # is not one: a .net keeps its number as its text (`k1 1`), which
+        # reads no parameter.
         self.declared_exprs = {
             n
-            for n, e in zip(self.model.param_names, self.model.param_expressions, strict=True)
-            if e
+            for n, e, live in zip(
+                self.model.param_names,
+                self.model.param_expressions,
+                self.model.param_is_expression,
+                strict=True,
+            )
+            if e and (live or self._param_reads(e))
         }
         self.saved_conc: dict[str, tuple[np.ndarray, dict] | None] = {}
         self.saved_params: dict[
@@ -653,7 +669,9 @@ class _Runner:
         """Whether setting *name* to *text* defines it through itself, directly
         or through the expressions it reads, which BNG2.pl refuses ("Parameter
         k2 is defined recursively"): those an action set, and those the
-        network declares, ``k3 2*k1`` (BNG2.pl: "Max recursion depth")."""
+        network declares, ``k3 2*k1`` (BNG2.pl: "Max recursion depth"). A
+        parameter a number ended reads nothing, even where the model still
+        holds its expression because the number is what it gives (#1738)."""
         names = list(self.model.param_names)
         declared = {
             n: e
@@ -663,7 +681,7 @@ class _Runner:
                 self.model.param_is_expression,
                 strict=True,
             )
-            if live and e
+            if live and e and n not in self.pinned
         }
         seen: set[str] = set()
         stack = self._param_reads(text)

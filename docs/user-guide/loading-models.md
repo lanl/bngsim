@@ -112,7 +112,11 @@ index the result by position, or by a run's `suffix`. A scan's points are in
   number. A number ends an expression, the network's own included, even the
   number the expression gives: with `k2 k1*0.5` declared, `setParameter("k2",0.5)`
   keeps k2 at 0.5 when `k1` moves, as BNG2.pl does. One defined through itself, directly or through the network's own
-  expressions, is refused, as BNG2.pl refuses it.
+  expressions, is refused, as BNG2.pl refuses it; an expression a number ended
+  is not read for that. These rules hold through the protocol's own steps.
+  `out.model` has the values they left, and `set_param` on it follows its own
+  rule: a derived parameter that holds the number its expression gives still
+  follows that expression, and one set to an expression holds a number.
 - **Saved states.** `saveConcentrations`/`resetConcentrations` and
   `saveParameters`/`resetParameters` keep one saved state per label. A save made
   before `generate_network` holds the network with the actions that made the
