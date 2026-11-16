@@ -301,7 +301,7 @@ def test_a_fixed_species_and_a_rule_target_are_not_named():
     points = _quiet(lambda: sim.parameter_scan("A0", [5.0, 40.0], **SCAN))
     assert [p.species[0, 0] for p in points] == [5.0, 40.0]
     rule = ANT.replace("species A, B;", "species A, B, R;").replace(
-        "A = A0*s;", "A = 10; R := A0*B;"
+        "A = A0*s;", "A = 10; R := A0 + B;"
     )
     sim, _ = _after_a_run(rule)
     _quiet(lambda: sim.parameter_scan("A0", [5.0, 40.0], **SCAN))
@@ -356,3 +356,98 @@ def test_a_sensitivity_scan_carries_what_it_carried():
     points = _quiet(lambda: sim.parameter_scan("k", [0.2, 0.3], **SCAN))
     for point in points:
         assert np.array_equal(np.asarray(point.sensitivities)[0, :, 0], carried)
+
+
+def test_a_sensitivity_scan_names_every_species_the_parameter_seeds():
+    """A sensitivity scan carries the state's dx/dθ into each point, and a
+    parameter write there moves no species, not even one still on its initial
+    condition: C = A0 starts at 10 at A0 = 5 and 40. Asked as a plain scan
+    asks, C looked moved and was not named, and with C the only species A0
+    seeds there was no warning at all. Model.reset() first is no remedy here
+    (a sensitivity scan from the initial conditions is refused), so the
+    message names only the hook."""
+    src = ANT.replace("species A, B;", "species A, B, C;").replace(
+        "A = A0*s; B = 0;", "A = 10*s; B = 0; C = A0;"
+    )
+    sim = bngsim.Simulator(
+        bngsim.Model.from_antimony_string(src), method="ode", sensitivity_params=["k"]
+    )
+    if not sim._codegen_provides_sens_rhs():
+        pytest.skip("codegen compile unavailable: no compiled sensitivity RHS on this install")
+    sim.run(t_span=(0, 5), n_points=2)
+    with pytest.warns(UserWarning, match=DROPS.format("A0", "'C'")) as caught:
+        points = sim.parameter_scan("A0", [5.0, 40.0], **SCAN)
+    assert [p.species[0, 2] for p in points] == [10.0, 10.0]
+    (warning,) = [w for w in caught if "does not move" in str(w.message)]
+    assert "Model.reset() first" not in str(warning.message)
+    assert "on_point=lambda model, value" in str(warning.message)
+
+
+def test_an_initial_condition_flat_at_the_probe_is_asked_at_the_scan_values():
+    """A = (A0 - 10)*(A0 - 20) + 3 is 3 at A0 = 10 and at 2*A0 = 20, so a write
+    of 20 alone moves nothing; the scan's own values, 5 and 40, move it."""
+    sim, snap = _after_a_run(ANT.replace("A = A0*s;", "A = (A0 - 10)*(A0 - 20) + 3;"))
+    with pytest.warns(UserWarning, match=DROPS.format("A0", "'A'")):
+        points = sim.parameter_scan("A0", [5.0, 40.0], **SCAN)
+    assert [p.species[0, 0] for p in points] == [snap[0], snap[0]]
+
+
+def _net(tmp_path, params, species="1 A() U\n2 B() 0"):
+    path = tmp_path / "m.net"
+    path.write_text(
+        f"begin parameters\n{params}\nend parameters\nbegin species\n{species}\n"
+        "end species\nbegin reactions\n1 1 2 k\nend reactions\n",
+        encoding="utf-8",
+    )
+    sim = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode")
+    sim.run(t_span=(0, 5), n_points=2)
+    sim.model.save_concentrations()
+    return sim
+
+
+def test_the_saved_baseline_walk_reads_the_graph_as_the_model_does(tmp_path):
+    """After an unlabeled save the species come from the parameter graph, which
+    has to be read as the model reads it: a chain 1500 derived parameters deep
+    (deeper than Python's recursion limit) is walked, not recursed, and the
+    scan that ran on main still runs; the exponent of 1e-3 is a number, not a
+    parameter named e; and a derived parameter overridden by a write (#188) no
+    longer reads its expression, so A0 no longer seeds A through it."""
+    chain = "\n".join(f"{i + 4} P{i} {'A0' if i == 0 else f'P{i - 1}'}+0" for i in range(1500))
+    sim = _net(tmp_path, f"1 A0 10\n2 k 0.1\n3 Z 1\n{chain}", "1 A() P1499\n2 B() 0")
+    with pytest.warns(UserWarning, match=DROPS.format("A0", r"'A\(\)'")):
+        sim.parameter_scan("A0", [5.0], **SCAN)
+    _quiet(lambda: sim.parameter_scan("Z", [2.0], **SCAN))
+
+    sim = _net(tmp_path, "1 A0 10\n2 e 3\n3 k 0.1\n4 U 1e-3*A0")
+    _quiet(lambda: sim.parameter_scan("e", [5.0], **SCAN))
+    with pytest.warns(UserWarning, match=DROPS.format("A0", r"'A\(\)'")):
+        sim.parameter_scan("A0", [5.0], **SCAN)
+
+    path = tmp_path / "chain.net"
+    path.write_text(CHAIN_NET, encoding="utf-8")
+    model = bngsim.Model.from_net(str(path))
+    sim = bngsim.Simulator(model, method="ode")
+    sim.run(t_span=(0, 5), n_points=2)
+    model.set_param("T", 7.0)  # T no longer follows A0; U still follows T
+    model.save_concentrations()
+    _quiet(lambda: sim.parameter_scan("A0", [5.0], **SCAN))
+    with pytest.warns(UserWarning, match=DROPS.format("T", r"'A\(\)'")):
+        sim.parameter_scan("T", [5.0], **SCAN)
+
+
+def test_a_compartment_size_is_said_alike_after_a_run_and_after_a_save():
+    """A size write re-divides an amount-declared species' initial condition,
+    so a scan over the size is a dose: the warning names A after a run, and
+    after an unlabeled save, where the size route is not a parameter
+    reference, alike."""
+    src = (
+        "model m\n compartment c = 2; substanceOnly species A in c; species B in c;\n"
+        " A = 10; B = 0; k = 0.1;\n J: A -> B; k*A;\nend"
+    )
+    for save in (False, True):
+        sim, snap = _after_a_run(src)
+        if save:
+            sim.model.save_concentrations()
+        with pytest.warns(UserWarning, match=DROPS.format("c", "'A'")):
+            points = sim.parameter_scan("c", [1.0, 4.0], **SCAN)
+        assert [p.species[0, 0] for p in points] == [snap[0], snap[0]]

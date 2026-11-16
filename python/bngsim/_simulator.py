@@ -74,7 +74,7 @@ from bngsim._exceptions import (
     StopConditionMet,
 )
 from bngsim._extension_handle import raise_cannot_pickle, raise_cannot_shallow_copy
-from bngsim._model import _STEP_DECIDES_WHY, Model
+from bngsim._model import _STEP_DECIDES_WHY, Model, _names_in
 from bngsim._result import (
     Result,
     _as_selector_list,
@@ -6766,7 +6766,9 @@ class Simulator:
             )
         return np.array(seed, dtype=np.float64), names
 
-    def _warn_if_the_scan_drops_a_dose(self, parameter: str, value: float) -> None:
+    def _warn_if_the_scan_drops_a_dose(
+        self, parameter: str, value: float, values: Sequence[float], carried: bool
+    ) -> None:
         """Warn where a scan over a parameter that seeds a species' initial
         condition cannot move that species, asked at a point's start.
 
@@ -6781,10 +6783,14 @@ class Simulator:
         says so here: one warning, naming the species.
 
         Which species the parameter seeds is asked of the model, by writing it
-        once to another value and reading which initial conditions moved, so a
-        derived one (``A = A0*s``) counts as the core resolves it; where the
-        baseline is a saved state, which no write moves, from the parameter
-        graph. The write is left for the scan's reset to put back.
+        to another value and to each of the scan's values and reading which
+        initial conditions moved, so a derived one (``A = A0*s``) counts as the
+        core resolves it; where the baseline is a saved state, which no write
+        moves, from the parameter graph. The writes are left for the scan's
+        reset to put back. A sensitivity scan (``carried``) carries the state's
+        dx/dθ into each point, where a write moves no species at all, so there
+        every species the parameter seeds is named, on its initial condition
+        or not.
         """
         core = self._model._core
         species = self._model.species_names
@@ -6797,20 +6803,29 @@ class Simulator:
         else:
             state = np.asarray(core.get_state(), dtype=float)
             before = np.asarray(core.get_initial_state(), dtype=float)
-            try:
-                self._model.set_param(parameter, 2.0 * value if value != 0.0 else 1.0)
-            except Exception:
-                # The warning is advice. Where the model refuses the value it is
-                # asked with, there is nothing to say, and the scan runs as it
-                # would have: a scan that writes only the value a parameter
-                # already holds must not fail on a write it never asked for.
-                return
-            after = np.asarray(core.get_initial_state(), dtype=float)
-            seeded = ~((before == after) | (np.isnan(before) & np.isnan(after)))
-            off = seeded & ~((state == before) | (np.isnan(state) & np.isnan(before)))
-            stuck = [species[i] for i in np.flatnonzero(off)]
+            seeded = np.zeros(len(before), dtype=bool)
+            # One value can leave an initial condition where it was (A = (A0 - 10)
+            # *(A0 - 20) + 3 is 3 at 10 and at 20); the scan's own values are the
+            # writes that matter.
+            asked = [2.0 * value if value != 0.0 else 1.0, *(float(v) for v in values)]
+            for probe in dict.fromkeys(v for v in asked if v != value):
+                try:
+                    self._model.set_param(parameter, probe)
+                except Exception:
+                    # The warning is advice. Where the model refuses the value it
+                    # is asked with, there is nothing to say, and the scan runs as
+                    # it would have: a scan that writes only the value a parameter
+                    # already holds must not fail on a write it never asked for.
+                    continue
+                after = np.asarray(core.get_initial_state(), dtype=float)
+                seeded |= ~((before == after) | (np.isnan(before) & np.isnan(after)))
+            on = (state == before) | (np.isnan(state) & np.isnan(before))
+            stuck = [species[i] for i in np.flatnonzero(seeded if carried else seeded & ~on)]
             why = (
-                "each point starts from the state at the call (or the reset_to snapshot), "
+                "a sensitivity scan carries the state's dx/dθ into each point, and a "
+                "parameter write there moves no species"
+                if carried
+                else "each point starts from the state at the call (or the reset_to snapshot), "
                 "where a run or a write has moved them off their initial condition, and a "
                 "parameter write leaves such a species where it is"
             )
@@ -6822,8 +6837,14 @@ class Simulator:
         warnings.warn(
             f"parameter_scan over {parameter!r} does not move the species it seeds "
             f"({shown}): {why}, so every point starts them at that state's values and "
-            "the dose is dropped. For a dose scan from the initial conditions, call "
-            "Model.reset() first. To dose them from this state, set them in on_point: "
+            "the dose is dropped. "
+            # A sensitivity scan from the initial conditions is refused (#81).
+            + (
+                ""
+                if carried
+                else "For a dose scan from the initial conditions, call Model.reset() first. "
+            )
+            + "To dose them from this state, set them in on_point: "
             "on_point=lambda model, value: model.set_concentration(name, value).",
             UserWarning,
             stacklevel=_stacklevel_outside_bngsim(),
@@ -6833,30 +6854,34 @@ class Simulator:
         """The species whose initial condition names ``parameter``, directly or
         through the derived parameters between (``A() U``, ``U = T``,
         ``T = 2*A0``): read from the parameter graph, for a model whose saved
-        baseline no write moves."""
+        baseline no write moves. Read as the model reads it: a number's exponent
+        is no name (``_names_in``), a derived parameter a write has overridden
+        (#188) no longer reads its expression, the walk is a loop and not a
+        recursion (a chain can be deeper than Python's limit), and a compartment
+        size reaches an amount-declared species through its storage divide."""
+        core = self._model._core
         names = list(self._model.param_names)
-        expressions = list(self._model.param_expressions)
-        index_of = {name: i for i, name in enumerate(names)}
-        reads: dict[int, bool] = {}
-
-        def reads_parameter(index: int, seen: frozenset[int] = frozenset()) -> bool:
-            if index in reads:
-                return reads[index]
-            hit = names[index] == parameter
-            if not hit:
-                for token in set(re.findall(r"[A-Za-z_][A-Za-z_0-9]*", expressions[index] or "")):
-                    if token == parameter:
-                        hit = True
-                    elif token in index_of and index_of[token] not in seen | {index}:
-                        hit = reads_parameter(index_of[token], seen | {index})
-                    if hit:
-                        break
-            reads[index] = hit
-            return hit
-
+        live = list(self._model.param_is_expression)
+        readers: dict[str, list[int]] = {}
+        for i, expression in enumerate(self._model.param_expressions):
+            if live[i] and expression:
+                for token in set(_names_in(expression)):
+                    readers.setdefault(token, []).append(i)
+        reach = {i for i, name in enumerate(names) if name == parameter}
+        stack = [parameter]
+        while stack:
+            for i in readers.get(stack.pop(), ()):
+                if i not in reach:
+                    reach.add(i)
+                    stack.append(names[i])
+        refs = [(int(i), int(p)) for i, p in core.species_ic_param_refs]
+        sizes = list(core.param_is_compartment_size)
+        if any(sizes[p] for p in reach):
+            for i, sp in enumerate(core.codegen_data()["species"]):
+                if not math.isnan(float(sp.get("initial_amount", math.nan))):
+                    refs.append((i, int(sp.get("volume_param_idx0", -1))))
         species = self._model.species_names
-        refs = self._model._core.species_ic_param_refs
-        return sorted({species[i] for i, p in refs if 0 <= p < len(names) and reads_parameter(p)})
+        return sorted({species[i] for i, p in refs if p in reach})
 
     def _pending_scan_sens_seed(self, names: list[str], point_index: int) -> np.ndarray:
         """The dx/dθ a continuation point inherits from the previous point's run."""
@@ -7292,7 +7317,10 @@ class Simulator:
             it at the snapshot's value and the dose is dropped, and the scan
             warns, naming the species. Call :meth:`Model.reset` first for a dose
             scan from the initial conditions, or set the species in
-            ``on_point``. When ``False``, points are *not* reset between values;
+            ``on_point``. A sensitivity scan carries the state's dx/dθ into
+            each point, where the write moves no species, on its initial
+            condition or not: it warns naming each, and only ``on_point``
+            doses there. When ``False``, points are *not* reset between values;
             each continues from the previous point's end-state (a continuation
             scan — see :meth:`bifurcate`).
         reset_to : str, optional
@@ -7534,7 +7562,9 @@ class Simulator:
                     )
             if reset_conc and on_point is None:  # a hook may be what doses them
                 _reset_point()
-                self._warn_if_the_scan_drops_a_dose(parameter, original_value)
+                self._warn_if_the_scan_drops_a_dose(
+                    parameter, original_value, values, carried=carry_seed is not None
+                )
             for i, value in enumerate(values):
                 if reset_conc:
                     _reset_point()

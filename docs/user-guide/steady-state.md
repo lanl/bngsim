@@ -1127,9 +1127,13 @@ sim = bngsim.Simulator(model, method="ode", sensitivity_params=["kf", "kr", "kde
 sim.run(t_span=(0, 1e6), n_points=2, steady_state=True)
 
 # Scan the dose. Each point resets to the equilibrated state *and* its dx_ss/dθ.
+# The hook is what doses: in a sensitivity scan a parameter write moves no
+# species, so without it every point would start the ligand L_0 seeds at its
+# equilibrated value, and the scan would warn that the dose is dropped.
 points = sim.parameter_scan(
     "L_0", par_min=1e-3, par_max=1e2, n_scan_pts=12, log_scale=True,
     t_span=(0, 600), n_points=61, steady_state=True,
+    on_point=lambda m, dose: m.set_concentration("L(r)", dose),
 )
 grads = [p.output_sensitivities("observable:pReceptor") for p in points]
 ```
