@@ -779,6 +779,45 @@ def _declared(text: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]] 
     return params, seeds
 
 
+def _write_parameter(work: Any, name: str, value: float) -> bool:
+    """Write one parameter of *work*, a copy made to be read; ``False`` where
+    the model refuses the write."""
+    from bngsim._exceptions import BngsimError
+
+    try:
+        work.set_params({name: value})
+    except (BngsimError, ValueError):
+        return False
+    return True
+
+
+def _at_declared_parameters(model: Any, params: list[tuple[str, str]], moved: set[str]) -> Any:
+    """A copy of *model* with each parameter of *moved*, the ones a
+    ``setParameter`` before ``generate_network`` writes, back at the value the
+    ``.bngl`` declares; ``None`` where one cannot be put back. BNG2.pl's
+    ``.net`` holds such a parameter as the number last set, whether the file
+    declared a number or an expression (``B0 10*k1``, ``B0 5 * 2``), so a
+    declared expression is evaluated here. Every other parameter already holds
+    its value at generation, which is its value at every step before it.
+
+    The copy is only read, never run, so a compartment volume BNG2.pl folded
+    into the rate constants (:attr:`~bngsim.Model.frozen_params`) is written
+    like any other: a seed amount reads the parameter, not a rate constant."""
+    from bngsim._bngl_loader import _value
+
+    declared = [(name, text) for name, text in params if name in moved]
+    if {name for name, _ in declared} != moved:
+        return None
+    work = model.clone()
+    work._frozen_params = {}
+    for _ in declared:  # one pass for each, as a declaration may read one below it
+        for name, text in declared:
+            value = _value(work, text)
+            if value is None or not _write_parameter(work, name, value):
+                return None
+    return work
+
+
 def _not_as_generated(model: Any, bngl: Path, protocol: ProtocolSpec | None) -> list[str]:
     """How the ``.net`` *model* was loaded from differs from the network
     *bngl* generates (issue #1683): each parameter declared as a number, and
@@ -840,21 +879,31 @@ def _not_as_generated(model: Any, bngl: Path, protocol: ProtocolSpec | None) -> 
     # addConcentration evaluates $spec->Concentration), which a later
     # setParameter does not move. Read at the parameters' final values, a seed
     # B0 that a later setParameter("B0",20) moved gave 80 for BNG2.pl's 70.
-    work = model.clone()
-    start: dict[str, float] = {}
-    for pname, declared_text in params:
-        try:
-            start[pname] = float(declared_text)
-        except ValueError:
-            continue
-    start = {k: v for k, v in start.items() if k in names}
-    if start:
-        work.set_params(start)
+    # Only an addConcentration reads its moment, and only a setParameter makes
+    # a moment differ from generation, so the replay needs its own copy of the
+    # model just where the actions hold both: any other file is read off
+    # *model*, as it was before, and pays for no copy.
+    moved: set[str] = {
+        step.target
+        for step in before
+        if isinstance(step, StateChange)
+        and step.kind == "set_parameter"
+        and step.target is not None
+        and step.target in names
+    }
+    adds = any(isinstance(s, StateChange) and s.kind == "add_concentration" for s in before)
+    work = model
+    if moved and adds:
+        work = _at_declared_parameters(model, params, moved)
+        if work is None:
+            return []
     held_as: dict[str, tuple[str, Any]] = {}  # species -> ("expr", text) or ("num", value)
+    seed_of: dict[str, str] = {}
     every_seed_read = True
     for pattern, amount in seeds:
         sname = _species_name(model, pattern)
         if sname is not None and _value(work, amount) is not None:
+            seed_of[sname] = amount
             held_as[sname] = ("expr", amount)
         else:
             every_seed_read = False
@@ -867,8 +916,13 @@ def _not_as_generated(model: Any, bngl: Path, protocol: ProtocolSpec | None) -> 
         if not isinstance(step, StateChange):
             continue
         if step.kind == "set_parameter":
-            if step.target in names and step.value is not None:
-                work.set_params({step.target: float(step.value)})
+            if (
+                work is not model
+                and step.target in moved
+                and step.value is not None
+                and not _write_parameter(work, step.target or "", float(step.value))
+            ):
+                return []
             continue
         sname = _species_name(model, step.target or "")
         if sname is None:
@@ -884,7 +938,14 @@ def _not_as_generated(model: Any, bngl: Path, protocol: ProtocolSpec | None) -> 
         if set_value is None:
             return []
         if step.kind == "add_concentration":
-            base = now(held_as.get(sname, ("num", 0.0)))
+            # What the add adds to: the species' number, or, where it is not a
+            # number, its seed at this step. BNGModel.pm evaluates
+            # $spec->Concentration, the seed, also after a setConcentration to
+            # an expression, which the add so discards.
+            entry = held_as.get(sname, ("num", 0.0))
+            if entry[0] == "expr":
+                entry = ("expr", seed_of.get(sname, entry[1]))
+            base = now(entry)
             if base is None:
                 return []
             held_as[sname] = ("num", base + set_value)
