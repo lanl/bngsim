@@ -685,6 +685,46 @@ def amici_sens(
     )
 
 
+def amount_states_as_concentrations(
+    x: np.ndarray, sx: np.ndarray, names: list[str], sbml_str: str, sens_ids: list[str]
+) -> tuple[np.ndarray, np.ndarray, list[str], list[str]]:
+    """:func:`_amici_common.amount_states_as_concentrations` for the sensitivity
+    job: AMICI keeps a ``hasOnlySubstanceUnits`` species as an amount, in ``x``
+    and in ``sx`` ``(n_t, n_sp, n_p)``, and bngsim reports concentrations.
+
+    Read from the SBML alone, so a run replayed from the reference archive
+    (which holds AMICI's amounts as it reported them) is converted the same as
+    a live one. Only a compartment nothing changes is sized
+    (:func:`_amici_common.constant_size`), and only when its size reads no
+    sensitized parameter: then ``d(n/V)/dp = (dn/dp)/V``. Any other amount
+    species is dropped and returned in the fourth element; one whose size is
+    no finite positive number at any time is kept as its amount, in ``x`` and
+    ``sx``, and returned in the fifth (:func:`_amici_common.amount_columns`).
+    Returns ``(x, sx, names, dropped, as_amount)``; the inputs are not modified."""
+    import libsbml
+
+    amounts = ac.amount_species_compartments(sbml_str)
+    if not amounts:
+        return x, sx, names, [], []
+    sbml = libsbml.readSBMLFromString(sbml_str).getModel()
+    constant = ac._rc._effectively_constant(sbml) if sbml is not None else set()
+    value_of = ac.sbml_value_of(sbml)
+    sens = set(sens_ids) | {ac.amici_state_id(p) for p in sens_ids}
+
+    def volume_of(cid: str):
+        deps: set[str] = set()
+        size = ac.constant_size(cid, sbml, value_of, constant, deps)
+        return None if deps & sens else size
+
+    keep, sizes, dropped, as_amount = ac.amount_columns(names, amounts, volume_of)
+    x = np.array(x, dtype=float, copy=True)
+    sx = np.array(sx, dtype=float, copy=True)
+    for j, size in sizes.items():
+        x[:, j] = x[:, j] / size
+        sx[:, j, :] = sx[:, j, :] / size
+    return x[:, keep], sx[:, keep, :], [names[j] for j in keep], dropped, as_amount
+
+
 # --------------------------------------------------------------------------- #
 # The oracle
 # --------------------------------------------------------------------------- #
