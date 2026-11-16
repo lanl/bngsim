@@ -1121,6 +1121,7 @@ def write_bngl_protocol(protocol: ProtocolSpec, out_path: str | Path | None = No
     str
         The ``begin actions`` … ``end actions`` block (trailing newline included).
     """
+    from bngsim._simulator import _stacklevel_outside_bngsim
     from bngsim.convert._bngl_writer import _generate_network_line
 
     lines = ["begin actions", ""]
@@ -1152,16 +1153,26 @@ def write_bngl_protocol(protocol: ProtocolSpec, out_path: str | Path | None = No
             and step.value_expr
             and step.kind == "set_concentration"
         ):
-            moved = _moved_before_run(protocol.steps[k + 1 :], step.value_expr)
+            moved, added = _followed_into_a_run(protocol.steps[k + 1 :], step)
             if moved:
-                from bngsim._simulator import _stacklevel_outside_bngsim
-
                 warnings.warn(
                     f"{_state_change_action(step)} is evaluated once where it runs (a SED-ML "
-                    f"change); BNG2.pl keeps the amount as that expression until the next "
-                    f"run, so the species follows {', '.join(moved)}, which "
-                    f"{'is' if len(moved) == 1 else 'are'} changed before that run or "
-                    "scanned by it, and starts from another amount there (issue #1737)",
+                    f"change); BNG2.pl keeps the amount as that expression until a run, and "
+                    f"a reset to concentrations saved while it was one (a resetting scan's, "
+                    f"at each point and at its end) brings it back, so the species follows "
+                    f"{', '.join(moved)}, which {'is' if len(moved) == 1 else 'are'} changed "
+                    "or scanned before a run that starts from the expression, and starts "
+                    "from another amount there (issue #1737)",
+                    ConversionWarning,
+                    stacklevel=_stacklevel_outside_bngsim(),
+                )
+            if added:
+                warnings.warn(
+                    f"{_state_change_action(step)} is evaluated once where it runs (a SED-ML "
+                    f"change), and the addConcentration after it adds to that amount; "
+                    f"BNG2.pl keeps the amount as an expression, and adds to the species' "
+                    "declared amount instead, so the species starts from another amount "
+                    "(issue #1737)",
                     ConversionWarning,
                     stacklevel=_stacklevel_outside_bngsim(),
                 )
@@ -1207,16 +1218,57 @@ def _moved_later(steps: Sequence[object], text: str) -> list[str]:
     return list(dict.fromkeys(moved))
 
 
-def _moved_before_run(steps: Sequence[object], text: str) -> list[str]:
-    """The names *text* reads that *steps* set before their first run, or that
-    the first run scans: BNG2.pl's ``setConcentration`` keeps an expression
-    only until a run, so a change after it moves nothing."""
-    upto: list[object] = []
+def _followed_into_a_run(steps: Sequence[object], change: StateChange) -> tuple[list[str], bool]:
+    """Where BNG2.pl runs *steps* from another amount than a ``setConcentration``
+    evaluated once (*change*, the step before them) left: the names its
+    expression reads that differ at a run starting from the expression, and
+    whether an ``addConcentration`` finds the amount still an expression.
+
+    BNG2.pl keeps the expression as the species' amount until a run writes a
+    number over it, or a ``setConcentration``, an ``addConcentration`` (which
+    adds to the declared amount, not to the expression's) or a
+    ``resetConcentrations`` replaces it. ``saveConcentrations`` copies the
+    expression, so a reset to that copy brings it back after a run:
+    ``parameter_scan`` saves as "SCAN" and, resetting, goes back to it before
+    each point and at its end. Each case was run through BNG2.pl 2.9.3.
+    """
+    names = set(re.findall(r"(?<![\w.])([A-Za-z_]\w*)(?!\w)", change.value_expr or ""))
+    live = True  # the species' amount is the expression
+    saved: dict[str, bool] = {}  # by label: the saved concentrations hold it
+    changed: list[str] = []  # the names that are not what they were at the change
+    saved_changed: dict[str, list[str]] = {}  # by label: ``changed`` at a saveParameters
+    followed: list[str] = []
+    added = False
     for step in steps:
-        upto.append(step)
         if isinstance(step, Experiment):
-            break
-    return _moved_later(upto, text)
+            if step.is_scan:
+                saved["SCAN"] = live
+                if step.scan_parameter in names:
+                    changed.append(step.scan_parameter or "")
+            if live:
+                followed.extend(changed)
+            live = live and step.kind == "scan" and step.reset_between
+        elif not isinstance(step, StateChange):
+            continue
+        elif step.kind == "set_parameter":
+            if step.target in names:
+                changed.append(step.target or "")
+        elif step.kind == "save_parameters":
+            saved_changed[step.label or "DEFAULT"] = list(changed)
+        elif step.kind == "reset_parameters":
+            # Back to the values of the save: those of the change, but for the
+            # names changed between the two. A save before the change holds
+            # values this cannot see, so every name counts as changed.
+            changed = list(saved_changed.get(step.label or "DEFAULT", sorted(names)))
+        elif step.kind == "save_concentrations":
+            saved[step.label or "DEFAULT"] = live
+        elif step.kind == "reset_concentrations":
+            live = saved.get(step.label or "DEFAULT", False)
+        elif step.kind in ("set_concentration", "add_concentration"):
+            if step.target == change.target:
+                added = added or (live and step.kind == "add_concentration")
+                live = False
+    return list(dict.fromkeys(followed)), added
 
 
 def _num_list(v: Any) -> list[float] | None:

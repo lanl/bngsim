@@ -834,6 +834,7 @@ def _actions_block(
                     target=pattern,
                     value=step.value,
                     value_expr=step.value_expr,
+                    evaluated_once=step.evaluated_once,
                 )
         return step
 
