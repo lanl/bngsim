@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 
 from bngsim._bngpath import (
+    _CHECKOUT_REMEDY,
     BUNDLED,
     ENV_BNG2_PL,
     ENV_BNGPATH,
@@ -53,6 +54,8 @@ def require_bng(purpose: str, explicit: str | os.PathLike[str] | None = None) ->
 
     r = resolve_bng(explicit)
     if not r.ok:
-        sys.exit(f"ABORT: {purpose}\n  {r.why_not()}")
+        # A found BNG2.pl with no perl needs perl, not a different PyBioNetGen.
+        remedy = "" if r.bng2_pl is not None else f"\n  {_CHECKOUT_REMEDY}"
+        sys.exit(f"ABORT: {purpose}\n  {r.why_not()}{remedy}")
     os.environ["BNGPATH"] = str(r.root)
     return r

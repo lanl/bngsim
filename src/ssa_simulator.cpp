@@ -815,24 +815,73 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
                         is_count[pi - 1] = 0;
     }
     const std::vector<char> &is_count = impl_->count_slot;
+
+    // A concentration species in a compartment whose size moves (an event, a
+    // rate rule or an assignment rule sets it) is stored as its count over the
+    // load-time size, volume_factor, so that a resize leaves the count alone
+    // (issue #741). The model holds that only where an SSA run left it; at the
+    // initial conditions, or after an ODE run, it holds the concentration, and
+    // the count is that times the size the compartment has now. Read as stored,
+    // a start size written over the load-time one was lost: c written to 3
+    // from 2 started X = 50 at 100 molecules for 150 (issue #1463). The size of
+    // a compartment an assignment rule sets is its rule's value at t_start.
+    std::vector<double> start_scale;
+    bool live_tags = false, live_param_tags = false;
+    for (const auto &sp : model.species()) {
+        live_tags = live_tags || sp.ssa_live_volume_idx0 >= 0 || sp.ssa_live_volume_param_idx0 >= 0;
+        live_param_tags = live_param_tags || sp.ssa_live_volume_param_idx0 >= 0;
+    }
+    // The size of species s's compartment now (conc: the state slots, or
+    // nullptr for the model's own), NaN when s has none that moves.
+    auto live_size = [&](int s, const double *cv) -> double {
+        const Species &sv = model.species()[static_cast<std::size_t>(s)];
+        if (sv.ssa_live_volume_idx0 >= 0 && sv.ssa_live_volume_idx0 < ns)
+            return cv ? cv[sv.ssa_live_volume_idx0]
+                      : model.species()[static_cast<std::size_t>(sv.ssa_live_volume_idx0)]
+                            .concentration;
+        if (sv.ssa_live_volume_param_idx0 >= 0 &&
+            sv.ssa_live_volume_param_idx0 < model.n_parameters())
+            return model.parameters()[static_cast<std::size_t>(sv.ssa_live_volume_param_idx0)]
+                .value;
+        return std::numeric_limits<double>::quiet_NaN();
+    };
+    if (live_tags && !model.ssa_counts_stored()) {
+        if (live_param_tags) {
+            std::vector<double> c0(ns);
+            for (int i = 0; i < ns; ++i)
+                c0[i] = model.species()[i].concentration;
+            model.update_observables(c0.data());
+            model.evaluate_functions(times_in.t_start);
+        }
+        start_scale.assign(ns, 1.0);
+        for (int i = 0; i < ns; ++i) {
+            const double v = live_size(i, nullptr);
+            const double vf = model.species()[i].volume_factor;
+            if (std::isfinite(v) && v >= 0.0 && vf > 0.0)
+                start_scale[i] = v / vf;
+        }
+    }
+
     long n_rounded = 0;
     int first_rounded = -1;
     std::vector<double> conc(ns);
     std::vector<double> counts(ns);
     for (int i = 0; i < ns; ++i) {
         const auto &sp = model.species()[i];
+        const double stored =
+            start_scale.empty() ? sp.concentration : sp.concentration * start_scale[i];
         if (!is_count[i]) {
-            conc[i] = sp.concentration;
+            conc[i] = stored;
             counts[i] = conc[i] * sp.volume_factor; // a continuous value, not snapped
             continue;
         }
-        conc[i] = round_initial_population_to_storage(sp.concentration, sp.volume_factor);
+        conc[i] = round_initial_population_to_storage(stored, sp.volume_factor);
         counts[i] = storage_to_count(conc[i], sp.volume_factor);
         // The same test _ssa_validation applies: a count that moved by more
         // than conversion noise, relative to the count, was fractional. It is
         // relative all the way down, so 5e-10 of a molecule rounded to 0 (a
         // model written in moles) is reported rather than read as noise.
-        const double amount = sp.concentration * sp.volume_factor;
+        const double amount = stored * sp.volume_factor;
         const double whole = conc[i] * sp.volume_factor;
         if (std::isfinite(amount) && std::fabs(amount - whole) > 1e-9 * std::fabs(amount)) {
             ++n_rounded;
@@ -1161,6 +1210,57 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
         }
         model.update_observables(conc.data());
         model.evaluate_functions(origin + t_eval);
+    };
+
+    // Issue #1464: the observables and expressions of output row k, recorded
+    // from the state cc at t_eval, read a concentration species in a
+    // compartment whose size moves at count/V_live, as the ODE run reads it,
+    // not at the stored count/V_static. Every other reader of such a species
+    // (a rate law, a rule a rate law or trigger reads, a trigger, an event
+    // assignment) is refused by the loader, so only the reports read it; after
+    // the row, the model goes back to the stored state the run goes on from.
+    // A no-op unless the model has such a species (live_tags) and the size has
+    // moved; then the row's species stay as stored, and the report rescales
+    // them (Simulator._apply_varvol_*). An observable B := 2*X read 64 for 32
+    // after c: 2 -> 4.
+    std::vector<double> live_view;
+    auto relive_row = [&](int k, double t_eval, const double *cc) {
+        if (!live_tags)
+            return;
+        const double t_abs = origin + t_eval;
+        for (int si = 0; si < ns; ++si)
+            sp_vec_ref[si].concentration = cc[si];
+        if (live_param_tags) { // the rule's size at the row's time
+            model.update_observables(cc);
+            model.evaluate_functions(t_abs);
+        }
+        live_view.assign(cc, cc + ns);
+        bool moved = false;
+        for (int si = 0; si < ns; ++si) {
+            const double v = live_size(si, cc);
+            const double vf = sp_vec_ref[si].volume_factor;
+            if (std::isfinite(v) && v > 0.0 && v != vf) {
+                live_view[si] = cc[si] * vf / v;
+                moved = true;
+            }
+        }
+        if (!moved)
+            return;
+        for (int si = 0; si < ns; ++si)
+            sp_vec_ref[si].concentration = live_view[si];
+        model.update_observables(live_view.data());
+        model.evaluate_functions(t_abs);
+        for (int j = 0; j < n_obs; ++j)
+            obs_buf[j] = model.observables()[j].total;
+        result.record(k, result.time()[static_cast<std::size_t>(k)], nullptr, obs_buf.data());
+        if (n_func > 0) {
+            auto fvals = model.function_values();
+            result.record_expressions(k, fvals.data());
+        }
+        for (int si = 0; si < ns; ++si)
+            sp_vec_ref[si].concentration = cc[si];
+        model.update_observables(cc);
+        model.evaluate_functions(t_abs);
     };
 
     // Issues #719/#751/#753 — the continuous path (see the loop for models with
@@ -1735,14 +1835,17 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
             // A concentration assigned to a species stored as amount/V_static
             // in a moving compartment is stored as c·V_live/V_static, V_live as
             // it stands when this event executes, before its own assignments
-            // (a resize among them included) apply (issue #741).
+            // (a resize among them included) apply (issue #741). In a
+            // compartment an assignment rule sizes, V_live is the rule's value
+            // there; left out, S = 50 at t = 2 in c := 1 + time was stored over
+            // the load-time size 1, [S](3) 12.5 for 37.5 (issue #1659).
             for (size_t a = 0; a < assigns.size(); ++a) {
                 const int sp = assigns[a].first;
                 if (sp < 0 || sp >= ns)
                     continue;
-                const Species &sv = model.species()[static_cast<size_t>(sp)];
-                if (sv.ssa_live_volume_idx0 >= 0 && sv.ssa_live_volume_idx0 < ns)
-                    nv[a] *= conc[sv.ssa_live_volume_idx0] / sv.volume_factor;
+                const double v = live_size(sp, conc.data());
+                if (!std::isnan(v))
+                    nv[a] *= v / model.species()[static_cast<size_t>(sp)].volume_factor;
             }
             auto is_ode_only = [&](size_t a) {
                 return a < ev.assignment_ode_only.size() && ev.assignment_ode_only[a];
@@ -2187,6 +2290,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
         auto fvals = model.function_values();
         result.record_expressions(0, fvals.data());
     }
+    if (live_tags)
+        relive_row(0, times.t_start, conc.data());
 
     // ─── Initial propensity computation (all reactions) ──────────────────────
     recompute_all_propensities();
@@ -2567,6 +2672,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
                         auto fvals = model.function_values();
                         result.record_expressions(next_output, fvals.data());
                     }
+                    if (live_tags)
+                        relive_row(next_output, t_out[next_output], conc.data());
                     ++next_output;
                 }
                 break;
@@ -2606,6 +2713,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
                     auto fvals = model.function_values();
                     result.record_expressions(next_output, fvals.data());
                 }
+                if (live_tags)
+                    relive_row(next_output, t_out[next_output], conc.data());
                 ++next_output;
             }
             if (next_output >= n_out)
@@ -2995,6 +3104,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
                 auto fvals = model.function_values();
                 result.record_expressions(next_output, fvals.data());
             }
+            if (live_tags)
+                relive_row(next_output, tk, conc.data());
             ++next_output;
         };
 
@@ -3007,12 +3118,23 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
                 all_triggers.push_back(ei);
         const std::vector<int> &watched = m > 0 ? all_triggers : time_triggers;
         // Whether row tk = tp + th·hh, less than sample_event_tol below an event
-        // the probe placed, comes before it: every watched trigger still reads
-        // its recorded truth at tk, on the dense y (row_before_time_change,
-        // for this loop).
-        auto row_before_event = [&](double th, double tk) -> bool {
+        // the probe placed at th_ev, comes before it: every watched trigger
+        // still reads its recorded truth at tk (row_before_time_change, for
+        // this loop). The clock is read at tk, and the rate-rule state a
+        // bisection tolerance ahead, as the ODE run reads a row's state half a
+        // root tolerance ahead (#1133). The integral lands a few ulps either
+        // side of a crossing on the row, so `q' = 0.1; at (q >= 2.5)` with a
+        // row at 25 read q = 2.4999999999999933 or 2.5000000000000373 as the
+        // grid's end moved, and the row held the state before the event at
+        // t_end = 25, 27, 30, 50 and after it at 26, 40 (issue #1658). No
+        // further than the event itself. A trigger on the clock alone reads as
+        // before (`time > 25` holds the row at 25 before its event); one that
+        // compares the state with the clock reads them a tolerance apart, as
+        // the ODE run does, so `q' = 1; at (q > time)` with q == time, never
+        // met exactly, fires at the first row, under ODE as here.
+        auto row_before_event = [&](double th, double tk, double th_ev) -> bool {
             if (m > 0) {
-                dense_y(th, ytmp.data());
+                dense_y(std::min(th_ev, th + bisect_tol(tk) / hh), ytmp.data());
                 load_y(ytmp.data());
             }
             sync_state(tk);
@@ -3038,6 +3160,10 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
         // A firing that did not keep its panel: the next panel starts at its
         // time, rounded onto the run's clock (issue #1059, below).
         bool restarted_at_firing = false;
+        // How far the run's clock stands past that firing's exact time (below
+        // it when negative): the hazard of that stretch is owed to the next
+        // waiting time, which counts from the exact time (issue #1436).
+        double restart_lag = 0.0;
         constexpr int MAX_FLOOR_STEPS = 100;
         int floor_steps = 0; // panels accepted at hmin in a row
         constexpr long MAX_TINY_PANELS = 1000000;
@@ -3297,6 +3423,17 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
             // too, and loses part of a spacing each: issue #1436.)
             if (restarted_at_firing) {
                 restarted_at_firing = false;
+                // The next waiting time counts from the firing's exact time,
+                // tp + th_cut·hh; the panel starts at it rounded onto the run's
+                // clock. Counted from there, far from 0, each restart dropped
+                // or added that rounding, and dropped it where it mattered: a
+                // firing whose rounded time reaches the double where a trigger
+                // on the clock turns over drains that event and restarts, so
+                // the restarts that drain an event round up. 500 events a unit
+                // at t = 1e12 came back 2.27% slow (z = -17.6), with no error
+                // (issue #1436).
+                Hz += (A_s + A0) * restart_lag;
+                restart_lag = 0.0;
                 constexpr double kMaxFiringsPerSpacing = 0.1;
                 const double at = std::fabs(t);
                 const double spacing =
@@ -3380,6 +3517,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
                 }
             }
             double th_ev = 2.0;
+            double th_ev_state = -1.0; // the state's θ at th_ev, when not th_ev itself
             if (n_events > 0) {
                 // Each trigger at the remaining quarter points of the panel, on the
                 // dense y: the first interval in which any trigger leaves its
@@ -3425,6 +3563,34 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
                     }
                     th_prev = thq;
                 }
+                // The last row in the panel, where the state read a bisection
+                // tolerance ahead of it (row_before_event) is past the panel's
+                // end, which the look at the end above does not reach: a
+                // trigger that rises there is a change at the row, taken with
+                // the state ahead, as the ODE run fires it at a row (#1133).
+                // Read at the row only, q' = 0.1 left q(25) = 2.4999999999999933
+                // when the panel ended on the row or just past it, and the row
+                // held the state before `at (q >= 2.5)` (issue #1658).
+                if (m > 0) {
+                    int last = -1;
+                    for (int k = next_output; k < n_out && t_out[k] <= s1; ++k)
+                        last = k;
+                    const double tk = last >= 0 ? t_out[last] : 0.0;
+                    const double thk = last >= 0 ? (tk - tp) / hh : 2.0;
+                    if (last >= 0 && thk >= th0 && thk < th_ev && tk + bisect_tol(tk) > s1) {
+                        const double th_a = thk + bisect_tol(tk) / hh;
+                        dense_y(th_a, ytmp.data());
+                        load_y(ytmp.data());
+                        sync_state(tk);
+                        for (int ei : watched)
+                            if ((eval_ref.evaluate(events[ei].trigger_expr_idx) > 0.5) !=
+                                (trigger_was_true[ei] != 0)) {
+                                th_ev = thk;
+                                th_ev_state = th_a;
+                                break;
+                            }
+                    }
+                }
             }
             const bool event_first = th_ev <= 1.0 && th_ev <= th_fire;
             const bool fire_first = !event_first && th_fire <= 1.0;
@@ -3439,7 +3605,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
                 const bool before =
                     event_first
                         ? tk < s_cut - sample_event_tol(s_cut) ||
-                              (tk < s_cut && row_before_event((tk - tp) / hh, tk))
+                              (tk < s_cut && row_before_event((tk - tp) / hh, tk, th_cut))
                         : (fire_first ? tk < s_cut
                                       // A row at a delayed execution's
                                       // time reads its effect.
@@ -3448,8 +3614,22 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
                     break;
                 record_at(tk, (tk - tp) / hh);
             }
-            bank_dyn(th_cut);
-            Hz += A_s * (s_cut - t) + (L_at(th_cut) - L0);
+            // The hazard to where the loop goes on from. A firing goes on from
+            // th_cut, in the panel's θ, where the solve above put the hazard at
+            // E: the static part is counted in θ too, as the solve counts it;
+            // by the clock (A_s·(s_cut - t)) it could be a spacing's worth off E
+            // far from 0, and the excess carried below would be that. A move to
+            // a new panel goes on from the clock's double, s_cut or s1, so the
+            // hazard runs to that double, not to th_cut, which the double is
+            // only th_cut rounded, up to half a spacing of the doubles away. A
+            // bisected event sits where the clock its trigger reads turns over,
+            // about half a spacing below the double s_cut rounds to, and each
+            // event's restart lost that stretch of the dynamic hazard (issue
+            // #1436). Near 0 all of these agree to rounding.
+            const double s_end = event_first ? s_cut : s1;
+            const double th_s = fire_first ? th_cut : std::max(th0, (s_end - tp) / hh);
+            bank_dyn(th_s);
+            Hz += (fire_first ? A_s * hh * (th_cut - th0) : A_s * (s_end - t)) + (L_at(th_s) - L0);
 
             if (!event_first && !fire_first) {
                 // Nothing discrete in the panel: move to its end.
@@ -3483,7 +3663,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
 
             // Move to the change.
             if (m > 0) {
-                dense_y(th_cut, ytmp.data());
+                dense_y(event_first && th_ev_state >= 0.0 ? th_ev_state : th_cut, ytmp.data());
                 y = ytmp;
                 load_y(y.data());
             }
@@ -3504,8 +3684,14 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
                 continue;
             }
 
-            // A firing at t: which reaction, from the propensities at t.
-            Hz = 0.0;
+            // A firing at t: which reaction, from the propensities at t. The
+            // hazard past E goes on to the next waiting time, which counts from
+            // where the hazard reached E: after an event whose restart counted
+            // it to the double the event's time rounds to (th_s, above), it
+            // could be past E already, and the next panel fired at its start,
+            // where zeroing it dropped that stretch (issue #1436). Elsewhere it
+            // is E to the precision the firing is solved to.
+            Hz = std::max(0.0, Hz - E);
             E = draw_exp();
             double a_dyn = 0.0;
             for (int k = 0; k < nd; ++k) {
@@ -3588,6 +3774,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
             // this state: the next panel's start needs no second evaluation.
             synced = dep_graph.has_functional_rates;
             restarted_at_firing = true;
+            restart_lag = (s_cut - tp) - th_cut * hh;
         }
         // Rows at t_end not yet written (a row at exactly t_end whose panel
         // ended in an event).
@@ -3650,6 +3837,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
                                 result.record_expressions(next_output, fvals.data());
                                 pc_guard(t_out[next_output]);
                             }
+                            if (live_tags)
+                                relive_row(next_output, t_out[next_output], conc.data());
                             ++next_output;
                         }
                         if (next_output >= n_out)
@@ -3680,6 +3869,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
                         auto fvals = model.function_values();
                         result.record_expressions(next_output, fvals.data());
                         pc_guard(t_out[next_output]);
+                        if (live_tags)
+                            relive_row(next_output, t_out[next_output], conc.data());
                         ++next_output;
                     }
                     if (next_output >= n_out)
@@ -3713,6 +3904,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
                         result.record_expressions(next_output, fvals.data());
                         pc_guard(t_out[next_output]);
                     }
+                    if (live_tags)
+                        relive_row(next_output, t_out[next_output], conc.data());
                     ++next_output;
                 }
                 break;
@@ -3782,6 +3975,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
                     result.record_expressions(next_output, fvals.data());
                     pc_guard(t_out[next_output]);
                 }
+                if (live_tags)
+                    relive_row(next_output, t_out[next_output], conc.data());
                 ++next_output;
             }
 
@@ -3853,6 +4048,9 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
         for (int i = 0; i < ns; ++i) {
             species[i].concentration = conc[i];
         }
+        // What it holds is this run's storage: counts, read as such by the
+        // next SSA run, which continues from them (issue #1463).
+        model.set_ssa_counts_stored(true);
         // t_end itself: the next run continues from the time the last row
         // reports (issue #693).
         model.set_current_time(t == times.t_end ? times_in.t_end : origin + t);

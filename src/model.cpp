@@ -159,6 +159,9 @@ NetworkModel NetworkModel::clone() const {
     // (issue #79), or the clone's set_param() would re-resolve a parameter-named
     // IC over a baseline the original had already retired.
     copy.impl_->ic_baseline_saved = impl_->ic_baseline_saved;
+    // ...and whether the copied state and baseline are SSA counts (issue #1463).
+    copy.impl_->ssa_counts_stored = impl_->ssa_counts_stored;
+    copy.impl_->baseline_ssa_counts_stored = impl_->baseline_ssa_counts_stored;
 
     // Create evaluator that shares the parser with the original
     copy.impl_->evaluator = impl_->evaluator->clone_empty();
@@ -702,6 +705,9 @@ void NetworkModel::reset() {
     impl_->current_time = 0.0;
     // A fresh start for the events too (issue #693).
     clear_event_carry();
+    // The baseline's storage, a concentration unless it was saved from an SSA
+    // run's state (issue #1463).
+    impl_->ssa_counts_stored = impl_->baseline_ssa_counts_stored;
     // Back at the IC baseline. When that baseline is θ-independent (the literal
     // .net ICs) this is a fresh start: no carry-over, no pending seed (GH #210).
     // But save_concentrations() can have redefined the baseline to a
@@ -728,6 +734,7 @@ void NetworkModel::save_concentrations() {
     for (auto &s : impl_->species) {
         s.initial_conc = s.concentration;
     }
+    impl_->baseline_ssa_counts_stored = impl_->ssa_counts_stored; // issue #1463
     // The current state is now the baseline ICs, so a subsequent reset() returns
     // here. GH #81: the state itself did not change, so neither did its
     // θ-derivative — the new baseline INHERITS the carried dx/dθ (a BNG
@@ -814,6 +821,10 @@ void NetworkModel::set_state_from(const double *in) {
 // ─── Pre-equilibration / carry-over sensitivity state (GH #210) ──────────────
 
 bool NetworkModel::ic_state_dirty() const { return impl_->ic_state_dirty; }
+
+bool NetworkModel::ssa_counts_stored() const { return impl_->ssa_counts_stored; }
+
+void NetworkModel::set_ssa_counts_stored(bool stored) { impl_->ssa_counts_stored = stored; }
 
 void NetworkModel::set_ic_state_dirty(bool dirty) { impl_->ic_state_dirty = dirty; }
 

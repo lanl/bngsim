@@ -399,7 +399,9 @@ _DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
         "no Windows equivalent: process-group reaping, the /bin/sh fake "
         "interpreters the pybind11-resolution probe walks (GH #288), the "
         "peak RSS the GH #577 setup-failure probe reads from resource.getrusage, "
-        "and the /bin/sh stand-in gh the contributors check is tested through",
+        "the /bin/sh stand-in gh the contributors check is tested through, "
+        "the /bin/sh fake perl the BNG2.pl compile check is tested with, and the "
+        "working directory removed under it, which Windows refuses (#1761)",
     ),
     (
         "RLIMIT_AS",
@@ -488,7 +490,7 @@ _DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
     ("codegen compile unavailable", _LOCAL_ONLY, "same condition, reported from the codegen side"),
     ("no codegen backend available", _LOCAL_ONLY, "as above"),
     # libsbml is a HARD dependency in pyproject (`python-libsbml>=5.20`) and
-    # HAS_LIBSBML is a plain import check, so this cannot be a build variant — if
+    # HAS_LIBSBML tries the import when read, so this cannot be a build variant — if
     # it fires, the install is broken, and in CI a broken install must not pass.
     ("requires libsbml", _LOCAL_ONLY, "libsbml is a base dependency, not an extra"),
     # Numerics that a given host does not reproduce. Narrow on purpose: this is a
@@ -611,6 +613,22 @@ def _tier_of(reason: str) -> str | None:
     return None
 
 
+def _bng2_remedy(counts: dict[str, int]) -> list[str]:
+    """How this checkout gets BNG2.pl, if any skip was for want of one (GH #1692).
+
+    Every test needing BNG2.pl skips with the resolver's ``why_not()``, which names
+    the fix for a *wheel* install (``pip install 'bngsim[bngl]'``). In a uv venv
+    that is the wrong fix, since ``uv sync`` prunes it, so the summary adds the
+    checkout's remedy once. The text lives beside the resolver, so it is not
+    restated here.
+    """
+    try:
+        from bngsim._bngpath import _checkout_remedy
+    except Exception:  # a broken build has bigger problems than this footer
+        return []
+    return _checkout_remedy(r for r, n in counts.items() for _ in range(n))
+
+
 def _audit_skips(
     terminalreporter: object,
 ) -> tuple[dict[str, int], dict[str, int], dict[str, int]]:
@@ -676,6 +694,11 @@ def pytest_terminal_summary(
         write(" parametrized over the corpus contributes one skip however many models it")
         write(" would have covered. CI never has the corpus and neither does a worktree,")
         write(" so a green run from either says nothing about these paths (GH #192).")
+    bng2_lines = _bng2_remedy(counts)
+    if bng2_lines:
+        write("")
+        for line in bng2_lines:
+            write(line)
     if undeclared:
         write("")
         write(f" {len(undeclared)} undeclared skip reason(s), marked ?? above.")
@@ -842,6 +865,7 @@ def skip_audit() -> SimpleNamespace:
     """
     return SimpleNamespace(
         is_corpus_absence=_is_corpus_absence,
+        bng2_remedy=_bng2_remedy,
         declared_skips=_DECLARED_SKIPS,
         corpus_remedies=_CORPUS_REMEDIES,
         tier_of=_tier_of,
