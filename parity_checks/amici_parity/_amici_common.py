@@ -735,6 +735,8 @@ def nothing_compared(bn_names: list[str], am_names: list[str], dropped: list[str
     inf: a verdict against bngsim on a row where nothing was compared."""
     if not dropped or align_common(bn_names, am_names) is not None:
         return None
+    if align_common(bn_names, list(am_names) + list(dropped)) is None:
+        return None  # disjoint with or without them: the DIFF it always was
     return "no species left to compare: amount species with no certain compartment size: " + (
         ", ".join(dropped)
     )

@@ -321,3 +321,5 @@ def test_a_row_with_every_species_dropped_is_not_a_diff():
     assert ac.nothing_compared(["A"], [], ["A"]).startswith("no species left to compare")
     assert ac.nothing_compared(["A", "B"], ["B"], ["A"]) is None
     assert ac.nothing_compared(["A"], [], []) is None  # disjoint for another reason
+    # Disjoint even with the dropped species back: not theirs to blame.
+    assert ac.nothing_compared(["X"], ["Y"], ["Z"]) is None
