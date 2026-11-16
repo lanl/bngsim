@@ -133,8 +133,115 @@ def test_failure_names_every_mechanism_tried(monkeypatch):
     why = r.why_not()
     for mechanism in (bngpath.ENV_BNG2_PL, bngpath.ENV_BNGPATH, bngpath.BUNDLED):
         assert mechanism in why, f"{mechanism} missing from the failure message"
-    # and it must say what to DO about it
-    assert "--group parity" in why or "$BNGPATH" in why
+    # and it must say what to DO about it, in terms a wheel user can act on
+    assert "pip install 'bngsim[bngl]'" in why
+    assert "$BNGPATH" in why
+    # ...and nothing about the repository's own tooling, which a wheel user does
+    # not have (GH #1692): Model.from_bngl and capabilities() show this text.
+    assert "parity_checks" not in why
+    assert "uv sync" not in why
+
+
+def test_require_bng_adds_the_parity_hint_for_developers(monkeypatch):
+    """The ``--group parity`` advice lives where only a sweep entrypoint shows it.
+
+    It moved out of ``why_not()`` for GH #1692; ``require_bng`` is the
+    ``parity_checks/`` abort path, so a developer still gets it there.
+    """
+    from _core import bngpath as core_bngpath
+
+    monkeypatch.delenv("BNG2_PL", raising=False)
+    monkeypatch.delenv("BNGPATH", raising=False)
+    monkeypatch.setattr(bngpath, "_bundled_bngpath", lambda: (None, "not installed"))
+
+    with pytest.raises(SystemExit) as exc:
+        core_bngpath.require_bng("running a sweep")
+    msg = str(exc.value.code)
+    assert msg.startswith("ABORT: running a sweep")
+    assert "$BNGPATH" in msg
+    assert "uv sync --extra dev --group parity" in msg
+
+
+def test_require_bng_omits_the_parity_hint_when_only_perl_is_missing(monkeypatch, fake_bng):
+    """A found BNG2.pl with no perl needs perl, not a different PyBioNetGen."""
+    from _core import bngpath as core_bngpath
+
+    monkeypatch.setenv("BNG2_PL", fake_bng("present"))
+    monkeypatch.setattr(bngpath.shutil, "which", lambda n, *a, **k: None)
+
+    with pytest.raises(SystemExit) as exc:
+        core_bngpath.require_bng("running a sweep")
+    msg = str(exc.value.code)
+    assert "perl" in msg
+    assert "--group parity" not in msg
+
+
+def test_checkout_remedy_counts_misses_and_ignores_a_missing_perl(monkeypatch, fake_bng):
+    """The skip-summary footer fires on the resolver's own miss text only (GH #1692).
+
+    Built from real ``why_not()`` output, so a rewording of that message that
+    drops ``_NOT_FOUND`` fails here instead of silently emptying the footer.
+    """
+    monkeypatch.delenv("BNG2_PL", raising=False)
+    monkeypatch.delenv("BNGPATH", raising=False)
+    monkeypatch.setattr(bngpath, "_bundled_bngpath", lambda: (None, "not installed"))
+    miss = f"BNG2.pl unavailable: {bngpath.resolve_bng().why_not()}"
+
+    monkeypatch.setenv("BNG2_PL", fake_bng("present"))
+    monkeypatch.setattr(bngpath.shutil, "which", lambda n, *a, **k: None)
+    no_perl = f"BNG2.pl unavailable: {bngpath.resolve_bng().why_not()}"
+
+    lines = bngpath._checkout_remedy([miss, miss, no_perl, "could not import h5py"])
+    assert lines[0].startswith(" 2 test(s) did not run")
+    assert any("uv sync --extra dev --group parity" in line for line in lines)
+    assert bngpath._checkout_remedy([no_perl, "could not import h5py"]) == []
+
+
+def test_parity_skip_summary_prints_the_checkout_remedy(monkeypatch):
+    """The parity suite's own footer reads real skip reports (GH #1692).
+
+    A skip's ``longrepr`` is a ``(path, lineno, "Skipped: reason")`` tuple; the
+    hook must still find the reason in it, and print nothing when none is a miss.
+    """
+    import importlib.util
+    import sys
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    spec = importlib.util.spec_from_file_location(
+        "_parity_tests_conftest", Path(__file__).with_name("conftest.py")
+    )
+    assert spec is not None and spec.loader is not None
+    conftest = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(conftest)
+
+    miss = bngpath.BngResolution(None, None, None, (("$BNGPATH", "unset"),), True).why_not()
+
+    def reporter(*reasons):
+        out: list[str] = []
+        skipped = [SimpleNamespace(longrepr=("t.py", 1, f"Skipped: {r}")) for r in reasons]
+        return out, SimpleNamespace(
+            stats={"skipped": skipped},
+            write_sep=lambda sep, title: out.append(f"== {title}"),
+            write_line=out.append,
+        )
+
+    out, rep = reporter(f"BNG2.pl unavailable: {miss}", "could not import h5py")
+    conftest.pytest_terminal_summary(rep)
+    assert out[0] == "== BNG2.pl"
+    assert out[1].startswith(" 1 test(s) did not run")
+    assert any("uv sync --extra dev --group parity" in line for line in out)
+
+    out, rep = reporter("could not import h5py")
+    conftest.pytest_terminal_summary(rep)
+    assert out == []
+
+    # A bngsim that cannot import must not turn the summary into an INTERNALERROR
+    # on top of the collection errors that already report it.
+    monkeypatch.setitem(sys.modules, "bngsim._bngpath", None)  # import now raises
+    out, rep = reporter(f"BNG2.pl unavailable: {miss}")
+    conftest.pytest_terminal_summary(rep)
+    assert out == []
 
 
 def test_skip_reason_is_none_when_usable(monkeypatch, fake_bng):

@@ -124,6 +124,10 @@ struct Species {
     // compartment species holding V_live; volume_factor is V_static. Read only
     // by the SSA/PSA event path.
     int ssa_live_volume_idx0 = -1;
+    // The same for a species in a compartment an assignment rule sizes (issues
+    // #1464, #1659), which has no state slot: when >= 0, the 0-based index of
+    // the parameter the rule's function writes the size into.
+    int ssa_live_volume_param_idx0 = -1;
 
     // GH #231 (rateOf sub-cluster 3) — when true, the SBML ``rateOf`` csymbol for
     // this species reports d(amount)/dt, NOT the stored d(conc)/dt the rateOf

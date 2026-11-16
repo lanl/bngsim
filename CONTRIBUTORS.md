@@ -6,4 +6,5 @@ Listed alphabetically by family name, with GitHub handle.
 - Arpit Jain (@arpitjain099)
 - Michael Mendy (@Montana)
 - Ely F. Miller (@elyfmiller)
+- Richard G. Posner (@richardposner)
 - Guan Tong (@happykawayigt)

@@ -21,7 +21,17 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import IO
 
-import libsbml
+try:
+    import libsbml
+except ImportError as _exc:
+    # python-libsbml is a base dependency, so this is a package that is present
+    # and whose compiled module did not load: on a slim container image, its
+    # Linux wheel's system expat library is missing (issue #1760). Say so, and
+    # what fixes it, instead of the bare "libexpat.so.1: cannot open shared
+    # object file" from inside libsbml.
+    from bngsim._libsbml_import import libsbml_import_failure
+
+    raise libsbml_import_failure(_exc) from _exc
 
 from bngsim import _sbml_unsupported
 from bngsim._switch_sensitivity import _ATOMIC_TOKEN, _condition_key, _fully_parenthesised
@@ -3494,11 +3504,20 @@ def _import_antimony():
     """
     try:
         import antimony as ant
-    except ImportError:
+    except ImportError as exc:
+        if isinstance(exc, ModuleNotFoundError) and exc.name == "antimony":
+            raise ImportError(
+                "The 'antimony' package is required to load Antimony models. "
+                "Install with: pip install 'bngsim[antimony]'"
+            ) from None
+        # The package is there and did not load (a shared library it needs is
+        # missing, say). Telling the caller to install it would send them to
+        # something they have; relay the cause instead (issue #1760).
         raise ImportError(
-            "The 'antimony' package is required to load Antimony models. "
-            "Install with: pip install 'bngsim[antimony]'"
-        ) from None
+            f"antimony is installed, but its compiled module could not be loaded: {exc}. "
+            "A shared library it needs is missing from this system, or the module was "
+            "built for another Python; `python -c 'import antimony'` shows the same failure."
+        ) from exc
     return ant
 
 
@@ -11385,6 +11404,21 @@ def _build_model_from_sbml_doc_in_context(doc):
             and species_idx.get(_cid) is not None
         ):
             builder.set_species_ssa_live_volume(species_idx[_sid], species_idx[_cid])
+    # (#1464, #1659) The same species in a compartment an assignment rule sizes,
+    # which has no state slot: its size is the parameter the rule's function
+    # writes. Without it an event's concentration was stored over the load-time
+    # size, and the reported observables and expressions read the stored count
+    # over it, under SSA (S = 50 at t = 2 in c := 1 + time read 12.5 for 37.5).
+    for _sid in sorted(ar_dilution_species):
+        _cid = species_comp.get(_sid)
+        if (
+            _cid in comp_param_idx
+            and _sid in species_idx
+            and not species_hosu.get(_sid, False)
+            and _sid not in rate_rule_targets
+            and _sid not in assignment_targets
+        ):
+            builder.set_species_ssa_live_volume_param(species_idx[_sid], comp_param_idx[_cid])
     for _sp_idx, _comp_id in ode_xcomp_species_fixups:
         _live_idx0 = species_idx.get(_comp_id)
         if _live_idx0 is None:

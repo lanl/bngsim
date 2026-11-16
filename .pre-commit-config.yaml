@@ -167,7 +167,7 @@ repos:
         pass_filenames: false
         stages: [manual]
       - id: local-ci-matrix
-        name: local CI — wheel matrix cp310-cp313 (uv, native arch)
+        name: local CI — wheel matrix cp310-cp315 (uv, native arch)
         entry: uv run python scripts/local_ci.py matrix
         language: system
         pass_filenames: false

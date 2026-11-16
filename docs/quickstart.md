@@ -2,8 +2,35 @@
 
 ## Load a model and simulate
 
+The block below runs as written after `pip install bngsim`. It first writes
+the model it loads, a two-species network in BioNetGen's `.net` format, so no
+file is needed beforehand; with a `.net` of your own, start at `from_net`.
+
 ```python
+from pathlib import Path
+
 import bngsim
+
+# A -> B at rate k, in BioNetGen's network (.net) format.
+Path("model.net").write_text(
+    """\
+begin parameters
+    1 k 0.5
+end parameters
+begin species
+    1 A() 100
+    2 B() 0
+end species
+begin reactions
+    1 1 2 k
+end reactions
+begin groups
+    1 A 1
+    2 B 2
+end groups
+""",
+    encoding="utf-8",
+)
 
 # Load a BioNetGen .net file
 model = bngsim.Model.from_net("model.net")
@@ -12,12 +39,13 @@ model = bngsim.Model.from_net("model.net")
 sim = bngsim.Simulator(model, method="ode")
 
 # Run simulation
-result = sim.run(t_span=(0, 100), n_points=101)
+result = sim.run(t_span=(0, 10), n_points=101)
 
 # Access results as NumPy arrays
 print(result.time.shape)          # (101,)
-print(result.species.shape)       # (101, n_species)
-print(result.observables.shape)   # (101, n_observables)
+print(result.species.shape)       # (101, 2): one column per species, in model.species_names order
+print(result.observables.shape)   # (101, 2): one column per observable, "A" and "B"
+print(round(float(result.observables["A"][-1]), 4))  # 0.6738, which is 100 * exp(-5)
 ```
 
 ## Other model formats
@@ -43,16 +71,16 @@ See [Loading models](user-guide/loading-models.md) for the full picture.
 ## Parameter sweeps
 
 ```python
-# Update parameters in-memory (no file I/O)
-model.set_param("kf", 0.5)
-model.set_param("kr", 0.1)
+# Update parameters in-memory (no file I/O). The next run goes on from the
+# state the last one ended in, not from the initial conditions.
+model.set_param("k", 1.0)
 result2 = sim.run(t_span=(0, 100), n_points=101)
 
 # Reset species to initial conditions
 model.reset()
 
-# Set multiple parameters at once
-model.set_params({"kf": 1.0, "kr": 0.2, "kcat": 5.0})
+# Set several parameters at once from a dict (this model has one, k)
+model.set_params({"k": 0.25})
 ```
 
 ## Stochastic simulation (SSA)
