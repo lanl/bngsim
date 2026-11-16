@@ -3166,6 +3166,58 @@ def _guard_zero_base(deriv):
     return deriv if _folds_nonfinite(guarded) else guarded
 
 
+# The engine's rint, mod and frac, which numpy and sympy each define otherwise
+# (issue #1800). ``rint`` is BNG's floor(x + 0.5), a half rounded up
+# (expr_compat::rint in src/expression.cpp, issue #771), where numpy's rint
+# rounds a half to even; ``mod`` is ExprTk's std::fmod, whose sign follows the
+# first argument, where numpy's mod is floored; ``frac`` is ExprTk's
+# x - trunc(x), where sympy's frac is x - floor(x). The C twin and the JAX RHS
+# already read them so; a derived parameter's value and partials read them
+# here, so a seed takes the value the run starts from.
+_ENGINE_ROUNDING_NUMPY = {
+    "__bngsim_rint__": lambda x: __import__("numpy").floor(x + 0.5),
+    "__bngsim_fmod__": lambda a, b: __import__("numpy").fmod(a, b),
+    "__bngsim_frac__": lambda x: x - __import__("numpy").trunc(x),
+}
+
+
+def _engine_rounding(expr, *, closed_form: bool):
+    """*expr* with each ``rint``, ``mod`` and ``frac`` read as the engine reads it.
+
+    ``closed_form`` writes them out in sympy's own functions, for ``evalf``;
+    otherwise they become calls :data:`_ENGINE_ROUNDING_NUMPY` binds, for
+    ``lambdify``, where numpy computes ``fmod`` exactly as C does."""
+    import sympy as sp
+
+    def trunc(z):
+        return sp.sign(z) * sp.floor(sp.Abs(z))
+
+    def name_of(node):
+        if isinstance(node, sp.frac):
+            return "frac"
+        func = getattr(node, "func", None)
+        name = getattr(func, "__name__", None) if isinstance(node, sp.Function) else None
+        return name if name in ("rint", "mod") else None
+
+    def rewrite(node):
+        name, args = name_of(node), node.args
+        if name == "rint" and len(args) == 1:
+            if closed_form:
+                return sp.floor(args[0] + sp.S.Half)
+            return sp.Function("__bngsim_rint__")(args[0])
+        if name == "mod" and len(args) == 2:
+            if closed_form:
+                return args[0] - args[1] * trunc(args[0] / args[1])
+            return sp.Function("__bngsim_fmod__")(*args)
+        if name == "frac" and len(args) == 1:
+            if closed_form:
+                return args[0] - trunc(args[0])
+            return sp.Function("__bngsim_frac__")(args[0])
+        return node
+
+    return expr.replace(lambda node: name_of(node) is not None, rewrite)
+
+
 def _partial_value(deriv, subs: dict) -> float:
     """*deriv* at the point *subs*, in IEEE double arithmetic, as the C twin
     computes it (issue #720).
@@ -3186,13 +3238,17 @@ def _partial_value(deriv, subs: dict) -> float:
 
     syms = sorted(deriv.free_symbols, key=str)
     try:
-        fn = sp.lambdify(syms, deriv, modules="numpy")
+        fn = sp.lambdify(
+            syms,
+            _engine_rounding(deriv, closed_form=False),
+            modules=[_ENGINE_ROUNDING_NUMPY, "numpy"],
+        )
         with np.errstate(all="ignore"):
             # numpy scalars, not Python floats: `0.0 ** -0.5` raises in Python
             # and is inf in numpy, as in C.
             return float(fn(*[np.float64(subs[s]) for s in syms]))
     except Exception:  # noqa: BLE001 - the sympy route below says why, if it fails
-        return float(deriv.subs(subs).evalf())
+        return float(_engine_rounding(deriv, closed_form=True).subs(subs).evalf())
 
 
 def _tie_weighted(prep):
@@ -3582,7 +3638,7 @@ def _derived_expr_value_numeric(
         # `sympify` of a sympy expression is the identity; it is here so the
         # `.subs` below type-checks against `_PreparedDerivedExpr.sym_expr`,
         # which the other two callers only ever hand to `sp.diff`.
-        value = sympy.sympify(prep.sym_expr).subs(subs).evalf()
+        value = _engine_rounding(sympy.sympify(prep.sym_expr), closed_form=True).subs(subs).evalf()
         try:
             return float(value)
         except TypeError:

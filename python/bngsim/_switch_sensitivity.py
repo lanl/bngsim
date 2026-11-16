@@ -10106,6 +10106,14 @@ def _double_printer():
         def _print_Float(self, expr):
             return repr(float(expr))
 
+        def _print_frac(self, expr):
+            # ExprTk's frac, x - trunc(x) (issue #1800). The base printer wrote
+            # `x % 1`, which is x - floor(x): 0.5 for -0.5, where the engine has
+            # -0.5. int() truncates a finite double exactly; inf and nan raise,
+            # so such a value is one this route cannot read.
+            x = self._print(expr.args[0])
+            return f"(({x}) - float(int({x})))"
+
     return _DoublePrinter
 
 
