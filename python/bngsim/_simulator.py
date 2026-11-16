@@ -7560,6 +7560,10 @@ class Simulator:
                         scan_rtol,
                         where="parameter_scan(atol=...)",
                     )
+            # The warning below writes the scanned parameter (to the scan's values
+            # and one more), and the reset at the first point puts it back: it
+            # comes after the tolerance above is read, which reads the model as
+            # the scan found it.
             if reset_conc and on_point is None:  # a hook may be what doses them
                 _reset_point()
                 self._warn_if_the_scan_drops_a_dose(
