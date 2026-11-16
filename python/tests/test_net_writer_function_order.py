@@ -235,3 +235,16 @@ def test_a_block_in_order_with_a_self_read_is_kept_and_warned():
     pairs = [("x", "x0 + 0*x"), ("y", "x*3")]
     with pytest.warns(bngsim.ConversionWarning, match="read each other, or themselves"):
         assert _order(pairs) == ["x", "y"]
+
+
+def test_a_dotted_name_is_read_whole():
+    # ExprTk reads R1.k as one name: it is no read of a function named k.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # split, k "read" itself: a false self-read
+        assert _order([("k", "R1.k*2"), ("y", "x"), ("x", "1")]) == ["k", "x", "y"]
+
+
+def test_a_name_written_twice_is_read_as_its_first_copy():
+    # The `_vd_` copies: a reader of the first is in order, and stays where it is.
+    pairs = [("_vd", "2"), ("r1", "_vd*k"), ("_vd", "2")]
+    assert _order(pairs) == ["_vd", "r1", "_vd"]

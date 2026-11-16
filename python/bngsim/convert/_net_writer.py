@@ -534,9 +534,12 @@ def _expand_functional_reactions(
 
 
 # A name as the .net loader reads one, ASCII (``is_bare_identifier`` in
-# src/net_file_loader.cpp, and SBML ids are ASCII too), and a number, read whole
-# so that the exponent of ``2e5`` is no name ``e5``.
-_READ_TOKEN = re.compile(r"(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?|[A-Za-z_][A-Za-z0-9_]*")
+# src/net_file_loader.cpp, and SBML ids are ASCII too), dotted parts and all
+# (ExprTk reads ``R1.k`` as one name, not ``R1`` and ``k``), and a number, read
+# whole so that the exponent of ``2e5`` is no name ``e5``.
+_READ_TOKEN = re.compile(
+    r"(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?|[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*"
+)
 
 
 def _components(edges: list[set[int]]) -> list[list[int]]:
@@ -623,7 +626,10 @@ def _functions_in_dependency_order(functions: list, *, model_name: str = "model"
     """
     import heapq
 
-    index = {name: i for i, (name, _) in enumerate(functions)}
+    index: dict[str, int] = {}
+    for i, (name, _) in enumerate(functions):
+        # A name written twice (the `_vd_` copies) is read as its first copy.
+        index.setdefault(name, i)
     reads = [
         {index[t] for t in _READ_TOKEN.findall(str(expr)) if t in index} for _, expr in functions
     ]
@@ -824,8 +830,9 @@ def write_net(
     lines.append("end groups")
     lines.append("")
 
-    # functions — originals, then per-species flux helpers, then any synthesized
-    # reaction wrappers, each expression one field
+    # functions — the originals, the per-species flux helpers and any synthesized
+    # reaction wrappers, each after the functions it reads (issue #1791), each
+    # expression one field
     if functions or flux_helpers or wrappers:
         lines.append("begin functions")
         # The helpers and wrappers read the model's functions; sorted with them,
