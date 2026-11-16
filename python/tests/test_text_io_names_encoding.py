@@ -1,15 +1,20 @@
 """bngsim reads and writes text as UTF-8, whatever the locale (issue #1665).
 
-The package opened model and protocol text without naming an encoding, at 19
-places, so Python used the locale's. A ``.bngl``, a SED-ML document or an
-exported file that is valid UTF-8 failed to load where the locale is ASCII
+The package opened text, and decoded the output of the programs it runs,
+without naming an encoding, at 33 places, so Python used the locale's. A
+``.bngl``, a SED-ML document or an exported file that is valid UTF-8 failed to
+load where the locale is ASCII
 (``UnicodeDecodeError``), and was read with other characters where it is
 Latin-1 or Windows' cp1252. Of the 895 BNGL files in the parity models, 83 hold
 a non-ASCII character, often an em dash in a comment.
 
 Each now names ``encoding="utf-8"``. The guard below keeps it so: it reads the
-package's source and fails on any text-mode ``open``, ``read_text``,
-``write_text`` or temporary file that names no encoding. Ruff's PLW1514 says
+package's source and fails on any text-mode ``open`` (the builtin, ``io.open``,
+``os.fdopen``, and ``gzip``/``bz2``/``lzma`` in a text mode), ``read_text``,
+``write_text``, temporary file or ``subprocess`` call decoded as text that
+names no encoding. It cannot tell ``path.open()`` from the binary ``open`` of
+a zip or tar member, so it does not look at ``.open`` on other objects; the
+package has none. Ruff's PLW1514 says
 the same, but only in preview mode, which also changes how stable rules read
 this package (F822 on ``HAS_BNGL``), so the check is a test.
 
@@ -42,6 +47,8 @@ pytestmark = pytest.mark.skipif(
 )
 
 _TEMPFILES = {"NamedTemporaryFile", "TemporaryFile", "SpooledTemporaryFile"}
+_SUBPROCESS = {"run", "Popen", "check_output", "check_call", "call"}
+_COMPRESSED = {"gzip", "bz2", "lzma"}
 
 
 def _mode(call: ast.Call, position: int) -> str | None:
@@ -55,37 +62,63 @@ def _mode(call: ast.Call, position: int) -> str | None:
     return None
 
 
+def _names_an_encoding(call: ast.Call, position: int | None) -> bool:
+    """An ``encoding=`` that is not ``None``, or one given by position."""
+    for kw in call.keywords:
+        if kw.arg == "encoding":
+            return not (isinstance(kw.value, ast.Constant) and kw.value.value is None)
+    return position is not None and len(call.args) > position
+
+
+def _imported(tree: ast.AST) -> dict[str, tuple[str, str]]:
+    """Local name -> (module, name) for ``from subprocess/tempfile/io import ...``."""
+    names = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module in ("subprocess", "tempfile", "io"):
+            for alias in node.names:
+                names[alias.asname or alias.name] = (node.module, alias.name)
+    return names
+
+
 def unnamed_text_io(source: str) -> list[int]:
     """Lines of *source* with a text-mode open that names no encoding."""
+    tree = ast.parse(source)
+    imported = _imported(tree)
     out = []
-    for node in ast.walk(ast.parse(source)):
-        if not isinstance(node, ast.Call) or any(kw.arg == "encoding" for kw in node.keywords):
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
             continue
         func = node.func
-        if isinstance(func, ast.Name) and func.id == "open":
+        if isinstance(func, ast.Name):
+            module, name = imported.get(func.id, ("builtins", func.id))
+        elif isinstance(func, ast.Attribute):
+            module = func.value.id if isinstance(func.value, ast.Name) else "?"
+            name = func.attr
+        else:
+            continue
+        encoding_at = None  # where an encoding may be given by position
+        if name == "open" and module in ("builtins", "io") or name == "fdopen" and module == "os":
             mode = _mode(node, 1)
-            text = mode is None or "b" not in mode
-        elif isinstance(func, ast.Attribute) and func.attr in ("read_text", "write_text"):
+            text, encoding_at = mode is None or "b" not in mode, 3
+        elif name == "open" and module in _COMPRESSED:
+            mode = _mode(node, 1)
+            text = mode is not None and "t" in mode  # the default mode is binary
+        elif name in ("read_text", "write_text") and isinstance(func, ast.Attribute):
             text = True
-        elif isinstance(func, ast.Attribute) and func.attr in _TEMPFILES:
+        elif name in _TEMPFILES and module in ("tempfile", "?"):
             mode = _mode(node, 0)
             text = mode is not None and "b" not in mode  # the default mode is binary
-        elif (
-            isinstance(func, ast.Attribute)
-            and func.attr in ("run", "Popen", "check_output")
-            and isinstance(func.value, ast.Name)
-            and func.value.id == "subprocess"
-        ):
+        elif name in _SUBPROCESS and module == "subprocess":
             # Output decoded as text: BNG2.pl echoes a model's lines in its errors.
+            # A value that is not a literal may be true, so it counts.
             text = any(
                 kw.arg in ("text", "universal_newlines")
-                and isinstance(kw.value, ast.Constant)
-                and kw.value.value is True
+                and not (isinstance(kw.value, ast.Constant) and not kw.value.value)
                 for kw in node.keywords
             )
         else:
             continue
-        if text:
+        if text and not _names_an_encoding(node, encoding_at):
             out.append(node.lineno)
     return out
 
@@ -114,10 +147,17 @@ def test_every_text_open_in_the_package_names_an_encoding():
         "tempfile.NamedTemporaryFile(mode='w+')",
         "subprocess.run(cmd, capture_output=True, text=True)",
         "subprocess.check_output(cmd, universal_newlines=True)",
+        "subprocess.run(cmd, text=flag)",  # not a literal: it may be true
+        "from subprocess import run\nrun(cmd, text=True)",
+        "from tempfile import NamedTemporaryFile as T\nT('w')",
+        "open(p, encoding=None)",
+        "io.open(p)",
+        "os.fdopen(fd, 'w')",
+        "gzip.open(p, 'rt')",
     ],
 )
 def test_the_guard_finds_a_text_open_without_an_encoding(snippet):
-    assert unnamed_text_io(snippet) == [1]
+    assert unnamed_text_io(snippet) == [snippet.count("\n") + 1]
 
 
 @pytest.mark.parametrize(
@@ -134,6 +174,12 @@ def test_the_guard_finds_a_text_open_without_an_encoding(snippet):
         "zipfile.ZipFile(p).open('a')",
         "subprocess.run(cmd, capture_output=True)",  # bytes
         "subprocess.run(cmd, text=True, encoding='utf-8', errors='replace')",
+        "subprocess.run(cmd, text=False)",
+        "open(p, 'r', -1, 'utf-8')",  # the encoding by position
+        "os.fdopen(fd, 'wb')",
+        "gzip.open(p)",  # binary by default
+        "gzip.open(p, 'rt', encoding='utf-8')",
+        "tarfile.open(p)",
     ],
 )
 def test_the_guard_leaves_binary_and_named_opens_alone(snippet):
@@ -168,7 +214,7 @@ CHILD = textwrap.dedent(
     warnings.simplefilter("ignore")
     import bngsim
     from bngsim.convert import parse_bngl_protocol, read_sedml_protocol, write_sedml_protocol
-    enc = locale.getencoding().lower().replace("-", "")
+    enc = locale.getpreferredencoding(False).lower().replace("-", "")  # 3.10 has no getencoding
     assert enc in ("usascii", "ascii", "ansi_x3.41968"), enc
     path = sys.argv[1]
     model = bngsim.Model.from_bngl(path)
@@ -205,8 +251,9 @@ CHILD_BNG2_ERROR = textwrap.dedent(
         bngsim.Model.from_bngl(sys.argv[1])
     except UnicodeDecodeError as e:
         print("decode error:", e); sys.exit(1)
-    except Exception as e:
-        print("refused:", type(e).__name__); sys.exit(0)
+    except bngsim.ModelError as e:
+        # ascii(): the message holds the em dash, and this locale cannot print it.
+        print("refused:", ascii(str(e))); sys.exit(0)
     print("loaded"); sys.exit(2)
     """
 )
@@ -233,6 +280,8 @@ def test_bng2pls_error_with_a_non_ascii_line_is_reported_not_a_decode_error(tmp_
         timeout=300,
     )
     assert done.returncode == 0, done.stdout + done.stderr
+    # BNG2.pl's own refusal, with the line it refused: not some other failure.
+    assert "ABORT" in done.stdout and "\\u2014 not a value" in done.stdout, done.stdout
 
 
 @pytest.mark.skipif(
@@ -261,3 +310,29 @@ def test_a_utf8_bngl_and_its_sedml_round_trip_under_an_ascii_locale(tmp_path):
     )
     assert done.returncode == 0, done.stdout + done.stderr
     assert done.stdout.strip().endswith("ok")
+
+
+@pytest.mark.skipif(
+    not (os.environ.get("BNGPATH") and shutil.which("perl")), reason="needs BNG2.pl on BNGPATH"
+)
+def test_a_bngl_with_a_byte_that_is_not_utf8_reaches_bng2pl_as_it_is(tmp_path):
+    # A file an older editor saved as Latin-1: 0xB5 (the micro sign) in two
+    # comments is no UTF-8. BNG2.pl reads bytes and skips comments, so the model
+    # loads; read strictly as UTF-8 it was a bare UnicodeDecodeError before
+    # BNG2.pl ran. The comment on the parameter's line is kept in the copy BNG2.pl
+    # is given, and in the cache key, so both must carry the byte too.
+    import bngsim
+
+    legacy = tmp_path / "legacy.bngl"
+    text = BNGL.encode("utf-8").replace(b"\xe2\x80\x94", b"\xb5M")
+    legacy.write_bytes(text.replace(b"  k 1\n", b"  k 1 # per \xb5M\n"))
+    assert legacy.read_bytes().count(b"\xb5") == 2
+    model = bngsim.Model.from_bngl(str(legacy))
+    assert model.n_species == 1
+
+
+def test_compiler_output_is_read_as_utf8_off_windows():
+    from bngsim import _codegen_toolchain
+
+    expected = "mbcs" if os.name == "nt" else "utf-8"
+    assert expected == _codegen_toolchain.TOOL_OUTPUT_ENCODING

@@ -5571,7 +5571,7 @@ def _run_compile(
             text=True,
             start_new_session=True,
             pass_fds=(watch_r,),
-            encoding="utf-8",
+            encoding=_toolchain.TOOL_OUTPUT_ENCODING,
             errors="replace",
         )
     except BaseException:
@@ -5626,7 +5626,7 @@ def _run_compile_unsupervised(
         stderr=subprocess.PIPE,
         text=True,
         **popen_kwargs,
-        encoding="utf-8",
+        encoding=_toolchain.TOOL_OUTPUT_ENCODING,
         errors="replace",
     )
     try:
