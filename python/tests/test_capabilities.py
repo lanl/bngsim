@@ -236,7 +236,9 @@ class TestCapabilitiesMissingExplanations:
         assert caps["features"]["lapack_dense"] is False
 
     def test_missing_libsbml_explanation(self, monkeypatch):
-        monkeypatch.setattr(bngsim, "HAS_LIBSBML", False)
+        monkeypatch.setattr(
+            bngsim, "_libsbml_status", lambda: "optional dependency 'python-libsbml' not installed"
+        )
         caps = bngsim.capabilities()
         for key in ("libsbml", "sbml_import", "sbml_ssa", "sbml_psa"):
             assert "python-libsbml" in caps["missing"][key]
@@ -259,7 +261,7 @@ class TestCapabilitiesMissingExplanations:
 
     def test_antimony_import_needs_both(self, monkeypatch):
         monkeypatch.setattr(bngsim, "HAS_ANTIMONY", False)
-        monkeypatch.setattr(bngsim, "HAS_LIBSBML", True)
+        monkeypatch.setattr(bngsim, "_libsbml_status", lambda: None)
         caps = bngsim.capabilities()
         assert caps["features"]["antimony_import"] is False
         assert "antimony" in caps["missing"]["antimony_import"]
@@ -267,7 +269,9 @@ class TestCapabilitiesMissingExplanations:
 
     def test_antimony_import_needs_libsbml(self, monkeypatch):
         monkeypatch.setattr(bngsim, "HAS_ANTIMONY", True)
-        monkeypatch.setattr(bngsim, "HAS_LIBSBML", False)
+        monkeypatch.setattr(
+            bngsim, "_libsbml_status", lambda: "optional dependency 'python-libsbml' not installed"
+        )
         caps = bngsim.capabilities()
         assert caps["features"]["antimony_import"] is False
         # antimony_import gets a libsbml-only message; antimony itself
@@ -277,7 +281,9 @@ class TestCapabilitiesMissingExplanations:
 
     def test_antimony_import_needs_both_when_both_missing(self, monkeypatch):
         monkeypatch.setattr(bngsim, "HAS_ANTIMONY", False)
-        monkeypatch.setattr(bngsim, "HAS_LIBSBML", False)
+        monkeypatch.setattr(
+            bngsim, "_libsbml_status", lambda: "optional dependency 'python-libsbml' not installed"
+        )
         caps = bngsim.capabilities()
         msg = caps["missing"]["antimony_import"]
         assert "antimony" in msg
@@ -287,7 +293,7 @@ class TestCapabilitiesMissingExplanations:
         monkeypatch.setattr(bngsim, "HAS_NFSIM", True)
         monkeypatch.setattr(bngsim, "HAS_RULEMONKEY", True)
         monkeypatch.setattr(bngsim, "HAS_KLU", True)
-        monkeypatch.setattr(bngsim, "HAS_LIBSBML", True)
+        monkeypatch.setattr(bngsim, "_libsbml_status", lambda: None)
         monkeypatch.setattr(bngsim, "HAS_ANTIMONY", True)
         monkeypatch.setattr(bngsim, "HAS_VIVARIUM", True)
         # HAS_MIR is a COMPILED flag (the MIR micro-JIT is an OFF-by-default
