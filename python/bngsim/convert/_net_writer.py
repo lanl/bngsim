@@ -533,6 +533,54 @@ def _expand_functional_reactions(
 # ─── Writer ───────────────────────────────────────────────────────────────
 
 
+def _functions_in_dependency_order(functions: list) -> list:
+    """*functions* with each one after the functions it reads (issue #1791).
+
+    BioNetGen's ``run_network`` reads a ``.net`` functions block top to bottom
+    and refuses a function that reads one defined below it ("Could not find
+    variable"). The model holds its functions in declaration order, which for
+    an SBML model is its assignment rules' order, and a rule may read one listed
+    after it. bngsim reads such a file, sorting on load, so its own reload could
+    not see this.
+
+    A function reads the functions whose names its written expression holds, as
+    ``run_network`` reads them. The sort is stable: of the functions whose reads
+    are all placed, the one declared first goes next, so a block already in order
+    is written as it was, line for line. Functions that read each other in a
+    cycle have no such order: the block is written as declared, as before, for
+    the reader to refuse.
+    """
+    import heapq
+
+    index = {f["name"]: i for i, f in enumerate(functions)}
+    reads = [
+        {
+            index[t]
+            for t in re.findall(r"[A-Za-z_]\w*", str(f["expression"]))
+            if index.get(t, i) != i
+        }
+        for i, f in enumerate(functions)
+    ]
+    readers: list[list[int]] = [[] for _ in functions]
+    for i, deps in enumerate(reads):
+        for j in deps:
+            readers[j].append(i)
+    waiting = [len(deps) for deps in reads]
+    ready = [i for i, n in enumerate(waiting) if n == 0]
+    heapq.heapify(ready)
+    order = []
+    while ready:
+        i = heapq.heappop(ready)
+        order.append(i)
+        for r in readers[i]:
+            waiting[r] -= 1
+            if waiting[r] == 0:
+                heapq.heappush(ready, r)
+    if len(order) < len(functions):
+        return list(functions)
+    return [functions[i] for i in order]
+
+
 def write_net(
     model: Model,
     out_path: str | Path | None = None,
@@ -700,8 +748,9 @@ def write_net(
     # reaction wrappers, each expression one field
     if functions or flux_helpers or wrappers:
         lines.append("begin functions")
+        ordered = _functions_in_dependency_order(functions)
         for k, (fname, fexpr) in enumerate(
-            [*((f["name"], f["expression"]) for f in functions), *flux_helpers, *wrappers], 1
+            [*((f["name"], f["expression"]) for f in ordered), *flux_helpers, *wrappers], 1
         ):
             lines.append(f"    {k} {fname}() {_written(fexpr)}")
         lines.append("end functions")
