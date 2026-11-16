@@ -103,12 +103,21 @@ An event whose trigger is first met at the time of an output row fires before
 the row is taken, so the row holds the state after the event (issue #1124). That
 includes a trigger on a counter, a variable whose rate rule is 1 (`x' = 1`):
 bngsim solves the time at which such a trigger is met
-before the run and stops there. The time is the first double at which the
-trigger's residual, as the doubles evaluate it, is 0 (or, where no double makes
-it 0, the one nearest): for `x >= 2.6` from `x = 0.1` that is t = 2.5, because
-`(2.5 + 0.1) - 2.6` is exactly 0 in doubles. A row at t = 2.5 then reads the
-state after the event, for a run of any length (issue #1673; before, it read the
-state before the event for some run lengths and after it for others).
+before the run and stops there. For `>=` and `<` on a rising counter, and `>`
+and `<=` on a falling one, the time is the first double at which the trigger's
+residual, as bngsim's threshold evaluator computes it, is 0 (or, where no double
+makes it 0, the one nearest): for `x >= 2.6` from `x = 0.1` that is t = 2.5,
+because `(2.5 + 0.1) - 2.6` is exactly 0. A row at t = 2.5 then reads the state
+after the event, for a run of any length (issue #1673; before, it read the state
+before the event for some run lengths and after it for others).
+
+That evaluator reads a number written with 17 digits (`3.0700000000000003`, or
+a time between two short ones) more finely than a double holds it, so where
+several doubles of t give the threshold exactly, the stop can be several doubles
+after the first of them (up to 15 in a sweep of 400 thresholds, as before this
+fix), and a row on one of those doubles can read the state before the event. A
+strict `x > 2.6` is met only after the zero and is stopped where the solve puts
+it, as before; its row can still depend on the run's length.
 
 Which side the row falls on there is decided in doubles, where `0.1 + 2.5` is
 the double 2.6, so the trigger is met at t = 2.5. The exact sum of those two

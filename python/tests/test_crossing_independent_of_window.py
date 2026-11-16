@@ -84,14 +84,15 @@ def test_the_row_reads_the_same_on_a_grid_and_at_any_tolerance(kw):
 
 @pytest.mark.parametrize(
     ("x0", "row"),
-    [("0.3", 1.7), ("0.3", 0.9), ("0.1", 0.9), ("0.7", 0.9)],
+    [("0.3", 1.7), ("0.3", 0.9), ("0.1", 0.9), ("0.7", 0.9), ("0.7", 2.37)],
     ids=lambda v: str(v),
 )
 def test_other_offsets_read_the_same_at_every_run_length(x0, row):
     # The threshold is the double x0 + row rounds to, so the trigger is met on
     # the row as the doubles evaluate it. On main the first three read 3 at
-    # some run lengths and 1 at others; 0.7 + 0.9 read 3 at every one, its
-    # stop always a double after the row.
+    # some run lengths and 1 at others; 0.7 + 0.9 and 0.7 + 2.37 read 3 at
+    # every one, the stop always a double after the row. 0.7 + 2.37 is the
+    # double 3.0700000000000003, a threshold of 17 digits.
     threshold = repr(float(x0) + row)
     doc = _doc(_geq("<ci>x</ci>", threshold), x0=x0)
     assert {_row(doc, row, t_end) for t_end in T_ENDS} == {1.0}
@@ -221,3 +222,91 @@ def test_a_residual_it_cannot_read_leaves_the_answer_alone():
     assert _snap_to_residual_zero(lambda t: None, 2.5) == 2.5
     assert _snap_to_residual_zero(lambda t: float("nan"), 2.5) == 2.5
     assert math.isinf(_snap_to_residual_zero(lambda t: t, math.inf))
+
+
+# ── Where the walk does not apply (a review of the first commit found) ─────
+
+
+def _stops(monkeypatch, doc: str, row: float, t_end: float) -> set[float]:
+    """The crossing times the solve returns during a run, and [S] on the row."""
+    from bngsim import _switch_sensitivity as ss
+
+    seen: list[float | None] = []
+    solve = ss._crossing_time_of_condition
+
+    def spy(*args, **kwargs):
+        answer = solve(*args, **kwargs)
+        seen.append(answer)
+        return answer
+
+    monkeypatch.setattr(ss, "_crossing_time_of_condition", spy)
+    _row(doc, row, t_end)
+    monkeypatch.setattr(ss, "_crossing_time_of_condition", solve)
+    return {t for t in seen if t is not None}
+
+
+def _strict(lhs: str, threshold: str) -> str:
+    return f"<apply><gt/>{lhs}<cn>{threshold}</cn></apply>"
+
+
+@pytest.mark.parametrize("t_end", [4.0, 8.0, 64.0])
+def test_a_strict_trigger_is_not_moved_onto_the_zero(t_end):
+    # In doubles 0.7 + 0.9 is 1.6, so `x > 1.6` is not met at t = 0.9 and the
+    # row reads the state before the event, as it did on main at every run
+    # length. Walked onto the zero, the stop was 0.9 and the row read 1. The
+    # `>=` of the same residual, solved first in the same process, still is.
+    geq, gt = (
+        _doc(_geq("<ci>x</ci>", "1.6"), x0="0.7"),
+        _doc(_strict("<ci>x</ci>", "1.6"), x0="0.7"),
+    )
+    assert _row(geq, 0.9, t_end) == 1.0
+    assert _row(gt, 0.9, t_end) == 3.0
+
+
+def test_a_falling_trigger_met_on_its_zero_is_moved_onto_it(monkeypatch):
+    # `2.7 - time <= 0.33000000000000007`: in doubles 2.7 - 2.37 is that
+    # threshold, so a falling `<=` is first met at t = 2.37, the residual's
+    # first zero. On main the stop was 2.37 for some run lengths and
+    # 2.3700000000000006 for others (4 and 8 against 40 and 64).
+    lhs = f"<apply><minus/><cn>2.7</cn>{TIME}</apply>"
+    doc = _doc(f"<apply><leq/>{lhs}<cn>0.33000000000000007</cn></apply>", counter=False)
+    for t_end in (4.0, 8.0, 40.0, 64.0):
+        assert _stops(monkeypatch, doc, 2.37, t_end) == {2.37}
+        assert _row(doc, 2.37, t_end) == 1.0
+
+
+@pytest.mark.parametrize("t_end", [4.0, 64.0])
+def test_a_crossing_on_the_start_instant_stays_on_it(monkeypatch, t_end):
+    # `x >= 0.1` from x = 0.1: (t + 0.1) - 0.1 is 0 for every t below about
+    # 7e-18 in size, far more doubles than the walk follows. The stop is the
+    # solve's 0, not -3.2e-322, 64 doubles below it.
+    stops = _stops(monkeypatch, _doc(_geq("<ci>x</ci>", "0.1")), 1.0, t_end)
+    assert stops and all(t == 0.0 for t in stops)
+
+
+@pytest.mark.parametrize("t_end", [4.0, 8.0, 64.0])
+def test_a_run_of_zeros_longer_than_the_walk_leaves_the_solve_alone(monkeypatch, t_end):
+    # (t + 1e6) - 1000000.5 is 0 for millions of doubles around 0.5. Its first
+    # is out of reach, and a stop 64 doubles down from the solve, at
+    # 0.49999999999999645, was a double of no meaning: the solve's 0.5 stands.
+    doc = _doc(_geq("<ci>x</ci>", "1000000.5"), x0="1000000")
+    assert _stops(monkeypatch, doc, 0.5, t_end) == {0.5}
+    assert _row(doc, 0.5, t_end) == 1.0
+
+
+def test_a_walk_that_reaches_its_bound_returns_the_answer_as_it_was():
+    from bngsim._switch_sensitivity import _CROSSING_SNAP_ULPS, _CROSSING_ZERO_RUN
+
+    base = 2.0**54  # doubles 4 apart
+
+    def zeros(t):  # 0 for 4 * _CROSSING_ZERO_RUN doubles from base
+        return 0.0 if base <= t < base + 16.0 * _CROSSING_ZERO_RUN else t - base
+
+    start = base + 8.0 * _CROSSING_ZERO_RUN
+    assert _snap_to_residual_zero(zeros, start) == start
+
+    def level(t):  # the same size for many doubles, then smaller
+        return 1.0 if t > base else 0.5
+
+    start = base + 4.0 * (4 * _CROSSING_SNAP_ULPS)
+    assert _snap_to_residual_zero(level, start) == start

@@ -2320,11 +2320,11 @@ def _snap_to_residual_zero(
     residual there (issue #1673).
 
     The two-point solve divides by a slope it measures over the run's scale, so
-    in doubles its answer moves by an ulp with that scale: ``x' = 1`` from 0.1,
-    at ``x >= 2.6``, was stopped at 2.5000000000000004 for a run to t = 3 or 40
+    its answer moves by an ulp with that scale: ``x' = 1`` from 0.1, at
+    ``x >= 2.6``, was stopped at 2.5000000000000004 for a run to t = 3 or 40
     and at 2.5 for one to 8, and a row at t = 2.5 read the state before the
-    event or after it according to where the run ended. The zero of the residual
-    as the doubles evaluate it is a property of the condition alone: here
+    event or after it according to where the run ended. The zero of the
+    residual as *at* evaluates it is a property of the condition alone: here
     ``(2.5 + 0.1) - 2.6`` is exactly 0. A residual that is 0 at a run of
     doubles is placed at the first of them, where a ``>=`` first holds; one
     that is 0 at none, where it is smallest.
@@ -2334,52 +2334,68 @@ def _snap_to_residual_zero(
     time, and stops where the next is no smaller: an answer already on the first
     zero costs one evaluation besides *r_star* (the linearity check's, passed
     in), the issue's case three. At most ``_CROSSING_SNAP_ULPS`` steps, and
-    ``_CROSSING_ZERO_RUN`` down a run of zeros.
+    ``_CROSSING_ZERO_RUN`` down a run of zeros. A walk that is still going at
+    either bound has not found the place it looks for (a run of zeros longer
+    than that, as ``(t + 1e6) - 1000000.5`` is near 0.5 or ``(t + 0.1) - 0.1``
+    near 0, or a plateau of equal residuals), and stopping there would put the
+    answer at a double that depends on where the solve landed: *t_star* is
+    returned as it was.
     """
+    seen: dict[float, float | None] = {}
 
     def size(t: float) -> float | None:
-        r = at(t)
-        return abs(r) if r is not None and math.isfinite(r) else None
+        if t not in seen:
+            r = at(t)
+            seen[t] = r if r is not None and math.isfinite(r) else None
+        r = seen[t]
+        return None if r is None else abs(r)
+
+    def first_of_zeros(t: float) -> float | None:
+        # The first double of the run of zeros *t* is in, or None where the
+        # run goes on past what is followed.
+        for _ in range(_CROSSING_ZERO_RUN):
+            before = math.nextafter(t, -math.inf)
+            if size(before) != 0.0:
+                return t
+            t = before
+        return None
 
     if not math.isfinite(t_star):
         return t_star, r_star
-    here = abs(r_star) if r_star is not None and math.isfinite(r_star) else size(t_star)
+    if r_star is not None and math.isfinite(r_star):
+        seen[t_star] = r_star
+    here = size(t_star)
     if here is None:
         return t_star, r_star
     t = t_star
-    if here == 0.0:
-        # On a zero: follow the run of zeros down to its first double.
-        for _ in range(_CROSSING_ZERO_RUN):
-            before = math.nextafter(t, -math.inf)
-            if size(before) != 0.0:
+    if here != 0.0:
+        down = math.nextafter(t, -math.inf)
+        s_down = size(down)
+        if s_down is not None and s_down <= here:
+            step, t, here = -math.inf, down, s_down  # a tie goes to the earlier double
+        else:
+            up = math.nextafter(t, math.inf)
+            s_up = size(up)
+            if s_up is None or s_up >= here:
+                return t_star, r_star  # already the smallest
+            step, t, here = math.inf, up, s_up
+        for _ in range(_CROSSING_SNAP_ULPS):
+            if here == 0.0:
                 break
-            t = before
-        return t, 0.0
-    down = math.nextafter(t, -math.inf)
-    s_down = size(down)
-    if s_down is not None and s_down <= here:
-        step, t, here = -math.inf, down, s_down  # a tie goes to the earlier double
-    else:
-        up = math.nextafter(t, math.inf)
-        s_up = size(up)
-        if s_up is None or s_up >= here:
-            return t_star, r_star  # already the smallest
-        step, t, here = math.inf, up, s_up
-    for _ in range(_CROSSING_SNAP_ULPS):
-        if here == 0.0:
-            break
-        nxt = math.nextafter(t, step)
-        s_nxt = size(nxt)
-        if s_nxt is None or (s_nxt > here if step < 0 else s_nxt >= here):
-            break
-        t, here = nxt, s_nxt
-    if here == 0.0:
-        for _ in range(_CROSSING_ZERO_RUN):
-            before = math.nextafter(t, -math.inf)
-            if size(before) != 0.0:
+            nxt = math.nextafter(t, step)
+            s_nxt = size(nxt)
+            if s_nxt is None or (s_nxt > here if step < 0 else s_nxt >= here):
                 break
-            t = before
-    return t, at(t)
+            t, here = nxt, s_nxt
+        else:
+            if here != 0.0:
+                return t_star, r_star  # still shrinking, or level, at the bound
+    if here == 0.0:
+        first = first_of_zeros(t)
+        if first is None:
+            return t_star, r_star
+        t = first
+    return t, seen[t]
 
 
 def _crossing_time_of_condition(
@@ -2417,10 +2433,10 @@ def _crossing_time_of_condition(
     # The registered text is a whole condition, so it arrives wrapped —
     # `((time()-PdBu_time)<0)` — and the relational splitter only matches at
     # paren depth 0.
-    split = _relational_split(_strip_redundant_parens(cond.strip()))
+    split = _relational_split_op(_strip_redundant_parens(cond.strip()))
     if split is None:
         return None
-    lhs, rhs = split
+    lhs, op, rhs = split
     bodies = bodies or {}
     # A function's slot is a plain parameter as far as the tables below are
     # concerned, and carries a stale number, so it has to be substituted BEFORE
@@ -2448,8 +2464,11 @@ def _crossing_time_of_condition(
     # differ) share an answer instead of each re-parsing the residual three
     # times, which cost a leg ~1.5 ms of sympy.
     scale = 2.0 ** math.ceil(math.log2(max(abs(t_start), abs(t_end), 1.0)))
+    # The operator as well: `x >= 2.6` and `x > 2.6` solve the same residual,
+    # and only the first is moved onto its zero (below).
     key = (
         flat,
+        op,
         scale,
         tuple(sorted((n, scope.values[scope.param_idx[n]]) for n in set(read))),
     )
@@ -2471,8 +2490,8 @@ def _crossing_time_of_condition(
         slope = (r1 - r0) / scale
         if slope == 0.0 or not (abs(slope) < float("inf")):
             return None  # `time` cancels out: no crossing to stop at
-        solved = -r0 / slope
-        t_star, check = _snap_to_residual_zero(at, solved, at(solved))
+        t_star = -r0 / slope
+        check = at(t_star)
         if check is None or abs(check) > _CROSSING_RESIDUAL_TOL * abs(slope) * scale:
             logger.debug(
                 "crossing stop: %r is not linear in time (residual %r at t=%r); skipping",
@@ -2481,6 +2500,13 @@ def _crossing_time_of_condition(
                 t_star,
             )
             return None
+        # The truth of `>=` and `<` changes at the first double where a rising
+        # residual is 0, and that of `>` and `<=` where a falling one is
+        # (issue #1673). For the other four, and for `==` and `!=`, it changes
+        # after the last zero, or holds only on the run: the solve's answer
+        # stands for those, as it did.
+        if (op in (">=", "<")) if slope > 0 else (op in (">", "<=")):
+            t_star = _snap_to_residual_zero(at, t_star, check)[0]
         return t_star
 
     answer = resolve()
