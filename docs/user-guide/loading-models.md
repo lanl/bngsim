@@ -313,14 +313,19 @@ whose h is moved into (0, 1) after loading, by `set_param`, a `run_batch` row,
 `parameter_scan`, or a BNGL `setParameter` or `parameter_scan` after
 `generate_network`, reads the law as 0 at S = 0 too (issue #1636).
 
-Where the guard cannot act, its root is not watched. A run without sensitivities
-roots on `S > 0` only while h is in (0, 1): at its start, a condition its
-parameter values already decide, such as `(h <= 0) or (h >= 1)` at h = 2, is read
-as that constant, and adds no root. (Before #1636 the guard was written only
-where h was in (0, 1) at load, because a root on each of 300 Hill reactions with
-h >= 1 made a run 10x slower.) The comparisons themselves are still evaluated:
-300 Hill reactions at h = 2 take 3.3 ms a run, against 3.0 ms unguarded. A model
-with events keeps every root, since an event may move h during the run.
+Where the guard cannot act, its root is not watched. A run, with or without
+sensitivities, a steady-state solve and `run_diffrax` root on `S > 0` only while
+h is in (0, 1): at its start, a condition its parameter values already decide,
+such as `(h <= 0) or (h >= 1)` at h = 2, is read as that constant, and adds no
+root. (Before #1636 the guard was written only where h was in (0, 1) at load,
+because a root on each of 300 Hill reactions with h >= 1 made a run 10x
+slower.) The comparisons themselves are still evaluated: 300 Hill reactions at
+h = 2 take 3.3 ms a run, against 3.0 ms unguarded. A model with events keeps
+every root, since an event may move h during the run.
+`Model.state_switch_root_conditions()` lists the conditions of the laws as
+written, whatever the parameter values, so it names `S > 0` at every h.
+An h of exactly 1 or 0 sits on the guard's own comparison, which is no kink of
+the law: `steady_state(sensitivity_params=["h"])` returns its column there.
 
 A reaction line is `<index> <reactants> <products> <rate law>`, and only a
 `Sat`, `Hill` or `MM` rate law takes more tokens: its constants.

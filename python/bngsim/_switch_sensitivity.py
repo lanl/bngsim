@@ -10408,7 +10408,9 @@ def state_switch_reactions(core, conditions: Sequence[str], ctx=None) -> list[li
     return out
 
 
-def fold_parameter_decided(text: str, constants: frozenset[str], value_of) -> str:
+def fold_parameter_decided(
+    text: str, constants: frozenset[str], value_of, *, take_branch: bool = False
+) -> str:
     """*text* with each ``if()`` condition its parameter terms decide written as
     ``1`` or ``0`` (issue #1636).
 
@@ -10421,6 +10423,10 @@ def fold_parameter_decided(text: str, constants: frozenset[str], value_of) -> st
     by *value_of* (a number, or ``None`` where it cannot be read, which leaves
     the condition as it is). Nested ``if()`` calls are folded too, inside out;
     nothing else in *text* changes.
+
+    With ``take_branch`` a decided ``if()`` is written as the branch it takes,
+    in parentheses, so a law whose every condition is decided has no ``if()``
+    left for a scanner to read.
     """
     out: list[str] = []
     cursor = 0
@@ -10439,12 +10445,17 @@ def fold_parameter_decided(text: str, constants: frozenset[str], value_of) -> st
             out.append(text[cursor : close_paren + 1])
             cursor = close_paren + 1
             continue
-        cond, yes, no = (fold_parameter_decided(a, constants, value_of) for a in args)
+        cond, yes, no = (
+            fold_parameter_decided(a, constants, value_of, take_branch=take_branch) for a in args
+        )
         decided = _decided_by_constants(cond, constants, value_of)
         if decided is not None:
             cond = "1" if decided else "0"
         out.append(text[cursor : m.start()])
-        out.append(f"if({cond},{yes},{no})")
+        if decided is not None and take_branch:
+            out.append(f"({(yes if decided else no).strip()})")
+        else:
+            out.append(f"if({cond},{yes},{no})")
         cursor = close_paren + 1
 
 
@@ -10528,7 +10539,21 @@ def part_truths_at_values(core, parts: Sequence[tuple[str, str, str]]) -> tuple[
     """Each of *parts* at the model's current values (None where a side cannot be
     read): the key a run's folded roots are kept by, since every decision a fold
     makes follows from these."""
-    _constants, value_of = _constants_and_values(core)
+    # Every run asks this, so it reads the parameters the parts name and no
+    # others: reading all 800 of a model with one Hill law took as long as its
+    # run. The names are parameters, which is what made each a part.
+    names = list(
+        dict.fromkeys(n for lhs, _op, rhs in parts for n in _IDENTIFIER.findall(f"{lhs} {rhs}"))
+    )
+    param_idx = {n: i for i, n in enumerate(names)}
+    values = tuple(core.get_param(n) for n in names)
+
+    def value_of(side: str) -> float | None:
+        try:
+            return _evaluate_threshold(side, param_idx, values, {})
+        except Exception:  # pragma: no cover - an unreadable side decides nothing
+            return None
+
     out: list[bool | None] = []
     for lhs, op, rhs in parts:
         a, b = value_of(lhs), value_of(rhs)
@@ -10540,6 +10565,59 @@ def _compare(a: float, op: str, b: float) -> bool | None:
     return {"<": a < b, "<=": a <= b, ">": a > b, ">=": a >= b, "==": a == b, "!=": a != b}.get(op)
 
 
+def folded_laws_at_values(
+    core, ctx=None, *, take_branch: bool = False
+) -> tuple[tuple[str, ...], dict] | None:
+    """The functional rate laws, in the context's order, and the function
+    bodies, each folded by :func:`fold_parameter_decided` at the model's
+    current parameter values, or ``None`` where nothing folds (issue #1636).
+    ``take_branch`` is the fold's.
+
+    A model with events is left alone: an event may assign a parameter mid-run,
+    and with it turn a decided condition into an open one.
+    """
+    if core.n_events:
+        return None
+    constants, value_of = _constants_and_values(core)
+    if not constants:
+        return None
+    if ctx is None:
+        ctx = core.functional_jacobian_context()
+    folded_any = False
+    laws = []
+    for rxn in ctx["functional_reactions"]:
+        text = str(rxn.get("rate_expr", ""))
+        folded = (
+            fold_parameter_decided(text, constants, value_of, take_branch=take_branch)
+            if _IF_CALL.search(text)
+            else text
+        )
+        folded_any = folded_any or folded != text
+        laws.append(folded)
+    bodies = {}
+    for name, body in dict(ctx["function_map"]).items():
+        if isinstance(body, str) and _IF_CALL.search(body):
+            folded = fold_parameter_decided(body, constants, value_of, take_branch=take_branch)
+            folded_any = folded_any or folded != body
+            bodies[name] = folded
+        else:
+            bodies[name] = body
+    if not folded_any:
+        return None
+    return tuple(laws), bodies
+
+
+def context_with_laws(ctx, laws: tuple[Sequence[str], dict]):
+    """*ctx* with its rate laws and function bodies replaced by *laws*, as
+    :func:`folded_laws_at_values` gives them."""
+    rate_exprs, bodies = laws
+    reactions = [
+        {**rxn, "rate_expr": text}
+        for rxn, text in zip(ctx["functional_reactions"], rate_exprs, strict=True)
+    ]
+    return {**ctx, "functional_reactions": reactions, "function_map": dict(bodies)}
+
+
 def state_switch_roots_at_values(core, covered: Sequence[str] = ()):
     """``(conditions, guards)`` of :func:`state_switch_root_conditions` for a
     plain run at the model's current parameter values, or ``None`` where no
@@ -10548,39 +10626,16 @@ def state_switch_roots_at_values(core, covered: Sequence[str] = ()):
     The rate laws and the functions they read are folded by
     :func:`fold_parameter_decided` before the roots are read from them, so an
     atom that switches nothing at these values is not rooted. A model with
-    events is left alone: an event may assign a parameter mid-run, and with it
-    turn a decided condition into an open one.
+    events is left alone (:func:`folded_laws_at_values`).
     """
     if core.n_events:
         return None
-    constants, value_of = _constants_and_values(core)
-    if not constants:
-        return None
     ctx = core.functional_jacobian_context()
-    folded_any = False
-    reactions = []
-    for rxn in ctx["functional_reactions"]:
-        text = str(rxn.get("rate_expr", ""))
-        folded = (
-            fold_parameter_decided(text, constants, value_of) if _IF_CALL.search(text) else text
-        )
-        folded_any = folded_any or folded != text
-        reactions.append({**rxn, "rate_expr": folded})
-    bodies = {}
-    for name, body in dict(ctx["function_map"]).items():
-        if isinstance(body, str) and _IF_CALL.search(body):
-            folded = fold_parameter_decided(body, constants, value_of)
-            folded_any = folded_any or folded != body
-            bodies[name] = folded
-        else:
-            bodies[name] = body
-    if not folded_any:
+    laws = folded_laws_at_values(core, ctx)
+    if laws is None:
         return None
     return state_switch_root_conditions(
-        core,
-        covered=covered,
-        ctx={**ctx, "functional_reactions": reactions, "function_map": bodies},
-        with_guards=True,
+        core, covered=covered, ctx=context_with_laws(ctx, laws), with_guards=True
     )
 
 
@@ -12027,8 +12082,13 @@ def compute_switch_time_sens(
     ic_species: Sequence[int] = (),
     declared: Mapping[str, Mapping[str, float]] | None = None,
     uncompensated_out: list[str] | None = None,
+    laws: tuple[Sequence[str], dict] | None = None,
 ) -> tuple[list[SwitchCrossing], list[int]]:
     """Switch-time crossings and their ``∂t*/∂p``, plus the parameters to pin.
+
+    ``laws``, where given, are the rate laws and function bodies to read in
+    place of the model's own (:func:`folded_laws_at_values`): a condition the
+    run's parameter values decide has no crossing (issue #1636).
 
     ``uncompensated_out``, where given, is handed each clock-threshold
     condition and each repeating schedule this pass could not compensate at the
@@ -12100,6 +12160,8 @@ def compute_switch_time_sens(
         return [], []
 
     ctx = core.functional_jacobian_context()
+    if laws is not None:
+        ctx = context_with_laws(ctx, laws)
     # Cheapest possible gate, checked before anything else: a model with no
     # conditional rate law has no switch to find. On the RAW bodies, so a
     # genome-scale model with tens of thousands of functions and no `if()`

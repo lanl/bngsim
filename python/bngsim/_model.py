@@ -1135,21 +1135,16 @@ class Model:
             self._state_switch_root_covered = covered
         return self._state_switch_root_conditions
 
-    def _state_switch_roots_at_values(
-        self, covered: tuple[str, ...]
-    ) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
-        """``(conditions, guards)`` for a plain run at the current parameter
-        values, where some condition is decided by them, or ``None`` where none
-        is and :meth:`_state_switch_roots_beside` stands (issue #1636). Kept by
-        what the values decide, so a fit or a scan that leaves those decisions
-        alone folds once."""
+    def _decided_at_values(self) -> tuple[bool | None, ...] | None:
+        """The truth, at the current parameter values, of each comparison over
+        parameters alone that can decide an ``if()`` condition of this model
+        (issue #1636), or ``None`` where none decides one, or the model has
+        events, which may move a parameter during the run. Everything a fold at
+        these values does follows from it, so it is the key the folded answers
+        are kept by."""
         if self._core.n_events:
             return None
-        from bngsim._switch_sensitivity import (
-            parameter_decidable_parts,
-            part_truths_at_values,
-            state_switch_roots_at_values,
-        )
+        from bngsim._switch_sensitivity import parameter_decidable_parts, part_truths_at_values
 
         parts = self._state_switch_root_memo.get("decidable parts")
         if parts is None:
@@ -1160,11 +1155,29 @@ class Model:
         decided = part_truths_at_values(self._core, parts)
         if all(d is None for d in decided):
             return None
+        return decided
+
+    def _state_switch_roots_at_values(
+        self, covered: tuple[str, ...]
+    ) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+        """``(conditions, guards)`` for a plain run at the current parameter
+        values, where some condition is decided by them, or ``None`` where none
+        is and :meth:`_state_switch_roots_beside` stands (issue #1636). Kept by
+        what the values decide, so a fit or a scan that leaves those decisions
+        alone folds once."""
+        decided = self._decided_at_values()
+        if decided is None:
+            return None
+        from bngsim._switch_sensitivity import state_switch_roots_at_values
+
         key = ("at values", covered, decided)
-        if key in self._state_switch_root_memo:
-            kept: tuple[tuple[str, ...], tuple[str, ...]] | None = self._state_switch_root_memo[
-                key
-            ]
+        # One read: the memo is shared with clones on worker threads, and
+        # cleared whole at its cap, so a key found may be gone at the next
+        # read. None is an answer here, so the default is not.
+        kept: tuple[tuple[str, ...], tuple[str, ...]] | None = self._state_switch_root_memo.get(
+            key, _NOT_KEPT
+        )
+        if kept is not _NOT_KEPT:
             return kept
         try:
             got = state_switch_roots_at_values(self._core, covered)
@@ -1176,6 +1189,56 @@ class Model:
             )
             got = None
         kept = None if got is None else (tuple(got[0]), tuple(got[1]))
+        _remember(self._state_switch_root_memo, key, kept)
+        return kept
+
+    def _state_switch_roots_at_run_values(
+        self, covered: tuple[str, ...] | None = None
+    ) -> tuple[str, ...]:
+        """The state-switch roots a solve at the current parameter values
+        watches: :meth:`_state_switch_roots_beside`, less the atoms of a
+        condition those values decide (issue #1636). What a plain run is handed,
+        for the other readers that ask what switches in a solve: a steady-state
+        march, ``run_diffrax``, and a schedule past the stop budget."""
+        if covered is None:
+            # Through the public method, which is what these readers called.
+            conditions = self.state_switch_root_conditions()
+            if not conditions:
+                return ()
+            covered = self.time_discontinuity_conditions()
+        else:
+            conditions = self._state_switch_roots_beside(covered)
+        if conditions:
+            at_values = self._state_switch_roots_at_values(covered)
+            if at_values is not None:
+                return at_values[0]
+        return conditions
+
+    def _rate_laws_at_values(self) -> tuple[tuple[str, ...], dict] | None:
+        """The rate laws and function bodies with each ``if()`` the current
+        parameter values decide written as the branch it takes, for
+        :func:`bngsim._switch_sensitivity.context_with_laws`, or ``None`` where
+        nothing folds (issue #1636). Kept as the roots are."""
+        decided = self._decided_at_values()
+        if decided is None:
+            return None
+        from bngsim._switch_sensitivity import folded_laws_at_values
+
+        key = ("laws at values", decided)
+        kept: tuple[tuple[str, ...], dict] | None = self._state_switch_root_memo.get(
+            key, _NOT_KEPT
+        )
+        if kept is not _NOT_KEPT:
+            return kept
+        try:
+            kept = folded_laws_at_values(self._core, take_branch=True)
+        except Exception as e:  # pragma: no cover - defensive, as for the roots
+            logger.warning(
+                "Folding the conditions parameters decide failed (%s); the run "
+                "roots on every state switch, as it would without it (issue #1636).",
+                e,
+            )
+            kept = None
         _remember(self._state_switch_root_memo, key, kept)
         return kept
 
@@ -3234,6 +3297,10 @@ _DERIVATION_MEMO_MAX = 16
 # The key of a cache slot while its answer is written: equal to no key, so an
 # interrupted write is recovered again (issue #726). Not None, which is a key.
 _UNKEYED = object()
+
+
+# What a memo read returns for a key it does not hold, where None is an answer.
+_NOT_KEPT: Any = object()
 
 
 def _remember(memo: dict, key, value) -> None:

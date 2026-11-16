@@ -57,7 +57,7 @@ RUN = {"t_span": (0.0, 5.0), "n_points": 2, "rtol": 1e-10, "atol": 1e-12}
 
 def _model(tmp_path, h=2.0):
     path = tmp_path / "hill.net"
-    path.write_text(NET.format(h=h))
+    path.write_text(NET.format(h=h), encoding="utf-8")
     return bngsim.Model.from_net(str(path))
 
 
@@ -144,9 +144,8 @@ def test_the_root_comes_back_when_h_moves_into_the_interval(tmp_path):
     assert not _roots_handed_to_the_run(model, sim)
 
 
-def test_a_sensitivity_run_is_not_folded(tmp_path):
-    # Not this change's business: its roots come by another route, which reads
-    # no parameter value. dS/dVmax at t = 5 at h = 2, against a difference.
+def test_a_sensitivity_run_at_h_2_gives_the_column(tmp_path):
+    # dS/dVmax at t = 5 at h = 2, against a difference.
     model = _model(tmp_path, 2.0)
     sens = bngsim.Simulator(model, "ode", sensitivity_params=["Vmax"]).run(**RUN)
     column = float(np.asarray(sens.sensitivities)[-1, 0, 0])
@@ -159,6 +158,215 @@ def test_a_sensitivity_run_is_not_folded(tmp_path):
         - _s_end(bngsim.Simulator(down, "ode").run(**RUN))
     ) / (2 * step)
     assert abs(column - fd) < 1e-6 * max(1.0, abs(fd))
+
+
+# ── The other readers of the roots ──────────────────────────────────────────
+# Each read the roots of the laws as written, where a plain run read them at
+# its parameter values: with the guard on every Hill law, a model at h >= 1
+# was refused, slowed or bounded differently by each, where it had not been.
+
+# S fed at kin and drained by Hill(1, 2, h) into P, which decays, so the model
+# has a steady state: S* = 2*(kin/(1 - kin))^(1/h), P* = kin.
+STEADY = """begin parameters
+ 1 Vmax 1
+ 2 Kh 2
+ 3 h {h}
+ 4 kin 0.4
+ 5 kdeg 1
+ 6 period 1
+ 7 width 0.1
+end parameters
+begin species
+ 1 S() 0
+ 2 P() 0
+ 3 X() 0
+end species
+{functions}begin reactions
+ 1 1 2 Hill Vmax Kh h
+ 2 0 1 kin
+ 3 2 0 kdeg
+{dosed}end reactions
+"""
+SCHEDULE = (
+    "begin functions\n"
+    " 1 dose() if(time() - period*floor(time()/period) < width, 1, 0)\n"
+    "end functions\n"
+)
+
+
+def _steady(tmp_path, h, schedule=False):
+    path = tmp_path / "steady.net"
+    text = STEADY.format(
+        h=h,
+        functions=SCHEDULE if schedule else "",
+        dosed=" 4 0 3 dose\n" if schedule else "",
+    )
+    path.write_text(text, encoding="utf-8")
+    return bngsim.Model.from_net(str(path))
+
+
+def _s_star(h, kin=0.4):
+    return 2.0 * (kin / (1.0 - kin)) ** (1.0 / h)
+
+
+@pytest.fixture
+def jumped(monkeypatch):
+    """The conditions each sensitivity run is handed to root and jump."""
+    from bngsim import _switch_sensitivity as sw
+
+    handed: list[list[str]] = []
+    found = sw.state_switch_conditions
+
+    def spy(core, ctx=None):
+        conditions = found(core, ctx)
+        handed.append(list(conditions))
+        return conditions
+
+    monkeypatch.setattr(sw, "state_switch_conditions", spy)
+    return handed
+
+
+@pytest.mark.parametrize(("h", "rooted"), [(2.0, False), (1.0, False), (0.5, True)])
+def test_a_sensitivity_run_roots_the_guard_only_inside_the_interval(tmp_path, jumped, h, rooted):
+    # 300 Hill reactions at h = 2 with a column ran 162 ms with the guard's
+    # roots, where main's bare body ran 12.
+    model = _steady(tmp_path, h)
+    model.set_param("kin", 0.4)
+    # Away from S = 0, where d/dVmax of the body is not finite at h = 1.
+    model.set_concentration("S()", 1.0)
+    bngsim.Simulator(model, "ode", sensitivity_params=["Vmax"]).run(**RUN)
+    assert [bool(conditions) for conditions in jumped] == [rooted]
+
+
+def test_each_row_of_a_sensitivity_batch_is_read_at_its_own_h(tmp_path, jumped):
+    model = _steady(tmp_path, 2.0)
+    model.set_concentration("S()", 1.0)
+    model.save_concentrations()
+    sim = bngsim.Simulator(model, "ode", sensitivity_params=["Vmax"])
+    rows = sim.run_batch(params=[{"h": 2.0}, {"h": 0.5}], **RUN)
+    # Rows may run on worker threads, in either order.
+    assert sorted(bool(conditions) for conditions in jumped) == [False, True]
+    for h, row in zip((2.0, 0.5), rows, strict=True):
+        alone = _steady(tmp_path, h)
+        alone.set_concentration("S()", 1.0)
+        single = bngsim.Simulator(alone, "ode", sensitivity_params=["Vmax"]).run(**RUN)
+        assert np.allclose(
+            np.asarray(row.sensitivities)[-1], np.asarray(single.sensitivities)[-1], rtol=1e-6
+        )
+
+
+@pytest.fixture
+def marched(monkeypatch):
+    """The roots each steady-state march is handed."""
+    import bngsim._bngsim_core as core
+
+    handed: list[list[str]] = []
+    solve = core.find_steady_state
+
+    def spy(model_core, opts):
+        handed.append(list(opts.state_switch_conditions))
+        return solve(model_core, opts)
+
+    monkeypatch.setattr(core, "find_steady_state", spy)
+    return handed
+
+
+@pytest.mark.parametrize(("h", "rooted"), [(2.0, False), (1.0, False), (0.5, True)])
+def test_a_steady_state_roots_the_guard_only_inside_the_interval(tmp_path, marched, h, rooted):
+    found = bngsim.Simulator(_steady(tmp_path, h), "ode").steady_state()
+    assert found.converged
+    assert abs(float(np.asarray(found.concentrations)[0]) - _s_star(h)) < 1e-6
+    assert marched and [bool(roots) for roots in marched] == [rooted] * len(marched)
+
+
+def test_a_steady_state_sweep_reads_each_entry_at_its_own_h(tmp_path, marched):
+    sim = bngsim.Simulator(_steady(tmp_path, 2.0), "ode")
+    entries = sim.steady_state_batch(params=[{"h": 2.0}, {"h": 0.5}])
+    assert sorted(bool(roots) for roots in marched) == [False, True]
+    for h, entry in zip((2.0, 0.5), entries, strict=True):
+        assert abs(float(np.asarray(entry.concentrations)[0]) - _s_star(h)) < 1e-6
+
+
+@pytest.mark.parametrize("h", [1.0, 2.0])
+def test_the_steady_state_column_in_h_at_an_h_of_1(tmp_path, h):
+    # h = 1 sits on the guard's `h >= 1`, which is no kink of the law: at S > 0
+    # the guard is true on both sides. Main returned this column from the bare
+    # body; with the guard on every law it was refused as on a kink.
+    # S* = 2*(2/3)^(1/h), so dS*/dh = -S*·ln(2/3)/h^2.
+    found = bngsim.Simulator(_steady(tmp_path, h), "ode").steady_state(sensitivity_params=["h"])
+    column = float(np.asarray(found.sensitivity).ravel()[0])
+    assert abs(column - (-_s_star(h) * np.log(2.0 / 3.0) / h**2)) < 1e-6
+
+
+def test_a_condition_on_its_switch_that_is_not_the_loaders_guard_is_still_a_kink(tmp_path):
+    # The guard is read as its body only in the loader's own shape: the same
+    # condition around another body is a kink at h = 1, as it was.
+    path = tmp_path / "kink.net"
+    text = STEADY.format(
+        h=1.0,
+        functions=(
+            "begin functions\n 1 gate() if((S_obs > 0) or (h <= 0) or (h >= 1), kin, 0)\n"
+            "end functions\n"
+        ),
+        dosed=" 4 0 3 gate\n",
+    ).replace("begin reactions", "begin groups\n 1 S_obs 1\nend groups\nbegin reactions")
+    path.write_text(text, encoding="utf-8")
+    model = bngsim.Model.from_net(str(path))
+    from bngsim._parameter_kinks import parameters_on_a_kink
+
+    assert parameters_on_a_kink(model._core, ["h"], conditions=True)
+    assert not parameters_on_a_kink(_steady(tmp_path, 1.0)._core, ["h"], conditions=True)
+
+
+@pytest.fixture
+def budget(monkeypatch):
+    """The run's budget of stops lowered to 1000, as test_crossing_stop_budget
+    lowers it, with the resolvers' memo emptied on each side."""
+    from bngsim import _switch_sensitivity as sw
+
+    sw._SCHEDULE_CACHE.clear()
+    monkeypatch.setattr(sw, "_RUN_STOP_BUDGET", 1000)
+    yield
+    sw._SCHEDULE_CACHE.clear()
+
+
+def test_a_schedule_past_the_budget_beside_a_hill_law_at_h_2_is_alone(tmp_path, budget):
+    # Nothing else switches at h = 2, so the step is bounded as it was on main,
+    # where the guard's root made the run ask for a max_step. X is the on-time.
+    run = {"t_span": (0.0, 2000.0), "n_points": 3}
+    result = bngsim.Simulator(_steady(tmp_path, 2.0, schedule=True), "ode").run(**run)
+    assert float(np.asarray(result.species)[-1, 2]) == pytest.approx(200.0, rel=1e-4)
+    # At h = 0.5 the guard does switch, and the run is refused, as on main.
+    with pytest.raises(bngsim.SimulationError, match="#890"):
+        bngsim.Simulator(_steady(tmp_path, 0.5, schedule=True), "ode").run(**run)
+
+
+def test_run_diffrax_takes_a_hill_law_at_h_2(tmp_path):
+    pytest.importorskip("diffrax")
+    from bngsim._diffrax_solver import run_diffrax
+
+    # Refused with the guard's root, though nothing switches at h = 2.
+    out = run_diffrax(_steady(tmp_path, 2.0), 0.0, 5.0, 3)
+    assert np.all(np.isfinite(np.asarray(out["species"])))
+    with pytest.raises(ValueError, match="switches on the model's state"):
+        run_diffrax(_steady(tmp_path, 0.5), 0.0, 5.0, 3)
+
+
+def test_the_kept_roots_are_read_once_from_a_memo_another_row_may_clear(tmp_path):
+    # The memo is shared with clones on worker threads and cleared whole at
+    # its cap: a key found by `in` may be gone at the read after it.
+    class ClearedBetween(dict):
+        def __contains__(self, key):
+            found = super().__contains__(key)
+            if found and isinstance(key, tuple) and key[0] == "at values":
+                self.clear()
+            return found
+
+    model = _model(tmp_path, 2.0)
+    covered = model.time_discontinuity_conditions()
+    first = model._state_switch_roots_at_values(covered)
+    model._state_switch_root_memo = ClearedBetween(model._state_switch_root_memo)
+    assert model._state_switch_roots_at_values(covered) == first == ((), ())
 
 
 M = "http://www.w3.org/1998/Math/MathML"
@@ -228,7 +436,8 @@ def test_the_issues_bngl_setparameter_after_generate_network(tmp_path):
         "begin observables\n  Molecules S_obs S()\n  Molecules P_obs P()\nend observables\n"
         "begin reaction rules\n  S() -> P() Hill(Vmax,Kh,h)\n  0 -> S() kin\nend reaction rules\n"
         'end model\ngenerate_network({overwrite=>1})\nsetParameter("h",0.5)\n'
-        'simulate({method=>"ode",t_end=>5,n_steps=>1,atol=>1e-12,rtol=>1e-10})\n'
+        'simulate({method=>"ode",t_end=>5,n_steps=>1,atol=>1e-12,rtol=>1e-10})\n',
+        encoding="utf-8",
     )
     result = bngsim.run_bngl(str(bngl)).runs[-1].result
     assert abs(_s_end(result) - S_AT_HALF) < TOL
@@ -299,3 +508,51 @@ def test_nested_conditions_are_folded_inside_out():
 def test_a_side_that_cannot_be_read_leaves_the_condition_alone():
     text = "if((S > 0) or (h >= 1), body, 0)"
     assert "S > 0" in fold_parameter_decided(text, CONSTANTS, lambda side: None)
+
+
+def test_a_decided_if_is_written_as_its_branch_where_asked():
+    from bngsim._switch_sensitivity import fold_parameter_decided as fold
+
+    def taken(text, **at):
+        return fold(text, CONSTANTS, _values(**at), take_branch=True).replace(" ", "")
+
+    assert taken("if((S > 0) or (h >= 1), a*b, 0)", h=2.0) == "(a*b)"
+    assert taken("if((S > 0) and (h >= 1), a, c + d)", h=0.5) == "(c+d)"
+    assert taken("2*if((S > 0) or (h >= 1), if(T > 3, a, b), 0)", h=2.0) == "2*(if(T>3,a,b))"
+    # Undecided, it stays an if().
+    assert taken("if((S > 0) or (h >= 1), a, 0)", h=0.5) == "if((S>0)or(h>=1),a,0)"
+
+
+BODY = "V * (s ^ (h - 1)) / ((K ^ h) + (s ^ h))"
+
+
+@pytest.mark.parametrize(
+    ("law", "read_as_its_body"),
+    [
+        (f"if((s > 0) or (h <= 0) or (h >= 1), {BODY}, 0)", True),
+        # As write_net writes it back.
+        ("if((s>0)||(h<=0)||(h>=1),V*(s^(h-1))/((K^h)+(s^h)),0)", True),
+        # Another exponent in the guard, another species in the body, a law
+        # that is more than the guard, and the guard around another body.
+        (f"if((s > 0) or (h <= 0) or (g >= 1), {BODY}, 0)", False),
+        ("if((s > 0) or (h <= 0) or (h >= 1), V * (t ^ (h - 1)) / ((K ^ h) + (s ^ h)), 0)", False),
+        (f"if((s > 0) or (h <= 0) or (h >= 1), {BODY}, 0) + 1", False),
+        ("if((s > 0) or (h <= 0) or (h >= 1), kin, 0)", False),
+    ],
+)
+def test_only_the_loaders_own_guard_is_read_as_its_body_for_a_kink(law, read_as_its_body):
+    from bngsim._parameter_kinks import _without_hill_guard
+
+    assert (_without_hill_guard(law) != law) is read_as_its_body
+
+
+def test_a_hill_law_written_back_and_loaded_has_its_column_in_h_at_1(tmp_path):
+    from bngsim.convert import write_net
+
+    written = tmp_path / "written.net"
+    write_net(_steady(tmp_path, 1.0), str(written))
+    found = bngsim.Simulator(bngsim.Model.from_net(str(written)), "ode").steady_state(
+        sensitivity_params=["h"]
+    )
+    column = float(np.asarray(found.sensitivity).ravel()[0])
+    assert abs(column - (-_s_star(1.0) * np.log(2.0 / 3.0))) < 1e-6
