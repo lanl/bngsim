@@ -92,6 +92,10 @@ CASES = {
             run(5),
         ],
     ),
+    "a run continues a run that continued a saved state": (
+        "0.5",
+        [run(1), 'saveConcentrations("a")', run(2), 'resetConcentrations("a")', run(3), run(4)],
+    ),
     "a chain after an unrelated run": (
         "0.5",
         [
@@ -293,3 +297,230 @@ def test_a_reset_inside_a_chain_starts_its_state_again(tmp_path):
     )
     for x, y in zip(_runs(want, net), _runs(spec, net), strict=True):
         assert np.allclose(x, y, rtol=1e-12, atol=1e-12)
+
+
+# --- chains another tool wrote, read as main read them (review of #1770) --------
+
+
+def _document(tasks: str, read: list[str]) -> str:
+    return (
+        f'<sedML xmlns="{SED}" xmlns:sbml="http://www.sbml.org/sbml/level3/version2/core" '
+        'level="1" version="3"><listOfSimulations>'
+        + _utc("t_a_s", 1)
+        + _utc("t_b_s", 2)
+        + _utc("t_c_s", 3)
+        + '</listOfSimulations><listOfModels><model id="m" '
+        'language="urn:sedml:language:sbml" source="model.xml"/></listOfModels>'
+        f"<listOfTasks>{tasks}</listOfTasks><listOfDataGenerators>"
+        + "".join(_generator(t) for t in read)
+        + "</listOfDataGenerators></sedML>"
+    )
+
+
+def _task(tid: str) -> str:
+    return f'<task id="{tid}" modelReference="m" simulationReference="{tid}_s"/>'
+
+
+_ABC = _task("t_a") + _task("t_b") + _task("t_c")
+
+# Each: the tasks, the tasks an output reads, and the t_end of the runs it
+# makes, which continue one another with no reset between.
+FOREIGN = {
+    "a chain adds two runs to a task already run": (
+        _ABC + _rt("R", ["t_a", "t_b", "t_c"]),
+        ["t_a", "R"],
+        [1.0, 2.0, 3.0],
+    ),
+    "a chain of a chain adds two runs to a task already run": (
+        _ABC + _rt("R1", ["t_a", "t_b"]) + _rt("R2", ["R1", "t_c"]),
+        ["t_a", "R2"],
+        [1.0, 2.0, 3.0],
+    ),
+    "a chain adds one run": (
+        _task("t_a") + _task("t_b") + _rt("R", ["t_a", "t_b"]),
+        ["t_a", "R"],
+        [1.0, 2.0],
+    ),
+    "a chain listed before the task it starts with": (
+        _task("t_b") + _rt("R", ["t_a", "t_b"]) + _task("t_a"),
+        ["t_a", "R"],
+        [1.0, 2.0],
+    ),
+    "a chain listed before a shorter chain and the task they start with": (
+        _rt("R", ["t_a", "t_b", "t_c"]) + _rt("R1", ["t_a", "t_b"]) + _ABC,
+        ["t_a", "R1", "R"],
+        [1.0, 2.0, 3.0],
+    ),
+    "a shorter chain listed before the longer": (
+        _ABC + _rt("R1", ["t_a", "t_b"]) + _rt("R", ["t_a", "t_b", "t_c"]),
+        ["R1", "R"],
+        [1.0, 2.0, 3.0],
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(FOREIGN))
+def test_a_foreign_chain_runs_each_of_its_tasks_once(tmp_path, case):
+    """A task is run once however many chains start with it, and wherever the
+    document lists it: SED-ML gives the order of listOfTasks no meaning. The
+    chain's runs continue the task's, with no reset and no save between."""
+    tasks, read, t_ends = FOREIGN[case]
+    net = tmp_path / "m.net"
+    net.write_text(NET.format(kr="0.5"), encoding="utf-8")
+    sbml = bngsim.convert.net_to_sbml(net, out_path=None, validate=None).output_text
+    spec = read_sedml_protocol(_document(tasks, read), sbml=sbml)
+    assert spec.lossy == ()
+    assert [getattr(s, "kind", None) for s in spec.steps] == ["simulate"] * len(t_ends)
+    assert [e.t_span[1] for e in spec.experiments] == t_ends
+    want = parse_bngl_protocol(
+        "begin model\nend model\ngenerate_network()\n" + "\n".join(run(t) for t in t_ends) + "\n"
+    )
+    for x, y in zip(_runs(want, net), _runs(spec, net), strict=True):
+        assert np.array_equal(x, y)
+
+
+def test_a_chain_of_tasks_never_run_continues_equal_steps(tmp_path):
+    """t_a2 has t_a's settings and is not t_a. The chain R = [t_a, t_b] names
+    t_a, which no output reads and nothing ran; its replay names the state
+    t_a2's equal run reached, and R's second run continues it, as main read
+    the two: an ode run from one state with one setting is one run."""
+    tasks = (
+        _task("t_a")
+        + _task("t_b")
+        + '<task id="t_a2" modelReference="m" simulationReference="t_a_s"/>'
+        + _rt("R", ["t_a", "t_b"])
+    )
+    net = tmp_path / "m.net"
+    net.write_text(NET.format(kr="0.5"), encoding="utf-8")
+    sbml = bngsim.convert.net_to_sbml(net, out_path=None, validate=None).output_text
+    spec = read_sedml_protocol(_document(tasks, ["t_a2", "R"]), sbml=sbml)
+    assert spec.lossy == ()
+    assert [getattr(s, "kind", None) for s in spec.steps] == ["simulate", "simulate"]
+    assert [e.t_span[1] for e in spec.experiments] == [1.0, 2.0]
+
+
+def test_a_chain_of_one_task_beside_that_task_is_a_run_of_its_own(tmp_path):
+    """R = [t_a] and t_a, both read: R is the start of no longer chain, so it
+    runs, from the initial state again, as main read the two."""
+    net = tmp_path / "m.net"
+    net.write_text(NET.format(kr="0.5"), encoding="utf-8")
+    sbml = bngsim.convert.net_to_sbml(net, out_path=None, validate=None).output_text
+    spec = read_sedml_protocol(
+        _document(_task("t_a") + _rt("R", ["t_a"]), ["t_a", "R"]), sbml=sbml
+    )
+    assert spec.lossy == ()
+    assert [getattr(s, "kind", None) for s in spec.steps] == [
+        "save_parameters",
+        "simulate",
+        "reset_concentrations",
+        "reset_parameters",
+        "simulate",
+    ]
+    out = _runs(spec, net)
+    assert np.array_equal(out[0], out[1])
+
+
+def test_a_chain_continues_where_the_steps_are_though_that_state_is_saved(tmp_path):
+    """C and D both continue t_a, so t_a's state is saved for D. R runs t_c,
+    resets and runs t_a again, and E, which continues t_a, is listed after R:
+    the steps are in that state, and E's run continues them, with no reset to
+    the save."""
+    tasks = (
+        _ABC
+        + _rt("C", ["t_a", "t_b"])
+        + _rt("D", ["t_a", "t_c"])
+        + _rt("r_a", ["t_a"])
+        + _rt("R", ["t_c", "r_a"])
+        + _rt("E", ["t_a", "t_b"])
+    )
+    net = tmp_path / "m.net"
+    net.write_text(NET.format(kr="0.5"), encoding="utf-8")
+    sbml = bngsim.convert.net_to_sbml(net, out_path=None, validate=None).output_text
+    spec = read_sedml_protocol(_document(tasks, ["t_a", "C", "D", "R", "E"]), sbml=sbml)
+    assert spec.lossy == ()
+    assert [e.t_span[1] for e in spec.experiments] == [1.0, 2.0, 3.0, 3.0, 1.0, 2.0]
+    assert [getattr(s, "kind", None) for s in spec.steps[-4:]] == [
+        "reset_concentrations",
+        "reset_parameters",
+        "simulate",
+        "simulate",
+    ]
+    assert spec.steps[-4].label is None  # to the initial state, inside R
+
+
+# --- no save where the steps already are, one save for one state ----------------
+
+
+def _chain_labels(steps) -> list[tuple[str, str]]:
+    return [
+        (s.kind, s.label)
+        for s in steps
+        if str(getattr(s, "label", None) or "").startswith("__sedml_chain_")
+    ]
+
+
+def test_a_run_after_a_scan_with_a_follower_continues_it(tmp_path):
+    """kr follows kf, so the scan's task leaves kr set to its last point's
+    value: a step after the lead's run. The run after it continues where the
+    steps are; it was read as a state reached earlier, saved and reset to,
+    with kr set twice."""
+    net, protocol, sbml, xml, lossy = _write(tmp_path, "kf*3", [SCAN, run()])
+    assert not lossy
+    _check(net, sbml, xml)
+    bare = re.sub(r"<annotation>.*?</annotation>", "", xml, flags=re.S)
+    steps = read_sedml_protocol(bare, sbml=sbml).steps
+    assert _chain_labels(steps) == []
+    assert [getattr(s, "kind", None) for s in steps] == [
+        "set_parameter",
+        "scan",
+        "set_parameter",
+        "simulate",
+    ]
+
+
+def test_every_return_to_one_state_resets_to_one_save(tmp_path):
+    """Three runs continue the first: its state is saved once, and each of
+    them resets to that label. Each return saved the state again, under a new
+    label, right after resetting to the last."""
+    actions = [run(1), 'saveConcentrations("a")']
+    for t in (2, 3, 4):
+        actions += [run(t), 'resetConcentrations("a")']
+    actions.append(run(5))
+    net, _, sbml, xml, lossy = _write(tmp_path, "0.5", actions)
+    assert not lossy
+    _check(net, sbml, xml)
+    bare = re.sub(r"<annotation>.*?</annotation>", "", xml, flags=re.S)
+    steps = read_sedml_protocol(bare, sbml=sbml).steps
+    label = "__sedml_chain_0"
+    assert _chain_labels(steps) == [
+        ("save_concentrations", label),
+        ("save_parameters", label),
+        *[("reset_concentrations", label), ("reset_parameters", label)] * 3,
+    ]
+
+
+def test_a_chain_continues_the_run_it_names_not_an_equal_one(tmp_path):
+    """Two unseeded ssa runs with one setting end in two states. The third run
+    continues the first, which its chain names; it was read as continuing the
+    second, the state the steps were in, whose steps are equal."""
+    ssa = 'simulate({method=>"ssa",t_end=>1,n_steps=>2})'
+    actions = [ssa, 'saveConcentrations("a")', "resetConcentrations()", ssa]
+    actions += ['resetConcentrations("a")', run(2)]
+    net, _, sbml, xml, lossy = _write(tmp_path, "0.5", actions)
+    assert not lossy
+    bare = re.sub(r"<annotation>.*?</annotation>", "", xml, flags=re.S)
+    spec = read_sedml_protocol(bare, sbml=sbml)
+    assert spec.lossy == ()
+    kinds = [getattr(s, "kind", None) for s in spec.steps]
+    first = kinds.index("simulate")
+    assert kinds[first + 1 : first + 3] == ["save_concentrations", "save_parameters"]
+    label = spec.steps[first + 1].label
+    third = len(kinds) - 1
+    assert kinds[third] == "simulate"
+    assert [(s.kind, s.label) for s in spec.steps[third - 2 : third]] == [
+        ("reset_concentrations", label),
+        ("reset_parameters", label),
+    ]
+    out = _runs(spec, net)
+    assert len(out) == 3
+    assert np.array_equal(out[2][0], out[0][-1])

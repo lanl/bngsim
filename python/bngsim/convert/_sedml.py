@@ -2346,10 +2346,14 @@ def read_sedml_protocol(source: str | Path, *, sbml: str | Path | None = None):
     ``repeatedTask`` that sweeps a parameter is a scan, and one that does not
     runs its subtasks in order on one model state, resetting it first where
     ``resetModel`` says so, with its ``setValue`` changes as the steps before
-    them. Tasks are independent, so the state is reset between them; a chain
-    that repeats the start of a longer chain, as :func:`write_sedml_protocol`
-    writes a run that continues an earlier one, is read once, as the longer
-    chain. A time course no task runs is not run. A sweep runs the values its
+    them. Tasks are independent, so the state is reset between them, and each
+    is run once, in the order the document lists them (issue #1739). A chain
+    that replays tasks already run, as :func:`write_sedml_protocol` writes a
+    run that continues earlier ones, continues from the state they reached:
+    where other runs came between, that state is saved there and reset to,
+    with ``saveConcentrations`` and ``saveParameters`` under a label of its
+    own. A task or chain that is the start of a chain already run is not run
+    again. A time course no task runs is not run. A sweep runs the values its
     ``setValue``'s math gives at each iteration, over the range it names
     (issue #1664). A change's math is evaluated once, where it applies, as
     SED-ML evaluates it; a ``setValue`` beside a sweep that reads the range
@@ -2628,25 +2632,33 @@ def _model_changes(model: ET.Element) -> list[ET.Element]:
 #: The label a chain's start is saved under, numbered (issue #1739).
 _CHAIN_LABEL = "__sedml_chain_{}"
 
+#: A step of an expansion with the task that ran it, for an experiment.
+_Key = tuple[object, "str | None"]
 
-def _sequence(expansions: list[list[object]]) -> list[object]:
+
+def _sequence(expansions: list[list[object]], ran: dict[int, str]) -> list[object]:
     """The protocol steps that run *expansions* in order, each from the state
     it starts from, with each experiment once (issue #1739).
 
     Each expansion is one task's steps from the initial state: a run of its
-    own, or a chain write_sedml_protocol writes for a run that continues
-    earlier ones, which replays them first. Its new part is what follows its
-    second-to-last experiment; the rest is the replay, which names the state
-    it continues from. Where that is the state the steps so far are in, the
-    new part continues it. Where the steps reached it before, it is saved
-    there and reset to here. Where it is the initial state, the steps reset to
-    that. A replay the steps never reached (a document another tool wrote) is
-    run in full from the initial state, as written.
+    own, or a chain, which replays earlier runs first, as write_sedml_protocol
+    writes a run that continues them. Its replay is its longest start, short
+    of its last experiment, that ends in a state the steps so far reached; the
+    rest is new. Where that state is the one the steps are in, the new part
+    continues it. Where they reached it before, it is saved there and reset to
+    here. Where it is the initial state, the steps reset to that: a chain none
+    of whose starts they reached runs in full, as written. An expansion that
+    is the start of one already run, the same tasks, has been run, whichever
+    of the two the document lists first.
 
-    A state is named by the steps since the last reset to the initial state.
-    The dedupe this replaced kept every expansion that was no prefix of
-    another: it dropped a run that repeated a chain's first run, ran a shared
-    replay twice, and put a chain after an unrelated run before it."""
+    A state is named by the steps since the last reset to the initial state,
+    each experiment with the task that ran it (*ran*, by the experiment's
+    ``id``): a chain names the tasks it replays, and two unseeded stochastic
+    runs with the same settings do not end in one state. A replay of tasks the
+    steps never ran, with equal settings, names the state equal steps reached.
+    The dedupe this replaced kept every expansion whose steps were no prefix
+    of another's: it dropped a run that repeated a chain's first run, ran a
+    shared replay twice, and put a chain after an unrelated run before it."""
     from bngsim.convert._protocol import Experiment, StateChange
 
     to_initial = (
@@ -2654,45 +2666,74 @@ def _sequence(expansions: list[list[object]]) -> list[object]:
         StateChange(kind="reset_parameters", label=_INITIAL_LABEL),
     )
     out: list[object] = []
-    history: list[object] = []  # the steps since the last reset to the initial state
-    reached: list[tuple[tuple[object, ...], int]] = [((), 0)]  # (state, len(out) there)
+    history: list[_Key] = []  # the steps since the last reset to initial
+    # Each state the steps reached, with len(out) there; the last is the current one.
+    reached: list[tuple[tuple[_Key, ...], int]] = [((), 0)]
     saves: dict[int, str] = {}  # len(out) where a save goes -> its label
+    done: list[list[_Key]] = []  # the expansions run so far
 
-    def emit(steps: list[object]) -> None:
-        for step in steps:
-            if step is _RESET:
+    def emit(keys: list[_Key]) -> None:
+        for key in keys:
+            if key[0] is _RESET:
                 out.extend(to_initial)
                 history.clear()
             else:
-                out.append(step)
-                history.append(step)
+                out.append(key[0])
+                history.append(key)
             reached.append((tuple(history), len(out)))
 
-    def since_reset(steps: list[object]) -> tuple[object, ...]:
-        cut = max((i + 1 for i, s in enumerate(steps) if s is _RESET), default=0)
-        return tuple(steps[cut:])
+    def since_reset(keys: list[_Key]) -> tuple[_Key, ...]:
+        cut = max((i + 1 for i, k in enumerate(keys) if k[0] is _RESET), default=0)
+        return tuple(keys[cut:])
+
+    def where(state: tuple[_Key, ...]) -> int | None:
+        """Where the steps reached *state*, as ``len(out)`` there: where they
+        are now, else where a save already is, else the latest. The same
+        tasks' runs come before runs that are only equal."""
+        steps = tuple(k[0] for k in state)
+        for same in (
+            lambda key: key == state,
+            lambda key: len(key) == len(steps) and tuple(k[0] for k in key) == steps,
+        ):
+            if same(reached[-1][0]):
+                return len(out)
+            at = next((n for key, n in reached if n in saves and same(key)), None)
+            if at is None:
+                at = next((n for key, n in reversed(reached) if same(key)), None)
+            if at is not None:
+                return at
+        return None
 
     for steps in expansions:
-        runs = [i for i, s in enumerate(steps) if isinstance(s, Experiment)]
-        split = runs[-2] + 1 if len(runs) > 1 else 0
-        replay, new = steps[:split], steps[split:]
-        state = since_reset(replay)
-        if state == tuple(history):
+        keys = [(s, ran.get(id(s))) for s in steps]
+        if any(len(other) > len(keys) and other[: len(keys)] == keys for other in done):
+            continue  # the start of a chain already run: it has been run
+        done.append(keys)
+        runs = [i for i, k in enumerate(keys) if isinstance(k[0], Experiment)]
+        lead = runs[-2] + 1 if len(runs) > 1 else 0
+        # Steps that trail the replay's last run and the steps so far end
+        # with (a value a scan leaves a follower of its parameter at) are
+        # where the steps are, not new.
+        split = next(
+            (j for j in range(runs[-1], lead, -1) if since_reset(keys[:j]) == tuple(history)),
+            None,
+        )
+        at: int | None = len(out)
+        if split is None:
+            for split in (*(i + 1 for i in reversed(runs[:-1])), 0):
+                at = where(since_reset(keys[:split]))
+                if at is not None:
+                    break
+        state, new = since_reset(keys[:split]), keys[split:]
+        if at == len(out):
             emit(new)  # it continues where the steps are
-            continue
-        at = next((n for key, n in reversed(reached) if key == state), None)
-        if at is None:
-            if out:
-                out.extend(to_initial)
-                history.clear()
-                reached.append(((), len(out)))
-            emit(steps)  # a replay never reached: run it as written
         elif not state:
             out.extend(to_initial)
             history.clear()
             reached.append(((), len(out)))
             emit(new)
         else:
+            assert at is not None
             label = saves.setdefault(at, _CHAIN_LABEL.format(len(saves)))
             out.extend(
                 (
@@ -2727,6 +2768,7 @@ class _TaskReader:
         }
         self.lossy: list[str] = []
         self.file: str | None = None  # the model file the first task runs, which every task runs
+        self.ran: dict[int, str] = {}  # id(experiment) -> the task that runs it
 
     @property
     def targets(self) -> _SbmlTargets | None:
@@ -2758,7 +2800,7 @@ class _TaskReader:
             if any(isinstance(s, Experiment) for s in steps):
                 expansions.append(steps)
                 self._after_a_reset_scan(elem.get("id") or "a task", steps)
-        out = _sequence(expansions)
+        out = _sequence(expansions, self.ran)
         if any(isinstance(s, StateChange) and s.kind == "reset_parameters" for s in out):
             out.insert(0, StateChange(kind="save_parameters", label=_INITIAL_LABEL))
         return ProtocolSpec(steps=tuple(out), source=None, dropped=(), lossy=tuple(self.lossy))
@@ -2819,7 +2861,9 @@ class _TaskReader:
                 step = self._change(change, f"model {model.get('id')!r}")
                 if step is not None:
                     loads.append(step)
-        return [_Loads(chain[0].get("id") or "", tuple(loads)), _experiment_of(utc, sweep)]
+        experiment = _experiment_of(utc, sweep)
+        self.ran[id(experiment)] = tid
+        return [_Loads(chain[0].get("id") or "", tuple(loads)), experiment]
 
     def _repeated(self, rt: ET.Element, depth: int) -> list[object]:
         rid = rt.get("id") or "a repeatedTask"
