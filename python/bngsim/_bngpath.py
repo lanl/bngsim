@@ -35,15 +35,32 @@ PyBioNetGen, no trail). Promoting the module here rather than adding an eighth i
 the whole point of the paragraphs above; ``parity_checks/_core/bngpath.py`` now
 re-exports from this file, so there is still exactly one resolver.
 
-The probe is deliberately **not** cached: the only expensive step is the first
+The lookup is deliberately **not** cached: the only expensive step is the first
 ``import bionetgen``, which ``sys.modules`` already memoizes, so re-resolving
 stays cheap while continuing to see an env var a caller sets at runtime.
+
+Whether the ``perl`` on ``PATH`` can run the BNG2.pl that was found is a second
+question (issue #1761). BNG2.pl needs Perl's core library (its line 34 is ``use
+FindBin``), and Debian's ``perl-base``, the only Perl on slim container images,
+leaves that library out: ``which("perl")`` says yes there, and the load dies with
+Perl's own "Can't locate FindBin.pm". So :func:`resolve_bng` asks perl to compile
+the script, ``perl -c BNG2.pl``, which loads every module BNG2.pl and its
+``Perl2`` library ``use`` at compile time, runs only that compile-time code
+(``BEGIN`` blocks and the ``use``d modules' top-level statements), not the
+program, and takes well under a second. It runs in the environment BNG2.pl
+itself runs in (``$BNGPATH`` and ``$BioNetGenRoot`` choose its ``Perl2``
+library, and ``PERL_BADLANG=0`` keeps a locale warning out of its output), and a
+success *is* remembered, per perl, script, script mtime and those two values,
+since the suites resolve BNG2.pl at the import of many modules; a refusal is
+asked again, so a Perl installed later in the same process is seen.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import shutil
+import subprocess
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -97,12 +114,16 @@ class BngResolution:
     root: Path | None
     source: str | None
     tried: tuple[tuple[str, str], ...]
+    #: Whether a ``perl`` is on ``PATH`` at all (the stock-Windows question).
     has_perl: bool
+    #: Why that perl cannot run the BNG2.pl found, as "<perl> said: <its first
+    #: line>"; empty when it can, when there is no perl, or when nothing was found.
+    perl_problem: str = ""
 
     @property
     def ok(self) -> bool:
-        """A usable BNG2.pl *and* the perl needed to run it."""
-        return self.bng2_pl is not None and self.has_perl
+        """A usable BNG2.pl *and* a perl that can run it."""
+        return self.bng2_pl is not None and self.has_perl and not self.perl_problem
 
     def why_not(self) -> str:
         """One-line, actionable reason this resolution is unusable.
@@ -113,6 +134,9 @@ class BngResolution:
         """
         if self.ok:
             return ""
+        if self.bng2_pl is not None and self.perl_problem:
+            # Not a miss (BNG2.pl is there) and not a missing interpreter.
+            return _perl_problem_reason(self.bng2_pl, self.perl_problem)
         if self.bng2_pl is not None and not self.has_perl:
             return (
                 f"found BNG2.pl at {self.bng2_pl} but `perl` is not on PATH — "
@@ -128,6 +152,54 @@ class BngResolution:
         )
 
 
+#: Perl's "Can't locate X.pm", with ``X`` as a path (``XML/TreePP``).
+_CANT_LOCATE = re.compile(r"Can't locate (\S+)\.pm\b")
+
+
+def _perl_problem_reason(bng2_pl: Path, problem: str) -> str:
+    """:meth:`BngResolution.why_not`'s text for a BNG2.pl the perl on PATH cannot compile.
+
+    What Perl could not find decides the advice (issue #1761). BioNetGen's own
+    modules sit in the ``Perl2`` folder beside BNG2.pl; when one of them is the
+    missing one, ``$BNGPATH`` or ``$BioNetGenRoot``, which BNG2.pl's ``use lib``
+    reads first, sent it to another library, and Perl is fine. Any other missing
+    module is one of Perl's own, which Debian's perl-base, the only Perl on slim
+    container images, leaves out. A refusal that names no module, and a perl that
+    could not be run or did not finish, get neither diagnosis.
+    """
+    if _PERL_SAID not in problem:
+        # perl could not be run or did not finish: the perl itself needs attention.
+        return (
+            f"found BNG2.pl at {bng2_pl} but the perl on PATH could not compile it "
+            f"({problem}) — fix that perl, or put another `perl` first on PATH"
+        )
+    head = f"found BNG2.pl at {bng2_pl} but the perl on PATH cannot compile it ({problem})"
+    missing = _CANT_LOCATE.search(problem)
+    if missing is None:
+        return f"{head} — check that BNG2.pl and its Perl2 library are complete and match"
+    module = missing.group(1)
+    try:
+        # Beside the real file, as BNG2.pl's own $FindBin::RealBin is: conda and
+        # others put a symlink to it on PATH, with no Perl2 folder beside the link.
+        folder = bng2_pl.resolve().parent
+        own = (folder / "Perl2" / f"{module}.pm").is_file()
+    except OSError:
+        own = False
+    if own:
+        return (
+            f"{head} — {module}.pm is one of BioNetGen's own modules, in the Perl2 folder "
+            f"in {folder}, so $BNGPATH or $BioNetGenRoot points BNG2.pl at another "
+            f"library: unset them, or point them at {folder}"
+        )
+    name = module.replace("/", "::")  # as Perl spells it in `use`
+    return (
+        f"{head} — {name} is not one of BioNetGen's own modules, so it is probably part "
+        "of Perl's own library, which Debian's perl-base, the only Perl on slim "
+        "container images, leaves out. Install the full Perl: `apt-get install perl` "
+        "(Debian/Ubuntu)"
+    )
+
+
 def _bundled_bngpath() -> tuple[str | None, str]:
     """PyBioNetGen's bundled BNG dir, plus a note on why it's unavailable."""
     try:
@@ -141,6 +213,143 @@ def _bundled_bngpath() -> tuple[str | None, str]:
     if not path:
         return None, "installed but get_conf() reports no bngpath"
     return str(path), str(path)
+
+
+#: Seconds allowed for ``perl -c BNG2.pl``. It takes well under a second; a perl
+#: that hangs here would hang the load too, so the probe says so instead.
+_PERL_CHECK_TIMEOUT = 60
+
+#: Marks a ``perl_problem`` that is perl's own refusal to compile the script, as
+#: against one where perl could not be run or did not finish; :meth:`why_not`
+#: names the Perl package only for the former.
+_PERL_SAID = " said: "
+
+#: The ``(perl, script, mtime_ns, $BNGPATH, $BioNetGenRoot)`` keys whose perl
+#: compiled the script. Successes only: a perl that refused is asked again on the
+#: next resolution, so a full Perl installed in the same process (``apt-get`` in
+#: a notebook) is seen at once, where perl's path and the script's mtime do not
+#: change. On a broken image that costs one ``perl -c`` per resolution.
+_PERL_COMPILES: set[tuple[str, str, int, str | None, str | None]] = set()
+
+
+def _forget_perl_checks() -> None:
+    """Drop the remembered successes (for tests that swap the perl or the script)."""
+    _PERL_COMPILES.clear()
+
+
+def _perl_status(bng2_pl: Path | None) -> tuple[bool, str]:
+    """``(has_perl, perl_problem)`` for a resolution that found ``bng2_pl``.
+
+    No ``perl`` on ``PATH`` is ``(False, "")``, the stock-Windows case. With no
+    BNG2.pl there is nothing to compile, so a present perl is ``(True, "")``. With
+    both, perl is asked to compile the script (issue #1761), in the environment
+    BNG2.pl itself runs in: a relative ``$BNGPATH`` or ``$BioNetGenRoot`` made
+    absolute against this process's directory (issue #1494), since either one
+    chooses the ``Perl2`` library the script loads.
+    """
+    perl = shutil.which("perl")
+    if perl is None or bng2_pl is None:
+        return perl is not None, ""
+    from bngsim._bngl_loader import _bng2_env
+
+    env = _bng2_env()
+    script = bng2_pl.absolute()  # as the load runs it; a relative one would key on cwd
+    problem = _perl_cannot_compile(
+        perl,
+        str(script),
+        _mtime_ns(script),
+        env.get("BNGPATH"),
+        env.get("BioNetGenRoot"),  # noqa: SIM112 - BNG2.pl's own spelling
+    )
+    return True, problem
+
+
+def _mtime_ns(path: Path) -> int:
+    try:
+        return path.stat().st_mtime_ns
+    except OSError:  # pragma: no cover - the file was just resolved
+        return -1
+
+
+def _perl_cannot_compile(
+    perl: str, bng2_pl: str, mtime_ns: int, bngpath: str | None, root_env: str | None
+) -> str:
+    """``""`` when ``perl -c bng2_pl`` succeeds, else why not.
+
+    Compiling BNG2.pl loads every module it and its ``Perl2`` library ``use`` at
+    compile time (``FindBin`` first, then ``Class::Struct``, ``Data::Dumper``,
+    ``Storable`` and the rest), running only compile-time code (``BEGIN`` blocks
+    and those modules' top-level statements), not the program. A perl that lacks
+    any of them fails here on the first one, reported as "<perl> said: <its line>"
+    (:func:`_first_perl_line`), the line a user would otherwise meet inside
+    ``Model.from_bngl``'s error; the
+    ``@INC`` listing Perl appends is dropped, since it says where Perl looked, not
+    what to do. A perl that could not be run, or did not finish, is reported
+    without that marker (see :data:`_PERL_SAID`).
+
+    A success is remembered in :data:`_PERL_COMPILES`, per perl, script, script
+    mtime and the two environment variables BNG2.pl's ``use lib`` reads, as the
+    run will see them, because the test suites resolve BNG2.pl when many modules
+    import. A failure is not, so a fix made in the same process is seen.
+    """
+    key = (perl, bng2_pl, mtime_ns, bngpath, root_env)
+    if key in _PERL_COMPILES:
+        return ""
+    problem = _run_perl_check(perl, bng2_pl, bngpath, root_env)
+    if not problem:
+        _PERL_COMPILES.add(key)
+    return problem
+
+
+def _run_perl_check(perl: str, bng2_pl: str, bngpath: str | None, root_env: str | None) -> str:
+    env = dict(os.environ)
+    for var, value in (("BNGPATH", bngpath), ("BioNetGenRoot", root_env)):
+        if value is None:
+            env.pop(var, None)
+        else:
+            env[var] = value
+    # Perl warns about an unusable locale before anything else (common on minimal
+    # images that forward LANG); the warning would take the place of the line
+    # that names the missing module. Compiling does not depend on the locale.
+    env["PERL_BADLANG"] = "0"
+    try:
+        proc = subprocess.run(
+            [perl, "-c", bng2_pl],
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_PERL_CHECK_TIMEOUT,
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        return f"{perl} -c did not finish within {_PERL_CHECK_TIMEOUT}s"
+    except OSError as exc:
+        return f"{perl} could not be run ({exc})"
+    if proc.returncode == 0:
+        return ""
+    first = _first_perl_line(f"{proc.stderr}\n{proc.stdout}") or f"exit status {proc.returncode}"
+    first = re.sub(r"\s*\(@INC (?:contains|entries checked):.*$", "", first)
+    if len(first) > 240:
+        first = first[:237] + "..."
+    return f"{perl}{_PERL_SAID}{first}"
+
+
+def _first_perl_line(text: str) -> str:
+    """The line of perl's output that says why it refused, or ``""``.
+
+    A "Can't locate" line wins wherever it is. Otherwise the first line that is not
+    part of perl's locale warning ("perl: warning: …" and its indented lines),
+    which ``PERL_BADLANG=0`` normally suppresses but a perl may still print.
+    """
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    for line in lines:
+        if "Can't locate" in line:
+            return line.strip()
+    for line in lines:
+        if line.startswith("perl: warning:") or line[:1].isspace():
+            continue
+        return line.strip()
+    return ""
 
 
 def resolve_bng(explicit: str | os.PathLike[str] | None = None) -> BngResolution:
@@ -181,12 +390,13 @@ def resolve_bng(explicit: str | os.PathLike[str] | None = None) -> BngResolution
         detail = f"{bundled} (no BNG2.pl there)"
     tried.append((BUNDLED, detail))
 
+    has_perl, _ = _perl_status(None)
     return BngResolution(
         bng2_pl=None,
         root=None,
         source=None,
         tried=tuple(tried),
-        has_perl=shutil.which("perl") is not None,
+        has_perl=has_perl,
     )
 
 
@@ -198,12 +408,14 @@ def _bng2_pl_under(raw: str) -> Path | None:
 
 
 def _resolved(bng2_pl: Path, source: str, tried: list[tuple[str, str]]) -> BngResolution:
+    has_perl, perl_problem = _perl_status(bng2_pl)
     return BngResolution(
         bng2_pl=bng2_pl,
         root=bng2_pl.parent,
         source=source,
         tried=(*tried, (source, str(bng2_pl))),
-        has_perl=shutil.which("perl") is not None,
+        has_perl=has_perl,
+        perl_problem=perl_problem,
     )
 
 
