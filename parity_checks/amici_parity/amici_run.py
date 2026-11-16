@@ -319,6 +319,7 @@ def _worker(spec: dict, q) -> None:
     am_full = ""
     am_timing = None
     onsets: list[float] = []
+    not_compared: list[str] = []
     am_wall = 0.0
     try:
         t0 = time.perf_counter()
@@ -337,6 +338,9 @@ def _worker(spec: dict, q) -> None:
             # Where the comparison must not look, not a cost: kept out of the
             # report's timing block (issue #1557).
             onsets = am_timing.pop("strict_onset_samples", [])
+            # Not a cost either: amount species AMICI could not size (see
+            # _amici_common.amount_states_as_concentrations); named in the comment.
+            not_compared = am_timing.pop("amount_states_dropped", [])
             am = am[:3]
     except Exception as exc:
         cap = capture_exception("amici", exc)
@@ -378,6 +382,10 @@ def _worker(spec: dict, q) -> None:
         status, value, comment, metric, m_tol = _compare_ode(
             bn, am, atol=p["atol"], n_instants=n_instants, onsets=onsets
         )
+        if not_compared:
+            comment += "; not compared (amount species, compartment size unknown): " + ", ".join(
+                not_compared
+            )
         res["status"], res["value"], res["comment"] = status, value, comment
         res["metric"], res["tol"] = metric, m_tol
     except Exception as exc:
