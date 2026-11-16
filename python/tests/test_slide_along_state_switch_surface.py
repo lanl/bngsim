@@ -19,6 +19,8 @@ trajectory, without sensitivities, is as it was.
 
 from __future__ import annotations
 
+import re
+
 import bngsim
 import numpy as np
 import pytest
@@ -356,14 +358,34 @@ def test_a_blow_up_beside_a_state_switch_fails_as_it_did(tmp_path):
     of 8 steps, and a stall is a whole ``max_steps`` of them that do not move
     the time. Counted from wherever the time stopped moving, and not in the
     windows a run in whole batches has, that was reached a few steps before
-    CVODE failed, and the run was called stalled at a discontinuity."""
+    CVODE failed, and the run was called stalled at a discontinuity.
+
+    Both endings are right for a run that blows up: CVODE's error, or a stall
+    whose step has collapsed at the blow-up itself. Which comes first is a
+    race that the rounding of the steps decides, on main as on any branch:
+    over 24 tolerances main stalls at 9, every one within 5e-6 of t = 1, and
+    #1454's move of the columns at the crossing at t = 0.5 turned this
+    tolerance from one ending to the other on Linux. What the test holds is
+    that a stall, if it is the ending, is read where the time really stopped:
+    at the blow-up, with a step that no longer moves it."""
     path = tmp_path / "m.net"
     path.write_text(BLOWS_UP)
     sim = bngsim.Simulator(
         bngsim.Model.from_net(path), method="ode", sensitivity_params=["k", "kb"]
     )
-    with pytest.raises(bngsim.SimulationError, match="CV_REPTD_SRHSFUNC_ERR.*non-finite"):
+    with pytest.raises(bngsim.SimulationError) as err:
         sim.run(sample_times=[0.0, 2.0], rtol=1e-8, atol=1e-10, timeout=60.0)
+    msg = str(err.value)
+    if re.search("CV_REPTD_SRHSFUNC_ERR.*non-finite", msg):
+        return
+    stall = re.search(
+        r"CVODE made no progress .*? at t=([0-9.eE+-]+) with step size h=([0-9.eE+-]+)",
+        msg,
+    )
+    assert stall, msg
+    t_stall, h_stall = float(stall.group(1)), float(stall.group(2))
+    assert 1.0 - 1e-5 < t_stall < 1.0, msg
+    assert t_stall + h_stall == t_stall, msg
 
 
 @pytest.mark.parametrize(
