@@ -17,8 +17,9 @@ The format-specific factories below remain the explicit route when the suffix
 does not match the contents (for example an SBML document saved as `.txt`).
 
 The `.xml` that BNG2.pl's `writeXML` writes for NFsim and RuleMonkey is not
-SBML, though its root element is `<sbml>`, and `Model.load` refuses it rather
-than load an empty model (issue #1712). Run it network-free instead: open it
+SBML, though its root element is `<sbml>`: libSBML reads its `<model>` element
+and none of the elements inside it. `Model.load` refuses it rather than load an
+empty model (issue #1712). Run it network-free instead: open it
 with `NfsimSession` or `RuleMonkeySession`, or pass it as `xml_path=` to a
 `Simulator` built from the `.net` it was written beside
 ([Network-free simulation](network-free.md)).
