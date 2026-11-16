@@ -806,10 +806,14 @@ slots that are concentrations by construction are read that way: a species
 declared with a negative initial value, a fixed species, and the target of a
 rate rule keep their values (GH #706). And only the slots a non-finite rate law
 needs moved are moved (issue #1661): first only those the non-finite laws read,
-then each of those that is further below 0 than any rounding of 0 put back at
-its value wherever the reading stays finite without it at 0. So a species that is negative where the model has it so, a
-voltage written to -61 or one its own law takes below 0, keeps its value beside
-a `sqrt` of another species, even in the law that takes it.
+then each of those that is further below 0 than any rounding of 0 (10^6 of
+its atol) put back at its value wherever the reading stays finite without it at
+0, and from then on, for the rest of the run, at any depth. So a species that
+is negative where the model has it so, a voltage written to -61 or one its own
+law takes below 0, keeps its value beside a `sqrt` of another species, even in
+the law that takes it, and in a law that needs it, `P^1.5*log(-V)`. At a loose
+atol the threshold can reach the species' own range: at `ExactAtol(1e-4)` it is
+100, and a V that crosses 0 on its own is read at 0 until it first passes -100.
 
 ## Logging
 

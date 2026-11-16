@@ -296,3 +296,22 @@ end"""
         )
     v = dict(zip(result.species_names, np.asarray(result.species)[-1], strict=True))["V"]
     assert v == pytest.approx(-70 + 9 * math.exp(-4), abs=1e-4)
+
+
+def test_a_slot_put_back_once_is_not_held_at_the_threshold():
+    # At atol 1e-4 the put-back's threshold, 1e6 atols, is V = -100, below
+    # E = -70. Read at 0 above it, V falls at g E = -7; put back below it, it
+    # rises at g (E - V) > 0. So V was held on the threshold: 8.9 million
+    # steps, 17 s, V(40) = -100. A slot put back once is now put back at any
+    # depth for the rest of the run. Main read V at 0 throughout: -328.57.
+    model = bngsim.Model.from_antimony_string(
+        (_V_BESIDE_SINK % "0").replace("k*sqrt(S);", "k*sqrt(S)*(1 + 0*V);")
+    )
+    model.set_concentration("V", -61.0)
+    r = bngsim.Simulator(model, method="ode", jacobian="fd").run(
+        t_span=(0, 40), n_points=41, atol=bngsim.ExactAtol(1e-4), rtol=1e-6, timeout=10
+    )
+    assert r.solver_stats["n_steps"] < 1000
+    v = _col(r, "V")
+    assert v.min() > -100.0
+    assert v[-1] == pytest.approx(-70.0 + 9.0 * math.exp(-4.0), abs=0.5)

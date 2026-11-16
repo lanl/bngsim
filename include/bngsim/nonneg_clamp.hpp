@@ -231,32 +231,135 @@ inline ClampReading read_values(const double *v, std::size_t n) {
 
 // The narrowed reading's last step (issue #1661): a slot it reads at 0 that
 // is below 0 by more than kClampNoiseAtols of its atol is put back at its
-// value, one at a time, wherever the reading stays finite without it at 0. A
-// row that is non-finite reads every slot in it, not only the one that makes
-// it so: k*sqrt(S)*(1 + V) reads V, and V at -61 was read at 0 with S. A slot
-// nearer 0 is not tried: that is where the run's own error puts a species it
-// empties, and reading it at 0 is what the retry is for. Tried there too, a
-// glycolysis model's species at -1e-8 (MODEL5952308332) were put back, which
-// took 8% more right-hand sides and moved nothing past the run's own error. `out` holds the
-// reading's state and `read_at` was finite there; on return `out` is the state finally read, and
-// `read_at` has left its reading at that state.
+// value wherever the reading stays finite without it at 0. A row that is
+// non-finite reads every slot in it, not only the one that makes it so:
+// k*sqrt(S)*(1 + V) reads V, and V at -61 was read at 0 with S. A slot nearer
+// 0 is not tried: that is where the run's own error puts a species it empties,
+// and reading it at 0 is what the retry is for. Tried there too, a glycolysis
+// model's species at -1e-8 (MODEL5952308332) were put back, which took 8% more
+// right-hand sides and moved nothing past the run's own error.
+//
+// A slot put back once is put back at any depth below 0 for the rest of the
+// run (`kept`, bit 1). Without that the right-hand side jumps where the slot
+// crosses the threshold: at atol 1e-4 (a threshold of -100), V relaxing to
+// E = -70 read dV/dt = g E = -7 above -100 and +3 below it, and the run held V
+// at -100 for 8.9 million steps. Bit 2 marks the slots put back by the reading
+// being tried (put_back_all), until it is kept or undone; bit 4 one the last
+// try needed at 0, which the first try of the next call leaves there.
+inline bool put_back_candidate(double y, double out, double atol, char kept) {
+    return out == 0.0 && y < 0.0 && (y < -kClampNoiseAtols * atol || (kept & 1) != 0);
+}
+
+// Every candidate in `out` put back at its value, but those marked needed
+// where `skip_needed`, each marked in `kept` (bit 2); how many.
+inline std::size_t put_back_all(const double *y, std::vector<double> &out,
+                                const std::vector<double> &atol, std::vector<char> &kept,
+                                bool skip_needed = false) {
+    std::size_t moved = 0;
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        if (put_back_candidate(y[i], out[i], atol[i], kept[i]) &&
+            !(skip_needed && (kept[i] & 4) != 0)) {
+            out[i] = y[i];
+            kept[i] = static_cast<char>(kept[i] | 2);
+            ++moved;
+        }
+    }
+    return moved;
+}
+
+// The slots put_back_all marked, kept (true) or read at 0 again (false).
+inline void settle_put_back(std::vector<double> &out, std::vector<char> &kept, bool keep) {
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        if ((kept[i] & 2) == 0)
+            continue;
+        if (!keep)
+            out[i] = 0.0;
+        kept[i] = keep ? 1 : static_cast<char>(kept[i] & 5);
+    }
+}
+
+// All the candidates at once first, but any the last call needed at 0: one
+// reading, where none of them is needed at 0. Then each candidate still at 0
+// on its own. A right-hand side read with k candidates costs 2 readings where
+// it reads them all, or where it needs the same ones at 0 as the call before,
+// and k + 1 otherwise: at 5,000 species with 200 of them at -61, one at a time
+// took 17.8 s for main's 0.94. `out` holds the reading's state and `read_at`
+// was finite there; on return `out` is the state finally read, and `read_at`
+// has left its reading at that state.
 template <class ReadAt>
 inline void restore_where_finite(const double *y, std::vector<double> &out,
-                                 const std::vector<double> &atol, ReadAt &&read_at) {
+                                 const std::vector<double> &atol, std::vector<char> &kept,
+                                 ReadAt &&read_at) {
     const std::size_t n = out.size();
     if (atol.size() != n)
         return;
+    if (kept.size() != n)
+        kept.assign(n, 0);
     bool last_reverted = false;
+    if (put_back_all(y, out, atol, kept, /*skip_needed=*/true) > 0) {
+        last_reverted = read_at(out.data()) != ClampReading::finite;
+        settle_put_back(out, kept, !last_reverted);
+    }
     for (std::size_t i = 0; i < n; ++i) {
-        if (out[i] != 0.0 || !(y[i] < -kClampNoiseAtols * atol[i]))
+        if (!put_back_candidate(y[i], out[i], atol[i], kept[i]))
             continue;
         out[i] = y[i];
         last_reverted = read_at(out.data()) != ClampReading::finite;
-        if (last_reverted)
+        if (last_reverted) {
             out[i] = 0.0;
+            kept[i] = static_cast<char>(kept[i] | 4);
+        } else {
+            kept[i] = 1;
+        }
     }
     if (last_reverted)
         read_at(out.data());
+}
+
+// The retry's narrowed readings (issue #1661), for the time course
+// (cvode_simulator.cpp's read_narrowed) and the run test (steady_state.cpp's
+// ss_read_narrowed) alike: `y` with only the slots a row `bad_row` marks reads
+// put at 0 (clamp_read_nonneg_into), and where that is not finite, with only
+// the band slots such a row reads put at 0 too (read_near_zero_read_into).
+// Where one is finite, restore_where_finite puts back what it can. Where
+// neither is, the same two readings once more with every candidate put back
+// first: a law that needs one slot at its value and another at 0, as
+// k*P^1.5*log(-V) does with V at -61, is 0 * -inf read with both at 0. The
+// band follows only a NaN where `band_after_infinite` is false: the run test
+// refuses an infinity the clamp leaves, as it did before (ss_eval_rhs). True
+// where a reading is finite, with `out` the state read and `read_at` left
+// there; false otherwise, and the caller reads as before.
+template <class ReadAt>
+inline bool read_narrowed_into(const std::vector<char> &mask, const SlotsReadByRow &rows,
+                               const std::vector<char> &bad_row, const double *y,
+                               const std::vector<double> &atol, std::vector<double> &out,
+                               std::vector<char> &read, std::vector<char> &kept, const char *spare,
+                               bool band_after_infinite, ReadAt &&read_at) {
+    const std::size_t n = mask.size();
+    if (kept.size() != n)
+        kept.assign(n, 0);
+    auto finite_at = [&] {
+        const ClampReading first = read_at(out.data());
+        if (first == ClampReading::finite)
+            return true;
+        if (!band_after_infinite && first != ClampReading::nan_only)
+            return false;
+        return read_near_zero_read_into(mask, read, y, atol, out) &&
+               read_at(out.data()) == ClampReading::finite;
+    };
+    clamp_read_nonneg_into(mask, rows, bad_row, y, out, read, spare);
+    if (finite_at()) {
+        restore_where_finite(y, out, atol, kept, read_at);
+        return true;
+    }
+    if (atol.size() != n)
+        return false;
+    clamp_read_nonneg_into(mask, rows, bad_row, y, out, read, spare);
+    if (put_back_all(y, out, atol, kept) == 0)
+        return false;
+    const bool finite = finite_at();
+    settle_put_back(out, kept, finite);
+    return finite;
 }
 
 } // namespace bngsim

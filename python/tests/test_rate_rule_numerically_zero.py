@@ -452,3 +452,42 @@ def test_the_run_test_puts_back_a_slot_the_nan_law_reads_but_does_not_need(jacob
     assert ss.continued_run_distance <= 1.0
     v = float(np.asarray(ss.concentrations)[list(ss.species_names).index("V")])
     assert v == pytest.approx(-70.0, rel=1e-9)
+
+
+@pytest.mark.parametrize("jacobian", ["auto", "fd"])
+@pytest.mark.parametrize("law", ["k*A*P^1.5*log(-V)", "k*A*P^0.5/V"], ids=["log(-V)", "1/V"])
+def test_a_nan_law_that_needs_the_negative_species_at_its_value(law, jacobian):
+    # The NaN law reads V itself and is finite only with V at its value and P
+    # at 0: with both at 0 it is 0 * -inf, or 0/0. The narrowed readings put V
+    # at 0 with P, so none was finite and the run was refused
+    # (CV_REPTD_RHSFUNC_ERR), as on main; they are now taken once more with V
+    # put back. A stays at 1: the law is 0 with P at 0.
+    sim = bngsim.Simulator(_v_beside_sinking(-61.0, law=law), method="ode", jacobian=jacobian)
+    r = sim.run(**_EXACT)
+    names = list(r.species_names)
+    x = {n: np.asarray(r.species)[:, names.index(n)] for n in names}
+    t = np.asarray(r.time)
+    np.testing.assert_allclose(x["V"], -70.0 + 9.0 * np.exp(-0.1 * t), rtol=1e-6)
+    np.testing.assert_array_equal(x["A"], 1.0)
+
+
+@pytest.mark.parametrize("jacobian", ["auto", "fd"])
+@pytest.mark.parametrize("sparse", [False, pytest.param(True, marks=_needs_klu)])
+@pytest.mark.parametrize("s0", [-1e-30, -1e-20])
+def test_the_run_test_refuses_an_infinity_the_narrowed_clamp_leaves(s0, jacobian, sparse):
+    # S^P, with S a rounding below 0 and P a hair below 0 in its band, is NaN;
+    # with S at 0 it is 0^P = inf, and only with P at 0 as well is it finite.
+    # The run test takes the band after a NaN only (ss_eval_rhs), so it refuses
+    # the infinity, as main does. The narrowed reading took the band after the
+    # infinity as well, and reported the state converged.
+    model = bngsim.Model.from_antimony_string(
+        "model m\n  species A = 1, S = 0, P = 0;\n  c = 1e-30;\n  P' = -c;\n"
+        "  J: -> A; S^P;\n  D: A -> ; A;\nend"
+    )
+    model.set_concentration("S", s0)
+    ss = bngsim.Simulator(
+        model, method="ode", jacobian=jacobian, force_sparse_linear_solver=sparse
+    ).steady_state(method="integration")
+    assert (ss.linear_solver == "klu") == sparse
+    assert not ss.converged
+    assert ss.continued_run_distance == float("inf")

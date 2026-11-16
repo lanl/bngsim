@@ -776,6 +776,10 @@ struct CvodeUserData {
     const NetworkModel *clamp_rows_model = nullptr;
     std::vector<char> clamp_bad_rows;
     std::vector<char> clamp_read_scratch;
+    // The slots the narrowed reading has put back in this run, which it puts
+    // back at any depth from then on (restore_where_finite); cleared with the
+    // tolerances.
+    std::vector<char> clamp_kept;
     // What that clamp weighs a negative component against where it reads a pole
     // (see spare_at_pole): the run's atol per slot, set with the tolerances,
     // and the solver it asks for the state a step started from. clamp_far marks
@@ -1014,6 +1018,7 @@ static void record_clamp_tolerances(CvodeUserData &data, void *cvode_mem, double
     data.clamp_cvode_mem = cvode_mem;
     data.clamp_far_any = false;
     data.below_zero_refusal.clear();
+    data.clamp_kept.clear();
     data.off_y_valid = false;
     if (!atol_v.empty()) {
         data.clamp_atol = atol_v;
@@ -1138,14 +1143,14 @@ static double *clamp_state_near_zero(CvodeUserData *data, N_Vector y, const char
 // moved the rows that read it: a species negative where the model has it so,
 // but not declared negative, was read at 0 by every retry and followed the
 // wrong ODE (V(40) = -328.6 for -69.8). The callbacks set clamp_bad_rows from
-// the reading they retry before spare_at_pole can overwrite it. Where a
-// narrowed reading is finite, each slot it reads at 0 from outside its band is
-// put back where the reading stays finite without it (restore_where_finite),
-// so a slot a non-finite row reads but does not need moved keeps its value
-// too. True then: `read_at` has left the reading where the callback keeps it,
-// and rhs_nonneg_scratch holds the state it read. False where neither narrowed
-// reading is finite; the callback then reads as before, so the retry still
-// rescues every state it rescued.
+// the reading they retry before spare_at_pole can overwrite it. Each slot a
+// narrowed reading reads at 0 from outside its band is put back where the
+// reading stays finite without it (read_narrowed_into, in
+// bngsim/nonneg_clamp.hpp), so a slot a non-finite row reads but does not need
+// moved keeps its value too. True where a reading is finite: `read_at` has
+// left it where the callback keeps it, and rhs_nonneg_scratch holds the state
+// it read. False otherwise; the callback then reads as before, so the retry
+// still rescues every state it rescued.
 template <class ReadAt>
 static bool read_narrowed(CvodeUserData *data, N_Vector y, const char *spare, ReadAt &&read_at) {
     if (data->clamp_rows_model != data->model) {
@@ -1153,17 +1158,10 @@ static bool read_narrowed(CvodeUserData *data, N_Vector y, const char *spare, Re
             slots_read_by_row(data->model->jacobian_sparsity(), data->model->n_species());
         data->clamp_rows_model = data->model;
     }
-    const double *y_ptr = N_VGetArrayPointer(y);
-    const std::vector<char> &mask = nonneg_clamp_mask(data);
-    clamp_read_nonneg_into(mask, data->clamp_rows, data->clamp_bad_rows, y_ptr,
-                           data->rhs_nonneg_scratch, data->clamp_read_scratch, spare);
-    if (read_at(data->rhs_nonneg_scratch.data()) != ClampReading::finite &&
-        !(read_near_zero_read_into(mask, data->clamp_read_scratch, y_ptr, data->clamp_atol,
-                                   data->rhs_nonneg_scratch) &&
-          read_at(data->rhs_nonneg_scratch.data()) == ClampReading::finite))
-        return false;
-    restore_where_finite(y_ptr, data->rhs_nonneg_scratch, data->clamp_atol, read_at);
-    return true;
+    return read_narrowed_into(nonneg_clamp_mask(data), data->clamp_rows, data->clamp_bad_rows,
+                              N_VGetArrayPointer(y), data->clamp_atol, data->rhs_nonneg_scratch,
+                              data->clamp_read_scratch, data->clamp_kept, spare,
+                              /*band_after_infinite=*/true, read_at);
 }
 
 // The state the value RHS's last call at (t, y) read f at, where that was not y

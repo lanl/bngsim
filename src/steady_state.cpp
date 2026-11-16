@@ -411,6 +411,7 @@ struct SteadyStateUserData {
     bool nonneg_rows_built = false;
     std::vector<char> nonneg_bad_rows;
     std::vector<char> nonneg_read;
+    std::vector<char> nonneg_kept; // put back once, at any depth since
     // What a callback threw, if one did (issue #589). SUNDIALS is C, so an
     // exception must not unwind through its frames; guard_ss_callback parks the
     // first one here and returns the unrecoverable-failure code, and the solve
@@ -880,9 +881,9 @@ static const double *ss_near_zero_state(SteadyStateUserData *data, const double 
 // The time course's narrowed readings (read_narrowed, issue #1661), taken
 // before ss_clamped_state and ss_near_zero_state: only the slots a row in
 // data->nonneg_bad_rows reads put at 0, then the band slots such a row reads
-// too, and the slots restore_where_finite can put back. True where one is
-// finite (`read_at` left it where the callback keeps it); false where neither
-// is, and the callback then reads as before.
+// too, and the slots restore_where_finite can put back (read_narrowed_into).
+// True where one is finite (`read_at` left it where the callback keeps it);
+// false where none is, and the callback then reads as before.
 template <class ReadAt>
 static bool ss_read_narrowed(SteadyStateUserData *data, const double *y, ReadAt &&read_at) {
     if (data->nonneg_mask.size() != static_cast<std::size_t>(data->model->n_species()))
@@ -892,15 +893,11 @@ static bool ss_read_narrowed(SteadyStateUserData *data, const double *y, ReadAt 
             slots_read_by_row(data->model->jacobian_sparsity(), data->model->n_species());
         data->nonneg_rows_built = true;
     }
-    clamp_read_nonneg_into(data->nonneg_mask, data->nonneg_rows, data->nonneg_bad_rows, y,
-                           data->nonneg_scratch, data->nonneg_read);
-    if (read_at(data->nonneg_scratch.data()) != ClampReading::finite &&
-        !(read_near_zero_read_into(data->nonneg_mask, data->nonneg_read, y, data->nonneg_atol,
-                                   data->nonneg_scratch) &&
-          read_at(data->nonneg_scratch.data()) == ClampReading::finite))
-        return false;
-    restore_where_finite(y, data->nonneg_scratch, data->nonneg_atol, read_at);
-    return true;
+    // The band follows a NaN only, as it does on the full clamp below: an
+    // infinity is refused (ss_eval_rhs).
+    return read_narrowed_into(data->nonneg_mask, data->nonneg_rows, data->nonneg_bad_rows, y,
+                              data->nonneg_atol, data->nonneg_scratch, data->nonneg_read,
+                              data->nonneg_kept, nullptr, /*band_after_infinite=*/false, read_at);
 }
 
 // A NaN, and no infinity, in v: the reading the run test retries
