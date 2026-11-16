@@ -761,19 +761,32 @@ The integrator advances its clock by `t + h`, and far from 0 the doubles are
 coarse: 1.2e-4 apart at `t = 1e12`, 0.125 apart at `1e15`. A step shorter than
 that spacing is rounded, and the trajectory goes wrong with it.
 
-A model that reads no clock cannot tell where its run starts, so bngsim runs it
-on the time elapsed since the end of the run nearer 0, wherever that end is at
-2^20 (1,048,576) or beyond, and reports the times you asked for (issue #1681).
-Such a run is the run from 0, to the bit:
+A model that reads no clock cannot tell where its run starts, so an ODE run
+(`method="ode"`) of it is integrated on the time elapsed since the end of the
+run nearer 0, wherever that end is at 2^20 (1,048,576) or beyond, and reports
+the times you asked for (issue #1681). That end is first rounded toward 0 to the
+spacing of the doubles at the run's far end, so every time in the run moves
+exactly. Where it is already on that spacing, as it always is for a run that
+crosses no power of 2, the run is the run from 0, to the bit:
 
 ```python
 far = sim.run(t_span=(1e15, 1e15 + 10), n_points=11)    # the same numbers as
 near = sim.run(t_span=(0, 10), n_points=11)             # this run, at far.time
 ```
 
+Where it is not, the run starts at what is left, less than that spacing: from
+`2**53 - 1` the far end's doubles are 2 apart, and the run is the run from 1,
+as accurate as the run from 0 but not equal to it in every bit.
+
 A run nearer 0 than that is integrated on the clock you gave it, as it always
-was. If a far run fails, the times in its message are on the run's own clock,
-and the message ends by saying which time to add to them.
+was. If a far run fails with a message that names a time, that time is on the
+run's own clock, and the message ends by saying which time to add to it.
+
+A model that stops at a switch time for its sensitivities (an `if()` on a
+counter clock whose threshold is a requested parameter) keeps the absolute
+clock, as a model with any other stop does. `run_diffrax` is not moved either:
+it integrates on the clock it is given, and from `1e15` it ends at its step
+limit with an error.
 
 A model that **reads the clock** keeps the absolute one, far or not: a function
 of `time()`, a table function indexed by time, or any event. Its laws are

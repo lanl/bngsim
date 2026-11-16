@@ -16456,6 +16456,38 @@ void CvodeSimulator::set_tolerances(double rtol, const std::vector<double> &atol
 
 void CvodeSimulator::set_max_steps(int max_steps) { impl_->max_steps = max_steps; }
 
+// The message of a failed run moved onto its own clock (issue #1681), with a
+// note saying which time to add, where it names a time: a "t=" or "t = " before
+// a number. A message that names none (an unknown jacobian option) is the one
+// the same request gave nearer 0.
+static std::string on_the_runs_clock(const std::string &what, double origin) {
+    bool names_a_time = false;
+    for (std::size_t i = what.find('t'); i != std::string::npos && !names_a_time;
+         i = what.find('t', i + 1)) {
+        if (i > 0 && (std::isalnum(static_cast<unsigned char>(what[i - 1])) || what[i - 1] == '_'))
+            continue;
+        std::size_t j = i + 1;
+        if (j < what.size() && what[j] == ' ')
+            ++j;
+        if (j >= what.size() || what[j] != '=')
+            continue;
+        ++j;
+        if (j < what.size() && what[j] == ' ')
+            ++j;
+        if (j < what.size() && what[j] == '-')
+            ++j;
+        names_a_time = j < what.size() && (std::isdigit(static_cast<unsigned char>(what[j])) ||
+                                           what[j] == '.' || what[j] == 'i' || what[j] == 'n');
+    }
+    if (!names_a_time)
+        return what;
+    char from[64];
+    std::snprintf(from, sizeof(from), "%.17g", origin);
+    return what +
+           " (The model reads no clock, so this run was integrated on time elapsed since t = " +
+           from + ": add that to each time above.)";
+}
+
 Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     auto &model = impl_->model;
     const int ns = model.n_species();
@@ -16506,22 +16538,36 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // the run nearer 0 is at 2^20 or beyond, so every other run is the one it
     // was, to the bit, as for SSA (issue #1059). The rows report the times
     // asked for. A model that reads the clock (a function of time(), a table
-    // indexed by it, an event, a discontinuity or a crossing stop) keeps the
-    // absolute clock: its laws are evaluated at t, and are not moved here. A
-    // model with no ODE state, above, has no step to lose.
+    // indexed by it, an event, a discontinuity, a crossing stop or a switch
+    // time to stop at) keeps the absolute clock: its laws are evaluated at t,
+    // and its stops are absolute times, which are not moved here. A model with
+    // no ODE state, above, has no step to lose.
     if (const double origin = elapsed_clock_origin(times);
         origin != 0.0 && !model.functions_use_time() && model.n_events() == 0 &&
         model.n_discontinuity_triggers() == 0 && opts.crossing_stops.empty() &&
-        opts.crossing_probes.empty()) {
+        opts.crossing_probes.empty() && opts.sensitivity.switch_times.empty()) {
         // The rows asked for, each moved onto the run's clock: exact, the
         // origin being a multiple of the spacing of doubles at the far end.
-        TimeSpec elapsed = times;
-        elapsed.t_start = times.t_start - origin;
-        elapsed.t_end = times.t_end - origin;
-        elapsed.sample_times = times.output_times();
-        for (double &x : elapsed.sample_times)
-            x -= origin;
+        // Past 2^72 that spacing is over 2^20, and what is left of the near
+        // end can be 2^20 or more again: it is moved again here, so the run
+        // below is moved no further and its failure has one note.
         const std::vector<double> asked = times.output_times();
+        TimeSpec elapsed = times;
+        elapsed.sample_times = asked;
+        std::vector<double> origins;
+        for (double o = origin; o != 0.0; o = elapsed_clock_origin(elapsed)) {
+            origins.push_back(o);
+            elapsed.t_start -= o;
+            elapsed.t_end -= o;
+            for (double &x : elapsed.sample_times)
+                x -= o;
+        }
+        // Each move back is exact, in the reverse order.
+        const auto back = [&origins](double t) {
+            for (auto o = origins.rbegin(); o != origins.rend(); ++o)
+                t += *o;
+            return t;
+        };
         try {
             Result result = run(elapsed, opts);
             // A run to a steady state stops early and keeps the rows it reached.
@@ -16529,20 +16575,20 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 result.set_time(i, asked[static_cast<std::size_t>(i)]);
             // Both ODE paths leave the model at the run's last time, on the
             // run's clock.
-            model.set_current_time(model.current_time() + origin);
+            model.set_current_time(back(model.current_time()));
             return result;
+        } catch (const SensitivityRefusedForParameters &e) {
+            // A failure names its times on the run's clock, and keeps its type,
+            // which Python maps to its own error.
+            throw SensitivityRefusedForParameters(on_the_runs_clock(e.what(), back(0.0)));
+        } catch (const SensitivityUnsupported &e) {
+            throw SensitivityUnsupported(on_the_runs_clock(e.what(), back(0.0)));
         } catch (const std::runtime_error &e) {
-            // A failure names its times on the run's clock. Only the plain
-            // runtime_error is reworded; the subclasses carry their own types
-            // to Python (a timeout, a sensitivity refusal) and say no time.
+            // The other subclasses (a timeout, a sparse solver refused) name
+            // no time of the run.
             if (typeid(e) != typeid(std::runtime_error))
                 throw;
-            char from[64];
-            std::snprintf(from, sizeof(from), "%.17g", origin);
-            throw std::runtime_error(std::string(e.what()) +
-                                     " (The model reads no clock, so this run was integrated on "
-                                     "time elapsed since t = " +
-                                     from + ": add that to each time above.)");
+            throw std::runtime_error(on_the_runs_clock(e.what(), back(0.0)));
         }
     }
 

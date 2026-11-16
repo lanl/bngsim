@@ -8,8 +8,10 @@ no error.
 
 A model that reads no clock cannot tell where its run starts, so a run whose end
 nearer 0 is at 2^20 or beyond is integrated on the time elapsed since that end,
-and reports the times asked for: it is the run from 0, bit for bit. A run nearer
-0, and a model that reads the clock, are run as before.
+and reports the times asked for: it is the run from 0, bit for bit, where that
+end is on the spacing of the doubles at the far end, and as accurate where it is
+not. A run nearer 0, a model that reads the clock, and a run given a switch time
+to stop at, are run as before.
 
 The models are ``.net`` text. Which clock a run was on is read from a failing
 run's message, which names its times: a law that leaves through infinity at
@@ -232,3 +234,114 @@ def test_a_far_runs_timeout_is_still_a_timeout(tmp_path):
     with pytest.raises(bngsim.SimulationTimeout) as info:
         _sim(tmp_path).run((1e15, 1e15 + 10.0), 11, timeout=1e-9)
     assert NOTE not in str(info.value)
+
+
+# ── After review ────────────────────────────────────────────────────────────
+
+# A unit-rate counter C from c0 = 0.5, and X' = k once C >= sigma: the crossing
+# is at t0 + 2.5, and dX(t0 + 5)/dsigma = -k = -2 (issue #725's model).
+CLOCK_NET = """begin parameters
+    1 c0     0.5
+    2 sigma  3
+    3 k      2
+    4 rc     1
+end parameters
+begin functions
+    1 rate_X() if(t>=sigma,k,0)
+end functions
+begin species
+    1 C() c0
+    2 X() 0
+end species
+begin reactions
+    1 0 1 rc
+    2 0 2 rate_X
+end reactions
+begin groups
+    1 t 1
+end groups
+"""
+
+
+def test_a_far_run_with_a_switch_time_keeps_the_absolute_clock(tmp_path, monkeypatch):
+    # A switch time is an absolute time to stop at and jump across. Handed to
+    # the run without a crossing stop beside it, the run moved onto its own
+    # clock never reached it: dX/dsigma came back 0 for -2. The stops are
+    # dropped here so the switch time is all the run is given.
+    monkeypatch.setattr(
+        bngsim._bngsim_core.SolverOptions, "set_crossing_stops", lambda self, *a: None
+    )
+    net = tmp_path / "clock.net"
+    net.write_text(CLOCK_NET)
+    t0 = 2.0**30
+    run = bngsim.Simulator(
+        bngsim.Model.from_net(str(net)), "ode", sensitivity_params=["sigma"]
+    ).run(sample_times=[t0 + i for i in range(6)], rtol=1e-10, atol=1e-12)
+    x = list(run.species_names).index("X()")
+    assert np.asarray(run.sensitivities)[-1, x, 0] == pytest.approx(-2.0, abs=1e-6)
+
+
+# S' = amp below lvl = 1 and -amp above it, from S = 0: at t = 1 it slides
+# along S = 1, which a sensitivity run refuses (issue #926), naming the time.
+SLIDE_NET = """begin parameters
+    1 amp 1.0
+    2 lvl 1.0
+end parameters
+begin functions
+    1 f() if(Sobs<lvl,amp,-amp)
+end functions
+begin species
+    1 S() 0.0
+end species
+begin reactions
+    1 0 1 f
+end reactions
+begin groups
+    1 Sobs 1
+end groups
+"""
+
+
+def test_a_far_sensitivity_refusal_names_its_own_clock_and_keeps_its_type(tmp_path):
+    net = tmp_path / "slide.net"
+    net.write_text(SLIDE_NET)
+    sim = bngsim.Simulator(bngsim.Model.from_net(str(net)), "ode", sensitivity_params=["amp"])
+    with pytest.raises(bngsim.SensitivityRefusedDuringRunError) as info:
+        sim.run(sample_times=[1e15, 1e15 + 0.5, 1e15 + 1.5], rtol=1e-6, atol=1e-8, timeout=10.0)
+    msg = str(info.value)
+    assert "at t=1 " in msg and "issue #926" in msg, msg
+    assert NOTE in msg and "elapsed since t = 1000000000000000:" in msg, msg
+
+
+def test_a_far_failure_that_names_no_time_says_nothing_of_the_clock(tmp_path):
+    # The message is the one the same request gives nearer 0.
+    messages = []
+    for t0 in (0.0, 1e15):
+        with pytest.raises(bngsim.SimulationError) as info:
+            _sim(tmp_path, jacobian="bogus").run((t0, t0 + 10.0), 11)
+        messages.append(str(info.value))
+    assert "bogus" in messages[0] and messages[1] == messages[0], messages
+
+
+def test_a_run_past_2_72_is_moved_once_and_says_so_once(tmp_path):
+    # Past 2^72 the doubles are over 2^20 apart, and what is left of the start
+    # once it is rounded to them can be 2^20 again: from 2^73 - 2^20 to 2^73 +
+    # 2^30 the spacing at the far end is 2^21, and 2^20 is left. That run was
+    # moved again, and its failure carried two notes with two times to add.
+    t0 = 2.0**73 - 2.0**20
+    with pytest.raises(bngsim.SimulationError) as info:
+        _blowup_sim(tmp_path).run((t0, 2.0**73 + 2.0**30), 2)
+    msg = str(info.value)
+    assert "non-finite value at t=1.5708" in msg, msg
+    assert msg.count(NOTE) == 1 and f"elapsed since t = {t0:.17g}:" in msg, msg
+
+
+def test_a_far_run_whose_start_is_not_on_the_far_ends_spacing(tmp_path):
+    # From 2^53 - 1 the doubles at the far end are 2 apart, so the run starts at
+    # what is left, 1, on its own clock: not the run from 0 to the bit, but as
+    # accurate. A(t0 + s) = e^-s, at the rows asked for.
+    t0 = 2.0**53 - 1.0
+    result = _sim(tmp_path).run(sample_times=[t0, t0 + 1.0, t0 + 5.0, t0 + 101.0])
+    assert np.array_equal(np.asarray(result.time), [t0, t0 + 1.0, t0 + 5.0, t0 + 101.0])
+    elapsed = np.array([0.0, 1.0, 5.0, 101.0])
+    assert np.abs(_species(result)[:, 0] - np.exp(-elapsed)).max() < 3e-6

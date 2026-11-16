@@ -587,10 +587,6 @@ template <class Run> static Result restoring_on_raise(NetworkModel &model, Run &
     }
 }
 
-// Issue #1059: where a run's clock starts (elapsed_clock_origin, bngsim/types.hpp,
-// which the ODE run of a model that reads no clock shares, issue #1681).
-static double ssa_clock_origin(const TimeSpec &times) { return elapsed_clock_origin(times); }
-
 Result SsaSimulator::run(const TimeSpec &times, uint64_t seed, double timeout_seconds) {
     // poplevel = 0.0 means no scaling (exact SSA)
     return restoring_on_raise(impl_->model,
@@ -635,8 +631,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
     times_in.require_walkable("SsaSimulator::run");
     auto &model = impl_->model;
     // Issue #1059: the run keeps its own clock as time elapsed since an origin
-    // (t_start, see ssa_clock_origin), and hands the model origin + elapsed
-    // wherever the model reads the clock
+    // (t_start, see elapsed_clock_origin in bngsim/types.hpp), and hands the
+    // model origin + elapsed wherever the model reads the clock
     // (evaluate_functions, set_current_time). Far from the origin the doubles
     // are coarse, 1.2e-4 apart at t = 1e12, and the continuous loop placed its
     // firings on panels in absolute time, where a waiting time below that
@@ -646,7 +642,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
     // moves the origin, so every other run is the one it was, to the bit
     // (origin + x == x at origin 0). The rows report the times asked for, and
     // the state and the events carried to the next run their absolute times.
-    const double origin = ssa_clock_origin(times_in);
+    const double origin = elapsed_clock_origin(times_in);
     TimeSpec shifted = times_in;
     if (origin != 0.0) {
         shifted.t_start = times_in.t_start - origin;
@@ -3899,7 +3895,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
     }
 
     // The rows were recorded on the run's clock; they report the times asked
-    // for, origin + elapsed exactly (issue #1059, ssa_clock_origin).
+    // for, origin + elapsed exactly (issue #1059, elapsed_clock_origin).
     if (origin != 0.0) {
         const std::vector<double> t_abs = times_in.output_times();
         for (int k = 0; k < static_cast<int>(t_abs.size()) && k < result.n_times(); ++k)
