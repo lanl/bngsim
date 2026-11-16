@@ -171,6 +171,10 @@ PyBioNetGen's bundled copy, so an env var always **overrides** an installed
 package. `$BNGPATH` may be the BioNetGen folder or the `BNG2.pl` script itself.
 When nothing resolves, the skip message names every location that was tried — if
 a test says "no usable BNG2.pl", that message is the diagnosis, not a dead end.
+Its "Fix:" is the one for a wheel install, since `Model.from_bngl` shows users the
+same text; the test run's closing summary adds the checkout's fix, `--group parity`
+or `$BNGPATH`, because a `pip install` into this venv is gone at the next `uv sync`
+(issue #1692).
 
 The resolver is `bngsim._bngpath`, in the shipped package since #162 because
 `Model.from_bngl` needs it; `_core.bngpath` re-exports it and adds the

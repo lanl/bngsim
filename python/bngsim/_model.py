@@ -138,6 +138,7 @@ class Model:
         "_table_function_bindings",
         "_named_conc_states",
         "_named_sens_seeds",
+        "_named_ssa_counts",
         "_named_advanced",
         "_named_advanced_since_baseline",
         "_declared_ic_sens",
@@ -373,6 +374,11 @@ class Model:
         # would be re-seeded as a fresh start (∂x(0)/∂θ = 0), which is wrong
         # rather than approximate. Labels with no seed are simply absent.
         self._named_sens_seeds: dict[str, tuple[np.ndarray, list[str]]] = {}
+        # Issue #1463: the labels whose snapshot is a state an SSA/PSA run left,
+        # whose concentration species in a moving compartment hold counts over
+        # the load-time size (NetworkModel::ssa_counts_stored), so a restore
+        # tells the next SSA run not to read them as concentrations.
+        self._named_ssa_counts: set[str] = set()
         # Issue #1528: the labels whose snapshot is a state a run advanced
         # (ic_state_dirty at save time). One saved with no seed is x(θ) with an
         # unknown dx/dθ, not literal ICs: restore_concentrations() puts the
@@ -1434,6 +1440,7 @@ class Model:
         m._named_sens_seeds = {
             k: (s.copy(), list(names)) for k, (s, names) in self._named_sens_seeds.items()
         }
+        m._named_ssa_counts = set(self._named_ssa_counts)  # issue #1463
         m._named_advanced = set(self._named_advanced)  # issue #1528
         m._named_advanced_since_baseline = set(self._named_advanced_since_baseline)
         # Issue #111: pending IC-sensitivity declarations travel with the snapshot
@@ -1896,6 +1903,11 @@ class Model:
             )
         else:
             self._named_sens_seeds.pop(key, None)
+        # ...and whether it is an SSA run's counts (issue #1463).
+        if core.ssa_counts_stored:
+            self._named_ssa_counts.add(key)
+        else:
+            self._named_ssa_counts.discard(key)
         # ...and whether a run advanced it (issue #1528).
         if core.ic_state_dirty:
             self._named_advanced.add(key)
@@ -1953,6 +1965,7 @@ class Model:
         # set_state drops any pending seed (it cannot know an externally supplied
         # state's derivative) — so re-install this snapshot's own, if it has one.
         self._core.set_state(snapshot)
+        self._core.ssa_counts_stored = key in self._named_ssa_counts  # issue #1463
         if self._ic_write_log is not None:
             self._ic_write_log.add("*")
         seeded = self._named_sens_seeds.get(key)

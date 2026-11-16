@@ -61,7 +61,7 @@ bngsim is validated *against* these; none is needed to run bngsim itself.
 | SBML Test Suite | `473e119d` (`3.4.0-36`, LGPL-2.1) | `harness/sbml_test_suite` | `harness/sbml_test_suite/SUITE_PIN.json` |
 | RuleMonkey | vendored `third_party/rulemonkey` | `bng_parity` (network-free) | in-tree |
 
-Python 3.10–3.13.
+Python: wheels for 3.10–3.15; the test suites run on 3.12.
 
 ---
 

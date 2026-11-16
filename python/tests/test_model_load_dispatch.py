@@ -144,12 +144,17 @@ def test_load_missing_file_raises_filenotfound(tmp_path: Path):
 
 @pytest.fixture
 def antimony_hidden(monkeypatch: pytest.MonkeyPatch):
-    """Make ``import antimony`` fail, however it is already installed."""
+    """Make ``import antimony`` fail as it does where the package is not installed.
+
+    That is a ``ModuleNotFoundError`` naming ``antimony``, which is what Python
+    raises. The guard tells it apart from an antimony that is installed but cannot
+    load (GH #1760), which must not be told to install the extra.
+    """
     real_import = builtins.__import__
 
     def fake_import(name, *args, **kwargs):
         if name == "antimony" or name.startswith("antimony."):
-            raise ImportError("No module named 'antimony'")
+            raise ModuleNotFoundError("No module named 'antimony'", name="antimony")
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", fake_import)

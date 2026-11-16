@@ -31,6 +31,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest          # manylinux x86_64
+          - os: ubuntu-24.04-arm       # manylinux aarch64, native runner
           - os: macos-15-intel         # macOS x86_64 (Intel); macos-13 retired 2025-12-04
             macos_target: "10.15"      # from-source SuiteSparse -> broad target
           - os: macos-15               # macOS arm64 (Apple Silicon); macos-14 retires 2026-11-02
@@ -40,7 +41,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build wheels
-        uses: pypa/cibuildwheel@v4.1.0
+        uses: pypa/cibuildwheel@v4.3.5
         env:
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_target }}
 

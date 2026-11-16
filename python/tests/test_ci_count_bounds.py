@@ -71,13 +71,9 @@ TRIGGERS = ("ci/check_test_count.sh", "ci/test_floors.env")
 #: (a renamed helper, a call this regex no longer reads), and a blind scan finds
 #: no calls, which every other assertion here would accept. This is the floor
 #: under the floors.
+#: python-tests.yml's four left for ci/test_file_counts.py in #1757
+#: (test_ci_file_counts.py).
 KNOWN_CHECKS = {
-    "python-tests.yml": {
-        "PYTEST_COLLECTED",
-        "PYTEST_SKIPPED",
-        "PARITY_COLLECTED",
-        "PARITY_SKIPPED",
-    },
     "windows-nfsim.yml": {"NFSIM_PASSED"},
     "windows-klu.yml": {"KLU_PASSED"},
     "native-tests.yml": {"CTEST_BINARIES", "TEST_BNGSIM_CASES"},

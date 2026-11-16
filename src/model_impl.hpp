@@ -337,6 +337,11 @@ struct NetworkModel::Impl {
     // run that carries a seed on (issue #1298; NetworkModel::carried_marks_for).
     std::deque<NetworkModel::CarriedMarks> carried_marks;
 
+    // Whether the species state is an SSA/PSA run's (NetworkModel::
+    // ssa_counts_stored, issue #1463), and whether the IC baseline is one.
+    bool ssa_counts_stored = false;
+    bool baseline_ssa_counts_stored = false;
+
     // Event state carried between runs (issue #693; NetworkModel::event_carry).
     NetworkModel::EventCarry event_carry;
     std::deque<NetworkModel::EventCarry> event_carry_history;

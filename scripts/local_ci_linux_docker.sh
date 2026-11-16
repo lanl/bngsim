@@ -16,7 +16,9 @@
 #   - bngsim/scripts/local_ci_report-linux-x86_64-cp312.md (written by smoke)
 #
 # By default builds cp312 only (the leg that actually failed in CI). To build
-# the full cp310/311/312/313 matrix in-container, set MATRIX=1:
+# the cp310-cp313 matrix in-container, set MATRIX=1. It stops at cp313 because
+# the cibuildwheel pinned below (2.22.0) predates 3.14; CI builds cp314 and
+# cp315 with v4.3.5 (wheels.yml, issue #1491). See #1492.
 #   MATRIX=1 bngsim/scripts/local_ci_linux_docker.sh
 
 set -euo pipefail
