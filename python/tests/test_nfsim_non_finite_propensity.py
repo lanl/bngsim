@@ -79,7 +79,9 @@ def test_a_session_that_stopped_refuses_to_go_on_until_initialized(data_dir: Pat
         with pytest.raises(bngsim.SimulationError, match="total propensity is nan"):
             nf.step_to(1.0)
         nf.set_param("k", 1.0)
-        with pytest.raises(bngsim.SimulationError, match=r"stopped at the sample at t = 1\b"):
+        with pytest.raises(
+            bngsim.SimulationError, match=r"stopped when step_to\(\) found .* at t = 1\b"
+        ):
             nf.simulate(1.0, 2.0, 2)
         with pytest.raises(bngsim.SimulationError, match="initialize"):
             nf.step_to(2.0)
@@ -95,8 +97,36 @@ def test_a_session_that_stopped_in_simulate_refuses_step_to(data_dir: Path) -> N
         nf.initialize(seed=1)
         with pytest.raises(bngsim.SimulationError, match="total propensity is nan"):
             nf.simulate(0.0, 500.0, 501)
-        with pytest.raises(bngsim.SimulationError, match="this session stopped at the sample"):
+        with pytest.raises(bngsim.SimulationError, match=r"stopped when simulate\(\) found"):
             nf.step_to(600.0)
+
+
+def test_a_restore_does_not_lift_the_stop(data_dir: Path) -> None:
+    # restore_concentrations() puts the molecules back and leaves NFsim's
+    # clock where the stop left it; only initialize() starts again.
+    with NfsimSession(_xml(data_dir, MID_FIRING)) as nf:
+        nf.initialize(seed=1)
+        nf.save_concentrations("start")
+        with pytest.raises(bngsim.SimulationError, match="total propensity is nan"):
+            nf.simulate(0.0, 500.0, 501)
+        nf.restore_concentrations("start")
+        with pytest.raises(bngsim.SimulationError, match="this session stopped"):
+            nf.simulate(0.0, 100.0, 101)
+
+
+def test_a_total_that_is_not_finite_from_the_start_is_refused_at_once(data_dir: Path) -> None:
+    # The #1788 model's total is NaN in its initial state: a one-point segment
+    # or run is refused too, at its only sample.
+    with NfsimSession(_xml(data_dir, NAN_LAW)) as nf:
+        nf.initialize(seed=1)
+        with pytest.raises(bngsim.SimulationError, match=r"by the sample at t = 0\b"):
+            nf.simulate(0.0, 0.0, 1)
+    from bngsim._bngsim_core import NfsimSimulator, TimeSpec
+
+    times = TimeSpec()
+    times.t_start, times.t_end, times.n_points = 0.0, 0.0, 1
+    with pytest.raises(RuntimeError, match=r"by the sample at t = 0\b"):
+        NfsimSimulator(_xml(data_dir, NAN_LAW)).run(times, 1)
 
 
 @pytest.mark.parametrize("t_start", [0.0, 100.0])

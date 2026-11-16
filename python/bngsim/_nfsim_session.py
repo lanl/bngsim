@@ -415,9 +415,9 @@ class NfsimSession:
             If the session is not initialized or simulation fails.
             NFsim's total propensity found not finite at a sample (a rate
             law that is NaN or infinite, issue #1818) raises too, and the
-            session then refuses to advance until :meth:`initialize` or
-            :meth:`restore_concentrations`: NFsim fired nothing from that
-            point, so its state is not the state at the time reached.
+            session then refuses to advance until :meth:`initialize`: NFsim
+            fired nothing from that point, so its state is not the state at
+            the time reached.
         SimulationTimeout
             If ``timeout`` is set and the wall-clock budget is exceeded.
         """
@@ -486,9 +486,9 @@ class NfsimSession:
             If the session is not initialized.
             NFsim's total propensity found not finite at a sample (a rate
             law that is NaN or infinite, issue #1818) raises too, and the
-            session then refuses to advance until :meth:`initialize` or
-            :meth:`restore_concentrations`: NFsim fired nothing from that
-            point, so its state is not the state at the time reached.
+            session then refuses to advance until :meth:`initialize`: NFsim
+            fired nothing from that point, so its state is not the state at
+            the time reached.
         """
         self._require_initialized()
         try:

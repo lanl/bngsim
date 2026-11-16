@@ -42,6 +42,7 @@
 #include <string>
 #include <system_error>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace bngsim {
@@ -778,9 +779,12 @@ struct NfsimSimulator::Impl {
     // non-finite (issue #1818). NFsim fired nothing from that point, so the
     // state is the one it froze in, not the state at the time its clock shows,
     // and a later segment would start from it as if the span between had run.
-    // Until initialize() or restore_concentrations(), the session refuses to
-    // advance. Holds the time of the sample at which it was found.
-    std::optional<double> session_stopped_at;
+    // Until initialize(), the session refuses to advance. A restore does not
+    // lift it: restore_concentrations() puts molecules back and leaves NFsim's
+    // clock where the stop left it, ahead of the session's own time, so a
+    // segment after it would repeat the restored state over that gap. Holds
+    // the call that stopped and the time of its sample, in that call's labels.
+    std::optional<std::pair<const char *, double>> session_stopped_at;
     // Named concentration snapshots, keyed by label ("" = default/unlabeled
     // slot). Each label owns its own SystemSnapshot, so multiple named states
     // coexist — true multi-slot parity with the network-based Model (issue #11).
@@ -803,12 +807,12 @@ struct NfsimSimulator::Impl {
         if (!session_stopped_at)
             return;
         std::ostringstream os;
-        os << where << ": this session stopped at the sample at t = " << std::setprecision(17)
-           << *session_stopped_at
-           << ", where NFsim's total propensity was found non-finite. NFsim fired nothing from "
-              "there, so the state is the one it stopped in, and a further segment would start "
-              "from it as though the time between had run. initialize() starts the session "
-              "again; restore_concentrations() returns it to a saved state.";
+        os << where << ": this session stopped when " << session_stopped_at->first
+           << " found NFsim's total propensity non-finite, at its sample at t = "
+           << std::setprecision(17) << session_stopped_at->second
+           << ". NFsim fired nothing from there, so the state is the one it stopped in, and a "
+              "further segment would start from it as though the time between had run. "
+              "initialize() starts the session again.";
         throw std::runtime_error(os.str());
     }
 
@@ -1178,7 +1182,7 @@ static std::string nonfinite_propensity_message(::NFcore::System *system, const 
     std::ostringstream os;
     os << where << ": NFsim's total propensity is " << spelled
        << " by the sample at t = " << std::setprecision(17) << t_row << ". ";
-    if (std::isnan(a_tot))
+    if (!(a_tot > 0))
         os << "NFsim fires nothing once it is, so the rest of the run would repeat the state it "
               "stopped in. ";
     std::string named;
@@ -1303,6 +1307,14 @@ Result NfsimSimulator::run(const TimeSpec &times, uint64_t seed, double timeout_
     result.record(0, t_out[0], nullptr, obs_buf.data());
     eval_function_set(fn_set.funcs, fn_buf);
     result.record_expressions(0, fn_buf.data());
+    {
+        // Not finite from the start (a rate law NaN in the initial state):
+        // refused at once, a one-point run as well.
+        const std::string nonfinite =
+            nonfinite_propensity_message(system, "NfsimSimulator::run", t_out[0]);
+        if (!nonfinite.empty())
+            throw std::runtime_error(nonfinite);
+    }
 
     // Simulation loop using stepTo(). The run starts from the initial state at
     // t_out[0] (= t_start) and never sees [0, t_start], as ode and ssa do and as
@@ -1367,7 +1379,7 @@ void NfsimSimulator::step_to(double time) {
     const std::string nonfinite =
         nonfinite_propensity_message(impl_->session_system, "NfsimSimulator::step_to", time);
     if (!nonfinite.empty()) {
-        impl_->session_stopped_at = time;
+        impl_->session_stopped_at = std::make_pair("step_to()", time);
         throw std::runtime_error(nonfinite);
     }
     impl_->session_logical_time = time;
@@ -1460,6 +1472,14 @@ Result NfsimSimulator::simulate(double t_start, double t_end, int n_points, doub
     result.record(0, t_out[0], nullptr, obs_buf.data());
     eval_function_set(impl_->session_fn_funcs, fn_buf);
     result.record_expressions(0, fn_buf.data());
+    {
+        const std::string nonfinite =
+            nonfinite_propensity_message(system, "NfsimSimulator::simulate", t_out[0]);
+        if (!nonfinite.empty()) {
+            impl_->session_stopped_at = std::make_pair("simulate()", t_out[0]);
+            throw std::runtime_error(nonfinite);
+        }
+    }
 
     // stepTo() for each subsequent time point
     {
@@ -1471,7 +1491,7 @@ Result NfsimSimulator::simulate(double t_start, double t_end, int n_points, doub
             const std::string nonfinite =
                 nonfinite_propensity_message(system, "NfsimSimulator::simulate", t_out[i]);
             if (!nonfinite.empty()) {
-                impl_->session_stopped_at = t_out[i];
+                impl_->session_stopped_at = std::make_pair("simulate()", t_out[i]);
                 throw std::runtime_error(nonfinite);
             }
 
@@ -1673,9 +1693,6 @@ void NfsimSimulator::restore_concentrations(const std::string &label) {
     // this too; SystemSnapshot::restore() alone does not).
     impl_->session_system->invalidateStepToCache();
     it->second->restore(impl_->session_system);
-    // A saved state is one the system was in; if its total is not finite
-    // either, the next segment finds that and stops again.
-    impl_->session_stopped_at.reset();
 }
 
 bool NfsimSimulator::has_saved_concentrations(const std::string &label) const {
