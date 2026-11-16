@@ -533,8 +533,14 @@ def _expand_functional_reactions(
 # ─── Writer ───────────────────────────────────────────────────────────────
 
 
-def _functions_in_dependency_order(functions: list) -> list:
-    """*functions* with each one after the functions it reads (issue #1791).
+# A name as the .net reads it, and a number, which may hold one (``2e5`` is not ``e5``).
+# Names may be non-ASCII (issue #1653), so not ``_EXPR_TOKEN``'s ASCII names.
+_READ_TOKEN = re.compile(r"(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?|[^\W\d]\w*")
+
+
+def _functions_in_dependency_order(functions: list, *, model_name: str = "model") -> list:
+    """*functions*, ``(name, expression)`` pairs, each after the ones it reads
+    (issue #1791).
 
     BioNetGen's ``run_network`` reads a ``.net`` functions block top to bottom
     and refuses a function that reads one defined below it ("Could not find
@@ -543,23 +549,20 @@ def _functions_in_dependency_order(functions: list) -> list:
     after it. bngsim reads such a file, sorting on load, so its own reload could
     not see this.
 
-    A function reads the functions whose names its written expression holds, as
-    ``run_network`` reads them. The sort is stable: of the functions whose reads
-    are all placed, the one declared first goes next, so a block already in order
-    is written as it was, line for line. Functions that read each other in a
-    cycle have no such order: the block is written as declared, as before, for
-    the reader to refuse.
+    A function reads the functions whose names its written expression holds,
+    read as tokens, so the exponent of ``2e5`` is no name. The sort is stable:
+    of the functions whose reads are all placed, the one declared first goes
+    next, so a block already in order is written as it was, line for line.
+    Functions that read each other in a cycle have no such order. They, and the
+    functions that read them, are written after the rest, as declared, with a
+    warning: ``run_network`` refuses such a file, though bngsim reads it.
     """
     import heapq
 
-    index = {f["name"]: i for i, f in enumerate(functions)}
+    index = {name: i for i, (name, _) in enumerate(functions)}
     reads = [
-        {
-            index[t]
-            for t in re.findall(r"[A-Za-z_]\w*", str(f["expression"]))
-            if index.get(t, i) != i
-        }
-        for i, f in enumerate(functions)
+        {index[t] for t in _READ_TOKEN.findall(str(expr)) if index.get(t, i) != i}
+        for i, (_, expr) in enumerate(functions)
     ]
     readers: list[list[int]] = [[] for _ in functions]
     for i, deps in enumerate(reads):
@@ -577,7 +580,20 @@ def _functions_in_dependency_order(functions: list) -> list:
             if waiting[r] == 0:
                 heapq.heappush(ready, r)
     if len(order) < len(functions):
-        return list(functions)
+        placed = set(order)
+        rest = [i for i in range(len(functions)) if i not in placed]
+        from bngsim._simulator import _stacklevel_outside_bngsim
+
+        names = ", ".join(functions[i][0] for i in rest[:6]) + (" ..." if len(rest) > 6 else "")
+        warnings.warn(
+            f"{model_name}: {len(rest)} function(s) read each other in a cycle or read one "
+            f"that does ({names}); they are written after the rest, as declared. bngsim "
+            "reads the file, but BioNetGen's run_network refuses a function read before "
+            "it is defined.",
+            ConversionWarning,
+            stacklevel=_stacklevel_outside_bngsim(),
+        )
+        order += rest
     return [functions[i] for i in order]
 
 
@@ -748,10 +764,13 @@ def write_net(
     # reaction wrappers, each expression one field
     if functions or flux_helpers or wrappers:
         lines.append("begin functions")
-        ordered = _functions_in_dependency_order(functions)
-        for k, (fname, fexpr) in enumerate(
-            [*((f["name"], f["expression"]) for f in ordered), *flux_helpers, *wrappers], 1
-        ):
+        # The helpers and wrappers read the model's functions; sorted with them,
+        # each still follows what it reads, wherever that is.
+        ordered = _functions_in_dependency_order(
+            [*((f["name"], f["expression"]) for f in functions), *flux_helpers, *wrappers],
+            model_name=str(name),
+        )
+        for k, (fname, fexpr) in enumerate(ordered, 1):
             lines.append(f"    {k} {fname}() {_written(fexpr)}")
         lines.append("end functions")
         lines.append("")
