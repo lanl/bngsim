@@ -127,6 +127,10 @@ class ModelBuilder:
         """
         Issue #741: under SSA/PSA, an event assignment of a concentration to this species is stored as value * conc[live_idx0] / volume_factor (V_live / V_static). No-op if species_idx0 is out of range.
         """
+    def set_species_ssa_live_volume_param(self, species_idx0: typing.SupportsInt | typing.SupportsIndex, param_idx0: typing.SupportsInt | typing.SupportsIndex) -> None:
+        """
+        Issues #1464/#1659: as set_species_ssa_live_volume, for a species in a compartment an assignment rule sizes, whose size is the value of parameter param_idx0. No-op if species_idx0 is out of range.
+        """
     def set_species_volume_param(self, species_idx0: typing.SupportsInt | typing.SupportsIndex, param_idx0: typing.SupportsInt | typing.SupportsIndex, initial_amount: typing.SupportsFloat | typing.SupportsIndex = ...) -> None:
         """
         Issue #170: bind a species' storage convention to the compartment-size PARAMETER it came from, so set_param re-derives volume_factor (and, when initial_amount is given, the stored IC = amount/V) instead of leaving them at their load-time values. No-op if species_idx0 is out of range.
@@ -225,7 +229,7 @@ class NetworkModel:
         """
     def event_carry_state(self) -> typing.Any:
         """
-        The carry together with the trajectory's leg ends a rollback can return to (issue #693), opaque, for set_event_carry_state: what a protocol primitive that rewinds the state and the clock saves and puts back.
+        The carry together with the trajectory's leg ends a rollback can return to (issue #693), opaque, for set_event_carry_state: what a protocol primitive that rewinds the state and the clock saves and puts back. With it, whether the state is an SSA run's counts (ssa_counts_stored, issue #1463), which goes with the state as the events do.
         """
     def event_sensitivity_unsupported_reason(self, sens_param_names: collections.abc.Sequence[str], event_time_compensated: collections.abc.Sequence[typing.SupportsInt | typing.SupportsIndex] = []) -> str | None:
         """
@@ -372,6 +376,14 @@ class NetworkModel:
         The StoichEntry list as three parallel arrays — species_index and reaction_index (int64, 1-BASED, as the C++ struct holds them) and coefficient (float64, the NET coefficient: products positive, reactants negative, one entry per (species, reaction) pair). Issue #523.
         """
     @property
+    def advanced_since_baseline(self) -> bool:
+        """
+        True iff a run() has advanced the species state since it was last at the IC baseline: set at each run's state write-back, cleared by reset() and save_concentrations(), left as it is by set_concentration() / set_state(), copied by clone(). Where ic_state_dirty is about θ, this is about the initial-condition axis: sensitivity_ic seeds e_k from the baseline plus literal changes, as on a fresh model, and raises from a state a run moved off the baseline (issue #1528). Writable so a protocol primitive that puts a captured state back can put the flag back with it.
+        """
+    @advanced_since_baseline.setter
+    def advanced_since_baseline(self, arg1: bool) -> None:
+        ...
+    @property
     def analytical_jacobian_complete(self) -> bool:
         """
         True iff the analytical Jacobian covers every reaction (Elementary + attached Functional terms). GH #76.
@@ -439,7 +451,7 @@ class NetworkModel:
     @property
     def ic_state_dirty(self) -> bool:
         """
-        True iff the current species state is carried-over dynamics from a previous run() (not a fresh initial condition). Forward sensitivities requested on a dirty state require carry_sensitivities=True (else they raise). Cleared by reset() — unless the IC baseline carries its own dx/dθ (GH #81) — and by save_concentrations() when there is no carried derivative to hand the new baseline (GH #210). Writable so a protocol primitive that restores a snapshot together with its dx/dθ (Simulator.parameter_scan) can put the flag back as it found it; setting it by hand otherwise just re-arms (or defeats) the raise.
+        True iff the current species state is carried-over dynamics from a previous run() (not a fresh initial condition). Forward sensitivities requested on a dirty state require carry_sensitivities=True (else they raise). reset() sets it to the IC baseline's own: clear for the declared ICs and for a baseline saved from a state no run advanced, set for one that carries its own dx/dθ (GH #81) or was saved from an advanced state (issue #1528). save_concentrations() leaves it as it is. Writable so a protocol primitive that restores a snapshot together with its dx/dθ (Simulator.parameter_scan) can put the flag back as it found it; setting it by hand otherwise just re-arms (or defeats) the raise.
         """
     @ic_state_dirty.setter
     def ic_state_dirty(self, arg1: bool) -> None:
@@ -551,6 +563,14 @@ class NetworkModel:
         """
     @property
     def species_names(self) -> list[str]:
+        ...
+    @property
+    def ssa_counts_stored(self) -> bool:
+        """
+        True iff the species state is one an SSA/PSA run wrote back, which holds a concentration species in a compartment whose size moves as its count over the load-time size; otherwise such a species holds its concentration, and a run turns it into a count at the size the compartment has at its start (issue #1463). Set by an SSA run, cleared by an ODE run, put back by reset() from the baseline save_concentrations() took. Writable so a snapshot of the state can carry it.
+        """
+    @ssa_counts_stored.setter
+    def ssa_counts_stored(self, arg1: bool) -> None:
         ...
     @property
     def ssa_reads_clock(self) -> bool:

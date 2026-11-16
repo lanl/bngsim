@@ -990,7 +990,8 @@ for `A0` at `kf = 1`, `kr = 0.5` (issue #704). The seeding is the one a time
 course starts from (`Model.effective_ic_sensitivity`), read from the state the
 solve starts at: a species that has been moved off its initial condition
 contributes nothing, and neither does any species once `save_concentrations()`
-has made the state its own baseline. A fixed species that a parameter sets,
+has made a state no run advanced its own baseline. One a run advanced is
+refused below, saved or not (issue #1528). A fixed species that a parameter sets,
 `$A() A0`, moves what reads it by the same seed.
 
 Three requests are refused, with `SensitivityUnsupportedError`:
@@ -1086,7 +1087,9 @@ Scope (matching the new-era pre-equilibration surface): the equilibration is a
 **steady state** (PEtab `time = -inf`) and the perturbation is an **absolute**
 (`=`) `setParameter` — the species state carries over, only a parameter
 changes. Finite-time equilibration and initial-condition–axis (`sensitivity_ic`)
-sensitivities across the boundary are out of scope (the latter raises); a model
+sensitivities across the boundary are out of scope (the latter raises, unless
+`save_concentrations()` has made the carried state the initial condition and no
+run has moved the state off it since); a model
 with **events** warns, since event-time sensitivity discontinuities are handled
 separately. The carried seed is model-level state alongside the concentrations,
 introspectable via `model._core.ic_state_dirty` /
@@ -1102,11 +1105,16 @@ derivative with the state:
 * `save_concentrations()` (unlabeled) redefines the IC baseline to the current
   state, so the new baseline **inherits** its `dx/dθ` — the state did not change,
   so neither did its derivative — and `reset()` restores both. A baseline saved
-  with no carried derivative is θ-independent literal ICs: no parameter seeds
-  it, where a fresh start is seeded from the model's own initial-condition
-  expressions (issue #704).
+  with no carried derivative from a state no run has advanced (the initial
+  conditions, or `set_concentration` doses on a fresh model) is θ-independent
+  literal ICs: no parameter seeds it, where a fresh start is seeded from the
+  model's own initial-condition expressions (issue #704). One saved from a
+  state a run advanced without tracking `dx/dθ` is still `x(θ)`, with no
+  derivative to carry: it keeps the carried-over mark, `reset()` restores it,
+  and a sensitivity run from it raises as one from the live state does. It
+  used to start from `dx(0)/dθ = 0`, with no error (issue #1528).
 * `save_concentrations(label=...)` / `restore_concentrations(label)` capture and
-  restore a named snapshot's `dx/dθ` the same way.
+  restore a named snapshot's `dx/dθ`, and its carried-over mark, the same way.
 * `Simulator.parameter_scan` / `bifurcate` restore the reset target's state
   **and** its `dx/dθ` per point and integrate each point with
   `carry_sensitivities=True`, then leave the model (state, parameter, carried

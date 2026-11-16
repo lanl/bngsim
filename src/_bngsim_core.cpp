@@ -2211,18 +2211,41 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "Bulk-assign all species concentrations from a 1-D float64 ndarray, "
             "ordered like species_names(). O(n_species), one Python call (GH #102).")
 
+        .def_property("ssa_counts_stored", &bngsim::NetworkModel::ssa_counts_stored,
+                      &bngsim::NetworkModel::set_ssa_counts_stored,
+                      "True iff the species state is one an SSA/PSA run wrote back, which "
+                      "holds a concentration species in a compartment whose size moves as its "
+                      "count over the load-time size; otherwise such a species holds its "
+                      "concentration, and a run turns it into a count at the size the "
+                      "compartment has at its start (issue #1463). Set by an SSA run, cleared by "
+                      "an ODE run, put back by reset() from the baseline save_concentrations() "
+                      "took. Writable so a "
+                      "snapshot of the state can carry it.")
         // ── Pre-equilibration / carry-over sensitivity state (GH #210) ───────
         .def_property("ic_state_dirty", &bngsim::NetworkModel::ic_state_dirty,
                       &bngsim::NetworkModel::set_ic_state_dirty,
                       "True iff the current species state is carried-over dynamics from a "
                       "previous run() (not a fresh initial condition). Forward sensitivities "
                       "requested on a dirty state require carry_sensitivities=True (else "
-                      "they raise). Cleared by reset() — unless the IC baseline carries its "
-                      "own dx/dθ (GH #81) — and by save_concentrations() when there is no "
-                      "carried derivative to hand the new baseline (GH #210). Writable so a "
+                      "they raise). reset() sets it to the IC baseline's own: clear for the "
+                      "declared ICs and for a baseline saved from a state no run advanced, "
+                      "set for one that carries its own dx/dθ (GH #81) or was saved from an "
+                      "advanced state (issue #1528). save_concentrations() leaves it as it "
+                      "is. Writable so a "
                       "protocol primitive that restores a snapshot together with its dx/dθ "
                       "(Simulator.parameter_scan) can put the flag back as it found it; "
                       "setting it by hand otherwise just re-arms (or defeats) the raise.")
+        .def_property("advanced_since_baseline", &bngsim::NetworkModel::advanced_since_baseline,
+                      &bngsim::NetworkModel::set_advanced_since_baseline,
+                      "True iff a run() has advanced the species state since it was last at "
+                      "the IC baseline: set at each run's state write-back, cleared by reset() "
+                      "and save_concentrations(), left as it is by set_concentration() / "
+                      "set_state(), copied by clone(). Where ic_state_dirty is about θ, this "
+                      "is about the initial-condition axis: sensitivity_ic seeds e_k from the "
+                      "baseline plus literal changes, as on a fresh model, and raises from a "
+                      "state a run moved off the baseline (issue #1528). Writable so a "
+                      "protocol primitive that puts a captured state back can put the flag "
+                      "back with it.")
         .def_property_readonly(
             "ic_baseline_saved", &bngsim::NetworkModel::ic_baseline_saved,
             "True once save_concentrations() has redefined the IC baseline "
@@ -2251,26 +2274,29 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "event_carry_state",
             [](const bngsim::NetworkModel &self) -> py::object {
                 const auto &h = self.event_carry_history();
-                if (!self.event_carry().valid && h.empty())
+                if (!self.event_carry().valid && h.empty() && !self.ssa_counts_stored())
                     return py::none();
                 py::list hist;
                 for (const auto &c : h)
                     hist.append(event_carry_to_py(c));
                 return py::make_tuple(event_carry_to_py(self.event_carry()), hist,
-                                      self.event_carry_evicted_t());
+                                      self.event_carry_evicted_t(), self.ssa_counts_stored());
             },
             "The carry together with the trajectory's leg ends a rollback can return "
             "to (issue #693), opaque, for set_event_carry_state: what a protocol "
-            "primitive that rewinds the state and the clock saves and puts back.")
+            "primitive that rewinds the state and the clock saves and puts back. "
+            "With it, whether the state is an SSA run's counts (ssa_counts_stored, "
+            "issue #1463), which goes with the state as the events do.")
         .def(
             "set_event_carry_state",
             [](bngsim::NetworkModel &self, py::object state) {
                 if (state.is_none()) {
                     self.clear_event_carry();
+                    self.set_ssa_counts_stored(false);
                     return;
                 }
                 auto tup = state.cast<py::tuple>();
-                if (tup.size() != 3)
+                if (tup.size() != 4)
                     throw py::value_error("set_event_carry_state expects what "
                                           "event_carry_state() returned");
                 std::deque<bngsim::NetworkModel::EventCarry> hist;
@@ -2278,6 +2304,7 @@ PYBIND11_MODULE(_bngsim_core, m) {
                     hist.push_back(event_carry_from_py(py::reinterpret_borrow<py::object>(c)));
                 self.set_event_carry_state(event_carry_from_py(tup[0]), std::move(hist),
                                            tup[2].cast<double>());
+                self.set_ssa_counts_stored(tup[3].cast<bool>());
             },
             py::arg("state"), "Put back what event_carry_state() returned (None clears).")
         .def("rewind_event_carry", &bngsim::NetworkModel::rewind_event_carry, py::arg("t"),
@@ -3800,6 +3827,12 @@ PYBIND11_MODULE(_bngsim_core, m) {
              "Issue #741: under SSA/PSA, an event assignment of a concentration to this "
              "species is stored as value * conc[live_idx0] / volume_factor (V_live / "
              "V_static). No-op if species_idx0 is out of range.")
+        .def("set_species_ssa_live_volume_param",
+             &bngsim::ModelBuilder::set_species_ssa_live_volume_param, py::arg("species_idx0"),
+             py::arg("param_idx0"),
+             "Issues #1464/#1659: as set_species_ssa_live_volume, for a species in a "
+             "compartment an assignment rule sizes, whose size is the value of parameter "
+             "param_idx0. No-op if species_idx0 is out of range.")
         .def("set_species_rateof_amount", &bngsim::ModelBuilder::set_species_rateof_amount,
              py::arg("species_idx0"),
              "GH #231 (rateOf): mark a hasOnlySubstanceUnits=true species so its rateOf "

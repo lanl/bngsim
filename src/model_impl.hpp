@@ -320,13 +320,15 @@ struct NetworkModel::Impl {
     double current_time = 0.0;
 
     // ── Pre-equilibration / carry-over sensitivity state (GH #210) ───────────
-    // ic_state_dirty: true once the species state diverges from the load/reset
-    // ICs (advanced by a run() or set manually). pending_sens_seed: the prior
+    // ic_state_dirty: true once a run() has advanced the species state past the
+    // load/reset ICs (or a snapshot of such a state was restored).
+    // set_concentration/set_state leave it as it is. pending_sens_seed: the prior
     // phase's final dx/dθ (row-major [species*np + param]) plus its column
     // parameter names, threaded into the next phase's yS(0) seed when
     // carry_sensitivities is set. clone() copies these (a clone is a faithful
-    // snapshot of live state, like `species`/`current_time`); reset() and the
-    // manual-state mutators clear them.
+    // snapshot of live state, like `species`/`current_time`); reset() sets them
+    // back to the baseline's own (baseline_dirty, baseline_sens_seed below), and
+    // the manual-state mutators clear the seed.
     bool ic_state_dirty = false;
     std::vector<double> pending_sens_seed;
     std::vector<std::string> pending_sens_seed_param_names;
@@ -334,6 +336,11 @@ struct NetworkModel::Impl {
     // assignment had put below 0, oldest first, for the sensitivity RHS of a
     // run that carries a seed on (issue #1298; NetworkModel::carried_marks_for).
     std::deque<NetworkModel::CarriedMarks> carried_marks;
+
+    // Whether the species state is an SSA/PSA run's (NetworkModel::
+    // ssa_counts_stored, issue #1463), and whether the IC baseline is one.
+    bool ssa_counts_stored = false;
+    bool baseline_ssa_counts_stored = false;
 
     // Event state carried between runs (issue #693; NetworkModel::event_carry).
     NetworkModel::EventCarry event_carry;
@@ -359,11 +366,32 @@ struct NetworkModel::Impl {
     // the carried dx/dθ, not zero. Stashing that derivative alongside the new
     // baseline lets reset() restore the baseline WITH its derivative, instead of
     // silently reverting a θ-dependent initial condition to fresh-start seeding.
-    // Empty ⇔ the baseline is θ-independent (literal .net ICs, or a
-    // save_concentrations() taken with no carried derivative), which is the
-    // pre-#81 behavior. clone() copies these with the baseline they describe.
+    // Empty for the declared ICs and for a save_concentrations() taken with no
+    // carried derivative. clone() copies these with the baseline they describe.
     std::vector<double> baseline_sens_seed;
     std::vector<std::string> baseline_sens_seed_param_names;
+    // Whether the baseline is a state a run advanced (issue #1528): the
+    // ic_state_dirty of the state save_concentrations() captured. With no seed
+    // above, such a baseline is x(θ) with no known dx/dθ, not literal ICs, and
+    // reset() puts the carried-over mark back with it, so a sensitivity run
+    // from it raises as one from the live state would. False for the declared
+    // ICs and for a save of a state no run advanced (set_concentration doses
+    // on a fresh model). clone() copies it with the baseline.
+    bool baseline_dirty = false;
+    // Whether a run() has advanced the live state since it was last at the IC
+    // baseline (issue #1528, from the review of its fix). Set at each run's
+    // state write-back; cleared by save_concentrations() (the state is now the
+    // baseline) and by reset() (the state is the baseline again); left alone by
+    // set_concentration/set_state_from (literal changes of a state relative to
+    // the baseline); copied by clone(). ic_state_dirty above is about θ: a state
+    // a run ever produced is x(θ) with no known dx/dθ, saved or not. This is
+    // about the initial-condition axis: e_k seeds ∂x(t)/∂x_k(0) while the state
+    // is the baseline plus literal changes, as on a fresh model, and does not
+    // once a run has moved the state off it, so the simulator refuses
+    // sensitivity_ic there. (Comparing the state with the baseline bit for bit
+    // read a run that ended where it started, at a fixed point, as the baseline,
+    // and a literal dose on a saved baseline as a carried state.)
+    bool advanced_since_baseline = false;
 
     // RHS instrumentation counters (T1 — gate ODE RHS observable/function eval).
     // Diagnostics only: rhs_eval_count counts every compute_derivs_core() call;

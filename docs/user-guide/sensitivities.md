@@ -634,6 +634,44 @@ and returns 0 on a counter.
 See the [PyBNF guide](pybnf.md#ask-each-model-whether-its-gradient-is-analytic)
 for using this to triage a fit.
 
+### How close a column comes at a narrow pulse
+
+A narrow pulse on a counter species or on a state, a triangle
+`kx*(1/w)*max(0, 1 - abs(Tobs - c)/(w/2))` or a rectangle written with `if()`,
+has edges and corners that the solver roots as state switches. Each one moves
+the columns: an edge by its saltation jump, carried with the state past the
+surface (issue #1454); a corner by integrating the columns again over the step
+that went past it, because the solver's own step smears the column's change of
+slope across that step (issues #1285, #1456); and, where the rate law reads
+`time()`, by the clock's share of the restart, which keeps the time while the
+state moves on (issue #1455). Three things are left:
+
+- **A corner whose root falls at the very end of its step, or a step too long
+  or stiff to integrate again** (2 and 4 substeps disagree): the column there is
+  the solver's, as it was before. It is off on some output grids and not
+  others, because the grid decides the steps. Worst relative error of
+  dY/dk_clock over 38 grids (issue #1777):
+
+  | pulse | `rtol` | worst | median |
+  |---|---|---|---|
+  | triangle, `w = 0.1` | 1e-8 | 1.5e-5 | not measured |
+  | triangle, `w = 0.005` | 1e-9 | 5.6e-5 | 5.1e-5 |
+  | triangle in a relaxing species, `+ 0.3*time()` in the condition | 1e-9 | 1.4e-4 | 5e-5 |
+
+- **A rate law that reads `time()` far from 0.** The clock is known to an ulp of
+  itself, 3.6e-15 at `t = 25`, and a column moving at 5e7 across a narrow pulse
+  turns that into a few parts in 1e6 of itself.
+- **A pulse whose argument reads the clock species with a minus sign**,
+  `max(0, 1 - abs(3*time() - Tobs - c)/(w/2))`, stalls at its near foot with
+  "CVODE made no progress" in a run with sensitivities at any tolerance; the
+  same pulse written `Tobs - time()` runs (issue #1776).
+
+These are relative errors of a column at the end of a run, and past a narrow
+pulse that column can be 1e4 times smaller than at the pulse's peak, so a small
+error at a corner shows up large. To check a run, compare it with one on a
+different output grid or at a tighter `rtol`: a column that moves by more than
+the tolerance between them is one of these.
+
 ## Parallel sensitivity computation
 
 For models with many parameters (Np), computing all sensitivities serially
@@ -987,9 +1025,12 @@ Each call starts from the model's initial conditions (`Model.reset`, after the
 parameters are written), not from its current state, and warns where the two
 differ (issue #1521): row 0 after `set_concentration("A()", 20)` is the initial
 `A() = 10`. Call `Model.save_concentrations()` first to start from the current
-state. The start is then a constant: an initial-condition parameter in θ no
-longer moves it, and its derivative is 0. After a `run()`, call `Model.reset()`
-first to keep the start a function of θ.
+state. A state you set (`set_state` or `set_concentration`) on a fresh model,
+or after `reset()` to a baseline no `run()` advanced, is then a constant: an
+initial-condition parameter in θ no longer moves it, and its derivative is 0. A state a `run()` advanced is a function of θ that
+nothing carried, so a solve from it refuses rather than seed its derivative as
+0 (issue #1528); after a `run()`, call `Model.reset()` first to keep the start
+a function of θ.
 
 **How it works**: The `@jax.custom_jvp` rule runs CVODES once per JVP call,
 computing the primal solution and forward sensitivities simultaneously (single
