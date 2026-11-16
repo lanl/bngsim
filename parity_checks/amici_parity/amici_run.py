@@ -320,6 +320,7 @@ def _worker(spec: dict, q) -> None:
     am_timing = None
     onsets: list[float] = []
     not_compared: list[str] = []
+    as_amount: list[str] = []
     am_wall = 0.0
     try:
         t0 = time.perf_counter()
@@ -341,6 +342,7 @@ def _worker(spec: dict, q) -> None:
             # Not a cost either: amount species AMICI could not size (see
             # _amici_common.amount_states_as_concentrations); named in the comment.
             not_compared = am_timing.pop("amount_states_dropped", [])
+            as_amount = am_timing.pop("amount_states_as_amount", [])
             am = am[:3]
     except Exception as exc:
         cap = capture_exception("amici", exc)
@@ -395,6 +397,12 @@ def _worker(spec: dict, q) -> None:
             )
             # Structured too: a PASS over the rest says nothing about these.
             res["not_compared"] = list(not_compared)
+        if as_amount:
+            comment += (
+                "; compared as amounts (compartment size not a finite positive number): "
+                + (", ".join(as_amount))
+            )
+            res["compared_as_amount"] = list(as_amount)
         res["status"], res["value"], res["comment"] = status, value, comment
         res["metric"], res["tol"] = metric, m_tol
     except Exception as exc:

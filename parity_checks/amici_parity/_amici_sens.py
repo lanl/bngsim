@@ -697,13 +697,15 @@ def amount_states_as_concentrations(
     a live one. Only a compartment nothing changes is sized
     (:func:`_amici_common.constant_size`), and only when its size reads no
     sensitized parameter: then ``d(n/V)/dp = (dn/dp)/V``. Any other amount
-    species is dropped and returned in the fourth element. Returns
-    ``(x, sx, names, dropped)``; the inputs are not modified."""
+    species is dropped and returned in the fourth element; one whose size is
+    no finite positive number at any time is kept as its amount, in ``x`` and
+    ``sx``, and returned in the fifth (:func:`_amici_common.amount_columns`).
+    Returns ``(x, sx, names, dropped, as_amount)``; the inputs are not modified."""
     import libsbml
 
     amounts = ac.amount_species_compartments(sbml_str)
     if not amounts:
-        return x, sx, names, []
+        return x, sx, names, [], []
     sbml = libsbml.readSBMLFromString(sbml_str).getModel()
     constant = ac._rc._effectively_constant(sbml) if sbml is not None else set()
     value_of = ac.sbml_value_of(sbml)
@@ -714,13 +716,13 @@ def amount_states_as_concentrations(
         size = ac.constant_size(cid, sbml, value_of, constant, deps)
         return None if deps & sens else size
 
-    keep, sizes, dropped = ac.amount_columns(names, amounts, volume_of)
+    keep, sizes, dropped, as_amount = ac.amount_columns(names, amounts, volume_of)
     x = np.array(x, dtype=float, copy=True)
     sx = np.array(sx, dtype=float, copy=True)
     for j, size in sizes.items():
         x[:, j] = x[:, j] / size
         sx[:, j, :] = sx[:, j, :] / size
-    return x[:, keep], sx[:, keep, :], [names[j] for j in keep], dropped
+    return x[:, keep], sx[:, keep, :], [names[j] for j in keep], dropped, as_amount
 
 
 # --------------------------------------------------------------------------- #

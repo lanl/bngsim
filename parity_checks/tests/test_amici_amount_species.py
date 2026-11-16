@@ -207,8 +207,10 @@ def test_amount_states_are_divided_by_their_compartments_size():
     names = ["A", "B", "C", "V"]
     sizes = {"c": 2.0, "V": 1.0 + t}
     amounts = ac.amount_species_compartments(SBML)
-    out, kept, dropped = ac.amount_states_as_concentrations(x, names, amounts, sizes.get)
-    assert kept == names and dropped == []
+    out, kept, dropped, as_amount = ac.amount_states_as_concentrations(
+        x, names, amounts, sizes.get
+    )
+    assert kept == names and dropped == [] and as_amount == []
     np.testing.assert_array_equal(out[:, 0], 2.0)  # A: amount 4 in size 2
     np.testing.assert_array_equal(out[:, 1], 1.0)  # B: a concentration, untouched
     np.testing.assert_array_equal(out[:, 2], 3.0 / (1.0 + t))  # C: per-time size
@@ -219,10 +221,10 @@ def test_amount_states_are_divided_by_their_compartments_size():
 def test_an_amount_species_with_no_known_size_is_dropped_not_compared():
     x = np.ones((3, 2))
     amounts = ac.amount_species_compartments(SBML)
-    out, kept, dropped = ac.amount_states_as_concentrations(
+    out, kept, dropped, as_amount = ac.amount_states_as_concentrations(
         x, ["A", "B"], amounts, lambda cid: None
     )
-    assert kept == ["B"] and dropped == ["A"] and out.shape == (3, 1)
+    assert kept == ["B"] and dropped == ["A"] and as_amount == [] and out.shape == (3, 1)
 
 
 def _raises(cid):
@@ -231,20 +233,41 @@ def _raises(cid):
 
 @pytest.mark.parametrize(
     "volume_of",
-    [
-        {"c": 0.0}.get,
-        {"c": -1.0}.get,
-        {"c": float("nan")}.get,
-        lambda cid: np.array([1.0, 0.0, 1.0]),
-        _raises,
-    ],
-    ids=["zero", "negative", "nan", "zero-at-one-time", "raises"],
+    [lambda cid: np.array([1.0, 0.0, 1.0]), lambda cid: np.array([2.0, np.nan, 2.0]), _raises],
+    ids=["zero-at-one-time", "nan-at-one-time", "raises"],
 )
-def test_a_size_that_is_not_finite_and_positive_drops_the_species(volume_of):
+def test_a_size_that_is_good_at_some_times_only_drops_the_species(volume_of):
     x = np.ones((3, 2))
     amounts = ac.amount_species_compartments(SBML)
-    out, kept, dropped = ac.amount_states_as_concentrations(x, ["A", "B"], amounts, volume_of)
-    assert kept == ["B"] and dropped == ["A"] and np.isfinite(out).all()
+    out, kept, dropped, as_amount = ac.amount_states_as_concentrations(
+        x, ["A", "B"], amounts, volume_of
+    )
+    assert kept == ["B"] and dropped == ["A"] and as_amount == [] and np.isfinite(out).all()
+
+
+@pytest.mark.parametrize(
+    "volume_of",
+    [
+        {"c": float("nan")}.get,
+        {"c": 0.0}.get,
+        {"c": -1.0}.get,
+        {"c": float("inf")}.get,
+        lambda cid: np.full(3, np.nan),
+    ],
+    ids=["nan", "zero", "negative", "inf", "nan-at-every-time"],
+)
+def test_a_size_that_is_no_finite_positive_number_keeps_the_amount(volume_of):
+    """No concentration exists to convert to (MODEL2002070001 declares its
+    compartments size="NaN" and nothing assigns them), so the species is
+    compared as the amount it is, as it was before the conversion, not
+    divided into inf or NaN."""
+    x = np.column_stack([np.full(3, 4.0), np.ones(3)])
+    amounts = ac.amount_species_compartments(SBML)
+    out, kept, dropped, as_amount = ac.amount_states_as_concentrations(
+        x, ["A", "B"], amounts, volume_of
+    )
+    assert kept == ["A", "B"] and dropped == [] and as_amount == ["A"]
+    np.testing.assert_array_equal(out, x)
 
 
 def test_amicis_renamed_ids_are_matched_to_their_sbml_species():
@@ -253,7 +276,7 @@ def test_amicis_renamed_ids_are_matched_to_their_sbml_species():
         .replace("<ci> A </ci>", "<ci> x </ci>")
         .replace('species="A"', 'species="x"')
     )
-    out, kept, _ = ac.amount_states_as_concentrations(
+    out, kept, _, _ = ac.amount_states_as_concentrations(
         np.full((2, 1), 4.0), ["amici_x"], ac.amount_species_compartments(sbml), {"c": 2.0}.get
     )
     assert kept == ["amici_x"]
@@ -272,6 +295,53 @@ def test_amici_ode_reports_every_species_as_a_concentration():
     np.testing.assert_allclose(col["D"], 5.0 / (2.0 + t), rtol=1e-6)
     np.testing.assert_allclose(col["E"], 3.0, rtol=1e-12)
     assert timing["amount_states_dropped"] == []
+    assert timing["amount_states_as_amount"] == []
+
+
+# MODEL2002070001's shape: a compartment declared size="NaN" that nothing
+# assigns, holding hasOnlySubstanceUnits species with rate rules.
+NAN_SBML = f"""<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version2/core" level="3" version="2">
+  <model id="nan_compartment">
+    <listOfCompartments>
+      <compartment id="lumen" size="NaN" constant="true" spatialDimensions="3"/>
+    </listOfCompartments>
+    <listOfSpecies>
+      <species id="G" compartment="lumen" initialAmount="4" hasOnlySubstanceUnits="true"
+               boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="k" value="0.5" constant="true"/>
+    </listOfParameters>
+    <listOfRules>
+      <rateRule variable="G"><math {MATH}><apply><times/><apply><minus/><ci> k </ci></apply><ci> G </ci></apply></math></rateRule>
+    </listOfRules>
+  </model>
+</sbml>"""
+
+
+def test_amici_ode_keeps_the_amount_in_a_compartment_of_size_nan():
+    """End to end through AMICI: a NaN-size compartment gives no concentration,
+    so G is reported as its amount, finite, and named, not divided into NaN."""
+    pytest.importorskip("amici")
+    t, x, names, timing = ac.amici_ode(NAN_SBML, *GRID, 1e-10, 1e-12)
+    col = {n: x[:, i] for i, n in enumerate(ac.normalize_amici_names(list(names)))}
+    np.testing.assert_allclose(col["G"], 4.0 * np.exp(-0.5 * t), rtol=1e-6)
+    assert timing["amount_states_as_amount"] == ["G"]
+    assert timing["amount_states_dropped"] == []
+
+
+def test_the_sensitivity_job_keeps_the_amount_in_a_compartment_of_size_nan():
+    import _amici_sens as asens
+
+    x = np.full((2, 1), 4.0)
+    sx = np.full((2, 1, 1), 8.0)
+    ox, osx, kept, dropped, as_amount = asens.amount_states_as_concentrations(
+        x, sx, ["G"], NAN_SBML, ["k"]
+    )
+    assert kept == ["G"] and dropped == [] and as_amount == ["G"]
+    np.testing.assert_array_equal(ox, x)
+    np.testing.assert_array_equal(osx, sx)
 
 
 def test_the_sensitivity_job_converts_x_and_sx_from_the_sbml():
@@ -284,15 +354,15 @@ def test_the_sensitivity_job_converts_x_and_sx_from_the_sbml():
     names = ["A", "B", "C", "D", "E"]
     x = np.tile([4.0, 1.0, 3.0, 5.0, 6.0], (2, 1))
     sx = np.tile(np.array([[8.0], [1.0], [1.0], [1.0], [12.0]]), (2, 1, 1))
-    ox, osx, kept, dropped = asens.amount_states_as_concentrations(x, sx, names, SBML, ["p"])
+    ox, osx, kept, dropped, _ = asens.amount_states_as_concentrations(x, sx, names, SBML, ["p"])
     assert kept == ["A", "B", "E"] and dropped == ["C", "D"]
     np.testing.assert_array_equal(ox[0], [2.0, 1.0, 3.0])
     np.testing.assert_array_equal(osx[0, :, 0], [4.0, 1.0, 6.0])
     np.testing.assert_array_equal(x[0], [4.0, 1.0, 3.0, 5.0, 6.0])  # not modified
 
-    _, _, kept, dropped = asens.amount_states_as_concentrations(x, sx, names, SBML, ["k"])
+    _, _, kept, dropped, _ = asens.amount_states_as_concentrations(x, sx, names, SBML, ["k"])
     assert kept == ["A", "B"] and dropped == ["C", "D", "E"]
-    _, _, kept, dropped = asens.amount_states_as_concentrations(x, sx, names, SBML, ["amici_c"])
+    _, _, kept, dropped, _ = asens.amount_states_as_concentrations(x, sx, names, SBML, ["amici_c"])
     assert "A" in dropped
 
 

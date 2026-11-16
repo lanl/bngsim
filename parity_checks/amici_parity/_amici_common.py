@@ -558,7 +558,11 @@ def amici_value_of(model, sbml_str: str):
 # coverage sweep (BIOMD0000000197's x5 at 1.5x, in its 1.5 compartment) were this
 # and nothing else. Parameters and compartments that AMICI integrates as states
 # are not species and are left alone. A species whose compartment size cannot be
-# read for certain is dropped and named on the row, never divided by a guess.
+# read for certain is dropped and named on the row, never divided by a guess. A
+# size that is read but is no finite positive number anywhere (a compartment
+# declared size="NaN" that nothing assigns, as in MODEL2002070001) has no
+# concentration to convert to: that species is compared as the amount it is, as
+# bngsim reports it there, and named on the row.
 
 
 def amount_species_compartments(sbml_str: str) -> dict[str, str]:
@@ -689,14 +693,16 @@ def amount_columns(names: list[str], amounts: dict[str, str], volume_of):
     each by. ``amounts`` is :func:`amount_species_compartments`; ``volume_of(cid)``
     gives the size as a scalar or one value per output time, or None.
 
-    Returns ``(keep, sizes, dropped)``: the column indices to compare, ``{column:
-    size}`` for the amount columns among them, and the species ids left out
-    because their size is unknown, raised on, or not finite and positive
-    everywhere. A dropped species is not compared as an amount; the caller names
-    it on the row."""
+    Returns ``(keep, sizes, dropped, as_amount)``: the column indices to compare,
+    ``{column: size}`` for the amount columns to divide among them, the species
+    ids left out because their size is unknown, raised on, or finite and positive
+    at some times but not others, and the species ids kept undivided because
+    their size is no finite positive number at any time (no concentration exists
+    to convert to). The caller names both lists on the row."""
     keep: list[int] = []
     sizes: dict[int, np.ndarray] = {}
     dropped: list[str] = []
+    as_amount: list[str] = []
     for j, sid in enumerate(normalize_amici_names(list(names))):
         cid = amounts.get(sid)
         if cid is not None:
@@ -704,13 +710,21 @@ def amount_columns(names: list[str], amounts: dict[str, str], volume_of):
                 size = volume_of(cid)
             except Exception:
                 size = None
-            size = None if size is None else np.asarray(size, dtype=float)
-            if size is None or not (np.all(np.isfinite(size)) and np.all(size > 0)):
+            if size is None:
                 dropped.append(sid)
                 continue
-            sizes[j] = size
+            size = np.asarray(size, dtype=float)
+            with np.errstate(invalid="ignore"):
+                good = np.isfinite(size) & (size > 0)
+            if not np.any(good):
+                as_amount.append(sid)
+            elif not np.all(good):
+                dropped.append(sid)
+                continue
+            else:
+                sizes[j] = size
         keep.append(j)
-    return keep, sizes, dropped
+    return keep, sizes, dropped, as_amount
 
 
 def amount_states_as_concentrations(
@@ -718,15 +732,15 @@ def amount_states_as_concentrations(
 ) -> tuple[np.ndarray, list[str], list[str]]:
     """Divide AMICI's amount states by their compartment's size, so every species
     is compared as a concentration, as bngsim and RoadRunner report it
-    (:func:`amount_columns`). Returns ``(x, names, dropped)``; the input is not
-    modified."""
+    (:func:`amount_columns`). Returns ``(x, names, dropped, as_amount)``; the
+    input is not modified."""
     if not amounts:
-        return x, names, []
-    keep, sizes, dropped = amount_columns(names, amounts, volume_of)
+        return x, names, [], []
+    keep, sizes, dropped, as_amount = amount_columns(names, amounts, volume_of)
     x = np.array(x, dtype=float, copy=True)
     for j, size in sizes.items():
         x[:, j] = x[:, j] / size
-    return x[:, keep], [names[j] for j in keep], dropped
+    return x[:, keep], [names[j] for j in keep], dropped, as_amount
 
 
 def nothing_compared(bn_names: list[str], am_names: list[str], dropped: list[str]) -> str | None:
@@ -1106,13 +1120,14 @@ def amici_ode(
     # run: a size this cannot read drops the species (named on the row).
     amounts = amount_species_compartments(sbml_str)
     timing["amount_states_dropped"] = []
+    timing["amount_states_as_amount"] = []
     if amounts:
         try:
             volume_of = amici_volume_of(model, rdata, sbml_str, x)
         except Exception:
             volume_of = lambda cid: None  # noqa: E731
-        x, names, timing["amount_states_dropped"] = amount_states_as_concentrations(
-            x, names, amounts, volume_of
+        x, names, timing["amount_states_dropped"], timing["amount_states_as_amount"] = (
+            amount_states_as_concentrations(x, names, amounts, volume_of)
         )
     rows = job_rows(run_ts, ts)
     if rows is not None:
