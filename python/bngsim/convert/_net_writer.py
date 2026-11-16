@@ -533,9 +533,72 @@ def _expand_functional_reactions(
 # ─── Writer ───────────────────────────────────────────────────────────────
 
 
-# A name as the .net reads it, and a number, which may hold one (``2e5`` is not ``e5``).
-# Names may be non-ASCII (issue #1653), so not ``_EXPR_TOKEN``'s ASCII names.
-_READ_TOKEN = re.compile(r"(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?|[^\W\d]\w*")
+# A name as the .net loader reads one, ASCII (``is_bare_identifier`` in
+# src/net_file_loader.cpp, and SBML ids are ASCII too), and a number, read whole
+# so that the exponent of ``2e5`` is no name ``e5``.
+_READ_TOKEN = re.compile(r"(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?|[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _components(edges: list[set[int]]) -> list[list[int]]:
+    """The strongly connected components of the graph ``i -> edges[i]``, each in
+    ascending order, by Tarjan's algorithm, iterative: a model may have 12,800
+    functions, past Python's recursion limit."""
+    n = len(edges)
+    index = [-1] * n
+    low = [0] * n
+    on_stack = [False] * n
+    stack: list[int] = []
+    out: list[list[int]] = []
+    counter = 0
+    for root in range(n):
+        if index[root] != -1:
+            continue
+        work = [(root, iter(sorted(edges[root])))]
+        index[root] = low[root] = counter
+        counter += 1
+        stack.append(root)
+        on_stack[root] = True
+        while work:
+            v, it = work[-1]
+            for w in it:
+                if index[w] == -1:
+                    index[w] = low[w] = counter
+                    counter += 1
+                    stack.append(w)
+                    on_stack[w] = True
+                    work.append((w, iter(sorted(edges[w]))))
+                    break
+                if on_stack[w]:
+                    low[v] = min(low[v], index[w])
+            else:
+                work.pop()
+                if work:
+                    low[work[-1][0]] = min(low[work[-1][0]], low[v])
+                if low[v] == index[v]:
+                    comp = []
+                    while True:
+                        w = stack.pop()
+                        on_stack[w] = False
+                        comp.append(w)
+                        if w == v:
+                            break
+                    out.append(sorted(comp))
+    return out
+
+
+def _warn_function_cycles(named: list[str], model_name: str) -> None:
+    """Say that *named* read each other, or themselves: run_network refuses them."""
+    from bngsim._simulator import _stacklevel_outside_bngsim
+
+    shown = ", ".join(named[:6]) + (" ..." if len(named) > 6 else "")
+    warnings.warn(
+        f"{model_name}: {len(named)} function(s) read each other, or themselves "
+        f"({shown}); each such group is written together, as declared. bngsim reads "
+        "the file, but BioNetGen's run_network refuses a function read before it is "
+        "defined.",
+        ConversionWarning,
+        stacklevel=_stacklevel_outside_bngsim(),
+    )
 
 
 def _functions_in_dependency_order(functions: list, *, model_name: str = "model") -> list:
@@ -550,50 +613,51 @@ def _functions_in_dependency_order(functions: list, *, model_name: str = "model"
     not see this.
 
     A function reads the functions whose names its written expression holds,
-    read as tokens, so the exponent of ``2e5`` is no name. The sort is stable:
-    of the functions whose reads are all placed, the one declared first goes
-    next, so a block already in order is written as it was, line for line.
-    Functions that read each other in a cycle have no such order. They, and the
-    functions that read them, are written after the rest, as declared, with a
-    warning: ``run_network`` refuses such a file, though bngsim reads it.
+    read as tokens (:data:`_READ_TOKEN`). Functions that read each other, a cycle
+    or a function that reads itself, have no order among themselves: each such
+    group is kept together, in declaration order, and placed as one function
+    would be, with a warning, since ``run_network`` refuses it though bngsim
+    reads it. The sort is stable: of the groups whose reads are all placed, the
+    one declared first goes next, so a block already in order is written as it
+    was, line for line.
     """
     import heapq
 
     index = {name: i for i, (name, _) in enumerate(functions)}
     reads = [
-        {index[t] for t in _READ_TOKEN.findall(str(expr)) if index.get(t, i) != i}
-        for i, (_, expr) in enumerate(functions)
+        {index[t] for t in _READ_TOKEN.findall(str(expr)) if t in index} for _, expr in functions
     ]
-    readers: list[list[int]] = [[] for _ in functions]
-    for i, deps in enumerate(reads):
-        for j in deps:
-            readers[j].append(i)
-    waiting = [len(deps) for deps in reads]
-    ready = [i for i, n in enumerate(waiting) if n == 0]
+    # No read of a function below it: nothing to move, and no cycle either (a
+    # cycle needs a read upward). The block is written as it is; most are.
+    # Only a function reading itself is left to say.
+    if not any(j > i for i, deps in enumerate(reads) for j in deps):
+        own = [functions[i][0] for i, deps in enumerate(reads) if i in deps]
+        if own:
+            _warn_function_cycles(own, model_name)
+        return list(functions)
+    groups = _components(reads)
+    group_of = {i: g for g, members in enumerate(groups) for i in members}
+    cyclic = [members for members in groups if len(members) > 1 or members[0] in reads[members[0]]]
+    if cyclic:
+        _warn_function_cycles([functions[i][0] for m in cyclic for i in m], model_name)
+    needs = [
+        {group_of[j] for i in members for j in reads[i]} - {g} for g, members in enumerate(groups)
+    ]
+    readers: list[list[int]] = [[] for _ in groups]
+    for g, deps in enumerate(needs):
+        for d in deps:
+            readers[d].append(g)
+    waiting = [len(deps) for deps in needs]
+    ready = [(groups[g][0], g) for g, n in enumerate(waiting) if n == 0]
     heapq.heapify(ready)
-    order = []
+    order: list[int] = []
     while ready:
-        i = heapq.heappop(ready)
-        order.append(i)
-        for r in readers[i]:
+        _, g = heapq.heappop(ready)
+        order.extend(groups[g])
+        for r in readers[g]:
             waiting[r] -= 1
             if waiting[r] == 0:
-                heapq.heappush(ready, r)
-    if len(order) < len(functions):
-        placed = set(order)
-        rest = [i for i in range(len(functions)) if i not in placed]
-        from bngsim._simulator import _stacklevel_outside_bngsim
-
-        names = ", ".join(functions[i][0] for i in rest[:6]) + (" ..." if len(rest) > 6 else "")
-        warnings.warn(
-            f"{model_name}: {len(rest)} function(s) read each other in a cycle or read one "
-            f"that does ({names}); they are written after the rest, as declared. bngsim "
-            "reads the file, but BioNetGen's run_network refuses a function read before "
-            "it is defined.",
-            ConversionWarning,
-            stacklevel=_stacklevel_outside_bngsim(),
-        )
-        order += rest
+                heapq.heappush(ready, (groups[r][0], r))
     return [functions[i] for i in order]
 
 

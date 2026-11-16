@@ -170,34 +170,68 @@ def test_a_forward_read_is_put_after_what_it_reads():
     assert _order(pairs) == ["a", "b", "x", "y"]
 
 
-def test_a_function_that_reads_its_own_name_does_not_stop_the_sort():
-    pairs = [("y", "x*3"), ("x", "x0 + 0*x")]
-    assert _order(pairs) == ["x", "y"]
+def test_a_function_that_reads_its_own_name_is_warned_and_does_not_stop_the_sort():
+    # run_network refuses a self-read as it refuses a cycle; the rest is sorted.
+    with pytest.warns(bngsim.ConversionWarning, match="read each other, or themselves"):
+        assert _order([("y", "x*3"), ("x", "x0 + 0*x")]) == ["x", "y"]
 
 
 def test_a_number_exponent_is_no_read():
     # 2e5 holds no name: a function named e5 is not read by it, and no false
     # cycle (e5 reads y, y "reads" e5) turns the sort off.
     pairs = [("y", "2e5*x"), ("e5", "y + 1"), ("x", "k")]
-    assert _order(pairs) == ["x", "y", "e5"]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # a false read would make a false cycle, and warn
+        assert _order(pairs) == ["x", "y", "e5"]
 
 
-def test_a_non_ascii_name_is_read_whole():
-    # Names may be non-ASCII (issue #1653): Ωk is read as Ωk, not as k.
-    pairs = [("y", "Ωk*3"), ("Ωk", "k/2"), ("k", "1")]
-    assert _order(pairs) == ["k", "Ωk", "y"]
+def test_a_name_is_read_whole_not_by_its_parts():
+    # x is no read of x_total, nor k of k1.
+    pairs = [("y", "x_total*k1"), ("x", "1"), ("x_total", "2"), ("k1", "3")]
+    assert _order(pairs) == ["x", "x_total", "k1", "y"]
 
 
 def test_a_cycle_leaves_the_rest_sorted_and_warns():
-    from bngsim.convert._net_writer import _functions_in_dependency_order
-
     pairs = [("y", "x*3"), ("x", "k/2"), ("a", "b+1"), ("b", "a+1")]
-    with pytest.warns(bngsim.ConversionWarning, match="read each other in a cycle"):
-        out = [n for n, _ in _functions_in_dependency_order(pairs)]
-    assert out == ["x", "y", "a", "b"]  # y after x; the cycle after, as declared
+    with pytest.warns(bngsim.ConversionWarning, match="read each other, or themselves"):
+        assert _order(pairs) == ["x", "y", "a", "b"]  # y after x; the cycle kept together
+
+
+def test_a_function_that_reads_a_cycle_goes_after_it():
+    # The cycle a <-> b is placed as one function: z, which reads a, goes after it,
+    # and w, which reads z, after z. Appending everything unplaced as declared put
+    # w above z, a forward read no cycle forced.
+    pairs = [("w", "z+a"), ("z", "a*2"), ("a", "b"), ("b", "a")]
+    with pytest.warns(bngsim.ConversionWarning):
+        assert _order(pairs) == ["a", "b", "z", "w"]
+
+
+def test_a_cycle_in_a_large_block_is_found_without_recursion():
+    # 20000 functions in one chain read backwards, closed into a cycle: Tarjan's
+    # algorithm, done recursively, would pass Python's recursion limit.
+    n = 20000
+    pairs = [(f"f{i}", f"f{i + 1}") for i in range(n - 1)] + [(f"f{n - 1}", "f0")]
+    with pytest.warns(bngsim.ConversionWarning):
+        assert len(_order(pairs)) == n
 
 
 def test_no_warning_without_a_cycle():
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         _order([("y", "x*3"), ("x", "k/2")])
+
+
+def test_a_cycle_takes_its_place_by_its_first_declared_member():
+    # Stable for a cycle too: a <-> c, declared first and third, goes before b,
+    # declared second and read by neither, as a alone would.
+    pairs = [("a", "c+1"), ("b", "k"), ("c", "a+1")]
+    with pytest.warns(bngsim.ConversionWarning):
+        assert _order(pairs) == ["a", "c", "b"]
+
+
+def test_a_block_in_order_with_a_self_read_is_kept_and_warned():
+    # Nothing to move, so the block is returned as it is, and the self-read is
+    # still said: run_network refuses it.
+    pairs = [("x", "x0 + 0*x"), ("y", "x*3")]
+    with pytest.warns(bngsim.ConversionWarning, match="read each other, or themselves"):
+        assert _order(pairs) == ["x", "y"]
