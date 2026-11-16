@@ -12377,6 +12377,18 @@ void CvodeSimulator::Impl::refuse_slide_along_state_switch(
         // What the tolerance allows the residual itself, before the band is
         // made as wide as a creeping state can sit.
         const double within = band;
+        // Wider than the restart test's band on purpose (issue #1452): the
+        // static atol where that reads tolerance_unit (which the restart test
+        // also floors at CVODE's error weights), a linear sum where it adds in quadrature
+        // (state_switch_band), and 10·√N where it takes 4·√N
+        // (kStateSwitchResolveMargin). A wider band only puts more states
+        // up to be read: whether one slides is decided below, from the flows
+        // on both sides of the surface, and a slide found is refused, which
+        // is loud. A band as narrow as the restart test's could leave a slide
+        // unread, and its columns would integrate the near branch's ∂f/∂p
+        // with no error (#926). What the width costs is readings: the watch
+        // asks a switch at every asking while |g| is within 4 times the band
+        // band_out hands it (watch_band), so a wider band asks more of them.
         band *= 10.0 * std::sqrt(static_cast<double>(ns));
         // The side the state is on, or comes from where it is on the surface.
         double side = g > 0.0 ? 1.0 : g < 0.0 ? -1.0 : 0.0;
