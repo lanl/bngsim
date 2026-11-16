@@ -10111,8 +10111,9 @@ def _double_printer():
             # `x % 1`, which is x - floor(x): 0.5 for -0.5, where the engine has
             # -0.5. Floor division is exact, needs no module this namespace may
             # lack, and gives nan for inf and nan, as `x % 1` did, not a raise.
+            # The argument is printed, and evaluated, once.
             x = self._print(expr.args[0])
-            return f"(({x}) - (({x}) // 1.0 if ({x}) >= 0 else -((-({x})) // 1.0)))"
+            return f"(lambda v: v - (v // 1.0 if v >= 0 else -((-v) // 1.0)))({x})"
 
     return _DoublePrinter
 

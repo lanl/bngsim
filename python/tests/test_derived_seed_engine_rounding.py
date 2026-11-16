@@ -174,3 +174,62 @@ def test_the_switch_analysis_reads_a_non_finite_frac_as_nan_not_a_raise():
     x = sp.Symbol("x")
     f = _lambdify_doubles([x], sp.frac(x))
     assert all(math.isnan(f(v)) for v in (math.inf, -math.inf, math.nan))
+
+
+# From the review of 9cd18bd3.
+
+
+@pytest.mark.parametrize("name", ["frac", "mod", "rint"])
+def test_a_parameter_named_like_one_of_them_stays_a_parameter(name):
+    # The engine reserves none of the three as a parameter name: `frac*k` is a
+    # product of two parameters, d/dfrac = k and d/dk = frac.
+    from bngsim._codegen import _direct_derived_partials_numeric
+
+    partials, _ = _direct_derived_partials_numeric(
+        f"{name}*k", {name, "k"}, set(), {name: 0, "k": 1}, [2.0, 0.3], False
+    )
+    assert partials == pytest.approx({name: 0.3, "k": 2.0})
+
+
+@pytest.mark.parametrize(
+    "expr,p,value",
+    [
+        ("-2.5 % 2 + p", 0.0, -0.5),  # sympy folded the literals as a floored Mod: 1.5
+        ("(p + 2) % 2", -0.5, 1.5),  # sympy simplified it to Mod(p, 2): -0.5
+        ("p*3 % 4 - 1", 2.0, 1.0),  # % binds like * and /, tighter than -
+    ],
+)
+def test_percent_is_spelled_as_fmod_before_the_parse(expr, p, value):
+    assert _derived_expr_value_numeric(expr, {"p"}, set(), {"p": 0}, [p]) == value
+
+
+def test_a_long_literal_is_read_as_the_engine_reads_it():
+    # strtod reads 8192.499999999999 as 8192.499999999998, so rint gives 8192;
+    # float() of sympy's 56-bit Float rounds twice, onto the tie, and gave 8193.
+    got = _derived_expr_value_numeric("rint(8192.499999999999) + p", {"p"}, set(), {"p": 0}, [0.0])
+    assert got == 8192.0
+
+
+def test_rint_of_an_infinity_is_that_infinity():
+    # floor(inf + 0.5) is inf in the engine; only frac of an infinity is nan.
+    assert _derived_expr_value_numeric("rint(p)", {"p"}, set(), {"p": 0}, [math.inf]) == math.inf
+    assert _derived_expr_value_numeric("rint(p)", {"p"}, set(), {"p": 0}, [-math.inf]) == -math.inf
+
+
+def test_the_switch_printer_prints_a_nested_frac_once_per_level():
+    import sympy as sp
+    from bngsim._switch_sensitivity import _double_printer
+
+    x = sp.Symbol("x")
+    text = _double_printer()().doprint(sp.frac(sp.frac(sp.frac(x))))
+    assert text.count("x") == 1  # was 27: each level printed its argument three times
+
+
+def test_the_kink_check_reads_a_symbolic_percent_as_fmod():
+    # An expression parsed outside the derived-parameter parse holds % as
+    # sympy's floored Mod; the kink check rewrites it to the engine's fmod.
+    import sympy as sp
+    from bngsim._parameter_kinks import _values
+
+    x, y = sp.symbols("x y")
+    assert _values([sp.Mod(x, y)], {x: -0.5, y: 2.0}, sp) == [-0.5]

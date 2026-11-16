@@ -2442,7 +2442,10 @@ def _preprocess_derived_expr(expr: str) -> str:
     s = _translate_bngl_if_to_piecewise(_normalize_exprtk_operators(expr))
     s = s.replace("^", "**")
     s = re.sub(r"\bnot\s*\(", "Not(", s)
-    return _coerce_booleans_used_as_numbers(_rewrite_logicals(s))
+    # ExprTk's `%` is fmod, which sympy would parse as its floored Mod and fold
+    # or simplify at once ((p + 2) % 2 to Mod(p, 2)); spelled as the engine's
+    # mod() it is read as fmod (issue #1800).
+    return _spell_mod(_coerce_booleans_used_as_numbers(_rewrite_logicals(s)))
 
 
 def _derived_rate_constant_decline(name: str, expr: str, reason: str) -> str:
@@ -3078,6 +3081,10 @@ def _prepare_derived_expr(
     # ExprTk's calls sympy has under another name or not at all, written out
     # so sympy can differentiate them (issue #1214). Before sym_map too.
     local_dict.update(exprtk_closed_form_bindings(sp))
+    # rint, mod and frac as the engine reads them, so sympy does not fold them
+    # its own way (#1800). Before sym_map too: a parameter named `frac` or
+    # `mod` (neither is reserved by the engine) stays a parameter.
+    local_dict.update(engine_rounding_bindings())
     local_dict.update(sym_map)
     local_dict.update(Piecewise=sp.Piecewise, And=sp.And, Or=sp.Or, Not=sp.Not, Eq=sp.Eq, Ne=sp.Ne)
     # The engine's own functions, which sympy has no counterpart for (issue
@@ -3085,8 +3092,6 @@ def _prepare_derived_expr(
     # builds three of its parameters out of ``mratio`` — so this path needs the
     # same binding the rate-law path gets.
     local_dict.update(engine_sympy_bindings(sp))
-    # rint, mod and frac as the engine reads them, before sympy can fold them (#1800).
-    local_dict.update(engine_rounding_bindings())
     # Every other bare name is a model symbol that is not a parameter — a
     # species or observable reached through a threshold — and must stay a
     # free symbol so the check below refuses it. Left unbound, parse_expr
@@ -3186,16 +3191,16 @@ def _engine_rint(x):
     return np.floor(x + 0.5)
 
 
-def _engine_fmod(a, b):
-    import numpy as np
-
-    return np.fmod(a, b)
-
-
 def _engine_frac(x):
     import numpy as np
 
     return x - np.trunc(x)
+
+
+def _engine_fmod(a, b):
+    import numpy as np
+
+    return np.fmod(a, b)  # C's fmod, exactly
 
 
 # For lambdify: each class below prints as its name, which this binds.
@@ -3204,53 +3209,82 @@ _ENGINE_ROUNDING_NUMPY = dict(
 )
 
 
+def _engine_double(x):
+    """The double the engine reads for the sympy number *x*, or None if *x* is
+    not a number.
+
+    parse_expr keeps a literal of 16 or more digits at 56+ bits, and float() of
+    that rounds twice, which can land on a tie: rint(8192.499999999999) read
+    8193, where strtod, and so the engine, reads 8192.499999999998 and gives
+    8192. A literal's own digits, which str() gives back, are read once, as
+    :func:`bngsim._jacobian.builtin_shadow_bindings` reads them for round()."""
+    import sympy as sp
+
+    if not x.is_Number:
+        return None
+    if x.is_Float and x._prec > 53:
+        text = str(x)
+        if sp.Float(text, precision=x._prec) == x:
+            return float(text)
+    try:
+        return float(x)
+    except (OverflowError, TypeError, ValueError):
+        return None
+
+
 @functools.cache
 def _engine_rounding_classes():
     """sympy functions for the engine's rint, mod and frac.
 
-    Each folds a numeric argument at once, in IEEE doubles, as the engine does:
-    ``math.fmod`` is exact, as C's is, where ``a - b*trunc(a/b)`` is not when
-    ``a/b`` rounds to a whole number (1.0 mod 0.1 read 0). None has a
-    derivative, so ``diff`` leaves each unevaluated, as sympy left the names
-    they replace: the callers' handling of a step is unchanged."""
+    Each folds a numeric argument at once, as the engine computes it: the
+    double the engine reads (:func:`_engine_double`), then BNG's
+    floor(x + 0.5), C's fmod (``math.fmod`` is exact, where
+    ``a - b*trunc(a/b)`` is not when ``a/b`` rounds to a whole number), or
+    x - trunc(x). None has a derivative, so ``diff`` leaves each unevaluated,
+    as sympy left the names they replace: the callers' handling of a step is
+    unchanged."""
     import math
 
     import sympy as sp
 
     def number(v):
-        return sp.Float(v) if math.isfinite(v) else sp.nan
+        if math.isnan(v):
+            return sp.nan
+        if math.isinf(v):
+            return sp.oo if v > 0 else -sp.oo
+        return sp.Float(v)
 
     class Rint(sp.Function):
         nargs = 1
 
         @classmethod
         def eval(cls, x):
-            if x.is_Number:
-                v = float(x)
-                return number(math.floor(v + 0.5)) if math.isfinite(v) else sp.nan
-            return None
+            v = _engine_double(x)
+            if v is None:
+                return None
+            return number(v if math.isinf(v) or math.isnan(v) else math.floor(v + 0.5))
 
     class Fmod(sp.Function):
         nargs = 2
 
         @classmethod
         def eval(cls, a, b):
-            if a.is_Number and b.is_Number:
-                fa, fb = float(a), float(b)
-                if fb == 0 or not math.isfinite(fa) or math.isnan(fb):
-                    return sp.nan
-                return number(math.fmod(fa, fb))
-            return None
+            fa, fb = _engine_double(a), _engine_double(b)
+            if fa is None or fb is None:
+                return None
+            if fb == 0 or math.isinf(fa) or math.isnan(fa) or math.isnan(fb):
+                return sp.nan  # C's fmod: nan here; fmod(a, inf) is a
+            return number(math.fmod(fa, fb))
 
     class Frac(sp.Function):
         nargs = 1
 
         @classmethod
         def eval(cls, x):
-            if x.is_Number:
-                v = float(x)
-                return number(v - math.trunc(v)) if math.isfinite(v) else sp.nan
-            return None
+            v = _engine_double(x)
+            if v is None:
+                return None
+            return number(v - math.trunc(v)) if math.isfinite(v) else sp.nan
 
     for cls, name in zip((Rint, Fmod, Frac), _ENGINE_ROUNDING_NAMES, strict=True):
         cls.__name__ = name
@@ -3267,7 +3301,10 @@ def engine_rounding_bindings() -> dict:
 def _engine_rounding(expr):
     """*expr* with each ``rint``, ``mod``, ``%`` and ``frac`` read as the engine reads it.
 
-    For an expression parsed without :func:`engine_rounding_bindings`: ``rint``
+    The derived-parameter parse binds them already (:func:`engine_rounding_bindings`,
+    and ``%`` spelled as ``mod`` before it); this is for an expression parsed
+    elsewhere, the kink check's. A constant one that parse folded is past
+    reaching here. For an expression parsed without the bindings: ``rint``
     and ``mod`` as unnamed functions, ``frac`` as sympy's, ``%`` as sympy's
     floored ``Mod``. An expression with none of them comes back as it is."""
     import sympy as sp
@@ -3317,7 +3354,7 @@ def _partial_value(deriv, subs: dict) -> float:
     try:
         fn = sp.lambdify(
             syms,
-            _engine_rounding(deriv),
+            deriv,  # rint, mod and frac bound at the parse: the engine's (#1800)
             modules=[_ENGINE_ROUNDING_NUMPY, "numpy"],
         )
         with np.errstate(all="ignore"):
@@ -3325,7 +3362,7 @@ def _partial_value(deriv, subs: dict) -> float:
             # and is inf in numpy, as in C.
             return float(fn(*[np.float64(subs[s]) for s in syms]))
     except Exception:  # noqa: BLE001 - the sympy route below says why, if it fails
-        return float(_engine_rounding(deriv).subs(subs).evalf())
+        return float(deriv.subs(subs).evalf())
 
 
 def _tie_weighted(prep):
@@ -3715,7 +3752,7 @@ def _derived_expr_value_numeric(
         # `sympify` of a sympy expression is the identity; it is here so the
         # `.subs` below type-checks against `_PreparedDerivedExpr.sym_expr`,
         # which the other two callers only ever hand to `sp.diff`.
-        value = _engine_rounding(sympy.sympify(prep.sym_expr)).subs(subs).evalf()
+        value = sympy.sympify(prep.sym_expr).subs(subs).evalf()
         try:
             return float(value)
         except TypeError:
