@@ -50,7 +50,7 @@ def test_a_rate_law_read_mid_firing_is_refused_not_frozen(data_dir: Path, seed: 
             nf.simulate(0.0, 500.0, 501)
     # Each propensity is finite again once the firing is done: the message says
     # where the NaN came from, and names no reaction.
-    assert "partway through a reaction firing" in str(err.value)
+    assert "Every reaction's propensity is finite now" in str(err.value)
     assert "RuleWorld/nfsim#115" in str(err.value)
 
 
@@ -66,10 +66,32 @@ def test_the_models_own_nan_rate_law_is_refused_and_named(data_dir: Path) -> Non
 def test_step_to_refuses_it_too(data_dir: Path) -> None:
     with NfsimSession(_xml(data_dir, NAN_LAW)) as nf:
         nf.initialize(seed=1)
-        with pytest.raises(
-            (bngsim.SimulationError, RuntimeError), match="total propensity is nan"
-        ):
+        with pytest.raises(bngsim.SimulationError, match="total propensity is nan"):
             nf.step_to(1.0)
+
+
+def test_a_session_that_raised_is_left_at_the_time_it_reached(data_dir: Path) -> None:
+    # NFsim's clock has moved when the check raises. A session used afterwards
+    # goes on from there: it does not replay the span as rows of one state.
+    from bngsim._bngsim_core import NfsimSimulator
+
+    core = NfsimSimulator(_xml(data_dir, NAN_LAW))
+    core.initialize(1)
+    with pytest.raises(RuntimeError, match="NfsimSimulator::step_to"):
+        core.step_to(1.0)
+    with pytest.raises(RuntimeError, match=r"by t = 2\b"):
+        core.simulate(1.0, 2.0, 2)
+
+
+def test_a_session_that_raised_in_simulate_is_left_at_the_time_it_reached(data_dir: Path) -> None:
+    from bngsim._bngsim_core import NfsimSimulator
+
+    core = NfsimSimulator(_xml(data_dir, NAN_LAW))
+    core.initialize(1)
+    with pytest.raises(RuntimeError, match=r"NfsimSimulator::simulate: .* by t = 1\b"):
+        core.simulate(0.0, 1.0, 2)
+    with pytest.raises(RuntimeError, match=r"by t = 2\b"):
+        core.simulate(1.0, 2.0, 2)
 
 
 def test_the_one_shot_run_refuses_it_too(data_dir: Path) -> None:
@@ -79,6 +101,9 @@ def test_the_one_shot_run_refuses_it_too(data_dir: Path) -> None:
     times.t_start, times.t_end, times.n_points = 0.0, 500.0, 501
     with pytest.raises(RuntimeError, match="NfsimSimulator::run: NFsim's total propensity is nan"):
         NfsimSimulator(_xml(data_dir, MID_FIRING)).run(times, 1)
+    times.t_end, times.n_points = 1.0, 11
+    with pytest.raises(RuntimeError, match=r"Non-finite propensity in 1 reaction\(s\)"):
+        NfsimSimulator(_xml(data_dir, NAN_LAW)).run(times, 1)
 
 
 def test_the_same_model_with_no_x_firing_runs_to_the_end(data_dir: Path) -> None:

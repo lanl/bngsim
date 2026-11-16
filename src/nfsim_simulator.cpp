@@ -1140,18 +1140,27 @@ struct NfsimTotalPropensity : ::NFcore::System {
 };
 } // namespace
 
+static double nfsim_total_propensity(::NFcore::System *system) {
+    return (system->*(&NfsimTotalPropensity::get_A_tot))();
+}
+
 static void require_finite_propensity(::NFcore::System *system, const char *where) {
-    const double a_tot = (system->*(&NfsimTotalPropensity::get_A_tot))();
+    const double a_tot = nfsim_total_propensity(system);
     if (std::isfinite(a_tot))
         return;
+    // Spelled out, as the SSA's refusal spells it (issue #809): glibc prints a
+    // NaN whose sign bit is set as "-nan" and macOS prints "nan".
+    const char *spelled = std::isnan(a_tot) ? "nan" : (a_tot > 0 ? "inf" : "-inf");
     std::ostringstream os;
-    os << where << ": NFsim's total propensity is " << a_tot << " by t = " << std::setprecision(17)
-       << system->getCurrentTime()
-       << ", so no further reaction can fire and the rest of the run would repeat the state it "
-          "stopped in. ";
+    os << where << ": NFsim's total propensity is " << spelled
+       << " by t = " << std::setprecision(17) << system->getCurrentTime() << ". ";
+    if (std::isnan(a_tot))
+        os << "NFsim fires nothing once it is, so the rest of the run would repeat the state it "
+              "stopped in. ";
     std::string named;
     int n_named = 0;
-    for (::NFcore::ReactionClass *rxn : system->getAllReactions()) {
+    const std::vector<::NFcore::ReactionClass *> reactions = system->getAllReactions();
+    for (::NFcore::ReactionClass *rxn : reactions) {
         if (rxn == nullptr || std::isfinite(rxn->get_a()))
             continue;
         if (++n_named <= 5)
@@ -1162,11 +1171,14 @@ static void require_finite_propensity(::NFcore::System *system, const char *wher
            << (n_named > 5 ? ", ..." : "")
            << ". A rate law evaluates to a non-finite value in this state.";
     } else {
-        os << "Every reaction's propensity is finite now, so a rate law was non-finite partway "
-              "through a reaction firing, where NFsim reads it with the firing molecules out of "
-              "the observables (RuleWorld/nfsim#115): a rate law that divides by an observable "
-              "one molecule keeps nonzero does this. method=\"rulemonkey\" and network \"ssa\" "
-              "run such a model.";
+        os << "Every reaction's propensity is finite now, so the non-finite value was passing: "
+              "NFsim keeps the total as a running sum, which stays non-finite after the "
+              "propensity that made it so is finite again. NFsim reads a rate law partway "
+              "through a reaction firing, with the firing molecules out of the observables "
+              "(RuleWorld/nfsim#115), where a rate law that divides by an observable one "
+              "molecule keeps nonzero is 0/0; a rate law that was non-finite earlier in the "
+              "session does the same. method=\"rulemonkey\" and network \"ssa\" do not read a "
+              "rate law mid-firing.";
     }
     throw std::runtime_error(os.str());
 }
@@ -1323,8 +1335,10 @@ void NfsimSimulator::step_to(double time) {
     require_finite_span("NfsimSimulator::step_to", impl_->session_logical_time, time);
     StreamSuppressor suppress;
     impl_->session_system->stepTo(time);
-    require_finite_propensity(impl_->session_system, "NfsimSimulator::step_to");
+    // NFsim's clock is at `time` whether or not the check below throws: a
+    // session used after the error must not replay [old time, time] as rows.
     impl_->session_logical_time = time;
+    require_finite_propensity(impl_->session_system, "NfsimSimulator::step_to");
 }
 
 Result NfsimSimulator::simulate(double t_start, double t_end, int n_points, double timeout_seconds,
@@ -1421,7 +1435,12 @@ Result NfsimSimulator::simulate(double t_start, double t_end, int n_points, doub
             if (budget.active())
                 budget.check();
             system->stepTo(abs_targets[i]);
-            require_finite_propensity(system, "NfsimSimulator::simulate");
+            if (!std::isfinite(nfsim_total_propensity(system))) {
+                // The clock is at this sample: leave the session there, as
+                // step_to() does, before raising.
+                impl_->session_logical_time = abs_targets[i];
+                require_finite_propensity(system, "NfsimSimulator::simulate");
+            }
 
             for (int j = 0; j < n_obs; ++j) {
                 obs_buf[j] = static_cast<double>(system->getObsForOutput(j)->getCount());
