@@ -399,7 +399,9 @@ _DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
         "no Windows equivalent: process-group reaping, the /bin/sh fake "
         "interpreters the pybind11-resolution probe walks (GH #288), the "
         "peak RSS the GH #577 setup-failure probe reads from resource.getrusage, "
-        "and the /bin/sh stand-in gh the contributors check is tested through",
+        "the /bin/sh stand-in gh the contributors check is tested through, "
+        "the /bin/sh fake perl the BNG2.pl compile check is tested with, and the "
+        "working directory removed under it, which Windows refuses (#1761)",
     ),
     (
         "RLIMIT_AS",
@@ -488,7 +490,7 @@ _DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
     ("codegen compile unavailable", _LOCAL_ONLY, "same condition, reported from the codegen side"),
     ("no codegen backend available", _LOCAL_ONLY, "as above"),
     # libsbml is a HARD dependency in pyproject (`python-libsbml>=5.20`) and
-    # HAS_LIBSBML is a plain import check, so this cannot be a build variant — if
+    # HAS_LIBSBML tries the import when read, so this cannot be a build variant — if
     # it fires, the install is broken, and in CI a broken install must not pass.
     ("requires libsbml", _LOCAL_ONLY, "libsbml is a base dependency, not an extra"),
     # Numerics that a given host does not reproduce. Narrow on purpose: this is a
