@@ -774,6 +774,13 @@ struct NfsimSimulator::Impl {
     std::vector<std::string> session_fn_names;
     std::vector<NfsimOutputFunction> session_fn_funcs;
     double session_logical_time = 0.0;
+    // Set when simulate() or step_to() found NFsim's total propensity
+    // non-finite (issue #1818). NFsim fired nothing from that point, so the
+    // state is the one it froze in, not the state at the time its clock shows,
+    // and a later segment would start from it as if the span between had run.
+    // Until initialize() or restore_concentrations(), the session refuses to
+    // advance. Holds the time of the sample at which it was found.
+    std::optional<double> session_stopped_at;
     // Named concentration snapshots, keyed by label ("" = default/unlabeled
     // slot). Each label owns its own SystemSnapshot, so multiple named states
     // coexist — true multi-slot parity with the network-based Model (issue #11).
@@ -790,6 +797,19 @@ struct NfsimSimulator::Impl {
             session_system = nullptr;
         }
         session_logical_time = 0.0;
+    }
+
+    void require_session_not_stopped(const char *where) const {
+        if (!session_stopped_at)
+            return;
+        std::ostringstream os;
+        os << where << ": this session stopped at the sample at t = " << std::setprecision(17)
+           << *session_stopped_at
+           << ", where NFsim's total propensity was found non-finite. NFsim fired nothing from "
+              "there, so the state is the one it stopped in, and a further segment would start "
+              "from it as though the time between had run. initialize() starts the session "
+              "again; restore_concentrations() returns it to a saved state.";
+        throw std::runtime_error(os.str());
     }
 
     // Parse XML and set up a fresh system (shared by run() and initialize())
@@ -1144,16 +1164,20 @@ static double nfsim_total_propensity(::NFcore::System *system) {
     return (system->*(&NfsimTotalPropensity::get_A_tot))();
 }
 
-static void require_finite_propensity(::NFcore::System *system, const char *where) {
+// The refusal's text, or an empty string while the total is finite. `t_row` is
+// the time of the caller's sample at which the total was found non-finite, in
+// the caller's labels (t_start onward), which NFsim's own clock is not.
+static std::string nonfinite_propensity_message(::NFcore::System *system, const char *where,
+                                                double t_row) {
     const double a_tot = nfsim_total_propensity(system);
     if (std::isfinite(a_tot))
-        return;
+        return std::string();
     // Spelled out, as the SSA's refusal spells it (issue #809): glibc prints a
     // NaN whose sign bit is set as "-nan" and macOS prints "nan".
     const char *spelled = std::isnan(a_tot) ? "nan" : (a_tot > 0 ? "inf" : "-inf");
     std::ostringstream os;
     os << where << ": NFsim's total propensity is " << spelled
-       << " by t = " << std::setprecision(17) << system->getCurrentTime() << ". ";
+       << " by the sample at t = " << std::setprecision(17) << t_row << ". ";
     if (std::isnan(a_tot))
         os << "NFsim fires nothing once it is, so the rest of the run would repeat the state it "
               "stopped in. ";
@@ -1180,7 +1204,7 @@ static void require_finite_propensity(::NFcore::System *system, const char *wher
               "session does the same. method=\"rulemonkey\" and network \"ssa\" do not read a "
               "rate law mid-firing.";
     }
-    throw std::runtime_error(os.str());
+    return os.str();
 }
 
 // NFsim seeds both its generators, the System's NfsimRNG and the process-wide
@@ -1295,7 +1319,10 @@ Result NfsimSimulator::run(const TimeSpec &times, uint64_t seed, double timeout_
             if (budget.active())
                 budget.check();
             system->stepTo(clock0 + (t_out[i] - t_out[0]));
-            require_finite_propensity(system, "NfsimSimulator::run");
+            const std::string nonfinite =
+                nonfinite_propensity_message(system, "NfsimSimulator::run", t_out[i]);
+            if (!nonfinite.empty())
+                throw std::runtime_error(nonfinite);
             for (int j = 0; j < n_obs; ++j) {
                 obs_buf[j] = static_cast<double>(system->getObsForOutput(j)->getCount());
             }
@@ -1327,23 +1354,29 @@ void NfsimSimulator::initialize(uint64_t seed) {
     impl_->cache_obs_names(impl_->session_system);
     impl_->cache_function_set(impl_->session_system);
     impl_->session_logical_time = 0.0;
+    impl_->session_stopped_at.reset();
     impl_->session_snapshots.clear();
 }
 
 void NfsimSimulator::step_to(double time) {
     impl_->require_session();
+    impl_->require_session_not_stopped("NfsimSimulator::step_to");
     require_finite_span("NfsimSimulator::step_to", impl_->session_logical_time, time);
     StreamSuppressor suppress;
     impl_->session_system->stepTo(time);
-    // NFsim's clock is at `time` whether or not the check below throws: a
-    // session used after the error must not replay [old time, time] as rows.
+    const std::string nonfinite =
+        nonfinite_propensity_message(impl_->session_system, "NfsimSimulator::step_to", time);
+    if (!nonfinite.empty()) {
+        impl_->session_stopped_at = time;
+        throw std::runtime_error(nonfinite);
+    }
     impl_->session_logical_time = time;
-    require_finite_propensity(impl_->session_system, "NfsimSimulator::step_to");
 }
 
 Result NfsimSimulator::simulate(double t_start, double t_end, int n_points, double timeout_seconds,
                                 bool relative_time, const std::vector<double> &sample_times) {
     impl_->require_session();
+    impl_->require_session_not_stopped("NfsimSimulator::simulate");
     auto *system = impl_->session_system;
     const int n_obs = impl_->session_n_obs;
     const double segment_base_time = impl_->session_logical_time;
@@ -1435,11 +1468,11 @@ Result NfsimSimulator::simulate(double t_start, double t_end, int n_points, doub
             if (budget.active())
                 budget.check();
             system->stepTo(abs_targets[i]);
-            if (!std::isfinite(nfsim_total_propensity(system))) {
-                // The clock is at this sample: leave the session there, as
-                // step_to() does, before raising.
-                impl_->session_logical_time = abs_targets[i];
-                require_finite_propensity(system, "NfsimSimulator::simulate");
+            const std::string nonfinite =
+                nonfinite_propensity_message(system, "NfsimSimulator::simulate", t_out[i]);
+            if (!nonfinite.empty()) {
+                impl_->session_stopped_at = t_out[i];
+                throw std::runtime_error(nonfinite);
             }
 
             for (int j = 0; j < n_obs; ++j) {
@@ -1599,6 +1632,7 @@ void NfsimSimulator::destroy_session() {
         impl_->session_system = nullptr;
     }
     impl_->session_logical_time = 0.0;
+    impl_->session_stopped_at.reset();
     impl_->session_n_obs = 0;
     impl_->session_obs_names.clear();
     impl_->session_snapshots.clear();
@@ -1639,6 +1673,9 @@ void NfsimSimulator::restore_concentrations(const std::string &label) {
     // this too; SystemSnapshot::restore() alone does not).
     impl_->session_system->invalidateStepToCache();
     it->second->restore(impl_->session_system);
+    // A saved state is one the system was in; if its total is not finite
+    // either, the next segment finds that and stops again.
+    impl_->session_stopped_at.reset();
 }
 
 bool NfsimSimulator::has_saved_concentrations(const std::string &label) const {

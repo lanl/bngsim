@@ -70,28 +70,51 @@ def test_step_to_refuses_it_too(data_dir: Path) -> None:
             nf.step_to(1.0)
 
 
-def test_a_session_that_raised_is_left_at_the_time_it_reached(data_dir: Path) -> None:
-    # NFsim's clock has moved when the check raises. A session used afterwards
-    # goes on from there: it does not replay the span as rows of one state.
-    from bngsim._bngsim_core import NfsimSimulator
+def test_a_session_that_stopped_refuses_to_go_on_until_initialized(data_dir: Path) -> None:
+    # NFsim fired nothing from the point its total went non-finite, so the
+    # state is the one it stopped in. Repairing the rate does not make the
+    # span between run: the session refuses until it is started again.
+    with NfsimSession(_xml(data_dir, NAN_LAW)) as nf:
+        nf.initialize(seed=1)
+        with pytest.raises(bngsim.SimulationError, match="total propensity is nan"):
+            nf.step_to(1.0)
+        nf.set_param("k", 1.0)
+        with pytest.raises(bngsim.SimulationError, match=r"stopped at the sample at t = 1\b"):
+            nf.simulate(1.0, 2.0, 2)
+        with pytest.raises(bngsim.SimulationError, match="initialize"):
+            nf.step_to(2.0)
+        nf.initialize(seed=1)
+        result = nf.simulate(0.0, 1.0, 11)
+    # k = 1 now: A and B both decay, and nothing was refused.
+    assert result.n_times == 11
+    assert np.asarray(result.observables["A"])[-1] < 100
 
-    core = NfsimSimulator(_xml(data_dir, NAN_LAW))
-    core.initialize(1)
-    with pytest.raises(RuntimeError, match="NfsimSimulator::step_to"):
-        core.step_to(1.0)
-    with pytest.raises(RuntimeError, match=r"by t = 2\b"):
-        core.simulate(1.0, 2.0, 2)
+
+def test_a_session_that_stopped_in_simulate_refuses_step_to(data_dir: Path) -> None:
+    with NfsimSession(_xml(data_dir, MID_FIRING)) as nf:
+        nf.initialize(seed=1)
+        with pytest.raises(bngsim.SimulationError, match="total propensity is nan"):
+            nf.simulate(0.0, 500.0, 501)
+        with pytest.raises(bngsim.SimulationError, match="this session stopped at the sample"):
+            nf.step_to(600.0)
 
 
-def test_a_session_that_raised_in_simulate_is_left_at_the_time_it_reached(data_dir: Path) -> None:
-    from bngsim._bngsim_core import NfsimSimulator
+@pytest.mark.parametrize("t_start", [0.0, 100.0])
+def test_the_time_named_is_the_samples_own(data_dir: Path, t_start: float) -> None:
+    # Seed 1's lone X first fires before the sample one time unit in. The
+    # message gives that sample's time in the caller's labels, which NFsim's
+    # own clock (0 at t_start) is not.
+    expected = rf"by the sample at t = {int(t_start) + 1}\b"
+    with NfsimSession(_xml(data_dir, MID_FIRING)) as nf:
+        nf.initialize(seed=1)
+        with pytest.raises(bngsim.SimulationError, match=expected):
+            nf.simulate(t_start, t_start + 500.0, 501)
+    from bngsim._bngsim_core import NfsimSimulator, TimeSpec
 
-    core = NfsimSimulator(_xml(data_dir, NAN_LAW))
-    core.initialize(1)
-    with pytest.raises(RuntimeError, match=r"NfsimSimulator::simulate: .* by t = 1\b"):
-        core.simulate(0.0, 1.0, 2)
-    with pytest.raises(RuntimeError, match=r"by t = 2\b"):
-        core.simulate(1.0, 2.0, 2)
+    times = TimeSpec()
+    times.t_start, times.t_end, times.n_points = t_start, t_start + 500.0, 501
+    with pytest.raises(RuntimeError, match=expected):
+        NfsimSimulator(_xml(data_dir, MID_FIRING)).run(times, 1)
 
 
 def test_the_one_shot_run_refuses_it_too(data_dir: Path) -> None:
