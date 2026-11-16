@@ -533,13 +533,12 @@ def _expand_functional_reactions(
 # ─── Writer ───────────────────────────────────────────────────────────────
 
 
-# A name as the .net loader reads one, ASCII (``is_bare_identifier`` in
-# src/net_file_loader.cpp, and SBML ids are ASCII too), dotted parts and all
-# (ExprTk reads ``R1.k`` as one name, not ``R1`` and ``k``), and a number, read
-# whole so that the exponent of ``2e5`` is no name ``e5``.
-_READ_TOKEN = re.compile(
-    r"(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?|[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*"
-)
+# A name as the engine's own dependency sort reads one (``for_each_identifier``
+# in src/model_builder.cpp): ASCII letters, digits and ``_``, so ``R1.k`` reads
+# ``R1`` and ``k``; and a number read whole, digits and dots and a well-formed
+# exponent, so that ``2e5`` is no name ``e5``. The writer orders by the reads
+# the engine orders by.
+_READ_TOKEN = re.compile(r"(?:\d[\d.]*|\.\d[\d.]*)(?:[eE][+-]?\d+)?|[A-Za-z_][A-Za-z0-9_]*")
 
 
 def _components(edges: list[set[int]]) -> list[list[int]]:

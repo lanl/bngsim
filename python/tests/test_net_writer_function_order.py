@@ -14,7 +14,6 @@ writer.
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 import warnings
@@ -23,13 +22,14 @@ from pathlib import Path
 import bngsim
 import numpy as np
 import pytest
+from bngsim._bngpath import resolve_bng
 from bngsim.convert import sbml_to_net
 
 pytestmark = pytest.mark.skipif(not bngsim.HAS_LIBSBML, reason="SBML conversion requires libsbml")
 
-_BNGPATH = os.environ.get("BNGPATH")
 _EXE = "run_network.exe" if sys.platform == "win32" else "run_network"
-_RUN_NETWORK = Path(_BNGPATH).resolve() / "bin" / _EXE if _BNGPATH else None
+_BNG = resolve_bng()  # as the sibling writer tests find it, BNGPATH or not
+_RUN_NETWORK = _BNG.root / "bin" / _EXE if _BNG.ok and _BNG.root is not None else None
 HAS_RUN_NETWORK = _RUN_NETWORK is not None and _RUN_NETWORK.is_file()
 
 _MATHML = {
@@ -237,11 +237,11 @@ def test_a_block_in_order_with_a_self_read_is_kept_and_warned():
         assert _order(pairs) == ["x", "y"]
 
 
-def test_a_dotted_name_is_read_whole():
-    # ExprTk reads R1.k as one name: it is no read of a function named k.
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")  # split, k "read" itself: a false self-read
-        assert _order([("k", "R1.k*2"), ("y", "x"), ("x", "1")]) == ["k", "x", "y"]
+def test_names_are_read_as_the_engines_sort_reads_them():
+    # for_each_identifier (src/model_builder.cpp): a dot ends a name, so R1.x
+    # reads x, and a number is stepped over whole, exponent and all.
+    assert _order([("y", "R1.x*2"), ("x", "1")]) == ["x", "y"]
+    assert _order([("y", "1.5e3*2.e5"), ("e3", "1"), ("e5", "2")]) == ["y", "e3", "e5"]
 
 
 def test_a_name_written_twice_is_read_as_its_first_copy():
