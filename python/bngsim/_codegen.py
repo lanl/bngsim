@@ -1931,8 +1931,8 @@ class _UnbalancedBrackets(Exception):
     """A bracket in a text :func:`_spell_mod` reads has no partner of its kind."""
 
 
-def _spell_mod(text: str) -> str:
-    """*text* with each ``a % b`` written ``mod(a, b)``.
+def _spell_mod(text: str, call: str = "mod") -> str:
+    """*text* with each ``a % b`` written ``mod(a, b)``, or *call* in place of ``mod``.
 
     ExprTk's ``%`` on doubles is ``std::fmod``, which is its ``mod()`` too, so
     the two read the same everywhere. C has no ``%`` on doubles. The stop and
@@ -1950,19 +1950,19 @@ def _spell_mod(text: str) -> str:
     """
     if "%" not in text:
         return text
-    return _spell_mod_cached(text)
+    return _spell_mod_cached(text, call)
 
 
 @functools.lru_cache(maxsize=16384)
-def _spell_mod_cached(text: str) -> str:
+def _spell_mod_cached(text: str, call: str = "mod") -> str:
     try:
-        out, _ = _spell_mod_from(text, 0, None)
+        out, _ = _spell_mod_from(text, 0, None, call)
     except _UnbalancedBrackets:
         return text
     return out
 
 
-def _spell_mod_from(text: str, i: int, closer: str | None) -> tuple[str, int]:
+def _spell_mod_from(text: str, i: int, closer: str | None, call: str = "mod") -> tuple[str, int]:
     """:func:`_spell_mod` of *text* from *i* to *closer*, the bracket that
     closes it (``None``: the end of the text)."""
     out: list[str] = []
@@ -1977,7 +1977,7 @@ def _spell_mod_from(text: str, i: int, closer: str | None) -> tuple[str, int]:
             trail = factor[len(factor.rstrip()) :]
             acc = chain[0][1].strip()
             for o, f in chain[1:]:
-                acc = f"mod({acc}, {f.strip()})" if o == "%" else f"{acc}{o}{f.strip()}"
+                acc = f"{call}({acc}, {f.strip()})" if o == "%" else f"{acc}{o}{f.strip()}"
             out.append(lead + acc + trail)
         else:
             out.append("".join(o + f for o, f in chain))
@@ -1988,7 +1988,7 @@ def _spell_mod_from(text: str, i: int, closer: str | None) -> tuple[str, int]:
     while i < n:
         c = text[i]
         if c in _BRACKET_CLOSES:
-            inner, i = _spell_mod_from(text, i + 1, _BRACKET_CLOSES[c])
+            inner, i = _spell_mod_from(text, i + 1, _BRACKET_CLOSES[c], call)
             factor += c + inner + _BRACKET_CLOSES[c]
             continue
         if c in _CLOSING_BRACKETS:
@@ -2442,10 +2442,7 @@ def _preprocess_derived_expr(expr: str) -> str:
     s = _translate_bngl_if_to_piecewise(_normalize_exprtk_operators(expr))
     s = s.replace("^", "**")
     s = re.sub(r"\bnot\s*\(", "Not(", s)
-    # ExprTk's `%` is fmod, which sympy would parse as its floored Mod and fold
-    # or simplify at once ((p + 2) % 2 to Mod(p, 2)); spelled as the engine's
-    # mod() it is read as fmod (issue #1800).
-    return _spell_mod(_coerce_booleans_used_as_numbers(_rewrite_logicals(s)))
+    return _coerce_booleans_used_as_numbers(_rewrite_logicals(s))
 
 
 def _derived_rate_constant_decline(name: str, expr: str, reason: str) -> str:
@@ -3037,7 +3034,12 @@ def _prepare_derived_expr(
     # Pass 1: ExprTk → sympy surface syntax (if→Piecewise, ^→**, logicals →
     # And/Or call form). Applied to the raw string so whole-word matching of
     # ``if`` sees the source as written.
-    s_pre = _preprocess_derived_expr(expr)
+    # ExprTk's `%` is fmod, which sympy would parse as its floored Mod and fold
+    # or simplify at once ((p + 2) % 2 to Mod(p, 2)). Spelled as a call before
+    # the parse, it is read as fmod (issue #1800). The call is a private name,
+    # so a parameter named `mod` is not called, and only this parse sees it: the
+    # clock parser shares _preprocess_derived_expr and reads `%` as before.
+    s_pre = _spell_mod(_preprocess_derived_expr(expr), call=_ENGINE_ROUNDING_NAMES[1])
 
     diff_names = primary_names | set(derived_names)
     referenced = _names_referenced_in(s_pre, diff_names)
@@ -3101,7 +3103,15 @@ def _prepare_derived_expr(
     # followed by `(` is a call and keeps its sympy meaning.
     for m in _DERIVED_BARE_NAME.finditer(s_aliased):
         name = m.group(1)
-        if m.group(2) is None and name not in local_dict and name not in ("True", "False"):
+        if (
+            m.group(2) is None
+            and name not in ("True", "False")
+            and (
+                name not in local_dict or (name in ("rint", "mod", "frac") and name not in sym_map)
+            )
+        ):
+            # A name bound to a call (rint, mod, frac) but read bare is a model
+            # symbol of that name, an observable, not the function (#1800).
             local_dict[name] = sp.Symbol(name)
 
     try:
@@ -3284,8 +3294,17 @@ def _engine_rounding_classes():
             v = _engine_double(x)
             if v is None:
                 return None
-            return number(v - math.trunc(v)) if math.isfinite(v) else sp.nan
+            return number(v - math.copysign(math.trunc(v), v)) if math.isfinite(v) else sp.nan
 
+    # As C, as the C twin writes them (expr_compat::rint, ExprTk's e_mod and
+    # frac_impl), so the compiled chain rule reads them, not their private names.
+    Rint._ccode = lambda self, printer: f"floor(({printer._print(self.args[0])}) + 0.5)"
+    Fmod._ccode = lambda self, printer: (
+        f"fmod(({printer._print(self.args[0])}), ({printer._print(self.args[1])}))"
+    )
+    Frac._ccode = lambda self, printer: (
+        f"(({printer._print(self.args[0])}) - trunc({printer._print(self.args[0])}))"
+    )
     for cls, name in zip((Rint, Fmod, Frac), _ENGINE_ROUNDING_NAMES, strict=True):
         cls.__name__ = name
     return Rint, Fmod, Frac
@@ -3295,7 +3314,7 @@ def engine_rounding_bindings() -> dict:
     """``{name: sympy function}`` for a ``parse_expr`` ``local_dict``, bound before
     the parse so sympy never folds a constant ``frac(-2.5)`` its own way."""
     rint, fmod, frac = _engine_rounding_classes()
-    return {"rint": rint, "mod": fmod, "frac": frac}
+    return {"rint": rint, "mod": fmod, "frac": frac, fmod.__name__: fmod}
 
 
 def _engine_rounding(expr):
@@ -3312,7 +3331,7 @@ def _engine_rounding(expr):
     rint, fmod, frac = _engine_rounding_classes()
 
     def target(node):
-        if isinstance(node, (sp.frac, sp.Mod)):
+        if isinstance(node, sp.frac):
             return True
         if not isinstance(node, sp.Function):
             return False
@@ -3325,7 +3344,7 @@ def _engine_rounding(expr):
     def rewrite(node):
         if isinstance(node, sp.frac):
             return frac(*node.args)
-        if isinstance(node, sp.Mod) or type(node).__name__ == "mod":
+        if type(node).__name__ == "mod":
             return fmod(*node.args)
         return rint(*node.args)
 

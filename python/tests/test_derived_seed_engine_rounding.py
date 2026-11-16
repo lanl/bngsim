@@ -225,11 +225,58 @@ def test_the_switch_printer_prints_a_nested_frac_once_per_level():
     assert text.count("x") == 1  # was 27: each level printed its argument three times
 
 
-def test_the_kink_check_reads_a_symbolic_percent_as_fmod():
-    # An expression parsed outside the derived-parameter parse holds % as
-    # sympy's floored Mod; the kink check rewrites it to the engine's fmod.
+def test_the_kink_check_keeps_mains_reading_of_a_percent_the_rate_law_parse_simplified():
+    # The rate-law parse reads % as sympy's Mod and simplifies (p + 2) % 2 to
+    # Mod(p, 2) before the kink check sees it. Rewritten to fmod after that, it
+    # read fmod(-0.5, 2) = -0.5 where the engine has fmod(1.5, 2) = 1.5, and main
+    # 1.5: a regression. The kink check leaves sympy's Mod as main does (#1815).
     import sympy as sp
+    from bngsim._jacobian import _exprtk_to_sympy
     from bngsim._parameter_kinks import _values
 
-    x, y = sp.symbols("x y")
-    assert _values([sp.Mod(x, y)], {x: -0.5, y: 2.0}, sp) == [-0.5]
+    p = sp.Symbol("p")
+    assert _values([_exprtk_to_sympy("(p + 2) % 2", bends=True)], {p: -0.5}, sp) == [1.5]
+
+
+def test_percent_beside_a_parameter_named_mod_parses():
+    # % is spelled as a private call, so a parameter named mod is not called.
+    from bngsim._codegen import _prepare_derived_expr
+
+    prep, why = _prepare_derived_expr("a % b", {"a", "b", "mod"}, [])
+    assert prep is not None, why
+    assert (
+        _derived_expr_value_numeric(
+            "a % b", {"a", "b", "mod"}, set(), {"a": 0, "b": 1, "mod": 2}, [-0.5, 2.0, 7.0]
+        )
+        == -0.5
+    )
+
+
+def test_the_clock_parser_reads_percent_as_main_does():
+    # The clock parser shares the derived-expression preprocessing; the spelling
+    # of % is the derived parse's alone, so the clock solvers are unchanged.
+    import sympy as sp
+    from bngsim._switch_sensitivity import _parse_clock_expr
+
+    expr, _ = _parse_clock_expr("_bng_clock_t % 24 - 6")
+    assert expr.has(sp.Mod)
+    expr, _ = _parse_clock_expr("mod - _bng_clock_t % 3")  # a parameter named mod beside it
+    assert expr.has(sp.Mod)
+
+
+def test_an_observable_named_like_one_of_them_is_refused_as_a_model_symbol():
+    # Read bare, frac / mod / rint is a model symbol, which a derived parameter
+    # cannot read: the refusal says so, as main's did, not a TypeError.
+    from bngsim._codegen import _prepare_derived_expr
+
+    for name in ("frac", "mod", "rint"):
+        prep, why = _prepare_derived_expr(f"time() > k*{name}", {"k"}, [], allow_no_reference=True)
+        assert prep is None and "unresolved symbol" in why, why
+
+
+def test_the_compiled_chain_rule_names_no_private_function():
+    from bngsim import _codegen
+
+    for expr in ("k*rint(p)", "k*(p % 2)", "k*frac(p)"):
+        _, why = _codegen._direct_derived_partials(expr, {"p", "k"}, set(), {"p": 0, "k": 1}, None)
+        assert why and "__bngsim" not in why, why
