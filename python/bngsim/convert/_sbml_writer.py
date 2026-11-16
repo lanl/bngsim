@@ -94,11 +94,24 @@ _E_SENTINEL = "__bngsim_const_e__"
 # case-insensitively) is renamed to this prefix plus its name before the parse
 # and back after it (issue #1741). Without it a derived parameter or function
 # that reads a parameter named ``avogadro`` was written with the Avogadro
-# constant in its place, silently. ``time`` is left out: ``time()`` is the
-# clock, handled by its own sentinel.
+# constant in its place, silently. ``time`` is one of the words: the parser
+# reads the bare name, in any case, as the time csymbol, and the engine reads a
+# bare ``time`` (or ``Time``) the model declares as that symbol. The clock is
+# the call ``time()``, which has its own sentinel and is never renamed.
 _SYMBOL_PREFIX = "__bngsim_symbol__"
 _PARSER_CONSTANT_WORDS = frozenset(
-    {"pi", "exponentiale", "avogadro", "true", "false", "inf", "infinity", "nan", "notanumber"}
+    {
+        "pi",
+        "exponentiale",
+        "avogadro",
+        "true",
+        "false",
+        "inf",
+        "infinity",
+        "nan",
+        "notanumber",
+        "time",
+    }
 )
 
 # ExprTk function/operator-keyword names we can translate to MathML. Anything
@@ -344,12 +357,14 @@ def _strip_zero_arg_calls(expr: str, scalar_names: frozenset[str]) -> str:
     (``Atot()``) anywhere the bareword is valid (BNG issue #28); the engine
     stores the call verbatim in a function body. SBML/MathML has no zero-arg
     call form, so collapse it to the bare symbol. ``time()`` is left alone (it
-    is the SBML time csymbol, handled separately).
+    is the SBML time csymbol, handled separately), also where the model
+    declares a symbol named ``time``: to the engine the call is still the
+    clock and only the bare name is the symbol (issue #776).
     """
 
     def _repl(m: re.Match) -> str:
         name = m.group(1)
-        return name if name in scalar_names else m.group(0)
+        return name if name in scalar_names and name != "time" else m.group(0)
 
     return _ZERO_ARG_CALL.sub(_repl, expr)
 
@@ -525,8 +540,15 @@ def _walk_restore_symbols(node: Any) -> None:
 
 def _assert_supported_calls(normalized: str, *, where: str) -> None:
     """Raise on any function call outside the supported set (fail-loud)."""
+    # A BNGL constant given an argument (``_pi(2)``) is by now its sentinel;
+    # the message names what the model says.
+    spelled = {_PI_SENTINEL: "_pi", _E_SENTINEL: "_e"}
     bad = sorted(
-        {name for name in _CALL_TOKEN.findall(normalized) if name not in _EXPRTK_SUPPORTED_CALLS}
+        {
+            spelled.get(name, name)
+            for name in _CALL_TOKEN.findall(normalized)
+            if name not in _EXPRTK_SUPPORTED_CALLS
+        }
     )
     if bad:
         joined = ", ".join(repr(b) for b in bad)

@@ -54,9 +54,11 @@ from bngsim.convert._net_writer import (
     _rateof_refs,
 )
 from bngsim.convert._sbml_writer import (
+    _E_TOKEN,
     _LOG1P_TOKEN,
     _LOG2_TOKEN,
     _LOG_TOKEN,
+    _PI_TOKEN,
     _dedup_functions,
     _rewrite_unary_call,
 )
@@ -100,14 +102,18 @@ def _normalize_bngl_expr(expr: str) -> str:
     stores: the boolean keyword operators ``and``/``or`` must be the symbolic
     ``&&``/``||`` (BNG rejects the barewords with a misleading "missing parenthesis"),
     natural log ``log(`` must be ``ln(`` (BNG has no bareword ``log``), and base-2 /
-    ``log1p`` (no BNG primitive) reduce to their exact ``ln`` identities. The π
-    symbol ``_pi`` is reserved-but-undefined in BNG2.pl (it aborts at network
-    generation whether the name is left bare *or* declared as a parameter), so it is
-    folded to its numeric literal. ``if(…)``, ``time()``, ``^`` and ``log10`` are
+    ``log1p`` (no BNG primitive) reduce to their exact ``ln`` identities. The
+    constants ``_pi`` and ``_e`` are reserved in BNG2.pl, which reads only their
+    call form (``_pi()``) and aborts at network generation on the bare name,
+    whether left bare *or* declared as a parameter; the engine takes both forms.
+    Each is folded to its numeric literal, bare or called (issue #1741: the
+    call's ``()`` was left behind the number, and ``_e`` was not folded).
+    ``if(…)``, ``time()``, ``^`` and ``log10`` are
     accepted verbatim. Word-boundary anchored so ``ligand``/``factor``/``nand`` are
     untouched.
     """
-    expr = re.sub(r"(?<![A-Za-z0-9_])_pi(?![A-Za-z0-9_])", repr(math.pi), expr)
+    expr = _PI_TOKEN.sub(repr(math.pi), expr)
+    expr = _E_TOKEN.sub(repr(math.e), expr)
     out = re.sub(r"(?<![A-Za-z0-9_])and(?![A-Za-z0-9_])", "&&", expr)
     out = re.sub(r"(?<![A-Za-z0-9_])or(?![A-Za-z0-9_])", "||", out)
     out = _rewrite_unary_call(out, _LOG2_TOKEN, lambda a: f"(ln({a}) / ln(2))")
