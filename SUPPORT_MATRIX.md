@@ -36,7 +36,7 @@ for it.
 | PSA (partial scaling)| Bundled                                       | `method="psa"`                     |
 | NFsim                | Bundled (vendored under `third_party/nfsim`)  | `HAS_NFSIM=True` everywhere        |
 | RuleMonkey           | Bundled (vendored under `third_party/rulemonkey`) | `HAS_RULEMONKEY=True` everywhere |
-| SBML loader          | Runtime dep `python-libsbml>=5.20`            | `HAS_LIBSBML=True` everywhere      |
+| SBML loader          | Runtime dep `python-libsbml>=5.20`            | `HAS_LIBSBML=True` wherever it imports: its Linux wheel needs the system expat library (`libexpat1`), which slim images lack |
 | Antimony loader      | Optional extra: `pip install bngsim[antimony]`| `HAS_ANTIMONY` depends on extra    |
 | KLU sparse solver    | Bundled in every wheel (Linux/macOS/Windows) — SuiteSparse vendored by auditwheel/delocate/delvewheel | `HAS_KLU=True` everywhere |
 | BLAS dense factor    | macOS wheels only (Accelerate); source builds where CMake finds a LAPACK | `HAS_LAPACK_DENSE` + `BNGSIM_LAPACK_DENSE=1` |

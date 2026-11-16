@@ -503,15 +503,19 @@ def _bng2_env() -> dict[str, str]:
     ``$BioNetGenRoot`` made absolute against this process's directory, where
     :func:`~bngsim._bngpath.resolve_bng` found BNG2.pl through it. BNG2.pl runs
     from the model's directory (issue #1494), where a relative one names
-    something else."""
+    something else.
+
+    The working directory is read only where a relative value needs it: the
+    resolver's perl check reads this environment too (issue #1761), and a process
+    whose directory has been removed must still get an answer from
+    ``bngsim.HAS_BNGL`` and ``capabilities()``."""
     env = dict(os.environ)
-    cwd = os.getcwd()
     for var in ("BNGPATH", "BioNetGenRoot"):
         value = env.get(var)
         if value and not os.path.isabs(value):
             # Joined, not normalized: ``link/..`` is the link target's parent,
             # which only the filesystem knows.
-            env[var] = os.path.join(cwd, value)
+            env[var] = os.path.join(os.getcwd(), value)
     return env
 
 
