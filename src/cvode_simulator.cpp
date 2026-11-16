@@ -16488,6 +16488,13 @@ static std::string on_the_runs_clock(const std::string &what, double origin) {
            from + ": add that to each time above.)";
 }
 
+// The same failure, of the same type (a refusal keeps the Python error it maps
+// to), with its message on the run's clock: a rewording, not another refusal.
+template <class Failure>
+[[noreturn]] static void rethrow_on_the_runs_clock(const Failure &e, double origin) {
+    throw Failure(on_the_runs_clock(e.what(), origin));
+}
+
 Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     auto &model = impl_->model;
     const int ns = model.n_species();
@@ -16580,15 +16587,15 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         } catch (const SensitivityRefusedForParameters &e) {
             // A failure names its times on the run's clock, and keeps its type,
             // which Python maps to its own error.
-            throw SensitivityRefusedForParameters(on_the_runs_clock(e.what(), back(0.0)));
+            rethrow_on_the_runs_clock(e, back(0.0));
         } catch (const SensitivityUnsupported &e) {
-            throw SensitivityUnsupported(on_the_runs_clock(e.what(), back(0.0)));
+            rethrow_on_the_runs_clock(e, back(0.0));
         } catch (const std::runtime_error &e) {
             // The other subclasses (a timeout, a sparse solver refused) name
             // no time of the run.
             if (typeid(e) != typeid(std::runtime_error))
                 throw;
-            throw std::runtime_error(on_the_runs_clock(e.what(), back(0.0)));
+            rethrow_on_the_runs_clock(e, back(0.0));
         }
     }
 
