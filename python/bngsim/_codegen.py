@@ -3283,7 +3283,10 @@ def _engine_rounding_classes():
             if fa is None or fb is None:
                 return None
             if fb == 0 or math.isinf(fa) or math.isnan(fa) or math.isnan(fb):
-                return sp.nan  # C's fmod: nan here; fmod(a, inf) is a
+                # C's fmod is nan here (fmod(a, inf) is a). Left unevaluated: a
+                # folded nan absorbs the expression around it, whose partials
+                # then read as a real zero where the value does not evaluate.
+                return None
             return number(math.fmod(fa, fb))
 
     class Frac(sp.Function):
@@ -3294,26 +3297,21 @@ def _engine_rounding_classes():
             v = _engine_double(x)
             if v is None:
                 return None
-            return number(v - math.copysign(math.trunc(v), v)) if math.isfinite(v) else sp.nan
-
-    # As C, as the C twin writes them (expr_compat::rint, ExprTk's e_mod and
-    # frac_impl), so the compiled chain rule reads them, not their private names.
-    Rint._ccode = lambda self, printer: f"floor(({printer._print(self.args[0])}) + 0.5)"
-    Fmod._ccode = lambda self, printer: (
-        f"fmod(({printer._print(self.args[0])}), ({printer._print(self.args[1])}))"
-    )
-    Frac._ccode = lambda self, printer: (
-        f"(({printer._print(self.args[0])}) - trunc({printer._print(self.args[0])}))"
-    )
+            # A non-finite argument is left unevaluated, as mod's is above.
+            return number(v - math.copysign(math.trunc(v), v)) if math.isfinite(v) else None
 
     def _eval_evalf(self, prec):
         # An argument that is a number but no sympy Number (_pi*2, sqrt(2)):
         # evalf gives its digits, and the fold above takes it from there. Left
         # to sympy, frac(_pi) evaluated its own way and rint and mod not at all.
-        args = [a if a.is_Number else a._eval_evalf(prec) for a in self.args]
+        args = [
+            a if a.is_Number else getattr(a, "_eval_evalf", lambda _p: None)(prec)
+            for a in self.args
+        ]
         if any(a is None or not a.is_Number for a in args):
             return None
-        return self.func(*args)
+        out = self.func(*args)
+        return out if out.is_Number else None  # a non-finite case stays as it is
 
     for cls, name in zip((Rint, Fmod, Frac), _ENGINE_ROUNDING_NAMES, strict=True):
         cls.__name__ = name

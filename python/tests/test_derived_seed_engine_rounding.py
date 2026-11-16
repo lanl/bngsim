@@ -203,12 +203,29 @@ def test_an_observable_named_like_one_of_them_is_refused_as_a_model_symbol():
         assert prep is None and "unresolved symbol" in why, why
 
 
-def test_the_compiled_chain_rule_names_no_private_function():
+def test_a_non_finite_constant_is_not_folded_into_a_real_zero():
+    # mod(2, 0) and frac(inf) are nan in the engine. Folded to nan at the parse,
+    # the nan absorbed k*mod(2, 0) and its partials read (None, None), "a real
+    # zero". Left unevaluated, the value does not evaluate and the chain rule
+    # refuses, as on main.
     from bngsim import _codegen
 
-    for expr in ("k*rint(p)", "k*(p % 2)", "k*frac(p)"):
-        _, why = _codegen._direct_derived_partials(expr, {"p", "k"}, set(), {"p": 0, "k": 1}, None)
-        assert why and "__bngsim" not in why, why
+    for expr in ("k*mod(2, 0)", "k*frac(1e400)"):
+        assert _derived_expr_value_numeric(expr, {"k"}, set(), {"k": 0}, [2.0]) is None
+        partials, why = _codegen._direct_derived_partials(expr, {"k"}, set(), {"k": 0}, None)
+        assert partials is None and why, (expr, partials, why)
+
+
+def test_the_compiled_chain_rule_still_refuses_them():
+    # Main refuses a derived rate constant that holds rint or mod in C; so does
+    # this, and nothing new runs analytically across their jumps.
+    from bngsim import _codegen
+
+    for expr in ("if(mod(p, 2) < 1, k, 2*k)", "if(rint(p) < 3, k, 2*k)", "k*(p % 2)"):
+        partials, why = _codegen._direct_derived_partials(
+            expr, {"p", "k"}, set(), {"p": 0, "k": 1}, None
+        )
+        assert partials is None and why, (expr, partials)
 
 
 # An argument that is a number but no sympy Number: it keeps an exact constant.
