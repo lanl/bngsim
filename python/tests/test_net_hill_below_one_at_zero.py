@@ -318,8 +318,25 @@ def _hill_function(model) -> str:
     return text
 
 
+def _roots_a_run_logs(m, caplog) -> list[str]:
+    """The line a plain run logs where it is handed state-switch roots."""
+    caplog.clear()
+    # At h <= 0 the law itself is infinite at S = 0, so the run fails at its
+    # first step; its roots are handed to it before that.
+    with (
+        caplog.at_level(logging.DEBUG, logger="bngsim"),
+        contextlib.suppress(bngsim.SimulationError),
+    ):
+        bngsim.Simulator(m, "ode").run(t_span=(0, 1), n_points=3)
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.getMessage().startswith("State-switch roots for a plain run")
+    ]
+
+
 @pytest.mark.parametrize("h", ["2", "1", "3.5", "0", "-1"])
-def test_an_h_known_outside_the_interval_is_guarded_but_not_rooted(tmp_path, h):
+def test_an_h_known_outside_the_interval_is_guarded_but_not_rooted(tmp_path, caplog, h):
     """An h whose value is >= 1 or <= 0 can never meet the guard, and the guard
     is a root the core watches every step: 300 such reactions ran 10x slower
     with it. The guard is written for every h (#1636: h can be moved into
@@ -331,30 +348,18 @@ def test_an_h_known_outside_the_interval_is_guarded_but_not_rooted(tmp_path, h):
         "Vmax * (__bngsim_net_rewrite_obs_r1_1 ^ (h - 1)) / "
         "((Kh ^ h) + (__bngsim_net_rewrite_obs_r1_1 ^ h)), 0)"
     )
-    seen: list[str] = []
-    handler = logging.Handler()
-    handler.emit = lambda record: seen.append(record.getMessage())
-    log = logging.getLogger("bngsim")
-    old = log.level
-    log.addHandler(handler)
-    log.setLevel(logging.DEBUG)
-    try:
-        # At h <= 0 the law itself is infinite at S = 0, so the run fails at
-        # its first step; its roots are handed to it before that.
-        with contextlib.suppress(bngsim.SimulationError):
-            bngsim.Simulator(m, "ode").run(t_span=(0, 1), n_points=3)
-    finally:
-        log.removeHandler(handler)
-        log.setLevel(old)
-    assert not [s for s in seen if s.startswith("State-switch roots for a plain run")]
+    assert m._state_switch_roots_at_run_values() == ()
+    assert not _roots_a_run_logs(m, caplog)
 
 
 @pytest.mark.parametrize(
     "h", ["0.5", "0.999", "1/2", "h_base*2"], ids=["0.5", "0.999", "1/2", "h_base*2"]
 )
-def test_an_h_in_the_interval_or_not_known_takes_the_guard(tmp_path, h):
+def test_an_h_in_the_interval_or_not_known_takes_the_guard(tmp_path, caplog, h):
     """An h in (0, 1), or one whose value is an expression, so not known until
-    the run, takes the guard; with it, the root that holds a run sliding at 0."""
+    the run, takes the guard; with it, the root that holds a run sliding at 0.
+    The run is handed that root, and says so: the line the test above reads as
+    absent at an h outside the interval."""
     text = NET.format(h=h, s0=0, kin=0, lhs="1", rhs="2", law="Hill").replace(
         "    5 kin 0\n", "    5 kin 0\n    6 h_base 0.25\n"
     )
@@ -363,6 +368,8 @@ def test_an_h_in_the_interval_or_not_known_takes_the_guard(tmp_path, h):
     m = _load(str(path))
     assert _hill_function(m).startswith("if((__bngsim_net_rewrite_obs_r1_1 > 0) or ")
     assert m.state_switch_root_conditions() != ()
+    assert m._state_switch_roots_at_run_values() == m.state_switch_root_conditions()
+    assert _roots_a_run_logs(m, caplog)
     assert m.rhs([0.0, 0.0, 1.0, 3.0]).tolist() == [0.0, 0.0, -1.0, 0.0]
 
 
