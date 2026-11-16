@@ -824,15 +824,34 @@ may well be right (the one above is from `A -> 0` at `k = 1e9` started at
 `t = 1e6`, which returns the right answer). Standard output is left to your
 script. Before issue #1680 the warnings went to standard output.
 
-SUNDIALS reads two environment variables when a run starts, and bngsim leaves
-them in charge where they are set:
+Two of SUNDIALS' environment variables say where they go instead, and where
+one is set bngsim leaves it in charge:
 
 ```bash
 SUNLOGGER_WARNING_FILENAME=/dev/null python script.py   # drop the warnings (NUL on Windows)
 SUNLOGGER_WARNING_FILENAME=stdout    python script.py   # where they went before
-SUNLOGGER_ERROR_FILENAME=sundials.log python script.py  # the errors, to a file
+SUNLOGGER_ERROR_FILENAME=/dev/null   python script.py   # drop the error lines
+python script.py 2> sundials.log                        # both, with the rest of stderr, to a file
 ```
+
+They are read when a solver context is made, not on every run. A `Simulator`
+running a model with no events, discontinuities or state switches, and no
+sensitivities, makes one on its first run and keeps it for the runs after;
+other runs, each `run_batch` row and each steady-state solve make their own.
+Set them before the script starts, or at least before the `Simulator` first
+runs: a change after that may not be seen by that `Simulator`.
+
+A file name is not a log that grows: each context SUNDIALS makes opens the
+file afresh and empties it, so it ends up holding the last context's lines
+only, and the rows of a `run_batch` on several threads write over each other.
+Name `stdout`, `stderr` or the null device, and redirect the stream itself to
+keep its lines in a file, as in the last line above.
 
 A model whose rate laws switch on time or on state restarts the integrator at
 each switch, which draws the warning above at every restart; bngsim drops the
-warnings of such a run itself.
+warnings of such a run itself, in a time course and in a steady-state solve,
+and those of a KINSOL solve, unless `SUNLOGGER_WARNING_FILENAME` is set. The
+`[ERROR]` lines of a solve bngsim expects to fail and recovers from (a KINSOL
+solve it falls back from to integration, and the steps of a state-switch run
+taken while bngsim watches or holds a switch) are dropped whatever
+`SUNLOGGER_ERROR_FILENAME` says.

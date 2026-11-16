@@ -23,6 +23,16 @@ namespace bngsim {
 
 // ─── SUNContext ──────────────────────────────────────────────────────────────
 
+// Whether the caller has said where SUNDIALS' warnings go (issue #1680):
+// SUNLOGGER_WARNING_FILENAME set and not empty, which is how SUNDIALS reads it
+// when it makes a context's logger. Where it is set, bngsim does not move the
+// warnings: not to standard error when a context is made, and not to the null
+// device where a run drops them itself (the restarts of a root model, KINSOL).
+inline bool caller_routes_sundials_warnings() {
+    const char *own = std::getenv("SUNLOGGER_WARNING_FILENAME");
+    return own != nullptr && *own != '\0';
+}
+
 struct SunContextGuard {
     SUNContext ctx = nullptr;
 
@@ -41,10 +51,11 @@ struct SunContextGuard {
         // reads when it creates the logger, is the caller's own choice of
         // where they go and is left as set: "stdout" puts them back, the null
         // device drops them. Every context bngsim makes is made here, so the
-        // time course, the steady-state march and KINSOL all follow; the runs
-        // that send a context's warnings to the null device still do.
-        const char *own = std::getenv("SUNLOGGER_WARNING_FILENAME");
-        if (own == nullptr || *own == '\0') {
+        // time course, the steady-state march and KINSOL all follow. The runs
+        // that drop a context's warnings (register_roots, the steady-state
+        // march's roots, KINSOL) do so after this, and only where the caller
+        // has not set the variable either.
+        if (!caller_routes_sundials_warnings()) {
             SUNLogger logger = nullptr;
             if (SUNContext_GetLogger(ctx, &logger) == SUN_SUCCESS && logger != nullptr)
                 SUNLogger_SetWarningFilename(logger, "stderr");

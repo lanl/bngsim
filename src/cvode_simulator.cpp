@@ -7109,17 +7109,21 @@ void CvodeSimulator::Impl::register_roots(void *cvode_mem, SUNContext ctx, int n
         // floating point — a benign SUNDIALS warning ("solver will continue
         // anyway") that RoadRunner emits on the same models. Route THIS
         // context's warning log to the null sink so a dosing-schedule model
-        // doesn't spam stdout. A state-switch root (issues #150, #897) does
-        // the same restarts, and its residual can also sit at exactly zero
-        // from the start (`EVx > 0` over a species that starts at 0), which
-        // draws a second benign warning ("some root functions identically
-        // 0"). As for a discontinuity root, the whole warning stream of the
-        // run's context goes to the sink, not just those two. Models with
-        // neither kind of root keep their exact prior logging. Hard errors still throw via the
-        // flag<0 checks. The context (and this logger) is freed when the run's SunContextGuard goes
-        // out of scope.
+        // doesn't fill standard error (where SunContextGuard sends the
+        // warnings, issue #1680) with them. A state-switch root (issues #150,
+        // #897) does the same restarts, and its residual can also sit at
+        // exactly zero from the start (`EVx > 0` over a species that starts at
+        // 0), which draws a second benign warning ("some root functions
+        // identically 0"). As for a discontinuity root, the whole warning
+        // stream of the run's context goes to the sink, not just those two.
+        // Models with neither kind of root keep their warnings on standard
+        // error. A caller who set SUNLOGGER_WARNING_FILENAME has said where
+        // the warnings go, and they go there. Hard errors still throw via the
+        // flag<0 checks. The context (and this logger) is freed when the run's
+        // SunContextGuard goes out of scope.
         SUNLogger logger = nullptr;
-        if (SUNContext_GetLogger(ctx, &logger) == SUN_SUCCESS && logger != nullptr) {
+        if (!caller_routes_sundials_warnings() &&
+            SUNContext_GetLogger(ctx, &logger) == SUN_SUCCESS && logger != nullptr) {
             SUNLogger_SetWarningFilename(logger, bngsim::null_device);
         }
     }

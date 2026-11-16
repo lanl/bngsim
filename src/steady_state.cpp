@@ -1232,10 +1232,12 @@ class SteadyStateMarcher {
             // As run() does for the same roots (register_roots): a residual at
             // exactly zero from the start (`P > 0` over a species that starts at
             // 0) draws a benign "some root functions identically 0" warning, on
-            // every solve. This context's warnings go to the null sink; errors
+            // every solve. This context's warnings go to the null sink, unless
+            // the caller set SUNLOGGER_WARNING_FILENAME (issue #1680); errors
             // still come back as flags.
             SUNLogger logger = nullptr;
-            if (SUNContext_GetLogger(ctx_, &logger) == SUN_SUCCESS && logger != nullptr) {
+            if (!caller_routes_sundials_warnings() &&
+                SUNContext_GetLogger(ctx_, &logger) == SUN_SUCCESS && logger != nullptr) {
                 SUNLogger_SetWarningFilename(logger, bngsim::null_device);
             }
         }
@@ -2327,11 +2329,16 @@ static SteadyStateResult solve_by_newton(NetworkModel &model, SteadyStateRhs &rh
     // Jacobian — GH #27 Bug 3, e.g. Barua 2013's 404×404 rank-deficient system)
     // is EXPECTED and handled by falling back to integration, so its stderr
     // spam is noise. Hard misuse still surfaces via the flag checks below.
+    // The warnings go to standard error otherwise (issue #1680), and a caller
+    // who set SUNLOGGER_WARNING_FILENAME keeps them where it says; the
+    // expected errors are dropped either way.
     {
         SUNLogger logger = nullptr;
         if (SUNContext_GetLogger(ctx, &logger) == SUN_SUCCESS && logger != nullptr) {
             SUNLogger_SetErrorFilename(logger, bngsim::null_device);
-            SUNLogger_SetWarningFilename(logger, bngsim::null_device);
+            if (!caller_routes_sundials_warnings()) {
+                SUNLogger_SetWarningFilename(logger, bngsim::null_device);
+            }
         }
     }
 

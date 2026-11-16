@@ -8,8 +8,15 @@ at k = 1e9 from t = 1e6, which returns the right answer, wrote eleven
 context's warnings to standard error, where SUNDIALS already sends its errors,
 unless ``SUNLOGGER_WARNING_FILENAME`` says where the caller wants them.
 
+A run that drops its own warnings (a model with discontinuity or state-switch
+roots, in a time course or a steady-state march) drops them only where the
+caller has not set that variable: where it is set, they go where it says.
+
 Each case runs in a child process whose standard output (fd 1) and standard
 error (fd 2) are captured apart, since nothing in the parent can see either.
+Each needs a run that draws a warning; a module probe asks for one with
+``SUNLOGGER_WARNING_FILENAME=stderr`` and skips the cases whose run draws none
+on this host (a SUNDIALS logging below warnings), rather than fail them.
 """
 
 from __future__ import annotations
@@ -36,6 +43,17 @@ SQUARE = (
     "begin reactions\n 1 0 1 f\nend reactions\n"
     "begin groups\n 1 Xtot 1\nend groups\n"
 )
+# Y is made at rate if(E > 0, k, 0), and nothing makes E, so the state-switch
+# root's residual E is zero from the start: CVODE warns "some root functions
+# identically 0" on every run, whatever the step sizes (Z decays so that a
+# steady-state march takes steps). bngsim drops a root model's warnings itself.
+ROOTED = (
+    "begin parameters\n 1 k 1.0\nend parameters\n"
+    "begin functions\n 1 r() if(Eobs>0,k,0)\nend functions\n"
+    "begin species\n 1 E() 0\n 2 Y() 0\n 3 Z() 1\nend species\n"
+    "begin reactions\n 1 0 2 r\n 2 3 0 k\nend reactions\n"
+    "begin groups\n 1 Eobs 1\nend groups\n"
+)
 CHILD = r"""
 import sys, warnings
 import bngsim
@@ -43,7 +61,10 @@ warnings.simplefilter("ignore")
 sim = bngsim.Simulator(bngsim.Model.from_net(sys.argv[1]), method="ode")
 span = (float(sys.argv[2]), float(sys.argv[3]))
 try:
-    if sys.argv[4] == "batch":
+    if sys.argv[4] in ("integration", "newton"):
+        state = sim.steady_state(method=sys.argv[4])
+        print("returned", [round(float(v), 6) + 0.0 for v in state.concentrations])
+    elif sys.argv[4] == "batch":
         rows = sim.run_batch(t_span=span, n_points=3, params=[{"k": 1e9}, {"k": 2e9}],
                              num_processors=2)
         print("returned", [float(v) for row in rows for v in row.species[:, 0]])
@@ -78,7 +99,35 @@ def _child(tmp_path, model, t0, t1, call="run", **env):
     return own[-1], warned, errors
 
 
-def test_a_healthy_runs_warnings_go_to_standard_error(tmp_path):
+_RUNS = {
+    "decay": (DECAY, 1e6, 1e6 + 1, "run"),
+    "square": (SQUARE, 0.0, 2.0, "run"),
+}
+
+
+@pytest.fixture(scope="module")
+def drawn(tmp_path_factory):
+    """How many warnings each run draws here, asked for on standard error.
+
+    SUNDIALS follows ``SUNLOGGER_WARNING_FILENAME`` itself, and bngsim leaves
+    it as set, so this counts what the run draws, wherever bngsim would put it.
+    """
+    counts = {}
+    for name, (model, t0, t1, call) in _RUNS.items():
+        where = tmp_path_factory.mktemp(name)
+        _, warned, _ = _child(where, model, t0, t1, call, SUNLOGGER_WARNING_FILENAME="stderr")
+        counts[name] = warned["stderr"]
+    return counts
+
+
+def _needs(drawn, *names):
+    """Skip unless one of the named runs draws a warning here."""
+    if not any(drawn[name] for name in names):
+        pytest.skip(f"SUNDIALS draws no warning on this host for the {' or '.join(names)} run")
+
+
+def test_a_healthy_runs_warnings_go_to_standard_error(tmp_path, drawn):
+    _needs(drawn, "decay")
     out, warned, errors = _child(tmp_path, DECAY, 1e6, 1e6 + 1)
     assert out == "returned [1.0, 0.0, 0.0]"
     assert warned["stdout"] == 0
@@ -86,14 +135,16 @@ def test_a_healthy_runs_warnings_go_to_standard_error(tmp_path):
     assert errors == {"stdout": 0, "stderr": 0}
 
 
-def test_a_failing_runs_warnings_join_its_error_on_standard_error(tmp_path):
+def test_a_failing_runs_warnings_join_its_error_on_standard_error(tmp_path, drawn):
+    _needs(drawn, "square")
     out, warned, errors = _child(tmp_path, SQUARE, 0.0, 2.0)
     assert out == "raised SimulationError"
     assert warned["stdout"] == 0 and warned["stderr"] > 0
     assert errors == {"stdout": 0, "stderr": 1}  # as before (#447)
 
 
-def test_each_thread_of_a_batch_sends_its_warnings_to_standard_error(tmp_path):
+def test_each_thread_of_a_batch_sends_its_warnings_to_standard_error(tmp_path, drawn):
+    _needs(drawn, "decay")
     # A batch row runs on its own context.
     out, warned, _ = _child(tmp_path, DECAY, 1e6, 1e6 + 1, call="batch")
     assert out.startswith("returned [1.0, ")
@@ -105,7 +156,8 @@ def test_each_thread_of_a_batch_sends_its_warnings_to_standard_error(tmp_path):
     [("stdout", True, False), ("stderr", False, True), (os.devnull, False, False)],
     ids=["stdout", "stderr", "the null device"],
 )
-def test_the_callers_own_choice_of_where_they_go_is_kept(tmp_path, where, stdout, stderr):
+def test_the_callers_own_choice_of_where_they_go_is_kept(tmp_path, drawn, where, stdout, stderr):
+    _needs(drawn, "decay")  # so that the null device's "none" means dropped
     # SUNLOGGER_WARNING_FILENAME is SUNDIALS' own variable, read when a logger
     # is made: "stdout" puts the warnings back where they were.
     out, warned, _ = _child(tmp_path, DECAY, 1e6, 1e6 + 1, SUNLOGGER_WARNING_FILENAME=where)
@@ -114,14 +166,36 @@ def test_the_callers_own_choice_of_where_they_go_is_kept(tmp_path, where, stdout
     assert (warned["stderr"] > 0) is stderr
 
 
-def test_an_empty_choice_is_no_choice(tmp_path):
+def test_an_empty_choice_is_no_choice(tmp_path, drawn):
+    _needs(drawn, "decay")
     out, warned, _ = _child(tmp_path, DECAY, 1e6, 1e6 + 1, SUNLOGGER_WARNING_FILENAME="")
     assert out == "returned [1.0, 0.0, 0.0]"
     assert warned["stdout"] == 0 and warned["stderr"] > 0
 
 
-def test_the_error_line_still_follows_its_own_variable(tmp_path):
+def test_the_error_line_still_follows_its_own_variable(tmp_path, drawn):
+    _needs(drawn, "square")
     out, warned, errors = _child(tmp_path, SQUARE, 0.0, 2.0, SUNLOGGER_ERROR_FILENAME=os.devnull)
     assert out == "raised SimulationError"
     assert errors == {"stdout": 0, "stderr": 0}
+    assert warned["stdout"] == 0 and warned["stderr"] > 0
+
+
+@pytest.mark.parametrize("call", ["run", "integration", "newton"])
+def test_a_root_model_drops_its_warnings_unless_the_caller_says_where(tmp_path, drawn, call):
+    # register_roots (a time course) and the steady-state march's roots send
+    # the context's warnings to the null device after SunContextGuard has sent
+    # them to standard error; a caller who set SUNLOGGER_WARNING_FILENAME has
+    # said where they go, and that holds there too. The root's warning does not
+    # hang on step sizes, so a SUNDIALS that logs warnings at all draws it; it
+    # is not probed itself, since the probe would go through the sites tested.
+    _needs(drawn, "decay", "square")
+    want = "returned [0.0, 0.0, " if call == "run" else "returned [0.0, 0.0, 0.0]"
+    out, warned, _ = _child(tmp_path, ROOTED, 0.0, 10.0, call)
+    assert out.startswith(want), out
+    assert warned == {"stdout": 0, "stderr": 0}  # dropped, as before #1680
+    out, warned, _ = _child(tmp_path, ROOTED, 0.0, 10.0, call, SUNLOGGER_WARNING_FILENAME="stdout")
+    assert out.startswith(want), out
+    assert warned["stdout"] > 0 and warned["stderr"] == 0
+    out, warned, _ = _child(tmp_path, ROOTED, 0.0, 10.0, call, SUNLOGGER_WARNING_FILENAME="stderr")
     assert warned["stdout"] == 0 and warned["stderr"] > 0
