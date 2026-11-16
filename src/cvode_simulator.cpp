@@ -6252,7 +6252,9 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(
                     "carry_sensitivities=True, but no matching forward-sensitivity "
                     "seed from a prior phase is available. Run the equilibration "
                     "phase on the same Simulator with the same sensitivity_params "
-                    "(and no reset between phases) before the measurement phase. "
+                    "(and no reset between phases) before the measurement phase; a "
+                    "run between them without those sensitivities, an SSA or PSA run "
+                    "included, drops the seed (issue #1749). "
                     "(pre-equilibration output sensitivities, GH #210)");
             }
             use_carry_seed = true;
@@ -6291,7 +6293,9 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(
                 "sensitivity_params; an SSA or PSA run leaves none, issue #1749), "
                 "or reset() the model for a fresh start. To take the state as "
                 "fixed data, with dx(0)/dtheta = 0, reset() and then set_state() "
-                "it. A save_concentrations() of such a state keeps it "
+                "it (after an SSA or PSA run, the run's last result row: where a "
+                "compartment's size moves, get_state() holds counts, issue #1463). "
+                "A save_concentrations() of such a state keeps it "
                 "carried-over, and so does a reset() back to it (issue #1528). "
                 "(GH #210)");
         }
