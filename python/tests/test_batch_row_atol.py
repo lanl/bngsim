@@ -110,7 +110,7 @@ def test_a_scalar_the_caller_chose_is_read_from_the_row_too(grower):
 
 def test_a_row_after_a_run_is_read_from_its_own_start_not_where_the_run_ended(grower):
     """Rows start from the initial conditions. Main took the tolerance from the
-    state a run left (X near 1): 0.622 for 0.327."""
+    state a run left (X = 0.327, the row starting at 1e-9): 0.622 for 0.327."""
     sim = grower(declared=DOSE)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)  # #1362's: the model is not at its start
