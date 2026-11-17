@@ -174,10 +174,8 @@ Current carry topics:
   and the run froze at the first X firing with no error (GH #1818). This is
   RuleWorld/nfsim#117, merged upstream as `a0bf9134`, written against the
   pinned base, which has no `selector->updateBatch` and no shared
-  `Observable::updateDependentReactions`. Beyond upstream's change, a firing
-  left by an exception drops the hold: bngsim turns NFsim's fatal exits into
-  exceptions, and a session outlives one. Drop the carry when the base moves
-  past `a0bf9134` (GH #519), keeping that part if upstream lacks it
+  `Observable::updateDependentReactions`. Drop it when the base moves past
+  `a0bf9134` (GH #519)
 
 Not a carry, but tied to the vendored NFsim: bngsim refuses, by name, the rate
 laws NFsim cannot run, in `python/bngsim/_network_free_checks.py`

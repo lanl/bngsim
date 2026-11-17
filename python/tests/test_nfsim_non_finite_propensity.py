@@ -11,8 +11,8 @@ Two things are tested here.
   carried). It used to read a rate law while a firing had its molecules out of
   the observables: with one X, ``kgap*(1+9*Xp/Xtot)`` was 0/0 there, though
   every state the model reaches is finite, and the run froze at the first X
-  firing. ``rate_divides_by_emptied_observable`` is #1818's model; the four
-  beside it reach the same fault by other paths.
+  firing. ``rate_divides_by_emptied_observable`` is #1818's model; five more
+  reach the same fault by other paths.
 * A NaN that is the model's own is refused, not returned as a frozen run:
   ``nan_rate_law`` (#1788: ``B -> 0`` at ``sqrt(k)``, k = -1, NaN from the
   start, which ssa and ode refuse) and ``rate_nan_in_reached_state``
@@ -21,6 +21,7 @@ Two things are tested here.
 
 from __future__ import annotations
 
+import functools
 import re
 from pathlib import Path
 
@@ -64,30 +65,35 @@ def test_issue_1818s_model_runs_to_the_end(data_dir: Path, seed: int) -> None:
     assert _still_changing(result)
 
 
-def _time_average(run, observable: str) -> tuple[float, float]:
-    """Mean over 40 seeds of *observable* averaged over t = 100..500, and its
+def _mean_and_se(results, observable: str) -> tuple[float, float]:
+    """Mean over the runs of *observable* averaged over t = 100..500, and its
     standard error."""
-    vals = [np.asarray(run(seed).observables[observable])[100:].mean() for seed in range(1, 41)]
+    vals = [np.asarray(r.observables[observable])[100:].mean() for r in results]
     return float(np.mean(vals)), float(np.std(vals, ddof=1) / np.sqrt(len(vals)))
 
 
-def _nfsim_run(data_dir: Path, name: str, connectivity: bool):
-    def run(seed: int):
-        with NfsimSession(_xml(data_dir, name), connectivity=connectivity) as nf:
+@functools.cache
+def _nfsim_runs(nfsim_dir: str, name: str, connectivity: bool) -> tuple:
+    """Seeds 1..40 of *name* to t = 500, once per module."""
+    runs = []
+    for seed in range(1, 41):
+        with NfsimSession(str(Path(nfsim_dir) / (name + ".xml")), connectivity=connectivity) as nf:
             nf.initialize(seed=seed)
-            return nf.simulate(0.0, 500.0, 501)
+            runs.append(nf.simulate(0.0, 500.0, 501))
+    return tuple(runs)
 
-    return run
 
-
-def _ssa_run(data_dir: Path, name: str):
-    model = bngsim.Model.from_net(str(data_dir / "nfsim" / (name + ".net")))
-
-    def run(seed: int):
+@functools.cache
+def _ssa_runs(nfsim_dir: str, name: str) -> tuple:
+    """Seeds 1..40 of *name*'s network under ssa: the same for either
+    connectivity setting, so taken once."""
+    model = bngsim.Model.from_net(str(Path(nfsim_dir) / (name + ".net")))
+    runs = []
+    for seed in range(1, 41):
         model.reset()
-        return bngsim.Simulator(model, method="ssa").run(t_span=(0, 500), n_points=501, seed=seed)
-
-    return run
+        sim = bngsim.Simulator(model, method="ssa")
+        runs.append(sim.run(t_span=(0, 500), n_points=501, seed=seed))
+    return tuple(runs)
 
 
 @pytest.mark.parametrize("connectivity", [False, True])
@@ -108,8 +114,9 @@ def _ssa_run(data_dir: Path, name: str):
 def test_a_rate_that_reads_an_observable_agrees_with_ssa_on_the_network(
     data_dir: Path, name: str, observable: str, connectivity: bool
 ) -> None:
-    nf_mean, nf_se = _time_average(_nfsim_run(data_dir, name, connectivity), observable)
-    ssa_mean, ssa_se = _time_average(_ssa_run(data_dir, name), observable)
+    nfsim_dir = str(data_dir / "nfsim")
+    nf_mean, nf_se = _mean_and_se(_nfsim_runs(nfsim_dir, name, connectivity), observable)
+    ssa_mean, ssa_se = _mean_and_se(_ssa_runs(nfsim_dir, name), observable)
     assert abs(nf_mean - ssa_mean) < 5 * float(np.hypot(nf_se, ssa_se)), (nf_mean, ssa_mean)
     if name == ISSUE_1818:
         assert nf_mean == pytest.approx(2.364, abs=0.3), (nf_mean, nf_se)
@@ -131,13 +138,12 @@ def test_a_rate_that_reads_an_observable_agrees_with_ssa_on_the_network(
 def test_a_total_rate_that_reads_an_observable_runs_to_the_end(
     data_dir: Path, name: str, closed_form: float | None, connectivity: bool
 ) -> None:
-    run = _nfsim_run(data_dir, name, connectivity)
-    for seed in range(1, 6):
-        result = run(seed)
+    runs = _nfsim_runs(str(data_dir / "nfsim"), name, connectivity)
+    for seed, result in enumerate(runs, start=1):
         assert result.n_times == 501
         assert _still_changing(result), (name, connectivity, seed)
     if closed_form is not None:
-        mean, se = _time_average(run, "RT")
+        mean, se = _mean_and_se(runs, "RT")
         assert mean == pytest.approx(closed_form, abs=0.3), (mean, se)
 
 
@@ -156,13 +162,13 @@ def test_a_rate_held_during_a_firing_is_applied_after_it(data_dir: Path) -> None
     assert 0.38 < float(np.mean(in_p)) < 0.62, np.mean(in_p)
 
 
-def test_a_firing_left_by_an_exception_leaves_no_rate_held(data_dir: Path) -> None:
+def test_an_error_inside_a_step_stops_the_session(data_dir: Path) -> None:
     # bngsim turns NFsim's fatal exits into exceptions, and a session outlives
-    # one. Here a synthesis hits the molecule limit partway through its firing.
-    # The hold must not outlive it: with X then put in its unphosphorylated
-    # state the synthesis rate, kmake*Xp/Xtot, is 0, and Y only decays. With
-    # the hold left on, that update was held and never applied, and Y went on
-    # being made at the old rate until the limit was hit again.
+    # one. Here a synthesis hits the molecule limit partway through its firing,
+    # which leaves NFsim's reaction lists and rates partly updated. The session
+    # went on from there: with X then put in its unphosphorylated state the
+    # synthesis rate, kmake*Xp/Xtot, is 0, yet Y went on being made at the old
+    # rate until the limit was hit again. It refuses now until initialize().
     name = "rate_only_the_held_update_refreshes"
     with NfsimSession(_xml(data_dir, name), molecule_limit=8) as nf:
         nf.set_param("kp", 0.0)
@@ -174,10 +180,32 @@ def test_a_firing_left_by_an_exception_leaves_no_rate_held(data_dir: Path) -> No
             nf.simulate(0.0, 200.0, 201)
         nf.set_species_count("X(s~P)", 0)
         nf.set_species_count("X(s~0)", 1)  # Xp = 0: nothing makes Y now
-        result = nf.simulate(0.0, 300.0, 301)
-    y = np.asarray(result.observables["Ytot"])
-    assert y[0] > 0 and y[-1] == 0
-    assert np.all(np.diff(y) <= 0), "Y was made though Xp = 0"
+        with pytest.raises(
+            bngsim.SimulationError,
+            match=r"stopped when simulate\(\) raised an error inside NFsim",
+        ):
+            nf.simulate(0.0, 300.0, 301)
+        with pytest.raises(bngsim.SimulationError, match="initialize"):
+            nf.step_to(300.0)
+        nf.initialize(seed=1)  # Xp = 0 from the start: no Y is made
+        result = nf.simulate(0.0, 50.0, 51)
+    assert np.all(np.asarray(result.observables["Ytot"]) == 0)
+
+
+def test_an_error_inside_step_to_stops_the_session(data_dir: Path) -> None:
+    name = "rate_only_the_held_update_refreshes"
+    with NfsimSession(_xml(data_dir, name), molecule_limit=8) as nf:
+        nf.set_param("kp", 0.0)
+        nf.set_param("kd", 0.0)
+        nf.initialize(seed=1)
+        nf.set_species_count("X(s~0)", 0)
+        nf.set_species_count("X(s~P)", 1)
+        with pytest.raises(bngsim.SimulationError, match="molecule limit"):
+            nf.step_to(200.0)
+        with pytest.raises(
+            bngsim.SimulationError, match=r"stopped when step_to\(\) raised an error inside NFsim"
+        ):
+            nf.simulate(200.0, 300.0, 2)
 
 
 # ─── A NaN that is the model's own is refused ─────────────────────────────────

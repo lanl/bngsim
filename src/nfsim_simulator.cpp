@@ -42,7 +42,6 @@
 #include <string>
 #include <system_error>
 #include <unordered_map>
-#include <utility>
 #include <vector>
 
 namespace bngsim {
@@ -742,6 +741,15 @@ class TempXmlGuard {
 
 // ─── NfsimSimulator::Impl ────────────────────────────────────────────────────
 
+// Why a session refuses to advance (see Impl::session_stopped_at): the call
+// that stopped it, the time of its sample in that call's labels, and what
+// happened.
+struct NfsimSessionStop {
+    const char *call;
+    double t;
+    const char *why;
+};
+
 struct NfsimSimulator::Impl {
     std::string xml_path;
     int molecule_limit = 2147483647; // INT_MAX — no artificial limit
@@ -775,17 +783,18 @@ struct NfsimSimulator::Impl {
     std::vector<std::string> session_fn_names;
     std::vector<NfsimOutputFunction> session_fn_funcs;
     double session_logical_time = 0.0;
-    // Set when simulate() or step_to() found NFsim's total propensity
-    // non-finite after a step (issue #1818). From the point it went non-finite
-    // NFsim did not run as it should (at NaN it fires nothing), so the state
-    // is not the state at the time its clock shows,
-    // and a later segment would start from it as if the span between had run.
-    // Until initialize(), the session refuses to advance. A restore does not
-    // lift it: restore_concentrations() puts molecules back and leaves NFsim's
-    // clock where the stop left it, ahead of the session's own time, so a
-    // segment after it would repeat the restored state over that gap. Holds
-    // the call that stopped and the time of its sample, in that call's labels.
-    std::optional<std::pair<const char *, double>> session_stopped_at;
+    // Set when a step of simulate() or step_to() left NFsim in a state that is
+    // not the state at the time its clock shows (issue #1818): its total
+    // propensity was found non-finite after the step (at NaN it fires nothing
+    // from that point), or the step threw, which leaves a firing partway done
+    // (bngsim turns NFsim's fatal exits into exceptions, the molecule limit
+    // among them). A later segment would start from that state as if the span
+    // between had run. Until initialize(), the session refuses to advance. A
+    // restore does not lift it: restore_concentrations() puts molecules back
+    // and leaves NFsim's clock where the stop left it, ahead of the session's
+    // own time, so a segment after it would repeat the restored state over
+    // that gap.
+    std::optional<NfsimSessionStop> session_stopped_at;
     // Named concentration snapshots, keyed by label ("" = default/unlabeled
     // slot). Each label owns its own SystemSnapshot, so multiple named states
     // coexist — true multi-slot parity with the network-based Model (issue #11).
@@ -808,9 +817,9 @@ struct NfsimSimulator::Impl {
         if (!session_stopped_at)
             return;
         std::ostringstream os;
-        os << where << ": this session stopped when " << session_stopped_at->first
-           << " found NFsim's total propensity non-finite, at t = " << std::setprecision(17)
-           << session_stopped_at->second
+        os << where << ": this session stopped when " << session_stopped_at->call << " "
+           << session_stopped_at->why << ", at t = " << std::setprecision(17)
+           << session_stopped_at->t
            << " in that call's times. NFsim's state from there is not the state at the time "
               "it reached, and a further segment would start from it as though the time "
               "between had run. initialize() starts the session again.";
@@ -1180,14 +1189,8 @@ static double nfsim_total_propensity(::NFcore::System *system) {
 static void recompute_a_stale_total(::NFcore::System *system) {
     if (std::isfinite(nfsim_total_propensity(system)))
         return;
-    // Summing evaluates each rate law, which prints, and throws for a rate it
-    // will not take (a negative one). Either way the check that follows gives
-    // the refusal, in this file's words.
-    StreamSuppressor suppress;
-    try {
-        (system->*(&NfsimTotalPropensity::recompute_A_tot))();
-    } catch (const std::exception &) {
-    }
+    StreamSuppressor suppress; // summing evaluates each rate law, which prints
+    (system->*(&NfsimTotalPropensity::recompute_A_tot))();
     system->invalidateStepToCache();
 }
 
@@ -1233,19 +1236,32 @@ static std::string nonfinite_propensity_message(::NFcore::System *system, const 
     return os.str();
 }
 
-using NfsimSessionStop = std::optional<std::pair<const char *, double>>;
+// Runs one piece of NFsim's work for a session. If it throws, NFsim is left
+// partway through it (a firing half done, or a sum half taken), so the session
+// is stopped before the exception goes on.
+template <typename Work>
+static void nfsim_session_work(std::optional<NfsimSessionStop> *stop, const char *call,
+                               double t_row, Work &&work) {
+    try {
+        work();
+    } catch (...) {
+        *stop = NfsimSessionStop{call, t_row, "raised an error inside NFsim"};
+        throw;
+    }
+}
 
 // Raises when NFsim's total propensity is not finite. `stop`, when given, is
 // set first: the caller has stepped, so NFsim's state may no longer be the
 // state at the time it reached (see Impl::session_stopped_at). At a run's or a
 // segment's first sample nothing has run yet, and no stop is set.
 static void throw_if_nonfinite_propensity(::NFcore::System *system, const char *where,
-                                          const char *call, double t_row, NfsimSessionStop *stop) {
+                                          const char *call, double t_row,
+                                          std::optional<NfsimSessionStop> *stop) {
     std::string nonfinite = nonfinite_propensity_message(system, where, t_row);
     if (nonfinite.empty())
         return;
     if (stop != nullptr)
-        *stop = std::make_pair(call, t_row);
+        *stop = NfsimSessionStop{call, t_row, "found NFsim's total propensity non-finite"};
     throw std::runtime_error(nonfinite);
 }
 
@@ -1409,11 +1425,13 @@ void NfsimSimulator::step_to(double time) {
     require_finite_span("NfsimSimulator::step_to", impl_->session_logical_time, time);
     // Before the step, as simulate() checks its first sample: nothing has run
     // yet, so no stop.
-    recompute_a_stale_total(impl_->session_system);
+    nfsim_session_work(&impl_->session_stopped_at, "step_to()", impl_->session_logical_time,
+                       [&] { recompute_a_stale_total(impl_->session_system); });
     throw_if_nonfinite_propensity(impl_->session_system, "NfsimSimulator::step_to", "step_to()",
                                   impl_->session_logical_time, nullptr);
     StreamSuppressor suppress;
-    impl_->session_system->stepTo(time);
+    nfsim_session_work(&impl_->session_stopped_at, "step_to()", time,
+                       [&] { impl_->session_system->stepTo(time); });
     throw_if_nonfinite_propensity(impl_->session_system, "NfsimSimulator::step_to", "step_to()",
                                   time, &impl_->session_stopped_at);
     impl_->session_logical_time = time;
@@ -1506,7 +1524,8 @@ Result NfsimSimulator::simulate(double t_start, double t_end, int n_points, doub
     result.record(0, t_out[0], nullptr, obs_buf.data());
     eval_function_set(impl_->session_fn_funcs, fn_buf);
     result.record_expressions(0, fn_buf.data());
-    recompute_a_stale_total(system);
+    nfsim_session_work(&impl_->session_stopped_at, "simulate()", t_out[0],
+                       [&] { recompute_a_stale_total(system); });
     throw_if_nonfinite_propensity(system, "NfsimSimulator::simulate", "simulate()", t_out[0],
                                   nullptr);
 
@@ -1516,7 +1535,8 @@ Result NfsimSimulator::simulate(double t_start, double t_end, int n_points, doub
         for (int i = 1; i < n_out; ++i) {
             if (budget.active())
                 budget.check();
-            system->stepTo(abs_targets[i]);
+            nfsim_session_work(&impl_->session_stopped_at, "simulate()", t_out[i],
+                               [&] { system->stepTo(abs_targets[i]); });
             throw_if_nonfinite_propensity(system, "NfsimSimulator::simulate", "simulate()",
                                           t_out[i], &impl_->session_stopped_at);
 

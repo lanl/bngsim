@@ -520,13 +520,7 @@ string ReactionClass::fire(double random_A_number, bool track) {
 	// From here until the products are back in their observables and their
 	// reactions, the counts are of no state the system is in, so no rate that
 	// reads an observable is computed from them: each update is held and
-	// applied once, after (RuleWorld/nfsim#115). If the firing is left by an
-	// exception the hold is dropped and nothing is applied.
-	struct HeldFiringUpdates {
-		System *system;
-		~HeldFiringUpdates() { system->abandonDeferredFiringPropensityUpdates(); }
-	} heldFiringUpdates = { this->system };
-	(void)heldFiringUpdates;
+	// applied once, after (RuleWorld/nfsim#115).
 	if (this->onTheFlyObservables) {
 		this->system->beginDeferredFiringPropensityUpdates();
 		std::unordered_set<int> updatedComplexIds;

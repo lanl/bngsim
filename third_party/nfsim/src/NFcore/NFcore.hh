@@ -440,15 +440,6 @@ namespace NFcore
 						&& noteHeldFiringPropensityUpdate(r);
 			}
 			void endDeferredFiringPropensityUpdates();
-			/* Leave the span without applying anything: for an exception out of
-			 * a firing. bngsim turns NFsim's fatal exits into exceptions and a
-			 * session outlives one (the molecule limit, say); the hold must not
-			 * outlive the firing, or every later update of a reaction that reads
-			 * an observable would be held and never applied. */
-			void abandonDeferredFiringPropensityUpdates() {
-				deferringFiringPropensityUpdates = false;
-				heldFiringReactions.clear();
-			}
 
 
 
