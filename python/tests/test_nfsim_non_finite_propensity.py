@@ -71,25 +71,23 @@ def test_step_to_refuses_it_too(data_dir: Path) -> None:
 
 
 def test_a_session_that_stopped_refuses_to_go_on_until_initialized(data_dir: Path) -> None:
-    # NFsim fired nothing from the point its total went non-finite, so the
-    # state is the one it stopped in. Repairing the rate does not make the
-    # span between run: the session refuses until it is started again.
-    with NfsimSession(_xml(data_dir, NAN_LAW)) as nf:
+    # The total goes non-finite during the step, and NFsim fires nothing from
+    # there, so the state is not the state at t = 500. Changing a rate does
+    # not make the span between run: the session refuses until started again.
+    with NfsimSession(_xml(data_dir, MID_FIRING)) as nf:
         nf.initialize(seed=1)
         with pytest.raises(bngsim.SimulationError, match="total propensity is nan"):
-            nf.step_to(1.0)
-        nf.set_param("k", 1.0)
+            nf.step_to(500.0)
+        nf.set_param("kp", 0.0)
         with pytest.raises(
-            bngsim.SimulationError, match=r"stopped when step_to\(\) found .* at t = 1 in"
+            bngsim.SimulationError, match=r"stopped when step_to\(\) found .* at t = 500 in"
         ):
-            nf.simulate(1.0, 2.0, 2)
+            nf.simulate(500.0, 600.0, 2)
         with pytest.raises(bngsim.SimulationError, match="initialize"):
-            nf.step_to(2.0)
-        nf.initialize(seed=1)
-        result = nf.simulate(0.0, 1.0, 11)
-    # k = 1 now: A and B both decay, and nothing was refused.
-    assert result.n_times == 11
-    assert np.asarray(result.observables["A"])[-1] < 100
+            nf.step_to(600.0)
+        nf.initialize(seed=1)  # kp = 0 now: X never fires
+        result = nf.simulate(0.0, 100.0, 101)
+    assert result.n_times == 101
 
 
 def test_a_session_that_stopped_in_simulate_refuses_step_to(data_dir: Path) -> None:
@@ -204,3 +202,16 @@ def test_finite_propensities_whose_sum_overflows_are_said_to(data_dir: Path) -> 
         with pytest.raises(bngsim.SimulationError, match="total propensity is inf") as err:
             nf.simulate(0.0, 1.0, 2)
     assert "their sum overflowed" in str(err.value)
+
+
+def test_step_to_before_any_step_does_not_stop_the_session(data_dir: Path) -> None:
+    # As simulate() at its first sample: a total already non-finite when
+    # step_to() is called is refused before NFsim steps, and a repair holds.
+    with NfsimSession(_xml(data_dir, NAN_LAW)) as nf:
+        nf.initialize(seed=1)
+        with pytest.raises(bngsim.SimulationError, match=r"by the sample at t = 0\b"):
+            nf.step_to(1.0)
+        nf.set_param("k", 1.0)
+        nf.step_to(1.0)
+        result = nf.simulate(1.0, 2.0, 11)
+    assert result.n_times == 11

@@ -776,8 +776,9 @@ struct NfsimSimulator::Impl {
     std::vector<NfsimOutputFunction> session_fn_funcs;
     double session_logical_time = 0.0;
     // Set when simulate() or step_to() found NFsim's total propensity
-    // non-finite (issue #1818). NFsim fired nothing from that point, so the
-    // state is the one it froze in, not the state at the time its clock shows,
+    // non-finite after a step (issue #1818). From the point it went non-finite
+    // NFsim did not run as it should (at NaN it fires nothing), so the state
+    // is not the state at the time its clock shows,
     // and a later segment would start from it as if the span between had run.
     // Until initialize(), the session refuses to advance. A restore does not
     // lift it: restore_concentrations() puts molecules back and leaves NFsim's
@@ -1372,22 +1373,26 @@ void NfsimSimulator::initialize(uint64_t seed) {
         delete impl_->session_system;
         impl_->session_system = nullptr;
     }
-    // Before anything that can throw: a failed initialize() leaves no stop
-    // from the session it replaced.
+    // Before anything that can throw: a failed initialize() leaves nothing of
+    // the session it replaced, no stop and no snapshot of its molecules.
     impl_->session_stopped_at.reset();
     impl_->session_logical_time = 0.0;
+    impl_->session_snapshots.clear();
 
     impl_->session_system = impl_->create_system();
     impl_->prepare_system(impl_->session_system, seed);
     impl_->cache_obs_names(impl_->session_system);
     impl_->cache_function_set(impl_->session_system);
-    impl_->session_snapshots.clear();
 }
 
 void NfsimSimulator::step_to(double time) {
     impl_->require_session();
     impl_->require_session_not_stopped("NfsimSimulator::step_to");
     require_finite_span("NfsimSimulator::step_to", impl_->session_logical_time, time);
+    // Before the step, as simulate() checks its first sample: nothing has run
+    // yet, so no stop.
+    throw_if_nonfinite_propensity(impl_->session_system, "NfsimSimulator::step_to", "step_to()",
+                                  impl_->session_logical_time, nullptr);
     StreamSuppressor suppress;
     impl_->session_system->stepTo(time);
     throw_if_nonfinite_propensity(impl_->session_system, "NfsimSimulator::step_to", "step_to()",
