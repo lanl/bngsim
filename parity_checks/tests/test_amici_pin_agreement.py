@@ -13,9 +13,9 @@ previous state — an editable build from a developer's home directory, recorded
 nowhere — left every recorded PASS/DIFF/timing tied to an environment nobody
 could rebuild.
 
-The pin also may not be relaxed to the PyPI release: it is 12 commits past
-``v1.0.1``, and those commits touch ``_symbolic/de_model.py``, the exporters and
-the SWIG template — the engine, not just its test data.
+The pin also may not be relaxed to the PyPI release: it is AMICI main, 22
+commits past ``v1.2.0``, because the release fires a time trigger whose
+threshold an event moves only once (AMICI #3397; fixed on main by #3490).
 """
 
 from __future__ import annotations
