@@ -549,13 +549,16 @@ CARRY_QUEUE = (
             "selector->updateBatch and no shared Observable::"
             "updateDependentReactions: the four add/subtract loops, "
             "removeFromRxns, updateRxnMembership and updateConnectedRxnMembership "
-            "ask System::holdFiringPropensityUpdate() first. Drop it when the "
-            "base moves past a0bf9134 (GH #519). Fixtures under tests/data/nfsim/ "
+            "ask System::holdFiringPropensityUpdate() first. Beyond upstream's "
+            "change: a firing left by an exception drops the hold, since bngsim "
+            "turns NFsim's fatal exits into exceptions and a session outlives "
+            "one. Drop it when the base moves past a0bf9134 (GH #519), keeping "
+            "that part if upstream lacks it. Fixtures under tests/data/nfsim/ "
             "(rate_divides_by_emptied_observable and its four variants)."
         ),
         "commits": [
             {
-                "commit": "c1358c4773a1bc25864881664727974c3546fd1c",
+                "commit": "f82b6cae9b9813132c3a362e99191677d50310e2",
                 "summary": ("bngsim: hold a rate that reads an observable until a firing is done"),
             },
         ],

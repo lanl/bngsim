@@ -64,53 +64,81 @@ def test_issue_1818s_model_runs_to_the_end(data_dir: Path, seed: int) -> None:
     assert _still_changing(result)
 
 
-def test_issue_1818s_model_agrees_with_ssa_on_its_network(data_dir: Path) -> None:
-    # RT averaged over t = 100..500, 40 seeds each. X is in each state half the
-    # time, so the closed form is 8*(1/(1+10) + 1/(1+1))/2 = 2.364. Frozen at
-    # the first X firing, NFsim gave about 4 (RT with X unphosphorylated).
-    def mean_rt(run) -> tuple[float, float]:
-        vals = [np.asarray(run(seed).observables["RT"])[100:].mean() for seed in range(1, 41)]
-        return float(np.mean(vals)), float(np.std(vals, ddof=1) / np.sqrt(len(vals)))
+def _time_average(run, observable: str) -> tuple[float, float]:
+    """Mean over 40 seeds of *observable* averaged over t = 100..500, and its
+    standard error."""
+    vals = [np.asarray(run(seed).observables[observable])[100:].mean() for seed in range(1, 41)]
+    return float(np.mean(vals)), float(np.std(vals, ddof=1) / np.sqrt(len(vals)))
 
-    def nfsim(seed: int):
-        with NfsimSession(_xml(data_dir, ISSUE_1818)) as nf:
+
+def _nfsim_run(data_dir: Path, name: str, connectivity: bool):
+    def run(seed: int):
+        with NfsimSession(_xml(data_dir, name), connectivity=connectivity) as nf:
             nf.initialize(seed=seed)
             return nf.simulate(0.0, 500.0, 501)
 
-    model = bngsim.Model.from_net(str(data_dir / "nfsim" / (ISSUE_1818 + ".net")))
+    return run
 
-    def ssa(seed: int):
+
+def _ssa_run(data_dir: Path, name: str):
+    model = bngsim.Model.from_net(str(data_dir / "nfsim" / (name + ".net")))
+
+    def run(seed: int):
         model.reset()
         return bngsim.Simulator(model, method="ssa").run(t_span=(0, 500), n_points=501, seed=seed)
 
-    nf_mean, nf_se = mean_rt(nfsim)
-    ssa_mean, ssa_se = mean_rt(ssa)
-    assert nf_mean == pytest.approx(2.364, abs=0.3), (nf_mean, nf_se)
-    assert ssa_mean == pytest.approx(2.364, abs=0.3), (ssa_mean, ssa_se)
-    assert abs(nf_mean - ssa_mean) < 5 * float(np.hypot(nf_se, ssa_se)), (nf_mean, ssa_mean)
+    return run
 
 
+@pytest.mark.parametrize("connectivity", [False, True])
 @pytest.mark.parametrize(
-    "name",
+    "name,observable",
     [
-        "rate_divides_and_firing_deletes",  # the firing deletes a molecule too
-        "rate_negative_mid_firing",  # 1+9*(Xtot-Xp): negative only in between
-        "total_rate_divides_by_emptied_observable",  # kd/Xp TotalRate, one reactant
-        "total_rate_divides_two_reactants",  # the same rule with two reactants
+        # #1818's model. X is in each state half the time, so the closed form is
+        # 8*(1/(1+10) + 1/(1+1))/2 = 2.364; frozen at the first X firing, NFsim
+        # gave about 4 (RT with X unphosphorylated).
+        (ISSUE_1818, "RT"),
+        ("rate_divides_and_firing_deletes", "RT"),  # the firing deletes a molecule too
+        ("rate_negative_mid_firing", "RT"),  # 1+9*(Xtot-Xp): negative only in between
+        # A synthesis at kmake*Xp/Xtot: its rate changes only when Xp does, and
+        # nothing else recomputes it, so a held update that was dropped shows.
+        ("rate_only_the_held_update_refreshes", "Ytot"),
     ],
 )
-@pytest.mark.parametrize("connectivity", [False, True])
-def test_the_other_ways_to_a_mid_firing_rate_run_to_the_end(
-    data_dir: Path, name: str, connectivity: bool
+def test_a_rate_that_reads_an_observable_agrees_with_ssa_on_the_network(
+    data_dir: Path, name: str, observable: str, connectivity: bool
 ) -> None:
-    # RuleWorld/nfsim#117's other fixtures: each froze or crashed upstream, by
-    # another of the places that computed a rate mid-firing.
+    nf_mean, nf_se = _time_average(_nfsim_run(data_dir, name, connectivity), observable)
+    ssa_mean, ssa_se = _time_average(_ssa_run(data_dir, name), observable)
+    assert abs(nf_mean - ssa_mean) < 5 * float(np.hypot(nf_se, ssa_se)), (nf_mean, ssa_mean)
+    if name == ISSUE_1818:
+        assert nf_mean == pytest.approx(2.364, abs=0.3), (nf_mean, nf_se)
+
+
+@pytest.mark.parametrize("connectivity", [False, True])
+@pytest.mark.parametrize(
+    "name,closed_form",
+    [
+        # X(s~P) -> X(s~0) at kd/Xp TotalRate is the rule at rate kd with one X,
+        # which is #1818's model: 2.364. Network ssa refuses kd/Xp at Xp = 0, so
+        # these two are held to the closed form.
+        ("total_rate_divides_by_emptied_observable", 2.364),
+        # With two reactants, R(g~T) + X(s~P) at total rate kd: X leaves P at kd
+        # only while an R(g~T) exists, which is nearly always.
+        ("total_rate_divides_two_reactants", None),
+    ],
+)
+def test_a_total_rate_that_reads_an_observable_runs_to_the_end(
+    data_dir: Path, name: str, closed_form: float | None, connectivity: bool
+) -> None:
+    run = _nfsim_run(data_dir, name, connectivity)
     for seed in range(1, 6):
-        with NfsimSession(_xml(data_dir, name), connectivity=connectivity) as nf:
-            nf.initialize(seed=seed)
-            result = nf.simulate(0.0, 500.0, 501)
+        result = run(seed)
         assert result.n_times == 501
         assert _still_changing(result), (name, connectivity, seed)
+    if closed_form is not None:
+        mean, se = _time_average(run, "RT")
+        assert mean == pytest.approx(closed_form, abs=0.3), (mean, se)
 
 
 def test_a_rate_held_during_a_firing_is_applied_after_it(data_dir: Path) -> None:
@@ -126,6 +154,30 @@ def test_a_rate_held_during_a_firing_is_applied_after_it(data_dir: Path) -> None
             result = nf.simulate(0.0, 500.0, 501)
         in_p.append(np.asarray(result.observables["Xp"]).mean())
     assert 0.38 < float(np.mean(in_p)) < 0.62, np.mean(in_p)
+
+
+def test_a_firing_left_by_an_exception_leaves_no_rate_held(data_dir: Path) -> None:
+    # bngsim turns NFsim's fatal exits into exceptions, and a session outlives
+    # one. Here a synthesis hits the molecule limit partway through its firing.
+    # The hold must not outlive it: with X then put in its unphosphorylated
+    # state the synthesis rate, kmake*Xp/Xtot, is 0, and Y only decays. With
+    # the hold left on, that update was held and never applied, and Y went on
+    # being made at the old rate until the limit was hit again.
+    name = "rate_only_the_held_update_refreshes"
+    with NfsimSession(_xml(data_dir, name), molecule_limit=8) as nf:
+        nf.set_param("kp", 0.0)
+        nf.set_param("kd", 0.0)  # X does not switch on its own
+        nf.initialize(seed=1)
+        nf.set_species_count("X(s~0)", 0)
+        nf.set_species_count("X(s~P)", 1)  # Xp = 1: Y is made at kmake
+        with pytest.raises(bngsim.SimulationError, match="molecule limit"):
+            nf.simulate(0.0, 200.0, 201)
+        nf.set_species_count("X(s~P)", 0)
+        nf.set_species_count("X(s~0)", 1)  # Xp = 0: nothing makes Y now
+        result = nf.simulate(0.0, 300.0, 301)
+    y = np.asarray(result.observables["Ytot"])
+    assert y[0] > 0 and y[-1] == 0
+    assert np.all(np.diff(y) <= 0), "Y was made though Xp = 0"
 
 
 # ─── A NaN that is the model's own is refused ─────────────────────────────────
@@ -314,8 +366,9 @@ def test_a_total_left_stale_by_an_edit_is_summed_afresh(data_dir: Path, advance:
 
 
 def test_issue_1818s_model_with_no_x_firing_relaxes_to_its_closed_form(data_dir: Path) -> None:
-    # With kp = 0 the lone X never fires and no rate is held. RT relaxes to
-    # 8*kex/(kex+kgap) = 4 (boost() is 1 with X unphosphorylated).
+    # With kp = 0 the lone X never fires, so Xp/Xtot stays 0/1 and the rate is
+    # never read with X out of the observables. RT relaxes to 8*kex/(kex+kgap)
+    # = 4 (boost() is 1 with X unphosphorylated).
     finals = []
     for seed in range(1, 21):
         with NfsimSession(_xml(data_dir, ISSUE_1818)) as nf:

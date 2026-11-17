@@ -1,4 +1,4 @@
-From c1358c4773a1bc25864881664727974c3546fd1c Mon Sep 17 00:00:00 2001
+From f82b6cae9b9813132c3a362e99191677d50310e2 Mon Sep 17 00:00:00 2001
 From: Montana <montana@linux.com>
 Date: Tue, 17 Nov 2026 08:59:14 -0800
 Subject: [PATCH] bngsim: hold a rate that reads an observable until a firing
@@ -18,21 +18,24 @@ loops, MoleculeType::removeFromRxns, updateRxnMembership and
 updateConnectedRxnMembership ask System::holdFiringPropensityUpdate()
 first, and ReactionClass::fire computes what was held once the products
 are back in their reactions. The base has no selector->updateBatch, so
-the held reactions are given to selector->update one at a time. Drop
-this carry when the base moves past a0bf9134.
+the held reactions are given to selector->update one at a time. Beyond
+upstream's change: if a firing is left by an exception (bngsim turns
+NFsim's fatal exits into exceptions, and a session outlives one) the
+hold is dropped, so it does not outlive the firing. Drop this carry when
+the base moves past a0bf9134, keeping that part if upstream lacks it.
 ---
- src/NFcore/NFcore.hh         | 50 ++++++++++++++++++++++++++++++++++++
- src/NFcore/moleculeType.cpp  | 16 ++++++++++++
- src/NFcore/observable.cpp    | 29 ++++++++++++++++++---
- src/NFcore/reactionClass.cpp | 10 ++++++++
- src/NFcore/system.cpp        | 35 +++++++++++++++++++++++++
- 5 files changed, 136 insertions(+), 4 deletions(-)
+ src/NFcore/NFcore.hh         | 59 ++++++++++++++++++++++++++++++++++++
+ src/NFcore/moleculeType.cpp  | 16 ++++++++++
+ src/NFcore/observable.cpp    | 29 +++++++++++++++---
+ src/NFcore/reactionClass.cpp | 16 ++++++++++
+ src/NFcore/system.cpp        | 35 +++++++++++++++++++++
+ 5 files changed, 151 insertions(+), 4 deletions(-)
 
 diff --git a/src/NFcore/NFcore.hh b/src/NFcore/NFcore.hh
-index b70b3a0..5f70fdc 100644
+index b70b3a0..181fdc2 100644
 --- a/src/NFcore/NFcore.hh
 +++ b/src/NFcore/NFcore.hh
-@@ -412,6 +412,35 @@ namespace NFcore
+@@ -412,6 +412,44 @@ namespace NFcore
  
  			void update_A_tot(ReactionClass *r, double old_a, double new_a);
  
@@ -64,11 +67,20 @@ index b70b3a0..5f70fdc 100644
 +						&& noteHeldFiringPropensityUpdate(r);
 +			}
 +			void endDeferredFiringPropensityUpdates();
++			/* Leave the span without applying anything: for an exception out of
++			 * a firing. bngsim turns NFsim's fatal exits into exceptions and a
++			 * session outlives one (the molecule limit, say); the hold must not
++			 * outlive the firing, or every later update of a reaction that reads
++			 * an observable would be held and never applied. */
++			void abandonDeferredFiringPropensityUpdates() {
++				deferringFiringPropensityUpdates = false;
++				heldFiringReactions.clear();
++			}
 +
  
  
  
-@@ -657,6 +686,12 @@ namespace NFcore
+@@ -657,6 +695,12 @@ namespace NFcore
  			///////////////////////////////////////////////////////////////////////////
  			// Properties of the system that update in time
  			double a_tot;        /*< the sum of all a's (propensities) of all reactions */
@@ -81,7 +93,7 @@ index b70b3a0..5f70fdc 100644
  			double current_time; /*< keeps track of the simulation time */
  			ReactionClass * nextReaction;  /*< keeps track of the next reaction to fire */
  			bool pendingStepEventValid = false; /*< cached waiting-time draw for stepTo() */
-@@ -1342,6 +1377,19 @@ namespace NFcore
+@@ -1342,6 +1386,19 @@ namespace NFcore
  			void setTraversalLimit(int limit) { this->traversalLimit = limit; };
  
  			double get_a() const { return a; };
@@ -101,7 +113,7 @@ index b70b3a0..5f70fdc 100644
  			virtual void printDetails() const;
  			void fire(double random_A_number);
  			// AS2023 - additional call sig to use with reaction firing tracking. The call
-@@ -1455,6 +1503,8 @@ namespace NFcore
+@@ -1455,6 +1512,8 @@ namespace NFcore
  			double baseRate;
  			string baseRateParameterName;
  			double a;
@@ -228,10 +240,10 @@ index 7725596..5730e80 100644
  
  
 diff --git a/src/NFcore/reactionClass.cpp b/src/NFcore/reactionClass.cpp
-index f2c130a..bcc7c2f 100755
+index f2c130a..a894d63 100755
 --- a/src/NFcore/reactionClass.cpp
 +++ b/src/NFcore/reactionClass.cpp
-@@ -516,7 +516,13 @@ string ReactionClass::fire(double random_A_number, bool track) {
+@@ -516,7 +516,19 @@ string ReactionClass::fire(double random_A_number, bool track) {
  	}
  
  	// Loop through the products (excluding added molecules) and remove from observables
@@ -239,13 +251,19 @@ index f2c130a..bcc7c2f 100755
 +	// From here until the products are back in their observables and their
 +	// reactions, the counts are of no state the system is in, so no rate that
 +	// reads an observable is computed from them: each update is held and
-+	// applied once, after (RuleWorld/nfsim#115).
++	// applied once, after (RuleWorld/nfsim#115). If the firing is left by an
++	// exception the hold is dropped and nothing is applied.
++	struct HeldFiringUpdates {
++		System *system;
++		~HeldFiringUpdates() { system->abandonDeferredFiringPropensityUpdates(); }
++	} heldFiringUpdates = { this->system };
++	(void)heldFiringUpdates;
  	if (this->onTheFlyObservables) {
 +		this->system->beginDeferredFiringPropensityUpdates();
  		std::unordered_set<int> updatedComplexIds;
  
  		// molecule observables..
-@@ -675,6 +681,10 @@ string ReactionClass::fire(double random_A_number, bool track) {
+@@ -675,6 +687,10 @@ string ReactionClass::fire(double random_A_number, bool track) {
  			mol->updateRxnMembership(this, useConnectedUpdate);
  		}
  	}

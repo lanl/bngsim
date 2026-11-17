@@ -7,11 +7,11 @@
     "local_origin_remote": "https://github.com/RuleWorld/nfsim.git",
     "fork_remote": null,
     "branch_or_ref": "bngsim/vendor",
-    "commit": "c1358c4773a1bc25864881664727974c3546fd1c",
+    "commit": "f82b6cae9b9813132c3a362e99191677d50310e2",
     "base_ref": "origin/master",
     "base_commit": "1a54f38701ab2213de831f9ba272cbb14f7c371f"
   },
-  "imported_at_utc": "2026-11-17T17:00:07+00:00",
+  "imported_at_utc": "2026-11-17T17:45:34+00:00",
   "pruning": {
     "included_paths": [
       "CMakeLists.txt",
@@ -287,10 +287,10 @@
     {
       "topic": "bngsim/carry-hold-observable-rates",
       "kind": "local",
-      "status": "Hold a rate that reads an observable until a firing is done. A firing takes its product molecules out of their observables, transforms them, puts them back, and then puts them back in their reactions one at a time; a rate law read in between is read at a state the system is never in. With one X, kgap*(1+9*Xp/Xtot) was 0/0 there, the NaN stayed in the running total, and the run froze at the first X firing with no error (GH #1818). This is RuleWorld/nfsim#117, merged upstream as a0bf9134, written against the pinned base, which has no selector->updateBatch and no shared Observable::updateDependentReactions: the four add/subtract loops, removeFromRxns, updateRxnMembership and updateConnectedRxnMembership ask System::holdFiringPropensityUpdate() first. Drop it when the base moves past a0bf9134 (GH #519). Fixtures under tests/data/nfsim/ (rate_divides_by_emptied_observable and its four variants).",
+      "status": "Hold a rate that reads an observable until a firing is done. A firing takes its product molecules out of their observables, transforms them, puts them back, and then puts them back in their reactions one at a time; a rate law read in between is read at a state the system is never in. With one X, kgap*(1+9*Xp/Xtot) was 0/0 there, the NaN stayed in the running total, and the run froze at the first X firing with no error (GH #1818). This is RuleWorld/nfsim#117, merged upstream as a0bf9134, written against the pinned base, which has no selector->updateBatch and no shared Observable::updateDependentReactions: the four add/subtract loops, removeFromRxns, updateRxnMembership and updateConnectedRxnMembership ask System::holdFiringPropensityUpdate() first. Beyond upstream's change: a firing left by an exception drops the hold, since bngsim turns NFsim's fatal exits into exceptions and a session outlives one. Drop it when the base moves past a0bf9134 (GH #519), keeping that part if upstream lacks it. Fixtures under tests/data/nfsim/ (rate_divides_by_emptied_observable and its four variants).",
       "commits": [
         {
-          "commit": "c1358c4773a1bc25864881664727974c3546fd1c",
+          "commit": "f82b6cae9b9813132c3a362e99191677d50310e2",
           "summary": "bngsim: hold a rate that reads an observable until a firing is done"
         }
       ]

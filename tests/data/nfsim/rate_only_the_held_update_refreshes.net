@@ -1,0 +1,26 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 kp     0.05  # Constant
+    2 kd     0.05  # Constant
+    3 kmake  2  # Constant
+    4 kdeg   0.2  # Constant
+end parameters
+begin functions
+    1 make() (kmake*Xp)/Xtot
+end functions
+begin species
+    1 X(s~0) 1
+    2 X(s~P) 0
+    3 Y() 0
+end species
+begin reactions
+    1 1 2 kp #_R1
+    2 0 3 make #_R3
+    3 2 1 kd #_R2
+    4 3 0 kdeg #_R4
+end reactions
+begin groups
+    1 Xp                   2
+    2 Xtot                 1,2
+    3 Ytot                 3
+end groups

@@ -1180,7 +1180,14 @@ static double nfsim_total_propensity(::NFcore::System *system) {
 static void recompute_a_stale_total(::NFcore::System *system) {
     if (std::isfinite(nfsim_total_propensity(system)))
         return;
-    (system->*(&NfsimTotalPropensity::recompute_A_tot))();
+    // Summing evaluates each rate law, which prints, and throws for a rate it
+    // will not take (a negative one). Either way the check that follows gives
+    // the refusal, in this file's words.
+    StreamSuppressor suppress;
+    try {
+        (system->*(&NfsimTotalPropensity::recompute_A_tot))();
+    } catch (const std::exception &) {
+    }
     system->invalidateStepToCache();
 }
 
