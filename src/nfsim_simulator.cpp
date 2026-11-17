@@ -1146,13 +1146,13 @@ static void require_finite_span(const char *where, double t_from, double t_to) {
 // total as a running sum, a_tot - old + new, so one non-finite propensity makes
 // it NaN for the rest of the run; `a_tot > 1e-9` is then false, stepTo() takes
 // the system to have nothing left to fire, and every later row repeats the
-// state it stopped in, with no error. The NaN may be the model's own (a rate
-// law of sqrt(-1), #1788, which ssa and ode refuse), or NFsim's: it reads a
-// rate law while a firing has its molecules out of the observables, where
-// 1+9*Xp/Xtot with one X is 0/0 although every state the model reaches is
-// finite (#1818, RuleWorld/nfsim#115). In the second case each propensity is
-// finite again once the firing is done and only the total stays NaN, which is
-// why the reactions are listed and may be none.
+// state it stopped in, with no error. The NaN is the model's own: a rate law
+// of sqrt(-1) (#1788, which ssa and ode refuse), or one that divides by an
+// observable in a state where it is 0. (NFsim used to make one itself, reading
+// a rate law while a firing had its molecules out of the observables; the
+// vendored NFsim carries RuleWorld/nfsim#117 for that, #1818.) The reactions
+// whose propensity is non-finite are listed; a propensity can be finite again
+// while the running total is not, so there may be none.
 //
 // System::get_A_tot() is protected in NFsim, and the vendored tree is changed
 // only through its carry queue (scripts/NFSIM_VENDORING.md). A using-declaration
@@ -1162,11 +1162,30 @@ static void require_finite_span(const char *where, double t_from, double t_to) {
 namespace {
 struct NfsimTotalPropensity : ::NFcore::System {
     using ::NFcore::System::get_A_tot;
+    using ::NFcore::System::recompute_A_tot;
 };
 } // namespace
 
 static double nfsim_total_propensity(::NFcore::System *system) {
     return (system->*(&NfsimTotalPropensity::get_A_tot))();
+}
+
+// Before a step: a total that is non-finite while every reaction's propensity
+// is finite is only a stale running sum. A session edit can leave one: with
+// the lone X removed, a rate that divides by its count is NaN; with X added
+// back the rate is finite again and the sum, NaN - NaN + new, is not. Nothing
+// has run from this state, so NFsim is asked to sum the propensities afresh
+// rather than the session being refused for a state that is sound.
+static void recompute_a_stale_total(::NFcore::System *system) {
+    if (std::isfinite(nfsim_total_propensity(system)))
+        return;
+    const std::vector<::NFcore::ReactionClass *> reactions = system->getAllReactions();
+    for (::NFcore::ReactionClass *rxn : reactions) {
+        if (rxn != nullptr && !std::isfinite(rxn->get_a()))
+            return;
+    }
+    (system->*(&NfsimTotalPropensity::recompute_A_tot))();
+    system->invalidateStepToCache();
 }
 
 // The refusal's text, or an empty string while the total is finite. `t_row` is
@@ -1205,12 +1224,8 @@ static std::string nonfinite_propensity_message(::NFcore::System *system, const 
     } else {
         os << "Every reaction's propensity is finite now, so the non-finite value was passing: "
               "NFsim keeps the total as a running sum, which stays non-finite after the "
-              "propensity that made it so is finite again. NFsim reads a rate law partway "
-              "through a reaction firing, with the firing molecules out of the observables "
-              "(RuleWorld/nfsim#115), where a rate law that divides by an observable one "
-              "molecule keeps nonzero is 0/0; a rate law that was non-finite earlier in the "
-              "session does the same. method=\"rulemonkey\" and network \"ssa\" do not read a "
-              "rate law mid-firing.";
+              "propensity that made it so is finite again. A rate law was non-finite for a "
+              "moment during the step.";
     }
     return os.str();
 }
@@ -1391,6 +1406,7 @@ void NfsimSimulator::step_to(double time) {
     require_finite_span("NfsimSimulator::step_to", impl_->session_logical_time, time);
     // Before the step, as simulate() checks its first sample: nothing has run
     // yet, so no stop.
+    recompute_a_stale_total(impl_->session_system);
     throw_if_nonfinite_propensity(impl_->session_system, "NfsimSimulator::step_to", "step_to()",
                                   impl_->session_logical_time, nullptr);
     StreamSuppressor suppress;
@@ -1487,6 +1503,7 @@ Result NfsimSimulator::simulate(double t_start, double t_end, int n_points, doub
     result.record(0, t_out[0], nullptr, obs_buf.data());
     eval_function_set(impl_->session_fn_funcs, fn_buf);
     result.record_expressions(0, fn_buf.data());
+    recompute_a_stale_total(system);
     throw_if_nonfinite_propensity(system, "NfsimSimulator::simulate", "simulate()", t_out[0],
                                   nullptr);
 

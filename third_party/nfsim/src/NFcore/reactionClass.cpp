@@ -516,7 +516,13 @@ string ReactionClass::fire(double random_A_number, bool track) {
 	}
 
 	// Loop through the products (excluding added molecules) and remove from observables
+	//
+	// From here until the products are back in their observables and their
+	// reactions, the counts are of no state the system is in, so no rate that
+	// reads an observable is computed from them: each update is held and
+	// applied once, after (RuleWorld/nfsim#115).
 	if (this->onTheFlyObservables) {
+		this->system->beginDeferredFiringPropensityUpdates();
 		std::unordered_set<int> updatedComplexIds;
 
 		// molecule observables..
@@ -675,6 +681,10 @@ string ReactionClass::fire(double random_A_number, bool track) {
 			mol->updateRxnMembership(this, useConnectedUpdate);
 		}
 	}
+	// The products are counted again and are in their reactions: compute what
+	// was held, from this state.
+	if (this->onTheFlyObservables)
+		this->system->endDeferredFiringPropensityUpdates();
 
 	// update complex-scoped local functions for typeII dependencies
 	// NOTE: as a side-effect, dependent DOR reactions (via typeI molecule dependencies) will be updated

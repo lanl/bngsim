@@ -899,6 +899,41 @@ void System::update_A_tot(ReactionClass *r, double old_a, double new_a)
 
 }
 
+bool System::noteHeldFiringPropensityUpdate(ReactionClass *r)
+{
+	if (!r->getReadsObservable())
+		return false;
+	if (r->markDeferredFiringUpdate(deferredFiringUpdateGeneration))
+		heldFiringReactions.push_back(r);
+	return true;
+}
+
+void System::beginDeferredFiringPropensityUpdates()
+{
+	if (!hasObservableDependentReactions)
+		return;
+	heldFiringReactions.clear();
+	++deferredFiringUpdateGeneration;
+	deferringFiringPropensityUpdates = true;
+}
+
+void System::endDeferredFiringPropensityUpdates()
+{
+	if (!deferringFiringPropensityUpdates)
+		return;
+	/* Reset the guard first, so each update below reaches the selector. No
+	 * held reaction's rate was computed in the span, so get_a() is still the
+	 * propensity the selector has for it. */
+	deferringFiringPropensityUpdates = false;
+	for (vector<ReactionClass *>::const_iterator it = heldFiringReactions.begin();
+			it != heldFiringReactions.end(); ++it) {
+		double old_a = (*it)->get_a();
+		double new_a = (*it)->update_a();
+		a_tot = selector->update(*it, old_a, new_a);
+	}
+	heldFiringReactions.clear();
+}
+
 
 double System::recompute_A_tot()
 {

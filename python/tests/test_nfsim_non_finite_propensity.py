@@ -1,23 +1,27 @@
-"""method="nfsim" refuses a total propensity that is not finite (issues #1818, #1788).
+"""method="nfsim" and a total propensity that is not finite (issues #1818, #1788).
 
 NFsim keeps its total propensity as a running sum, so one non-finite propensity
 makes it NaN for the rest of the run. NFsim then takes the system to have
 nothing left to fire, and every later row repeats the state it stopped in. That
 was returned as a trajectory, with no error.
 
-Two models reach it:
+Two things are tested here.
 
-* ``rate_divides_by_emptied_observable`` (RuleWorld/nfsim#115): ``kgap*(1+9*Xp/Xtot)``
-  with one X. Every state the model reaches has a finite rate, but NFsim reads
-  the rate law while a firing has X out of the observables, where it is 0/0.
-  When the vendored NFsim carries the upstream fix this model runs to the end,
-  and its tests here are to assert that instead.
-* ``nan_rate_law`` (#1788): ``B -> 0`` at ``sqrt(k)``, k = -1, beside ``A -> 0``.
-  The NaN is the model's own, which ssa and ode refuse.
+* The vendored NFsim no longer makes such a NaN itself (RuleWorld/nfsim#117,
+  carried). It used to read a rate law while a firing had its molecules out of
+  the observables: with one X, ``kgap*(1+9*Xp/Xtot)`` was 0/0 there, though
+  every state the model reaches is finite, and the run froze at the first X
+  firing. ``rate_divides_by_emptied_observable`` is #1818's model; the four
+  beside it reach the same fault by other paths.
+* A NaN that is the model's own is refused, not returned as a frozen run:
+  ``nan_rate_law`` (#1788: ``B -> 0`` at ``sqrt(k)``, k = -1, NaN from the
+  start, which ssa and ode refuse) and ``rate_nan_in_reached_state``
+  (``R(g~T) -> R(g~D)`` at ``kgap/RT``: NaN once the last R(g~T) is gone).
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import bngsim
@@ -32,89 +36,139 @@ def _has_nfsim() -> bool:
 
 pytestmark = pytest.mark.skipif(not _has_nfsim(), reason="NFsim not compiled in")
 
-MID_FIRING = "rate_divides_by_emptied_observable.xml"
+ISSUE_1818 = "rate_divides_by_emptied_observable"
 NAN_LAW = "nan_rate_law.xml"
+NAN_REACHED = "rate_nan_in_reached_state.xml"
 
 
 def _xml(data_dir: Path, name: str) -> str:
-    return str(data_dir / "nfsim" / name)
+    return str(data_dir / "nfsim" / (name if name.endswith(".xml") else name + ".xml"))
+
+
+def _still_changing(result, after: int = 400) -> bool:
+    cols = [np.asarray(result.observables[name]) for name in result.observable_names]
+    return any(np.any(c[after:] != c[after]) for c in cols)
+
+
+# ─── The vendored NFsim computes no rate mid-firing ───────────────────────────
 
 
 @pytest.mark.parametrize("seed", [1, 2, 3, 4, 5])
-def test_a_rate_law_read_mid_firing_is_refused_not_frozen(data_dir: Path, seed: int) -> None:
-    # On main each of these seeds returned 501 rows whose last change came at
+def test_issue_1818s_model_runs_to_the_end(data_dir: Path, seed: int) -> None:
+    # Before the carry each of these seeds froze: the last change came at
     # t = 1, 54, 14, 19 and 4 of 500.
-    with NfsimSession(_xml(data_dir, MID_FIRING)) as nf:
+    with NfsimSession(_xml(data_dir, ISSUE_1818)) as nf:
         nf.initialize(seed=seed)
-        with pytest.raises(bngsim.SimulationError, match="total propensity is nan") as err:
-            nf.simulate(0.0, 500.0, 501)
-    # Each propensity is finite again once the firing is done: the message says
-    # where the NaN came from, and names no reaction.
-    assert "Every reaction's propensity is finite now" in str(err.value)
-    assert "RuleWorld/nfsim#115" in str(err.value)
+        result = nf.simulate(0.0, 500.0, 501)
+    assert result.n_times == 501
+    assert _still_changing(result)
 
 
-def test_the_models_own_nan_rate_law_is_refused_and_named(data_dir: Path) -> None:
-    # On main: A = 100 and B = 10 at every sample, for E[A(1)] = 36.8.
+def test_issue_1818s_model_agrees_with_ssa_on_its_network(data_dir: Path) -> None:
+    # RT averaged over t = 100..500, 40 seeds each. X is in each state half the
+    # time, so the closed form is 8*(1/(1+10) + 1/(1+1))/2 = 2.364. Frozen at
+    # the first X firing, NFsim gave about 4 (RT with X unphosphorylated).
+    def mean_rt(run) -> tuple[float, float]:
+        vals = [np.asarray(run(seed).observables["RT"])[100:].mean() for seed in range(1, 41)]
+        return float(np.mean(vals)), float(np.std(vals, ddof=1) / np.sqrt(len(vals)))
+
+    def nfsim(seed: int):
+        with NfsimSession(_xml(data_dir, ISSUE_1818)) as nf:
+            nf.initialize(seed=seed)
+            return nf.simulate(0.0, 500.0, 501)
+
+    model = bngsim.Model.from_net(str(data_dir / "nfsim" / (ISSUE_1818 + ".net")))
+
+    def ssa(seed: int):
+        model.reset()
+        return bngsim.Simulator(model, method="ssa").run(t_span=(0, 500), n_points=501, seed=seed)
+
+    nf_mean, nf_se = mean_rt(nfsim)
+    ssa_mean, ssa_se = mean_rt(ssa)
+    assert nf_mean == pytest.approx(2.364, abs=0.3), (nf_mean, nf_se)
+    assert ssa_mean == pytest.approx(2.364, abs=0.3), (ssa_mean, ssa_se)
+    assert abs(nf_mean - ssa_mean) < 5 * float(np.hypot(nf_se, ssa_se)), (nf_mean, ssa_mean)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "rate_divides_and_firing_deletes",  # the firing deletes a molecule too
+        "rate_negative_mid_firing",  # 1+9*(Xtot-Xp): negative only in between
+        "total_rate_divides_by_emptied_observable",  # kd/Xp TotalRate, one reactant
+        "total_rate_divides_two_reactants",  # the same rule with two reactants
+    ],
+)
+@pytest.mark.parametrize("connectivity", [False, True])
+def test_the_other_ways_to_a_mid_firing_rate_run_to_the_end(
+    data_dir: Path, name: str, connectivity: bool
+) -> None:
+    # RuleWorld/nfsim#117's other fixtures: each froze or crashed upstream, by
+    # another of the places that computed a rate mid-firing.
+    for seed in range(1, 6):
+        with NfsimSession(_xml(data_dir, name), connectivity=connectivity) as nf:
+            nf.initialize(seed=seed)
+            result = nf.simulate(0.0, 500.0, 501)
+        assert result.n_times == 501
+        assert _still_changing(result), (name, connectivity, seed)
+
+
+def test_a_rate_held_during_a_firing_is_applied_after_it(data_dir: Path) -> None:
+    # A synthesis at kmake*Xp/Xtot: its rate changes only when Xp does, and
+    # nothing else recomputes it. If the held update were dropped the selector
+    # would keep a stale total and X would sit in its P state three quarters
+    # of the time (measured upstream, 0.75 to 0.77), where kp = kd puts it
+    # there half the time.
+    in_p = []
+    for seed in range(1, 21):
+        with NfsimSession(_xml(data_dir, "rate_only_the_held_update_refreshes")) as nf:
+            nf.initialize(seed=seed)
+            result = nf.simulate(0.0, 500.0, 501)
+        in_p.append(np.asarray(result.observables["Xp"]).mean())
+    assert 0.38 < float(np.mean(in_p)) < 0.62, np.mean(in_p)
+
+
+# ─── A NaN that is the model's own is refused ─────────────────────────────────
+
+
+def test_a_rate_law_that_is_nan_from_the_start_is_refused_and_named(data_dir: Path) -> None:
+    # #1788. Before: A = 100 and B = 10 at every sample, for E[A(1)] = 36.8.
     with NfsimSession(_xml(data_dir, NAN_LAW)) as nf:
         nf.initialize(seed=1)
         with pytest.raises(bngsim.SimulationError, match="total propensity is nan") as err:
             nf.simulate(0.0, 1.0, 11)
-    assert "Non-finite propensity in 1 reaction(s)" in str(err.value)
-
-
-def test_step_to_refuses_it_too(data_dir: Path) -> None:
-    with NfsimSession(_xml(data_dir, NAN_LAW)) as nf:
-        nf.initialize(seed=1)
+        assert "Non-finite propensity in 1 reaction(s)" in str(err.value)
         with pytest.raises(bngsim.SimulationError, match="total propensity is nan"):
             nf.step_to(1.0)
 
 
-def test_a_session_that_stopped_refuses_to_go_on_until_initialized(data_dir: Path) -> None:
-    # The total goes non-finite during the step, and NFsim fires nothing from
-    # there, so the state is not the state at t = 500. Changing a rate does
-    # not make the span between run: the session refuses until started again.
-    with NfsimSession(_xml(data_dir, MID_FIRING)) as nf:
-        nf.initialize(seed=1)
-        with pytest.raises(bngsim.SimulationError, match="total propensity is nan"):
-            nf.step_to(500.0)
-        nf.set_param("kp", 0.0)
-        with pytest.raises(
-            bngsim.SimulationError, match=r"stopped when step_to\(\) found .* at t = 500 in"
-        ):
-            nf.simulate(500.0, 600.0, 2)
-        with pytest.raises(bngsim.SimulationError, match="initialize"):
-            nf.step_to(600.0)
-        nf.initialize(seed=1)  # kp = 0 now: X never fires
-        result = nf.simulate(0.0, 100.0, 101)
-    assert result.n_times == 101
+@pytest.mark.parametrize("seed", [1, 2, 3])
+def test_a_rate_law_that_becomes_nan_mid_run_is_refused_not_frozen(
+    data_dir: Path, seed: int
+) -> None:
+    # kgap/RT with three R(g~T) and no way back: NaN once the last is gone.
+    with NfsimSession(_xml(data_dir, NAN_REACHED)) as nf:
+        nf.initialize(seed=seed)
+        with pytest.raises(bngsim.SimulationError, match="total propensity is nan") as err:
+            nf.simulate(0.0, 200.0, 201)
+    assert "Non-finite propensity in 1 reaction(s)" in str(err.value)
+    assert "NFsim fires nothing once it is" in str(err.value)
 
 
-def test_a_session_that_stopped_in_simulate_refuses_step_to(data_dir: Path) -> None:
-    with NfsimSession(_xml(data_dir, MID_FIRING)) as nf:
-        nf.initialize(seed=1)
-        with pytest.raises(bngsim.SimulationError, match="total propensity is nan"):
-            nf.simulate(0.0, 500.0, 501)
-        with pytest.raises(bngsim.SimulationError, match=r"stopped when simulate\(\) found"):
-            nf.step_to(600.0)
+def test_the_one_shot_run_refuses_both(data_dir: Path) -> None:
+    from bngsim._bngsim_core import NfsimSimulator, TimeSpec
 
-
-def test_a_restore_does_not_lift_the_stop(data_dir: Path) -> None:
-    # restore_concentrations() puts the molecules back and leaves NFsim's
-    # clock where the stop left it; only initialize() starts again.
-    with NfsimSession(_xml(data_dir, MID_FIRING)) as nf:
-        nf.initialize(seed=1)
-        nf.save_concentrations("start")
-        with pytest.raises(bngsim.SimulationError, match="total propensity is nan"):
-            nf.simulate(0.0, 500.0, 501)
-        nf.restore_concentrations("start")
-        with pytest.raises(bngsim.SimulationError, match="this session stopped"):
-            nf.simulate(0.0, 100.0, 101)
+    times = TimeSpec()
+    times.t_start, times.t_end, times.n_points = 0.0, 200.0, 201
+    with pytest.raises(RuntimeError, match="NfsimSimulator::run: NFsim's total propensity is nan"):
+        NfsimSimulator(_xml(data_dir, NAN_REACHED)).run(times, 1)
+    times.t_end, times.n_points = 1.0, 11
+    with pytest.raises(RuntimeError, match=r"Non-finite propensity in 1 reaction\(s\)"):
+        NfsimSimulator(_xml(data_dir, NAN_LAW)).run(times, 1)
 
 
 def test_a_total_that_is_not_finite_from_the_start_is_refused_at_once(data_dir: Path) -> None:
-    # The #1788 model's total is NaN in its initial state: a one-point segment
-    # or run is refused too, at its only sample.
+    # A one-point segment or run is refused too, at its only sample.
     with NfsimSession(_xml(data_dir, NAN_LAW)) as nf:
         nf.initialize(seed=1)
         with pytest.raises(bngsim.SimulationError, match=r"by the sample at t = 0\b"):
@@ -127,60 +181,87 @@ def test_a_total_that_is_not_finite_from_the_start_is_refused_at_once(data_dir: 
         NfsimSimulator(_xml(data_dir, NAN_LAW)).run(times, 1)
 
 
-@pytest.mark.parametrize("t_start", [0.0, 100.0])
-def test_the_time_named_is_the_samples_own(data_dir: Path, t_start: float) -> None:
-    # Seed 1's lone X first fires before the sample one time unit in. The
-    # message gives that sample's time in the caller's labels, which NFsim's
-    # own clock (0 at t_start) is not.
-    expected = rf"by the sample at t = {int(t_start) + 1}\b"
-    with NfsimSession(_xml(data_dir, MID_FIRING)) as nf:
-        nf.initialize(seed=1)
-        with pytest.raises(bngsim.SimulationError, match=expected):
-            nf.simulate(t_start, t_start + 500.0, 501)
+def _sample_named(message: str) -> float:
+    found = re.search(r"by the sample at t = ([0-9.eE+-]+?)\. ", message)
+    assert found, message
+    return float(found.group(1))
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3])
+def test_the_time_named_is_the_samples_own(data_dir: Path, seed: int) -> None:
+    # The message gives the sample's time in the caller's labels, which NFsim's
+    # own clock (0 at t_start) is not: the same seed run from t_start = 100
+    # names a time 100 later, through a session and through the one-shot run.
     from bngsim._bngsim_core import NfsimSimulator, TimeSpec
 
-    times = TimeSpec()
-    times.t_start, times.t_end, times.n_points = t_start, t_start + 500.0, 501
-    with pytest.raises(RuntimeError, match=expected):
-        NfsimSimulator(_xml(data_dir, MID_FIRING)).run(times, 1)
-
-
-def test_the_one_shot_run_refuses_it_too(data_dir: Path) -> None:
-    from bngsim._bngsim_core import NfsimSimulator, TimeSpec
-
-    times = TimeSpec()
-    times.t_start, times.t_end, times.n_points = 0.0, 500.0, 501
-    with pytest.raises(RuntimeError, match="NfsimSimulator::run: NFsim's total propensity is nan"):
-        NfsimSimulator(_xml(data_dir, MID_FIRING)).run(times, 1)
-    times.t_end, times.n_points = 1.0, 11
-    with pytest.raises(RuntimeError, match=r"Non-finite propensity in 1 reaction\(s\)"):
-        NfsimSimulator(_xml(data_dir, NAN_LAW)).run(times, 1)
-
-
-def test_the_same_model_with_no_x_firing_runs_to_the_end(data_dir: Path) -> None:
-    # The control: with kp = 0 the lone X never fires, the rate law is never
-    # read in between, and the run is as it was. RT relaxes to 8*kex/(kex+kgap)
-    # = 4 (boost() is 1 with X unphosphorylated).
-    finals = []
-    for seed in range(1, 21):
-        with NfsimSession(_xml(data_dir, MID_FIRING)) as nf:
-            nf.set_param("kp", 0.0)
+    named = []
+    for t_start in (0.0, 100.0):
+        with NfsimSession(_xml(data_dir, NAN_REACHED)) as nf:
             nf.initialize(seed=seed)
-            result = nf.simulate(0.0, 500.0, 501)
-        rt = np.asarray(result.observables["RT"])
-        assert len(rt) == 501
-        assert np.any(rt[400:] != rt[400])  # still changing at the end
-        finals.append(rt[100:].mean())
-    assert np.mean(finals) == pytest.approx(4.0, abs=0.15)
+            with pytest.raises(bngsim.SimulationError) as err:
+                nf.simulate(t_start, t_start + 200.0, 201)
+        times = TimeSpec()
+        times.t_start, times.t_end, times.n_points = t_start, t_start + 200.0, 201
+        with pytest.raises(RuntimeError) as core_err:
+            NfsimSimulator(_xml(data_dir, NAN_REACHED)).run(times, seed)
+        assert _sample_named(str(core_err.value)) == _sample_named(str(err.value))
+        named.append(_sample_named(str(err.value)))
+    assert named[0] >= 1.0
+    assert named[1] == named[0] + 100.0
 
 
-def test_a_finite_run_is_not_refused(data_dir: Path) -> None:
-    # A model with no such rate law runs as before: the check raises nothing.
-    with NfsimSession(_xml(data_dir, "ring2_homodimer.xml"), molecule_limit=1_000_000) as nf:
-        nf.initialize(seed=7)
-        nf.simulate(0.0, 5.0, 6)
-        values = nf.get_observable_values()
-    assert len(values) > 0 and all(np.isfinite(v) for v in values)
+def test_finite_propensities_whose_sum_overflows_are_said_to(data_dir: Path) -> None:
+    with NfsimSession(_xml(data_dir, "propensity_sum_overflows.xml")) as nf:
+        nf.initialize(seed=1)
+        with pytest.raises(bngsim.SimulationError, match="total propensity is inf") as err:
+            nf.simulate(0.0, 1.0, 2)
+    assert "their sum overflowed" in str(err.value)
+
+
+# ─── The session after a refusal ──────────────────────────────────────────────
+
+
+def test_a_session_that_stopped_refuses_to_go_on_until_initialized(data_dir: Path) -> None:
+    # The total goes non-finite during the step and NFsim fires nothing from
+    # there, so the state is not the state at t = 200. Changing a rate does not
+    # make the span between run: the session refuses until it is started again.
+    with NfsimSession(_xml(data_dir, NAN_REACHED)) as nf:
+        nf.initialize(seed=1)
+        with pytest.raises(bngsim.SimulationError, match="total propensity is nan"):
+            nf.step_to(200.0)
+        nf.set_param("kgap", 2.0)
+        with pytest.raises(
+            bngsim.SimulationError, match=r"stopped when step_to\(\) found .* at t = 200 in"
+        ):
+            nf.simulate(200.0, 300.0, 2)
+        with pytest.raises(bngsim.SimulationError, match="initialize"):
+            nf.step_to(300.0)
+        nf.initialize(seed=1)
+        result = nf.simulate(0.0, 0.0, 1)  # the start again: three R(g~T), a finite total
+    assert result.n_times == 1
+    assert np.asarray(result.observables["RT"])[0] == 3
+
+
+def test_a_session_that_stopped_in_simulate_refuses_step_to(data_dir: Path) -> None:
+    with NfsimSession(_xml(data_dir, NAN_REACHED)) as nf:
+        nf.initialize(seed=1)
+        with pytest.raises(bngsim.SimulationError, match="total propensity is nan"):
+            nf.simulate(0.0, 200.0, 201)
+        with pytest.raises(bngsim.SimulationError, match=r"stopped when simulate\(\) found"):
+            nf.step_to(300.0)
+
+
+def test_a_restore_does_not_lift_the_stop(data_dir: Path) -> None:
+    # restore_concentrations() puts the molecules back and leaves NFsim's
+    # clock where the stop left it; only initialize() starts again.
+    with NfsimSession(_xml(data_dir, NAN_REACHED)) as nf:
+        nf.initialize(seed=1)
+        nf.save_concentrations("start")
+        with pytest.raises(bngsim.SimulationError, match="total propensity is nan"):
+            nf.simulate(0.0, 200.0, 201)
+        nf.restore_concentrations("start")
+        with pytest.raises(bngsim.SimulationError, match="this session stopped"):
+            nf.simulate(0.0, 100.0, 101)
 
 
 def test_a_refusal_at_a_segments_first_sample_does_not_stop_the_session(data_dir: Path) -> None:
@@ -196,14 +277,6 @@ def test_a_refusal_at_a_segments_first_sample_does_not_stop_the_session(data_dir
     assert np.asarray(result.observables["B"])[-1] < 10
 
 
-def test_finite_propensities_whose_sum_overflows_are_said_to(data_dir: Path) -> None:
-    with NfsimSession(_xml(data_dir, "propensity_sum_overflows.xml")) as nf:
-        nf.initialize(seed=1)
-        with pytest.raises(bngsim.SimulationError, match="total propensity is inf") as err:
-            nf.simulate(0.0, 1.0, 2)
-    assert "their sum overflowed" in str(err.value)
-
-
 def test_step_to_before_any_step_does_not_stop_the_session(data_dir: Path) -> None:
     # As simulate() at its first sample: a total already non-finite when
     # step_to() is called is refused before NFsim steps, and a repair holds.
@@ -215,3 +288,50 @@ def test_step_to_before_any_step_does_not_stop_the_session(data_dir: Path) -> No
         nf.step_to(1.0)
         result = nf.simulate(1.0, 2.0, 11)
     assert result.n_times == 11
+
+
+@pytest.mark.parametrize("advance", ["simulate", "step_to"])
+def test_a_total_left_stale_by_an_edit_is_summed_afresh(data_dir: Path, advance: str) -> None:
+    # With the lone X taken out, kgap*(1+9*Xp/Xtot) is NaN in the state the
+    # session is in, and is refused. With X put back every rate is finite again,
+    # but NFsim's running sum, NaN - NaN + new, is not. The state is sound and
+    # nothing has run from it, so the total is summed afresh and the session
+    # goes on; it was refused before, naming no reaction.
+    with NfsimSession(_xml(data_dir, ISSUE_1818)) as nf:
+        nf.initialize(seed=1)
+        nf.set_species_count("X(s~0)", 0)
+        with pytest.raises(bngsim.SimulationError, match="Non-finite propensity in 1 reaction"):
+            nf.simulate(0.0, 1.0, 2)
+        nf.add_molecules("X", 1)
+        if advance == "step_to":
+            nf.step_to(1.0)
+        result = nf.simulate(1.0, 101.0, 101)
+    assert result.n_times == 101
+    assert _still_changing(result, after=50)
+
+
+# ─── Controls ─────────────────────────────────────────────────────────────────
+
+
+def test_issue_1818s_model_with_no_x_firing_relaxes_to_its_closed_form(data_dir: Path) -> None:
+    # With kp = 0 the lone X never fires and no rate is held. RT relaxes to
+    # 8*kex/(kex+kgap) = 4 (boost() is 1 with X unphosphorylated).
+    finals = []
+    for seed in range(1, 21):
+        with NfsimSession(_xml(data_dir, ISSUE_1818)) as nf:
+            nf.set_param("kp", 0.0)
+            nf.initialize(seed=seed)
+            result = nf.simulate(0.0, 500.0, 501)
+        rt = np.asarray(result.observables["RT"])
+        assert len(rt) == 501
+        finals.append(rt[100:].mean())
+    assert np.mean(finals) == pytest.approx(4.0, abs=0.15)
+
+
+def test_a_finite_run_is_not_refused(data_dir: Path) -> None:
+    # A model with no such rate law runs as before: the check raises nothing.
+    with NfsimSession(_xml(data_dir, "ring2_homodimer.xml"), molecule_limit=1_000_000) as nf:
+        nf.initialize(seed=7)
+        nf.simulate(0.0, 5.0, 6)
+        values = nf.get_observable_values()
+    assert len(values) > 0 and all(np.isfinite(v) for v in values)
