@@ -94,17 +94,20 @@ def test_lookup_is_regime_scoped_and_empty_for_unknown_models():
         assert ad.disposition_for(model_id, other) is None, key
 
 
-def test_a_model_authored_on_both_regimes_gets_each_regimes_own_entry():
+def test_a_model_authored_on_both_regimes_gets_each_regimes_own_entry(monkeypatch):
     """The other side of the scoping rule: authoring both is allowed, and the two
-    must not collapse into one. MODEL0910846879's ``ode`` entry carries the closed
-    form; its ``sens`` entry points at that one rather than restating it, so
-    returning the wrong regime's entry would silently swap the evidence."""
+    must not collapse into one. An ``ode`` entry may carry the evidence and its
+    ``sens`` entry point at it rather than restate it, so returning the wrong
+    regime's entry would silently swap the evidence. (MODEL0910846879 was the
+    authored pair until AMICI 1.1.0 fixed its defect; a pair is authored here.)"""
+    monkeypatch.setitem(ad.INVALID_REFERENCE, "PAIR:ode", {"issue": "GH #0", "reason": "ode"})
+    monkeypatch.setitem(ad.INVALID_REFERENCE, "PAIR:sens", {"issue": "GH #0", "reason": "sens"})
     both = [
         m
-        for m in {k.rpartition(":")[0] for k in ad.ALL_KEYS}
+        for m in {k.rpartition(":")[0] for k in ad.INVALID_REFERENCE}
         if ad.disposition_for(m, "ode") and ad.disposition_for(m, "sens")
     ]
-    assert "MODEL0910846879" in both
+    assert "PAIR" in both
     for model_id in both:
         assert ad.disposition_for(model_id, "ode") != ad.disposition_for(model_id, "sens")
 
@@ -481,7 +484,11 @@ def test_an_entry_supported_only_by_bngsim_is_rejected(monkeypatch):
 # What a no-ground-truth claim may rest on: not bngsim and not AMICI, and since
 # both run CVODES, not RoadRunner's CVODE either. A CLOSED FORM, or an integrator
 # that shares no code with SUNDIALS (scipy's) driven where it tracks the solution.
-_GROUND_TRUTH_ORACLES = ("CLOSED FORM", "scipy")
+# A closed form or an integrator outside SUNDIALS shows that a model has no
+# solution to follow. "SBML text" is for the other ground, a model whose text
+# defines no unique system (MODEL2003040001 declares a function argument twice):
+# there the text is the oracle, read by hand, and no engine is.
+_GROUND_TRUTH_ORACLES = ("CLOSED FORM", "scipy", "SBML text")
 
 
 def test_a_no_ground_truth_entry_cites_an_oracle_that_is_neither_engine():
