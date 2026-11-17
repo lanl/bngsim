@@ -808,11 +808,11 @@ struct NfsimSimulator::Impl {
             return;
         std::ostringstream os;
         os << where << ": this session stopped when " << session_stopped_at->first
-           << " found NFsim's total propensity non-finite, at its sample at t = "
-           << std::setprecision(17) << session_stopped_at->second
-           << ". NFsim fired nothing from there, so the state is the one it stopped in, and a "
-              "further segment would start from it as though the time between had run. "
-              "initialize() starts the session again.";
+           << " found NFsim's total propensity non-finite, at t = " << std::setprecision(17)
+           << session_stopped_at->second
+           << " in that call's times. NFsim's state from there is not the state at the time "
+              "it reached, and a further segment would start from it as though the time "
+              "between had run. initialize() starts the session again.";
         throw std::runtime_error(os.str());
     }
 
@@ -1198,6 +1198,9 @@ static std::string nonfinite_propensity_message(::NFcore::System *system, const 
         os << "Non-finite propensity in " << n_named << " reaction(s): " << named
            << (n_named > 5 ? ", ..." : "")
            << ". A rate law evaluates to a non-finite value in this state.";
+    } else if (std::isinf(a_tot) && a_tot > 0) {
+        os << "Every reaction's propensity is finite, so their sum overflowed: the rates are "
+              "too large for a double.";
     } else {
         os << "Every reaction's propensity is finite now, so the non-finite value was passing: "
               "NFsim keeps the total as a running sum, which stays non-finite after the "
@@ -1209,6 +1212,22 @@ static std::string nonfinite_propensity_message(::NFcore::System *system, const 
               "rate law mid-firing.";
     }
     return os.str();
+}
+
+using NfsimSessionStop = std::optional<std::pair<const char *, double>>;
+
+// Raises when NFsim's total propensity is not finite. `stop`, when given, is
+// set first: the caller has stepped, so NFsim's state may no longer be the
+// state at the time it reached (see Impl::session_stopped_at). At a run's or a
+// segment's first sample nothing has run yet, and no stop is set.
+static void throw_if_nonfinite_propensity(::NFcore::System *system, const char *where,
+                                          const char *call, double t_row, NfsimSessionStop *stop) {
+    std::string nonfinite = nonfinite_propensity_message(system, where, t_row);
+    if (nonfinite.empty())
+        return;
+    if (stop != nullptr)
+        *stop = std::make_pair(call, t_row);
+    throw std::runtime_error(nonfinite);
 }
 
 // NFsim seeds both its generators, the System's NfsimRNG and the process-wide
@@ -1307,14 +1326,9 @@ Result NfsimSimulator::run(const TimeSpec &times, uint64_t seed, double timeout_
     result.record(0, t_out[0], nullptr, obs_buf.data());
     eval_function_set(fn_set.funcs, fn_buf);
     result.record_expressions(0, fn_buf.data());
-    {
-        // Not finite from the start (a rate law NaN in the initial state):
-        // refused at once, a one-point run as well.
-        const std::string nonfinite =
-            nonfinite_propensity_message(system, "NfsimSimulator::run", t_out[0]);
-        if (!nonfinite.empty())
-            throw std::runtime_error(nonfinite);
-    }
+    // Not finite from the start (a rate law NaN in the initial state): refused
+    // at once, a one-point run as well.
+    throw_if_nonfinite_propensity(system, "NfsimSimulator::run", "run()", t_out[0], nullptr);
 
     // Simulation loop using stepTo(). The run starts from the initial state at
     // t_out[0] (= t_start) and never sees [0, t_start], as ode and ssa do and as
@@ -1331,10 +1345,8 @@ Result NfsimSimulator::run(const TimeSpec &times, uint64_t seed, double timeout_
             if (budget.active())
                 budget.check();
             system->stepTo(clock0 + (t_out[i] - t_out[0]));
-            const std::string nonfinite =
-                nonfinite_propensity_message(system, "NfsimSimulator::run", t_out[i]);
-            if (!nonfinite.empty())
-                throw std::runtime_error(nonfinite);
+            throw_if_nonfinite_propensity(system, "NfsimSimulator::run", "run()", t_out[i],
+                                          nullptr);
             for (int j = 0; j < n_obs; ++j) {
                 obs_buf[j] = static_cast<double>(system->getObsForOutput(j)->getCount());
             }
@@ -1360,13 +1372,15 @@ void NfsimSimulator::initialize(uint64_t seed) {
         delete impl_->session_system;
         impl_->session_system = nullptr;
     }
+    // Before anything that can throw: a failed initialize() leaves no stop
+    // from the session it replaced.
+    impl_->session_stopped_at.reset();
+    impl_->session_logical_time = 0.0;
 
     impl_->session_system = impl_->create_system();
     impl_->prepare_system(impl_->session_system, seed);
     impl_->cache_obs_names(impl_->session_system);
     impl_->cache_function_set(impl_->session_system);
-    impl_->session_logical_time = 0.0;
-    impl_->session_stopped_at.reset();
     impl_->session_snapshots.clear();
 }
 
@@ -1376,12 +1390,8 @@ void NfsimSimulator::step_to(double time) {
     require_finite_span("NfsimSimulator::step_to", impl_->session_logical_time, time);
     StreamSuppressor suppress;
     impl_->session_system->stepTo(time);
-    const std::string nonfinite =
-        nonfinite_propensity_message(impl_->session_system, "NfsimSimulator::step_to", time);
-    if (!nonfinite.empty()) {
-        impl_->session_stopped_at = std::make_pair("step_to()", time);
-        throw std::runtime_error(nonfinite);
-    }
+    throw_if_nonfinite_propensity(impl_->session_system, "NfsimSimulator::step_to", "step_to()",
+                                  time, &impl_->session_stopped_at);
     impl_->session_logical_time = time;
 }
 
@@ -1472,14 +1482,8 @@ Result NfsimSimulator::simulate(double t_start, double t_end, int n_points, doub
     result.record(0, t_out[0], nullptr, obs_buf.data());
     eval_function_set(impl_->session_fn_funcs, fn_buf);
     result.record_expressions(0, fn_buf.data());
-    {
-        const std::string nonfinite =
-            nonfinite_propensity_message(system, "NfsimSimulator::simulate", t_out[0]);
-        if (!nonfinite.empty()) {
-            impl_->session_stopped_at = std::make_pair("simulate()", t_out[0]);
-            throw std::runtime_error(nonfinite);
-        }
-    }
+    throw_if_nonfinite_propensity(system, "NfsimSimulator::simulate", "simulate()", t_out[0],
+                                  nullptr);
 
     // stepTo() for each subsequent time point
     {
@@ -1488,12 +1492,8 @@ Result NfsimSimulator::simulate(double t_start, double t_end, int n_points, doub
             if (budget.active())
                 budget.check();
             system->stepTo(abs_targets[i]);
-            const std::string nonfinite =
-                nonfinite_propensity_message(system, "NfsimSimulator::simulate", t_out[i]);
-            if (!nonfinite.empty()) {
-                impl_->session_stopped_at = std::make_pair("simulate()", t_out[i]);
-                throw std::runtime_error(nonfinite);
-            }
+            throw_if_nonfinite_propensity(system, "NfsimSimulator::simulate", "simulate()",
+                                          t_out[i], &impl_->session_stopped_at);
 
             for (int j = 0; j < n_obs; ++j) {
                 obs_buf[j] = static_cast<double>(system->getObsForOutput(j)->getCount());

@@ -80,7 +80,7 @@ def test_a_session_that_stopped_refuses_to_go_on_until_initialized(data_dir: Pat
             nf.step_to(1.0)
         nf.set_param("k", 1.0)
         with pytest.raises(
-            bngsim.SimulationError, match=r"stopped when step_to\(\) found .* at t = 1\b"
+            bngsim.SimulationError, match=r"stopped when step_to\(\) found .* at t = 1 in"
         ):
             nf.simulate(1.0, 2.0, 2)
         with pytest.raises(bngsim.SimulationError, match="initialize"):
@@ -183,3 +183,24 @@ def test_a_finite_run_is_not_refused(data_dir: Path) -> None:
         nf.simulate(0.0, 5.0, 6)
         values = nf.get_observable_values()
     assert len(values) > 0 and all(np.isfinite(v) for v in values)
+
+
+def test_a_refusal_at_a_segments_first_sample_does_not_stop_the_session(data_dir: Path) -> None:
+    # Nothing has run when the first sample is checked, so the state is the
+    # true state: once the rate is repaired the session goes on.
+    with NfsimSession(_xml(data_dir, NAN_LAW)) as nf:
+        nf.initialize(seed=1)
+        with pytest.raises(bngsim.SimulationError, match=r"by the sample at t = 0\b"):
+            nf.simulate(0.0, 1.0, 11)
+        nf.set_param("k", 1.0)
+        result = nf.simulate(0.0, 1.0, 11)
+    assert result.n_times == 11
+    assert np.asarray(result.observables["B"])[-1] < 10
+
+
+def test_finite_propensities_whose_sum_overflows_are_said_to(data_dir: Path) -> None:
+    with NfsimSession(_xml(data_dir, "propensity_sum_overflows.xml")) as nf:
+        nf.initialize(seed=1)
+        with pytest.raises(bngsim.SimulationError, match="total propensity is inf") as err:
+            nf.simulate(0.0, 1.0, 2)
+    assert "their sum overflowed" in str(err.value)
