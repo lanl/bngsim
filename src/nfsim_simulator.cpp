@@ -1170,20 +1170,16 @@ static double nfsim_total_propensity(::NFcore::System *system) {
     return (system->*(&NfsimTotalPropensity::get_A_tot))();
 }
 
-// Before a step: a total that is non-finite while every reaction's propensity
-// is finite is only a stale running sum. A session edit can leave one: with
-// the lone X removed, a rate that divides by its count is NaN; with X added
-// back the rate is finite again and the sum, NaN - NaN + new, is not. Nothing
-// has run from this state, so NFsim is asked to sum the propensities afresh
-// rather than the session being refused for a state that is sound.
+// Before a step: a non-finite total may be only a stale running sum. A session
+// edit can leave one: with the lone X removed, a rate that divides by its count
+// is NaN; with X added back the rate is finite again and the sum, NaN - NaN +
+// new, is not. Nothing has run from this state, so NFsim is asked to sum the
+// propensities afresh rather than the session being refused for a state that
+// is sound. If a propensity is itself non-finite the fresh sum is too, and the
+// check that follows refuses it.
 static void recompute_a_stale_total(::NFcore::System *system) {
     if (std::isfinite(nfsim_total_propensity(system)))
         return;
-    const std::vector<::NFcore::ReactionClass *> reactions = system->getAllReactions();
-    for (::NFcore::ReactionClass *rxn : reactions) {
-        if (rxn != nullptr && !std::isfinite(rxn->get_a()))
-            return;
-    }
     (system->*(&NfsimTotalPropensity::recompute_A_tot))();
     system->invalidateStepToCache();
 }
