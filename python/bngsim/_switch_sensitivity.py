@@ -11063,6 +11063,11 @@ class SwitchCrossing(NamedTuple):
     fixed_on_instant: bool = False
     instant_clocks: list[tuple[int, float]] = []
     instant_other_clocks: list[tuple[int, float]] = []
+    # Read as coming after the one crossing it shares its instant with, which
+    # has no parameter of its own (issue #1822). Where a rate law composes the
+    # two, the core takes this crossing's jump from that side of the kink and
+    # reports the column as one-sided, where it would otherwise refuse (#951).
+    delayed_past_instant: bool = False
 
 
 class _Crossing(NamedTuple):
@@ -11205,6 +11210,70 @@ _ISOLATION_MIN_ULP = 1024.0
 _EPS = sys.float_info.epsilon
 
 
+def _private_partials(
+    cross: _Crossing, group: Sequence[_Crossing], param_idx: dict[str, int]
+) -> dict[str, float]:
+    """The parameters ``cross``'s threshold depends on and no other threshold in
+    ``group`` does, each with its partial: what can move it alone off the
+    instant."""
+    others: set[str] = set()
+    for other in group:
+        if other is not cross:
+            others |= set(other.partials)
+    return {n: v for n, v in cross.partials.items() if n not in others and n in param_idx}
+
+
+def _unseparable(group: Sequence[_Crossing], lacking: Sequence[_Crossing]) -> str:
+    """The refusal for a group in which more than one crossing has no parameter
+    of its own (issues #375, #1822)."""
+    shared = sorted({n for cross in lacking for n in cross.partials})
+    return (
+        "Forward sensitivity is not supported on this model: the switch times "
+        f"crossing together at t={lacking[0].t_star:.6g} cannot be told apart. bngsim reads "
+        "a crossing's jump by nudging the clock across the threshold, which flips "
+        "every condition thresholding it at that instant at once, so a coinciding "
+        "crossing is separated by moving its threshold off the instant instead "
+        "(issue #375), with a parameter no other threshold on the instant reads. "
+        f"{len(lacking)} of the {len(group)} crossings here have no such parameter"
+        + (
+            " (their thresholds read " + ", ".join(f"'{n}'" for n in shared) + ")"
+            if shared
+            else ""
+        )
+        + ". One crossing without one is taken as what is left of the instant's jump "
+        "once the others are separated (issue #1822); two or more cannot be divided "
+        "between themselves, and returning the merged jump would charge each "
+        "parameter with the other's, so bngsim refuses. The switch times need not "
+        "be equal by accident, a parameter on a bound makes them so; giving each "
+        "threshold a parameter of its own, or moving them apart, makes this model "
+        "supported."
+    )
+
+
+def _comes_after_the_other(cross: _Crossing, group: Sequence[_Crossing]) -> bool:
+    """Whether ``cross`` is the later of the two crossings on its instant by how
+    its threshold is built (issue #1822).
+
+    ``sigma = t0 + t_delta`` reads every parameter ``t0`` reads, and one more.
+    The two coincide where the extra one is 0, a bound, and the order they come
+    apart in is the model's: ``t0``, then ``sigma``. The core reads ``sigma``'s
+    jump with ``t0`` already made, which is its jump on that side. Where a rate
+    law composes the two that side is all there is to return, and the core
+    returns it with a warning in place of the refusal of issue #951.
+
+    Not so for two thresholds that are equal by value, ``tA`` and ``tB``, or a
+    fitted one on a literal: neither is built on the other, there is no order
+    to take, and the refusal stands. Whether the other one's parameters were
+    requested does not come into it: the kink in ``t_delta`` is the same with
+    ``t0`` in ``sensitivity_params`` or out of it. With three on the instant two
+    of them would each be read after the other, and no one order has both.
+    """
+    if len(group) != 2:
+        return False
+    other = group[0] if group[1] is cross else group[1]
+    return bool(other.partials) and set(other.partials) < set(cross.partials)
+
+
 def _isolation_bump(
     cross: _Crossing,
     group: Sequence[_Crossing],
@@ -11228,27 +11297,11 @@ def _isolation_bump(
     exists the crossings are not separable this way and bngsim refuses rather
     than return the merged answer #375 reported.
     """
-    others: set[str] = set()
-    for other in group:
-        if other is not cross:
-            others |= set(other.partials)
-    private = {n: v for n, v in cross.partials.items() if n not in others and n in param_idx}
+    private = _private_partials(cross, group, param_idx)
     if not private:
-        shared = sorted(set(cross.partials) & others)
-        raise SensitivityUnsupportedError(
-            "Forward sensitivity is not supported on this model: the switch times "
-            f"crossing together at t={cross.t_star:.6g} cannot be told apart. bngsim reads "
-            "a crossing's jump by nudging the clock across the threshold, which flips "
-            "every condition thresholding it at that instant at once, so a coinciding "
-            "crossing is separated by moving its threshold off the instant instead "
-            "(issue #375) — and every parameter this one's threshold depends on ("
-            + ", ".join(f"'{n}'" for n in sorted(cross.partials))
-            + ") is also read by a threshold it coincides with"
-            + (" (" + ", ".join(f"'{n}'" for n in shared) + ")" if shared else "")
-            + ". Returning the merged jump would charge each parameter with the other's, "
-            "so bngsim refuses. Separating the switch times — they are equal only by "
-            "coincidence of value — makes this model supported."
-        )
+        # The caller takes one such crossing as the remainder of the instant's
+        # jump and refuses two; it does not ask for a bump for either.
+        raise SensitivityUnsupportedError(_unseparable(group, [cross]))
     # The largest partial gives the smallest parameter step for a given move of
     # the threshold, so it is the one least able to disturb anything else.
     name = max(private, key=lambda n: abs(private[n]))
@@ -11643,10 +11696,46 @@ def _emit_switch_records(
 
     records: list[SwitchCrossing] = []
     for group in _instant_groups(found):
+        # ── One crossing with no parameter of its own (issue #1822) ──────────
+        # A crossing is isolated by a parameter only its threshold reads. Where
+        # sigma = t0 + t_delta and t_delta is 0, the threshold t0 has none: its
+        # only parameter moves sigma too. But isolating all but one crossing of
+        # an instant is enough. Write M for the instant's merged jump, which the
+        # core reads with nothing isolated, and J_i for the isolated ones. The
+        # one left over has M − ΣJ_i, so a column's jump,
+        #     (M − ΣJ_i)·∂t_R/∂p + Σ J_i·∂t_i/∂p,
+        # is M·∂t_R/∂p + Σ J_i·(∂t_i/∂p − ∂t_R/∂p): the remainder emitted with
+        # the merged jump and its own ∂t*/∂p, and each of the others isolated
+        # as before with the remainder's ∂t*/∂p taken off its own. With
+        # sigma = t0 + t_delta that is M in the t0 column and sigma's jump in
+        # the t_delta column.
+        remainder: _Crossing | None = None
+        if len(group) > 1:
+            lacking = [c for c in group if not _private_partials(c, group, param_idx)]
+            # Asked only where a crossing some requested parameter moves has no
+            # parameter of its own. One that no requested parameter moves, a
+            # literal threshold, has none either, and never needed one: it has
+            # no column, and the others are separated from it as they always
+            # were. Beside one that does lack a parameter it is a second
+            # crossing with nothing to separate it by, and the instant is
+            # refused: the merged jump holds its jump too, which the left-over
+            # crossing's parameters do not move.
+            if any(emits(c) for c in lacking):
+                if len(lacking) > 1 or any(c.clock_idx0 in moved_clocks for c in group):
+                    # On a clock a requested parameter moves, a crossing's
+                    # column is not its ∂t*/∂p times a jump alone, and the
+                    # identity above is not established for it.
+                    raise SensitivityUnsupportedError(_unseparable(group, lacking))
+                remainder = lacking[0]
         for cross in group:
-            if not emits(cross):
+            dtstar = cross.dtstar
+            if remainder is not None and cross is not remainder:
+                dtstar = [own - left for own, left in zip(dtstar, remainder.dtstar, strict=True)]
+                if not any(v != 0.0 for v in dtstar):
+                    continue
+            elif not emits(cross):
                 continue
-            if len(group) > 1:
+            if len(group) > 1 and cross is not remainder:
                 idx0, delta = _isolation_bump(
                     cross,
                     group,
@@ -11662,7 +11751,7 @@ def _emit_switch_records(
                     t_star=cross.t_star,
                     clock_idx0=cross.clock_idx0,
                     threshold=cross.threshold,
-                    dtstar=cross.dtstar,
+                    dtstar=dtstar,
                     isolate_param_idx0=isolate_idx,
                     isolate_delta=isolate_delta,
                     fixed_on_instant=any(
@@ -11678,6 +11767,7 @@ def _emit_switch_records(
                             for at in _extent(other)
                         }
                     ),
+                    delayed_past_instant=_comes_after_the_other(cross, group),
                 )
             )
     records.sort(key=lambda r: r.t_star)

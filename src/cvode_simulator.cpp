@@ -3909,6 +3909,10 @@ struct SwitchJumpScratch {
     // crossing that shares its instant with another (issue #375). Sized with
     // the rest; untouched on the overwhelmingly common isolated crossing.
     std::vector<double> f_iso;
+    // Set by apply_switch_sensitivity_jump where the crossing it was given does
+    // not commute with the one it is delayed past, and its jump was taken from
+    // the side that was read (issue #1822). Cleared by the caller.
+    bool one_sided = false;
 
     void resize(int ns) {
         f_minus.resize(static_cast<size_t>(ns));
@@ -11262,6 +11266,15 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
                        "two times, or set them equal, or drop the parameters that move them from "
                        "sensitivity_params.";
                 not_commuting = msg.str();
+            } else if (worst >= 0 && sw.delayed_past_instant) {
+                // The one it shares the instant with has no parameter of its
+                // own, so the detector emitted that one with the merged jump
+                // and this one with its jump read after it (issue #1822). The
+                // two do not commute, and the jump just read is the one for a
+                // parameter that delays this crossing: the derivative on that
+                // side of the kink, which is the side a parameter on a bound
+                // can move to. The caller reports it.
+                scratch.one_sided = true;
             } else if (worst >= 0) {
                 const auto uw = static_cast<size_t>(worst);
                 std::ostringstream msg;
@@ -23073,9 +23086,24 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     next_switch < switch_list.size() &&
                     (switch_list[next_switch]->t_star <= static_cast<double>(t_ret) ||
                      same_instant(switch_list[next_switch]->t_star, static_cast<double>(t_ret)))) {
+                    sw_scratch.one_sided = false;
                     impl_->apply_switch_sensitivity_jump(
                         cvode_mem, y, ns, static_cast<double>(t_ret), *switch_list[next_switch],
                         sw_scratch, sens, root_watch);
+                    if (sw_scratch.one_sided) {
+                        // The columns this crossing moves, and which way each
+                        // parameter has to go to delay it (issue #1822).
+                        Result::OneSidedSwitch entry;
+                        entry.t = static_cast<double>(t_ret);
+                        const auto &dt = switch_list[next_switch]->dtstar_dp;
+                        for (size_t c = 0; c < dt.size(); ++c) {
+                            if (dt[c] != 0.0) {
+                                entry.columns.push_back(static_cast<int>(c));
+                                entry.directions.push_back(dt[c] > 0.0 ? 1 : -1);
+                            }
+                        }
+                        result.add_one_sided_switch(std::move(entry));
+                    }
                     // Remembered for an event that rises on this instant after
                     // the stop (issue #767).
                     if (!same_instant(switches_applied_t, static_cast<double>(t_ret))) {

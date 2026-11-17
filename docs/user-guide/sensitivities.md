@@ -247,6 +247,30 @@ before-branch is read with the other switch's threshold bumped away, so a
 coincident pair does not merge into a single doubled jump (issue #375). Models
 with distinct switch times are unaffected and read the plain `f⁻ − f⁺`.
 
+A crossing is separated from the others on its instant by a parameter that only
+its own threshold reads. One crossing of the instant may have none (issue
+#1822). With `sigma = t0 + t_delta` and `t_delta = 0`, which is where a bounded
+optimizer puts a parameter that wants to be smaller, `t0` is the only parameter
+of the threshold `t0` and it moves `sigma` too. `sigma` is separated with
+`t_delta`, and the crossing at `t0` is given what is left: the `t0` column takes
+the instant's whole jump, both crossings moving with it, and the `t_delta`
+column takes `sigma`'s jump alone. Two or more crossings with no parameter of
+their own cannot be divided between themselves, and the run is refused; so is
+`t_delta = t_delta2 = 0` in the model above, where `t0` and `sigma` are both
+without one.
+
+Where a rate law composes the two crossings, a rate `U()*Lambda()` with one
+gate at `t0` and the other at `sigma`, the run sits on a kink in `t_delta`:
+raising it delays the rate, and lowering it does nothing, `t0` then being the
+later of the two. The `t_delta` column is then the derivative for `t_delta`
+increasing, the direction that delays `sigma` past `t0` and the feasible one at
+a lower bound of 0. bngsim raises a `bngsim.OneSidedSensitivityWarning` that
+names the parameter and the direction, and `Result.one_sided_sensitivities`
+lists them. The derivative in the other direction is another number and is not
+computed. This is only for a pair of crossings one of which has no parameter of
+its own. Two composed crossings that each have one, `tA` and `tB` equal by
+value, have no order to take, and are refused as before (issue #951).
+
 Two crossings share an instant when they are within 64 ulp of each other, which
 is how far the clock is nudged to read the two branches. Crossings further apart
 than that, however close, are stopped at one after the other, fitted or fixed. The same holds for

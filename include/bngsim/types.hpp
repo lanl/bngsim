@@ -1113,6 +1113,17 @@ struct SwitchTimeSens {
     // nudge of this crossing's clock flips those, and the right-hand side a
     // comoving column enters its frame against has to have them made.
     std::vector<std::pair<int, double>> instant_other_clocks;
+    // This crossing shares its instant with one that has no parameter of its
+    // own, and is read as coming after it (issue #1822). With sigma = t0 +
+    // t_delta and t_delta on its bound of 0, no parameter moves t0 alone; the
+    // detector isolates sigma and emits t0 with the instant's merged jump. The
+    // jump read for this crossing, with the other already made, is then its
+    // jump for a parameter that delays it. Where a rate law composes the two,
+    // a product of their gates, that is one side of a kink and the other side
+    // is another number: the commute test (issue #951) refuses such an instant
+    // otherwise. Set, the core takes the side it read and reports the crossing
+    // in Result::one_sided_switches instead.
+    bool delayed_past_instant = false;
 };
 
 // One event whose crossing time moves with the sensitivity parameters (issue

@@ -109,6 +109,43 @@ def _psa_diagnostics_from_core(ssa_diag: Any) -> dict[str, Any]:
     }
 
 
+def _one_sided_from_core(core: Any, columns: list[str]) -> list[tuple[float, dict[str, str]]]:
+    """The core's one-sided switch records, by parameter name (issue #1822)."""
+    out: list[tuple[float, dict[str, str]]] = []
+    for t, cols, directions in getattr(core, "one_sided_switches", ()):
+        named = {
+            columns[c]: "increasing" if d > 0 else "decreasing"
+            for c, d in zip(cols, directions, strict=True)
+            if 0 <= c < len(columns)
+        }
+        if named:
+            out.append((float(t), named))
+    return out
+
+
+def _warn_one_sided(entries: list[tuple[float, dict[str, str]]]) -> None:
+    if not entries:
+        return
+    from bngsim._exceptions import OneSidedSensitivityWarning
+    from bngsim._simulator import _stacklevel_outside_bngsim
+
+    for t, named in entries:
+        which = ", ".join(f"'{p}' {direction}" for p, direction in named.items())
+        warnings.warn(
+            f"Forward sensitivity: the switch time at t={t:.6g} shares its instant with "
+            "another that no requested parameter moves alone, and a rate law composes the "
+            "two, so the run sits on a kink in the parameters that move this switch and not "
+            "the other. Their columns are one-sided derivatives, each for a step in the "
+            f"direction that delays this switch past the other: {which}. That is the "
+            "derivative on the feasible side of a bound such as t_delta >= 0; in the other "
+            "direction the derivative is another number, which bngsim does not compute. "
+            "Every other column is an ordinary derivative (issue #1822). "
+            "Result.one_sided_sensitivities lists these.",
+            OneSidedSensitivityWarning,
+            stacklevel=_stacklevel_outside_bngsim(),
+        )
+
+
 @dataclass(frozen=True)
 class IdentifiabilityReport:
     r"""Model-identifiability readout of a Fisher Information Matrix (GH #202).
@@ -249,6 +286,7 @@ class Result:
         "_expression_names",
         "_sensitivity_params",
         "_sensitivity_ic_species",
+        "_one_sided_sensitivities",
         "_solver_stats",
         "_ssa_diagnostics",
         "_psa_diagnostics",
@@ -331,6 +369,8 @@ class Result:
             else:
                 self._sensitivities = np.empty((0, 0, 0))
                 self._sensitivity_params = []
+            self._one_sided_sensitivities = _one_sided_from_core(core, self._sensitivity_params)
+            _warn_one_sided(self._one_sided_sensitivities)
 
             # IC sensitivity data
             if hasattr(core, "n_sens_ic_species") and core.n_sens_ic_species > 0:
@@ -447,6 +487,8 @@ class Result:
             # batch / stitch), else default to the empty (0, 0, 0) block.
             self._sensitivities = _empty_sens_block(_sensitivities)
             self._sensitivity_params = _sensitivity_params or []
+            # Known only to the run that read the kink (issue #1822).
+            self._one_sided_sensitivities = []
             self._sensitivities_ic = _empty_sens_block(_sensitivities_ic)
             self._sensitivity_ic_species = _sensitivity_ic_species or []
             self._observable_sensitivities = _empty_sens_block(_observable_sensitivities)
@@ -1980,6 +2022,26 @@ class Result:
     def sensitivity_params(self) -> list[str]:
         """Parameter names for sensitivity analysis."""
         return self._sensitivity_params
+
+    @property
+    def one_sided_sensitivities(self) -> list[tuple[float, dict[str, str]]]:
+        """The sensitivity columns that are one-sided derivatives (GH #1822).
+
+        One ``(t, {parameter: direction})`` entry for each switch time at
+        which the run sits on a kink: two rate-law switches share the instant
+        ``t``, a rate law composes them, and no requested parameter moves one
+        of them alone. ``direction`` is ``"increasing"`` or ``"decreasing"``:
+        the column of that parameter in :attr:`sensitivities` is the derivative
+        for a step of the parameter in that direction, the one that delays its
+        switch past the other. In the other direction the derivative is another
+        number. Every parameter not listed has an ordinary derivative.
+
+        Empty for a run that sits on no such kink, which is nearly every run,
+        and for a result that did not come from one (loaded from a file, sliced
+        or stacked). A :class:`bngsim.OneSidedSensitivityWarning` is raised for
+        each entry when the run returns.
+        """
+        return [(t, dict(columns)) for t, columns in self._one_sided_sensitivities]
 
     @property
     def sensitivities_ic(self) -> NDArray[np.float64]:
