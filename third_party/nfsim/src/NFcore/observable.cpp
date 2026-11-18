@@ -39,9 +39,14 @@ void Observable::add()
 
 	//Next, we update our dependent reactions, if there are any
 	for(int r=0; r<n_dependentRxns; r++) {
+		/* During a firing this count is of no state the system is in: the
+		 * rate is computed when the firing is done (RuleWorld/nfsim#115). */
+		System *s = templateMolecules[0]->getMoleculeType()->getSystem();
+		if (s->holdFiringPropensityUpdate(dependentRxns[r]))
+			continue;
 		double old_a = dependentRxns[r]->get_a();
 		double new_a = dependentRxns[r]->update_a();
-		templateMolecules[0]->getMoleculeType()->getSystem()->update_A_tot(dependentRxns[r],old_a,new_a);
+		s->update_A_tot(dependentRxns[r], old_a, new_a);
 	}
 }
 
@@ -58,9 +63,14 @@ void Observable::add( int n_matches )
 	// Next, we update our dependent reactions, if there are any
 	for (int r=0; r<n_dependentRxns; r++)
 	{
+		/* During a firing this count is of no state the system is in: the
+		 * rate is computed when the firing is done (RuleWorld/nfsim#115). */
+		System *s = templateMolecules[0]->getMoleculeType()->getSystem();
+		if (s->holdFiringPropensityUpdate(dependentRxns[r]))
+			continue;
 		double old_a = dependentRxns[r]->get_a();
 		double new_a = dependentRxns[r]->update_a();
-		templateMolecules[0]->getMoleculeType()->getSystem()->update_A_tot( dependentRxns[r], old_a, new_a);
+		s->update_A_tot(dependentRxns[r], old_a, new_a);
 	}
 }
 
@@ -87,9 +97,14 @@ void Observable::subtract()
 
 	//Next, we update our dependent reactions, if there are any
 	for(int r=0; r<n_dependentRxns; r++) {
+		/* During a firing this count is of no state the system is in: the
+		 * rate is computed when the firing is done (RuleWorld/nfsim#115). */
+		System *s = templateMolecules[0]->getMoleculeType()->getSystem();
+		if (s->holdFiringPropensityUpdate(dependentRxns[r]))
+			continue;
 		double old_a = dependentRxns[r]->get_a();
 		double new_a = dependentRxns[r]->update_a();
-		templateMolecules[0]->getMoleculeType()->getSystem()->update_A_tot(dependentRxns[r],old_a,new_a);
+		s->update_A_tot(dependentRxns[r], old_a, new_a);
 	}
 }
 
@@ -113,9 +128,14 @@ void Observable::subtract( int n_matches )
 	// Next, we update our dependent reactions, if there are any
 	for (int r=0; r<n_dependentRxns; r++)
 	{
+		/* During a firing this count is of no state the system is in: the
+		 * rate is computed when the firing is done (RuleWorld/nfsim#115). */
+		System *s = templateMolecules[0]->getMoleculeType()->getSystem();
+		if (s->holdFiringPropensityUpdate(dependentRxns[r]))
+			continue;
 		double old_a = dependentRxns[r]->get_a();
 		double new_a = dependentRxns[r]->update_a();
-		templateMolecules[0]->getMoleculeType()->getSystem()->update_A_tot( dependentRxns[r], old_a, new_a);
+		s->update_A_tot(dependentRxns[r], old_a, new_a);
 	}
 }
 
@@ -164,6 +184,7 @@ void Observable::addDependentRxn(ReactionClass *r)
 	delete [] dependentRxns;
 	dependentRxns = newDepRxns;
 	n_dependentRxns++;
+	r->markReadsObservable();
 }
 
 

@@ -166,6 +166,16 @@ Current carry topics:
   molecule the rule acts on), and `ensureConnected`. Same carry: `getListOfProducts`
   lists each molecule once (without `-cb`, two reactants in one complex listed
   shared neighbours twice and inflated the Molecules observables)
+- a rate that reads an observable held until a firing is done: a firing takes
+  its products out of their observables, transforms them, puts them back, and
+  then puts them back in their reactions one at a time, and a rate law read in
+  between is read at a state the system is never in. With one X,
+  `kgap*(1+9*Xp/Xtot)` was 0/0 there; the NaN stayed in NFsim's running total
+  and the run froze at the first X firing with no error (GH #1818). This is
+  RuleWorld/nfsim#117, merged upstream as `a0bf9134`, written against the
+  pinned base, which has no `selector->updateBatch` and no shared
+  `Observable::updateDependentReactions`. Drop it when the base moves past
+  `a0bf9134` (GH #519)
 
 Not a carry, but tied to the vendored NFsim: bngsim refuses, by name, the rate
 laws NFsim cannot run, in `python/bngsim/_network_free_checks.py`
@@ -296,6 +306,10 @@ Expected carry order:
     branches of `checkBonds` and of `checkSymmetricComponents` -- all four
     reachable, all four faulting under AddressSanitizer (GH #1543; submitted
     upstream as RuleWorld/nfsim#113)
+24. product molecularity tested as BioNetGen tests it, and each product
+    molecule listed once
+25. a rate that reads an observable held until a firing is done (GH #1818;
+    RuleWorld/nfsim#117, merged upstream as `a0bf9134`)
 
 When you intentionally change the carry stack, regenerate the patch bundle
 afterward.

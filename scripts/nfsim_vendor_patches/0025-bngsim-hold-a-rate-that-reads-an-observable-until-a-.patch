@@ -1,0 +1,307 @@
+From ad873702af9952edead60a4a9908b5531baa8677 Mon Sep 17 00:00:00 2001
+From: Montana <montana@linux.com>
+Date: Tue, 17 Nov 2026 08:59:14 -0800
+Subject: [PATCH] bngsim: hold a rate that reads an observable until a firing
+ is done
+
+A firing takes each product molecule out of its Molecules observables,
+transforms it, puts it back, and then puts the products back in their
+reactions, one molecule at a time. Until that is done the system is in no
+state it ever occupies, and the rates that read an observable were
+computed there: with one X, kgap*(1+9*Xp/Xtot) was 0/0, the NaN went into
+a_tot, where a_tot - old + new keeps it, and the run ended silently at
+the first X firing.
+
+This is RuleWorld/nfsim#117 (issue #115, merged upstream as a0bf9134),
+written against the pinned base: Observable's four add and subtract
+loops, MoleculeType::removeFromRxns, updateRxnMembership and
+updateConnectedRxnMembership ask System::holdFiringPropensityUpdate()
+first, and ReactionClass::fire computes what was held once the products
+are back in their reactions. The base has no selector->updateBatch, so
+the held reactions are given to selector->update one at a time. Drop
+this carry when the base moves past a0bf9134.
+---
+ src/NFcore/NFcore.hh         | 50 ++++++++++++++++++++++++++++++++++++
+ src/NFcore/moleculeType.cpp  | 16 ++++++++++++
+ src/NFcore/observable.cpp    | 29 ++++++++++++++++++---
+ src/NFcore/reactionClass.cpp | 10 ++++++++
+ src/NFcore/system.cpp        | 35 +++++++++++++++++++++++++
+ 5 files changed, 136 insertions(+), 4 deletions(-)
+
+diff --git a/src/NFcore/NFcore.hh b/src/NFcore/NFcore.hh
+index b70b3a0..5f70fdc 100644
+--- a/src/NFcore/NFcore.hh
++++ b/src/NFcore/NFcore.hh
+@@ -412,6 +412,35 @@ namespace NFcore
+ 
+ 			void update_A_tot(ReactionClass *r, double old_a, double new_a);
+ 
++			/* A firing takes its product molecules out of their observables,
++			 * transforms them, puts them back, and then puts the products back
++			 * in their reactions, one molecule at a time. Until that is done the
++			 * system is in no state it ever occupies: an observable a single
++			 * molecule keeps nonzero reads 0, and a rate law that divides by it
++			 * is NaN, which a_tot - old + new then keeps for good
++			 * (RuleWorld/nfsim#115).
++			 *
++			 * In that span the update of a reaction whose rate reads an
++			 * observable is held: the reaction is noted, once, and its rate is
++			 * not computed, so the propensity it holds stays the one the
++			 * selector has for it. At the end each noted reaction's propensity
++			 * is computed from the state the firing leaves and given to the
++			 * selector. Each place that updates a propensity in that span asks
++			 * holdFiringPropensityUpdate() first: an observable whose count
++			 * changes, a molecule the transformation deletes, and a product
++			 * molecule's reactions (MoleculeType::updateRxnMembership, and
++			 * updateConnectedRxnMembership under -connect).
++			 *
++			 * A reaction whose rate reads no observable is updated as before,
++			 * and a system with no reaction that reads one has no such span. */
++			void noteObservableDependentReaction() { hasObservableDependentReactions = true; }
++			void beginDeferredFiringPropensityUpdates();
++			bool holdFiringPropensityUpdate(ReactionClass *r) {
++				return deferringFiringPropensityUpdates
++						&& noteHeldFiringPropensityUpdate(r);
++			}
++			void endDeferredFiringPropensityUpdates();
++
+ 
+ 
+ 
+@@ -657,6 +686,12 @@ namespace NFcore
+ 			///////////////////////////////////////////////////////////////////////////
+ 			// Properties of the system that update in time
+ 			double a_tot;        /*< the sum of all a's (propensities) of all reactions */
++			/* RuleWorld/nfsim#115: see holdFiringPropensityUpdate(). */
++			bool deferringFiringPropensityUpdates = false;
++			bool hasObservableDependentReactions = false;
++			vector<ReactionClass *> heldFiringReactions;
++			bool noteHeldFiringPropensityUpdate(ReactionClass *r);
++			unsigned long long deferredFiringUpdateGeneration = 0;
+ 			double current_time; /*< keeps track of the simulation time */
+ 			ReactionClass * nextReaction;  /*< keeps track of the next reaction to fire */
+ 			bool pendingStepEventValid = false; /*< cached waiting-time draw for stepTo() */
+@@ -1342,6 +1377,19 @@ namespace NFcore
+ 			void setTraversalLimit(int limit) { this->traversalLimit = limit; };
+ 
+ 			double get_a() const { return a; };
++			/* Whether this reaction's rate reads an observable (RuleWorld/nfsim#115). */
++			void markReadsObservable() {
++				readsObservable = true;
++				if (system != 0) system->noteObservableDependentReaction();
++			}
++			bool getReadsObservable() const { return readsObservable; }
++			/* Mark this reaction once per firing whose updates are held. */
++			bool markDeferredFiringUpdate(unsigned long long generation) {
++				if (deferredFiringUpdateGeneration == generation)
++					return false;
++				deferredFiringUpdateGeneration = generation;
++				return true;
++			}
+ 			virtual void printDetails() const;
+ 			void fire(double random_A_number);
+ 			// AS2023 - additional call sig to use with reaction firing tracking. The call
+@@ -1455,6 +1503,8 @@ namespace NFcore
+ 			double baseRate;
+ 			string baseRateParameterName;
+ 			double a;
++			bool readsObservable = false;
++			unsigned long long deferredFiringUpdateGeneration = 0;
+ 			unsigned int fireCounter;
+ 
+ 			unsigned int traversalLimit;
+diff --git a/src/NFcore/moleculeType.cpp b/src/NFcore/moleculeType.cpp
+index 213f1f7..b88acbd 100644
+--- a/src/NFcore/moleculeType.cpp
++++ b/src/NFcore/moleculeType.cpp
+@@ -572,6 +572,9 @@ void MoleculeType::updateRxnMembership(Molecule * m)
+ 		ReactionClass * rxn=reactions.at(r);
+ 		double oldA = rxn->get_a();
+ 		rxn->tryToAdd(m, reactionPositions.at(r));
++		/* Its rate is computed when the firing is done (RuleWorld/nfsim#115). */
++		if (this->system->holdFiringPropensityUpdate(rxn))
++			continue;
+ 		double newA = rxn->update_a();
+ 		this->system->update_A_tot(rxn,oldA,newA);
+   	}
+@@ -590,6 +593,12 @@ void MoleculeType::updateConnectedRxnMembership(Molecule * m, ReactionClass * fi
+ 			continue;
+ 		}
+ 		int pos = reactionPositions.at(r);
++		if (this->system->holdFiringPropensityUpdate(rxn)) {
++			/* Its rate is computed when the firing is done (RuleWorld/nfsim#115),
++			 * so it has no line in the -trackconnected output. */
++			rxn->tryToAdd(m, pos);
++			continue;
++		}
+ 		double oldA = rxn->get_a();
+ 		double oldAwithTotal = rxn->update_a();
+ 		rxn->tryToAdd(m, pos);
+@@ -659,6 +668,13 @@ void MoleculeType::removeFromRxns(Molecule * m)
+ 	int r=0;
+ 	for(rxnIter = reactions.begin(); rxnIter != reactions.end(); rxnIter++, r++ )
+ 	{
++		/* A molecule deleted by a firing leaves its reactions while the
++		 * firing's products are out of the observables: a rate that reads one
++		 * is computed when the firing is done (RuleWorld/nfsim#115). */
++		if (this->system->holdFiringPropensityUpdate(*rxnIter)) {
++			(*rxnIter)->remove(m, reactionPositions.at(r));
++			continue;
++		}
+ 		double oldA = (*rxnIter)->get_a();
+ 		(*rxnIter)->remove(m, reactionPositions.at(r));
+ 		double newA = (*rxnIter)->update_a();
+diff --git a/src/NFcore/observable.cpp b/src/NFcore/observable.cpp
+index 7725596..5730e80 100644
+--- a/src/NFcore/observable.cpp
++++ b/src/NFcore/observable.cpp
+@@ -39,9 +39,14 @@ void Observable::add()
+ 
+ 	//Next, we update our dependent reactions, if there are any
+ 	for(int r=0; r<n_dependentRxns; r++) {
++		/* During a firing this count is of no state the system is in: the
++		 * rate is computed when the firing is done (RuleWorld/nfsim#115). */
++		System *s = templateMolecules[0]->getMoleculeType()->getSystem();
++		if (s->holdFiringPropensityUpdate(dependentRxns[r]))
++			continue;
+ 		double old_a = dependentRxns[r]->get_a();
+ 		double new_a = dependentRxns[r]->update_a();
+-		templateMolecules[0]->getMoleculeType()->getSystem()->update_A_tot(dependentRxns[r],old_a,new_a);
++		s->update_A_tot(dependentRxns[r], old_a, new_a);
+ 	}
+ }
+ 
+@@ -58,9 +63,14 @@ void Observable::add( int n_matches )
+ 	// Next, we update our dependent reactions, if there are any
+ 	for (int r=0; r<n_dependentRxns; r++)
+ 	{
++		/* During a firing this count is of no state the system is in: the
++		 * rate is computed when the firing is done (RuleWorld/nfsim#115). */
++		System *s = templateMolecules[0]->getMoleculeType()->getSystem();
++		if (s->holdFiringPropensityUpdate(dependentRxns[r]))
++			continue;
+ 		double old_a = dependentRxns[r]->get_a();
+ 		double new_a = dependentRxns[r]->update_a();
+-		templateMolecules[0]->getMoleculeType()->getSystem()->update_A_tot( dependentRxns[r], old_a, new_a);
++		s->update_A_tot(dependentRxns[r], old_a, new_a);
+ 	}
+ }
+ 
+@@ -87,9 +97,14 @@ void Observable::subtract()
+ 
+ 	//Next, we update our dependent reactions, if there are any
+ 	for(int r=0; r<n_dependentRxns; r++) {
++		/* During a firing this count is of no state the system is in: the
++		 * rate is computed when the firing is done (RuleWorld/nfsim#115). */
++		System *s = templateMolecules[0]->getMoleculeType()->getSystem();
++		if (s->holdFiringPropensityUpdate(dependentRxns[r]))
++			continue;
+ 		double old_a = dependentRxns[r]->get_a();
+ 		double new_a = dependentRxns[r]->update_a();
+-		templateMolecules[0]->getMoleculeType()->getSystem()->update_A_tot(dependentRxns[r],old_a,new_a);
++		s->update_A_tot(dependentRxns[r], old_a, new_a);
+ 	}
+ }
+ 
+@@ -113,9 +128,14 @@ void Observable::subtract( int n_matches )
+ 	// Next, we update our dependent reactions, if there are any
+ 	for (int r=0; r<n_dependentRxns; r++)
+ 	{
++		/* During a firing this count is of no state the system is in: the
++		 * rate is computed when the firing is done (RuleWorld/nfsim#115). */
++		System *s = templateMolecules[0]->getMoleculeType()->getSystem();
++		if (s->holdFiringPropensityUpdate(dependentRxns[r]))
++			continue;
+ 		double old_a = dependentRxns[r]->get_a();
+ 		double new_a = dependentRxns[r]->update_a();
+-		templateMolecules[0]->getMoleculeType()->getSystem()->update_A_tot( dependentRxns[r], old_a, new_a);
++		s->update_A_tot(dependentRxns[r], old_a, new_a);
+ 	}
+ }
+ 
+@@ -164,6 +184,7 @@ void Observable::addDependentRxn(ReactionClass *r)
+ 	delete [] dependentRxns;
+ 	dependentRxns = newDepRxns;
+ 	n_dependentRxns++;
++	r->markReadsObservable();
+ }
+ 
+ 
+diff --git a/src/NFcore/reactionClass.cpp b/src/NFcore/reactionClass.cpp
+index f2c130a..bcc7c2f 100755
+--- a/src/NFcore/reactionClass.cpp
++++ b/src/NFcore/reactionClass.cpp
+@@ -516,7 +516,13 @@ string ReactionClass::fire(double random_A_number, bool track) {
+ 	}
+ 
+ 	// Loop through the products (excluding added molecules) and remove from observables
++	//
++	// From here until the products are back in their observables and their
++	// reactions, the counts are of no state the system is in, so no rate that
++	// reads an observable is computed from them: each update is held and
++	// applied once, after (RuleWorld/nfsim#115).
+ 	if (this->onTheFlyObservables) {
++		this->system->beginDeferredFiringPropensityUpdates();
+ 		std::unordered_set<int> updatedComplexIds;
+ 
+ 		// molecule observables..
+@@ -675,6 +681,10 @@ string ReactionClass::fire(double random_A_number, bool track) {
+ 			mol->updateRxnMembership(this, useConnectedUpdate);
+ 		}
+ 	}
++	// The products are counted again and are in their reactions: compute what
++	// was held, from this state.
++	if (this->onTheFlyObservables)
++		this->system->endDeferredFiringPropensityUpdates();
+ 
+ 	// update complex-scoped local functions for typeII dependencies
+ 	// NOTE: as a side-effect, dependent DOR reactions (via typeI molecule dependencies) will be updated
+diff --git a/src/NFcore/system.cpp b/src/NFcore/system.cpp
+index e33ed6f..9b1c910 100644
+--- a/src/NFcore/system.cpp
++++ b/src/NFcore/system.cpp
+@@ -899,6 +899,41 @@ void System::update_A_tot(ReactionClass *r, double old_a, double new_a)
+ 
+ }
+ 
++bool System::noteHeldFiringPropensityUpdate(ReactionClass *r)
++{
++	if (!r->getReadsObservable())
++		return false;
++	if (r->markDeferredFiringUpdate(deferredFiringUpdateGeneration))
++		heldFiringReactions.push_back(r);
++	return true;
++}
++
++void System::beginDeferredFiringPropensityUpdates()
++{
++	if (!hasObservableDependentReactions)
++		return;
++	heldFiringReactions.clear();
++	++deferredFiringUpdateGeneration;
++	deferringFiringPropensityUpdates = true;
++}
++
++void System::endDeferredFiringPropensityUpdates()
++{
++	if (!deferringFiringPropensityUpdates)
++		return;
++	/* Reset the guard first, so each update below reaches the selector. No
++	 * held reaction's rate was computed in the span, so get_a() is still the
++	 * propensity the selector has for it. */
++	deferringFiringPropensityUpdates = false;
++	for (vector<ReactionClass *>::const_iterator it = heldFiringReactions.begin();
++			it != heldFiringReactions.end(); ++it) {
++		double old_a = (*it)->get_a();
++		double new_a = (*it)->update_a();
++		a_tot = selector->update(*it, old_a, new_a);
++	}
++	heldFiringReactions.clear();
++}
++
+ 
+ double System::recompute_A_tot()
+ {
+-- 
+2.48.1
+
