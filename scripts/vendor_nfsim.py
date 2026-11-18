@@ -534,6 +534,34 @@ CARRY_QUEUE = (
             },
         ],
     },
+    {
+        "topic": "bngsim/carry-hold-observable-rates",
+        "kind": "local",
+        "status": (
+            "Hold a rate that reads an observable until a firing is done. A firing "
+            "takes its product molecules out of their observables, transforms "
+            "them, puts them back, and then puts them back in their reactions one "
+            "at a time; a rate law read in between is read at a state the system "
+            "is never in. With one X, kgap*(1+9*Xp/Xtot) was 0/0 there, the NaN "
+            "stayed in the running total, and the run froze at the first X firing "
+            "with no error (GH #1818). This is RuleWorld/nfsim#117, merged "
+            "upstream as a0bf9134, written against the pinned base, which has no "
+            "selector->updateBatch and no shared Observable::"
+            "updateDependentReactions: the four add/subtract loops, "
+            "removeFromRxns, updateRxnMembership and updateConnectedRxnMembership "
+            "ask System::holdFiringPropensityUpdate() first. Drop it when the "
+            "base moves past a0bf9134 (GH #519). Fixtures under tests/data/nfsim/ "
+            "(rate_divides_by_emptied_observable, rate_divides_and_firing_deletes, "
+            "rate_negative_mid_firing, total_rate_divides_by_emptied_observable, "
+            "total_rate_divides_two_reactants, rate_only_the_held_update_refreshes)."
+        ),
+        "commits": [
+            {
+                "commit": "ad873702af9952edead60a4a9908b5531baa8677",
+                "summary": ("bngsim: hold a rate that reads an observable until a firing is done"),
+            },
+        ],
+    },
 )
 
 SUMMARY_PREVIEW_LIMIT = 12
