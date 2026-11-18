@@ -162,8 +162,8 @@ def _warn_one_sided(entries: list[tuple[float, dict[str, str]]]) -> None:
         warnings.warn(
             f"Forward sensitivity: the switch time at t={t:.6g} shares its instant with "
             "another that no requested parameter moves alone, and a rate law composes the "
-            "two, so the run sits on a kink in the parameters that move this switch and not "
-            "the other. Their columns are one-sided derivatives, each for a step in the "
+            "two, so the run sits on a kink in the parameters that move this switch apart "
+            "from the other. Their columns are one-sided derivatives, each for a step in the "
             f"direction that delays this switch past the other: {which}. With sigma = t0 + "
             "t_delta on a bound t_delta >= 0 that is the feasible side; bngsim cannot see "
             "the bound, so check the direction against it. In the other direction the "

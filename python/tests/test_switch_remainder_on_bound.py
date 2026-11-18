@@ -585,7 +585,9 @@ def test_an_event_on_the_instant_is_not_matched_against_a_difference():
     b.add_reaction([x2], [], "functional", "r1")
     b.add_event("dose", "time()>=t0", [(x1, "O1+50")])
     model = bngsim.Model(_core=b.build())
-    with pytest.raises(SensitivityUnsupportedError):
+    with pytest.raises(
+        SensitivityUnsupportedError, match="shares its instant with another switch"
+    ):
         _run(model, ["t0"])
 
 
@@ -604,3 +606,72 @@ def test_the_left_over_crossing_alone_is_refused_beside_a_moving_frame(tmp_path,
     model = _net(tmp_path, "time()", SHIFTED, laws, species=2)
     with pytest.raises(SensitivityRefusedForParametersError, match="singular at its switch"):
         _run(model, ["t0"])
+
+
+# ─── Found in a fifth review ─────────────────────────────────────────────────
+
+CLOSING = [
+    "k/(1-ln(sigma-time()))",  # −3.29 came back, marked one-sided
+    "k*(sigma-time())/(0.000001+(sigma-time()))",  # −22.5
+    "k*(sigma-time())^1.5",
+]
+
+
+@pytest.mark.parametrize("law", CLOSING)
+@pytest.mark.parametrize("requested", [["d"], ["t0", "d"]])
+def test_a_composed_reading_that_is_no_jump_is_refused_whatever_is_asked(tmp_path, law, requested):
+    # X decays at LAW on [t0, sigma), a window of no width, so dX/dd is 0 for d
+    # increasing. With d alone asked for, t0's crossing is fixed and nothing is
+    # left over; the side read was taken without asking whether it was a jump.
+    params = ["t0 3", "d 0", "sigma t0+d", "k 0.5"]
+    model = _net(tmp_path, "time()", params, {"a": f"if(time()>=t0,if(time()<sigma,{law},0),0)"})
+    with pytest.raises(SensitivityRefusedForParametersError, match="is not a jump"):
+        _run(model, requested)
+
+
+def test_the_column_by_column_retry_does_not_return_what_the_run_refuses(tmp_path):
+    # compute_all_sensitivities retries a refused chunk one column at a time,
+    # and `d` alone was the request that came back wrong.
+    params = ["t0 3", "d 0", "sigma t0+d", "k 0.5"]
+    law = {"a": f"if(time()>=t0,if(time()<sigma,{CLOSING[0]},0),0)"}
+    model = _net(tmp_path, "time()", params, law)
+    with pytest.raises(SensitivityUnsupportedError):
+        bngsim.Simulator(model, method="ode").compute_all_sensitivities(
+            (0.0, T_END), 7, params=["t0", "d"]
+        )
+
+
+def _twice_as_fast(power_law: str, event: bool):
+    """t0's gate on X1; on X2 a power at S = 2*t0 + d − 3, which moves with t0
+    at twice the rate of t0's own crossing."""
+    b = ModelBuilder()
+    for name, value in (("t0", 3.0), ("d", 0.0), ("k", 0.5), ("k2", 0.25)):
+        b.add_parameter(name, value)
+    idx = [b.add_species(f"X{i}()", 100.0) for i in (1, 2, 3)]
+    b.add_observable("O3", [(idx[2], 1.0)])
+    b.add_function("r1", "if(time()>=t0,k,0)")
+    b.add_function("r2", power_law.replace("S", "(2*t0+d-3)"))
+    b.add_reaction([idx[0]], [], "functional", "r1")
+    b.add_reaction([idx[1]], [], "functional", "r2")
+    if event:
+        b.add_event("late", "time()>=5", [(idx[2], "O3+1")])
+    return bngsim.Model(_core=b.build())
+
+
+@pytest.mark.parametrize(
+    "power_law,event",
+    [
+        ("if(time()>=S,k2*(time()-S)^0.2,0)", True),  # failed in the right-hand side
+        ("if(time()<S,k2*(S-time())^0.2,0)", False),  # made no progress short of 3
+        ("if(time()>=S,k2*(time()-S)^0.2,0)", False),
+    ],
+    ids=["frames-off-for-an-event", "a-closing-power", "an-opening-power"],
+)
+@pytest.mark.parametrize("requested", [["t0"], ["t0", "k"], ["t0", "d"]])
+def test_a_moving_frame_is_refused_before_the_run_whatever_moves_it(power_law, event, requested):
+    # No record carries how fast the power's switch moves, so nothing at the
+    # crossing could refuse; an event turns the frames off, and a closing edge
+    # is approached before it is reached.
+    model = _twice_as_fast(power_law, event)
+    with pytest.raises(SensitivityUnsupportedError, match="singular at its switch|issue #958"):
+        _run(model, requested)

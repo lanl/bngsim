@@ -10757,22 +10757,6 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
     // scaled by (1 ∓ √rtol) — see restore_nominal_params.
     restore_nominal_params(sens);
 
-    // An instant with a left-over crossing (issue #1822) emits ∂t*/∂p that are
-    // differences, and a column that enters a comoving frame at a crossing
-    // (a power singular at its switch, issues #545, #949) is entered by its
-    // own ∂t*/∂p. The frame was not entered, and the run failed in the
-    // sensitivity right-hand side with a non-finite value. Refused here.
-    if (sw.on_a_left_over_instant() && sens.comoving.enabled) {
-        throw SensitivityRefusedForParameters(
-            "Forward sensitivity: the switch times crossing together at t=" +
-            std::to_string(t_evt) +
-            " include one that no requested parameter moves alone, which is given what is "
-            "left of the instant's jump (issue #1822), and the model has a rate law that is a "
-            "power singular at its switch, whose columns are carried in a frame that moves "
-            "with the switch (issue #949). The two are not combined. Separate the switch "
-            "times, or drop the parameters that move them from sensitivity_params.");
-    }
-
     // f⁻ / f⁺ at x(t*), branch selected by nudging the clock across its
     // threshold. eps_clock is a few ulp of the threshold: large enough that
     // threshold ± eps_clock are distinct doubles, small enough that the
@@ -11357,14 +11341,19 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
         // column is wrong either way: a window closing as (sa − t)^0.2 in a
         // law of its own, beside a gate in another, came back −9.91 for −9.49.
         //
-        // Asked only beside a left-over crossing, an instant that was refused
-        // whole before. With the other crossing fixed for the columns asked,
-        // the run was returned before, and the test below refuses readings
+        // Asked beside a left-over crossing, an instant that was refused whole
+        // before. With the other crossing fixed for the columns asked and no
+        // law composing the two, the run was returned before, and the test
+        // below refuses readings
         // that are jumps: a species near its steady state whose flux reads the
         // bumped parameter rounds by the gross flux, not by the net one the
         // allowance is taken from (found in review).
-        if (not_commuting.empty() && sw.read_after_the_other() && sw.beside_a_left_over() &&
-            scratch.not_a_jump_species >= 0) {
+        //
+        // And where a law composes the pair and the side read is being taken,
+        // whatever was asked: with `d` alone requested, a window closing as
+        // k/(1 − ln(sigma − t)) came back −3.29 for 0, marked one-sided.
+        if (not_commuting.empty() && sw.read_after_the_other() &&
+            (sw.beside_a_left_over() || scratch.one_sided) && scratch.not_a_jump_species >= 0) {
             std::ostringstream msg;
             msg << "Forward sensitivity: the switch time at t=" << t_evt
                 << " shares its instant with another that no requested parameter moves alone, "
@@ -19775,6 +19764,29 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     }
     // Issue #760: the run takes its stops for the comoving columns on the
     // stretch it starts with.
+    // An instant with a left-over crossing (issue #1822) emits ∂t*/∂p that are
+    // differences, and a column that rides in a comoving frame (a power
+    // singular at its switch, issues #545, #949) enters it, and is refused
+    // where it cannot (#958), by the crossing's own ∂t*/∂p. With no record
+    // carrying that, the frame was not entered and nothing refused: the run
+    // failed in the sensitivity right-hand side, or made no progress short of
+    // the crossing. Refused before the first step, so wherever the frame would
+    // have been asked for, and with frames off for an event too.
+    if (n_sens_p > 0 && (sens.comoving.enabled || sens.comoving.off_for_events)) {
+        for (const SwitchTimeSens *sw : switch_list) {
+            if (sw->on_a_left_over_instant()) {
+                throw SensitivityRefusedForParameters(
+                    "Forward sensitivity: the switch times crossing together at t=" +
+                    std::to_string(sw->t_star) +
+                    " include one that no requested parameter moves alone, which is given what "
+                    "is left of the instant's jump (issue #1822), and the model has a rate law "
+                    "that is a power singular at its switch, whose columns are carried in a "
+                    "frame that moves with the switch (issue #949). The two are not combined. "
+                    "Separate the switch times, or drop the parameters that move them from "
+                    "sensitivity_params.");
+            }
+        }
+    }
     sens.comoving.switches = &switch_list;
     sens.comoving.entry_request = std::numeric_limits<double>::quiet_NaN();
     if (sens.comoving.enabled && n_sens_p > 0) {

@@ -223,10 +223,10 @@ class Result {
 
     // A switch time whose columns are one-sided derivatives (issue #1822): it
     // sits on the instant of another switch, a rate law composes the two, and
-    // the run is on a kink in every parameter that moves this one and not the
-    // other. `columns` are the parameter columns (0-based) and `directions`
-    // the sign of the step each derivative is for: +1 where the parameter is
-    // increased, -1 where it is decreased.
+    // the run is on a kink in every parameter that moves this one apart from
+    // the other (sigma = 2*t0 + d and t0: both d and t0). `columns` are the parameter columns
+    // (0-based) and `directions` the sign of the step each derivative is for: +1 where the
+    // parameter is increased, -1 where it is decreased.
     struct OneSidedSwitch {
         double t = 0.0;
         std::vector<int> columns;
