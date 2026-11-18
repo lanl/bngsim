@@ -490,10 +490,12 @@ class OneSidedSensitivityWarning(UserWarning):
     the two.
 
     The column returned for such a parameter is the derivative in the direction
-    that delays its switch past the other one, which the warning names. That is
-    the derivative a bounded optimizer wants where the parameter sits on a lower
-    bound of 0 (``t_delta >= 0``). In the other direction the derivative is
-    another number, and bngsim does not compute it. The columns of every other
+    that delays its switch past the other one, which the warning names. With
+    ``sigma = t0 + t_delta`` and ``t_delta >= 0`` that is the feasible side of
+    the bound, the derivative a bounded optimizer wants. bngsim cannot see the
+    bound: with ``sigma = t0 - t_delta`` the direction named is ``t_delta``
+    decreasing, the infeasible one, and the feasible derivative is another
+    number. In the other direction bngsim does not compute it. The columns of every other
     parameter are ordinary two-sided derivatives.
     :attr:`bngsim.Result.one_sided_sensitivities` lists the same thing as data.
     Filter or escalate it like any ``UserWarning``::

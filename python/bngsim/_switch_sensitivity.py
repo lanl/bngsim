@@ -11250,6 +11250,49 @@ def _unseparable(group: Sequence[_Crossing], lacking: Sequence[_Crossing]) -> st
     )
 
 
+def _outside_the_nudge(remainder: _Crossing, group: Sequence[_Crossing]) -> list[str]:
+    """What the merged jump read about ``remainder`` would leave out (issue #1822).
+
+    The crossing left over is given the instant's merged jump, which the core
+    reads by nudging ``remainder``'s clock 64 ulp either side of it. That
+    flips every crossing on its clock within the nudge and nothing else. A
+    group holds more than that: crossings within twelve significant digits of
+    each other, and crossings on another clock. One the nudge does not flip is
+    not in the merged jump, and the left-over crossing's column would lack its
+    jump with no error: with ``t_delta = 1e-12`` the ``t0`` column came back 0
+    for 11.8. Each such crossing is named here; the caller refuses.
+    """
+    ulp = _EPS * max(abs(_on_clock(remainder)), 1.0)
+    reach = _INSTANT_ULPS * ulp
+    out = []
+    for other in group:
+        if other is remainder:
+            continue
+        if other.clock_idx0 != remainder.clock_idx0:
+            out.append(f"one at {_on_clock(other):.17g} is on another clock")
+        elif any(abs(at - _on_clock(remainder)) > reach for at in _extent(other)):
+            out.append(
+                f"one at {_on_clock(other):.17g} is "
+                f"{abs(_on_clock(other) - _on_clock(remainder)) / ulp:.3g} ulp from it"
+            )
+    return out
+
+
+def _unmerged(remainder: _Crossing, apart: Sequence[str]) -> str:
+    """The refusal for a left-over crossing whose merged jump would leave some of
+    the instant out (issue #1822)."""
+    return (
+        "Forward sensitivity is not supported on this model: the switch times "
+        f"crossing together at t={remainder.t_star:.6g} cannot be told apart. One of them "
+        "has no parameter its threshold alone reads, and is given what is left of the "
+        "instant's jump once the others are separated (issue #1822). That jump is read by "
+        "nudging its clock 64 ulp across it, which flips no crossing on another clock "
+        "and none further away, and here " + "; ".join(apart) + ". Set the two switch "
+        "times equal, or move them apart, or drop the parameters that move them from "
+        "sensitivity_params."
+    )
+
+
 def _comes_after_the_other(cross: _Crossing, group: Sequence[_Crossing]) -> bool:
     """Whether ``cross`` is the later of the two crossings on its instant by how
     its threshold is built (issue #1822).
@@ -11726,6 +11769,9 @@ def _emit_switch_records(
                     # column is not its ∂t*/∂p times a jump alone, and the
                     # identity above is not established for it.
                     raise SensitivityUnsupportedError(_unseparable(group, lacking))
+                apart = _outside_the_nudge(lacking[0], group)
+                if apart:
+                    raise SensitivityUnsupportedError(_unmerged(lacking[0], apart))
                 remainder = lacking[0]
         for cross in group:
             dtstar = cross.dtstar

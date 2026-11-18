@@ -12,9 +12,11 @@ Result wraps the C++ Result and provides:
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import threading
 import warnings
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn
@@ -123,8 +125,34 @@ def _one_sided_from_core(core: Any, columns: list[str]) -> list[tuple[float, dic
     return out
 
 
+_HELD = threading.local()
+
+
+@contextlib.contextmanager
+def _one_sided_warnings_held() -> Iterator[None]:
+    """Record one-sided entries on the results made in this thread, and warn of
+    none of them: for runs made in worker threads, where no frame of the
+    caller's is on the stack for a warning to name. Whoever holds them warns
+    once the results are back on the calling thread (issue #1822)."""
+    was = getattr(_HELD, "on", False)
+    _HELD.on = True
+    try:
+        yield
+    finally:
+        _HELD.on = was
+
+
+def _merge_one_sided(results: Iterable[Any]) -> list[tuple[float, dict[str, str]]]:
+    """The one-sided entries of several results of one run, by instant."""
+    by_t: dict[float, dict[str, str]] = {}
+    for r in results:
+        for t, named in getattr(r, "_one_sided_sensitivities", ()):
+            by_t.setdefault(t, {}).update(named)
+    return sorted(by_t.items())
+
+
 def _warn_one_sided(entries: list[tuple[float, dict[str, str]]]) -> None:
-    if not entries:
+    if not entries or getattr(_HELD, "on", False):
         return
     from bngsim._exceptions import OneSidedSensitivityWarning
     from bngsim._simulator import _stacklevel_outside_bngsim
@@ -136,9 +164,10 @@ def _warn_one_sided(entries: list[tuple[float, dict[str, str]]]) -> None:
             "another that no requested parameter moves alone, and a rate law composes the "
             "two, so the run sits on a kink in the parameters that move this switch and not "
             "the other. Their columns are one-sided derivatives, each for a step in the "
-            f"direction that delays this switch past the other: {which}. That is the "
-            "derivative on the feasible side of a bound such as t_delta >= 0; in the other "
-            "direction the derivative is another number, which bngsim does not compute. "
+            f"direction that delays this switch past the other: {which}. With sigma = t0 + "
+            "t_delta on a bound t_delta >= 0 that is the feasible side; bngsim cannot see "
+            "the bound, so check the direction against it. In the other direction the "
+            "derivative is another number, which bngsim does not compute. "
             "Every other column is an ordinary derivative (issue #1822). "
             "Result.one_sided_sensitivities lists these.",
             OneSidedSensitivityWarning,
@@ -2038,7 +2067,9 @@ class Result:
 
         Empty for a run that sits on no such kink, which is nearly every run,
         and for a result that did not come from one (loaded from a file, sliced
-        or stacked). A :class:`bngsim.OneSidedSensitivityWarning` is raised for
+        or stacked). A result cut short by a stop condition, or stitched from
+        :meth:`Simulator.compute_all_sensitivities`' chunks, keeps the entries
+        of the runs it was made from. A :class:`bngsim.OneSidedSensitivityWarning` is raised for
         each entry when the run returns.
         """
         return [(t, dict(columns)) for t, columns in self._one_sided_sensitivities]

@@ -316,3 +316,80 @@ def test_on_a_clock_a_requested_parameter_moves_the_left_over_rule_is_not_used(t
     )
     with pytest.raises(SensitivityUnsupportedError, match="cannot be told apart"):
         _run(model, ["t0", "t_delta", "one"])
+
+
+# ─── Refused where the instant's merged jump would leave a crossing out ──────
+# The crossing left over is given the merged jump, read by nudging its clock 64
+# ulp across it. A crossing the nudge does not flip is not in it: the t0
+# column came back 0 for 11.8, with no error (found in review).
+
+TWO_LAWS = {"a": "if(CLOCK>=t0,k,0)", "b": "if(CLOCK>=sigma,k2,0)"}
+
+
+@pytest.mark.parametrize("t_delta", ["6e-14", "1e-13", "1e-12"])
+def test_crossings_past_the_nudge_and_within_the_instant_are_refused(tmp_path, t_delta):
+    params = ["t0 3", f"t_delta {t_delta}", "sigma t0+t_delta", "k 0.5", "k2 0.25"]
+    model = _net(tmp_path, "time()", params, TWO_LAWS, species=2)
+    with pytest.raises(SensitivityUnsupportedError, match="ulp from it"):
+        _run(model, ["t0", "t_delta"])
+
+
+@pytest.mark.parametrize("t_delta", ["0", "3e-14"])
+def test_crossings_within_the_nudge_take_the_merged_jump(tmp_path, t_delta):
+    params = ["t0 3", f"t_delta {t_delta}", "sigma t0+t_delta", "k 0.5", "k2 0.25"]
+    model = _net(tmp_path, "time()", params, TWO_LAWS, species=2)
+    result, _ = _run(model, ["t0", "t_delta"])
+    x2 = 100 * math.exp(-0.25 * (T_END - 3))
+    assert _column(result, 1, "t0") == pytest.approx(0.25 * x2, rel=1e-6)
+
+
+@pytest.mark.parametrize(
+    "laws",
+    [
+        {"a": "if(time()>=t0,k,0)", "b": "if(t>=sigma,k2,0)"},
+        {"a": "if(t>=t0,k,0)", "b": "if(time()>=sigma,k2,0)"},
+        {"a": "if(time()>=t0,1,0)*if(t>=sigma,k,0)"},
+        {"a": "if(time()>=t0,k,0)", "b": "if(time()>=sigma,k2,0)", "c": "if(t>=tc,k2,0)"},
+    ],
+    ids=[
+        "time-then-counter",
+        "counter-then-time",
+        "a-product-on-two-clocks",
+        "a-third-gate-elsewhere",
+    ],
+)
+def test_a_crossing_on_another_clock_is_refused(tmp_path, laws):
+    params = ["t0 3", "t_delta 0", "sigma t0+t_delta", "tc 3", "k 0.5", "k2 0.25"]
+    model = _net(tmp_path, "time()", params, laws, species=len(laws))
+    requested = ["t0", "t_delta", "tc"] if "c" in laws else ["t0", "t_delta"]
+    with pytest.raises(SensitivityUnsupportedError, match="on another clock"):
+        _run(model, requested)
+
+
+def test_a_window_that_closes_as_a_singular_power_is_refused(tmp_path):
+    # X decays at k·(sigma − t)^0.2 on [t0, sigma), so X = 100·exp(−k·d^1.2/1.2)
+    # and the derivative for d increasing is 0. What a hair past the instant
+    # reads goes as the hair to the 0.2 and is no jump: −2.9 came back (#949).
+    params = ["t0 3", "d 0", "sigma t0+d", "k 0.5"]
+    law = {"a": "if(CLOCK>=t0,if(CLOCK<sigma,k*(sigma-CLOCK)^0.2,0),0)"}
+    model = _net(tmp_path, "time()", params, law)
+    with pytest.raises(SensitivityRefusedForParametersError, match="is not a jump"):
+        _run(model, ["t0", "d"])
+
+
+# ─── Results made from several runs keep the entries ─────────────────────────
+
+
+@pytest.mark.parametrize("n_workers", [1, 3])
+def test_chunked_sensitivities_keep_the_entries_and_warn_once_at_the_caller(tmp_path, n_workers):
+    model = _net(tmp_path, "time()", SHIFTED, PRODUCT)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = bngsim.Simulator(model, method="ode").compute_all_sensitivities(
+            (0.0, T_END), 7, params=["k", "t0", "t_delta"], chunk_size=1, n_workers=n_workers
+        )
+    raised = [w for w in caught if issubclass(w.category, OneSidedSensitivityWarning)]
+    assert result.one_sided_sensitivities == [(3.0, {"t_delta": "increasing"})]
+    assert [w.filename for w in raised] == [__file__]
+    x = 100 * math.exp(-0.5 * (T_END - 3))
+    assert _column(result, 0, "t_delta") == pytest.approx(0.5 * x, rel=1e-6)

@@ -263,13 +263,22 @@ Where a rate law composes the two crossings, a rate `U()*Lambda()` with one
 gate at `t0` and the other at `sigma`, the run sits on a kink in `t_delta`:
 raising it delays the rate, and lowering it does nothing, `t0` then being the
 later of the two. The `t_delta` column is then the derivative for `t_delta`
-increasing, the direction that delays `sigma` past `t0` and the feasible one at
-a lower bound of 0. bngsim raises a `bngsim.OneSidedSensitivityWarning` that
-names the parameter and the direction, and `Result.one_sided_sensitivities`
-lists them. The derivative in the other direction is another number and is not
-computed. This is only for a pair of crossings one of which has no parameter of
-its own. Two composed crossings that each have one, `tA` and `tB` equal by
-value, have no order to take, and are refused as before (issue #951).
+increasing, the direction that delays `sigma` past `t0`, which at a lower bound
+of 0 is the feasible one. bngsim raises a `bngsim.OneSidedSensitivityWarning`
+that names the parameter and the direction, and `Result.one_sided_sensitivities`
+lists them. bngsim cannot see a bound: with `sigma = t0 - t_delta` the direction
+is `t_delta` decreasing, and at `t_delta >= 0` that is the infeasible side. The
+derivative in the other direction is another number and is not computed.
+
+This is only for a pair of crossings, one of which has no parameter of its own,
+on one clock and within the 64-ulp nudge of each other. Refused as before:
+
+- two composed crossings that each have a parameter of their own, `tA` and `tB`
+  equal by value, which have no order to take (issue #951);
+- a third crossing on the instant, composed or not;
+- a pair on two clocks, or 64 ulp to twelve digits apart (`t_delta = 1e-12`),
+  where the instant's merged jump would leave one of them out;
+- a window that closes as a power singular at its edge (issue #949).
 
 Two crossings share an instant when they are within 64 ulp of each other, which
 is how far the clock is nudged to read the two branches. Crossings further apart

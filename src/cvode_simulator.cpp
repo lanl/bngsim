@@ -3913,6 +3913,10 @@ struct SwitchJumpScratch {
     // not commute with the one it is delayed past, and its jump was taken from
     // the side that was read (issue #1822). Cleared by the caller.
     bool one_sided = false;
+    // The species whose reading at a hair, half of it and a quarter is not a
+    // jump, for a crossing read from one side of a kink; -1 where it is one.
+    // Cleared by the caller with one_sided.
+    int not_a_jump_species = -1;
 
     void resize(int ns) {
         f_minus.resize(static_cast<size_t>(ns));
@@ -10978,6 +10982,37 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
             model.refresh_derived_params();
             std::vector<double> half_hair(static_cast<size_t>(ns), 0.0);
             rhs_past_instant(half_hair);
+            // A crossing whose jump is taken from one side of a kink (issue
+            // #1822) is read at a quarter of the hair too, and the two
+            // extrapolations to none have to agree: they do where what the
+            // hair reads is a jump and a part in proportion to it. A window
+            // that closes as a power singular at its edge, k·(sigma − t)^0.2,
+            // reads the power a hair from its zero, which goes as the hair to
+            // the 0.2 and is no jump (issue #949): the column came back −2.9
+            // where the derivative on that side is 0.
+            if (sw.delayed_past_instant) {
+                for (size_t k = 0; k < sw.isolate_param_idx0.size(); ++k) {
+                    params_live[static_cast<size_t>(sw.isolate_param_idx0[k])].value =
+                        saved[k] + 0.25 * sw.isolate_delta[k];
+                }
+                model.refresh_derived_params();
+                std::vector<double> quarter_hair(static_cast<size_t>(ns), 0.0);
+                rhs_past_instant(quarter_hair);
+                for (int i = 0; i < ns; ++i) {
+                    const auto ui = static_cast<size_t>(i);
+                    const double outer = 2.0 * half_hair[ui] - scratch.f_iso[ui];
+                    const double inner = 2.0 * quarter_hair[ui] - half_hair[ui];
+                    const double size =
+                        std::max({std::fabs(scratch.f_iso[ui]), std::fabs(half_hair[ui]),
+                                  std::fabs(quarter_hair[ui])});
+                    if (!(std::fabs(outer - inner) <=
+                          kEventJumpRelTol * std::max(std::fabs(outer), std::fabs(inner)) +
+                              kEventJumpUlps * std::numeric_limits<double>::epsilon() * size)) {
+                        scratch.not_a_jump_species = i;
+                        break;
+                    }
+                }
+            }
             for (int i = 0; i < ns; ++i) {
                 const auto ui = static_cast<size_t>(i);
                 scratch.f_iso[ui] = 2.0 * half_hair[ui] - scratch.f_iso[ui];
@@ -11264,6 +11299,18 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
                        "this switch the result has a kink a few ulp away (issue #951). Separate "
                        "the "
                        "two times, or set them equal, or drop the parameters that move them from "
+                       "sensitivity_params.";
+                not_commuting = msg.str();
+            } else if (worst >= 0 && sw.delayed_past_instant && scratch.not_a_jump_species >= 0) {
+                std::ostringstream msg;
+                msg << "Forward sensitivity: the switch time at t=" << t_evt
+                    << " shares its instant with another, a rate law composes the two, and "
+                       "the run sits on a kink in the parameters that move this one alone. "
+                       "Its jump on the side that delays it cannot be read: what d["
+                    << model.species()[static_cast<size_t>(scratch.not_a_jump_species)].name
+                    << "]/dt does a hair past the instant is not a jump, as a power that is "
+                       "singular at a window's edge is not (issues #949, #1822). Separate the "
+                       "two times, or drop the parameters that move them from "
                        "sensitivity_params.";
                 not_commuting = msg.str();
             } else if (worst >= 0 && sw.delayed_past_instant) {
@@ -23087,6 +23134,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     (switch_list[next_switch]->t_star <= static_cast<double>(t_ret) ||
                      same_instant(switch_list[next_switch]->t_star, static_cast<double>(t_ret)))) {
                     sw_scratch.one_sided = false;
+                    sw_scratch.not_a_jump_species = -1;
                     impl_->apply_switch_sensitivity_jump(
                         cvode_mem, y, ns, static_cast<double>(t_ret), *switch_list[next_switch],
                         sw_scratch, sens, root_watch);
