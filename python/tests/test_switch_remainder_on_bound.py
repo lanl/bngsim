@@ -587,3 +587,20 @@ def test_an_event_on_the_instant_is_not_matched_against_a_difference():
     model = bngsim.Model(_core=b.build())
     with pytest.raises(SensitivityUnsupportedError):
         _run(model, ["t0"])
+
+
+@pytest.mark.parametrize(
+    "laws",
+    [
+        {"a": "if(time()>=t0,k*(time()-t0)^0.2,0)", "b": "if(time()>=sigma,k2,0)"},
+        {"a": "if(time()>=t0,k,0)", "b": "if(time()>=sigma,k2*(time()-sigma)^0.2,0)"},
+    ],
+    ids=["a-power-at-the-left-over-one", "a-power-at-the-later-one"],
+)
+def test_the_left_over_crossing_alone_is_refused_beside_a_moving_frame(tmp_path, laws):
+    # Only t0 is asked for: sigma moves with it and has nothing left of its
+    # own, so the left-over crossing's record is the only one on the instant,
+    # carrying the merged jump. Refused all the same.
+    model = _net(tmp_path, "time()", SHIFTED, laws, species=2)
+    with pytest.raises(SensitivityRefusedForParametersError, match="singular at its switch"):
+        _run(model, ["t0"])
