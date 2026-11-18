@@ -287,3 +287,32 @@ def test_three_on_an_instant_that_add_are_separated(tmp_path, clock):
                 on * 0.5 * x, rel=1e-6, abs=1e-6
             )
     assert raised == [] and result.one_sided_sensitivities == []
+
+
+@pytest.mark.parametrize("clock", CLOCKS)
+def test_a_later_switch_on_its_own_is_not_reported_as_one_sided(tmp_path, clock):
+    # The kink at 3, then an ordinary switch at 5 in another law. Only the
+    # first is on a kink; the second has a derivative on both sides.
+    params = ["t0 3", "t_delta 0", "sigma t0+t_delta", "k 0.5", "late 5", "k2 0.25"]
+    laws = {**PRODUCT, "b": "if(CLOCK>=late,k2,0)"}
+    model = _net(tmp_path, clock, params, laws, species=2)
+    result, raised = _run(model, ["t0", "t_delta", "late"])
+    x2 = 100 * math.exp(-0.25 * (T_END - 5))
+    assert _column(result, 1, "late") == pytest.approx(0.25 * x2, rel=1e-6)
+    assert _column(result, 1, "t_delta") == pytest.approx(0.0, abs=1e-6)
+    assert result.one_sided_sensitivities == [(3.0, {"t_delta": "increasing"})]
+    assert len(raised) == 1 and "'late'" not in str(raised[0].message)
+
+
+def test_on_a_clock_a_requested_parameter_moves_the_left_over_rule_is_not_used(tmp_path):
+    # The counter rises at `one`, and `one` is asked for: every crossing on the
+    # counter moves with it, and a column there is not a jump times dt*/dp alone.
+    model = _net(
+        tmp_path,
+        "t",
+        SHIFTED,
+        {"a": "if(CLOCK>=t0,k,0)", "b": "if(CLOCK>=sigma,k2,0)"},
+        species=2,
+    )
+    with pytest.raises(SensitivityUnsupportedError, match="cannot be told apart"):
+        _run(model, ["t0", "t_delta", "one"])
