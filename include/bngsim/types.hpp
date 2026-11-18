@@ -1121,8 +1121,9 @@ struct SwitchTimeSens {
     // jump for a parameter that delays it. Where a rate law composes the two,
     // a product of their gates, that is one side of a kink and the other side
     // is another number: the commute test (issue #951) refuses such an instant
-    // otherwise. Set, the core takes the side it read and reports the crossing
-    // in Result::one_sided_switches instead.
+    // otherwise. Set, the core takes the side it read, where what it read is
+    // a jump, and reports the crossing in Result::one_sided_switches. Whether
+    // that side is the feasible one at a bound is not the core's to know.
     bool delayed_past_instant = false;
 };
 

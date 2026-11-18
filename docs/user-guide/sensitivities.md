@@ -271,14 +271,16 @@ is `t_delta` decreasing, and at `t_delta >= 0` that is the infeasible side. The
 derivative in the other direction is another number and is not computed.
 
 This is only for a pair of crossings, one of which has no parameter of its own,
-on one clock and within the 64-ulp nudge of each other. Refused as before:
+on one clock and within half the 64-ulp nudge of each other. Refused as before:
 
 - two composed crossings that each have a parameter of their own, `tA` and `tB`
   equal by value, which have no order to take (issue #951);
 - a third crossing on the instant, composed or not;
-- a pair on two clocks, or 64 ulp to twelve digits apart (`t_delta = 1e-12`),
-  where the instant's merged jump would leave one of them out;
-- a window that closes as a power singular at its edge (issue #949).
+- a pair on two clocks, or 32 ulp to twelve digits apart (`t_delta = 1e-12`),
+  where the instant's merged jump would leave one of them out and the run is
+  near the kink, not on it;
+- a window whose rate goes to zero at its edge, as a power does (issue #949):
+  what is read a hair past the instant is then not a jump.
 
 Two crossings share an instant when they are within 64 ulp of each other, which
 is how far the clock is nudged to read the two branches. Crossings further apart

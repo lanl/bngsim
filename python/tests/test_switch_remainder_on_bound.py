@@ -326,7 +326,7 @@ def test_on_a_clock_a_requested_parameter_moves_the_left_over_rule_is_not_used(t
 TWO_LAWS = {"a": "if(CLOCK>=t0,k,0)", "b": "if(CLOCK>=sigma,k2,0)"}
 
 
-@pytest.mark.parametrize("t_delta", ["6e-14", "1e-13", "1e-12"])
+@pytest.mark.parametrize("t_delta", ["8e-14", "1e-13", "1e-12"])
 def test_crossings_past_the_nudge_and_within_the_instant_are_refused(tmp_path, t_delta):
     params = ["t0 3", f"t_delta {t_delta}", "sigma t0+t_delta", "k 0.5", "k2 0.25"]
     model = _net(tmp_path, "time()", params, TWO_LAWS, species=2)
@@ -334,7 +334,7 @@ def test_crossings_past_the_nudge_and_within_the_instant_are_refused(tmp_path, t
         _run(model, ["t0", "t_delta"])
 
 
-@pytest.mark.parametrize("t_delta", ["0", "3e-14"])
+@pytest.mark.parametrize("t_delta", ["0", "1e-14"])
 def test_crossings_within_the_nudge_take_the_merged_jump(tmp_path, t_delta):
     params = ["t0 3", f"t_delta {t_delta}", "sigma t0+t_delta", "k 0.5", "k2 0.25"]
     model = _net(tmp_path, "time()", params, TWO_LAWS, species=2)
@@ -412,9 +412,10 @@ def test_a_result_cut_by_a_stop_condition_keeps_the_entries(tmp_path):
 
 @pytest.mark.parametrize("clock", CLOCKS)
 def test_a_reading_that_is_no_jump_at_one_instant_does_not_refuse_the_next(tmp_path, clock):
-    # At 2 a law that rises from its switch as a power, beside a gate it does
-    # not compose with: no kink, so what the hair reads there, which goes as
-    # the hair to the 1.5 and is no jump, is not asked to be one. At 4 the product of two gates on a bound: one-sided, as alone.
+    # At 2 a law that falls to its switch as a power, beside a gate it does not
+    # compose with: no kink, so what the hair reads there, which goes as the
+    # hair to the 1.5 and is no jump, is not asked to be one. At 4 the product
+    # of two gates on a bound: one-sided, as alone.
     params = [
         "t0 4",
         "t_delta 0",
@@ -428,7 +429,7 @@ def test_a_reading_that_is_no_jump_at_one_instant_does_not_refuse_the_next(tmp_p
     laws = {
         "a": "if(CLOCK>=t0,1,0)*if(CLOCK>=sigma,k,0)",
         "b": "if(CLOCK>=a0,k3,0)",
-        "c": "if(CLOCK>=sa,k3*(CLOCK-sa)^1.5,0)",
+        "c": "if(CLOCK<sa,k3*(sa-CLOCK)^1.5,0)",
     }
     model = _net(tmp_path, clock, params, laws, species=3)
     # a0 is asked for, so the pair at 2 is read as ordered, sa after a0.
@@ -436,3 +437,56 @@ def test_a_reading_that_is_no_jump_at_one_instant_does_not_refuse_the_next(tmp_p
     assert (4.0, {"t_delta": "increasing"}) in result.one_sided_sensitivities
     x = 100 * math.exp(-0.5 * (T_END - 4))
     assert _column(result, 0, "t_delta") == pytest.approx(0.5 * x, rel=1e-6)
+
+
+# ─── The end of the nudge, and a pair that only looks coincident ─────────────
+
+AT_THE_NUDGE = 64 * 2.0**-52 * 3  # 64 ulp of t0 = 3: where the core reads f⁻ and f⁺
+
+
+@pytest.mark.parametrize(
+    "sigma,gate",
+    [("t0-d", ">="), ("t0+d", ">")],
+    ids=["a-gate-made-at-the-early-reading", "a-gate-not-yet-made-at-the-late-one"],
+)
+def test_a_crossing_at_the_end_of_the_nudge_is_refused(tmp_path, sigma, gate):
+    # Read on its own threshold, the gate is on one branch at both readings,
+    # and the merged jump lacks its jump: dX2/dt0 came back 0 for 11.8.
+    params = ["t0 3", f"d {AT_THE_NUDGE!r}", f"sigma {sigma}", "k 0.5", "k2 0.25"]
+    laws = {"a": f"if(time(){gate}t0,k,0)", "b": f"if(time(){gate}sigma,k2,0)"}
+    model = _net(tmp_path, "time()", params, laws, species=2)
+    with pytest.raises(SensitivityUnsupportedError, match="ulp from it"):
+        _run(model, ["t0", "d"])
+
+
+@pytest.mark.parametrize("requested", [["t_delta"], ["t0", "t_delta"]])
+@pytest.mark.parametrize("t_delta", ["-1e-12", "1e-12", "3e-13"])
+def test_a_pair_a_few_hundred_ulp_apart_is_refused_whatever_is_asked(tmp_path, t_delta, requested):
+    # Within twelve digits and not on one instant: at -1e-12 sigma comes first
+    # and the derivative is 0. Read as ordered, 11.16 came back, the number for
+    # t_delta = 0, when t0 was not asked for.
+    params = ["t0 3", f"t_delta {t_delta}", "sigma t0+t_delta", "k 0.5"]
+    model = _net(tmp_path, "time()", params, PRODUCT)
+    with pytest.raises((SensitivityUnsupportedError, SensitivityRefusedForParametersError)):
+        _run(model, requested)
+
+
+def test_a_batch_run_from_another_thread_still_warns(tmp_path):
+    # Held for the caller only where workers make the runs; a batch run in
+    # sequence from a thread of the user's warns from that thread.
+    import threading
+
+    model = _net(tmp_path, "time()", SHIFTED, PRODUCT)
+    seen: list = []
+
+    def work():
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            sim = bngsim.Simulator(model, method="ode", sensitivity_params=["t_delta"])
+            sim.run_batch((0.0, T_END), 7, params=[{"k": 0.5}, {"k": 0.4}])
+        seen.extend(w for w in caught if issubclass(w.category, OneSidedSensitivityWarning))
+
+    thread = threading.Thread(target=work)
+    thread.start()
+    thread.join(120)
+    assert len(seen) == 2

@@ -11308,8 +11308,9 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
                        "the run sits on a kink in the parameters that move this one alone. "
                        "Its jump on the side that delays it cannot be read: what d["
                     << model.species()[static_cast<size_t>(scratch.not_a_jump_species)].name
-                    << "]/dt does a hair past the instant is not a jump, as a power that is "
-                       "singular at a window's edge is not (issues #949, #1822). Separate the "
+                    << "]/dt does a hair past the instant is not a jump within rounding: a "
+                       "rate that goes to zero at a window's edge, as a power, reads this way "
+                       "(issues #949, #1822). Separate the "
                        "two times, or drop the parameters that move them from "
                        "sensitivity_params.";
                 not_commuting = msg.str();
@@ -11319,8 +11320,9 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
                 // and this one with its jump read after it (issue #1822). The
                 // two do not commute, and the jump just read is the one for a
                 // parameter that delays this crossing: the derivative on that
-                // side of the kink, which is the side a parameter on a bound
-                // can move to. The caller reports it.
+                // side of the kink. With sigma = t0 + t_delta and t_delta >= 0
+                // that is the feasible side; the core cannot see a bound, and
+                // the caller reports the direction for the user to check.
                 scratch.one_sided = true;
             } else if (worst >= 0) {
                 const auto uw = static_cast<size_t>(worst);

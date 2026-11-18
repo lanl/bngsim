@@ -11255,7 +11255,7 @@ def _outside_the_nudge(remainder: _Crossing, group: Sequence[_Crossing]) -> list
 
     The crossing left over is given the instant's merged jump, which the core
     reads by nudging ``remainder``'s clock 64 ulp either side of it. That
-    flips every crossing on its clock within the nudge and nothing else. A
+    flips every crossing on its clock inside the nudge and nothing else. A
     group holds more than that: crossings within twelve significant digits of
     each other, and crossings on another clock. One the nudge does not flip is
     not in the merged jump, and the left-over crossing's column would lack its
@@ -11263,7 +11263,11 @@ def _outside_the_nudge(remainder: _Crossing, group: Sequence[_Crossing]) -> list
     for 11.8. Each such crossing is named here; the caller refuses.
     """
     ulp = _EPS * max(abs(_on_clock(remainder)), 1.0)
-    reach = _INSTANT_ULPS * ulp
+    # Half the nudge, not the whole of it. The core reads on the doubles the
+    # nudge rounds to, and a crossing exactly at its end is read on its own
+    # threshold: a `>=` gate 64 ulp before is made on both sides, and its jump
+    # is not in the difference (found in review: 0 for 11.8 again).
+    reach = 0.5 * _INSTANT_ULPS * ulp
     out = []
     for other in group:
         if other is remainder:
@@ -11287,7 +11291,9 @@ def _unmerged(remainder: _Crossing, apart: Sequence[str]) -> str:
         "has no parameter its threshold alone reads, and is given what is left of the "
         "instant's jump once the others are separated (issue #1822). That jump is read by "
         "nudging its clock 64 ulp across it, which flips no crossing on another clock "
-        "and none further away, and here " + "; ".join(apart) + ". Set the two switch "
+        "and none at the nudge's end or further away, and here "
+        + "; ".join(apart)
+        + ". Set the two switch "
         "times equal, or move them apart, or drop the parameters that move them from "
         "sensitivity_params."
     )
@@ -11314,7 +11320,13 @@ def _comes_after_the_other(cross: _Crossing, group: Sequence[_Crossing]) -> bool
     if len(group) != 2:
         return False
     other = group[0] if group[1] is cross else group[1]
-    return bool(other.partials) and set(other.partials) < set(cross.partials)
+    if not (other.partials and set(other.partials) < set(cross.partials)):
+        return False
+    # And the two are on one clock and inside the nudge that reads them. A
+    # group holds crossings up to twelve digits apart; at t_delta = -1e-12
+    # sigma comes first, the run is not on the kink, and the jump read with
+    # t0 made is the number for t_delta = 0, not for this run.
+    return not _outside_the_nudge(other, group)
 
 
 def _isolation_bump(

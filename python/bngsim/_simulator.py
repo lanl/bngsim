@@ -6388,11 +6388,13 @@ class Simulator:
 
         def _run_one(i: int) -> Result:
             """Run simulation i (thread-safe, GIL released)."""
-            if threading.current_thread() is not threading.main_thread():
+            if in_workers:
                 # Warned of below, on the caller's thread (issue #1822).
                 with _one_sided_warnings_held():
                     return _run_one_here(i)
             return _run_one_here(i)
+
+        in_workers = num_processors is not None and num_processors > 1
 
         def _run_one_here(i: int) -> Result:
             return runner_of.get(i, self)._run_single_batch(
@@ -6431,7 +6433,7 @@ class Simulator:
             results = [_run_one(i) for i in range(n_sims)]
 
         logger.info("Batch complete: %d results", len(results))
-        if num_processors is not None and num_processors > 1:
+        if in_workers:
             for r in results:
                 _warn_one_sided(r._one_sided_sensitivities)
         if self._atol_is_default(atol):
@@ -8266,17 +8268,20 @@ class Simulator:
                 # One that turns on the columns asked (issue #1435) is retried
                 # below, as an untyped failure is: a column alone can run.
                 raise exc
-            return self._recover_failed_chunk(
-                chunk_idx,
-                chunks,
-                target_params,
-                exc,
-                t_span,
-                n_points,
-                effective_rtol,
-                effective_atol_spec,
-                effective_max_steps,
-            )
+            # Each column's run is one of this call's: warned of from the
+            # stitched result, as a chunk's is.
+            with _one_sided_warnings_held():
+                return self._recover_failed_chunk(
+                    chunk_idx,
+                    chunks,
+                    target_params,
+                    exc,
+                    t_span,
+                    n_points,
+                    effective_rtol,
+                    effective_atol_spec,
+                    effective_max_steps,
+                )
 
         # Run chunks (parallel or serial). GH #243 — a chunk that fails is not
         # the end of the call: the grouping itself is part of what failed, so
