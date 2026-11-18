@@ -1186,7 +1186,7 @@ PYBIND11_MODULE(_bngsim_core, m) {
                const std::vector<std::tuple<double, int, double, std::vector<double>,
                                             std::vector<int>, std::vector<double>, bool,
                                             std::vector<std::pair<int, double>>,
-                                            std::vector<std::pair<int, double>>>>
+                                            std::vector<std::pair<int, double>>, int>>
                    &records) {
                 self.sensitivity.switch_times.clear();
                 self.sensitivity.switch_times.reserve(records.size());
@@ -1201,6 +1201,7 @@ PYBIND11_MODULE(_bngsim_core, m) {
                     sw.fixed_on_instant = std::get<6>(r);
                     sw.instant_clocks = std::get<7>(r);
                     sw.instant_other_clocks = std::get<8>(r);
+                    sw.instant_role = std::get<9>(r);
                     if (sw.isolate_param_idx0.size() != sw.isolate_delta.size()) {
                         throw std::invalid_argument(
                             "set_switch_time_sens: isolate_param_idx0 and isolate_delta must be "
@@ -1218,7 +1219,7 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "Set the switch-time crossings to stop at and jump across, as "
             "(t_star, clock_species_idx0, threshold, [∂t*/∂p per param column], "
             "[isolate_param_idx0], [isolate_delta], fixed_on_instant, [instant_clocks], "
-            "[instant_other_clocks]) "
+            "[instant_other_clocks], instant_role) "
             "records (issue #48). A "
             "switch time is a fitted parameter that sets "
             "WHEN a step in the dynamics occurs — an `if(t>=sigma, ...)` onset "
@@ -1236,7 +1237,13 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "this instant that a rate law reads together with this one, as "
             "(clock_species_idx0, value) pairs, -1 for the time (issue #951), "
             "and instant_other_clocks every crossing on the instant that is on "
-            "another clock. Detection and the chain "
+            "another clock. instant_role is bits: 1, the crossing is read as "
+            "coming after the one it shares its instant with, and where a rate "
+            "law composes the two its column is a one-sided derivative, reported "
+            "in ResultCore.one_sided_switches; 2, it is isolated beside a "
+            "crossing with no parameter of its own, and its ∂t*/∂p here is its "
+            "own less that one's; 4, it is that crossing, emitted with the "
+            "instant's merged jump (issue #1822). Detection and the chain "
             "rule to fitted primaries are done by bngsim._switch_sensitivity; "
             "empty records (the default) leave the integration loop untouched.")
         .def(
@@ -1659,6 +1666,18 @@ PYBIND11_MODULE(_bngsim_core, m) {
         // Sensitivity data (CVODES forward sensitivities)
         .def_property_readonly("n_sens_params", &bngsim::Result::n_sens_params)
         .def_property_readonly("sens_param_names", &bngsim::Result::sens_param_names)
+        .def_property_readonly(
+            "one_sided_switches",
+            [](const bngsim::Result &r) {
+                std::vector<std::tuple<double, std::vector<int>, std::vector<int>>> out;
+                for (const auto &e : r.one_sided_switches()) {
+                    out.emplace_back(e.t, e.columns, e.directions);
+                }
+                return out;
+            },
+            "Switch times whose columns are one-sided derivatives, as (t, [param "
+            "column], [direction]) with direction +1 for the parameter increased "
+            "and -1 for it decreased (issue #1822).")
         .def_property_readonly(
             "sensitivity_data",
             [](const bngsim::Result &r) {

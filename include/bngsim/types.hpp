@@ -1113,6 +1113,41 @@ struct SwitchTimeSens {
     // nudge of this crossing's clock flips those, and the right-hand side a
     // comoving column enters its frame against has to have them made.
     std::vector<std::pair<int, double>> instant_other_clocks;
+    // This crossing shares its instant with one that has no parameter of its
+    // own, and is read as coming after it (issue #1822). With sigma = t0 +
+    // t_delta and t_delta on its bound of 0, no parameter moves t0 alone; the
+    // detector isolates sigma and emits t0 with the instant's merged jump. The
+    // jump read for this crossing, with the other already made, is then its
+    // jump for a parameter that delays it. Where a rate law composes the two,
+    // a product of their gates, that is one side of a kink and the other side
+    // is another number: the commute test (issue #951) refuses such an instant
+    // otherwise. For such a crossing the core takes the side it read, where
+    // what it read is a jump, and reports it in Result::one_sided_switches.
+    // Whether that side is the feasible one at a bound is not the core's to
+    // know.
+    //
+    // Three things the detector says of a crossing on a shared instant, as bits
+    // of instant_role:
+    //   kReadAfterTheOther (1)  what is described above: one of a pair, read as
+    //       the later. Its reading has to be a jump where a law composes the
+    //       two, and the side read is then taken and reported.
+    //   kBesideALeftOver (2)  it is isolated beside a crossing that has no
+    //       parameter of its own, and dtstar_dp here is its own less that
+    //       one's: not how fast this crossing moves.
+    //   kLeftOver (4)  it is that crossing, emitted with the merged jump.
+    // An instant main refused whole is one with a left-over crossing, bits 2
+    // and 4. What this code cannot do there it refuses; with bit 1 alone, the
+    // other crossing fixed for the columns asked, main ran, and nothing is
+    // refused that main returned.
+    static constexpr int kReadAfterTheOther = 1;
+    static constexpr int kBesideALeftOver = 2;
+    static constexpr int kLeftOver = 4;
+    int instant_role = 0;
+    bool read_after_the_other() const { return (instant_role & kReadAfterTheOther) != 0; }
+    bool beside_a_left_over() const { return (instant_role & kBesideALeftOver) != 0; }
+    bool on_a_left_over_instant() const {
+        return (instant_role & (kBesideALeftOver | kLeftOver)) != 0;
+    }
 };
 
 // One event whose crossing time moves with the sensitivity parameters (issue

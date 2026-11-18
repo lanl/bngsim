@@ -3909,6 +3909,14 @@ struct SwitchJumpScratch {
     // crossing that shares its instant with another (issue #375). Sized with
     // the rest; untouched on the overwhelmingly common isolated crossing.
     std::vector<double> f_iso;
+    // Set by apply_switch_sensitivity_jump where the crossing it was given does
+    // not commute with the one it is delayed past, and its jump was taken from
+    // the side that was read (issue #1822). Cleared by the caller.
+    bool one_sided = false;
+    // The species whose reading at a hair, half of it and a quarter is not a
+    // jump, for a crossing read from one side of a kink; -1 where it is one.
+    // Cleared by the caller with one_sided.
+    int not_a_jump_species = -1;
 
     void resize(int ns) {
         f_minus.resize(static_cast<size_t>(ns));
@@ -9917,6 +9925,13 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             double d = c < n_sens_p && one->dtstar_dp.size() == static_cast<size_t>(n_sens_p)
                            ? one->dtstar_dp[static_cast<size_t>(c)]
                            : 0.0;
+            if (one->beside_a_left_over()) {
+                // Its ∂t*/∂p here is its own less the left-over crossing's
+                // (issue #1822), which is not how it moves: a crossing moving
+                // twice as fast as the left-over one read as moving with the
+                // event, and a kink came back as a derivative.
+                return false;
+            }
             if (one->clock_species_idx0 >= 0) {
                 // A counter clock's crossing also moves with the clock's own
                 // sensitivity (issue #725).
@@ -10974,6 +10989,37 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
             model.refresh_derived_params();
             std::vector<double> half_hair(static_cast<size_t>(ns), 0.0);
             rhs_past_instant(half_hair);
+            // A crossing whose jump is taken from one side of a kink (issue
+            // #1822) is read at a quarter of the hair too, and the two
+            // extrapolations to none have to agree: they do where what the
+            // hair reads is a jump and a part in proportion to it. A window
+            // that closes as a power singular at its edge, k·(sigma − t)^0.2,
+            // reads the power a hair from its zero, which goes as the hair to
+            // the 0.2 and is no jump (issue #949): the column came back −2.9
+            // where the derivative on that side is 0.
+            if (sw.read_after_the_other()) {
+                for (size_t k = 0; k < sw.isolate_param_idx0.size(); ++k) {
+                    params_live[static_cast<size_t>(sw.isolate_param_idx0[k])].value =
+                        saved[k] + 0.25 * sw.isolate_delta[k];
+                }
+                model.refresh_derived_params();
+                std::vector<double> quarter_hair(static_cast<size_t>(ns), 0.0);
+                rhs_past_instant(quarter_hair);
+                for (int i = 0; i < ns; ++i) {
+                    const auto ui = static_cast<size_t>(i);
+                    const double outer = 2.0 * half_hair[ui] - scratch.f_iso[ui];
+                    const double inner = 2.0 * quarter_hair[ui] - half_hair[ui];
+                    const double size =
+                        std::max({std::fabs(scratch.f_iso[ui]), std::fabs(half_hair[ui]),
+                                  std::fabs(quarter_hair[ui])});
+                    if (!(std::fabs(outer - inner) <=
+                          kEventJumpRelTol * std::max(std::fabs(outer), std::fabs(inner)) +
+                              kEventJumpUlps * std::numeric_limits<double>::epsilon() * size)) {
+                        scratch.not_a_jump_species = i;
+                        break;
+                    }
+                }
+            }
             for (int i = 0; i < ns; ++i) {
                 const auto ui = static_cast<size_t>(i);
                 scratch.f_iso[ui] = 2.0 * half_hair[ui] - scratch.f_iso[ui];
@@ -11262,6 +11308,16 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
                        "two times, or set them equal, or drop the parameters that move them from "
                        "sensitivity_params.";
                 not_commuting = msg.str();
+            } else if (worst >= 0 && sw.read_after_the_other()) {
+                // The one it shares the instant with has no parameter of its
+                // own, so the detector emitted that one with the merged jump
+                // and this one with its jump read after it (issue #1822). The
+                // two do not commute, and the jump just read is the one for a
+                // parameter that delays this crossing: the derivative on that
+                // side of the kink. With sigma = t0 + t_delta and t_delta >= 0
+                // that is the feasible side; the core cannot see a bound, and
+                // the caller reports the direction for the user to check.
+                scratch.one_sided = true;
             } else if (worst >= 0) {
                 const auto uw = static_cast<size_t>(worst);
                 std::ostringstream msg;
@@ -11278,6 +11334,36 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
                        "parameters that move them from sensitivity_params.";
                 not_commuting = msg.str();
             }
+        }
+        // A crossing read after the one it shares its instant with (issue
+        // #1822) has its jump taken from the reading a hair past the instant,
+        // composed with the other or not. Where that reading is no jump the
+        // column is wrong either way: a window closing as (sa − t)^0.2 in a
+        // law of its own, beside a gate in another, came back −9.91 for −9.49.
+        //
+        // Asked beside a left-over crossing, an instant that was refused whole
+        // before. With the other crossing fixed for the columns asked and no
+        // law composing the two, the run was returned before, and the test
+        // below refuses readings
+        // that are jumps: a species near its steady state whose flux reads the
+        // bumped parameter rounds by the gross flux, not by the net one the
+        // allowance is taken from (found in review).
+        //
+        // And where a law composes the pair and the side read is being taken,
+        // whatever was asked: with `d` alone requested, a window closing as
+        // k/(1 − ln(sigma − t)) came back −3.29 for 0, marked one-sided.
+        if (not_commuting.empty() && sw.read_after_the_other() &&
+            (sw.beside_a_left_over() || scratch.one_sided) && scratch.not_a_jump_species >= 0) {
+            std::ostringstream msg;
+            msg << "Forward sensitivity: the switch time at t=" << t_evt
+                << " shares its instant with another that no requested parameter moves alone, "
+                   "and its own jump has to be read with that one made. It cannot be: what d["
+                << model.species()[static_cast<size_t>(scratch.not_a_jump_species)].name
+                << "]/dt does a hair past the instant is not a jump within rounding. A rate "
+                   "that goes to zero at a window's edge, as a power, reads this way (issues "
+                   "#949, #1822). Separate the two times, or drop the parameters that move "
+                   "them from sensitivity_params.";
+            not_commuting = msg.str();
         }
 
         // An isolated difference of exactly zero is a legitimate answer here and
@@ -19678,6 +19764,29 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     }
     // Issue #760: the run takes its stops for the comoving columns on the
     // stretch it starts with.
+    // An instant with a left-over crossing (issue #1822) emits ∂t*/∂p that are
+    // differences, and a column that rides in a comoving frame (a power
+    // singular at its switch, issues #545, #949) enters it, and is refused
+    // where it cannot (#958), by the crossing's own ∂t*/∂p. With no record
+    // carrying that, the frame was not entered and nothing refused: the run
+    // failed in the sensitivity right-hand side, or made no progress short of
+    // the crossing. Refused before the first step, so wherever the frame would
+    // have been asked for, and with frames off for an event too.
+    if (n_sens_p > 0 && (sens.comoving.enabled || sens.comoving.off_for_events)) {
+        for (const SwitchTimeSens *sw : switch_list) {
+            if (sw->on_a_left_over_instant()) {
+                throw SensitivityRefusedForParameters(
+                    "Forward sensitivity: the switch times crossing together at t=" +
+                    std::to_string(sw->t_star) +
+                    " include one that no requested parameter moves alone, which is given what "
+                    "is left of the instant's jump (issue #1822), and the model has a rate law "
+                    "that is a power singular at its switch, whose columns are carried in a "
+                    "frame that moves with the switch (issue #949). The two are not combined. "
+                    "Separate the switch times, or drop the parameters that move them from "
+                    "sensitivity_params.");
+            }
+        }
+    }
     sens.comoving.switches = &switch_list;
     sens.comoving.entry_request = std::numeric_limits<double>::quiet_NaN();
     if (sens.comoving.enabled && n_sens_p > 0) {
@@ -23073,9 +23182,25 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     next_switch < switch_list.size() &&
                     (switch_list[next_switch]->t_star <= static_cast<double>(t_ret) ||
                      same_instant(switch_list[next_switch]->t_star, static_cast<double>(t_ret)))) {
+                    sw_scratch.one_sided = false;
+                    sw_scratch.not_a_jump_species = -1;
                     impl_->apply_switch_sensitivity_jump(
                         cvode_mem, y, ns, static_cast<double>(t_ret), *switch_list[next_switch],
                         sw_scratch, sens, root_watch);
+                    if (sw_scratch.one_sided) {
+                        // The columns this crossing moves, and which way each
+                        // parameter has to go to delay it (issue #1822).
+                        Result::OneSidedSwitch entry;
+                        entry.t = static_cast<double>(t_ret);
+                        const auto &dt = switch_list[next_switch]->dtstar_dp;
+                        for (size_t c = 0; c < dt.size(); ++c) {
+                            if (dt[c] != 0.0) {
+                                entry.columns.push_back(static_cast<int>(c));
+                                entry.directions.push_back(dt[c] > 0.0 ? 1 : -1);
+                            }
+                        }
+                        result.add_one_sided_switch(std::move(entry));
+                    }
                     // Remembered for an event that rises on this instant after
                     // the stop (issue #767).
                     if (!same_instant(switches_applied_t, static_cast<double>(t_ret))) {

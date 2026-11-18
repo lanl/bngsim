@@ -247,6 +247,54 @@ before-branch is read with the other switch's threshold bumped away, so a
 coincident pair does not merge into a single doubled jump (issue #375). Models
 with distinct switch times are unaffected and read the plain `f⁻ − f⁺`.
 
+A crossing is separated from the others on its instant by a parameter that only
+its own threshold reads. One crossing of the instant may have none (issue
+#1822). With `sigma = t0 + t_delta` and `t_delta = 0`, which is where a bounded
+optimizer puts a parameter that wants to be smaller, `t0` is the only parameter
+of the threshold `t0` and it moves `sigma` too. `sigma` is separated with
+`t_delta`, and the crossing at `t0` is given what is left: the `t0` column takes
+the instant's whole jump, both crossings moving with it, and the `t_delta`
+column takes `sigma`'s jump alone. Two or more crossings with no parameter of
+their own cannot be divided between themselves, and the run is refused; so is
+`t_delta = t_delta2 = 0` in the model above, where `t0` and `sigma` are both
+without one.
+
+Where a rate law composes the two crossings, a rate `U()*Lambda()` with one
+gate at `t0` and the other at `sigma`, the run sits on a kink in `t_delta`:
+raising it delays the rate, and lowering it does nothing, `t0` then being the
+later of the two. The `t_delta` column is then the derivative for `t_delta`
+increasing, the direction that delays `sigma` past `t0`, which at a lower bound
+of 0 is the feasible one. bngsim raises a `bngsim.OneSidedSensitivityWarning`
+that names the parameter and the direction, and `Result.one_sided_sensitivities`
+lists them. bngsim cannot see a bound: with `sigma = t0 - t_delta` the direction
+is `t_delta` decreasing, and at `t_delta >= 0` that is the infeasible side. The
+derivative in the other direction is another number and is not computed.
+
+This is only for a pair of crossings, one of which has no parameter of its own,
+on one clock and within half the nudge of each other: 32 times
+`eps·max(|t|, 1)`, which is 2.1e-14 at `t = 3`. Within that the two are one
+instant, whichever comes first by a few ulp. Refused as before:
+
+- two composed crossings that each have a parameter of their own, `tA` and `tB`
+  equal by value, which have no order to take (issue #951);
+- a third crossing on the instant of such a composed pair (three that add,
+  one law each, are separated and run);
+- such a pair on two clocks, or further apart than that and within twelve
+  digits (`t_delta = 1e-12`), where the instant's merged jump would leave one
+  of them out, or the run is near a kink and not on it;
+- a crossing read after the other whose rate goes to zero at a window's edge,
+  as a power does (issue #949): what is read a hair past the instant is then
+  not a jump;
+- an instant with a left-over crossing in a model that has, anywhere, a rate
+  law that opens or closes as a power singular at its switch,
+  `k*(t - sigma)^0.2`: those columns are carried in a frame that moves with
+  the switch, and the two are not combined.
+
+The test of whether a reading is a jump allows for the rounding of the net
+rate. A species near a steady state, whose production reads the parameter that
+is bumped, rounds by its gross rate, and an instant with such a species is
+refused with the same message although its reading is a jump.
+
 Two crossings share an instant when they are within 64 ulp of each other, which
 is how far the clock is nudged to read the two branches. Crossings further apart
 than that, however close, are stopped at one after the other, fitted or fixed. The same holds for

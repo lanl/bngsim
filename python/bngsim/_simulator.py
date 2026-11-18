@@ -75,7 +75,14 @@ from bngsim._exceptions import (
 )
 from bngsim._extension_handle import raise_cannot_pickle, raise_cannot_shallow_copy
 from bngsim._model import _STEP_DECIDES_WHY, Model
-from bngsim._result import Result, _as_selector_list, _resolve_output_selector
+from bngsim._result import (
+    Result,
+    _as_selector_list,
+    _merge_one_sided,
+    _one_sided_warnings_held,
+    _resolve_output_selector,
+    _warn_one_sided,
+)
 from bngsim._sample_times import (
     normalize_sample_times,
     require_finite_time,
@@ -6381,6 +6388,15 @@ class Simulator:
 
         def _run_one(i: int) -> Result:
             """Run simulation i (thread-safe, GIL released)."""
+            if in_workers:
+                # Warned of below, on the caller's thread (issue #1822).
+                with _one_sided_warnings_held():
+                    return _run_one_here(i)
+            return _run_one_here(i)
+
+        in_workers = num_processors is not None and num_processors > 1
+
+        def _run_one_here(i: int) -> Result:
             return runner_of.get(i, self)._run_single_batch(
                 i,
                 params[i],
@@ -6417,6 +6433,9 @@ class Simulator:
             results = [_run_one(i) for i in range(n_sims)]
 
         logger.info("Batch complete: %d results", len(results))
+        if in_workers:
+            for r in results:
+                _warn_one_sided(r._one_sided_sensitivities)
         if self._atol_is_default(atol):
             self._warn_atol_above_scale(results, "ODE batch", per_result=row_atols)
 
@@ -8217,14 +8236,16 @@ class Simulator:
         def _run_chunk(chunk_idx: int) -> Result:
             """Run one sensitivity chunk (thread-safe)."""
             chunk_params = chunks[chunk_idx]
-            return self._run_sensitivity_chunk(
-                chunk_params,
-                t_span,
-                n_points,
-                effective_rtol,
-                effective_atol_spec,
-                effective_max_steps,
-            )
+            # Warned of once, on this thread, from the stitched result.
+            with _one_sided_warnings_held():
+                return self._run_sensitivity_chunk(
+                    chunk_params,
+                    t_span,
+                    n_points,
+                    effective_rtol,
+                    effective_atol_spec,
+                    effective_max_steps,
+                )
 
         def _recover_chunk(chunk_idx: int, exc: BaseException) -> list[Result]:
             """Retry a failed chunk one column at a time (GH #243)."""
@@ -8247,17 +8268,20 @@ class Simulator:
                 # One that turns on the columns asked (issue #1435) is retried
                 # below, as an untyped failure is: a column alone can run.
                 raise exc
-            return self._recover_failed_chunk(
-                chunk_idx,
-                chunks,
-                target_params,
-                exc,
-                t_span,
-                n_points,
-                effective_rtol,
-                effective_atol_spec,
-                effective_max_steps,
-            )
+            # Each column's run is one of this call's: warned of from the
+            # stitched result, as a chunk's is.
+            with _one_sided_warnings_held():
+                return self._recover_failed_chunk(
+                    chunk_idx,
+                    chunks,
+                    target_params,
+                    exc,
+                    t_span,
+                    n_points,
+                    effective_rtol,
+                    effective_atol_spec,
+                    effective_max_steps,
+                )
 
         # Run chunks (parallel or serial). GH #243 — a chunk that fails is not
         # the end of the call: the grouping itself is part of what failed, so
@@ -8283,6 +8307,8 @@ class Simulator:
 
         # Stitch sensitivity tensors along param axis
         stitched = self._stitch_sensitivity_results(chunk_results, target_params)
+        stitched._one_sided_sensitivities = _merge_one_sided(chunk_results)
+        _warn_one_sided(stitched._one_sided_sensitivities)
         # Carry the #198 support map so an unsupported expression selector raises
         # the specific reason on the stitched result too.
         stitched._expression_sens_support = self._expression_sens_support()
@@ -11229,6 +11255,8 @@ class Simulator:
         # the result after building it, so the copy does the same.
         out._psa_diagnostics = dict(result._psa_diagnostics)
         out._expression_sens_support = dict(result._expression_sens_support)
+        # Of the run it was cut from (issue #1822).
+        out._one_sided_sensitivities = list(result._one_sided_sensitivities)
         out._ar_sens_map = dict(result._ar_sens_map)
         out._ar_sens_blocked = result._ar_sens_blocked
         out._ar_sens_refused = result._ar_sens_refused

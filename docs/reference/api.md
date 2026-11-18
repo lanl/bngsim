@@ -246,6 +246,7 @@ Properties:
 - **`sensitivities`** — `ndarray (n_times, n_species, n_params)` forward sensitivity tensor
 - **`has_sensitivities`** — `bool`
 - **`sensitivity_params`** — `list[str]` parameter names for sensitivity
+- **`one_sided_sensitivities`** — `list[tuple[float, dict[str, str]]]` — one `(t, {parameter: "increasing" | "decreasing"})` entry for each switch time at which the run sits on a kink, with the direction each listed column is the derivative for; empty for nearly every run (GH #1822)
 - **`ic_sensitivity_seed`** — `dict[str, dict[str, float]] | None` — the per-run record of the same matrix `Model.effective_ic_sensitivity()` reports: what CVODES was actually seeded with *for this run*. Use the `Model` accessor to build routing at setup; use this to see what a particular run used, which is the only correct answer for a batch/scan over a nonlinear derived IC (`Rtot = R0*scale`), where the coefficients move per point. `{}` = nothing seeds; `None` = not recorded (no parameter sensitivities, non-ODE, an older HDF5 file, a squeezed batch whose rows disagreed, or a `carry_sensitivities=True` phase, where the engine seeds from the prior phase's `dx/dθ` and discards these rows — GH #210/#81)
 - **`dataframe`** — `pandas.DataFrame` (requires pandas)
 - **`xr`** — AMICI-style xarray accessor; `result.xr.species`, `.observables`, `.expressions`, `.sensitivities`, `.sensitivities_ic` return labeled `xarray.DataArray`s with `time`/`state`/`observable`/`expression`/`parameter`/`ic_state` coords (requires xarray)
@@ -320,6 +321,12 @@ All inherit from `bngsim.BngsimError` (which inherits `RuntimeError`):
 - **`StopConditionMet`** — Stop condition triggered; `.result` has partial data
 
 Warnings (`UserWarning` subclasses; filter or escalate them with `warnings`):
+
+- **`OneSidedSensitivityWarning`** — a sensitivity column is a one-sided
+  derivative: two rate-law switches share an instant, a rate law composes them,
+  and one cannot be moved alone by any requested parameter (`sigma = t0 +
+  t_delta` at `t_delta = 0`). Names each parameter and the direction its column
+  is for; `Result.one_sided_sensitivities` lists the same (GH #1822).
 
 - **`RuleMonkeyWarning`** — `method="rm"` or a `RuleMonkeySession` loaded a model
   for which RuleMonkey reports a warning-level diagnostic: how it reads a rule

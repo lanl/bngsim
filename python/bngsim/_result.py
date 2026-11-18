@@ -12,9 +12,11 @@ Result wraps the C++ Result and provides:
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import threading
 import warnings
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn
@@ -107,6 +109,70 @@ def _psa_diagnostics_from_core(ssa_diag: Any) -> dict[str, Any]:
         "peak_population": float(ssa_diag.psa_peak_population),
         "activation_crossed": bool(ssa_diag.psa_activation_crossed),
     }
+
+
+def _one_sided_from_core(core: Any, columns: list[str]) -> list[tuple[float, dict[str, str]]]:
+    """The core's one-sided switch records, by parameter name (issue #1822)."""
+    out: list[tuple[float, dict[str, str]]] = []
+    for t, cols, directions in getattr(core, "one_sided_switches", ()):
+        named = {
+            columns[c]: "increasing" if d > 0 else "decreasing"
+            for c, d in zip(cols, directions, strict=True)
+            if 0 <= c < len(columns)
+        }
+        if named:
+            out.append((float(t), named))
+    return out
+
+
+_HELD = threading.local()
+
+
+@contextlib.contextmanager
+def _one_sided_warnings_held() -> Iterator[None]:
+    """Record one-sided entries on the results made in this thread, and warn of
+    none of them: for runs made in worker threads, where no frame of the
+    caller's is on the stack for a warning to name. Whoever holds them warns
+    once the results are back on the calling thread (issue #1822)."""
+    was = getattr(_HELD, "on", False)
+    _HELD.on = True
+    try:
+        yield
+    finally:
+        _HELD.on = was
+
+
+def _merge_one_sided(results: Iterable[Any]) -> list[tuple[float, dict[str, str]]]:
+    """The one-sided entries of several results of one run, by instant."""
+    by_t: dict[float, dict[str, str]] = {}
+    for r in results:
+        for t, named in getattr(r, "_one_sided_sensitivities", ()):
+            by_t.setdefault(t, {}).update(named)
+    return sorted(by_t.items())
+
+
+def _warn_one_sided(entries: list[tuple[float, dict[str, str]]]) -> None:
+    if not entries or getattr(_HELD, "on", False):
+        return
+    from bngsim._exceptions import OneSidedSensitivityWarning
+    from bngsim._simulator import _stacklevel_outside_bngsim
+
+    for t, named in entries:
+        which = ", ".join(f"'{p}' {direction}" for p, direction in named.items())
+        warnings.warn(
+            f"Forward sensitivity: the switch time at t={t:.6g} shares its instant with "
+            "another that no requested parameter moves alone, and a rate law composes the "
+            "two, so the run sits on a kink in the parameters that move this switch apart "
+            "from the other. Their columns are one-sided derivatives, each for a step in the "
+            f"direction that delays this switch past the other: {which}. With sigma = t0 + "
+            "t_delta on a bound t_delta >= 0 that is the feasible side; bngsim cannot see "
+            "the bound, so check the direction against it. In the other direction the "
+            "derivative is another number, which bngsim does not compute. "
+            "Every other column is an ordinary derivative (issue #1822). "
+            "Result.one_sided_sensitivities lists these.",
+            OneSidedSensitivityWarning,
+            stacklevel=_stacklevel_outside_bngsim(),
+        )
 
 
 @dataclass(frozen=True)
@@ -249,6 +315,7 @@ class Result:
         "_expression_names",
         "_sensitivity_params",
         "_sensitivity_ic_species",
+        "_one_sided_sensitivities",
         "_solver_stats",
         "_ssa_diagnostics",
         "_psa_diagnostics",
@@ -331,6 +398,8 @@ class Result:
             else:
                 self._sensitivities = np.empty((0, 0, 0))
                 self._sensitivity_params = []
+            self._one_sided_sensitivities = _one_sided_from_core(core, self._sensitivity_params)
+            _warn_one_sided(self._one_sided_sensitivities)
 
             # IC sensitivity data
             if hasattr(core, "n_sens_ic_species") and core.n_sens_ic_species > 0:
@@ -447,6 +516,8 @@ class Result:
             # batch / stitch), else default to the empty (0, 0, 0) block.
             self._sensitivities = _empty_sens_block(_sensitivities)
             self._sensitivity_params = _sensitivity_params or []
+            # Known only to the run that read the kink (issue #1822).
+            self._one_sided_sensitivities = []
             self._sensitivities_ic = _empty_sens_block(_sensitivities_ic)
             self._sensitivity_ic_species = _sensitivity_ic_species or []
             self._observable_sensitivities = _empty_sens_block(_observable_sensitivities)
@@ -1980,6 +2051,28 @@ class Result:
     def sensitivity_params(self) -> list[str]:
         """Parameter names for sensitivity analysis."""
         return self._sensitivity_params
+
+    @property
+    def one_sided_sensitivities(self) -> list[tuple[float, dict[str, str]]]:
+        """The sensitivity columns that are one-sided derivatives (GH #1822).
+
+        One ``(t, {parameter: direction})`` entry for each switch time at
+        which the run sits on a kink: two rate-law switches share the instant
+        ``t``, a rate law composes them, and no requested parameter moves one
+        of them alone. ``direction`` is ``"increasing"`` or ``"decreasing"``:
+        the column of that parameter in :attr:`sensitivities` is the derivative
+        for a step of the parameter in that direction, the one that delays its
+        switch past the other. In the other direction the derivative is another
+        number. Every parameter not listed has an ordinary derivative.
+
+        Empty for a run that sits on no such kink, which is nearly every run,
+        and for a result that did not come from one (loaded from a file, sliced
+        or stacked). A result cut short by a stop condition, or stitched from
+        :meth:`Simulator.compute_all_sensitivities`' chunks, keeps the entries
+        of the runs it was made from. A :class:`bngsim.OneSidedSensitivityWarning` is raised for
+        each entry when the run returns.
+        """
+        return [(t, dict(columns)) for t, columns in self._one_sided_sensitivities]
 
     @property
     def sensitivities_ic(self) -> NDArray[np.float64]:
