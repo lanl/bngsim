@@ -410,33 +410,29 @@ def test_a_result_cut_by_a_stop_condition_keeps_the_entries(tmp_path):
     assert result.one_sided_sensitivities == [(3.0, {"t_delta": "increasing"})]
 
 
-@pytest.mark.parametrize("clock", CLOCKS)
-def test_a_reading_that_is_no_jump_at_one_instant_does_not_refuse_the_next(tmp_path, clock):
-    # At 2 a law that falls to its switch as a power, beside a gate it does not
-    # compose with: no kink, so what the hair reads there, which goes as the
-    # hair to the 1.5 and is no jump, is not asked to be one. At 4 the product
-    # of two gates on a bound: one-sided, as alone.
-    params = [
-        "t0 4",
-        "t_delta 0",
-        "sigma t0+t_delta",
-        "k 0.5",
-        "a0 2",
-        "ad 0",
-        "sa a0+ad",
-        "k3 0.1",
-    ]
-    laws = {
-        "a": "if(CLOCK>=t0,1,0)*if(CLOCK>=sigma,k,0)",
-        "b": "if(CLOCK>=a0,k3,0)",
-        "c": "if(CLOCK<sa,k3*(sa-CLOCK)^1.5,0)",
-    }
-    model = _net(tmp_path, clock, params, laws, species=3)
-    # a0 is asked for, so the pair at 2 is read as ordered, sa after a0.
-    result, raised = _run(model, ["t_delta", "ad", "a0"])
-    assert (4.0, {"t_delta": "increasing"}) in result.one_sided_sensitivities
-    x = 100 * math.exp(-0.5 * (T_END - 4))
-    assert _column(result, 0, "t_delta") == pytest.approx(0.5 * x, rel=1e-6)
+@pytest.mark.parametrize(
+    "power,wrong", [("0.2", "-9.91 for -9.49"), ("0.5", "-11.7166 for -11.7118")]
+)
+def test_a_power_read_after_a_gate_in_another_law_is_refused(tmp_path, power, wrong):
+    # Nothing composes the two, so the commute test is not asked; the jump of
+    # the later one is still taken from a reading a hair past the instant, and
+    # for a window that closes as a singular power that reading is no jump.
+    params = ["a0 2", "ad 0", "sa a0+ad", "k3 0.1"]
+    laws = {"b": "if(time()>=a0,k3,0)", "c": f"if(time()<sa,k3*(sa-time())^{power},0)"}
+    model = _net(tmp_path, "time()", params, laws, species=2)
+    with pytest.raises(SensitivityRefusedForParametersError, match="is not a jump"):
+        _run(model, ["a0", "ad"])
+
+
+def test_a_left_over_crossing_that_folds_two_thresholds_apart_is_refused(tmp_path):
+    # `t0` gates two laws, one of them 5e-14 later: one crossing to the
+    # detector, and the nudge about it flips only the nearer. dX3/dt0 came back
+    # 0 for 10.98.
+    params = ["t0 3", "t_delta 0", "sigma t0+t_delta", "k 0.5", "k2 0.25", "k3 0.2"]
+    laws = {**TWO_LAWS, "c": "if(CLOCK>=t0+5e-14,k3,0)"}
+    model = _net(tmp_path, "time()", params, laws, species=3)
+    with pytest.raises(SensitivityUnsupportedError, match="folds thresholds"):
+        _run(model, ["t0", "t_delta"])
 
 
 # ─── The end of the nudge, and a pair that only looks coincident ─────────────
@@ -467,7 +463,7 @@ def test_a_pair_a_few_hundred_ulp_apart_is_refused_whatever_is_asked(tmp_path, t
     # t_delta = 0, when t0 was not asked for.
     params = ["t0 3", f"t_delta {t_delta}", "sigma t0+t_delta", "k 0.5"]
     model = _net(tmp_path, "time()", params, PRODUCT)
-    with pytest.raises((SensitivityUnsupportedError, SensitivityRefusedForParametersError)):
+    with pytest.raises(SensitivityUnsupportedError):  # of which #951's refusal is one
         _run(model, requested)
 
 
@@ -490,3 +486,18 @@ def test_a_batch_run_from_another_thread_still_warns(tmp_path):
     thread.start()
     thread.join(120)
     assert len(seen) == 2
+
+
+@pytest.mark.parametrize("units,runs", [(31, True), (32, True), (33, False), (63, False)])
+def test_the_left_over_rule_reaches_half_the_nudge_and_no_further(tmp_path, units, runs):
+    # In units of eps·max(|t0|, 1) at t0 = 3.
+    params = ["t0 3", f"d {units * 2.0**-52 * 3!r}", "sigma t0+d", "k 0.5", "k2 0.25"]
+    model = _net(tmp_path, "time()", params, TWO_LAWS, species=2)
+    if not runs:
+        with pytest.raises(SensitivityUnsupportedError, match="ulp from it"):
+            _run(model, ["t0", "d"])
+        return
+    result, _ = _run(model, ["t0", "d"])
+    x2 = 100 * math.exp(-0.25 * (T_END - 3))
+    assert _column(result, 1, "t0") == pytest.approx(0.25 * x2, rel=1e-6)
+    assert _column(result, 1, "d") == pytest.approx(0.25 * x2, rel=1e-6)

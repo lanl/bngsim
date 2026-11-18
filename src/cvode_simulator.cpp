@@ -11301,19 +11301,6 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
                        "two times, or set them equal, or drop the parameters that move them from "
                        "sensitivity_params.";
                 not_commuting = msg.str();
-            } else if (worst >= 0 && sw.delayed_past_instant && scratch.not_a_jump_species >= 0) {
-                std::ostringstream msg;
-                msg << "Forward sensitivity: the switch time at t=" << t_evt
-                    << " shares its instant with another, a rate law composes the two, and "
-                       "the run sits on a kink in the parameters that move this one alone. "
-                       "Its jump on the side that delays it cannot be read: what d["
-                    << model.species()[static_cast<size_t>(scratch.not_a_jump_species)].name
-                    << "]/dt does a hair past the instant is not a jump within rounding: a "
-                       "rate that goes to zero at a window's edge, as a power, reads this way "
-                       "(issues #949, #1822). Separate the "
-                       "two times, or drop the parameters that move them from "
-                       "sensitivity_params.";
-                not_commuting = msg.str();
             } else if (worst >= 0 && sw.delayed_past_instant) {
                 // The one it shares the instant with has no parameter of its
                 // own, so the detector emitted that one with the merged jump
@@ -11340,6 +11327,23 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
                        "parameters that move them from sensitivity_params.";
                 not_commuting = msg.str();
             }
+        }
+        // A crossing read after the one it shares its instant with (issue
+        // #1822) has its jump taken from the reading a hair past the instant,
+        // composed with the other or not. Where that reading is no jump the
+        // column is wrong either way: a window closing as (sa − t)^0.2 in a
+        // law of its own, beside a gate in another, came back −9.91 for −9.49.
+        if (not_commuting.empty() && sw.delayed_past_instant && scratch.not_a_jump_species >= 0) {
+            std::ostringstream msg;
+            msg << "Forward sensitivity: the switch time at t=" << t_evt
+                << " shares its instant with another that no requested parameter moves alone, "
+                   "and its own jump has to be read with that one made. It cannot be: what d["
+                << model.species()[static_cast<size_t>(scratch.not_a_jump_species)].name
+                << "]/dt does a hair past the instant is not a jump within rounding. A rate "
+                   "that goes to zero at a window's edge, as a power, reads this way (issues "
+                   "#949, #1822). Separate the two times, or drop the parameters that move "
+                   "them from sensitivity_params.";
+            not_commuting = msg.str();
         }
 
         // An isolated difference of exactly zero is a legitimate answer here and

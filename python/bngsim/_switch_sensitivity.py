@@ -11269,6 +11269,10 @@ def _outside_the_nudge(remainder: _Crossing, group: Sequence[_Crossing]) -> list
     # is not in the difference (found in review: 0 for 11.8 again).
     reach = 0.5 * _INSTANT_ULPS * ulp
     out = []
+    # The crossing itself may be several thresholds folded into one, a little
+    # apart: `t0` and `t0 + 5e-14` in two laws. The nudge is about one of them.
+    if any(abs(at - _on_clock(remainder)) > reach for at in _extent(remainder)):
+        out.append("it folds thresholds that are further apart than the nudge reaches")
     for other in group:
         if other is remainder:
             continue
