@@ -393,3 +393,46 @@ def test_chunked_sensitivities_keep_the_entries_and_warn_once_at_the_caller(tmp_
     assert [w.filename for w in raised] == [__file__]
     x = 100 * math.exp(-0.5 * (T_END - 3))
     assert _column(result, 0, "t_delta") == pytest.approx(0.5 * x, rel=1e-6)
+
+
+def test_a_result_cut_by_a_stop_condition_keeps_the_entries(tmp_path):
+    # The run is cut at the first sample past X1 < 50; the result it carries
+    # is built again from the run's, and keeps what the run read.
+    model = _net(tmp_path, "time()", SHIFTED, PRODUCT)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["t_delta"])
+    sim.add_stop_condition("X1obs < 50")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", OneSidedSensitivityWarning)
+        with pytest.raises(bngsim.StopConditionMet) as met:
+            sim.run((0.0, T_END), 61)
+    result = met.value.result
+    assert result.time[-1] < T_END  # cut short
+    assert result.one_sided_sensitivities == [(3.0, {"t_delta": "increasing"})]
+
+
+@pytest.mark.parametrize("clock", CLOCKS)
+def test_a_reading_that_is_no_jump_at_one_instant_does_not_refuse_the_next(tmp_path, clock):
+    # At 2 a law that rises from its switch as a power, beside a gate it does
+    # not compose with: no kink, so what the hair reads there, which goes as
+    # the hair to the 1.5 and is no jump, is not asked to be one. At 4 the product of two gates on a bound: one-sided, as alone.
+    params = [
+        "t0 4",
+        "t_delta 0",
+        "sigma t0+t_delta",
+        "k 0.5",
+        "a0 2",
+        "ad 0",
+        "sa a0+ad",
+        "k3 0.1",
+    ]
+    laws = {
+        "a": "if(CLOCK>=t0,1,0)*if(CLOCK>=sigma,k,0)",
+        "b": "if(CLOCK>=a0,k3,0)",
+        "c": "if(CLOCK>=sa,k3*(CLOCK-sa)^1.5,0)",
+    }
+    model = _net(tmp_path, clock, params, laws, species=3)
+    # a0 is asked for, so the pair at 2 is read as ordered, sa after a0.
+    result, raised = _run(model, ["t_delta", "ad", "a0"])
+    assert (4.0, {"t_delta": "increasing"}) in result.one_sided_sensitivities
+    x = 100 * math.exp(-0.5 * (T_END - 4))
+    assert _column(result, 0, "t_delta") == pytest.approx(0.5 * x, rel=1e-6)
