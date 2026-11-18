@@ -474,7 +474,7 @@ def test_a_pair_a_few_hundred_ulp_apart_is_refused_whatever_is_asked(tmp_path, t
     params = ["t0 3", f"t_delta {t_delta}", "sigma t0+t_delta", "k 0.5"]
     model = _net(tmp_path, "time()", params, PRODUCT)
     # The left-over rule's refusal with t0 asked for, #951's without.
-    reason = "ulp from it" if "t0" in requested else "switches within a few ulp|do not commute"
+    reason = "ulp from it" if "t0" in requested else "do not commute"
     with pytest.raises(SensitivityUnsupportedError, match=reason):
         _run(model, requested)
 
@@ -635,7 +635,7 @@ def test_the_column_by_column_retry_does_not_return_what_the_run_refuses(tmp_pat
     params = ["t0 3", "d 0", "sigma t0+d", "k 0.5"]
     law = {"a": f"if(time()>=t0,if(time()<sigma,{CLOSING[0]},0),0)"}
     model = _net(tmp_path, "time()", params, law)
-    with pytest.raises(SensitivityUnsupportedError):
+    with pytest.raises(SensitivityUnsupportedError, match="is not a jump"):
         bngsim.Simulator(model, method="ode").compute_all_sensitivities(
             (0.0, T_END), 7, params=["t0", "d"]
         )
@@ -673,5 +673,5 @@ def test_a_moving_frame_is_refused_before_the_run_whatever_moves_it(power_law, e
     # crossing could refuse; an event turns the frames off, and a closing edge
     # is approached before it is reached.
     model = _twice_as_fast(power_law, event)
-    with pytest.raises(SensitivityUnsupportedError, match="singular at its switch|issue #958"):
+    with pytest.raises(SensitivityRefusedForParametersError, match="singular at its switch"):
         _run(model, requested)

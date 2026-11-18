@@ -285,9 +285,15 @@ instant, whichever comes first by a few ulp. Refused as before:
 - a crossing read after the other whose rate goes to zero at a window's edge,
   as a power does (issue #949): what is read a hair past the instant is then
   not a jump;
-- an instant with a left-over crossing in a model that has a rate law opening
-  as a power singular at its switch, `k*(t - sigma)^0.2`: those columns are
-  carried in a frame that moves with the switch, and the two are not combined.
+- an instant with a left-over crossing in a model that has, anywhere, a rate
+  law that opens or closes as a power singular at its switch,
+  `k*(t - sigma)^0.2`: those columns are carried in a frame that moves with
+  the switch, and the two are not combined.
+
+The test of whether a reading is a jump allows for the rounding of the net
+rate. A species near a steady state, whose production reads the parameter that
+is bumped, rounds by its gross rate, and an instant with such a species is
+refused with the same message although its reading is a jump.
 
 Two crossings share an instant when they are within 64 ulp of each other, which
 is how far the clock is nudged to read the two branches. Crossings further apart
