@@ -277,13 +277,17 @@ instant, whichever comes first by a few ulp. Refused as before:
 
 - two composed crossings that each have a parameter of their own, `tA` and `tB`
   equal by value, which have no order to take (issue #951);
-- a third crossing on the instant, composed or not;
+- a third crossing on the instant of such a composed pair (three that add,
+  one law each, are separated and run);
 - such a pair on two clocks, or further apart than that and within twelve
   digits (`t_delta = 1e-12`), where the instant's merged jump would leave one
   of them out, or the run is near a kink and not on it;
 - a crossing read after the other whose rate goes to zero at a window's edge,
   as a power does (issue #949): what is read a hair past the instant is then
-  not a jump.
+  not a jump;
+- an instant with a left-over crossing in a model that has a rate law opening
+  as a power singular at its switch, `k*(t - sigma)^0.2`: those columns are
+  carried in a frame that moves with the switch, and the two are not combined.
 
 Two crossings share an instant when they are within 64 ulp of each other, which
 is how far the clock is nudged to read the two branches. Crossings further apart

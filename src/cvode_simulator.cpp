@@ -9925,6 +9925,13 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             double d = c < n_sens_p && one->dtstar_dp.size() == static_cast<size_t>(n_sens_p)
                            ? one->dtstar_dp[static_cast<size_t>(c)]
                            : 0.0;
+            if (one->beside_a_left_over()) {
+                // Its ∂t*/∂p here is its own less the left-over crossing's
+                // (issue #1822), which is not how it moves: a crossing moving
+                // twice as fast as the left-over one read as moving with the
+                // event, and a kink came back as a derivative.
+                return false;
+            }
             if (one->clock_species_idx0 >= 0) {
                 // A counter clock's crossing also moves with the clock's own
                 // sensitivity (issue #725).
@@ -10750,6 +10757,22 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
     // scaled by (1 ∓ √rtol) — see restore_nominal_params.
     restore_nominal_params(sens);
 
+    // An instant with a left-over crossing (issue #1822) emits ∂t*/∂p that are
+    // differences, and a column that enters a comoving frame at a crossing
+    // (a power singular at its switch, issues #545, #949) is entered by its
+    // own ∂t*/∂p. The frame was not entered, and the run failed in the
+    // sensitivity right-hand side with a non-finite value. Refused here.
+    if (sw.on_a_left_over_instant() && sens.comoving.enabled) {
+        throw SensitivityRefusedForParameters(
+            "Forward sensitivity: the switch times crossing together at t=" +
+            std::to_string(t_evt) +
+            " include one that no requested parameter moves alone, which is given what is "
+            "left of the instant's jump (issue #1822), and the model has a rate law that is a "
+            "power singular at its switch, whose columns are carried in a frame that moves "
+            "with the switch (issue #949). The two are not combined. Separate the switch "
+            "times, or drop the parameters that move them from sensitivity_params.");
+    }
+
     // f⁻ / f⁺ at x(t*), branch selected by nudging the clock across its
     // threshold. eps_clock is a few ulp of the threshold: large enough that
     // threshold ± eps_clock are distinct doubles, small enough that the
@@ -10990,7 +11013,7 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
             // reads the power a hair from its zero, which goes as the hair to
             // the 0.2 and is no jump (issue #949): the column came back −2.9
             // where the derivative on that side is 0.
-            if (sw.delayed_past_instant) {
+            if (sw.read_after_the_other()) {
                 for (size_t k = 0; k < sw.isolate_param_idx0.size(); ++k) {
                     params_live[static_cast<size_t>(sw.isolate_param_idx0[k])].value =
                         saved[k] + 0.25 * sw.isolate_delta[k];
@@ -11301,7 +11324,7 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
                        "two times, or set them equal, or drop the parameters that move them from "
                        "sensitivity_params.";
                 not_commuting = msg.str();
-            } else if (worst >= 0 && sw.delayed_past_instant) {
+            } else if (worst >= 0 && sw.read_after_the_other()) {
                 // The one it shares the instant with has no parameter of its
                 // own, so the detector emitted that one with the merged jump
                 // and this one with its jump read after it (issue #1822). The
@@ -11333,7 +11356,15 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
         // composed with the other or not. Where that reading is no jump the
         // column is wrong either way: a window closing as (sa − t)^0.2 in a
         // law of its own, beside a gate in another, came back −9.91 for −9.49.
-        if (not_commuting.empty() && sw.delayed_past_instant && scratch.not_a_jump_species >= 0) {
+        //
+        // Asked only beside a left-over crossing, an instant that was refused
+        // whole before. With the other crossing fixed for the columns asked,
+        // the run was returned before, and the test below refuses readings
+        // that are jumps: a species near its steady state whose flux reads the
+        // bumped parameter rounds by the gross flux, not by the net one the
+        // allowance is taken from (found in review).
+        if (not_commuting.empty() && sw.read_after_the_other() && sw.beside_a_left_over() &&
+            scratch.not_a_jump_species >= 0) {
             std::ostringstream msg;
             msg << "Forward sensitivity: the switch time at t=" << t_evt
                 << " shares its instant with another that no requested parameter moves alone, "

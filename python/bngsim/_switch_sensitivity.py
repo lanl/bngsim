@@ -11067,7 +11067,10 @@ class SwitchCrossing(NamedTuple):
     # has no parameter of its own (issue #1822). Where a rate law composes the
     # two, the core takes this crossing's jump from that side of the kink and
     # reports the column as one-sided, where it would otherwise refuse (#951).
-    delayed_past_instant: bool = False
+    # Bits: 1, read as coming after the other (above); 2, isolated beside a
+    # crossing with no parameter of its own, ``dtstar`` being its own less that
+    # one's; 4, that crossing itself, emitted with the instant's merged jump.
+    instant_role: int = 0
 
 
 class _Crossing(NamedTuple):
@@ -11301,6 +11304,12 @@ def _unmerged(remainder: _Crossing, apart: Sequence[str]) -> str:
         "times equal, or move them apart, or drop the parameters that move them from "
         "sensitivity_params."
     )
+
+
+# The bits of ``SwitchCrossing.instant_role``, as the core reads them.
+_READ_AFTER = 1
+_BESIDE_LEFT_OVER = 2
+_LEFT_OVER = 4
 
 
 def _comes_after_the_other(cross: _Crossing, group: Sequence[_Crossing]) -> bool:
@@ -11829,7 +11838,15 @@ def _emit_switch_records(
                             for at in _extent(other)
                         }
                     ),
-                    delayed_past_instant=_comes_after_the_other(cross, group),
+                    instant_role=(
+                        (_READ_AFTER if _comes_after_the_other(cross, group) else 0)
+                        | (
+                            _BESIDE_LEFT_OVER
+                            if remainder is not None and cross is not remainder
+                            else 0
+                        )
+                        | (_LEFT_OVER if cross is remainder else 0)
+                    ),
                 )
             )
     records.sort(key=lambda r: r.t_star)

@@ -24,6 +24,7 @@ import warnings
 
 import bngsim
 import pytest
+from bngsim._bngsim_core import ModelBuilder
 from bngsim._exceptions import SensitivityRefusedForParametersError, SensitivityUnsupportedError
 
 # Looked up, not imported: on a build without the fix each test then fails on
@@ -366,14 +367,21 @@ def test_a_crossing_on_another_clock_is_refused(tmp_path, laws):
         _run(model, requested)
 
 
-def test_a_window_that_closes_as_a_singular_power_is_refused(tmp_path):
-    # X decays at k·(sigma − t)^0.2 on [t0, sigma), so X = 100·exp(−k·d^1.2/1.2)
+@pytest.mark.parametrize(
+    "power,reason",
+    [("1.5", "is not a jump"), ("0.2", "singular at its switch")],
+)
+def test_a_window_that_closes_as_a_singular_power_is_refused(tmp_path, power, reason):
+    # X decays at k·(sigma − t)^a on [t0, sigma), so X = 100·exp(−k·d^(1+a)/(1+a))
     # and the derivative for d increasing is 0. What a hair past the instant
-    # reads goes as the hair to the 0.2 and is no jump: −2.9 came back (#949).
+    # reads goes as the hair to the a and is no jump: −2.9 came back at 0.2
+    # (#949). A power under 1 also has its columns carried in a moving frame,
+    # and the left-over rule is refused for that first; one above 1 is refused
+    # by the reading.
     params = ["t0 3", "d 0", "sigma t0+d", "k 0.5"]
-    law = {"a": "if(CLOCK>=t0,if(CLOCK<sigma,k*(sigma-CLOCK)^0.2,0),0)"}
+    law = {"a": f"if(CLOCK>=t0,if(CLOCK<sigma,k*(sigma-CLOCK)^{power},0),0)"}
     model = _net(tmp_path, "time()", params, law)
-    with pytest.raises(SensitivityRefusedForParametersError, match="is not a jump"):
+    with pytest.raises(SensitivityRefusedForParametersError, match=reason):
         _run(model, ["t0", "d"])
 
 
@@ -411,16 +419,18 @@ def test_a_result_cut_by_a_stop_condition_keeps_the_entries(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "power,wrong", [("0.2", "-9.91 for -9.49"), ("0.5", "-11.7166 for -11.7118")]
+    "power,reason",
+    [("1.5", "is not a jump"), ("0.2", "singular at its switch")],
+    ids=["a-power-above-one", "-9.91 for -9.49"],
 )
-def test_a_power_read_after_a_gate_in_another_law_is_refused(tmp_path, power, wrong):
+def test_a_power_read_after_a_gate_in_another_law_is_refused(tmp_path, power, reason):
     # Nothing composes the two, so the commute test is not asked; the jump of
     # the later one is still taken from a reading a hair past the instant, and
     # for a window that closes as a singular power that reading is no jump.
     params = ["a0 2", "ad 0", "sa a0+ad", "k3 0.1"]
     laws = {"b": "if(time()>=a0,k3,0)", "c": f"if(time()<sa,k3*(sa-time())^{power},0)"}
     model = _net(tmp_path, "time()", params, laws, species=2)
-    with pytest.raises(SensitivityRefusedForParametersError, match="is not a jump"):
+    with pytest.raises(SensitivityRefusedForParametersError, match=reason):
         _run(model, ["a0", "ad"])
 
 
@@ -463,7 +473,9 @@ def test_a_pair_a_few_hundred_ulp_apart_is_refused_whatever_is_asked(tmp_path, t
     # t_delta = 0, when t0 was not asked for.
     params = ["t0 3", f"t_delta {t_delta}", "sigma t0+t_delta", "k 0.5"]
     model = _net(tmp_path, "time()", params, PRODUCT)
-    with pytest.raises(SensitivityUnsupportedError):  # of which #951's refusal is one
+    # The left-over rule's refusal with t0 asked for, #951's without.
+    reason = "ulp from it" if "t0" in requested else "switches within a few ulp|do not commute"
+    with pytest.raises(SensitivityUnsupportedError, match=reason):
         _run(model, requested)
 
 
@@ -501,3 +513,77 @@ def test_the_left_over_rule_reaches_half_the_nudge_and_no_further(tmp_path, unit
     x2 = 100 * math.exp(-0.25 * (T_END - 3))
     assert _column(result, 1, "t0") == pytest.approx(0.25 * x2, rel=1e-6)
     assert _column(result, 1, "d") == pytest.approx(0.25 * x2, rel=1e-6)
+
+
+# ─── Beside the rest of the machinery (found in a fourth review) ─────────────
+
+
+def test_a_run_that_was_returned_before_is_not_refused_by_the_jump_test():
+    # sigma's own parameter also scales a production rate, and X1 sits near its
+    # steady state: what the hair reads for X1 rounds by the gross flux. Only
+    # t_delta is asked for, so t0's crossing is fixed, nothing is left over,
+    # and main returned this run. It still is.
+    b = ModelBuilder()
+    for name, value in (("t0", 3.0), ("t_delta", 0.0), ("k", 0.5), ("k2", 0.25)):
+        b.add_parameter(name, value)
+    x1 = b.add_species("X1()", 1.0)
+    x2 = b.add_species("X2()", 100.0)
+    x3 = b.add_species("X3()", 100.0)
+    b.add_function("p", "1*(1+t_delta)")
+    b.add_function("d", "1")
+    b.add_function("a", "if(time()>=t0,k,0)")
+    b.add_function("s", "if(time()>=(t0+t_delta),k2,0)")
+    b.add_reaction([], [x1], "functional", "p")
+    b.add_reaction([x1], [], "functional", "d")
+    b.add_reaction([x2], [], "functional", "a")
+    b.add_reaction([x3], [], "functional", "s")
+    model = bngsim.Model(_core=b.build())
+    result, raised = _run(model, ["t_delta"])
+    x3_end = 100 * math.exp(-0.25 * (T_END - 3))
+    assert result.sensitivities[-1, :, 0] == pytest.approx(
+        [1 - math.exp(-T_END), 0.0, 0.25 * x3_end], rel=1e-6, abs=1e-6
+    )
+    assert raised == []
+
+
+@pytest.mark.parametrize(
+    "laws",
+    [
+        {"a": "if(CLOCK>=t0,k,0)", "b": "if(CLOCK>=sigma,k2*(CLOCK-sigma)^0.2,0)"},
+        {"a": "if(CLOCK>=t0,k*(CLOCK-t0)^0.2,0)", "b": "if(CLOCK>=sigma,k2,0)"},
+        {"a": "if(CLOCK>=t0,1,0)*if(CLOCK>=sigma,k*(CLOCK-sigma)^0.2,0)"},
+    ],
+    ids=["a-power-at-the-later-one", "a-power-at-the-left-over-one", "a-power-in-a-product"],
+)
+@pytest.mark.parametrize("clock", CLOCKS)
+def test_a_left_over_crossing_beside_a_power_singular_at_its_switch_is_refused(
+    tmp_path, clock, laws
+):
+    # Such a power's columns ride in a frame that moves with its switch, which
+    # is entered by the crossing's own dt*/dp; beside a left-over crossing the
+    # record carries a difference. The run failed inside the integrator, with
+    # an error that is no refusal.
+    model = _net(tmp_path, clock, SHIFTED, laws, species=len(laws))
+    with pytest.raises(SensitivityRefusedForParametersError, match="singular at its switch"):
+        _run(model, ["t0", "t_delta"])
+
+
+def test_an_event_on_the_instant_is_not_matched_against_a_difference():
+    # X1's gate moves twice as fast as t0, so its dt*/dp less the left-over
+    # crossing's is 1, which is how fast the event moves: it was taken to move
+    # with the event, and 33.47 came back, the upward side of a kink (the
+    # downward is 27.89), with no warning.
+    b = ModelBuilder()
+    for name, value in (("t0", 3.0), ("t_delta", 0.0), ("k", 0.5), ("k2", 0.25)):
+        b.add_parameter(name, value)
+    x1 = b.add_species("X1()", 100.0)
+    x2 = b.add_species("X2()", 100.0)
+    b.add_observable("O1", [(x1, 1.0)])
+    b.add_function("r0", "if(time()>=(2*t0+t_delta-3),k,0)")
+    b.add_function("r1", "if(time()>=t0,k2,0)")
+    b.add_reaction([x1], [], "functional", "r0")
+    b.add_reaction([x2], [], "functional", "r1")
+    b.add_event("dose", "time()>=t0", [(x1, "O1+50")])
+    model = bngsim.Model(_core=b.build())
+    with pytest.raises(SensitivityUnsupportedError):
+        _run(model, ["t0"])
