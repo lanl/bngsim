@@ -797,7 +797,14 @@ def write_bngl(
     # ── actions (SBML events → BNGL protocol, #224 phase 2) ────────────────
     if protocol is not None and not protocol.is_empty:
         lines.append("")
-        lines.append(_actions_block(protocol, mol_names, species_comp, species))
+        # The model's derived parameters, so a warning follows a change made
+        # through one (kd = A0: a species set to kd*2 follows A0).
+        derived = {
+            p["name"]: p["expression"]
+            for p in data["parameters"]
+            if p.get("expression") and not p.get("is_const", True)
+        }
+        lines.append(_actions_block(protocol, mol_names, species_comp, species, derived))
 
     text = "\n".join(lines) + "\n"
     if out_path is not None:
@@ -810,6 +817,7 @@ def _actions_block(
     mol_names: list[str],
     species_comp: list[str],
     species: list[dict[str, Any]],
+    derived: dict[str, str] | None = None,
 ) -> str:
     """Serialize ``protocol`` to a ``begin actions`` block with ``setConcentration``
     targets translated from codegen species names to ``@comp:Mol()`` patterns.
@@ -848,7 +856,7 @@ def _actions_block(
         lossy_before_generation=protocol.lossy_before_generation,
         dropped_before_generation=protocol.dropped_before_generation,
     )
-    block = write_bngl_protocol(translated)
+    block = write_bngl_protocol(translated, derived=derived)
     if translated.generation_step:
         return block  # it generates the network where the protocol did
     # Materialize the network before simulating (generate_network is a build

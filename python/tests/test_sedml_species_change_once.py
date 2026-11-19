@@ -434,10 +434,10 @@ def _steps(actions: str) -> ProtocolSpec:
     return ProtocolSpec(steps=tuple(steps))
 
 
-def _warned(spec: ProtocolSpec) -> tuple[bool, bool, str]:
+def _warned(spec: ProtocolSpec, derived=None) -> tuple[bool, bool, str]:
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        text = write_bngl_protocol(spec)
+        text = write_bngl_protocol(spec, derived=derived)
     said = [str(w.message) for w in caught if "#1737" in str(w.message)]
     return (
         any("species follows" in m for m in said),
@@ -492,3 +492,105 @@ def test_the_block_warns_exactly_where_bng2pl_runs_it_differently(actions, tmp_p
     assert len(ours) == len(theirs) and ours
     differs = ours != pytest.approx(theirs, rel=1e-5, abs=1e-6)
     assert differs == (follows or added), (ours, theirs)
+
+
+# --- a change made through a derived parameter -------------------------------
+#
+# With kd = A0 derived in the model and the species set once to kd*2, BNG2.pl
+# follows A0 through kd as it does through A0*2: setParameter("A0",5) then a run
+# starts from 10, where run_protocol starts from 200. The walk read only the
+# names in the expression's text, kd, and wrote the block with no warning. Given
+# the model's derived parameters (write_bngl has them), it follows kd to A0.
+
+DERIVED = {"kd": "A0"}
+BNGL_DERIVED = BNGL_MODEL.replace("  A0 100\n", "  A0 100\n  kd A0\n")
+NET_DERIVED = NET.replace("    3 A0 100\n", "    3 A0 100\n    4 kd A0\n")
+# (actions, the species follows a change)
+DERIVED_CASES = [
+    ("once:kd*2 setp run", True),
+    ("once:kd*2 scan:A0:1 run", True),
+    ("once:kd*2 run setp run", False),
+]
+
+
+@pytest.mark.parametrize(("actions", "follows"), DERIVED_CASES, ids=[c[0] for c in DERIVED_CASES])
+def test_a_change_through_a_derived_parameter_is_warned_of(actions, follows):
+    follows_, added, _ = _warned(_steps(actions), derived=DERIVED)
+    assert (follows_, added) == (follows, False)
+
+
+def test_without_the_model_a_derived_parameter_is_not_followed():
+    # write_bngl_protocol on its own has no model: kd*2 reads kd alone, and the
+    # change to A0 is not seen. (The documented limit; write_bngl passes them.)
+    assert _warned(_steps("once:kd*2 setp run"))[:2] == (False, False)
+
+
+def test_a_parameter_set_once_through_a_derived_one_is_warned_of_too():
+    # The #1682 parameter warning reads names the same way.
+    spec = ProtocolSpec(
+        steps=(
+            StateChange(kind="set_parameter", target="k2", value_expr="kd*3", evaluated_once=True),
+            StateChange(kind="set_parameter", target="A0", value=5.0),
+        )
+    )
+    with pytest.warns(ConversionWarning, match="A0"):
+        write_bngl_protocol(spec, derived=DERIVED)
+
+
+def test_a_function_call_is_no_parameter_of_the_derived_walk():
+    from bngsim.convert._protocol import _names_read
+
+    assert _names_read("exp(kd)*2", {"kd": "A0*f(k1)"}) == {"kd", "A0", "k1"}
+
+
+def test_a_derived_parameter_of_a_derived_one_is_followed_to_the_end():
+    from bngsim.convert._protocol import _names_read
+
+    assert _names_read("kd2*2", {"kd2": "kd + 1", "kd": "A0"}) == {"kd2", "kd", "A0"}
+
+
+def test_write_bngl_follows_the_model_s_derived_parameters(tmp_path):
+    net = tmp_path / "d.net"
+    net.write_text(NET_DERIVED)
+    model = bngsim.Model.from_net(str(net))
+    with pytest.warns(ConversionWarning, match=r"species follows A0.*issue #1737"):
+        write_bngl(model, protocol=_steps("once:kd*2 setp run"), strict=False)
+
+
+@needs_bng2
+@pytest.mark.parametrize(("actions", "follows"), DERIVED_CASES, ids=[c[0] for c in DERIVED_CASES])
+def test_a_derived_parameter_s_warning_is_where_bng2pl_runs_it_differently(
+    actions, follows, tmp_path
+):
+    """As the table's test above, on the model with kd = A0."""
+    spec = _steps(actions)
+    follows_, added, block = _warned(spec, derived=DERIVED)
+    assert follows_ == follows
+    block = block.replace("begin actions\n", "begin actions\ngenerate_network({overwrite=>1})\n")
+    (tmp_path / "m.bngl").write_text(BNGL_DERIVED + block, encoding="utf-8")
+    (tmp_path / "m.net").write_text(NET_DERIVED, encoding="utf-8")
+    done = subprocess.run(
+        ["perl", str(Path(_BNG.bng2_pl).resolve()), "m.bngl"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert done.returncode == 0, done.stdout[-2000:] + done.stderr[-2000:]
+
+    def rows(path: Path) -> list[list[float]]:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        return [[float(x) for x in line.split()] for line in lines if not line.startswith("#")]
+
+    ours: list[float] = []
+    theirs: list[float] = []
+    for run in bngsim.run_protocol(bngsim.Model.from_net(str(tmp_path / "m.net")), spec):
+        if run.kind == "scan":
+            ours += [float(r.species[-1, 0]) for r in run.scan_results]
+            theirs += [row[1] for row in rows(tmp_path / f"m_{run.label}.scan")]
+        else:
+            ours += [float(x) for x in run.result.species[0, :2]]
+            theirs += rows(tmp_path / f"m_{run.label}.cdat")[0][1:3]
+    assert len(ours) == len(theirs) and ours
+    differs = ours != pytest.approx(theirs, rel=1e-5, abs=1e-6)
+    assert differs == follows_, (ours, theirs)

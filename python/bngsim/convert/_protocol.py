@@ -1092,7 +1092,12 @@ def _state_change_action(s: StateChange) -> str:
     return f'{verb}("{s.target}",{val})'
 
 
-def write_bngl_protocol(protocol: ProtocolSpec, out_path: str | Path | None = None) -> str:
+def write_bngl_protocol(
+    protocol: ProtocolSpec,
+    out_path: str | Path | None = None,
+    *,
+    derived: Mapping[str, str] | None = None,
+) -> str:
     """Serialize a :class:`ProtocolSpec` to a BNGL ``begin actions`` block.
 
     The mirror of :func:`parse_bngl_protocol`: each :class:`Experiment` becomes a
@@ -1136,7 +1141,7 @@ def write_bngl_protocol(protocol: ProtocolSpec, out_path: str | Path | None = No
             and step.value_expr
             and step.kind == "set_parameter"
         ):
-            moved = _moved_later(protocol.steps[k + 1 :], step.value_expr)
+            moved = _moved_later(protocol.steps[k + 1 :], step.value_expr, derived)
             if moved:
                 warnings.warn(
                     f"{_state_change_action(step)} is evaluated once where it runs (a SED-ML "
@@ -1153,7 +1158,7 @@ def write_bngl_protocol(protocol: ProtocolSpec, out_path: str | Path | None = No
             and step.value_expr
             and step.kind == "set_concentration"
         ):
-            moved, added = _followed_into_a_run(protocol.steps[k + 1 :], step)
+            moved, added = _followed_into_a_run(protocol.steps[k + 1 :], step, derived)
             if moved:
                 warnings.warn(
                     f"{_state_change_action(step)} is evaluated once where it runs (a SED-ML "
@@ -1202,10 +1207,30 @@ def write_bngl_protocol(protocol: ProtocolSpec, out_path: str | Path | None = No
     return text
 
 
-def _moved_later(steps: Sequence[object], text: str) -> list[str]:
+def _names_read(text: str, derived: Mapping[str, str] | None = None) -> set[str]:
+    """The parameter names *text* reads: not a function call (``exp(1)``), and,
+    with *derived* (a derived parameter's name to its expression, from the
+    model), every name a derived one reads, so ``kd*2`` with ``kd = A0`` reads
+    ``A0`` too, as BNG2.pl follows it (issue #1737)."""
+    names = set(re.findall(r"(?<![\w.])([A-Za-z_]\w*)(?!\w|\s*\()", text or ""))
+    todo = list(names)
+    while derived and todo:
+        expr = derived.get(todo.pop())
+        if expr is None:
+            continue
+        for name in re.findall(r"(?<![\w.])([A-Za-z_]\w*)(?!\w|\s*\()", expr):
+            if name not in names:
+                names.add(name)
+                todo.append(name)
+    return names
+
+
+def _moved_later(
+    steps: Sequence[object], text: str, derived: Mapping[str, str] | None = None
+) -> list[str]:
     """The names *text* reads that a step of *steps* sets: a ``setParameter``
     of it, a scan over it, or a ``resetParameters``."""
-    names = set(re.findall(r"(?<![\w.])([A-Za-z_]\w*)(?!\w)", text))
+    names = _names_read(text, derived)
     moved: list[str] = []
     for step in steps:
         if isinstance(step, StateChange):
@@ -1218,7 +1243,9 @@ def _moved_later(steps: Sequence[object], text: str) -> list[str]:
     return list(dict.fromkeys(moved))
 
 
-def _followed_into_a_run(steps: Sequence[object], change: StateChange) -> tuple[list[str], bool]:
+def _followed_into_a_run(
+    steps: Sequence[object], change: StateChange, derived: Mapping[str, str] | None = None
+) -> tuple[list[str], bool]:
     """Where BNG2.pl runs *steps* from another amount than a ``setConcentration``
     evaluated once (*change*, the step before them) left: the names its
     expression reads that differ at a run starting from the expression, and
@@ -1232,8 +1259,8 @@ def _followed_into_a_run(steps: Sequence[object], change: StateChange) -> tuple[
     ``parameter_scan`` saves as "SCAN" and, resetting, goes back to it before
     each point and at its end. Each case was run through BNG2.pl 2.9.3.
     """
-    # The names it reads; a function call (exp(1)) is no parameter a step changes.
-    names = set(re.findall(r"(?<![\w.])([A-Za-z_]\w*)(?!\w|\s*\()", change.value_expr or ""))
+    # The names it reads, through the model's derived parameters where given.
+    names = _names_read(change.value_expr or "", derived)
     live = True  # the species' amount is the expression
     saved: dict[str, bool] = {}  # by label: the saved concentrations hold it
     changed: list[str] = []  # the names that are not what they were at the change
