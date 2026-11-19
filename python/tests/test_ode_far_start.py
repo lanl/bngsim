@@ -308,6 +308,93 @@ def test_a_far_run_of_a_switch_on_a_counter_is_the_run_from_its_near_end(tmp_pat
         assert np.array_equal(np.asarray(far.sensitivities), np.asarray(near.sensitivities))
 
 
+def _clock_run(tmp_path, start, sens=(), c0=None, ic=()):
+    net = tmp_path / "clock.net"
+    net.write_text(
+        CLOCK_NET if c0 is None else CLOCK_NET.replace("1 c0     0.5", f"1 c0     {c0}")
+    )
+    kw = {"sensitivity_params": list(sens)} if sens else {}
+    if ic:
+        kw["sensitivity_ic"] = list(ic)
+    sim = bngsim.Simulator(bngsim.Model.from_net(str(net)), "ode", **kw)
+    # Rows 16 apart: the doubles' spacing at 1e17, so each is its own time there.
+    return sim.run(sample_times=[start, start + 16.0, start + 32.0])
+
+
+def test_a_counter_crossing_that_rounds_onto_a_far_start_is_refused(tmp_path):
+    # Issue #1828: CLOCK_NET's crossing is 2.5 after the start. From 1e17, where
+    # the doubles are 16 apart, its time rounds onto the start, the crossing is
+    # dropped, and dX/dsigma came back 0 for -2 with no error, where a build
+    # before #1681 refused the run (CV_TOO_CLOSE). It is refused, naming the issue.
+    with pytest.raises(
+        bngsim.SensitivityUnsupportedError, match=r"crosses 2\.5 after the start.*issue #1828"
+    ):
+        _clock_run(tmp_path, 1e17, sens=["sigma"])
+
+
+def test_a_crossing_rounded_onto_a_nearer_start_is_refused_too(tmp_path):
+    # The rounding depends on the spacing at the start and the crossing's
+    # distance, not on how far out the start is: from 1e6 (1.2e-10 apart) a
+    # crossing 4e-11 after it rounds onto it, and the column was 0 for -2.
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="issue #1828"):
+        _clock_run(tmp_path, 1e6, sens=["sigma"], c0=repr(3 - 4e-11))
+
+
+def test_a_counter_crossing_moved_only_by_the_counter_s_start_is_refused(tmp_path):
+    # The clock's own sensitivity moves the crossing too (issue #725): with the
+    # counter's initial value as the only column, it has the same jump to lose.
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="issue #1828"):
+        _clock_run(tmp_path, 1e17, ic=["C()"])
+
+
+def test_a_column_the_crossing_does_not_move_is_run(tmp_path):
+    # k scales X past the switch but does not move it: there is no jump to lose,
+    # and dX/dk from 1e17 is the run from 0's (13.5 and 29.5 at +16 and +32).
+    far, near = _clock_run(tmp_path, 1e17, sens=["k"]), _clock_run(tmp_path, 0.0, sens=["k"])
+    x = list(far.species_names).index("X()")
+    assert np.allclose(
+        np.asarray(far.sensitivities)[:, x, 0], np.asarray(near.sensitivities)[:, x, 0], atol=1e-6
+    )
+    assert np.asarray(far.sensitivities)[-1, x, 0] == pytest.approx(29.5, abs=1e-6)
+
+
+def test_the_same_crossing_from_a_start_where_it_does_not_round_is_run(tmp_path):
+    # From 1e15 the doubles are 0.125 apart: the crossing is placed, and the
+    # column is the run from 0's.
+    far, near = (
+        _clock_run(tmp_path, 1e15, sens=["sigma"]),
+        _clock_run(tmp_path, 0.0, sens=["sigma"]),
+    )
+    x = list(far.species_names).index("X()")
+    assert np.asarray(far.sensitivities)[-1, x, 0] == pytest.approx(-2.0, abs=1e-6)
+    assert np.array_equal(np.asarray(far.sensitivities), np.asarray(near.sensitivities))
+
+
+def test_a_plain_run_from_1e17_is_not_refused(tmp_path):
+    # No column for the lost switch to zero: X is right (2 (32 - 2.5) = 59).
+    run = _clock_run(tmp_path, 1e17)
+    x = list(run.species_names).index("X()")
+    assert _species(run)[-1, x] == pytest.approx(59.0, abs=1e-6)
+
+
+def test_a_crossing_past_the_run_s_end_is_not_refused(tmp_path):
+    # Dropped by the same window, but for being after the end, not for
+    # rounding: c0 = -100 puts it 103 after the start, past +32. X stays 0.
+    run = _clock_run(tmp_path, 1e17, sens=["sigma"], c0="-100")
+    x = list(run.species_names).index("X()")
+    assert _species(run)[-1, x] == 0.0
+    assert np.asarray(run.sensitivities)[-1, x, 0] == 0.0
+
+
+@pytest.mark.parametrize("c0", ["3", "40"], ids=["on the start", "past the end"])
+def test_a_counter_with_no_crossing_inside_the_run_is_not_refused(tmp_path, c0):
+    # c0 = sigma: the switch is on at the start; c0 = 40: the counter is past
+    # sigma throughout. Neither has a crossing inside the run to lose.
+    run = _clock_run(tmp_path, 1e17, sens=["sigma"], c0=c0)
+    x = list(run.species_names).index("X()")
+    assert _species(run)[-1, x] == pytest.approx(64.0, abs=1e-6)
+
+
 # Two counters, C from 0.5 and D from 1.5, crossing 3 and 4 at one instant,
 # t0 + 2.5: the run is given one stop there and a probe for each crossing
 # (issue #767), and every one moves with the run.

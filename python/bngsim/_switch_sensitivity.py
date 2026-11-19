@@ -11732,6 +11732,21 @@ def _dtstar_columns(
     return dtstar, moved
 
 
+def _rounds_onto_the_start(t_start: float, clock_idx0: int, elapsed: float) -> bool:
+    """Issue #1828: whether a counter clock's crossing *elapsed* after the start,
+    inside the run in exact arithmetic, is placed on ``t_start`` itself.
+
+    The crossing's time is ``t_start + (threshold - c(t_start))``. The elapsed
+    part is the difference of two values of the counter, which nothing far from
+    0 touches; the sum rounds onto ``t_start`` where the doubles there are at
+    least twice the elapsed time apart (from 1e17, 16 apart, a crossing 2.5
+    after the start; from 1e6, 1.2e-10 apart, one 4e-11 after it). Rounding
+    onto the start takes at most half the spacing, and a run whose end is a
+    double past its start is at least the spacing long, so such a crossing is
+    never past the run's end."""
+    return clock_idx0 >= 0 and elapsed > 0.0 and t_start + elapsed == t_start
+
+
 def _absorb_schedule_crossings(
     found: list[_Crossing],
     found_index: dict[tuple[int, str], list[int]],
@@ -11744,6 +11759,7 @@ def _absorb_schedule_crossings(
     n_cols: int,
     own_names: AbstractSet[str] = frozenset(),
     uncompensated_out: list[str] | None = None,
+    rounded_out: list[tuple[float, _Crossing]] | None = None,
 ) -> None:
     """Add every edge of *atom*'s repeating schedule that falls in the run window
     (issue #436), or do nothing when *atom* is not one.
@@ -11826,6 +11842,23 @@ def _absorb_schedule_crossings(
         # time rather than in clock values so a schedule on a counter clock is
         # filtered by exactly the test a threshold on it would be.
         if not (t_start < t_star <= t_end):
+            if rounded_out is not None and _rounds_onto_the_start(
+                t_start, clock_idx0, value - clock_now
+            ):
+                dtstar, _ = _dtstar_columns(partials, col_of, n_cols)
+                rounded_out.append(
+                    (
+                        value - clock_now,
+                        _Crossing(
+                            t_star=t_star,
+                            clock_idx0=clock_idx0,
+                            threshold=value,
+                            dtstar=dtstar,
+                            partials={},
+                            atoms=frozenset({atom}),
+                        ),
+                    )
+                )
             continue
         dtstar, _ = _dtstar_columns(partials, col_of, n_cols)
         _absorb_crossing(
@@ -11986,6 +12019,8 @@ def compute_switch_time_sens(
     # what turns isolation on below. Dropping them early is why #375 reproduced
     # even when a single parameter was requested.
     found: list[_Crossing] = []
+    # Crossings dropped only because their time rounds onto t_start (issue #1828).
+    rounded: list[tuple[float, _Crossing]] = []
     # ``found`` bucketed by clock and threshold value, so absorbing a crossing
     # does not walk every crossing found so far (see :func:`_absorb_crossing`).
     found_index: dict[tuple[int, str], list[int]] = {}
@@ -12042,6 +12077,7 @@ def compute_switch_time_sens(
                         len(names),
                         own_names,
                         uncompensated_out,
+                        rounded_out=rounded,
                     )
                     continue
                 clock_sym, threshold_exprs = split
@@ -12099,6 +12135,22 @@ def compute_switch_time_sens(
                     # on t_end still jumps into the final recorded column; one on
                     # t_start would precede the run's initial recording.
                     if not (t_start < t_star <= t_end):
+                        if clock_idx0 >= 0 and _rounds_onto_the_start(
+                            t_start, clock_idx0, threshold_value - clock_now
+                        ):
+                            rounded.append(
+                                (
+                                    threshold_value - clock_now,
+                                    _Crossing(
+                                        t_star=t_star,
+                                        clock_idx0=clock_idx0,
+                                        threshold=threshold_value,
+                                        dtstar=dtstar,
+                                        partials={},
+                                        atoms=frozenset({atom}),
+                                    ),
+                                )
+                            )
                         continue
 
                     _absorb_crossing(
@@ -12124,6 +12176,26 @@ def compute_switch_time_sens(
     # which is what puts the record onto the isolation path.
     moved_clocks = _clocks_moved(core, clocks, names, ic_species, declared=declared)
     moved = [c for c in found if any(v != 0.0 for v in c.dtstar) or c.clock_idx0 in moved_clocks]
+    # A crossing a requested column moves is a record the run applies a jump
+    # for. One whose time rounded onto t_start was dropped above, and the column
+    # would come back without its jump: 0 for -2 in dX/dsigma from 1e17, with no
+    # error, where a build before #1681 refused the run (CV_TOO_CLOSE). Until the
+    # crossings are placed from t_start (issue #1828), refuse.
+    lost = [
+        (elapsed, c)
+        for elapsed, c in rounded
+        if any(v != 0.0 for v in c.dtstar) or c.clock_idx0 in moved_clocks
+    ]
+    if lost:
+        elapsed, c = lost[0]
+        raise SensitivityUnsupportedError(
+            "Forward sensitivity is not supported for this run: the counter clock in "
+            f"{_strip_redundant_parens(min(c.atoms).strip())!r} crosses {elapsed:g} after the "
+            f"start, t = {t_start!r}, but there the doubles are {math.ulp(t_start):g} apart, "
+            "so the crossing's time rounds onto the start and the jump it makes in the "
+            "requested columns would be lost, returning them without it (issue #1828). "
+            "Start the run nearer 0."
+        )
     if moved:
         for step in _steps_on_instants(core, ctx, scope, float(t_start), float(t_end), moved):
             for call in step.atoms:
