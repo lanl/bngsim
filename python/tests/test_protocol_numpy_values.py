@@ -400,6 +400,22 @@ def test_an_integer_past_a_doubles_range_reads_as_it_did(digits):
     assert negative.value == -math.inf
 
 
+def test_an_int_subclass_is_written_as_the_integer_it_is():
+    # str() of an int subclass may not be its digits: an IntEnum prints as its
+    # name before Python 3.11. Main wrote every number through float().
+    class Named(int):
+        def __str__(self) -> str:
+            return "named"
+
+    def steps(seven, three):
+        return _spec(
+            StateChange(kind="set_concentration", target="A()", value=three),
+            _run(seed=seven),
+        )
+
+    assert write_bngl_protocol(steps(Named(7), Named(3))) == write_bngl_protocol(steps(7, 3))
+
+
 @pytest.mark.parametrize(
     "token, value",
     [
@@ -419,3 +435,11 @@ def test_an_integer_a_double_can_hold_reads_exactly(token, value):
     seed = spec.experiments[0].extra["seed"]
     assert seed == value and type(seed) is int
     float(seed)  # what every reader of an action's number does next
+
+
+@pytest.mark.parametrize("value", [True, np.bool_(True)], ids=["bool", "numpy bool"])
+def test_a_bool_value_is_written_as_1(value):
+    """A bool is written as 1, as main wrote it through ``float()``, not as
+    ``str(True)``, a bareword to BNG2.pl."""
+    step = StateChange(kind="set_parameter", target="kp", value=value)
+    assert 'setParameter("kp",1)' in write_bngl_protocol(_spec(step))

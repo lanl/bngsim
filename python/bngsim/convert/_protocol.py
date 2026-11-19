@@ -238,7 +238,12 @@ def _hold_plain(step: Any) -> None:
     Python value it holds (:func:`_plain`). An array given as a field is held
     as a tuple, which is what every sequence field of a step is: as a list, the
     step did not equal the one given the tuple, nor the one its JSON reads back
-    as."""
+    as.
+
+    This is done once, when the step is made. A step given no numpy value holds
+    the caller's own ``extra``, so a numpy value put into that mapping later is
+    held as it is, and is written and run as main did (``to_json`` raises
+    ``TypeError``)."""
     for f in fields(step):
         value = getattr(step, f.name)
         plain = _plain(value)
@@ -1064,9 +1069,12 @@ def _action_num(v: float | int) -> str:
     """Render a numeric action argument: an integral value as a bare int, else
     a ``float()``-round-tripping repr (BNG re-parses every value). An int is
     written as it is: through a float, a seed above 2**53 changed, and 2**64 - 1
-    was written as 2**64, out of a seed's range (issue #1750)."""
-    if isinstance(v, int) and not isinstance(v, bool):
-        return str(v)
+    was written as 2**64, out of a seed's range (issue #1750). Through
+    ``int()``, since a subclass may print as something else: an ``IntEnum``
+    prints as its name before Python 3.11, and a bool as ``True``, where
+    BNG2.pl needs 1."""
+    if isinstance(v, int):
+        return str(int(v))
     f = float(v)
     return str(int(f)) if f.is_integer() else repr(f)
 
