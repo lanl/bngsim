@@ -260,6 +260,61 @@ def test_an_addition_after_it_adds_to_the_amount_it_left(files):
     assert not [w for w in caught if "species follows" in str(w.message)]
 
 
+# --- a setValue in the sweep that reads the swept parameter ------------------
+#
+# SED-ML applies a repeatedTask's setValues at each iteration, and "variable
+# references retrieve always the current value of the model variable ... at the
+# current iteration" (L1V3, SetValue). So a species set from the swept
+# parameter through a variable, listed after the setValue that sweeps it, is
+# set from the point's value, and follows the sweep: A(0) = 2 A0 at each point.
+# Listed before it, it reads the parameter as the reset left it, 100.
+
+
+def _set_from_a0() -> str:
+    return (
+        f'<setValue modelReference="m" target="{S}"><listOfVariables>'
+        f'<variable id="a0" target="{P.format("A0")}" modelReference="m"/></listOfVariables>'
+        f'<math xmlns="{MML}"><apply><times/><ci>a0</ci><cn>2</cn></apply></math></setValue>'
+    )
+
+
+def test_a_setvalue_after_the_swept_one_reads_the_points_value(files):
+    net, sbml = files
+    spec = _read(_doc("", _scan(_set_from_a0())), sbml)
+    assert spec.lossy == ()
+    (change,) = [s for s in spec.steps if isinstance(s, StateChange)]
+    assert change.kind == "set_concentration" and not change.evaluated_once
+    assert _scan_ends(_replay(net, spec)) == pytest.approx(
+        [a_at_1(2 * a0) for a0 in (10, 20, 30)], rel=1e-8
+    )
+
+
+def test_a_setvalue_before_the_swept_one_reads_the_reset_value(files):
+    net, sbml = files
+    before = _scan().replace("<listOfChanges>", "<listOfChanges>" + _set_from_a0())
+    spec = _read(_doc("", before), sbml)
+    assert spec.lossy == ()
+    (change,) = [s for s in spec.steps if isinstance(s, StateChange)]
+    assert change.kind == "set_concentration" and change.evaluated_once
+    assert _scan_ends(_replay(net, spec)) == pytest.approx([a_at_1(200.0)] * 3, rel=1e-8)
+
+
+def test_a_setvalue_after_the_swept_one_that_reads_another_parameter_is_evaluated_once(files):
+    # k1 is not swept, so the value is the same at every point and one step
+    # before the scan gives it: A(0) = 200 k1 = 200, evaluated once (#1737).
+    net, sbml = files
+    from_k1 = (
+        f'<setValue modelReference="m" target="{S}"><listOfVariables>'
+        f'<variable id="k" target="{P.format("k1")}" modelReference="m"/></listOfVariables>'
+        f'<math xmlns="{MML}"><apply><times/><ci>k</ci><cn>200</cn></apply></math></setValue>'
+    )
+    spec = _read(_doc("", _scan(from_k1)), sbml)
+    assert spec.lossy == ()
+    (change,) = [s for s in spec.steps if isinstance(s, StateChange)]
+    assert change.kind == "set_concentration" and change.evaluated_once
+    assert _scan_ends(_replay(net, spec)) == pytest.approx([a_at_1(200.0)] * 3, rel=1e-8)
+
+
 # --- where BNG2.pl keeps the expression, case by case -----------------------
 #
 # BNG2.pl keeps a setConcentration's expression as the amount until a run
@@ -317,6 +372,7 @@ CASES = [
     ("once setp savep setp resetp run", True, False),  # 10
     ("savep:p setp once resetp:p run", True, False),  # 200, where the change gave 10
     ("once:exp(1)*2 savep resetp run", False, False),  # 5.44: it reads no parameter
+    ("savep once:exp(1)*2 resetp run", False, False),  # 5.44: exp is a function
     ("onceB num setp run", True, False),  # B from 10: the number was A's
     ("once add run", False, True),  # 101: added to the declared 100
     ("once setp add run", False, True),  # 101

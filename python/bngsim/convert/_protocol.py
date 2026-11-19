@@ -1232,7 +1232,8 @@ def _followed_into_a_run(steps: Sequence[object], change: StateChange) -> tuple[
     ``parameter_scan`` saves as "SCAN" and, resetting, goes back to it before
     each point and at its end. Each case was run through BNG2.pl 2.9.3.
     """
-    names = set(re.findall(r"(?<![\w.])([A-Za-z_]\w*)(?!\w)", change.value_expr or ""))
+    # The names it reads; a function call (exp(1)) is no parameter a step changes.
+    names = set(re.findall(r"(?<![\w.])([A-Za-z_]\w*)(?!\w|\s*\()", change.value_expr or ""))
     live = True  # the species' amount is the expression
     saved: dict[str, bool] = {}  # by label: the saved concentrations hold it
     changed: list[str] = []  # the names that are not what they were at the change
