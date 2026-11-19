@@ -793,7 +793,7 @@ side.
 A species whose own law carries it out through minus infinity in finite time
 ends this way too, as one that leaves through plus infinity does.
 `X' = -(1 + X^2)` from `X = 1` is `tan(pi/4 - t)`, which crosses 0 and has no
-value from `t = 3*pi/4` on: the run fails there, naming the law as `-> -inf`
+value from `t = 3*pi/4` on: the run fails there, naming the overflowing law
 (issue #1679). Before, a species declared at 0 or above was read at 0 once its
 own law overflowed, and the run went on to return `X(3) = -3.5e+286`. Not every
 such failure names a law: for `X' = -(1 + exp(-X))` it can name only the state.

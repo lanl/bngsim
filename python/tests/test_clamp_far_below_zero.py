@@ -28,6 +28,7 @@ concentration, or returns no concentration carried 1e6 atols below 0 to a pole.
 from __future__ import annotations
 
 import re
+import shutil
 from pathlib import Path
 
 import bngsim
@@ -41,6 +42,21 @@ BIOMD338 = DATA / "BIOMD0000000338.xml"
 # read (BioModels, CC0; each at its rr-parity job's own window and tolerances).
 BIOMD404 = DATA / "BIOMD0000000404.xml"  # Bray 1993, chemotaxis
 BIOMD810 = DATA / "BIOMD0000000810.xml"  # Ganguli 2018, tumour immunology
+
+
+# The compiled right-hand side has its own retry (cvode_codegen_rhs_body). A
+# model this small runs interpreted unless it is asked for, so the cases below
+# ask for it where a C compiler is there.
+_CC = shutil.which("cc") or shutil.which("clang") or shutil.which("gcc")
+_COMPILED = pytest.param(
+    {"codegen": True}, marks=pytest.mark.skipif(_CC is None, reason="no C compiler on PATH")
+)
+
+
+def _took_named_route(sim, kw):
+    # The route the run took, where the case names one: a compiled case that
+    # fell back to the interpreter would test the interpreted retry twice.
+    return "codegen" not in kw or (sim.codegen_backend != "exprtk") == kw["codegen"]
 
 
 @pytest.fixture(autouse=True)
@@ -265,8 +281,8 @@ T_STAR = 3.0 * np.pi / 4.0  # from X = 1 at k = 1
 
 @pytest.mark.parametrize(
     "kw",
-    [{}, {"jacobian": "analytical"}, {"jacobian": "fd"}, {"codegen": False}],
-    ids=["default", "analytical", "fd", "interpreted"],
+    [{}, {"jacobian": "analytical"}, {"jacobian": "fd"}, {"codegen": False}, _COMPILED],
+    ids=["default", "analytical", "fd", "interpreted", "compiled"],
 )
 def test_a_species_run_to_minus_infinity_is_refused_at_its_blowup(tmp_path, kw):
     # Main returned [1, -0.218, -2.69, -3.5e+286] here on the closed-form
@@ -275,6 +291,7 @@ def test_a_species_run_to_minus_infinity_is_refused_at_its_blowup(tmp_path, kw):
     sim = _blowup_sim(tmp_path, QUADRATIC, **kw)
     with pytest.raises(bngsim.SimulationError) as info:
         sim.run((0.0, 3.0), 4)
+    assert _took_named_route(sim, kw)
     assert abs(_refused_at(info) - T_STAR) < 1e-4
     # The failure names the law and the way it left.
     assert "f() = -(k+Xtot*Xtot) -> -inf" in str(info.value), str(info.value)
@@ -392,8 +409,8 @@ def test_an_overflow_with_an_edge_at_0_is_clamped_as_before(tmp_path, law, start
 
 @pytest.mark.parametrize(
     "kw",
-    [{}, {"jacobian": "analytical"}, {"jacobian": "fd"}, {"codegen": False}],
-    ids=["default", "analytical", "fd", "interpreted"],
+    [{}, {"jacobian": "analytical"}, {"jacobian": "fd"}, {"codegen": False}, _COMPILED],
+    ids=["default", "analytical", "fd", "interpreted", "compiled"],
 )
 def test_another_species_overflow_at_an_undershoot_is_clamped_as_before(tmp_path, kw):
     # W at -8e-5 is 8e7 atols below 0 at atol 1e-12, but inside the tolerance of
@@ -415,6 +432,7 @@ def test_another_species_overflow_at_an_undershoot_is_clamped_as_before(tmp_path
     model.set_concentration("W()", -8e-5)
     sim = bngsim.Simulator(model, "ode", **kw)
     result = sim.run((0.0, 1.0), 3, rtol=1e-6, atol=1e-12)
+    assert _took_named_route(sim, kw)
     species = np.asarray(result.species, dtype=float)
     assert np.all(species[:, 0] == -8e-5)
     assert np.abs(species[:, 1] - np.asarray(result.time)).max() < 1e-6
@@ -428,8 +446,9 @@ def test_another_species_overflow_at_an_undershoot_is_clamped_as_before(tmp_path
         {"jacobian": "fd"},
         {"codegen": False},
         {"jacobian": "analytical", "force_sparse_linear_solver": True},
+        _COMPILED,
     ],
-    ids=["default", "analytical", "fd", "interpreted", "analytical-klu"],
+    ids=["default", "analytical", "fd", "interpreted", "analytical-klu", "compiled"],
 )
 def test_an_undershoot_whose_own_law_overflows_is_clamped_as_before(tmp_path, kw):
     # The case above with W the reactant: W -> Z at W*exp(-W/1e-7), so W's own
@@ -451,7 +470,26 @@ def test_an_undershoot_whose_own_law_overflows_is_clamped_as_before(tmp_path, kw
     )
     model = bngsim.Model.from_net(str(net))
     model.set_concentration("W()", -8e-5)
-    result = bngsim.Simulator(model, "ode", **kw).run((0.0, 1.0), 3, rtol=1e-6, atol=1e-12)
+    sim = bngsim.Simulator(model, "ode", **kw)
+    result = sim.run((0.0, 1.0), 3, rtol=1e-6, atol=1e-12)
+    assert _took_named_route(sim, kw)
     species = np.asarray(result.species, dtype=float)
     assert np.all(species[:, 0] == -8e-5)
     assert np.all(species[:, 1] == 0.0)
+
+
+@pytest.mark.parametrize("kw", [{"codegen": False}, _COMPILED], ids=["interpreted", "compiled"])
+def test_its_own_law_infinite_up_to_0_is_clamped_as_before(tmp_path, kw):
+    # X' = -exp(-1/X), X written to -1e-3: the infinity is in X's own row and
+    # drives it on down, as a solution carried out through minus infinity does,
+    # but it reaches all the way up to 0 (exp(1/atol) one atol below it), so 0 is
+    # the law's own edge: its value there, -exp(-inf) = 0, is its limit from
+    # above. That is what the reading one atol below 0 is for. X is read at 0,
+    # nothing moves it, and the run returns it where it was put, as on main.
+    # Asked at 0 itself the law is finite, X would count as carried, and the
+    # run would be refused.
+    sim = _blowup_sim(tmp_path, "-exp(-1/Xtot)", **kw)
+    sim.model.set_concentration("X()", -1e-3)
+    result = sim.run((0.0, 5.0), 6, rtol=1e-6, atol=1e-12)
+    assert _took_named_route(sim, kw)
+    assert np.all(np.asarray(result.species, dtype=float)[:, 0] == -1e-3)
