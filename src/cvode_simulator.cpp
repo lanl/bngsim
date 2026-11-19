@@ -17076,14 +17076,22 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // the run nearer 0 is at 2^20 or beyond, so every other run is the one it
     // was, to the bit, as for SSA (issue #1059). The rows report the times
     // asked for. A model that reads the clock (a function of time(), a table
-    // indexed by it, an event, a discontinuity, a crossing stop or a switch
-    // time to stop at) keeps the absolute clock: its laws are evaluated at t,
-    // and its stops are absolute times, which are not moved here. A model with
-    // no ODE state, above, has no step to lose.
+    // indexed by it, an event, a discontinuity, or a stop on the time itself)
+    // keeps the absolute clock: its laws are evaluated at t. A stop or a switch
+    // time on a counter clock is where the counter reaches its threshold,
+    // t_start + (threshold - c(t_start)), and moves with the run: kept on the
+    // absolute clock for its stops, an if() on a counter from 1e15 came back
+    // 2.5 short of 5, with no error. A model with no ODE state, above, has no
+    // step to lose.
+    const auto on_counter_clocks = [](const auto &crossings) {
+        return std::all_of(crossings.begin(), crossings.end(),
+                           [](const auto &c) { return c.clock_species_idx0 >= 0; });
+    };
     if (const double origin = elapsed_clock_origin(times);
         origin != 0.0 && !model.functions_use_time() && model.n_events() == 0 &&
-        model.n_discontinuity_triggers() == 0 && opts.crossing_stops.empty() &&
-        opts.crossing_probes.empty() && opts.sensitivity.switch_times.empty()) {
+        model.n_discontinuity_triggers() == 0 && on_counter_clocks(opts.crossing_stops) &&
+        on_counter_clocks(opts.crossing_probes) &&
+        on_counter_clocks(opts.sensitivity.switch_times)) {
         // The rows asked for, each moved onto the run's clock: exact, the
         // origin being a multiple of the spacing of doubles at the far end.
         // Past 2^72 that spacing is over 2^20, and what is left of the near
@@ -17092,6 +17100,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         const std::vector<double> asked = times.output_times();
         TimeSpec elapsed = times;
         elapsed.sample_times = asked;
+        SolverOptions moved = opts;
         std::vector<double> origins;
         for (double o = origin; o != 0.0; o = elapsed_clock_origin(elapsed)) {
             origins.push_back(o);
@@ -17099,6 +17108,21 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             elapsed.t_end -= o;
             for (double &x : elapsed.sample_times)
                 x -= o;
+            for (CrossingStop &stop : moved.crossing_stops)
+                stop.t_star -= o;
+            // Read only where an event fires, which a run here has none of:
+            // moved so the copy is the run's on one clock.
+            for (CrossingStop &probe : moved.crossing_probes)
+                probe.t_star -= o;
+            for (SwitchTimeSens &sw : moved.sensitivity.switch_times) {
+                sw.t_star -= o;
+                for (auto &clock : sw.instant_clocks)
+                    if (clock.first < 0)
+                        clock.second -= o;
+                for (auto &clock : sw.instant_other_clocks)
+                    if (clock.first < 0)
+                        clock.second -= o;
+            }
         }
         // Each move back is exact, in the reverse order.
         const auto back = [&origins](double t) {
@@ -17107,7 +17131,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             return t;
         };
         try {
-            Result result = run(elapsed, opts);
+            Result result = run(elapsed, moved);
             // A run to a steady state stops early and keeps the rows it reached.
             for (int i = 0; i < result.n_times(); ++i)
                 result.set_time(i, asked[static_cast<std::size_t>(i)]);

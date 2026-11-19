@@ -779,14 +779,24 @@ Where it is not, the run starts at what is left, less than that spacing: from
 as accurate as the run from 0 but not equal to it in every bit.
 
 A run nearer 0 than that is integrated on the clock you gave it, as it always
-was. If a far run fails with a message that names a time, that time is on the
-run's own clock, and the message ends by saying which time to add to it.
+was. So is a run that starts far below 0 and ends within 2^20 of 0, or past it:
+its nearer end is not far, and its first rows are only as fine as the doubles
+at its start (over `(-1e15, -5)` the decay above is at 0.00144 for 0.00674 at
+`-1e15 + 5`, with no error). If a far run fails with a message that names a
+time, that time is on the run's own clock, and the message ends by saying which
+time to add to it.
 
-A model that stops at a switch time for its sensitivities (an `if()` on a
-counter clock whose threshold is a requested parameter) keeps the absolute
-clock, as a model with any other stop does. `run_diffrax` is not moved either:
-it integrates on the clock it is given, and from `1e15` it ends at its step
-limit with an error.
+A switch on a counter clock (an `if()` on a species that counts time, such as
+`C' = 1`) does not read the clock. Its stop, and its switch time when the
+threshold is a requested parameter, are where the counter reaches the
+threshold, and both move with the run. Both are placed before the run, on the
+clock it was given, to the spacing of the doubles there: from `1e15`, 0.125
+apart, a crossing 2.53 after the start still comes out right, and from `1e17`,
+16 apart, a crossing 2.5 after the start is placed at the start and its
+sensitivity is lost (0 for -2), as it always was.
+
+`run_diffrax` is not moved either: it integrates on the clock it is given, and
+from `1e15` it ends at its step limit with an error.
 
 A model that **reads the clock** keeps the absolute one, far or not: a function
 of `time()`, a table function indexed by time, or any event. Its laws are

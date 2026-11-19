@@ -10,8 +10,8 @@ A model that reads no clock cannot tell where its run starts, so a run whose end
 nearer 0 is at 2^20 or beyond is integrated on the time elapsed since that end,
 and reports the times asked for: it is the run from 0, bit for bit, where that
 end is on the spacing of the doubles at the far end, and as accurate where it is
-not. A run nearer 0, a model that reads the clock, and a run given a switch time
-to stop at, are run as before.
+not. A run nearer 0 and a model that reads the clock are run as before; the stop
+and the switch time of a switch on a counter clock move with the run.
 
 The models are ``.net`` text. Which clock a run was on is read from a failing
 run's message, which names its times: a law that leaves through infinity at
@@ -263,11 +263,11 @@ end groups
 """
 
 
-def test_a_far_run_with_a_switch_time_keeps_the_absolute_clock(tmp_path, monkeypatch):
-    # A switch time is an absolute time to stop at and jump across. Handed to
-    # the run without a crossing stop beside it, the run moved onto its own
-    # clock never reached it: dX/dsigma came back 0 for -2. The stops are
-    # dropped here so the switch time is all the run is given.
+def test_a_far_runs_switch_time_moves_with_it(tmp_path, monkeypatch):
+    # A switch time is a time to stop at and jump across. Left on the absolute
+    # clock while the run moved onto its own, it was never reached: dX/dsigma
+    # came back 0 for -2. The stops are dropped here so the switch time is all
+    # the run is given.
     monkeypatch.setattr(
         bngsim._bngsim_core.SolverOptions, "set_crossing_stops", lambda self, *a: None
     )
@@ -279,6 +279,89 @@ def test_a_far_run_with_a_switch_time_keeps_the_absolute_clock(tmp_path, monkeyp
     ).run(sample_times=[t0 + i for i in range(6)], rtol=1e-10, atol=1e-12)
     x = list(run.species_names).index("X()")
     assert np.asarray(run.sensitivities)[-1, x, 0] == pytest.approx(-2.0, abs=1e-6)
+
+
+@pytest.mark.parametrize("sens", [False, True], ids=["plain", "sensitivity"])
+@pytest.mark.parametrize("t0", [1e15, -(2.0**30) - 5.0], ids=["far", "far negative"])
+def test_a_far_run_of_a_switch_on_a_counter_is_the_run_from_its_near_end(tmp_path, t0, sens):
+    # CLOCK_NET reads no clock: its switch is on the counter C, and its crossing
+    # is handed to the run as a stop (and, with sigma asked for, a switch time)
+    # at t_start + (sigma - c0). Kept on the absolute clock for its stops, the
+    # run from 1e15 came back as X(t0 + 5) = 2.12 for 5, 2.47 at rtol 1e-10,
+    # with no error. The stops move with the run, so it is the run from its end
+    # nearer 0, to the bit: from 0, or over (-5, 0) for the negative one. Run
+    # with each stop left at its absolute time, it is not: no stop is ever
+    # reached, and the step goes over the jump.
+    net = tmp_path / "clock.net"
+    net.write_text(CLOCK_NET)
+    kw = {"sensitivity_params": ["sigma"]} if sens else {}
+
+    def run(start):
+        sim = bngsim.Simulator(bngsim.Model.from_net(str(net)), "ode", **kw)
+        return sim.run(sample_times=[start + i for i in range(6)])
+
+    far, near = run(t0), run(0.0 if t0 > 0 else -5.0)
+    assert np.array_equal(_species(far), _species(near))
+    x = list(far.species_names).index("X()")
+    assert _species(far)[-1, x] == pytest.approx(5.0, abs=1e-6)
+    if sens:
+        assert np.array_equal(np.asarray(far.sensitivities), np.asarray(near.sensitivities))
+
+
+# Two counters, C from 0.5 and D from 1.5, crossing 3 and 4 at one instant,
+# t0 + 2.5: the run is given one stop there and a probe for each crossing
+# (issue #767), and every one moves with the run.
+TWO_COUNTERS_NET = """begin parameters
+    1 c0     0.5
+    2 d0     1.5
+    3 sigma  3
+    4 s2     4
+    5 k      2
+    6 k2     3
+    7 rc     1
+end parameters
+begin functions
+    1 rate_X() if(t>=sigma,k,0)
+    2 rate_Y() if(u>=s2,k2,0)
+end functions
+begin species
+    1 C() c0
+    2 D() d0
+    3 X() 0
+    4 Y() 0
+end species
+begin reactions
+    1 0 1 rc
+    2 0 2 rc
+    3 0 3 rate_X
+    4 0 4 rate_Y
+end reactions
+begin groups
+    1 t 1
+    2 u 2
+end groups
+"""
+
+
+@pytest.mark.parametrize("sens", [False, True], ids=["plain", "sensitivity"])
+def test_a_far_run_of_two_crossings_on_one_instant_is_the_run_from_0(tmp_path, sens):
+    net = tmp_path / "two.net"
+    net.write_text(TWO_COUNTERS_NET)
+    kw = {"sensitivity_params": ["sigma"]} if sens else {}
+
+    def run(start):
+        sim = bngsim.Simulator(bngsim.Model.from_net(str(net)), "ode", **kw)
+        return sim.run(sample_times=[start + i for i in range(6)])
+
+    far, near = run(1e15), run(0.0)
+    assert np.array_equal(_species(far), _species(near))
+    # X = k (s - 2.5) and Y = k2 (s - 2.5) past the instant: 5 and 7.5 at s = 5.
+    x, y = (list(far.species_names).index(name) for name in ("X()", "Y()"))
+    assert _species(far)[-1, x] == pytest.approx(5.0, abs=1e-6)
+    assert _species(far)[-1, y] == pytest.approx(7.5, abs=1e-6)
+    if sens:
+        assert np.array_equal(np.asarray(far.sensitivities), np.asarray(near.sensitivities))
+        assert np.asarray(far.sensitivities)[-1, x, 0] == pytest.approx(-2.0, abs=1e-6)
 
 
 # S' = amp below lvl = 1 and -amp above it, from S = 0: at t = 1 it slides
