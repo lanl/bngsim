@@ -7,7 +7,7 @@ root on ``S > 0`` costs every step it is watched, and 300 Hill reactions with
 h >= 1 ran 10x slower with it. So a model whose h was moved into (0, 1) after it
 was loaded evaluated ``inf*0`` at S = 0, and every run that reached S = 0 failed.
 
-Every Hill law now takes the guard, and a plain run folds a condition its
+Every Hill law now takes the guard, and a solve folds a condition its
 parameter values decide (``(h <= 0) or (h >= 1)`` true at h = 2) to a constant
 before choosing its roots, so a model at h >= 1 roots nothing for it.
 
@@ -424,6 +424,49 @@ def test_a_model_with_events_keeps_its_roots():
         assert np.abs(s - 3 * np.exp(-np.asarray(result.time))).max() < 1e-7
 
 
+def _sbml_rule_bound() -> str:
+    # S fed at k while (S > 100) or (p < 10) or (q >= 1), else at 0.1 k, where
+    # an assignment rule sets p = 2 S: the second part reads a parameter, but
+    # one the state moves, so it is no constant to fold on. The third, false at
+    # q = 0, is one: it gives the model a part to fold by, so the fold is asked.
+    law = (
+        f'<math xmlns="{M}"><apply><times/><ci>k</ci><piecewise><piece><cn>1</cn>'
+        "<apply><or/><apply><gt/><ci>S</ci><cn>100</cn></apply>"
+        "<apply><lt/><ci>p</ci><cn>10</cn></apply>"
+        "<apply><geq/><ci>q</ci><cn>1</cn></apply></apply></piece>"
+        "<otherwise><cn>0.1</cn></otherwise></piecewise></apply></math>"
+    )
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1"><model id="m">
+<listOfCompartments><compartment id="C" size="1" constant="true"/></listOfCompartments>
+<listOfSpecies><species id="S" compartment="C" initialConcentration="0"
+ hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/></listOfSpecies>
+<listOfParameters><parameter id="k" value="1" constant="true"/>
+<parameter id="p" value="0" constant="false"/>
+<parameter id="q" value="0" constant="true"/></listOfParameters>
+<listOfRules><assignmentRule variable="p"><math xmlns="{M}"><apply><times/><cn>2</cn>
+<ci>S</ci></apply></math></assignmentRule></listOfRules>
+<listOfReactions><reaction id="R" reversible="false"><listOfProducts>
+<speciesReference species="S" stoichiometry="1" constant="true"/></listOfProducts>
+<kineticLaw>{law}</kineticLaw></reaction></listOfReactions>
+</model></sbml>"""
+
+
+def test_a_parameter_an_assignment_rule_sets_decides_nothing():
+    # p < 10 holds at the start (p = 0), but p = 2 S moves with the state, so
+    # the switch at S = 5 stays. Read as a constant, it decided the condition,
+    # and the sensitivity run read the first branch throughout: dS/dk = 5.5.
+    # Closed form at k = 1: S = k t until t* = 5/k, then 5 + 0.1 k (t - t*),
+    # so S(10) = 4.5 + k = 5.5 and dS/dk = 1. The tolerance is the run's
+    # rtol of 1e-10, with the crossing located by its root.
+    model = bngsim.Model.from_sbml_string(_sbml_rule_bound())
+    run = bngsim.Simulator(model, "ode", sensitivity_params=["k"]).run(
+        (0.0, 10.0), 2, rtol=1e-10, atol=1e-12
+    )
+    assert float(np.asarray(run.species)[-1, 0]) == pytest.approx(5.5, rel=1e-8)
+    assert float(np.asarray(run.sensitivities)[-1, 0, 0]) == pytest.approx(1.0, rel=1e-8)
+
+
 @pytest.mark.skipif(
     not (os.environ.get("BNGPATH") and shutil.which("perl")), reason="BNG2.pl not available"
 )
@@ -556,3 +599,74 @@ def test_a_hill_law_written_back_and_loaded_has_its_column_in_h_at_1(tmp_path):
     )
     column = float(np.asarray(found.sensitivity).ravel()[0])
     assert abs(column - (-_s_star(1.0) * np.log(2.0 / 3.0))) < 1e-6
+
+
+@pytest.mark.parametrize(
+    ("method", "options"), [("ssa", {}), ("psa", {"poplevel": 100})], ids=["ssa", "psa"]
+)
+def test_a_stochastic_run_after_h_is_set_into_the_interval(tmp_path, method, options):
+    # The guard is in the function, so the propensity S*f is 0 at S = 0 too. On
+    # main the bare body gave a NaN propensity there, and the run was refused.
+    # Oracle: the model loaded at h = 0.5, which had the guard before #1636, on
+    # the same seed.
+    run = {"t_span": (0.0, 20.0), "n_points": 5, "seed": 7}
+    moved = _model(tmp_path, 2.0)
+    moved.set_param("h", 0.5)
+    got = bngsim.Simulator(moved, method, **options).run(**run)
+    loaded = bngsim.Simulator(_model(tmp_path, 0.5), method, **options).run(**run)
+    assert np.array_equal(np.asarray(got.species), np.asarray(loaded.species))
+    assert np.asarray(got.species)[-1].sum() > 0
+
+
+CLOCK = """begin parameters
+ 1 k 1
+ 2 t1 2
+ 3 p {p}
+end parameters
+begin species
+ 1 S() 5
+end species
+begin functions
+ 1 f() if((time()>t1)||(p>=1),k,0)
+end functions
+begin reactions
+ 1 1 0 f
+end reactions
+"""
+
+
+@pytest.mark.parametrize(("p", "crossing"), [(2.0, False), (0.5, True)])
+def test_the_switch_time_scan_reads_a_decided_condition_as_its_branch(
+    tmp_path, monkeypatch, p, crossing
+):
+    # At p = 2 the condition is decided, so the clock's t1 switches nothing and
+    # the scan finds no crossing; at p = 0.5 it finds the one at t1.
+    from bngsim import _switch_sensitivity as sw
+
+    path = tmp_path / "clock.net"
+    path.write_text(CLOCK.format(p=p), encoding="utf-8")
+    model = bngsim.Model.from_net(str(path))
+    found: list[int] = []
+    scan = sw.compute_switch_time_sens
+
+    def spy(*args, **kwargs):
+        crossings, pinned = scan(*args, **kwargs)
+        found.append(len(crossings))
+        return crossings, pinned
+
+    monkeypatch.setattr(sw, "compute_switch_time_sens", spy)
+    result = bngsim.Simulator(model, "ode", sensitivity_params=["t1"]).run(
+        t_span=(0.0, 4.0), n_points=3, rtol=1e-10, atol=1e-12
+    )
+    assert found and [bool(n) for n in found] == [crossing] * len(found)
+    # Closed form: S = 5 until t1 = 2 and 5 e^-(t - t1) after it where p < 1,
+    # so S(4) = 5 e^-2 and dS(4)/dt1 = S(4); where p >= 1, 5 e^-t from 0 and no
+    # column. The tolerances are the run's rtol of 1e-10.
+    s = float(np.asarray(result.species)[-1, 0])
+    column = float(np.asarray(result.sensitivities)[-1, 0, 0])
+    if crossing:
+        assert s == pytest.approx(5 * np.exp(-2.0), rel=1e-8)
+        assert column == pytest.approx(s, rel=1e-6)
+    else:
+        assert s == pytest.approx(5 * np.exp(-4.0), rel=1e-8)
+        assert abs(column) < 1e-9

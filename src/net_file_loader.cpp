@@ -1369,7 +1369,7 @@ static std::vector<std::string> rewrite_legacy_sat_hill_rate_laws(
             // fails at S = 0. Written only for an h in (0, 1) at load, as #1497
             // first did, it missed those. A root costs every step it is
             // watched (300 Hill reactions with h >= 1 ran 10x slower with it),
-            // so a plain run folds the condition to true where (h <= 0) or
+            // so a solve folds the condition to true where (h <= 0) or
             // (h >= 1) holds at its parameter values, and roots nothing for it
             // (_switch_sensitivity.fold_parameter_decided).
             const std::string body = vmax + " * (" + obs_name + " ^ (" + h + " - 1)) / ((" + kh +
