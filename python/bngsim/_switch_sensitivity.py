@@ -341,6 +341,9 @@ def _turning_side(expr: str) -> tuple[str, str] | None:
     return "square", _strip_redundant_parens(base).strip()
 
 
+_MIRRORED_OP = {"<": ">", ">": "<", "<=": ">=", ">=": "<="}
+
+
 def _monotone_pieces(atom: str) -> list[str]:
     """The comparisons whose crossings are this atom's, one per turn of its
     residual, where the atom compares ``abs(u)`` or ``u^2`` with a bound.
@@ -363,12 +366,13 @@ def _monotone_pieces(atom: str) -> list[str]:
     split = _relational_split_op(_strip_redundant_parens(atom))
     if split is None:
         return []
-    lhs, _op, rhs = split
+    lhs, op, rhs = split
     side = _turning_side(lhs)
     bound = rhs
     if side is None:
         side = _turning_side(rhs)
         bound = lhs
+        op = _MIRRORED_OP.get(op, op)  # `b > abs(u)` is `abs(u) < b`
     if side is None or _turning_side(bound) is not None:
         return []
     kind, inner = side
@@ -380,12 +384,21 @@ def _monotone_pieces(atom: str) -> list[str]:
         value = None
     if value is not None and not (0.0 < value < math.inf):
         return []
+    # Each edge keeps the operator the atom was written with, `<=` as `<=` and
+    # `>` as `>` (the far edge mirrored): the crossing stop reads it, and moves
+    # the stop onto the residual's first zero where the edge's truth changes
+    # there (issue #1673). `abs(u) <= b` was registered as `u < b` and
+    # `u > -b`, and its stop was placed by the strict rule, a double after the
+    # zero for some run lengths. An equality has one edge per root either way,
+    # and keeps the strict pair.
+    near = op if op in _MIRRORED_OP else "<"
+    far = _MIRRORED_OP[near]
     if kind == "abs":
-        return [f"({inner})<({bound})", f"({inner})>(-({bound}))"]
+        return [f"({inner}){near}({bound})", f"({inner}){far}(-({bound}))"]
     if value is None:
         return []
     root = repr(math.sqrt(value))
-    return [f"({inner})<({root})", f"({inner})>(-{root})"]
+    return [f"({inner}){near}({root})", f"({inner}){far}(-{root})"]
 
 
 def _relational_split(atom: str) -> tuple[str, str] | None:
@@ -2333,8 +2346,9 @@ def _snap_to_residual_zero(
     the search walks from *t_star* toward the smaller residual, a double at a
     time, and stops where the next is no smaller: an answer already on the first
     zero costs one evaluation besides *r_star* (the linearity check's, passed
-    in), the issue's case three. At most ``_CROSSING_SNAP_ULPS`` steps, and
-    ``_CROSSING_ZERO_RUN`` down a run of zeros. A walk that is still going at
+    in), the issue's case three. At most ``_CROSSING_SNAP_ULPS`` steps, and a
+    run of zeros followed ``_CROSSING_ZERO_RUN`` doubles, searched at the bound
+    first and then by halves, not a double at a time. A walk that is still going at
     either bound has not found the place it looks for (a run of zeros longer
     than that, as ``(t + 1e6) - 1000000.5`` is near 0.5 or ``(t + 0.1) - 0.1``
     near 0, or a plateau of equal residuals), and stopping there would put the
@@ -2352,13 +2366,28 @@ def _snap_to_residual_zero(
 
     def first_of_zeros(t: float) -> float | None:
         # The first double of the run of zeros *t* is in, or None where the
-        # run goes on past what is followed.
-        for _ in range(_CROSSING_ZERO_RUN):
-            before = math.nextafter(t, -math.inf)
-            if size(before) != 0.0:
-                return t
-            t = before
-        return None
+        # run goes on past what is followed. Most runs are a double or two, so the next double
+        # is tried first, which settles those in one evaluation. Past it the
+        # doubles are listed, which costs nothing, and the residual is
+        # evaluated at the bound, then by bisection: a residual's zeros near a
+        # crossing are one run, so a run longer than the bound costs two more
+        # evaluations, and any other about seven, where a double at a time
+        # cost up to 64 (about 16 ms of sympy).
+        doubles = [t, math.nextafter(t, -math.inf)]
+        if size(doubles[1]) != 0.0:
+            return t
+        for _ in range(_CROSSING_ZERO_RUN - 1):
+            doubles.append(math.nextafter(doubles[-1], -math.inf))
+        if size(doubles[-1]) == 0.0:
+            return None
+        zero, nonzero = 1, len(doubles) - 1
+        while nonzero - zero > 1:
+            mid = (zero + nonzero) // 2
+            if size(doubles[mid]) == 0.0:
+                zero = mid
+            else:
+                nonzero = mid
+        return doubles[zero]
 
     if not math.isfinite(t_star):
         return t_star, r_star
@@ -2504,7 +2533,9 @@ def _crossing_time_of_condition(
         # residual is 0, and that of `>` and `<=` where a falling one is
         # (issue #1673). For the other four, and for `==` and `!=`, it changes
         # after the last zero, or holds only on the run: the solve's answer
-        # stands for those, as it did.
+        # stands for those, as it did. (Moved past the last zero, a strict
+        # stop is no longer on the instant the engine fires a strict event at:
+        # 42 tests of events, delays and sensitivities read it there.)
         if (op in (">=", "<")) if slope > 0 else (op in (">", "<=")):
             t_star = _snap_to_residual_zero(at, t_star, check)[0]
         return t_star

@@ -310,3 +310,103 @@ def test_a_walk_that_reaches_its_bound_returns_the_answer_as_it_was():
 
     start = base + 4.0 * (4 * _CROSSING_SNAP_ULPS)
     assert _snap_to_residual_zero(level, start) == start
+
+
+# ── A trigger written with abs() or a square ────────────────────────────────
+#
+# Such a comparison is registered as its two edges, and the stop reads each
+# edge's operator. They were written as strict `<` and `>` whatever the model
+# wrote, so `abs(x - 3.1) <= 0.5` was placed by the strict rule and its row
+# moved with the run length; each edge now keeps the operator written. Each
+# spelling below is met on its zero, exactly on the row at t = 2.5, so the row
+# reads the state after the event (S = 1) at every run length.
+
+_U = "<apply><minus/><ci>x</ci><cn>3.1</cn></apply>"
+_ABS = f"<apply><abs/>{_U}</apply>"
+_SQUARE = f"<apply><power/>{_U}<cn>2</cn></apply>"
+_FALL = "<apply><minus/><cn>2.6</cn><ci>x</ci></apply>"
+
+
+def _cmp(op: str, lhs: str, rhs: str) -> str:
+    return f"<apply><{op}/>{lhs}{rhs}</apply>"
+
+
+SPELLINGS = {
+    "abs(x - 3.1) <= 0.5": _cmp("leq", _ABS, "<cn>0.5</cn>"),
+    "0.5 >= abs(x - 3.1)": _cmp("geq", "<cn>0.5</cn>", _ABS),
+    "(x - 3.1)^2 <= 0.25": _cmp("leq", _SQUARE, "<cn>0.25</cn>"),
+    # A control the first commit already placed: `<=` on a falling residual.
+    "2.6 - x <= 0 (falling)": _cmp("leq", _FALL, "<cn>0</cn>"),
+}
+
+
+@pytest.mark.parametrize("spelling", sorted(SPELLINGS))
+def test_every_spelling_met_on_its_zero_reads_the_same_at_every_run_length(spelling):
+    """On main each read 3 for some run lengths and 1 for others; before the
+    edges kept their operator, the abs() and square ones still did."""
+    doc = _doc(SPELLINGS[spelling])
+    assert [_row(doc, 2.5, t_end) for t_end in T_ENDS] == [1.0] * len(T_ENDS)
+
+
+def test_a_run_of_zeros_costs_a_few_evaluations_not_one_per_double():
+    """Each evaluation is a sympy parse of the residual, about 0.25 ms. A run of
+    zeros was followed a double at a time, up to 64 of them, and a run longer
+    than that used all 64 to give the solve's answer back: about 16 ms more per
+    solve than main, paid again at each new parameter set. The next double is
+    tried first, then the bound, then halves."""
+    from bngsim._switch_sensitivity import _CROSSING_ZERO_RUN
+    from bngsim._switch_sensitivity import _snap_to_residual_zero as snap
+
+    base = 2.0**54  # doubles 4 apart
+    calls = []
+
+    def counted(zero_until):
+        def at(t):
+            calls.append(t)
+            return 0.0 if base <= t < zero_until else t - base
+
+        return at
+
+    snap(counted(base + 16.0 * _CROSSING_ZERO_RUN), base + 8.0 * _CROSSING_ZERO_RUN, 0.0)
+    assert len(calls) <= 3  # longer than the bound: the next double, the bound
+    calls.clear()
+    assert snap(counted(base + 4.0 * 50), base + 4.0 * 25, 0.0)[0] == base
+    assert len(calls) <= 10  # 25 doubles down to the first zero
+    calls.clear()
+    assert snap(counted(base + 4.0), base, 0.0)[0] == base
+    assert len(calls) <= 1  # the common case: the double below is not 0
+
+
+def _solve(cond: str, t_end: float) -> float | None:
+    from bngsim import _switch_sensitivity as sw
+
+    scope = sw.SwitchConditionScope(
+        core=None,
+        clocks={},
+        clock_symbols=frozenset({"time", "time()"}),
+        param_names=(),
+        param_pats={},
+        primary_names=frozenset(),
+        param_idx={},
+        values=(),
+        derived_exprs={},
+        run_constants=frozenset(),
+        function_names=frozenset(),
+    )
+    sw._CROSSING_CACHE.clear()
+    return sw._crossing_time_of_condition(cond, scope, 0.0, t_end)
+
+
+@pytest.mark.parametrize("op", [">", "==", "!="])
+def test_a_strict_comparison_and_an_equality_keep_the_solve_s_answer(op):
+    """A strict stop moved past the last zero, where its truth changes, is no
+    longer on the instant the engine fires a strict event at, and `==` holds
+    only on the run: these keep the solve's answer, which still moves with the
+    scale (2.5 for a run to 8, the double after it for 4 or 64)."""
+    cond = f"((time()+(0.1)){op}2.6)"
+    after = math.nextafter(2.5, math.inf)
+    assert [_solve(cond, t_end) for t_end in (4.0, 8.0, 64.0)] == [after, 2.5, after]
+
+
+def test_the_solve_for_a_trigger_met_on_its_zero_is_the_same_at_every_run_length():
+    assert {_solve("((time()+(0.1))>=2.6)", t) for t in T_ENDS} == {2.5}

@@ -116,8 +116,11 @@ a time between two short ones) more finely than a double holds it, so where
 several doubles of t give the threshold exactly, the stop can be several doubles
 after the first of them (up to 15 in a sweep of 400 thresholds, as before this
 fix), and a row on one of those doubles can read the state before the event. A
-strict `x > 2.6` is met only after the zero and is stopped where the solve puts
-it, as before; its row can still depend on the run's length.
+trigger written with `abs()` or a square, `abs(x - 3.1) <= 0.5` or
+`(x - 3.1)^2 <= 0.25`, is two such crossings, one per edge, each placed by the
+operator written. A strict `x > 2.6` (or `abs(x - 3.1) < 0.5`) is met only
+after the zero and is stopped where the solve puts it, as before; its row can
+still depend on the run's length.
 
 Which side the row falls on there is decided in doubles, where `0.1 + 2.5` is
 the double 2.6, so the trigger is met at t = 2.5. The exact sum of those two
