@@ -315,3 +315,44 @@ def test_a_slot_put_back_once_is_not_held_at_the_threshold():
     v = _col(r, "V")
     assert v.min() > -100.0
     assert v[-1] == pytest.approx(-70.0 + 9.0 * math.exp(-4.0), abs=0.5)
+
+
+def _put_back_start():
+    # The model of the test above: at ExactAtol(1e-4) V, at -61, is above the
+    # put-back's threshold of -100, and is put back once a step tried takes it
+    # past it.
+    model = bngsim.Model.from_antimony_string(
+        (_V_BESIDE_SINK % "0").replace("k*sqrt(S);", "k*sqrt(S)*(1 + 0*V);")
+    )
+    model.set_concentration("V", -61.0)
+    return model
+
+
+_LOOSE = {"atol": bngsim.ExactAtol(1e-4), "rtol": 1e-6, "timeout": 10}
+
+
+def test_a_second_run_starts_with_nothing_put_back():
+    # What a run has put back is for that run. A plain run reuses the solver's
+    # memory, and the marks of the run before stayed set in it: a second run
+    # from the same state put V back from its first retry on, where the first
+    # read it at 0 until a step it tried took V past the threshold, and the two
+    # differed by 3.7 in V. The oracle is the first run, and the same run on a
+    # new Simulator: one solve repeated is the same arithmetic, so the columns
+    # are equal to the bit.
+    model = _put_back_start()
+    sim = bngsim.Simulator(model, method="ode", jacobian="fd")
+    first = sim.run(t_span=(0, 40), n_points=41, **_LOOSE)
+    model.reset()
+    model.set_concentration("V", -61.0)
+    second = sim.run(t_span=(0, 40), n_points=41, **_LOOSE)
+    fresh = bngsim.Simulator(_put_back_start(), method="ode", jacobian="fd").run(
+        t_span=(0, 40), n_points=41, **_LOOSE
+    )
+    # The case bites only while the first run reads V at 0 for a stretch: it
+    # is then 3 from V's own ODE at t = 5, and a run with V put back from the
+    # start is not.
+    own_ode = -70.0 + 9.0 * np.exp(-0.1 * np.asarray(first.time))
+    assert np.abs(_col(first, "V") - own_ode).max() > 1.0
+    np.testing.assert_array_equal(_col(fresh, "V"), _col(first, "V"))
+    np.testing.assert_array_equal(_col(second, "V"), _col(first, "V"))
+    np.testing.assert_array_equal(_col(second, "S"), _col(first, "S"))

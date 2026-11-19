@@ -5753,6 +5753,14 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
     // equivalent. So too a below-zero refusal.
     w.user_data.nonfinite_witness = NonFiniteWitness{};
     w.user_data.below_zero_refusal.clear();
+    // And on what the narrowed retry put back (issue #1661), which is for one
+    // run: record_clamp_tolerances clears it only where the solver is rebuilt,
+    // so a second run from the same state put a slot back from its first retry
+    // where the first run read it at 0, and the two differed (by 3.7 in V at
+    // ExactAtol(1e-4)). A run that continues the previous one is the same
+    // integration and keeps it, as it keeps the factor count above.
+    if (!opts.continues_trajectory)
+        w.user_data.clamp_kept.clear();
 
     // ─── Integration loop (no events, no sensitivities) ──────────────────────
     void *cvode_mem = w.cvode_mem;

@@ -491,3 +491,32 @@ def test_the_run_test_refuses_an_infinity_the_narrowed_clamp_leaves(s0, jacobian
     assert (ss.linear_solver == "klu") == sparse
     assert not ss.converged
     assert ss.continued_run_distance == float("inf")
+
+
+@pytest.mark.parametrize("codegen", [False, pytest.param(True, marks=_needs_cc)])
+@pytest.mark.parametrize("sparse", [False, pytest.param(True, marks=_needs_klu)])
+def test_a_jacobian_names_the_rows_not_the_columns_that_are_nan(codegen, sparse):
+    # The law k*P^1.5 does not read A, so the Jacobian's one NaN entry is
+    # dA'/dP: in A's row and P's column, off the diagonal. The slots moved are
+    # the ones A's row reads (P). Taken by its column the entry names P's row,
+    # which reads nothing: nothing is moved, the retry falls back to the full
+    # clamp, V is read at 0 where log(-V) has the derivative 1/V, and the run
+    # is refused. With A in the law the same entry's row and column both lead
+    # to P, so the tests above cannot tell the two apart. V(t) = E + 9 e^(-g t);
+    # the tolerance is theirs.
+    model = bngsim.Model.from_antimony_string(_LOG_V.replace("k*A*P^1.5", "k*P^1.5"))
+    model.set_concentration("V", -61.0)
+    sim = bngsim.Simulator(
+        model,
+        method="ode",
+        jacobian="analytical",
+        codegen=codegen,
+        force_dense_linear_solver=not sparse,
+        force_sparse_linear_solver=sparse,
+    )
+    r = sim.run(t_span=(0, 10), n_points=11, atol=bngsim.ExactAtol(1e-9), rtol=1e-8)
+    assert (sim.codegen_backend != "exprtk") == codegen
+    assert (r.solver_stats["linear_solver"] == 1) == sparse
+    t = np.asarray(r.time)
+    v = np.asarray(r.species)[:, list(r.species_names).index("V")]
+    np.testing.assert_allclose(v, -70.0 + 9.0 * np.exp(-0.1 * t), rtol=1e-6)

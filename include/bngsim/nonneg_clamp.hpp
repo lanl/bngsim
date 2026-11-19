@@ -280,12 +280,14 @@ inline void settle_put_back(std::vector<double> &out, std::vector<char> &kept, b
 
 // All the candidates at once first, but any the last call needed at 0: one
 // reading, where none of them is needed at 0. Then each candidate still at 0
-// on its own. A right-hand side read with k candidates costs 2 readings where
-// it reads them all, or where it needs the same ones at 0 as the call before,
-// and k + 1 otherwise: at 5,000 species with 200 of them at -61, one at a time
-// took 17.8 s for main's 0.94. `out` holds the reading's state and `read_at`
-// was finite there; on return `out` is the state finally read, and `read_at`
-// has left its reading at that state.
+// on its own, those the last call needed there among them. A right-hand side
+// read with k candidates costs 2 readings where it reads them all, up to m + 1
+// more where it needs m of them at 0 as the call before did (each is tried
+// again, and the reading taken once more at the state kept), and k + 1
+// otherwise: at 5,000 species with 200 of them at -61, one at a time took
+// 17.8 s for main's 0.94. `out` holds the reading's state and `read_at` was
+// finite there; on return `out` is the state finally read, and `read_at` has
+// left its reading at that state.
 template <class ReadAt>
 inline void restore_where_finite(const double *y, std::vector<double> &out,
                                  const std::vector<double> &atol, std::vector<char> &kept,
