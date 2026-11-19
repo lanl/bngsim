@@ -395,6 +395,39 @@ def test_a_counter_with_no_crossing_inside_the_run_is_not_refused(tmp_path, c0):
     assert _species(run)[-1, x] == pytest.approx(64.0, abs=1e-6)
 
 
+def test_a_schedule_edge_that_rounds_onto_the_start_is_refused(tmp_path):
+    # The schedule path drops an edge by the same window. A schedule on the
+    # counter, period 5, on while its phase is at least sigma = 3, the counter
+    # 4e-11 below the first on-edge: on-edges 4e-11, 5, 10, 15, ... after the
+    # start, each moved by sigma, so dX/dsigma is -k = -2 per edge passed, -8 at
+    # +16 and -14 at +32. From 0 the first edge is placed. From 1e6 it rounds
+    # onto the start, and the columns were -6 and -12 with no error.
+    law = "if(t-P*floor(t/P)>=sigma,k,0)"
+    text = (
+        CLOCK_NET.replace("1 c0     0.5", f"1 c0     {3 - 4e-11!r}")
+        .replace("4 rc     1\n", "4 rc     1\n    5 P      5\n")
+        .replace("if(t>=sigma,k,0)", law)
+    )
+    assert law in text and "5 P      5" in text
+    net = tmp_path / "schedule.net"
+    net.write_text(text)
+
+    def run(start):
+        sim = bngsim.Simulator(
+            bngsim.Model.from_net(str(net)), "ode", sensitivity_params=["sigma"]
+        )
+        return sim.run(sample_times=[start, start + 16.0, start + 32.0])
+
+    near = run(0.0)
+    x = list(near.species_names).index("X()")
+    # The jumps are exact multiples of k; 1e-6 is the file's bound on the column.
+    assert np.asarray(near.sensitivities)[1:, x, 0] == pytest.approx([-8.0, -14.0], abs=1e-6)
+    with pytest.raises(
+        bngsim.SensitivityUnsupportedError, match=r"crosses 4e-11 after the start.*issue #1828"
+    ):
+        run(1e6)
+
+
 # Two counters, C from 0.5 and D from 1.5, crossing 3 and 4 at one instant,
 # t0 + 2.5: the run is given one stop there and a probe for each crossing
 # (issue #767), and every one moves with the run.

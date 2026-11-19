@@ -790,13 +790,17 @@ A switch on a counter clock (an `if()` on a species that counts time, such as
 `C' = 1`) does not read the clock. Its stop, and its switch time when the
 threshold is a requested parameter, are where the counter reaches the
 threshold, and both move with the run. Both are placed before the run, on the
-clock it was given, to the spacing of the doubles there: from `1e15`, 0.125
-apart, a crossing 2.53 after the start still comes out right. From `1e17`,
-16 apart, a crossing 2.5 after the start would be placed on the start and its
-switch lost. A sensitivity run whose requested columns that crossing moves (a
-parameter of its threshold, or the counter's own starting value) is refused
-there with `SensitivityUnsupportedError` (issue #1828), as is any run whose
-crossing rounds onto its start this way, however far out it starts. A plain
+clock it was given, to the spacing of the doubles there, and a switch time's
+jump is taken at the placed time. That is exact for a jump that is the same
+whenever it is taken; otherwise the column is the jump at the placed time.
+From `1e15`, 0.125 apart, a crossing 2.53 after the start is placed 2.5 after
+it: with `X' = k A` past the crossing, `A' = -A`, k = 2 and A(0) = 1,
+dX/dsigma comes back -0.16417 for -0.159318 (issue #1828). From `1e17`, 16
+apart, a crossing 2.5 after the start would be placed on the start and its
+switch lost. A sensitivity run whose requested columns that crossing moves
+(a parameter of its threshold, or the counter's own starting value) is
+refused there with `SensitivityUnsupportedError` (issue #1828), as is any such
+run whose crossing rounds onto its start, however far out it starts. A plain
 run, or a column the crossing does not move, is not refused: it has no jump to
 lose.
 
