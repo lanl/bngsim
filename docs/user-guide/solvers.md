@@ -798,7 +798,10 @@ value from `t = 3*pi/4` on: the run fails there, naming the law as `-> -inf`
 own law overflowed, and the run went on to return `X(3) = -3.5e+286`. Not every
 such failure names a law: for `X' = -(1 + exp(-X))` it can name only the state.
 And an overflow in another species' law, at a species far below 0, still reads
-that species at 0, as an undershoot inside the run's tolerance needs.
+that species at 0, as an undershoot inside the run's tolerance needs, and so
+does one in its own law where that law pushes it back up toward 0 (`W -> Z` at
+`W*exp(-W/1e-7)`, whose derivative is `+inf` below 0): only a law that drives
+the species on down is a solution carried out through minus infinity.
 
 The fix is in the model: constrain the species, or write the law so it is
 defined where the solver will look. `ln(abs(S))` — identical to `ln(S)` for

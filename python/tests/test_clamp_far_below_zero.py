@@ -27,6 +27,7 @@ concentration, or returns no concentration carried 1e6 atols below 0 to a pole.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import bngsim
@@ -290,7 +291,11 @@ def test_it_is_refused_where_the_same_law_declared_negative_is(tmp_path):
     with pytest.raises(bngsim.SimulationError) as info_carried:
         carried.run((0.0, 3.0), 4)
     for info in (info_declared, info_carried):
-        assert "The RHS returned a non-finite value" in str(info.value)
+        # "The compiled RHS" where the run is compiled (a forced threshold or
+        # JIT): the same refusal, named for the right-hand side that gave it.
+        assert re.search(r"The (compiled )?RHS returned a non-finite value", str(info.value)), (
+            info.value
+        )
 
 
 def test_a_run_started_where_its_law_overflows_is_refused_on_its_first_step(tmp_path):
@@ -413,3 +418,40 @@ def test_another_species_overflow_at_an_undershoot_is_clamped_as_before(tmp_path
     species = np.asarray(result.species, dtype=float)
     assert np.all(species[:, 0] == -8e-5)
     assert np.abs(species[:, 1] - np.asarray(result.time)).max() < 1e-6
+
+
+@pytest.mark.parametrize(
+    "kw",
+    [
+        {},
+        {"jacobian": "analytical"},
+        {"jacobian": "fd"},
+        {"codegen": False},
+        {"jacobian": "analytical", "force_sparse_linear_solver": True},
+    ],
+    ids=["default", "analytical", "fd", "interpreted", "analytical-klu"],
+)
+def test_an_undershoot_whose_own_law_overflows_is_clamped_as_before(tmp_path, kw):
+    # The case above with W the reactant: W -> Z at W*exp(-W/1e-7), so W's own
+    # derivative, -W*exp(-W/1e-7), is infinite too at -8e-5, but +inf: the law
+    # pushes W back up toward 0, where it is 0. That is the undershoot the clamp
+    # is for, not a solution carried out through minus infinity, which its own
+    # law drives on down. Main read W at 0 and returned the extinct run, W held
+    # and Z = 0; marked carried, the step was cut until CVODE gave up at t = 0.5
+    # (ultra review of #1751).
+    if kw.get("force_sparse_linear_solver") and not getattr(bngsim, "HAS_KLU", False):
+        pytest.skip("KLU sparse solver not built")
+    net = tmp_path / "undershoot.net"
+    net.write_text(
+        "begin parameters\n    1 W0 1\nend parameters\n"
+        "begin functions\n    1 source() exp(-Wtot/1e-7)\nend functions\n"
+        "begin species\n    1 W() W0\n    2 Z() 0\nend species\n"
+        "begin reactions\n    1 1 2 source\nend reactions\n"
+        "begin groups\n    1 Wtot 1\nend groups\n"
+    )
+    model = bngsim.Model.from_net(str(net))
+    model.set_concentration("W()", -8e-5)
+    result = bngsim.Simulator(model, "ode", **kw).run((0.0, 1.0), 3, rtol=1e-6, atol=1e-12)
+    species = np.asarray(result.species, dtype=float)
+    assert np.all(species[:, 0] == -8e-5)
+    assert np.all(species[:, 1] == 0.0)

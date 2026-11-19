@@ -1343,10 +1343,10 @@ static bool csc_row_infinite(const double *jac, const JacobianSparsity &sp, std:
 // Each spared candidate costs one evaluation, and each one infinite on its own
 // two or three more; none of this runs unless an infinity was read at a step
 // started far below 0.
-template <class ReadAt, class OwnRowInfinite>
+template <class ReadAt, class OwnRowInfinite, class OwnFalls>
 static const char *spare_at_pole(CvodeUserData *data, N_Vector y, const double *values,
                                  std::size_t count, ReadAt &&read_at,
-                                 OwnRowInfinite &&own_row_infinite) {
+                                 OwnRowInfinite &&own_row_infinite, OwnFalls &&own_falls) {
     data->clamp_far_any = false;
     data->clamp_at_pole_any = false;
     bool infinite = false;
@@ -1365,7 +1365,13 @@ static const char *spare_at_pole(CvodeUserData *data, N_Vector y, const double *
         double *x = clamp_state_nonneg(data, y);
         x[i] = y_ptr[i];
         const bool infinite_here = read_at(x) == ClampReading::infinite;
-        const bool own_infinite = infinite_here && own_row_infinite(i);
+        // Carried out through minus infinity, the slot's own law drives it on
+        // down (`own_falls(i, x)`: its derivative is below 0 there). One whose
+        // law pushes it back up is an undershoot the clamp is for, whatever
+        // overflows: W emptied to -8e-5, consumed at W*exp(-W/1e-7), has an
+        // infinite derivative of its own, +inf, and kept below 0 its run failed
+        // where main read it at 0 and finished (ultra review of #1751).
+        const bool own_infinite = infinite_here && own_row_infinite(i) && own_falls(i, x);
         bool pole = infinite_here;
         // A pole the run has landed on is infinite at that one point and finite
         // a hair to either side of it; an overflow is infinite over a stretch:
@@ -1399,6 +1405,16 @@ static const char *spare_at_pole(CvodeUserData *data, N_Vector y, const double *
     }
     data->clamp_far_any = any;
     return any ? data->clamp_far.data() : nullptr;
+}
+
+// spare_at_pole's own_falls for a Jacobian's callers, which hold no derivative:
+// whether slot `i`'s own derivative is below 0 at `x`, read once from the model.
+// Only a slot already far below 0 with an infinite row of its own asks.
+static bool own_derivative_falls(CvodeUserData *data, sunrealtype t, const double *x,
+                                 std::size_t i) {
+    std::vector<double> f(static_cast<std::size_t>(data->model->n_species()));
+    data->model->compute_derivs(static_cast<double>(t), x, f.data());
+    return f[i] < 0.0;
 }
 
 // Has the run itself carried a species to a pole? The callbacks ask where the
@@ -2155,9 +2171,10 @@ static int retry_interpreted_rhs(CvodeUserData *data, sunrealtype t, N_Vector y,
         data->model->compute_derivs(static_cast<double>(t), x, ydot_ptr);
         return read_values(ydot_ptr, static_cast<std::size_t>(data->model->n_species()));
     };
-    const char *spare =
-        spare_at_pole(data, y, ydot_ptr, static_cast<std::size_t>(data->model->n_species()),
-                      read_at, [&](std::size_t i) { return std::isinf(ydot_ptr[i]); });
+    const char *spare = spare_at_pole(
+        data, y, ydot_ptr, static_cast<std::size_t>(data->model->n_species()), read_at,
+        [&](std::size_t i) { return std::isinf(ydot_ptr[i]); },
+        [&](std::size_t i, const double *) { return ydot_ptr[i] < 0.0; });
     data->model->compute_derivs(static_cast<double>(t), clamp_state_nonneg(data, y, spare),
                                 ydot_ptr);
     // Still non-finite: once more, with the slots the mask leaves alone that
@@ -2321,9 +2338,10 @@ static int cvode_codegen_rhs_body(sunrealtype t, N_Vector y, N_Vector ydot, void
                 return ClampReading::nan_only;
             return read_values(ydot_ptr, static_cast<std::size_t>(data->model->n_species()));
         };
-        const char *spare =
-            spare_at_pole(data, y, ydot_ptr, static_cast<std::size_t>(data->model->n_species()),
-                          read_at, [&](std::size_t i) { return std::isinf(ydot_ptr[i]); });
+        const char *spare = spare_at_pole(
+            data, y, ydot_ptr, static_cast<std::size_t>(data->model->n_species()), read_at,
+            [&](std::size_t i) { return std::isinf(ydot_ptr[i]); },
+            [&](std::size_t i, const double *) { return ydot_ptr[i] < 0.0; });
         rc = data->codegen_fn(static_cast<double>(t), clamp_state_nonneg(data, y, spare), ydot_ptr,
                               &data->codegen_so_data);
         if (rc != 0)
@@ -2750,9 +2768,10 @@ static int cvode_analytical_dense_jac_body(sunrealtype t, N_Vector y, N_Vector /
             model->fill_dense_analytical_jacobian(static_cast<double>(t), x, jac);
             return read_values(jac, n * n);
         };
-        const char *spare = spare_at_pole(data, y, jac, n * n, read_at, [&](std::size_t i) {
-            return dense_row_infinite(jac, n, i);
-        });
+        const char *spare = spare_at_pole(
+            data, y, jac, n * n, read_at,
+            [&](std::size_t i) { return dense_row_infinite(jac, n, i); },
+            [&](std::size_t i, const double *x) { return own_derivative_falls(data, t, x, i); });
         model->fill_dense_analytical_jacobian(static_cast<double>(t),
                                               clamp_state_nonneg(data, y, spare), jac);
         // Still non-finite: once more, with the slots the mask leaves alone that
@@ -2817,9 +2836,10 @@ static int cvode_codegen_dense_jac_body(sunrealtype t, N_Vector y, N_Vector /*fy
                 return ClampReading::nan_only;
             return read_values(jac, n * n);
         };
-        const char *spare = spare_at_pole(data, y, jac, n * n, read_at, [&](std::size_t i) {
-            return dense_row_infinite(jac, n, i);
-        });
+        const char *spare = spare_at_pole(
+            data, y, jac, n * n, read_at,
+            [&](std::size_t i) { return dense_row_infinite(jac, n, i); },
+            [&](std::size_t i, const double *x) { return own_derivative_falls(data, t, x, i); });
         rc = data->codegen_jac_fn(static_cast<double>(t), clamp_state_nonneg(data, y, spare), jac,
                                   &data->codegen_so_data);
         // Still non-finite: once more, with the slots the mask leaves alone that
@@ -3012,9 +3032,10 @@ static int cvode_analytical_jac_body(sunrealtype t, N_Vector y, N_Vector /*fy*/,
             model->fill_sparse_analytical_jacobian(static_cast<double>(t), x, jac_data);
             return read_values(jac_data, static_cast<std::size_t>(sp.nnz));
         };
-        const char *spare =
-            spare_at_pole(data, y, jac_data, static_cast<std::size_t>(sp.nnz), read_at,
-                          [&](std::size_t i) { return csc_row_infinite(jac_data, sp, i); });
+        const char *spare = spare_at_pole(
+            data, y, jac_data, static_cast<std::size_t>(sp.nnz), read_at,
+            [&](std::size_t i) { return csc_row_infinite(jac_data, sp, i); },
+            [&](std::size_t i, const double *x) { return own_derivative_falls(data, t, x, i); });
         model->fill_sparse_analytical_jacobian(static_cast<double>(t),
                                                clamp_state_nonneg(data, y, spare), jac_data);
         // Still non-finite: once more, with the slots the mask leaves alone that
@@ -3084,9 +3105,10 @@ static int cvode_codegen_sparse_jac_body(sunrealtype t, N_Vector y, N_Vector /*f
                 return ClampReading::nan_only;
             return read_values(jac_data, static_cast<std::size_t>(sp.nnz));
         };
-        const char *spare =
-            spare_at_pole(data, y, jac_data, static_cast<std::size_t>(sp.nnz), read_at,
-                          [&](std::size_t i) { return csc_row_infinite(jac_data, sp, i); });
+        const char *spare = spare_at_pole(
+            data, y, jac_data, static_cast<std::size_t>(sp.nnz), read_at,
+            [&](std::size_t i) { return csc_row_infinite(jac_data, sp, i); },
+            [&](std::size_t i, const double *x) { return own_derivative_falls(data, t, x, i); });
         rc = data->codegen_jac_sparse_fn(static_cast<double>(t), clamp_state_nonneg(data, y, spare),
                                          jac_data, &data->codegen_so_data);
         // Still non-finite: once more, with the slots the mask leaves alone that
