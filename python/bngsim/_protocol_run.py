@@ -173,6 +173,12 @@ class ProtocolResult(Sequence[ProtocolRun]):
 
     Index it by position, or by a run's ``suffix``. ``model`` is the model in
     the state the protocol left it; ``protocol`` is the spec that ran.
+
+    ``model`` holds the values the protocol left, not what the replay kept
+    beside it: a parameter a ``setParameter`` set to an expression is a number
+    there, and one it set to the very number its network expression gives
+    still follows that expression under :meth:`Model.set_param` (issue #188).
+    Running a further protocol on it starts from the values alone.
     """
 
     def __init__(self, runs: Sequence[ProtocolRun], model: Model, protocol: ProtocolSpec):
@@ -442,8 +448,32 @@ class _Runner:
         # name → the expression. BNG2.pl keeps such a parameter as that
         # expression, so it follows what it reads (issue #1682).
         self.param_exprs: dict[str, str] = {}
+        # Derived parameters a setParameter (or a scan) set to a number: name →
+        # the number. BNG2.pl's setParameter replaces the network's expression
+        # whatever the value (issue #1738), but bngsim's set_param overrides a
+        # derived parameter only while the value differs from its expression's
+        # (#188), so a number equal to it left the expression live. Each write
+        # holds these at their numbers (:meth:`_hold_pinned`).
+        self.pinned: dict[str, float] = {}
+        # The parameters with an expression a number could leave live: those
+        # derived now, and those a write before the replay overrode, whose
+        # expression a number equal to it would bring back (#188). A primary
+        # is not one: a .net keeps its number as its text (`k1 1`), which
+        # reads no parameter.
+        self.declared_exprs = {
+            n
+            for n, e, live in zip(
+                self.model.param_names,
+                self.model.param_expressions,
+                self.model.param_is_expression,
+                strict=True,
+            )
+            if e and (live or self._param_reads(e))
+        }
         self.saved_conc: dict[str, tuple[np.ndarray, dict] | None] = {}
-        self.saved_params: dict[str, tuple[dict[str, float], set[str], dict[str, str]] | None] = {}
+        self.saved_params: dict[
+            str, tuple[dict[str, float], set[str], dict[str, str], dict[str, float]] | None
+        ] = {}
         self._before_generation(protocol.steps[: protocol.generation_step or 0])
 
     # ── bookkeeping ───────────────────────────────────────────────────────
@@ -593,9 +623,28 @@ class _Runner:
             )
         state = self._state()
         self.model.set_params(values)
+        self._hold_pinned()
         self.model.set_state(state)
 
-    def _param_state(self) -> tuple[dict[str, float], set[str], dict[str, str]]:
+    def _hold_pinned(self) -> None:
+        """Write each pinned parameter back to its number where a write moved it:
+        its expression followed what it reads, which BNG2.pl's would not have.
+        Once it differs from its expression, set_param overrides it (#188)."""
+        moved = {n: v for n, v in self.pinned.items() if float(self.model.get_param(n)) != v}
+        if moved:
+            self.model.set_params(moved)
+
+    def _pin(self, name: str, value: float | None) -> None:
+        """Record that *name* now holds *value* as a number (``None``: it holds an
+        expression an action set, or nothing an action set)."""
+        if value is not None and name in self.declared_exprs:
+            self.pinned[name] = float(value)
+        else:
+            self.pinned.pop(name, None)
+
+    def _param_state(
+        self,
+    ) -> tuple[dict[str, float], set[str], dict[str, str], dict[str, float]]:
         """The parameters a ``saveParameters`` keeps: constants and constant
         expressions (BNG2.pl's ``copyConstant``), not the slots bngsim keeps for
         a function's or an observable's value. An expression an action set
@@ -605,7 +654,9 @@ class _Runner:
         computed = set(self.model.function_names) | set(self.model.observable_names)
         kept = [n for n in names if n not in computed]
         values = {n: float(self.model.get_param(n)) for n in kept}
-        return values, derived, dict(self.param_exprs)
+        # The pins too: a parameter a number ended is a constant in BNG2.pl's
+        # copy, even where that number is what its expression gives (#1738).
+        return values, derived, dict(self.param_exprs), dict(self.pinned)
 
     def _param_reads(self, text: str) -> list[str]:
         """The parameters *text* names, the slots of functions and observables
@@ -618,7 +669,9 @@ class _Runner:
         """Whether setting *name* to *text* defines it through itself, directly
         or through the expressions it reads, which BNG2.pl refuses ("Parameter
         k2 is defined recursively"): those an action set, and those the
-        network declares, ``k3 2*k1`` (BNG2.pl: "Max recursion depth")."""
+        network declares, ``k3 2*k1`` (BNG2.pl: "Max recursion depth"). A
+        parameter a number ended reads nothing, even where the model still
+        holds its expression because the number is what it gives (#1738)."""
         names = list(self.model.param_names)
         declared = {
             n: e
@@ -628,7 +681,7 @@ class _Runner:
                 self.model.param_is_expression,
                 strict=True,
             )
-            if live and e
+            if live and e and n not in self.pinned
         }
         seen: set[str] = set()
         stack = self._param_reads(text)
@@ -709,7 +762,10 @@ class _Runner:
                     f"{_action(change)}: the value reads {name} through itself; BNG2.pl "
                     f'refuses it too ("Parameter {name} is defined recursively")'
                 )
-            self._set_params({name: self._value(change)})
+            value = self._value(change)
+            # A number replaces the network's expression, whatever it is (#1738).
+            self._pin(name, None if reads else value)
+            self._set_params({name: value})
             # BNG2.pl keeps a value that reads other parameters as that
             # expression (BNGModel.pm, setParameter: the .net it writes lists
             # `k2 k1*3`), so the parameter follows them; a number ends that.
@@ -808,9 +864,14 @@ class _Runner:
         self.symbolic = dict(symbolic)
 
     def _restore_params(
-        self, values: dict[str, float], derived: set[str], exprs: dict[str, str]
+        self,
+        values: dict[str, float],
+        derived: set[str],
+        exprs: dict[str, str],
+        pinned: dict[str, float],
     ) -> None:
         self.param_exprs = dict(exprs)
+        self.pinned = dict(pinned)
         names = list(self.model.param_names)
         now = {n: float(self.model.get_param(n)) for n in names}
         primary = {n: v for n, v in values.items() if n not in derived and now.get(n) != v}
@@ -851,6 +912,7 @@ class _Runner:
         for value in values:
             # BNG2.pl sets each point with setParameter: a number, which ends an
             # expression the parameter held, and which those that read it follow.
+            self._pin(parameter, float(value))
             self._set_params({parameter: float(value)})
             self.param_exprs.pop(parameter, None)
             self._follow()
