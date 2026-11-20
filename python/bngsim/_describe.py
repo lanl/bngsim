@@ -528,7 +528,9 @@ def _text(d: dict[str, Any]) -> str:
         "table_functions",
         "conservation_laws",
     )
-    lines.append("Size: " + ", ".join(_count(c[k], k) for k in order if k in c))
+    # The first four always; the rest where the model has any.
+    shown = [k for i, k in enumerate(order) if k in c and (i < 4 or c[k])]
+    lines.append("Size: " + ", ".join(_count(c[k], k) for k in shown))
     starts = d["next_run_starts_from"]
     lines.append(
         "Next run starts from: "
@@ -555,12 +557,17 @@ def _text(d: dict[str, Any]) -> str:
         "rm": "rm",
         "forward_sensitivities": "forward sensitivities",
     }
+    # Methods with the same verdict share a line: nf and rm, ssa and psa.
+    grouped: dict[str, list[str]] = {}
     for key, label in labels.items():
-        verdict = d["methods"][key]
-        lines.append(f"  {label}: {_status_line(verdict)}")
-        refused = verdict.get("refused_parameters")
-        if refused:
-            lines.append("    refused for parameters folded at load: " + ", ".join(refused))
+        grouped.setdefault(_status_line(d["methods"][key]), []).append(label)
+    for status, names in grouped.items():
+        lines.append(f"  {', '.join(names)}: {status}")
+    refused = d["methods"]["forward_sensitivities"].get("refused_parameters")
+    if refused:
+        lines.append(
+            "  forward sensitivities refuse the parameters folded at load: " + ", ".join(refused)
+        )
 
     j = d["jacobian"]
     lines.append(
