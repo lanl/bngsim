@@ -377,21 +377,43 @@ def test_a_plain_run_from_1e17_is_not_refused(tmp_path):
     assert _species(run)[-1, x] == pytest.approx(59.0, abs=1e-6)
 
 
-@pytest.mark.parametrize(
-    ("c0", "why"),
-    [
-        ("-17", r"is placed 16 after the start, 4 off its time"),  # 20 after, placed at +16
-        ("-33", r"lies outside the run, but rounds into it"),  # 36 after, past +32, placed on it
-    ],
-    ids=["placed on a row", "placed onto the end"],
-)
-def test_a_counter_crossing_placed_off_its_time_is_refused(tmp_path, c0, why):
-    # Issue #1828, form 2: from 1e17 (16 apart) a crossing that does not round
-    # onto the start is placed off its time. 20 after came back 0, -2, -2 for
-    # 0, 0, -2; 36 after, 0, 0, -2 for 0, 0, 0; with no error, where a build
-    # before #1681 refused both (CV_TOO_CLOSE).
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match=why + ".*issue #1828"):
-        _clock_run(tmp_path, 1e17, sens=["sigma"], c0=c0)
+def test_a_counter_crossing_placed_off_its_time_is_refused(tmp_path):
+    # Issue #1828, form 2: from 1e17 (16 apart) a crossing 20 after the start
+    # is placed at +16, and its jump taken there: 0, -2, -2 for 0, 0, -2, with
+    # no error, where a build before #1681 refused the run (CV_TOO_CLOSE).
+    with pytest.raises(
+        bngsim.SensitivityUnsupportedError,
+        match=r"is placed 16 after the start, 4 off its time.*issue #1828",
+    ):
+        _clock_run(tmp_path, 1e17, sens=["sigma"], c0="-17")
+
+
+@pytest.mark.parametrize("c0", ["-33", "-37"], ids=["36 after", "40 after"])
+def test_a_crossing_past_the_end_that_rounds_onto_it_makes_no_jump(tmp_path, c0):
+    # From 1e17 a crossing 36 or 40 after the start, past a run of 32, is placed
+    # on the end, and the run made its jump in the last row: 0, 0, -2 for
+    # 0, 0, 0. By its elapsed time, which does not round, it is past the end and
+    # no crossing of the run: the column is the run from 0's.
+    far, near = (_clock_run(tmp_path, t, sens=["sigma"], c0=c0) for t in (1e17, 0.0))
+    x = list(far.species_names).index("X()")
+    assert np.array_equal(np.asarray(far.sensitivities)[:, x, 0], [0.0, 0.0, 0.0])
+    assert np.array_equal(np.asarray(far.sensitivities), np.asarray(near.sensitivities))
+
+
+def test_the_refusal_names_the_earliest_crossing_lost(tmp_path):
+    # A period-5 schedule on the counter, on while its phase is at least 3, the
+    # counter from 0.5, with the period requested: the off-edge 4.5 after the
+    # start and the on-edge 7.5 after it both move with P, and from 1e17 both
+    # round onto the start. The message named the first found, 7.5.
+    text = CLOCK_NET.replace("4 rc     1\n", "4 rc     1\n    5 P      5\n").replace(
+        "if(t>=sigma,k,0)", "if(t-P*floor(t/P)>=sigma,k,0)"
+    )
+    assert "5 P      5" in text and "floor(t/P)" in text
+    net = tmp_path / "schedule.net"
+    net.write_text(text)
+    sim = bngsim.Simulator(bngsim.Model.from_net(str(net)), "ode", sensitivity_params=["P"])
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="crosses 4.5 after the start"):
+        sim.run(sample_times=[1e17, 1e17 + 16.0, 1e17 + 32.0])
 
 
 def test_a_crossing_placed_off_by_a_large_share_of_the_run_is_refused(tmp_path):
@@ -417,9 +439,9 @@ def test_a_crossing_exactly_on_the_run_s_end_is_run(tmp_path):
     # and the run is the run from 0's.
     far, near = (_clock_run(tmp_path, t, sens=["sigma"], c0="-29") for t in (1e17, 0.0))
     x = list(far.species_names).index("X()")
-    assert np.array_equal(
-        np.asarray(far.sensitivities)[:, x, 0], np.asarray(near.sensitivities)[:, x, 0]
-    )
+    # The value itself, in both: the same wrong window in both would agree.
+    assert np.array_equal(np.asarray(far.sensitivities)[:, x, 0], [0.0, 0.0, -2.0])
+    assert np.array_equal(np.asarray(near.sensitivities)[:, x, 0], [0.0, 0.0, -2.0])
 
 
 def test_a_crossing_past_the_run_s_end_is_not_refused(tmp_path):

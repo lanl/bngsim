@@ -11752,9 +11752,10 @@ def _misplaced(
     The crossing's time is ``t_start + (threshold - c(t_start))``. The elapsed
     part is the difference of two values of the counter, which nothing far from
     0 touches; the sum is rounded to the doubles at ``t_start``, 16 apart at
-    1e17. So the crossing can be placed onto the start (and dropped), onto the
-    run's end from past it (and given a jump it does not make), or off its time
-    inside the run (and its jump taken there)."""
+    1e17. So a crossing inside the run can be placed onto the start (and
+    dropped), past its end, or off its time inside it (and its jump taken
+    there). One past the run's end in exact arithmetic is no crossing of the
+    run, wherever it is placed: :func:`_past_the_end` drops it."""
     if clock_idx0 < 0:
         return None
     span = t_end - t_start
@@ -11763,11 +11764,17 @@ def _misplaced(
     placed = t_star - t_start
     if inside_exact and not inside_placed:
         return "rounds onto the start" if t_star <= t_start else "rounds past the run's end"
-    if inside_placed and not inside_exact:
-        return "lies outside the run, but rounds into it"
     if inside_exact and abs(placed - elapsed) > _CROSSING_PLACEMENT_SHARE * span:
         return f"is placed {placed:g} after the start, {abs(placed - elapsed):g} off its time"
     return None
+
+
+def _past_the_end(t_start: float, t_end: float, clock_idx0: int, elapsed: float) -> bool:
+    """Issue #1828: whether a counter clock's crossing is past the run's end by
+    its elapsed time, which does not round. From 1e17 one 36 after the start, in
+    a run of 32, is placed on the end (the doubles are 16 apart), and the run
+    made its jump in the last row: 0, 0, -2 for 0, 0, 0. It is not in the run."""
+    return clock_idx0 >= 0 and elapsed > t_end - t_start
 
 
 def _absorb_schedule_crossings(
@@ -11864,6 +11871,8 @@ def _absorb_schedule_crossings(
         # The same half-open window the rest of the loop applies, re-checked in
         # time rather than in clock values so a schedule on a counter clock is
         # filtered by exactly the test a threshold on it would be.
+        # (An edge past the run's end is not listed: the edges are taken from a
+        # window in counter values, so only the threshold path asks.)
         why = _misplaced(t_start, t_end, t_star, clock_idx0, value - clock_now)
         if rounded_out is not None and why is not None:
             rounded_out.append(
@@ -12156,6 +12165,10 @@ def compute_switch_time_sens(
                     # Half-open window, matching the core's own filter: a crossing
                     # on t_end still jumps into the final recorded column; one on
                     # t_start would precede the run's initial recording.
+                    if clock_idx0 >= 0 and _past_the_end(
+                        t_start, t_end, clock_idx0, threshold_value - clock_now
+                    ):
+                        continue
                     why = (
                         _misplaced(t_start, t_end, t_star, clock_idx0, threshold_value - clock_now)
                         if clock_idx0 >= 0
@@ -12203,9 +12216,9 @@ def compute_switch_time_sens(
     moved_clocks = _clocks_moved(core, clocks, names, ic_species, declared=declared)
     moved = [c for c in found if any(v != 0.0 for v in c.dtstar) or c.clock_idx0 in moved_clocks]
     # A crossing a requested column moves is a record the run applies a jump
-    # for. One the absolute clock misplaced (onto the start, so dropped; onto
-    # the end from past it; or off its time inside the run) has that jump lost,
-    # made where it is not, or taken at the wrong time, and the column comes
+    # for. One the absolute clock misplaced (onto the start, so dropped; past
+    # the end; or off its time inside the run) has that jump lost or taken at
+    # the wrong time, and the column comes
     # back wrong with no error: from 1e17, 0, -2, -2 for 0, 0, -2, where a build
     # before #1681 refused the run (CV_TOO_CLOSE). Until the crossings are
     # placed from t_start (issue #1828), refuse.
@@ -12215,7 +12228,7 @@ def compute_switch_time_sens(
         if any(v != 0.0 for v in c.dtstar) or c.clock_idx0 in moved_clocks
     ]
     if lost:
-        elapsed, why, c = lost[0]
+        elapsed, why, c = min(lost, key=lambda entry: entry[0])  # the earliest
         raise SensitivityUnsupportedError(
             "Forward sensitivity is not supported for this run: the counter clock in "
             f"{_strip_redundant_parens(min(c.atoms).strip())!r} crosses {elapsed:g} after the "
