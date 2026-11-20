@@ -6,9 +6,8 @@ An agent copies its blocks, so a block that no longer runs, or a value that no
 longer comes out, teaches the wrong call with the authority of the docs:
 
 * every Python block runs, in page order, in one namespace, in an empty
-  directory, as the guide says it does, with warnings raised as errors except
-  the one the guide's own rules block shows;
-* a line whose comment states a value prints it;
+  directory, as the guide says it does, with warnings raised as errors;
+* a ``print`` line whose comment states a value prints it;
 * the translation table is the one :data:`bngsim._foreign_names.FOREIGN_NAMES`
   generates, so it says what bngsim's wrong-name errors say;
 * the guide stays under :data:`BUDGET_CHARS` characters, so it can be loaded
@@ -85,23 +84,39 @@ def test_the_skill_is_the_guide_with_a_header():
     assert len(front.splitlines()) <= 10
 
 
+def _stated(*args: object, stated: str, line: str) -> None:
+    """What ``print(*args)`` would show, checked against the value its comment states."""
+    shown = " ".join(str(arg) for arg in args)
+    assert shown == stated, f"{line!r} prints {shown!r}"
+
+
+def _checked(code: str) -> str:
+    """*code* with each top-level ``print(...)  # value`` line turned into a check
+    of that call's own output, so no other print can shift what it is compared
+    with."""
+    lines = []
+    for line in code.splitlines():
+        stated = _STATED.match(line)
+        if stated:
+            line = (
+                f"_stated({stated.group('expr')}, stated={stated.group('value')!r}, line={line!r})"
+            )
+        lines.append(line)
+    return "\n".join(lines) + "\n"
+
+
 def test_every_block_runs_and_prints_what_it_says(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    namespace: dict[str, object] = {"__name__": "__guide__"}
+    namespace: dict[str, object] = {"__name__": "__guide__", "_stated": _stated}
+    n_checked = 0
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         for _, code in _blocks():
-            out = io.StringIO()
-            with contextlib.redirect_stdout(out):
-                exec(compile(code, "agent_guide.md", "exec"), namespace)
-            printed = iter(out.getvalue().splitlines())
-            for line in code.splitlines():
-                if not line.startswith("print("):
-                    continue
-                shown = next(printed)
-                stated = _STATED.match(line)
-                if stated:
-                    assert shown == stated.group("value"), f"{line!r} printed {shown!r}"
+            checked = _checked(code)
+            n_checked += checked.count("_stated(")
+            with contextlib.redirect_stdout(io.StringIO()):
+                exec(compile(checked, "agent_guide.md", "exec"), namespace)
+    assert n_checked >= 5, "the guide's stated values were not found"
 
 
 def test_python_m_bngsim_prints_the_guide_and_the_skill():

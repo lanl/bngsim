@@ -11,7 +11,8 @@ the user guides are at <https://bngsim.readthedocs.io>, indexed for agents at
 <https://bngsim.readthedocs.io/llms.txt>.
 
 Every Python block below runs as written, in order, in an empty directory,
-after `pip install bngsim`; the test suite runs them so. The calls it teaches
+after `pip install bngsim`, on a machine with a C compiler, which the
+sensitivities need (see "What needs what"); the test suite runs them so. The calls it teaches
 keep their spelling across releases: a call renamed in a later release raises
 an error that names the new spelling, never a silent change.
 
@@ -147,9 +148,10 @@ print(reps.observables.shape)  # (50, 11, 2)
 6. **A stochastic run without a seed differs every time.** Pass `seed=n` to
    reproduce one; `result.seed` is the seed a run used, drawn or given. In a
    `run_replicates` or `run_batch` list each row's `seed` reruns that row.
-7. **Setting a derived parameter detaches it.** `model.primary_param_names`
-   are the ones to set; a parameter defined by an expression of others follows
-   them until it is set directly, and then keeps the value it was given.
+7. **Set the primary parameters.** `model.primary_param_names` are the ones
+   to set. A parameter defined by an expression of others follows them, and
+   one set directly to a value other than its expression's keeps that value
+   from then on, whatever its inputs do.
 8. **A run that fails raises.** `run()` returns only a run that finished;
    there is no `success` flag to check. `bngsim.SimulationError` is a failed
    solve, `bngsim.StopConditionMet` carries the cut result of a stop condition,

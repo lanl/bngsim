@@ -22,9 +22,12 @@ usage: python -m bngsim {guide,skill}
 
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
+    if args in (["-h"], ["--help"]):
+        sys.stdout.write(_USAGE)
+        return 0
     if args not in (["guide"], ["skill"]):
         sys.stderr.write(_USAGE)
-        return 0 if args in (["-h"], ["--help"]) else 2
+        return 2
     from bngsim import agent_guide
 
     text = agent_guide(skill=args[0] == "skill")

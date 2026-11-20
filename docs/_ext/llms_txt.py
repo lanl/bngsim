@@ -55,14 +55,19 @@ def _check_summaries(app: Sphinx, env: BuildEnvironment) -> None:
             )
 
 
+def _read(path: Path) -> str:
+    """A file's text with its line endings as ``\n``, as a CRLF checkout has them too."""
+    return path.read_text(encoding="utf-8").replace("\r\n", "\n")
+
+
 def _markdown(env: BuildEnvironment, docname: str) -> str:
     """The page's Markdown as an agent should read it."""
     source = Path(env.doc2path(docname))
-    text = _FRONT_MATTER.sub("", source.read_text(encoding="utf-8"), count=1)
+    text = _FRONT_MATTER.sub("", _read(source), count=1)
 
     def include(match: re.Match[str]) -> str:
         target = (source.parent / match.group("path")).resolve()
-        return _FRONT_MATTER.sub("", target.read_text(encoding="utf-8"), count=1).rstrip("\n")
+        return _FRONT_MATTER.sub("", _read(target), count=1).rstrip("\n")
 
     return _INCLUDE.sub(include, text).rstrip("\n") + "\n"
 
@@ -96,10 +101,11 @@ def _write(app: Sphinx, exception: Exception | None) -> None:
     optional = set(app.config.llms_txt_optional_captions)
     sections = _sections(app)
 
-    for docname in env.found_docs:
+    markdown = {docname: _markdown(env, docname) for docname in env.found_docs}
+    for docname, text in markdown.items():
         path = out / f"{docname}.md"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(_markdown(env, docname), encoding="utf-8")
+        path.write_text(text, encoding="utf-8")
 
     root = app.config.root_doc
     summary = app.config.llms_txt_summary or _summary(env, root)
@@ -120,7 +126,7 @@ def _write(app: Sphinx, exception: Exception | None) -> None:
                 f"- [{_title(env, docname)}]({base}{docname}.md): {_summary(env, docname)}"
             )
             if caption not in optional:
-                full += [f"<!-- {base}{docname}.md -->", "", _markdown(env, docname)]
+                full += [f"<!-- {base}{docname}.md -->", "", markdown[docname]]
     if "Optional" in headings:
         headings["Optional"] = headings.pop("Optional")
     for heading, lines in headings.items():
