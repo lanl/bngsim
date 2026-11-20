@@ -103,9 +103,11 @@ def _number_for_t_span(t: Any, n_points: object) -> str:
     ``run(10)``, and ``run(0, 10)`` with RoadRunner's ``simulate(start, end)``
     in mind, used to fail with "'int' object is not iterable" (issue #1700).
     The second reads as ``t_span=0, n_points=10``: two numbers in order are
-    offered as the span. One number alone is offered as the end of a span from
-    0. ``n_points`` is taken as the caller's only when it is not run()'s
-    default, 101, which no caller wrote.
+    offered as the span, and one number alone as the end of a span from 0.
+    ``n_points`` is taken as the caller's only when it is not run()'s default,
+    101, which no caller wrote. Which positional argument comes next depends
+    on the call (``run_replicates`` takes ``n_replicates`` first), so the
+    message does not say.
     """
     text = f"t_span is the interval as one (t_start, t_end) tuple, got the number {t!r}"
     given = (
@@ -116,11 +118,8 @@ def _number_for_t_span(t: Any, n_points: object) -> str:
     elif t > 0:
         start, end = 0, t
     else:
-        return text + ". A second positional argument is n_points."
-    return (
-        text + f": a run from {start!r} to {end!r} is t_span=({start!r}, {end!r}). "
-        "A second positional argument is n_points."
-    )
+        return text + "."
+    return text + f": a run from {start!r} to {end!r} is t_span=({start!r}, {end!r})."
 
 
 def require_finite_time(name: str, t: float) -> float:

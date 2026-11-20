@@ -22,6 +22,7 @@ import builtins
 import contextlib
 import copy
 import ctypes
+import inspect
 import logging
 import math
 import os
@@ -75,7 +76,7 @@ from bngsim._exceptions import (
     StopConditionMet,
 )
 from bngsim._extension_handle import raise_cannot_pickle, raise_cannot_shallow_copy
-from bngsim._foreign_names import call_error, rewrite_run_call
+from bngsim._foreign_names import RUN_CALLS, call_error
 from bngsim._model import _STEP_DECIDES_WHY, Model
 from bngsim._result import (
     Result,
@@ -232,6 +233,12 @@ def _tracking_hint(decades: float) -> str:
 
 
 _PACKAGE_DIR = os.path.dirname(__file__) + os.sep
+
+# Issue #1700: each run call's signature without its catch-alls, filled at the
+# end of the module once the class exists. Declared here with its type: a
+# global inferred only below would defer mypy's check of every method reading
+# it, and the deferred pass forgets a narrowing a closure relies on.
+_SIGNATURES: dict[str, inspect.Signature] = {}
 
 
 def _stacklevel_outside_bngsim() -> int:
@@ -5824,15 +5831,7 @@ class Simulator:
             do not jump state and are unaffected.
         """
         if _extra or _foreign:
-            raise call_error(
-                "Simulator.run()",
-                "Simulator.run",
-                _RUN_SIGNATURE,
-                locals(),
-                _extra,
-                _foreign,
-                rewrite_run_call,
-            )
+            raise call_error("run", _SIGNATURES["run"], locals(), _extra, _foreign)
         from bngsim._bngsim_core import TimeSpec
 
         times = TimeSpec()
@@ -6362,7 +6361,8 @@ class Simulator:
         self,
         t_span: tuple[float, float] = (0.0, 100.0),
         n_points: int = 101,
-        *,
+        # Issue #1700: catch-alls for a wrong call only, as on run().
+        *_extra: NoReturn,
         params: Sequence[dict[str, float]] | None = None,
         seed: int | None = None,
         rtol: float | None = None,
@@ -6374,6 +6374,7 @@ class Simulator:
         timeout: float | None = None,
         steady_state: bool = False,
         steady_state_tol: float | None = None,
+        **_foreign: NoReturn,
     ) -> list[Result] | Result:
         """Run a batch of simulations over parameter sets.
 
@@ -6490,6 +6491,8 @@ class Simulator:
         >>> batch.species.shape
         (3, 101, n_species)
         """
+        if _extra or _foreign:
+            raise call_error("run_batch", _SIGNATURES["run_batch"], locals(), _extra, _foreign)
         if self._method in ("nfsim", "rulemonkey"):
             # Each point builds an engine on a clone of the model's network, and a
             # network-free backend is built from the XML, not the network: this
@@ -6740,11 +6743,13 @@ class Simulator:
         n_replicates: int,
         t_span: tuple[float, float] = (0.0, 100.0),
         n_points: int = 101,
-        *,
+        # Issue #1700: catch-alls for a wrong call only, as on run().
+        *_extra: NoReturn,
         seed: int | None = None,
         timeout: float | None = None,
         num_processors: int | None = None,
         squeeze: bool = False,
+        **_foreign: NoReturn,
     ) -> list[Result] | Result:
         """Run ``n_replicates`` stochastic replicates of the *same* model.
 
@@ -6809,6 +6814,10 @@ class Simulator:
         >>> len(reps)
         30
         """
+        if _extra or _foreign:
+            raise call_error(
+                "run_replicates", _SIGNATURES["run_replicates"], locals(), _extra, _foreign
+            )
         if self._method not in ("ssa", "psa"):
             raise ValueError(
                 "run_replicates is for stochastic methods (method='ssa' or "
@@ -7463,7 +7472,8 @@ class Simulator:
         self,
         parameter: str,
         par_scan_vals: Sequence[float] | None = None,
-        *,
+        # Issue #1700: catch-alls for a wrong call only, as on run().
+        *_extra: NoReturn,
         par_min: float | None = None,
         par_max: float | None = None,
         n_scan_pts: int | None = None,
@@ -7482,6 +7492,7 @@ class Simulator:
         steady_state: bool = False,
         steady_state_tol: float | None = None,
         squeeze: bool = False,
+        **_foreign: NoReturn,
     ) -> list[Result] | Result:
         """Sweep one parameter, running a simulation per value (BNG ``parameter_scan``).
 
@@ -7633,6 +7644,10 @@ class Simulator:
         points start from the model's own seed initial conditions, use
         :meth:`run_batch`.
         """
+        if _extra or _foreign:
+            raise call_error(
+                "parameter_scan", _SIGNATURES["parameter_scan"], locals(), _extra, _foreign
+            )
         self._require_interactive_backend_support()
         if steady_state and self._method != "ode":
             raise ValueError(
@@ -7899,7 +7914,8 @@ class Simulator:
         self,
         parameter: str,
         par_scan_vals: Sequence[float] | None = None,
-        *,
+        # Issue #1700: catch-alls for a wrong call only, as on run().
+        *_extra: NoReturn,
         par_min: float | None = None,
         par_max: float | None = None,
         n_scan_pts: int | None = None,
@@ -7915,6 +7931,7 @@ class Simulator:
         steady_state: bool = False,
         steady_state_tol: float | None = None,
         squeeze: bool = False,
+        **_foreign: NoReturn,
     ) -> list[Result] | Result:
         """Continuation scan of one parameter (BNG ``bifurcate``, ``reset_conc=0``).
 
@@ -7930,6 +7947,8 @@ class Simulator:
         (which pertain to the per-point reset that continuation omits). See
         :meth:`parameter_scan` for the shared parameters.
         """
+        if _extra or _foreign:
+            raise call_error("bifurcate", _SIGNATURES["bifurcate"], locals(), _extra, _foreign)
         return self.parameter_scan(
             parameter,
             par_scan_vals,
@@ -8186,13 +8205,15 @@ class Simulator:
         self,
         t_span: tuple[float, float] = (0.0, 100.0),
         n_points: int = 101,
-        *,
+        # Issue #1700: catch-alls for a wrong call only, as on run().
+        *_extra: NoReturn,
         params: list[str] | None = None,
         chunk_size: int = 2,
         n_workers: int | None = None,
         rtol: float | None = None,
         atol: AtolLike | None = None,
         max_steps: int | None = None,
+        **_foreign: NoReturn,
     ) -> Result:
         """Compute full sensitivity tensor via parallel chunked CVODES jobs.
 
@@ -8324,6 +8345,14 @@ class Simulator:
         thread count manageable. ``chunk_size=1`` works but doubles
         the number of threads needed.
         """
+        if _extra or _foreign:
+            raise call_error(
+                "compute_all_sensitivities",
+                _SIGNATURES["compute_all_sensitivities"],
+                locals(),
+                _extra,
+                _foreign,
+            )
         import math
         import os
 
@@ -11651,12 +11680,14 @@ class Simulator:
     def run_until(
         self,
         t: float,
-        *,
+        # Issue #1700: catch-alls for a wrong call only, as on run().
+        *_extra: NoReturn,
         n_points: int | None = None,
         seed: int | None = None,
         rtol: float | None = None,
         atol: AtolLike | None = None,
         max_steps: int | None = None,
+        **_foreign: NoReturn,
     ) -> Result:
         """Run simulation from current time to *t*.
 
@@ -11711,6 +11742,8 @@ class Simulator:
         :class:`bngsim.LiveStartWarning` says so (issue #1701). :meth:`set_time`
         puts the clock where the state is.
         """
+        if _extra or _foreign:
+            raise call_error("run_until", _SIGNATURES["run_until"], locals(), _extra, _foreign)
         self._require_interactive_backend_support()
 
         # Issue #1504 — a NaN target passed the comparison below, which is false
@@ -14136,8 +14169,13 @@ class SteadyStateResult:
         )
 
 
-# Issue #1700: what run() shows of itself is the signature without the
+# Issue #1700: what each run call shows of itself is its signature without the
 # catch-alls it takes only to name the keyword a wrong call meant.
-_RUN_SIGNATURE = _foreign_names.signature_without_catch_alls(Simulator.run)
-Simulator.run.__signature__ = _RUN_SIGNATURE  # type: ignore[attr-defined]
+_SIGNATURES.update(
+    (method, _foreign_names.signature_without_catch_alls(getattr(Simulator, method)))
+    for method in RUN_CALLS
+)
+for _method, _signature in _SIGNATURES.items():
+    getattr(Simulator, _method).__signature__ = _signature
+del _method, _signature
 _foreign_names.install(Simulator, "Simulator")
