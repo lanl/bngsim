@@ -50,6 +50,13 @@ def result(sim: Simulator) -> Result:
     return sim.run(t_span=(0, 10), n_points=11)
 
 
+@pytest.fixture
+def fresh() -> Simulator:
+    """A Simulator on a model no run has advanced, for a test that runs: the
+    shared one's model holds the state its last run ended at (issue #1701)."""
+    return Simulator(Model.load(DECAY))
+
+
 def instance(owner: str, model: Model, sim: Simulator, result: Result) -> object:
     return {"Model": model, "Simulator": sim, "Result": result}[owner]
 
@@ -331,8 +338,8 @@ def test_copy_pickle_and_numpy_are_as_they_were(model, sim, result):
     with pytest.raises(TypeError, match="cannot copy a Model"):
         copy.copy(model)
     # A copy taken before species is first read returns the same view too.
-    fresh = sim.run(t_span=(0, 1), n_points=3)
-    assert copy.copy(fresh).species is fresh.species
+    unread = Simulator(Model.load(DECAY)).run(t_span=(0, 1), n_points=3)
+    assert copy.copy(unread).species is unread.species
     as_array = np.asarray(result)
     assert as_array.shape == () and as_array.dtype == object and as_array[()] is result
     with pytest.raises(TypeError, match="not iterable"):
@@ -454,14 +461,14 @@ def _corrected_call(err: pytest.ExceptionInfo) -> str:
         ("sim.run(times=np.array([0.0, 1.0, 2.5]))", np.array([0, 1, 2.5])),
     ],
 )
-def test_a_foreign_run_call_names_the_call_that_runs(sim, call, times):
+def test_a_foreign_run_call_names_the_call_that_runs(fresh, call, times):
     """The corrected call the error gives is run, and gives the grid the
     foreign call meant: the oracle is each tool's own definition of its
     arguments, off by one where n_steps and steps count intervals."""
     with pytest.raises(TypeError) as err:
-        eval(call, {"sim": sim, "np": np})
+        eval(call, {"sim": fresh, "np": np})
     fixed = _corrected_call(err)
-    got = eval(fixed, {"sim": sim}).time
+    got = eval(fixed, {"sim": fresh}).time
     np.testing.assert_allclose(got, times, rtol=0, atol=1e-12)
 
 
@@ -495,6 +502,13 @@ def test_a_run_call_that_does_not_translate_gets_no_corrected_call(sim, call):
     assert "For this call" not in str(err.value)
 
 
+def test_a_number_for_start_names_t_span(sim):
+    """run(start=...) names the state a run starts from (issue #1701); a number
+    there is RoadRunner's start time, which bngsim takes in t_span."""
+    with pytest.raises(ValueError, match=r"A start time goes in t_span: t_span=\(5, t_end\)"):
+        sim.run(start=5)  # type: ignore[arg-type]
+
+
 def test_an_unknown_run_keyword_reads_as_pythons(sim):
     with pytest.raises(TypeError) as err:
         sim.run(not_a_keyword=1)  # type: ignore[call-arg]
@@ -516,13 +530,13 @@ def test_a_number_for_t_span_names_the_tuple(sim, args, says):
         sim.run(*args)
 
 
-def test_run_shows_its_own_signature_and_still_runs(sim):
+def test_run_shows_its_own_signature_and_still_runs(fresh):
     params = inspect.signature(Simulator.run).parameters
     kinds = {p.kind for p in params.values()}
     assert inspect.Parameter.VAR_POSITIONAL not in kinds
     assert inspect.Parameter.VAR_KEYWORD not in kinds
     assert list(params)[:3] == ["self", "t_span", "n_points"]
-    r = sim.run((0, 10), 11)
+    r = fresh.run((0, 10), 11)
     np.testing.assert_allclose(r.time, np.linspace(0, 10, 11), rtol=0, atol=1e-12)
 
 

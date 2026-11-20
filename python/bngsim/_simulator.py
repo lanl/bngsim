@@ -5880,10 +5880,16 @@ class Simulator:
         # Issue #1701 — where the run starts, checked before anything changes.
         # The reset itself waits for the solve, below.
         if start is not None and start not in _RUN_STARTS:
+            # A number is RoadRunner's simulate(start=...), a start time (#1700).
+            when = (
+                f" A start time goes in t_span: t_span=({start!r}, t_end)."
+                if isinstance(start, (int, float)) and not isinstance(start, bool)
+                else ""
+            )
             raise ValueError(
                 f"start must be None, 'live' or 'initial', got {start!r}: 'initial' runs "
                 "from the model's initial conditions (Model.reset() first), 'live' from "
-                "the state the model holds now, which is where the last run ended."
+                f"the state the model holds now, which is where the last run ended.{when}"
             )
         if start == "initial" and carry_sensitivities:
             raise ValueError(
