@@ -512,6 +512,10 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
     + _entries(
         "Simulator.run_until",
         "guess",
+        *(
+            (name, f"t={name}", "run_until() runs on to the one time t, its first argument.")
+            for name in ("t_end", "end", "tend")
+        ),
         (
             "t_start",
             "sim.set_time(t_start)",
@@ -872,7 +876,7 @@ def keyword_entry(method: str, name: str, takes: Container[str]) -> ForeignName 
     method takes."""
     own = lookup(f"Simulator.{method}", name)
     if own is not None or method == "run":
-        return own if own is not None else lookup("Simulator.run", name)
+        return own
     shared = lookup("Simulator.run", name)
     if shared is None:
         return None
@@ -949,6 +953,7 @@ _RUN_END = ("t_end", "end", "tend")
 _RUN_STEPS = ("n_steps", "steps")
 _RUN_POINTS = ("points",)
 _RUN_TIMES = ("times", "t_eval")
+_SCAN_VALUES = ("values", "scan_values")
 
 
 def rewrite_call(
@@ -988,7 +993,7 @@ def rewrite_call(
         if len(rest) == 4 and not isinstance(rest[3], (list, tuple)):
             return None
         for name, value in zip(positional[:lead], args[:lead], strict=True):
-            put(name, _short(value))
+            put(name, _given(name, value))
         start, end = rest[0], rest[1]
         if not put("n_points", _count_text(rest[2])):
             return None
@@ -1008,10 +1013,12 @@ def rewrite_call(
             ok = put("sample_times", _times_text(name, value))
         elif name == "tspan":
             ok = put("t_span", _short(tuple(value)) if isinstance(value, Iterable) else None)
+        elif name in _SCAN_VALUES:
+            ok = put("par_scan_vals", _given(name, value))
         elif name == "selections":
             continue
         elif name in takes:
-            ok = put(name, _short(value))
+            ok = put(name, _given(name, value))
         else:
             return None
         if not ok:
@@ -1031,6 +1038,14 @@ def rewrite_call(
     rank = {name: i for i, name in enumerate(order)}
     ordered = sorted(out.items(), key=lambda item: rank.get(item[0], len(rank)))
     return f"sim.{method}(" + ", ".join(f"{k}={v}" for k, v in ordered) + ")"
+
+
+def _given(name: str, value: object) -> str:
+    """A value the call gave, as code for the corrected call: itself when its
+    ``repr`` is short, else the keyword's own name (``params=params``), which
+    reads as "what you passed" where ``...`` would be passed as Ellipsis."""
+    text = _short(value)
+    return name if text == "..." else text
 
 
 def _times_text(name: str, value: object) -> str:

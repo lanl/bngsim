@@ -106,7 +106,7 @@ PINNED = {
     ],
     "Simulator.run_batch": ["sample_times", "t_eval", "times"],
     "Simulator.run_replicates": ["sample_times", "t_eval", "times"],
-    "Simulator.run_until": ["sample_times", "t_eval", "t_start", "times"],
+    "Simulator.run_until": ["end", "sample_times", "t_end", "t_eval", "t_start", "tend", "times"],
     "pattern": [
         'from bngsim import simulate', 'model.k1', 'model.k1 = value', 'model["S1"]',
         'model["k1"] = value', 'result.A', 'sim.k1 = value',
@@ -644,6 +644,16 @@ def test_a_foreign_keyword_of_another_run_call_names_the_call_that_runs(method, 
         ("sim.parameter_scan('k1', values=[0.1])", r"Use par_scan_vals=values"),
         ("sim.run_batch(method='ssa')", r"Use bngsim\.Simulator\(model, method=\.\.\.\)"),
         ("sim.run_until(5, 10)", r"takes 1 positional argument \(t\) but 2 were given\.$"),
+        ("sim.run_until(5, t_end=10)", r"Use t=t_end\. run_until\(\) runs on to the one time t"),
+        (
+            "sim.parameter_scan('k1', values=[0.1], t_end=10)",
+            r"For this call: sim\.parameter_scan\(parameter='k1', par_scan_vals=\[0\.1\], "
+            r"t_span=\(0, 10\)\)\.$",
+        ),
+        (
+            "sim.run_batch(t_end=10, params=[{'k1': 0.1 * i} for i in range(1, 20)])",
+            r"For this call: sim\.run_batch\(t_span=\(0, 10\), params=params\)\.$",
+        ),
     ],
 )
 def test_another_run_call_names_its_own_keywords(sim, call, says):
