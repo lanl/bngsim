@@ -7081,6 +7081,136 @@ class Simulator:
             )
         return np.array(seed, dtype=np.float64), names
 
+    def _warn_if_the_scan_drops_a_dose(
+        self, parameter: str, value: float, values: Sequence[float], carried: bool
+    ) -> None:
+        """Warn where a scan over a parameter that seeds a species' initial
+        condition cannot move that species, asked at a point's start.
+
+        A point starts from the state at the call (or the ``reset_to``
+        snapshot), and a parameter write moves a species only while it sits on
+        its initial condition (:meth:`Model.set_param`). After a run it does
+        not: a scan over A0 = 5 and 40 started both points at the run's
+        A = 6.07, for totals 10 and 10 where a fresh model gives 5 and 40, with
+        no word. After :meth:`Model.save_concentrations` with no label the
+        saved state is the baseline, and no write moves it at all. The scan
+        keeps both, which is what a pre-equilibrated protocol relies on, and
+        says so here: one warning, naming the species.
+
+        Which species the parameter seeds is asked of the model, by writing it
+        to another value and to each of the scan's values and reading which
+        initial conditions moved, so a derived one (``A = A0*s``) counts as the
+        core resolves it; where the baseline is a saved state, which no write
+        moves, from the parameter graph. The writes are left for the scan's
+        reset to put back. A sensitivity scan (``carried``) carries the state's
+        dx/dθ into each point, where a write moves no species at all, so there
+        a species the parameter seeds is named on its initial condition too,
+        where a scan value asks for another (a scan of only the value held
+        asks it for nothing).
+        """
+        core = self._model._core
+        species = self._model.species_names
+        if core.ic_baseline_saved:
+            stuck = self._species_seeded_through_the_graph(parameter)
+            why = (
+                "after Model.save_concentrations() with no label the saved state is the "
+                "baseline, which no parameter write moves"
+            )
+        else:
+            state = np.asarray(core.get_state(), dtype=float)
+            before = np.asarray(core.get_initial_state(), dtype=float)
+            seeded = np.zeros(len(before), dtype=bool)
+            on = (state == before) | (np.isnan(state) & np.isnan(before))
+            # In a sensitivity scan no write moves a species, so one that sits on
+            # its initial condition is dropped too, where a scan value asks for
+            # another: a scan of only the value held asks it for nothing.
+            scanned = {float(v) for v in values}
+            elsewhere = np.zeros(len(before), dtype=bool)
+            # One value can leave an initial condition where it was (A = (A0 - 10)
+            # *(A0 - 20) + 3 is 3 at 10 and at 20); the scan's own values are the
+            # writes that matter.
+            asked = [2.0 * value if value != 0.0 else 1.0, *(float(v) for v in values)]
+            for probe in dict.fromkeys(v for v in asked if v != value):
+                try:
+                    self._model.set_param(parameter, probe)
+                except Exception:
+                    # The warning is advice. Where the model refuses the value it
+                    # is asked with, there is nothing to say, and the scan runs as
+                    # it would have: a scan that writes only the value a parameter
+                    # already holds must not fail on a write it never asked for.
+                    continue
+                after = np.asarray(core.get_initial_state(), dtype=float)
+                seeded |= ~((before == after) | (np.isnan(before) & np.isnan(after)))
+                if probe in scanned:
+                    elsewhere |= ~((state == after) | (np.isnan(state) & np.isnan(after)))
+            dropped = ~on | elsewhere if carried else ~on
+            stuck = [species[i] for i in np.flatnonzero(seeded & dropped)]
+            why = (
+                "a sensitivity scan carries the state's dx/dθ into each point, and a "
+                "parameter write there moves no species"
+                if carried
+                else "each point starts from the state at the call (or the reset_to snapshot), "
+                "where a run or a write has moved them off their initial condition, and a "
+                "parameter write leaves such a species where it is"
+            )
+        if not stuck:
+            return
+        shown = ", ".join(repr(n) for n in stuck[:3]) + (
+            f" and {len(stuck) - 3} more" if len(stuck) > 3 else ""
+        )
+        warnings.warn(
+            f"parameter_scan over {parameter!r} does not move the species it seeds "
+            f"({shown}): {why}, so every point starts them at that state's values and "
+            "the dose is dropped. "
+            # A sensitivity scan from the initial conditions is refused (#81).
+            + (
+                ""
+                if carried
+                else "For a dose scan from the initial conditions, call Model.reset() first. "
+            )
+            + "To dose them from this state, set each in on_point to its initial condition "
+            "at the point's value: on_point=lambda model, value: "
+            "model.set_concentration(name, value) where that initial condition is the "
+            "parameter itself.",
+            UserWarning,
+            stacklevel=_stacklevel_outside_bngsim(),
+        )
+
+    def _species_seeded_through_the_graph(self, parameter: str) -> list[str]:
+        """The species whose initial condition names ``parameter``, directly or
+        through the derived parameters between (``A() U``, ``U = T``,
+        ``T = 2*A0``): read from the parameter graph, for a model whose saved
+        baseline no write moves. Read as the model reads it: a number's exponent
+        is no name (``_names_in``), a derived parameter a write has overridden
+        (#188) no longer reads its expression, the walk is a loop and not a
+        recursion (a chain can be deeper than Python's limit), and a compartment
+        size reaches an amount-declared species through its storage divide."""
+        from bngsim._model import _names_in
+
+        core = self._model._core
+        names = list(self._model.param_names)
+        live = list(self._model.param_is_expression)
+        readers: dict[str, list[int]] = {}
+        for i, expression in enumerate(self._model.param_expressions):
+            if live[i] and expression:
+                for token in set(_names_in(expression)):
+                    readers.setdefault(token, []).append(i)
+        reach = {i for i, name in enumerate(names) if name == parameter}
+        stack = [parameter]
+        while stack:
+            for i in readers.get(stack.pop(), ()):
+                if i not in reach:
+                    reach.add(i)
+                    stack.append(names[i])
+        refs = [(int(i), int(p)) for i, p in core.species_ic_param_refs]
+        sizes = list(core.param_is_compartment_size)
+        if any(sizes[p] for p in reach):
+            for i, sp in enumerate(core.codegen_data()["species"]):
+                if not math.isnan(float(sp.get("initial_amount", math.nan))):
+                    refs.append((i, int(sp.get("volume_param_idx0", -1))))
+        species = self._model.species_names
+        return sorted({species[i] for i, p in refs if p in reach})
+
     def _pending_scan_sens_seed(self, names: list[str], point_index: int) -> np.ndarray:
         """The dx/dθ a continuation point inherits from the previous point's run."""
         core = self._model._core
@@ -7533,7 +7663,18 @@ class Simulator:
         reset_conc : bool
             BNG ``reset_conc``. When ``True`` (default), every point resets to
             the snapshot before applying the scanned parameter — points are
-            independent. When ``False``, points are *not* reset between values;
+            independent. A parameter that seeds a species' initial condition
+            (``A = A0``, or ``A = A0*s`` scanning either) moves that species
+            only while it sits on that condition (:meth:`Model.set_param`):
+            from a state a run has advanced, or after
+            :meth:`Model.save_concentrations` with no label, every point starts
+            it at the snapshot's value and the dose is dropped, and the scan
+            warns, naming the species. Call :meth:`Model.reset` first for a dose
+            scan from the initial conditions, or set the species in
+            ``on_point``. A sensitivity scan carries the state's dx/dθ into
+            each point, where the write moves no species, on its initial
+            condition or not: it warns naming each, and only ``on_point``
+            doses there. When ``False``, points are *not* reset between values;
             each continues from the previous point's end-state (a continuation
             scan — see :meth:`bifurcate`).
         reset_to : str, optional
@@ -7795,6 +7936,15 @@ class Simulator:
                         scan_rtol,
                         where="parameter_scan(atol=...)",
                     )
+            # The warning below writes the scanned parameter (to the scan's values
+            # and one more), and the reset at the first point puts it back: it
+            # comes after the tolerance above is read, which reads the model as
+            # the scan found it.
+            if reset_conc and on_point is None:  # a hook may be what doses them
+                _reset_point()
+                self._warn_if_the_scan_drops_a_dose(
+                    parameter, original_value, values, carried=carry_seed is not None
+                )
             for i, value in enumerate(values):
                 if reset_conc:
                     _reset_point()
