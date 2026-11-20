@@ -60,8 +60,11 @@ def test_replicates_after_a_run_start_where_it_ended(net):
     sim.run(t_span=(0, 1.0), n_points=2, seed=1)
     ended = float(sim.model.get_state()[0])
     assert ended > 0.0
-    reps = sim.run_replicates(2, **KW)
+    # ...and says so, where the span sets the clock back (issue #1701).
+    with pytest.warns(bngsim.LiveStartWarning, match="Each replicate starts"):
+        reps = sim.run_replicates(2, **KW)
     assert [_a0(r) for r in reps] == [ended, ended]
+    assert [r.started_from for r in reps] == ["live", "live"]
 
 
 _MATH = '<math xmlns="http://www.w3.org/1998/Math/MathML">{}</math>'

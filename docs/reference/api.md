@@ -75,7 +75,7 @@ Constructor:
   NFsim/RuleMonkey: `xml_path` (str, required), `gml` (int).
 
 Simulation:
-- **`run(t_span, n_points, *, seed, rtol, atol, max_steps, timeout, steady_state, steady_state_tol)`** → `Result`
+- **`run(t_span, n_points, *, seed, rtol, atol, max_steps, timeout, steady_state, steady_state_tol, carry_sensitivities, start)`** → `Result` — starts from the model's live state, where the last run ended. `start="initial"` resets the model first; `start="live"` continues with no warning; the default warns (`LiveStartWarning`) where the run starts before the time the last run ended at, from exactly the state it left (issue #1701)
 - **`run_batch(t_span, n_points, *, params, seed, num_processors, squeeze, timeout, steady_state, steady_state_tol)`** → `list[Result]` or `Result` — clones + resets each point to the `.net` seed
 - **`parameter_scan(parameter, par_scan_vals=None, *, par_min, par_max, n_scan_pts, log_scale, t_span, n_points, reset_conc=True, reset_to=None, on_point=None, seed, squeeze, …)`** → `list[Result]` or `Result` — BNG `parameter_scan`. With `reset_conc=True`, each point resets to the state *at scan invocation* (or to the named snapshot `reset_to`), not the seed — so a pre-equilibrate → intervene → scan protocol carries its post-intervention state. `on_point(model, value)` applies coupled `setConcentration` overrides that track the scanned value.
 - **`bifurcate(parameter, par_scan_vals=None, *, …)`** → `list[Result]` or `Result` — continuation scan (`reset_conc=0`): each point continues from the previous point's end-state
@@ -252,6 +252,8 @@ Properties:
 - **`xr`** — AMICI-style xarray accessor; `result.xr.species`, `.observables`, `.expressions`, `.sensitivities`, `.sensitivities_ic` return labeled `xarray.DataArray`s with `time`/`state`/`observable`/`expression`/`parameter`/`ic_state` coords (requires xarray)
 - **`solver_stats`** — `dict` with solver diagnostics
 - **`stop_condition`** — `str | None`: the label (else the expression) of the stop condition the result was cut at, `None` where none was met (issue #1369)
+- **`started_from`** — `"initial" | "live" | None`: whether the run started from the model's initial conditions (the state `Model.reset()` restores) or from another state, such as the end of an earlier run; `None` where nothing recorded it (a `run_batch` row, a `compute_all_sensitivities` result, an older HDF5 file, a stack whose rows disagree) (issue #1701)
+- **`start_state_sha256`** — `str | None`: the SHA-256 of the state vector the run started from, as little-endian float64 bytes in `Model.species_names` order; two runs with the same digest started from the same state (issue #1701)
 - **`custom_attrs`** — `dict` for user metadata
 - `n_times`, `n_species`, `n_observables`, `n_expressions`
 - `species_names`, `observable_names`, `expression_names`
@@ -321,6 +323,16 @@ All inherit from `bngsim.BngsimError` (which inherits `RuntimeError`):
 - **`StopConditionMet`** — Stop condition triggered; `.result` has partial data
 
 Warnings (`UserWarning` subclasses; filter or escalate them with `warnings`):
+
+- **`LiveStartWarning`** — a call is about to start from exactly the state the
+  last run left, which is not the model's initial conditions, before the time
+  that run ended at: a second `run(t_span=(0, 5))`, which continues the first.
+  Raised before anything integrates, by `run()` (pass `start="initial"` or
+  `start="live"` to say which start is meant), by `run_until` from a clock
+  behind that time (`set_time` moves it), and once per call by
+  `run_replicates`, `parameter_scan` (unless `reset_to` names the start),
+  `bifurcate` and `run_protocol`'s first run, where `Model.reset()` or
+  `Model.save_concentrations()` says it (issue #1701).
 
 - **`OneSidedSensitivityWarning`** — a sensitivity column is a one-sided
   derivative: two rate-law switches share an instant, a rate law composes them,

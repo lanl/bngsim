@@ -61,6 +61,7 @@ from bngsim._exceptions import (
     CodegenDeclinedError,
     CodegenToolchainError,
     DenseSolverFallbackWarning,
+    LiveStartWarning,
     ModelError,
     SensitivityRefusedDuringRunError,
     SensitivityRefusedForParametersError,
@@ -549,6 +550,109 @@ def _warn_if_rows_start_off_the_current_state(model, what, remedy):
         "(issue #1528). Call Model.reset() first where the initial conditions are the "
         "start you want, as they are for such a dose.",
         UserWarning,
+        stacklevel=_stacklevel_outside_bngsim(),
+    )
+
+
+# Issue #1701: what run(start=...) takes. None, the default, is "live" with
+# the warning below armed.
+_RUN_STARTS = ("live", "initial")
+
+# Issue #1701: a start this close to the time the last run ended at continues
+# that run. 0.1 + 0.2 for 0.3 is float arithmetic on a time grid, not a clock
+# started over.
+_CLOCK_REL_TOL = 1e-12
+
+# The remedy a run() caller has; the other calls say their own.
+_RUN_REMEDY = (
+    "Pass start='initial' to run from the initial conditions (it calls Model.reset() "
+    "first), or start='live' to continue on purpose."
+)
+# ...and a call that has no start= of its own.
+_MODEL_REMEDY = (
+    "Call Model.reset() first to start from the initial conditions, or "
+    "Model.save_concentrations() to make this state the model's initial one."
+)
+
+
+# Below this many entries, two vectors are compared in Python: numpy's call
+# overhead is most of the cost of a run_until step of a small model.
+_SMALL_STATE = 32
+
+
+def _same_values(a: np.ndarray, b: np.ndarray) -> bool:
+    """``np.array_equal(a, b, equal_nan=True)`` for two state vectors (issue #1701).
+
+    Every run asks it, a ``run_until`` step included, so it is made cheap: in
+    Python for a small vector, and for a large one equal bytes first, then
+    equal values (``-0.0`` and ``0.0``), and NaNs only where ``a`` holds one.
+    """
+    if a.shape != b.shape:
+        return False
+    if a.size <= _SMALL_STATE:
+        return all(
+            x == y or (x != x and y != y) for x, y in zip(a.tolist(), b.tolist(), strict=True)
+        )
+    if a.tobytes() == b.tobytes() or bool((a == b).all()):
+        return True
+    return bool(np.isnan(a).any()) and bool(np.array_equal(a, b, equal_nan=True))
+
+
+def _start_record(core, state: np.ndarray | None = None) -> tuple[str, np.ndarray]:
+    """Where a run that starts now starts (issue #1701).
+
+    ``("initial" | "live", state)``: ``"initial"`` where the state equals, value
+    for value, the vector ``Model.reset()`` restores (``get_initial_state()``,
+    as :func:`_warn_if_rows_start_off_the_current_state` reads it). *state* is
+    the model's live state unless given: the state a call captured to start
+    each of its rows from. The vector is a fresh copy the Result may keep; its
+    digest is computed when first read (``Result.start_state_sha256``).
+    """
+    state = np.array(core.get_state() if state is None else state, dtype=np.float64)
+    initial = np.asarray(core.get_initial_state(), dtype=np.float64)
+    started_from = "initial" if _same_values(state, initial) else "live"
+    state.setflags(write=False)
+    return started_from, state
+
+
+def _warn_if_start_restarts_the_clock(
+    model,
+    t_start: float,
+    *,
+    what: str,
+    remedy: str,
+    state: np.ndarray | None = None,
+) -> None:
+    """Warn that a call continues the last run's end state with its clock set
+    back (issue #1701, :class:`LiveStartWarning`).
+
+    It holds where the model holds exactly the state the last run wrote back
+    (``Model._last_run_end``), that state is not the initial conditions, and
+    the call starts before the time that run ended at. A start at or after it
+    continues the run (a steady state that stopped early, then a run from the
+    span's planned end), and a state the caller wrote since is one the caller
+    chose. *state* is the start, the model's live state unless given; it is
+    read only once the clock says the question arises.
+    """
+    end = model._last_run_end
+    if end is None:
+        return
+    t_end, end_state = end
+    if not t_start < t_end or math.isclose(t_start, t_end, rel_tol=_CLOCK_REL_TOL):
+        return
+    core = model._core
+    state = np.asarray(core.get_state() if state is None else state, dtype=np.float64)
+    if not _same_values(state, end_state):
+        return
+    if _same_values(state, np.asarray(core.get_initial_state(), dtype=np.float64)):
+        return
+    warnings.warn(
+        f"{what} starts at t = {t_start:.12g} from the state the last run left at "
+        f"t = {t_end:.12g}, not from the model's initial conditions: the state lives "
+        "in the Model, and each run writes its end state back to it, so this "
+        f"continues that run with its clock set back. {remedy} Result.started_from "
+        "records which start a run had (issue #1701).",
+        LiveStartWarning,
         stacklevel=_stacklevel_outside_bngsim(),
     )
 
@@ -5472,8 +5576,16 @@ class Simulator:
         steady_state: bool = False,
         steady_state_tol: float | None = None,
         carry_sensitivities: bool = False,
+        start: Literal["live", "initial"] | None = None,
     ) -> Result:
         """Run a simulation.
+
+        The run starts from the model's live state, which each run writes its
+        end state back to: a second ``run()`` continues from where the first
+        one ended, as BNG2.pl's successive ``simulate`` actions do, unless the
+        model is reset in between. ``start`` chooses, and
+        :attr:`Result.started_from` records, which start a run had (issue
+        #1701).
 
         Parameters
         ----------
@@ -5492,9 +5604,10 @@ class Simulator:
             The override covers the interval, not just the output
             grid: the run starts at the first sample time and ends at
             the last, so ``sample_times=[5.0, 10.0]`` integrates over
-            ``[5, 10]`` from the model's initial conditions and never
-            sees ``[0, 5]``. Pass the start time as the first entry
-            whenever the pre-history matters.
+            ``[5, 10]`` from the model's live state, which is its initial
+            conditions on a first run, and never sees ``[0, 5]``. Pass
+            the start time as the first entry whenever the pre-history
+            matters.
         seed : int, optional
             Random seed for stochastic methods. When omitted (or
             ``None``), bngsim draws a fresh seed from system entropy
@@ -5625,6 +5738,36 @@ class Simulator:
             sensitivities on a carried-over state **without** this flag
             raises (no silent wrong derivatives); a fresh single run is
             unaffected. Default ``False``.
+        start : {"live", "initial"}, optional
+            Where the run starts (issue #1701).
+
+            - ``None`` (default): from the model's live state, as ``"live"``
+              does, with one check. Where the model holds exactly the state
+              the last run left, that state is not its initial conditions, and
+              this run starts before the time that run ended at, a
+              :class:`bngsim.LiveStartWarning` says so before the run
+              integrates. Running ``t_span=(0, 5)`` twice is the case: the
+              second run starts where the first ended, at ``t = 0`` again. A
+              run at or after that time continues it (``t_span=(5, 10)`` after
+              it), and a state changed since to other values (by
+              ``set_concentration``, ``set_state``, ``restore_concentrations``)
+              is one the caller chose: neither is warned of.
+            - ``"live"``: from the live state, with no warning. Say so where a
+              run continues an earlier one on purpose: an
+              equilibrate-then-stimulate protocol that changes a parameter
+              between two runs from ``t = 0``.
+            - ``"initial"``: from the model's initial conditions. The run
+              calls :meth:`Model.reset` first, which restores them, or the
+              last unlabeled :meth:`Model.save_concentrations`, and leaves
+              parameters as they are. A run that raises before it has a result
+              undoes the reset. Not with ``carry_sensitivities=True``, which
+              continues a state by definition.
+
+            Whatever this says, :attr:`Result.started_from` reads
+            ``"initial"`` or ``"live"`` by what the state was, and
+            :attr:`Result.start_state_sha256` holds its digest. A run that
+            ``carry_sensitivities=True`` continues is not warned of, nor a
+            sensitivity run the engine refuses for its carried start.
 
         Returns
         -------
@@ -5642,7 +5785,9 @@ class Simulator:
         ValueError
             If t_span, n_points or sample_times are invalid (a time that is
             not finite, ``t_end <= t_start``, ``n_points < 2``, fewer than two
-            sample times), or if output sensitivities
+            sample times), if ``start`` is not ``None``, ``"live"`` or
+            ``"initial"``, or ``"initial"`` with ``carry_sensitivities=True``,
+            or if output sensitivities
             were requested (``sensitivity_params`` / ``sensitivity_ic``,
             including the ``carry_sensitivities`` path) on a model that
             contains events. Events reinitialise the CVODE state
@@ -5695,6 +5840,21 @@ class Simulator:
                 raise ValueError(
                     f"steady_state_tol must be non-negative or None, got {steady_state_tol!r}"
                 )
+
+        # Issue #1701 — where the run starts, checked before anything changes.
+        # The reset itself waits for the solve, below.
+        if start is not None and start not in _RUN_STARTS:
+            raise ValueError(
+                f"start must be None, 'live' or 'initial', got {start!r}: 'initial' runs "
+                "from the model's initial conditions (Model.reset() first), 'live' from "
+                "the state the model holds now, which is where the last run ended."
+            )
+        if start == "initial" and carry_sensitivities:
+            raise ValueError(
+                "start='initial' with carry_sensitivities=True: a reset discards the "
+                "pre-equilibrated state and its dx/dθ that carry_sensitivities "
+                "continues (GH #210). Drop one of them."
+            )
 
         # GH #205 — event-time output-sensitivity correctness. Events
         # reinitialise the CVODE state discontinuously but the forward-
@@ -5762,6 +5922,35 @@ class Simulator:
                 t_start,
                 t_end,
                 n_points,
+            )
+
+        # Issue #1701 — the start. start="initial" resets the model here, after
+        # every refusal made of the arguments and before anything that reads the
+        # state (the atol's scales, the IC seeds); a refusal or failure from here
+        # to the solve's result undoes it (_undo_start_reset, below), so a call
+        # that raises leaves the model, and with it the clock, as it found them.
+        core = self._model._core
+        undo_reset = None
+        if start == "initial":
+            undo_reset = self._capture_start_undo()
+            self._model.reset()
+        started_from, start_state = _start_record(core)
+        # A sensitivity run from a carried state is refused by the engine, with
+        # its own remedy (carry_sensitivities=True, GH #210; issue #1528), which
+        # a warning first would only bury, and stop under `-W error`.
+        refused_for_the_carry = self._method == "ode" and (
+            (bool(self._sensitivity_params) and core.ic_state_dirty)
+            or (bool(self._sensitivity_ic) and core.advanced_since_baseline)
+        )
+        if (
+            start is None
+            and started_from == "live"
+            and not carry_sensitivities
+            and not refused_for_the_carry
+        ):
+            # Before the solve, so `-W error` stops the run with nothing changed.
+            _warn_if_start_restarts_the_clock(
+                self._model, t_start, what="This run", remedy=_RUN_REMEDY, state=start_state
             )
 
         core_result = None
@@ -5935,9 +6124,16 @@ class Simulator:
             # setup and never reach here — which is why one site regressed and
             # the other two did not. The solver's own refusal where the state
             # leaves a rate-law equality (issue #1279) arrives here typed too.
+            self._undo_start_reset(undo_reset)
             raise
         except RuntimeError as e:
+            self._undo_start_reset(undo_reset)
             raise SimulationError(f"Simulation failed: {e}{_tracking_hint(track_decades)}") from e
+        except BaseException:
+            # A refusal of an argument read against the start (an atol of the
+            # wrong length, issue #1701), or an interrupt.
+            self._undo_start_reset(undo_reset)
+            raise
 
         # Stamp the seed on the Result when it identifies the realization (any
         # stochastic method) or drives ODE equal-priority event tie-breaking
@@ -5948,6 +6144,8 @@ class Simulator:
             seed=used_seed if seed_is_meaningful else None,
             ic_seed=ic_seed,
         )
+        result._started_from = started_from
+        result._start_state = start_state
 
         # Issue #553 — the interactive clock moves with the state, here, rather
         # than in the caller after run() returns. The backend has written the
@@ -5967,6 +6165,16 @@ class Simulator:
         # the final output time instead.
         if result.n_times:
             self._current_time = float(result.time[-1])
+            # Issue #1701 — and the model records the state the run left with
+            # its time, which the next run's start is compared with. Only where
+            # the run wrote its end state back: a network-free run starts from
+            # the model's state each time and leaves it as it was, so a second
+            # one over the same span is a second run from the same start.
+            if self._method in ("ode", "ssa", "psa"):
+                self._model._last_run_end = (
+                    self._current_time,
+                    np.ascontiguousarray(self._model._core.get_state(), dtype="<f8"),
+                )
 
         # GH #198 — attach the expression output-sensitivity support map so a
         # selector for an unsupported global function raises the specific reason
@@ -6505,9 +6713,12 @@ class Simulator:
         Every replicate starts from the model's state at this call, as
         :meth:`run` does: a :meth:`Model.set_concentration` made first is the
         start of each (issue #1362), and after a :meth:`run` so is that run's
-        end state, as it is for a second :meth:`run`. Call
-        :meth:`Model.reset` first to start each from the initial conditions.
-        The model is left in the state it was in at the call.
+        end state, as it is for a second :meth:`run`, and a
+        :class:`bngsim.LiveStartWarning` says so where ``t_span`` starts before
+        that run ended (issue #1701). Call :meth:`Model.reset` first to start
+        each from the initial conditions. Each replicate's
+        :attr:`Result.started_from` says which start it had. The model is left
+        in the state it was in at the call.
 
         Replicate 0 uses ``seed_base`` itself and replicate *i* > 0 a seed
         drawn from numpy's ``SeedSequence(seed_base)`` (``seed_base`` resolved
@@ -6593,6 +6804,16 @@ class Simulator:
         # (issue #693), where reset() cleared them.
         start_state = self._model.get_state()
         start_carry = self._capture_carryover_state()
+        # Issue #1701: that start, said of each replicate and warned of where it
+        # is the end of a run with the clock set back, as a second run() is.
+        _warn_if_start_restarts_the_clock(
+            self._model,
+            t_start,
+            what="Each replicate",
+            remedy=_MODEL_REMEDY,
+            state=start_state,
+        )
+        started_from, start_vector = _start_record(self._model._core, start_state)
 
         def _run_one(sim: Any, model: Model, times: Any, i: int) -> Result:
             # reset() zeroes time and clears what the last replicate left
@@ -6615,6 +6836,8 @@ class Simulator:
             except RuntimeError as e:
                 raise SimulationError(f"Simulation failed: {e}") from e
             r = self._stamp(Result(cr), seed=used, model=model)
+            r._started_from = started_from
+            r._start_state = start_vector
             self._warn_ssa_boundary(r)
             return r
 
@@ -7124,6 +7347,30 @@ class Simulator:
         plus, minus = out
         return (plus - minus) / (2.0 * h), np.maximum(np.abs(plus), np.abs(minus))
 
+    def _capture_start_undo(self) -> tuple[np.ndarray, Any, bool, dict]:
+        """What ``run(start="initial")``'s reset changes, to put back if the run
+        raises before it has a result (issue #1701): the state, the carry-over
+        :meth:`_capture_carryover_state` holds (which the reset clears), the SSA
+        counts mark, and the declared IC sensitivities the reset drops."""
+        core = self._model._core
+        return (
+            np.array(core.get_state(), dtype=np.float64),
+            self._capture_carryover_state(),
+            bool(core.ssa_counts_stored),
+            {k: dict(v) for k, v in self._model._declared_ic_sens.items()},
+        )
+
+    def _undo_start_reset(self, undo: tuple[np.ndarray, Any, bool, dict] | None) -> None:
+        """Put back what :meth:`_capture_start_undo` captured; no-op for ``None``."""
+        if undo is None:
+            return
+        state, carry, ssa_counts, declared = undo
+        core = self._model._core
+        core.set_state(state)
+        core.ssa_counts_stored = ssa_counts
+        self._restore_carryover_state(carry)
+        self._model._declared_ic_sens = declared
+
     def _capture_carryover_state(
         self, core: Any = None
     ) -> tuple[np.ndarray | None, list[str], bool, Any, bool]:
@@ -7232,7 +7479,13 @@ class Simulator:
             (``Model.save_concentrations(label=...)``) to reset each point to.
             When ``None`` (default), the reset target is the model's live state
             captured at the moment this method is called. Only consulted when
-            ``reset_conc=True``.
+            ``reset_conc=True``. Where that live state is the end of the last
+            run and ``t_span`` starts before that run ended, the points
+            continue it with the clock set back, and a
+            :class:`bngsim.LiveStartWarning` says so once, before the first
+            (issue #1701); :meth:`Model.reset` first starts them from the
+            initial conditions. A scan with ``reset_conc=False`` is asked the
+            same of its first point.
         on_point : callable, optional
             ``on_point(model, value)`` invoked after the reset + scanned-parameter
             assignment and before integration, for each point. Use it to apply
@@ -7362,6 +7615,9 @@ class Simulator:
         # so the clock is part of what the finally: below puts back — otherwise a
         # scan would leave it at the last point's end time over a rewound model.
         invocation_time = self._current_time
+        # ...and so is the record of the run that left the state (issue #1701),
+        # so a run after the scan is compared with the run before it.
+        invocation_run_end = self._model._last_run_end
 
         # Issue #196 — freeze the absolute tolerance at the invocation state,
         # before the first point moves the model. Passing the resolved value to
@@ -7386,6 +7642,20 @@ class Simulator:
         # the scan runs the plain path. Resolved after the reset-target validation
         # above so a bad ``reset_to`` still reports itself, not a missing seed.
         carry_seed, carry_names = self._resolve_scan_sens_carry(parameter, reset_conc, reset_to)
+        # Issue #1701: a scan whose points start from the invocation state, where
+        # that is the end of a run and the span sets the clock back, continues
+        # that run, as a second run() does. Its points pass start="live" below,
+        # so it is asked here, once. A named reset target is a start the caller
+        # chose, and a carried dx/dθ says the continuation is meant, as
+        # run(carry_sensitivities=True) does.
+        if not (reset_conc and use_named) and carry_seed is None:
+            _warn_if_start_restarts_the_clock(
+                self._model,
+                float(t_span[0]),
+                what="Each point of this scan" if reset_conc else "The first point of this scan",
+                remedy=_MODEL_REMEDY,
+                state=invocation_state,
+            )
         # ...and the carry-over state to put back afterward, so a scan still
         # leaves the model exactly as it found it (the runs below both consume and
         # overwrite the pending seed).
@@ -7530,6 +7800,9 @@ class Simulator:
                         steady_state=steady_state,
                         steady_state_tol=steady_state_tol,
                         carry_sensitivities=pt_sens_seed is not None,
+                        # The scan has put each point's start in place (issue #1701):
+                        # a continuation scan continues the last point on purpose.
+                        start="live",
                     )
                 except StopConditionMet as stop:
                     # One point's stop is not the scan's (issue #1369): the point
@@ -7548,6 +7821,7 @@ class Simulator:
             self._model.set_param(parameter, original_value)
             self._model.set_state(invocation_state)
             self._current_time = invocation_time
+            self._model._last_run_end = invocation_run_end
             self._restore_carryover_state(invocation_sens)
             self._recreate_interactive_sim()
 
@@ -11303,6 +11577,9 @@ class Simulator:
         out._varvol_conc_factor = cut_map(result._varvol_conc_factor)
         out._varvol_amount_factor = cut_map(result._varvol_amount_factor)
         out._stop_condition = result._stop_condition
+        out._started_from = result._started_from
+        out._start_state = result._start_state
+        out._start_state_sha256 = result._start_state_sha256
         return out
 
     # ─── Interactive simulation ─────────────────────────────────────
@@ -11362,6 +11639,13 @@ class Simulator:
         :meth:`snapshot` first and :meth:`restore` it — the partial result cannot
         be used to rewind the model, because on a model with a promoted state
         entry it carries only the reported species block.
+
+        A step runs from this Simulator's clock, :attr:`current_time`. Where
+        that is behind the time the last run left the model's state at, as a
+        new Simulator's clock is after another one ran the model, the step
+        continues that run with the clock set back, and a
+        :class:`bngsim.LiveStartWarning` says so (issue #1701). :meth:`set_time`
+        puts the clock where the state is.
         """
         self._require_interactive_backend_support()
 
@@ -11391,6 +11675,20 @@ class Simulator:
         # This run continues the stored trajectory, which the ODE warm path uses
         # to keep its adaptive dense-factor count across the steps of a coupling
         # loop (SolverOptions.continues_trajectory).
+        #
+        # Issue #1701 — from this Simulator's clock. Where that is behind the time
+        # the last run left the model's state at, the step continues that run
+        # with the clock set back: a second Simulator's first step after another
+        # one's run is the case. set_time() puts the clock there.
+        _warn_if_start_restarts_the_clock(
+            self._model,
+            self._current_time,
+            what="This run_until step, on this Simulator's clock,",
+            remedy=(
+                "Call set_time() to put this Simulator's clock at the time that run "
+                "ended, or Model.reset() to start from the initial conditions."
+            ),
+        )
         self._continues_trajectory = True
         try:
             return self.run(
@@ -11400,6 +11698,9 @@ class Simulator:
                 rtol=rtol,
                 atol=atol,
                 max_steps=max_steps,
+                # A step continues the state by definition, asked of above
+                # against its own clock (issue #1701).
+                start="live",
             )
         finally:
             self._continues_trajectory = False
@@ -11630,6 +11931,13 @@ class Simulator:
         # clock: the next run continues the triggers and pending executions as
         # they were then (issue #693). At any other time it is a fresh start.
         self._current_time = t
+        # Issue #1701: the caller says the state the last run left is at t, so a
+        # run from t continues it, and is not one with its clock set back.
+        end = self._model._last_run_end
+        if end is not None and _same_values(
+            np.asarray(self._model._core.get_state(), dtype=np.float64), end[1]
+        ):
+            self._model._last_run_end = (t, end[1])
         if self._model._core.rewind_event_carry(t) < 0:
             warnings.warn(
                 f"set_time({t!r}) rolls back past the last "

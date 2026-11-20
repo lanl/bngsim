@@ -153,16 +153,20 @@ trajectory means nothing — it can come back negative. There is no scalar
 between them that is a tolerance for both.
 
 ```python
+# Three ways to give the vector. start="initial" runs each from the initial
+# conditions, not from where the run before it ended (issue #1701).
+
 # Explicit — one value per species, in species_names order.
-result = sim.run(t_span=(0, 100), atol=[1e-17, 1e-9, 1e-7])
+result = sim.run(t_span=(0, 100), atol=[1e-17, 1e-9, 1e-7], start="initial")
 
 # Derived from the model's own state: rtol * max(|y_i|, floor).
-result = sim.run(t_span=(0, 100), atol="auto")
+result = sim.run(t_span=(0, 100), atol="auto", start="initial")
 
 # ...or derive, inspect, adjust, then pass it back.
+model.reset()
 atol = sim.auto_atol()
 atol[model.species_names.index("IRp")] *= 10
-result = sim.run(t_span=(0, 100), atol=atol)
+result = sim.run(t_span=(0, 100), atol=atol, start="initial")
 ```
 
 The vector is positional and its length is checked, not adjusted: a wrong
@@ -209,9 +213,10 @@ atol_i(y) = clamp(rtol * |y_i|, ceiling_i * 10**-decades, ceiling_i)
 ```
 
 ```python
-result = sim.run(t_span=(0, 30), atol="tracking")                     # default depth
-result = sim.run(t_span=(0, 30), atol=bngsim.TrackingAtol(decades=6))  # shallower
-result = sim.run(t_span=(0, 30), atol=bngsim.TrackingAtol(ceiling=my_vector))
+# Each from the initial conditions (start="initial"), as alternatives.
+result = sim.run(t_span=(0, 30), atol="tracking", start="initial")  # default depth
+result = sim.run(t_span=(0, 30), atol=bngsim.TrackingAtol(decades=6), start="initial")
+result = sim.run(t_span=(0, 30), atol=bngsim.TrackingAtol(ceiling=my_vector), start="initial")
 ```
 
 `ceiling` is the vector from the previous section (`"auto"` by default), so

@@ -123,8 +123,15 @@ changes neither the state nor the clock.
 
 A `run_until` step continues the trajectory the previous one ended, which the
 ODE solver uses to keep its linear-solver state across the steps of a loop (see
-[Linear solver](solvers.md#linear-solver)). An independent `run()` starts
-afresh.
+[Linear solver](solvers.md#linear-solver)). A `run()` sets that solver state up
+afresh, but its species start where the last run left them, as every run's do,
+unless it passes `start="initial"` (issue #1701).
+
+A `run_until` step runs from the Simulator's own clock. Where that clock is
+behind the time the last run left the model's state at, as it is for a second
+`Simulator`'s first step after another one's run, the step raises a
+`bngsim.LiveStartWarning`; `set_time(t)` puts the clock at the time the state is
+at, and the step continues from there.
 
 ## Species manipulation
 

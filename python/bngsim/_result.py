@@ -13,6 +13,7 @@ Result wraps the C++ Result and provides:
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import logging
 import threading
 import warnings
@@ -253,6 +254,17 @@ class IdentifiabilityReport:
         )
 
 
+def _state_digest(state: NDArray[np.float64]) -> str:
+    """The SHA-256, in hex, of a state vector's values as little-endian float64
+    bytes, with ``-0.0`` read as ``0.0`` and every NaN as one NaN, so that two
+    vectors equal value for value (``np.array_equal(equal_nan=True)``) have one
+    digest (issue #1701)."""
+    canon = np.ascontiguousarray(state, dtype="<f8") + 0.0  # -0.0 + 0.0 is 0.0
+    if not np.isfinite(canon).all():
+        canon[np.isnan(canon)] = np.nan
+    return hashlib.sha256(canon.tobytes()).hexdigest()
+
+
 class Result:
     """Simulation result container.
 
@@ -296,6 +308,9 @@ class Result:
 
     __slots__ = (
         "_stop_condition",
+        "_started_from",
+        "_start_state",
+        "_start_state_sha256",
         "_time",
         "_species",
         "_observables",
@@ -658,6 +673,15 @@ class Result:
         # was cut at; None where none was met (issue #1369).
         self._stop_condition: str | None = None
 
+        # Issue #1701: where the run started, "initial" or "live", and the
+        # state vector it started from, whose sha256 is computed on first read
+        # (a run_until loop of short steps pays for no hash it never reads) and
+        # is all a loaded file holds. Set by Simulator.run; None where nothing
+        # recorded it (see started_from).
+        self._started_from: str | None = None
+        self._start_state: NDArray[np.float64] | None = None
+        self._start_state_sha256: str | None = None
+
         self.custom_attrs: dict[str, Any] = custom_attrs or {}
 
     # ─── Core data ──────────────────────────────────────────────────
@@ -700,6 +724,55 @@ class Result:
         on it, as it does on the result :meth:`Simulator.run` raises with.
         """
         return self._stop_condition
+
+    @property
+    def started_from(self) -> str | None:
+        """Where this run started: ``"initial"``, ``"live"``, or ``None``.
+
+        The state lives in the :class:`Model`, and each run writes its end state
+        back there, so a second :meth:`Simulator.run` starts where the first one
+        ended unless the model is reset in between (issue #1701).
+
+        - ``"initial"``: the run started from the model's initial conditions,
+          the state :meth:`Model.reset` restores. After an unlabeled
+          :meth:`Model.save_concentrations` that is the saved state.
+        - ``"live"``: it started from any other state: the end of an earlier
+          run, a :meth:`Model.set_concentration`, a restored snapshot, a
+          :meth:`Simulator.run_until` step.
+        - ``None``: not recorded. :meth:`Simulator.run` records it, and so do
+          the calls made of it (``run_until``, ``parameter_scan``,
+          ``bifurcate``, a protocol's runs) and ``run_replicates``. A
+          ``run_batch`` row and a ``compute_all_sensitivities`` result, whose
+          rows start from the initial conditions by construction, and a file
+          an earlier bngsim saved, do not; nor does a :meth:`squeeze` of rows
+          that started differently.
+
+        "Initial" means the start vector equals the initial conditions value
+        for value. :attr:`start_state_sha256` tells two starts apart further.
+        :meth:`summary`, :meth:`save` and :meth:`to_xarray` carry both. For a
+        network-free method the start is the model's species vector, which
+        the run hands its backend in place of the XML's seed amounts where
+        they differ.
+        """
+        return self._started_from
+
+    @property
+    def start_state_sha256(self) -> str | None:
+        """The SHA-256, in hex, of the state vector this run started from.
+
+        The digest of the model's full species vector
+        (:meth:`Model.get_state`, ordered like :attr:`Model.species_names`) as
+        little-endian float64 bytes, the moment before the run integrated,
+        with ``-0.0`` read as ``0.0`` and every NaN as one. Two runs of one
+        model with the same digest started from the same values; a digest that
+        differs says the starts differ even where both are ``"live"`` (issue
+        #1701). ``None`` where nothing recorded it, and in a :meth:`squeeze` of
+        rows whose starts differ, which may still agree on
+        :attr:`started_from`.
+        """
+        if self._start_state_sha256 is None and self._start_state is not None:
+            self._start_state_sha256 = _state_digest(self._start_state)
+        return self._start_state_sha256
 
     @property
     def ic_sensitivity_seed(self) -> dict[str, dict[str, float]] | None:
@@ -2465,7 +2538,9 @@ class Result:
         ``custom_attrs`` is mirrored onto ``ds.attrs``; the stochastic
         ``seed`` (when present) is stored as ``ds.attrs["seed"]``, and the
         :attr:`stop_condition` the result was cut at as
-        ``ds.attrs["stop_condition"]``.
+        ``ds.attrs["stop_condition"]``. :attr:`started_from` and
+        :attr:`start_state_sha256`, where recorded, are
+        ``ds.attrs["started_from"]`` and ``ds.attrs["start_state_sha256"]``.
 
         Returns
         -------
@@ -2578,6 +2653,10 @@ class Result:
             attrs["seed"] = int(self._seed)
         if self._stop_condition is not None:
             attrs["stop_condition"] = self._stop_condition
+        if self._started_from is not None:
+            attrs["started_from"] = self._started_from
+        if self.start_state_sha256 is not None:
+            attrs["start_state_sha256"] = self.start_state_sha256
 
         return xr.Dataset(data_vars=data_vars, coords=coords, attrs=attrs)
 
@@ -2792,7 +2871,9 @@ class Result:
             (``None`` for an empty time grid), ``shapes`` (per-array shape
             lists), ``species_names``/``observable_names``/``expression_names``,
             the ``has_sensitivities*`` flags, ``sensitivity_params``,
-            ``sensitivity_ic_species``, ``solver_stats``, and ``seed``.
+            ``sensitivity_ic_species``, ``solver_stats``, ``seed``, and
+            ``started_from`` and ``start_state_sha256`` (where the run started,
+            issue #1701; see :attr:`started_from`).
 
         Examples
         --------
@@ -2839,6 +2920,8 @@ class Result:
             "sensitivity_ic_species": list(self._sensitivity_ic_species),
             "solver_stats": dict(self._solver_stats),
             "seed": self._seed,
+            "started_from": self._started_from,
+            "start_state_sha256": self.start_state_sha256,
         }
 
     # ─── HDF5 save / load ──────────────────────────────────────────
@@ -2885,6 +2968,12 @@ class Result:
             # does, so the format version stands.
             if self._stop_condition is not None:
                 f.attrs["stop_condition"] = self._stop_condition
+            # Where the run started (issue #1701), written where recorded. Absent
+            # loads as None, as any older file does, so the format version stands.
+            if self._started_from is not None:
+                f.attrs["started_from"] = self._started_from
+            if self.start_state_sha256 is not None:
+                f.attrs["start_state_sha256"] = self.start_state_sha256
 
             # Core data
             f.create_dataset("time", data=self._time)
@@ -3214,6 +3303,10 @@ class Result:
             stop_condition = (
                 _text(f.attrs["stop_condition"]) if "stop_condition" in f.attrs else None
             )
+            started_from = _text(f.attrs["started_from"]) if "started_from" in f.attrs else None
+            start_state_sha256 = (
+                _text(f.attrs["start_state_sha256"]) if "start_state_sha256" in f.attrs else None
+            )
 
             # GH #155: absent ⇒ None, not recorded, as in a file that predates
             # saving the seed.
@@ -3296,6 +3389,8 @@ class Result:
         result._varvol_amount_factor = amount_factor
         result._volume_record_missing = volume_record_missing
         result._stop_condition = stop_condition
+        result._started_from = started_from
+        result._start_state_sha256 = start_state_sha256
         logger.info(
             "Loaded result: %d time points, %d species, %d observables",
             result.n_times,
@@ -3621,6 +3716,15 @@ class Result:
 
         seeds = {r._seed for r in results}
         squeeze_seed = next(iter(seeds)) if len(seeds) == 1 else None
+        # Issue #1701: the same rule for where the rows started, each part on
+        # its own. A scan over an initial-condition parameter starts every row
+        # from the initial conditions, and each from a state of its own.
+        froms = {r._started_from for r in results}
+        digests = {r.start_state_sha256 for r in results}
+        squeeze_start = (
+            next(iter(froms)) if len(froms) == 1 else None,
+            next(iter(digests)) if len(digests) == 1 else None,
+        )
 
         # GH #155: same rule for ∂x(0)/∂θ. A nonlinear derived IC makes the
         # coefficients point-dependent, so the rows can legitimately disagree
@@ -3735,6 +3839,7 @@ class Result:
         }
         out._ar_sens_blocked = frozenset().union(*(r._ar_sens_blocked for r in results))
         out._ar_sens_refused = frozenset().union(*(r._ar_sens_refused for r in results))
+        out._started_from, out._start_state_sha256 = squeeze_start
         out._varvol_conc_factor = stack_conc
         out._varvol_amount_factor = stack_amount
         # A row loaded from a file that does not record its sizes leaves the
