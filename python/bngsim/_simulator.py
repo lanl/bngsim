@@ -645,7 +645,7 @@ def _warn_if_start_restarts_the_clock(
     end = model._last_run_end
     if end is None:
         return
-    t_end, end_state = end
+    t_end, end_state, _ = end
     if not t_start < t_end or math.isclose(t_start, t_end, rel_tol=_CLOCK_REL_TOL):
         return
     core = model._core
@@ -979,6 +979,7 @@ class Simulator:
         "_stop_conditions",
         # Interactive simulation state
         "_current_time",
+        "_clock_token",
         "_snapshot_stack",
         # True only inside run_until: the run continues the stored trajectory
         # (SolverOptions.continues_trajectory — keeps the GH #132 gate's count)
@@ -1398,6 +1399,10 @@ class Simulator:
 
         # Interactive simulation state
         self._current_time: float = 0.0
+        # Issue #1701: this Simulator's mark on the run-end record it writes, so
+        # that only its own set_time moves that record's time (another
+        # Simulator's clock says nothing of where this one's run left the state).
+        self._clock_token = object()
         self._continues_trajectory = False
         self._snapshot_stack: list[dict] = []
 
@@ -6189,7 +6194,7 @@ class Simulator:
             if self._method in ("ode", "ssa", "psa"):
                 end_state = np.ascontiguousarray(self._model._core.get_state(), dtype="<f8")
                 end_state.setflags(write=False)  # shared by clones, never written
-                self._model._last_run_end = (self._current_time, end_state)
+                self._model._last_run_end = (self._current_time, end_state, self._clock_token)
 
         # GH #198 — attach the expression output-sensitivity support map so a
         # selector for an unsupported global function raises the specific reason
@@ -7666,17 +7671,11 @@ class Simulator:
         # Issue #1701: a scan whose points start from the invocation state, where
         # that is the end of a run and the span sets the clock back, continues
         # that run, as a second run() does. Its points pass start="live" below,
-        # so it is asked here, once. A named reset target is a start the caller
-        # chose, and a carried dx/dθ says the continuation is meant, as
-        # run(carry_sensitivities=True) does.
-        if not (reset_conc and use_named) and carry_seed is None:
-            _warn_if_start_restarts_the_clock(
-                self._model,
-                float(t_span[0]),
-                what="Each point of this scan" if reset_conc else "The first point of this scan",
-                remedy=_MODEL_REMEDY,
-                state=invocation_state,
-            )
+        # so it is asked once, of the first point's start, after any on_point
+        # hook has written it: a hook that sets the species sets a start the
+        # caller chose, as a named reset target does. A carried dx/dθ says the
+        # continuation is meant, as run(carry_sensitivities=True) does.
+        ask_the_start = not (reset_conc and use_named) and carry_seed is None
         # ...and the carry-over state to put back afterward, so a scan still
         # leaves the model exactly as it found it (the runs below both consume and
         # overwrite the pending seed).
@@ -7782,6 +7781,19 @@ class Simulator:
                             on_point, float(value), pt_sens_seed, carry_names
                         )
                         self._install_scan_sens_seed(pt_sens_seed, carry_names)
+                if i == 0 and ask_the_start:
+                    # Inside the try: under `-W error` the finally below puts the
+                    # parameter, the state and the clock back.
+                    _warn_if_start_restarts_the_clock(
+                        self._model,
+                        float(t_span[0]),
+                        what=(
+                            "Each point of this scan"
+                            if reset_conc
+                            else "The first point of this scan"
+                        ),
+                        remedy=_MODEL_REMEDY,
+                    )
                 # Rebuild the backend so the scanned parameter (and any on_point
                 # rate-constant change) is picked up; run() then seeds from the
                 # model's current live concentrations.
@@ -8828,6 +8840,9 @@ class Simulator:
         )
 
         clone = self._model.clone()
+        # Issue #1701: the chunk starts from the model's live state, as run()
+        # does; the stitched Result is the first chunk's, record included.
+        started_from, start_state = _start_record(clone._core)
 
         sim = CvodeSimulator(clone._core)
 
@@ -8878,6 +8893,8 @@ class Simulator:
         # back into the model it names (#1510), and this call never advances
         # the caller's model, which other chunks are cloning meanwhile.
         result = self._stamp(Result(core_result), ic_seed=chunk_ic_seed, model=clone)
+        result._started_from = started_from
+        result._start_state = start_state
         self._raise_if_nonfinite_sensitivities(result, sens_params)
         return result
 
@@ -11952,13 +11969,17 @@ class Simulator:
         # clock: the next run continues the triggers and pending executions as
         # they were then (issue #693). At any other time it is a fresh start.
         self._current_time = t
-        # Issue #1701: the caller says the state the last run left is at t, so a
-        # run from t continues it, and is not one with its clock set back.
+        # Issue #1701: the caller says the state this Simulator's last run left
+        # is at t, so a run from t continues it, and is not one with its clock
+        # set back. Only this Simulator's: another one's clock, set to 0, does
+        # not make a rerun of this one's span a continuation.
         end = self._model._last_run_end
-        if end is not None and _same_values(
-            np.asarray(self._model._core.get_state(), dtype=np.float64), end[1]
+        if (
+            end is not None
+            and end[2] is self._clock_token
+            and _same_values(np.asarray(self._model._core.get_state(), dtype=np.float64), end[1])
         ):
-            self._model._last_run_end = (t, end[1])
+            self._model._last_run_end = (t, end[1], end[2])
         if self._model._core.rewind_event_carry(t) < 0:
             warnings.warn(
                 f"set_time({t!r}) rolls back past the last "

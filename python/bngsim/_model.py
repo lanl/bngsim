@@ -167,11 +167,12 @@ class Model:
         # where the model has changed it (issue #1373).
         self._loaded_state: tuple[float, ...] = tuple(float(x) for x in _core.get_state())
         # Issue #1701: the time the last run that wrote its end state back left
-        # the model at, and that state, as Simulator.run records it. A run that
-        # starts at another time from exactly this state, unchanged since, is a
-        # run that continues an earlier one with its clock started over, which
-        # run() warns of (LiveStartWarning). None until a run writes back.
-        self._last_run_end: tuple[float, np.ndarray] | None = None
+        # the model at, that state, and the mark of the Simulator that ran it, as
+        # Simulator.run records it. A run that starts before that time from
+        # exactly this state, unchanged since, continues that run with its clock
+        # set back, which run() warns of (LiveStartWarning). None until a run
+        # writes back.
+        self._last_run_end: tuple[float, np.ndarray, object] | None = None
         self._codegen_so_path: str = ""
         # GH #198: whether codegen should emit the expression output-sensitivity
         # evaluator. Set by the Simulator before codegen prep (only a sensitivity

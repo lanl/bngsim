@@ -252,8 +252,8 @@ Properties:
 - **`xr`** — AMICI-style xarray accessor; `result.xr.species`, `.observables`, `.expressions`, `.sensitivities`, `.sensitivities_ic` return labeled `xarray.DataArray`s with `time`/`state`/`observable`/`expression`/`parameter`/`ic_state` coords (requires xarray)
 - **`solver_stats`** — `dict` with solver diagnostics
 - **`stop_condition`** — `str | None`: the label (else the expression) of the stop condition the result was cut at, `None` where none was met (issue #1369)
-- **`started_from`** — `"initial" | "live" | None`: whether the run started from the model's initial conditions (the state `Model.reset()` restores) or from another state, such as the end of an earlier run; `None` where nothing recorded it (a `run_batch` row, a `compute_all_sensitivities` result, an older HDF5 file, a stack whose rows disagree) (issue #1701)
-- **`start_state_sha256`** — `str | None`: the SHA-256 of the state vector the run started from, as little-endian float64 bytes in `Model.species_names` order; two runs with the same digest started from the same state (issue #1701)
+- **`started_from`** — `"initial" | "live" | None`: whether the run started from the model's initial conditions (the state `Model.reset()` restores) or from another state, such as the end of an earlier run; `None` where nothing recorded it (a `run_batch` row, an older HDF5 file, a stack whose rows disagree) (issue #1701)
+- **`start_state_sha256`** — `str | None`: the SHA-256 of the state vector the run started from, as little-endian float64 bytes in `Model.species_names` order, with `-0.0` read as `0.0` and every NaN as one NaN; two runs with the same digest started from the same values (issue #1701)
 - **`custom_attrs`** — `dict` for user metadata
 - `n_times`, `n_species`, `n_observables`, `n_expressions`
 - `species_names`, `observable_names`, `expression_names`

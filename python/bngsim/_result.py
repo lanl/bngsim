@@ -741,18 +741,18 @@ class Result:
           :meth:`Simulator.run_until` step.
         - ``None``: not recorded. :meth:`Simulator.run` records it, and so do
           the calls made of it (``run_until``, ``parameter_scan``,
-          ``bifurcate``, a protocol's runs) and ``run_replicates``. A
-          ``run_batch`` row and a ``compute_all_sensitivities`` result, whose
-          rows start from the initial conditions by construction, and a file
-          an earlier bngsim saved, do not; nor does a :meth:`squeeze` of rows
-          that started differently.
+          ``bifurcate``, a protocol's runs), ``run_replicates`` and
+          ``compute_all_sensitivities``. A ``run_batch`` row, which starts
+          from the initial conditions by construction (``Model.reset``), and a
+          file an earlier bngsim saved do not; nor does a :meth:`squeeze` of
+          rows that disagree on it.
 
         "Initial" means the start vector equals the initial conditions value
         for value. :attr:`start_state_sha256` tells two starts apart further.
         :meth:`summary`, :meth:`save` and :meth:`to_xarray` carry both. For a
         network-free method the start is the model's species vector, which
         the run hands its backend in place of the XML's seed amounts where
-        they differ.
+        they differ, and which the backend rounds to whole molecules.
         """
         return self._started_from
 
@@ -767,8 +767,11 @@ class Result:
         model with the same digest started from the same values; a digest that
         differs says the starts differ even where both are ``"live"`` (issue
         #1701). ``None`` where nothing recorded it, and in a :meth:`squeeze` of
-        rows whose starts differ, which may still agree on
-        :attr:`started_from`.
+        rows whose starts differ. A squeeze keeps each of the two where its
+        rows agree on it, apart: rows from different states can all be
+        ``"initial"``, and rows from one state can disagree on it, where it
+        was the initial conditions for some (after a
+        :meth:`Model.save_concentrations`) and not for others.
         """
         if self._start_state_sha256 is None and self._start_state is not None:
             self._start_state_sha256 = _state_digest(self._start_state)

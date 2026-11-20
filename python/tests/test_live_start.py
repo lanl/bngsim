@@ -611,3 +611,50 @@ def test_to_xarray_carries_the_record(tmp_path):
     attrs = r1.to_xarray().attrs
     assert attrs["started_from"] == "initial"
     assert attrs["start_state_sha256"] == r1.start_state_sha256
+
+
+def test_a_scan_whose_hook_sets_the_start_is_not_warned_of(tmp_path):
+    # An on_point hook that writes the species sets each point's start, as a
+    # named reset target does: a start the caller chose. One that only sets a
+    # parameter leaves the run's end as the start, and is warned of.
+    model = _model(tmp_path)
+    sim = bngsim.Simulator(model, method="ode")
+    _run(sim, t_span=(0, 5), n_points=6)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        points = sim.parameter_scan(
+            "k",
+            [1.0, 2.0],
+            t_span=(0, 5),
+            n_points=6,
+            on_point=lambda m, v: m.set_concentration("A()", 10.0 * v),
+        )
+    assert _live_start_warnings(caught) == []
+    assert [p.observables["A"][0] for p in points] == [10.0, 20.0]
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        sim.parameter_scan("k", [1.0, 2.0], t_span=(0, 5), n_points=6, on_point=lambda m, v: None)
+    assert len(_live_start_warnings(caught)) == 1
+
+
+def test_another_simulators_clock_does_not_move_the_record(tmp_path):
+    # The second Simulator's clock at 0 says nothing of where the first one's
+    # run left the state: a rerun of the first one's span is still warned of.
+    model = _model(tmp_path)
+    first = bngsim.Simulator(model, method="ode")
+    _run(first, t_span=(0, 5), n_points=6)
+    bngsim.Simulator(model, method="ode").set_time(0.0)
+    r, w = _run(first, t_span=(0, 5), n_points=6)
+    assert len(w) == 1
+    assert r.started_from == "live"
+
+
+def test_compute_all_sensitivities_records_its_start(tmp_path):
+    model = _model(tmp_path)
+    sim = bngsim.Simulator(model, method="ode")
+    fresh = sim.compute_all_sensitivities(t_span=(0, 5), n_points=6, params=["k"])
+    assert (fresh.started_from, fresh.start_state_sha256) == ("initial", _sha256([10.0, 0.0]))
+    model.set_concentration("A()", 3.0)
+    dosed = sim.compute_all_sensitivities(t_span=(0, 5), n_points=6, params=["k"])
+    assert dosed.started_from == "live"
+    assert dosed.observables["A"][0] == 3.0
