@@ -803,8 +803,9 @@ value) is refused with `SensitivityUnsupportedError` (issue #1828) where a
 crossing inside the run is placed outside it, or more than 0.1% of the run's
 length off its time, however far out the run starts; the 1e15 case above, 0.03
 off in a run of 32, is not. A crossing past the run's end is left out by the
-time elapsed to it, which does not round, wherever its time is placed. A plain run, or a column the crossing
-does not move, is not refused: it has no jump to lose.
+time elapsed to it, which does not round, wherever its time is placed. A plain
+run, or a column the crossing does not move, is not refused: it has no jump to
+lose.
 
 `run_diffrax` is not moved either: it integrates on the clock it is given, and
 from `1e15` it ends at its step limit with an error.
