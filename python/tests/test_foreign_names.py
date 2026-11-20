@@ -101,6 +101,12 @@ PINNED = {
         "duration", "end", "integrator", "method", "n_steps", "points", "selections", "steps",
         "t_end", "t_eval", "t_start", "tend", "times", "tspan", "y0",
     ],
+    "Simulator.parameter_scan": [
+        "sample_times", "scan_values", "suffix", "t_eval", "times", "values",
+    ],
+    "Simulator.run_batch": ["sample_times", "t_eval", "times"],
+    "Simulator.run_replicates": ["sample_times", "t_eval", "times"],
+    "Simulator.run_until": ["sample_times", "t_eval", "t_start", "times"],
     "pattern": [
         'from bngsim import simulate', 'model.k1', 'model.k1 = value', 'model["S1"]',
         'model["k1"] = value', 'result.A', 'sim.k1 = value',
@@ -112,7 +118,8 @@ def test_the_table_holds_no_name_a_protocol_checks_for():
     """A descriptor is a class attribute to inspect.getattr_static, which a
     runtime_checkable Protocol reads on 3.12+: ``keys`` on Result would make
     it pass for a mapping."""
-    assert not {e.name for e in fn.FOREIGN_NAMES} & fn.PROTOCOL_NAMES
+    attributes = {e.name for e in fn.FOREIGN_NAMES if e.owner in CLASSES}
+    assert not attributes & fn.PROTOCOL_NAMES
     from typing import Protocol, runtime_checkable
 
     @runtime_checkable
@@ -147,8 +154,10 @@ def test_an_entry_names_something_and_is_not_a_real_name(entry):
         assert all(entry.name not in vars(cls) for cls in CLASSES.values())
     elif entry.owner == "bngsim":
         assert entry.name not in vars(bngsim) and entry.name not in bngsim.__all__
-    elif entry.owner == "Simulator.run":
-        assert entry.name not in inspect.signature(Simulator.run).parameters
+    elif entry.owner.startswith("Simulator."):
+        method = entry.owner.removeprefix("Simulator.")
+        assert method in fn.RUN_CALLS
+        assert entry.name not in inspect.signature(getattr(Simulator, method)).parameters
     else:
         cls = CLASSES[entry.owner]
         # The class holds the table's descriptor and nothing else under the name.
@@ -206,9 +215,11 @@ def test_every_call_an_entry_names_exists(entry):
     for call, args in re.findall(r"(\w+)\(((?:[^()]|\([^()]*\))*)\)", text):
         for keyword in re.findall(r"\b([a-z_]+)=", args):
             assert keyword in takes[call], f"{call}({keyword}=)"
-    if entry.owner == "Simulator.run":
+    if entry.owner.startswith("Simulator."):
+        method = entry.owner.removeprefix("Simulator.")
+        method_takes = inspect.signature(getattr(Simulator, method)).parameters
         for keyword in re.findall(r"^([a-z_]+)=", entry.use):
-            assert keyword in takes["run"], keyword
+            assert keyword in method_takes, f"{method}({keyword}=)"
 
 
 def _do_pattern(code: str, model: Model, sim: Simulator, result: Result) -> None:
@@ -566,6 +577,86 @@ def test_a_warning_from_run_names_the_callers_line():
         ssa.run(t_span=(0, 1), n_points=3, seed=1)
     assert caught, "the non-integer count warns"
     assert {Path(w.filename).name for w in caught} == {Path(__file__).name}
+
+
+# ─── The other run calls ─────────────────────────────────────────────────────
+
+
+_GRID = [0, 2, 4, 6, 8, 10]  # 6 points over (0, 10): BioNetGen's n_steps=5
+
+
+@pytest.mark.parametrize(
+    ("method", "call", "check"),
+    [
+        (
+            "ode",
+            "sim.run_batch(t_end=10, n_steps=5, params=[{'k1': 0.05}, {'k1': 0.5}])",
+            lambda out: [r.time.tolist() for r in out] == [_GRID, _GRID],
+        ),
+        (
+            "ode",
+            "sim.run_batch(0, 10, 6, params=[{'k1': 0.05}])",
+            lambda out: out[0].time.tolist() == _GRID,
+        ),
+        (
+            "ssa",
+            "sim.run_replicates(2, 0, 10, 6, seed=1)",
+            lambda out: len(out) == 2 and out[0].time.tolist() == _GRID,
+        ),
+        (
+            "ssa",
+            "sim.run_replicates(2, t_end=10, n_steps=5, seed=1)",
+            lambda out: len(out) == 2 and out[1].time.tolist() == _GRID,
+        ),
+        (
+            "ode",
+            "sim.parameter_scan('k1', [0.05, 0.5], t_end=10, n_steps=5)",
+            lambda out: len(out) == 2 and out[0].time.tolist() == _GRID,
+        ),
+        (
+            "ode",
+            "sim.run_until(5, n_steps=10)",
+            lambda out: out.time.tolist() == np.linspace(0, 5, 11).tolist(),
+        ),
+    ],
+)
+def test_a_foreign_keyword_of_another_run_call_names_the_call_that_runs(method, call, check):
+    """run_batch, run_replicates, parameter_scan and run_until name the keyword
+    and give the corrected call as run() does, and the call they give runs and
+    gives the grid the foreign one meant."""
+    sim = Simulator(Model.load(DECAY), method=method)
+    with pytest.raises(TypeError) as err:
+        eval(call, {"sim": sim})
+    fixed = re.search(r"For this call: (sim\.\w+\(.*\))\.$", str(err.value))
+    assert fixed, str(err.value)
+    assert check(eval(fixed.group(1), {"sim": sim}))
+
+
+@pytest.mark.parametrize(
+    ("call", "says"),
+    [
+        ("sim.run_batch(sample_times=[0, 1])", r"run_batch\(\) writes a uniform grid"),
+        ("sim.run_replicates(2, times=[0, 1])", r"run_replicates\(\) writes a uniform grid"),
+        ("sim.parameter_scan('k1', [0.1], t_eval=[0, 1])", r"parameter_scan\(\) writes a uniform"),
+        ("sim.run_until(5, sample_times=[1, 2])", r"run_until\(\) writes a uniform grid"),
+        ("sim.run_until(5, t_start=0)", r"Use sim\.set_time\(t_start\)"),
+        ("sim.parameter_scan('k1', [0.1], suffix='x')", r"bngsim writes no files from a scan"),
+        ("sim.parameter_scan('k1', values=[0.1])", r"Use par_scan_vals=values"),
+        ("sim.run_batch(method='ssa')", r"Use bngsim\.Simulator\(model, method=\.\.\.\)"),
+        ("sim.run_until(5, 10)", r"takes 1 positional argument \(t\) but 2 were given\.$"),
+    ],
+)
+def test_another_run_call_names_its_own_keywords(sim, call, says):
+    with pytest.raises(TypeError, match=says):
+        eval(call, {"sim": sim})
+
+
+def test_the_other_run_calls_show_their_own_signatures():
+    for method in fn.RUN_CALLS:
+        params = inspect.signature(getattr(Simulator, method)).parameters.values()
+        kinds = {p.kind for p in params}
+        assert inspect.Parameter.VAR_POSITIONAL not in kinds, method
+        assert inspect.Parameter.VAR_KEYWORD not in kinds, method
 
 
 # ─── ParameterError and ModelError ───────────────────────────────────────────

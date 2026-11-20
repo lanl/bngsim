@@ -33,7 +33,8 @@ import difflib
 import inspect
 import numbers
 import os
-from collections.abc import Callable, Iterable, Mapping
+import re
+from collections.abc import Callable, Container, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, NoReturn
 
@@ -47,7 +48,9 @@ class ForeignName:
     owner : str
         Where the name was looked up: ``"bngsim"`` (the module), ``"Model"``,
         ``"Simulator"`` or ``"Result"`` (an attribute of one, or of the class),
-        or ``"Simulator.run"`` (a keyword argument of :meth:`Simulator.run`).
+        or ``"Simulator.run"`` (a keyword argument of :meth:`Simulator.run`, and
+        of each other run call that takes the keyword the row names), or
+        ``"Simulator.<method>"`` (one of that method's own).
         ``"pattern"`` is a habit no error of bngsim's names the call for
         (:data:`PATTERNS`): listed for the agent guide only.
     name : str
@@ -484,6 +487,49 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
             "The interval is one (t_start, t_end) tuple.",
         ),
     )
+    # ── Keywords of the other run calls ──────────────────────────────────
+    #
+    # The Simulator.run rows above serve run_batch, run_replicates,
+    # parameter_scan and run_until too, wherever the keyword a row names is one
+    # the method takes (keyword_entry): t_end= is t_span= on all but run_until.
+    # These are each method's own.
+    + _entries(
+        "Simulator.parameter_scan",
+        "BioNetGen",
+        (
+            "suffix",
+            "",
+            "bngsim writes no files from a scan: parameter_scan() returns one Result per "
+            "point, and squeeze=True stacks them into one.",
+        ),
+    )
+    + _entries(
+        "Simulator.parameter_scan",
+        "guess",
+        ("scan_values", "par_scan_vals=scan_values", "bngsim keeps BioNetGen's name."),
+        ("values", "par_scan_vals=values", "bngsim keeps BioNetGen's name."),
+    )
+    + _entries(
+        "Simulator.run_until",
+        "guess",
+        (
+            "t_start",
+            "sim.set_time(t_start)",
+            "run_until() runs on from the simulator's clock, sim.current_time, to t.",
+        ),
+    )
+    + [
+        ForeignName(
+            f"Simulator.{method}",
+            name,
+            "",
+            f"{method}() writes a uniform grid of n_points output times; "
+            "run() takes explicit ones, sample_times=.",
+            "bngsim" if name == "sample_times" else ("SciPy" if name == "t_eval" else "guess"),
+        )
+        for method in ("run_batch", "run_replicates", "parameter_scan", "run_until")
+        for name in ("sample_times", "times", "t_eval")
+    ]
     # ── Patterns: for the agent guide only ───────────────────────────────
     #
     # Habits whose error cannot name bngsim's call without slowing calls that
@@ -815,30 +861,48 @@ def _is_default(value: object, default: object) -> bool:
         return False
 
 
+#: The run calls whose wrong keywords are named, and where their t_span goes.
+RUN_CALLS = ("run", "run_batch", "run_replicates", "parameter_scan", "run_until")
+
+
+def keyword_entry(method: str, name: str, takes: Container[str]) -> ForeignName | None:
+    """The entry for keyword *name* of ``Simulator.<method>``, which takes the
+    parameters *takes*: the method's own, or else the ``Simulator.run`` one,
+    where the keyword its call names (``t_span=``, ``n_points=``) is one the
+    method takes."""
+    own = lookup(f"Simulator.{method}", name)
+    if own is not None or method == "run":
+        return own if own is not None else lookup("Simulator.run", name)
+    shared = lookup("Simulator.run", name)
+    if shared is None:
+        return None
+    keyword = re.match(r"([a-z_]+)=", shared.use)
+    return None if keyword and keyword.group(1) not in takes else shared
+
+
 def call_error(
-    what: str,
-    owner: str,
+    method: str,
     sig: inspect.Signature,
     values: Mapping[str, object],
     extra: tuple,
     unknown: Mapping[str, object],
-    rewrite: Callable[[tuple, dict, frozenset], str | None] | None = None,
 ) -> TypeError:
-    """The ``TypeError`` for a call that passed positional arguments *extra*
-    past the ones the method takes, or the keywords *unknown*.
+    """The ``TypeError`` for a call of ``Simulator.<method>`` that passed
+    positional arguments *extra* past the ones it takes, or the keywords
+    *unknown*.
 
     *sig* is the method's own signature without its catch-alls, and *values*
     its parameters as the call bound them (its ``locals()`` on entry). Each
-    keyword the table has under *owner* gets its hint, one close to a real
-    parameter a "did you mean"; any other is named as Python names it.
-    *rewrite*, given the call's positional arguments, its keywords (the
-    method's own that differ from their defaults too) and the method's
-    parameter names, returns the corrected call as code where it can be
-    written, which the error adds.
+    keyword the table has for it (:func:`keyword_entry`) gets its hint, one
+    close to a real parameter a "did you mean"; any other is named as Python
+    names it. Where :func:`rewrite_call` can write the corrected call, the
+    error adds it.
     """
+    what = f"Simulator.{method}()"
     params = [p for p in sig.parameters.values() if p.name != "self"]
     positional = [p.name for p in params if p.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD]
-    known = frozenset(p.name for p in params)
+    order = [p.name for p in params]
+    known = frozenset(order)
     given = {
         p.name: values[p.name]
         for p in params
@@ -849,21 +913,20 @@ def call_error(
         call_kwargs = {k: v for k, v in given.items() if k not in positional}
     else:
         call_args, call_kwargs = (), given
-    corrected = None
-    if rewrite is not None:
-        try:
-            corrected = rewrite(call_args, {**call_kwargs, **unknown}, known)
-        except Exception:
-            corrected = None
+    try:
+        corrected = rewrite_call(method, positional, call_args, {**call_kwargs, **unknown}, order)
+    except Exception:
+        corrected = None
     tail = f" For this call: {corrected}." if corrected else ""
     if extra:
+        plural = "" if len(positional) == 1 else "s"
         return TypeError(
-            f"{what} takes {len(positional)} positional arguments "
+            f"{what} takes {len(positional)} positional argument{plural} "
             f"({', '.join(positional)}) but {len(call_args)} were given.{tail}"
         )
     hints = []
     for name in unknown:
-        entry = lookup(owner, name)
+        entry = keyword_entry(method, name, known)
         if entry is not None:
             hints.append((name, entry.hint))
             continue
@@ -880,45 +943,60 @@ def call_error(
     return TypeError(f"{head}{body}{tail}")
 
 
-#: Run keywords that translate to one of run()'s own one-to-one.
+#: Run keywords that translate to one of the run calls' own one-to-one.
 _RUN_START = ("t_start",)
-_RUN_END = ("t_end", "end")
+_RUN_END = ("t_end", "end", "tend")
 _RUN_STEPS = ("n_steps", "steps")
 _RUN_POINTS = ("points",)
 _RUN_TIMES = ("times", "t_eval")
 
 
-def rewrite_run_call(args: tuple, kwargs: dict, known: frozenset) -> str | None:
-    """The call ``Simulator.run(*args, **kwargs)`` means, as code, where every
-    foreign spelling in it translates one-to-one: RoadRunner's
+def rewrite_call(
+    method: str, positional: list[str], args: tuple, kwargs: dict, order: list[str]
+) -> str | None:
+    """The call ``Simulator.<method>(*args, **kwargs)`` means, as code, where
+    every foreign spelling in it translates one-to-one: RoadRunner's
     ``simulate(0, 10, 11)`` and ``simulate(start=0, end=10, points=11)``,
-    BioNetGen's ``t_end=10, n_steps=10``, SciPy's ``t_eval=[...]``. ``None``
-    when something in it does not (a count that is not a whole number), or when
-    two of its arguments say the same thing (``t_span=`` and ``t_end=``)."""
+    BioNetGen's ``t_end=10, n_steps=10``, SciPy's ``t_eval=[...]``.
+
+    *positional* and *order* are the method's positional parameters and all of
+    them, in order. ``None`` when something in the call does not translate (a
+    count that is not a whole number, a time grid the method takes no
+    ``sample_times=`` for), or when two of its arguments say the same thing
+    (``t_span=`` and ``t_end=``).
+    """
+    takes = set(order)
+    spans = "t_span" in takes  # all but run_until, which runs on to one time t
     out: dict[str, str] = {}
     start = end = None
 
     def put(key: str, text: str | None) -> bool:
-        if text is None or key in out:
+        if text is None or key in out or key not in takes:
             return False
         out[key] = text
         return True
 
-    # RoadRunner's simulate(start, end, points[, selections]); selections are
-    # dropped, since a Result holds every column.
-    if len(args) in (3, 4) and all(_is_real(a) for a in args[:3]):
-        if len(args) == 4 and not isinstance(args[3], (list, tuple)):
+    if args:
+        # RoadRunner's simulate(start, end, points[, selections]) where t_span and
+        # n_points stand; selections are dropped, since a Result holds every column.
+        if not spans or "t_span" not in positional:
             return None
-        start, end = args[0], args[1]
-        if not put("n_points", _count_text(args[2])):
+        lead = positional.index("t_span")
+        rest = args[lead:]
+        if len(args) < lead or len(rest) not in (3, 4) or not all(_is_real(a) for a in rest[:3]):
             return None
-    elif args:
-        return None
+        if len(rest) == 4 and not isinstance(rest[3], (list, tuple)):
+            return None
+        for name, value in zip(positional[:lead], args[:lead], strict=True):
+            put(name, _short(value))
+        start, end = rest[0], rest[1]
+        if not put("n_points", _count_text(rest[2])):
+            return None
     for name, value in kwargs.items():
         ok = True
         if name in _RUN_START or (name == "start" and _is_real(value)):
-            # "start" is RoadRunner's start time; a run(start=...) of bngsim's
-            # own names a state, and is a string.
+            # "start" is RoadRunner's start time; run(start=...) of bngsim's own
+            # names a state, and is a string.
             start = value
         elif name in _RUN_END:
             end = value
@@ -932,23 +1010,27 @@ def rewrite_run_call(args: tuple, kwargs: dict, known: frozenset) -> str | None:
             ok = put("t_span", _short(tuple(value)) if isinstance(value, Iterable) else None)
         elif name == "selections":
             continue
-        elif name in known:
+        elif name in takes:
             ok = put(name, _short(value))
         else:
             return None
         if not ok:
             return None
     if start is not None or end is not None:
-        if "t_span" in out or any(v is not None and not _is_real(v) for v in (start, end)):
+        if not spans or "t_span" in out:
+            return None
+        if any(v is not None and not _is_real(v) for v in (start, end)):
             return None
         span = (
             f"({value_text(start) if start is not None else 0}, "
             f"{value_text(end) if end is not None else 't_end'})"
         )
-        out = {"t_span": span, **out}
+        out["t_span"] = span
     if not out:
         return None
-    return "sim.run(" + ", ".join(f"{k}={v}" for k, v in out.items()) + ")"
+    rank = {name: i for i, name in enumerate(order)}
+    ordered = sorted(out.items(), key=lambda item: rank.get(item[0], len(rank)))
+    return f"sim.{method}(" + ", ".join(f"{k}={v}" for k, v in ordered) + ")"
 
 
 def _times_text(name: str, value: object) -> str:
