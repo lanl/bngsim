@@ -166,6 +166,14 @@ const std::vector<double> &Result::sensitivity_data() const { return sensitiviti
 int Result::n_sens_params() const { return n_sens_params_; }
 const std::vector<std::string> &Result::sens_param_names() const { return sens_param_names_; }
 
+void Result::add_one_sided_switch(OneSidedSwitch entry) {
+    one_sided_switches_.push_back(std::move(entry));
+}
+
+const std::vector<Result::OneSidedSwitch> &Result::one_sided_switches() const {
+    return one_sided_switches_;
+}
+
 // ─── IC sensitivity data ─────────────────────────────────────────────────────
 
 void Result::allocate_sensitivities_ic(int n_times, int n_species, int n_ic) {

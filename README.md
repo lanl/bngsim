@@ -101,7 +101,9 @@ Three rules worth knowing from the start:
 - `n_points` counts the first point. 101 points over `(0, 10)` are 0.1 apart.
 - An ODE or stochastic run continues from the state the last one on that model
   ended in. Call `model.reset()` to start again from the initial state, as the
-  next block does.
+  next block does, or pass `run(..., start="initial")`. `result.started_from`
+  says which start a run had, and a run that restarts the clock on the last
+  run's end state raises a `bngsim.LiveStartWarning`.
 - A stochastic run draws a fresh seed unless you pass one. `result.seed` is the
   seed that was used.
 

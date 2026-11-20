@@ -42,7 +42,9 @@ from bngsim._exceptions import (
     ConversionError,
     ConversionWarning,
     DenseSolverFallbackWarning,
+    LiveStartWarning,
     ModelError,
+    OneSidedSensitivityWarning,
     ParameterError,
     RuleMonkeyWarning,
     SensitivityRefusedDuringRunError,
@@ -379,12 +381,18 @@ def __getattr__(name: str) -> object:
     ``$BNGPATH`` at runtime sees the change. That stays cheap: the only expensive
     steps are the first ``import bionetgen`` and the first ``import libsbml``,
     which ``sys.modules`` memoizes.
+
+    A name the module lacks raises ``AttributeError``, which names bngsim's call
+    when the name is one another tool has (``bngsim.load``, ``bngsim.simulate``;
+    issue #1700, ``bngsim._foreign_names``).
     """
     if name == "HAS_BNGL":
         return _bngl_available()
     if name == "HAS_LIBSBML":
         return _libsbml_status() is None
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from bngsim._foreign_names import module_attribute_error
+
+    raise module_attribute_error(__name__, name)
 
 
 __all__ = [
@@ -435,7 +443,9 @@ __all__ = [
     "SsaBoundaryWarning",
     "SsaRoundingWarning",
     "DenseSolverFallbackWarning",
+    "OneSidedSensitivityWarning",
     "AtolScaleWarning",
+    "LiveStartWarning",
     "RuleMonkeyWarning",
     "SensitivityRefusedDuringRunError",
     "SensitivityRefusedForParametersError",

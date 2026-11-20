@@ -71,10 +71,11 @@ See [Loading models](user-guide/loading-models.md) for the full picture.
 ## Parameter sweeps
 
 ```python
-# Update parameters in-memory (no file I/O). The next run goes on from the
-# state the last one ended in, not from the initial conditions.
+# Update parameters in-memory (no file I/O). A run goes on from the state
+# the last one ended in unless told otherwise: start="initial" runs this
+# one from the initial conditions, so it compares with the first run.
 model.set_param("k", 1.0)
-result2 = sim.run(t_span=(0, 100), n_points=101)
+result2 = sim.run(t_span=(0, 100), n_points=101, start="initial")
 
 # Reset species to initial conditions
 model.reset()
@@ -143,17 +144,18 @@ import bngsim
 
 sim = bngsim.Simulator(model, method="ssa")
 
-# Default — fresh seed each call:
-r1 = sim.run(t_span=(0, 100), n_points=101)
-r2 = sim.run(t_span=(0, 100), n_points=101)
+# Default — fresh seed each call (each run from the initial conditions):
+r1 = sim.run(t_span=(0, 100), n_points=101, start="initial")
+r2 = sim.run(t_span=(0, 100), n_points=101, start="initial")
 assert r1.seed != r2.seed                        # seeds differ
 
 # Explicit, reproducible:
 sim_a = bngsim.Simulator(model.clone(), method="ssa")
 sim_b = bngsim.Simulator(model.clone(), method="ssa")
-ra = sim_a.run(t_span=(0, 100), n_points=101, seed=42)
-rb = sim_b.run(t_span=(0, 100), n_points=101, seed=42)
+ra = sim_a.run(t_span=(0, 100), n_points=101, seed=42, start="initial")
+rb = sim_b.run(t_span=(0, 100), n_points=101, seed=42, start="initial")
 assert ra.seed == rb.seed == 42                  # exact reproduction
+assert (ra.species == rb.species).all()
 ```
 
 The same contract applies to `Simulator.run_batch`,
@@ -188,24 +190,36 @@ protocols work. So:
 ```python
 sim = bngsim.Simulator(model, method="ssa")
 
-# First run: starts from model's initial state, seed=42.
-r1 = sim.run(t_span=(0, 100), n_points=101, seed=42)
+# First run: from the model's initial state, seed=42. start="initial"
+# resets the model first, whatever the blocks above left it holding.
+r1 = sim.run(t_span=(0, 100), n_points=101, seed=42, start="initial")
 
 # Second run on the same sim with seed=42 *continues from r1's end
 # state*, then advances with the seed=42 RNG stream. r2 is correctly a
 # different trajectory because it starts from a different state — not
-# because of any RNG issue.
-r2 = sim.run(t_span=(0, 100), n_points=101, seed=42)
+# because of any RNG issue. start="live" says the continuation is meant;
+# without it, run() raises a bngsim.LiveStartWarning here.
+r2 = sim.run(t_span=(0, 100), n_points=101, seed=42, start="live")
 assert r2.species[0].tolist() == r1.species[-1].tolist()  # state continues
+assert (r1.started_from, r2.started_from) == ("initial", "live")
 
-# To re-run the same trajectory: reset the model first.
-model.reset()
-r3 = sim.run(t_span=(0, 100), n_points=101, seed=42)
+# To re-run the same trajectory: start from the initial state, which
+# resets the model first (model.reset() does the same).
+r3 = sim.run(t_span=(0, 100), n_points=101, seed=42, start="initial")
 assert (r3.species == r1.species).all()  # exactly reproduces r1
 ```
 
 The state lives in the `Model`, not the `Simulator`: a second
 `Simulator` built on the same model also starts from where the last
 run ended. To run two trajectories from the model's initial state,
-call `model.reset()` between them, or give each its own
-`model.clone()`.
+pass `start="initial"`, call `model.reset()` between them, or give each
+its own `model.clone()` made before the first run.
+
+`Result.started_from` says which start a run had, `"initial"` or
+`"live"`, and `summary()` carries it. Where a run starts from exactly
+the state the last run left, before the time that run ended at, `run()`
+raises a `bngsim.LiveStartWarning` before it integrates: running
+`t_span=(0, 5)` twice is the case. A run that continues the clock
+(`t_span=(5, 10)` after it) and a state you changed in between are not
+warned of. `run_until`, `run_replicates`, the scans and `run_protocol`
+ask the same of where they start (issue #1701).

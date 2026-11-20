@@ -477,6 +477,72 @@ class AtolScaleWarning(UserWarning):
     """
 
 
+class LiveStartWarning(UserWarning):
+    """A run starts from an earlier run's end state with its clock set back (issue #1701).
+
+    The state lives in the :class:`~bngsim.Model`, and a run writes its end
+    state back there, so a second ``run()`` continues from where the first one
+    ended. A second ``run(t_span=(0, 5))`` of ``A -> B`` from ``A = 10``
+    returned ``A(0) = 0.0674`` on the same time axis as the first, with nothing
+    to say so. BNG2.pl's successive ``simulate`` actions and libRoadRunner's
+    ``simulate`` calls do the same, so it is no bug, but a caller who runs again
+    to compare, or on a finer grid to confirm, gets a trajectory from a start it
+    did not mean.
+
+    Raised before anything integrates, where the model holds exactly the state
+    the last ODE, SSA or PSA run wrote back, that state is not the model's
+    initial conditions, and the call starts before the time that run ended at:
+
+    - :meth:`Simulator.run`, whose ``start="initial"`` runs from the initial
+      conditions and ``start="live"`` continues on purpose, neither warned;
+    - :meth:`Simulator.run_until`, from the Simulator's own clock, as a second
+      Simulator's first step after another one's run is; ``set_time`` puts
+      the clock at the time the state is at;
+    - :meth:`Simulator.run_replicates`, :meth:`Simulator.parameter_scan`
+      (unless ``reset_to`` names the start, or the scan carries an
+      equilibration's ``dx/dθ`` into its points) and
+      :meth:`Simulator.bifurcate`, once per call;
+    - :func:`bngsim.run_protocol`, for the protocol's first run.
+
+    A call at or after the time the run ended at continues it (``t_span=(5,
+    10)`` after a run that ended at 5), and is not warned of; nor is a state
+    the caller changed since, to values other than the run left. Where a call
+    has no ``start=``, :meth:`Model.reset` starts it from the initial
+    conditions and :meth:`Model.save_concentrations` makes the state the
+    initial one. :attr:`Result.started_from` records which start a run had,
+    warned or not.
+    """
+
+
+class OneSidedSensitivityWarning(UserWarning):
+    """A sensitivity column is a one-sided derivative: the run is on a kink (GH #1822).
+
+    Two rate-law switches share an instant, a rate law composes them (a product
+    of their gates, or a window between them), and one of them cannot be moved
+    alone by any requested parameter. With ``sigma = t0 + t_delta`` and
+    ``t_delta = 0`` that is ``t0``: the gate at ``t0`` and the gate at ``sigma``
+    open together, and a rate ``U()*Lambda()`` is on only where both are. As a
+    function of ``t_delta`` the solution has a kink at 0. Raising ``t_delta``
+    delays the rate; lowering it does nothing, ``t0`` then being the later of
+    the two.
+
+    The column returned for such a parameter is the derivative in the direction
+    that delays its switch past the other one, which the warning names. With
+    ``sigma = t0 + t_delta`` and ``t_delta >= 0`` that is the feasible side of
+    the bound, the derivative a bounded optimizer wants. bngsim cannot see the
+    bound: with ``sigma = t0 - t_delta`` the direction named is ``t_delta``
+    decreasing, the infeasible one, and the feasible derivative is another
+    number. In the other direction bngsim does not compute it. The columns of every other
+    parameter are ordinary two-sided derivatives.
+    :attr:`bngsim.Result.one_sided_sensitivities` lists the same thing as data.
+    Filter or escalate it like any ``UserWarning``::
+
+        import warnings, bngsim
+        warnings.simplefilter("ignore", bngsim.OneSidedSensitivityWarning)  # silence
+        warnings.simplefilter("error", bngsim.OneSidedSensitivityWarning)  # promote
+    """
+
+
 class DenseSolverFallbackWarning(UserWarning):
     """A large ODE model is running on the dense solver for lack of KLU (GH #209).
 

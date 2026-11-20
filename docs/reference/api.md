@@ -75,7 +75,7 @@ Constructor:
   NFsim/RuleMonkey: `xml_path` (str, required), `gml` (int).
 
 Simulation:
-- **`run(t_span, n_points, *, seed, rtol, atol, max_steps, timeout, steady_state, steady_state_tol)`** → `Result`
+- **`run(t_span, n_points, *, seed, rtol, atol, max_steps, timeout, steady_state, steady_state_tol, carry_sensitivities, start)`** → `Result` — starts from the model's live state, where the last run ended. `start="initial"` resets the model first; `start="live"` continues with no warning; the default warns (`LiveStartWarning`) where the run starts before the time the last run ended at, from exactly the state it left (issue #1701)
 - **`run_batch(t_span, n_points, *, params, seed, num_processors, squeeze, timeout, steady_state, steady_state_tol)`** → `list[Result]` or `Result` — clones + resets each point to the `.net` seed
 - **`parameter_scan(parameter, par_scan_vals=None, *, par_min, par_max, n_scan_pts, log_scale, t_span, n_points, reset_conc=True, reset_to=None, on_point=None, seed, squeeze, …)`** → `list[Result]` or `Result` — BNG `parameter_scan`. With `reset_conc=True`, each point resets to the state *at scan invocation* (or to the named snapshot `reset_to`), not the seed — so a pre-equilibrate → intervene → scan protocol carries its post-intervention state. `on_point(model, value)` applies coupled `setConcentration` overrides that track the scanned value.
 - **`bifurcate(parameter, par_scan_vals=None, *, …)`** → `list[Result]` or `Result` — continuation scan (`reset_conc=0`): each point continues from the previous point's end-state
@@ -238,7 +238,7 @@ Parameters and counts:
 
 Properties:
 - **`time`** — `ndarray (n_times,)`
-- **`species`** — `ndarray (n_times, n_species)` with named access
+- **`species`** — `ndarray (n_times, n_species)` with named access (e.g. `result.species["A()"]`, `result.species[-1, "A()"]`; an array numpy derives from it carries no names)
 - **`state`** — `ndarray (n_times, n_state)`: the full integrator state, unprojected and unremapped, in `Model.species_names` order — the rows `Model.rhs` / `Model.jacobian` take. Wider than `species` on an SBML model whose event assigns a parameter or compartment; the stored rather than the reported value where a species column is remapped after the solve. Solve results only (issue #508)
 - **`state_names`** — `list[str]` column names of `state` (= the producing model's `species_names`)
 - **`observables`** — `ndarray (n_times, n_obs)` with named access (e.g. `result.observables["A_tot"]`)
@@ -246,11 +246,14 @@ Properties:
 - **`sensitivities`** — `ndarray (n_times, n_species, n_params)` forward sensitivity tensor
 - **`has_sensitivities`** — `bool`
 - **`sensitivity_params`** — `list[str]` parameter names for sensitivity
+- **`one_sided_sensitivities`** — `list[tuple[float, dict[str, str]]]` — one `(t, {parameter: "increasing" | "decreasing"})` entry for each switch time at which the run sits on a kink, with the direction each listed column is the derivative for; empty for nearly every run (GH #1822)
 - **`ic_sensitivity_seed`** — `dict[str, dict[str, float]] | None` — the per-run record of the same matrix `Model.effective_ic_sensitivity()` reports: what CVODES was actually seeded with *for this run*. Use the `Model` accessor to build routing at setup; use this to see what a particular run used, which is the only correct answer for a batch/scan over a nonlinear derived IC (`Rtot = R0*scale`), where the coefficients move per point. `{}` = nothing seeds; `None` = not recorded (no parameter sensitivities, non-ODE, an older HDF5 file, a squeezed batch whose rows disagreed, or a `carry_sensitivities=True` phase, where the engine seeds from the prior phase's `dx/dθ` and discards these rows — GH #210/#81)
 - **`dataframe`** — `pandas.DataFrame` (requires pandas)
 - **`xr`** — AMICI-style xarray accessor; `result.xr.species`, `.observables`, `.expressions`, `.sensitivities`, `.sensitivities_ic` return labeled `xarray.DataArray`s with `time`/`state`/`observable`/`expression`/`parameter`/`ic_state` coords (requires xarray)
 - **`solver_stats`** — `dict` with solver diagnostics
 - **`stop_condition`** — `str | None`: the label (else the expression) of the stop condition the result was cut at, `None` where none was met (issue #1369)
+- **`started_from`** — `"initial" | "live" | None`: whether the run started from the model's initial conditions (the state `Model.reset()` restores) or from another state, such as the end of an earlier run; `None` where nothing recorded it (a `run_batch` row, an older HDF5 file, a stack whose rows disagree) (issue #1701)
+- **`start_state_sha256`** — `str | None`: the SHA-256 of the state vector the run started from, as little-endian float64 bytes in `Model.species_names` order, with `-0.0` read as `0.0` and every NaN as one NaN; two runs with the same digest started from the same values (issue #1701)
 - **`custom_attrs`** — `dict` for user metadata
 - `n_times`, `n_species`, `n_observables`, `n_expressions`
 - `species_names`, `observable_names`, `expression_names`
@@ -320,6 +323,22 @@ All inherit from `bngsim.BngsimError` (which inherits `RuntimeError`):
 - **`StopConditionMet`** — Stop condition triggered; `.result` has partial data
 
 Warnings (`UserWarning` subclasses; filter or escalate them with `warnings`):
+
+- **`LiveStartWarning`** — a call is about to start from exactly the state the
+  last run left, which is not the model's initial conditions, before the time
+  that run ended at: a second `run(t_span=(0, 5))`, which continues the first.
+  Raised before anything integrates, by `run()` (pass `start="initial"` or
+  `start="live"` to say which start is meant), by `run_until` from a clock
+  behind that time (`set_time` moves it), and once per call by
+  `run_replicates`, `parameter_scan` (unless `reset_to` names the start or the scan carries an equilibration's `dx/dθ`),
+  `bifurcate` and `run_protocol`'s first run, where `Model.reset()` or
+  `Model.save_concentrations()` says it (issue #1701).
+
+- **`OneSidedSensitivityWarning`** — a sensitivity column is a one-sided
+  derivative: two rate-law switches share an instant, a rate law composes them,
+  and one cannot be moved alone by any requested parameter (`sigma = t0 +
+  t_delta` at `t_delta = 0`). Names each parameter and the direction its column
+  is for; `Result.one_sided_sensitivities` lists the same (GH #1822).
 
 - **`RuleMonkeyWarning`** — `method="rm"` or a `RuleMonkeySession` loaded a model
   for which RuleMonkey reports a warning-level diagnostic: how it reads a rule

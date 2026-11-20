@@ -27,10 +27,12 @@ fails here rather than silently re-opening the trap.
 from __future__ import annotations
 
 import copy
+import inspect
 
 import bngsim
 import numpy as np
 import pytest
+from bngsim._foreign_names import _ForeignAttribute
 
 from .test_pickle_refusals import DECAY_SBML  # k = 0.1, X(0) = 100, X' = -k X
 
@@ -150,6 +152,8 @@ def test_result_exposes_no_setter_for_the_sharing_to_carry(model):
     for name in dir(bngsim.Result):
         if name.startswith("_"):
             continue
+        if isinstance(inspect.getattr_static(bngsim.Result, name), _ForeignAttribute):
+            continue  # another tool's name, there only to raise naming bngsim's (issue #1700)
         attribute = getattr(bngsim.Result, name)
         if isinstance(attribute, property) and attribute.fset is not None:
             offenders.append(f"{name} (property setter)")
