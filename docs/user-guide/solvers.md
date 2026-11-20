@@ -796,13 +796,15 @@ whenever it is taken; otherwise the column is the jump at the placed time.
 From `1e15`, 0.125 apart, a crossing 2.53 after the start is placed 2.5 after
 it: with `X' = k A` past the crossing, `A' = -A`, k = 2 and A(0) = 1,
 dX/dsigma comes back -0.16417 for -0.159318 (issue #1828). From `1e17`, 16
-apart, a crossing 2.5 after the start would be placed on the start and its
-switch lost. A sensitivity run whose requested columns that crossing moves
-(a parameter of its threshold, or the counter's own starting value) is
-refused there with `SensitivityUnsupportedError` (issue #1828), as is any such
-run whose crossing rounds onto its start, however far out it starts. A plain
-run, or a column the crossing does not move, is not refused: it has no jump to
-lose.
+apart, a crossing 2.5 after the start is placed on the start and dropped, one
+20 after it at +16, and one past the run's end can be placed on it. A
+sensitivity run whose requested columns such a crossing moves (a parameter of
+its threshold, or the counter's own starting value) is refused with
+`SensitivityUnsupportedError` (issue #1828) where the crossing is placed on the
+other side of the run's start or end than it is, or more than 0.1% of the
+run's length off its time, however far out the run starts; the 1e15 case
+above, 0.03 off in a run of 32, is not. A plain run, or a column the crossing
+does not move, is not refused: it has no jump to lose.
 
 `run_diffrax` is not moved either: it integrates on the clock it is given, and
 from `1e15` it ends at its step limit with an error.

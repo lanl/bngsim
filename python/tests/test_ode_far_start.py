@@ -377,6 +377,51 @@ def test_a_plain_run_from_1e17_is_not_refused(tmp_path):
     assert _species(run)[-1, x] == pytest.approx(59.0, abs=1e-6)
 
 
+@pytest.mark.parametrize(
+    ("c0", "why"),
+    [
+        ("-17", r"is placed 16 after the start, 4 off its time"),  # 20 after, placed at +16
+        ("-33", r"lies outside the run, but rounds into it"),  # 36 after, past +32, placed on it
+    ],
+    ids=["placed on a row", "placed onto the end"],
+)
+def test_a_counter_crossing_placed_off_its_time_is_refused(tmp_path, c0, why):
+    # Issue #1828, form 2: from 1e17 (16 apart) a crossing that does not round
+    # onto the start is placed off its time. 20 after came back 0, -2, -2 for
+    # 0, 0, -2; 36 after, 0, 0, -2 for 0, 0, 0; with no error, where a build
+    # before #1681 refused both (CV_TOO_CLOSE).
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match=why + ".*issue #1828"):
+        _clock_run(tmp_path, 1e17, sens=["sigma"], c0=c0)
+
+
+def test_a_crossing_placed_off_by_a_large_share_of_the_run_is_refused(tmp_path):
+    # From 1e16 (2 apart) a crossing 2.5 after the start is placed at +2, 0.5
+    # off in a run of 32: where the jump depends on when it is taken, the
+    # column was 0.27 for 0.16; a build before #1681 refused it.
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="0.5 off its time"):
+        _clock_run(tmp_path, 1e16, sens=["sigma"])
+
+
+def test_a_crossing_placed_off_by_a_small_share_of_the_run_is_run(tmp_path):
+    # From 1e15 (0.125 apart) a crossing 2.53 after the start is placed at 2.5,
+    # 0.03 of a run of 32 (under 0.1%): run, and X' = k's column is the run
+    # from 0's (-2 wherever the jump is taken).
+    far = _clock_run(tmp_path, 1e15, sens=["sigma"], c0=repr(3 - 2.53))
+    x = list(far.species_names).index("X()")
+    assert np.asarray(far.sensitivities)[-1, x, 0] == pytest.approx(-2.0, abs=1e-6)
+
+
+def test_a_crossing_exactly_on_the_run_s_end_is_run(tmp_path):
+    # The window is half-open: a crossing on t_end makes its jump into the last
+    # row. 32 after the start is a double at 1e17, so it is placed where it is,
+    # and the run is the run from 0's.
+    far, near = (_clock_run(tmp_path, t, sens=["sigma"], c0="-29") for t in (1e17, 0.0))
+    x = list(far.species_names).index("X()")
+    assert np.array_equal(
+        np.asarray(far.sensitivities)[:, x, 0], np.asarray(near.sensitivities)[:, x, 0]
+    )
+
+
 def test_a_crossing_past_the_run_s_end_is_not_refused(tmp_path):
     # Dropped by the same window, but for being after the end, not for
     # rounding: c0 = -100 puts it 103 after the start, past +32. X stays 0.
