@@ -720,3 +720,76 @@ def test_a_bngl_model_names_the_file_and_its_network(tmp_path):
     assert "writeXML()" in d["methods"]["nf"]["reasons"][0]["message"] or (
         d["methods"]["nf"]["status"] == "unavailable"
     )
+
+
+# ─── What sets a value ───────────────────────────────────────────────────────
+
+# c sized by an assignment rule over p, v by a rate rule; R set by a rate rule;
+# q, a parameter an event sets, held as a state with no column; a delayed event.
+RULES_AND_EVENTS = """
+compartment c = 1, v = 2;
+v' = 0.1;
+species A in c = 10, B in v = 1, R in c = 0;
+R' = k;
+k = 0.5; q = 1; p = 3;
+c := 1 + p;
+J1: A -> B; k*A;
+E1: at (time > 1), t0 = false: q = 5;
+E2: at 0.5 after (time > 2): A = 7;
+"""
+
+
+def test_what_sets_a_compartment_or_a_species():
+    pytest.importorskip("antimony")
+    model = bngsim.Model.from_antimony_string(RULES_AND_EVENTS)
+    d = model.describe()
+    assert d["compartments"] == [
+        {"name": "c", "size": 4.0, "size_declared": True, "size_set_by": ["assignment_rule"]},
+        {"name": "v", "size": 2.0, "size_declared": True, "size_set_by": ["rate_rule"]},
+    ]
+    species = {s["name"]: s for s in d["species"]}
+    assert species["A"]["set_by"] == ["event"]
+    assert "set_by" not in species["B"]
+    assert species["R"]["set_by"] == ["rate_rule"]
+    # The rate-rule compartment and the event-set parameter are states, not
+    # species of the file; only q has no column.
+    assert species["v"]["sbml_species"] is False and "reported" not in species["v"]
+    assert species["q"]["sbml_species"] is False and species["q"]["reported"] is False
+    row = _first_row(model)
+    columns = list(row.species_names)
+    assert [s["name"] for s in d["species"] if s.get("reported", True)] == columns
+    assert "q" not in columns
+
+    events = {e["id"]: e for e in d["events"]}
+    assert events["E1"] == {"id": "E1", "trigger": "(time()>1)", "assigns": ["q"]}
+    assert events["E2"] == {"id": "E2", "trigger": "(time()>2)", "assigns": ["A"], "delay": 0.5}
+    text = str(d)
+    assert "c  size 4, set by assignment rule" in text
+    assert "E2: when (time()>2), after 0.5 sets A" in text
+
+
+def test_an_observable_with_negative_coefficients():
+    from bngsim._bngsim_core import ModelBuilder
+
+    b = ModelBuilder()
+    x = b.add_species("X", 1.0)
+    y = b.add_species("Y", 2.0)
+    b.add_observable("diff", [(x, 1.0), (y, -2.0)])
+    b.add_observable("neg", [(y, -1.0), (x, 0.5)])
+    obs = {o["name"]: o["reads"] for o in bngsim.Model(_core=b.build()).describe()["observables"]}
+    assert obs == {"diff": "X - 2*Y", "neg": "-Y + 0.5*X"}
+
+
+def test_an_unavailable_network_free_method_says_so(tmp_path, monkeypatch):
+    from bngsim import _simulator
+
+    message = "RuleMonkey is not present in this bngsim install (test)."
+    monkeypatch.setitem(_simulator._UNAVAILABLE_NF_METHODS, "nf_exact", message)
+    model, path = _net(tmp_path)
+    rm = model.describe()["methods"]["rm"]
+    assert rm == {
+        "status": "unavailable",
+        "reasons": [{"code": "not_in_this_install", "message": message}],
+    }
+    with pytest.raises(ValueError, match="RuleMonkey is not present"):
+        bngsim.Simulator(model, method="rm", xml_path=str(path))

@@ -3398,7 +3398,9 @@ class Model:
           ``"rate_rule"``, ``"assignment_rule"`` or ``"event"``.
         * ``species``: each one's ``name``, ``initial`` value (what
           :meth:`reset` restores and a run from the initial state starts at)
-          and whether it is ``fixed``. For an SBML or Antimony model, also its
+          and whether it is ``fixed`` (no reaction changes it); ``set_by`` names
+          a rule or event that does, and ``reported: False`` marks a state with
+          no column in ``Result.species``. For an SBML or Antimony model, also its
           ``compartment`` and ``quantity``: ``"amount"`` where the file
           declares the species in amounts (``hasOnlySubstanceUnits``), with
           its ``initial_amount``, else ``"concentration"``. ``species_values``

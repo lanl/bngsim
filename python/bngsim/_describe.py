@@ -289,6 +289,10 @@ def _species(model: Model, cd: dict, record: dict | None) -> list[dict[str, Any]
     for i, name in enumerate(names):
         sp = meta[i]
         entry: dict[str, Any] = {"name": name, "initial": initial[i], "fixed": bool(sp["fixed"])}
+        if not sp.get("reported", True):
+            # Integrator state with no column in Result.species (GH #71): an
+            # event-assigned parameter or compartment the loader promoted.
+            entry["reported"] = False
         set_by = [
             kind
             for kind, hit in (
@@ -628,6 +632,8 @@ def _text(d: dict[str, Any]) -> str:
             bits.append(f"declared as an amount: initial amount {_num(sp['initial_amount'])}")
         if sp.get("sbml_species") is False:
             bits.append("a size or parameter held as a state")
+        if sp.get("reported") is False:
+            bits.append("no column in Result.species")
         if sp.get("fixed"):
             bits.append("fixed")
         if sp.get("set_by"):
