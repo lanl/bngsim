@@ -74,7 +74,7 @@ from bngsim._exceptions import (
     StopConditionMet,
 )
 from bngsim._extension_handle import raise_cannot_pickle, raise_cannot_shallow_copy
-from bngsim._model import _STEP_DECIDES_WHY, Model, _names_in
+from bngsim._model import _STEP_DECIDES_WHY, Model
 from bngsim._result import (
     Result,
     _as_selector_list,
@@ -6789,8 +6789,9 @@ class Simulator:
         moves, from the parameter graph. The writes are left for the scan's
         reset to put back. A sensitivity scan (``carried``) carries the state's
         dx/dθ into each point, where a write moves no species at all, so there
-        every species the parameter seeds is named, on its initial condition
-        or not.
+        a species the parameter seeds is named on its initial condition too,
+        where a scan value asks for another (a scan of only the value held
+        asks it for nothing).
         """
         core = self._model._core
         species = self._model.species_names
@@ -6804,6 +6805,12 @@ class Simulator:
             state = np.asarray(core.get_state(), dtype=float)
             before = np.asarray(core.get_initial_state(), dtype=float)
             seeded = np.zeros(len(before), dtype=bool)
+            on = (state == before) | (np.isnan(state) & np.isnan(before))
+            # In a sensitivity scan no write moves a species, so one that sits on
+            # its initial condition is dropped too, where a scan value asks for
+            # another: a scan of only the value held asks it for nothing.
+            scanned = {float(v) for v in values}
+            elsewhere = np.zeros(len(before), dtype=bool)
             # One value can leave an initial condition where it was (A = (A0 - 10)
             # *(A0 - 20) + 3 is 3 at 10 and at 20); the scan's own values are the
             # writes that matter.
@@ -6819,8 +6826,10 @@ class Simulator:
                     continue
                 after = np.asarray(core.get_initial_state(), dtype=float)
                 seeded |= ~((before == after) | (np.isnan(before) & np.isnan(after)))
-            on = (state == before) | (np.isnan(state) & np.isnan(before))
-            stuck = [species[i] for i in np.flatnonzero(seeded if carried else seeded & ~on)]
+                if probe in scanned:
+                    elsewhere |= ~((state == after) | (np.isnan(state) & np.isnan(after)))
+            dropped = ~on | elsewhere if carried else ~on
+            stuck = [species[i] for i in np.flatnonzero(seeded & dropped)]
             why = (
                 "a sensitivity scan carries the state's dx/dθ into each point, and a "
                 "parameter write there moves no species"
@@ -6844,8 +6853,10 @@ class Simulator:
                 if carried
                 else "For a dose scan from the initial conditions, call Model.reset() first. "
             )
-            + "To dose them from this state, set them in on_point: "
-            "on_point=lambda model, value: model.set_concentration(name, value).",
+            + "To dose them from this state, set each in on_point to its initial condition "
+            "at the point's value: on_point=lambda model, value: "
+            "model.set_concentration(name, value) where that initial condition is the "
+            "parameter itself.",
             UserWarning,
             stacklevel=_stacklevel_outside_bngsim(),
         )
@@ -6859,6 +6870,8 @@ class Simulator:
         (#188) no longer reads its expression, the walk is a loop and not a
         recursion (a chain can be deeper than Python's limit), and a compartment
         size reaches an amount-declared species through its storage divide."""
+        from bngsim._model import _names_in
+
         core = self._model._core
         names = list(self._model.param_names)
         live = list(self._model.param_is_expression)

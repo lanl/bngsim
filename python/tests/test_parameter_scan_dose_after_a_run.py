@@ -10,7 +10,7 @@ species and the two ways to dose them. Each remedy is run here.
 
 The model: A -> B at k = 0.1 from A = A0*s, A0 = 10, s = 1, run to t = 5. The
 snapshot is the state that run left, read off the model. A point that starts at
-(a, b) holds A = a e^-k and B = b + a (1 - e^-k) at t = 1.
+(a, b) holds A = a e^-k and B = b + a (1 - e^-k) one unit of time on.
 """
 
 from __future__ import annotations
@@ -23,7 +23,10 @@ import numpy as np
 import pytest
 
 ANT = "model m\n A0 = 10; s = 1; k = 0.1; species A, B; A = A0*s; B = 0;\n J: A -> B; k*A;\nend"
-SCAN = {"t_span": (0, 1), "n_points": 2}
+# After the run to t = 5 a scan starts where it ended: one that set the clock
+# back to 0 would draw main's warning for that too (issue #1701), which is not
+# what this file asks about.
+SCAN = {"t_span": (5, 6), "n_points": 2}
 DROPS = r"parameter_scan over '{}' does not move the species it seeds \({}\)"
 
 
@@ -96,6 +99,33 @@ def test_the_hook_the_warning_names_doses_from_the_current_state():
     )
     for dose, point in zip([5.0, 40.0], points, strict=True):
         _expect(point, dose, snap[1])
+
+
+def test_the_hook_sets_each_species_to_its_initial_condition_at_the_value():
+    """D = 2*A0 is not the parameter itself: written with the value, the hook
+    starts D at 5 and 40 where a fresh model starts it at 10 and 80. The message
+    says to set each species to its initial condition at the point's value, 2*value
+    for D, and the hook written so doses A and D as a fresh model does."""
+    src = ANT.replace("species A, B;", "species A, B, D;").replace("B = 0;", "B = 0; D = 2*A0;")
+    src = src.replace(" J: A -> B; k*A;\n", " J: A -> B; k*A;\n J2: D -> B; k*D;\n")
+    sim, _ = _after_a_run(src)
+    with pytest.warns(UserWarning, match=DROPS.format("A0", "'A', 'D'")) as caught:
+        sim.parameter_scan("A0", [5.0, 40.0], **SCAN)
+    (warning,) = [w for w in caught if "does not move" in str(w.message)]
+    assert "set each in on_point to its initial condition at the point's value" in str(
+        warning.message
+    )
+    assert "where that initial condition is the parameter itself" in str(warning.message)
+
+    def dose(model, value):
+        model.set_concentration("A", value)
+        model.set_concentration("D", 2 * value)
+
+    sim, _ = _after_a_run(src)
+    points = _quiet(lambda: sim.parameter_scan("A0", [5.0, 40.0], on_point=dose, **SCAN))
+    for value, point in zip([5.0, 40.0], points, strict=True):
+        assert point.species[0, 0] == value
+        assert point.species[0, 2] == 2 * value
 
 
 def test_a_fresh_model_is_dosed_with_no_word():
@@ -323,6 +353,12 @@ def test_the_value_the_warning_asks_with():
         with pytest.warns(UserWarning, match=DROPS.format("A0", "'A'")):
             points = sim.parameter_scan("A0", values, **SCAN)
         assert [p.species[0, 0] for p in points] == [snap[0], snap[0]]
+    # The scan's own values are asked too, and 5 and 40 would find A whatever
+    # the first value asked: a scan of 0 alone leaves only that one.
+    sim, snap = _after_a_run(made)
+    with pytest.warns(UserWarning, match=DROPS.format("A0", "'A'")):
+        points = sim.parameter_scan("A0", [0.0], **SCAN)
+    assert points[0].species[0, 0] == snap[0]
 
 
 def test_a_write_the_model_refuses_is_no_reason_to_stop_the_scan(monkeypatch):
@@ -381,6 +417,25 @@ def test_a_sensitivity_scan_names_every_species_the_parameter_seeds():
     (warning,) = [w for w in caught if "does not move" in str(w.message)]
     assert "Model.reset() first" not in str(warning.message)
     assert "on_point=lambda model, value" in str(warning.message)
+
+
+def test_a_sensitivity_scan_of_the_value_held_names_only_what_it_drops():
+    """C = A0 sits on its initial condition, 10, and a sensitivity scan of
+    A0 = 10 alone asks it for nothing: it starts at its dose. A = A0*s is off
+    its initial condition after the run, and its dose of 10 is dropped. Naming
+    every species the parameter seeds named C too."""
+    src = ANT.replace("species A, B;", "species A, B, C;").replace("B = 0;", "B = 0; C = A0;")
+    sim = bngsim.Simulator(
+        bngsim.Model.from_antimony_string(src), method="ode", sensitivity_params=["k"]
+    )
+    if not sim._codegen_provides_sens_rhs():
+        pytest.skip("codegen compile unavailable: no compiled sensitivity RHS on this install")
+    sim.run(t_span=(0, 5), n_points=2)
+    with pytest.warns(UserWarning, match=DROPS.format("A0", "'A'")) as caught:
+        points = sim.parameter_scan("A0", [10.0], **SCAN)
+    (warning,) = [w for w in caught if "does not move" in str(w.message)]
+    assert "'C'" not in str(warning.message)
+    assert points[0].species[0, 2] == 10.0
 
 
 def test_an_initial_condition_flat_at_the_probe_is_asked_at_the_scan_values():
