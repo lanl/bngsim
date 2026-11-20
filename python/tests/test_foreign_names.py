@@ -296,9 +296,24 @@ def test_a_name_off_the_table_gets_pythons_own_error(owner, model, sim, result):
 
 
 def test_pythons_did_you_mean_still_comes_from_real_names_only(sim):
+    """Python's suggestion for a typo of a real name is as it was. Which
+    versions' traceback module writes one differs (3.13 does; 3.12's
+    format_exception_only does not), so the oracle is a plain class on this
+    Python: the error carries the name and the object its suggestion is read
+    from, and the text is the plain class's."""
+
+    class Plain:
+        __slots__ = ()
+
+        def run(self) -> None: ...
+
+    with pytest.raises(AttributeError) as plain:
+        Plain().rn  # type: ignore[attr-defined]  # noqa: B018
     with pytest.raises(AttributeError) as err:
         sim.rn  # type: ignore[attr-defined]  # noqa: B018
-    assert "Did you mean: 'run'?" in message(err.value)
+    assert err.value.name == "rn" and err.value.obj is sim
+    suggested = "Did you mean: 'run'?" in message(plain.value)
+    assert ("Did you mean: 'run'?" in message(err.value)) == suggested
     # "simulat" is closer to the table's "simulate" than to anything real; the
     # table's names are kept out of dir(), so it is not suggested.
     with pytest.raises(AttributeError) as err:
