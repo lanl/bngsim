@@ -341,9 +341,14 @@ model state, resetting it first where `resetModel` says so. Tasks are
 independent, so the state is reset between them, and a time course no task runs
 is not run. A model's changes are steps where the model is loaded: before the
 first task of a chain that runs it, and again after a reset, not before each
-task that runs it. A task whose steps are the start of a longer chain's is that
-chain's first runs, read once: `write_sedml_protocol`'s chain names the task of
-its first run as its first subtask. A change the replay cannot apply (a compartment's size, an
+task that runs it. The tasks run in order, each run once. A chain replays the
+tasks it names before its last, as `write_sedml_protocol` writes a run that
+continues earlier ones, and the longest start of it that the tasks before it
+ran names the state it continues from: where they left the model there, it
+continues; where they reached it earlier, the state is saved there and reset
+to; a chain none of whose starts they ran runs in full from the initial state.
+A task or chain that is the start of a chain already run has been run, and is
+not run again, wherever the document lists it. A change the replay cannot apply (a compartment's size, an
 `addXML`, a species' `initialAmount` without the SBML's compartment sizes, a
 `setValue` that reads the range beside the swept parameter other than as an
 expression of it, a sweep whose math reads the model's values, a task on a
