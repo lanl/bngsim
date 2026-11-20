@@ -154,6 +154,8 @@ class Model:
         "_loaded_params",
         "_loaded_state",
         "_last_run_end",
+        "_source",
+        "_compartments",
     )
 
     def __init__(
@@ -178,6 +180,16 @@ class Model:
         # set back, which run() warns of (LiveStartWarning). None until a run
         # writes back.
         self._last_run_end: tuple[float, np.ndarray, object] | None = None
+        # Issue #1705: where the model came from, ``{"format", "path",
+        # "sha256", ...}`` as the loader recorded it (_record_source), or None
+        # for a model built in Python (ModelBuilder, build_model_from_parsed, a
+        # coupling submodel). Read by describe(). A clone keeps its parent's.
+        self._source: dict[str, Any] | None = None
+        # Issue #1705: the SBML loader's record of the compartments, for
+        # describe(): each one's size at load and what sets it, and each
+        # species' compartment, by the names the model uses. None for every
+        # other format, which has no compartments to report.
+        self._compartments: dict[str, Any] | None = None
         self._codegen_so_path: str = ""
         # GH #198: whether codegen should emit the expression output-sensitivity
         # evaluator. Set by the Simulator before codegen prep (only a sensitivity
@@ -784,6 +796,7 @@ class Model:
             raise ModelError(f"Failed to load {path}: {e}") from e
         m = cls(_core=core)
         m._net_path = str(path)
+        _record_source(m, "net", path=path)
         m._ar_report_map = _ar_report_map_from_net(core)
         _mark_ar_targets_continuous(core, m._ar_report_map)
         m._frozen_params = _unit_conversion_folds(_unit_conversions_in(path), core)
@@ -1483,6 +1496,8 @@ class Model:
         # from another time continues that run as the original's would. Shared,
         # not copied: the vector is read-only, and the record is only replaced.
         m._last_run_end = self._last_run_end
+        m._source = dict(self._source) if self._source is not None else None
+        m._compartments = self._compartments  # read-only once the loader made it
         m._net_path = self._net_path
         m._want_output_sens = self._want_output_sens
         m._codegen_so_path = self._codegen_so_path
@@ -3350,6 +3365,100 @@ class Model:
             "Use clone() for an independent Model.",
         )
 
+    def describe(self, *, limit: int | None = 50) -> dict[str, Any]:
+        """What the model is, in one call: a JSON-serializable dict whose
+        ``str()`` is a plain-text form (issue #1705).
+
+        Read it before choosing a method or the outputs to report. It is built
+        from what the loader recorded and the model holds, so it neither runs
+        the model nor changes its state or parameters. Most models take under a
+        millisecond. The first call on a model also makes two scans the model
+        keeps for later runs, its conservation laws and whether a rate reads
+        the clock: on a network of 6,047 species that took 2.5 s, and each call
+        after it 0.1 s.
+
+        Keys:
+
+        * ``source``: ``format`` (``"sbml"``, ``"antimony"``, ``"net"``,
+          ``"bngl"``, or ``None`` for a model built in Python), ``path`` and
+          the ``sha256`` of the file as it was read (of the text, encoded as
+          UTF-8, for a ``from_*_string`` load). A ``.bngl`` load adds
+          ``network``, the ``.net`` file BNG2.pl generated, and a load with
+          ``compartment_sizes=`` records the sizes it set.
+        * ``counts``: species, reactions, observables, parameters, functions,
+          events, table functions and conservation laws, and compartments for
+          an SBML or Antimony model.
+        * ``parameters``: each one's ``name``, ``value`` and ``kind``
+          (``"primary"``, ``"derived"`` with its ``expression``, or
+          ``"compartment_size"``). ``frozen`` says what a parameter folded at
+          load was folded into (:attr:`frozen_params`). Synthesized slots
+          (:attr:`param_is_internal`) are left out.
+        * ``compartments`` (SBML and Antimony only): each one's ``size`` at load
+          and ``size_set_by``, ``None`` for a constant size, else
+          ``"rate_rule"``, ``"assignment_rule"`` or ``"event"``.
+        * ``species``: each one's ``name``, ``initial`` value (what
+          :meth:`reset` restores and a run from the initial state starts at)
+          and whether it is ``fixed``. For an SBML or Antimony model, also its
+          ``compartment`` and ``quantity``: ``"amount"`` where the file
+          declares the species in amounts (``hasOnlySubstanceUnits``), with
+          its ``initial_amount``, else ``"concentration"``. ``species_values``
+          says what the numbers are: ``"concentration"`` for an SBML or
+          Antimony model, an amount divided by its compartment's size, for
+          every species and whatever its quantity, as :meth:`get_concentration`
+          and ``Result.species`` give them; ``None`` for a ``.net`` or BNGL
+          model, whose file states no units.
+        * ``observables`` (what each reads), ``functions`` (each one's
+          expression), ``reactions`` (``reactants``, ``products``, ``rate_law``
+          of ``"elementary"``, ``"michaelis_menten"``, ``"functional"`` or
+          ``"rate_rule"``, and the ``rate``) and ``events``.
+        * ``time_dependence``: whether a rate law reads the clock, the functions
+          that do, whether the clock reaches the state (which a steady state
+          refuses), and the number of events.
+        * ``methods``: for ``ode``, ``ssa``, ``psa``, ``nf`` and ``rm``, and for
+          ``forward_sensitivities``, a ``status`` with ``reasons``. ``"ok"``
+          means nothing in the model or this install refuses the method
+          before a run; a run can still refuse what depends on its own
+          arguments. ``"refused"`` lists the constructs, each with a ``code``
+          and the message the run would raise; ``"needs_input"`` names what
+          the method needs that the model does not carry (the network-free
+          methods read a BNG-XML file, ``xml_path=``); ``"unavailable"`` says
+          what this install lacks.
+        * ``jacobian``: the analytical Jacobian's status
+          (:attr:`analytical_jacobian_status`), which ``describe()`` does not
+          derive.
+        * ``next_run_starts_from``: ``"initial"``, or ``"live"`` where the
+          model's state is not its initial state, as after a run: the next
+          ``run()`` continues from it (see ``Result.started_from``).
+        * ``load_warnings``: what the loader warned of, where it did.
+
+        Parameters
+        ----------
+        limit : int or None
+            The most entries listed in each of ``parameters``, ``compartments``,
+            ``species``, ``observables``, ``functions``, ``reactions`` and
+            ``events``, and the most terms an observable lists. Lists longer
+            than that are cut, in model order, and ``omitted`` says how many
+            entries each lost, so a network of thousands of species does not
+            print thousands of lines. ``None`` lists everything. Default 50.
+
+        Returns
+        -------
+        dict
+            A ``dict`` subclass: ``json.dumps`` writes it, and ``print`` shows
+            the text form.
+
+        Examples
+        --------
+        >>> model = bngsim.Model.from_sbml("model.xml")      # doctest: +SKIP
+        >>> d = model.describe()                              # doctest: +SKIP
+        >>> d["methods"]["ssa"]["status"]                     # doctest: +SKIP
+        'ok'
+        >>> print(d)                                          # doctest: +SKIP
+        """
+        from bngsim._describe import describe_model
+
+        return describe_model(self, limit=limit)
+
     def __repr__(self) -> str:
         return (
             f"Model(species={self.n_species}, reactions={self.n_reactions}, "
@@ -3400,6 +3509,41 @@ def _remember(memo: dict, key, value) -> None:
 _UNIT_CONVERSION = re.compile(r"\bunit_conversion\s*=\s*([^\s#][^#]*?)\s*(?:#|$)")
 # A number first, so that the ``e`` of ``6.0221e+23`` is not read as a name.
 _NUMBER_OR_NAME = re.compile(r"(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?|([A-Za-z_]\w*)")
+
+
+def _record_source(
+    model: Model,
+    fmt: str,
+    *,
+    path: str | Path | None = None,
+    text: str | None = None,
+    **extra: Any,
+) -> None:
+    """Record where ``model`` came from, for :meth:`Model.describe` (issue
+    #1705): the format, the absolute path, and the SHA-256 of the bytes of the
+    file (re-read here; ``None`` if it can no longer be read) or of ``text``
+    encoded as UTF-8. ``extra`` adds what the load did beyond the file, such as
+    the compartment sizes it set. A later call for the same model replaces the
+    record: an Antimony load records itself over the SBML string it made."""
+    import hashlib
+    import os
+
+    where: str | None = None
+    data: bytes | None = None
+    if path is not None:
+        where = os.path.abspath(os.fspath(path))
+        try:
+            data = Path(where).read_bytes()
+        except OSError:
+            data = None
+    elif text is not None:
+        data = text.encode("utf-8")
+    model._source = {
+        "format": fmt,
+        "path": where,
+        "sha256": None if data is None else hashlib.sha256(data).hexdigest(),
+        **{k: v for k, v in extra.items() if v is not None},
+    }
 
 
 def _require_core(core: object) -> None:

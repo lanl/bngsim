@@ -3469,6 +3469,7 @@ def load_sbml(path: str | Path, compartment_sizes: dict | None = None):
     parse_sec = time.perf_counter() - t0
     model = _build_model_from_sbml_doc(doc)
     model._libsbml_parse_sec = parse_sec
+    _record_source(model, "sbml", path=path, compartment_sizes=_sizes_set(compartment_sizes))
     return model
 
 
@@ -3490,7 +3491,21 @@ def load_sbml_string(text: str, compartment_sizes: dict | None = None):
     parse_sec = time.perf_counter() - t0
     model = _build_model_from_sbml_doc(doc)
     model._libsbml_parse_sec = parse_sec
+    _record_source(model, "sbml", text=text, compartment_sizes=_sizes_set(compartment_sizes))
     return model
+
+
+def _sizes_set(compartment_sizes: dict | None) -> dict | None:
+    """The ``compartment_sizes=`` a load applied, as its source record keeps them
+    (issue #1705), or None where it applied none."""
+    return {str(k): float(v) for k, v in compartment_sizes.items()} if compartment_sizes else None
+
+
+def _record_source(model, fmt: str, **kwargs) -> None:
+    """Record where the model came from (issue #1705); see _model._record_source."""
+    from bngsim._model import _record_source as record
+
+    record(model, fmt, **kwargs)
 
 
 def _import_antimony():
@@ -3633,7 +3648,9 @@ def load_antimony_via_sbml(path: str | Path, compartment_sizes: dict | None = No
     if not sbml_str or len(sbml_str) < 10:
         raise RuntimeError(f"Antimony produced empty SBML for {path}")
 
-    return load_sbml_string(sbml_str, compartment_sizes)
+    model = load_sbml_string(sbml_str, compartment_sizes)
+    _record_source(model, "antimony", path=path, compartment_sizes=_sizes_set(compartment_sizes))
+    return model
 
 
 def load_antimony_string_via_sbml(text: str, compartment_sizes: dict | None = None):
@@ -3651,7 +3668,9 @@ def load_antimony_string_via_sbml(text: str, compartment_sizes: dict | None = No
     if not sbml_str or len(sbml_str) < 10:
         raise RuntimeError("Antimony produced empty SBML")
 
-    return load_sbml_string(sbml_str, compartment_sizes)
+    model = load_sbml_string(sbml_str, compartment_sizes)
+    _record_source(model, "antimony", text=text, compartment_sizes=_sizes_set(compartment_sizes))
+    return model
 
 
 # The largest species power the SSA falling factorial takes (Reaction stores m
@@ -5293,6 +5312,48 @@ def _fold_stoichiometry_denominators(doc) -> None:
                         f"SBML reaction '{reaction.getId()}': could not fold the "
                         f"stoichiometry denominator of species '{ref.getSpecies()}'"
                     )
+
+
+def _compartment_record(
+    sbml_model,
+    comp_volumes: dict[str, float],
+    species_comp: dict[str, str],
+    *,
+    declared: set[str],
+    rate_rule: set[str],
+    assignment_rule: set[str],
+    event: set[str],
+) -> dict:
+    """The compartments as Model.describe() reports them (issue #1705), by the
+    names the model uses: ``{"compartments": {name: {"size", "size_declared",
+    "size_set_by"}}, "species": {species: compartment}}``.
+
+    ``size`` is the size the model was built at (section 1's ``comp_volumes``:
+    the file's, an initialAssignment's, a ``compartment_sizes=`` override's, or
+    the 1.0 used where SBML leaves it undefined). ``size_declared`` is False
+    for that last case: no size, initialAssignment or assignment rule.
+    ``size_set_by`` lists what moves it during a run."""
+    compartments: dict[str, dict] = {}
+    for i in range(sbml_model.getNumCompartments()):
+        c = sbml_model.getCompartment(i)
+        cid = c.getId()
+        compartments[_safe_name(cid)] = {
+            "size": float(comp_volumes.get(cid, 1.0)),
+            "size_declared": bool(c.isSetSize()) or cid in declared,
+            "size_set_by": [
+                kind
+                for kind, ids in (
+                    ("rate_rule", rate_rule),
+                    ("assignment_rule", assignment_rule),
+                    ("event", event),
+                )
+                if cid in ids
+            ],
+        }
+    return {
+        "compartments": compartments,
+        "species": {_safe_name(s): _safe_name(c) for s, c in species_comp.items()},
+    }
 
 
 def _build_model_from_sbml_doc(doc):
@@ -11907,6 +11968,16 @@ def _build_model_from_sbml_doc_in_context(doc):
     # ── 11. Build ─────────────────────────────────────────────────────
     core = builder.build()
     model = Model(_core=core)
+    # Issue #1705: the compartments, for Model.describe().
+    model._compartments = _compartment_record(
+        sbml_model,
+        comp_volumes,
+        species_comp,
+        declared=set(ia_values) | ar_comp_targets,
+        rate_rule=rate_rule_comps,
+        assignment_rule=ar_comp_targets,
+        event=event_resize_comps,
+    )
     # Only what the built model has as a parameter a caller could write.
     _built_params = set(core.param_names)
     model._frozen_params = {n: w for n, w in _folded_into.items() if n in _built_params}

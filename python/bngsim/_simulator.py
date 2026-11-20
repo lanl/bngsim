@@ -57,6 +57,7 @@ from bngsim._codegen import (
     output_sens_support_of_artifact,
     read_sens_decline_note,
 )
+from bngsim._describe import ode_refusals
 from bngsim._exceptions import (
     AtolScaleWarning,
     CodegenDeclinedError,
@@ -1181,29 +1182,16 @@ class Simulator:
             # so surface it here. Refuse by default;
             # BNGSIM_ALLOW_UNSUPPORTED_CONSTRUCTS=1 restores the silent
             # approximation (cf. the delay/AlgebraicRule load-time gate).
-            fast_issues = [
-                i for i in getattr(model, "_ssa_issues", None) or [] if i.code == "fast_reaction"
-            ]
-            if fast_issues and os.environ.get("BNGSIM_ALLOW_UNSUPPORTED_CONSTRUCTS") != "1":
-                locs = ", ".join(i.location for i in fast_issues if i.location)
-                raise ModelError(
-                    'Model contains fast="true" reaction(s) '
-                    f"[{locs}], a fast-equilibrium constraint bngsim cannot "
-                    "honor under ODE — the kinetic law would integrate as an "
-                    "ordinary reaction, silently ignoring the constraint "
-                    "(RoadRunner refuses the same model). To restore the legacy "
-                    "silent-approximation behavior, set "
-                    "BNGSIM_ALLOW_UNSUPPORTED_CONSTRUCTS=1."
-                )
-
+            #
             # A ring of rates written in terms of each other (`X' =
             # rateOf(Y); Y' = rateOf(X)`) is an algebraic loop, and has no
             # right-hand side to integrate (lanl/bngsim#991).
-            # (Asked of a core that can say. The C++ simulator refuses the
-            # model too, for a caller that comes by another way.)
-            ring = getattr(model._core, "rateof_ring_refusal", None)
-            if ring is not None and ring():
-                raise ModelError(ring())
+            #
+            # Both are read by ode_refusals, which Model.describe() reports
+            # from too (issue #1705), so the two cannot disagree.
+            refusals = ode_refusals(model)
+            if refusals:
+                raise ModelError(refusals[0][1])
 
             self._sim = CvodeSimulator(model._core)
         elif dispatch in ("ssa", "psa"):
