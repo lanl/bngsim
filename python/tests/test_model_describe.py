@@ -210,6 +210,7 @@ def test_it_is_a_dict_json_writes_and_print_reads(tmp_path):
     text = str(d)
     assert text.splitlines()[0].startswith("Model from net: ")
     assert "Methods:" in text and "Reactions (3):" in text
+    assert "Species values are as the net file gives them; it states no units." in text
     # And nothing else about it is unlike a dict: repr is a dict's.
     assert repr(d) == repr(dict(d))
 
@@ -347,6 +348,7 @@ def test_compartments_and_what_each_species_is():
     d = model.describe()
     assert d["species_values"] == "concentration"
     assert d["counts"]["compartments"] == 2
+    assert "Species values are concentrations (amount / compartment size)" in str(d)
     assert d["compartments"] == [
         {"name": "cell", "size": 2.0, "size_declared": True, "size_set_by": []},
         {"name": "nuc", "size": 0.5, "size_declared": True, "size_set_by": []},
@@ -695,6 +697,7 @@ def test_a_model_built_in_python_has_no_source():
     d = bngsim.Model(_core=b.build()).describe()
     assert d["source"] == {"format": None, "path": None, "sha256": None}
     assert str(d).splitlines()[0] == "Model built in Python (no source file recorded)"
+    assert "Species values carry no stated units." in str(d)
 
 
 # ─── The other loaders ───────────────────────────────────────────────────────

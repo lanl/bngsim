@@ -547,10 +547,15 @@ def _text(d: dict[str, Any]) -> str:
     )
     if d.get("species_values") == "concentration":
         lines.append(
-            "Species values are concentrations: amount / compartment size, for every species."
+            "Species values are concentrations (amount / compartment size), for every "
+            "species the file declares."
         )
-    elif d.get("species_values") is None:
-        lines.append("Species values are as the file gives them; it states no units.")
+    elif src.get("format") in ("net", "bngl"):
+        lines.append(
+            f"Species values are as the {src['format']} file gives them; it states no units."
+        )
+    else:
+        lines.append("Species values carry no stated units.")
 
     lines.append("Methods:")
     labels = {

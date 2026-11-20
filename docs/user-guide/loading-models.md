@@ -266,7 +266,7 @@ prints
 Model from net: /path/to/decay.net (sha256 e2e0d0740901)
 Size: 2 species, 1 reaction, 1 observable, 1 parameter, 1 conservation law
 Next run starts from: the initial state
-Species values are as the file gives them; it states no units.
+Species values are as the net file gives them; it states no units.
 Methods:
   ode, ssa, psa: ok
   nf, rm: needs: [needs_bng_xml] The network-free methods read the model's rules from a BNG-XML file, passed as xml_path=..., not from the loaded network. BNG2.pl writes one from the .bngl a network came from, with the writeXML() action.
