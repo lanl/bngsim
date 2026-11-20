@@ -48,8 +48,10 @@ class ForeignName:
         Where the name was looked up: ``"bngsim"`` (the module), ``"Model"``,
         ``"Simulator"`` or ``"Result"`` (an attribute of one, or of the class),
         or ``"Simulator.run"`` (a keyword argument of :meth:`Simulator.run`).
+        ``"pattern"`` is a habit no error of bngsim's names the call for
+        (:data:`PATTERNS`): listed for the agent guide only.
     name : str
-        The name as the caller wrote it.
+        The name as the caller wrote it; for a ``"pattern"``, the code.
     use : str
         bngsim's call, as code, written over ``model``, ``sim`` and ``result``;
         empty where no one call replaces it and :attr:`note` says what does.
@@ -482,7 +484,70 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
             "The interval is one (t_start, t_end) tuple.",
         ),
     )
+    # ── Patterns: for the agent guide only ───────────────────────────────
+    #
+    # Habits whose error cannot name bngsim's call without slowing calls that
+    # succeed: the name is the model's own (a parameter, a species), so no
+    # descriptor can be put there for it, and a __getattr__, __setattr__ or
+    # __getitem__ that looked would cost every lookup or write (see "Attribute
+    # lookups" below). Python's own error is what the caller gets; the guide
+    # generated from this table (#1699) is where these are said up front.
+    + _entries(
+        "pattern",
+        "libRoadRunner",
+        (
+            "model.k1 = value",
+            'model.set_param("k1", value)',
+            "libRoadRunner sets a parameter as an attribute; on a bngsim Model the write "
+            "fails with Python's own AttributeError. A species: "
+            "model.set_concentration(name, value).",
+        ),
+        (
+            "model.k1",
+            'model.get_param("k1")',
+            "A species: model.get_concentration(name).",
+        ),
+        (
+            'model["k1"] = value',
+            'model.set_param("k1", value)',
+            "A species: model.set_concentration(name, value).",
+        ),
+        (
+            'model["S1"]',
+            'model.get_concentration("S1")',
+            "A parameter: model.get_param(name).",
+        ),
+        (
+            "sim.k1 = value",
+            'sim.model.set_param("k1", value)',
+            "libRoadRunner's one object is both the model and its simulator; in bngsim, "
+            "parameters and species are the Model's, and sim.model is it.",
+        ),
+    )
+    + _entries(
+        "pattern",
+        "pandas",
+        (
+            "result.A",
+            'result.observables["A"]',
+            'A species: result.species["A"]; an expression: result.expressions["A"].',
+        ),
+    )
+    + _entries(
+        "pattern",
+        "guess",
+        (
+            "from bngsim import simulate",
+            "import bngsim",
+            "Then bngsim.Simulator(bngsim.Model.load(path)).run(t_span=(t0, t1), n_points=n). "
+            "Python reports a name a module lacks, imported with from ... import, as a bare "
+            "ImportError, without the hint the same name read as an attribute gets.",
+        ),
+    )
 )
+
+#: The table's guide-only rows (``owner == "pattern"``).
+PATTERNS: tuple[ForeignName, ...] = tuple(e for e in FOREIGN_NAMES if e.owner == "pattern")
 
 #: Names the table must not hold. A descriptor is a real class attribute to
 #: ``inspect.getattr_static``, which a ``typing.runtime_checkable`` protocol

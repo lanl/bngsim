@@ -94,6 +94,10 @@ PINNED = {
         "duration", "end", "integrator", "method", "n_steps", "points", "selections", "steps",
         "t_end", "t_eval", "t_start", "tend", "times", "tspan", "y0",
     ],
+    "pattern": [
+        'from bngsim import simulate', 'model.k1', 'model.k1 = value', 'model["S1"]',
+        'model["k1"] = value', 'result.A', 'sim.k1 = value',
+    ],
 }  # fmt: skip
 
 
@@ -131,7 +135,10 @@ def test_the_table_is_pinned():
 def test_an_entry_names_something_and_is_not_a_real_name(entry):
     assert entry.use or entry.note, "an entry says what to do"
     assert entry.origin
-    if entry.owner == "bngsim":
+    if entry.owner == "pattern":
+        assert entry.use, "a pattern names the call to make"
+        assert all(entry.name not in vars(cls) for cls in CLASSES.values())
+    elif entry.owner == "bngsim":
         assert entry.name not in vars(bngsim) and entry.name not in bngsim.__all__
     elif entry.owner == "Simulator.run":
         assert entry.name not in inspect.signature(Simulator.run).parameters
@@ -195,6 +202,24 @@ def test_every_call_an_entry_names_exists(entry):
     if entry.owner == "Simulator.run":
         for keyword in re.findall(r"^([a-z_]+)=", entry.use):
             assert keyword in takes["run"], keyword
+
+
+def _do_pattern(code: str, model: Model, sim: Simulator, result: Result) -> None:
+    """Perform a guide-only pattern on the fixtures: k1 is a parameter of the
+    decay model, S1 stands for a species name, A for an observable."""
+    namespace = {"model": model, "sim": sim, "result": result, "value": 2.0}
+    code = code.replace('"S1"', '"A()"').replace("result.A", "result.A_tot")
+    exec(code, namespace)
+
+
+@pytest.mark.parametrize("entry", fn.PATTERNS, ids=lambda e: e.name)
+def test_a_guide_only_pattern_still_gets_pythons_error(entry, model, sim, result):
+    """The rows bngsim lists for the guide alone fail with Python's own error,
+    which names no call. Where bngsim comes to catch one with a hint, the row
+    belongs under its owner instead, and this fails to say so."""
+    with pytest.raises((AttributeError, TypeError, ImportError)) as err:
+        _do_pattern(entry.name, model, sim, result)
+    assert "Use " not in str(err.value)
 
 
 # ─── Attribute errors ────────────────────────────────────────────────────────
