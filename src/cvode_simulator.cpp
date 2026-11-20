@@ -769,6 +769,17 @@ struct CvodeUserData {
     // by design. Built on first use from the model, which a run does not
     // restructure; see clamp_state_nonneg.
     std::vector<char> rhs_nonneg_mask;
+    // The retry's narrowed readings (issue #1661, read_narrowed): the slots each
+    // row of f reads, built once from the sparsity pattern of `clamp_rows_model`;
+    // the rows the reading being retried has not finite; the slots they read.
+    SlotsReadByRow clamp_rows;
+    const NetworkModel *clamp_rows_model = nullptr;
+    std::vector<char> clamp_bad_rows;
+    std::vector<char> clamp_read_scratch;
+    // The slots the narrowed reading has put back in this run, which it puts
+    // back at any depth from then on (restore_where_finite); cleared with the
+    // tolerances.
+    std::vector<char> clamp_kept;
     // What that clamp weighs a negative component against where it reads a pole
     // (see spare_at_pole): the run's atol per slot, set with the tolerances,
     // and the solver it asks for the state a step started from. clamp_far marks
@@ -996,8 +1007,8 @@ static double codegen_tfun_eval_thunk(int tf_id, double x, void *ctx) {
 // emptied from X0 stops up to 8.2 rtols of X0 below 0 within its tolerance (8e7
 // atols at atol 1e-12), and an undershoot of a spike between two rows, or one a
 // run starts from, has no scale to be judged on. A run at a loose atol widens
-// the band with it (at 1e-6 it reaches 338's pole).
-constexpr double kClampNoiseAtols = 1e6;
+// the band with it (at 1e-6 it reaches 338's pole). kClampNoiseAtols is
+// defined in bngsim/nonneg_clamp.hpp, which restore_where_finite reads too.
 
 // Record the run's atol per slot for spare_at_pole: the vector where the run has
 // one (issue #196; with tracking, issue #213, its ceiling, the widest the run
@@ -1007,6 +1018,7 @@ static void record_clamp_tolerances(CvodeUserData &data, void *cvode_mem, double
     data.clamp_cvode_mem = cvode_mem;
     data.clamp_far_any = false;
     data.below_zero_refusal.clear();
+    data.clamp_kept.clear();
     data.off_y_valid = false;
     if (!atol_v.empty()) {
         data.clamp_atol = atol_v;
@@ -1121,6 +1133,35 @@ static double *clamp_state_near_zero(CvodeUserData *data, N_Vector y, const char
                              data->rhs_nonneg_scratch))
         return nullptr;
     return data->rhs_nonneg_scratch.data();
+}
+
+// The retry's narrowed readings (issue #1661), taken before the ones above:
+// `y` with only the slots a row in data->clamp_bad_rows reads put at 0
+// (clamp_read_nonneg_into), and where that is not finite, with only the band
+// slots such a row reads put at 0 too (read_near_zero_read_into). A slot no
+// non-finite row reads is not what makes the reading so, and clamping it only
+// moved the rows that read it: a species negative where the model has it so,
+// but not declared negative, was read at 0 by every retry and followed the
+// wrong ODE (V(40) = -328.6 for -69.8). The callbacks set clamp_bad_rows from
+// the reading they retry before spare_at_pole can overwrite it. Each slot a
+// narrowed reading reads at 0 from outside its band is put back where the
+// reading stays finite without it (read_narrowed_into, in
+// bngsim/nonneg_clamp.hpp), so a slot a non-finite row reads but does not need
+// moved keeps its value too. True where a reading is finite: `read_at` has
+// left it where the callback keeps it, and rhs_nonneg_scratch holds the state
+// it read. False otherwise; the callback then reads as before, so the retry
+// still rescues every state it rescued.
+template <class ReadAt>
+static bool read_narrowed(CvodeUserData *data, N_Vector y, const char *spare, ReadAt &&read_at) {
+    if (data->clamp_rows_model != data->model) {
+        data->clamp_rows =
+            slots_read_by_row(data->model->jacobian_sparsity(), data->model->n_species());
+        data->clamp_rows_model = data->model;
+    }
+    return read_narrowed_into(nonneg_clamp_mask(data), data->clamp_rows, data->clamp_bad_rows,
+                              N_VGetArrayPointer(y), data->clamp_atol, data->rhs_nonneg_scratch,
+                              data->clamp_read_scratch, data->clamp_kept, spare,
+                              /*band_after_infinite=*/true, read_at);
 }
 
 // The state the value RHS's last call at (t, y) read f at, where that was not y
@@ -2083,8 +2124,12 @@ static int retry_interpreted_rhs(CvodeUserData *data, sunrealtype t, N_Vector y,
         data->model->compute_derivs(static_cast<double>(t), x, ydot_ptr);
         return read_values(ydot_ptr, static_cast<std::size_t>(data->model->n_species()));
     };
+    nonfinite_rows_of_f(ydot_ptr, static_cast<std::size_t>(data->model->n_species()),
+                        data->clamp_bad_rows);
     const char *spare = spare_at_pole(data, y, ydot_ptr,
                                       static_cast<std::size_t>(data->model->n_species()), read_at);
+    if (read_narrowed(data, y, spare, read_at))
+        return 0; // issue #1661
     data->model->compute_derivs(static_cast<double>(t), clamp_state_nonneg(data, y, spare),
                                 ydot_ptr);
     // Still non-finite: once more, with the slots the mask leaves alone that
@@ -2248,8 +2293,14 @@ static int cvode_codegen_rhs_body(sunrealtype t, N_Vector y, N_Vector ydot, void
                 return ClampReading::nan_only;
             return read_values(ydot_ptr, static_cast<std::size_t>(data->model->n_species()));
         };
+        nonfinite_rows_of_f(ydot_ptr, static_cast<std::size_t>(data->model->n_species()),
+                            data->clamp_bad_rows);
         const char *spare = spare_at_pole(
             data, y, ydot_ptr, static_cast<std::size_t>(data->model->n_species()), read_at);
+        if (read_narrowed(data, y, spare, read_at)) { // issue #1661
+            note_value_rhs_state(data, t, y_ptr, data->rhs_nonneg_scratch.data());
+            return 0;
+        }
         rc = data->codegen_fn(static_cast<double>(t), clamp_state_nonneg(data, y, spare), ydot_ptr,
                               &data->codegen_so_data);
         if (rc != 0)
@@ -2676,7 +2727,10 @@ static int cvode_analytical_dense_jac_body(sunrealtype t, N_Vector y, N_Vector /
             model->fill_dense_analytical_jacobian(static_cast<double>(t), x, jac);
             return read_values(jac, n * n);
         };
+        nonfinite_rows_of_dense(jac, n, data->clamp_bad_rows);
         const char *spare = spare_at_pole(data, y, jac, n * n, read_at);
+        if (read_narrowed(data, y, spare, read_at))
+            return 0; // issue #1661
         model->fill_dense_analytical_jacobian(static_cast<double>(t),
                                               clamp_state_nonneg(data, y, spare), jac);
         // Still non-finite: once more, with the slots the mask leaves alone that
@@ -2741,7 +2795,10 @@ static int cvode_codegen_dense_jac_body(sunrealtype t, N_Vector y, N_Vector /*fy
                 return ClampReading::nan_only;
             return read_values(jac, n * n);
         };
+        nonfinite_rows_of_dense(jac, n, data->clamp_bad_rows);
         const char *spare = spare_at_pole(data, y, jac, n * n, read_at);
+        if (read_narrowed(data, y, spare, read_at))
+            return 0; // issue #1661
         rc = data->codegen_jac_fn(static_cast<double>(t), clamp_state_nonneg(data, y, spare), jac,
                                   &data->codegen_so_data);
         // Still non-finite: once more, with the slots the mask leaves alone that
@@ -2934,8 +2991,12 @@ static int cvode_analytical_jac_body(sunrealtype t, N_Vector y, N_Vector /*fy*/,
             model->fill_sparse_analytical_jacobian(static_cast<double>(t), x, jac_data);
             return read_values(jac_data, static_cast<std::size_t>(sp.nnz));
         };
+        nonfinite_rows_of_pattern(jac_data, sp, static_cast<std::size_t>(model->n_species()),
+                                  data->clamp_bad_rows);
         const char *spare =
             spare_at_pole(data, y, jac_data, static_cast<std::size_t>(sp.nnz), read_at);
+        if (read_narrowed(data, y, spare, read_at))
+            return 0; // issue #1661
         model->fill_sparse_analytical_jacobian(static_cast<double>(t),
                                                clamp_state_nonneg(data, y, spare), jac_data);
         // Still non-finite: once more, with the slots the mask leaves alone that
@@ -3005,8 +3066,12 @@ static int cvode_codegen_sparse_jac_body(sunrealtype t, N_Vector y, N_Vector /*f
                 return ClampReading::nan_only;
             return read_values(jac_data, static_cast<std::size_t>(sp.nnz));
         };
+        nonfinite_rows_of_pattern(jac_data, sp, static_cast<std::size_t>(model->n_species()),
+                                  data->clamp_bad_rows);
         const char *spare =
             spare_at_pole(data, y, jac_data, static_cast<std::size_t>(sp.nnz), read_at);
+        if (read_narrowed(data, y, spare, read_at))
+            return 0; // issue #1661
         rc = data->codegen_jac_sparse_fn(static_cast<double>(t), clamp_state_nonneg(data, y, spare),
                                          jac_data, &data->codegen_so_data);
         // Still non-finite: once more, with the slots the mask leaves alone that
@@ -5696,6 +5761,14 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
     // equivalent. So too a below-zero refusal.
     w.user_data.nonfinite_witness = NonFiniteWitness{};
     w.user_data.below_zero_refusal.clear();
+    // And on what the narrowed retry put back (issue #1661), which is for one
+    // run: record_clamp_tolerances clears it only where the solver is rebuilt,
+    // so a second run from the same state put a slot back from its first retry
+    // where the first run read it at 0, and the two differed (by 3.7 in V at
+    // ExactAtol(1e-4)). A run that continues the previous one is the same
+    // integration and keeps it, as it keeps the factor count above.
+    if (!opts.continues_trajectory)
+        w.user_data.clamp_kept.clear();
 
     // ─── Integration loop (no events, no sensitivities) ──────────────────────
     void *cvode_mem = w.cvode_mem;
