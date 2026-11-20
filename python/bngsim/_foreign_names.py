@@ -596,7 +596,10 @@ def lookup(owner: str, name: str) -> ForeignName | None:
 # no name the class does not have; the API reference skips it too (docs/conf.py).
 # dir() of the class itself lists it, with its hint as its docstring, as help()
 # does: hiding it there takes a metaclass, which a subclass mixing in another
-# (abc.ABC) would then conflict with.
+# (abc.ABC) would then conflict with. Read on the class it raises, as
+# getattr(type, "__abstractmethods__") does for a name dir(type) lists, so
+# code that walks dir(cls) catches AttributeError, as inspect.getmembers,
+# pydoc, Sphinx and unittest.mock do.
 
 
 class _ForeignAttribute:
