@@ -12399,12 +12399,16 @@ class Simulator(metaclass=NamesTheCall):
         return f"Simulator(method='{self._method}', model={self._model!r})"
 
 
-def _require_model(model: object) -> NoReturn:
-    """Refuse what ``Simulator(...)`` was given in place of a :class:`Model`."""
+def _require_model(model: object) -> None:
+    """Refuse what ``Simulator(...)`` was given in place of a :class:`Model`: a
+    path or model text, or anything without the engine handle a Model holds.
+    A stand-in that has one passes, as a test double of a Model does."""
     source = _foreign_names.model_source(model, lambda load: f"bngsim.Simulator({load})")
     if source is not None:
         what, call = source
         raise TypeError(f"Simulator() runs a Model, not {what}: build the Model first, {call}.")
+    if hasattr(model, "_core"):
+        return
     raise TypeError(
         f"Simulator() runs a bngsim.Model, not a value of type {type(model).__name__}: "
         "bngsim.Simulator(bngsim.Model.load(path))."

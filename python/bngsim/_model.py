@@ -3393,16 +3393,15 @@ _NUMBER_OR_NAME = re.compile(r"(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?|([A-Za-z_]\w
 
 
 def _require_core(core: object) -> None:
-    """Refuse what ``Model(...)`` is given unless it is the engine's model.
+    """Refuse what ``Model(...)`` is given in place of the engine's model: a
+    path or model text, or anything without the ``param_names`` the
+    constructor reads first.
 
     ``Model(path)`` is what a caller who has not met the factories writes
     first, and it used to fail inside this constructor with "'str' object has
-    no attribute 'param_names'" (issue #1700).
+    no attribute 'param_names'" (issue #1700). The check is by attribute, not
+    by type, so a stand-in for the engine's model still passes.
     """
-    from bngsim._bngsim_core import NetworkModel
-
-    if isinstance(core, NetworkModel):
-        return
     source = _foreign_names.model_source(core)
     if source is not None:
         what, loader = source
@@ -3412,6 +3411,8 @@ def _require_core(core: object) -> None:
             else ""
         )
         raise TypeError(f"Model() does not take {what}: use {loader}{tail}.")
+    if hasattr(core, "param_names"):
+        return
     raise TypeError(
         f"Model() is built by its loaders, not called with a value of type "
         f"{type(core).__name__}: use bngsim.Model.load(path), or "
