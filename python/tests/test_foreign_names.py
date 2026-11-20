@@ -87,15 +87,29 @@ PINNED = {
         "steadyState", "timeCourseSelections",
     ],
     "Result": [
-        "as_dataframe", "colnames", "columns", "df", "keys", "message", "plot", "shape",
-        "status", "success", "t", "times", "to_dataframe", "to_df", "to_numpy", "to_pandas",
-        "values", "y",
+        "as_dataframe", "colnames", "columns", "df", "message", "plot", "status", "success",
+        "t", "times", "to_dataframe", "to_df", "to_numpy", "to_pandas", "y",
     ],
     "Simulator.run": [
         "end", "integrator", "method", "n_steps", "points", "selections", "steps", "t_end",
         "t_eval", "t_start", "times", "tspan", "y0",
     ],
 }  # fmt: skip
+
+
+def test_the_table_holds_no_name_a_protocol_checks_for():
+    """A descriptor is a class attribute to inspect.getattr_static, which a
+    runtime_checkable Protocol reads on 3.12+: ``keys`` on Result would make
+    it pass for a mapping."""
+    assert not {e.name for e in fn.FOREIGN_NAMES} & fn.PROTOCOL_NAMES
+    from typing import Protocol, runtime_checkable
+
+    @runtime_checkable
+    class HasKeys(Protocol):
+        def keys(self) -> object: ...
+
+    result = Simulator(Model.load(DECAY)).run(t_span=(0, 1), n_points=3)
+    assert not isinstance(result, HasKeys)
 
 
 def test_the_table_is_pinned():
@@ -333,6 +347,11 @@ def test_model_and_simulator_given_a_path_or_text_name_the_loader(given, loader)
     assert isinstance(built, Model)
 
 
+def test_a_string_that_is_no_path_is_not_called_one():
+    with pytest.raises(TypeError, match=r"not a string: build the Model first"):
+        Simulator("ode")  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize("given", [None, 42, [1, 2]])
 def test_model_and_simulator_given_something_else_say_what_they_take(given):
     with pytest.raises(TypeError, match=r"built by its loaders.*bngsim\.Model\.load\(path\)"):
@@ -554,6 +573,16 @@ def test_an_array_derived_from_species_takes_no_name(result, derive):
         derive(result.species)["A()"]
 
 
+def test_species_written_in_place_keeps_its_names():
+    r = Simulator(Model.load(DECAY)).run(t_span=(0, 1), n_points=3)
+    before = r.species["B()"].copy()
+    species = r.species
+    species += 1  # numpy hands back the out= array, and this name keeps it
+    assert species is r.species
+    np.testing.assert_array_equal(species["B()"], before + 1)
+    assert np.add(species, 0, out=species) is species
+
+
 def test_species_is_otherwise_the_same_numpy_array(result):
     species = result.species
     assert isinstance(species, np.ndarray)
@@ -584,6 +613,7 @@ def test_a_saved_result_takes_species_names_too(result, tmp_path):
         ("B()", r"'B\(\)' is a species: result\.species\['B\(\)'\]"),
         ("A", r"No column is named 'A'; close matches: 'A\(\)'"),
         (0, r"result\.species\[0\], result\.observables\[0\]"),
+        (slice(None, 2), r"result\.species\[\.\.\.\], result\.observables\[\.\.\.\]"),
     ],
 )
 def test_result_indexed_directly_names_the_block(result, key, says):

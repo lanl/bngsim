@@ -937,14 +937,14 @@ class Result(metaclass=NamesTheCall):
         - ``result.observables["name"]`` → single column ``(n_times,)``
         """
         return _ObservableAccessor(
-            self._observables, self._observable_names, "observable", self._blocks()
+            self._observables, self._observable_names, "observable", self._names_by_kind()
         )
 
     @property
     def expressions(self) -> _ObservableAccessor:
         """Expression (function) values with named access."""
         return _ObservableAccessor(
-            self._expressions, self._expression_names, "expression", self._blocks()
+            self._expressions, self._expression_names, "expression", self._names_by_kind()
         )
 
     # ─── Dimensions ─────────────────────────────────────────────────
@@ -1047,11 +1047,11 @@ class Result(metaclass=NamesTheCall):
                 self._core.raw_expression_data,
                 list(self._core.raw_expression_names),
                 "expression",
-                self._blocks(),
+                self._names_by_kind(),
                 "result.raw_expression_names",
             )
         return _ObservableAccessor(
-            self._expressions, self._expression_names, "expression", self._blocks()
+            self._expressions, self._expression_names, "expression", self._names_by_kind()
         )
 
     @property
@@ -3905,18 +3905,14 @@ class Result(metaclass=NamesTheCall):
 
     # ─── Names that are not the API (issue #1700) ──────────────────
 
-    def _blocks(self) -> tuple[tuple[str, str, list[str]], ...]:
-        """``(kind, attribute, names)`` for each named block, for :func:`_where_is`."""
-        return (
-            ("species", "species", self._species_names),
-            ("observable", "observables", self._observable_names),
-            ("expression", "expressions", self._expression_names),
-        )
+    def _names_by_kind(self) -> tuple[list[str], list[str], list[str]]:
+        """The species, observable and expression names, for :func:`_where_is`."""
+        return self._species_names, self._observable_names, self._expression_names
 
     def _where_is(self, name: str, besides: str | None = None) -> str | None:
         """Which of this result's blocks holds a column *name*, as the code
         that reads it, or ``None``. *besides* is a block not to look in."""
-        return _where_is(name, self._blocks(), besides)
+        return _where_is(name, self._names_by_kind(), besides)
 
     def __dir__(self) -> list[str]:
         # Without the names of bngsim._foreign_names' table (issue #1700).
@@ -3949,7 +3945,8 @@ class Result(metaclass=NamesTheCall):
                         else f"No column is named {key!r}."
                     )
                 raise TypeError(f"{text} by name. {where}")
-            raise TypeError(f"{text}: result.species[{key!r}], result.observables[{key!r}].")
+            shown = repr(key) if isinstance(key, int) else "..."
+            raise TypeError(f"{text}: result.species[{shown}], result.observables[{shown}].")
 
         # With __getitem__ defined, Python would iterate a Result by calling it
         # with 0, 1, 2, ...; None keeps iter() and ``in`` refusing, as before.
@@ -3996,13 +3993,17 @@ def _unclamped(name: str) -> str:
     return _unclamped(name)
 
 
+_KINDS = (("species", "species"), ("observable", "observables"), ("expression", "expressions"))
+
+
 def _where_is(
-    name: str, blocks: Iterable[tuple[str, str, list[str]]], besides: str | None = None
+    name: str, names_by_kind: tuple[list[str], ...], besides: str | None = None
 ) -> str | None:
-    """The block of *blocks* (``(kind, attribute, names)``) holding a column
-    *name*, as the code that reads it, or ``None`` (issue #1700). A fixed
-    species' ``$`` may be given, as the model's names never hold it."""
-    for kind, attr, names in blocks:
+    """The block holding a column *name*, as the code that reads it, or
+    ``None`` (issue #1700). *names_by_kind* is a Result's species, observable
+    and expression names; *besides* a kind not to look in. A fixed species'
+    ``$`` may be given, as the model's names never hold it."""
+    for (kind, attr), names in zip(_KINDS, names_by_kind, strict=False):
         if kind == besides:
             continue
         if name in names or (kind == "species" and _unclamped(name) in names):
@@ -4035,7 +4036,7 @@ class _SpeciesArray(np.ndarray):
     # the class's None. ndarray subclasses carry attributes in a __dict__.
     _plain: NDArray[np.float64] | None = None
     _index: dict[str, int] | None = None
-    _blocks: tuple[tuple[str, str, list[str]], ...] = ()
+    _names_by_kind: tuple[list[str], ...] = ()
 
     @classmethod
     def over(cls, data: NDArray[np.float64], names: list[str], result: Any) -> _SpeciesArray:
@@ -4045,10 +4046,10 @@ class _SpeciesArray(np.ndarray):
         # more than on the array itself, and what it returns is a plain ndarray.
         view._plain = plain
         view._index = {n: i for i, n in enumerate(names)}
-        # The other blocks' names, for the "is an observable" hint. Names, not
-        # the Result: the Result holds this view, so a reference back would be a
+        # The blocks' names, for the "is an observable" hint. Names, not the
+        # Result: the Result holds this view, so a reference back would be a
         # cycle, and a large result would wait for the cyclic collector.
-        view._blocks = tuple(b for b in result._blocks() if b[0] != "species")
+        view._names_by_kind = result._names_by_kind()
         return view
 
     def _column(self, name: str) -> int:
@@ -4065,7 +4066,7 @@ class _SpeciesArray(np.ndarray):
         bare = _unclamped(name)
         if bare in index:
             return index[bare]
-        where = _where_is(name, self._blocks)
+        where = _where_is(name, self._names_by_kind, besides="species")
         if where is None:
             close = _foreign_names.near_matches(name, index)
             where = f"Close matches: {_foreign_names.quote_list(close)}." if close else None
@@ -4091,10 +4092,14 @@ class _SpeciesArray(np.ndarray):
 
     def __array_wrap__(self, arr: Any, context: Any = None, return_scalar: bool = False) -> Any:
         # A ufunc's output is a plain array: it is a new array, whose columns this
-        # class knows nothing about.
+        # class knows nothing about. Except where it is written into this one
+        # (``out=``, which ``species += 1`` is): numpy returns ``out`` itself, and
+        # the name it is bound to keeps it.
         if return_scalar:
             return arr[()]
-        return arr.view(np.ndarray) if isinstance(arr, _SpeciesArray) else arr
+        if not isinstance(arr, _SpeciesArray) or arr._index is not None:
+            return arr
+        return arr.view(np.ndarray)
 
     def __reduce__(self) -> Any:
         return np.asarray(self).__reduce__()
@@ -4121,25 +4126,25 @@ class _ObservableAccessor:
     matching what the same key does on the underlying array.
     """
 
-    __slots__ = ("_data", "_names", "_name_to_idx", "_kind", "_blocks", "_listed")
+    __slots__ = ("_data", "_names", "_name_to_idx", "_kind", "_names_by_kind", "_listed")
 
     def __init__(
         self,
         data: NDArray[np.float64],
         names: list[str],
         kind: str = "observable",
-        blocks: tuple[tuple[str, str, list[str]], ...] = (),
+        names_by_kind: tuple[list[str], ...] = (),
         listed: str | None = None,
     ) -> None:
         self._data = data
         self._names = names
         self._name_to_idx = {n: i for i, n in enumerate(names)}
         # For the KeyError (issue #1700): what a name is looked up as, the
-        # Result's blocks to look in for one that is something else (their
-        # names, not the Result, so an accessor kept does not keep the Result's
-        # arrays alive), and where the names are listed.
+        # Result's names to look in for one that is something else (the lists,
+        # not the Result, so an accessor kept does not keep the Result's arrays
+        # alive), and where the names are listed.
         self._kind = kind
-        self._blocks = blocks
+        self._names_by_kind = names_by_kind
         self._listed = listed or f"result.{kind}_names"
 
     def __getitem__(self, key: str | int | slice) -> NDArray[np.float64]:
@@ -4152,7 +4157,7 @@ class _ObservableAccessor:
 
     def _not_found(self, key: str) -> str:
         text = f"{self._kind.capitalize()} '{key}' not found."
-        where = _where_is(key, self._blocks, besides=self._kind)
+        where = _where_is(key, self._names_by_kind, besides=self._kind)
         if where is None:
             close = _foreign_names.near_matches(key, self._names)
             where = f"Close matches: {_foreign_names.quote_list(close)}." if close else None

@@ -3275,6 +3275,11 @@ class Model(metaclass=NamesTheCall):
         is when it is a species, an observable or a function, else the near
         matches (issue #1700)."""
         head = f"Parameter '{name}' not found in model."
+        if name in self._core.param_names:
+            # The engine's binding reports any failure after the lookup as a
+            # missing name; a hint would send the caller after a typo there is
+            # none of, so say no more than it did.
+            return head[:-1]
         why = self._not_a_parameter(name, value)
         return f"{head} {why or f'Model.param_names lists all {self.n_parameters}.'}"
 

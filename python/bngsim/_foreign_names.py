@@ -381,19 +381,7 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
             "DataFrame's.",
         ),
         (
-            "keys",
-            "result.observable_names",
-            "result.species_names names the species columns, and result.dataframe.columns the "
-            "DataFrame's.",
-        ),
-        (
             "to_numpy",
-            "result.species",
-            "result.time, result.species, result.observables and result.expressions are numpy "
-            "arrays.",
-        ),
-        (
-            "values",
             "result.species",
             "result.time, result.species, result.observables and result.expressions are numpy "
             "arrays.",
@@ -443,12 +431,6 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
         "Result",
         "guess",
         ("times", "result.time"),
-        (
-            "shape",
-            "result.species.shape",
-            "A Result holds several arrays, each with its own shape: result.observables.shape, "
-            "result.time.shape.",
-        ),
     )
     # ── Simulator.run keywords ───────────────────────────────────────────
     + _entries(
@@ -500,6 +482,14 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
         ("times", "sample_times=times"),
         ("tspan", "t_span=(t_start, t_end)"),
     )
+)
+
+#: Names the table must not hold. A descriptor is a real class attribute to
+#: ``inspect.getattr_static``, which a ``typing.runtime_checkable`` protocol
+#: reads on 3.12 and later, so ``keys`` on Result would make it pass for a
+#: mapping, and ``shape`` or ``values`` for an array or a frame.
+PROTOCOL_NAMES = frozenset(
+    {"keys", "values", "items", "shape", "dtype", "ndim", "read", "write", "close", "send"}
 )
 
 #: The owners an attribute lookup reports under, and the keyword-argument owner.
@@ -688,7 +678,12 @@ def model_source(value: object, wrap: Callable[[str], str] = str) -> tuple[str, 
             f"{wrap('bngsim.Model.from_antimony_string(text)')} for Antimony, or "
             f"{wrap('bngsim.Model.from_sbml_string(text)')} for SBML"
         )
-    return "a path", wrap("bngsim.Model.load(path)")
+    suffix = os.path.splitext(value.strip())[1].lower()
+    looks_like_a_path = suffix in _MODEL_SUFFIXES or os.sep in value or os.path.exists(value)
+    return ("a path" if looks_like_a_path else "a string"), wrap("bngsim.Model.load(path)")
+
+
+_MODEL_SUFFIXES = (".net", ".bngl", ".xml", ".sbml", ".ant")
 
 
 # ─── Keyword arguments ──────────────────────────────────────────────────────
