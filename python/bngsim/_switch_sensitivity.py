@@ -11732,24 +11732,39 @@ def _dtstar_columns(
     return dtstar, moved
 
 
-def _in_window(
-    t_start: float, t_end: float, t_star: float, clock_idx0: int, elapsed: float
-) -> bool:
-    """Whether a crossing is in the run's half-open window ``(t_start, t_end]``.
+def _placed_in_window(
+    t_start: float,
+    t_end: float,
+    t_star: float,
+    clock_idx0: int,
+    threshold: float,
+    clock_now: float,
+) -> float | None:
+    """Where the run takes a crossing inside its half-open window
+    ``(t_start, t_end]``, or ``None`` for one outside it.
 
-    A crossing on a counter clock is judged by *elapsed*, its time after the
-    start in exact arithmetic: ``threshold - c(t_start)``, a difference of two
-    of the counter's own values (issue #1828). Its time ``t_start + elapsed``
-    is rounded to the doubles at ``t_start``, 16 apart at 1e17, so judged by
-    that, one 2.5 after the start was dropped as on it, and one 36 after it, in
-    a run of 32, was kept as on the end and made its jump in the last row. The
-    core places a counter's switch time from the counter wherever the run is on
-    its own clock, and refuses one whose rounding loses it where the run is not
-    (``CvodeSimulator::run``). A crossing on literal time is judged by its time.
+    A crossing on literal time is at *t_star*. One on a counter clock is where
+    the counter reaches *threshold* from *clock_now*: ``threshold - clock_now``
+    after the start (issue #1828). Whether that is inside the run is decided
+    in exact arithmetic (``math.fsum``), and its time is that sum rounded once.
+    The sum was rounded twice, to the doubles at ``t_start`` (16 apart at
+    1e17), and judged by that, one 2.5 after a far start was dropped as on it,
+    one 36 after it in a run of 32 was kept as on the end, and from (0.6, 1.7)
+    one 1.1 after the start, past the end by an ulp, was kept and the run
+    refused. One inside the run whose time rounds onto the start is listed on
+    it: a run the core moves onto its own clock places it from the counter
+    again, as finely as the run from 0, and a run on its given clock is refused,
+    since its jump would be lost (``CvodeSimulator::run``).
     """
-    if clock_idx0 >= 0:
-        return 0.0 < elapsed <= t_end - t_start
-    return t_start < t_star <= t_end
+    if clock_idx0 < 0:
+        return t_star if t_start < t_star <= t_end else None
+    if not (math.isfinite(threshold) and math.isfinite(clock_now)):
+        return None
+    if math.fsum((threshold, -clock_now)) <= 0.0:
+        return None
+    if math.fsum((t_start, threshold, -clock_now, -t_end)) > 0.0:
+        return None
+    return math.fsum((t_start, threshold, -clock_now))
 
 
 def _absorb_schedule_crossings(
@@ -11841,12 +11856,15 @@ def _absorb_schedule_crossings(
         return
 
     for value, partials in edges:
-        t_star = t_start + (value - clock_now)
         # The same half-open window the rest of the loop applies, so a schedule
-        # on a counter clock is filtered by exactly the test a threshold on it
-        # would be: by its time after the start, which does not round.
-        if not _in_window(t_start, t_end, t_star, clock_idx0, value - clock_now):
+        # on a counter clock is filtered and placed by exactly the test a
+        # threshold on it would be.
+        placed = _placed_in_window(
+            t_start, t_end, t_start + (value - clock_now), clock_idx0, value, clock_now
+        )
+        if placed is None:
             continue
+        t_star = placed
         dtstar, _ = _dtstar_columns(partials, col_of, n_cols)
         _absorb_crossing(
             found,
@@ -12118,14 +12136,17 @@ def compute_switch_time_sens(
                     # Half-open window, matching the core's own filter: a crossing
                     # on t_end still jumps into the final recorded column; one on
                     # t_start would precede the run's initial recording.
-                    if not _in_window(
+                    placed = _placed_in_window(
                         t_start,
                         t_end,
                         t_star,
                         clock_idx0,
-                        threshold_value - clock_now if clock_idx0 >= 0 else 0.0,
-                    ):
+                        threshold_value,
+                        clock_now if clock_idx0 >= 0 else t_start,
+                    )
+                    if placed is None:
                         continue
+                    t_star = placed
 
                     _absorb_crossing(
                         found,

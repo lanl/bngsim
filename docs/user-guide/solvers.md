@@ -798,16 +798,23 @@ after it at +16; with `X' = k A` past the crossing (`A' = -A`, k = 2, A(0) = 1)
 one 2.5 after `1e16` was placed at +2, and dX/dsigma came back -0.271 for
 -0.164. Each is now the run from 0's, whatever the run's length. The stop that
 lands the integrator on the switch is still placed on the clock the run was
-given, so a far run can differ from the run from 0 within its tolerances.
+given, so a far run can differ from the run from 0 within its tolerances. A far
+run below 0 is counted from its end, so a long one starts where its own clock
+is coarse again, and its trajectory and columns there are off with no error:
+ending at `-1e17`, a column read 2.5 after the start is 1e-6 off over `2**30`,
+7e-4 off over `2**40` and 7% off over `2**46`. Start such a run at 0 or above,
+with the offset written into the model.
 
-Where the run keeps the clock it was given (a model that reads it, below), a
-crossing on a counter is placed there, to the spacing of the doubles, like every
-other time in the run. A sensitivity run whose requested columns such a
-crossing moves is refused with `SensitivityUnsupportedError` (issue #1828)
-where the crossing is inside the run but its time rounds onto the start or past
-the end, since its jump would be lost: from `1e6`, 1.2e-10 apart, one 4e-11
-after the start. Whether a crossing is inside the run is decided by the time
-elapsed to it, which does not round.
+Where the run keeps the clock it was given (a run whose end nearer 0 is within
+2^20 of it, or a model that reads the clock, below), a crossing on a counter is
+placed there, to the spacing of the doubles, like every other time in the run.
+Whether it is inside the run is decided by the time elapsed to it, in exact
+arithmetic. A sensitivity run whose requested columns such a crossing moves is
+refused with `SensitivityRefusedForParametersError` (a
+`SensitivityUnsupportedError`; issue #1828) where the crossing is inside the
+run but its time rounds onto the start, since its jump would be lost: from
+`1e6`, 1.2e-10 apart, one 4e-11 after the start. A column the crossing does not
+move may still be run on its own.
 
 `run_diffrax` is not moved either: it integrates on the clock it is given, and
 from `1e15` it ends at its step limit with an error.

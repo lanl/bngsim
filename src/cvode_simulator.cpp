@@ -17136,8 +17136,10 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         // the counter on the run's own clock, each is where the run's counter
         // reaches it, as in the run from 0, and no error is left to bound.
         // Python lists such a crossing by that elapsed time, not by where it
-        // rounds. (A crossing stop is placed as before: its threshold is read
-        // back from its rounded time, and it only lands the step.)
+        // rounds. (One that rounds onto the start here is refused below, in
+        // the run on this clock. A crossing stop is placed as before: its
+        // threshold is read back from its rounded time, and it only lands the
+        // step.)
         {
             std::vector<double> start(static_cast<std::size_t>(ns));
             model.get_state_into(start.data());
@@ -17147,6 +17149,16 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                         elapsed.t_start +
                         (sw.threshold - start[static_cast<std::size_t>(sw.clock_species_idx0)]);
             }
+            // Python lists them by their rounded times, and two that rounded
+            // onto one double can be the wrong way round once apart. The run
+            // takes its switch times in order: with X' = k A past each of two
+            // crossings, 20 and 18 after a start at 1e17, listed in that order,
+            // both jumps were taken at +20, and dX/ds2 was -0.736 for -0.813.
+            std::stable_sort(moved.sensitivity.switch_times.begin(),
+                             moved.sensitivity.switch_times.end(),
+                             [](const SwitchTimeSens &a, const SwitchTimeSens &b) {
+                                 return a.t_star < b.t_star;
+                             });
         }
         // Each move back is exact, in the reverse order.
         const auto back = [&origins](double t) {
@@ -17178,14 +17190,16 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         }
     }
 
-    // A run on the absolute clock (one that reads it, or one nearer 0, or one
-    // moved above, whose switch times are placed exactly) takes a counter's
-    // switch time where t_start + (threshold - c(t_start)) rounds, like every
-    // other time in it. Python lists a crossing by that elapsed time (issue
-    // #1828), so one inside the run whose time rounds onto its start, or past
-    // its end, is here; the window below drops it, and the jump it makes in
-    // the requested columns with it: from 1e6 (1.2e-10 apart) one 4e-11 after
-    // the start, and dX/dsigma came back 0 for -2. Refused.
+    // A run on its given clock (one that reads it, or one nearer 0, or a run
+    // moved above) takes a counter's switch time where Python placed it,
+    // t_start + (threshold - c(t_start)) rounded once, like every other time
+    // in it. Python lists a crossing inside the run by that elapsed time
+    // (issue #1828), so one whose time rounds onto the start is here; the
+    // window below would drop it, and the jump it makes in the requested
+    // columns with it: from 1e6 (1.2e-10 apart) one 4e-11 after the start,
+    // and dX/dsigma came back 0 for -2. Taken a double after the start
+    // instead, the run fails (CV_TOO_CLOSE). Refused, as a refusal of the
+    // columns that move it.
     {
         const SwitchTimeSens *lost = nullptr;
         double lost_after = 0.0;
@@ -17222,7 +17236,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 model.species_names()[static_cast<std::size_t>(lost->clock_species_idx0)].c_str(),
                 lost_after, t0, apart,
                 lost->t_star <= times.t_start ? "onto the start" : "past the run's end");
-            throw SensitivityUnsupported(text);
+            // A column moves the crossing: one that does not may run alone.
+            throw SensitivityRefusedForParameters(text);
         }
     }
 

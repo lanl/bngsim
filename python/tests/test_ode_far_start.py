@@ -339,10 +339,13 @@ def test_a_counter_crossing_that_rounds_onto_a_far_start_is_placed_from_the_coun
 
 def test_a_crossing_rounded_onto_a_nearer_start_is_refused_too(tmp_path):
     # The rounding depends on the spacing at the start and the crossing's
-    # distance, not on how far out the start is: from 1e6 (1.2e-10 apart) a
-    # crossing 4e-11 after it rounds onto it, and the column was 0 for -2.
+    # distance, not on how far out the start is: from 1e6 (1.2e-10 apart), a
+    # run kept on the clock it was given, a crossing 4e-11 after the start
+    # rounds onto it, and the column was 0 for -2.
+    # Refused as the requested columns' refusal: one the crossing does not move
+    # may run alone (compute_all_sensitivities retries column by column).
     with pytest.raises(
-        bngsim.SensitivityUnsupportedError,
+        bngsim.SensitivityRefusedForParametersError,
         match=r"crosses 4e-11 after the start.*rounds onto the start.*issue #1828",
     ):
         _clock_run(tmp_path, 1e6, sens=["sigma"], c0=repr(3 - 4e-11))
@@ -552,9 +555,8 @@ def test_a_schedule_edge_that_rounds_onto_the_start_is_refused(tmp_path):
         return sim.run(sample_times=[start, start + 16.0, start + 32.0])
 
     near = run(0.0)
-    x = list(near.species_names).index("X()")
     # The jumps are exact multiples of k; 1e-6 is the file's bound on the column.
-    assert np.asarray(near.sensitivities)[1:, x, 0] == pytest.approx([-8.0, -14.0], abs=1e-6)
+    assert _column(near)[1:] == pytest.approx([-8.0, -14.0], abs=1e-6)
     with pytest.raises(
         bngsim.SensitivityUnsupportedError, match=r"crosses 4e-11 after the start.*issue #1828"
     ):
@@ -587,6 +589,83 @@ def test_a_schedule_edge_between_far_doubles_is_placed_from_the_counter(tmp_path
     # The jump is exactly -k; 1e-6 is the file's bound on the column.
     assert _column(near) == pytest.approx([0.0, 0.0, -2.0], abs=1e-6)
     assert _column(far) == pytest.approx(_column(near), abs=1e-6)
+
+
+def test_two_crossings_that_round_onto_one_double_are_taken_in_order(tmp_path):
+    # From 1e17 a crossing of sigma 20 after the start and one of s2 18 after
+    # it both round to +16, and are listed in the order the laws are written,
+    # sigma's first. Placed from the counter they are apart again, the later
+    # first: the run took both jumps at +20, and with X' = k A, Y' = k A past
+    # each (A' = -A/20), dY/ds2 was -0.736 for -0.813.
+    text = (
+        DECAY_NET.replace("3 k      2", "3 k      2\n    6 s2     18.5")
+        .replace("2 sigma  3", "2 sigma  20.5")
+        .replace("5 kd     1", "5 kd     0.05")
+        .replace("    3 A() 1\n", "    3 A() 1\n    4 Y() 0\n")
+        .replace(
+            "    1 rate_X() if(t>=sigma,k*a,0)\n",
+            "    1 rate_X() if(t>=sigma,k*a,0)\n    2 rate_Y() if(t>=s2,k*a,0)\n",
+        )
+        .replace("    3 3 0 kd\n", "    3 3 0 kd\n    4 0 4 rate_Y\n")
+    )
+    assert "6 s2     18.5" in text and "2 rate_Y()" in text and "4 0 4 rate_Y" in text
+    net = tmp_path / "two.net"
+    net.write_text(text)
+
+    def run(start):
+        sim = bngsim.Simulator(
+            bngsim.Model.from_net(str(net)), "ode", sensitivity_params=["sigma", "s2"]
+        )
+        r = sim.run(
+            sample_times=[start + o for o in (0.0, 16.0, 32.0, 64.0)], rtol=1e-10, atol=1e-12
+        )
+        names = list(r.species_names)
+        sens = np.asarray(r.sensitivities)
+        return sens[:, names.index("X()"), 0], sens[:, names.index("Y()"), 1]
+
+    (x_far, y_far), (x_near, y_near) = run(1e17), run(0.0)
+    assert x_far[-1] == pytest.approx(-2.0 * math.exp(-0.05 * 20.0), rel=1e-6)
+    assert y_far[-1] == pytest.approx(-2.0 * math.exp(-0.05 * 18.0), rel=1e-6)
+    assert x_far == pytest.approx(x_near, rel=1e-8, abs=1e-12)
+    assert y_far == pytest.approx(y_near, rel=1e-8, abs=1e-12)
+
+
+def test_a_crossing_an_ulp_past_the_end_is_not_in_the_run(tmp_path):
+    # Whether a counter crossing is inside the run is decided in exact
+    # arithmetic. Over (0.6, 1.7) with C from 0, the crossing of 1.1 is at
+    # 0.6 + 1.1 = 1.70000000000000007 in the doubles given, past the end
+    # (1.69999999999999996): the counter does not reach sigma in the run, X
+    # stays 0, and so does the column. The doubles' difference 1.7 - 0.6
+    # rounds up to 1.1, and judged by that the crossing was listed, placed one
+    # double past the end, and the run refused with "Start the run nearer 0".
+    net = tmp_path / "clock.net"
+    net.write_text(
+        CLOCK_NET.replace("1 c0     0.5", "1 c0     0").replace("2 sigma  3", "2 sigma  1.1")
+    )
+    assert 0.6 + 1.1 > 1.7 and 1.7 - 0.6 == 1.1
+    sim = bngsim.Simulator(bngsim.Model.from_net(str(net)), "ode", sensitivity_params=["sigma"])
+    run = sim.run(sample_times=[0.6, 1.15, 1.7])
+    # X within the file's bound: the step that ends the run may go an
+    # atol-sized way past the counter's threshold.
+    assert _species(run)[:, list(run.species_names).index("X()")] == pytest.approx(
+        [0.0] * 3, abs=1e-6
+    )
+    assert np.array_equal(_column(run), [0.0, 0.0, 0.0])
+
+
+def test_a_crossing_exactly_on_the_end_of_a_run_near_0_jumps_into_its_last_row(tmp_path):
+    # C from 0.6 at 0.6 crosses 1.7 at 1.7, the run's end, in exact arithmetic.
+    # 1.7 - 0.6 is a tie the doubles round up, so t_start + (sigma - c0),
+    # rounded twice, is a double past the end; rounded once it is the end.
+    net = tmp_path / "clock.net"
+    net.write_text(
+        CLOCK_NET.replace("1 c0     0.5", "1 c0     0.6").replace("2 sigma  3", "2 sigma  1.7")
+    )
+    assert 0.6 + (1.7 - 0.6) > 1.7
+    sim = bngsim.Simulator(bngsim.Model.from_net(str(net)), "ode", sensitivity_params=["sigma"])
+    assert _column(sim.run(sample_times=[0.6, 1.15, 1.7])) == pytest.approx(
+        [0.0, 0.0, -2.0], abs=1e-6
+    )
 
 
 # Two counters, C from 0.5 and D from 1.5, crossing 3 and 4 at one instant,
