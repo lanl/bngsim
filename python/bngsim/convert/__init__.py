@@ -897,6 +897,59 @@ def _not_as_generated(model: Any, bngl: Path, protocol: ProtocolSpec | None) -> 
         work = _at_declared_parameters(model, params, moved)
         if work is None:
             return []
+    # A moved parameter the .bngl declares as an expression (B0 10*k1) follows
+    # the parameters it reads until its own setParameter makes it a number. The
+    # .net holds it as the number last set, so the copy cannot follow it by
+    # itself: it is read again from its declaration after each setParameter.
+    # Read as the number, setParameter("k1",3) did not move B0, and the add
+    # after it gave 21 where BNG2.pl wrote 31.
+    pending: dict[str, str] = {}
+    if work is not model:
+        for pname, declared_text in params:
+            if pname in moved:
+                try:
+                    float(declared_text)
+                except ValueError:
+                    pending[pname] = declared_text
+
+    # In the order they read each other, so one pass writes each from values
+    # already written: parameters are declared without cycles. A cycle this
+    # reading cannot order gets no verdict.
+    order: list[str] = []
+    reads = {
+        pname: {
+            n
+            for n in pending
+            if n != pname and re.search(rf"(?<![\w.]){re.escape(n)}(?!\w)", text)
+        }
+        for pname, text in pending.items()
+    }
+    while len(order) < len(pending):
+        ready = [n for n in pending if n not in order and reads[n] <= set(order)]
+        if not ready:
+            return []
+        order.extend(ready)
+
+    def follow() -> bool:
+        """Each pending parameter written from its declaration, as the
+        parameters it reads stand now."""
+        for pname in order:
+            if pname in pending:
+                value = _value(work, pending[pname])
+                if value is None or not _write_parameter(work, pname, value):
+                    return False
+        return True
+
+    # An action's value read from an observable or a function is read by
+    # BNG2.pl from the amounts of that moment, before generation, and here only
+    # from the .net's, after it: no verdict.
+    state_names = [*model.observable_names, *model.function_names]
+
+    def reads_state(text: str | None) -> bool:
+        return bool(text) and any(
+            re.search(rf"(?<![\w.]){re.escape(n)}(?!\w)", text or "") for n in state_names
+        )
+
     held_as: dict[str, tuple[str, Any]] = {}  # species -> ("expr", text) or ("num", value)
     seed_of: dict[str, str] = {}
     every_seed_read = True
@@ -916,14 +969,16 @@ def _not_as_generated(model: Any, bngl: Path, protocol: ProtocolSpec | None) -> 
         if not isinstance(step, StateChange):
             continue
         if step.kind == "set_parameter":
-            if (
-                work is not model
-                and step.target in moved
-                and step.value is not None
-                and not _write_parameter(work, step.target or "", float(step.value))
-            ):
-                return []
+            if work is not model and step.target in moved and step.value is not None:
+                pending.pop(step.target or "", None)
+                if (
+                    not _write_parameter(work, step.target or "", float(step.value))
+                    or not follow()
+                ):
+                    return []
             continue
+        if reads_state(step.value_expr):
+            return []
         sname = _species_name(model, step.target or "")
         if sname is None:
             return []
@@ -942,9 +997,13 @@ def _not_as_generated(model: Any, bngl: Path, protocol: ProtocolSpec | None) -> 
             # number, its seed at this step. BNGModel.pm evaluates
             # $spec->Concentration, the seed, also after a setConcentration to
             # an expression, which the add so discards.
+            if sname not in held_as and not every_seed_read:
+                return []  # its seed may be one this reading could not match
             entry = held_as.get(sname, ("num", 0.0))
             if entry[0] == "expr":
-                entry = ("expr", seed_of.get(sname, entry[1]))
+                if sname not in seed_of:
+                    return []  # BNG2.pl adds to the seed, which was not read
+                entry = ("expr", seed_of[sname])
             base = now(entry)
             if base is None:
                 return []

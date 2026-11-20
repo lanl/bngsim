@@ -148,6 +148,27 @@ CASES = {
         "10*k1",
         70,
     ),
+    # B0 10*k1 follows k1 until its own setParameter: at the add it is 10*3, so
+    # B is 31. Read as the 20 the .net holds, the check wanted 21 and refused
+    # BNG2.pl's own network (the review of #1774).
+    "the seed's parameter follows what it reads until it is set": (
+        'setParameter("k1",3)\naddConcentration("B()",1)\nsetParameter("B0",20)',
+        20,
+        31,
+    ),
+    # Its own setParameter makes it a number: the add after reads 20, not 10*k1.
+    "the seed's parameter set, then an add": (
+        'setParameter("B0",20)\naddConcentration("B()",1)',
+        20,
+        21,
+    ),
+    # Moved twice before its own setParameter, an add after each: 31, then 32.
+    "the seed's parameter follows two setParameters of what it reads": (
+        'setParameter("k1",3)\naddConcentration("B()",1)\nsetParameter("k1",4)\n'
+        'addConcentration("B()",1)\nsetParameter("B0",20)',
+        20,
+        32,
+    ),
 }
 
 # What the .bngl declares B0 as (and beside it), where that is not "B0 10", and
@@ -157,10 +178,15 @@ DECLARED = {
     "the seed's parameter declared as arithmetic on numbers": "  B0 = 5 * 2",
     "the seed's parameter declared over another, both set later": "  B0 10*k1",
     "the seed's parameter an expression of the one that is set": "  B0 10*k1",
+    "the seed's parameter follows what it reads until it is set": "  B0 10*k1",
+    "the seed's parameter set, then an add": "  B0 10*k1",
+    "the seed's parameter follows two setParameters of what it reads": "  B0 10*k1",
 }
 K1_IN_NET = {
     "the seed's parameter declared over another, both set later": 3,
     "the seed's parameter an expression of the one that is set": 3,
+    "the seed's parameter follows what it reads until it is set": 3,
+    "the seed's parameter follows two setParameters of what it reads": 4,
 }
 
 
@@ -431,3 +457,107 @@ def test_a_declared_expression_may_read_a_parameter_declared_below_it(tmp_path):
     assert _at_declared_parameters(model, [("k2", "4")], {"B0", "k2"}) is None
     # A write the model refuses is a file the check cannot follow, not an error.
     assert _write_parameter(work, "not_a_parameter", 1.0) is False
+
+
+# --- where the check cannot follow BNG2.pl, no verdict ---------------------------
+#
+# A .net is refused only on a difference shown. These are readings the check
+# would get wrong, and it now gives none, as for a reset or a continued line.
+
+
+@pytest.mark.parametrize("b", [61, 999])
+def test_an_add_that_reads_an_observable_gets_no_verdict(tmp_path, b):
+    # BNG2.pl reads Btot from the amounts before generation; the .net's Btot,
+    # read here, is after it and holds the add's own result.
+    assert _not_generated(tmp_path, 'addConcentration("B()","Btot")', 10, b) == []
+
+
+def test_an_add_to_a_species_whose_seed_is_not_read_gets_no_verdict(tmp_path):
+    # A seed amount that does not evaluate here: the add's base would be taken
+    # as 0, where BNG2.pl adds to the seed.
+    bngl = tmp_path / "m.bngl"
+    bngl.write_text(
+        _bngl("", 'addConcentration("B()",5)').replace("  B() B0\n", "  B() B0*nosuch\n"),
+        encoding="utf-8",
+    )
+    assert "B0*nosuch" in bngl.read_text()
+    net = tmp_path / "m.net"
+    # 15: the seed, taken as 10, plus the 5 BNG2.pl adds to it. The check read
+    # the base as 0, wanted 5, and refused it.
+    net.write_text(_net("", 10, 15), encoding="utf-8")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        report = net_to_sbml(str(net), bngl=str(bngl), validate=None)
+    assert not [n for n in report.lossy if "is not the network" in n]
+
+
+# --- a chain of parameters declared as expressions, each set later ---------------
+#
+# kk 2*k1 and B0 10*kk both follow k1 until their own setParameter: at the add,
+# kk = 6 and B0 = 60, so B is 61. BNG2.pl 2.9.3 wrote this network.
+
+CHAIN_BNGL = BNGL.format(
+    declared="  kk 2*k1\n  B0 10*kk",
+    actions='setParameter("k1",3)\naddConcentration("B()",1)\n'
+    'setParameter("kk",50)\nsetParameter("B0",20)',
+)
+CHAIN_NET = """begin parameters
+    1 k1    3  # Constant
+    2 k2    1  # Constant
+    3 kk    50  # Constant
+    4 B0    20  # Constant
+end parameters
+begin species
+    1 A() 100
+    2 B() 61
+end species
+begin reactions
+    1 1 2 k1 #_R1
+    2 2 1 k2 #_reverse__R1
+end reactions
+begin groups
+    1 Btot                 2
+end groups
+"""
+
+
+@pytest.mark.parametrize("b", [61, 62])
+@pytest.mark.parametrize("order", ["as declared", "reversed"])
+def test_a_chain_of_expressions_follows_in_the_order_they_read(tmp_path, order, b):
+    # Reversed, B0 is declared above the kk it reads (BNG2.pl refuses that file,
+    # so it has no network of its own); the reading must not depend on the order.
+    bngl_text = CHAIN_BNGL
+    if order == "reversed":
+        bngl_text = bngl_text.replace("  kk 2*k1\n  B0 10*kk", "  B0 10*kk\n  kk 2*k1")
+    assert ("B0 10*kk\n  kk" in bngl_text) == (order == "reversed")
+    bngl = tmp_path / "m.bngl"
+    bngl.write_text(bngl_text, encoding="utf-8")
+    net = tmp_path / "m.net"
+    net.write_text(CHAIN_NET.replace("2 B() 61", f"2 B() {b}"), encoding="utf-8")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        report = net_to_sbml(str(net), bngl=str(bngl), validate=None)
+    notes = [n for n in report.lossy if "is not the network" in n]
+    if b == 61:
+        assert notes == []
+    else:
+        (note,) = notes
+        assert "B() is 62 there, 61 as declared" in note
+
+
+def test_an_add_after_a_set_to_an_expression_on_an_unread_seed_gets_no_verdict(tmp_path):
+    # The add adds to the seed, BNG2.pl's $spec->Concentration, not to the
+    # expression; with the seed unread, the check took the expression.
+    bngl = tmp_path / "m.bngl"
+    bngl.write_text(
+        _bngl("", 'setConcentration("B()","B0*2")\naddConcentration("B()",1)').replace(
+            "  B() B0\n", "  B() B0*nosuch\n"
+        ),
+        encoding="utf-8",
+    )
+    net = tmp_path / "m.net"
+    net.write_text(_net("", 10, 11), encoding="utf-8")  # the seed, taken as 10, plus 1
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        report = net_to_sbml(str(net), bngl=str(bngl), validate=None)
+    assert not [n for n in report.lossy if "is not the network" in n]
