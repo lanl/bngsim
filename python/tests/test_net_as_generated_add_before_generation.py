@@ -563,7 +563,6 @@ def test_an_add_after_a_set_to_an_expression_on_an_unread_seed_gets_no_verdict(t
     assert not [n for n in report.lossy if "is not the network" in n]
 
 
-
 # The chain can run through a parameter no setParameter writes: B0 R*10, R 2*Q,
 # Q 2*k1, with Q and B0 set later. R follows Q in the copy by itself, so B0 reads
 # Q only through it, and the order of the pending ones (Q, B0) has to be taken
@@ -602,7 +601,9 @@ end groups
 def test_a_chain_through_a_parameter_no_action_writes_is_followed(tmp_path, order, b):
     bngl_text = CHAIN2_BNGL
     if order == "reversed":
-        bngl_text = bngl_text.replace("  Q 2*k1\n  R 2*Q\n  B0 R*10", "  B0 R*10\n  R 2*Q\n  Q 2*k1")
+        bngl_text = bngl_text.replace(
+            "  Q 2*k1\n  R 2*Q\n  B0 R*10", "  B0 R*10\n  R 2*Q\n  Q 2*k1"
+        )
     assert ("B0 R*10\n  R 2*Q\n  Q 2*k1" in bngl_text) == (order == "reversed")
     bngl = tmp_path / "m.bngl"
     bngl.write_text(bngl_text, encoding="utf-8")
