@@ -394,6 +394,16 @@ def test_compartment_sizes_set_at_load_are_recorded():
     }
 
 
+def test_compartment_sizes_set_at_a_file_load_are_recorded(tmp_path):
+    path = tmp_path / "two.xml"
+    path.write_text(TWO_COMPARTMENTS, encoding="utf-8")
+    d = bngsim.Model.from_sbml(str(path), compartment_sizes={"nuc": 0.25}).describe()
+    assert d["source"]["compartment_sizes"] == {"nuc": 0.25}
+    assert d["source"]["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert d["compartments"][1]["size"] == 0.25
+    assert "compartment sizes set at load: nuc=0.25" in str(d)
+
+
 def test_a_compartment_with_no_size_says_so():
     text = TWO_COMPARTMENTS.replace(' size="0.5"', "")
     d = bngsim.Model.from_sbml_string(text).describe()
@@ -567,6 +577,22 @@ def test_forward_sensitivities_with_no_compiler(tmp_path, monkeypatch):
     assert fs["status"] == "unavailable"
     assert [r["code"] for r in fs["reasons"]] == ["no_compiler"]
     assert "no-such-compiler" in fs["reasons"][0]["message"]
+
+
+def test_forward_sensitivities_with_a_compiler_found_broken(tmp_path, monkeypatch):
+    """A toolchain a probe found unable to build is reported with its verdict."""
+    from bngsim import _codegen_toolchain
+
+    model, _ = _net(tmp_path)
+    monkeypatch.delenv("BNGSIM_NO_CODEGEN", raising=False)
+    monkeypatch.delenv("BNGSIM_CODEGEN_JIT", raising=False)
+    verdict = "cc cannot link a shared library (test)."
+    monkeypatch.setattr(_codegen_toolchain, "check", lambda: (["cc"], verdict))
+    fs = model.describe()["methods"]["forward_sensitivities"]
+    assert fs["status"] == "unavailable"
+    assert [r["code"] for r in fs["reasons"]] == ["no_compiler"]
+    assert fs["reasons"][0]["message"].startswith(verdict)
+    assert "backend" not in fs
 
 
 def test_forward_sensitivities_name_the_parameters_folded_at_load():
