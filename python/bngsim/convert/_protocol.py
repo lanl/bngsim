@@ -1120,6 +1120,11 @@ def write_bngl_protocol(
         (e.g. ``@comp1:S1()``); the model-block writer does that translation.
     out_path : str | Path | None
         If given, the actions text is also written here.
+    derived : Mapping[str, str] | None
+        The model's derived parameters, name to expression (``kd`` to ``A0``),
+        so a warning follows a change made through one, as BNG2.pl does. Without
+        the mapping, the warnings read only the names in each expression's text
+        (issue #1737).
 
     Returns
     -------

@@ -29,9 +29,11 @@ from bngsim import ConversionWarning
 from bngsim._bngpath import resolve_bng
 from bngsim.convert import (
     net_to_sbml,
+    omex_to_net,
     read_sedml_protocol,
     write_bngl,
     write_bngl_protocol,
+    write_omex,
     write_sedml_protocol,
 )
 from bngsim.convert._protocol import Experiment, ProtocolSpec, StateChange
@@ -537,6 +539,32 @@ def test_a_parameter_set_once_through_a_derived_one_is_warned_of_too():
         write_bngl_protocol(spec, derived=DERIVED)
 
 
+def test_a_function_call_is_no_parameter_of_the_parameter_warning():
+    # saveParameters, k2 set once to exp(1)*0.5, resetParameters: the reset
+    # counts every name the expression reads as changed, and it read "exp":
+    # "the parameter follows exp". BNG2.pl 2.9.3 runs this block as
+    # run_protocol does (A from 100 to 56.7668 at t = 1), so nothing is to be
+    # warned of. With k1*0.5 the same actions still warn.
+    def said(expr: str) -> list[str]:
+        spec = ProtocolSpec(
+            steps=(
+                StateChange(kind="save_parameters"),
+                StateChange(
+                    kind="set_parameter", target="k2", value_expr=expr, evaluated_once=True
+                ),
+                StateChange(kind="reset_parameters"),
+            )
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            write_bngl_protocol(spec)
+        return [str(w.message) for w in caught if "#1682" in str(w.message)]
+
+    assert said("exp(1)*0.5") == []
+    (message,) = said("k1*0.5")
+    assert "follows k1" in message
+
+
 def test_a_function_call_is_no_parameter_of_the_derived_walk():
     from bngsim.convert._protocol import _names_read
 
@@ -594,3 +622,106 @@ def test_a_derived_parameter_s_warning_is_where_bng2pl_runs_it_differently(
     assert len(ours) == len(theirs) and ours
     differs = ours != pytest.approx(theirs, rel=1e-5, abs=1e-6)
     assert differs == follows_, (ours, theirs)
+
+
+# --- the actions block omex_to_net writes beside its .net ---------------------
+#
+# omex_to_net writes an archive's protocol as a .bngl actions block for the .net
+# it wrote, and that .net declares the model's derived parameters: an SBML
+# initialAssignment kd = A0 is `kd A0` there, and BNG2.pl follows A0 through it.
+# The block's warnings take the derived parameters from the .net, as write_bngl's
+# take the model's.
+
+KD_TIMES_2 = A0_TIMES_2.replace(P.format("A0"), P.format("kd"))
+
+
+def _archive(tmp_path: Path, net_text: str, change: str) -> Path:
+    src = tmp_path / "src.net"
+    src.write_text(net_text)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        sbml = net_to_sbml(str(src), validate=None).sbml_text
+    return write_omex(tmp_path / "a.omex", sbml=sbml, sedml=_doc(change, _scan()))
+
+
+def _unpacked(omex: Path, **kwargs):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        report = omex_to_net(omex, strict=False, **kwargs)
+    return report, [str(w.message) for w in caught if "#1737" in str(w.message)]
+
+
+def test_omex_to_net_follows_the_written_net_s_derived_parameters(tmp_path):
+    omex = _archive(tmp_path, NET_DERIVED, KD_TIMES_2)
+    _, (said,) = _unpacked(omex, out_path=tmp_path / "o.net")
+    assert "species follows A0" in said
+
+
+def test_omex_to_net_follows_them_with_only_the_actions_path(tmp_path):
+    # No .net path: the .net is read back from the text it would have written.
+    omex = _archive(tmp_path, NET_DERIVED, KD_TIMES_2)
+    report, (said,) = _unpacked(omex, actions_out=tmp_path / "a.bngl")
+    assert "species follows A0" in said
+    assert report.bngl_out == str(tmp_path / "a.bngl")
+
+
+def test_omex_to_net_reads_the_text_alone_where_the_net_does_not_load_back(tmp_path, monkeypatch):
+    # A .net written with strict=False may not load back. The block is still
+    # written, and its warnings read each expression's text, as before: A0*2
+    # still warns of the sweep of A0, kd*2 does not.
+    archives = {}
+    for name, net_text, change in (("a0", NET, A0_TIMES_2), ("kd", NET_DERIVED, KD_TIMES_2)):
+        (tmp_path / name).mkdir()
+        archives[name] = _archive(tmp_path / name, net_text, change)
+
+    def refuse(cls, path, **kwargs):
+        raise bngsim.ModelError(f"{path}: does not load back")
+
+    monkeypatch.setattr(bngsim.Model, "from_net", classmethod(refuse))
+    for name, warned in (("a0", True), ("kd", False)):
+        out = tmp_path / name / "o.net"
+        report, said = _unpacked(archives[name], out_path=out, gate="none")
+        assert bool(said) == warned, said
+        assert Path(report.bngl_out).is_file()
+
+
+def test_omex_to_net_reads_the_net_back_only_for_a_change_evaluated_once(tmp_path, monkeypatch):
+    # The warnings read an expression only of a change evaluated once. With none
+    # in the archive (the sweep alone) the .net is not loaded again.
+    omex = _archive(tmp_path, NET_DERIVED, "")
+
+    def refuse(cls, path, **kwargs):
+        raise AssertionError(f"{path} was read back")
+
+    monkeypatch.setattr(bngsim.Model, "from_net", classmethod(refuse))
+    report, said = _unpacked(omex, out_path=tmp_path / "o.net", gate="none")
+    assert said == []
+    assert Path(report.bngl_out).is_file()
+
+
+@needs_bng2
+def test_omex_to_net_s_warning_is_where_bng2pl_runs_the_pair_differently(tmp_path):
+    """BNG2.pl runs the .net and the block (readFile, then the actions, as the
+    user guide says) following A0 through kd at each point of the sweep; the
+    document, and run_protocol, hold A where the change put it."""
+    omex = _archive(tmp_path, NET_DERIVED, KD_TIMES_2)
+    report, said = _unpacked(omex, out_path=tmp_path / "o.net")
+    assert said
+    block = Path(report.bngl_out).read_text(encoding="utf-8")
+    inner = block.split("begin actions\n", 1)[1].rsplit("end actions", 1)[0]
+    run = tmp_path / "run.bngl"
+    run.write_text('readFile({file=>"o.net"})\n' + inner, encoding="utf-8")
+    done = subprocess.run(
+        ["perl", str(Path(_BNG.bng2_pl).resolve()), run.name],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert done.returncode == 0, done.stdout[-2000:] + done.stderr[-2000:]
+    (scan,) = tmp_path.glob("*.scan")
+    rows = [line.split() for line in scan.read_text(encoding="utf-8").splitlines()]
+    theirs = [float(row[1]) for row in rows if row and not row[0].startswith("#")]
+    assert theirs == pytest.approx([a_at_1(2 * a0) for a0 in (10, 20, 30)], rel=1e-5)
+    ours = _scan_ends(_replay(tmp_path / "o.net", report.protocol))
+    assert ours == pytest.approx([a_at_1(200)] * 3, rel=1e-6)
