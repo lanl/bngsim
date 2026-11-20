@@ -29,6 +29,7 @@ since the first public release.
 
 from __future__ import annotations
 
+import ast
 import difflib
 import inspect
 import numbers
@@ -81,6 +82,19 @@ class ForeignName:
         use = f"Use {self.use}." if self.use else ""
         return " ".join(part for part in (use, self.note) if part)
 
+
+#: The Simulator calls whose wrong keywords and positional arguments are named.
+#: Each takes ``*_extra`` and ``**_foreign`` typed ``NoReturn`` and checks them
+#: first in its body (issue #1700).
+RUN_CALLS = (
+    "run",
+    "run_batch",
+    "run_replicates",
+    "parameter_scan",
+    "bifurcate",
+    "compute_all_sensitivities",
+    "run_until",
+)
 
 # BioNetGen's n_steps and RoadRunner's simulate(start, end, points) both read
 # naturally as n_points, and one of the two is off by one.
@@ -510,8 +524,66 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
         ("values", "par_scan_vals=values", "bngsim keeps BioNetGen's name."),
     )
     + _entries(
+        "Simulator.run_batch",
+        "SciPy",
+        (
+            "y0",
+            "model.set_concentration(name, value)",
+            "run_batch() starts every point from the initial conditions (Model.reset): set the "
+            "state, then model.save_concentrations() to make it the one reset returns to, or "
+            "set an initial-condition parameter in each params row.",
+        ),
+    )
+    + _entries(
+        "Simulator.run_batch",
+        "bngsim",
+        (
+            "start",
+            "",
+            "run_batch() starts every point from the initial conditions (Model.reset); "
+            "model.save_concentrations() first makes the current state the one it resets to.",
+        ),
+    )
+    + _entries(
+        "Simulator.run_replicates",
+        "bngsim",
+        (
+            "start",
+            "",
+            "Every replicate starts from the model's state at the call; model.reset() first "
+            "starts them from the initial conditions.",
+        ),
+    )
+    + _entries(
+        "Simulator.parameter_scan",
+        "bngsim",
+        (
+            "start",
+            "reset_to=label",
+            "Each point starts from the model's state at the call, or from a state saved with "
+            "model.save_concentrations(label); model.reset() first starts them from the initial "
+            "conditions.",
+        ),
+    )
+    + _entries(
+        "Simulator.run_until",
+        "bngsim",
+        (
+            "max_step",
+            "",
+            "run_until() takes no max_step: max_steps= is a count of steps, and "
+            "sim.run(..., max_step=...) bounds the size of one.",
+        ),
+        ("timeout", "", "run_until() takes no timeout; sim.run(..., timeout=...) does."),
+    )
+    + _entries(
         "Simulator.run_until",
         "guess",
+        (
+            "duration",
+            "t=sim.current_time + duration",
+            "run_until() runs on to the one time t, its first argument.",
+        ),
         *(
             (name, f"t={name}", "run_until() runs on to the one time t, its first argument.")
             for name in ("t_end", "end", "tend")
@@ -531,7 +603,7 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
             "run() takes explicit ones, sample_times=.",
             "bngsim" if name == "sample_times" else ("SciPy" if name == "t_eval" else "guess"),
         )
-        for method in ("run_batch", "run_replicates", "parameter_scan", "run_until")
+        for method in RUN_CALLS[1:]
         for name in ("sample_times", "times", "t_eval")
     ]
     # ── Patterns: for the agent guide only ───────────────────────────────
@@ -835,9 +907,16 @@ def _is_real(value: object) -> bool:
 
 
 def _short(value: object) -> str:
-    """*value* as code when its ``repr`` is short, else ``...``."""
+    """*value* as code when its ``repr`` is short and reads back as the value
+    (a numpy array's ``array([...])`` does not), else ``...``."""
     text = repr(value)
-    return text if len(text) <= 40 else "..."
+    if len(text) > 40:
+        return "..."
+    try:
+        ast.literal_eval(text)
+    except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+        return "..."
+    return text
 
 
 def signature_without_catch_alls(fn: Callable[..., Any]) -> inspect.Signature:
@@ -863,10 +942,6 @@ def _is_default(value: object, default: object) -> bool:
         return type(value) is type(default) and bool(value == default)
     except Exception:
         return False
-
-
-#: The run calls whose wrong keywords are named, and where their t_span goes.
-RUN_CALLS = ("run", "run_batch", "run_replicates", "parameter_scan", "run_until")
 
 
 def keyword_entry(method: str, name: str, takes: Container[str]) -> ForeignName | None:
@@ -988,10 +1063,14 @@ def rewrite_call(
             return None
         lead = positional.index("t_span")
         rest = args[lead:]
-        if len(args) < lead or len(rest) not in (3, 4) or not all(_is_real(a) for a in rest[:3]):
+        if len(rest) not in (3, 4) or not all(_is_real(a) for a in rest[:3]):
             return None
-        if len(rest) == 4 and not isinstance(rest[3], (list, tuple)):
-            return None
+        if len(rest) == 4:
+            fourth = rest[3]
+            if "params" in takes and _rows_of_dicts(fourth):
+                put("params", _given("params", fourth))  # run_batch's parameter sets
+            elif not (_names_list(fourth) and method == "run"):
+                return None  # selections, which a Result needs none of, only on run()
         for name, value in zip(positional[:lead], args[:lead], strict=True):
             put(name, _given(name, value))
         start, end = rest[0], rest[1]
@@ -1001,9 +1080,14 @@ def rewrite_call(
         ok = True
         if name in _RUN_START or (name == "start" and _is_real(value)):
             # "start" is RoadRunner's start time; run(start=...) of bngsim's own
-            # names a state, and is a string.
+            # names a state, and is a string. Two starts (or two ends) are two
+            # answers to one question, which a rewrite does not pick between.
+            if start is not None:
+                return None
             start = value
         elif name in _RUN_END:
+            if end is not None:
+                return None
             end = value
         elif name in _RUN_STEPS:
             ok = put("n_points", _count_text(value + 1) if _is_real(value) else None)
@@ -1038,6 +1122,18 @@ def rewrite_call(
     rank = {name: i for i, name in enumerate(order)}
     ordered = sorted(out.items(), key=lambda item: rank.get(item[0], len(rank)))
     return f"sim.{method}(" + ", ".join(f"{k}={v}" for k, v in ordered) + ")"
+
+
+def _rows_of_dicts(value: object) -> bool:
+    return (
+        isinstance(value, (list, tuple))
+        and bool(value)
+        and all(isinstance(v, dict) for v in value)
+    )
+
+
+def _names_list(value: object) -> bool:
+    return isinstance(value, (list, tuple)) and all(isinstance(v, str) for v in value)
 
 
 def _given(name: str, value: object) -> str:

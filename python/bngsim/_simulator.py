@@ -7914,7 +7914,8 @@ class Simulator:
         self,
         parameter: str,
         par_scan_vals: Sequence[float] | None = None,
-        *,
+        # Issue #1700: catch-alls for a wrong call only, as on run().
+        *_extra: NoReturn,
         par_min: float | None = None,
         par_max: float | None = None,
         n_scan_pts: int | None = None,
@@ -7930,6 +7931,7 @@ class Simulator:
         steady_state: bool = False,
         steady_state_tol: float | None = None,
         squeeze: bool = False,
+        **_foreign: NoReturn,
     ) -> list[Result] | Result:
         """Continuation scan of one parameter (BNG ``bifurcate``, ``reset_conc=0``).
 
@@ -7945,6 +7947,8 @@ class Simulator:
         (which pertain to the per-point reset that continuation omits). See
         :meth:`parameter_scan` for the shared parameters.
         """
+        if _extra or _foreign:
+            raise call_error("bifurcate", _SIGNATURES["bifurcate"], locals(), _extra, _foreign)
         return self.parameter_scan(
             parameter,
             par_scan_vals,
@@ -8201,13 +8205,15 @@ class Simulator:
         self,
         t_span: tuple[float, float] = (0.0, 100.0),
         n_points: int = 101,
-        *,
+        # Issue #1700: catch-alls for a wrong call only, as on run().
+        *_extra: NoReturn,
         params: list[str] | None = None,
         chunk_size: int = 2,
         n_workers: int | None = None,
         rtol: float | None = None,
         atol: AtolLike | None = None,
         max_steps: int | None = None,
+        **_foreign: NoReturn,
     ) -> Result:
         """Compute full sensitivity tensor via parallel chunked CVODES jobs.
 
@@ -8339,6 +8345,14 @@ class Simulator:
         thread count manageable. ``chunk_size=1`` works but doubles
         the number of threads needed.
         """
+        if _extra or _foreign:
+            raise call_error(
+                "compute_all_sensitivities",
+                _SIGNATURES["compute_all_sensitivities"],
+                locals(),
+                _extra,
+                _foreign,
+            )
         import math
         import os
 

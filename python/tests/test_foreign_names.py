@@ -102,11 +102,16 @@ PINNED = {
         "t_end", "t_eval", "t_start", "tend", "times", "tspan", "y0",
     ],
     "Simulator.parameter_scan": [
-        "sample_times", "scan_values", "suffix", "t_eval", "times", "values",
+        "sample_times", "scan_values", "start", "suffix", "t_eval", "times", "values",
     ],
-    "Simulator.run_batch": ["sample_times", "t_eval", "times"],
-    "Simulator.run_replicates": ["sample_times", "t_eval", "times"],
-    "Simulator.run_until": ["end", "sample_times", "t_end", "t_eval", "t_start", "tend", "times"],
+    "Simulator.run_batch": ["sample_times", "start", "t_eval", "times", "y0"],
+    "Simulator.run_replicates": ["sample_times", "start", "t_eval", "times"],
+    "Simulator.bifurcate": ["sample_times", "t_eval", "times"],
+    "Simulator.compute_all_sensitivities": ["sample_times", "t_eval", "times"],
+    "Simulator.run_until": [
+        "duration", "end", "max_step", "sample_times", "t_end", "t_eval", "t_start", "tend",
+        "timeout", "times",
+    ],
     "pattern": [
         'from bngsim import simulate', 'model.k1', 'model.k1 = value', 'model["S1"]',
         'model["k1"] = value', 'result.A', 'sim.k1 = value',
@@ -548,7 +553,7 @@ def test_an_unknown_run_keyword_reads_as_pythons(sim):
         ((0, 10), r"got the number 0: a run from 0 to 10 is t_span=\(0, 10\)"),
         ((5, 10), r"got the number 5: a run from 5 to 10 is t_span=\(5, 10\)"),
         # n_points' default, 101, is no end the caller wrote.
-        ((0,), r"got the number 0\. A second positional argument is n_points\.$"),
+        ((0,), r"got the number 0\.$"),
     ],
 )
 def test_a_number_for_t_span_names_the_tuple(sim, args, says):
@@ -659,6 +664,87 @@ def test_a_foreign_keyword_of_another_run_call_names_the_call_that_runs(method, 
 def test_another_run_call_names_its_own_keywords(sim, call, says):
     with pytest.raises(TypeError, match=says):
         eval(call, {"sim": sim})
+
+
+def test_run_batch_reads_a_fourth_positional_list_of_dicts_as_its_params():
+    """run_batch(0, 100, 101, rows): the rows are params, not RoadRunner's
+    selections, so the corrected call keeps them."""
+    sim = Simulator(Model.load(DECAY))
+    rows = [{"k1": 0.05}, {"k1": 0.5}]
+    with pytest.raises(TypeError) as err:
+        sim.run_batch(0, 10, 6, rows)  # type: ignore[misc]
+    fixed = re.search(r"For this call: (sim\.run_batch\(.*\))\.$", str(err.value))
+    assert fixed and "params=" in fixed.group(1), str(err.value)
+    out = eval(fixed.group(1), {"sim": sim})
+    assert len(out) == 2 and out[0].time.tolist() == [0, 2, 4, 6, 8, 10]
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        "sim.run_batch(0, 10, 11, t_end=5, params=[{'k1': 0.1}])",  # two ends
+        "sim.run_batch(t_end=5, end=10, params=[{'k1': 0.1}])",
+        "sim.run(t_start=1, start=2, t_end=5)",  # two starts
+        "sim.run_batch(0, 10, 11, ['A()'], params=[{'k1': 0.1}])",  # selections: run() only
+    ],
+)
+def test_a_call_that_says_one_thing_twice_gets_no_corrected_call(sim, call):
+    with pytest.raises(TypeError) as err:
+        eval(call, {"sim": sim})
+    assert "For this call" not in str(err.value)
+
+
+def test_a_value_whose_repr_is_no_literal_is_named_not_printed(sim):
+    """par_scan_vals=np.linspace(...) prints as array([...]), which pasted is a
+    NameError: the corrected call names the argument instead."""
+    with pytest.raises(TypeError) as err:
+        sim.parameter_scan("k1", np.array([0.1, 0.2]), t_end=10)  # type: ignore[call-arg]
+    assert "array(" not in str(err.value)
+    assert "par_scan_vals=par_scan_vals" in str(err.value)
+
+
+def test_a_shared_row_naming_a_keyword_the_method_lacks_is_not_offered(sim):
+    """keyword_entry filters run()'s rows: tspan= says t_span= on run(), and
+    on run_until, which takes no t_span, says nothing of it."""
+    with pytest.raises(TypeError, match=r"Use t_span="):
+        sim.run(tspan=(0, 5))  # type: ignore[call-arg]
+    with pytest.raises(TypeError) as err:
+        sim.run_until(5, tspan=(0, 5))  # type: ignore[call-arg]
+    assert "t_span=" not in str(err.value)
+
+
+@pytest.mark.parametrize(
+    ("call", "says"),
+    [
+        ("sim.run_batch(y0=[1, 2])", r"run_batch\(\) starts every point from the initial"),
+        ("sim.run_batch(start='initial')", r"run_batch\(\) starts every point from the initial"),
+        (
+            "sim.run_replicates(2, start='initial')",
+            r"Every replicate starts from the model's state",
+        ),
+        ("sim.parameter_scan('k1', [0.1], start='initial')", r"Use reset_to=label"),
+        ("sim.run_until(5, max_step=0.1)", r"run_until\(\) takes no max_step"),
+        ("sim.run_until(5, timeout=1)", r"run_until\(\) takes no timeout"),
+        ("sim.run_until(5, duration=3)", r"Use t=sim\.current_time \+ duration"),
+        ("sim.bifurcate('k1', [0.1, 0.2], t_end=10)", r"Use t_span=\(t_start, t_end\)"),
+        ("sim.compute_all_sensitivities(n_steps=10)", r"Use n_points=n_steps \+ 1"),
+    ],
+)
+def test_each_run_call_says_what_its_own_start_and_limits_are(sim, call, says):
+    with pytest.raises(TypeError, match=says):
+        eval(call, {"sim": sim})
+
+
+@pytest.mark.parametrize(("args", "kwargs"), [((10, 0, 100), {}), (("k1", [0.1]), {"t_span": 10})])
+def test_a_number_for_t_span_in_another_call_says_nothing_of_positions(args, kwargs):
+    """run_replicates takes n_replicates first and parameter_scan t_span by
+    keyword, so the message says nothing of where n_points sits."""
+    sim = Simulator(Model.load(DECAY), method="ssa")
+    call = sim.run_replicates if len(args) == 3 else sim.parameter_scan
+    with pytest.raises(TypeError) as err:
+        call(*args, **kwargs)
+    assert "t_span is the interval" in str(err.value)
+    assert "positional" not in str(err.value)
 
 
 def test_the_other_run_calls_show_their_own_signatures():
