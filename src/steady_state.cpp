@@ -1172,7 +1172,7 @@ class SteadyStateMarcher {
           ns_(model.n_species()) {
 
         if (!ctx_) {
-            throw std::runtime_error("SUNContext_Create failed (steady_state)");
+            throw std::runtime_error(sun_context_failure(ctx_, " (steady_state)"));
         }
 
         y_ = NVectorGuard(N_VNew_Serial(ns_, ctx_));
@@ -2320,7 +2320,7 @@ static SteadyStateResult solve_by_newton(NetworkModel &model, SteadyStateRhs &rh
     // RAII guards
     SunContextGuard ctx;
     if (!ctx) {
-        throw std::runtime_error("SUNContext_Create failed (kinsol)");
+        throw std::runtime_error(sun_context_failure(ctx, " (kinsol)"));
     }
 
     // Route this KINSOL context's error/warning log to the null sink. In the

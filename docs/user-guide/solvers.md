@@ -845,13 +845,18 @@ A file name is not a log that grows: each context SUNDIALS makes opens the
 file afresh and empties it, so it ends up holding the last context's lines
 only, and the rows of a `run_batch` on several threads write over each other.
 Name `stdout`, `stderr` or the null device, and redirect the stream itself to
-keep its lines in a file, as in the last line above.
+keep its lines in a file, as in the last line above. A name SUNDIALS cannot
+open, such as a file in a directory that does not exist, stops every run and
+steady-state solve, since SUNDIALS then makes no solver context; the error
+names the variable.
 
-A model whose rate laws switch on time or on state restarts the integrator at
-each switch, which draws the warning above at every restart; bngsim drops the
-warnings of such a run itself, in a time course and in a steady-state solve,
-and those of a KINSOL solve, unless `SUNLOGGER_WARNING_FILENAME` is set. The
-`[ERROR]` lines of a solve bngsim expects to fail and recovers from (a KINSOL
-solve it falls back from to integration, and the steps of a state-switch run
-taken while bngsim watches or holds a switch) are dropped whatever
-`SUNLOGGER_ERROR_FILENAME` says.
+A model whose rate laws switch on state, or on time in an SBML model, restarts
+the integrator at each switch, which can draw the warning above at every
+restart; bngsim drops the warnings of such a run itself, in a time course and
+in a steady-state solve, and those of a KINSOL solve, unless
+`SUNLOGGER_WARNING_FILENAME` is set. A BNGL rate law that switches on time is
+taken at a stop instead, and its run keeps its warnings. The `[ERROR]` lines of
+a solve bngsim expects to fail and recovers from (a KINSOL solve it falls back
+from to integration, and the steps of a state-switch run taken while bngsim
+watches or holds a switch) are dropped whatever `SUNLOGGER_ERROR_FILENAME`
+says.

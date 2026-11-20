@@ -25,6 +25,7 @@ import os
 import subprocess
 import sys
 
+import bngsim
 import pytest
 
 # A -> 0 at k = 1e9 over (1e6, 1e6 + 1): right ([1, 0, 0]), and CVODE's first
@@ -199,3 +200,54 @@ def test_a_root_model_drops_its_warnings_unless_the_caller_says_where(tmp_path, 
     assert warned["stdout"] > 0 and warned["stderr"] == 0
     out, warned, _ = _child(tmp_path, ROOTED, 0.0, 10.0, call, SUNLOGGER_WARNING_FILENAME="stderr")
     assert warned["stdout"] == 0 and warned["stderr"] > 0
+
+
+@pytest.mark.parametrize(
+    ("variable", "call"),
+    [
+        ("SUNLOGGER_WARNING_FILENAME", "run"),
+        ("SUNLOGGER_ERROR_FILENAME", "run"),
+        ("SUNLOGGER_WARNING_FILENAME", "sensitivities"),
+        ("SUNLOGGER_WARNING_FILENAME", "integration"),
+        ("SUNLOGGER_WARNING_FILENAME", "newton"),
+    ],
+)
+def test_a_log_file_sundials_cannot_open_is_named_in_the_error(
+    tmp_path, monkeypatch, drawn, variable, call
+):
+    # SUNDIALS opens the file the variable names when it makes a solver
+    # context, and makes none where it cannot, so every run and solve fails.
+    # The error said only "SUNContext_Create failed"; it names the variable
+    # and its value. A SUNDIALS that logs warnings opens both files.
+    _needs(drawn, "decay", "square")
+    where = tmp_path / "no such directory" / "sundials.log"
+    net = tmp_path / "model.net"
+    net.write_text(DECAY)
+    monkeypatch.setenv(variable, str(where))
+    kw = {"sensitivity_params": ["k"]} if call == "sensitivities" else {}
+    sim = bngsim.Simulator(bngsim.Model.from_net(str(net)), method="ode", **kw)
+    with pytest.raises(bngsim.SimulationError) as caught:
+        if call in ("integration", "newton"):
+            sim.steady_state(method=call)
+        else:
+            sim.run(t_span=(0.0, 1.0), n_points=3)
+    assert "SUNContext_Create failed" in str(caught.value)
+    assert f"{variable}={where}" in str(caught.value)
+
+
+def test_a_log_file_name_that_is_not_utf8_is_shown_in_the_error(tmp_path, monkeypatch, drawn):
+    # The error quotes the variable's value, and a file name is bytes: one that
+    # is not UTF-8 text would have turned the SimulationError into a bare
+    # UnicodeDecodeError on its way to Python (issue #1653). The byte is shown
+    # as Python's "backslashreplace" shows it. "\udcff" is how Python holds
+    # the byte 0xff of a POSIX file name; elsewhere the name need only be named.
+    _needs(drawn, "decay", "square")
+    net = tmp_path / "model.net"
+    net.write_text(DECAY)
+    monkeypatch.setenv("SUNLOGGER_WARNING_FILENAME", f"{tmp_path}/no\udcff directory/w.log")
+    sim = bngsim.Simulator(bngsim.Model.from_net(str(net)), method="ode")
+    with pytest.raises(bngsim.SimulationError) as caught:
+        sim.run(t_span=(0.0, 1.0), n_points=3)
+    assert "SUNLOGGER_WARNING_FILENAME=" in str(caught.value)
+    if os.name == "posix":
+        assert f"{tmp_path}/no\\xff directory/w.log" in str(caught.value)

@@ -5573,7 +5573,7 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
             w.ctx = SunContextGuard{};
         }
         if (!w.ctx) {
-            throw std::runtime_error("SUNContext_Create failed");
+            throw std::runtime_error(sun_context_failure(w.ctx, ""));
         }
 
         w.y = NVectorGuard(N_VNew_Serial(ns, w.ctx));
@@ -5976,7 +5976,7 @@ void CvodeSimulator::Impl::create_cvode_core(const TimeSpec &times, const Solver
                                              CvodeMemGuard &cvode_mem, CvodeUserData &user_data,
                                              std::vector<double> &codegen_param_buf) {
     if (!ctx) {
-        throw std::runtime_error("SUNContext_Create failed");
+        throw std::runtime_error(sun_context_failure(ctx, ""));
     }
     select_spent_batch_handler(ctx);
 

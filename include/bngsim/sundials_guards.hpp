@@ -8,15 +8,19 @@
 
 #pragma once
 
+#include "bngsim/utf8.hpp"
+
 #include <cvodes/cvodes.h>
 #include <kinsol/kinsol.h>
 #include <nvector/nvector_serial.h>
 #include <sundials/sundials_context.h>
+#include <sundials/sundials_errors.h>
 #include <sundials/sundials_logger.h>
 #include <sunlinsol/sunlinsol_dense.h>
 #include <sunmatrix/sunmatrix_dense.h>
 
 #include <cstdlib> // std::getenv
+#include <string>
 #include <utility> // std::exchange
 
 namespace bngsim {
@@ -35,9 +39,13 @@ inline bool caller_routes_sundials_warnings() {
 
 struct SunContextGuard {
     SUNContext ctx = nullptr;
+    // What SUNContext_Create returned where it made no context, for the
+    // message sun_context_failure builds.
+    SUNErrCode create_error = SUN_SUCCESS;
 
     SunContextGuard() {
-        if (SUNContext_Create(SUN_COMM_NULL, &ctx) != 0) {
+        create_error = SUNContext_Create(SUN_COMM_NULL, &ctx);
+        if (create_error != SUN_SUCCESS) {
             ctx = nullptr;
             return;
         }
@@ -71,16 +79,47 @@ struct SunContextGuard {
 
     SunContextGuard(const SunContextGuard &) = delete;
     SunContextGuard &operator=(const SunContextGuard &) = delete;
-    SunContextGuard(SunContextGuard &&o) noexcept : ctx(std::exchange(o.ctx, nullptr)) {}
+    SunContextGuard(SunContextGuard &&o) noexcept
+        : ctx(std::exchange(o.ctx, nullptr)),
+          create_error(std::exchange(o.create_error, SUN_SUCCESS)) {}
     SunContextGuard &operator=(SunContextGuard &&o) noexcept {
         if (this != &o) {
             if (ctx)
                 SUNContext_Free(&ctx);
             ctx = std::exchange(o.ctx, nullptr);
+            create_error = std::exchange(o.create_error, SUN_SUCCESS);
         }
         return *this;
     }
 };
+
+// The message for a context SunContextGuard could not make, *where* naming the
+// solver ("" for a time course). SUNDIALS opens the file each
+// SUNLOGGER_*_FILENAME names when it makes a context's logger; where it cannot
+// (a directory that does not exist) it makes no context (SUN_ERR_FILE_OPEN), so
+// every run and every solve fails here. "SUNContext_Create failed" alone gave
+// no hint of the variable: the message names those set.
+inline std::string sun_context_failure(const SunContextGuard &guard, const char *where) {
+    std::string message = std::string("SUNContext_Create failed") + where;
+    if (guard.create_error == SUN_SUCCESS)
+        return message;
+    message += std::string(": ") + SUNGetErrMsg(guard.create_error);
+    if (guard.create_error == SUN_ERR_FILE_OPEN) {
+        std::string named;
+        for (const char *variable : {"SUNLOGGER_ERROR_FILENAME", "SUNLOGGER_WARNING_FILENAME",
+                                     "SUNLOGGER_INFO_FILENAME", "SUNLOGGER_DEBUG_FILENAME"}) {
+            const char *value = std::getenv(variable);
+            if (value != nullptr && *value != '\0')
+                named +=
+                    std::string(named.empty() ? "" : ", ") + variable + "=" + shown_as_utf8(value);
+        }
+        message += ". SUNDIALS opens the log files named by " + named +
+                   " when it makes a solver context, and could not open one: name a file "
+                   "that can be created, or stdout, stderr or the null device, or unset "
+                   "the variable";
+    }
+    return message;
+}
 
 // ─── N_Vector ────────────────────────────────────────────────────────────────
 
