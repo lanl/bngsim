@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn, overload
 
 import numpy as np
 
+from bngsim import _foreign_names
 from bngsim._exceptions import (
     ModelError,
     ParameterError,
@@ -47,6 +48,9 @@ if TYPE_CHECKING:
     from bngsim.convert import ProtocolSpec
 
 logger = logging.getLogger("bngsim")
+
+#: No value was given: the call a message suggests says ``value`` (issue #1700).
+_UNSET: Any = object()
 
 # Suffix → factory-method name, for Model.load() dispatch. ``.sbml`` is accepted
 # alongside ``.xml`` because SBML is served under both (BioModels uses .xml).
@@ -155,6 +159,7 @@ class Model:
     def __init__(
         self, _core: NetworkModel, _guarded: list[tuple[str, str, str]] | None = None
     ) -> None:
+        _require_core(_core)
         self._core = _core
         # Every parameter's value as the model was built, which a network-free
         # run compares the model's values with to find the ones set since, and
@@ -1696,7 +1701,7 @@ class Model:
         try:
             self._core.set_param(name, float(value), force_override=force_override)
         except (KeyError, RuntimeError) as e:
-            raise ParameterError(f"Parameter '{name}' not found in model") from e
+            raise ParameterError(self._parameter_not_found(name, value)) from e
 
     @property
     def frozen_params(self) -> list[str]:
@@ -1876,7 +1881,7 @@ class Model:
         try:
             return self._core.get_param(name)
         except (KeyError, RuntimeError) as e:
-            raise ParameterError(f"Parameter '{name}' not found in model") from e
+            raise ParameterError(self._parameter_not_found(name)) from e
 
     def set_params(self, params: dict[str, float]) -> None:
         """Set multiple parameters from a dict.
@@ -1911,8 +1916,13 @@ class Model:
         known = set(self._core.param_names)
         unknown = set(params.keys()) - known
         if unknown:
+            why = "".join(
+                f"{text} "
+                for n in sorted(unknown, key=str)
+                if isinstance(n, str) and (text := self._not_a_parameter(n, params[n], among=True))
+            )
             raise ParameterError(
-                f"Unknown parameter(s): {', '.join(sorted(unknown))}. "
+                f"Unknown parameter(s): {', '.join(sorted(map(str, unknown)))}. {why}"
                 f"Known: {', '.join(sorted(known))}"
             )
         # Phase 2: Convert all values (catches "x", None, etc.)
@@ -2174,7 +2184,7 @@ class Model:
         (issue #1528).
         """
         value = float(value)
-        name = self._species_call(name, lambda n: self._core.set_concentration(n, value))[0]
+        name = self._species_call(name, lambda n: self._core.set_concentration(n, value), value)[0]
         # A fresh assignment supersedes whatever this species' initial condition
         # was declared to depend on; declare again after the write (issue #111).
         self._declared_ic_sens.pop(name, None)
@@ -2207,10 +2217,14 @@ class Model:
         """
         return float(self._species_call(name, self._core.get_concentration)[1])
 
-    def _species_call(self, name: str, call: Callable[[str], Any]) -> tuple[str, Any]:
+    def _species_call(
+        self, name: str, call: Callable[[str], Any], value: object = _UNSET
+    ) -> tuple[str, Any]:
         """``(the model's name, call(it))`` for species *name*: *name* itself,
         or else *name* without a fixed species' ``$``, which the model's names
-        never hold. Raises :class:`ModelError` when neither is a species."""
+        never hold. Raises :class:`ModelError` when neither is a species, saying
+        what the name is if it is something else (issue #1700); *value* is the
+        one a write was given, for the call that message suggests."""
         try:
             return name, call(name)
         except (KeyError, RuntimeError) as e:
@@ -2220,7 +2234,7 @@ class Model:
                     return bare, call(bare)
                 except (KeyError, RuntimeError):
                     pass
-            raise ModelError(f"Species '{name}' not found in model") from e
+            raise ModelError(self._species_not_found(name, value)) from e
 
     def get_state(self) -> np.ndarray:
         """Bulk-copy the full live species-concentration vector (GH #102).
@@ -3253,6 +3267,62 @@ class Model:
         """Names of all registered table functions."""
         return self._core.table_function_names
 
+    # ─── Names that are not the API (issue #1700) ─────────────────────────
+
+    def _parameter_not_found(self, name: str, value: object = _UNSET) -> str:
+        """The message for a parameter *name* the model does not have: what it
+        is when it is a species, an observable or a function, else the near
+        matches (issue #1700)."""
+        head = f"Parameter '{name}' not found in model."
+        if name in self._core.param_names:
+            # The engine's binding reports any failure after the lookup as a
+            # missing name; a hint would send the caller after a typo there is
+            # none of, so say no more than it did.
+            return head[:-1]
+        why = self._not_a_parameter(name, value)
+        return f"{head} {why or f'Model.param_names lists all {self.n_parameters}.'}"
+
+    def _not_a_parameter(
+        self, name: str, value: object = _UNSET, *, among: bool = False
+    ) -> str | None:
+        """What *name* is instead of a parameter, or its near matches, or
+        ``None``. *among*: the sentence is one of several, so it names *name*."""
+        what = _what_it_is(self, name, value, via="model", besides="parameter")
+        if what is not None:
+            return what
+        close = _foreign_names.near_matches(name, self._core.param_names)
+        if close:
+            lead = f"For {name!r}, close" if among else "Close"
+            return f"{lead} matches: {_foreign_names.quote_list(close)}."
+        return None
+
+    def _species_not_found(self, name: str, value: object = _UNSET) -> str:
+        """:meth:`_parameter_not_found` for a species. A species the name
+        matches loosely comes first: BNGL's ``Molecules S1 S1()`` makes ``S1``
+        an observable, and the caller wants the species ``S1()``."""
+        head = f"Species '{name}' not found in model"
+        bare = _foreign_names._bare(name)
+        loose = next((s for s in self.species_names if _foreign_names._bare(s) == bare), None)
+        if loose is not None:
+            v = _foreign_names.value_text(value) if value is not _UNSET else "value"
+            return (
+                f"{head}. The species {loose!r} is close: read it with "
+                f"model.get_concentration({loose!r}) and set it with "
+                f"model.set_concentration({loose!r}, {v})."
+            )
+        what = _what_it_is(self, name, value, via="model", besides="species")
+        if what is not None:
+            return f"{head}. {what}"
+        close = _foreign_names.near_matches(name, self.species_names)
+        if close:
+            return f"{head}. Close matches: {_foreign_names.quote_list(close)}."
+        return f"{head}. Model.species_names lists all {self.n_species}."
+
+    def __dir__(self) -> list[str]:
+        # Without the names of bngsim._foreign_names' table, which are on the
+        # class only to say what to call instead (issue #1700).
+        return _foreign_names.public_dir(self)
+
     # ─── Dunder methods ───────────────────────────────────────────────────
 
     def __reduce__(self) -> NoReturn:
@@ -3330,6 +3400,88 @@ def _remember(memo: dict, key, value) -> None:
 _UNIT_CONVERSION = re.compile(r"\bunit_conversion\s*=\s*([^\s#][^#]*?)\s*(?:#|$)")
 # A number first, so that the ``e`` of ``6.0221e+23`` is not read as a name.
 _NUMBER_OR_NAME = re.compile(r"(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?|([A-Za-z_]\w*)")
+
+
+def _require_core(core: object) -> None:
+    """Refuse what ``Model(...)`` is given in place of the engine's model: a
+    path or model text, or anything without the ``param_names`` the
+    constructor reads first.
+
+    ``Model(path)`` is what a caller who has not met the factories writes
+    first, and it used to fail inside this constructor with "'str' object has
+    no attribute 'param_names'" (issue #1700). The check is by attribute, not
+    by type, so a stand-in for the engine's model still passes.
+    """
+    if isinstance(core, Model):
+        raise TypeError(
+            "Model() is given a Model: model.clone() makes an independent copy, and "
+            "bngsim.Simulator(model) runs it."
+        )
+    source = _foreign_names.model_source(core)
+    if source is not None:
+        what, loader = source
+        tail = (
+            ", which reads .net, .bngl, .xml, .sbml and .ant files by suffix"
+            if what == "a path"
+            else ""
+        )
+        raise TypeError(f"Model() does not take {what}: use {loader}{tail}.")
+    if hasattr(core, "param_names"):
+        return
+    raise TypeError(
+        f"Model() is built by its loaders, not called with a value of type "
+        f"{type(core).__name__}: use bngsim.Model.load(path), or "
+        "bngsim.Model.from_sbml_string(text) or bngsim.Model.from_antimony_string(text) "
+        "for model text."
+    )
+
+
+def _what_it_is(
+    model: Model, name: str, value: object = _UNSET, *, via: str, besides: str | None = None
+) -> str | None:
+    """What *name* is in *model*, and the call that reads or sets it, or
+    ``None`` when it is none of the model's names (issue #1700).
+
+    *via* is how the caller reaches the model (``model`` or ``sim.model``).
+    *besides* is the kind the caller asked for and did not find, which is not
+    looked at; ``None`` looks at every kind. A function's value lives in a
+    parameter slot, so functions are looked at before parameters.
+    """
+    v = _foreign_names.value_text(value) if value is not _UNSET else "value"
+    functions = model.function_names
+    if name in functions:
+        return (
+            f"{name!r} is a function, which a run evaluates, so it has no value of its own to "
+            f"set: read it from a run's result.expressions[{name!r}], and set the parameters "
+            "its expression reads."
+        )
+    if besides != "parameter" and name in model._core.param_names:
+        return (
+            f"{name!r} is a parameter: read it with {via}.get_param({name!r}) and set it with "
+            f"{via}.set_param({name!r}, {v})."
+        )
+    if besides != "species":
+        species = model.species_names
+        # The name, or it without a fixed species' $ (the model's names never
+        # hold one), or else one that differs from it only loosely: A for A().
+        actual: str | None = next((n for n in (name, _unclamped(name)) if n in species), None)
+        if actual is None:
+            bare = _foreign_names._bare(name)
+            actual = next((s for s in species if _foreign_names._bare(s) == bare), None)
+        if actual is not None:
+            lead = (
+                f"{name!r} is a species" if actual == name else f"The species {actual!r} is close"
+            )
+            return (
+                f"{lead}: read it with {via}.get_concentration({actual!r}) and set it with "
+                f"{via}.set_concentration({actual!r}, {v})."
+            )
+    if name in model.observable_names:
+        return (
+            f"{name!r} is an observable, which a run computes from the species, so it has no "
+            f"value of its own to set: read it from a run's result.observables[{name!r}]."
+        )
+    return None
 
 
 def _unclamped(name: str) -> str:
@@ -3566,3 +3718,6 @@ def _warn_dropped_state_changes(model: Model, path: str | Path) -> None:
         ConversionWarning,
         stacklevel=_stacklevel_outside_bngsim(),
     )
+
+
+_foreign_names.install(Model, "Model")

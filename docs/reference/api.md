@@ -238,7 +238,7 @@ Parameters and counts:
 
 Properties:
 - **`time`** — `ndarray (n_times,)`
-- **`species`** — `ndarray (n_times, n_species)` with named access
+- **`species`** — `ndarray (n_times, n_species)` with named access (e.g. `result.species["A()"]`, `result.species[-1, "A()"]`; an array numpy derives from it carries no names)
 - **`state`** — `ndarray (n_times, n_state)`: the full integrator state, unprojected and unremapped, in `Model.species_names` order — the rows `Model.rhs` / `Model.jacobian` take. Wider than `species` on an SBML model whose event assigns a parameter or compartment; the stored rather than the reported value where a species column is remapped after the solve. Solve results only (issue #508)
 - **`state_names`** — `list[str]` column names of `state` (= the producing model's `species_names`)
 - **`observables`** — `ndarray (n_times, n_obs)` with named access (e.g. `result.observables["A_tot"]`)

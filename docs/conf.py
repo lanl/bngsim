@@ -134,3 +134,15 @@ html_title = f"bngsim {version}"
 html_logo = "bngsim-coyote-logo/bngsim-logo.svg"
 html_favicon = "bngsim-coyote-logo/bngsim-favicon.svg"
 html_static_path = []
+
+
+def _skip_foreign_names(app, what, name, obj, skip, options):
+    """Leave out the names bngsim._foreign_names puts on Model, Simulator and
+    Result to say what to call instead (issue #1700): they are not bngsim's."""
+    from bngsim._foreign_names import _ForeignAttribute
+
+    return True if isinstance(obj, _ForeignAttribute) else None
+
+
+def setup(app):
+    app.connect("autodoc-skip-member", _skip_foreign_names)
