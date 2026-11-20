@@ -499,8 +499,9 @@ class LiveStartWarning(UserWarning):
       Simulator's first step after another one's run is; ``set_time`` puts
       the clock at the time the state is at;
     - :meth:`Simulator.run_replicates`, :meth:`Simulator.parameter_scan`
-      (unless ``reset_to`` names the start) and :meth:`Simulator.bifurcate`,
-      once per call;
+      (unless ``reset_to`` names the start, or the scan carries an
+      equilibration's ``dx/dθ`` into its points) and
+      :meth:`Simulator.bifurcate`, once per call;
     - :func:`bngsim.run_protocol`, for the protocol's first run.
 
     A call at or after the time the run ended at continues it (``t_span=(5,

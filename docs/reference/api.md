@@ -330,7 +330,7 @@ Warnings (`UserWarning` subclasses; filter or escalate them with `warnings`):
   Raised before anything integrates, by `run()` (pass `start="initial"` or
   `start="live"` to say which start is meant), by `run_until` from a clock
   behind that time (`set_time` moves it), and once per call by
-  `run_replicates`, `parameter_scan` (unless `reset_to` names the start),
+  `run_replicates`, `parameter_scan` (unless `reset_to` names the start or the scan carries an equilibration's `dx/dθ`),
   `bifurcate` and `run_protocol`'s first run, where `Model.reset()` or
   `Model.save_concentrations()` says it (issue #1701).
 

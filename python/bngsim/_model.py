@@ -1474,12 +1474,9 @@ class Model:
         m._loaded_params = dict(self._loaded_params)
         m._loaded_state = self._loaded_state
         # Issue #1701: the clone holds the state the run left, so a run of it
-        # from another time continues that run as the original's would.
-        m._last_run_end = (
-            None
-            if self._last_run_end is None
-            else (self._last_run_end[0], self._last_run_end[1].copy())
-        )
+        # from another time continues that run as the original's would. Shared,
+        # not copied: the vector is read-only, and the record is only replaced.
+        m._last_run_end = self._last_run_end
         m._net_path = self._net_path
         m._want_output_sens = self._want_output_sens
         m._codegen_so_path = self._codegen_so_path

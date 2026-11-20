@@ -82,6 +82,7 @@ from bngsim._result import (
     _merge_one_sided,
     _one_sided_warnings_held,
     _resolve_output_selector,
+    _state_digest,
     _warn_one_sided,
 )
 from bngsim._sample_times import (
@@ -608,7 +609,12 @@ def _start_record(core, state: np.ndarray | None = None) -> tuple[str, np.ndarra
     each of its rows from. The vector is a fresh copy the Result may keep; its
     digest is computed when first read (``Result.start_state_sha256``).
     """
-    state = np.array(core.get_state() if state is None else state, dtype=np.float64)
+    # The core's get_state() is a fresh array of its own; a caller's is copied.
+    state = (
+        np.asarray(core.get_state(), dtype=np.float64)
+        if state is None
+        else np.array(state, dtype=np.float64)
+    )
     initial = np.asarray(core.get_initial_state(), dtype=np.float64)
     started_from = "initial" if _same_values(state, initial) else "live"
     state.setflags(write=False)
@@ -622,6 +628,7 @@ def _warn_if_start_restarts_the_clock(
     what: str,
     remedy: str,
     state: np.ndarray | None = None,
+    started_from: str | None = None,
 ) -> None:
     """Warn that a call continues the last run's end state with its clock set
     back (issue #1701, :class:`LiveStartWarning`).
@@ -632,7 +639,8 @@ def _warn_if_start_restarts_the_clock(
     continues the run (a steady state that stopped early, then a run from the
     span's planned end), and a state the caller wrote since is one the caller
     chose. *state* is the start, the model's live state unless given; it is
-    read only once the clock says the question arises.
+    read only once the clock says the question arises. *started_from* is
+    :func:`_start_record`'s verdict on it, where the caller has it.
     """
     end = model._last_run_end
     if end is None:
@@ -644,7 +652,10 @@ def _warn_if_start_restarts_the_clock(
     state = np.asarray(core.get_state() if state is None else state, dtype=np.float64)
     if not _same_values(state, end_state):
         return
-    if _same_values(state, np.asarray(core.get_initial_state(), dtype=np.float64)):
+    if started_from is None:
+        initial = np.asarray(core.get_initial_state(), dtype=np.float64)
+        started_from = "initial" if _same_values(state, initial) else "live"
+    if started_from == "initial":
         return
     warnings.warn(
         f"{what} starts at t = {t_start:.12g} from the state the last run left at "
@@ -5950,7 +5961,12 @@ class Simulator:
         ):
             # Before the solve, so `-W error` stops the run with nothing changed.
             _warn_if_start_restarts_the_clock(
-                self._model, t_start, what="This run", remedy=_RUN_REMEDY, state=start_state
+                self._model,
+                t_start,
+                what="This run",
+                remedy=_RUN_REMEDY,
+                state=start_state,
+                started_from=started_from,
             )
 
         core_result = None
@@ -6171,10 +6187,9 @@ class Simulator:
             # the model's state each time and leaves it as it was, so a second
             # one over the same span is a second run from the same start.
             if self._method in ("ode", "ssa", "psa"):
-                self._model._last_run_end = (
-                    self._current_time,
-                    np.ascontiguousarray(self._model._core.get_state(), dtype="<f8"),
-                )
+                end_state = np.ascontiguousarray(self._model._core.get_state(), dtype="<f8")
+                end_state.setflags(write=False)  # shared by clones, never written
+                self._model._last_run_end = (self._current_time, end_state)
 
         # GH #198 — attach the expression output-sensitivity support map so a
         # selector for an unsupported global function raises the specific reason
@@ -6806,14 +6821,18 @@ class Simulator:
         start_carry = self._capture_carryover_state()
         # Issue #1701: that start, said of each replicate and warned of where it
         # is the end of a run with the clock set back, as a second run() is.
+        started_from, start_vector = _start_record(self._model._core, start_state)
         _warn_if_start_restarts_the_clock(
             self._model,
             t_start,
             what="Each replicate",
             remedy=_MODEL_REMEDY,
-            state=start_state,
+            state=start_vector,
+            started_from=started_from,
         )
-        started_from, start_vector = _start_record(self._model._core, start_state)
+        # One start for every replicate, so one digest, made here: a squeeze or
+        # a summary of each would otherwise hash the same vector once per row.
+        start_digest = _state_digest(start_vector)
 
         def _run_one(sim: Any, model: Model, times: Any, i: int) -> Result:
             # reset() zeroes time and clears what the last replicate left
@@ -6838,6 +6857,7 @@ class Simulator:
             r = self._stamp(Result(cr), seed=used, model=model)
             r._started_from = started_from
             r._start_state = start_vector
+            r._start_state_sha256 = start_digest
             self._warn_ssa_boundary(r)
             return r
 
@@ -7483,7 +7503,8 @@ class Simulator:
             run and ``t_span`` starts before that run ended, the points
             continue it with the clock set back, and a
             :class:`bngsim.LiveStartWarning` says so once, before the first
-            (issue #1701); :meth:`Model.reset` first starts them from the
+            (issue #1701), unless the scan carries that run's ``dx/dθ`` into
+            its points; :meth:`Model.reset` first starts them from the
             initial conditions. A scan with ``reset_conc=False`` is asked the
             same of its first point.
         on_point : callable, optional

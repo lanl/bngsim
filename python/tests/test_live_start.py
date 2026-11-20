@@ -520,6 +520,67 @@ def test_a_stack_keeps_what_its_rows_agree_on(tmp_path):
     assert (own.started_from, own.start_state_sha256) == ("initial", None)
 
 
+def test_a_refused_start_initial_puts_the_carried_state_back(tmp_path):
+    # The reset clears the pending dx/dθ and the carried mark; a refusal must
+    # put them back with the state, or the measurement run that follows loses
+    # its seed (GH #210).
+    def equilibrated():
+        model = _model(tmp_path)
+        sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k"])
+        sim.run(t_span=(0, 5), n_points=6)
+        return model, sim
+
+    model, sim = equilibrated()
+    core = model._core
+    assert core.has_pending_sensitivity_seed and core.ic_state_dirty
+    with pytest.raises(ValueError):
+        sim.run(t_span=(5, 10), n_points=6, start="initial", atol=[1e-8, 1e-8, 1e-8])
+    assert core.has_pending_sensitivity_seed and core.ic_state_dirty
+    assert core.advanced_since_baseline
+    measured = sim.run(t_span=(5, 10), n_points=6, carry_sensitivities=True)
+    _, twin = equilibrated()
+    expected = twin.run(t_span=(5, 10), n_points=6, carry_sensitivities=True)
+    np.testing.assert_array_equal(measured.sensitivities, expected.sensitivities)
+    np.testing.assert_array_equal(measured.species, expected.species)
+
+
+@pytest.mark.parametrize("n", [2, 32, 33, 500])
+def test_both_comparisons_agree_with_numpy(n):
+    # _same_values compares in Python up to 32 entries and with numpy above;
+    # either is np.array_equal(equal_nan=True), and equal vectors share a digest.
+    from bngsim._result import _state_digest
+    from bngsim._simulator import _same_values
+
+    rng = np.random.default_rng(n)
+    base = rng.random(n)
+    variants = {"same": base.copy()}
+    signed = base.copy()
+    signed[0] = 0.0
+    neg = signed.copy()
+    neg[0] = -0.0
+    variants["zero-sign"] = neg
+    nan_a = base.copy()
+    nan_a[-1] = np.nan
+    variants["nan-both"] = nan_a
+    moved = base.copy()
+    moved[n // 2] += 1e-12
+    variants["moved"] = moved
+    pairs = [
+        (base, variants["same"]),
+        (signed, variants["zero-sign"]),
+        (nan_a, nan_a.copy()),
+        (base, nan_a),
+        (nan_a, base),
+        (base, moved),
+        (base, base[:-1]),
+    ]
+    for a, b in pairs:
+        expected = a.shape == b.shape and bool(np.array_equal(a, b, equal_nan=True))
+        assert _same_values(a, b) == expected
+        if expected:
+            assert _state_digest(a) == _state_digest(b)
+
+
 def test_equal_values_have_one_digest(tmp_path):
     # -0.0 equals 0.0, so the start is the initial one and its digest is too.
     model = _model(tmp_path)
