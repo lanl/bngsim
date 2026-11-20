@@ -120,7 +120,7 @@ PINNED = {
         'BngSimulator(model).run(method="ssa", n_runs=n)',
         'ScipyOdeSimulator(model).run(param_values={...})',
         'ScipyOdeSimulator(model, tspan=t).run()',
-        'amici.runAmiciSimulation(model, solver)',
+        'amici.sim.sundials.run_simulation(model, solver)',
         'basico.load_model(path)',
         'basico.run_steadystate()',
         'basico.run_time_course(duration=d, intervals=n)',
@@ -128,14 +128,14 @@ PINNED = {
         'basico.set_parameters(name, initial_value=v)',
         'basico.set_species(name, initial_concentration=c)',
         'generate_network({overwrite=>1})',
-        'model.setParameterByName(name, value)',
-        'model.setTimepoints(times)',
-        'parameter_scan({parameter=>"k", par_min=>a, par_max=>b, n_scan_pts=>n, log_scale=>1})',
+        'model.set_free_parameter_by_name(name, value)',
+        'model.set_timepoints(times)',
+        'parameter_scan({parameter=>"k", par_min=>a, par_max=>b, n_scan_pts=>n, log_scale=>1, t_end=>T, n_steps=>N})',  # noqa: E501
         'rdata.x',
         'res.observables["obs"]',
         'simulate({..., continue=>1})',
-        'simulate({method=>"ode", t_end=>T, n_steps=>N})',
-        'solver.setSensitivityOrder(amici.SensitivityOrder.first)',
+        'simulate({method=>"ode", t_end=>T, n_steps=>N})',  # noqa: E501
+        'solver.set_sensitivity_order(SensitivityOrder.first)',
     ],
 }  # fmt: skip
 

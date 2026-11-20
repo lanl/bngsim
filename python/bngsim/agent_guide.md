@@ -68,7 +68,7 @@ print(round(float(a[-1]), 2))       # 33.37
 | load a file by its suffix | `bngsim.Model.load(path)` |
 | load one format | `Model.from_net(path)`, `Model.from_bngl(path)`, `Model.from_sbml(path)`, `Model.from_antimony(path)` |
 | load text | `Model.from_sbml_string(text)`, `Model.from_antimony_string(text)`; BNGL only from a file |
-| choose the method | `bngsim.Simulator(model, method="ode")`; `"ssa"`, `"psa"`, `"nf"` (NFsim), `"rm"` (RuleMonkey); `Simulator.METHODS` lists all |
+| choose the method | `bngsim.Simulator(model, method="ode")`; `"ssa"`, `"psa"`; network-free `"nf"` (NFsim) and `"rm"` (RuleMonkey) also take `xml_path=`; `Simulator.METHODS` lists all |
 | run | `sim.run(t_span=(t0, t1), n_points=n)` or `sim.run(sample_times=[...])` |
 | read a run | `result.time`, `result.species`, `result.observables`, `result.expressions`; each takes a name: `result.observables["A"]` |
 | read names | `model.param_names`, `model.species_names`, `model.observable_names` |
@@ -210,13 +210,15 @@ for feature, why in caps["missing"].items():
 | `result.dataframe` | `pip install "bngsim[pandas]"` | |
 | `result.save`, `Result.load` (HDF5) | `pip install "bngsim[hdf5]"` | |
 | forward sensitivities | a C compiler: `cc` on macOS and Linux, `cl` or `gcc` on Windows, or `$CC`. bngsim compiles the model's derivatives; without one, `bngsim.CodegenToolchainError`. `capabilities()` does not check for it | |
-| network-free methods `nf`, `rm` | compiled in to the wheels | `nfsim`, `rulemonkey` |
+| network-free methods `nf`, `rm` | the engines are in the wheels; each run needs `xml_path=`, the model's BioNetGen XML, which BNG2.pl's `writeXML()` action writes from the `.bngl` | `nfsim`, `rulemonkey` |
 
 ## If you know another tool
 
 What a caller of another tool writes, and the bngsim call to write instead.
-Most of the names in the first column, called on a bngsim object, raise an
-error that says the same thing.
+The first column is either the tool's habit tried on a bngsim object
+(`bngsim.loada` for Tellurium's `te.loada`, `sim.simulate` for RoadRunner's
+`r.simulate`), which raises an error that says the same thing, or a call on
+the tool's own objects, as that tool spells it.
 
 <!-- translation-table: generated from bngsim._foreign_names; do not edit -->
 
@@ -269,10 +271,10 @@ error that says the same thing.
 
 | you write | in bngsim | note |
 |---|---|---|
-| `amici.runAmiciSimulation(model, solver)` | `sim.run(sample_times=times)` | There is no import or compile step: bngsim.Model.load(path) reads the SBML, and a Simulator runs it. |
-| `model.setTimepoints(times)` | `sim.run(sample_times=times)` | The run starts at the first sample time, so put the start time first. |
-| `model.setParameterByName(name, value)` | `model.set_param(name, value)` |  |
-| `solver.setSensitivityOrder(amici.SensitivityOrder.first)` | `bngsim.Simulator(model, sensitivity_params=[...])` | result.sensitivities is (n_times, n_species, n_params); AMICI's rdata.sx is (n_times, n_params, n_species). |
+| `amici.sim.sundials.run_simulation(model, solver)` | `sim.run(sample_times=times)` | AMICI before 1.0: amici.runAmiciSimulation. There is no import or compile step: bngsim.Model.load(path) reads the SBML, and a Simulator runs it. AMICI integrates from t0; a bngsim run starts at the first sample time, so put t0 first. |
+| `model.set_timepoints(times)` | `sim.run(sample_times=times)` | AMICI before 1.0: setTimepoints. The run starts at the first sample time, so put the start time first. |
+| `model.set_free_parameter_by_name(name, value)` | `model.set_param(name, value)` | AMICI before 1.0: setParameterByName. |
+| `solver.set_sensitivity_order(SensitivityOrder.first)` | `bngsim.Simulator(model, sensitivity_params=[...])` | AMICI before 1.0: setSensitivityOrder. result.sensitivities is (n_times, n_species, n_params); AMICI's rdata.sx is (n_times, n_params, n_species). |
 | `rdata.x` | `result.species` |  |
 
 **COPASI (basico)**
@@ -300,7 +302,7 @@ error that says the same thing.
 | `sim.run(n_steps=...)` | `n_points=n_steps + 1` | BioNetGen's n_steps counts the intervals between output points; n_points counts the points, the first included, so n_steps=10 is n_points=11. |
 | `simulate({method=>"ode", t_end=>T, n_steps=>N})` | `bngsim.Simulator(model, method="ode").run(t_span=(0, T), n_points=N + 1)` | bngsim.run_bngl(path) runs the actions a .bngl file holds, as written. |
 | `simulate({..., continue=>1})` | `sim.run(t_span=(t_end, t_next), n_points=n)` | Every run goes on from the model's state; a t_span that starts where the last one ended continues its clock too. |
-| `parameter_scan({parameter=>"k", par_min=>a, par_max=>b, n_scan_pts=>n, log_scale=>1})` | `sim.parameter_scan("k", par_min=a, par_max=b, n_scan_pts=n, log_scale=True)` | It returns one Result per point and writes no files. |
+| `parameter_scan({parameter=>"k", par_min=>a, par_max=>b, n_scan_pts=>n, log_scale=>1, t_end=>T, n_steps=>N})` | `sim.parameter_scan("k", par_min=a, par_max=b, n_scan_pts=n, log_scale=True, t_span=(0, T), n_points=N + 1)` | It returns one Result per point and writes no files. Without t_span and n_points it runs (0, 100) at 101 points. |
 | `generate_network({overwrite=>1})` | `bngsim.Model.from_bngl(path)` | It runs BNG2.pl's generate_network and loads the network; a repeated load of an unchanged file reads a cache. |
 
 **PySB**
@@ -308,7 +310,7 @@ error that says the same thing.
 | you write | in bngsim | note |
 |---|---|---|
 | `ScipyOdeSimulator(model, tspan=t).run()` | `bngsim.Simulator(model).run(sample_times=t)` | Export the PySB model first: pysb.export.export(model, 'bngl') returns BNGL text, which bngsim.Model.from_bngl(path) reads from a file. |
-| `ScipyOdeSimulator(model).run(param_values={...})` | `model.set_params({name: value, ...})` | Set the parameters on the Model, then run. |
+| `ScipyOdeSimulator(model).run(param_values={...})` | `model.set_params({name: value, ...})` | Set the parameters on the Model, then run. PySB's values hold for that run only; the Model keeps these. |
 | `BngSimulator(model).run(method="ssa", n_runs=n)` | `bngsim.Simulator(model, method="ssa").run_replicates(n, t_span=(t0, t1), n_points=m)` |  |
 | `res.observables["obs"]` | `result.observables["obs"]` | A numpy column. |
 
@@ -321,7 +323,7 @@ error that says the same thing.
 | `result.success` | — | run() raises bngsim.SimulationError when a run fails, so a Result it returns is a run that finished. A stop condition that ends a run early raises bngsim.StopConditionMet, which carries the cut Result. |
 | `result.status` | — | run() raises bngsim.SimulationError when a run fails, so a Result it returns is a run that finished. A stop condition that ends a run early raises bngsim.StopConditionMet, which carries the cut Result. |
 | `result.message` | — | run() raises bngsim.SimulationError when a run fails, so a Result it returns is a run that finished. A stop condition that ends a run early raises bngsim.StopConditionMet, which carries the cut Result. |
-| `sim.run(t_eval=...)` | `sample_times=t_eval` |  |
+| `sim.run(t_eval=...)` | `sample_times=t_eval` | SciPy integrates from t_span[0]; a bngsim run starts at the first sample time, so put the start time first. |
 | `sim.run(method=...)` | `bngsim.Simulator(model, method=...)` | The method is chosen when the Simulator is built; Simulator.METHODS lists them. |
 | `sim.run(y0=...)` | `model.set_concentration(name, value)` | A run starts from the model's state: set it before run(), all of it at once with model.set_state(values). |
 

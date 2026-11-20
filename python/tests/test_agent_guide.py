@@ -17,6 +17,8 @@ longer comes out, teaches the wrong call with the authority of the docs:
 from __future__ import annotations
 
 import contextlib
+import importlib.metadata
+import inspect
 import io
 import re
 import subprocess
@@ -66,8 +68,69 @@ def test_the_translation_table_is_generated_from_foreign_names():
     text = bngsim.agent_guide()
     assert _agent_guide._with_table(text, _agent_guide.translation_table()) == text, (
         "the agent guide's translation table differs from FOREIGN_NAMES': "
-        "run `python -m bngsim._agent_guide --write`"
+        "run `python scripts/agent_guide_table.py`"
     )
+
+
+#: A name the guide's prose reads on a bngsim object, in backticks: ``model.x``,
+#: ``sim.x``, ``result.x``, ``ss.x``, ``bngsim.x`` and ``bngsim.Model.x``.
+_PROSE_NAME = re.compile(
+    r"\b(bngsim\.Model|bngsim\.Simulator|bngsim\.Result|Model|Simulator|Result|bngsim|"
+    r"model|sim|ssa|result|ss)\.([A-Za-z_]\w*)"
+)
+
+
+def _prose() -> str:
+    """The guide without its code blocks and its generated table, which other
+    tests check."""
+    text = _FENCE.sub("", bngsim.agent_guide())
+    start = text.index(_agent_guide.TABLE_START)
+    return text[:start] + text[text.index(_agent_guide.TABLE_END) :]
+
+
+def test_every_name_the_prose_reads_exists():
+    """The calls table, the rules and "What needs what" are prose no block runs:
+    each bngsim name they spell must be a real one, not a renamed or a foreign
+    one."""
+    from bngsim._foreign_names import _ForeignAttribute, lookup
+
+    on = {
+        "bngsim": bngsim,
+        "bngsim.Model": bngsim.Model, "Model": bngsim.Model, "model": bngsim.Model,
+        "bngsim.Simulator": bngsim.Simulator, "Simulator": bngsim.Simulator,
+        "sim": bngsim.Simulator, "ssa": bngsim.Simulator,
+        "bngsim.Result": bngsim.Result, "Result": bngsim.Result, "result": bngsim.Result,
+        "ss": bngsim.SteadyStateResult,
+    }  # fmt: skip
+    code = " ".join(re.findall(r"`([^`]+)`", _prose()))
+    names = _PROSE_NAME.findall(code)
+    assert len(names) > 30
+    for obj, attr in names:
+        target = on[obj]
+        owner = target.__name__.rpartition(".")[2]
+        if lookup(owner, attr) is not None:
+            continue  # a wrong name the prose names as one, from the table
+        assert hasattr(target, attr) or attr in dir(target), f"{obj}.{attr}"
+        assert not isinstance(vars(target).get(attr), _ForeignAttribute), f"{obj}.{attr}"
+    # A keyword the prose passes to a Simulator or a run call is one it takes.
+    for call, keyword in re.findall(
+        r"\b(Simulator|run|run_replicates|parameter_scan)\([^)]*?\b(\w+)=", _prose()
+    ):
+        target = bngsim.Simulator if call == "Simulator" else getattr(bngsim.Simulator, call)
+        assert keyword in inspect.signature(target).parameters, f"{call}({keyword}=)"
+
+
+def test_the_capabilities_and_extras_the_guide_names_exist():
+    section = bngsim.agent_guide().split("## What needs what")[1].split("\n## ")[0]
+    features = bngsim.capabilities()["features"]
+    rows = [line.split("|") for line in section.splitlines() if line.startswith("| ")][1:]
+    named = [cap for row in rows for cap in re.findall(r"`(\w+)`", row[3])]
+    assert named and all(cap in features for cap in named), named
+    extras = set(importlib.metadata.metadata("bngsim").get_all("Provides-Extra") or ())
+    for extra in re.findall(r"bngsim\[(\w+)\]", section):
+        assert extra in extras, extra
+    for method in re.findall(r'method="(\w+)"', _prose()):
+        assert method in bngsim.Simulator.METHODS, method
 
 
 def test_the_table_lists_each_tool_the_guide_names():

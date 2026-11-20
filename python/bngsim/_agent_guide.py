@@ -9,13 +9,12 @@ installed, with no network, and the documentation includes the same file.
 Its translation table, from other tools' calls to bngsim's, is generated from
 :data:`bngsim._foreign_names.FOREIGN_NAMES`, the table bngsim's wrong-name
 errors read, so the two cannot say different things. It sits between two
-markers in the file; ``python -m bngsim._agent_guide --write`` regenerates it,
+markers in the file; ``python scripts/agent_guide_table.py`` regenerates it,
 and ``test_agent_guide.py`` fails while the file holds anything else.
 """
 
 from __future__ import annotations
 
-import sys
 from importlib import resources
 
 from bngsim._foreign_names import FOREIGN_NAMES, ForeignName
@@ -152,22 +151,3 @@ def agent_guide(*, skill: bool = False) -> str:
     """
     text = _stored_guide()
     return SKILL_HEADER + text if skill else text
-
-
-def _main(argv: list[str]) -> int:
-    """``python -m bngsim._agent_guide --write`` regenerates the table in place."""
-    if argv != ["--write"]:
-        print("usage: python -m bngsim._agent_guide --write", file=sys.stderr)
-        return 2
-    path = resources.files("bngsim").joinpath(GUIDE_FILE)
-    text = path.read_text(encoding="utf-8")
-    new = _with_table(text, translation_table())
-    if new != text:
-        with resources.as_file(path) as file:
-            file.write_text(new, encoding="utf-8")
-        print(f"rewrote the translation table in {file}")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(_main(sys.argv[1:]))

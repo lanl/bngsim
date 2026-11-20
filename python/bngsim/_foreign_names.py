@@ -484,7 +484,12 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
     + _entries(
         "Simulator.run",
         "SciPy",
-        ("t_eval", "sample_times=t_eval"),
+        (
+            "t_eval",
+            "sample_times=t_eval",
+            "SciPy integrates from t_span[0]; a bngsim run starts at the first sample time, so "
+            "put the start time first.",
+        ),
         ("method", "bngsim.Simulator(model, method=...)", _BUILT),
         (
             "y0",
@@ -679,22 +684,28 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
         "translation",
         "AMICI",
         (
-            "amici.runAmiciSimulation(model, solver)",
+            "amici.sim.sundials.run_simulation(model, solver)",
             "sim.run(sample_times=times)",
-            "There is no import or compile step: bngsim.Model.load(path) reads the SBML, and a "
-            "Simulator runs it.",
+            "AMICI before 1.0: amici.runAmiciSimulation. There is no import or compile step: "
+            "bngsim.Model.load(path) reads the SBML, and a Simulator runs it. AMICI integrates "
+            "from t0; a bngsim run starts at the first sample time, so put t0 first.",
         ),
         (
-            "model.setTimepoints(times)",
+            "model.set_timepoints(times)",
             "sim.run(sample_times=times)",
-            "The run starts at the first sample time, so put the start time first.",
+            "AMICI before 1.0: setTimepoints. The run starts at the first sample time, so put "
+            "the start time first.",
         ),
-        ("model.setParameterByName(name, value)", "model.set_param(name, value)"),
         (
-            "solver.setSensitivityOrder(amici.SensitivityOrder.first)",
+            "model.set_free_parameter_by_name(name, value)",
+            "model.set_param(name, value)",
+            "AMICI before 1.0: setParameterByName.",
+        ),
+        (
+            "solver.set_sensitivity_order(SensitivityOrder.first)",
             "bngsim.Simulator(model, sensitivity_params=[...])",
-            "result.sensitivities is (n_times, n_species, n_params); AMICI's rdata.sx is "
-            "(n_times, n_params, n_species).",
+            "AMICI before 1.0: setSensitivityOrder. result.sensitivities is "
+            "(n_times, n_species, n_params); AMICI's rdata.sx is (n_times, n_params, n_species).",
         ),
         ("rdata.x", "result.species"),
     )
@@ -734,9 +745,11 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
         ),
         (
             'parameter_scan({parameter=>"k", par_min=>a, par_max=>b, n_scan_pts=>n, '
-            "log_scale=>1})",
-            'sim.parameter_scan("k", par_min=a, par_max=b, n_scan_pts=n, log_scale=True)',
-            "It returns one Result per point and writes no files.",
+            "log_scale=>1, t_end=>T, n_steps=>N})",
+            'sim.parameter_scan("k", par_min=a, par_max=b, n_scan_pts=n, log_scale=True, '
+            "t_span=(0, T), n_points=N + 1)",
+            "It returns one Result per point and writes no files. Without t_span and n_points "
+            "it runs (0, 100) at 101 points.",
         ),
         (
             "generate_network({overwrite=>1})",
@@ -757,7 +770,8 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
         (
             "ScipyOdeSimulator(model).run(param_values={...})",
             "model.set_params({name: value, ...})",
-            "Set the parameters on the Model, then run.",
+            "Set the parameters on the Model, then run. PySB's values hold for that run only; "
+            "the Model keeps these.",
         ),
         (
             'BngSimulator(model).run(method="ssa", n_runs=n)',
