@@ -727,7 +727,7 @@ class Result:
 
     @property
     def started_from(self) -> str | None:
-        """Where this run started: ``"initial"``, ``"live"``, or ``None``.
+        """Where this run started — ``"initial"``, ``"live"``, or ``None``.
 
         The state lives in the :class:`Model`, and each run writes its end state
         back there, so a second :meth:`Simulator.run` starts where the first one
