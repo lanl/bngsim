@@ -6,6 +6,11 @@
 # Access by name (returns 1D array for that observable)
 a_total = result.observables["A_total"]
 
+# Species by name too: result.species is a numpy array that also takes a
+# species name in the column position
+a = result.species["A()"]           # the column, as result.species[:, index]
+a_end = result.species[-1, "A()"]   # its last value
+
 # Access as pandas DataFrame
 df = result.dataframe  # requires: pip install bngsim[pandas]
 print(df.head())

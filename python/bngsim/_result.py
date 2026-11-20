@@ -25,7 +25,9 @@ from typing import TYPE_CHECKING, Any, NoReturn
 import numpy as np
 from numpy.typing import NDArray
 
+from bngsim import _foreign_names
 from bngsim._extension_handle import raise_cannot_pickle, shallow_copy
+from bngsim._foreign_names import NamesTheCall
 
 if TYPE_CHECKING:
     from bngsim._bngsim_core import ResultCore
@@ -265,7 +267,7 @@ def _state_digest(state: NDArray[np.float64]) -> str:
     return hashlib.sha256(canon.tobytes()).hexdigest()
 
 
-class Result:
+class Result(metaclass=NamesTheCall):
     """Simulation result container.
 
     Attributes
@@ -273,9 +275,11 @@ class Result:
     time : ndarray, shape (n_times,)
         Time points.
     species : ndarray, shape (n_times, n_species)
-        Species concentrations at each time point.
+        Species concentrations at each time point. ``result.species["A"]``
+        is species ``A``'s column.
     observables : ndarray, shape (n_times, n_observables)
-        Observable values at each time point.
+        Observable values at each time point. ``result.observables["Atot"]``
+        is observable ``Atot``'s column.
     solver_stats : dict
         Solver diagnostics (n_steps, n_rhs_evals, etc.).
 
@@ -346,6 +350,11 @@ class Result:
         "_seed",
         "_ic_sensitivity_seed",
         "_core",
+        # Issue #1700: [the _species array and the _species_names list it was made
+        # over, the _SpeciesArray view Result.species returns], so every access
+        # returns the same view. A list, filled in place, so a copy.copy() shares
+        # it, and the copy and the original return one view whichever asks first.
+        "_species_view",
         "custom_attrs",
     )
 
@@ -389,6 +398,7 @@ class Result:
         _ssa_diagnostics: dict[str, Any] | None = None,
     ) -> None:
         self._core = core
+        self._species_view: list[Any] = []
 
         if core is not None:
             # Construct from C++ core Result
@@ -850,8 +860,24 @@ class Result:
 
     @property
     def species(self) -> NDArray[np.float64]:
-        """Species concentrations, shape ``(n_times, n_species)``."""
-        return self._species
+        """Species concentrations, shape ``(n_times, n_species)``.
+
+        A numpy array, which also takes a species name where a column index
+        goes, as :attr:`observables` does: ``result.species["A"]`` is the
+        column of species ``A``, ``result.species[-1, "A"]`` its last value. On
+        a squeezed batch the name selects along the last axis, as an index of
+        :attr:`species_names` would. A fixed species may be named with its
+        ``$`` or without, as :meth:`Model.set_concentration` takes it. Only
+        this array takes a name: one numpy derives from it (a copy, a
+        transpose, a sort) carries none, since its columns need not be these
+        (issue #1700).
+        """
+        cached = self._species_view
+        if cached and cached[0] is self._species and cached[1] is self._species_names:
+            return cached[2]
+        view = _SpeciesArray.over(self._species, self._species_names, self)
+        cached[:] = (self._species, self._species_names, view)
+        return view
 
     @property
     def state(self) -> NDArray[np.float64]:
@@ -910,12 +936,16 @@ class Result:
         - ``result.observables`` → full array ``(n_times, n_obs)``
         - ``result.observables["name"]`` → single column ``(n_times,)``
         """
-        return _ObservableAccessor(self._observables, self._observable_names)
+        return _ObservableAccessor(
+            self._observables, self._observable_names, "observable", self._blocks()
+        )
 
     @property
     def expressions(self) -> _ObservableAccessor:
         """Expression (function) values with named access."""
-        return _ObservableAccessor(self._expressions, self._expression_names)
+        return _ObservableAccessor(
+            self._expressions, self._expression_names, "expression", self._blocks()
+        )
 
     # ─── Dimensions ─────────────────────────────────────────────────
 
@@ -1014,9 +1044,15 @@ class Result:
         """
         if self._core is not None:
             return _ObservableAccessor(
-                self._core.raw_expression_data, list(self._core.raw_expression_names)
+                self._core.raw_expression_data,
+                list(self._core.raw_expression_names),
+                "expression",
+                self._blocks(),
+                "result.raw_expression_names",
             )
-        return _ObservableAccessor(self._expressions, self._expression_names)
+        return _ObservableAccessor(
+            self._expressions, self._expression_names, "expression", self._blocks()
+        )
 
     @property
     def raw_n_expressions(self) -> int:
@@ -3867,6 +3903,58 @@ class Result:
             out._psa_diagnostics = summary
         return out
 
+    # ─── Names that are not the API (issue #1700) ──────────────────
+
+    def _blocks(self) -> tuple[tuple[str, str, list[str]], ...]:
+        """``(kind, attribute, names)`` for each named block, for :func:`_where_is`."""
+        return (
+            ("species", "species", self._species_names),
+            ("observable", "observables", self._observable_names),
+            ("expression", "expressions", self._expression_names),
+        )
+
+    def _where_is(self, name: str, besides: str | None = None) -> str | None:
+        """Which of this result's blocks holds a column *name*, as the code
+        that reads it, or ``None``. *besides* is a block not to look in."""
+        return _where_is(name, self._blocks(), besides)
+
+    def __dir__(self) -> list[str]:
+        # Without the names of bngsim._foreign_names' table (issue #1700).
+        return _foreign_names.public_dir(self)
+
+    if not TYPE_CHECKING:
+        # Hidden from type checkers, which then refuse ``result["A"]`` as they did.
+
+        def __getitem__(self, key: object) -> NoReturn:
+            # ``result["A"]``, a pandas or RoadRunner habit, was "'Result' object
+            # is not subscriptable", which says nothing of where "A" is.
+            text = (
+                "'Result' object is not subscriptable: it holds one array per kind, "
+                "result.time, result.species, result.observables and result.expressions, "
+                "and each of those is indexed"
+            )
+            if isinstance(key, str):
+                where = self._where_is(key)
+                if where is None:
+                    names = [
+                        *self._species_names,
+                        *self._observable_names,
+                        *self._expression_names,
+                    ]
+                    close = _foreign_names.near_matches(key, names)
+                    where = (
+                        f"No column is named {key!r}; close matches: "
+                        f"{_foreign_names.quote_list(close)}."
+                        if close
+                        else f"No column is named {key!r}."
+                    )
+                raise TypeError(f"{text} by name. {where}")
+            raise TypeError(f"{text}: result.species[{key!r}], result.observables[{key!r}].")
+
+        # With __getitem__ defined, Python would iterate a Result by calling it
+        # with 0, 1, 2, ...; None keeps iter() and ``in`` refusing, as before.
+        __iter__ = None
+
     # ─── Dunder methods ─────────────────────────────────────────────
 
     def __reduce__(self) -> NoReturn:
@@ -3900,6 +3988,121 @@ class Result:
         )
 
 
+def _unclamped(name: str) -> str:
+    """*name* without a fixed species' ``$``, which the model's species names
+    never hold (see :func:`bngsim._model._unclamped`)."""
+    from bngsim._model import _unclamped
+
+    return _unclamped(name)
+
+
+def _where_is(
+    name: str, blocks: Iterable[tuple[str, str, list[str]]], besides: str | None = None
+) -> str | None:
+    """The block of *blocks* (``(kind, attribute, names)``) holding a column
+    *name*, as the code that reads it, or ``None`` (issue #1700). A fixed
+    species' ``$`` may be given, as the model's names never hold it."""
+    for kind, attr, names in blocks:
+        if kind == besides:
+            continue
+        if name in names or (kind == "species" and _unclamped(name) in names):
+            lead = "a species" if kind == "species" else f"an {kind}"
+            return f"{name!r} is {lead}: result.{attr}[{name!r}]."
+    return None
+
+
+class _SpeciesArray(np.ndarray):
+    """:attr:`Result.species`: a numpy array that also takes a species name in
+    the column position (issue #1700).
+
+    ``result.species["A"]`` used to raise numpy's "only integers, slices ..."
+    while ``result.observables["A"]`` worked. :attr:`Result.observables` is a
+    wrapper around its array; making ``species`` one too would have taken its
+    numpy methods (``.copy()``, ``.max()``, item assignment) away from every
+    caller, so this is the array itself, with one more kind of key.
+
+    A name is answered only by the array :attr:`Result.species` returns. Every
+    array numpy derives from it — a slice, a ufunc's output, a reduction — is a
+    plain ``ndarray``, and the few methods that keep the class (``.copy()``,
+    ``.T``, ``.reshape()``, ``.astype()``, ``np.sort``) make one that carries no
+    names and refuses a name, because its columns need not be these: the trap
+    issue #561 found in :class:`~bngsim.NamedArray`, where ``np.sort(a,
+    axis=1)`` kept the labels of columns it had moved. A pickle round trip gives
+    a plain ``ndarray``.
+    """
+
+    # The view Result.species returns sets these; every other instance keeps
+    # the class's None. ndarray subclasses carry attributes in a __dict__.
+    _plain: NDArray[np.float64] | None = None
+    _index: dict[str, int] | None = None
+    _blocks: tuple[tuple[str, str, list[str]], ...] = ()
+
+    @classmethod
+    def over(cls, data: NDArray[np.float64], names: list[str], result: Any) -> _SpeciesArray:
+        plain = np.asarray(data)
+        view = plain.view(cls)
+        # Indexed in its place, so a key that is no name costs one Python call
+        # more than on the array itself, and what it returns is a plain ndarray.
+        view._plain = plain
+        view._index = {n: i for i, n in enumerate(names)}
+        # The other blocks' names, for the "is an observable" hint. Names, not
+        # the Result: the Result holds this view, so a reference back would be a
+        # cycle, and a large result would wait for the cyclic collector.
+        view._blocks = tuple(b for b in result._blocks() if b[0] != "species")
+        return view
+
+    def _column(self, name: str) -> int:
+        index = self._index
+        if index is None:
+            raise KeyError(
+                f"Species {name!r}: this array was derived from result.species, and only "
+                "result.species itself takes a species name, since a copy, a transpose or "
+                "a sort need not keep its columns. Index result.species by name first, "
+                f"then derive: result.species[{name!r}]."
+            )
+        if name in index:
+            return index[name]
+        bare = _unclamped(name)
+        if bare in index:
+            return index[bare]
+        where = _where_is(name, self._blocks)
+        if where is None:
+            close = _foreign_names.near_matches(name, index)
+            where = f"Close matches: {_foreign_names.quote_list(close)}." if close else None
+        text = f"Species {name!r} not found."
+        if where is not None:
+            text += f" {where}"
+        raise KeyError(f"{text} result.species_names lists all {len(index)}.")
+
+    def __getitem__(self, key: Any) -> Any:
+        plain = self._plain
+        if isinstance(key, str):
+            return (plain if plain is not None else np.asarray(self))[..., self._column(key)]
+        if isinstance(key, tuple) and key and isinstance(key[-1], str):
+            # (rows, name): the name's column, then the rest of the key on it, which
+            # for basic and advanced keys alike selects what (rows, its index)
+            # would on a 2-D array, and the leading axes of a batch.
+            whole = plain if plain is not None else np.asarray(self)
+            return whole[..., self._column(key[-1])][key[:-1]]
+        if plain is not None:
+            return plain[key]
+        out = super().__getitem__(key)
+        return out.view(np.ndarray) if isinstance(out, _SpeciesArray) else out
+
+    def __array_wrap__(self, arr: Any, context: Any = None, return_scalar: bool = False) -> Any:
+        # A ufunc's output is a plain array: it is a new array, whose columns this
+        # class knows nothing about.
+        if return_scalar:
+            return arr[()]
+        return arr.view(np.ndarray) if isinstance(arr, _SpeciesArray) else arr
+
+    def __reduce__(self) -> Any:
+        return np.asarray(self).__reduce__()
+
+    def __repr__(self) -> str:
+        return repr(np.asarray(self))
+
+
 class _ObservableAccessor:
     """Wrapper allowing both array access and named column access.
 
@@ -3918,20 +4121,46 @@ class _ObservableAccessor:
     matching what the same key does on the underlying array.
     """
 
-    __slots__ = ("_data", "_names", "_name_to_idx")
+    __slots__ = ("_data", "_names", "_name_to_idx", "_kind", "_blocks", "_listed")
 
-    def __init__(self, data: NDArray[np.float64], names: list[str]) -> None:
+    def __init__(
+        self,
+        data: NDArray[np.float64],
+        names: list[str],
+        kind: str = "observable",
+        blocks: tuple[tuple[str, str, list[str]], ...] = (),
+        listed: str | None = None,
+    ) -> None:
         self._data = data
         self._names = names
         self._name_to_idx = {n: i for i, n in enumerate(names)}
+        # For the KeyError (issue #1700): what a name is looked up as, the
+        # Result's blocks to look in for one that is something else (their
+        # names, not the Result, so an accessor kept does not keep the Result's
+        # arrays alive), and where the names are listed.
+        self._kind = kind
+        self._blocks = blocks
+        self._listed = listed or f"result.{kind}_names"
 
     def __getitem__(self, key: str | int | slice) -> NDArray[np.float64]:
         if isinstance(key, str):
             if key not in self._name_to_idx:
-                raise KeyError(f"Observable '{key}' not found. Available: {self._names}")
+                raise KeyError(self._not_found(key))
             # Last axis, not the second: see the note above about batches.
             return self._data[..., self._name_to_idx[key]]
         return self._data[key]
+
+    def _not_found(self, key: str) -> str:
+        text = f"{self._kind.capitalize()} '{key}' not found."
+        where = _where_is(key, self._blocks, besides=self._kind)
+        if where is None:
+            close = _foreign_names.near_matches(key, self._names)
+            where = f"Close matches: {_foreign_names.quote_list(close)}." if close else None
+        if where is not None:
+            text += f" {where}"
+        if len(self._names) <= 50:
+            return f"{text} Available: {self._names}"
+        return f"{text} {self._listed} lists all {len(self._names)}."
 
     def __array__(self, dtype=None, copy=None) -> NDArray[np.float64]:
         """Support ``np.asarray(result.observables)``.
@@ -4480,3 +4709,6 @@ def _write_bng_file(
             for j in range(data.shape[1]):
                 row.append(f"{data[i, j]:20.12e}")
             f.write(" ".join(row) + "\n")
+
+
+_foreign_names.install(Result, "Result")

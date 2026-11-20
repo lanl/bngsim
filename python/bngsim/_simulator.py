@@ -38,7 +38,7 @@ from typing import Any, Literal, NamedTuple, NoReturn
 
 import numpy as np
 
-from bngsim import _codegen_toolchain
+from bngsim import _codegen_toolchain, _foreign_names
 from bngsim._atol import AUTO as _ATOL_AUTO
 from bngsim._atol import TRACKING as _ATOL_TRACKING
 from bngsim._atol import (
@@ -75,6 +75,7 @@ from bngsim._exceptions import (
     StopConditionMet,
 )
 from bngsim._extension_handle import raise_cannot_pickle, raise_cannot_shallow_copy
+from bngsim._foreign_names import NamesTheCall, call_error, rewrite_run_call
 from bngsim._model import _STEP_DECIDES_WHY, Model
 from bngsim._result import (
     Result,
@@ -668,7 +669,7 @@ def _warn_if_start_restarts_the_clock(
     )
 
 
-class Simulator:
+class Simulator(metaclass=NamesTheCall):
     """Unified simulation interface for ODE, SSA, PSA, and network-free methods.
 
     Parameters
@@ -1058,6 +1059,10 @@ class Simulator:
         strict_ssa: bool = True,
         reaction_stats: bool = False,
     ) -> None:
+        if not isinstance(model, Model):
+            # Simulator(path) failed inside this constructor, with "'str' object has
+            # no attribute '_want_output_sens'" (issue #1700).
+            _require_model(model)
         # Normalize the user-facing method token before backend dispatch.
         # normalize_method() validates the token, checks availability,
         # and returns (canonical, dispatch) where dispatch is the
@@ -5581,7 +5586,11 @@ class Simulator:
         self,
         t_span: tuple[float, float] = (0.0, 100.0),
         n_points: int = 101,
-        *,
+        # Issue #1700: catch-alls for a wrong call only, so the error can name the
+        # keyword it meant (RoadRunner's run(0, 10, 11), BioNetGen's t_end= and
+        # n_steps=). Typed NoReturn so a type checker still refuses one, and left
+        # out of the signature run.__signature__ shows.
+        *_extra: NoReturn,
         sample_times: list[float] | None = None,
         seed: int | None = None,
         rtol: float | None = None,
@@ -5593,6 +5602,7 @@ class Simulator:
         steady_state_tol: float | None = None,
         carry_sensitivities: bool = False,
         start: Literal["live", "initial"] | None = None,
+        **_foreign: NoReturn,
     ) -> Result:
         """Run a simulation.
 
@@ -5813,6 +5823,16 @@ class Simulator:
             Discontinuity triggers (forcing pulses / piecewise-time dosing)
             do not jump state and are unaffected.
         """
+        if _extra or _foreign:
+            raise call_error(
+                "Simulator.run()",
+                "Simulator.run",
+                _RUN_SIGNATURE,
+                locals(),
+                _extra,
+                _foreign,
+                rewrite_run_call,
+            )
         from bngsim._bngsim_core import TimeSpec
 
         times = TimeSpec()
@@ -12344,6 +12364,10 @@ class Simulator:
         """
         return self._current_time
 
+    def __dir__(self) -> list[str]:
+        # Without the names of bngsim._foreign_names' table (issue #1700).
+        return _foreign_names.public_dir(self)
+
     def __reduce__(self) -> NoReturn:
         raise_cannot_pickle(
             "Simulator",
@@ -12373,6 +12397,18 @@ class Simulator:
 
     def __repr__(self) -> str:
         return f"Simulator(method='{self._method}', model={self._model!r})"
+
+
+def _require_model(model: object) -> NoReturn:
+    """Refuse what ``Simulator(...)`` was given in place of a :class:`Model`."""
+    source = _foreign_names.model_source(model, lambda load: f"bngsim.Simulator({load})")
+    if source is not None:
+        what, call = source
+        raise TypeError(f"Simulator() runs a Model, not {what}: build the Model first, {call}.")
+    raise TypeError(
+        f"Simulator() runs a bngsim.Model, not a value of type {type(model).__name__}: "
+        "bngsim.Simulator(bngsim.Model.load(path))."
+    )
 
 
 # ─── Stop condition implementations ────────────────────────────────
@@ -14078,3 +14114,10 @@ class SteadyStateResult:
             f"residual={self.residual:.2e}, "
             f"n_species={len(self._concentrations)})"
         )
+
+
+# Issue #1700: what run() shows of itself is the signature without the
+# catch-alls it takes only to name the keyword a wrong call meant.
+_RUN_SIGNATURE = _foreign_names.signature_without_catch_alls(Simulator.run)
+Simulator.run.__signature__ = _RUN_SIGNATURE  # type: ignore[attr-defined]
+_foreign_names.install(Simulator, "Simulator")

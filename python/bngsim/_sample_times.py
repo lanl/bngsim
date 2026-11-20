@@ -25,7 +25,9 @@ nor the count, and ``n_points=0`` there killed the interpreter).
 from __future__ import annotations
 
 import math
+import numbers
 from collections.abc import Iterable
+from typing import Any
 
 
 def normalize_sample_times(sample_times: Iterable[float]) -> list[float]:
@@ -80,6 +82,8 @@ def validate_time_span(t_span: tuple[float, float], n_points: int) -> tuple[floa
         If either end is not finite, if ``t_end <= t_start``, or if
         ``n_points < 2``.
     """
+    if isinstance(t_span, numbers.Real):
+        raise TypeError(_number_for_t_span(t_span, n_points))
     t_start, t_end = (float(t) for t in t_span)
     # Ahead of the order test: a NaN fails every comparison, so
     # `t_end <= t_start` is false for it and for inf alike, and both used to
@@ -91,6 +95,21 @@ def validate_time_span(t_span: tuple[float, float], n_points: int) -> tuple[floa
     if n_points < 2:
         raise ValueError(f"n_points ({n_points}) must be >= 2")
     return t_start, t_end, n_points
+
+
+def _number_for_t_span(t: Any, n_points: object) -> str:
+    """The error for a number given as ``t_span``.
+
+    ``run(10)``, and ``run(0, 10)`` with RoadRunner's ``simulate(start, end)``
+    in mind, used to fail with "'int' object is not iterable" (issue #1700).
+    The second reads as ``t_span=0, n_points=10``, so a span from 0 is offered
+    to the number, or to ``n_points`` when the number is no end.
+    """
+    text = f"t_span is the interval as one (t_start, t_end) tuple, got the number {t!r}"
+    start, end = (0, t) if t > 0 else (t, n_points)
+    if isinstance(end, numbers.Real) and not isinstance(end, bool) and float(end) > start:
+        text += f": a run from {start!r} to {end!r} is t_span=({start!r}, {end!r})"
+    return text + ". A second positional argument is n_points."
 
 
 def require_finite_time(name: str, t: float) -> float:
