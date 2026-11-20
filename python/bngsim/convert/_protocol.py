@@ -51,7 +51,7 @@ import math
 import re
 import warnings
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, NamedTuple, overload
 
@@ -186,6 +186,73 @@ _COSMETIC_SETOPTIONS = frozenset({"specieslabel"})
 # ─── IR ─────────────────────────────────────────────────────────────────────
 
 
+_PYTHON_SCALARS = frozenset({str, int, float, bool, type(None)})
+
+
+def _plain(value: Any) -> Any:
+    """*value* with each numpy scalar and array as the Python number, bool or
+    list it holds, through mappings, lists and tuples (issue #1750).
+
+    A step may be given numpy values (a seed from ``rng.integers()``, a count,
+    a sweep's ``np.linspace``). Held as they were, ``json.dumps`` refused them,
+    so a protocol that ran could not be written, to JSON or to the SED-ML that
+    embeds it; the actions block quoted an int64 seed as a string and wrote a
+    numpy bool as "True" or "False"; the SED-ML left out a uint64 seed it read
+    as a float; and a scan's float32 bounds made float32 points. A step holds
+    the Python values instead (:meth:`StateChange.__post_init__`,
+    :meth:`Experiment.__post_init__`), and so does the protocol, whose fields
+    go to the same ``json.dumps`` (:meth:`ProtocolSpec.__post_init__`).
+    ``item()`` is exact: an ``int64`` is the int it holds, a ``float32`` the
+    double it widens to. Only a ``longdouble`` wider than a double is rounded,
+    to the double the engine would run."""
+    if type(value) in _PYTHON_SCALARS:  # most of what a step holds; no subclass
+        return value
+    import numpy as np
+
+    if isinstance(value, np.generic):
+        # A longdouble's item() is the longdouble: the double nearest it.
+        item = value.item()
+        return float(item) if isinstance(item, np.floating) else item
+    if isinstance(value, np.ndarray):
+        # Through the list too: an object array's elements, and a longdouble
+        # array's, are what they were.
+        return _plain(value.tolist())
+    # A container with no numpy value in it is returned as it is, not a copy:
+    # the step holds the caller's own ``extra``, of the caller's type, as it
+    # did, and a step with Python values costs one pass and no allocation.
+    if isinstance(value, Mapping):
+        pairs = [(_plain(k), _plain(v)) for k, v in value.items()]
+        if all(p[0] is k and p[1] is v for p, (k, v) in zip(pairs, value.items(), strict=True)):
+            return value
+        return dict(pairs)
+    if isinstance(value, (list, tuple)):
+        items = [_plain(v) for v in value]
+        if all(p is v for p, v in zip(items, value, strict=True)):
+            return value
+        return items if isinstance(value, list) else tuple(items)
+    return value
+
+
+def _hold_plain(step: Any) -> None:
+    """Replace each field of a frozen *step* that holds a numpy value with the
+    Python value it holds (:func:`_plain`). An array given as a field is held
+    as a tuple, which is what every sequence field of a step is: as a list, the
+    step did not equal the one given the tuple, nor the one its JSON reads back
+    as.
+
+    This is done once, when the step is made. A step given no numpy value holds
+    the caller's own ``extra``, so a numpy value put into that mapping later is
+    held as it is, and is written and run as main did (``to_json`` raises
+    ``TypeError``)."""
+    for f in fields(step):
+        value = getattr(step, f.name)
+        plain = _plain(value)
+        if isinstance(plain, list) and not isinstance(value, list):
+            plain = tuple(plain)
+        if plain is not value:
+            object.__setattr__(step, f.name, plain)
+
+
 @dataclass(frozen=True)
 class StateChange:
     """A model-state action between experiments (the BNG ``set*`` family)."""
@@ -208,6 +275,9 @@ class StateChange:
     # holds: a SED-ML computeChange or setValue, read from another tool's
     # document.
     evaluated_once: bool = False
+
+    def __post_init__(self) -> None:
+        _hold_plain(self)
 
     def to_dict(self) -> dict[str, Any]:
         out = {
@@ -275,6 +345,7 @@ class Experiment:
     output_start: float | None = None
 
     def __post_init__(self) -> None:
+        _hold_plain(self)
         if self.output_start is None:
             return
         start = float(self.output_start)
@@ -404,6 +475,9 @@ class ProtocolSpec:
     generation_step: int | None = None
     lossy_before_generation: int = 0
     dropped_before_generation: int = 0
+
+    def __post_init__(self) -> None:
+        _hold_plain(self)
 
     @property
     def experiments(self) -> list[Experiment]:
@@ -993,7 +1067,14 @@ def _flag_lossy(
 
 def _action_num(v: float | int) -> str:
     """Render a numeric action argument: an integral value as a bare int, else
-    a ``float()``-round-tripping repr (BNG re-parses every value)."""
+    a ``float()``-round-tripping repr (BNG re-parses every value). An int is
+    written as it is: through a float, a seed above 2**53 changed, and 2**64 - 1
+    was written as 2**64, out of a seed's range (issue #1750). Through
+    ``int()``, since a subclass may print as something else: an ``IntEnum``
+    prints as its name before Python 3.11, and a bool as ``True``, where
+    BNG2.pl needs 1."""
+    if isinstance(v, int):
+        return str(int(v))
     f = float(v)
     return str(int(f)) if f.is_integer() else repr(f)
 
@@ -1092,7 +1173,12 @@ def _state_change_action(s: StateChange) -> str:
     return f'{verb}("{s.target}",{val})'
 
 
-def write_bngl_protocol(protocol: ProtocolSpec, out_path: str | Path | None = None) -> str:
+def write_bngl_protocol(
+    protocol: ProtocolSpec,
+    out_path: str | Path | None = None,
+    *,
+    derived: Mapping[str, str] | None = None,
+) -> str:
     """Serialize a :class:`ProtocolSpec` to a BNGL ``begin actions`` block.
 
     The mirror of :func:`parse_bngl_protocol`: each :class:`Experiment` becomes a
@@ -1115,12 +1201,18 @@ def write_bngl_protocol(protocol: ProtocolSpec, out_path: str | Path | None = No
         (e.g. ``@comp1:S1()``); the model-block writer does that translation.
     out_path : str | Path | None
         If given, the actions text is also written here.
+    derived : Mapping[str, str] | None
+        The model's derived parameters, name to expression (``kd`` to ``A0``),
+        so a warning follows a change made through one, as BNG2.pl does. Without
+        the mapping, the warnings read only the names in each expression's text
+        (issue #1737).
 
     Returns
     -------
     str
         The ``begin actions`` … ``end actions`` block (trailing newline included).
     """
+    from bngsim._simulator import _stacklevel_outside_bngsim
     from bngsim.convert._bngl_writer import _generate_network_line
 
     lines = ["begin actions", ""]
@@ -1129,8 +1221,13 @@ def write_bngl_protocol(protocol: ProtocolSpec, out_path: str | Path | None = No
             # Where the source generated its network, so the block reads back
             # with the actions before it in the network (issue #1687).
             lines.append(_generate_network_line(protocol.network_gen))
-        if isinstance(step, StateChange) and step.evaluated_once and step.value_expr:
-            moved = _moved_later(protocol.steps[k + 1 :], step.value_expr)
+        if (
+            isinstance(step, StateChange)
+            and step.evaluated_once
+            and step.value_expr
+            and step.kind == "set_parameter"
+        ):
+            moved = _moved_later(protocol.steps[k + 1 :], step.value_expr, derived)
             if moved:
                 warnings.warn(
                     f"{_state_change_action(step)} is evaluated once where it runs (a SED-ML "
@@ -1140,6 +1237,35 @@ def write_bngl_protocol(protocol: ProtocolSpec, out_path: str | Path | None = No
                     "(issue #1682)",
                     ConversionWarning,
                     stacklevel=2,
+                )
+        elif (
+            isinstance(step, StateChange)
+            and step.evaluated_once
+            and step.value_expr
+            and step.kind == "set_concentration"
+        ):
+            moved, added = _followed_into_a_run(protocol.steps[k + 1 :], step, derived)
+            if moved:
+                warnings.warn(
+                    f"{_state_change_action(step)} is evaluated once where it runs (a SED-ML "
+                    f"change); BNG2.pl keeps the amount as that expression until a run, and "
+                    f"a reset to concentrations saved while it was one (a resetting scan's, "
+                    f"at each point and at its end) brings it back, so the species follows "
+                    f"{', '.join(moved)}, which {'is' if len(moved) == 1 else 'are'} changed "
+                    "or scanned before a run that starts from the expression, and starts "
+                    "from another amount there (issue #1737)",
+                    ConversionWarning,
+                    stacklevel=_stacklevel_outside_bngsim(),
+                )
+            if added:
+                warnings.warn(
+                    f"{_state_change_action(step)} is evaluated once where it runs (a SED-ML "
+                    f"change), and the addConcentration after it adds to that amount; "
+                    f"BNG2.pl keeps the amount as an expression, and adds to the species' "
+                    "declared amount instead, so the species starts from another amount "
+                    "(issue #1737)",
+                    ConversionWarning,
+                    stacklevel=_stacklevel_outside_bngsim(),
                 )
         if isinstance(step, Experiment):
             if step.output_start is not None:
@@ -1167,10 +1293,30 @@ def write_bngl_protocol(protocol: ProtocolSpec, out_path: str | Path | None = No
     return text
 
 
-def _moved_later(steps: Sequence[object], text: str) -> list[str]:
+def _names_read(text: str, derived: Mapping[str, str] | None = None) -> set[str]:
+    """The parameter names *text* reads: not a function call (``exp(1)``), and,
+    with *derived* (a derived parameter's name to its expression, from the
+    model), every name a derived one reads, so ``kd*2`` with ``kd = A0`` reads
+    ``A0`` too, as BNG2.pl follows it (issue #1737)."""
+    names = set(re.findall(r"(?<![\w.])([A-Za-z_]\w*)(?!\w|\s*\()", text or ""))
+    todo = list(names)
+    while derived and todo:
+        expr = derived.get(todo.pop())
+        if expr is None:
+            continue
+        for name in re.findall(r"(?<![\w.])([A-Za-z_]\w*)(?!\w|\s*\()", expr):
+            if name not in names:
+                names.add(name)
+                todo.append(name)
+    return names
+
+
+def _moved_later(
+    steps: Sequence[object], text: str, derived: Mapping[str, str] | None = None
+) -> list[str]:
     """The names *text* reads that a step of *steps* sets: a ``setParameter``
     of it, a scan over it, or a ``resetParameters``."""
-    names = set(re.findall(r"(?<![\w.])([A-Za-z_]\w*)(?!\w)", text))
+    names = _names_read(text, derived)
     moved: list[str] = []
     for step in steps:
         if isinstance(step, StateChange):
@@ -1181,6 +1327,62 @@ def _moved_later(steps: Sequence[object], text: str) -> list[str]:
         elif isinstance(step, Experiment) and step.is_scan and step.scan_parameter in names:
             moved.append(step.scan_parameter or "")
     return list(dict.fromkeys(moved))
+
+
+def _followed_into_a_run(
+    steps: Sequence[object], change: StateChange, derived: Mapping[str, str] | None = None
+) -> tuple[list[str], bool]:
+    """Where BNG2.pl runs *steps* from another amount than a ``setConcentration``
+    evaluated once (*change*, the step before them) left: the names its
+    expression reads that differ at a run starting from the expression, and
+    whether an ``addConcentration`` finds the amount still an expression.
+
+    BNG2.pl keeps the expression as the species' amount until a run writes a
+    number over it, or a ``setConcentration``, an ``addConcentration`` (which
+    adds to the declared amount, not to the expression's) or a
+    ``resetConcentrations`` replaces it. ``saveConcentrations`` copies the
+    expression, so a reset to that copy brings it back after a run:
+    ``parameter_scan`` saves as "SCAN" and, resetting, goes back to it before
+    each point and at its end. Each case was run through BNG2.pl 2.9.3.
+    """
+    # The names it reads, through the model's derived parameters where given.
+    names = _names_read(change.value_expr or "", derived)
+    live = True  # the species' amount is the expression
+    saved: dict[str, bool] = {}  # by label: the saved concentrations hold it
+    changed: list[str] = []  # the names that are not what they were at the change
+    saved_changed: dict[str, list[str]] = {}  # by label: ``changed`` at a saveParameters
+    followed: list[str] = []
+    added = False
+    for step in steps:
+        if isinstance(step, Experiment):
+            if step.is_scan:
+                saved["SCAN"] = live
+                if step.scan_parameter in names:
+                    changed.append(step.scan_parameter or "")
+            if live:
+                followed.extend(changed)
+            live = live and step.kind == "scan" and step.reset_between
+        elif not isinstance(step, StateChange):
+            continue
+        elif step.kind == "set_parameter":
+            if step.target in names:
+                changed.append(step.target or "")
+        elif step.kind == "save_parameters":
+            saved_changed[step.label or "DEFAULT"] = list(changed)
+        elif step.kind == "reset_parameters":
+            # Back to the values of the save: those of the change, but for the
+            # names changed between the two. A save before the change holds
+            # values this cannot see, so every name counts as changed.
+            changed = list(saved_changed.get(step.label or "DEFAULT", sorted(names)))
+        elif step.kind == "save_concentrations":
+            saved[step.label or "DEFAULT"] = live
+        elif step.kind == "reset_concentrations":
+            live = saved.get(step.label or "DEFAULT", False)
+        elif step.kind in ("set_concentration", "add_concentration"):
+            if step.target == change.target:
+                added = added or (live and step.kind == "add_concentration")
+                live = False
+    return list(dict.fromkeys(followed)), added
 
 
 def _num_list(v: Any) -> list[float] | None:
@@ -1664,6 +1866,18 @@ def _scalar(tok: str) -> Any:
     tok = tok.strip()
     if len(tok) >= 2 and tok[0] in ("'", '"') and tok[-1] == tok[0]:
         return tok[1:-1]
+    if re.fullmatch(r"[+-]?\d+", tok):
+        # The integer it spells: through a float, a seed above 2**53 changed
+        # (issue #1750). Perl holds a 64-bit integer exactly too. One past a
+        # double's range stays the inf it was: as an int it raised at the next
+        # float(). And int() refuses more than 4300 digits, zeros or not.
+        f = float(tok)
+        if not math.isfinite(f):
+            return f
+        try:
+            return int(tok)
+        except ValueError:
+            return int(f)
     try:
         f = float(tok)
         return int(f) if f.is_integer() and "." not in tok and "e" not in tok.lower() else f

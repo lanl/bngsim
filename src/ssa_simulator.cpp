@@ -4051,6 +4051,16 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
         // What it holds is this run's storage: counts, read as such by the
         // next SSA run, which continues from them (issue #1463).
         model.set_ssa_counts_stored(true);
+        // A state a run produced, as an ODE run's write-back marks its own
+        // (GH #210, issue #1528): x(θ) with no dx/dθ known, so a forward-
+        // sensitivity run from it is refused rather than seeded with the
+        // fresh start's dx(0)/dθ = 0, and one in the initial conditions
+        // (sensitivity_ic) is refused rather than seeded with e_k, the state
+        // being no longer the baseline (issue #1749). A stochastic sample has
+        // no pathwise dx/dθ to carry, so any seed an earlier run left goes.
+        model.set_ic_state_dirty(true);
+        model.set_advanced_since_baseline(true);
+        model.clear_pending_sens_seed();
         // t_end itself: the next run continues from the time the last row
         // reports (issue #693).
         model.set_current_time(t == times.t_end ? times_in.t_end : origin + t);

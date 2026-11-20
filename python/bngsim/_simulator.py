@@ -75,7 +75,14 @@ from bngsim._exceptions import (
 )
 from bngsim._extension_handle import raise_cannot_pickle, raise_cannot_shallow_copy
 from bngsim._model import _STEP_DECIDES_WHY, Model
-from bngsim._result import Result, _as_selector_list, _resolve_output_selector
+from bngsim._result import (
+    Result,
+    _as_selector_list,
+    _merge_one_sided,
+    _one_sided_warnings_held,
+    _resolve_output_selector,
+    _warn_one_sided,
+)
 from bngsim._sample_times import (
     normalize_sample_times,
     require_finite_time,
@@ -2565,7 +2572,7 @@ class Simulator:
                 len(conditions) == 1
                 and len(over_budget) == 1
                 and not table_breaks
-                and not model._state_switch_roots_beside(conditions)
+                and not model._state_switch_roots_at_run_values(conditions)
                 and model._core.n_events == 0
             )
             self._bound_step_past_stop_budget(opts, over_budget, t_start, t_end, alone)
@@ -2910,7 +2917,7 @@ class Simulator:
             return []
 
     def _apply_switch_time_sens(
-        self, opts, core, t_start, t_end, param_names=None, _rebuilt: bool = False
+        self, opts, core, t_start, t_end, param_names=None, _rebuilt: bool = False, model=None
     ) -> None:
         """Inject the switch-time crossings and their ∂t*/∂p (issue #48).
 
@@ -2936,6 +2943,11 @@ class Simulator:
 
         A no-op unless some ``if()`` threshold actually moves with a requested
         parameter, which leaves every other model's integration untouched.
+
+        Given the *model* whose core this is, the laws are read as the branches
+        its parameter values take (issue #1636), as
+        :meth:`_apply_state_switch_sens` reads them: a condition those values
+        decide has no crossing to find.
         """
         names = list(param_names) if param_names is not None else list(self._sensitivity_params)
         # IC columns too: a counter clock's crossing moves with its own IC axis
@@ -2958,6 +2970,11 @@ class Simulator:
                 ic_species=ic_species,
                 declared=self._model._declared_ic_sens,
                 uncompensated_out=uncompensated,
+                laws=(
+                    model._rate_laws_at_values()
+                    if model is not None and model._core is core
+                    else None
+                ),
             )
         except ValueError:
             # An unsupported switch parameter (one that also acts in-branch) is a
@@ -2993,7 +3010,7 @@ class Simulator:
                 # artifact from before was taken to have settled.
                 self._raise_if_uncompensated_crossing_sensitivities(params=param_names)
                 self._apply_switch_time_sens(
-                    opts, core, t_start, t_end, param_names, _rebuilt=True
+                    opts, core, t_start, t_end, param_names, _rebuilt=True, model=model
                 )
                 return
         if records:
@@ -3092,6 +3109,7 @@ class Simulator:
         """
         from bngsim._switch_sensitivity import (
             _surface_key,
+            context_with_laws,
             state_switch_conditions,
             state_switch_reactions,
             state_switch_residual,
@@ -3104,6 +3122,16 @@ class Simulator:
                 ctx = core.functional_jacobian_context()
             except Exception:  # pragma: no cover - defensive; each detector builds its own
                 ctx = None
+
+        # Issue #1636: a condition this run's parameter values decide, such as a
+        # Hill guard's `(S > 0) or (h <= 0) or (h >= 1)` at h = 2, switches
+        # nothing, and its atoms are neither rooted nor jumped: 300 of them made
+        # a sensitivity run 14x slower. The laws are read as the branches those
+        # values take, by the conditions and the equalities alike.
+        if ctx is not None and model is not None and model._core is core:
+            laws = model._rate_laws_at_values()
+            if laws is not None:
+                ctx = context_with_laws(ctx, laws)
 
         try:
             conditions = state_switch_conditions(core, ctx)
@@ -3266,6 +3294,14 @@ class Simulator:
         if covered is None:
             covered = model.time_discontinuity_conditions()
         conditions = model._state_switch_roots_beside(covered)
+        guards: tuple[str, ...] | None = None
+        if conditions:
+            # Issue #1636: a condition this run's parameter values decide, such
+            # as a Hill guard's `(S > 0) or (h <= 0) or (h >= 1)` at h = 2,
+            # switches nothing, and its atoms are not rooted.
+            at_values = model._state_switch_roots_at_values(covered)
+            if at_values is not None:
+                conditions, guards = at_values
         if conditions:
             logger.debug(
                 "State-switch roots for a plain run (issue #897): %s",
@@ -3273,7 +3309,8 @@ class Simulator:
             )
             opts.set_state_switch_conditions(list(conditions))
             # Issue #1147: the if() branches each root switches a rate law in.
-            guards = model._state_switch_guards_beside(covered)
+            if guards is None:
+                guards = model._state_switch_guards_beside(covered)
             if any(guards):
                 opts.set_state_switch_guards(list(guards))
         # Issue #959: an SBML model's thresholds are rooted by the loader's
@@ -5802,7 +5839,9 @@ class Simulator:
                     opts.set_sensitivity_method(self._sensitivity_method)
                     # Outside the parameter guard: a counter clock's crossing
                     # moves with the clock's own IC axis (issue #725).
-                    self._apply_switch_time_sens(opts, self._model._core, t_start, t_end)
+                    self._apply_switch_time_sens(
+                        opts, self._model._core, t_start, t_end, model=self._model
+                    )
                     # Outside the parameter guard on purpose: a *state* crossing
                     # moves every column, initial conditions included (issue
                     # #150 / #144), so an IC-only request needs the jump too.
@@ -6381,6 +6420,15 @@ class Simulator:
 
         def _run_one(i: int) -> Result:
             """Run simulation i (thread-safe, GIL released)."""
+            if in_workers:
+                # Warned of below, on the caller's thread (issue #1822).
+                with _one_sided_warnings_held():
+                    return _run_one_here(i)
+            return _run_one_here(i)
+
+        in_workers = num_processors is not None and num_processors > 1
+
+        def _run_one_here(i: int) -> Result:
             return runner_of.get(i, self)._run_single_batch(
                 i,
                 params[i],
@@ -6417,6 +6465,9 @@ class Simulator:
             results = [_run_one(i) for i in range(n_sims)]
 
         logger.info("Batch complete: %d results", len(results))
+        if in_workers:
+            for r in results:
+                _warn_one_sided(r._one_sided_sensitivities)
         if self._atol_is_default(atol):
             self._warn_atol_above_scale(results, "ODE batch", per_result=row_atols)
 
@@ -7714,7 +7765,9 @@ class Simulator:
                     # crossings are, so they must be detected on the clone. Outside
                     # the parameter guard, as at the single-shot site: a counter
                     # clock's crossing moves with its own IC axis (issue #725).
-                    self._apply_switch_time_sens(opts, clone._core, t_span[0], t_span[1])
+                    self._apply_switch_time_sens(
+                        opts, clone._core, t_span[0], t_span[1], model=clone
+                    )
                     # See the note at the single-shot site: keyed on "any
                     # sensitivity at all", not on a parameter request.
                     self._apply_state_switch_sens(opts, clone._core, clone, covered, t_span[0])
@@ -8217,14 +8270,16 @@ class Simulator:
         def _run_chunk(chunk_idx: int) -> Result:
             """Run one sensitivity chunk (thread-safe)."""
             chunk_params = chunks[chunk_idx]
-            return self._run_sensitivity_chunk(
-                chunk_params,
-                t_span,
-                n_points,
-                effective_rtol,
-                effective_atol_spec,
-                effective_max_steps,
-            )
+            # Warned of once, on this thread, from the stitched result.
+            with _one_sided_warnings_held():
+                return self._run_sensitivity_chunk(
+                    chunk_params,
+                    t_span,
+                    n_points,
+                    effective_rtol,
+                    effective_atol_spec,
+                    effective_max_steps,
+                )
 
         def _recover_chunk(chunk_idx: int, exc: BaseException) -> list[Result]:
             """Retry a failed chunk one column at a time (GH #243)."""
@@ -8247,17 +8302,20 @@ class Simulator:
                 # One that turns on the columns asked (issue #1435) is retried
                 # below, as an untyped failure is: a column alone can run.
                 raise exc
-            return self._recover_failed_chunk(
-                chunk_idx,
-                chunks,
-                target_params,
-                exc,
-                t_span,
-                n_points,
-                effective_rtol,
-                effective_atol_spec,
-                effective_max_steps,
-            )
+            # Each column's run is one of this call's: warned of from the
+            # stitched result, as a chunk's is.
+            with _one_sided_warnings_held():
+                return self._recover_failed_chunk(
+                    chunk_idx,
+                    chunks,
+                    target_params,
+                    exc,
+                    t_span,
+                    n_points,
+                    effective_rtol,
+                    effective_atol_spec,
+                    effective_max_steps,
+                )
 
         # Run chunks (parallel or serial). GH #243 — a chunk that fails is not
         # the end of the call: the grouping itself is part of what failed, so
@@ -8283,6 +8341,8 @@ class Simulator:
 
         # Stitch sensitivity tensors along param axis
         stitched = self._stitch_sensitivity_results(chunk_results, target_params)
+        stitched._one_sided_sensitivities = _merge_one_sided(chunk_results)
+        _warn_one_sided(stitched._one_sided_sensitivities)
         # Carry the #198 support map so an unsupported expression selector raises
         # the specific reason on the stitched result too.
         stitched._expression_sens_support = self._expression_sens_support()
@@ -8503,7 +8563,9 @@ class Simulator:
         chunk_ic_seed = self._apply_ic_param_sens_seed(opts, clone, sens_params)
         # This chunk differentiates only `sens_params`, so the ∂t*/∂p columns
         # must be built against that subset rather than the full request.
-        self._apply_switch_time_sens(opts, clone._core, t_span[0], t_span[1], sens_params)
+        self._apply_switch_time_sens(
+            opts, clone._core, t_span[0], t_span[1], sens_params, model=clone
+        )
         self._apply_event_time_sens(opts, clone._core, t_span[0], t_span[1], sens_params)
         self._apply_state_switch_sens(opts, clone._core, clone, covered, t_span[0])
         opts.set_sensitivity_method(self._sensitivity_method)
@@ -8989,8 +9051,9 @@ class Simulator:
         if self._codegen_c_source:
             opts.codegen_c_source = self._codegen_c_source
         # Issue #904 — the march roots what a plain run() roots (issue #897),
-        # so a window on the approach is not stepped over.
-        opts.state_switch_conditions = list(self._model.state_switch_root_conditions())
+        # so a window on the approach is not stepped over: at these parameter
+        # values, so not a condition they decide (issue #1636).
+        opts.state_switch_conditions = list(self._model._state_switch_roots_at_run_values())
         if sensitivity_params:
             opts.sensitivity_params = list(sensitivity_params)
             # Issue #704 — ∂x(0)/∂p, the seeding a time course starts from. A
@@ -10563,7 +10626,7 @@ class Simulator:
             if self._codegen_c_source:
                 opts.codegen_c_source = self._codegen_c_source
             # Issue #904 — as steady_state(), of the entry's own model.
-            opts.state_switch_conditions = list(clone.state_switch_root_conditions())
+            opts.state_switch_conditions = list(clone._state_switch_roots_at_run_values())
             entry_mask = self._ss_mask_excluding_ar_species(mask_selector)
             if entry_mask is not None:
                 opts.steady_state_mask = entry_mask
@@ -11229,6 +11292,8 @@ class Simulator:
         # the result after building it, so the copy does the same.
         out._psa_diagnostics = dict(result._psa_diagnostics)
         out._expression_sens_support = dict(result._expression_sens_support)
+        # Of the run it was cut from (issue #1822).
+        out._one_sided_sensitivities = list(result._one_sided_sensitivities)
         out._ar_sens_map = dict(result._ar_sens_map)
         out._ar_sens_blocked = result._ar_sens_blocked
         out._ar_sens_refused = result._ar_sens_refused

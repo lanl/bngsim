@@ -477,6 +477,35 @@ class AtolScaleWarning(UserWarning):
     """
 
 
+class OneSidedSensitivityWarning(UserWarning):
+    """A sensitivity column is a one-sided derivative: the run is on a kink (GH #1822).
+
+    Two rate-law switches share an instant, a rate law composes them (a product
+    of their gates, or a window between them), and one of them cannot be moved
+    alone by any requested parameter. With ``sigma = t0 + t_delta`` and
+    ``t_delta = 0`` that is ``t0``: the gate at ``t0`` and the gate at ``sigma``
+    open together, and a rate ``U()*Lambda()`` is on only where both are. As a
+    function of ``t_delta`` the solution has a kink at 0. Raising ``t_delta``
+    delays the rate; lowering it does nothing, ``t0`` then being the later of
+    the two.
+
+    The column returned for such a parameter is the derivative in the direction
+    that delays its switch past the other one, which the warning names. With
+    ``sigma = t0 + t_delta`` and ``t_delta >= 0`` that is the feasible side of
+    the bound, the derivative a bounded optimizer wants. bngsim cannot see the
+    bound: with ``sigma = t0 - t_delta`` the direction named is ``t_delta``
+    decreasing, the infeasible one, and the feasible derivative is another
+    number. In the other direction bngsim does not compute it. The columns of every other
+    parameter are ordinary two-sided derivatives.
+    :attr:`bngsim.Result.one_sided_sensitivities` lists the same thing as data.
+    Filter or escalate it like any ``UserWarning``::
+
+        import warnings, bngsim
+        warnings.simplefilter("ignore", bngsim.OneSidedSensitivityWarning)  # silence
+        warnings.simplefilter("error", bngsim.OneSidedSensitivityWarning)  # promote
+    """
+
+
 class DenseSolverFallbackWarning(UserWarning):
     """A large ODE model is running on the dense solver for lack of KLU (GH #209).
 

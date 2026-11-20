@@ -828,6 +828,18 @@ def _affine(node, value_of, literal_of=None):
         return ("aff", a, b)
     if ty == libsbml.AST_DIVIDE and len(parts) == 2 and parts[1][1] == 0.0 and parts[1][2] != 0.0:
         return ("aff", parts[0][1] / parts[1][2], parts[0][2] / parts[1][2])
+    if (
+        ty in (libsbml.AST_POWER, libsbml.AST_FUNCTION_POWER)
+        and len(parts) == 2
+        and parts[0][1] == 0.0
+        and parts[1][1] == 0.0
+    ):
+        # A constant to a constant power only: a power of the clock is not affine.
+        try:
+            v = float(parts[0][2] ** parts[1][2])
+        except (ArithmeticError, TypeError, ValueError):  # TypeError: a complex root
+            return None
+        return ("aff", 0.0, v) if np.isfinite(v) else None
     return None
 
 

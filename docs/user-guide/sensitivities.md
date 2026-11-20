@@ -247,6 +247,54 @@ before-branch is read with the other switch's threshold bumped away, so a
 coincident pair does not merge into a single doubled jump (issue #375). Models
 with distinct switch times are unaffected and read the plain `f⁻ − f⁺`.
 
+A crossing is separated from the others on its instant by a parameter that only
+its own threshold reads. One crossing of the instant may have none (issue
+#1822). With `sigma = t0 + t_delta` and `t_delta = 0`, which is where a bounded
+optimizer puts a parameter that wants to be smaller, `t0` is the only parameter
+of the threshold `t0` and it moves `sigma` too. `sigma` is separated with
+`t_delta`, and the crossing at `t0` is given what is left: the `t0` column takes
+the instant's whole jump, both crossings moving with it, and the `t_delta`
+column takes `sigma`'s jump alone. Two or more crossings with no parameter of
+their own cannot be divided between themselves, and the run is refused; so is
+`t_delta = t_delta2 = 0` in the model above, where `t0` and `sigma` are both
+without one.
+
+Where a rate law composes the two crossings, a rate `U()*Lambda()` with one
+gate at `t0` and the other at `sigma`, the run sits on a kink in `t_delta`:
+raising it delays the rate, and lowering it does nothing, `t0` then being the
+later of the two. The `t_delta` column is then the derivative for `t_delta`
+increasing, the direction that delays `sigma` past `t0`, which at a lower bound
+of 0 is the feasible one. bngsim raises a `bngsim.OneSidedSensitivityWarning`
+that names the parameter and the direction, and `Result.one_sided_sensitivities`
+lists them. bngsim cannot see a bound: with `sigma = t0 - t_delta` the direction
+is `t_delta` decreasing, and at `t_delta >= 0` that is the infeasible side. The
+derivative in the other direction is another number and is not computed.
+
+This is only for a pair of crossings, one of which has no parameter of its own,
+on one clock and within half the nudge of each other: 32 times
+`eps·max(|t|, 1)`, which is 2.1e-14 at `t = 3`. Within that the two are one
+instant, whichever comes first by a few ulp. Refused as before:
+
+- two composed crossings that each have a parameter of their own, `tA` and `tB`
+  equal by value, which have no order to take (issue #951);
+- a third crossing on the instant of such a composed pair (three that add,
+  one law each, are separated and run);
+- such a pair on two clocks, or further apart than that and within twelve
+  digits (`t_delta = 1e-12`), where the instant's merged jump would leave one
+  of them out, or the run is near a kink and not on it;
+- a crossing read after the other whose rate goes to zero at a window's edge,
+  as a power does (issue #949): what is read a hair past the instant is then
+  not a jump;
+- an instant with a left-over crossing in a model that has, anywhere, a rate
+  law that opens or closes as a power singular at its switch,
+  `k*(t - sigma)^0.2`: those columns are carried in a frame that moves with
+  the switch, and the two are not combined.
+
+The test of whether a reading is a jump allows for the rounding of the net
+rate. A species near a steady state, whose production reads the parameter that
+is bumped, rounds by its gross rate, and an instant with such a species is
+refused with the same message although its reading is a jump.
+
 Two crossings share an instant when they are within 64 ulp of each other, which
 is how far the clock is nudged to read the two branches. Crossings further apart
 than that, however close, are stopped at one after the other, fitted or fixed. The same holds for
@@ -644,7 +692,12 @@ surface (issue #1454); a corner by integrating the columns again over the step
 that went past it, because the solver's own step smears the column's change of
 slope across that step (issues #1285, #1456); and, where the rate law reads
 `time()`, by the clock's share of the restart, which keeps the time while the
-state moves on (issue #1455). Three things are left:
+state moves on (issue #1455). Where the clock carries the pulse's argument
+across a threshold while the state's own term carries it back, as in
+`max(0, 1 - abs(3*time() - Tobs - c)/(w/2))` with `Tobs` rising at 2 per unit
+time, the restart moves the state onto the far side of the threshold to take up
+the clock's share of the crossing, and the columns read the restart that way
+(issue #1776). Three things are left:
 
 - **A corner whose root falls at the very end of its step, or a step too long
   or stiff to integrate again** (2 and 4 substeps disagree): the column there is
@@ -658,13 +711,19 @@ state moves on (issue #1455). Three things are left:
   | triangle, `w = 0.005` | 1e-9 | 5.6e-5 | 5.1e-5 |
   | triangle in a relaxing species, `+ 0.3*time()` in the condition | 1e-9 | 1.4e-4 | 5e-5 |
 
+- **A crossing the clock carries far faster than its species do.** The move
+  above takes at most 16 times what the restart already moves each species,
+  which in `3*time() - b*Tobs` covers `b` down to about 0.094. Below that the
+  restart is the one it was before, and some of these runs still stall, or
+  return columns that are wrong with no error: a step at `b = 0.05` returns
+  its clock-rate column 100% off at rtol 1e-9, and a sawtooth at `b = 0.05`
+  is off by a factor of 5e4 at rtol 1e-6. Issue #1779 lists the cases. Check
+  such a model against a finite difference of runs without sensitivities.
+  Those are right wherever they finish in the cases measured, but a sawtooth
+  of this kind at rtol 1e-11 can fail without sensitivities too.
 - **A rate law that reads `time()` far from 0.** The clock is known to an ulp of
   itself, 3.6e-15 at `t = 25`, and a column moving at 5e7 across a narrow pulse
   turns that into a few parts in 1e6 of itself.
-- **A pulse whose argument reads the clock species with a minus sign**,
-  `max(0, 1 - abs(3*time() - Tobs - c)/(w/2))`, stalls at its near foot with
-  "CVODE made no progress" in a run with sensitivities at any tolerance; the
-  same pulse written `Tobs - time()` runs (issue #1776).
 
 These are relative errors of a column at the end of a run, and past a narrow
 pulse that column can be 1e4 times smaller than at the pulse's peak, so a small

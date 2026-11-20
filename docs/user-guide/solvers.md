@@ -811,6 +811,23 @@ switch whose crossing time moves, which the forward-sensitivity path declines
 (the same reason the GH #333 zero-base rewrite lands on a function's evaluation
 expression and never on its declared one).
 
+Before it gives up, a run whose right-hand side or Jacobian comes back
+non-finite reads it once more with the concentrations below 0 read at 0 (GH
+#135): the integrator's own error puts a species it empties a hair below 0,
+where a `sqrt` of it is `nan` and its value at 0 is the limit from above. Only
+slots that are concentrations by construction are read that way: a species
+declared with a negative initial value, a fixed species, and the target of a
+rate rule keep their values (GH #706). And only the slots a non-finite rate law
+needs moved are moved (issue #1661): first only those the non-finite laws read,
+then each of those that is further below 0 than any rounding of 0 (10^6 of
+its atol) put back at its value wherever the reading stays finite without it at
+0, and from then on, for the rest of the run, at any depth. So a species that
+is negative where the model has it so, a voltage written to -61 or one its own
+law takes below 0, keeps its value beside a `sqrt` of another species, even in
+the law that takes it, and in a law that needs it, `P^1.5*log(-V)`. At a loose
+atol the threshold can reach the species' own range: at `ExactAtol(1e-4)` it is
+100, and a V that crosses 0 on its own is read at 0 until it first passes -100.
+
 ## Logging
 
 ```python
@@ -818,3 +835,58 @@ import logging
 bngsim.configure_logging(logging.DEBUG)
 # Now all bngsim operations produce log output
 ```
+
+### SUNDIALS' own lines
+
+The ODE and steady-state solvers are SUNDIALS', and SUNDIALS writes lines of its
+own, straight to the process's streams: they do not pass through `sys.stdout`,
+`sys.stderr`, `warnings` or the `bngsim` logger, so `contextlib.redirect_stdout`,
+a warnings filter and a logging level do not catch them.
+
+```
+[WARNING][rank 0][...cvodes.c:3482][CVode] Internal t = 1e+06 and h = 1.49012e-13
+are such that t + h = t on the next step. The solver will continue anyway.
+```
+
+Both kinds go to **standard error**: an `[ERROR]` line beside the
+`SimulationError` a failed run raises, and a `[WARNING]` line from a run that
+may well be right (the one above is from `A -> 0` at `k = 1e9` started at
+`t = 1e6`, which returns the right answer). Standard output is left to your
+script. Before issue #1680 the warnings went to standard output.
+
+Two of SUNDIALS' environment variables say where they go instead, and where
+one is set bngsim leaves it in charge:
+
+```bash
+SUNLOGGER_WARNING_FILENAME=/dev/null python script.py   # drop the warnings (NUL on Windows)
+SUNLOGGER_WARNING_FILENAME=stdout    python script.py   # where they went before
+SUNLOGGER_ERROR_FILENAME=/dev/null   python script.py   # drop the error lines
+python script.py 2> sundials.log                        # both, with the rest of stderr, to a file
+```
+
+They are read when a solver context is made, not on every run. A `Simulator`
+running a model with no events, discontinuities or state switches, and no
+sensitivities, makes one on its first run and keeps it for the runs after;
+other runs, each `run_batch` row and each steady-state solve make their own.
+Set them before the script starts, or at least before the `Simulator` first
+runs: a change after that may not be seen by that `Simulator`.
+
+A file name is not a log that grows: each context SUNDIALS makes opens the
+file afresh and empties it, so it ends up holding the last context's lines
+only, and the rows of a `run_batch` on several threads write over each other.
+Name `stdout`, `stderr` or the null device, and redirect the stream itself to
+keep its lines in a file, as in the last line above. A name SUNDIALS cannot
+open, such as a file in a directory that does not exist, stops every run and
+steady-state solve, since SUNDIALS then makes no solver context; the error
+names the variable.
+
+A model whose rate laws switch on state, or on time in an SBML model, restarts
+the integrator at each switch, which can draw the warning above at every
+restart; bngsim drops the warnings of such a run itself, in a time course and
+in a steady-state solve, and those of a KINSOL solve, unless
+`SUNLOGGER_WARNING_FILENAME` is set. A BNGL rate law that switches on time is
+taken at a stop instead, and its run keeps its warnings. The `[ERROR]` lines of
+a solve bngsim expects to fail and recovers from (a KINSOL solve it falls back
+from to integration, and the steps of a state-switch run taken while bngsim
+watches or holds a switch) are dropped whatever `SUNLOGGER_ERROR_FILENAME`
+says.

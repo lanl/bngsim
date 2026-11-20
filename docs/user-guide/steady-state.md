@@ -1079,9 +1079,28 @@ state *without* `carry_sensitivities=True` **raises** (fresh seeding would
 silently assume `∂x(0)/∂θ = 0`). So does `carry_sensitivities=True` when no
 matching seed is available — e.g. the equilibration phase was not run with the
 same `sensitivity_params`, a plain (non-sensitivity) run advanced the state
-without tracking `dx/dθ`, or a `reset()` (as an SBML/RoadRunner every-action
-reset would do) returned to a θ-independent IC baseline and so wiped the
-carry-over. A fresh single sensitivity run is unaffected.
+without tracking `dx/dθ`, an SSA or PSA run advanced it (a stochastic sample has
+no pathwise `dx/dθ` to carry, issue #1749), or a `reset()` (as an SBML/RoadRunner
+every-action reset would do) returned to a θ-independent IC baseline and so wiped
+the carry-over. A fresh single sensitivity run is unaffected. To take a carried
+state as fixed data instead, with `∂x(0)/∂θ = 0`, as one might a stochastic
+sample, `set_state()` that state after a `reset()` to a baseline no run advanced:
+a state set by hand there is not carried over (a `set_state()` alone keeps the
+mark a run left). Once `save_concentrations()` has made an advanced state the
+baseline (after an SSA run too), `reset()` returns to that carried-over state, so
+set the numbers on a fresh `Model` instead (issue #1735). After an SSA or PSA
+run, set the run's last result row, `result.species[-1]`: in a compartment whose
+size a rule or event moves, the model holds that run's counts over the load-time
+size (issue #1463), which `set_state()` would read as concentrations. The
+`reset()` also rewinds the clock to 0 and drops any event execution still
+pending, so the run is a fresh start from that state at the `t_span` it is given.
+
+The same mark decides two more things after an SSA or PSA run, as after an ODE
+run (issue #1749): `set_param()` of a parameter that names an initial condition
+does not re-dose a species in a state a run advanced, even one `set_state()` put
+back on the declared values (`reset()` first, or dose it with
+`set_concentration()`); and `steady_state(sensitivity_params=...)` of such a
+parameter, where it sets the total of a conservation law, is refused.
 
 Scope (matching the new-era pre-equilibration surface): the equilibration is a
 **steady state** (PEtab `time = -inf`) and the perturbation is an **absolute**

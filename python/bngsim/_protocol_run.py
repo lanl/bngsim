@@ -719,10 +719,15 @@ class _Runner:
             self._follow()
         elif kind == "set_concentration":
             i = self._species(change)
-            if change.value is None and change.value_expr is not None:
+            if (
+                change.value is None
+                and change.value_expr is not None
+                and not change.evaluated_once
+            ):
                 # BNG2.pl keeps an expression amount as one: it follows its
                 # parameters until a run (BNGModel.pm, setConcentration's NewConc),
-                # with its observables and functions read now.
+                # with its observables and functions read now. A SED-ML change
+                # is evaluated once, here, and holds (issue #1737).
                 self.symbolic[i] = ("expr", self._freeze(change.value_expr))
                 value = self._value(change)
             else:
