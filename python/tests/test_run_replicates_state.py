@@ -48,6 +48,8 @@ def _sim(tmp_path: Path, method: str, kw: dict) -> bngsim.Simulator:
     return bngsim.Simulator(bngsim.Model.from_net(str(net)), method=method, **kw)
 
 
+# Replicates from a run's end on purpose: the start is not what is tested (#1701).
+@pytest.mark.filterwarnings("ignore::bngsim.LiveStartWarning")
 @pytest.mark.parametrize("procs", [None, 1, 2], ids=["default", "one", "parallel"])
 @pytest.mark.parametrize(("method", "kw"), _METHODS, ids=[m for m, _ in _METHODS])
 def test_replicates_leave_the_model_and_clock_untouched(tmp_path, method, kw, procs):
@@ -86,6 +88,7 @@ _PREEQUIL_NET = Path(__file__).resolve().parents[2] / "tests" / "data" / "preequ
 _TOL = dict(rtol=1e-11, atol=1e-13)
 
 
+@pytest.mark.filterwarnings("ignore::bngsim.LiveStartWarning")  # a run's end, on purpose (#1701)
 @pytest.mark.parametrize("procs", [None, 1, 2], ids=["default", "one", "parallel"])
 def test_replicates_keep_a_shared_models_carried_sensitivity_state(procs):
     """Each sequential replicate's reset() cleared the pending dx/dθ seed and the

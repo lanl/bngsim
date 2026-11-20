@@ -622,8 +622,11 @@ r = sim.run(t_span=(0, 1000), n_points=101, steady_state=True)
 print(len(r.time))                                 # < 101 if it equilibrated early
 print(r.solver_stats["steady_state_reached"])      # 1 if the criterion fired, else 0
 
-# steady_state_tol defaults to atol (matching BNG2.pl); override explicitly:
-r = sim.run(t_span=(0, 1000), n_points=101, steady_state=True, steady_state_tol=1e-9)
+# steady_state_tol defaults to atol (matching BNG2.pl); override explicitly.
+# start="initial": from the initial conditions again, not the steady state above.
+r = sim.run(
+    t_span=(0, 1000), n_points=101, steady_state=True, steady_state_tol=1e-9, start="initial"
+)
 ```
 
 ### Dose-response sweeps (parallel)
