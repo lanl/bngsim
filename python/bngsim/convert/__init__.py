@@ -913,17 +913,36 @@ def _not_as_generated(model: Any, bngl: Path, protocol: ProtocolSpec | None) -> 
                     pending[pname] = declared_text
 
     # In the order they read each other, so one pass writes each from values
-    # already written: parameters are declared without cycles. A cycle this
-    # reading cannot order gets no verdict.
+    # already written: parameters are declared without cycles. A pending one
+    # can read another through a parameter no setParameter writes (B0 R*10,
+    # R 2*Q, Q pending), which the copy follows itself, so the reads are taken
+    # through every parameter the .bngl declares as an expression, whatever
+    # order it declares them in. A cycle this reading cannot order gets no
+    # verdict.
+    declared_expr: dict[str, str] = {}
+    for pname, declared_text in params:
+        try:
+            float(declared_text)
+        except ValueError:
+            declared_expr[pname] = declared_text
+
+    def named(text: str) -> set[str]:
+        return {n for n in declared_expr if re.search(rf"(?<![\w.]){re.escape(n)}(?!\w)", text)}
+
+    def reach(pname: str) -> set[str]:
+        seen: set[str] = set()
+        todo = list(named(pending[pname]))
+        while todo:
+            n = todo.pop()
+            if n in seen:
+                continue
+            seen.add(n)
+            if n not in pending:  # through one the copy follows, to what it reads
+                todo.extend(named(declared_expr[n]))
+        return seen
+
     order: list[str] = []
-    reads = {
-        pname: {
-            n
-            for n in pending
-            if n != pname and re.search(rf"(?<![\w.]){re.escape(n)}(?!\w)", text)
-        }
-        for pname, text in pending.items()
-    }
+    reads = {pname: (reach(pname) & set(pending)) - {pname} for pname in pending}
     while len(order) < len(pending):
         ready = [n for n in pending if n not in order and reads[n] <= set(order)]
         if not ready:

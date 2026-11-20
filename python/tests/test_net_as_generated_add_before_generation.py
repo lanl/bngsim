@@ -561,3 +561,60 @@ def test_an_add_after_a_set_to_an_expression_on_an_unread_seed_gets_no_verdict(t
         warnings.simplefilter("ignore")
         report = net_to_sbml(str(net), bngl=str(bngl), validate=None)
     assert not [n for n in report.lossy if "is not the network" in n]
+
+
+
+# The chain can run through a parameter no setParameter writes: B0 R*10, R 2*Q,
+# Q 2*k1, with Q and B0 set later. R follows Q in the copy by itself, so B0 reads
+# Q only through it, and the order of the pending ones (Q, B0) has to be taken
+# through R. Declared B0 first, B0 was written before Q, from a stale R, and the
+# check wanted 41 for 121 (a second review of #1774). BNG2.pl 2.9.3 wrote this
+# network from the file in dependency order, and refuses the reversed one.
+
+CHAIN2_BNGL = BNGL.format(
+    declared="  Q 2*k1\n  R 2*Q\n  B0 R*10",
+    actions='setParameter("k1",3)\naddConcentration("B()",1)\n'
+    'setParameter("Q",1)\nsetParameter("B0",20)',
+)
+CHAIN2_NET = """begin parameters
+    1 k1    3  # Constant
+    2 k2    1  # Constant
+    3 Q     1  # Constant
+    4 R     2*Q  # ConstantExpression
+    5 B0    20  # Constant
+end parameters
+begin species
+    1 A() 100
+    2 B() 121
+end species
+begin reactions
+    1 1 2 k1 #_R1
+    2 2 1 k2 #_reverse__R1
+end reactions
+begin groups
+    1 Btot                 2
+end groups
+"""
+
+
+@pytest.mark.parametrize("b", [121, 122])
+@pytest.mark.parametrize("order", ["as declared", "reversed"])
+def test_a_chain_through_a_parameter_no_action_writes_is_followed(tmp_path, order, b):
+    bngl_text = CHAIN2_BNGL
+    if order == "reversed":
+        bngl_text = bngl_text.replace("  Q 2*k1\n  R 2*Q\n  B0 R*10", "  B0 R*10\n  R 2*Q\n  Q 2*k1")
+    assert ("B0 R*10\n  R 2*Q\n  Q 2*k1" in bngl_text) == (order == "reversed")
+    bngl = tmp_path / "m.bngl"
+    bngl.write_text(bngl_text, encoding="utf-8")
+    net = tmp_path / "m.net"
+    net.write_text(CHAIN2_NET.replace("2 B() 121", f"2 B() {b}"), encoding="utf-8")
+    assert f"2 B() {b}" in net.read_text()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        report = net_to_sbml(str(net), bngl=str(bngl), validate=None)
+    notes = [n for n in report.lossy if "is not the network" in n]
+    if b == 121:
+        assert notes == []
+    else:
+        (note,) = notes
+        assert "B() is 122 there, 121 as declared" in note
