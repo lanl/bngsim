@@ -7,11 +7,13 @@ CVODE advances its clock by ``t + h``, and far from 0 the doubles are coarse:
 no error.
 
 A model that reads no clock cannot tell where its run starts, so a run whose end
-nearer 0 is at 2^20 or beyond is integrated on the time elapsed since that end,
-and reports the times asked for: it is the run from 0, bit for bit, where that
-end is on the spacing of the doubles at the far end, and as accurate where it is
-not. A run nearer 0 and a model that reads the clock are run as before; the stop
-and the switch time of a switch on a counter clock move with the run.
+nearer 0 is at 2^20 or beyond is integrated on the time elapsed since its start,
+and reports the times asked for: it is the run from 0, bit for bit, where the
+start is on the spacing of the doubles at the far end, and as accurate where it
+is not. A run below 0 that starts more than twice as far out as it ends is
+counted from its end, as before, since from its start the times near its end
+need not be exact. A run nearer 0 and a model that reads the clock are run as before;
+the stop and the switch time of a switch on a counter clock move with the run.
 
 The models are ``.net`` text. Which clock a run was on is read from a failing
 run's message, which names its times: a law that leaves through infinity at
@@ -26,7 +28,7 @@ import bngsim
 import numpy as np
 import pytest
 
-FAR = 2.0**20  # where a run starts counting its own clock (elapsed_clock_origin)
+FAR = 2.0**20  # where a run starts counting its own clock (ode_elapsed_clock_origin)
 
 
 def _net(law):
@@ -85,8 +87,8 @@ def test_a_far_run_is_the_run_from_0(tmp_path, t0):
 
 @pytest.mark.parametrize("span", [(1e15, 1e15 + 10.0), (-1e15 - 10.0, -1e15)])
 def test_a_far_run_follows_the_closed_form(tmp_path, span):
-    # A(t0 + s) = e^-s. A run at negative times counts from its end, the end
-    # nearer 0, so it is the run over (-10, 0). bngsim's defaults
+    # A(t0 + s) = e^-s. A run at negative times counts from its start too, so
+    # it is the run over (0, 10). bngsim's defaults
     # (rtol = atol = 1e-8): 3e-6 of A's start is what a run from 0 is held to.
     result = _sim(tmp_path).run(span, 11)
     elapsed = np.asarray(result.time) - span[0]
@@ -209,10 +211,11 @@ def test_a_far_runs_failure_names_its_own_clock_and_says_so(tmp_path):
     assert NOTE in msg and "elapsed since t = 1000000000000000:" in msg, msg
 
 
-@pytest.mark.parametrize("t0", [0.0, 1000.0, FAR - 1.0])
+@pytest.mark.parametrize("t0", [0.0, 1000.0, FAR - 1.0, -FAR - 2.0, -1.0])
 def test_a_run_nearer_0_keeps_the_clock_it_had(tmp_path, t0):
     # Below 2^20 the doubles are within 1.2e-10 of each other, and the run is
-    # the one it was: its failure names the absolute time.
+    # the one it was: its failure names the absolute time. So is a run below 0
+    # whose end is within 2^20 of 0, and one across 0.
     msg = _failure(_blowup_sim(tmp_path), t0)
     assert NOTE not in msg, msg
     assert f"non-finite value at t={t0 + math.pi / 2:.6g}" in msg, msg
@@ -283,15 +286,15 @@ def test_a_far_runs_switch_time_moves_with_it(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("sens", [False, True], ids=["plain", "sensitivity"])
 @pytest.mark.parametrize("t0", [1e15, -(2.0**30) - 5.0], ids=["far", "far negative"])
-def test_a_far_run_of_a_switch_on_a_counter_is_the_run_from_its_near_end(tmp_path, t0, sens):
+def test_a_far_run_of_a_switch_on_a_counter_is_the_run_from_0(tmp_path, t0, sens):
     # CLOCK_NET reads no clock: its switch is on the counter C, and its crossing
     # is handed to the run as a stop (and, with sigma asked for, a switch time)
     # at t_start + (sigma - c0). Kept on the absolute clock for its stops, the
     # run from 1e15 came back as X(t0 + 5) = 2.12 for 5, 2.47 at rtol 1e-10,
-    # with no error. The stops move with the run, so it is the run from its end
-    # nearer 0, to the bit: from 0, or over (-5, 0) for the negative one. Run
-    # with each stop left at its absolute time, it is not: no stop is ever
-    # reached, and the step goes over the jump.
+    # with no error. The stops move with the run, so it is the run from 0, to
+    # the bit, the negative one too (counted from its end, it was the run over
+    # (-5, 0)). Run with each stop left at its absolute time, it is not: no
+    # stop is ever reached, and the step goes over the jump.
     net = tmp_path / "clock.net"
     net.write_text(CLOCK_NET)
     kw = {"sensitivity_params": ["sigma"]} if sens else {}
@@ -300,7 +303,7 @@ def test_a_far_run_of_a_switch_on_a_counter_is_the_run_from_its_near_end(tmp_pat
         sim = bngsim.Simulator(bngsim.Model.from_net(str(net)), "ode", **kw)
         return sim.run(sample_times=[start + i for i in range(6)])
 
-    far, near = run(t0), run(0.0 if t0 > 0 else -5.0)
+    far, near = run(t0), run(0.0)
     assert np.array_equal(_species(far), _species(near))
     x = list(far.species_names).index("X()")
     assert _species(far)[-1, x] == pytest.approx(5.0, abs=1e-6)
@@ -788,3 +791,91 @@ def test_a_far_run_whose_start_is_not_on_the_far_ends_spacing(tmp_path):
     assert np.array_equal(np.asarray(result.time), [t0, t0 + 1.0, t0 + 5.0, t0 + 101.0])
     elapsed = np.array([0.0, 1.0, 5.0, 101.0])
     assert np.abs(_species(result)[:, 0] - np.exp(-elapsed)).max() < 3e-6
+
+
+# ── A run below 0 ───────────────────────────────────────────────────────────
+#
+# Counted from its end, the end nearer 0, a far run below 0 took its start, and
+# its finest steps, on the doubles one span from 0: ending at -1e17, a crossing
+# 2.5 after a start 2^46 before it was taken on doubles 2^-6 apart.
+
+
+@pytest.mark.parametrize(
+    "end, span",
+    [(-1e17, 2.0**46), (-1e12, 2.0**30), (-(2.0**21), 2.0**21), (-(2.0**22), 2.0**22 - 2.0**19)],
+    ids=["-1e17 over 2^46", "-1e12 over 2^30", "start twice the end", "start just inside it"],
+)
+def test_a_far_run_below_0_is_the_run_from_0(tmp_path, end, span):
+    # DECAY_NET past a crossing 2.5 after the start: dX/dsigma = -2 exp(-2.5).
+    # Counted from its end, the run to -1e17 over 2^46 came back -0.685 for
+    # -0.164, and the one to -1e12 2.1e-6 off, with no error. Counted from its
+    # start it is the run from 0, to the bit, up to a start exactly twice as
+    # far out as its end: the last two start at that bound and 2^19 inside it.
+    net = tmp_path / "decay.net"
+    net.write_text(DECAY_NET)
+    offs = [0.0, 16.0, 32.0, span]
+    start = end - span
+    assert [(start + o) - start for o in offs] == offs
+
+    def run(t0):
+        sim = bngsim.Simulator(
+            bngsim.Model.from_net(str(net)), "ode", sensitivity_params=["sigma"]
+        )
+        return sim.run(sample_times=[t0 + o for o in offs], rtol=1e-10, atol=1e-12)
+
+    far, near = run(start), run(0.0)
+    assert np.array_equal(_species(far), _species(near))
+    assert np.array_equal(np.asarray(far.sensitivities), np.asarray(near.sensitivities))
+    assert _column(far)[1:] == pytest.approx([-2.0 * math.exp(-2.5)] * 3, rel=1e-6)
+
+
+def test_a_far_run_below_0_counts_from_its_start(tmp_path):
+    # tan(t) leaves at pi/2 after the start, on the run's clock from its start.
+    # Counted from its end, the failure was at t=-1.4292, elapsed since t =
+    # -999999999999997.
+    msg = _failure(_blowup_sim(tmp_path), -1e15)
+    assert "non-finite value at t=1.5708" in msg, msg
+    assert NOTE in msg and "elapsed since t = -1000000000000000:" in msg, msg
+
+
+def test_a_long_run_below_0_counts_from_its_end(tmp_path):
+    # Over (-3 * 2^20, -2^20), which starts more than twice as far out as it
+    # ends, the run is counted from its end, as before: its start is 2^21
+    # before 0 on its clock, and tan(t) leaves pi/2 after it.
+    with pytest.raises(bngsim.SimulationError) as info:
+        _blowup_sim(tmp_path).run((-3.0 * FAR, -FAR), 2)
+    msg = str(info.value)
+    assert f"non-finite value at t={-2.0 * FAR + math.pi / 2:.6g}" in msg, msg
+    assert NOTE in msg and "elapsed since t = -1048576:" in msg, msg
+
+
+def test_a_long_run_below_0_whose_crossing_rounds_onto_its_start_is_refused(tmp_path):
+    # From -2e17 - 2^20 to -1e17 the run is counted from its end: its start is
+    # 1e17 + 2^20 before 0 on its clock, where the doubles are 16 apart, so a
+    # crossing 2.5 after it rounds onto it, and the run is refused. Counted
+    # from twice its end, in a draft of this rule, such a run was not refused,
+    # and as its start moved out from 2^40 to 2^50 before 0 its column came
+    # back 2% to 12x off, with no error.
+    net = tmp_path / "decay.net"
+    net.write_text(DECAY_NET)
+    start, end = -2e17 - 2.0**20, -1e17
+    offs = [0.0, 32.0, 64.0]
+    assert [(start + o) - start for o in offs] == offs
+    sim = bngsim.Simulator(bngsim.Model.from_net(str(net)), "ode", sensitivity_params=["sigma"])
+    with pytest.raises(
+        bngsim.SensitivityRefusedForParametersError,
+        match=r"crosses 2\.5 after the start.*16 apart.*rounds onto the start",
+    ):
+        sim.run(sample_times=[start + o for o in offs] + [end], rtol=1e-10, atol=1e-12)
+
+
+def test_a_long_run_below_0_is_counted_from_a_time_on_the_far_end_s_spacing(tmp_path):
+    # The end, -2^21 - 2^-20, is between the doubles at the far end, -2^44,
+    # which are 2^-8 apart: rounded toward 0 onto them it is -2^21, and every
+    # time in the run moves exactly. Taken as it is, the start would be moved
+    # to the nearest double, 2^-20 off.
+    end = -(2.0**21) - 2.0**-20
+    with pytest.raises(bngsim.SimulationError) as info:
+        _blowup_sim(tmp_path).run((-(2.0**44), end), 2)
+    msg = str(info.value)
+    assert NOTE in msg and "elapsed since t = -2097152:" in msg, msg

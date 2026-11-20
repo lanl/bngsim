@@ -17066,7 +17066,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     }
 
     // A run far from t = 0 of a model that reads no clock is integrated on its
-    // own clock, the time elapsed since elapsed_clock_origin (issue #1681).
+    // own clock, the time elapsed since ode_elapsed_clock_origin (issue #1681).
     // CVODE advances t by t + h, and far out the doubles are coarse: 0.125
     // apart at 1e15, 16 at 1e17. A -> 0 at k = 1 over (1e15, 1e15 + 10) came
     // back as A(+5) = 0.00144 for 0.00674, 7.97e-7 at rtol 1e-10, and over
@@ -17074,11 +17074,16 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // model can tell where its run starts, so the run from the origin is the
     // same run, with steps as fine as at 0. The origin is 0 unless the end of
     // the run nearer 0 is at 2^20 or beyond, so every other run is the one it
-    // was, to the bit, as for SSA (issue #1059). The rows report the times
-    // asked for. A model that reads the clock (a function of time(), a table
-    // indexed by it, an event, a discontinuity, or a stop on the time itself)
-    // keeps the absolute clock: its laws are evaluated at t. A stop or a switch
-    // time on a counter clock is where the counter reaches its threshold,
+    // was, to the bit, as for SSA (issue #1059). A moved run is counted from
+    // its start, and is the run from 0, but for one below 0 that starts more
+    // than twice as far out as it ends, which is counted from its end (see
+    // types.hpp): counted from its end, a run to -1e17 from 2^46 before it
+    // took its start at the spacing of the doubles at 2^46. The rows report
+    // the times asked for. A
+    // model that reads the clock (a function of time(), a table indexed by
+    // it, an event, a discontinuity, or a stop on the time itself) keeps the
+    // absolute clock: its laws are evaluated at t. A stop or a switch time on
+    // a counter clock is where the counter reaches its threshold,
     // t_start + (threshold - c(t_start)), and moves with the run: kept on the
     // absolute clock for its stops, an if() on a counter from 1e15 came back
     // 2.5 short of 5, with no error. A model with no ODE state, above, has no
@@ -17087,22 +17092,33 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         return std::all_of(crossings.begin(), crossings.end(),
                            [](const auto &c) { return c.clock_species_idx0 >= 0; });
     };
-    if (const double origin = elapsed_clock_origin(times);
+    if (const double origin = ode_elapsed_clock_origin(times);
         origin != 0.0 && !model.functions_use_time() && model.n_events() == 0 &&
         model.n_discontinuity_triggers() == 0 && on_counter_clocks(opts.crossing_stops) &&
         on_counter_clocks(opts.crossing_probes) &&
         on_counter_clocks(opts.sensitivity.switch_times)) {
         // The rows asked for, each moved onto the run's clock: exact, the
-        // origin being a multiple of the spacing of doubles at the far end.
-        // Past 2^72 that spacing is over 2^20, and what is left of the near
-        // end can be 2^20 or more again: it is moved again here, so the run
-        // below is moved no further and its failure has one note.
+        // origin being a multiple of the spacing of doubles at the far end and
+        // no farther from any of them than 0 is. Past 2^72 that spacing is
+        // over 2^20, and what is left of the near end of a run above 0 can be
+        // 2^20 or more again: it is moved again here, so the run below is
+        // moved no further and its failure has one note.
         const std::vector<double> asked = times.output_times();
         TimeSpec elapsed = times;
         elapsed.sample_times = asked;
         SolverOptions moved = opts;
         std::vector<double> origins;
-        for (double o = origin; o != 0.0; o = elapsed_clock_origin(elapsed)) {
+        for (double o = origin; o != 0.0; o = ode_elapsed_clock_origin(elapsed)) {
+            // A run is moved a handful of times at most (twice from 2^73; each
+            // move after the first at least halves the spacing of the doubles
+            // at the far end, so never 2100). One that keeps moving is a bug
+            // in the origin, and with an origin kept per move it took every
+            // byte the machine had: a mutant of it that moved a run across 0
+            // back and forth froze a 64 GB Mac. Stop it here instead.
+            if (origins.size() == 4096)
+                throw std::logic_error("CvodeSimulator::run: a far run was moved 4096 times "
+                                       "onto its own clock without settling (issue #1681); "
+                                       "this is a bug in ode_elapsed_clock_origin");
             origins.push_back(o);
             elapsed.t_start -= o;
             elapsed.t_end -= o;

@@ -762,12 +762,13 @@ coarse: 1.2e-4 apart at `t = 1e12`, 0.125 apart at `1e15`. A step shorter than
 that spacing is rounded, and the trajectory goes wrong with it.
 
 A model that reads no clock cannot tell where its run starts, so an ODE run
-(`method="ode"`) of it is integrated on the time elapsed since the end of the
-run nearer 0, wherever that end is at 2^20 (1,048,576) or beyond, and reports
-the times you asked for (issue #1681). That end is first rounded toward 0 to the
-spacing of the doubles at the run's far end, so every time in the run moves
-exactly. Where it is already on that spacing, as it always is for a run that
-crosses no power of 2, the run is the run from 0, to the bit:
+(`method="ode"`) of it is integrated on the time elapsed since its start,
+wherever the end of the run nearer 0 is at 2^20 (1,048,576) or beyond, and
+reports the times you asked for (issue #1681). The start is first rounded toward
+0 to the spacing of the doubles at the run's far end, so every time in the run
+moves exactly. Where it is already on that spacing, as it always is for a run
+below 0 counted from its start (below) and for one above 0 that crosses no
+power of 2, the run is the run from 0, to the bit:
 
 ```python
 far = sim.run(t_span=(1e15, 1e15 + 10), n_points=11)    # the same numbers as
@@ -778,10 +779,22 @@ Where it is not, the run starts at what is left, less than that spacing: from
 `2**53 - 1` the far end's doubles are 2 apart, and the run is the run from 1,
 as accurate as the run from 0 but not equal to it in every bit.
 
-A run nearer 0 than that is integrated on the clock you gave it, as it always
-was. So is a run that starts far below 0 and ends within 2^20 of 0, or past it:
-its nearer end is not far, and its first rows are only as fine as the doubles
-at its start (over `(-1e15, -5)` the decay above is at 0.00144 for 0.00674 at
+A run below 0 that starts more than twice as far from 0 as it ends is counted
+from its end instead, as it was before: counted from its start, the times near
+its end need not all move exactly. Its start is then about `|t_start| - |t_end|`
+before 0 on its clock, and its first rows are only as fine as the doubles
+there, with no error: ending at `-2**21`, the column of a crossing 1 to 7 after
+the start, at rtol 1e-10, is about 4e-6 of its value off over `2**30` (1.8e-5
+at worst), up to 1.5e-3 off over `2**36`, and 37% to 72% off over `2**44`. A
+sensitivity run whose crossing
+rounds onto that start is refused, as below. Start such a run at 0 or above,
+with the offset written into the model.
+
+A run whose end nearer 0 is within 2^20 of it, or that crosses 0, is
+integrated on the clock you gave it, as it always was. One that starts far below
+0 and ends there is far only at its start, and its first rows are only as fine
+as the doubles at its start (over `(-1e15, -5)`, with rows at `-1e15`,
+`-1e15 + 5` and `-5`, the decay above is at 0.000587 for 0.00674 at
 `-1e15 + 5`, with no error). If a far run fails with a message that names a
 time, that time is on the run's own clock, and the message ends by saying which
 time to add to it.
@@ -798,12 +811,16 @@ after it at +16; with `X' = k A` past the crossing (`A' = -A`, k = 2, A(0) = 1)
 one 2.5 after `1e16` was placed at +2, and dX/dsigma came back -0.271 for
 -0.164. Each is now the run from 0's, whatever the run's length. The stop that
 lands the integrator on the switch is still placed on the clock the run was
-given, so a far run can differ from the run from 0 within its tolerances. A far
-run below 0 is counted from its end, so a long one starts where its own clock
-is coarse again, and its trajectory and columns there are off with no error:
-ending at `-1e17`, a column read 2.5 after the start is 1e-6 off over `2**30`,
-7e-4 off over `2**40` and 7% off over `2**46`. Start such a run at 0 or above,
-with the offset written into the model.
+given, so from `1e16` on, where the doubles are 2 or more apart, a far run can
+differ from the run from 0: with `X' = k A` past a crossing 2.5 after the start,
+X is 2.7e-5 of its value off the run from 0 at bngsim's default tolerances
+(9e-11 at rtol 1e-10).
+
+No one clock is fine at both ends of a long run. A switch late in a long run is
+taken where the run's own clock is coarse, as it is in the same run from 0 or
+above 0: with `X' = k (1 - X)` past a crossing 2.5 before the end (k = 2, rtol
+1e-10), dX/dsigma at the end is 1.1% off over `2**40`, 69% off over `2**46` and
+0 over `2**50`, with no error.
 
 Where the run keeps the clock it was given (a run whose end nearer 0 is within
 2^20 of it, or a model that reads the clock, below), a crossing on a counter is

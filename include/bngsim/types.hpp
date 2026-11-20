@@ -2086,7 +2086,8 @@ struct TimeSpec {
 };
 
 // Where a run that keeps its own clock starts it (issue #1059, for SSA and PSA;
-// issue #1681, for an ODE run of a model that reads no clock). At the end of the run nearer 0,
+// whether an ODE run of a model that reads no clock is moved, issue #1681, and
+// see ode_elapsed_clock_origin below for where it starts). At the end of the run nearer 0,
 // t_start or (for a run at negative times) t_end: counted from there the run's
 // own time is nowhere coarser than the absolute one. Counted from a far negative
 // t_start, the half of a run toward 0 was, and lost its waiting times as a far
@@ -2108,6 +2109,30 @@ inline double elapsed_clock_origin(const TimeSpec &times) {
     const double t_far = std::max(std::fabs(times.t_start), std::fabs(times.t_end));
     const double ulp = std::nextafter(t_far, std::numeric_limits<double>::infinity()) - t_far;
     return t_near - std::fmod(t_near, ulp);
+}
+
+// Where an ODE run of a model that reads no clock starts its own clock (issue
+// #1681): moved exactly when elapsed_clock_origin moves a run, and from its
+// start where that leaves every time in it exact, as elapsed_clock_origin's
+// near end does for a run above 0. Below 0 that is a run that starts no more
+// than twice as far from 0 as it ends (2 t_end <= t_start < t_end): every time
+// x in it is within a factor 2 of t_start, so x - t_start is exact, and t_start
+// is on its own spacing. Such a run is the run from 0, but for where its
+// crossing stops land (see CvodeSimulator::run). An ODE run takes its
+// finest steps at its start, and counted from its end it took them where the
+// doubles were a span from 0: a run to -1e17 from 2^46 before it put a
+// crossing 2.5 after its start on doubles 2^-6 apart, and dX/dsigma came back
+// -0.685 for -0.164 with no error. A run below 0 that starts farther out is
+// counted from its end, as elapsed_clock_origin has it: from its start, the
+// times near its end need not all be exact. No one origin is fine at both
+// ends of a long run, so a switch late in one counted from its start is taken
+// where the doubles are coarse, as in a run from 0.
+inline double ode_elapsed_clock_origin(const TimeSpec &times) {
+    const double near_end = elapsed_clock_origin(times);
+    // (Where 2 t_end overflows it is -inf, and the run starts within twice it.)
+    if (near_end == 0.0 || times.t_start >= 0.0 || times.t_start < 2.0 * times.t_end)
+        return near_end;
+    return times.t_start;
 }
 
 } // namespace bngsim
