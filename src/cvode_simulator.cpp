@@ -572,6 +572,13 @@ struct StateSwitchHold {
     }
 };
 
+// What CvodeUserData::clamp_far holds per slot: 0, or the step started it more
+// than kClampNoiseAtols atols below 0 (mark_far_at_step_start), which
+// spare_at_pole narrows to at a pole or carried to an overflow, or back to 0.
+constexpr char kFarAtStepStart = 1;
+constexpr char kAtPole = 2;
+constexpr char kCarriedToOverflow = 3;
+
 struct CvodeUserData {
     NetworkModel *model;
     // The largest |x| of each species at any state the right-hand side is
@@ -790,6 +797,9 @@ struct CvodeUserData {
     std::vector<char> clamp_far;
     std::vector<double> clamp_start;
     bool clamp_far_any = false;
+    // Any of them at a pole (kAtPole), which ends the run (followed_below_zero);
+    // one carried to an overflow (kCarriedToOverflow) only cuts the step.
+    bool clamp_at_pole_any = false;
     // Why followed_below_zero ended the run, for its failure message; empty
     // until it does.
     std::string below_zero_refusal;
@@ -1017,6 +1027,7 @@ static void record_clamp_tolerances(CvodeUserData &data, void *cvode_mem, double
                                     const std::vector<double> &atol_v, int ns) {
     data.clamp_cvode_mem = cvode_mem;
     data.clamp_far_any = false;
+    data.clamp_at_pole_any = false;
     data.below_zero_refusal.clear();
     data.clamp_kept.clear();
     data.off_y_valid = false;
@@ -1102,7 +1113,7 @@ static void mark_far_at_step_start(CvodeUserData *data, N_Vector y) {
         data->clamp_start.assign(y0, y0 + ns);
         for (std::size_t i = 0; i < uns; ++i) {
             if (mask[i] && y0[i] < -kClampNoiseAtols * atol[i]) {
-                data->clamp_far[i] = 1;
+                data->clamp_far[i] = kFarAtStepStart;
                 data->clamp_far_any = true;
             }
         }
@@ -1320,6 +1331,24 @@ static bool sens_may_read_at(const CvodeUserData *data, const double *y_ptr, con
     return true;
 }
 
+// Whether row `i` of a dense n x n column-major Jacobian, or of a CSC one with
+// sparsity `sp`, has an infinite entry (spare_at_pole's own_row_infinite).
+static bool dense_row_infinite(const double *jac, std::size_t n, std::size_t i) {
+    for (std::size_t j = 0; j < n; ++j) {
+        if (std::isinf(jac[j * n + i]))
+            return true;
+    }
+    return false;
+}
+
+static bool csc_row_infinite(const double *jac, const JacobianSparsity &sp, std::size_t i) {
+    for (std::size_t k = 0; k < static_cast<std::size_t>(sp.nnz); ++k) {
+        if (static_cast<std::size_t>(sp.row_indices[k]) == i && std::isinf(jac[k]))
+            return true;
+    }
+    return false;
+}
+
 // The slots the clamp leaves alone at `y`: where `values` (the right-hand side
 // or a closed-form Jacobian, `count` of them, as first evaluated there) has an
 // infinite entry, those the step started far below 0 whose own reading is
@@ -1327,13 +1356,40 @@ static bool sens_may_read_at(const CvodeUserData *data, const double *y_ptr, con
 // side (`read_at(state)` evaluates at a state and says what it read; it may
 // overwrite `values`, which are scanned first). None otherwise: not where the
 // value is only NaN, not a far slot whose laws are only NaN while another
-// species' law is what is infinite, and not an overflow. Each spared candidate
-// costs one evaluation, and each one infinite on its own two more; none of
-// this runs unless an infinity was read at a step started far below 0.
-template <class ReadAt>
+// species' law is what is infinite, and not an overflow that reaches up to 0.
+//
+// An overflow the run has carried the slot to is left alone too (issue #1679),
+// marked kCarriedToOverflow and not kAtPole. X' = -(1 + X^2) from X = 1 is
+// tan(pi/4 - t), which has no value from t = 3pi/4 on; near -1e154 X*X
+// overflows, the retry read X at 0, where the law is -1, and the run returned
+// X(3) = -3.5e+286 with no error. That infinity is no edge at 0: the law is
+// finite with the slot one atol below 0, well inside the band the clamp is
+// for, so its value at 0 is not what the law tends to where the run is.
+// exp(-1/S) is the other kind: infinite for every S in (-1/709.8, 0), all the
+// way up to 0, so one atol below 0 too, and it is clamped as before. A slot
+// left alone this way keeps the reading infinite, and the callback hands CVODE
+// its recoverable code: the step is cut, a predictor that only overshot goes
+// on from a shorter one, and a solution that leaves through minus infinity
+// ends as CV_CONV_FAILURE, as it does for a species declared negative or one
+// that leaves through plus infinity.
+//
+// Only where the infinity is in the slot's own row (`own_row_infinite(i)`: of
+// `values` as read_at last wrote them, its own derivative or its row of the
+// Jacobian), which is the shape of a solution carried out through minus
+// infinity. An infinity in another species' law is not that: W emptied to -8e-5
+// at atol 1e-12, inside its tolerance, beside a law exp(-W/1e-7), is finite one
+// atol below 0 too, but W is the undershoot the clamp is for, and kept there it
+// had the run refused at its first step.
+//
+// Each spared candidate costs one evaluation, and each one infinite on its own
+// two or three more; none of this runs unless an infinity was read at a step
+// started far below 0.
+template <class ReadAt, class OwnRowInfinite, class OwnFalls>
 static const char *spare_at_pole(CvodeUserData *data, N_Vector y, const double *values,
-                                 std::size_t count, ReadAt &&read_at) {
+                                 std::size_t count, ReadAt &&read_at,
+                                 OwnRowInfinite &&own_row_infinite, OwnFalls &&own_falls) {
     data->clamp_far_any = false;
+    data->clamp_at_pole_any = false;
     bool infinite = false;
     for (std::size_t k = 0; k < count && !infinite; ++k)
         infinite = std::isinf(values[k]);
@@ -1349,7 +1405,15 @@ static const char *spare_at_pole(CvodeUserData *data, N_Vector y, const double *
             continue;
         double *x = clamp_state_nonneg(data, y);
         x[i] = y_ptr[i];
-        bool pole = read_at(x) == ClampReading::infinite;
+        const bool infinite_here = read_at(x) == ClampReading::infinite;
+        // Carried out through minus infinity, the slot's own law drives it on
+        // down (`own_falls(i, x)`: its derivative is below 0 there). One whose
+        // law pushes it back up is an undershoot the clamp is for, whatever
+        // overflows: W emptied to -8e-5, consumed at W*exp(-W/1e-7), has an
+        // infinite derivative of its own, +inf, and kept below 0 its run failed
+        // where main read it at 0 and finished (ultra review of #1751).
+        const bool own_infinite = infinite_here && own_row_infinite(i) && own_falls(i, x);
+        bool pole = infinite_here;
         // A pole the run has landed on is infinite at that one point and finite
         // a hair to either side of it; an overflow is infinite over a stretch:
         // exp(-1/S), 0 at S = 0, overflows for every S in (-1/709.8, 0), where an
@@ -1361,13 +1425,37 @@ static const char *spare_at_pole(CvodeUserData *data, N_Vector y, const double *
             x[i] = y_ptr[i] * side;
             pole = read_at(x) != ClampReading::infinite;
         }
-        if (pole)
-            any = true;
-        else
+        // An overflow, then: one in the slot's own row that is finite an atol
+        // below 0 does not reach up to 0, and the run carried the slot to it
+        // (issue #1679).
+        bool carried = false;
+        if (own_infinite && !pole) {
+            x = clamp_state_nonneg(data, y);
+            x[i] = -data->clamp_atol[i];
+            carried = read_at(x) == ClampReading::finite;
+        }
+        if (pole) {
+            data->clamp_far[i] = kAtPole;
+            data->clamp_at_pole_any = true;
+        } else if (carried) {
+            data->clamp_far[i] = kCarriedToOverflow;
+        } else {
             data->clamp_far[i] = 0;
+        }
+        any = any || pole || carried;
     }
     data->clamp_far_any = any;
     return any ? data->clamp_far.data() : nullptr;
+}
+
+// spare_at_pole's own_falls for a Jacobian's callers, which hold no derivative:
+// whether slot `i`'s own derivative is below 0 at `x`, read once from the model.
+// Only a slot already far below 0 with an infinite row of its own asks.
+static bool own_derivative_falls(CvodeUserData *data, sunrealtype t, const double *x,
+                                 std::size_t i) {
+    std::vector<double> f(static_cast<std::size_t>(data->model->n_species()));
+    data->model->compute_derivs(static_cast<double>(t), x, f.data());
+    return f[i] < 0.0;
 }
 
 // Has the run itself carried a species to a pole? The callbacks ask where the
@@ -1386,13 +1474,13 @@ template <class ReadAt>
 static bool followed_below_zero(CvodeUserData *data, N_Vector y, double t, const char *src,
                                 ReadAt &&read_at) {
     const int ns = data->model->n_species();
-    if (!data->clamp_far_any || read_at(clamp_state_nonneg(data, y)) != ClampReading::finite)
+    if (!data->clamp_at_pole_any || read_at(clamp_state_nonneg(data, y)) != ClampReading::finite)
         return false;
     if (!data->below_zero_refusal.empty())
         return true;
     std::vector<std::pair<double, int>> named_slots; // (depth in atols, slot)
     for (std::size_t i = 0; i < data->clamp_far.size(); ++i) {
-        if (data->clamp_far[i])
+        if (data->clamp_far[i] == kAtPole)
             named_slots.emplace_back(-data->clamp_start[i] / data->clamp_atol[i],
                                      static_cast<int>(i));
     }
@@ -2126,8 +2214,10 @@ static int retry_interpreted_rhs(CvodeUserData *data, sunrealtype t, N_Vector y,
     };
     nonfinite_rows_of_f(ydot_ptr, static_cast<std::size_t>(data->model->n_species()),
                         data->clamp_bad_rows);
-    const char *spare = spare_at_pole(data, y, ydot_ptr,
-                                      static_cast<std::size_t>(data->model->n_species()), read_at);
+    const char *spare = spare_at_pole(
+        data, y, ydot_ptr, static_cast<std::size_t>(data->model->n_species()), read_at,
+        [&](std::size_t i) { return std::isinf(ydot_ptr[i]); },
+        [&](std::size_t i, const double *) { return ydot_ptr[i] < 0.0; });
     if (read_narrowed(data, y, spare, read_at))
         return 0; // issue #1661
     data->model->compute_derivs(static_cast<double>(t), clamp_state_nonneg(data, y, spare),
@@ -2296,7 +2386,9 @@ static int cvode_codegen_rhs_body(sunrealtype t, N_Vector y, N_Vector ydot, void
         nonfinite_rows_of_f(ydot_ptr, static_cast<std::size_t>(data->model->n_species()),
                             data->clamp_bad_rows);
         const char *spare = spare_at_pole(
-            data, y, ydot_ptr, static_cast<std::size_t>(data->model->n_species()), read_at);
+            data, y, ydot_ptr, static_cast<std::size_t>(data->model->n_species()), read_at,
+            [&](std::size_t i) { return std::isinf(ydot_ptr[i]); },
+            [&](std::size_t i, const double *) { return ydot_ptr[i] < 0.0; });
         if (read_narrowed(data, y, spare, read_at)) { // issue #1661
             note_value_rhs_state(data, t, y_ptr, data->rhs_nonneg_scratch.data());
             return 0;
@@ -2728,7 +2820,10 @@ static int cvode_analytical_dense_jac_body(sunrealtype t, N_Vector y, N_Vector /
             return read_values(jac, n * n);
         };
         nonfinite_rows_of_dense(jac, n, data->clamp_bad_rows);
-        const char *spare = spare_at_pole(data, y, jac, n * n, read_at);
+        const char *spare = spare_at_pole(
+            data, y, jac, n * n, read_at,
+            [&](std::size_t i) { return dense_row_infinite(jac, n, i); },
+            [&](std::size_t i, const double *x) { return own_derivative_falls(data, t, x, i); });
         if (read_narrowed(data, y, spare, read_at))
             return 0; // issue #1661
         model->fill_dense_analytical_jacobian(static_cast<double>(t),
@@ -2796,7 +2891,10 @@ static int cvode_codegen_dense_jac_body(sunrealtype t, N_Vector y, N_Vector /*fy
             return read_values(jac, n * n);
         };
         nonfinite_rows_of_dense(jac, n, data->clamp_bad_rows);
-        const char *spare = spare_at_pole(data, y, jac, n * n, read_at);
+        const char *spare = spare_at_pole(
+            data, y, jac, n * n, read_at,
+            [&](std::size_t i) { return dense_row_infinite(jac, n, i); },
+            [&](std::size_t i, const double *x) { return own_derivative_falls(data, t, x, i); });
         if (read_narrowed(data, y, spare, read_at))
             return 0; // issue #1661
         rc = data->codegen_jac_fn(static_cast<double>(t), clamp_state_nonneg(data, y, spare), jac,
@@ -2993,8 +3091,10 @@ static int cvode_analytical_jac_body(sunrealtype t, N_Vector y, N_Vector /*fy*/,
         };
         nonfinite_rows_of_pattern(jac_data, sp, static_cast<std::size_t>(model->n_species()),
                                   data->clamp_bad_rows);
-        const char *spare =
-            spare_at_pole(data, y, jac_data, static_cast<std::size_t>(sp.nnz), read_at);
+        const char *spare = spare_at_pole(
+            data, y, jac_data, static_cast<std::size_t>(sp.nnz), read_at,
+            [&](std::size_t i) { return csc_row_infinite(jac_data, sp, i); },
+            [&](std::size_t i, const double *x) { return own_derivative_falls(data, t, x, i); });
         if (read_narrowed(data, y, spare, read_at))
             return 0; // issue #1661
         model->fill_sparse_analytical_jacobian(static_cast<double>(t),
@@ -3068,8 +3168,10 @@ static int cvode_codegen_sparse_jac_body(sunrealtype t, N_Vector y, N_Vector /*f
         };
         nonfinite_rows_of_pattern(jac_data, sp, static_cast<std::size_t>(model->n_species()),
                                   data->clamp_bad_rows);
-        const char *spare =
-            spare_at_pole(data, y, jac_data, static_cast<std::size_t>(sp.nnz), read_at);
+        const char *spare = spare_at_pole(
+            data, y, jac_data, static_cast<std::size_t>(sp.nnz), read_at,
+            [&](std::size_t i) { return csc_row_infinite(jac_data, sp, i); },
+            [&](std::size_t i, const double *x) { return own_derivative_falls(data, t, x, i); });
         if (read_narrowed(data, y, spare, read_at))
             return 0; // issue #1661
         rc = data->codegen_jac_sparse_fn(static_cast<double>(t), clamp_state_nonneg(data, y, spare),
