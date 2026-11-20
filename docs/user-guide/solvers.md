@@ -787,25 +787,27 @@ time, that time is on the run's own clock, and the message ends by saying which
 time to add to it.
 
 A switch on a counter clock (an `if()` on a species that counts time, such as
-`C' = 1`) does not read the clock. Its stop, and its switch time when the
-threshold is a requested parameter, are where the counter reaches the
-threshold, and both move with the run. Both are placed before the run, on the
-clock it was given, to the spacing of the doubles there, and a switch time's
-jump is taken at the placed time. That is exact for a jump that is the same
-whenever it is taken; otherwise the column is the jump at the placed time.
-From `1e15`, 0.125 apart, a crossing 2.53 after the start is placed 2.5 after
-it: with `X' = k A` past the crossing, `A' = -A`, k = 2 and A(0) = 1,
-dX/dsigma comes back -0.16417 for -0.159318 (issue #1828). From `1e17`, 16
-apart, a crossing 2.5 after the start is placed on the start and dropped, and
-one 20 after it at +16. A sensitivity run whose requested columns such a
-crossing moves (a parameter of its threshold, or the counter's own starting
-value) is refused with `SensitivityUnsupportedError` (issue #1828) where a
-crossing inside the run is placed outside it, or more than 0.1% of the run's
-length off its time, however far out the run starts; the 1e15 case above, 0.03
-off in a run of 32, is not. A crossing past the run's end is left out by the
-time elapsed to it, which does not round, wherever its time is placed. A plain
-run, or a column the crossing does not move, is not refused: it has no jump to
-lose.
+`C' = 1`) does not read the clock. Its switch time, when the threshold is a
+requested parameter, is where the counter reaches the threshold, and it is
+placed from the counter on the run's own clock: `threshold - C(t_start)` after
+the start, a difference of two of the counter's values, which no far start
+rounds (issue #1828). The jump is taken where the run's counter reaches its
+threshold, as in the run from 0. From `1e17`, where the doubles are 16 apart, a
+crossing 2.5 after the start was placed on the start and dropped, and one 20
+after it at +16; with `X' = k A` past the crossing (`A' = -A`, k = 2, A(0) = 1)
+one 2.5 after `1e16` was placed at +2, and dX/dsigma came back -0.271 for
+-0.164. Each is now the run from 0's, whatever the run's length. The stop that
+lands the integrator on the switch is still placed on the clock the run was
+given, so a far run can differ from the run from 0 within its tolerances.
+
+Where the run keeps the clock it was given (a model that reads it, below), a
+crossing on a counter is placed there, to the spacing of the doubles, like every
+other time in the run. A sensitivity run whose requested columns such a
+crossing moves is refused with `SensitivityUnsupportedError` (issue #1828)
+where the crossing is inside the run but its time rounds onto the start or past
+the end, since its jump would be lost: from `1e6`, 1.2e-10 apart, one 4e-11
+after the start. Whether a crossing is inside the run is decided by the time
+elapsed to it, which does not round.
 
 `run_diffrax` is not moved either: it integrates on the clock it is given, and
 from `1e15` it ends at its step limit with an error.

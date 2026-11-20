@@ -17124,6 +17124,30 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                         clock.second -= o;
             }
         }
+        // A switch time on a counter is where the counter reaches its
+        // threshold: threshold - c(t_start) after the start, a difference of
+        // two of the counter's own values (issue #1828). Its t_star, t_start
+        // plus that, was rounded to the doubles at t_start before the run was
+        // moved, and moved with the run it kept the rounding: from 1e17 (16
+        // apart) a crossing 20 after the start was placed at +16 and its jump
+        // taken there, 0, -2, -2 for 0, 0, -2, while the run's counter crossed
+        // at +20. With X' = 2 A past it (A' = -A), one 2.5 after a start at
+        // 1e16 was placed at +2, and the column was 0.27 for 0.16. Placed from
+        // the counter on the run's own clock, each is where the run's counter
+        // reaches it, as in the run from 0, and no error is left to bound.
+        // Python lists such a crossing by that elapsed time, not by where it
+        // rounds. (A crossing stop is placed as before: its threshold is read
+        // back from its rounded time, and it only lands the step.)
+        {
+            std::vector<double> start(static_cast<std::size_t>(ns));
+            model.get_state_into(start.data());
+            for (SwitchTimeSens &sw : moved.sensitivity.switch_times) {
+                if (sw.clock_species_idx0 < ns)
+                    sw.t_star =
+                        elapsed.t_start +
+                        (sw.threshold - start[static_cast<std::size_t>(sw.clock_species_idx0)]);
+            }
+        }
         // Each move back is exact, in the reverse order.
         const auto back = [&origins](double t) {
             for (auto o = origins.rbegin(); o != origins.rend(); ++o)
@@ -17151,6 +17175,54 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             if (typeid(e) != typeid(std::runtime_error))
                 throw;
             rethrow_on_the_runs_clock(e, back(0.0));
+        }
+    }
+
+    // A run on the absolute clock (one that reads it, or one nearer 0, or one
+    // moved above, whose switch times are placed exactly) takes a counter's
+    // switch time where t_start + (threshold - c(t_start)) rounds, like every
+    // other time in it. Python lists a crossing by that elapsed time (issue
+    // #1828), so one inside the run whose time rounds onto its start, or past
+    // its end, is here; the window below drops it, and the jump it makes in
+    // the requested columns with it: from 1e6 (1.2e-10 apart) one 4e-11 after
+    // the start, and dX/dsigma came back 0 for -2. Refused.
+    {
+        const SwitchTimeSens *lost = nullptr;
+        double lost_after = 0.0;
+        std::vector<double> start;
+        const double span = times.t_end - times.t_start;
+        for (const SwitchTimeSens &sw : opts.sensitivity.switch_times) {
+            if (sw.clock_species_idx0 < 0 || sw.clock_species_idx0 >= ns ||
+                (sw.t_star > times.t_start && sw.t_star <= times.t_end))
+                continue;
+            if (start.empty()) {
+                start.resize(static_cast<std::size_t>(ns));
+                model.get_state_into(start.data());
+            }
+            const double after =
+                sw.threshold - start[static_cast<std::size_t>(sw.clock_species_idx0)];
+            if (after > 0.0 && after <= span) {
+                lost = &sw;
+                lost_after = after;
+                break;
+            }
+        }
+        if (lost != nullptr) {
+            const double t0 = times.t_start;
+            const double apart =
+                std::nextafter(std::fabs(t0), std::numeric_limits<double>::infinity()) -
+                std::fabs(t0);
+            char text[512];
+            std::snprintf(
+                text, sizeof(text),
+                "Forward sensitivity is not supported for this run: the counter clock %s crosses "
+                "%g after the start, t = %.17g, but there the doubles are %g apart, and the "
+                "crossing rounds %s, so the jump it makes in the requested columns would be lost "
+                "(issue #1828). Start the run nearer 0.",
+                model.species_names()[static_cast<std::size_t>(lost->clock_species_idx0)].c_str(),
+                lost_after, t0, apart,
+                lost->t_star <= times.t_start ? "onto the start" : "past the run's end");
+            throw SensitivityUnsupported(text);
         }
     }
 

@@ -11732,49 +11732,24 @@ def _dtstar_columns(
     return dtstar, moved
 
 
-#: The share of a run's span by which a counter crossing may be placed off its
-#: exact time before a sensitivity run that it moves is refused (issue #1828).
-#: Where the jump does not depend on when it is taken (``X' = k`` past the
-#: crossing) a small placement error changes nothing; where it does (``X' = k A``,
-#: A decaying) the column is off by about the error's share of A's time scale.
-#: 0.1% refuses the far starts where the error is gross (16 of 32 at 1e17, 0.5 of
-#: 32 at 1e16, both refused before #1681 too) and runs those where it is small
-#: (0.03 of 32 at 1e15, whose ``X' = k`` column is right, as before #1681).
-_CROSSING_PLACEMENT_SHARE = 1e-3
-
-
-def _misplaced(
+def _in_window(
     t_start: float, t_end: float, t_star: float, clock_idx0: int, elapsed: float
-) -> str | None:
-    """Issue #1828: why a counter clock's crossing, *elapsed* after the start in
-    exact arithmetic, is not where the run places it, or ``None``.
+) -> bool:
+    """Whether a crossing is in the run's half-open window ``(t_start, t_end]``.
 
-    The crossing's time is ``t_start + (threshold - c(t_start))``. The elapsed
-    part is the difference of two values of the counter, which nothing far from
-    0 touches; the sum is rounded to the doubles at ``t_start``, 16 apart at
-    1e17. So a crossing inside the run can be placed onto the start (and
-    dropped), past its end, or off its time inside it (and its jump taken
-    there). One past the run's end in exact arithmetic is no crossing of the
-    run, wherever it is placed: :func:`_past_the_end` drops it."""
-    if clock_idx0 < 0:
-        return None
-    span = t_end - t_start
-    inside_exact = 0.0 < elapsed <= span
-    inside_placed = t_start < t_star <= t_end
-    placed = t_star - t_start
-    if inside_exact and not inside_placed:
-        return "rounds onto the start" if t_star <= t_start else "rounds past the run's end"
-    if inside_exact and abs(placed - elapsed) > _CROSSING_PLACEMENT_SHARE * span:
-        return f"is placed {placed:g} after the start, {abs(placed - elapsed):g} off its time"
-    return None
-
-
-def _past_the_end(t_start: float, t_end: float, clock_idx0: int, elapsed: float) -> bool:
-    """Issue #1828: whether a counter clock's crossing is past the run's end by
-    its elapsed time, which does not round. From 1e17 one 36 after the start, in
-    a run of 32, is placed on the end (the doubles are 16 apart), and the run
-    made its jump in the last row: 0, 0, -2 for 0, 0, 0. It is not in the run."""
-    return clock_idx0 >= 0 and elapsed > t_end - t_start
+    A crossing on a counter clock is judged by *elapsed*, its time after the
+    start in exact arithmetic: ``threshold - c(t_start)``, a difference of two
+    of the counter's own values (issue #1828). Its time ``t_start + elapsed``
+    is rounded to the doubles at ``t_start``, 16 apart at 1e17, so judged by
+    that, one 2.5 after the start was dropped as on it, and one 36 after it, in
+    a run of 32, was kept as on the end and made its jump in the last row. The
+    core places a counter's switch time from the counter wherever the run is on
+    its own clock, and refuses one whose rounding loses it where the run is not
+    (``CvodeSimulator::run``). A crossing on literal time is judged by its time.
+    """
+    if clock_idx0 >= 0:
+        return 0.0 < elapsed <= t_end - t_start
+    return t_start < t_star <= t_end
 
 
 def _absorb_schedule_crossings(
@@ -11789,7 +11764,6 @@ def _absorb_schedule_crossings(
     n_cols: int,
     own_names: AbstractSet[str] = frozenset(),
     uncompensated_out: list[str] | None = None,
-    rounded_out: list[tuple[float, str, _Crossing]] | None = None,
 ) -> None:
     """Add every edge of *atom*'s repeating schedule that falls in the run window
     (issue #436), or do nothing when *atom* is not one.
@@ -11868,28 +11842,10 @@ def _absorb_schedule_crossings(
 
     for value, partials in edges:
         t_star = t_start + (value - clock_now)
-        # The same half-open window the rest of the loop applies, re-checked in
-        # time rather than in clock values so a schedule on a counter clock is
-        # filtered by exactly the test a threshold on it would be.
-        # (An edge past the run's end is not listed: the edges are taken from a
-        # window in counter values, so only the threshold path asks.)
-        why = _misplaced(t_start, t_end, t_star, clock_idx0, value - clock_now)
-        if rounded_out is not None and why is not None:
-            rounded_out.append(
-                (
-                    value - clock_now,
-                    why,
-                    _Crossing(
-                        t_star=t_star,
-                        clock_idx0=clock_idx0,
-                        threshold=value,
-                        dtstar=_dtstar_columns(partials, col_of, n_cols)[0],
-                        partials={},
-                        atoms=frozenset({atom}),
-                    ),
-                )
-            )
-        if not (t_start < t_star <= t_end):
+        # The same half-open window the rest of the loop applies, so a schedule
+        # on a counter clock is filtered by exactly the test a threshold on it
+        # would be: by its time after the start, which does not round.
+        if not _in_window(t_start, t_end, t_star, clock_idx0, value - clock_now):
             continue
         dtstar, _ = _dtstar_columns(partials, col_of, n_cols)
         _absorb_crossing(
@@ -12050,8 +12006,6 @@ def compute_switch_time_sens(
     # what turns isolation on below. Dropping them early is why #375 reproduced
     # even when a single parameter was requested.
     found: list[_Crossing] = []
-    # Counter crossings the absolute clock misplaces (issue #1828): (elapsed, why, crossing).
-    rounded: list[tuple[float, str, _Crossing]] = []
     # ``found`` bucketed by clock and threshold value, so absorbing a crossing
     # does not walk every crossing found so far (see :func:`_absorb_crossing`).
     found_index: dict[tuple[int, str], list[int]] = {}
@@ -12108,7 +12062,6 @@ def compute_switch_time_sens(
                         len(names),
                         own_names,
                         uncompensated_out,
-                        rounded_out=rounded,
                     )
                     continue
                 clock_sym, threshold_exprs = split
@@ -12165,31 +12118,13 @@ def compute_switch_time_sens(
                     # Half-open window, matching the core's own filter: a crossing
                     # on t_end still jumps into the final recorded column; one on
                     # t_start would precede the run's initial recording.
-                    if clock_idx0 >= 0 and _past_the_end(
-                        t_start, t_end, clock_idx0, threshold_value - clock_now
+                    if not _in_window(
+                        t_start,
+                        t_end,
+                        t_star,
+                        clock_idx0,
+                        threshold_value - clock_now if clock_idx0 >= 0 else 0.0,
                     ):
-                        continue
-                    why = (
-                        _misplaced(t_start, t_end, t_star, clock_idx0, threshold_value - clock_now)
-                        if clock_idx0 >= 0
-                        else None
-                    )
-                    if why is not None:
-                        rounded.append(
-                            (
-                                threshold_value - clock_now,
-                                why,
-                                _Crossing(
-                                    t_star=t_star,
-                                    clock_idx0=clock_idx0,
-                                    threshold=threshold_value,
-                                    dtstar=dtstar,
-                                    partials={},
-                                    atoms=frozenset({atom}),
-                                ),
-                            )
-                        )
-                    if not (t_start < t_star <= t_end):
                         continue
 
                     _absorb_crossing(
@@ -12215,27 +12150,6 @@ def compute_switch_time_sens(
     # which is what puts the record onto the isolation path.
     moved_clocks = _clocks_moved(core, clocks, names, ic_species, declared=declared)
     moved = [c for c in found if any(v != 0.0 for v in c.dtstar) or c.clock_idx0 in moved_clocks]
-    # A crossing a requested column moves is a record the run applies a jump
-    # for. One the absolute clock misplaced (onto the start, so dropped; past
-    # the end; or off its time inside the run) has that jump lost or taken at
-    # the wrong time, and the column comes
-    # back wrong with no error: from 1e17, 0, -2, -2 for 0, 0, -2, where a build
-    # before #1681 refused the run (CV_TOO_CLOSE). Until the crossings are
-    # placed from t_start (issue #1828), refuse.
-    lost = [
-        (elapsed, why, c)
-        for elapsed, why, c in rounded
-        if any(v != 0.0 for v in c.dtstar) or c.clock_idx0 in moved_clocks
-    ]
-    if lost:
-        elapsed, why, c = min(lost, key=lambda entry: entry[0])  # the earliest
-        raise SensitivityUnsupportedError(
-            "Forward sensitivity is not supported for this run: the counter clock in "
-            f"{_strip_redundant_parens(min(c.atoms).strip())!r} crosses {elapsed:g} after the "
-            f"start, t = {t_start!r}, but there the doubles are {math.ulp(t_start):g} apart, "
-            f"and the crossing {why}, so the jump it makes in the requested columns would "
-            "be lost or misplaced (issue #1828). Start the run nearer 0."
-        )
     if moved:
         for step in _steps_on_instants(core, ctx, scope, float(t_start), float(t_end), moved):
             for call in step.atoms:
