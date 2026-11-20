@@ -3459,7 +3459,7 @@ def load_sbml(path: str | Path, compartment_sizes: dict | None = None):
 
     t0 = time.perf_counter()
     doc = libsbml.readSBMLFromFile(str(path))
-    _check_sbml_errors(doc, str(path))
+    _check_sbml_errors(doc, str(path), lambda: _document_text(path))
     with open(path, "rb") as stream:  # read as bytes, so the XML declaration names the encoding
         _check_required_packages(doc, str(path), raw_xml=stream)
     if _doc_uses_comp(doc):
@@ -3479,7 +3479,7 @@ def load_sbml_string(text: str, compartment_sizes: dict | None = None):
     # analytical-Jacobian derivation are timed separately inside _build (T-instr).
     t0 = time.perf_counter()
     doc = libsbml.readSBMLFromString(text)
-    _check_sbml_errors(doc, "<string>")
+    _check_sbml_errors(doc, "<string>", lambda: text)
     _check_required_packages(doc, "<string>", raw_xml=io.StringIO(text))
     if _doc_uses_comp(doc):
         # No file context for a string load, so ExternalModelDefinitions cannot
@@ -5174,11 +5174,118 @@ def _collect_local_params(kl, rid, builder):
     return local_param_map, local_param_values
 
 
-def _check_sbml_errors(doc, source):
-    """Check for fatal SBML parsing errors."""
+# BioNetGen's writeXML output (the file NFsim and RuleMonkey read) has elements
+# SBML has not. The comment "Created by BioNetGen" is no such mark: BNG2.pl's
+# writeSBML writes it too, at the top of real SBML.
+_BNG_XML = re.compile(r"<ListOfMoleculeTypes\b|<ListOfReactionRules\b")
+_XML_COMMENT = re.compile(r"<!--.*?-->", re.S)
+_ROOT_XMLNS = re.compile(r"<(?:\w+:)?sbml\b[^>]*?\sxmlns\s*=\s*[\"']([^\"']*)[\"']", re.S)
+
+
+def _document_text(path) -> str:
+    """A file's text, for :func:`_check_sbml_errors`; UTF-16 is told by its byte-order mark."""
+    try:
+        with open(path, "rb") as stream:
+            raw = stream.read()
+    except OSError:
+        return ""
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return raw.decode("utf-16", errors="replace")
+    return raw.decode("utf-8", errors="replace")
+
+
+def _model_is_empty(model) -> bool:
+    """Whether libSBML read nothing a simulation could use from *model*."""
+    return not (
+        model.getNumSpecies()
+        or model.getNumCompartments()
+        or model.getNumParameters()
+        or model.getNumReactions()
+        or model.getNumRules()
+        or model.getNumEvents()
+        or model.getNumInitialAssignments()
+        or model.getNumFunctionDefinitions()
+        or model.getNumConstraints()
+        or model.getNumUnitDefinitions()
+    )
+
+
+def _network_free_routes() -> str:
+    """The ways this build runs BioNetGen's XML, for the refusal's advice."""
+    import bngsim
+
+    routes = []
+    if bngsim.HAS_NFSIM:
+        routes.append("bngsim.NfsimSession(path)")
+    if bngsim.HAS_RULEMONKEY:
+        routes.append("bngsim.RuleMonkeySession(path)")
+    if bngsim.HAS_NFSIM:
+        routes.append(
+            "bngsim.Simulator(bngsim.Model.from_net(...), method='nfsim', xml_path=path) "
+            "beside the .net it was written with"
+        )
+    if not routes:
+        return (
+            "NFsim and RuleMonkey run it, and this build has neither; "
+            "load the .bngl or .net it came from."
+        )
+    return f"Run it network-free: {', or '.join(routes)}; or load the .bngl or .net it came from."
+
+
+def _check_sbml_errors(doc, source, text=None):
+    """Refuse a document libSBML cannot read as SBML.
+
+    A fatal error is refused. So is a document that is not SBML but has an
+    ``<sbml>`` root with a ``<model>`` in it: libSBML reads that ``<model>``
+    element and none of the elements inside it, so loading it gave an empty
+    model with no error, which ran and returned nothing (issue #1712). Two
+    such documents are refused, and only when the model libSBML read is empty:
+
+    - BioNetGen's XML, the file BNG2.pl's ``writeXML`` writes for NFsim and
+      RuleMonkey, told by its ``<ListOfMoleculeTypes>`` or
+      ``<ListOfReactionRules>``. Its root is ``<sbml>`` in
+      ``http://www.sbml.org/sbml/level3``.
+    - A root element in a namespace that is no SBML namespace (libSBML error
+      20101, at severity Error).
+
+    Error 20101 alone refuses nothing: SBML whose root namespace is missing or
+    slightly wrong gives it too, and libSBML still reads that document's whole
+    model. *text* gives the document's text, and is called only for an empty
+    model.
+    """
     if doc.getNumErrors(libsbml.LIBSBML_SEV_FATAL) > 0:
         msg = doc.getError(0).getMessage()
         raise RuntimeError(f"Fatal SBML error in {source}: {msg}")
+    model = doc.getModel()
+    if model is None or not _model_is_empty(model):
+        return
+    bad_namespace = any(
+        doc.getError(i).getErrorId() == libsbml.InvalidNamespaceOnSBML
+        for i in range(doc.getNumErrors())
+    )
+    body = _XML_COMMENT.sub("", text() if text is not None else "")
+    namespace = ""
+    if bad_namespace:
+        m = _ROOT_XMLNS.search(body)
+        namespace = (
+            f"its root element is in the namespace {m.group(1)!r}, which is no SBML namespace"
+            if m
+            else "its root element is in no SBML namespace"
+        ) + " (libSBML error 20101)"
+    if _BNG_XML.search(body):
+        raise RuntimeError(
+            f"{source} is BioNetGen's XML (what BNG2.pl's writeXML writes for NFsim and "
+            "RuleMonkey), not SBML: it has <ListOfMoleculeTypes> or <ListOfReactionRules>, "
+            f"which SBML has not{', and ' + namespace if namespace else ''}. libSBML reads "
+            "its <model> element and none of the elements inside it, so loaded as SBML it "
+            f"gave an empty model (issue #1712). {_network_free_routes()}"
+        )
+    if bad_namespace:
+        raise RuntimeError(
+            f"{source} is not SBML: {namespace}, and libSBML reads nothing from its <model>: "
+            "no species, compartments, parameters, reactions or rules. Loaded as SBML it "
+            "gave an empty model (issue #1712)."
+        )
 
 
 def _walk_species_refs(node, species_id_set, out):
