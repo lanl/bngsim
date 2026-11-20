@@ -71,7 +71,7 @@ PINNED = {
         "loada", "run", "seed", "set_seed", "simulate",
     ],
     "Model": [
-        "copy", "from_antimony_file", "from_bngl_file", "from_bngl_string", "from_file",
+        "from_antimony_file", "from_bngl_file", "from_bngl_string", "from_file",
         "from_net_file", "from_sbml_file", "from_string", "getFloatingSpeciesIds",
         "getGlobalParameterIds", "getValue", "get_parameter", "n_params", "observables",
         "parameters", "resetAll", "resetConcentrations", "run", "saveConcentrations",
@@ -87,12 +87,12 @@ PINNED = {
         "steadyState", "timeCourseSelections",
     ],
     "Result": [
-        "as_dataframe", "colnames", "columns", "df", "message", "plot", "status", "success",
+        "as_dataframe", "colnames", "df", "message", "plot", "status", "success",
         "t", "times", "to_dataframe", "to_df", "to_numpy", "to_pandas", "y",
     ],
     "Simulator.run": [
-        "end", "integrator", "method", "n_steps", "points", "selections", "steps", "t_end",
-        "t_eval", "t_start", "times", "tspan", "y0",
+        "duration", "end", "integrator", "method", "n_steps", "points", "selections", "steps",
+        "t_end", "t_eval", "t_start", "tend", "times", "tspan", "y0",
     ],
 }  # fmt: skip
 
@@ -108,8 +108,14 @@ def test_the_table_holds_no_name_a_protocol_checks_for():
     class HasKeys(Protocol):
         def keys(self) -> object: ...
 
-    result = Simulator(Model.load(DECAY)).run(t_span=(0, 1), n_points=3)
+    @runtime_checkable
+    class Copyable(Protocol):
+        def copy(self) -> object: ...
+
+    model = Model.load(DECAY)
+    result = Simulator(model).run(t_span=(0, 1), n_points=3)
     assert not isinstance(result, HasKeys)
+    assert not isinstance(model, Copyable)
 
 
 def test_the_table_is_pinned():
@@ -136,11 +142,13 @@ def test_an_entry_names_something_and_is_not_a_real_name(entry):
         assert all(entry.name not in vars(k) for k in cls.__mro__[1:])
 
 
-#: ``owner.name`` references in a hint, by the object they are read on.
+#: ``owner.name`` references in a hint, by the object they are read on, and a
+#: name read off a call's value (``sim.steady_state().concentrations``).
 _REFERENCE = re.compile(
-    r"\b(bngsim\.Model|bngsim\.Simulator|bngsim|Model|Simulator|sim\.model|model|sim|result|ss)"
+    r"\b(bngsim\.Model|bngsim\.Simulator|bngsim|Model|Simulator|sim\.model|model|sim|result)"
     r"\.([A-Za-z_]\w*)"
 )
+_CHAINED = re.compile(r"\.(steady_state|as_roadrunner|dataframe)(?:\(\))?\.([A-Za-z_]\w*)")
 _READ_ON = {
     "bngsim": bngsim,
     "bngsim.Model": Model,
@@ -160,13 +168,19 @@ def test_every_call_an_entry_names_exists(entry):
     not have would send the caller from one wrong call to another."""
     text = f"{entry.use} {entry.note}"
     for obj, attr in _REFERENCE.findall(text):
-        if obj == "ss":  # sim.steady_state()'s result, ss[name]
-            assert attr == "concentrations" or hasattr(bngsim.SteadyStateResult, attr)
-            continue
         target = _READ_ON[obj]
-        if attr in ("T", "shape", "plot", "columns", "colnames"):  # numpy / pandas / NamedArray
+        if attr in ("T", "shape", "plot", "columns"):  # numpy's and pandas' own
             continue
         assert attr in dir(target) or attr in getattr(target, "__all__", ()), f"{obj}.{attr}"
+        assert not isinstance(vars(target).get(attr), fn._ForeignAttribute), f"{obj}.{attr}"
+    returns = {
+        "steady_state": bngsim.SteadyStateResult,
+        "as_roadrunner": bngsim.NamedArray(np.zeros((1, 1)), ["time"]),  # colnames is per array
+        "dataframe": None,  # a pandas DataFrame
+    }
+    for call, attr in _CHAINED.findall(text):
+        if returns[call] is not None:
+            assert hasattr(returns[call], attr) or attr in dir(returns[call]), f"{call}.{attr}"
     takes = {
         "Simulator": inspect.signature(Simulator).parameters,
         "run": inspect.signature(Simulator.run).parameters,
@@ -206,7 +220,8 @@ def test_a_foreign_attribute_names_the_call(entry, model, sim, result):
     assert not hasattr(obj, entry.name)
     assert getattr(obj, entry.name, None) is None
     assert entry.name not in dir(obj)
-    assert entry.name not in dir(cls)
+    # The class lists it, with the hint as its docstring, as help() shows it.
+    assert entry.hint in vars(cls)[entry.name].__doc__
 
 
 @pytest.mark.parametrize(
@@ -302,16 +317,22 @@ def test_copy_pickle_and_numpy_are_as_they_were(model, sim, result):
     assert not np.iterable(result)
 
 
-def test_no_class_has_a_getattr_or_setattr():
+def test_no_class_has_a_getattr_or_setattr_or_a_metaclass():
     """The success path stays free: CPython does not specialize a property read
     on a class with ``__getattr__`` (about 40 ns more per read), a metaclass
     ``__getattr__`` slows every class-attribute read, and a ``__setattr__``
-    every write. The table's names are descriptors instead."""
+    every write. The table's names are descriptors instead. No metaclass
+    either, so a subclass can mix in an ABC."""
     for cls in (Model, Simulator, Result):
         assert "__getattr__" not in vars(cls)
         assert cls.__setattr__ is object.__setattr__
-        assert "__getattr__" not in vars(type(cls))
-        assert type(cls).__getattribute__ is type.__getattribute__
+        assert type(cls) is type
+    import abc
+
+    class Mixed(Model, abc.ABC):
+        pass
+
+    assert issubclass(Mixed, Model)
 
 
 # ─── Constructors given a path ───────────────────────────────────────────────
@@ -345,6 +366,23 @@ def test_model_and_simulator_given_a_path_or_text_name_the_loader(given, loader)
         "bngsim.Model.from_antimony_string(text)": Model.from_antimony_string,
     }[loader](source)
     assert isinstance(built, Model)
+
+
+def test_constructors_given_the_wrong_bngsim_object_name_the_right_one(model, sim, result):
+    with pytest.raises(TypeError, match=r"Model\(\) is given a Model: model\.clone\(\)"):
+        Model(model)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match=r"bngsim\.Simulator\(sim\.model, method=\.\.\.\)"):
+        Simulator(sim)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match=r"given a Result, a run's output"):
+        Simulator(result)  # type: ignore[arg-type]
+
+
+def test_model_text_bngsim_reads_only_from_a_file_says_so():
+    bngl = "begin model\nbegin parameters\n k 1\nend parameters\nend model\n"
+    with pytest.raises(TypeError, match=r"BNGL text: use bngsim\.Model\.load\(path\) on a \.bngl"):
+        Model(bngl)
+    with pytest.raises(TypeError, match=r"\.net text: .* on a \.net file"):
+        Simulator(DECAY.read_text())  # type: ignore[arg-type]
 
 
 def test_a_string_that_is_no_path_is_not_called_one():
@@ -381,9 +419,14 @@ def _corrected_call(err: pytest.ExceptionInfo) -> str:
         ("sim.run(t_start=2, t_end=10, n_steps=4)", np.linspace(2, 10, 5)),
         ("sim.run(t_span=(0, 10), n_steps=5)", np.linspace(0, 10, 6)),
         ("sim.run(t_end=10, n_points=6)", np.linspace(0, 10, 6)),
+        ("sim.run(start=5, end=10, points=6)", np.linspace(5, 10, 6)),
+        ("sim.run(0, 10, 11, ['A()'])", np.linspace(0, 10, 11)),  # selections dropped
+        ("sim.run(0, 10, 11.0)", np.linspace(0, 10, 11)),  # a whole float is a count
+        ("sim.run(t_end=10, n_steps=10.0)", np.linspace(0, 10, 11)),
         # SciPy's t_eval, and the obvious guess.
         ("sim.run(t_eval=[0, 1, 2.5])", np.array([0, 1, 2.5])),
         ("sim.run(times=[0, 1, 2.5])", np.array([0, 1, 2.5])),
+        ("sim.run(times=np.array([0.0, 1.0, 2.5]))", np.array([0, 1, 2.5])),
     ],
 )
 def test_a_foreign_run_call_names_the_call_that_runs(sim, call, times):
@@ -391,7 +434,7 @@ def test_a_foreign_run_call_names_the_call_that_runs(sim, call, times):
     foreign call meant: the oracle is each tool's own definition of its
     arguments, off by one where n_steps and steps count intervals."""
     with pytest.raises(TypeError) as err:
-        eval(call, {"sim": sim})
+        eval(call, {"sim": sim, "np": np})
     fixed = _corrected_call(err)
     got = eval(fixed, {"sim": sim}).time
     np.testing.assert_allclose(got, times, rtol=0, atol=1e-12)
@@ -413,6 +456,20 @@ def test_a_run_keyword_with_no_one_to_one_translation_still_names_the_call(sim, 
     assert "For this call" not in str(err.value)
 
 
+@pytest.mark.parametrize(
+    "call",
+    [
+        "sim.run(t_end=10, n_steps=10.5)",  # not a count: no corrected call
+        "sim.run(t_span=(0, 10), t_end=5)",  # two ends
+        "sim.run(n_points=5, n_steps=10)",  # two counts
+    ],
+)
+def test_a_run_call_that_does_not_translate_gets_no_corrected_call(sim, call):
+    with pytest.raises(TypeError) as err:
+        eval(call, {"sim": sim})
+    assert "For this call" not in str(err.value)
+
+
 def test_an_unknown_run_keyword_reads_as_pythons(sim):
     with pytest.raises(TypeError) as err:
         sim.run(not_a_keyword=1)  # type: ignore[call-arg]
@@ -424,6 +481,9 @@ def test_an_unknown_run_keyword_reads_as_pythons(sim):
     [
         ((10,), r"got the number 10: a run from 0 to 10 is t_span=\(0, 10\)"),
         ((0, 10), r"got the number 0: a run from 0 to 10 is t_span=\(0, 10\)"),
+        ((5, 10), r"got the number 5: a run from 5 to 10 is t_span=\(5, 10\)"),
+        # n_points' default, 101, is no end the caller wrote.
+        ((0,), r"got the number 0\. A second positional argument is n_points\.$"),
     ],
 )
 def test_a_number_for_t_span_names_the_tuple(sim, args, says):
@@ -507,7 +567,7 @@ def test_a_species_name_that_is_a_parameter_says_so():
     with pytest.raises(ModelError) as err:
         m.set_concentration("kf", 2.0)
     assert str(err.value).startswith("Species 'kf' not found in model.")
-    assert "model.set_param('kf', 2.0)" in str(err.value)
+    assert "model.set_param('kf', 2)" in str(err.value)
     with pytest.raises(ModelError, match=r"Close matches: 'B'"):
         m.get_concentration("BB")
 
@@ -573,6 +633,33 @@ def test_an_array_derived_from_species_takes_no_name(result, derive):
         derive(result.species)["A()"]
 
 
+def test_a_bngl_species_named_like_its_observable_is_named(data_dir=DATA):
+    """BNGL's ``Molecules S1 S1()`` makes S1 an observable and S1() the species:
+    asked for the species S1, the error names S1(), not the observable."""
+    m = Model.load(data_dir / "case_sensitivity.net")
+    assert "S1" in m.observable_names and "S1()" in m.species_names
+    with pytest.raises(ModelError, match=r"The species 'S1\(\)' is close"):
+        m.set_concentration("S1", 5.0)
+    r = Simulator(m).run(t_span=(0, 1), n_points=3)
+    with pytest.raises(KeyError, match=r"Close matches: 'S1\(\)'"):
+        r.species["S1"]
+
+
+def test_set_params_with_a_key_that_is_no_string_still_says_which():
+    m = Model.from_antimony_string(ANTIMONY)
+    with pytest.raises(ParameterError, match=r"Unknown parameter\(s\): 1\."):
+        m.set_params({1: 2.0})  # type: ignore[dict-item]
+
+
+def test_species_written_by_name():
+    r = Simulator(Model.load(DECAY)).run(t_span=(0, 1), n_points=3)
+    before = r.species.copy()
+    r.species["A()"] *= 2
+    np.testing.assert_array_equal(r.species["A()"], 2 * before[:, 0])
+    r.species[1:, "B()"] = 0.0
+    np.testing.assert_array_equal(r.species[:, 1], [before[0, 1], 0.0, 0.0])
+
+
 def test_species_written_in_place_keeps_its_names():
     r = Simulator(Model.load(DECAY)).run(t_span=(0, 1), n_points=3)
     before = r.species["B()"].copy()
@@ -581,6 +668,11 @@ def test_species_written_in_place_keeps_its_names():
     assert species is r.species
     np.testing.assert_array_equal(species["B()"], before + 1)
     assert np.add(species, 0, out=species) is species
+    # A copy too: numpy hands back the out= array the caller passed.
+    c = species.copy()
+    alias = c
+    c += 1
+    assert c is alias
 
 
 def test_species_is_otherwise_the_same_numpy_array(result):
@@ -590,6 +682,11 @@ def test_species_is_otherwise_the_same_numpy_array(result):
     assert repr(species) == repr(np.asarray(species))
     for out in (species * 2, np.log1p(species), species.sum(axis=0), species[:, 0], species[1:]):
         assert type(out) is np.ndarray
+    # A reduction is a number, as on a plain array (numpy 1.x gave a subclass a
+    # 0-d array here).
+    for total in (species.sum(), species.max(), np.mean(species), species[:, 0].sum()):
+        assert isinstance(total, float) and np.ndim(total) == 0
+    assert [type(row) for row in species] == [np.ndarray] * len(species)
     back = pickle.loads(pickle.dumps(species))
     assert type(back) is np.ndarray
     np.testing.assert_array_equal(back, species)

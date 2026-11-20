@@ -75,7 +75,7 @@ from bngsim._exceptions import (
     StopConditionMet,
 )
 from bngsim._extension_handle import raise_cannot_pickle, raise_cannot_shallow_copy
-from bngsim._foreign_names import NamesTheCall, call_error, rewrite_run_call
+from bngsim._foreign_names import call_error, rewrite_run_call
 from bngsim._model import _STEP_DECIDES_WHY, Model
 from bngsim._result import (
     Result,
@@ -669,7 +669,7 @@ def _warn_if_start_restarts_the_clock(
     )
 
 
-class Simulator(metaclass=NamesTheCall):
+class Simulator:
     """Unified simulation interface for ODE, SSA, PSA, and network-free methods.
 
     Parameters
@@ -12403,6 +12403,16 @@ def _require_model(model: object) -> None:
     """Refuse what ``Simulator(...)`` was given in place of a :class:`Model`: a
     path or model text, or anything without the engine handle a Model holds.
     A stand-in that has one passes, as a test double of a Model does."""
+    if isinstance(model, Simulator):
+        raise TypeError(
+            "Simulator() is given a Simulator: its model is sim.model, so "
+            "bngsim.Simulator(sim.model, method=...) runs the same Model another way."
+        )
+    if isinstance(model, Result):
+        raise TypeError(
+            "Simulator() is given a Result, a run's output: pass the Model that ran it, "
+            "bngsim.Simulator(model)."
+        )
     source = _foreign_names.model_source(model, lambda load: f"bngsim.Simulator({load})")
     if source is not None:
         what, call = source

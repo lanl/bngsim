@@ -20,14 +20,13 @@ import warnings
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn, overload
 
 import numpy as np
 from numpy.typing import NDArray
 
 from bngsim import _foreign_names
 from bngsim._extension_handle import raise_cannot_pickle, shallow_copy
-from bngsim._foreign_names import NamesTheCall
 
 if TYPE_CHECKING:
     from bngsim._bngsim_core import ResultCore
@@ -267,7 +266,7 @@ def _state_digest(state: NDArray[np.float64]) -> str:
     return hashlib.sha256(canon.tobytes()).hexdigest()
 
 
-class Result(metaclass=NamesTheCall):
+class Result:
     """Simulation result container.
 
     Attributes
@@ -859,7 +858,7 @@ class Result(metaclass=NamesTheCall):
         return self._time
 
     @property
-    def species(self) -> NDArray[np.float64]:
+    def species(self) -> _SpeciesArray:
         """Species concentrations, shape ``(n_times, n_species)``.
 
         A numpy array, which also takes a species name where a column index
@@ -4012,7 +4011,7 @@ def _where_is(
     return None
 
 
-class _SpeciesArray(np.ndarray):
+class _SpeciesArray(np.ndarray[Any, np.dtype[np.float64]]):
     """:attr:`Result.species`: a numpy array that also takes a species name in
     the column position (issue #1700).
 
@@ -4022,14 +4021,18 @@ class _SpeciesArray(np.ndarray):
     numpy methods (``.copy()``, ``.max()``, item assignment) away from every
     caller, so this is the array itself, with one more kind of key.
 
-    A name is answered only by the array :attr:`Result.species` returns. Every
-    array numpy derives from it — a slice, a ufunc's output, a reduction — is a
-    plain ``ndarray``, and the few methods that keep the class (``.copy()``,
-    ``.T``, ``.reshape()``, ``.astype()``, ``np.sort``) make one that carries no
-    names and refuses a name, because its columns need not be these: the trap
-    issue #561 found in :class:`~bngsim.NamedArray`, where ``np.sort(a,
-    axis=1)`` kept the labels of columns it had moved. A pickle round trip gives
-    a plain ``ndarray``.
+    A name is answered, read or written, only by the array :attr:`Result.species`
+    returns. Every array numpy derives from it — a slice, a ufunc's output, a
+    reduction (a number) — is a plain ``ndarray``, and the few methods that keep
+    the class (``.copy()``, ``.T``, ``.reshape()``, ``.astype()``, ``np.sort``)
+    make one that carries no names and refuses a name, because its columns need
+    not be these: the trap issue #561 found in :class:`~bngsim.NamedArray`,
+    where ``np.sort(a, axis=1)`` kept the labels of columns it had moved. A
+    pickle round trip gives a plain ``ndarray``.
+
+    Every key goes through Python, so indexing costs about 0.2 µs more than on
+    the plain array (``result.species[i]``: 0.39 µs against 0.16 µs here);
+    iteration and ufuncs hand the plain array to numpy and cost a call each.
     """
 
     # The view Result.species returns sets these; every other instance keeps
@@ -4066,40 +4069,75 @@ class _SpeciesArray(np.ndarray):
         bare = _unclamped(name)
         if bare in index:
             return index[bare]
-        where = _where_is(name, self._names_by_kind, besides="species")
+        # A species the name matches loosely first: BNGL's Molecules S1 S1()
+        # makes S1 an observable too, and here the caller wants the species.
+        close = _foreign_names.near_matches(name, index)
+        loose = [c for c in close if _foreign_names._bare(c) == _foreign_names._bare(name)]
+        where = f"Close matches: {_foreign_names.quote_list(close)}." if loose else None
         if where is None:
-            close = _foreign_names.near_matches(name, index)
-            where = f"Close matches: {_foreign_names.quote_list(close)}." if close else None
+            where = _where_is(name, self._names_by_kind, besides="species")
+        if where is None and close:
+            where = f"Close matches: {_foreign_names.quote_list(close)}."
         text = f"Species {name!r} not found."
         if where is not None:
             text += f" {where}"
         raise KeyError(f"{text} result.species_names lists all {len(index)}.")
 
-    def __getitem__(self, key: Any) -> Any:
+    def _whole(self) -> NDArray[np.float64]:
         plain = self._plain
+        return plain if plain is not None else np.asarray(self)
+
+    @overload  # type: ignore[override]
+    def __getitem__(self, key: str) -> NDArray[np.float64]: ...
+    @overload
+    def __getitem__(self, key: Any) -> Any: ...
+
+    def __getitem__(self, key: Any) -> Any:
         if isinstance(key, str):
-            return (plain if plain is not None else np.asarray(self))[..., self._column(key)]
+            return self._whole()[..., self._column(key)]
         if isinstance(key, tuple) and key and isinstance(key[-1], str):
             # (rows, name): the name's column, then the rest of the key on it, which
             # for basic and advanced keys alike selects what (rows, its index)
             # would on a 2-D array, and the leading axes of a batch.
-            whole = plain if plain is not None else np.asarray(self)
-            return whole[..., self._column(key[-1])][key[:-1]]
+            return self._whole()[..., self._column(key[-1])][key[:-1]]
+        plain = self._plain
         if plain is not None:
             return plain[key]
         out = super().__getitem__(key)
         return out.view(np.ndarray) if isinstance(out, _SpeciesArray) else out
 
-    def __array_wrap__(self, arr: Any, context: Any = None, return_scalar: bool = False) -> Any:
-        # A ufunc's output is a plain array: it is a new array, whose columns this
-        # class knows nothing about. Except where it is written into this one
-        # (``out=``, which ``species += 1`` is): numpy returns ``out`` itself, and
-        # the name it is bound to keeps it.
-        if return_scalar:
-            return arr[()]
-        if not isinstance(arr, _SpeciesArray) or arr._index is not None:
-            return arr
-        return arr.view(np.ndarray)
+    def __setitem__(self, key: Any, value: Any) -> None:  # type: ignore[override]
+        # A name writes where it reads, so ``species["A"] *= 2`` (a read, then a
+        # write back under the same key) works as it does for an index.
+        if isinstance(key, str):
+            self._whole()[..., self._column(key)] = value
+        elif isinstance(key, tuple) and key and isinstance(key[-1], str):
+            column = self._whole()[..., self._column(key[-1])]
+            column[key[:-1]] = value
+        else:
+            self._whole()[key] = value
+
+    def __iter__(self) -> Any:
+        # The plain array's own iterator: ndarray iteration indexes row by row,
+        # which through __getitem__ above would cost a Python call per row.
+        return iter(self._whole())
+
+    def __array_ufunc__(self, ufunc: Any, method: str, *inputs: Any, **kwargs: Any) -> Any:
+        # A ufunc runs on the plain arrays, so its output is plain: a new array,
+        # whose columns this class knows nothing about, and a reduction a number
+        # on every numpy (1.x hands a subclass a 0-d array where it means one).
+        # Written into ``out=`` (``species += 1`` is), it returns ``out`` as the
+        # caller passed it, as numpy's own ufuncs do, so the name keeps the array.
+        args = [np.asarray(x) if isinstance(x, _SpeciesArray) else x for x in inputs]
+        out = kwargs.get("out")
+        if out is not None:
+            kwargs["out"] = tuple(
+                np.asarray(o) if isinstance(o, _SpeciesArray) else o for o in out
+            )
+        result = getattr(ufunc, method)(*args, **kwargs)
+        if out is None or method == "at":
+            return result
+        return out[0] if len(out) == 1 else out
 
     def __reduce__(self) -> Any:
         return np.asarray(self).__reduce__()

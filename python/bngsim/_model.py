@@ -24,7 +24,6 @@ from bngsim._exceptions import (
     UnderSpecifiedModelError,
 )
 from bngsim._extension_handle import raise_cannot_pickle, raise_cannot_shallow_copy
-from bngsim._foreign_names import NamesTheCall
 
 
 def _guard_function_expressions(core) -> list[tuple[str, str, str]]:
@@ -73,7 +72,7 @@ def _ic_carrier_name(species_id: str) -> str:
     return _safe_name(f"_ic_{species_id}")
 
 
-class Model(metaclass=NamesTheCall):
+class Model:
     """A BioNetGen reaction network model.
 
     A Model holds species, reactions, observables, parameters, and functions.
@@ -1919,11 +1918,11 @@ class Model(metaclass=NamesTheCall):
         if unknown:
             why = "".join(
                 f"{text} "
-                for n in sorted(unknown)
-                if (text := self._not_a_parameter(n, params[n], among=True))
+                for n in sorted(unknown, key=str)
+                if isinstance(n, str) and (text := self._not_a_parameter(n, params[n], among=True))
             )
             raise ParameterError(
-                f"Unknown parameter(s): {', '.join(sorted(unknown))}. {why}"
+                f"Unknown parameter(s): {', '.join(sorted(map(str, unknown)))}. {why}"
                 f"Known: {', '.join(sorted(known))}"
             )
         # Phase 2: Convert all values (catches "x", None, etc.)
@@ -3298,8 +3297,19 @@ class Model(metaclass=NamesTheCall):
         return None
 
     def _species_not_found(self, name: str, value: object = _UNSET) -> str:
-        """:meth:`_parameter_not_found` for a species."""
+        """:meth:`_parameter_not_found` for a species. A species the name
+        matches loosely comes first: BNGL's ``Molecules S1 S1()`` makes ``S1``
+        an observable, and the caller wants the species ``S1()``."""
         head = f"Species '{name}' not found in model"
+        bare = _foreign_names._bare(name)
+        loose = next((s for s in self.species_names if _foreign_names._bare(s) == bare), None)
+        if loose is not None:
+            v = _foreign_names.value_text(value) if value is not _UNSET else "value"
+            return (
+                f"{head}. The species {loose!r} is close: read it with "
+                f"model.get_concentration({loose!r}) and set it with "
+                f"model.set_concentration({loose!r}, {v})."
+            )
         what = _what_it_is(self, name, value, via="model", besides="species")
         if what is not None:
             return f"{head}. {what}"
@@ -3402,6 +3412,11 @@ def _require_core(core: object) -> None:
     no attribute 'param_names'" (issue #1700). The check is by attribute, not
     by type, so a stand-in for the engine's model still passes.
     """
+    if isinstance(core, Model):
+        raise TypeError(
+            "Model() is given a Model: model.clone() makes an independent copy, and "
+            "bngsim.Simulator(model) runs it."
+        )
     source = _foreign_names.model_source(core)
     if source is not None:
         what, loader = source

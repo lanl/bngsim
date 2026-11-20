@@ -211,7 +211,6 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
             "model.observable_names",
             "A run computes their values: result.observables[name].",
         ),
-        ("copy", "model.clone()", "A clone is an independent model; copy.copy(model) is refused."),
     )
     + _entries(
         "Model",
@@ -266,7 +265,8 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
         (
             "reset",
             "sim.model.reset()",
-            "Resetting the species is the Model's: it returns them to their initial conditions.",
+            "Resetting the species is the Model's: it returns them to their initial conditions, "
+            "or to the state an unlabeled model.save_concentrations() saved.",
         ),
         (
             "resetAll",
@@ -375,12 +375,6 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
             for name in ("to_dataframe", "to_pandas", "as_dataframe", "to_df", "df")
         ),
         (
-            "columns",
-            "result.observable_names",
-            "result.species_names names the species columns, and result.dataframe.columns the "
-            "DataFrame's.",
-        ),
-        (
             "to_numpy",
             "result.species",
             "result.time, result.species, result.observables and result.expressions are numpy "
@@ -481,16 +475,28 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
         "guess",
         ("times", "sample_times=times"),
         ("tspan", "t_span=(t_start, t_end)"),
+        ("tend", "t_span=(t_start, t_end)", "The interval is one (t_start, t_end) tuple."),
+        (
+            "duration",
+            "t_span=(t_start, t_start + duration)",
+            "The interval is one (t_start, t_end) tuple.",
+        ),
     )
 )
 
 #: Names the table must not hold. A descriptor is a real class attribute to
 #: ``inspect.getattr_static``, which a ``typing.runtime_checkable`` protocol
 #: reads on 3.12 and later, so ``keys`` on Result would make it pass for a
-#: mapping, and ``shape`` or ``values`` for an array or a frame.
+#: mapping, ``shape`` or ``values`` for an array or a frame, and ``copy`` for
+#: anything copyable. The names left in the table are bngsim-specific enough
+#: that a protocol naming one (``run``, ``plot``) is rare, and the exposure is
+#: the price of a hint that costs a successful lookup nothing.
 PROTOCOL_NAMES = frozenset(
-    {"keys", "values", "items", "shape", "dtype", "ndim", "read", "write", "close", "send"}
-)
+    {
+        "keys", "values", "items", "shape", "dtype", "ndim", "copy", "columns", "index",
+        "read", "write", "close", "send", "tolist",
+    }
+)  # fmt: skip
 
 #: The owners an attribute lookup reports under, and the keyword-argument owner.
 ATTRIBUTE_OWNERS = ("bngsim", "Model", "Simulator", "Result")
@@ -520,9 +526,12 @@ def lookup(owner: str, name: str) -> ForeignName | None:
 # measured on 3.10 to 3.13), and on 3.10 and 3.11 a slot read and a method call
 # do too; a metaclass __getattr__ costs a class-attribute read 45 to 60 ns, and
 # a __setattr__ costs every write some 185 ns, 103 of them per Model.clone().
-# A descriptor costs nothing except on its own name. It is left out of dir(), so
-# neither tab completion, help() nor the API reference lists a name the class
-# does not have, and neither does the "Did you mean" Python adds to a typo.
+# A descriptor costs nothing except on its own name. An instance's dir() leaves
+# it out, so tab completion and the "Did you mean" Python adds to a typo offer
+# no name the class does not have; the API reference skips it too (docs/conf.py).
+# dir() of the class itself lists it, with its hint as its docstring, as help()
+# does: hiding it there takes a metaclass, which a subclass mixing in another
+# (abc.ABC) would then conflict with.
 
 
 class _ForeignAttribute:
@@ -588,18 +597,6 @@ def public_dir(obj: object) -> list[str]:
     return [n for n in object.__dir__(obj) if n not in hidden]
 
 
-class NamesTheCall(type):
-    """Metaclass of :class:`~bngsim.Model`, :class:`~bngsim.Simulator` and
-    :class:`~bngsim.Result`, for ``dir()`` of the class alone: it leaves out
-    the names :func:`install` put there. It has no ``__getattr__``, so it costs
-    an attribute lookup nothing.
-    """
-
-    def __dir__(cls) -> list[str]:
-        hidden = _hidden(cls)
-        return [n for n in type.__dir__(cls) if n not in hidden]
-
-
 def module_attribute_error(module: str, name: str) -> AttributeError:
     """The error ``bngsim.<name>`` raises for a name the module lacks."""
     prefix = f"module {module!r} has no attribute {name!r}"
@@ -651,13 +648,25 @@ def quote_list(names: Iterable[str]) -> str:
 
 
 def value_text(value: object) -> str:
-    """*value* as code for a suggested call: itself when it is a short number,
-    else the word ``value``."""
+    """*value* as code for a suggested call: itself when it is a short number
+    (an integral float as an int, since every count it fills is one), else the
+    word ``value``."""
     if isinstance(value, numbers.Real) and not isinstance(value, bool):
-        text = repr(value.item() if hasattr(value, "item") else value)
+        number = value.item() if hasattr(value, "item") else value
+        if isinstance(number, float) and number.is_integer():
+            number = int(number)
+        text = repr(number)
         if len(text) <= 24:
             return text
     return "value"
+
+
+def _count_text(value: object) -> str | None:
+    """*value* as code for a count (n_points), or ``None`` when it is none."""
+    if not isinstance(value, numbers.Real) or isinstance(value, bool):
+        return None
+    number = float(value)
+    return str(int(number)) if number.is_integer() else None
 
 
 def model_source(value: object, wrap: Callable[[str], str] = str) -> tuple[str, str] | None:
@@ -673,6 +682,13 @@ def model_source(value: object, wrap: Callable[[str], str] = str) -> tuple[str, 
     head = value.lstrip()[:200].lower()
     if head.startswith("<") and ("<sbml" in value[:2000].lower() or head.startswith("<?xml")):
         return "SBML text", wrap("bngsim.Model.from_sbml_string(text)")
+    low = value[:5000].lower()
+    for kind, suffix, marks in _FILE_ONLY_TEXT:
+        if any(mark in low for mark in marks):
+            return f"{kind} text", (
+                f"{wrap('bngsim.Model.load(path)')} on a {suffix} file holding it, since "
+                f"bngsim reads {kind} only from a file"
+            )
     if "\n" in value.strip():
         return "model text", (
             f"{wrap('bngsim.Model.from_antimony_string(text)')} for Antimony, or "
@@ -684,6 +700,13 @@ def model_source(value: object, wrap: Callable[[str], str] = str) -> tuple[str, 
 
 
 _MODEL_SUFFIXES = (".net", ".bngl", ".xml", ".sbml", ".ant")
+
+#: Formats bngsim reads from a file only, by the block headers that mark them:
+#: BNGL (rules, handed to BNG2.pl) and BioNetGen's .net (a generated network).
+_FILE_ONLY_TEXT = (
+    ("BNGL", ".bngl", ("begin model", "begin molecule types", "begin reaction rules")),
+    (".net", ".net", ("begin reactions", "begin groups")),
+)
 
 
 # ─── Keyword arguments ──────────────────────────────────────────────────────
@@ -800,39 +823,47 @@ _RUN_TIMES = ("times", "t_eval")
 def rewrite_run_call(args: tuple, kwargs: dict, known: frozenset) -> str | None:
     """The call ``Simulator.run(*args, **kwargs)`` means, as code, where every
     foreign spelling in it translates one-to-one: RoadRunner's
-    ``simulate(0, 10, 11)``, BioNetGen's ``t_end=10, n_steps=10``, SciPy's
-    ``t_eval=[...]``. ``None`` when something in it does not, or when two of
-    its arguments say the same thing (``t_span=`` and ``t_end=``)."""
+    ``simulate(0, 10, 11)`` and ``simulate(start=0, end=10, points=11)``,
+    BioNetGen's ``t_end=10, n_steps=10``, SciPy's ``t_eval=[...]``. ``None``
+    when something in it does not (a count that is not a whole number), or when
+    two of its arguments say the same thing (``t_span=`` and ``t_end=``)."""
     out: dict[str, str] = {}
     start = end = None
 
-    def put(key: str, text: str) -> bool:
-        if key in out:
+    def put(key: str, text: str | None) -> bool:
+        if text is None or key in out:
             return False
         out[key] = text
         return True
 
-    if len(args) == 3 and all(_is_real(a) for a in args):
+    # RoadRunner's simulate(start, end, points[, selections]); selections are
+    # dropped, since a Result holds every column.
+    if len(args) in (3, 4) and all(_is_real(a) for a in args[:3]):
+        if len(args) == 4 and not isinstance(args[3], (list, tuple)):
+            return None
         start, end = args[0], args[1]
-        put("n_points", value_text(args[2]))
+        if not put("n_points", _count_text(args[2])):
+            return None
     elif args:
         return None
     for name, value in kwargs.items():
         ok = True
-        if name in _RUN_START:
+        if name in _RUN_START or (name == "start" and _is_real(value)):
+            # "start" is RoadRunner's start time; a run(start=...) of bngsim's
+            # own names a state, and is a string.
             start = value
         elif name in _RUN_END:
             end = value
-        elif name in _RUN_STEPS and _is_real(value):
-            ok = put("n_points", value_text(value + 1))  # type: ignore[operator]
-        elif name in _RUN_POINTS and _is_real(value):
-            ok = put("n_points", value_text(value))
+        elif name in _RUN_STEPS:
+            ok = put("n_points", _count_text(value + 1) if _is_real(value) else None)
+        elif name in _RUN_POINTS:
+            ok = put("n_points", _count_text(value))
         elif name in _RUN_TIMES:
-            ok = put(
-                "sample_times", _short(list(value)) if isinstance(value, Iterable) else "[...]"
-            )
+            ok = put("sample_times", _times_text(name, value))
         elif name == "tspan":
-            ok = put("t_span", _short(tuple(value)) if isinstance(value, Iterable) else "(t0, t1)")
+            ok = put("t_span", _short(tuple(value)) if isinstance(value, Iterable) else None)
+        elif name == "selections":
+            continue
         elif name in known:
             ok = put(name, _short(value))
         else:
@@ -850,3 +881,15 @@ def rewrite_run_call(args: tuple, kwargs: dict, known: frozenset) -> str | None:
     if not out:
         return None
     return "sim.run(" + ", ".join(f"{k}={v}" for k, v in out.items()) + ")"
+
+
+def _times_text(name: str, value: object) -> str:
+    """``sample_times=`` for times given as *name*: the values when they are a
+    short list of numbers, else the caller's own keyword as the value."""
+    if isinstance(value, Iterable) and not isinstance(value, (str, bytes)):
+        items = list(value)
+        if all(_is_real(v) for v in items):
+            text = _short([value_text(v) if value_text(v) != "value" else v for v in items])
+            if text != "...":
+                return text.replace("'", "")
+    return name
