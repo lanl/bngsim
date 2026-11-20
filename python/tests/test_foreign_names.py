@@ -24,7 +24,7 @@ from pathlib import Path
 import bngsim
 import numpy as np
 import pytest
-from bngsim import Model, ModelError, ParameterError, Result, Simulator
+from bngsim import Model, ModelError, ParameterError, Result, Simulator, _agent_guide
 from bngsim import _foreign_names as fn
 
 DATA = Path(__file__).resolve().parents[2] / "tests" / "data"
@@ -116,6 +116,27 @@ PINNED = {
         'from bngsim import simulate', 'model.k1', 'model.k1 = value', 'model["S1"]',
         'model["k1"] = value', 'result.A', 'sim.k1 = value',
     ],
+    "translation": [
+        'BngSimulator(model).run(method="ssa", n_runs=n)',
+        'ScipyOdeSimulator(model).run(param_values={...})',
+        'ScipyOdeSimulator(model, tspan=t).run()',
+        'amici.runAmiciSimulation(model, solver)',
+        'basico.load_model(path)',
+        'basico.run_steadystate()',
+        'basico.run_time_course(duration=d, intervals=n)',
+        'basico.run_time_course(method="stochastic")',
+        'basico.set_parameters(name, initial_value=v)',
+        'basico.set_species(name, initial_concentration=c)',
+        'generate_network({overwrite=>1})',
+        'model.setParameterByName(name, value)',
+        'model.setTimepoints(times)',
+        'parameter_scan({parameter=>"k", par_min=>a, par_max=>b, n_scan_pts=>n, log_scale=>1})',
+        'rdata.x',
+        'res.observables["obs"]',
+        'simulate({..., continue=>1})',
+        'simulate({method=>"ode", t_end=>T, n_steps=>N})',
+        'solver.setSensitivityOrder(amici.SensitivityOrder.first)',
+    ],
 }  # fmt: skip
 
 
@@ -157,6 +178,10 @@ def test_an_entry_names_something_and_is_not_a_real_name(entry):
     if entry.owner == "pattern":
         assert entry.use, "a pattern names the call to make"
         assert all(entry.name not in vars(cls) for cls in CLASSES.values())
+    elif entry.owner == "translation":
+        # Another tool's call, as that tool spells it: the guide's table only.
+        assert entry.use, "a translation names the call to make"
+        assert entry.origin in _agent_guide.TOOLS
     elif entry.owner == "bngsim":
         assert entry.name not in vars(bngsim) and entry.name not in bngsim.__all__
     elif entry.owner.startswith("Simulator."):
@@ -211,9 +236,10 @@ def test_every_call_an_entry_names_exists(entry):
             assert hasattr(returns[call], attr) or attr in dir(returns[call]), f"{call}.{attr}"
     takes = {
         "Simulator": inspect.signature(Simulator).parameters,
-        "run": inspect.signature(Simulator.run).parameters,
-        "steady_state": inspect.signature(Simulator.steady_state).parameters,
-        "set_tolerances": inspect.signature(Simulator.set_tolerances).parameters,
+        **{
+            name: inspect.signature(getattr(Simulator, name)).parameters
+            for name in (*fn.RUN_CALLS, "steady_state", "set_tolerances")
+        },
         "plot": {"x"},  # pandas
     }
     # Each call's keywords, one level of parentheses inside its arguments.

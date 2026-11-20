@@ -1,3 +1,7 @@
+---
+summary: "Forward parameter and initial-condition sensitivities with CVODES, switch-time parameters, parallel computation, Fisher information and gradients for fitting."
+---
+
 # Sensitivity analysis & gradients
 
 ## Forward sensitivity analysis (CVODES)

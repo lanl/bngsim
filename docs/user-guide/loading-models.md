@@ -1,3 +1,7 @@
+---
+summary: "Model.load and each format's loader (.net, BNGL through BNG2.pl, SBML, Antimony), what each supports and refuses, and reading a .net file as a dict."
+---
+
 # Loading models
 
 ## `Model.load` — dispatch on the file suffix

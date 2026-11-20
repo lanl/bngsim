@@ -213,6 +213,11 @@ and lives in [`docs/`](https://github.com/lanl/bngsim/tree/HEAD/docs):
   [SBML/SED-ML/OMEX interchange](https://bngsim.readthedocs.io/en/latest/user-guide/interchange.html)
 - Reference: [API](https://bngsim.readthedocs.io/en/latest/reference/api.html) ·
   [expression language](https://bngsim.readthedocs.io/en/latest/reference/expressions.html)
+- For AI agents: the [agent guide](https://bngsim.readthedocs.io/en/latest/agent-guide.html),
+  one page of calls, rules and a translation table from other simulators, which
+  `bngsim.agent_guide()` returns and `python -m bngsim guide` prints for the
+  installed version, and an [`llms.txt`](https://bngsim.readthedocs.io/llms.txt)
+  index of every page's Markdown
 - [Architecture](https://bngsim.readthedocs.io/en/latest/about/architecture.html) ·
   [benchmarks & validation](https://bngsim.readthedocs.io/en/latest/about/benchmarks.html)
 

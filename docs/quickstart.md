@@ -1,3 +1,7 @@
+---
+summary: "Load a .net, SBML, Antimony or BNGL model and run it as ODEs, by SSA or by PSA; change parameters; the seed contract of stochastic runs."
+---
+
 # Quickstart
 
 ## Load a model and simulate

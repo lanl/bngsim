@@ -1,3 +1,7 @@
+---
+summary: "What bngsim is, and a model loaded and run in one block."
+---
+
 # bngsim
 
 **Embeddable simulation engine for BioNetGen reaction networks.**
@@ -46,7 +50,9 @@ print(result.observables["A"])    # trajectory of observable "A"
 print(round(float(result.observables["A"][-1]), 4))  # 0.6738, which is 100 * exp(-5)
 ```
 
-New here? Start with {doc}`installation` and the {doc}`quickstart`.
+New here? Start with {doc}`installation` and the {doc}`quickstart`. An AI
+agent, or anyone who would rather read rules than a tutorial, can start with
+the {doc}`agent-guide`, which `bngsim.agent_guide()` also returns.
 
 ```{toctree}
 :caption: Getting started
@@ -54,6 +60,7 @@ New here? Start with {doc}`installation` and the {doc}`quickstart`.
 
 installation
 quickstart
+agent-guide
 ```
 
 ```{toctree}

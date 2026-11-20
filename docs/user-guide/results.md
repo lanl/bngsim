@@ -1,3 +1,7 @@
+---
+summary: "The Result object: arrays by name, pandas and xarray views, saving to HDF5, and exporting BioNetGen .gdat and .cdat text files."
+---
+
 # Working with results
 
 ## Named observable access

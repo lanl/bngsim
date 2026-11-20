@@ -1,3 +1,7 @@
+---
+summary: "Finding steady states by integration or Newton, convergence criteria, conservation laws, unstable roots, steady-state sensitivities, and what is refused."
+---
+
 # Steady-state solver
 
 ## Steady-state solver

@@ -1,3 +1,7 @@
+---
+summary: "The expression language of rate laws and functions: constants, built-in functions, mratio, logical operators, and adding functions from Python."
+---
+
 # Expression language reference
 
 BNGsim uses [ExprTk](https://github.com/ArashPartow/exprtk) as its expression

@@ -1,0 +1,127 @@
+"""The agent guide runs as written, fits its budget and ships in the package (#1699).
+
+``bngsim/agent_guide.md`` is what an agent reads to learn bngsim, through
+:func:`bngsim.agent_guide`, ``python -m bngsim guide`` or the documentation.
+An agent copies its blocks, so a block that no longer runs, or a value that no
+longer comes out, teaches the wrong call with the authority of the docs:
+
+* every Python block runs, in page order, in one namespace, in an empty
+  directory, as the guide says it does, with warnings raised as errors except
+  the one the guide's own rules block shows;
+* a line whose comment states a value prints it;
+* the translation table is the one :data:`bngsim._foreign_names.FOREIGN_NAMES`
+  generates, so it says what bngsim's wrong-name errors say;
+* the guide stays under :data:`BUDGET_CHARS` characters, so it can be loaded
+  whole into an agent's context (about 8,000 tokens).
+"""
+
+from __future__ import annotations
+
+import contextlib
+import io
+import re
+import subprocess
+import sys
+import warnings
+
+import bngsim
+from bngsim import _agent_guide
+
+#: The guide's size budget, in characters: about 8,000 tokens, small enough to
+#: be loaded whole beside a task. Raise it only with something taken out.
+BUDGET_CHARS = 32_000
+
+_FENCE = re.compile(r"^```(\w*)\s*$(.*?)^```\s*$", re.MULTILINE | re.DOTALL)
+
+# `print(x)  # value` and `print(x, y)  # v1 v2`: the comment up to a colon is
+# what the line prints.
+_STATED = re.compile(r"^print\((?P<expr>.+)\)\s+#\s*(?P<value>[^:]+?)\s*(?::.*)?$")
+
+
+def _blocks() -> list[tuple[str, str]]:
+    return [(m.group(1), m.group(2)) for m in _FENCE.finditer(bngsim.agent_guide())]
+
+
+def test_the_guide_ships_in_the_package_and_is_markdown():
+    text = bngsim.agent_guide()
+    assert text.startswith("# bngsim agent guide\n")
+    assert "bngsim.agent_guide()" in text
+    assert "agent_guide" in bngsim.__all__
+    assert "bngsim.agent_guide()" in bngsim.__doc__
+
+
+def test_the_guide_fits_its_budget():
+    text = bngsim.agent_guide()
+    assert len(text) <= BUDGET_CHARS, (
+        f"the agent guide is {len(text):,} characters, over its {BUDGET_CHARS:,} budget"
+    )
+
+
+def test_every_block_is_python():
+    """Every fenced block is one the test runs: no block is left out unrun."""
+    languages = {language for language, _ in _blocks()}
+    assert languages == {"python"}
+
+
+def test_the_translation_table_is_generated_from_foreign_names():
+    text = bngsim.agent_guide()
+    assert _agent_guide._with_table(text, _agent_guide.translation_table()) == text, (
+        "the agent guide's translation table differs from FOREIGN_NAMES': "
+        "run `python -m bngsim._agent_guide --write`"
+    )
+
+
+def test_the_table_lists_each_tool_the_guide_names():
+    table = _agent_guide.translation_table()
+    for tool in _agent_guide.TOOLS:
+        assert f"**{tool}**" in table
+
+
+def test_the_skill_is_the_guide_with_a_header():
+    skill = bngsim.agent_guide(skill=True)
+    assert skill.startswith("---\nname: bngsim\ndescription: >-\n")
+    assert skill.endswith(bngsim.agent_guide())
+    front = skill.split("---\n")[1]
+    assert len(front.splitlines()) <= 10
+
+
+def test_every_block_runs_and_prints_what_it_says(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    namespace: dict[str, object] = {"__name__": "__guide__"}
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        for _, code in _blocks():
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                exec(compile(code, "agent_guide.md", "exec"), namespace)
+            printed = iter(out.getvalue().splitlines())
+            for line in code.splitlines():
+                if not line.startswith("print("):
+                    continue
+                shown = next(printed)
+                stated = _STATED.match(line)
+                if stated:
+                    assert shown == stated.group("value"), f"{line!r} printed {shown!r}"
+
+
+def test_python_m_bngsim_prints_the_guide_and_the_skill():
+    for command, expected in (("guide", bngsim.agent_guide()), ("skill", None)):
+        out = subprocess.run(
+            [sys.executable, "-m", "bngsim", command],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+        ).stdout
+        if expected is not None:
+            assert out == expected
+        else:
+            assert out == bngsim.agent_guide(skill=True)
+
+
+def test_python_m_bngsim_with_no_command_says_what_it_takes():
+    run = subprocess.run(
+        [sys.executable, "-m", "bngsim"], capture_output=True, text=True, encoding="utf-8"
+    )
+    assert run.returncode == 2
+    assert "guide" in run.stderr and "skill" in run.stderr

@@ -1,3 +1,7 @@
+---
+summary: "Using bngsim as PyBNF's simulator for parameter fitting: setup, cluster evaluation, and the capability checks a fitting tool gates on."
+---
+
 # Use with PyBNF
 
 When `bngsim` is installed, [PyBNF](https://github.com/lanl/PyBNF) automatically
