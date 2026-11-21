@@ -86,9 +86,11 @@ changed since.
   process, from the XML BioNetGen writes (`xml_path=`). `method="nf"` (NFsim,
   the rejection method) is the default and the faster on most large models.
   `method="rm"` (RuleMonkey, an exact method) is an independent second
-  engine. It runs energy (`Arrhenius`) rules, which NFsim refuses; it is much
-  faster on a few models and times out on others; and it is the check to run
-  when an NFsim result matters. The two agree on 221 of 222 models of a parity
+  engine. It runs energy (`Arrhenius`) rules, which NFsim refuses, and it is
+  the check to run when an NFsim result matters. Its speed against NFsim
+  depends on the model: on the published models timed for the bngsim paper it
+  was slower on most, by up to about 3 times, and faster on a few, by up to 15
+  times. The two agree on 221 of 222 models of a parity
   suite. Neither runs a model with
   compartments; use its generated network with `ode` or `ssa`.
 - **bngsim's NFsim or the standalone binary.** The NFsim inside bngsim is
