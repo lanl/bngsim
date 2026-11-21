@@ -1,0 +1,15 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 ksyn  5000  # Constant
+    2 kdeg  0.5  # Constant
+end parameters
+begin species
+    1 A() 0
+end species
+begin reactions
+    1 0 1 ksyn #_R1
+    2 1 0 kdeg #_R2
+end reactions
+begin groups
+    1 A                    1
+end groups

@@ -520,6 +520,14 @@ class Model:
         path = Path(path)
         suffix = path.suffix.lower()
         factory = _LOAD_DISPATCH.get(suffix)
+        if factory is None and not path.exists():
+            from bngsim._biomodels import ID
+
+            if ID.match(path.name):
+                raise ModelError(
+                    f"{path.name!r} is a BioModels id, not a file: "
+                    f"Model.from_biomodels({path.name!r}) fetches it"
+                )
         if factory is None:
             known = ", ".join(sorted(_LOAD_DISPATCH))
             raise ModelError(
@@ -637,6 +645,90 @@ class Model:
             raise  # typed refusal — see from_sbml (Antimony loads via SBML)
         except Exception as e:
             raise ModelError(f"Failed to load Antimony string: {e}") from e
+
+    @classmethod
+    def from_biomodels(
+        cls,
+        model_id: str,
+        *,
+        version: int | None = None,
+        cache: bool = True,
+        refresh: bool = False,
+        defer_jacobian: bool | None = None,
+        compartment_sizes: dict[str, float] | None = None,
+    ) -> Model:
+        """Load a model from BioModels by its id, such as ``"BIOMD0000000010"``.
+
+        Fetches the entry's main SBML file from https://www.biomodels.org,
+        checks it against the sha256 BioModels publishes for it, and keeps a
+        copy, so a second call needs no network. Nothing is fetched unless you
+        call this.
+
+        Parameters
+        ----------
+        model_id : str
+            The BioModels id: ``BIOMD`` (curated) or ``MODEL`` (not curated)
+            and ten digits.
+        version : int, optional
+            The entry's version. Default: the latest, or the latest already
+            cached. Pass a version to pin the exact file.
+        cache : bool, optional
+            Read and keep a copy in ``~/.cache/bngsim/biomodels`` (or
+            ``$BNGSIM_BIOMODELS_CACHE_DIR``). Default True. ``False`` fetches
+            the file again and keeps nothing.
+        refresh : bool, optional
+            Fetch again even if a copy is cached, and update the cache. A cached
+            latest version is otherwise used until you refresh it.
+        defer_jacobian, compartment_sizes
+            As for :meth:`from_sbml`.
+
+        Returns
+        -------
+        Model
+            The model. ``model.describe()["source"]`` records the id, the
+            version, the file name and its sha256.
+
+        Raises
+        ------
+        ValueError
+            If ``model_id`` is not a BioModels id.
+        ModelError
+            If BioModels has no such entry, or the file can't be fetched (no
+            network, or a host BioModels refuses) and no copy is cached. The
+            message names the cache directory.
+
+        Examples
+        --------
+        >>> model = bngsim.Model.from_biomodels("BIOMD0000000010")  # doctest: +SKIP
+        """
+        from bngsim import _biomodels
+
+        got = _biomodels.fetch(model_id, version=version, cache=cache, refresh=refresh)
+        if got["path"] is not None:
+            model = cls.from_sbml(
+                got["path"], defer_jacobian=defer_jacobian, compartment_sizes=compartment_sizes
+            )
+        else:
+            model = cls.from_sbml_string(
+                got["data"].decode("utf-8"),
+                defer_jacobian=defer_jacobian,
+                compartment_sizes=compartment_sizes,
+            )
+        # Keep what the SBML load recorded beyond the file (compartment_sizes).
+        loaded = dict(model._source or {})
+        _record_source(
+            model,
+            "sbml",
+            path=got["path"],
+            text=None if got["path"] is not None else got["data"],
+            biomodels_id=got["id"],
+            biomodels_version=got["version"],
+            biomodels_file=got["file"],
+        )
+        assert model._source is not None
+        for key, value in loaded.items():
+            model._source.setdefault(key, value)
+        return model
 
     @classmethod
     def from_sbml(

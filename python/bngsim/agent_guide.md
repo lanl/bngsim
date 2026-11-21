@@ -72,6 +72,7 @@ print(d["methods"]["ssa"]["status"])  # ok
 | what the model is, and which methods it admits | `print(model.describe())`; `model.describe()["methods"]["ssa"]` gives a status and the reasons; lists past 50 entries are cut, and `model.describe(limit=None)` keeps all |
 | load one format | `Model.from_net(path)`, `Model.from_bngl(path)`, `Model.from_sbml(path)`, `Model.from_antimony(path)` |
 | load text | `Model.from_sbml_string(text)`, `Model.from_antimony_string(text)`; BNGL only from a file |
+| load a BioModels entry | `Model.from_biomodels("BIOMD0000000010")`: fetched once, then cached |
 | choose the method | `bngsim.Simulator(model, method="ode")`; `"ssa"`, `"psa"`; network-free `"nf"` (NFsim) and `"rm"` (RuleMonkey) also take `xml_path=`; `Simulator.METHODS` lists all |
 | run | `sim.run(t_span=(t0, t1), n_points=n)` or `sim.run(sample_times=[...])` |
 | read a run | `result.time`, `result.species`, `result.observables`, `result.expressions`; each takes a name: `result.observables["A"]` |
@@ -356,6 +357,28 @@ the tool's own objects, as that tool spells it.
 | `result.A` | `result.observables["A"]` | A species: result.species["A"]; an expression: result.expressions["A"]. |
 
 <!-- end of translation-table -->
+
+## Example models, and models built in Python
+
+`bngsim.examples` holds small models that ship with bngsim, each with its
+exact solution: a model to try with no file of your own, and a check that
+bngsim works on this machine. `bngsim.examples.formats(name)` lists the
+formats each comes in. `bngsim.ModelBuilder` builds a model in Python.
+
+```python
+print(bngsim.examples.names())  # ['binding', 'decay', 'chain', 'birth_death', 'bolus', 'schlogl']
+example = bngsim.examples.load("binding")  # A + B <-> C
+res = bngsim.Simulator(example).run(t_span=(0, 10), n_points=101)
+exact = bngsim.examples.exact("binding", res.time)
+print(np.allclose(res.observables["C"], exact["C"], rtol=1e-4))  # True
+
+b = bngsim.ModelBuilder()
+b.add_parameter("k", 0.5)
+b.add_species("A", 100)  # each species is also an observable
+b.add_reaction(["A"], [], rate="k")  # rate: mass action; law=: the whole rate
+built = b.build()
+print(bngsim.Simulator(built).run(t_span=(0, 2), n_points=3).observables["A"][-1].round(2))  # 36.79
+```
 
 ## Check a result before reporting it
 

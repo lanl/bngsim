@@ -17,6 +17,7 @@ Factory methods:
 - **`Model.from_antimony_string(text)`** — Load from Antimony string
 - **`Model.from_sbml(path)`** — Load from SBML `.xml` file (requires `python-libsbml`)
 - **`Model.from_sbml_string(text)`** — Load from SBML XML string
+- **`Model.from_biomodels(model_id, *, version=None, cache=True, refresh=False)`** — Load a BioModels entry by id, such as `"BIOMD0000000010"`. The file is checked against BioModels' published sha256 and cached in `~/.cache/bngsim/biomodels` (or `$BNGSIM_BIOMODELS_CACHE_DIR`). `refresh=True` fetches again.
 
 Properties:
 - `n_species`, `n_reactions`, `n_observables`, `n_parameters`, `n_functions`, `n_events`
@@ -351,6 +352,28 @@ Warnings (`UserWarning` subclasses; filter or escalate them with `warnings`):
   for which RuleMonkey reports a warning-level diagnostic: how it reads a rule
   or rate law, such as a rule whose products can never be what it writes, which
   it never fires as BioNetGen generates no reaction for it (issue #1022)
+
+## `bngsim.ModelBuilder`
+
+Builds a model in Python. Each species also gets an observable of the same name.
+
+- **`add_parameter(name, value)`**
+- **`add_species(name, initial=0.0, *, fixed=False)`**: a `fixed` species keeps its amount.
+- **`add_observable(name, species)`**: a list of species names, or a dict of name to weight.
+- **`add_function(name, expression)`**: reads parameters, species, observables, other functions, and `time()`.
+- **`add_reaction(reactants, products, *, rate=None, law=None)`**: `rate` is a mass-action rate constant (a parameter, a function, or an expression), multiplied by the reactants. `law` is the whole rate. Give one.
+- **`add_event(trigger, assignments, *, delay=0.0, name=None)`**: when `trigger` becomes true, set species to new values, such as `{"A": "A + 100"}`.
+- **`build()`** → `Model`.
+
+## `bngsim.examples`
+
+Small models that ship with BNGsim, each with its exact solution.
+
+- **`names()`**, **`describe(name)`**, **`formats(name)`**
+- **`path(name, format="net")`** → the model's file. Formats: `net`, `bngl`, `bng-xml`, `sbml`, `antimony`, `python`.
+- **`load(name, format=None)`** → `Model`.
+- **`exact(name, t, **params)`** → each observable at times `t`, as an array.
+- **`steady_states(name, **params)`** → each steady state, with `"stable"`.
 
 ## `.net` files as a dict
 

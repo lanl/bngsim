@@ -238,6 +238,35 @@ rule templates, and a `qual` document's core layer is typically empty. A
 presentation-only package (`layout`, `render`, `fbc`) declares `required="false"`
 and loads untouched.
 
+## Models from BioModels
+
+`Model.from_biomodels` loads a BioModels entry by its id:
+
+```python
+model = bngsim.Model.from_biomodels("BIOMD0000000010")
+```
+
+BNGsim asks BioModels for the entry's main SBML file, downloads it, and checks
+it against the sha256 BioModels publishes. It keeps a copy in
+`~/.cache/bngsim/biomodels` (or `$BNGSIM_BIOMODELS_CACHE_DIR`), so the next call
+needs no network.
+
+- **Versions.** By default you get the latest version. Once cached, that copy
+  is used until you pass `refresh=True`, which fetches again and updates the
+  cache. Pass `version=2` to pin a version.
+- **No cache.** `cache=False` fetches the file again and keeps nothing.
+- **Checking.** When BioModels publishes no sha256 for a file, the file can't
+  be checked, and BNGsim only checks that it is SBML.
+- **Where it came from.** `model.describe()["source"]` records the id, the
+  version, the file name, and its sha256.
+- **No network.** If BioModels can't be reached and no copy is cached, you get
+  an error that says so and names the cache directory. Some cloud hosts are
+  refused by BioModels. There, download the SBML file yourself and load it with
+  `Model.from_sbml(path)`.
+
+`Model.load("BIOMD0000000010")` doesn't fetch anything. It tells you to call
+`Model.from_biomodels`.
+
 ## What a loaded model is: `Model.describe()`
 
 `Model.describe()` answers, in one call, the questions a caller has before it
