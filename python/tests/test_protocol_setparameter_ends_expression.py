@@ -298,6 +298,53 @@ def test_two_parameters_numbers_ended_hold_through_one_write(tmp_path):
     assert _end(run.result) == pytest.approx(a_at(0.25, 6, 0.5), rel=1e-8)
 
 
+@pytest.mark.parametrize(
+    ("kr", "number", "followed"),
+    [
+        # kr = kf/k1 is 0.5 while kf follows k1, and 0.5/k1 once kf is held.
+        ("kf/k1", 0.5, 0.5 / 3),
+        # kr = k1 - kf*2 + 1 is 1 while kf follows k1, and k1 once it is held.
+        ("k1-kf*2+1", 1.0, 3.0),
+    ],
+)
+@pytest.mark.parametrize("kr_first", [False, True])
+def test_a_held_parameter_that_reads_another_holds_when_the_write_leaves_it_be(
+    tmp_path, kr, number, followed, kr_first
+):
+    # kf k1*0.5 and kr, which reads kf and k1, each set to the number it gives.
+    # k1 = 3 moves kf to 1.5 and leaves kr on its number, so only kf is written
+    # back; that write moves kr, to `followed`, unless it is held again.
+    # BNG2.pl 2.9.3 keeps both numbers (the .net it writes lists them).
+    model = _model3(tmp_path, "k1*0.5", kr)
+    sets = [_set("kf", 0.5), _set("kr", number)]
+    out = _replay(model, *(reversed(sets) if kr_first else sets), _set("k1", 3), _run(0.25))
+    assert _end(out[0].result) == pytest.approx(a_at(0.25, 0.5, number), rel=1e-8)
+    assert _end(out[0].result) != pytest.approx(a_at(0.25, 0.5, followed), rel=1e-3)
+    assert out.model.get_param("kr") == number
+
+
+def test_a_held_parameter_set_to_a_second_number_takes_it(tmp_path):
+    # The first number's hold must not write itself back over the second: the
+    # run is at k2 = 0.7, then at 0.5 again.
+    model = _model(tmp_path, "k1*0.5")
+    (run,) = _replay(model, _set("k2", 0.5), _set("k2", 0.7), _run())
+    assert _end(run.result) == pytest.approx(a_at(1.0, 1, 0.7), rel=1e-8)
+    model = _model(tmp_path, "k1*0.5")
+    (run,) = _replay(model, _set("k2", 0.7), _set("k2", 0.5), _set("k1", 3), _run())
+    assert _end(run.result) == pytest.approx(a_at(1.0, 3, 0.5), rel=1e-8)
+
+
+def test_each_point_of_a_scan_over_a_derived_parameter_runs_at_its_own_value(tmp_path):
+    # Each point is a number that ends the expression, and the next point's
+    # number replaces it: no point runs at the one before.
+    model = _model(tmp_path, "k1*0.5")
+    values = (0.5, 0.7, 0.5, 2.0)
+    (run,) = _replay(model, _scan("k2", values))
+    assert [_end(r) for r in run.scan_results] == pytest.approx(
+        [a_at(1.0, 1, v) for v in values], rel=1e-8
+    )
+
+
 def test_a_parameter_overridden_before_the_replay(tmp_path):
     # The caller's set_param made k2 0.7; the model still holds k1*0.5, and
     # the number it gives would bring it back (#188) without the hold.
