@@ -3457,14 +3457,20 @@ class Model:
         * ``observables``: each one's ``name`` and what it ``reads``
           (``A + 2*B``), the columns of ``Result.observables``.
         * ``functions``: ``name`` and ``expression``; for SBML the file's
-          assignment rules and reaction rates, by its ids.
+          assignment rules and reaction rates, by its ids. A rule that is a
+          linear sum of species is an observable instead.
+        * ``function_definitions`` (SBML, where any): each one's ``name`` and
+          ``definition``, a lambda, which a ``rate`` calls by name and the
+          model inlines.
         * ``reactions``: ``reactants``, ``products``, the ``equation`` with its
           coefficients, ``rate_law`` and ``rate``. For a network:
           ``"elementary"``, ``"michaelis_menten"``, ``"functional"`` (with the
           function's ``expression``) or ``"rate_rule"``, and a ``multiplier``
           other than 1. For SBML, as the file writes them: ``id``,
-          ``rate_law`` ``"kinetic_law"`` with the law as ``rate``,
-          ``reversible``, and ``modifiers`` and ``fast`` where set.
+          ``rate_law`` ``"kinetic_law"`` with the law as ``rate``, in the
+          model's names (a local parameter as ``_lp_<reaction>_<id>``, the
+          parameter the run reads), ``reversible``, and ``modifiers`` and
+          ``fast`` where set.
         * ``events``: ``id``, ``trigger``, what it ``assigns``, and its
           ``delay`` where it has one.
         * ``omitted``: how many entries each list lost to ``limit``.

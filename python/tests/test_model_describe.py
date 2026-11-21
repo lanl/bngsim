@@ -950,6 +950,8 @@ def test_a_renamed_compartment_keeps_the_files_id():
     first = d["compartments"][0]
     assert first["name"] == "_ant_default" and first["id"] == "default"
     assert "(the file's default)" in str(d)
+    # A rate reads it by the model's name too.
+    assert d["reactions"][0]["rate"] == "k1 * A * _ant_default"
 
 
 def test_many_ssa_refusals_of_one_kind_are_grouped():
@@ -1069,7 +1071,13 @@ def test_describe_is_cheap_on_a_large_network(tmp_path):
         f"begin reactions\n{reactions}end reactions\n"
     )
     model, _ = _net(tmp_path, text, "big.net")
-    d = model.describe()
+
+    def forbidden(self):
+        pytest.fail("describe() found the conservation laws")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(bngsim.Model, "conservation_laws", property(forbidden))
+        d = model.describe()
     assert d["counts"]["species"] == n and d["counts"]["reactions"] == m
     assert "conservation_laws" not in d["counts"]
 
@@ -1103,3 +1111,53 @@ def test_a_stoichiometry_an_assignment_sets_is_named_not_numbered():
     assert 'id="nA"' in text and 'symbol="nA"' in text
     r = bngsim.Model.from_sbml_string(text).describe()["reactions"][0]
     assert r["equation"] == "(nA)*A -> B"
+
+
+def test_a_local_parameter_reads_as_the_models_name_for_it():
+    """A kinetic law's local k shadows the global k: the rate names the
+    parameter the run reads, the model's _lp_R1_k, not the global."""
+    text = TWO_COMPARTMENTS.replace(
+        '   <parameter id="k1" value="1" constant="true"/>\n',
+        '   <parameter id="k1" value="1" constant="true"/>\n'
+        '   <parameter id="k" value="5" constant="true"/>\n',
+    ).replace(
+        "<kineticLaw>"
+        + _math(f"<apply><times/>{_ci('k1')}{_ci('A')}{_ci('cell')}</apply>")
+        + "</kineticLaw>",
+        "<kineticLaw>"
+        + _math(f"<apply><times/>{_ci('k')}{_ci('A')}</apply>")
+        + '<listOfLocalParameters><localParameter id="k" value="0.1"/></listOfLocalParameters>'
+        + "</kineticLaw>",
+    )
+    assert 'localParameter id="k"' in text
+    model = bngsim.Model.from_sbml_string(text)
+    d = model.describe()
+    assert d["reactions"][0]["rate"] == "_lp_R1_k * A"
+    params = {p["name"]: p["value"] for p in d["parameters"]}
+    assert params["k"] == 5.0 and params["_lp_R1_k"] == 0.1
+    # And it is the rate the run reads. A (in cell, of size 2) loses R1 = k*A
+    # and gains R2 = k2*B*C, amount rates, so [A]' = (-k*10 + 0.1*3*1) / 2:
+    # -0.35 with the local k = 0.1, where the global k = 5 would give -2.35.
+    assert model.rhs(model.get_state())[0] == pytest.approx((-0.1 * 10 + 0.1 * 3 * 1) / 2)
+
+
+def test_function_definitions_a_rate_calls_are_listed():
+    text = TWO_COMPARTMENTS.replace(
+        "  <listOfCompartments>\n",
+        "  <listOfFunctionDefinitions>\n"
+        '   <functionDefinition id="twice">'
+        + _math(
+            "<lambda><bvar><ci>x</ci></bvar><apply><times/><cn>2</cn><ci>x</ci></apply></lambda>"
+        )
+        + "</functionDefinition>\n"
+        "  </listOfFunctionDefinitions>\n"
+        "  <listOfCompartments>\n",
+    ).replace(
+        f"<apply><times/>{_ci('k2')}{_ci('B')}{_ci('C')}</apply>",
+        f"<apply><ci>twice</ci><apply><times/>{_ci('k2')}{_ci('B')}{_ci('C')}</apply></apply>",
+    )
+    d = bngsim.Model.from_sbml_string(text).describe()
+    assert d["reactions"][1]["rate"] == "twice(k2 * B * C)"
+    assert d["function_definitions"] == [{"name": "twice", "definition": "lambda(x, 2 * x)"}]
+    assert d["counts"]["function_definitions"] == 1
+    assert "twice = lambda(x, 2 * x)" in str(d)

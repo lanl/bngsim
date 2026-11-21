@@ -302,7 +302,10 @@ What to read in it:
   `quantity` or `compartment`: they are absent, not guessed.
 - **The file, not bngsim's channels.** For SBML and Antimony, `reactions` are the
   file's, with their ids, stoichiometry and kinetic laws, and `parameters` and
-  `functions` are the ones the file declares. bngsim runs some of these as
+  `functions` are the ones the file declares. A law reads in the model's names: a
+  local parameter is the model's `_lp_<reaction>_<id>`, the parameter the run
+  reads, and a function definition it calls is listed under
+  `function_definitions`. bngsim runs some of these as
   several channels (a reversible law, a rate rule, a dilution term), which
   `Model.n_reactions` counts. A compartment size or parameter that a rule or an
   event moves is held as a state; it is listed under `other_states`, not as a
