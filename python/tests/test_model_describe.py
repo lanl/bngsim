@@ -1231,3 +1231,7 @@ def test_a_law_the_parser_cannot_read_back_is_renamed_by_token():
     law = f"<apply><ci>log</ci>{_ci('kl')}{_ci('A')}{_ci('kl')}</apply>"
     model = bngsim.Model.from_sbml_string(_with_local("kl", law, definition))
     assert model.describe()["reactions"][0]["rate"] == "log(_lp_R1_kl, A, _lp_R1_kl)"
+    # A local that shares the function's id: the call keeps its name.
+    law = f"<apply><ci>log</ci>{_ci('log')}{_ci('A')}{_ci('log')}</apply>"
+    model = bngsim.Model.from_sbml_string(_with_local("log", law, definition))
+    assert model.describe()["reactions"][0]["rate"] == "log(_lp_R1_log, A, _lp_R1_log)"
