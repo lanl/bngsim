@@ -16,7 +16,13 @@ build-backend = "scikit_build_core.build"
 [project]
 name = "bngsim"
 version = "0.17.2"
-description = "Embeddable simulation engine for BioNetGen reaction networks"
+description = "Simulate SBML, Antimony and BioNetGen (BNGL) models in Python: ODE, stochastic (SSA) and network-free simulation, steady states and sensitivities"
+keywords = [
+    "SBML", "Antimony", "BioNetGen", "BNGL", "systems biology", "biochemical reaction network",
+    "simulation", "ODE", "CVODE", "SUNDIALS", "stochastic simulation", "Gillespie", "SSA",
+    "rule-based modeling", "network-free", "NFsim", "sensitivity analysis", "steady state",
+    "parameter estimation",
+]
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
@@ -244,6 +250,10 @@ no-build-isolation-package = ["bionetgen"]
 # that re-resolve. See CONTRIBUTING.md, "Re-locking after a pyproject change".
 
 [project.scripts]
+# The bngsim command (GH #1708): doctor, guide, examples, inspect, and the tools
+# below as `bngsim convert ...` and `bngsim cache ...`. Also runnable as
+# ``python -m bngsim``.
+bngsim = "bngsim._cli:main"
 # SBML → .net network converter (GH #215). Also runnable as
 # ``python -m bngsim.convert``.
 bngsim-sbml2net = "bngsim.convert._cli:main"
@@ -402,7 +412,13 @@ environment = { BNGSIM_ENABLE_KLU = "ON", BNGSIM_REQUIRE_KLU = "ON" }
 # #1556): on Python 3.13 and later a numpy warning inside a condition refused the
 # run, and the pull-request suites run 3.12 only, so the wheels are where 3.13
 # and later are exercised. Same constraints: bngsim and numpy only.
-test-command = "python {project}/ci/wheel_smoke_klu.py && python {project}/ci/wheel_smoke_stop_condition.py"
+#
+# ci/wheel_smoke_agent_guide.py reads the agent guide from the installed wheel
+# (issue #1699): the test suites run on the source tree, where the file always
+# is, so only a wheel shows that the guide an agent reads offline shipped.
+# ci/wheel_smoke_examples.py does the same for the example models (issue
+# #1706), and checks each against its exact solution.
+test-command = "python {project}/ci/wheel_smoke_klu.py && python {project}/ci/wheel_smoke_stop_condition.py && python {project}/ci/wheel_smoke_agent_guide.py && python {project}/ci/wheel_smoke_examples.py"
 
 [tool.cibuildwheel.linux]
 # manylinux_2_28 = AlmaLinux 8 (has dnf); SuiteSparse/KLU comes from EPEL. Its

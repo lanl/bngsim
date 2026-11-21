@@ -123,8 +123,12 @@ def run_diffrax(
         :func:`bngsim._jax_rhs.check_rhs_against_engine`).
     """
     if not diffrax_available():
-        raise ImportError(
-            "Diffrax is required for method='diffrax'. Install with: pip install diffrax"
+        from bngsim._error_codes import install
+        from bngsim._exceptions import DependencyError
+
+        raise DependencyError(
+            "Diffrax is required for method='diffrax'. Install with: pip install diffrax",
+            remedies=[install("diffrax")],
         )
 
     import diffrax
@@ -163,7 +167,9 @@ def run_diffrax(
         )
     # A step or bend call over state is one of these since issue #1068: a pulse
     # written as `max(0, 1 - abs(u)/w)` is stepped over where nothing roots it.
-    state_switches = model.state_switch_root_conditions()
+    # At this run's parameter values: a condition they decide, such as the
+    # `.net` loader's Hill guard at h = 2, switches nothing (issue #1636).
+    state_switches = model._state_switch_roots_at_run_values()
     if state_switches:
         raise ValueError(
             "run_diffrax does not integrate a rate law that switches on the model's state, "

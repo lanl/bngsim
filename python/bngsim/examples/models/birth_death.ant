@@ -1,0 +1,10 @@
+// 0 -> A -> 0. Constant production and first-order decay.
+// Exact mean: bngsim.examples.exact("birth_death", t). Started at 0, the
+// number of A at time t is Poisson-distributed with that mean.
+model birth_death
+  J1: -> A; ksyn
+  J2: A -> ; kdeg*A
+  ksyn = 5000   // production rate
+  kdeg = 0.5    // decay rate constant
+  A = 0
+end

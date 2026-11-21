@@ -109,9 +109,14 @@ def test_each_edge_is_read_by_the_reaction_that_reads_the_window(tmp_path, cond)
     [
         ("abs(Aobs-5)<0.01", ["(Aobs-5)<(0.01)", "(Aobs-5)>(-(0.01))"]),
         ("0.01>abs(Aobs-5)", ["(Aobs-5)<(0.01)", "(Aobs-5)>(-(0.01))"]),
-        ("abs(Aobs-c)<=w", ["(Aobs-c)<(w)", "(Aobs-c)>(-(w))"]),
+        # Each edge keeps the operator written, the far one mirrored, so the
+        # crossing stop places it where the atom's truth changes (issue #1673).
+        ("abs(Aobs-c)<=w", ["(Aobs-c)<=(w)", "(Aobs-c)>=(-(w))"]),
+        ("w>=abs(Aobs-c)", ["(Aobs-c)<=(w)", "(Aobs-c)>=(-(w))"]),
+        ("abs(Aobs-5)>=0.5", ["(Aobs-5)>=(0.5)", "(Aobs-5)<=(-(0.5))"]),
         ("(Aobs-5)^2<0.0001", ["(Aobs-5)<(0.01)", "(Aobs-5)>(-0.01)"]),
-        ("Aobs^2>4", ["(Aobs)<(2.0)", "(Aobs)>(-2.0)"]),
+        ("Aobs^2>4", ["(Aobs)>(2.0)", "(Aobs)<(-2.0)"]),
+        ("4<Aobs^2", ["(Aobs)>(2.0)", "(Aobs)<(-2.0)"]),
         # as the SBML loader writes a condition
         ("(abs((A-5))<0.01)", ["((A-5))<(0.01)", "((A-5))>(-(0.01))"]),
     ],

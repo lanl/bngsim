@@ -192,6 +192,8 @@ class TestClockOnTheOrdinaryPaths:
         assert result.time[0] == pytest.approx(100.0)
         assert result.species[0, 0] == pytest.approx(_analytic(100.0), rel=1e-4)
 
+    # From a run's end on purpose (#1701).
+    @pytest.mark.filterwarnings("ignore::bngsim.LiveStartWarning")
     def test_parameter_scan_leaves_the_clock_as_it_found_it(self, data_dir: Path) -> None:
         """The scan rewinds the model when it finishes; the clock is part of that."""
         sim = _decay(data_dir)

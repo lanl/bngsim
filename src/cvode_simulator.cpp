@@ -64,6 +64,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <typeinfo>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -572,6 +573,13 @@ struct StateSwitchHold {
     }
 };
 
+// What CvodeUserData::clamp_far holds per slot: 0, or the step started it more
+// than kClampNoiseAtols atols below 0 (mark_far_at_step_start), which
+// spare_at_pole narrows to at a pole or carried to an overflow, or back to 0.
+constexpr char kFarAtStepStart = 1;
+constexpr char kAtPole = 2;
+constexpr char kCarriedToOverflow = 3;
+
 struct CvodeUserData {
     NetworkModel *model;
     // The largest |x| of each species at any state the right-hand side is
@@ -769,6 +777,17 @@ struct CvodeUserData {
     // by design. Built on first use from the model, which a run does not
     // restructure; see clamp_state_nonneg.
     std::vector<char> rhs_nonneg_mask;
+    // The retry's narrowed readings (issue #1661, read_narrowed): the slots each
+    // row of f reads, built once from the sparsity pattern of `clamp_rows_model`;
+    // the rows the reading being retried has not finite; the slots they read.
+    SlotsReadByRow clamp_rows;
+    const NetworkModel *clamp_rows_model = nullptr;
+    std::vector<char> clamp_bad_rows;
+    std::vector<char> clamp_read_scratch;
+    // The slots the narrowed reading has put back in this run, which it puts
+    // back at any depth from then on (restore_where_finite); cleared with the
+    // tolerances.
+    std::vector<char> clamp_kept;
     // What that clamp weighs a negative component against where it reads a pole
     // (see spare_at_pole): the run's atol per slot, set with the tolerances,
     // and the solver it asks for the state a step started from. clamp_far marks
@@ -779,6 +798,9 @@ struct CvodeUserData {
     std::vector<char> clamp_far;
     std::vector<double> clamp_start;
     bool clamp_far_any = false;
+    // Any of them at a pole (kAtPole), which ends the run (followed_below_zero);
+    // one carried to an overflow (kCarriedToOverflow) only cuts the step.
+    bool clamp_at_pole_any = false;
     // Why followed_below_zero ended the run, for its failure message; empty
     // until it does.
     std::string below_zero_refusal;
@@ -996,8 +1018,8 @@ static double codegen_tfun_eval_thunk(int tf_id, double x, void *ctx) {
 // emptied from X0 stops up to 8.2 rtols of X0 below 0 within its tolerance (8e7
 // atols at atol 1e-12), and an undershoot of a spike between two rows, or one a
 // run starts from, has no scale to be judged on. A run at a loose atol widens
-// the band with it (at 1e-6 it reaches 338's pole).
-constexpr double kClampNoiseAtols = 1e6;
+// the band with it (at 1e-6 it reaches 338's pole). kClampNoiseAtols is
+// defined in bngsim/nonneg_clamp.hpp, which restore_where_finite reads too.
 
 // Record the run's atol per slot for spare_at_pole: the vector where the run has
 // one (issue #196; with tracking, issue #213, its ceiling, the widest the run
@@ -1006,7 +1028,9 @@ static void record_clamp_tolerances(CvodeUserData &data, void *cvode_mem, double
                                     const std::vector<double> &atol_v, int ns) {
     data.clamp_cvode_mem = cvode_mem;
     data.clamp_far_any = false;
+    data.clamp_at_pole_any = false;
     data.below_zero_refusal.clear();
+    data.clamp_kept.clear();
     data.off_y_valid = false;
     if (!atol_v.empty()) {
         data.clamp_atol = atol_v;
@@ -1090,7 +1114,7 @@ static void mark_far_at_step_start(CvodeUserData *data, N_Vector y) {
         data->clamp_start.assign(y0, y0 + ns);
         for (std::size_t i = 0; i < uns; ++i) {
             if (mask[i] && y0[i] < -kClampNoiseAtols * atol[i]) {
-                data->clamp_far[i] = 1;
+                data->clamp_far[i] = kFarAtStepStart;
                 data->clamp_far_any = true;
             }
         }
@@ -1121,6 +1145,35 @@ static double *clamp_state_near_zero(CvodeUserData *data, N_Vector y, const char
                              data->rhs_nonneg_scratch))
         return nullptr;
     return data->rhs_nonneg_scratch.data();
+}
+
+// The retry's narrowed readings (issue #1661), taken before the ones above:
+// `y` with only the slots a row in data->clamp_bad_rows reads put at 0
+// (clamp_read_nonneg_into), and where that is not finite, with only the band
+// slots such a row reads put at 0 too (read_near_zero_read_into). A slot no
+// non-finite row reads is not what makes the reading so, and clamping it only
+// moved the rows that read it: a species negative where the model has it so,
+// but not declared negative, was read at 0 by every retry and followed the
+// wrong ODE (V(40) = -328.6 for -69.8). The callbacks set clamp_bad_rows from
+// the reading they retry before spare_at_pole can overwrite it. Each slot a
+// narrowed reading reads at 0 from outside its band is put back where the
+// reading stays finite without it (read_narrowed_into, in
+// bngsim/nonneg_clamp.hpp), so a slot a non-finite row reads but does not need
+// moved keeps its value too. True where a reading is finite: `read_at` has
+// left it where the callback keeps it, and rhs_nonneg_scratch holds the state
+// it read. False otherwise; the callback then reads as before, so the retry
+// still rescues every state it rescued.
+template <class ReadAt>
+static bool read_narrowed(CvodeUserData *data, N_Vector y, const char *spare, ReadAt &&read_at) {
+    if (data->clamp_rows_model != data->model) {
+        data->clamp_rows =
+            slots_read_by_row(data->model->jacobian_sparsity(), data->model->n_species());
+        data->clamp_rows_model = data->model;
+    }
+    return read_narrowed_into(nonneg_clamp_mask(data), data->clamp_rows, data->clamp_bad_rows,
+                              N_VGetArrayPointer(y), data->clamp_atol, data->rhs_nonneg_scratch,
+                              data->clamp_read_scratch, data->clamp_kept, spare,
+                              /*band_after_infinite=*/true, read_at);
 }
 
 // The state the value RHS's last call at (t, y) read f at, where that was not y
@@ -1279,6 +1332,24 @@ static bool sens_may_read_at(const CvodeUserData *data, const double *y_ptr, con
     return true;
 }
 
+// Whether row `i` of a dense n x n column-major Jacobian, or of a CSC one with
+// sparsity `sp`, has an infinite entry (spare_at_pole's own_row_infinite).
+static bool dense_row_infinite(const double *jac, std::size_t n, std::size_t i) {
+    for (std::size_t j = 0; j < n; ++j) {
+        if (std::isinf(jac[j * n + i]))
+            return true;
+    }
+    return false;
+}
+
+static bool csc_row_infinite(const double *jac, const JacobianSparsity &sp, std::size_t i) {
+    for (std::size_t k = 0; k < static_cast<std::size_t>(sp.nnz); ++k) {
+        if (static_cast<std::size_t>(sp.row_indices[k]) == i && std::isinf(jac[k]))
+            return true;
+    }
+    return false;
+}
+
 // The slots the clamp leaves alone at `y`: where `values` (the right-hand side
 // or a closed-form Jacobian, `count` of them, as first evaluated there) has an
 // infinite entry, those the step started far below 0 whose own reading is
@@ -1286,13 +1357,40 @@ static bool sens_may_read_at(const CvodeUserData *data, const double *y_ptr, con
 // side (`read_at(state)` evaluates at a state and says what it read; it may
 // overwrite `values`, which are scanned first). None otherwise: not where the
 // value is only NaN, not a far slot whose laws are only NaN while another
-// species' law is what is infinite, and not an overflow. Each spared candidate
-// costs one evaluation, and each one infinite on its own two more; none of
-// this runs unless an infinity was read at a step started far below 0.
-template <class ReadAt>
+// species' law is what is infinite, and not an overflow that reaches up to 0.
+//
+// An overflow the run has carried the slot to is left alone too (issue #1679),
+// marked kCarriedToOverflow and not kAtPole. X' = -(1 + X^2) from X = 1 is
+// tan(pi/4 - t), which has no value from t = 3pi/4 on; near -1e154 X*X
+// overflows, the retry read X at 0, where the law is -1, and the run returned
+// X(3) = -3.5e+286 with no error. That infinity is no edge at 0: the law is
+// finite with the slot one atol below 0, well inside the band the clamp is
+// for, so its value at 0 is not what the law tends to where the run is.
+// exp(-1/S) is the other kind: infinite for every S in (-1/709.8, 0), all the
+// way up to 0, so one atol below 0 too, and it is clamped as before. A slot
+// left alone this way keeps the reading infinite, and the callback hands CVODE
+// its recoverable code: the step is cut, a predictor that only overshot goes
+// on from a shorter one, and a solution that leaves through minus infinity
+// ends as CV_CONV_FAILURE, as it does for a species declared negative or one
+// that leaves through plus infinity.
+//
+// Only where the infinity is in the slot's own row (`own_row_infinite(i)`: of
+// `values` as read_at last wrote them, its own derivative or its row of the
+// Jacobian), which is the shape of a solution carried out through minus
+// infinity. An infinity in another species' law is not that: W emptied to -8e-5
+// at atol 1e-12, inside its tolerance, beside a law exp(-W/1e-7), is finite one
+// atol below 0 too, but W is the undershoot the clamp is for, and kept there it
+// had the run refused at its first step.
+//
+// Each spared candidate costs one evaluation, and each one infinite on its own
+// two or three more; none of this runs unless an infinity was read at a step
+// started far below 0.
+template <class ReadAt, class OwnRowInfinite, class OwnFalls>
 static const char *spare_at_pole(CvodeUserData *data, N_Vector y, const double *values,
-                                 std::size_t count, ReadAt &&read_at) {
+                                 std::size_t count, ReadAt &&read_at,
+                                 OwnRowInfinite &&own_row_infinite, OwnFalls &&own_falls) {
     data->clamp_far_any = false;
+    data->clamp_at_pole_any = false;
     bool infinite = false;
     for (std::size_t k = 0; k < count && !infinite; ++k)
         infinite = std::isinf(values[k]);
@@ -1308,7 +1406,15 @@ static const char *spare_at_pole(CvodeUserData *data, N_Vector y, const double *
             continue;
         double *x = clamp_state_nonneg(data, y);
         x[i] = y_ptr[i];
-        bool pole = read_at(x) == ClampReading::infinite;
+        const bool infinite_here = read_at(x) == ClampReading::infinite;
+        // Carried out through minus infinity, the slot's own law drives it on
+        // down (`own_falls(i, x)`: its derivative is below 0 there). One whose
+        // law pushes it back up is an undershoot the clamp is for, whatever
+        // overflows: W emptied to -8e-5, consumed at W*exp(-W/1e-7), has an
+        // infinite derivative of its own, +inf, and kept below 0 its run failed
+        // where main read it at 0 and finished (ultra review of #1751).
+        const bool own_infinite = infinite_here && own_row_infinite(i) && own_falls(i, x);
+        bool pole = infinite_here;
         // A pole the run has landed on is infinite at that one point and finite
         // a hair to either side of it; an overflow is infinite over a stretch:
         // exp(-1/S), 0 at S = 0, overflows for every S in (-1/709.8, 0), where an
@@ -1320,13 +1426,37 @@ static const char *spare_at_pole(CvodeUserData *data, N_Vector y, const double *
             x[i] = y_ptr[i] * side;
             pole = read_at(x) != ClampReading::infinite;
         }
-        if (pole)
-            any = true;
-        else
+        // An overflow, then: one in the slot's own row that is finite an atol
+        // below 0 does not reach up to 0, and the run carried the slot to it
+        // (issue #1679).
+        bool carried = false;
+        if (own_infinite && !pole) {
+            x = clamp_state_nonneg(data, y);
+            x[i] = -data->clamp_atol[i];
+            carried = read_at(x) == ClampReading::finite;
+        }
+        if (pole) {
+            data->clamp_far[i] = kAtPole;
+            data->clamp_at_pole_any = true;
+        } else if (carried) {
+            data->clamp_far[i] = kCarriedToOverflow;
+        } else {
             data->clamp_far[i] = 0;
+        }
+        any = any || pole || carried;
     }
     data->clamp_far_any = any;
     return any ? data->clamp_far.data() : nullptr;
+}
+
+// spare_at_pole's own_falls for a Jacobian's callers, which hold no derivative:
+// whether slot `i`'s own derivative is below 0 at `x`, read once from the model.
+// Only a slot already far below 0 with an infinite row of its own asks.
+static bool own_derivative_falls(CvodeUserData *data, sunrealtype t, const double *x,
+                                 std::size_t i) {
+    std::vector<double> f(static_cast<std::size_t>(data->model->n_species()));
+    data->model->compute_derivs(static_cast<double>(t), x, f.data());
+    return f[i] < 0.0;
 }
 
 // Has the run itself carried a species to a pole? The callbacks ask where the
@@ -1345,13 +1475,13 @@ template <class ReadAt>
 static bool followed_below_zero(CvodeUserData *data, N_Vector y, double t, const char *src,
                                 ReadAt &&read_at) {
     const int ns = data->model->n_species();
-    if (!data->clamp_far_any || read_at(clamp_state_nonneg(data, y)) != ClampReading::finite)
+    if (!data->clamp_at_pole_any || read_at(clamp_state_nonneg(data, y)) != ClampReading::finite)
         return false;
     if (!data->below_zero_refusal.empty())
         return true;
     std::vector<std::pair<double, int>> named_slots; // (depth in atols, slot)
     for (std::size_t i = 0; i < data->clamp_far.size(); ++i) {
-        if (data->clamp_far[i])
+        if (data->clamp_far[i] == kAtPole)
             named_slots.emplace_back(-data->clamp_start[i] / data->clamp_atol[i],
                                      static_cast<int>(i));
     }
@@ -2083,8 +2213,14 @@ static int retry_interpreted_rhs(CvodeUserData *data, sunrealtype t, N_Vector y,
         data->model->compute_derivs(static_cast<double>(t), x, ydot_ptr);
         return read_values(ydot_ptr, static_cast<std::size_t>(data->model->n_species()));
     };
-    const char *spare = spare_at_pole(data, y, ydot_ptr,
-                                      static_cast<std::size_t>(data->model->n_species()), read_at);
+    nonfinite_rows_of_f(ydot_ptr, static_cast<std::size_t>(data->model->n_species()),
+                        data->clamp_bad_rows);
+    const char *spare = spare_at_pole(
+        data, y, ydot_ptr, static_cast<std::size_t>(data->model->n_species()), read_at,
+        [&](std::size_t i) { return std::isinf(ydot_ptr[i]); },
+        [&](std::size_t i, const double *) { return ydot_ptr[i] < 0.0; });
+    if (read_narrowed(data, y, spare, read_at))
+        return 0; // issue #1661
     data->model->compute_derivs(static_cast<double>(t), clamp_state_nonneg(data, y, spare),
                                 ydot_ptr);
     // Still non-finite: once more, with the slots the mask leaves alone that
@@ -2248,8 +2384,16 @@ static int cvode_codegen_rhs_body(sunrealtype t, N_Vector y, N_Vector ydot, void
                 return ClampReading::nan_only;
             return read_values(ydot_ptr, static_cast<std::size_t>(data->model->n_species()));
         };
+        nonfinite_rows_of_f(ydot_ptr, static_cast<std::size_t>(data->model->n_species()),
+                            data->clamp_bad_rows);
         const char *spare = spare_at_pole(
-            data, y, ydot_ptr, static_cast<std::size_t>(data->model->n_species()), read_at);
+            data, y, ydot_ptr, static_cast<std::size_t>(data->model->n_species()), read_at,
+            [&](std::size_t i) { return std::isinf(ydot_ptr[i]); },
+            [&](std::size_t i, const double *) { return ydot_ptr[i] < 0.0; });
+        if (read_narrowed(data, y, spare, read_at)) { // issue #1661
+            note_value_rhs_state(data, t, y_ptr, data->rhs_nonneg_scratch.data());
+            return 0;
+        }
         rc = data->codegen_fn(static_cast<double>(t), clamp_state_nonneg(data, y, spare), ydot_ptr,
                               &data->codegen_so_data);
         if (rc != 0)
@@ -2676,7 +2820,13 @@ static int cvode_analytical_dense_jac_body(sunrealtype t, N_Vector y, N_Vector /
             model->fill_dense_analytical_jacobian(static_cast<double>(t), x, jac);
             return read_values(jac, n * n);
         };
-        const char *spare = spare_at_pole(data, y, jac, n * n, read_at);
+        nonfinite_rows_of_dense(jac, n, data->clamp_bad_rows);
+        const char *spare = spare_at_pole(
+            data, y, jac, n * n, read_at,
+            [&](std::size_t i) { return dense_row_infinite(jac, n, i); },
+            [&](std::size_t i, const double *x) { return own_derivative_falls(data, t, x, i); });
+        if (read_narrowed(data, y, spare, read_at))
+            return 0; // issue #1661
         model->fill_dense_analytical_jacobian(static_cast<double>(t),
                                               clamp_state_nonneg(data, y, spare), jac);
         // Still non-finite: once more, with the slots the mask leaves alone that
@@ -2741,7 +2891,13 @@ static int cvode_codegen_dense_jac_body(sunrealtype t, N_Vector y, N_Vector /*fy
                 return ClampReading::nan_only;
             return read_values(jac, n * n);
         };
-        const char *spare = spare_at_pole(data, y, jac, n * n, read_at);
+        nonfinite_rows_of_dense(jac, n, data->clamp_bad_rows);
+        const char *spare = spare_at_pole(
+            data, y, jac, n * n, read_at,
+            [&](std::size_t i) { return dense_row_infinite(jac, n, i); },
+            [&](std::size_t i, const double *x) { return own_derivative_falls(data, t, x, i); });
+        if (read_narrowed(data, y, spare, read_at))
+            return 0; // issue #1661
         rc = data->codegen_jac_fn(static_cast<double>(t), clamp_state_nonneg(data, y, spare), jac,
                                   &data->codegen_so_data);
         // Still non-finite: once more, with the slots the mask leaves alone that
@@ -2934,8 +3090,14 @@ static int cvode_analytical_jac_body(sunrealtype t, N_Vector y, N_Vector /*fy*/,
             model->fill_sparse_analytical_jacobian(static_cast<double>(t), x, jac_data);
             return read_values(jac_data, static_cast<std::size_t>(sp.nnz));
         };
-        const char *spare =
-            spare_at_pole(data, y, jac_data, static_cast<std::size_t>(sp.nnz), read_at);
+        nonfinite_rows_of_pattern(jac_data, sp, static_cast<std::size_t>(model->n_species()),
+                                  data->clamp_bad_rows);
+        const char *spare = spare_at_pole(
+            data, y, jac_data, static_cast<std::size_t>(sp.nnz), read_at,
+            [&](std::size_t i) { return csc_row_infinite(jac_data, sp, i); },
+            [&](std::size_t i, const double *x) { return own_derivative_falls(data, t, x, i); });
+        if (read_narrowed(data, y, spare, read_at))
+            return 0; // issue #1661
         model->fill_sparse_analytical_jacobian(static_cast<double>(t),
                                                clamp_state_nonneg(data, y, spare), jac_data);
         // Still non-finite: once more, with the slots the mask leaves alone that
@@ -3005,8 +3167,14 @@ static int cvode_codegen_sparse_jac_body(sunrealtype t, N_Vector y, N_Vector /*f
                 return ClampReading::nan_only;
             return read_values(jac_data, static_cast<std::size_t>(sp.nnz));
         };
-        const char *spare =
-            spare_at_pole(data, y, jac_data, static_cast<std::size_t>(sp.nnz), read_at);
+        nonfinite_rows_of_pattern(jac_data, sp, static_cast<std::size_t>(model->n_species()),
+                                  data->clamp_bad_rows);
+        const char *spare = spare_at_pole(
+            data, y, jac_data, static_cast<std::size_t>(sp.nnz), read_at,
+            [&](std::size_t i) { return csc_row_infinite(jac_data, sp, i); },
+            [&](std::size_t i, const double *x) { return own_derivative_falls(data, t, x, i); });
+        if (read_narrowed(data, y, spare, read_at))
+            return 0; // issue #1661
         rc = data->codegen_jac_sparse_fn(static_cast<double>(t), clamp_state_nonneg(data, y, spare),
                                          jac_data, &data->codegen_so_data);
         // Still non-finite: once more, with the slots the mask leaves alone that
@@ -5581,7 +5749,7 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
             w.ctx = SunContextGuard{};
         }
         if (!w.ctx) {
-            throw std::runtime_error("SUNContext_Create failed");
+            throw std::runtime_error(sun_context_failure(w.ctx, ""));
         }
 
         w.y = NVectorGuard(N_VNew_Serial(ns, w.ctx));
@@ -5696,6 +5864,14 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
     // equivalent. So too a below-zero refusal.
     w.user_data.nonfinite_witness = NonFiniteWitness{};
     w.user_data.below_zero_refusal.clear();
+    // And on what the narrowed retry put back (issue #1661), which is for one
+    // run: record_clamp_tolerances clears it only where the solver is rebuilt,
+    // so a second run from the same state put a slot back from its first retry
+    // where the first run read it at 0, and the two differed (by 3.7 in V at
+    // ExactAtol(1e-4)). A run that continues the previous one is the same
+    // integration and keeps it, as it keeps the factor count above.
+    if (!opts.continues_trajectory)
+        w.user_data.clamp_kept.clear();
 
     // ─── Integration loop (no events, no sensitivities) ──────────────────────
     void *cvode_mem = w.cvode_mem;
@@ -5984,7 +6160,7 @@ void CvodeSimulator::Impl::create_cvode_core(const TimeSpec &times, const Solver
                                              CvodeMemGuard &cvode_mem, CvodeUserData &user_data,
                                              std::vector<double> &codegen_param_buf) {
     if (!ctx) {
-        throw std::runtime_error("SUNContext_Create failed");
+        throw std::runtime_error(sun_context_failure(ctx, ""));
     }
     select_spent_batch_handler(ctx);
 
@@ -6299,7 +6475,9 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(
                     "carry_sensitivities=True, but no matching forward-sensitivity "
                     "seed from a prior phase is available. Run the equilibration "
                     "phase on the same Simulator with the same sensitivity_params "
-                    "(and no reset between phases) before the measurement phase. "
+                    "(and no reset between phases) before the measurement phase; a "
+                    "run between them without those sensitivities, an SSA or PSA run "
+                    "included, drops the seed (issue #1749). "
                     "(pre-equilibration output sensitivities, GH #210)");
             }
             use_carry_seed = true;
@@ -6335,9 +6513,14 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(
                 "pre-equilibration boundary. Pass "
                 "carry_sensitivities=True to seed from the prior phase's "
                 "steady-state sensitivity (run that phase with the same "
-                "sensitivity_params), or reset() the model for a fresh start. A "
-                "save_concentrations() of such a state keeps it carried-over, and "
-                "so does a reset() back to it (issue #1528). (GH #210)");
+                "sensitivity_params; an SSA or PSA run leaves none, issue #1749), "
+                "or reset() the model for a fresh start. A save_concentrations() "
+                "of such a state keeps it carried-over, and so does a reset() "
+                "back to it (issue #1528). To take the state as fixed data, with "
+                "dx(0)/dtheta = 0, set_state() it after a reset() to a baseline "
+                "no run advanced, or on a fresh Model (issue #1735); after an SSA "
+                "or PSA run, set the run's last result row: where a compartment's "
+                "size moves, get_state() holds counts (issue #1463). (GH #210)");
         }
     }
     // IC (∂y/∂y_k(0)) sensitivities across a carry-over boundary are out of
@@ -7157,17 +7340,21 @@ void CvodeSimulator::Impl::register_roots(void *cvode_mem, SUNContext ctx, int n
         // floating point — a benign SUNDIALS warning ("solver will continue
         // anyway") that RoadRunner emits on the same models. Route THIS
         // context's warning log to the null sink so a dosing-schedule model
-        // doesn't spam stdout. A state-switch root (issues #150, #897) does
-        // the same restarts, and its residual can also sit at exactly zero
-        // from the start (`EVx > 0` over a species that starts at 0), which
-        // draws a second benign warning ("some root functions identically
-        // 0"). As for a discontinuity root, the whole warning stream of the
-        // run's context goes to the sink, not just those two. Models with
-        // neither kind of root keep their exact prior logging. Hard errors still throw via the
-        // flag<0 checks. The context (and this logger) is freed when the run's SunContextGuard goes
-        // out of scope.
+        // doesn't fill standard error (where SunContextGuard sends the
+        // warnings, issue #1680) with them. A state-switch root (issues #150,
+        // #897) does the same restarts, and its residual can also sit at
+        // exactly zero from the start (`EVx > 0` over a species that starts at
+        // 0), which draws a second benign warning ("some root functions
+        // identically 0"). As for a discontinuity root, the whole warning
+        // stream of the run's context goes to the sink, not just those two.
+        // Models with neither kind of root keep their warnings on standard
+        // error. A caller who set SUNLOGGER_WARNING_FILENAME has said where
+        // the warnings go, and they go there. Hard errors still throw via the
+        // flag<0 checks. The context (and this logger) is freed when the run's
+        // SunContextGuard goes out of scope.
         SUNLogger logger = nullptr;
-        if (SUNContext_GetLogger(ctx, &logger) == SUN_SUCCESS && logger != nullptr) {
+        if (!caller_routes_sundials_warnings() &&
+            SUNContext_GetLogger(ctx, &logger) == SUN_SUCCESS && logger != nullptr) {
             SUNLogger_SetWarningFilename(logger, bngsim::null_device);
         }
     }
@@ -17235,6 +17422,45 @@ void CvodeSimulator::set_tolerances(double rtol, const std::vector<double> &atol
 
 void CvodeSimulator::set_max_steps(int max_steps) { impl_->max_steps = max_steps; }
 
+// The message of a failed run moved onto its own clock (issue #1681), with a
+// note saying which time to add, where it names a time: a "t=" or "t = " before
+// a number. A message that names none (an unknown jacobian option) is the one
+// the same request gave nearer 0.
+static std::string on_the_runs_clock(const std::string &what, double origin) {
+    bool names_a_time = false;
+    for (std::size_t i = what.find('t'); i != std::string::npos && !names_a_time;
+         i = what.find('t', i + 1)) {
+        if (i > 0 && (std::isalnum(static_cast<unsigned char>(what[i - 1])) || what[i - 1] == '_'))
+            continue;
+        std::size_t j = i + 1;
+        if (j < what.size() && what[j] == ' ')
+            ++j;
+        if (j >= what.size() || what[j] != '=')
+            continue;
+        ++j;
+        if (j < what.size() && what[j] == ' ')
+            ++j;
+        if (j < what.size() && what[j] == '-')
+            ++j;
+        names_a_time = j < what.size() && (std::isdigit(static_cast<unsigned char>(what[j])) ||
+                                           what[j] == '.' || what[j] == 'i' || what[j] == 'n');
+    }
+    if (!names_a_time)
+        return what;
+    char from[64];
+    std::snprintf(from, sizeof(from), "%.17g", origin);
+    return what +
+           " (The model reads no clock, so this run was integrated on time elapsed since t = " +
+           from + ": add that to each time above.)";
+}
+
+// The same failure, of the same type (a refusal keeps the Python error it maps
+// to), with its message on the run's clock: a rewording, not another refusal.
+template <class Failure>
+[[noreturn]] static void rethrow_on_the_runs_clock(const Failure &e, double origin) {
+    throw Failure(on_the_runs_clock(e.what(), origin));
+}
+
 Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     auto &model = impl_->model;
     const int ns = model.n_species();
@@ -17272,6 +17498,198 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // at all, so the whole path lives in its own helper.
     if (ns == 0) {
         return impl_->run_algebraic_only(times);
+    }
+
+    // A run far from t = 0 of a model that reads no clock is integrated on its
+    // own clock, the time elapsed since ode_elapsed_clock_origin (issue #1681).
+    // CVODE advances t by t + h, and far out the doubles are coarse: 0.125
+    // apart at 1e15, 16 at 1e17. A -> 0 at k = 1 over (1e15, 1e15 + 10) came
+    // back as A(+5) = 0.00144 for 0.00674, 7.97e-7 at rtol 1e-10, and over
+    // (1e17, 1e17 + 64) A stayed at 1, each with no error. Nothing in such a
+    // model can tell where its run starts, so the run from the origin is the
+    // same run, with steps as fine as at 0. The origin is 0 unless the end of
+    // the run nearer 0 is at 2^20 or beyond, so every other run is the one it
+    // was, to the bit, as for SSA (issue #1059). A moved run is counted from
+    // its start, and is the run from 0, but for one below 0 that starts more
+    // than twice as far out as it ends, which is counted from its end (see
+    // types.hpp): counted from its end, a run to -1e17 from 2^46 before it
+    // took its start at the spacing of the doubles at 2^46. The rows report
+    // the times asked for. A
+    // model that reads the clock (a function of time(), a table indexed by
+    // it, an event, a discontinuity, or a stop on the time itself) keeps the
+    // absolute clock: its laws are evaluated at t. A stop or a switch time on
+    // a counter clock is where the counter reaches its threshold,
+    // t_start + (threshold - c(t_start)), and moves with the run: kept on the
+    // absolute clock for its stops, an if() on a counter from 1e15 came back
+    // 2.5 short of 5, with no error. A model with no ODE state, above, has no
+    // step to lose.
+    const auto on_counter_clocks = [](const auto &crossings) {
+        return std::all_of(crossings.begin(), crossings.end(),
+                           [](const auto &c) { return c.clock_species_idx0 >= 0; });
+    };
+    if (const double origin = ode_elapsed_clock_origin(times);
+        origin != 0.0 && !model.functions_use_time() && model.n_events() == 0 &&
+        model.n_discontinuity_triggers() == 0 && on_counter_clocks(opts.crossing_stops) &&
+        on_counter_clocks(opts.crossing_probes) &&
+        on_counter_clocks(opts.sensitivity.switch_times)) {
+        // The rows asked for, each moved onto the run's clock: exact, the
+        // origin being a multiple of the spacing of doubles at the far end and
+        // no farther from any of them than 0 is. Past 2^72 that spacing is
+        // over 2^20, and what is left of the near end of a run above 0 can be
+        // 2^20 or more again: it is moved again here, so the run below is
+        // moved no further and its failure has one note.
+        const std::vector<double> asked = times.output_times();
+        TimeSpec elapsed = times;
+        elapsed.sample_times = asked;
+        SolverOptions moved = opts;
+        std::vector<double> origins;
+        for (double o = origin; o != 0.0; o = ode_elapsed_clock_origin(elapsed)) {
+            // A run is moved a handful of times at most (twice from 2^73; each
+            // move after the first at least halves the spacing of the doubles
+            // at the far end, so never 2100). One that keeps moving is a bug
+            // in the origin, and with an origin kept per move it took every
+            // byte the machine had: a mutant of it that moved a run across 0
+            // back and forth froze a 64 GB Mac. Stop it here instead.
+            if (origins.size() == 4096)
+                throw std::logic_error("CvodeSimulator::run: a far run was moved 4096 times "
+                                       "onto its own clock without settling (issue #1681); "
+                                       "this is a bug in ode_elapsed_clock_origin");
+            origins.push_back(o);
+            elapsed.t_start -= o;
+            elapsed.t_end -= o;
+            for (double &x : elapsed.sample_times)
+                x -= o;
+            for (CrossingStop &stop : moved.crossing_stops)
+                stop.t_star -= o;
+            // Read only where an event fires, which a run here has none of:
+            // moved so the copy is the run's on one clock.
+            for (CrossingStop &probe : moved.crossing_probes)
+                probe.t_star -= o;
+            for (SwitchTimeSens &sw : moved.sensitivity.switch_times) {
+                sw.t_star -= o;
+                for (auto &clock : sw.instant_clocks)
+                    if (clock.first < 0)
+                        clock.second -= o;
+                for (auto &clock : sw.instant_other_clocks)
+                    if (clock.first < 0)
+                        clock.second -= o;
+            }
+        }
+        // A switch time on a counter is where the counter reaches its
+        // threshold: threshold - c(t_start) after the start, a difference of
+        // two of the counter's own values (issue #1828). Its t_star, t_start
+        // plus that, was rounded to the doubles at t_start before the run was
+        // moved, and moved with the run it kept the rounding: from 1e17 (16
+        // apart) a crossing 20 after the start was placed at +16 and its jump
+        // taken there, 0, -2, -2 for 0, 0, -2, while the run's counter crossed
+        // at +20. With X' = 2 A past it (A' = -A), one 2.5 after a start at
+        // 1e16 was placed at +2, and the column was 0.27 for 0.16. Placed from
+        // the counter on the run's own clock, each is where the run's counter
+        // reaches it, as in the run from 0, and no error is left to bound.
+        // Python lists such a crossing by that elapsed time, not by where it
+        // rounds. (One that rounds onto the start here is refused below, in
+        // the run on this clock. A crossing stop is placed as before: its
+        // threshold is read back from its rounded time, and it only lands the
+        // step.)
+        {
+            std::vector<double> start(static_cast<std::size_t>(ns));
+            model.get_state_into(start.data());
+            for (SwitchTimeSens &sw : moved.sensitivity.switch_times) {
+                if (sw.clock_species_idx0 < ns)
+                    sw.t_star =
+                        elapsed.t_start +
+                        (sw.threshold - start[static_cast<std::size_t>(sw.clock_species_idx0)]);
+            }
+            // Python lists them by their rounded times, and two that rounded
+            // onto one double can be the wrong way round once apart. The run
+            // takes its switch times in order: with X' = k A past each of two
+            // crossings, 20 and 18 after a start at 1e17, listed in that order,
+            // both jumps were taken at +20, and dX/ds2 was -0.736 for -0.813.
+            std::stable_sort(moved.sensitivity.switch_times.begin(),
+                             moved.sensitivity.switch_times.end(),
+                             [](const SwitchTimeSens &a, const SwitchTimeSens &b) {
+                                 return a.t_star < b.t_star;
+                             });
+        }
+        // Each move back is exact, in the reverse order.
+        const auto back = [&origins](double t) {
+            for (auto o = origins.rbegin(); o != origins.rend(); ++o)
+                t += *o;
+            return t;
+        };
+        try {
+            Result result = run(elapsed, moved);
+            // A run to a steady state stops early and keeps the rows it reached.
+            for (int i = 0; i < result.n_times(); ++i)
+                result.set_time(i, asked[static_cast<std::size_t>(i)]);
+            // Both ODE paths leave the model at the run's last time, on the
+            // run's clock.
+            model.set_current_time(back(model.current_time()));
+            return result;
+        } catch (const SensitivityRefusedForParameters &e) {
+            // A failure names its times on the run's clock, and keeps its type,
+            // which Python maps to its own error.
+            rethrow_on_the_runs_clock(e, back(0.0));
+        } catch (const SensitivityUnsupported &e) {
+            rethrow_on_the_runs_clock(e, back(0.0));
+        } catch (const std::runtime_error &e) {
+            // The other subclasses (a timeout, a sparse solver refused) name
+            // no time of the run.
+            if (typeid(e) != typeid(std::runtime_error))
+                throw;
+            rethrow_on_the_runs_clock(e, back(0.0));
+        }
+    }
+
+    // A run on its given clock (one that reads it, or one nearer 0, or a run
+    // moved above) takes a counter's switch time where Python placed it,
+    // t_start + (threshold - c(t_start)) rounded once, like every other time
+    // in it. Python lists a crossing inside the run by that elapsed time
+    // (issue #1828), so one whose time rounds onto the start is here; the
+    // window below would drop it, and the jump it makes in the requested
+    // columns with it: from 1e6 (1.2e-10 apart) one 4e-11 after the start,
+    // and dX/dsigma came back 0 for -2. Taken a double after the start
+    // instead, the run fails (CV_TOO_CLOSE). Refused, as a refusal of the
+    // columns that move it.
+    {
+        const SwitchTimeSens *lost = nullptr;
+        double lost_after = 0.0;
+        std::vector<double> start;
+        const double span = times.t_end - times.t_start;
+        for (const SwitchTimeSens &sw : opts.sensitivity.switch_times) {
+            if (sw.clock_species_idx0 < 0 || sw.clock_species_idx0 >= ns ||
+                (sw.t_star > times.t_start && sw.t_star <= times.t_end))
+                continue;
+            if (start.empty()) {
+                start.resize(static_cast<std::size_t>(ns));
+                model.get_state_into(start.data());
+            }
+            const double after =
+                sw.threshold - start[static_cast<std::size_t>(sw.clock_species_idx0)];
+            if (after > 0.0 && after <= span) {
+                lost = &sw;
+                lost_after = after;
+                break;
+            }
+        }
+        if (lost != nullptr) {
+            const double t0 = times.t_start;
+            const double apart =
+                std::nextafter(std::fabs(t0), std::numeric_limits<double>::infinity()) -
+                std::fabs(t0);
+            char text[512];
+            std::snprintf(
+                text, sizeof(text),
+                "Forward sensitivity is not supported for this run: the counter clock %s crosses "
+                "%g after the start, t = %.17g, but there the doubles are %g apart, and the "
+                "crossing rounds %s, so the jump it makes in the requested columns would be lost "
+                "(issue #1828). Start the run nearer 0.",
+                model.species_names()[static_cast<std::size_t>(lost->clock_species_idx0)].c_str(),
+                lost_after, t0, apart,
+                lost->t_star <= times.t_start ? "onto the start" : "past the run's end");
+            // A column moves the crossing: one that does not may run alone.
+            throw SensitivityRefusedForParameters(text);
+        }
     }
 
     // Wall-clock budget. Checked at each outer integration step and at each

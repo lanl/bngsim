@@ -1,313 +1,228 @@
+---
+summary: "ODE solver settings: tolerances and their defaults, per-species and tracking atol, the Jacobian, dense and sparse (KLU) linear solvers, rate laws that switch on time, runs far from t = 0, failed solves, and logging."
+---
+
 # Solver configuration
 
-## Solver configuration
+This page covers the settings of the ODE solver (CVODE): tolerances, step
+limits, the Jacobian, the linear solver, and what to expect from rate laws that
+switch on time, runs that start far from 0, and solves that fail.
+
+## Set tolerances and step limits
 
 ```python
 sim.set_tolerances(rtol=1e-10, atol=1e-10)
 sim.set_max_steps(50000)
 
-# Per-run overrides
+# Or for one run only
 result = sim.run(
     t_span=(0, 100), n_points=101,
     rtol=1e-12, atol=1e-12, max_steps=100000,
 )
 
-# Solver diagnostics
 print(result.solver_stats)
 # {'n_steps': 1247, 'n_rhs_evals': 2891, 'n_jac_evals': 43, ...}
 ```
 
-`n_rhs_evals` is CVODE's count of the integration's own right-hand-side
-evaluations. Those spent forming a Jacobian by difference quotients (with
-`jacobian="fd"`, or where a closed form is declined) are counted separately, as
-`n_jac_rhs_evals`, which is 0 where every Jacobian is closed-form (issue #1333).
-`n_jac_evals` counts the linear solver's setups, which can reuse the last
-Jacobian; `n_jac_formations` counts the Jacobians the solver asked for (one that
-a failed right-hand-side call cut short among them).
+Things to know:
 
-Those counters cover the **whole run**. CVODE's own counters restart at every
-re-initialization — an event fire, a rate-law switch crossing and a chatter
-re-arm each force one — so bngsim banks each segment as it closes rather than
-sampling the counters once at the end, which would report only the span after
-the last restart (issue #182).
+- The defaults are `rtol=1e-8` and `atol=1e-8`.
+- A scalar `atol` is a **ceiling**, not a fixed value. A species much smaller
+  than `atol` is held to a tighter tolerance of its own. See below.
+- `atol` also takes one value per species, `"auto"`, `"tracking"`, or
+  `bngsim.ExactAtol(value)` to hold every species to exactly that number.
+- `max_step=` bounds the size of a single step. Use it for a narrow pulse the
+  solver could step over.
+
+### Solver statistics
+
+`result.solver_stats` covers the whole run, across every restart of the
+integrator (events, rate-law switches).
+
+- `n_rhs_evals` counts the integration's own right-hand-side evaluations.
+- `n_jac_rhs_evals` counts the evaluations spent forming a Jacobian by
+  difference quotients. It is 0 when every Jacobian is closed-form.
+- `n_jac_evals` counts the linear solver's setups, which can reuse the last
+  Jacobian. `n_jac_formations` counts the Jacobians the solver asked for.
+- `linear_solver` is `0` for the built-in dense LU, `1` for sparse KLU and `2`
+  for the BLAS dense factor.
 
 ## The default tolerances, and models in small units
 
-The default `rtol` is `1e-8`. The default `atol` is BNG2.pl's scalar `1e-8`, and
-bngsim reads a scalar `atol`, the default or one you pass, as a **ceiling**: each
-species is held to the scalar where that is a tolerance for it, and to a smaller
-one where it is not (issue #1420):
+A scalar `atol`, the default or one you pass, is used as is where it is small
+next to a species. A species smaller than that is held to `rtol` of its own
+start instead:
 
 ```
-atol_i = min(atol, rtol * max(|x_i(0)|, floor))
-floor  = max(smallest start of a species the solver integrates, 1e-6 * the largest)
+atol_i = min(atol, rtol * |x_i(0)|)
 ```
 
-A species that starts below the floor keeps `rtol * |x_i(0)|` wherever that is
-more than double precision resolves beside the largest start (`ε`, 2.2e-16, of it).
+`x(0)` is the state the run starts from. A species that starts at 0, or too
+small for `rtol` of it to be resolved beside the largest species, has no scale
+of its own. It uses the floor in place of `|x_i(0)|`:
 
-`x(0)` is the state the call starts from. To hold every species to the number
-exactly instead, pass `atol=bngsim.ExactAtol(value)` (see below). The scalar was chosen for species held
-as molecule counts. A species that stays below `atol` for the whole run has no
-error control beyond the tolerance itself, which happens in a model in molar or
-other small units, common in SBML and BioModels. Such a trajectory can be off by
-its own size, or go negative, and CVODE reports no error: a binding model of
-species near 1e-9 M ended at -8.7e-10 for 4.1e-10. Under the scalar, 62 of 1,251
-BioModels were off their reference by over 1% of a species' peak, 21 of them with
-no warning. Under this default, 13 are, and none got worse; the corpus took 19%
-longer, nearly all of it on models that had been wrong.
+```
+floor = max(smallest start of a species the solver integrates, 1e-6 * the largest)
+```
+
+This matters for models in molar or other small units, common in SBML. Held to
+`1e-8`, a species near `1e-9` M has no error control: its trajectory can be off
+by its own size or go negative, and the solver reports nothing.
 
 - **It is never looser than the scalar.** A species the scalar already resolves
   keeps it.
 - **A model of counts is unchanged.** Its species start at 0 or at least 1, so
-  every one takes the scalar, and the run is on the scalar's own code path: 162
-  of 175 `.net` models took the same steps.
-- **The floor** is where a species with no scale of its own (one that starts at
-  0) is held as though it were. It is never under 1e-6 of the largest species:
-  a model that declares a species at 1e-31 beside one at 10 does not integrate
-  with every species at 0 held to 1e-39. A species with a scale of its own
-  below the floor keeps it, where double precision resolves `rtol` of it: held
-  as though at the floor, BIOMD0000000857's Ephe, at 1e-5 beside a pool at 500,
-  stopped CVODE on 14 of 381 output grids at `rtol=1e-6, atol=1e-9` (issue
-  #1439). Where every species the solver
-  integrates starts at 0, the floor is the smallest start of any species, a
-  `$`-fixed one too, and where every species starts at 0 the default is the
-  scalar.
-- **Forward sensitivities on CVODES' difference quotient keep the scalar.**
-  A model whose `∂f/∂p` bngsim cannot derive (`has_analytic_sens_rhs` is
-  `False`) runs its sensitivities on the quotient,
-  which sizes its increment from the state's error weights. A species held
-  tighter is then perturbed by less and carries more roundoff, not more
-  accuracy: one such model took 187,685 steps for 28,732, with a worse
-  gradient. So such a run is held to the scalar itself.
-- **It reads the state each call starts from**, as `atol="auto"` does, and a
-  batch, a scan or a chunked sensitivity job derives it once for all its runs.
-  A `run_until` step (and so a `ReactionKernel.advance`) keeps the one its
-  trajectory started with, so a coupling loop's answer does not depend on how
-  it is cut into steps, and a model of counts stays on the scalar. For a fit
-  that moves initial conditions, pass a vector from `bngsim.derive_atol`
-  (below) to hold it fixed.
+  every one gets the scalar.
+- **The floor** is the scale given to a species that starts at 0. It is never
+  below 1e-6 of the largest species. Where every integrated species starts at
+  0, the floor is the smallest start of any species, a `$`-fixed one included.
+  Where every species starts at 0, the default is the scalar.
+- **Sensitivities on CVODES' difference quotient keep the scalar.** When
+  BNGsim cannot derive `∂f/∂p` for a model (`has_analytic_sens_rhs` is
+  `False`), a tighter tolerance makes the difference quotient worse, not
+  better, so such a run uses the scalar as is.
+- **It reads the state each call starts from.** A batch, a scan or a chunked
+  sensitivity job derives it once for all its runs. A `run_until` step (and so
+  `ReactionKernel.advance`) keeps the one its trajectory started with. For a
+  fit that moves initial conditions, pass a fixed vector from
+  `bngsim.derive_atol` (below).
 
-What the default cannot scale is a species that starts at 0, or below every
-scale the start gives, in a model where no species starts small: in a model
-whose species all start at 0, every species is at the scalar. `run()`,
-`run_until()`, `run_batch()`, `parameter_scan()`,
-`compute_all_sensitivities()` and `bngsim.jax.differentiable_solve()` raise
-`bngsim.AtolScaleWarning` in that case,
-once per call and naming the species, where you gave no `atol` and a species
-the solver integrates stays below its tolerance while reaching at least 1e-6 of
-the run's largest. A species stuck at rounding in a count model does not reach
-that, and a `$`-fixed species or an assignment-rule target is not integrated;
-neither is warned. The remedy is `atol="tracking"` (below), which follows each
-species' magnitude, or an `atol` well below those species (issue #1361).
+The default cannot scale a species that starts at 0 in a model where no species
+starts small. When you pass no `atol` and an integrated species stays below its
+tolerance while reaching at least 1e-6 of the run's largest species, `run()`,
+`run_until()`, `run_batch()`, `parameter_scan()`, `compute_all_sensitivities()`
+and `bngsim.jax.differentiable_solve()` warn with `bngsim.AtolScaleWarning`,
+once per call, naming the species. `$`-fixed species and assignment-rule
+targets are not integrated and are not warned about. The fix is
+`atol="tracking"` (below), or an `atol` well below those species.
 
 ### A scalar `atol` you pass, and holding it exactly
 
-**A scalar `atol` you pass is read the same way, as a ceiling.** This includes
-one given to `set_tolerances`, and a SED-ML file's absolute tolerance
-(`KISAO:0000211`), which `bngsim.convert.read_sedml` turns into one. Every
-species is held to that number or tighter, never looser, so a species far below
-it is still resolved. Until issue #1420 a scalar was held exactly for every
-species. A SED-ML file's `atol=1e-9` at `rtol=1e-6` then held BIOMD0000000457's
-species_42, near 1.6e-7, to 13% at t = 5, and libRoadRunner's answer at the
-same tolerances was right, because libRoadRunner scales its absolute tolerance
-by each species' value.
+A scalar `atol` you pass is read the same way, as a ceiling. That includes one
+given to `set_tolerances`, and a SED-ML absolute tolerance (`KISAO:0000211`)
+that `bngsim.convert.read_sedml` reads.
 
-**To hold every species to exactly the number you give**, say so:
+To hold every species to exactly the number you give, say so:
 
 ```python
 result = sim.run(t_span=(0, 100), rtol=1e-6, atol=bngsim.ExactAtol(1e-9))
-sim.set_tolerances(rtol=1e-8, atol=bngsim.ExactAtol(1e-8))   # the old default, exactly
+sim.set_tolerances(rtol=1e-8, atol=bngsim.ExactAtol(1e-8))
 spec = bngsim.convert.read_sedml("simulation.sedml", exact_atol=True)
 ```
 
-`ExactAtol` is accepted wherever `atol` is: `run`, `run_until`, `run_batch`,
-`parameter_scan`, `compute_all_sensitivities`, `set_tolerances` and
-`steady_state`. An `EvaluationSpec` carries it through its JSON as
-`{"exact": value}`. SED-ML has no way to say "exactly", so `write_sedml` writes
-the number, and `read_sedml(..., exact_atol=True)` is how a reader takes it back
-that way. A vector of `n_species` values is also used exactly as given.
+- `ExactAtol` works wherever `atol` does: `run`, `run_until`, `run_batch`,
+  `parameter_scan`, `compute_all_sensitivities`, `set_tolerances` and
+  `steady_state`.
+- An `EvaluationSpec` stores it in JSON as `{"exact": value}`.
+- SED-ML cannot say "exactly", so `write_sedml` writes the number, and
+  `read_sedml(..., exact_atol=True)` reads it back as exact.
+- A vector of `n_species` values is always used exactly as given.
+- `steady_state(atol=...)` uses a scalar as given. Under `criterion="scaled"`
+  it is also the steady-state convergence test's tolerance.
 
-Reach for it to reproduce a run made under the old reading, or to compare with
-a tool that holds one absolute tolerance for every species.
-`steady_state(atol=...)` takes a scalar as given in any case: under
-`criterion="scaled"` it is also the run test's tolerance.
+Use `ExactAtol` to compare with a tool that holds one absolute tolerance for
+every species.
 
 ## Per-species absolute tolerance
 
-`atol` also takes one value **per species**, ordered like
-`model.species_names`. That is `CVodeSVtolerances` rather than
-`CVodeSStolerances`, and it exists because a scalar `atol` is one number asked
-to mean the same thing for every state variable:
+`atol` takes one value **per species**, in `model.species_names` order. Use it
+when species span many decades and no single number is a tolerance for all of
+them:
 
-| species | `y(0)` | the atol it needs alone (`rtol·y`) |
+| species | `y(0)` | the atol it needs (`rtol·y`) |
 |---|---:|---:|
 | `IRp` | 1.763e-09 | **1.8e-17** |
 | `IRSiP` | 1.33e-01 | 1.3e-09 |
 | `X` | 1.0e+01 | **1.0e-07** |
 
-Ten decades of species, and a scalar has to pick one number for all of them.
-Pinned near the tight end the model stops integrating; pinned near the loose
-end the small species sits under the noise floor for the entire run and its
-trajectory means nothing — it can come back negative. There is no scalar
-between them that is a tolerance for both.
-
 ```python
-# Explicit — one value per species, in species_names order.
-result = sim.run(t_span=(0, 100), atol=[1e-17, 1e-9, 1e-7])
+# Three ways to give the vector. start="initial" runs each one from the
+# initial conditions, not from where the previous run ended.
 
-# Derived from the model's own state: rtol * max(|y_i|, floor).
-result = sim.run(t_span=(0, 100), atol="auto")
+# Explicit: one value per species, in species_names order.
+result = sim.run(t_span=(0, 100), atol=[1e-17, 1e-9, 1e-7], start="initial")
 
-# ...or derive, inspect, adjust, then pass it back.
+# Derived from the model's state: rtol * max(|y_i|, floor).
+result = sim.run(t_span=(0, 100), atol="auto", start="initial")
+
+# Or derive, adjust and pass it back.
+model.reset()
 atol = sim.auto_atol()
 atol[model.species_names.index("IRp")] *= 10
-result = sim.run(t_span=(0, 100), atol=atol)
+result = sim.run(t_span=(0, 100), atol=atol, start="initial")
 ```
 
-The vector is positional and its length is checked, not adjusted: a wrong
-length raises `ValueError` rather than broadcasting or truncating, because the
-consequence of guessing is species *i* held to the number written for species
-*j*, with a plausible-looking trajectory to show for it.
-
-`atol=` accepts the same three forms on `set_tolerances`, `run_batch`,
-`parameter_scan`, `bifurcate`, `run_until`, `compute_all_sensitivities`,
-`steady_state`, `steady_state_batch`, and `EvaluationSpec`. Anything that runs
-many points (a batch, a scan, a chunked sensitivity job) resolves a vector,
-`"auto"` or a tracking `atol` **once** up front: every point is held to the same
-tolerance, so the points can be compared with each other. In a `run_batch`, a
-`parameter_scan` and a `steady_state_batch`, `"auto"` takes each species'
-smallest scale over the points' starts, so no point is held above a species' size
-where it starts; a continuation scan's later points start where the last ended,
-and a scan point whose `on_point` hook writes a species lower holds it tighter
-still. A scalar, the default
-`1e-8` or one you pass, is a ceiling under which each species takes `rtol` of its
-scale in the state the run starts from. A `run_batch` row reads that both from the
-model's initial conditions and from its own start, a `parameter_scan` point both
-from the state at the call and from its own start, and each
-species takes the tighter of the two. A row that doses a growing species decades
-below the model's value is then held to that species' scale, as a `run()` from
-there would be: read from the model alone, a logistic grower declared at 1 and
-dosed at 1e-9 returned X(20) = -4.6e-7 for 0.327 (issue #1660). A row that starts
-above the model keeps the model's tighter reading.
+- **The length is checked.** A vector of the wrong length raises `ValueError`.
+  It is never broadcast or cut.
+- **Where it is accepted:** `run`, `set_tolerances`, `run_batch`,
+  `parameter_scan`, `bifurcate`, `run_until`, `compute_all_sensitivities`,
+  `steady_state`, `steady_state_batch` and `EvaluationSpec` all take a vector,
+  `"auto"` or a tracking `atol`.
+- **One tolerance for many points.** A batch, a scan or a chunked sensitivity
+  job resolves the tolerance once, so every point is held to the same one. In
+  `run_batch`, `parameter_scan` and `steady_state_batch`, `"auto"` takes each
+  species' smallest scale over the points' starts. With a scalar, each
+  `run_batch` row and `parameter_scan` point reads the scale both from the
+  model and from its own start, and takes the tighter of the two. A row that
+  doses a species far below the model's value is held to that species' scale.
+- **`"auto"`'s floor.** `"auto"` gives a species at 0 the smallest strictly
+  positive species value in the model, but not more than 1. Pass `floor=` to
+  `auto_atol` to choose another.
+- **It does not help species of similar size.** If every species starts at
+  about the same magnitude, the vector equals the scalar it replaces.
+- **Sensitivity tolerances follow it.** The tolerance for ∂x_i/∂θ is built from
+  species *i*'s own absolute tolerance.
+- **`steady_state_tol` still reads the scalar.** The early-stop test in `run()`
+  is one norm over all species, so it uses the `Simulator`'s scalar `atol` even
+  when you pass a vector. **Pass `steady_state_tol` whenever you pass a
+  vector.** Otherwise, on a model whose states are near `1e-8`, the test passes
+  at *t* = 0 and the run returns the initial state as the steady state.
 
 ## Tracking absolute tolerance
 
-A vector fixes the tolerance *per species*. It does not fix it *per instant*:
-whatever number species `i` gets, it keeps for the whole run. So a species that
-starts at order one and **decays** to something tiny crosses under its own
-`atol` partway through and stops being error-controlled from there on — the
-same failure as above, reached through time rather than through the species
-list. No initial-value heuristic can see it coming, because at `t = 0` there is
-nothing to see.
-
-`atol="tracking"` hands CVODE an error-weight function (`CVodeWFtolerances`)
-that re-evaluates the vector against the state actually being integrated:
+A vector is fixed for the whole run. A species that starts at order one and
+decays to something tiny falls below its own `atol` partway through and loses
+error control from there on. `atol="tracking"` re-reads the tolerance from the
+current state as the run goes:
 
 ```
 atol_i(y) = clamp(rtol * |y_i|, ceiling_i * 10**-decades, ceiling_i)
 ```
 
 ```python
-result = sim.run(t_span=(0, 30), atol="tracking")                     # default depth
-result = sim.run(t_span=(0, 30), atol=bngsim.TrackingAtol(decades=6))  # shallower
-result = sim.run(t_span=(0, 30), atol=bngsim.TrackingAtol(ceiling=my_vector))
+# Alternatives, each from the initial conditions.
+result = sim.run(t_span=(0, 30), atol="tracking", start="initial")  # decades=12
+result = sim.run(t_span=(0, 30), atol=bngsim.TrackingAtol(decades=6), start="initial")
+result = sim.run(t_span=(0, 30), atol=bngsim.TrackingAtol(ceiling=my_vector), start="initial")
 ```
 
-`ceiling` is the vector from the previous section (`"auto"` by default), so
-this is a strict extension of it — at `decades=0` the rule *is* that vector,
-and the clamp's upper end means tracking is never looser than it, only tighter.
+`ceiling` defaults to `"auto"`. Tracking is never looser than its ceiling, and
+at `decades=0` it is the ceiling.
 
-`tests/data/deep_decay.net` is the worked example: two species that both start
-at exactly `1.0`, so `atol="auto"` derives the same `1e-8` for both and the
-per-species vector is provably a no-op. One of them decays sixteen decades.
-Worst relative error in that species against the analytical `exp(-t)`:
+`tests/data/deep_decay.net` is a worked example: two species start at 1.0, and
+one decays sixteen decades. Against the exact `exp(-t)`, its worst relative
+error is 1.8e+04 with the scalar or `"auto"`, 9.5e-02 with `decades=6` and
+2.6e-06 with the default 12.
 
-| `atol` | rel. err. | steps |
-|---|---:|---:|
-| `1e-8` (scalar) | 1.8e+04 | 162 |
-| `"auto"` (vector) | 1.8e+04 | 162 |
-| `TrackingAtol(decades=6)` | 9.5e-02 | 366 |
-| `TrackingAtol()` (12) | 2.6e-06 | 605 |
+What to know:
 
-Two things worth knowing before reaching for it:
-
-- **It costs steps** — roughly 4x here. That is the price of resolving a decay
-  over twelve decades, and it is why the mode is opt-in rather than the default.
-- **It cannot conjure digits that are not there.** A species whose value is a
-  *difference* of large fluxes carries absolute roundoff of order `eps × flux`;
-  asking for relative accuracy below that collapses the step size instead of
-  sharpening the answer. `decades` is the bound on how far it will try, and 12
-  is where the measured accuracy above stops improving.
-
-Swept over the first 400 `rr_parity` SBML models (391 integrate at the default
-tolerance; 37 of them have a species that falls six or more decades below its
-own initial value, so this is not an exotic shape):
-
-| `decades` | still integrate | lost | gained | steps vs default |
-|---|---:|---:|---:|---:|
-| 3 | 393 | 0 | 2 | 1.18 |
-| 6 | 392 | 1 | 2 | 1.24 |
-| 12 (default) | 387 | 6 | 2 | 1.58 |
-
-So six models that integrate at the default tolerance do not at the default
-depth. That failure is loud — the solver error names the depth and tells you to
-lower it — and **lowering `decades` is the first thing to try**. (Two models
-integrate *only* under tracking, which is the same effect from the other side.)
-
-On the **sensitivity** axis nothing changes: `atolS` is still built from the
-ceiling, so turning tracking on leaves the sensitivity tolerances where the same
-vector would have put them. Measured on the fixture above, that costs nothing —
-the sensitivity column comes back resolved anyway, because the state axis is
-what drives the step size.
-
-Two things worth knowing:
-
-- **The sensitivity columns follow the state axis.** `atolS` for
-  ∂x_i/∂θ is built from species *i*'s own absolute tolerance, so a per-species
-  state tolerance is not collapsed back onto one number for the derivatives.
-- **`steady_state_tol` still reads the scalar.** The early-stop criterion is
-  `||f(t,y)||₂ / n_species`, one norm over every species with no per-species
-  reading to take, so it falls back to the *scalar* `atol` even when a vector is
-  in force — and to this `Simulator`'s own scalar, not to anything derived from
-  the vector, because there is no honest single number to derive from one.
-  **Pass `steady_state_tol` explicitly whenever you pass a vector.** Left
-  unset it silently reverts to the default `1e-8`, and on a model whose states
-  are themselves ~1e-8 that criterion is already satisfied at *t* = 0: the
-  relaxation returns the initial state and calls it the steady state. That reads
-  as a modelling problem rather than a tolerance one, which is why it is worth
-  one kwarg to rule out.
-
-`atol="auto"` derives `rtol * max(|y_i|, floor)`, where `floor` defaults to the
-smallest strictly positive species value in the model, but not above 1 — a
-species sitting at zero has no magnitude of its own to scale, so it is treated
-as living at the smallest scale the model actually exhibits, or at one unit
-(one molecule, in a model of counts) where every species that has a scale is
-larger. Without the cap, a species at 0 beside species at 1e10 was held to an
-absolute 100, and one grown from 0 came out 100% off (MODEL2009230001). Pass
-`floor=` to `auto_atol` to choose differently. Being built from *initial* values, this cannot see a species
-that starts at order one and decays to something tiny; that is a within-species,
-over-time mismatch, and the CVODE construct for it is `CVodeWFtolerances`, which
-bngsim does not expose yet (issue #213). The corollary is worth stating plainly:
-on a model whose species all start at similar magnitudes there is no
-cross-species spread to compromise over, so a per-species vector is elementwise
-the scalar it replaces and changes nothing. It is not a general tolerance
-improvement — it is the fix for models spanning decades.
+- **It costs more steps.** That is why it is not the default.
+- **It cannot add digits that are not there.** A species that is a difference
+  of large fluxes carries roundoff of order `eps × flux`. Asking for more
+  shrinks the step instead of improving the answer. `decades` bounds how far it
+  tries.
+- **Some models that integrate at the default tolerance fail at the default
+  depth.** The error names the depth. **Lower `decades` first.**
+- **Sensitivity tolerances do not track.** They are built from the ceiling, as
+  for the vector.
 
 ### Which state the tolerance comes from
 
-`atol="auto"` and `sim.auto_atol()` read the model's **live** state — the one
-the next `run()` would start from. That is what you want for a one-off run, and
-it is the wrong thing for a **parameter fit that moves initial conditions**:
-the vector would be re-derived at every evaluation, so `atol` becomes a function
-of the fit point rather than of the model. The objective then steps wherever the
-derivation crosses a rounding boundary — invisible in the usual way, since the
-objective still looks correct and the finite-difference gradient check still
-passes, and only the search behaves oddly.
-
-`bngsim.derive_atol` is the same rule against a state **you** supply, so the
-result can be a constant of the model. Derive it once, hold it, pass it every
-time:
+`atol="auto"` and `sim.auto_atol()` read the model's **live** state, the one
+the next `run()` starts from. In a parameter fit that moves initial conditions,
+that makes `atol` change with each fit point, and the objective jumps where the
+tolerance changes. Derive the vector once with `bngsim.derive_atol` and pass it
+every time:
 
 ```python
 import bngsim
@@ -317,152 +232,82 @@ sim = bngsim.Simulator(model, method="ode")
 
 RTOL = 1e-8
 nominal = model.get_state()                          # before anything is fitted
-atol = bngsim.derive_atol(nominal, RTOL)             # a constant of the model
+atol = bngsim.derive_atol(nominal, RTOL)             # fixed for the whole fit
 
 for theta in search:
     model.set_params(theta)                          # may move initial conditions
     result = sim.run(t_span=(0, 100), rtol=RTOL, atol=atol)
 ```
 
-The rule, the `floor` default, and the length/order contract are identical to
-`auto_atol`'s; the only difference is which state is read. If you assemble the
-vector yourself instead — clamping per species, reading it off a table —
-`bngsim.normalize_atol_vector(vec, model.n_species, model.species_names)`
-applies the same length and position check `run()` would, so the mismatch
-surfaces where the vector was built rather than at the first evaluation.
-
-### Detecting the capability
-
-The version string will not tell you whether an install has any of this — the
-checkout that first carried it still declared `0.12.2`. Feature-detect instead:
-
-```python
-if hasattr(bngsim, "AUTO"):
-    atol = bngsim.derive_atol(nominal, RTOL)
-else:
-    atol = scalar_fallback(nominal, RTOL)
-```
+The rule and the `floor` default are the same as `auto_atol`'s. If you build
+the vector yourself,
+`bngsim.normalize_atol_vector(vec, model.n_species, model.species_names)` runs
+the same length check `run()` would, so a mistake shows up where the vector
+was built.
 
 ## Jacobian strategy
 
-The ODE solver (CVODE BDF/Newton) needs the Jacobian matrix ∂f/∂y at each
-Newton iteration. BNGsim supports three strategies, selectable via the
-`jacobian` keyword:
+Choose how the Jacobian ∂f/∂y is computed with `jacobian=`:
 
 ```python
-# Default: auto-select best available strategy
-sim = bngsim.Simulator(model, method="ode")  # jacobian="auto"
-
-# Force analytical Jacobian (error if model has Functional/MM rates)
-sim = bngsim.Simulator(model, method="ode", jacobian="analytical")
-
-# Force finite-difference Jacobian (baseline, for benchmarking)
-sim = bngsim.Simulator(model, method="ode", jacobian="fd")
+sim = bngsim.Simulator(model, method="ode")                         # "auto"
+sim = bngsim.Simulator(model, method="ode", jacobian="analytical")  # exact
+sim = bngsim.Simulator(model, method="ode", jacobian="fd")          # finite differences
 ```
 
-| Strategy | Description | Cost per Jacobian | Availability |
-|----------|-------------|-------------------|--------------|
-| `"auto"` (default) | Analytical if available, else finite-difference; falls back to FD if the analytical attempt fails to integrate | — | All models |
-| `"analytical"` | Exact derivatives from mass-action stoichiometry | O(nnz) ops, zero RHS evals | All-Elementary models only |
-| `"fd"` | Finite-difference approximation (SUNDIALS DQ for dense, colored FD for sparse) | O(N) or O(n_colors) RHS evals | All models |
+| Strategy | What it does |
+|---|---|
+| `"auto"` (default) | Analytical where available, else finite differences. If the analytical run fails to integrate, it retries once with finite differences. |
+| `"analytical"` | Exact derivatives. A failure is raised, not retried. A model with no complete analytical Jacobian (its derivation ran out of budget, or `BNGSIM_ANALYTICAL_FUNCTIONAL_JAC=0` is set) runs on finite differences. |
+| `"fd"` | Finite differences: SUNDIALS' difference quotient for dense models, graph-colored differences for sparse (KLU) ones. |
+| `"jax"` | The Jacobian by JAX autodiff, for research: much slower than `"auto"`, and it warns so. Needs `jax` and `jaxlib`; ODE only. |
 
-After a run, `sim.jacobian_strategy` reports the strategy that actually produced
-the result (`"analytical"`, `"fd"`, or `"jax"`) — including `"fd"` when an
-`"auto"` run fell back (see below).
+After a run, `sim.jacobian_strategy` reports what was used: `"analytical"`,
+`"fd"` or `"jax"`. It reports `"fd"` whenever finite differences were used,
+including an `"auto"` run that fell back.
 
-**When to use `"fd"`**: For A/B benchmarking, or if you suspect the analytical
-Jacobian is causing issues. The `"fd"` option uses SUNDIALS' internal
-difference-quotient (DQ) approximation for dense models, and graph-colored
-finite differences for sparse (KLU) models. Against a system SUNDIALS of
+The retry under `"auto"` exists because a rate law that jumps in a state
+variable (an `if()` on a threshold the state sits at) has an exact derivative
+that ignores the jump, which can stop CVODE's corrector. Use `"fd"` to compare
+against the analytical Jacobian, or if you suspect it. For a system SUNDIALS of
 another release, see [Installation](../installation.md#from-source).
 
-**Analytical Jacobian**: Available automatically when all reactions use
-Elementary (mass-action) rate laws. For models with Functional or
-Michaelis-Menten rates, the solver falls back to finite-difference. The
-analytical Jacobian provides ~10-27% speedup on large models by eliminating
-O(N) RHS evaluations per Jacobian update.
+### Derivation budgets
 
-**Auto-fallback on a solver failure (GH #176)**: `jacobian="auto"` is a bet —
-an analytical Jacobian is a strict speedup where it integrates, but it is not
-guaranteed to. A rate law that is *discontinuous* in a state variable (e.g. an
-`if()` whose condition crosses a threshold the state sits at) has an exact
-derivative that omits the jump, which can de-stabilize CVODE's implicit
-corrector even though the Jacobian is mathematically correct. Under `"auto"`,
-such a CVODE failure is caught and the integration is transparently retried once
-with the finite-difference Jacobian (which straddles the step and regularizes
-the corrector), so the default config still integrates the model. An explicit
-`jacobian="analytical"` is **not** second-guessed — it surfaces the failure.
+For a model with Functional or Michaelis-Menten rate laws, the analytical terms
+are derived when the model loads. That derivation has a time budget so a
+pathological model cannot hang the load:
 
-**Build-time derivation budget (GH #95 / #187)**: for models with Functional or
-Michaelis-Menten rate laws, the analytical Jacobian terms are derived once
-(symbolically) at model load. That derivation is wall-clock-budgeted so a
-pathological *small* model cannot hang the load — it simply falls back to the FD
-Jacobian, which at small scale is never wrong and usually solves just as fast.
-Not always, though — on some small models the analytical Jacobian is genuinely
-several times faster to solve with, so the default is set above the slowest
-derivation measured to buy such a speed-up rather than at the point waste stops
-(GH #245); raising it is rarely necessary. The budget **scales with
-species count** and becomes **unbounded** on genome-scale models
-(≥ 20,000 species): there an FD Jacobian needs ~`n_species` RHS evaluations per
-Newton step and is not a viable solver path, so the analytical Jacobian is
-treated as mandatory and is always derived to completion. Override the budget with
-`BNGSIM_JAC_DERIV_BUDGET_S` (seconds, or `inf`/`none`/`0` to disable it entirely —
-the manual genome-scale escape hatch).
+- **`BNGSIM_JAC_DERIV_BUDGET_S`** bounds the Jacobian derivation. When it runs
+  out, the model uses the finite-difference Jacobian. The budget grows with the
+  number of species, and has no limit at 20,000 species or more, where a
+  finite-difference Jacobian is not practical. Set it in seconds, or to `inf`,
+  `none` or `0` for no limit.
+- **`BNGSIM_SENS_DERIV_BUDGET_S`** bounds the sensitivity derivation, which
+  only a sensitivity run does. It scales the same way and takes the same
+  values, but it is independent. Unlike the Jacobian budget, it stays bounded at
+  any model size.
+  When it runs out, the run falls back to CVODES' difference quotient, which is
+  much slower per sensitivity column and, on a stiff model at a tight `rtol`,
+  can exhaust `max_steps`. The fallback is logged as a warning that names this
+  variable. If it hits a model you care about, raise the budget:
 
-**Sensitivity derivation budget (GH #90)**: a sensitivity run derives a second
-set of terms at build time — both halves of the compiled sensitivity RHS's
-`ySdot = J·yS + ∂f/∂p` — and that derivation has its own budget,
-`BNGSIM_SENS_DERIV_BUDGET_S`. Only a *sensitivity* run pays it: a plain
-`Simulator(model, method="ode")` used to run the same derivation for a solve that
-never installs the result, which on a large Functional model was most of the build
-(issue #209). It
-shares the Jacobian budget's base and its per-species scaling, and takes the same
-values (seconds, or `inf`/`none`/`0` for unbounded), but the two are independent:
-raising one does not raise the other.
+  ```bash
+  BNGSIM_SENS_DERIV_BUDGET_S=inf python fit.py
+  ```
 
-One difference is deliberate. The sensitivity budget **never becomes unbounded**,
-at any model size. Where a dropped analytical Jacobian falls back to something
-that may not converge at all, a declined sensitivity RHS falls back to CVODES'
-internal difference quotient, which converges at every scale — so there is never
-a reason to let this derivation run without a bound, and a genome-scale model with
-Functional rate laws gets a decline it can read rather than a build that appears
-to hang.
-
-The fallback is correct but not cheap: measured 9–37x per sensitivity column, and
-on a stiff model at a tight `rtol` the difference quotient's own `~sqrt(rtol)`
-accuracy collapses the step size (it can exhaust `max_steps`). So the decline is
-logged as a warning naming this variable — if a model you care about reports it,
-raise the budget rather than accept the slower path:
-
-```bash
-BNGSIM_SENS_DERIV_BUDGET_S=inf python fit.py
-```
-
-**Expression output sensitivities (GH #97)**: a sensitivity run on a model with
-global functions derives a *third* set of terms at build time — the chain rule
-`d func/dθ` behind `Result.output_sensitivities("expression:…")` — and it reads
-the same `BNGSIM_SENS_DERIV_BUDGET_S`. Two differences from the phase above, both
-deliberate:
-
-- It resolves its **own** deadline rather than sharing that build's, so a slow
-  `∂f/∂p` cannot starve it (and vice versa). One knob, two clocks.
-- Its budget scales with the number of **derivation steps** the analysis is about
-  to run — one per expression parsed, one per derivative taken — rather than with
-  species count, because that is what drives the cost here: a model can carry
-  thousands of global functions on a few hundred species.
-
-An expiry does **not** decline anything. Output sensitivities are per function, so
-every function derived before the deadline keeps working, and the rest are marked
-unsupported: selecting one raises an error naming the budget and this variable,
-the same way selecting a function containing a non-differentiable construct does.
-Observable and species sensitivities are unaffected.
+- **Expression output sensitivities** (`Result.output_sensitivities("expression:…")`)
+  are derived under the same variable, with a deadline of their own and a budget that
+  grows with the number of expressions and derivatives to take. When it runs
+  out, the expressions already derived still work. Selecting one that was not
+  raises an error naming the budget. Species and observable sensitivities are
+  not affected.
 
 ## Linear solver
 
-Each Newton iteration solves a linear system in `I - γJ`, and how that matrix is
-factored is chosen per model, separately from how `J` is computed.
-`result.solver_stats["linear_solver"]` reports the choice: `0` for the built-in
-dense LU, `1` for sparse KLU, `2` for the BLAS dense factor.
+Each Newton iteration solves a linear system. How that system is factored is
+chosen per model, separately from how the Jacobian is computed.
+`result.solver_stats["linear_solver"]` reports the choice.
 
 | Route | When (default options) |
 |---|---|
@@ -470,303 +315,204 @@ dense LU, `1` for sparse KLU, `2` for the BLAS dense factor.
 | BLAS dense factor | a model KLU would take whose LU factor fills in, on a build with BLAS |
 | built-in dense LU | everything else |
 
-**The LU-fill test.** A sparse Jacobian does not mean a sparse factor. On
-rule-derived networks a few hub species (a free enzyme, an adaptor, a ligand)
-couple to most complexes, and the LU of a Jacobian that is 1–7% dense fills
-20–35% of `n²` or more. KLU has no BLAS, so there it spends most of a run
-refactoring, and the BLAS dense factor is several times faster. A model of
-256–5,000 species whose estimated fill is at least 10% therefore goes dense,
-when all of these hold:
+**The LU-fill test.** A sparse Jacobian can still have a dense LU factor. In
+rule-derived networks, a few hub species (a free enzyme, an adaptor) couple to
+most complexes, and the factor fills in. KLU then spends most of the run
+refactoring. So a model of 256 to 5,000 species whose estimated fill is at
+least 10% takes the BLAS dense factor instead, when:
 
-- the build links a BLAS dense factor (`bngsim.HAS_LAPACK_DENSE`: the macOS
-  wheels, and source builds that find a LAPACK);
-- the analytical Jacobian is in use (`jacobian="auto"` or `"analytical"`, and
-  `sim.jacobian_strategy == "analytical"`). With `"fd"` the dense route would
-  difference every column, where KLU colors its differences, so KLU stays.
-
-| model (species, Jacobian density, LU fill) | KLU | BLAS dense |
-|---|---|---|
-| `fceri_ji` (354, 6.8%, 0.35) | 0.111 s | **0.025 s** |
-| `multisite_phos` (1026, 1.2%, 0.21) | 2.37 s | **0.66 s** |
-| `fceri_gamma` (3744, 0.9%, 0.30) | 47.4 s | **4.68 s** |
-| `metapop_sir_100` (300, 1%, 0.02) | **0.025 s** | 0.159 s — stays KLU |
+- the build has a BLAS dense factor (`bngsim.HAS_LAPACK_DENSE`: the macOS
+  wheels, and source builds that find LAPACK); and
+- the analytical Jacobian is in use (`sim.jacobian_strategy == "analytical"`).
+  With `"fd"`, KLU stays, because it colors its differences.
 
 `sim.model._core.jacobian_sparsity["lu_fill_estimate"]` reports the estimate,
-which comes from KLU's own symbolic analysis. `force_sparse_linear_solver=True`
-keeps a model on KLU whatever its fill, and `force_dense_linear_solver=True`
-takes the built-in dense LU (or, with `BNGSIM_LAPACK_DENSE=1`, the adaptive BLAS
-solver below). The route changes the cost, not the answer: trajectories agree to
-solver tolerance. `steady_state()` routes its march by the same rule and reports
-it as `"lapack-dense"`.
+from KLU's own symbolic analysis.
 
-**The opt-in BLAS solver (`BNGSIM_LAPACK_DENSE=1`).** Every other dense model
-stays on the built-in LU unless this variable is set. The solver it enables
-starts on the built-in factor and switches to BLAS after five factorizations, so
-a short run pays no BLAS overhead. That count belongs to an *integration*: the
-steps of a coupling loop (`run_until`, `ReactionKernel.advance`) continue it, and
-an independent `run()` restarts it. `solver_stats["n_dense_blas_factorizations"]`
-counts the run's own BLAS factorizations.
+Overrides:
+
+- `force_sparse_linear_solver=True` keeps a model on KLU.
+- `force_dense_linear_solver=True` takes the built-in dense LU, or with
+  `BNGSIM_LAPACK_DENSE=1`, the adaptive BLAS solver.
+
+The route changes the cost, not the answer: trajectories agree to the solver
+tolerance. `steady_state()` picks its route by the same rule and reports the
+BLAS route as `"lapack-dense"`.
+
+**`BNGSIM_LAPACK_DENSE=1`** turns on the BLAS solver for other dense models. It
+starts on the built-in factor and switches to BLAS after five factorizations,
+so a short run pays nothing extra. The count runs per integration: the steps of
+`run_until` and `ReactionKernel.advance` continue it, and a new `run()` starts
+it over. `solver_stats["n_dense_blas_factorizations"]` counts the BLAS
+factorizations.
 
 ## Rate laws that switch on time
 
-A rate law that is flat on both sides of a window, `if(time() >= 100 &&
-time() <= 100.5, k, 0)`, gives an adaptive integrator no error to see, so a
-step can span the whole window and the run returns as if it were never open.
-bngsim finds the times at which a rate law changes branch on the clock before
-the run, stops the integration on each, and restarts there. That covers:
+A rate law that is flat on both sides of a short window, such as
+`if(time() >= 100 && time() <= 100.5, k, 0)`, shows an adaptive solver no
+error, so a step can jump over the window entirely. BNGsim finds the times
+where such a rate law changes before the run, stops the integration at each,
+and restarts there. It handles:
 
-- a comparison of the clock with constants, inside an `if()` or used as a
-  number (`k*((time()>=100)*(time()<=140))`);
+- comparisons of the clock with constants, in an `if()` or as a number
+  (`k*((time()>=100)*(time()<=140))`);
 - `floor`, `ceil`, `trunc`, `round`, `rint`, `frac`, `sign` and `mod` of the
-  clock, compared or bare, and a repeating schedule written with them;
-- a window written with `abs`, `min`, `max`, a power, an exponential or a
-  sinusoid, and a pulse that only bends (`max(0, 1 - abs(time()-t0)/w)`);
+  clock, and repeating schedules written with them;
+- windows written with `abs`, `min`, `max`, powers, exponentials or sinusoids,
+  and pulses that only bend (`max(0, 1 - abs(time()-t0)/w)`);
 - the breakpoints of a table function over time;
-- the same conditions written on a unit-rate counter species.
+- the same conditions on a counter species fed at a constant rate;
+- smooth bumps: `exp` of a quadratic in the clock with a negative leading term
+  (also written `_e^` or `pow(_e, ...)`), and `cosh` or `tanh` of a linear
+  function of it, such as `1/cosh(u)^2`. BNGsim stops at each bump's center. A
+  bump centered just past the end of the run gets a stop at the end.
 
-A smooth pulse with no switch in it has the same trouble. A narrow Gaussian
-`exp(-((time()-t0)/s)^2)` is exactly 0 in doubles away from itself, so a step
-spanned it whole. bngsim stops on the centre of each such bump in the value of
-a rate law (issue #1286). It reads `exp` of a quadratic in the clock with a
-negative leading term (also written `_e^` or `pow(_e, ...)`), and `cosh` or
-`tanh` of a linear function of it, which covers sech² written `1/cosh(u)^2` or
-`1 - tanh(u)^2`. The clock is `time()` or a counter species fed at a constant
-rate, at any rate. A bump centred just past the end of the run, with its rise
-inside the run, gets a stop at the end.
+A condition of a shape BNGsim knows is solved exactly. Any other is evaluated
+over the run on finer and finer grids until the number of changes agrees, and
+a stop is placed at each. That evaluation is redone when the run window or a
+parameter it reads changes, which adds up in a loop of short `run_until` legs
+or a fit.
 
-A condition is first read exactly where it has a shape bngsim knows (linear in
-time, a repeating schedule, a step of a linear argument, a sinusoid, a
-polynomial). Any other is evaluated over the run window with the model's own
-evaluator, and a stop is placed where its value changes. The evaluation is done
-on a grid and again on one twice as fine, until both find the same number of
-changes; what an exact reading placed is checked against the evaluator the same
-way.
+**Many stops cost accuracy.** Each restart spends about one unit of the local
+error tolerance. With tens of thousands of stops, a quantity of order
+`n_stops × atol` is lost: `mod(time(), 0.0003)` over 10 time units (33,000
+stops) accumulates 1.5e-3 at `atol=1e-8`, and 2e-8 at `atol=1e-14`. Tighten
+`atol` for runs with many stops and small quantities.
 
-What this does not cover:
-
-- **A smooth pulse of a shape not listed above**, such as the derivative of a
-  logistic, `exp(-u)/(1+exp(-u))^2`, or a bump of a counter whose feed reads
-  the state or is changed by an event. Nothing changes branch, so there is
-  nothing to stop at. Pass `max_step` no larger than the pulse's width. A
-  counter that an event resets has its bump stopped on only where it first
-  reaches it, and a warning says so.
-- **A window narrower than 1/8,192 of the run that no sample has any sign
-  of**: one made by a smooth residual that is flat to the last bit outside the
-  window (`exp(-((time()-t0)/s)^2) > 0.5` with `s` a millionth of the run), or
-  by a discontinuity bngsim does not know the levels of (the `%` operator).
-  Windows made by the calls listed above, by a residual that leans toward its
-  turn, or at the edge of a `sqrt` or `ln` are found at any width.
-- **A condition whose changes cannot be counted.** `sin(1/(time()-t0)) > 0.5`
-  changes more often on every finer grid, up to two million cells. The run is
-  refused with an error that names it.
-- **A step call whose argument is within its own rounding of a level it
-  crosses.** `sign(time()^3 - 15*time()^2 + 75*time() - 125)`, the cube of
-  `time() - 5` written out term by term, reads -1 and 1 by turns on the doubles
-  around 5, for as long as the terms cancel to less than their own last places:
-  0.00004 time units either side of 5 for this cube, a twentieth of a time unit
-  for a seventh power. There is no time at which such a call changes, so no
-  stop can be placed for it, and the run is refused with an error that names
-  the call and the stretch. Write the argument so that it is not a small
-  difference of large terms (`(time() - 5)^3`). A `max_step` does not stand in
-  here as it does for a condition that cannot be counted: what the rate law's
-  other switches are is not known where a call of it flickers, so no bound can
-  be checked against them. A flicker shorter than a billionth of the run, which
-  any sum of terms can show around a crossing, is one instant of the run and is
-  stopped at as usual. The refusal is for the call, whatever reads it:
-  `ceil(p) > -7751` for a parabola `p` written out is refused for the flicker
-  of `ceil(p)` at its top, which the comparison does not read.
-
-  An argument that does not flicker can still be too close to a level for too
-  long. `floor(1e9 + 3e-7*sin(time()))` moves by two and a half last places of
-  1e9 in all, and `floor(tanh(u))` creeps onto 1 one last place at a time: each
-  is a staircase of its own last places, and nothing says the next step of such
-  a staircase is not back across the level. So the call is read, at every
-  quarter of an instant (a billionth of the run), for as far as its argument is
-  within eight of its last places of a level it crosses. Up to two million
-  readings that is done and every change has its stop. Past that the run is
-  refused in the same words, naming the call and the longest such stretch. A
-  run that is short against its clock (a leg of a few time units at t = 1e9) is
-  read whole. A staircase made by step calls and comparisons inside the
-  argument (`mod(floor(time()), 24)`) is none of this: where those jump is
-  known. Nor is an argument that is a line in time by its own spelling (the
-  clock, numbers and parameters that nothing writes during the run, `+`, `-`,
-  `*`, and `/` by one of those), however coarse: `ceil(t0 + time())` with
-  `t0 = 1e12` moves once in 500 instants of a run 240 long, but a sum or a
-  product with a constant never steps back, so it crosses each whole number
-  once and is read as any other.
-
-  Far from zero, such a line holds each of its doubles for a stretch of time,
-  a tread (1.2e-4 at `1e12 + time()`), and a rate law that reads the clock
-  once, inside such a line, is a staircase, however the rest of it is written
-  (`floor((1e10 + time())/(0.01))` is read through `1e10 + time()`; SBML's
-  `quotient` of those operands loads with a sign test, issue #1522, whose
-  `ceil` is a second step on the line, and is refused by name). Where the
-  reading above refuses such a law, or leaves it
-  without stops, the law is read once on each tread instead, and stopped on
-  the last double before each change (issue #1018): between two stops the
-  rate is constant, and integrated exactly. So it is with
-  `floor(mod(1e12 + time(), 0.3)/0.3 + 0.0005)`, a pulse 1.5e-4 wide before
-  each wrap, too many to read every quarter instant; with a `mod` or `frac`
-  used as a number (not under a comparison) whose argument is coarser than the
-  clock and whose period is at most 1,024 doubles of its argument, as in
-  `100*mod(1.1e12 + time(), 0.0048828125)` (20); and with one that takes off a
-  whole number beyond 2^48 (2.8e14), as `100*mod(1e12 + time(), 0.0015)` does.
-  That last returns its argument's rounding, a few steps up to each wrap, and
-  not a sawtooth: where its stops are placed, the run is made as the model
-  reads it, and warned. Take the offset out of what the call divides for a
-  sawtooth.
-
-  A sawtooth with more doubles to its period than that is a staircase of steps
-  under a thousandth of the period, the line it nearly is, and is integrated
-  as before: `100*mod(1.7e9 + time(), 86400)/86400`, a time of day, over 0.2 is
-  14 steps, where a stop on each of its 838,861 treads would be 1.7 million.
-  Up to 4.2 million treads of each law are read in a run, and 1,000,000 stops
-  placed. A law the reading above refuses that needs more stops than that is
-  refused by name, whatever `max_step` is passed, with a leg that fits (past
-  the 4.2 million treads, it is refused as it was): a step bound
-  in place of its stops left `100*mod(1e12 + time(), 12u)` 0.4% off at the
-  default tolerances, and 4.5% from X(0) = 1e4, where in legs each change has
-  its stop and the answer is exact to rounding. A sawtooth it leaves without
-  stops has its stops placed after every other switch of the run has its own,
-  and where they do not fit, or are more than can be read, it is integrated as
-  before, with the error test finding each change, and a warning (once a
-  session) to run it in legs that fit. Nor is anything read so whose changes
-  are closer together than 3.5e-13 of the time (16 times the 2.2e-14 of it
-  within which CVODE takes a stop as reached and integrates nothing more):
-  late in a run its stops would each be reached at the one before, and the
-  stretch between never integrated. Such a law is refused where it was, and
-  integrated as before where it was not. So is a rate law that reads such a
-  line outside its conditions too, as `x - P*floor(x/P)` does, and SBML's
-  `rem` of it, which loads with the sign test that makes it truncate (issue
-  #1522): a stop on each change of the `floor` is not a stop on each step of
-  `x`. So is a run with two laws read so, whose stops can fall a
-  double apart and be taken as one, or with one beside a condition past the
-  budget, whose step bound its stops would cut. Runs with sensitivity
-  columns, an event's trigger, a counter clock, a function no rate law reads
-  and the stochastic methods are read as before.
-- **More than 1,000,000 switches in one run.** A repeating schedule or a
-  sinusoid that is the only thing in the model that switches is then integrated
-  under a step bound of half its shorter stretch. Anything else is refused with
-  an error that names the condition: run it in shorter legs with `run_until`, or pass
-  `max_step` no larger than half the shortest stretch between two switches of
-  the rate law, which then stands for the stops. A `max_step` wider than a
-  stretch bngsim knows of is tightened to half of it, and a bound that would
-  take more than 1e8 steps is refused rather than started.
-
-A condition that is read by evaluating it costs about 2 ms each time its run
-window or a parameter it reads changes (the answer is kept otherwise), which a
-loop of short `run_until` legs or a fit over such a parameter pays on every
-pass. A condition of a shape bngsim knows costs a few microseconds.
-
-Each stop is a restart of the integrator, and each restart spends about one
-unit of the local error tolerance. With tens of thousands of stops in a run
-that adds up: a quantity of order `n_stops × atol` is integrated to no better
-than that. `mod(time(), 0.0003)` over 10 time units (33,000 stops) accumulates
-1.5e-3, which an `atol` of 1e-8 does not resolve and `atol=1e-14`
-does to 2e-8. Tighten `atol` where a run has many stops and small quantities.
-
-A stop sits on the first double at which the model's own arithmetic reads
-the rate law's new value, found by asking the evaluator: an edge worked out
-from a period and an offset can be a double away from it, and with an offset
-in the argument (`mod(1e12 + time(), 0.3)`) billions of doubles of the clock
-(issue #891). The compiled right-hand side is built without fused
-multiply-add (issue #963), so it changes on the same double as the
-interpreter. (A law read tread by tread is stopped on the last double before
-each change: above.) A condition an event's trigger reads keeps its stop where it
-was put, as does every condition in a run with sensitivity columns. At an
-`rtol` looser than 1e-4, each stop the resolvers or the scan put on a change
-sits on the last double before the change instead (issue #1226); one on a
-counter clock stays where it was put, since the integrated counter lands a
-few doubles past it. A step ends on a stop, and the implicit step reads the
-rate at its end: on the change, the step that reaches it is taken at the next
-stretch's rate, and at a tolerance loose enough for that step to span the
-stretch, `if(mod(time(), 24) < 1, 1, 0)` over 1,000 days came to 14,627 for
-1,000 at `rtol` 1e-2 (each day's 23 hours off at the rate on, its hour on at
-the rate off). A double earlier it is exact to rounding, where the rate law
-holds between its changes. One that reads the clock outside every condition
-that holds between its changes (a sawtooth, written with `mod`, `frac` or
-`floor`, a ramp, a pulse times the clock) keeps its stops where they were put:
-spanned by one step, its stretch is read at one end, and the end a double
-before the change is no better than the other (`mod(time(), 0.7)` from
-X(0) = 1e4 at `rtol` 1e-3 was 19.3 over a double before each change, and 0.45
-as the stops were put). A condition that comes in parentheses, as every one an
-SBML or Antimony model loads does (`((time() - 24*floor(time()/24)) < 1)`), is
-not read as one that holds, and keeps its stops where they were put: an SBML
-pulse schedule is main's at every tolerance. Tighter, the step on the change fails on the jump and
-the run walks the stretch before it, which finds a pulse inside the stretch
-that a step from the double before would not. In a run where a moved stop
-would sit a double or two from another stop (two spellings of one schedule,
-or another switch on one of its edges), every stop the resolvers placed is
-where they put it: the run takes the second of two such as reached where it
-restarts on the first, and neither alone is right for both conditions.
-
-CVODE takes a stop as reached once a step ends within 100 doubles' worth of
-its time, about 2.2e-14*t, and does not integrate what is left. Where a rate
-jumps on a stop by so much that that time's worth of the jump would be a tenth
-of the tolerance or more, a run with no sensitivity columns stops CVODE on the
-double before the stop, integrates that double on the branch that ends, and
-takes the stop from there: stopped on the stop itself, a dose schedule
-started at t = 1e6 lost 2e-8 at each stop where it switched off, 180 times
-rtol at 1e-9 (issue #891). Elsewhere the step that reaches a stop reads the
-new branch and, at a tight tolerance, fails on the jump, so the integrator
-walks the stretch before it, which is how a pulse inside it is found.
-
-Where the rate law is flat at a restart, the integrator's first step has
-nothing to measure its error by, and the steps after it grow as far as the
-integrator lets them (10,000 times the first, then ten times each) until one
-takes most of the stretch to the next stop at once. That step reads the law at
-its end alone, and on the stop a law that repeats reads there what it read at
-the restart, so the step passes with nothing added for the stretch. So, until
-a stretch has been looked at, a run watches its steps, and before one that
-would take a quarter or more of what is left, it reads the right-hand side
-where that step ends, against what the integrator's own history predicts
-there. Where the step's error there is well past what the integrator's error
-test allows, nothing is done: it fails the step and walks the stretch itself.
-Otherwise the step is read at a quarter, a half and three quarters of its
-length, and where a step would fail at one of them the run restarts there, so
-the step ends on it (issue #998). Before, a dose train that begins each period
-flat lost every period from about the 72nd stop on, and with output rows
-inside the periods from the first, with no error. A run with sensitivity
-columns steps as before.
-
-The steps watched include those the integrator takes on its way to an output
-row or to the time a delayed event is executed, and those of the stretch after
-a stop that restarts nothing (a table function's breakpoint), and where the
-error read at a step's end says the step fails, it is read again through the
-integrator's corrector, so a stiff species elsewhere in the model does not make
-a step that passes read as one that fails (issue #1192). Before, a
-daily dose with rows every 12 hours kept 0.28 of its integral, a pulse while a
-delayed event waited 0.08, a late pulse beside a table's breakpoints 0.78, and
-the same pulse beside a fast reversible binding 0.04.
-
-What this does not see, and can still step over: a pulse that is nothing at
-both ends of a step and at the three places inside it, or inside a step that
-takes less than a quarter of what is left of its stretch. For these, as for a
+Between stops, after a restart where the rate law is flat, the run checks each
+long step at its quarter points before taking it, so a pulse at the start of a
+stretch is not stepped over. It cannot see a pulse that is zero at all those
+points, or one inside a step shorter than a quarter of what is left of its
+stretch, and runs with sensitivity columns skip the check. For these, and for a
 narrow pulse in a run with no stops, pass `max_step` no larger than the pulse.
 
-In a run with sensitivity columns the same stops are placed for a condition
-that reads none of the requested parameters, and for a pulse that only bends.
-A step call outside any condition whose step times move with a requested
-parameter (`floor((time()-w)/P)` with `w` or `P` requested) is refused by name:
-each step is a jump in that column, which is not computed.
+### What it does not cover
+
+- **A smooth pulse of another shape**, such as `exp(-u)/(1+exp(-u))^2`, or a
+  bump on a counter whose feed reads the state or is changed by an event.
+  Pass `max_step` no larger than the pulse's width. A counter that an event
+  resets gets a stop only on the first bump, and a warning says so.
+- **A window narrower than 1/8,192 of the run that no sample can see**, such as
+  `exp(-((time()-t0)/s)^2) > 0.5` with a tiny `s`, or one made with the `%`
+  operator. Windows made by the calls listed above are found at any width.
+- **A condition whose changes cannot be counted**, such as
+  `sin(1/(time()-t0)) > 0.5`. The run is refused with an error that names it.
+  Run it in shorter legs with `run_until`, or pass `max_step` no larger than
+  half the shortest stretch between switches, which then stands in for the
+  stops.
+- **A step call whose argument rounds back and forth across a level.**
+  `sign(time()^3 - 15*time()^2 + 75*time() - 125)` flips between -1 and 1 near
+  5, because the terms cancel below their rounding. The run is refused with an
+  error naming the call and the stretch. Write it as `(time() - 5)^3`.
+  `max_step` does not help here.
+- **A step call whose argument stays within rounding of a level.**
+  `floor(1e9 + 3e-7*sin(time()))` and `floor(tanh(u))` creep along their last
+  places near a level. BNGsim reads such a call finely for up to two million
+  evaluations and places a stop at every change. Past that, the run is refused
+  with an error naming the call and the stretch.
+- **More than 1,000,000 switches in one run.** A repeating schedule or sinusoid
+  that is the only switch in the model is then run under a step bound of half
+  its shortest stretch. Anything else is refused with an error naming the
+  condition. Run it in shorter legs with `run_until`, or pass `max_step` no
+  larger than half the shortest stretch between switches. A `max_step` wider
+  than a stretch BNGsim knows of is tightened to half of it. A bound that would
+  take more than 1e8 steps is refused.
+
+### Step calls on a clock far from 0
+
+Far from 0, a line such as `1e12 + time()` holds each double for a stretch of
+time, so a step call on it (`floor((1e10 + time())/0.01)`, a `mod` of
+`1e12 + time()`) is a staircase. Where the reading above refuses such a law or
+leaves it without stops, BNGsim reads it one double of its argument at a time
+instead, with a stop on each change. Between stops the rate is constant and is
+integrated exactly.
+
+- **Up to 1,000,000 stops.** A law that needs more is refused by name, whatever
+  `max_step` you pass, because a step bound does not keep it within tolerance.
+  The error gives a leg length: run it in `run_until` legs no longer than that.
+- **A slow sawtooth** such as a time of day,
+  `100*mod(1.7e9 + time(), 86400)/86400`, is integrated as the near-straight
+  line it is. One whose stops do not fit is integrated without them, with a
+  warning to run it in legs that fit.
+- **A `mod` whose argument is more than 2^48 periods from 0** returns its
+  argument's rounding, not a sawtooth. The run uses it as the model reads it,
+  and warns. Take the offset out of what the call divides to get a sawtooth.
+- **SBML's `quotient`** on such a clock is refused by name.
+- **`x - P*floor(x/P)` and SBML's `rem`** on such a clock are not read this
+  way: they are refused where the reading above refuses them, and otherwise run
+  without stops.
+- **Not read this way:** changes closer than 3.5e-13 of the time apart, two
+  such laws in one run, one beside a condition past the stop budget, more than
+  4.2 million treads in a law, and runs with sensitivity columns, an event
+  trigger, a counter clock, or a stochastic method.
+
+### With sensitivities
+
+In a run with sensitivity columns, the same stops are placed for conditions
+that read none of the requested parameters, and for pulses that only bend. A
+step call whose step times move with a requested parameter
+(`floor((time()-w)/P)` with `w` or `P` requested) is refused by name, since the
+jump in that column is not computed.
 
 A condition that reads the model's state (`if(S > 5, ...)`) switches at a time
-nothing knows before the run. Its residual is a CVODE root instead; see
-[Events](events.md) and the sensitivities guide for what that does and does
-not resolve.
+not known before the run. It is handled as a CVODE root instead; see
+[Events](events.md) and the sensitivities guide.
+
+## A run that starts far from t = 0
+
+The doubles are coarse far from 0: 1.2e-4 apart at `t = 1e12`, 0.125 apart at
+`1e15`. A step shorter than that spacing is rounded, and the trajectory goes
+wrong.
+
+**A model that reads no clock** is moved. An ODE run (`method="ode"`) whose end
+nearer 0 is at 2^20 (1,048,576) or beyond is integrated on the time since its
+start, and reports the times you asked for. The start is first rounded toward 0
+to the spacing of the doubles at the run's far end. Where the start is already
+on that spacing, the run from the far start is the run from 0, to the bit:
+
+```python
+far = sim.run(t_span=(1e15, 1e15 + 10), n_points=11, start="initial")
+near = sim.run(t_span=(0, 10), n_points=11, start="initial")
+# far.species equals near.species
+```
+
+Otherwise it is the run from a start less than that spacing, as accurate but
+not identical in every bit.
+
+Exceptions:
+
+- A run below 0 that starts more than twice as far from 0 as it ends is counted
+  from its end, so its first rows are only as fine as the doubles there. Start
+  such a run at 0 or above, with the offset written into the model.
+- A run whose end nearer 0 is within 2^20 of 0, or that crosses 0, keeps its
+  clock. One that starts far below 0 has coarse first rows.
+- `run_diffrax` keeps the clock it is given. From `1e15` it ends at its step
+  limit with an error.
+- If a far run fails with a message naming a time, that time is on the run's
+  own clock, and the message says which time to add to it.
+
+**A model that reads the clock** keeps it, far or not: a function of `time()`,
+a table function over time, a discontinuity trigger, or any event. Its steps are only as fine as the
+doubles there, with no error. A decay whose rate reads `time()` is 1.8e-3 off
+at `t = 1e12` and off by a factor of 11 at `1e15`. Run such a model from near 0,
+with the offset written into the model. SSA and PSA count their own clock from
+a far start for every model.
+
+**A switch on a counter clock** (an `if()` on a species with `C' = 1`) is
+placed from the counter, so a far start does not move it. Its stop still sits
+on the run's clock, so from `1e16` on a far run can differ slightly from the
+run from 0. Late switches in a very long run are taken where the clock is
+coarse, and their sensitivities can be badly wrong, or lost, with no error. A
+sensitivity run is refused with `SensitivityRefusedForParametersError` (a
+`SensitivityUnsupportedError`) if a counter crossing inside the run, which
+moves a requested column, rounds onto the start or past the run's end. A
+column the crossing does not move can still be run alone.
 
 ## When a solve fails on a rate law's domain
 
-bngsim evaluates a rate law literally. A logarithm, a `sqrt` or a fractional
-power of a negative concentration is `nan`, and that `nan` is kept rather than
-papered over — the same policy the SSA's negative-count warning states. What the
-integrator does with it is give up, historically with nothing but a number:
-
-```
-CVODE integration failed at t=1.000000 with flag=-4
-```
-
-Such a failure now names what it found (GH #336):
+BNGsim evaluates a rate law literally. A logarithm, `sqrt` or fractional power
+of a negative concentration is `nan`, and BNGsim keeps it. The solver then
+fails, and the error says why:
 
 ```
 CVODE integration failed at t=1.000000 with flag=-4 (CV_CONV_FAILURE). The
@@ -775,33 +521,78 @@ logterm() = ln(1 - Atot) -> nan. Species below zero there: C() = -1. bngsim
 evaluates a rate law literally, so a state outside its domain ...
 ```
 
-The first sentence says which callback saw it and when — `The RHS`, `The
-compiled RHS`, `The Jacobian`, `The compiled sensitivity RHS` — which separates
-a right-hand side that leaves the domain from a *derivative* that does. What
-follows is the state read back at that point: the rate laws that evaluate
-non-finite there, and any species below zero.
+The first sentence names the callback (`The RHS`, `The compiled RHS`,
+`The Jacobian`, `The compiled sensitivity RHS`) and the time. Then come the
+rate laws that are not finite there and any species below zero. A run that
+succeeds pays nothing for this. A failed run replays the state through the
+interpreted evaluator, so a model's own warnings (`bngsim: warning:
+'ln(-1e-09)' returned nan`) can appear on stderr even for a compiled run.
 
-The check costs a healthy solve nothing and says nothing about one. CVODE
-routinely takes a step that dips a zero-pinned species slightly negative and
-recovers from it, and a run that finishes prints no diagnostic at all. Only a
-run that *fails* replays the offending state, and it does so through the
-interpreted evaluator — so a model's own instrumentation
-(`bngsim: warning: 'ln(-1e-09)' returned nan`) appears on stderr alongside the
-message, even for a compiled run that never touched the interpreted right-hand
-side.
+A species whose own law drives it to minus infinity in finite time also fails
+this way. `X' = -(1 + X^2)` from `X = 1` fails at `t = 3*pi/4`, naming the law.
+Some such failures can name only the state.
 
-The fix is in the model: constrain the species, or write the law so it is
-defined where the solver will look. `ln(abs(S))` — identical to `ln(S)` for
-every `S > 0` — is the cheapest spelling. An `if()` guard works too but is not
-free: a state-dependent condition in a *declared* rate law reads as a state
-switch whose crossing time moves, which the forward-sensitivity path declines
-(the same reason the GH #333 zero-base rewrite lands on a function's evaluation
-expression and never on its declared one).
+Fix it in the model: constrain the species, or write the law so it is defined
+where the solver looks. `ln(abs(S))` equals `ln(S)` for every `S > 0` and is
+the cheapest fix. An `if()` guard also works, but a state-dependent condition
+in a declared rate law is a switch that forward sensitivities refuse.
+
+Before it gives up, a run whose right-hand side or Jacobian is not finite tries
+once more with concentrations below 0 read as 0. The solver's own error often
+puts an emptied species a hair below 0, where a `sqrt` of it is `nan`. Only
+the species the failing laws read are moved, and only ones that are
+concentrations: a species declared with a negative initial value, a fixed
+species and a rate-rule target keep their values. A species further below 0
+than any rounding of 0 (10^6 of its atol) keeps its value where the law stays
+finite without the change, and once it has gone that far, it keeps its value at
+any depth for the rest of the run. So a voltage at -61 keeps its value beside a
+`sqrt` of another species. At a loose atol this threshold can reach a species'
+own range: at `ExactAtol(1e-4)` it is 100, so a voltage that crosses 0 on its
+own is read as 0 until it first passes -100.
 
 ## Logging
 
 ```python
 import logging
 bngsim.configure_logging(logging.DEBUG)
-# Now all bngsim operations produce log output
 ```
+
+### SUNDIALS' own lines
+
+SUNDIALS writes its own lines straight to the process's streams. They do not
+pass through `sys.stdout`, `sys.stderr`, `warnings` or the `bngsim` logger, so
+`contextlib.redirect_stdout`, a warnings filter and a logging level do not
+catch them.
+
+```
+[WARNING][rank 0][...cvodes.c:3482][CVode] Internal t = 1e+06 and h = 1.49012e-13
+are such that t + h = t on the next step. The solver will continue anyway.
+```
+
+Both `[ERROR]` and `[WARNING]` lines go to **standard error**. A warning can
+come from a run that is right; the one above is. Two SUNDIALS environment
+variables redirect them, and BNGsim respects them when set:
+
+```bash
+SUNLOGGER_WARNING_FILENAME=/dev/null python script.py   # drop the warnings (NUL on Windows)
+SUNLOGGER_WARNING_FILENAME=stdout    python script.py   # send them to standard output
+SUNLOGGER_ERROR_FILENAME=/dev/null   python script.py   # drop the error lines
+python script.py 2> sundials.log                        # both, with the rest of stderr, to a file
+```
+
+- **Set them before the `Simulator` first runs.** They are read when a solver
+  context is made. A `Simulator` running a model with no events, switches or
+  sensitivities makes one on its first run and reuses it. Other runs, each
+  `run_batch` row and each steady-state solve make their own, and read the
+  variables again.
+- **A file name is overwritten, not appended.** Each solver context empties
+  the file, and `run_batch` rows on several threads write over each other. Use
+  `stdout`, `stderr` or the null device, and redirect the stream to keep a log.
+- **A name SUNDIALS cannot open** (a file in a missing directory) stops every
+  run and steady-state solve, with an error that names the variable.
+
+BNGsim drops the warnings itself for runs whose rate laws switch on state, or
+on time in an SBML model, since they restart at each switch, and for KINSOL
+solves, unless `SUNLOGGER_WARNING_FILENAME` is set. A BNGL rate law that
+switches on time keeps its warnings. The `[ERROR]` lines of a solve BNGsim
+expects to fail and recovers from are always dropped.

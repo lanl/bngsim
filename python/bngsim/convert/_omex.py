@@ -271,7 +271,12 @@ class OmexArchive:
             raise ConversionError(
                 f"manifest lists model {entry.location!r} but it is not in the archive"
             )
-        return Model.from_net(path) if entry.kind == "net" else Model.from_sbml(path)
+        model = Model.from_net(path) if entry.kind == "net" else Model.from_sbml(path)
+        # Issue #1705: the path is the extracted copy, gone after cleanup(); the
+        # manifest entry says which file of the archive it was.
+        if model._source is not None:
+            model._source["archive_entry"] = entry.location
+        return model
 
     def load_protocol(self) -> EvaluationSpec:
         """Read the master SED-ML entry into an :class:`EvaluationSpec`.

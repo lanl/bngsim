@@ -128,9 +128,13 @@ def scipy_sparse() -> Any:
     try:
         import scipy.sparse
     except ImportError as e:  # pragma: no cover - exercised only without scipy
-        raise ImportError(
+        from bngsim._error_codes import install, pass_argument
+        from bngsim._exceptions import DependencyError
+
+        raise DependencyError(
             "sparse=True returns a scipy.sparse.csc_array; install scipy "
-            "(`pip install scipy`) or call without sparse=True for a dense ndarray"
+            "(`pip install scipy`) or call without sparse=True for a dense ndarray",
+            remedies=[install("scipy"), pass_argument("sparse", False)],
         ) from e
     return scipy.sparse
 
