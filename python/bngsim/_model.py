@@ -1792,12 +1792,16 @@ class Model:
         a volume decides — the amount↔concentration conversion, an
         amount-declared initial condition, the mass-action scalar's ``Π V^n``,
         the SSA propensity volume — is re-derived from the parameter rather than
-        left at the size the model happened to load at. What they are still not
-        is *differentiable*: forward sensitivity refuses a ``d/dV`` column
-        (issue #170 stage 3), which is why this list is worth having.
+        left at the size the model happened to load at. A forward-sensitivity
+        run differentiates them too: ``d/dV`` is a column like any other
+        parameter's (issue #170 stage 3), and matches a central finite
+        difference across a rebuild at ``V ± h`` (issue #1845).
 
-        A handful cannot be written even so; see
-        :attr:`unwritable_compartment_size_params`.
+        A handful cannot be written even so, and a sensitivity run refuses their
+        column for the same reason; see
+        :attr:`unwritable_compartment_size_params`. A steady-state sensitivity
+        also refuses a compartment size where the model has a conservation law,
+        whose conserved total is an amount the size does not move.
 
         Empty for ``.net`` models, and for any compartment the SBML loader
         promoted to a species (rate-rule or event-resized): that one is live
@@ -1837,8 +1841,11 @@ class Model:
         such expression once, at load, against the sizes. All three are decided
         at load and named in the error.
 
-        A subset of :attr:`compartment_size_params`, and usually empty — reload
-        with ``Model.from_sbml(..., compartment_sizes={...})`` to move one.
+        A forward-sensitivity column for one is refused too, since it is the
+        derivative of the same write; the gradient is a difference of rebuilds at
+        ``V ± h``. A subset of :attr:`compartment_size_params`, and usually
+        empty — reload with ``Model.from_sbml(..., compartment_sizes={...})`` to
+        move one.
 
         Returns
         -------
@@ -3416,8 +3423,11 @@ class Model:
           it is ``"undecided"`` where nothing refuses it, since whether the
           rate laws differentiate to closed form is decided when a sensitivity
           run builds its code, and a ``note`` says so; it reports the
-          ``backend`` that would build it, and ``refused_parameters``, those
-          folded at load (:attr:`frozen_params`) with what they went into.
+          ``backend`` that would build it, and ``refused_parameters``: the
+          parameters a sensitivity run refuses whatever it asks, those folded at
+          load (:attr:`frozen_params`, with what they went into) and the
+          compartment sizes :meth:`set_param` cannot write
+          (:attr:`unwritable_compartment_size_params`), each with why.
         * ``time_dependence``: ``rate_laws_read_clock``,
           ``functions_reading_clock``, ``state_reads_clock`` (which a steady
           state refuses), ``time_tables`` (table functions over time) and

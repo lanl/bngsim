@@ -639,7 +639,7 @@ def test_forward_sensitivities_name_the_parameters_folded_at_load():
     model = bngsim.Model.from_sbml_string(text)
     assert model.frozen_params == ["p"]
     fs = model.describe()["methods"]["forward_sensitivities"]
-    assert fs["refused_parameters"] == {"p": model._frozen_params["p"]}
+    assert fs["refused_parameters"] == {"p": f"folded at load into {model._frozen_params['p']}"}
     p = next(e for e in model.describe()["parameters"] if e["name"] == "p")
     assert p["frozen"] == model._frozen_params["p"]
     # And a sensitivity run refuses it.
@@ -1302,3 +1302,52 @@ def test_a_global_the_model_keeps_spelled_like_a_parser_word(word):
     assert word in model.param_names
     rate = model.describe()["reactions"][0]["rate"]
     assert rate == _ast_renamed(text, {"kl": "_lp_R1_kl"}) == f"{word} * _lp_R1_kl * A"
+
+
+# ─── Compartment sizes and sensitivities (issue #1845) ───────────────────────
+
+
+def test_a_d_dv_column_matches_a_difference_of_rebuilds():
+    """A compartment size's sensitivity column is computed, and it is right: it
+    matches a central difference across models rebuilt at V +/- h, the oracle
+    Simulator._raise_if_compartment_size_params names (issue #1845, whose
+    docstring said the column was refused)."""
+    model = bngsim.Model.from_sbml_string(TWO_COMPARTMENTS)
+    assert "cell" in model.compartment_size_params
+    assert "cell" not in model.describe()["methods"]["forward_sensitivities"].get(
+        "refused_parameters", {}
+    )
+    run = {"t_span": (0, 1), "n_points": 3, "rtol": 1e-12, "atol": 1e-14}
+    try:
+        sim = bngsim.Simulator(model, method="ode", sensitivity_params=["cell"])
+    except bngsim.CodegenToolchainError:
+        pytest.skip("no C compiler: a sensitivity run compiles the model")
+    column = sim.run(**run).sensitivities[-1, :, 0]
+
+    def end(size):
+        m = bngsim.Model.from_sbml_string(TWO_COMPARTMENTS, compartment_sizes={"cell": size})
+        return bngsim.Simulator(m, method="ode", codegen=False).run(**run).species[-1]
+
+    h = 1e-5
+    difference = (end(2 + h) - end(2 - h)) / (2 * h)
+    assert column == pytest.approx(difference, rel=1e-7, abs=1e-10)
+    assert abs(column[1]) > 1  # B moves with the size: the column is not a zero
+
+
+def test_unwritable_compartment_sizes_are_refused_parameters():
+    """Two compartments of one size share a mass-action scalar, so set_param
+    cannot write either, and a sensitivity run refuses both: describe() says so."""
+    pytest.importorskip("antimony")
+    model = bngsim.Model.from_antimony_string(
+        "compartment c1 = 2, c2 = 2; species A in c1 = 10, B in c2 = 0; J: A -> B; k*A*B; k = 0.1"
+    )
+    assert model.unwritable_compartment_size_params == ["c1", "c2"]
+    refused = model.describe()["methods"]["forward_sensitivities"]["refused_parameters"]
+    assert set(refused) == {"c1", "c2"}
+    assert all("set_param cannot write" in why for why in refused.values())
+    for name in ("c1", "c2"):
+        with pytest.raises(
+            ValueError, match="Forward sensitivity is not supported for compartment"
+        ):
+            sim = bngsim.Simulator(model.clone(), method="ode", sensitivity_params=[name])
+            sim.run(t_span=(0, 1), n_points=2)

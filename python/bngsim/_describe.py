@@ -223,9 +223,23 @@ def _forward_sensitivities(model: Model) -> dict[str, Any]:
         out["note"] = _UNDECIDED
     if backend is not None:
         out["backend"] = backend
+    # Refused whatever the run asks: a parameter folded at load (what it went
+    # into), and a compartment size set_param cannot write, whose column is the
+    # derivative of that write (Simulator._raise_if_compartment_size_params).
     frozen = model._frozen_params
-    if frozen:
-        out["refused_parameters"] = {n: frozen[n] for n in model.param_names if n in frozen}
+    unwritable = set(model.unwritable_compartment_size_params)
+    refused = {
+        n: (
+            f"folded at load into {frozen[n]}"
+            if n in frozen
+            else "a compartment size set_param cannot write "
+            "(Model.unwritable_compartment_size_params)"
+        )
+        for n in model.param_names
+        if n in frozen or n in unwritable
+    }
+    if refused:
+        out["refused_parameters"] = refused
     return out
 
 
@@ -747,9 +761,7 @@ def _text(d: dict[str, Any]) -> str:
         lines.append(f"  {', '.join(names)}: {status}")
     refused = d["methods"]["forward_sensitivities"].get("refused_parameters")
     if refused:
-        lines.append(
-            "  forward sensitivities refuse the parameters folded at load: " + ", ".join(refused)
-        )
+        lines.append("  forward sensitivities refuse the parameters: " + ", ".join(refused))
 
     j = d["jacobian"]
     lines.append(
