@@ -87,16 +87,32 @@ def test_every_registered_code_can_be_raised():
     assert set(CODES) - reachable == set()
 
 
+def _notice_keywords(tree: ast.AST) -> set[int]:
+    """The ``code=`` keywords of ``_notices.*`` calls: a warning's code, which
+    ``bngsim._notices.CODES`` registers and ``test_result_notices`` checks."""
+    return {
+        id(k)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "_notices"
+        for k in node.keywords
+    }
+
+
 def test_every_code_the_source_passes_is_registered():
     """A ``code="..."`` keyword anywhere in the package, and each solver flag's
     code, is in the registry, so no error carries a code the page lacks."""
     used = set(_error_codes.SOLVER_FLAGS.values())
     for path in _PACKAGE.rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
+        notices = _notice_keywords(tree)
         for node in ast.walk(tree):
             if (
                 isinstance(node, ast.keyword)
                 and node.arg == "code"
+                and id(node) not in notices
                 and isinstance(node.value, ast.Constant)
                 and isinstance(node.value.value, str)
             ):
@@ -104,6 +120,14 @@ def test_every_code_the_source_passes_is_registered():
     missing = sorted(c for c in used if c not in CODES and "." in c)
     assert not missing, missing
     assert len(used) > 15
+
+
+def test_an_error_code_is_never_a_warnings_code():
+    """A program that branches on ``code`` reads errors' and a Result's notices'
+    codes alike (issue #1703), so no code names both."""
+    from bngsim import _notices
+
+    assert set(CODES).isdisjoint(_notices.CODES)
 
 
 def test_anchors_are_unique():

@@ -39,7 +39,7 @@ from typing import Any, Literal, NamedTuple, NoReturn
 
 import numpy as np
 
-from bngsim import _codegen_toolchain, _foreign_names
+from bngsim import _codegen_toolchain, _foreign_names, _notices, _record
 from bngsim._atol import AUTO as _ATOL_AUTO
 from bngsim._atol import TRACKING as _ATOL_TRACKING
 from bngsim._atol import (
@@ -515,14 +515,16 @@ def _remember_auto_codegen_failure(model, jit_backend, exc: BaseException) -> No
 
 def _log_auto_codegen_skip(key: tuple) -> None:
     """Say once per key why the automatic build is not attempted."""
-    if key in _AUTO_CODEGEN_SKIP_LOGGED:
-        return
+    first = key not in _AUTO_CODEGEN_SKIP_LOGGED
     _AUTO_CODEGEN_SKIP_LOGGED.add(key)
-    logger.warning(
+    _notices.log(
+        logger,
+        "codegen.skipped",
         "Skipping automatic codegen: this model's build failed at %s. The interpreted "
         "RHS is used instead. Pass codegen=True to retry, or raise "
         "BNGSIM_CODEGEN_TIMEOUT / BNGSIM_CODEGEN_JOBS, which starts a fresh attempt.",
         _AUTO_CODEGEN_FAILURES[key],
+        emit=first,
     )
 
 
@@ -552,7 +554,7 @@ def _warn_if_rows_start_off_the_current_state(model, what, remedy):
     core = model._core
     if np.array_equal(core.get_initial_state(), core.get_state(), equal_nan=True):
         return
-    warnings.warn(
+    _notices.warn(
         f"{what} from the model's initial conditions (Model.reset), not from its "
         "current state, which differs from them (a set_concentration, or the end of "
         f"a run). {remedy} Such a start does not follow an initial-condition "
@@ -562,7 +564,8 @@ def _warn_if_rows_start_off_the_current_state(model, what, remedy):
         "(issue #1528). Call Model.reset() first where the initial conditions are the "
         "start you want, as they are for such a dose.",
         UserWarning,
-        stacklevel=_stacklevel_outside_bngsim(),
+        code="start.rows_from_initial",
+        stacklevel=_notices.OUTSIDE,
     )
 
 
@@ -668,14 +671,15 @@ def _warn_if_start_restarts_the_clock(
         started_from = "initial" if _same_values(state, initial) else "live"
     if started_from == "initial":
         return
-    warnings.warn(
+    _notices.warn(
         f"{what} starts at t = {t_start:.12g} from the state the last run left at "
         f"t = {t_end:.12g}, not from the model's initial conditions: the state lives "
         "in the Model, and each run writes its end state back to it, so this "
         f"continues that run with its clock set back. {remedy} Result.started_from "
         "records which start a run had (issue #1701).",
         LiveStartWarning,
-        stacklevel=_stacklevel_outside_bngsim(),
+        code="start.continues_last_run",
+        stacklevel=_notices.OUTSIDE,
     )
 
 
@@ -997,6 +1001,8 @@ class Simulator:
         "_continues_trajectory",
         # NFsim-specific
         "_xml_path",
+        # Issue #1703: {"path", "sha256"} of the XML a network-free run reads.
+        "_xml_record",
         # PSA-specific
         "_poplevel",
         # ODE Jacobian strategy
@@ -1124,6 +1130,7 @@ class Simulator:
         self._method = dispatch  # internal dispatch key
         self._canonical_method = canonical
         self._xml_path = xml_path
+        self._xml_record: dict[str, Any] | None = None
         self._rm_clock_offset = False
         # nf/rm: the ids of the XML's <Parameter> elements, None when the XML
         # cannot be read (issue #1360).
@@ -2463,7 +2470,9 @@ class Simulator:
             # The guard above already refused anything whose ∂t*/∂p is needed
             # but unavailable, so reaching here means detection worked once and
             # failed now. Warn rather than silently zero the event-time column.
-            logger.warning(
+            _notices.log(
+                logger,
+                "sens.detection_failed",
                 "Event-time sensitivity detection failed (%s); any event-time "
                 "parameter's gradient will be zero (issue #49).",
                 e,
@@ -2587,7 +2596,12 @@ class Simulator:
         try:
             pulses = smooth_pulse_stops(model._core, float(t_start), float(t_end))
         except Exception as e:  # pragma: no cover - defensive
-            logger.warning("Smooth-pulse stop resolution failed (%s) (issue #1286).", e)
+            _notices.log(
+                logger,
+                "stops.detection_failed",
+                "Smooth-pulse stop resolution failed (%s) (issue #1286).",
+                e,
+            )
             pulses = []
         if not conditions and not table_breaks and not pulses:
             return conditions
@@ -2671,7 +2685,9 @@ class Simulator:
             # Resolution is best-effort: failing it leaves the pre-#305 stepping,
             # which is correct wherever it completes at all. Warn rather than
             # break a run whose crossing may be perfectly reachable.
-            logger.warning(
+            _notices.log(
+                logger,
+                "stops.detection_failed",
                 "Discontinuity crossing-stop resolution failed (%s); the "
                 "integrator will approach each crossing unclamped (issue #305).",
                 e,
@@ -2983,7 +2999,9 @@ class Simulator:
                 except (TriggerEqualityNeverHolds, StopsMoveWithAnEvent) as e:
                     raise SimulationError(str(e)) from None
                 except Exception as e:  # pragma: no cover - defensive
-                    logger.warning(
+                    _notices.log(
+                        logger,
+                        "stops.detection_failed",
                         "Discontinuity crossing resolution failed (%s); the SSA "
                         "continuous loop will step without breakpoints (issue #719).",
                         e,
@@ -3118,7 +3136,9 @@ class Simulator:
             # that may not have a switch time at all. Warn, though — for a model
             # that DOES fit one, this is the difference between a gradient and a
             # silent zero.
-            logger.warning(
+            _notices.log(
+                logger,
+                "sens.detection_failed",
                 "Switch-time sensitivity detection failed (%s); any switch-time "
                 "parameter's gradient will be zero (issue #48).",
                 e,
@@ -3273,7 +3293,9 @@ class Simulator:
             # warns about. Degrading beats breaking a run that may have no state
             # switch at all — but say so, because for a model that DOES cross one
             # this is the difference between a gradient and a wrong gradient.
-            logger.warning(
+            _notices.log(
+                logger,
+                "sens.detection_failed",
                 "State-switch sensitivity detection failed (%s); a rate-law condition "
                 "that reads model state will not have its crossing jump applied "
                 "(issue #150).",
@@ -3318,7 +3340,9 @@ class Simulator:
             except Exception as e:  # pragma: no cover - defensive
                 # Without the map the solver judges each crossing's continuity
                 # over the whole right-hand side, as it did before issue #763.
-                logger.warning(
+                _notices.log(
+                    logger,
+                    "sens.detection_failed",
                     "State-switch reaction map failed (%s); continuity at each "
                     "crossing is judged over every species (issue #763).",
                     e,
@@ -3362,7 +3386,9 @@ class Simulator:
         try:
             equalities = [atom for atom, _ in rate_law_equalities(core, ctx)]
         except Exception as e:  # pragma: no cover - defensive
-            logger.warning(
+            _notices.log(
+                logger,
+                "equality.detection_failed",
                 "Rate-law equality detection failed (%s); a state that leaves one is not "
                 "watched (issue #1279).",
                 e,
@@ -3385,7 +3411,9 @@ class Simulator:
                 for equality in equalities
             ]
         except Exception as e:
-            logger.warning(
+            _notices.log(
+                logger,
+                "equality.detection_failed",
                 "The state switches inside a rate-law equality were not found (%s); a "
                 "leaving at one's crossing is refused (issue #1279).",
                 e,
@@ -3395,7 +3423,9 @@ class Simulator:
         try:
             reactions = state_switch_reactions(core, equalities, ctx)
         except Exception as e:
-            logger.warning(
+            _notices.log(
+                logger,
+                "equality.detection_failed",
                 "Rate-law equality reaction map failed (%s); a leaving is judged over "
                 "every reaction's flux (issue #1279).",
                 e,
@@ -4204,6 +4234,160 @@ class Simulator:
         result._ar_sens_blocked = ar_blocked
         return result
 
+    def _atol_asked(self, atol: AtolLike | None) -> Any:
+        """The absolute tolerance a call was asked for, for its record (issue
+        #1703): the call's ``atol=``, else the Simulator's
+        :meth:`set_tolerances`, else ``None``, the default."""
+        if isinstance(atol, _Ceiling):
+            # A call's own resolved scalar, handed back to run() (a scan's
+            # point); the call that resolved it records what it was asked.
+            return float(atol.scalar)
+        if atol is not None:
+            return _record.atol_given(atol)
+        if not self._atol_set:
+            return None
+        if self._atol_track is not None:
+            return repr(self._atol_track)
+        if self._atol_vec is not None:
+            return [float(x) for x in self._atol_vec]
+        if self._atol_exact:
+            return repr(ExactAtol(self._atol))
+        return float(self._atol)
+
+    def _xml_source(self) -> dict[str, Any]:
+        """The BNG-XML file a network-free run read, ``{"path", "sha256"}``,
+        for the run's record (issue #1703): the model the engine ran, where
+        the Model's own source is the network it was loaded from. Hashed once
+        a Simulator, as the engine read it once."""
+        held = self._xml_record
+        if held is None:
+            import hashlib
+
+            path = os.path.abspath(os.fspath(self._xml_path)) if self._xml_path else None
+            try:
+                digest = hashlib.sha256(Path(path).read_bytes()).hexdigest() if path else None
+            except OSError:
+                digest = None
+            held = {"path": path, "sha256": digest}
+            self._xml_record = held
+        return dict(held)
+
+    @staticmethod
+    def _jacobian_used(opts: Any, core: Any) -> str:
+        """The Jacobian an ODE attempt made with *opts* on *core* used, as the
+        engine chooses its callback (cvode_simulator.cpp): the analytical one
+        where it was asked for (``"auto"`` or ``"analytical"``) and the model
+        has it complete, else a difference quotient. Read off the attempt that
+        returned, whose ``opts.jacobian`` a GH #176 retry set to ``"fd"``; not
+        off :attr:`jacobian_strategy`, which another row's retry on another
+        thread can change meanwhile (issue #1703)."""
+        if opts.jacobian == "jax":
+            return "jax"
+        if opts.jacobian in ("auto", "analytical") and bool(
+            getattr(core, "analytical_jacobian_complete", False)
+        ):
+            return "analytical"
+        return "difference_quotient"
+
+    def _record_run(
+        self,
+        result: Result,
+        params: tuple[Any, Any],
+        *,
+        began: float,
+        t_start: float,
+        t_end: float,
+        n_points: int,
+        sample_times: Sequence[float] | None,
+        timeout: float | None,
+        rtol: float | None = None,
+        atol: AtolLike | None = None,
+        resolved: _ResolvedAtol | None = None,
+        max_steps: int | None = None,
+        max_step: float | None = None,
+        steady_state: bool = False,
+        steady_state_tol: float | None = None,
+        carry_sensitivities: bool = False,
+        start: str | None = None,
+        jacobian: str | None = None,
+    ) -> None:
+        """Leave on *result* what its record says of its run (issue #1703):
+        what the call was asked and what it did, the parameter values it
+        started with (*params*, from :func:`bngsim._record.parameter_values`
+        before the run), and which code ran. *began* is the call's
+        ``time.perf_counter()``. For an ODE run, *resolved* is the absolute
+        tolerance the solver was given and *jacobian* the one its returned
+        attempt used (:meth:`_jacobian_used`)."""
+        ode = self._method == "ode"
+        sens = bool(self._sensitivity_params or self._sensitivity_ic)
+        info, values = params
+        timed = ode and resolved is not None
+        if timed:
+            # The solver's own list, shared, not copied: a run_until loop reuses
+            # one, and nothing writes into one once it is made.
+            result._run_atol = resolved.vector  # type: ignore[union-attr]
+        ssa = self._method in ("ssa", "psa")
+        result._run_info = _record.RunCapture(
+            method=self._method,
+            requested_method=self._requested_method,
+            t_start=t_start,
+            t_end=t_end,
+            n_points=n_points,
+            sample_times=sample_times,
+            start=start,
+            rtol=rtol if ode else None,
+            atol_given=self._atol_asked(atol) if timed else None,
+            atol_scalar=resolved.scalar if timed else None,  # type: ignore[union-attr]
+            atol_decades=resolved.decades if timed else None,  # type: ignore[union-attr]
+            max_steps=max_steps if ode else None,
+            max_step=max_step if ode else None,
+            steady_state=steady_state,
+            steady_state_tol=steady_state_tol if steady_state and steady_state_tol else None,
+            carry_sensitivities=carry_sensitivities,
+            sensitivity_params=tuple(self._sensitivity_params) if ode and sens else (),
+            sensitivity_ic=tuple(self._sensitivity_ic) if ode and sens else (),
+            sensitivity_method=self._sensitivity_method if ode and sens else None,
+            poplevel=self._poplevel if self._method == "psa" else None,
+            stop_conditions=(
+                tuple(sc.record_name() for sc in self._stop_conditions)
+                if self._stop_conditions
+                else ()
+            ),
+            xml=self._xml_source() if self._method in ("nfsim", "rulemonkey") else None,
+            timeout=timeout or None,
+            wall_time_s=time.perf_counter() - began,
+            rhs=(
+                ("interpreted" if self.codegen_backend == "exprtk" else self.codegen_backend)
+                if ode
+                else None
+            ),
+            jacobian=jacobian if ode else None,
+            jacobian_requested=self._jacobian if ode else None,
+            jacobian_retried=(
+                _notices.seen("jacobian.difference_quotient_retry") if ode else None
+            ),
+            linear_solver=result._solver_stats.get("linear_solver") if ode else None,
+            linear_solver_requested=(
+                (
+                    "dense"
+                    if self._force_dense_linear_solver
+                    else "sparse"
+                    if self._force_sparse_linear_solver
+                    else "auto"
+                )
+                if ode
+                else None
+            ),
+            sensitivity_rhs=(
+                ("analytic" if self._codegen_provides_sens_rhs() else "difference_quotient")
+                if ode and sens
+                else None
+            ),
+            propensities=result._ssa_diagnostics.get("propensity_backend") if ssa else None,
+        )
+        result._run_params = (info.param_names, values)
+        result._model_info = info
+
     def _ar_sensitivity_metadata(
         self, model: Model | None = None
     ) -> tuple[dict[str, tuple[str, str, float, str]], frozenset[str]]:
@@ -4495,7 +4679,7 @@ class Simulator:
                 setattr(result, sp_attr, out)
         if refused:
             result._ar_sens_refused = frozenset(refused) | result._ar_sens_refused
-            warnings.warn(
+            _notices.warn(
                 f"Assignment-rule species {sorted(refused)} have NaN or infinite entries "
                 "in their Result.sensitivities row: the chain rule through the assignment "
                 "is not available for them, because codegen declined the rule's own "
@@ -4510,6 +4694,7 @@ class Simulator:
                 "a gradient. Result.ar_sensitivity_refused lists them, and "
                 "Result.output_sensitivities('species:<name>') raises with the "
                 "specific reason.",
+                code="sens.nan_rows",
                 stacklevel=2,
             )
 
@@ -4719,7 +4904,7 @@ class Simulator:
             setattr(result, sp_attr, out)
         if refused:
             result._ar_sens_refused = frozenset(refused) | result._ar_sens_refused
-            warnings.warn(
+            _notices.warn(
                 f"Species {sorted(refused)} have NaN or infinite entries in their "
                 "Result.sensitivities row. Each is an amount reported as a concentration in "
                 "a compartment whose size changes, so its row needs the derivative of that "
@@ -4728,6 +4913,7 @@ class Simulator:
                 "expression, or codegen declined it (GH #198). NaN rather than the "
                 "derivative of the stored amount, which is what the row held before (issue "
                 "#742). Result.ar_sensitivity_refused lists them.",
+                code="sens.nan_rows",
                 stacklevel=2,
             )
 
@@ -5552,6 +5738,14 @@ class Simulator:
             # A prior run on this Simulator already proved the analytical attempt
             # is doomed for this model — go straight to FD, no wasted attempt.
             opts.jacobian = "fd"
+            # Said on the run's record only: the retry was logged once already.
+            _notices.note(
+                "notice",
+                "jacobian.difference_quotient_kept",
+                "An earlier run on this Simulator failed with the analytical Jacobian "
+                "and was retried with the finite-difference one (GH#176); this run used "
+                "the finite-difference Jacobian from the start.",
+            )
             return sim.run(times, opts)
         try:
             return sim.run(times, opts)
@@ -5571,7 +5765,9 @@ class Simulator:
             # blamed the rate law (issue #1501).
             if "(CV_TOO_CLOSE)" in str(e):
                 raise
-            logger.warning(
+            _notices.log(
+                logger,
+                "jacobian.difference_quotient_retry",
                 "GH#176 analytical Jacobian: CVODE integration failed (%s); "
                 "retrying with the finite-difference Jacobian. The rate law is "
                 "likely discontinuous in a state variable (e.g. an if() whose "
@@ -5589,6 +5785,7 @@ class Simulator:
             self._ode_jacobian_fell_back = True
             return result
 
+    @_notices.collected
     def run(
         self,
         t_span: tuple[float, float] = (0.0, 100.0),
@@ -5834,7 +6031,9 @@ class Simulator:
             raise call_error("run", _SIGNATURES["run"], locals(), _extra, _foreign)
         from bngsim._bngsim_core import TimeSpec
 
+        began = time.perf_counter()  # the record's wall time (issue #1703)
         times = TimeSpec()
+        sorted_times: list[float] | None = None
 
         # Issue #1504 — every time finite, before anything is sorted or run: a
         # NaN or inf target sent CVODE toward a time it never reaches, inside one
@@ -5976,6 +6175,8 @@ class Simulator:
             undo_reset = self._capture_start_undo()
             self._model.reset()
         started_from, start_state = _start_record(core)
+        # And the parameter values it starts with, for its record (issue #1703).
+        start_params = _record.parameter_values(self._model)
         # A sensitivity run from a carried state is refused by the engine, with
         # its own remedy (carry_sensitivities=True, GH #210; issue #1528), which
         # a warning first would only bury, and stop under `-W error`.
@@ -6012,6 +6213,12 @@ class Simulator:
         # The per-species atol the run integrates at, for the warning below: where
         # no caller chose one, the vector the species' scales gave (issue #1420).
         atol_vector: list[float] | None = None
+        # What the solver was given, for the record (issue #1703).
+        resolved_atol: _ResolvedAtol | None = None
+        eff_max_step: float | None = None
+        run_rtol: float | None = None
+        run_max_steps: int | None = None
+        run_jacobian: str | None = None
         try:
             if self._method == "ode":
                 from bngsim._bngsim_core import SolverOptions
@@ -6034,6 +6241,7 @@ class Simulator:
                 atol_vector = resolved_atol.vector
                 track_decades = resolved_atol.decades
                 opts.max_steps = max_steps if max_steps is not None else self._max_steps
+                run_rtol, run_max_steps = opts.rtol, opts.max_steps
                 opts.jacobian = self._jacobian
                 opts.force_dense_linear_solver = self._force_dense_linear_solver
                 opts.force_sparse_linear_solver = self._force_sparse_linear_solver
@@ -6112,6 +6320,7 @@ class Simulator:
                     opts.set_jax_jac_fn(_jax_callback)
 
                 core_result = self._run_ode_with_jacobian_fallback(times, opts)
+                run_jacobian = self._jacobian_used(opts, self._model._core)
             elif self._method == "ssa":
                 self._apply_ssa_breakpoints([self._sim], self._model, t_start, t_end)
                 core_result = self._sim.run(times, used_seed, timeout_seconds)
@@ -6192,6 +6401,26 @@ class Simulator:
         )
         result._started_from = started_from
         result._start_state = start_state
+        self._record_run(
+            result,
+            start_params,
+            began=began,
+            t_start=t_start,
+            t_end=t_end,
+            n_points=n_points,
+            sample_times=sorted_times,
+            timeout=timeout,
+            rtol=run_rtol,
+            atol=atol,
+            resolved=resolved_atol,
+            max_steps=run_max_steps,
+            max_step=eff_max_step,
+            steady_state=steady_state,
+            steady_state_tol=ss_tol_value,
+            carry_sensitivities=carry_sensitivities,
+            start=start,
+            jacobian=run_jacobian,
+        )
 
         # Issue #553 — the interactive clock moves with the state, here, rather
         # than in the caller after run() returns. The backend has written the
@@ -6314,6 +6543,9 @@ class Simulator:
         if per_result is None:
             per_result = [atol] * len(results)
         found: dict[str, None] = {}  # ordered, and no list scan per species
+        # Each result's own, for its notice (issue #1703): a batch row that
+        # held every species to its scale is not told of another row's.
+        own_hits: list[tuple[Result, list[str]]] = []
         for result, vector in zip(results, per_result, strict=True):
             own = dict(zip(model.species_names, vector, strict=True)) if vector is not None else {}
             species = np.asarray(result._species, dtype=np.float64)
@@ -6333,15 +6565,39 @@ class Simulator:
                 & (peaks < limits)
                 & (peaks >= self._ATOL_SCALE_RELEVANT * largest)
             )
-            hits = zip(result._species_names, below, strict=True)
-            found.update((name, None) for name, hit in hits if hit)
+            hit = [name for name, flag in zip(result._species_names, below, strict=True) if flag]
+            found.update((name, None) for name in hit)
+            if hit:
+                own_hits.append((result, hit))
         if not found:
             return
-        names = list(found)
+        several = len(results) > 1
+        if several:
+            for result, hit in own_hits:
+                _notices.add(
+                    result,
+                    _notices.Notice(
+                        AtolScaleWarning.__name__,
+                        "atol.below_scale",
+                        self._atol_scale_message(hit, call),
+                    ),
+                )
+        # One warning for the call, naming the species of every result. Of a
+        # batch or a scan, each result that holds one has its notice above.
+        _notices.warn(
+            self._atol_scale_message(list(found), call),
+            AtolScaleWarning,
+            code="atol.below_scale",
+            stacklevel=_notices.OUTSIDE,
+            record=not several,
+        )
+
+    def _atol_scale_message(self, names: list[str], call: str) -> str:
+        """The :meth:`_warn_atol_above_scale` warning, of *names*."""
         shown = ", ".join(repr(n) for n in names[:5]) + (
             f" and {len(names) - 5} more" if len(names) > 5 else ""
         )
-        warnings.warn(
+        return (
             f"{len(names)} species of this {call} stay below their absolute tolerance "
             f"(atol={self._atol:g} or less) throughout, while reaching at least "
             f"{self._ATOL_SCALE_RELEVANT:g} of the largest species: {shown}. The run "
@@ -6350,13 +6606,12 @@ class Simulator:
             "species' scale from the state the run starts from, and these start at 0 or "
             "below every scale that state gives; pass atol='tracking' (a tolerance that "
             "follows each species' magnitude), or an atol well below these species "
-            "(issues #1361, #1420).",
-            AtolScaleWarning,
-            stacklevel=_stacklevel_outside_bngsim(),
+            "(issues #1361, #1420)."
         )
 
     # ─── Batch ──────────────────────────────────────────────────────
 
+    @_notices.collected
     def run_batch(
         self,
         t_span: tuple[float, float] = (0.0, 100.0),
@@ -6578,6 +6833,9 @@ class Simulator:
         # row was held to it. X -> Y at 1 run to t = 30 first, then batched over
         # k, took 309 and 429 steps for the 153 and 176 the same rows take on a
         # fresh model, and other numbers.
+        # What the rows' records say of the model, made once here so that every
+        # clone below shares it (issue #1703).
+        _record.model_info(self._model)
         rows_reset = self._model.clone()
         rows_reset.reset()
         batch_reading = None
@@ -6701,6 +6959,7 @@ class Simulator:
                 max_step=effective_max_step,
                 model=self._model,
                 atol_of=atol_of,
+                asked_atol=atol,
             )
 
         if num_processors is not None and num_processors > 1:
@@ -6724,7 +6983,7 @@ class Simulator:
         logger.info("Batch complete: %d results", len(results))
         if in_workers:
             for r in results:
-                _warn_one_sided(r._one_sided_sensitivities)
+                _warn_one_sided(r._one_sided_sensitivities, note=False)
         if self._atol_is_default(atol):
             self._warn_atol_above_scale(results, "ODE batch", per_result=row_atols)
 
@@ -6738,6 +6997,7 @@ class Simulator:
             return Result.squeeze(results)
         return results
 
+    @_notices.collected
     def run_replicates(
         self,
         n_replicates: int,
@@ -6874,11 +7134,17 @@ class Simulator:
         # a summary of each would otherwise hash the same vector once per row.
         start_digest = _state_digest(start_vector)
 
+        # One set of parameters for every replicate, for each one's record
+        # (issue #1703).
+        start_params = _record.parameter_values(self._model)
+
+        @_notices.collected
         def _run_one(sim: Any, model: Model, times: Any, i: int) -> Result:
             # reset() zeroes time and clears what the last replicate left
             # behind; the state and the carry-over go back to the call's. The
             # simulator (hence the cached dependency graph) is reused. A fresh
             # seed per replicate makes each trajectory independent.
+            began = time.perf_counter()
             model.reset()
             model.set_state(start_state)
             self._restore_carryover_state(start_carry, model._core)
@@ -6898,6 +7164,16 @@ class Simulator:
             r._started_from = started_from
             r._start_state = start_vector
             r._start_state_sha256 = start_digest
+            self._record_run(
+                r,
+                start_params,
+                began=began,
+                t_start=t_start,
+                t_end=t_end,
+                n_points=n_points,
+                sample_times=None,
+                timeout=eff_timeout,
+            )
             self._warn_ssa_boundary(r)
             return r
 
@@ -7468,6 +7744,7 @@ class Simulator:
         core.advanced_since_baseline = advanced
         core.set_event_carry_state(events)
 
+    @_notices.collected
     def parameter_scan(
         self,
         parameter: str,
@@ -7888,6 +8165,11 @@ class Simulator:
                     result = stop.result
                 result.custom_attrs["scan_parameter"] = parameter
                 result.custom_attrs["scan_value"] = float(value)
+                held = result._run_info
+                if isinstance(held, _record.RunCapture) and held.atol_scalar is not None:
+                    # The point ran at the tolerance the scan resolved; what the
+                    # scan was asked is the point's to record (issue #1703).
+                    result._run_info = held._replace(atol_given=self._atol_asked(atol))
                 results.append(result)
                 point_atols.append(point_atol.vector if isinstance(point_atol, _Ceiling) else None)
         finally:
@@ -8003,6 +8285,7 @@ class Simulator:
             scratch.set_params({n: v for n, v in held.items() if n in derived})
         return starts
 
+    @_notices.collected
     def _run_single_batch(
         self,
         index: int,
@@ -8019,6 +8302,7 @@ class Simulator:
         max_step: float | None = None,
         model: Model | None = None,
         atol_of: Callable[[int, Model], _ResolvedAtol] | None = None,
+        asked_atol: AtolLike | None = None,
     ) -> Result:
         """Run a single simulation in a batch (thread-safe).
 
@@ -8027,14 +8311,20 @@ class Simulator:
         row it was built for, and a row cut from it ran at that row's values.
 
         *atol_of* gives the row's tolerance from its index and its clone, where
-        that is the row's own and not *atol_spec* (issue #1660).
+        that is the row's own and not *atol_spec* (issue #1660). *asked_atol*
+        is the ``atol=`` the batch was called with, for the row's record.
         """
         from bngsim._bngsim_core import TimeSpec
 
+        began = time.perf_counter()
         clone = (self._model if model is None else model).clone()
         clone.set_params(pset)
         clone.reset()
         self._raise_if_row_is_attached_otherwise(index, clone)
+        # Where the row starts, its initial conditions by construction, and
+        # the parameters it starts with, for its record (issues #1701, #1703).
+        row_started, row_start_state = _start_record(clone._core)
+        start_params = _record.parameter_values(clone)
 
         times = TimeSpec()
         times.t_start = t_span[0]
@@ -8044,6 +8334,7 @@ class Simulator:
         # This row's ∂x(0)/∂θ rows (issue #155); None for an IC-only request,
         # which has no `parameter` axis to describe.
         row_ic_seed: dict[str, dict[str, float]] | None = None
+        row_jacobian: str | None = None
         try:
             if self._method == "ode":
                 from bngsim._bngsim_core import (
@@ -8138,6 +8429,7 @@ class Simulator:
                     self._restore_carryover_state(start_carry, row_core)
 
                 core_result = self._ode_attempts(times, opts, restore, sim=sim, core=row_core)
+                row_jacobian = self._jacobian_used(opts, row_core)
 
             elif self._method in ("ssa", "psa"):
                 sim = self._new_ssa_engine(clone._core)
@@ -8197,10 +8489,33 @@ class Simulator:
         # size, not the parent's (issue #743), and a squeezed batch is stacked
         # from rows already remapped, where stamping the stack skipped every
         # remap (issue #698).
-        return self._stamp(result, model=clone)
+        result = self._stamp(result, model=clone)
+        result._started_from = row_started
+        result._start_state = row_start_state
+        ode = self._method == "ode"
+        self._record_run(
+            result,
+            start_params,
+            began=began,
+            t_start=t_span[0],
+            t_end=t_span[1],
+            n_points=n_points,
+            sample_times=None,
+            timeout=timeout_seconds,
+            rtol=rtol,
+            atol=asked_atol,
+            resolved=atol_spec if ode else None,
+            max_steps=max_steps,
+            max_step=max_step if max_step is not None and max_step > 0.0 else None,
+            steady_state=steady_state,
+            steady_state_tol=steady_state_tol,
+            jacobian=row_jacobian,
+        )
+        return result
 
     # ─── Parallel sensitivity ───────────────────────────────────────
 
+    @_notices.collected
     def compute_all_sensitivities(
         self,
         t_span: tuple[float, float] = (0.0, 100.0),
@@ -8439,7 +8754,7 @@ class Simulator:
             ]
 
             if folded:
-                warnings.warn(
+                _notices.warn(
                     f"compute_all_sensitivities: skipping {len(folded)} parameter(s) "
                     f"{_abbreviate(folded)} that the model was built with as numbers: "
                     "each was read once at load (for a compartment's size, a "
@@ -8450,11 +8765,12 @@ class Simulator:
                     "Model.frozen_params). The returned tensor has "
                     f"{len(target_params)} parameter columns; result.sensitivity_params "
                     "lists them.",
+                    code="sens.parameters_skipped",
                     stacklevel=2,
                 )
             skipped = sorted(refused_sizes)
             if skipped:
-                warnings.warn(
+                _notices.warn(
                     f"compute_all_sensitivities: skipping compartment size(s) {skipped} "
                     f"— this model cannot resolve them to live volumes, so set_param "
                     f"refuses to write them and their sensitivity column would be the "
@@ -8465,10 +8781,11 @@ class Simulator:
                     f"to make the refusal explicit, or finite-difference through a "
                     f"rebuild (Model.from_sbml(..., compartment_sizes={{...}}) at "
                     f"V ± h).",
+                    code="sens.parameters_skipped",
                     stacklevel=2,
                 )
             if derived:
-                warnings.warn(
+                _notices.warn(
                     f"compute_all_sensitivities: skipping {len(derived)} derived "
                     f"parameter(s) {_abbreviate(derived)} — each is a constant "
                     f"expression over other parameters, so its column is not "
@@ -8483,6 +8800,7 @@ class Simulator:
                     f"d(x)/d(that parameter) on its own terms — a column that treats "
                     f"it as an independent axis, which is what it becomes once "
                     f"set_param overrides its expression.",
+                    code="sens.parameters_skipped",
                     stacklevel=2,
                 )
             if internal:
@@ -8511,7 +8829,7 @@ class Simulator:
                         f"compartment size itself instead, an ordinary writable "
                         f"parameter since #170."
                     )
-                warnings.warn(
+                _notices.warn(
                     f"compute_all_sensitivities: skipping {len(internal)} internal "
                     f"parameter(s) {_abbreviate(sorted(internal))} — each is a slot "
                     f"bngsim synthesized rather than a knob the model declared, so "
@@ -8520,6 +8838,7 @@ class Simulator:
                     f"meaning (issue #203).{why} The returned tensor has "
                     f"{len(target_params)} parameter columns; "
                     f"result.sensitivity_params lists them.",
+                    code="sens.parameters_skipped",
                     stacklevel=2,
                 )
 
@@ -8631,6 +8950,9 @@ class Simulator:
         )
         effective_max_steps = max_steps if max_steps is not None else self._max_steps
 
+        # Each chunk collects its own notices, on whatever thread it runs, and
+        # the stitched result gathers them (issue #1703).
+        @_notices.collected
         def _run_chunk(chunk_idx: int) -> Result:
             """Run one sensitivity chunk (thread-safe)."""
             chunk_params = chunks[chunk_idx]
@@ -8645,6 +8967,7 @@ class Simulator:
                     effective_max_steps,
                 )
 
+        @_notices.collected
         def _recover_chunk(chunk_idx: int, exc: BaseException) -> list[Result]:
             """Retry a failed chunk one column at a time (GH #243)."""
             if isinstance(exc, _ConditionReadOtherwise):
@@ -8705,6 +9028,11 @@ class Simulator:
 
         # Stitch sensitivity tensors along param axis
         stitched = self._stitch_sensitivity_results(chunk_results, target_params)
+        # The chunks' notices, but for their one-sided switches, each said of a
+        # chunk's columns: the stitched result says them once, of all of them.
+        stitched._notices = _notices.unique(
+            n for r in chunk_results for n in r._notices if n.code != "sens.one_sided"
+        )
         stitched._one_sided_sensitivities = _merge_one_sided(chunk_results)
         _warn_one_sided(stitched._one_sided_sensitivities)
         # Carry the #198 support map so an unsupported expression selector raises
@@ -8802,7 +9130,7 @@ class Simulator:
                 else:
                     solo_ok.append(name)
             if not solo_failed:
-                warnings.warn(
+                _notices.warn(
                     f"compute_all_sensitivities: sensitivity chunk {chunk_idx} "
                     f"(params={chunk_params}) failed as a group but every one of its "
                     f"columns integrated on its own, so the tensor is complete and "
@@ -8812,6 +9140,7 @@ class Simulator:
                     f"controlled together and can decide whether the step is accepted "
                     f"(issue #243). Underlying failure: {exc}",
                     # user → compute_all_sensitivities → _recover_chunk → here
+                    code="sens.chunk_split",
                     stacklevel=4,
                 )
                 return solo_results
@@ -11419,11 +11748,12 @@ class Simulator:
         * the model is large enough for sparsity to matter
           (``n_species >= _DENSE_FALLBACK_WARN_NSPECIES``).
 
-        A KLU-enabled install never reaches the warning. The notice fires at
-        most once per process (see ``_dense_fallback_warned``).
+        A KLU-enabled install never reaches the warning. The warning fires at
+        most once per process (see ``_dense_fallback_warned``); the notice is on
+        every run it concerns (issue #1703).
         """
         global _dense_fallback_warned
-        if _dense_fallback_warned or _HAS_KLU:
+        if _HAS_KLU:
             return
         if self._force_dense_linear_solver or self._jacobian == "jax":
             return
@@ -11434,8 +11764,9 @@ class Simulator:
         if n_species < _DENSE_FALLBACK_WARN_NSPECIES:
             return
 
+        first = not _dense_fallback_warned
         _dense_fallback_warned = True
-        warnings.warn(
+        _notices.warn(
             f"This bngsim install was built WITHOUT SuiteSparse/KLU, so this "
             f"{n_species:,}-species ODE model will run on the DENSE linear "
             f"solver — it factorizes the full N×N Jacobian at O(N³), which for "
@@ -11449,7 +11780,9 @@ class Simulator:
             f"bngsim.capabilities()['features']['klu']. See GH #209. (Silence: "
             f"warnings.simplefilter('ignore', bngsim.DenseSolverFallbackWarning).)",
             DenseSolverFallbackWarning,
+            code="linear_solver.dense_without_klu",
             stacklevel=3,
+            emit=first,
         )
 
     @staticmethod
@@ -11466,31 +11799,33 @@ class Simulator:
         if diag["n_negative_crossings"] > 0:
             sp = diag["first_negative_species"]
             sp_txt = f" (first: {sp})" if sp else ""
-            warnings.warn(
+            _notices.warn(
                 f"SSA: a species count went negative {diag['n_negative_crossings']} "
                 f"time(s){sp_txt}. The SSA evaluates rate laws literally and does "
                 "not floor counts at zero (matching the ODE/CVODE path); enforce "
                 "non-negativity in the rate law itself, e.g. piecewise(X<=0, 0, k). "
                 "See result.ssa_diagnostics.",
                 SsaBoundaryWarning,
+                code="ssa.negative_count",
                 stacklevel=3,
             )
         n_rounded = int(diag.get("n_rounded_populations", 0))
         if n_rounded > 0:
             sp = diag.get("first_rounded_species", "")
             sp_txt = f" (first: {sp})" if sp else ""
-            warnings.warn(
+            _notices.warn(
                 f"SSA: {n_rounded} molecule count(s) were not whole numbers when the "
                 f"run started and were rounded to the nearest one{sp_txt}. The SSA "
                 "fires whole molecules; set whole-number counts to silence this. See "
                 "result.ssa_diagnostics.",
                 SsaRoundingWarning,
+                code="ssa.rounded_counts",
                 stacklevel=3,
             )
         if diag["n_reverse_fires"] > 0:
             rx = diag["first_reverse_reaction"]
             rx_txt = f" (first: {rx})" if rx else ""
-            warnings.warn(
+            _notices.warn(
                 f"SSA: a reaction fired in reverse {diag['n_reverse_fires']} "
                 f"time(s){rx_txt} because its rate law evaluated negative. The "
                 "reaction is run backward with propensity |rate| so the SSA mean "
@@ -11498,6 +11833,7 @@ class Simulator:
                 "split the reaction into explicit forward/reverse channels. See "
                 "result.ssa_diagnostics.",
                 SsaBoundaryWarning,
+                code="ssa.reverse_fire",
                 stacklevel=3,
             )
 
@@ -11637,10 +11973,20 @@ class Simulator:
         out._started_from = result._started_from
         out._start_state = result._start_state
         out._start_state_sha256 = result._start_state_sha256
+        # The run's record and notices (issue #1703): of the run it was cut
+        # from, which the cut does not change.
+        out._run_info = result._run_info
+        out._run_params = result._run_params
+        out._run_atol = result._run_atol
+        out._model_info = result._model_info
+        out._record_frozen = result._record_frozen
+        out._record_differs = result._record_differs
+        out._notices = result._notices
         return out
 
     # ─── Interactive simulation ─────────────────────────────────────
 
+    @_notices.collected
     def run_until(
         self,
         t: float,
@@ -12632,12 +12978,13 @@ class _StopArithmeticErrors:
 
     def warn(self, expression: str) -> None:
         if self.kinds:
-            warnings.warn(
+            _notices.warn(
                 f"{' and '.join(self.kinds)} encountered in stop condition {expression!r}; "
                 "each sample is read at the value numpy gives it, where NaN is not met "
                 "(issue #1556)",
                 RuntimeWarning,
-                stacklevel=_stacklevel_outside_bngsim(),
+                code="stop_condition.non_finite",
+                stacklevel=_notices.OUTSIDE,
             )
 
 
@@ -12650,6 +12997,11 @@ class _StopCondition:
     def check(self, result: Result) -> int | None:
         """Check condition. Returns time index or None."""
         raise NotImplementedError
+
+    def record_name(self) -> str:
+        """How a run's record names this condition (issue #1703): its label,
+        else its expression."""
+        return self.label or str(self)
 
 
 class _ExpressionStopCondition(_StopCondition):
@@ -12752,6 +13104,16 @@ class _CallableStopCondition(_StopCondition):
     ) -> None:
         super().__init__(label=label or repr(func))
         self._func = func
+        self._labeled = bool(label)
+
+    def record_name(self) -> str:
+        """The label given, else the callable's qualified name: its ``repr``,
+        the label it reports otherwise, holds a memory address, which would
+        make two runs of one script record differently (issue #1703)."""
+        if self._labeled:
+            return self.label
+        name = getattr(self._func, "__qualname__", None) or type(self._func).__qualname__
+        return f"callable {name}"
 
     def check(self, result: Result) -> int | None:
         """Call the function; if it returns a true value, the last time index.

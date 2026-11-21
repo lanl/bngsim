@@ -48,6 +48,7 @@ from collections.abc import Callable
 # #56). Both live in ``_codegen`` so the derived-parameter chain-rule path there
 # and this symbolic core share one implementation, with the import going one
 # way only.
+from bngsim import _notices
 from bngsim._codegen import (
     _BUILTIN_CONSTANT_VALUES,
     _PY_KEYWORD_PARAM_NAMES,
@@ -4626,7 +4627,9 @@ def attach_functional_jacobian(core) -> bool:
             )
             if n_species >= _FD_COSTLY_SPECIES:
                 # GH #187 option 3, as for the budget below: FD is costly at this size.
-                logger.warning(
+                _notices.log(
+                    logger,
+                    "jacobian.difference_quotient",
                     "GH#76 analytical Jacobian: %s; the model runs on the finite-difference "
                     "Jacobian, which needs ~%d RHS evaluations per Newton step.",
                     reason,
@@ -4714,7 +4717,9 @@ def attach_functional_jacobian(core) -> bool:
             # fires when the budget was forced finite below the model's needs — the
             # size-scaled default goes unbounded at _FD_NONVIABLE_SPECIES precisely
             # to avoid reaching here on a genome-scale model.
-            logger.warning(
+            _notices.log(
+                logger,
+                "jacobian.difference_quotient",
                 "GH#76 analytical Jacobian: build-time derivation exceeded the %.1fs "
                 "budget after %d/%d functional reactions (%.1fs elapsed) on a large "
                 "model (%d species); falling back to the finite-difference Jacobian, "

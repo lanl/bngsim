@@ -54,6 +54,7 @@ import threading
 import time
 from pathlib import Path
 
+from bngsim import _notices
 from bngsim._exceptions import CodegenToolchainError
 
 logger = logging.getLogger("bngsim")
@@ -177,8 +178,7 @@ def check() -> tuple[list[str] | None, str | None]:
         message = f"{err} {_FALLBACK}"
         with _lock:
             first = _keep_broken(toolchain_key(None), message)
-        if first:
-            logger.warning("%s", message)
+        _notices.log(logger, "codegen.toolchain", "%s", message, emit=first)
         return None, message
     return compiler, known_broken(compiler)
 
@@ -205,7 +205,11 @@ def known_broken(compiler: list[str]) -> str | None:
         if ok:
             del _verdicts[key]
             _warned.discard(key)
-            logger.warning("The C toolchain builds a codegen library again; codegen resumes.")
+            _notices.log(
+                logger,
+                "codegen.toolchain",
+                "The C toolchain builds a codegen library again; codegen resumes.",
+            )
             return None
         _verdicts[key] = (entry[0], time.monotonic())
         return entry[0]
@@ -245,8 +249,40 @@ def record_missing(compiler: list[str]) -> str | None:
     )
     with _lock:
         first = _keep_broken(toolchain_key(compiler), message)
-    if first:
-        logger.warning("%s", message)
+    _notices.log(logger, "codegen.toolchain", "%s", message, emit=first)
+    return message
+
+
+def found_from_anywhere(compiler: list[str]) -> bool:
+    """Whether ``compiler`` names the same file from any working directory: an
+    absolute path, or a bare name that PATH finds in an absolute directory. A
+    relative path such as ``./cc``, or a name found through a relative PATH
+    entry, is not; a sharded build runs from its scratch directory, where it is
+    not there."""
+    name = compiler[0]
+    if os.path.dirname(name):
+        return os.path.isabs(name)
+    return os.path.isabs(shutil.which(name) or "")
+
+
+def record_unstartable(compiler: list[str], err: OSError) -> str:
+    """When ``compiler`` is there but the system cannot start it (a script whose
+    ``#!`` interpreter is gone, a binary whose loader is), keep that as the
+    toolchain's verdict, log it once, and return it. Every build would fail the
+    same way, and the probe cannot tell this from a scratch directory it could
+    not write, so it is decided here. Only for a compiler
+    :func:`found_from_anywhere`."""
+    exe = shutil.which(compiler[0]) or compiler[0]
+    message = (
+        f"The C toolchain cannot build a codegen library: the system cannot start "
+        f"the compiler {exe!r}{' (from CC)' if os.environ.get('CC') else ''} "
+        f"({err.strerror or err}); a script whose interpreter is gone, for example, "
+        "fails this way. Reinstall the compiler, or set CC to one that runs. The "
+        f"toolchain is probed again after {_VERDICT_TTL:g} s. {_FALLBACK}"
+    )
+    with _lock:
+        first = _keep_broken(toolchain_key(compiler), message)
+    _notices.log(logger, "codegen.toolchain", "%s", message, emit=first)
     return message
 
 
@@ -301,8 +337,9 @@ def _probe(
     except subprocess.TimeoutExpired:
         return None, f"the probe build ran past {limit:g} s"
     except OSError as err:
-        # A compiler that is not there is caught before any probe
-        # (record_missing); anything else here is the scratch directory's.
+        # A compiler that is not there, or cannot be started, is caught before
+        # any probe (record_missing, record_unstartable); anything else here is
+        # the scratch directory's.
         return None, f"the probe could not be written or run ({err})"
     if result.returncode == 0:
         return True, ""
@@ -466,6 +503,5 @@ def classify_failure(compiler: list[str]) -> str | None:
             return None
         message = _broken_message(compiler, detail)
         first = _keep_broken(key, message)
-    if first:
-        logger.warning("%s", message)
+    _notices.log(logger, "codegen.toolchain", "%s", message, emit=first)
     return message

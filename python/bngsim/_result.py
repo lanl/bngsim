@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 import logging
 import threading
 import warnings
@@ -25,9 +26,10 @@ from typing import TYPE_CHECKING, Any, NoReturn, overload
 import numpy as np
 from numpy.typing import NDArray
 
-from bngsim import _foreign_names
+from bngsim import _foreign_names, _notices, _record
 from bngsim._exceptions import MissingFileError
 from bngsim._extension_handle import raise_cannot_pickle, shallow_copy
+from bngsim._notices import Notice
 
 if TYPE_CHECKING:
     from bngsim._bngsim_core import ResultCore
@@ -154,15 +156,18 @@ def _merge_one_sided(results: Iterable[Any]) -> list[tuple[float, dict[str, str]
     return sorted(by_t.items())
 
 
-def _warn_one_sided(entries: list[tuple[float, dict[str, str]]]) -> None:
-    if not entries or getattr(_HELD, "on", False):
+def _warn_one_sided(entries: list[tuple[float, dict[str, str]]], *, note: bool = True) -> None:
+    """Warn of each one-sided entry, and record it with the run (issue #1703)
+    unless *note* is False: a batch row held its warning and recorded it on
+    its own thread, and the caller's thread gives the warning alone."""
+    if not entries:
         return
+    held = getattr(_HELD, "on", False)
     from bngsim._exceptions import OneSidedSensitivityWarning
-    from bngsim._simulator import _stacklevel_outside_bngsim
 
     for t, named in entries:
         which = ", ".join(f"'{p}' {direction}" for p, direction in named.items())
-        warnings.warn(
+        _notices.warn(
             f"Forward sensitivity: the switch time at t={t:.6g} shares its instant with "
             "another that no requested parameter moves alone, and a rate law composes the "
             "two, so the run sits on a kink in the parameters that move this switch apart "
@@ -174,7 +179,10 @@ def _warn_one_sided(entries: list[tuple[float, dict[str, str]]]) -> None:
             "Every other column is an ordinary derivative (issue #1822). "
             "Result.one_sided_sensitivities lists these.",
             OneSidedSensitivityWarning,
-            stacklevel=_stacklevel_outside_bngsim(),
+            code="sens.one_sided",
+            stacklevel=_notices.OUTSIDE,
+            emit=not held,
+            record=note,
         )
 
 
@@ -315,6 +323,15 @@ class Result:
         "_started_from",
         "_start_state",
         "_start_state_sha256",
+        # Issue #1703: what the record says of the run, the model and the
+        # notices (bngsim._record builds Result.record from them).
+        "_run_info",
+        "_run_params",
+        "_run_atol",
+        "_model_info",
+        "_record_frozen",
+        "_record_differs",
+        "_notices",
         "_time",
         "_species",
         "_observables",
@@ -692,6 +709,23 @@ class Result:
         self._start_state: NDArray[np.float64] | None = None
         self._start_state_sha256: str | None = None
 
+        # Issue #1703: what Result.record says, set by the Simulator call that
+        # made the result (bngsim._record): what the run was asked and did, the
+        # parameter values (names, values) and per-species atol it started
+        # with, and what the model is. A stack or a file holds the parts as a
+        # dict instead (_record_frozen). None where nothing recorded them.
+        self._run_info: Any = None
+        self._run_params: tuple[tuple[str, ...], Any] | None = None
+        self._run_atol: Any = None
+        self._model_info: Any = None
+        self._record_frozen: dict[str, Any] | None = None
+        # Of a stack (squeeze): the record's paths at which its rows differ,
+        # each None in the stack's record. None for a single run.
+        self._record_differs: tuple[str, ...] | None = None
+        # The warnings, fallbacks and complaints of the call that made it,
+        # each once, in order (bngsim._notices).
+        self._notices: tuple[Notice, ...] = ()
+
         self.custom_attrs: dict[str, Any] = custom_attrs or {}
 
     # ─── Core data ──────────────────────────────────────────────────
@@ -751,11 +785,11 @@ class Result:
           :meth:`Simulator.run_until` step.
         - ``None``: not recorded. :meth:`Simulator.run` records it, and so do
           the calls made of it (``run_until``, ``parameter_scan``,
-          ``bifurcate``, a protocol's runs), ``run_replicates`` and
-          ``compute_all_sensitivities``. A ``run_batch`` row, which starts
-          from the initial conditions by construction (``Model.reset``), and a
-          file an earlier bngsim saved do not; nor does a :meth:`squeeze` of
-          rows that disagree on it.
+          ``bifurcate``, a protocol's runs), ``run_replicates``,
+          ``compute_all_sensitivities`` and, since issue #1703, a
+          ``run_batch`` row, which starts from the initial conditions by
+          construction (``Model.reset``). A file an earlier bngsim saved does
+          not; nor does a :meth:`squeeze` of rows that disagree on it.
 
         "Initial" means the start vector equals the initial conditions value
         for value. :attr:`start_state_sha256` tells two starts apart further.
@@ -786,6 +820,135 @@ class Result:
         if self._start_state_sha256 is None and self._start_state is not None:
             self._start_state_sha256 = _state_digest(self._start_state)
         return self._start_state_sha256
+
+    @property
+    def record(self) -> dict[str, Any]:
+        """What this result's numbers are and how its run went, in one
+        JSON-serializable dict (issue #1703).
+
+        Read it to say what a number is and how it was computed from the
+        result, not from memory of the script: the quantity each column holds,
+        the method, the tolerances as applied, where the run started, which
+        code ran, what the run warned of, the model file and the build.
+        :meth:`summary` returns it too, :meth:`save` keeps it, and
+        :meth:`to_xarray` carries it as a JSON string. Each read builds a new
+        dict.
+
+        Keys:
+
+        * ``schema_version``: 1. A change that removes or renames a key, or
+          changes what one holds, increments it.
+        * ``software``: ``bngsim``, the version, and ``build_commit``, the
+          commit the compiled extension was built from (``None`` where the
+          build did not record one).
+        * ``model``: where the model came from, as :meth:`Model.describe`'s
+          ``source`` gives it: ``format``, ``path`` and the file's ``sha256``
+          (``None`` each for a model built in Python).
+        * ``run``: ``method`` (``"ode"``, ``"ssa"``, ``"psa"``, ``"nfsim"``,
+          ``"rulemonkey"``) and ``requested_method`` as passed (``"nf"``);
+          ``t_start``, ``t_end`` and ``n_points`` the run was asked for, and
+          ``sample_times`` where they were given; ``start``, the ``start=``
+          the run was made with (``run_until`` and a scan's points make theirs
+          with ``"live"``), and ``started_from``, ``start_state_sha256`` and
+          ``start_state``, the state it began from (ordered like
+          :attr:`Model.species_names`, whose unreported states it includes);
+          ``parameters``, each parameter's value at the start, synthesized
+          slots left out; ``seed`` (as :attr:`seed`); for an ODE run
+          ``rtol``, ``atol`` (``given``, what the call or
+          :meth:`Simulator.set_tolerances` asked for, ``None`` for the
+          default; ``scalar``, ``per_species`` and ``tracking_decades``, what
+          the solver was given: ``per_species`` is ``None`` where the scalar
+          held every species, and the default and ``"auto"`` scale it from the
+          start, issue #1420), ``max_steps``, ``max_step``, ``steady_state``
+          and ``steady_state_tol`` (``None``: the default, from ``atol``),
+          ``carry_sensitivities``, ``sensitivity_params``,
+          ``sensitivity_ic`` and ``sensitivity_method``; ``poplevel`` for
+          PSA; ``xml``, the ``path`` and ``sha256`` of the BNG-XML file a
+          network-free method ran; ``stop_conditions``, each registered one
+          by its label (else its expression); ``timeout``; and
+          ``wall_time_s``, the seconds the call took to make this result.
+          A result a stop condition cut keeps the record of the run it was
+          cut from: ``time`` and :attr:`stop_condition` say where it ends.
+        * ``backend``: which code ran. ``rhs``: ``"interpreted"``, ``"cc"``
+          (compiled C) or ``"mir"`` (the in-process JIT); ``jacobian``:
+          ``"analytical"``, ``"difference_quotient"`` or ``"jax"``, as used;
+          ``jacobian_requested``; ``jacobian_retried``: True where this run's
+          analytical attempt failed and it was made again from its start with
+          a difference quotient (GH #176; a later run on the Simulator uses
+          the difference quotient from the start, and its notices say why);
+          ``linear_solver``: ``"dense"``, ``"klu"`` or ``"lapack_dense"``, and
+          ``linear_solver_requested`` (``"auto"``, ``"dense"``,
+          ``"sparse"``); ``sensitivity_rhs``: ``"analytic"`` or
+          ``"difference_quotient"`` on a sensitivity run; ``propensities``
+          for SSA and PSA: ``"interpreted"``, ``"cc"`` or ``"mir"``. ``None``
+          for a part a method does not have.
+        * ``time``: ``units``, the SBML unit id of time where the file
+          declares one.
+        * ``columns``: for each ``species`` and ``observables`` column, its
+          ``name``, ``quantity`` and ``compartment`` (and a species'
+          ``substance_units``); and ``compartments``, each one's ``size`` for
+          this run, ``size_varies`` (a rule or event moves it, and the column
+          divides by the size at each time; ``size`` is then ``None``) and
+          ``units``. ``quantity`` is ``"concentration"`` (an amount over its
+          compartment's size), ``"amount"``, ``"count"`` (a number of
+          molecules), or ``None`` where the model does not say. An SBML or
+          Antimony model's species columns are concentrations, under every
+          method: under a stochastic one, molecules over the size. Its
+          observable of one species is the species as the file declares it,
+          an amount (a count, under a stochastic method) where the file
+          declares the species in amounts. A ``.net`` or BNGL model's columns
+          are counts under a stochastic method, and ``None`` under ODE, whose
+          numbers are the file's, in units it does not state. bngsim converts
+          no unit.
+        * ``rows_differ``: of a :meth:`squeeze`, each path (``"run.seed"``,
+          ``"run.parameters.kf"``) whose value is ``None`` there because the
+          rows differ; ``None`` for a single run.
+        * ``notices``: :attr:`notices`.
+
+        Recorded by :meth:`Simulator.run` and the calls that make their
+        results with it (:meth:`~Simulator.run_until`,
+        :meth:`~Simulator.parameter_scan`, :meth:`~Simulator.bifurcate`, a
+        protocol's simulate actions), and by :meth:`~Simulator.run_batch` and
+        :meth:`~Simulator.run_replicates`. ``None`` for a part nothing
+        recorded: a :meth:`~Simulator.compute_all_sensitivities` result (which
+        has its notices), a network-free session's, a protocol action that
+        runs no time, a result built from arrays, or one loaded from a file an
+        earlier bngsim saved. In a :meth:`squeeze`, each value the rows hold
+        alike, and ``None`` where they differ, which ``rows_differ`` lists;
+        each row's own record is on the rows ``squeeze=False`` returns.
+
+        Values are Python floats, so a parameter of ``inf`` is written by
+        ``json.dumps`` as ``Infinity``, which strict JSON does not have.
+        """
+        return _record.record(self)
+
+    @property
+    def notices(self) -> list[dict[str, str]]:
+        """Every warning, fallback and solver complaint of the call that made
+        this result, each once (issue #1703): the run's own in the order it
+        gave them, then those of the call around it (a batch's, a scan's, a
+        ``run_until`` step's).
+
+        Each is a dict: ``category``, the warning's class name
+        (``"AtolScaleWarning"``), ``"log"`` for one the ``bngsim`` logger
+        gave, or ``"notice"`` for one given nowhere else; ``code``, a stable
+        key (``"jacobian.difference_quotient_retry"``, ``"atol.below_scale"``,
+        ``"start.continues_last_run"``, ...) whose wording does not change
+        between releases where the message may; and ``message``. A notice is
+        recorded here whether or not a warnings filter or a logging level let
+        it through: a warning the default filter shows only once is on every
+        result it concerns. A notice of a call about all its results (a
+        batch's rows that start from the initial conditions) is on each; one
+        about some of them (a row whose species stay below the tolerance) on
+        those alone.
+
+        Not here: what the :class:`Simulator` said when it was built (its SSA
+        validation, a compiler it could not use), which :attr:`record`'s
+        ``backend`` reflects; what a protocol says of its actions as it reads
+        them; and the lines SUNDIALS writes to standard error itself. An empty
+        list is a run that warned of nothing else.
+        """
+        return [n.as_dict() for n in self._notices]
 
     @property
     def ic_sensitivity_seed(self) -> dict[str, dict[str, float]] | None:
@@ -2584,7 +2747,9 @@ class Result:
         :attr:`stop_condition` the result was cut at as
         ``ds.attrs["stop_condition"]``. :attr:`started_from` and
         :attr:`start_state_sha256`, where recorded, are
-        ``ds.attrs["started_from"]`` and ``ds.attrs["start_state_sha256"]``.
+        ``ds.attrs["started_from"]`` and ``ds.attrs["start_state_sha256"]``,
+        and :attr:`record`, as :meth:`summary` gives it (without the start
+        vector), is ``ds.attrs["record"]``, a JSON string.
 
         Returns
         -------
@@ -2705,6 +2870,8 @@ class Result:
             attrs["started_from"] = self._started_from
         if self.start_state_sha256 is not None:
             attrs["start_state_sha256"] = self.start_state_sha256
+        # A string: a netCDF attribute holds no dict (issue #1703).
+        attrs["record"] = json.dumps(_record.record(self, start_state=False))
 
         return xr.Dataset(data_vars=data_vars, coords=coords, attrs=attrs)
 
@@ -2919,9 +3086,11 @@ class Result:
             (``None`` for an empty time grid), ``shapes`` (per-array shape
             lists), ``species_names``/``observable_names``/``expression_names``,
             the ``has_sensitivities*`` flags, ``sensitivity_params``,
-            ``sensitivity_ic_species``, ``solver_stats``, ``seed``, and
+            ``sensitivity_ic_species``, ``solver_stats``, ``seed``,
             ``started_from`` and ``start_state_sha256`` (where the run started,
-            issue #1701; see :attr:`started_from`).
+            issue #1701; see :attr:`started_from`), and ``record``
+            (:attr:`record`, issue #1703), without ``run.start_state``, the
+            start vector, which :meth:`save` keeps.
 
         Examples
         --------
@@ -2970,6 +3139,7 @@ class Result:
             "seed": self._seed,
             "started_from": self._started_from,
             "start_state_sha256": self.start_state_sha256,
+            "record": _record.record(self, start_state=False),
         }
 
     # ─── HDF5 save / load ──────────────────────────────────────────
@@ -3026,6 +3196,30 @@ class Result:
                 f.attrs["started_from"] = self._started_from
             if self.start_state_sha256 is not None:
                 f.attrs["start_state_sha256"] = self.start_state_sha256
+            # The record (issue #1703): its parts and notices as JSON, in a
+            # dataset, since an attribute holds at most 64 KiB and a large
+            # network's columns and parameters pass that; and the start vector,
+            # which summary() leaves out. Each written only where recorded, so
+            # the format version stands.
+            if self._start_state is not None:
+                f.create_dataset("start_state", data=np.asarray(self._start_state, dtype="<f8"))
+            parts = _record.frozen_parts(self)
+            if parts is not None or self._notices:
+                f.create_dataset(
+                    "record",
+                    data=json.dumps(
+                        {
+                            "parts": parts,
+                            "notices": [n.as_dict() for n in self._notices],
+                            "rows_differ": (
+                                None
+                                if self._record_differs is None
+                                else list(self._record_differs)
+                            ),
+                        }
+                    ),
+                    dtype=h5py.string_dtype(),
+                )
 
             # Core data
             f.create_dataset("time", data=self._time)
@@ -3363,6 +3557,21 @@ class Result:
             start_state_sha256 = (
                 _text(f.attrs["start_state_sha256"]) if "start_state_sha256" in f.attrs else None
             )
+            # Issue #1703: the record, the start vector and the notices. Absent
+            # in a file an earlier bngsim wrote, whose record then holds only
+            # what the fields above give it.
+            start_state = (
+                np.asarray(f["start_state"][()], dtype=np.float64) if "start_state" in f else None
+            )
+            record_parts: dict[str, Any] | None = None
+            notices: tuple[Notice, ...] = ()
+            rows_differ: tuple[str, ...] | None = None
+            if "record" in f:
+                held = json.loads(_text(f["record"][()]))
+                record_parts = held.get("parts")
+                notices = tuple(Notice(**n) for n in held.get("notices", ()))
+                if held.get("rows_differ") is not None:
+                    rows_differ = tuple(held["rows_differ"])
 
             # GH #155: absent ⇒ None, not recorded, as in a file that predates
             # saving the seed.
@@ -3447,6 +3656,10 @@ class Result:
         result._stop_condition = stop_condition
         result._started_from = started_from
         result._start_state_sha256 = start_state_sha256
+        result._start_state = start_state
+        result._record_frozen = record_parts
+        result._record_differs = rows_differ
+        result._notices = notices
         logger.info(
             "Loaded result: %d time points, %d species, %d observables",
             result.n_times,
@@ -3896,6 +4109,15 @@ class Result:
         out._ar_sens_blocked = frozenset().union(*(r._ar_sens_blocked for r in results))
         out._ar_sens_refused = frozenset().union(*(r._ar_sens_refused for r in results))
         out._started_from, out._start_state_sha256 = squeeze_start
+        if squeeze_start[1] is not None:
+            # One start for every row: its vector, for the record (issue #1703).
+            out._start_state = next(
+                (r._start_state for r in results if r._start_state is not None), None
+            )
+        # The record's parts the rows agree on, and every row's notices
+        # (issue #1703).
+        _record.squeeze_into(out, results)
+        out._notices = _notices.unique(n for r in results for n in r._notices)
         out._varvol_conc_factor = stack_conc
         out._varvol_amount_factor = stack_amount
         # A row loaded from a file that does not record its sizes leaves the

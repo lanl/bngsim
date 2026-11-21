@@ -5470,6 +5470,7 @@ def _sbml_record(
     return {
         "compartments": compartments,
         "species": {_safe_name(s): _safe_name(c) for s, c in species_comp.items()},
+        "units": _sbml_units(sbml_model, species_comp),
         "parameters": {
             _safe_name(sbml_model.getParameter(i).getId())
             for i in range(sbml_model.getNumParameters())
@@ -5490,6 +5491,58 @@ def _sbml_record(
             }
             for i in range(sbml_model.getNumFunctionDefinitions())
         ],
+    }
+
+
+def _sbml_units(sbml_model, species_comp: dict[str, str]) -> dict:
+    """The unit ids the file declares, for a Result's record (issue #1703), by
+    the names the model uses: ``time``, each species' substance units
+    (``species``) and each compartment's size units (``compartments``), or
+    ``None`` where the file declares none. A species or compartment without
+    its own takes the model's default: Level 3's ``substanceUnits``,
+    ``timeUnits`` and ``volumeUnits``, ``areaUnits`` or ``lengthUnits`` by the
+    compartment's dimensions; in Level 2, the built-in ``substance``, ``time``,
+    ``volume``, ``area`` or ``length``, where the file redefines it. bngsim
+    converts no unit: these say what the file's numbers are in."""
+    level = sbml_model.getLevel()
+    redefined = {
+        sbml_model.getUnitDefinition(i).getId() for i in range(sbml_model.getNumUnitDefinitions())
+    }
+
+    def default(attribute: str, builtin: str) -> str | None:
+        if level >= 3:
+            is_set = getattr(sbml_model, f"isSet{attribute}")
+            return str(getattr(sbml_model, f"get{attribute}")()) if is_set() else None
+        return builtin if builtin in redefined else None
+
+    substance = default("SubstanceUnits", "substance")
+    by_dimension = {
+        3.0: default("VolumeUnits", "volume"),
+        2.0: default("AreaUnits", "area"),
+        1.0: default("LengthUnits", "length"),
+    }
+    compartments: dict[str, str | None] = {}
+    for i in range(sbml_model.getNumCompartments()):
+        c = sbml_model.getCompartment(i)
+        if c.isSetUnits() and c.getUnits():
+            own: str | None = c.getUnits()
+        elif c.isSetSpatialDimensions():
+            own = by_dimension.get(float(c.getSpatialDimensionsAsDouble()))
+        else:
+            # Three-dimensional in Levels 1 and 2 unless it says; unknown in 3.
+            own = by_dimension[3.0] if level < 3 else None
+        compartments[_safe_name(c.getId())] = own
+    species: dict[str, str | None] = {}
+    for sid in species_comp:
+        s = sbml_model.getSpecies(sid)
+        if s is not None and s.isSetSubstanceUnits() and s.getSubstanceUnits():
+            species[_safe_name(sid)] = s.getSubstanceUnits()
+        else:
+            species[_safe_name(sid)] = substance
+    return {
+        "time": default("TimeUnits", "time"),
+        "species": species,
+        "compartments": compartments,
     }
 
 

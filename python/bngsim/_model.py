@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn, overload
 
 import numpy as np
 
-from bngsim import _foreign_names
+from bngsim import _foreign_names, _notices
 from bngsim._exceptions import (
     MissingFileError,
     ModelError,
@@ -157,6 +157,7 @@ class Model:
         "_last_run_end",
         "_source",
         "_sbml_record",
+        "_record_info",
     )
 
     def __init__(
@@ -191,6 +192,10 @@ class Model:
         # declares and its reactions as written, by the names the model uses
         # (_sbml_loader._sbml_record). None for every other format.
         self._sbml_record: dict[str, Any] | None = None
+        # Issue #1703: what a Result's record says of the model, made on the
+        # first run (bngsim._record.model_info) and shared by clones. None
+        # until then.
+        self._record_info: Any = None
         self._codegen_so_path: str = ""
         # GH #198: whether codegen should emit the expression output-sensitivity
         # evaluator. Set by the Simulator before codegen prep (only a sensitivity
@@ -1242,7 +1247,9 @@ class Model:
                     # Detection is best-effort: without it a model keeps the
                     # stepping it had before issue #897, which is correct
                     # wherever no step spans a whole state-gated window.
-                    logger.warning(
+                    _notices.log(
+                        logger,
+                        "stops.detection_failed",
                         "State-switch root detection failed (%s); a rate law switched by "
                         "a condition over model state will be integrated without a root "
                         "at its crossings (issue #897).",
@@ -1303,7 +1310,9 @@ class Model:
         try:
             got = state_switch_roots_at_values(self._core, covered)
         except Exception as e:  # pragma: no cover - defensive, as for the roots
-            logger.warning(
+            _notices.log(
+                logger,
+                "stops.detection_failed",
                 "Folding the conditions parameters decide failed (%s); the run "
                 "roots on every state switch, as it would without it (issue #1636).",
                 e,
@@ -1354,7 +1363,9 @@ class Model:
         try:
             kept = folded_laws_at_values(self._core, take_branch=True)
         except Exception as e:  # pragma: no cover - defensive, as for the roots
-            logger.warning(
+            _notices.log(
+                logger,
+                "stops.detection_failed",
                 "Folding the conditions parameters decide failed (%s); the run "
                 "roots on every state switch, as it would without it (issue #1636).",
                 e,
@@ -1405,7 +1416,9 @@ class Model:
 
                 stops = state_switch_root_conditions(self._core, covered=covered, calls_only=True)
             except Exception as e:  # pragma: no cover - defensive
-                logger.warning(
+                _notices.log(
+                    logger,
+                    "stops.detection_failed",
                     "State-switch root detection failed (%s); a rate law with a step or bend "
                     "call over model state will be integrated with sensitivities and "
                     "without a root where the call jumps or bends (issue #1068).",
@@ -1593,6 +1606,7 @@ class Model:
         m._last_run_end = self._last_run_end
         m._source = dict(self._source) if self._source is not None else None
         m._sbml_record = self._sbml_record  # read-only once the loader made it
+        m._record_info = self._record_info  # of the model's structure, read-only
         m._net_path = self._net_path
         m._want_output_sens = self._want_output_sens
         m._codegen_so_path = self._codegen_so_path

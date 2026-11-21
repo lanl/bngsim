@@ -532,6 +532,90 @@ def test_a_missing_compiler_is_a_verdict_said_once(clean, monkeypatch, caplog):
     assert _other_codegen_warnings(caplog) == []
 
 
+@posix_only
+@pytest.mark.parametrize("named", ["by-path", "on-path"])
+def test_a_compiler_that_cannot_start_is_a_verdict_said_once(clean, monkeypatch, caplog, named):
+    """A compiler that the system cannot start (here a script whose interpreter
+    is gone), named by its path or found on PATH, fails every build, as a
+    missing one does. Since #1702 typed its error, the fallbacks took it as
+    already said and logged it at DEBUG alone, so auto-codegen and the SSA
+    propensities fell back in silence and every model tried the compiler again."""
+    cc = clean / "bngsim-cc-without-interpreter"
+    cc.write_text("#!/nonexistent/interpreter\nexit 0\n")
+    cc.chmod(cc.stat().st_mode | stat.S_IXUSR)
+    if named == "on-path":
+        monkeypatch.setenv("PATH", str(clean) + os.pathsep + os.environ.get("PATH", ""))
+        monkeypatch.setenv("CC", cc.name)
+    else:
+        monkeypatch.setenv("CC", str(cc))
+    generated = _count_generation(monkeypatch)
+    with caplog.at_level(logging.WARNING, logger="bngsim"):
+        assert bngsim.Simulator(_chain(N_AUTO), method="ode").codegen_backend == "exprtk"
+        assert len(_verdict_warnings(caplog)) == 1  # the fallback says why
+        assert bngsim.Simulator(_chain(8), method="ssa")._ssa_propensity_lib == ""
+        with pytest.raises(bngsim.CodegenToolchainError, match="cannot start the compiler") as err:
+            bngsim.Simulator(_chain(5), method="ode", codegen=True)
+    assert err.value.code == "env.broken_toolchain"
+    assert str(cc) in str(err.value)
+    assert generated == [N_AUTO]  # later builds are refused on the verdict
+    assert len(_verdict_warnings(caplog)) == 1
+    assert _other_codegen_warnings(caplog) == []
+
+
+@posix_only
+def test_a_build_file_gone_missing_is_not_blamed_on_the_compiler(clean, monkeypatch, caplog):
+    """A FileNotFoundError about a file of the build's own (its cache directory
+    removed under it) is that build's failure: reported, and no verdict kept
+    that would refuse every later model."""
+    FakeCC(clean, monkeypatch, "broken")  # on PATH; never started here
+
+    def lost_file(cmd, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory", str(clean / "gone.c"))
+
+    monkeypatch.setattr(cg, "_run_compile", lost_file)
+    with caplog.at_level(logging.WARNING, logger="bngsim"):
+        assert bngsim.Simulator(_chain(N_AUTO), method="ode").codegen_backend == "exprtk"
+    assert tc._verdicts == {}
+    assert _verdict_warnings(caplog) == []
+    assert any("gone.c" in w for w in _other_codegen_warnings(caplog))
+
+
+@posix_only
+@requires_posix_cc
+@pytest.mark.parametrize(
+    ("cc_env", "path_entry"),
+    [("./bin/cc", None), ("bngsim-test-cc", "bin")],
+    ids=["relative-cc", "relative-path-entry"],
+)
+def test_a_relative_cc_a_sharded_build_cannot_find_refuses_no_other_model(
+    clean, monkeypatch, cc_env, path_entry
+):
+    """A compiler found relative to the working directory (``CC=./bin/cc``, or a
+    name PATH finds through a relative entry) is found where a serial build
+    runs, and not from a sharded build's scratch directory. That build fails,
+    but the compiler starts fine, so no verdict is kept and the next model
+    still compiles."""
+    (clean / "bin").mkdir()
+    cc = clean / "bin" / Path(cc_env).name
+    cc.write_text(f'#!/bin/sh\nexec "{REAL_CC}" "$@"\n')
+    cc.chmod(cc.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.chdir(clean)
+    if path_entry is not None:
+        monkeypatch.setenv("PATH", path_entry + os.pathsep + os.environ.get("PATH", ""))
+    monkeypatch.setenv("CC", cc_env)
+    monkeypatch.setenv("BNGSIM_CODEGEN_CHUNK", "on")
+    monkeypatch.setenv("BNGSIM_CODEGEN_CHUNK_SIZE", "4")
+    monkeypatch.setattr(cg, "_resolve_codegen_jobs", lambda n_units: 2)
+    src, _ = cg.generate_combined_from_model(_chain(40))
+    assert cg._split_sharded_source(src) is not None
+    with pytest.raises(RuntimeError) as err:
+        cg.compile_rhs(src, "relativehash")
+    assert not isinstance(err.value, bngsim.CodegenToolchainError)
+    assert tc._verdicts == {}
+    monkeypatch.delenv("BNGSIM_CODEGEN_CHUNK")
+    assert bngsim.Simulator(_chain(6), method="ode", codegen=True).codegen_backend == "cc"
+
+
 def test_no_compiler_to_name_is_a_verdict_said_once(clean, monkeypatch, caplog):
     """Where no compiler can be named at all (Windows with neither cl nor gcc),
     the refusal is said once, and later models generate no source for it."""

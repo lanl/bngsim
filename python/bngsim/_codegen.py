@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
 from bngsim import _codegen_toolchain as _toolchain
-from bngsim import _term_order
+from bngsim import _notices, _term_order
 from bngsim._exceptions import CodegenToolchainError
 
 if TYPE_CHECKING:
@@ -91,7 +91,9 @@ def _codegen_jit_backend() -> str:
         return ""
     if raw in _CODEGEN_JIT_BACKENDS:
         return raw
-    logger.warning(
+    _notices.log(
+        logger,
+        "config.ignored_setting",
         "Ignoring unknown BNGSIM_CODEGEN_JIT=%r; expected one of %s. Using the "
         "default cc+dlopen codegen backend.",
         raw,
@@ -1171,7 +1173,9 @@ def _chunk_threshold() -> int | None:
     try:
         n = int(raw)
     except ValueError:
-        logger.warning(
+        _notices.log(
+            logger,
+            "config.ignored_setting",
             "Ignoring invalid BNGSIM_CODEGEN_CHUNK=%r; using default threshold %d",
             raw,
             _DEFAULT_CHUNK_THRESHOLD,
@@ -1190,7 +1194,9 @@ def _chunk_block_size() -> int:
                 return n
         except ValueError:
             pass
-        logger.warning(
+        _notices.log(
+            logger,
+            "config.ignored_setting",
             "Ignoring invalid BNGSIM_CODEGEN_CHUNK_SIZE=%r; using %d",
             raw,
             _DEFAULT_CHUNK_SIZE,
@@ -2467,7 +2473,9 @@ def _warn_chain_rule_dropped(expr: str, referenced: list[str], reason: str) -> N
     nothing to do with the requested sensitivity parameters, and raising would
     refuse models that simulate correctly today.
     """
-    logger.warning(
+    _notices.log(
+        logger,
+        "sens.chain_rule_dropped",
         "Forward sensitivity: could not differentiate the derived parameter "
         "expression %r (%s). The chain rule through it is dropped, so "
         "sensitivities w.r.t. %s will read as exactly zero along this path "
@@ -5042,7 +5050,9 @@ def _resolve_codegen_timeout() -> float | None:
     try:
         val = float(raw)
     except ValueError:
-        logger.warning(
+        _notices.log(
+            logger,
+            "config.ignored_setting",
             "Ignoring invalid BNGSIM_CODEGEN_TIMEOUT=%r; using default %d s",
             raw,
             _DEFAULT_CODEGEN_TIMEOUT,
@@ -5087,7 +5097,9 @@ def _resolve_opt_flag(compiler_name: str, source_size: int, chunked: bool = Fals
                 # MSVC has no /O0 or /O3; map 0→/Od, 1→/O1, ≥2→/O2.
                 return "/Od" if level == 0 else ("/O1" if level == 1 else "/O2")
             return f"-O{min(level, 3)}"
-        logger.warning(
+        _notices.log(
+            logger,
+            "config.ignored_setting",
             "Ignoring invalid BNGSIM_CODEGEN_OPT=%r; using size-based default",
             override,
         )
@@ -5381,7 +5393,9 @@ def _per_job_memory_bytes() -> int:
             mb = 0.0
         if mb > 0:
             return int(mb * 1024 * 1024)
-        logger.warning(
+        _notices.log(
+            logger,
+            "config.ignored_setting",
             "Ignoring invalid BNGSIM_CODEGEN_MEM_PER_JOB=%r; using %d MB",
             raw,
             _DEFAULT_SHARD_MEM_MB,
@@ -5408,7 +5422,9 @@ def _resolve_codegen_jobs(n_units: int) -> int:
         try:
             explicit = int(raw)
         except ValueError:
-            logger.warning(
+            _notices.log(
+                logger,
+                "config.ignored_setting",
                 "Ignoring invalid BNGSIM_CODEGEN_JOBS=%r; using allocation-aware auto",
                 raw,
             )
@@ -6051,10 +6067,15 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
         missing = _toolchain.record_missing(compiler)
         if missing is not None:
             raise CodegenToolchainError(missing) from err
-        raise CodegenToolchainError(
-            "C compiler not found. Install Xcode Command Line Tools "
-            "(macOS), gcc (Linux), or Visual Studio Build Tools (Windows)."
-        ) from err
+        if err.filename in (None, compiler[0]) and _toolchain.found_from_anywhere(compiler):
+            # There, but the system cannot start it. A verdict, kept and logged
+            # once as a missing compiler's is: the fallbacks that catch this
+            # error log only at DEBUG, taking it as said.
+            raise CodegenToolchainError(_toolchain.record_unstartable(compiler, err)) from err
+        # A file of this build's own went missing (the cache directory removed
+        # under it), or a relative CC was not found from a sharded build's
+        # scratch directory: this build's failure, not the toolchain's.
+        raise RuntimeError(f"Codegen compilation failed: {err}") from err
     finally:
         tmp_so_path.unlink(missing_ok=True)
         _unlink_msvc_sidecars(tmp_so_path)
@@ -9496,7 +9517,9 @@ def _warn_functional_sens_rhs_refused(reason: str) -> None:
                 "single comparison over state to root on, applies to this condition."
             )
         )
-        logger.warning(
+        _notices.log(
+            logger,
+            "sens.rhs_difference_quotient",
             "Forward sensitivity: %s. The analytic sensitivity RHS is declined for this "
             "model, and CVODES' internal difference quotient — which is used instead — "
             "does NOT recover the missing term: it integrates the variational equation "
@@ -9508,7 +9531,9 @@ def _warn_functional_sens_rhs_refused(reason: str) -> None:
             remedy,
         )
         return
-    logger.warning(
+    _notices.log(
+        logger,
+        "sens.rhs_difference_quotient",
         "Forward sensitivity: %s, so the analytic sensitivity RHS is declined for "
         "this model and CVODES' internal difference quotient is used instead "
         "(correct, but slower, where every rate law is continuous in the state along "
@@ -13146,7 +13171,9 @@ def _compute_output_sens_analysis(model, core) -> dict:
         # GH #97: a build that quietly turned every d(function)/dθ into a NaN is
         # not something to discover at selection time. Said once here, with the
         # override, in addition to the per-function reason the Result raises.
-        logger.warning(
+        _notices.log(
+            logger,
+            "sens.output_budget",
             "Expression output sensitivities: %s. The functions derived before the "
             "deadline are unaffected; the rest raise this reason when selected.",
             budget_reason,
@@ -13893,7 +13920,9 @@ def prepare_model_codegen(model) -> Path | None:
             # otherwise drop every model-path user onto the interpreted RHS,
             # silently and permanently. Fall back to the pre-#174 key — hashing
             # the generated source, which is always correct and merely slow.
-            logger.warning(
+            _notices.log(
+                logger,
+                "codegen.cache_key_unavailable",
                 "Structural codegen cache key unavailable (%s); falling back to hashing "
                 "the generated source. Every construction will re-derive it (issue #174).",
                 e,
@@ -13999,7 +14028,7 @@ def prepare_model_codegen(model) -> Path | None:
         _record_codegen_error(e)
         return None
     except Exception as e:
-        logger.warning("Model codegen failed: %s", e)
+        _notices.log(logger, "codegen.failed", "Model codegen failed: %s", e)
         _record_codegen_error(e)
         return None
     finally:
@@ -14048,7 +14077,7 @@ def prepare_model_codegen_source(model) -> str | None:
         _record_codegen_decline(str(exc))
         return None
     except Exception as e:
-        logger.warning("Model codegen source generation failed: %s", e)
+        _notices.log(logger, "codegen.failed", "Model codegen source generation failed: %s", e)
         _record_codegen_error(e)
         return None
     finally:
@@ -14119,8 +14148,11 @@ def prepare_ssa_propensity_lib(model, *, force_recompile: bool = False) -> str |
             # Issue #1544: logged once, when the verdict was reached.
             logger.debug("SSA propensity codegen refused, the toolchain cannot build: %s", e)
         else:
-            logger.warning(
-                "SSA propensity codegen compile failed (%s); using interpreted propensities", e
+            _notices.log(
+                logger,
+                "codegen.ssa_propensities_interpreted",
+                "SSA propensity codegen compile failed (%s); using interpreted propensities",
+                e,
             )
         return None
 
