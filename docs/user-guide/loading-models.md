@@ -131,10 +131,10 @@ index the result by position, or by a run's `suffix`. A scan's points are in
   relative, unless the action or the call gives others. `seed=` seeds the
   stochastic runs.
 
-What bngsim cannot run as written is refused before anything runs:
+What BNGsim cannot run as written is refused before anything runs:
 
 - a network-free (NFsim) step, which needs a live NFsim session (issue #1482);
-- PLA, which bngsim does not have;
+- PLA, which BNGsim does not have;
 - a run argument such as `stop_if` or `max_sim_steps`;
 - an action that changes results but has no step to run, such as `setVolume`;
 - an argument the protocol holds only approximately.
@@ -229,7 +229,7 @@ Antimony loading requires `bngsim[antimony]`. Direct SBML loading requires
 
 **SBML Level 3 packages.** A document that declares a package `required="true"`
 — SBML's way of saying the package changes the mathematical meaning of the model
-— is refused by name unless bngsim accounts for that package. `comp` does load
+— is refused by name unless BNGsim accounts for that package. `comp` does load
 (the composition is flattened first); so does `distrib`, whose random draws the
 math translator refuses individually. `multi`, `qual`, `spatial` and the rest are
 refused, because reading only the core `<listOfSpecies>` / `<listOfReactions>` of
@@ -350,7 +350,7 @@ dict, which you can inspect, modify and build, or hand to another engine. It is
 the C++ loader's own reading of the file, the one `Model.from_net` builds, with
 the values the built model holds, so the two cannot disagree about what a line
 means, and a file `Model.from_net` refuses is refused here too. It needs
-bngsim's compiled extension.
+BNGsim's compiled extension.
 
 ```python
 import bngsim
@@ -441,12 +441,12 @@ A reaction line is `<index> <reactants> <products> <rate law>`, and only a
 `Sat`, `Hill` or `MM` rate law takes more tokens: its constants.
 `parse_net_file` and `Model.from_net` refuse a line with anything else after
 the rate law, as run_network does, rather than load it without that part.
-bngsim reads no per-reaction modifiers, such as a delay (issue #505). A stat
+BNGsim reads no per-reaction modifiers, such as a delay (issue #505). A stat
 factor ahead of the rate law's type (`2*MM kcat Km`) is read off the first
 token before the type is matched, as run_network reads it.
 
 An `MM` reaction reads two reactants, an enzyme and a substrate, and one with
-more is refused (issue #1502): bngsim left the others out of its rate, so the
+more is refused (issue #1502): BNGsim left the others out of its rate, so the
 answer changed with the order the enzymes were listed in. BNG2.pl refuses such a
 rule, and run_network reads the first reactant as the substrate and the total of
 the others as the enzyme. To run that, write the reaction with a functional rate

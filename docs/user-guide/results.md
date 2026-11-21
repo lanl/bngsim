@@ -33,7 +33,7 @@ ds.to_netcdf("result.nc")  # archive via xarray's writer
 
 Dimension names follow AMICI's convention (`state` rather than `species`)
 so code written against `rdata.xr.x.sel(state=...)` works against a
-bngsim Result. `custom_attrs` and the stochastic `seed` (when set)
+BNGsim Result. `custom_attrs` and the stochastic `seed` (when set)
 propagate to `ds.attrs`. `sensitivities` / `sensitivities_ic` appear
 only when the simulator was run with `sensitivity_params=` /
 `sensitivity_ic=`; requesting them on a plain Result raises a clear
@@ -53,7 +53,7 @@ result.save("results_with_meta.h5")
 
 The file keeps what `as_roadrunner` needs to report amounts and live
 concentrations: each species' compartment size and, where a size changes,
-the per-sample volume factors. A file written before bngsim saved these
+the per-sample volume factors. A file written before BNGsim saved these
 (format 2) does not say what the sizes were, so `as_roadrunner` on it
 refuses an amount selector (`"S"`) and warns on a concentration one
 (`"[S]"`). Multiply `"[S]"` by the size yourself, or run the model again and
@@ -61,13 +61,13 @@ save the result.
 
 It also keeps the run's `ic_sensitivity_seed` and its `ssa_diagnostics` and
 `psa_diagnostics` (for a stacked batch, each run's, as
-`psa_diagnostics_per_run`). A file written before bngsim saved these loads them as a
+`psa_diagnostics_per_run`). A file written before BNGsim saved these loads them as a
 result built from arrays has them: the seed `None` ("not recorded"), the SSA
 counts 0 with the propensity backend `"unknown"`, and PSA inactive.
 
 ## Export results to text files
 
-bngsim provides three text-export methods on `Result`; pick by audience.
+BNGsim provides three text-export methods on `Result`; pick by audience.
 
 ```python
 # BNG-native (#-prefixed header, fixed-width, space-padded)

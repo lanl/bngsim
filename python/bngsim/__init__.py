@@ -1,4 +1,4 @@
-"""bngsim — Embeddable simulation engine for BioNetGen reaction networks.
+"""bngsim — simulate SBML, Antimony and BioNetGen (BNGL) models in Python.
 
 Usage::
 

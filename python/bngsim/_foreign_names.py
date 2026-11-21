@@ -67,7 +67,7 @@ class ForeignName:
         translation is not one-to-one, the difference.
     origin : str
         Where the habit comes from: a tool (``"libRoadRunner"``,
-        ``"Tellurium"``, ``"AMICI"``, ``"COPASI (basico)"``, ``"BioNetGen"``,
+        ``"Tellurium"``, ``"AMICI"``, ``"COPASI (basico)"``, ``"BNGL actions"``,
         ``"PySB"``, ``"SciPy"``, ``"pandas"``),
         ``"bngsim"`` for a bngsim name asked of the wrong object,
         ``"guess"`` for a name no tool has that callers try anyway, or
@@ -145,7 +145,7 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
     )
     + _entries(
         "bngsim",
-        "BioNetGen",
+        "BNGL actions",
         (
             "simulate",
             f"bngsim.Simulator(bngsim.Model.load(path)).{_RUN.removeprefix('sim.')}",
@@ -247,7 +247,7 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
     )
     + _entries(
         "Model",
-        "BioNetGen",
+        "BNGL actions",
         ("setParameter", "model.set_param(name, value)"),
         ("setConcentration", "model.set_concentration(name, value)"),
         ("saveConcentrations", "model.save_concentrations()"),
@@ -452,7 +452,7 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
     # ── Simulator.run keywords ───────────────────────────────────────────
     + _entries(
         "Simulator.run",
-        "BioNetGen",
+        "BNGL actions",
         ("t_end", "t_span=(t_start, t_end)", "The interval is one (t_start, t_end) tuple."),
         ("t_start", "t_span=(t_start, t_end)", "The interval is one (t_start, t_end) tuple."),
         (
@@ -518,7 +518,7 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
     # These are each method's own.
     + _entries(
         "Simulator.parameter_scan",
-        "BioNetGen",
+        "BNGL actions",
         (
             "suffix",
             "",
@@ -731,7 +731,7 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
     )
     + _entries(
         "translation",
-        "BioNetGen",
+        "BNGL actions",
         (
             'simulate({method=>"ode", t_end=>T, n_steps=>N})',
             'bngsim.Simulator(model, method="ode").run(t_span=(0, T), n_points=N + 1)',

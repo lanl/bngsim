@@ -293,7 +293,7 @@ the tool's own objects, as that tool spells it.
 | `basico.set_species(name, initial_concentration=c)` | `model.set_concentration(name, c)` |  |
 | `basico.run_steadystate()` | `sim.steady_state()` |  |
 
-**BioNetGen**
+**BNGL actions**
 
 | you write | in bngsim | note |
 |---|---|---|

@@ -220,7 +220,7 @@ A model with `if()` conditions but **no fitted switch time** yields no records
 at all, and its stepping stays bit-for-bit identical to a run without
 sensitivities.
 
-### Clock forms that are recognised
+### Clock forms that are recognized
 
 The crossing has to be solved for from the condition. These forms are handled:
 
@@ -268,9 +268,9 @@ gate at `t0` and the other at `sigma`, the run sits on a kink in `t_delta`:
 raising it delays the rate, and lowering it does nothing, `t0` then being the
 later of the two. The `t_delta` column is then the derivative for `t_delta`
 increasing, the direction that delays `sigma` past `t0`, which at a lower bound
-of 0 is the feasible one. bngsim raises a `bngsim.OneSidedSensitivityWarning`
+of 0 is the feasible one. BNGsim raises a `bngsim.OneSidedSensitivityWarning`
 that names the parameter and the direction, and `Result.one_sided_sensitivities`
-lists them. bngsim cannot see a bound: with `sigma = t0 - t_delta` the direction
+lists them. BNGsim cannot see a bound: with `sigma = t0 - t_delta` the direction
 is `t_delta` decreasing, and at `t_delta >= 0` that is the infeasible side. The
 derivative in the other direction is another number and is not computed.
 
@@ -313,7 +313,7 @@ If a requested parameter moves one of the two and not the other, they come
 apart under it. Where the event changes what the switched rate law contributes,
 the result depends on which comes first and the sensitivity does not exist: a
 reset of `X` at `tau` beside `piecewise(k*X, time >= 3, 0)` with `tau = 3`.
-bngsim measures whether the event and the switch commute, and refuses the run
+BNGsim measures whether the event and the switch commute, and refuses the run
 where they do not. A pair that commutes runs: a bolus beside an infusion that
 starts at the same time.
 
@@ -777,12 +777,12 @@ anything dropped is named in a warning. Two classes come out:
   axis into one vector an optimizer then steps along in every coordinate at
   once. Roughly one SBML model in five carries some (279 of the 1,291 loadable
   rr_parity models, 9,524 parameters in total).
-- **Synthesized slots** (`model.param_is_internal`) — parameter slots bngsim
+- **Synthesized slots** (`model.param_is_internal`) — parameter slots BNGsim
   created for its own bookkeeping rather than ones the model declared.
   `set_param` refuses a value-changing write to either kind, so neither is a
-  coordinate that can move on its own. `_V0_<comp>` is bngsim's record of a
+  coordinate that can move on its own. `_V0_<comp>` is BNGsim's record of a
   compartment's size at load, which the rate constants in that compartment are
-  normalised against — differentiate the compartment size itself, an ordinary
+  normalized against — differentiate the compartment size itself, an ordinary
   writable parameter. And every **function** has one, holding the value it last
   evaluated to; the engine rewrites it from the function's own expression before
   every derivative evaluation, so that column is identically zero (issue #227) —
@@ -814,7 +814,7 @@ marking which columns those were. Pass `model.primary_param_names`, or let
 
 The chain rule *through* an `<assignmentRule>` is unaffected: a parameter whose
 only route to the right-hand side is a rule target differentiates normally, since
-bngsim lowers the rule to a function the emitted sensitivity RHS differentiates
+BNGsim lowers the rule to a function the emitted sensitivity RHS differentiates
 like any other expression. It is the rule's **target** that is not a column, not
 the parameters underneath it.
 
@@ -921,7 +921,7 @@ The **gradient** followed in stage 3: `d/dV` now carries the storage half as wel
 as the kinetic-law half — including the initial-condition seed, which is
 `-amount/V²` for an amount-declared species rather than zero — so `Liver` is an
 ordinary column of `compute_all_sensitivities()` and `sensitivity_params=["Liver"]`
-is accepted. `_V0_Liver` is not: that is bngsim's record of the load-time size
+is accepted. `_V0_Liver` is not: that is BNGsim's record of the load-time size
 rather than the volume, `set_param` refuses to move it, and it is one of the
 things the `params=None` default drops (see
 [the default column set](#what-the-default-column-set-is-and-why-it-is-narrower-than-param_names)).
@@ -1018,7 +1018,7 @@ volume, change it in the BNGL source and generate the network again.
 Two things are not covered. A network written with its expressions evaluated
 (`writeNetwork({evaluate_expressions=>1})`) has numbers where the derived
 parameters were, so what a derived volume read is not known from the file. And
-a model written out by bngsim's converters (`write_net`, `net_to_sbml`) and
+a model written out by BNGsim's converters (`write_net`, `net_to_sbml`) and
 loaded again has no such comment: the volume is then an ordinary parameter that
 nothing reads, as it was before.
 
