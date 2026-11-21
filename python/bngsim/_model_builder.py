@@ -47,6 +47,8 @@ class ModelBuilder:
         self._core = _CoreBuilder()
         self._species: dict[str, int] = {}
         self._names: set[str] = set()
+        # Names a reaction's rate can name directly: parameters and functions.
+        self._rate_names: set[str] = set()
         self._n_hidden = 0
         self._built = False
 
@@ -68,9 +70,16 @@ class ModelBuilder:
         except KeyError:
             raise ValueError(f"no species named {name!r}; add it with add_species") from None
 
+    def _hidden_name(self, stem: str) -> str:
+        while True:
+            self._n_hidden += 1
+            name = f"_{stem}{self._n_hidden}"
+            if name not in self._names:
+                self._names.add(name)
+                return name
+
     def _hidden_function(self, expression: str) -> str:
-        self._n_hidden += 1
-        name = f"_rate{self._n_hidden}"
+        name = self._hidden_name("rate")
         self._core.add_function(name, expression)
         return name
 
@@ -78,6 +87,7 @@ class ModelBuilder:
         """Add a parameter with a value."""
         self._new_name(name, "parameter")
         self._core.add_parameter(name, float(value))
+        self._rate_names.add(name)
 
     def add_species(self, name: str, initial: float = 0.0, *, fixed: bool = False) -> None:
         """Add a species with its initial amount, and an observable of the same name.
@@ -99,6 +109,7 @@ class ModelBuilder:
         """Add a function of parameters, species, observables, other functions and ``time()``."""
         self._new_name(name, "function")
         self._core.add_function(name, expression)
+        self._rate_names.add(name)
 
     def add_reaction(
         self,
@@ -132,7 +143,7 @@ class ModelBuilder:
             )
             return
         assert rate is not None
-        if _NAME.match(rate) and rate in self._names and rate not in self._species:
+        if rate in self._rate_names:
             # A parameter or a function: the core reads either by its name.
             self._core.add_reaction(r, p, "elementary", rate)
         else:
@@ -155,8 +166,7 @@ class ModelBuilder:
         if self._built:
             raise RuntimeError("this ModelBuilder has built its model; start a new one")
         if name is None:
-            self._n_hidden += 1
-            name = f"_event{self._n_hidden}"
+            name = self._hidden_name("event")
         else:
             self._new_name(name, "event")
         self._core.add_event(

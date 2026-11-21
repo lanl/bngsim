@@ -41,6 +41,26 @@ def test_a_rate_can_name_a_function():
     assert _run(b.build()).observables["A"][-1] == pytest.approx(100 * np.exp(-0.5), rel=1e-7)
 
 
+def test_a_rate_can_name_an_observable_or_a_species():
+    b = bngsim.ModelBuilder()
+    b.add_parameter("k", 0.5)
+    b.add_species("A", 10)
+    b.add_species("E", 0.1, fixed=True)
+    b.add_observable("enzyme", ["E"])
+    b.add_reaction(["A"], [], rate="enzyme")  # rate constant 0.1, read from E
+    b.add_reaction(["A"], [], rate="E")
+    assert _run(b.build()).observables["A"][-1] == pytest.approx(10 * np.exp(-0.2), rel=1e-7)
+
+
+def test_a_users_name_never_collides_with_a_hidden_one():
+    b = bngsim.ModelBuilder()
+    b.add_parameter("k", 0.5)
+    b.add_species("A", 100)
+    b.add_function("_rate1", "1000*k")  # the builder's own first name
+    b.add_reaction(["A"], [], rate="2*k")
+    assert _run(b.build()).observables["A"][-1] == pytest.approx(100 * np.exp(-1), rel=1e-7)
+
+
 def test_a_reactant_listed_twice_counts_twice():
     b = bngsim.ModelBuilder()
     b.add_parameter("k", 0.01)
