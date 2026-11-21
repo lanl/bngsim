@@ -148,5 +148,5 @@ jobs:
         run: |
           grep -q '^# BNGsim$' docs/_build/html/llms.txt
           grep -q '/agent-guide.md): ' docs/_build/html/llms.txt
-          grep -q '^# bngsim agent guide$' docs/_build/html/agent-guide.md
-          grep -q '^# bngsim agent guide$' docs/_build/html/llms-full.txt
+          grep -q '^# BNGsim agent guide$' docs/_build/html/agent-guide.md
+          grep -q '^# BNGsim agent guide$' docs/_build/html/llms-full.txt

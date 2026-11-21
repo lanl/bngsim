@@ -64,7 +64,7 @@ description: >-
   load BioNetGen (.net, .bngl), SBML or Antimony models, run ODE or
   stochastic (SSA, PSA, network-free) simulations, scan parameters, find
   steady states and compute parameter sensitivities. Use when a task loads,
-  simulates or fits a model with bngsim, or asks for a BioNetGen, SBML or
+  simulates or fits a model with BNGsim, or asks for a BioNetGen, SBML or
   Antimony model to be simulated in Python.
 ---
 
@@ -99,7 +99,7 @@ def translation_table() -> str:
     for tool, entries in by_tool.items():
         if not entries:
             continue
-        lines += [f"**{tool}**", "", "| you write | in bngsim | note |", "|---|---|---|"]
+        lines += [f"**{tool}**", "", "| you write | in BNGsim | note |", "|---|---|---|"]
         for e in entries:
             use = f"`{_cell(e.use)}`" if e.use else "—"
             lines.append(f"| `{_cell(_foreign_call(e))}` | {use} | {_cell(e.note)} |")
@@ -117,7 +117,7 @@ def _with_table(text: str, table: str) -> str:
 
 
 def agent_guide(*, skill: bool = False) -> str:
-    """The bngsim agent guide: how to use this library, in one page.
+    """The BNGsim agent guide: how to use this library, in one page.
 
     Rules and runnable recipes written for an AI agent, or anyone, meeting
     bngsim for the first time: the dozen calls that load, run, read and change
@@ -147,7 +147,7 @@ def agent_guide(*, skill: bool = False) -> str:
     --------
     >>> import bngsim
     >>> bngsim.agent_guide().splitlines()[0]
-    '# bngsim agent guide'
+    '# BNGsim agent guide'
     """
     text = _stored_guide()
     return SKILL_HEADER + text if skill else text

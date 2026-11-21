@@ -119,15 +119,15 @@ _COMPARTMENTS_NOTE = (
 _REACTIONS = 'describe(limit=None)["reactions"]'
 _REACTIONS_NOTE = (
     "Each entry is a dict; for an SBML or Antimony model, the file's reactions as written, "
-    'each with its "id". The channels bngsim runs can be more or fewer: n_reactions on '
+    'each with its "id". The channels BNGsim runs can be more or fewer: n_reactions on '
     "the model counts those."
 )
 _N_REACTIONS_NOTE = (
     "The model's reactions as its file has them, as RoadRunner counts them. n_reactions on "
-    "the model counts the channels bngsim runs, which can be more or fewer."
+    "the model counts the channels BNGsim runs, which can be more or fewer."
 )
 _UNITS_NOTE = (
-    "bngsim reads no SBML unit definitions: species_values says what the numbers are, and "
+    "BNGsim reads no SBML unit definitions: species_values says what the numbers are, and "
     'each entry of model.describe()["species"] whether it is an amount or a concentration.'
 )
 
@@ -285,7 +285,7 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
         (
             "from_bngl_string",
             "bngsim.Model.from_bngl(path)",
-            "bngsim reads BNGL only from a file, through BNG2.pl: write the text to a .bngl "
+            "BNGsim reads BNGL only from a file, through BNG2.pl: write the text to a .bngl "
             "file first. SBML and Antimony text have from_sbml_string and from_antimony_string.",
         ),
     )
@@ -332,7 +332,7 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
     + _entries(
         "Simulator",
         "libRoadRunner",
-        ("simulate", _RUN, "bngsim has no simulate(). " + _N_POINTS),
+        ("simulate", _RUN, "BNGsim has no simulate(). " + _N_POINTS),
         (
             "reset",
             "sim.model.reset()",
@@ -483,7 +483,7 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
         (
             "plot",
             'result.dataframe.plot(x="time")',
-            "bngsim draws no plots; this needs pandas and matplotlib.",
+            "BNGsim draws no plots; this needs pandas and matplotlib.",
         ),
     )
     + _entries(
@@ -539,7 +539,7 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
         (
             "t_eval",
             "sample_times=t_eval",
-            "SciPy integrates from t_span[0]; a bngsim run starts at the first sample time, so "
+            "SciPy integrates from t_span[0]; a BNGsim run starts at the first sample time, so "
             "put the start time first.",
         ),
         ("method", "bngsim.Simulator(model, method=...)", _BUILT),
@@ -574,15 +574,15 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
         (
             "suffix",
             "",
-            "bngsim writes no files from a scan: parameter_scan() returns one Result per "
+            "BNGsim writes no files from a scan: parameter_scan() returns one Result per "
             "point, and squeeze=True stacks them into one.",
         ),
     )
     + _entries(
         "Simulator.parameter_scan",
         "guess",
-        ("scan_values", "par_scan_vals=scan_values", "bngsim keeps BioNetGen's name."),
-        ("values", "par_scan_vals=values", "bngsim keeps BioNetGen's name."),
+        ("scan_values", "par_scan_vals=scan_values", "BNGsim keeps BioNetGen's name."),
+        ("values", "par_scan_vals=values", "BNGsim keeps BioNetGen's name."),
     )
     + _entries(
         "Simulator.run_batch",
@@ -681,7 +681,7 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
         (
             "model.k1 = value",
             'model.set_param("k1", value)',
-            "libRoadRunner sets a parameter as an attribute; on a bngsim Model the write "
+            "libRoadRunner sets a parameter as an attribute; on a BNGsim Model the write "
             "fails with Python's own AttributeError. A species: "
             "model.set_concentration(name, value).",
         ),
@@ -703,7 +703,7 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
         (
             "sim.k1 = value",
             'sim.model.set_param("k1", value)',
-            "libRoadRunner's one object is both the model and its simulator; in bngsim, "
+            "libRoadRunner's one object is both the model and its simulator; in BNGsim, "
             "parameters and species are the Model's, and sim.model is it.",
         ),
     )
@@ -740,7 +740,7 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
             "sim.run(sample_times=times)",
             "AMICI before 1.0: amici.runAmiciSimulation. There is no import or compile step: "
             "bngsim.Model.load(path) reads the SBML, and a Simulator runs it. AMICI integrates "
-            "from t0; a bngsim run starts at the first sample time, so put t0 first.",
+            "from t0; a BNGsim run starts at the first sample time, so put t0 first.",
         ),
         (
             "model.set_timepoints(times)",
@@ -769,7 +769,7 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
             "basico.run_time_course(duration=d, intervals=n)",
             "sim.run(t_span=(0, d), n_points=n + 1)",
             "intervals counts the steps between output points. basico starts each time course "
-            "from the initial values; a bngsim run continues from the last one unless "
+            "from the initial values; a BNGsim run continues from the last one unless "
             'start="initial".',
         ),
         (
@@ -897,7 +897,7 @@ class _ForeignAttribute:
 
     def __init__(self, entry: ForeignName) -> None:
         self.entry = entry
-        self.__doc__ = f"Not a bngsim attribute. {entry.hint}"
+        self.__doc__ = f"Not a BNGsim attribute. {entry.hint}"
 
     def _error(self, what: str) -> AttributeError:
         # Without ``obj``: Python's traceback adds a "Did you mean" of its own to
@@ -1042,7 +1042,7 @@ def model_source(value: object, wrap: Callable[[str], str] = str) -> tuple[str, 
         if any(mark in low for mark in marks):
             return f"{kind} text", (
                 f"{wrap('bngsim.Model.load(path)')} on a {suffix} file holding it, since "
-                f"bngsim reads {kind} only from a file"
+                f"BNGsim reads {kind} only from a file"
             )
     if "\n" in value.strip():
         return "model text", (

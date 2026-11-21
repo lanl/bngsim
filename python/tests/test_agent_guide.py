@@ -53,7 +53,7 @@ def _blocks() -> list[tuple[str, str]]:
 
 def test_the_guide_ships_in_the_package_and_is_markdown():
     text = bngsim.agent_guide()
-    assert text.startswith("# bngsim agent guide\n")
+    assert text.startswith("# BNGsim agent guide\n")
     assert "bngsim.agent_guide()" in text
     assert "agent_guide" in bngsim.__all__
     assert "bngsim.agent_guide()" in bngsim.__doc__
