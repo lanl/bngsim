@@ -795,7 +795,7 @@ def _not_as_generated(model: Any, bngl: Path, protocol: ProtocolSpec | None) -> 
     from bngsim._bngl_loader import _species_name, _value
 
     try:
-        text = bngl.read_text(encoding="utf-8")
+        text = bngl.read_text(encoding="utf-8", errors="replace")
     except (OSError, UnicodeDecodeError):
         return []
     declared = _declared(text)

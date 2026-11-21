@@ -1951,9 +1951,12 @@ def _looks_like_path(source: str | Path) -> bool:
 
 
 def _read_text(source: str | Path) -> str:
+    # UTF-8, with a byte that is not (a Latin-1 comment) read as U+FFFD: the
+    # model loader hands such a file to BNG2.pl as it is, so its actions are
+    # read too, not refused with a bare UnicodeDecodeError (issue #1665).
     if isinstance(source, Path):
-        return source.read_text(encoding="utf-8")
+        return source.read_text(encoding="utf-8", errors="replace")
     s = str(source)
     if "\n" in s or s.lstrip().startswith(("begin", "#")):
         return s
-    return Path(s).read_text(encoding="utf-8")
+    return Path(s).read_text(encoding="utf-8", errors="replace")

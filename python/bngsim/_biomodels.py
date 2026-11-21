@@ -65,7 +65,9 @@ def _record_path(cache_dir: Path, model_id: str, version: int | None) -> Path:
 
 def _read_cached(cache_dir: Path, model_id: str, version: int | None) -> dict[str, Any] | None:
     try:
-        record: dict[str, Any] = json.loads(_record_path(cache_dir, model_id, version).read_text())
+        record: dict[str, Any] = json.loads(
+            _record_path(cache_dir, model_id, version).read_text(encoding="utf-8")
+        )
         path = cache_dir / f"{record['sha256']}.xml"
         if hashlib.sha256(path.read_bytes()).hexdigest() != record["sha256"]:
             return None

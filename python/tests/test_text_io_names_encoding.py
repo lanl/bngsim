@@ -18,7 +18,7 @@ package has none. Ruff's PLW1514 says
 the same, but only in preview mode, which also changes how stable rules read
 this package (F822 on ``HAS_BNGL``), so the check is a test.
 
-The behaviour is pinned end to end too: a UTF-8 ``.bngl`` and a SED-ML
+The behavior is pinned end to end too: a UTF-8 ``.bngl`` and a SED-ML
 document, each with an em dash, round-trip in a child process whose locale's
 encoding is ASCII.
 """
@@ -334,5 +334,22 @@ def test_a_bngl_with_a_byte_that_is_not_utf8_reaches_bng2pl_as_it_is(tmp_path):
 def test_compiler_output_is_read_as_utf8_off_windows():
     from bngsim import _codegen_toolchain
 
-    expected = "mbcs" if os.name == "nt" else "utf-8"
+    expected = "oem" if os.name == "nt" else "utf-8"
     assert expected == _codegen_toolchain.TOOL_OUTPUT_ENCODING
+
+
+def test_a_bngl_with_a_byte_that_is_not_utf8_has_its_actions_read(tmp_path):
+    # The model loads (above), so its protocol must read too: strict UTF-8 raised
+    # a bare UnicodeDecodeError out of parse_bngl_protocol, and so out of
+    # net_to_omex and run_protocol, for a Latin-1 comment.
+    from bngsim.convert import parse_bngl_protocol
+
+    legacy = tmp_path / "legacy.bngl"
+    text = BNGL.encode("utf-8").replace(b"\xe2\x80\x94", b"\xb5M")
+    legacy.write_bytes(
+        text + b"generate_network({overwrite=>1})\n# per \xb5M\n"
+        b'simulate({method=>"ode",t_end=>1,n_steps=>2})\n'
+    )
+    for source in (legacy, str(legacy)):
+        spec = parse_bngl_protocol(source)
+        assert len(spec.experiments) == 1

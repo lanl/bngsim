@@ -56,10 +56,12 @@ from pathlib import Path
 
 from bngsim._exceptions import CodegenToolchainError
 
-# What a compiler or linker writes its messages and paths in: the ANSI code
-# page on Windows, UTF-8 elsewhere, whatever the locale says (issue #1665).
-# Read with errors="replace", so a byte outside it is never a decode error.
-TOOL_OUTPUT_ENCODING = "mbcs" if os.name == "nt" else "utf-8"
+# What a compiler or linker writes its messages and paths in: on Windows the
+# OEM code page, in which MSVC's cl and link write to a pipe (not the ANSI one,
+# where an accented user name in a path reads as another letter); UTF-8
+# elsewhere, whatever the locale says (issue #1665). Read with
+# errors="replace", so a byte outside it is never a decode error.
+TOOL_OUTPUT_ENCODING = "oem" if os.name == "nt" else "utf-8"
 
 logger = logging.getLogger("bngsim")
 
