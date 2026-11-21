@@ -99,10 +99,10 @@ result = ssa.run(t_span=(0, 100), n_points=101, seed=42)
 
 PSA (partial-scaling approximation) accelerates large-population runs by
 leaping reaction firings whose minimum reactant population exceeds
-`poplevel = N_c`. It keeps the ensemble mean but inflates the fluctuations of
-the scaled channels, so it is an approximation, not an exact SSA: for
-variances, distributions or rare events use `method="ssa"`, and see
-`bngsim.psa_cost_decision` for when it pays for a mean. The dispatch and
+`poplevel = N_c`. Use it when you care about ensemble means and not variances:
+it keeps the means and runs much faster, but it scales up the fluctuations of
+the scaled channels, so for variances, distributions or rare events use
+`method="ssa"`. The dispatch and
 the `validate_for_ssa` gate are shared with SSA, so the same call shape
 works for `.net`, SBML, and Antimony models:
 

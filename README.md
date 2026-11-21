@@ -57,55 +57,51 @@ them by reading each tool's source code in July and August 2026 (libRoadRunner
   `Simulator`, and your choice is used.
 - **Many parameters.** `sim.compute_all_sensitivities(t_span=..., n_points=...,
   n_workers=8)` splits the parameters into chunks and integrates each chunk's
-  sensitivities on its own thread, so wall time falls with more cores, if less
-  than in proportion (3x on 6 cores for a 356-species model). It gives the
-  whole sensitivity matrix, every output with respect to every parameter,
-  which a Fisher information matrix, an identifiability check or a
+  sensitivities on its own thread, so wall time falls as cores are added. It
+  gives the whole sensitivity matrix, every output with respect to every
+  parameter, which a Fisher information matrix, an identifiability check or a
   least-squares fit needs. Adjoint sensitivities, which bngsim does not
   offer, give only the gradient of one objective, and they integrate backward
   in time, which brings numerical difficulties that forward sensitivities do
   not have.
-- **Steady states.** The default, `sim.steady_state()`, integrates the model
-  until it stops moving, and is the one to use unless you have a reason not
-  to. `method="newton"` (or `"kinsol"`) integrates the same way, then polishes
-  the root with KINSOL's Newton solver: use it when you need the root far below
-  the tolerance (a residual near `1e-13` rather than `1e-9`), or when you have
-  cut `max_time` short. On six published dose-response models it cost 1.4 to
-  3.9 times the default. For every steady state of a model, including
-  unstable ones a simulation never settles on, `sim.steady_states()` runs
-  KINSOL from many starts and reports each root with its stability.
-- **SSA or PSA.** `method="ssa"` is exact: use it for distributions,
-  variances, rare events and small populations. `method="psa"` (partial
-  scaling, with `poplevel=`) runs a model with large populations faster and
-  keeps the ensemble mean, but it inflates the fluctuations, so it needs more
-  replicates for the same precision. It pays for a mean only when its speedup
-  exceeds that inflation: measure both against a few SSA runs and ask
-  `bngsim.psa_cost_decision(speedup, rho)`. Like SSA, it needs a network
-  (`.net`, SBML or Antimony, or a BNGL model that `generate_network` can
-  expand); a network too large to generate runs network-free (`nf`, `rm`).
-- **NFsim or RuleMonkey.** Both run a rule-based model network-free, in
-  process, from the XML BioNetGen writes (`xml_path=`). `method="nf"` (NFsim)
-  is the default. `method="rm"` (RuleMonkey) is an independent second engine:
-  it runs some energy (`Arrhenius`) rules, which NFsim refuses, and it is the
-  check to run when an NFsim result matters. Which is faster depends on the
-  model. On 13 published models we timed, NFsim was faster on 9, RuleMonkey
-  by up to 3 times slower where both finished; on two, RuleMonkey had not
-  finished when the time limit NFsim met ran out.
-  RuleMonkey was faster on 4, by up to 15 times. The two agree on 221 of 222
-  models of a parity suite, and on the one where they disagree the fault is
-  NFsim's. Neither runs a model with compartments; use its generated network
+- **Steady states.** To know that you have a true steady state, call
+  `sim.steady_state()` rather than running for a long time: a long run never
+  tells you whether the model has stopped moving, and `steady_state()` does
+  (`ss.converged`). Its default integrates until the residual is below the
+  tolerance. `method="newton"` (or `"kinsol"`) starts the same way, with a
+  solver run that carries the state into the basin of the steady state the
+  dynamics reach, and only then hands it to KINSOL's Newton solver to polish
+  the root, far below the tolerance. Starting with the run is what keeps
+  Newton's method from converging to an unstable steady state the system
+  would never settle on. To find every steady state, unstable ones included,
+  `sim.steady_states()` runs KINSOL from many starts and reports each root
+  with its stability.
+- **SSA or PSA.** `method="ssa"` is exact, for when fluctuations matter:
+  distributions, variances, rare events, small populations. When you care
+  about means and not variances, `method="psa"` (partial scaling, with
+  `poplevel=`) runs a model with large populations much faster and keeps its
+  ensemble means. It scales up the fluctuations, so do not read variances or
+  distributions from it. Like SSA, it needs a network (`.net`, SBML or
+  Antimony, or a BNGL model that `generate_network` can expand); a network
+  too large to generate runs network-free.
+- **NFsim and RuleMonkey.** bngsim runs a rule-based model network-free with
+  two independent implementations, in process, from the XML BioNetGen writes
+  (`xml_path=`): RuleMonkey (`method="rm"`), first published in 2010 and
+  recently rebuilt from the ground up, and NFsim (`method="nf"`). A
+  network-free result is otherwise essentially impossible to check for
+  correctness, so compare the two engines' results on any result that
+  matters. RuleMonkey runs some energy (`Arrhenius`) rules that NFsim
+  refuses. Neither runs a model with compartments; use its generated network
   with `ode` or `ssa`.
 - **bngsim's NFsim or the standalone binary.** The NFsim inside bngsim is
   NFsim with fixes carried on top, and it refuses the constructs on which the
   standalone NFsim that ships with BioNetGen gives a wrong answer without an
   error (energy rules, compartments, functions that read an observable outside
   their argument; RuleWorld/nfsim#102, #104, #106). It also skips the binary's
-  launch and model reparse on every run, which is where it saves time: in
-  fitting and ensembles, where one model runs many times. Run once, it was
-  faster than the binary on 3 of those 13 models (by up to 4.5 times) and
-  slower on the rest, mostly by under 2 times. `nfsim_v1143_compat=True`
-  reproduces NFsim 1.14.3's trajectories
-  seed for seed, for comparison with the binary.
+  launch and model reparse on every run, which saves time where one model runs
+  many times, as in fitting and ensembles. `nfsim_v1143_compat=True`
+  reproduces NFsim 1.14.3's trajectories seed for seed, for comparison with
+  the binary.
 - **JAX.** `bngsim.jax.differentiable_solve` (`pip install 'bngsim[jax]'`)
   makes a CVODE solve a JAX function, so `jax.grad` or `jax.jacfwd` goes
   through the simulation into a loss written in JAX. Use it when the rest of
