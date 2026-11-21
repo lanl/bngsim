@@ -1085,3 +1085,21 @@ def test_a_file_gone_before_it_is_hashed_records_no_hash(tmp_path):
         "path": os.path.abspath(path),
         "sha256": None,
     }
+
+
+def test_a_stoichiometry_an_assignment_sets_is_named_not_numbered():
+    """A speciesReference id an initialAssignment sets holds a number the file
+    does not: the equation names the id."""
+    text = NON_INTEGER_STOICH.replace(
+        '<speciesReference species="A" stoichiometry="1.5" constant="true"/>',
+        '<speciesReference id="nA" species="A" stoichiometry="1.5" constant="true"/>',
+    ).replace(
+        "  </listOfParameters>\n",
+        '   <parameter id="m" value="2" constant="true"/>\n  </listOfParameters>\n'
+        "  <listOfInitialAssignments>\n"
+        '   <initialAssignment symbol="nA">' + _math(_ci("m")) + "</initialAssignment>\n"
+        "  </listOfInitialAssignments>\n",
+    )
+    assert 'id="nA"' in text and 'symbol="nA"' in text
+    r = bngsim.Model.from_sbml_string(text).describe()["reactions"][0]
+    assert r["equation"] == "(nA)*A -> B"
