@@ -1792,12 +1792,16 @@ class Model:
         a volume decides — the amount↔concentration conversion, an
         amount-declared initial condition, the mass-action scalar's ``Π V^n``,
         the SSA propensity volume — is re-derived from the parameter rather than
-        left at the size the model happened to load at. What they are still not
-        is *differentiable*: forward sensitivity refuses a ``d/dV`` column
-        (issue #170 stage 3), which is why this list is worth having.
+        left at the size the model happened to load at. A forward-sensitivity
+        run differentiates them too: ``d/dV`` is a column like any other
+        parameter's (issue #170 stage 3), and matches a central finite
+        difference across a rebuild at ``V ± h`` (issue #1845).
 
-        A handful cannot be written even so; see
-        :attr:`unwritable_compartment_size_params`.
+        Some cannot be written even so, and a sensitivity run refuses their
+        column for the same reason; see
+        :attr:`unwritable_compartment_size_params`. A steady-state sensitivity
+        also refuses a compartment size where the model has a conservation law,
+        whose conserved total is an amount the size does not move.
 
         Empty for ``.net`` models, and for any compartment the SBML loader
         promoted to a species (rate-rule or event-resized): that one is live
@@ -1837,8 +1841,13 @@ class Model:
         such expression once, at load, against the sizes. All three are decided
         at load and named in the error.
 
-        A subset of :attr:`compartment_size_params`, and usually empty — reload
-        with ``Model.from_sbml(..., compartment_sizes={...})`` to move one.
+        A forward-sensitivity column for one is refused too, since it is the
+        derivative of the same write. A subset of
+        :attr:`compartment_size_params`, empty for most models (not for 9% of
+        the SBML test corpus). To move one, or for its gradient as a difference
+        of rebuilds at ``V ± h``, reload with
+        ``Model.from_sbml(..., compartment_sizes={...})``; that refuses a size an
+        assignment rule sets, which moves with what the rule reads.
 
         Returns
         -------
@@ -3400,8 +3409,9 @@ class Model:
           the file declares and whatever its quantity, as :meth:`get_concentration`
           and ``Result.species`` give them. ``None`` for a ``.net`` or BNGL
           model, whose file states no units, or one built in Python.
-        * ``methods``: for ``ode``, ``ssa``, ``psa``, ``nf``, ``rm`` and
-          ``forward_sensitivities``, a ``status`` and ``reasons``, each reason a
+        * ``methods``: for ``ode``, ``ssa``, ``psa``, ``nf``, ``rm``,
+          ``forward_sensitivities`` and ``steady_state``, a ``status`` and
+          ``reasons``, each reason a
           ``code`` and the ``message`` the run raises (SSA's grouped by code,
           with a ``count`` and its ``locations``). ``"ok"``: nothing in the
           model or this install refuses the method before a run; a run can
@@ -3416,8 +3426,20 @@ class Model:
           it is ``"undecided"`` where nothing refuses it, since whether the
           rate laws differentiate to closed form is decided when a sensitivity
           run builds its code, and a ``note`` says so; it reports the
-          ``backend`` that would build it, and ``refused_parameters``, those
-          folded at load (:attr:`frozen_params`) with what they went into.
+          ``backend`` that would build it, and ``refused_parameters``: the
+          parameters a sensitivity run refuses whatever it asks, those folded at
+          load (:attr:`frozen_params`, with what they went into), the
+          compartment sizes :meth:`set_param` cannot write
+          (:attr:`unwritable_compartment_size_params`), and the parameters a
+          rule or function sets, each with why, cut at ``limit`` like a list
+          (``refused_parameters_omitted`` counts the rest). ``steady_state``
+          lists every
+          reason :meth:`Simulator.steady_state` is refused for the model alone,
+          in the order the refusals come: the ODE Simulator's own, then the
+          call's checks (an event, a compartment size that jumps, the time
+          reaching the state), then a model with no species. Its ``note`` says
+          what it leaves to the call: a conservation law the right-hand side
+          does not keep, and whether the solve converges.
         * ``time_dependence``: ``rate_laws_read_clock``,
           ``functions_reading_clock``, ``state_reads_clock`` (which a steady
           state refuses), ``time_tables`` (table functions over time) and

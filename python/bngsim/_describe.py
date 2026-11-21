@@ -81,6 +81,96 @@ def ode_refusals(model: Model) -> list[tuple[str, str]]:
     return out
 
 
+def steady_state_refusals(model: Model, where: str = "steady_state()") -> list[tuple[str, str]]:
+    """``(code, message)`` for each reason a steady-state solve of ``model`` is
+    refused whatever it asks, every one that holds, in the order
+    :meth:`Simulator.steady_state` and :meth:`Simulator.steady_state_batch`
+    check them; each raises the first as a
+    :class:`~bngsim.SimulationError` (issues #710, #961, #1054). ``where`` names
+    the call in the message.
+
+    * ``event``: the model has an event, which a root of ``f(y)`` never fires.
+    * ``size_jump``: a compartment an assignment rule sizes jumps where a
+      piecewise the rule reads switches, and the solvers make no rescale there.
+    * ``reads_clock``: the time reaches the state
+      (``NetworkModel.state_reads_clock``), so there is no ``f(y) = 0`` to
+      solve without a time being chosen.
+
+    Not here: a conservation law the right-hand side does not keep (issue #758),
+    which the call checks by finding the laws, gigabytes on a large network.
+    """
+    core = model._core
+    # A compartment size that jumps keeps the amounts in it through an event
+    # the loader adds (issue #1054), which is no event of the model's own.
+    jumps = list(core.event_size_jump_compartments)
+    n_events = sum(1 for comp in jumps if not comp)
+    out: list[tuple[str, str]] = []
+    if n_events:
+        out.append(
+            (
+                "event",
+                f"{where} is not supported for this model: it has {n_events} "
+                f"event{'s' if n_events != 1 else ''}. The steady-state solvers look for a "
+                "root of the right-hand side and fire no event, so an event's assignment is "
+                "never made, and the state they return is one the model's dynamics may never "
+                "reach (issue #710). Integrate the model with run() over a span long enough "
+                "for the trajectory to settle, and read the state where it ends.",
+            )
+        )
+    comps = sorted({comp for comp in jumps if comp})
+    if comps:
+        what = (
+            f"the size of compartment {comps[0]}, which an assignment rule sets, jumps "
+            "where a piecewise the rule reads switches, and the amounts in it are"
+            if len(comps) == 1
+            else f"the sizes of compartments {', '.join(comps)}, which assignment rules "
+            "set, jump where a piecewise a rule reads switches, and the amounts in them are"
+        )
+        out.append(
+            (
+                "size_jump",
+                f"{where} is not supported for this model: {what} kept across a jump by a "
+                "rescale of their concentrations there (issue #1054). The steady-state "
+                "solvers look for a root of the right-hand side and make no such rescale, so "
+                "the state they return can hold the concentrations from the wrong side of a "
+                "jump (issue #710). Integrate the model with run() over a span long enough for "
+                "the trajectory to settle, and read the state where it ends.",
+            )
+        )
+    if core.state_reads_clock:
+        out.append(
+            (
+                "reads_clock",
+                f"{where} is not supported for this model: it reads the time, through time() "
+                "or a table function indexed by time, in a rate law, a rule a species or a "
+                "compartment size is reported through, or what one of those reads. The "
+                "steady-state solvers look for a root of f(y) with everything read at t = 0, "
+                "which is the model's steady state only where nothing changes with the time "
+                "after that: a rate that is 0 at t = 0 returned the initial state as "
+                "converged, and a species set by a rule on the time its value at t = 0 "
+                "(issue #710). Integrate the model with run() over a span long enough for the "
+                "trajectory to settle, and read the state where it ends.",
+            )
+        )
+    return out
+
+
+#: What steady_state() raises for a model with no species, from the engine.
+_SS_NO_SPECIES = "Steady-state computation failed: Cannot find steady state: model has no species"
+
+
+def _steady_state_reasons(model: Model) -> list[dict[str, Any]]:
+    """Why ``Simulator(model, method="ode").steady_state()`` is refused, in the
+    order the refusals come: the ODE Simulator's own (a steady state is only
+    asked of one), the call's checks, and the engine's for a model with no
+    species."""
+    reasons = [{"code": c, "message": m} for c, m in ode_refusals(model)]
+    reasons += [{"code": c, "message": m} for c, m in steady_state_refusals(model)]
+    if model._core.n_species == 0:
+        reasons.append({"code": "no_species", "message": _SS_NO_SPECIES})
+    return reasons
+
+
 def _verdict(reasons: list[dict[str, Any]], **extra: Any) -> dict[str, Any]:
     return {"status": "refused" if reasons else "ok", "reasons": reasons, **extra}
 
@@ -158,6 +248,14 @@ def _network_free(model: Model, canonical: str) -> dict[str, Any]:
     }
 
 
+#: What a steady-state verdict does not cover.
+_STEADY_STATE_NOTE = (
+    "From the checks steady_state() makes of the model alone. The call also refuses a "
+    "conservation law the model's own right-hand side does not keep (issue #758), which "
+    "it finds by computing the laws, not done here; and a solve can still fail to "
+    "converge, or find a root the run does not reach."
+)
+
 #: Why a sensitivity verdict that nothing refuses is not "ok".
 _UNDECIDED = (
     "Nothing in the model or this install refuses forward sensitivities before a "
@@ -168,7 +266,7 @@ _UNDECIDED = (
 )
 
 
-def _forward_sensitivities(model: Model) -> dict[str, Any]:
+def _forward_sensitivities(model: Model, limit: int | None) -> dict[str, Any]:
     """What a sensitivity run needs of this install (a codegen backend: a C
     compiler, or the MIR JIT), the events that refuse every request (the
     core's own check, asked as an initial-condition-only run asks it), and the
@@ -223,9 +321,45 @@ def _forward_sensitivities(model: Model) -> dict[str, Any]:
         out["note"] = _UNDECIDED
     if backend is not None:
         out["backend"] = backend
+    # Refused whatever the run asks: a parameter folded at load (what it went
+    # into), and a compartment size set_param cannot write, whose column is the
+    # derivative of that write (Simulator._raise_if_compartment_size_params).
     frozen = model._frozen_params
-    if frozen:
-        out["refused_parameters"] = {n: frozen[n] for n in model.param_names if n in frozen}
+    unwritable = set(model.unwritable_compartment_size_params)
+    # And a parameter a function owns, which no write moves
+    # (Simulator._raise_if_function_backed_params, issue #329): for SBML the
+    # file's own parameters an assignment rule sets, not the rates the loader
+    # names after reactions.
+    core = model._core
+    backed = {
+        n for n, internal in zip(core.param_names, core.param_is_internal, strict=True) if internal
+    } & set(core.function_names)
+    if model._sbml_record is not None:
+        backed &= model._sbml_record["parameters"]
+
+    def reason_for(n: str) -> str:
+        if n in frozen:
+            return f"folded at load into {frozen[n]}"
+        if n in unwritable:
+            return (
+                "a compartment size set_param cannot write "
+                "(Model.unwritable_compartment_size_params)"
+            )
+        return "set by a rule or function, which no write can move (issue #329)"
+
+    refused = {
+        n: reason_for(n)
+        for n in model.param_names
+        if n in frozen or n in unwritable or n in backed
+    }
+    if refused:
+        # Cut at limit like a list: a model of many rules has hundreds
+        # (MODEL1006230049: 652), and the size is the point of the limit.
+        names = list(refused)
+        if limit is not None and len(names) > limit:
+            out["refused_parameters_omitted"] = len(names) - limit
+            names = names[:limit]
+        out["refused_parameters"] = {n: refused[n] for n in names}
     return out
 
 
@@ -588,7 +722,8 @@ def describe_model(model: Model, *, limit: int | None = 50) -> ModelDescription:
             "psa": dict(stochastic),
             "nf": _network_free(model, "nf_reject"),
             "rm": _network_free(model, "nf_exact"),
-            "forward_sensitivities": _forward_sensitivities(model),
+            "forward_sensitivities": _forward_sensitivities(model, limit),
+            "steady_state": _verdict(_steady_state_reasons(model), note=_STEADY_STATE_NOTE),
         },
         time_dependence={
             "rate_laws_read_clock": bool(core.rate_laws_read_clock),
@@ -738,17 +873,25 @@ def _text(d: dict[str, Any]) -> str:
         "nf": "nf",
         "rm": "rm",
         "forward_sensitivities": "forward sensitivities",
+        "steady_state": "steady state",
     }
     # Methods with the same verdict share a line: nf and rm, ssa and psa.
     grouped: dict[str, list[str]] = {}
     for key, label in labels.items():
-        grouped.setdefault(_status_line(d["methods"][key]), []).append(label)
+        status = _status_line(d["methods"][key])
+        if key == "steady_state" and status == "ok":
+            # What the verdict leaves to the call (its note), said where it is read.
+            status = "ok, if a solve converges (the call also checks the conservation laws)"
+        grouped.setdefault(status, []).append(label)
     for status, names in grouped.items():
         lines.append(f"  {', '.join(names)}: {status}")
     refused = d["methods"]["forward_sensitivities"].get("refused_parameters")
     if refused:
+        more = d["methods"]["forward_sensitivities"].get("refused_parameters_omitted")
         lines.append(
-            "  forward sensitivities refuse the parameters folded at load: " + ", ".join(refused)
+            "  forward sensitivities refuse the parameters: "
+            + ", ".join(refused)
+            + (f" and {more} more" if more else "")
         )
 
     j = d["jacobian"]
@@ -858,4 +1001,10 @@ def _text(d: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-__all__ = ["SCHEMA_VERSION", "ModelDescription", "describe_model", "ode_refusals"]
+__all__ = [
+    "SCHEMA_VERSION",
+    "ModelDescription",
+    "describe_model",
+    "ode_refusals",
+    "steady_state_refusals",
+]

@@ -57,7 +57,7 @@ from bngsim._codegen import (
     output_sens_support_of_artifact,
     read_sens_decline_note,
 )
-from bngsim._describe import ode_refusals
+from bngsim._describe import ode_refusals, steady_state_refusals
 from bngsim._exceptions import (
     AtolScaleWarning,
     CodegenDeclinedError,
@@ -10264,49 +10264,11 @@ class Simulator:
         A ``rateOf`` accessor is not a read of the time: it reads the state's own
         derivatives, which are 0 at a steady state.
         """
-        core = self._model._core
-        # A compartment size that jumps keeps the amounts in it through an event
-        # the loader adds (issue #1054), which is no event of the model's own.
-        jumps = list(core.event_size_jump_compartments)
-        n_events = sum(1 for comp in jumps if not comp)
-        if n_events:
-            raise SimulationError(
-                f"{where} is not supported for this model: it has {n_events} "
-                f"event{'s' if n_events != 1 else ''}. The steady-state solvers look for a "
-                "root of the right-hand side and fire no event, so an event's assignment is "
-                "never made, and the state they return is one the model's dynamics may never "
-                "reach (issue #710). Integrate the model with run() over a span long enough "
-                "for the trajectory to settle, and read the state where it ends."
-            )
-        if jumps:
-            comps = sorted(set(jumps))
-            what = (
-                f"the size of compartment {comps[0]}, which an assignment rule sets, jumps "
-                "where a piecewise the rule reads switches, and the amounts in it are"
-                if len(comps) == 1
-                else f"the sizes of compartments {', '.join(comps)}, which assignment rules "
-                "set, jump where a piecewise a rule reads switches, and the amounts in them are"
-            )
-            raise SimulationError(
-                f"{where} is not supported for this model: {what} kept across a jump by a "
-                "rescale of their concentrations there (issue #1054). The steady-state "
-                "solvers look for a root of the right-hand side and make no such rescale, so "
-                "the state they return can hold the concentrations from the wrong side of a "
-                "jump (issue #710). Integrate the model with run() over a span long enough for "
-                "the trajectory to settle, and read the state where it ends."
-            )
-        if core.state_reads_clock:
-            raise SimulationError(
-                f"{where} is not supported for this model: it reads the time, through time() "
-                "or a table function indexed by time, in a rate law, a rule a species or a "
-                "compartment size is reported through, or what one of those reads. The "
-                "steady-state solvers look for a root of f(y) with everything read at t = 0, "
-                "which is the model's steady state only where nothing changes with the time "
-                "after that: a rate that is 0 at t = 0 returned the initial state as "
-                "converged, and a species set by a rule on the time its value at t = 0 "
-                "(issue #710). Integrate the model with run() over a span long enough for the "
-                "trajectory to settle, and read the state where it ends."
-            )
+        # The checks are bngsim._describe.steady_state_refusals, which
+        # Model.describe() reports from too (issue #1844).
+        refusals = steady_state_refusals(self._model, where)
+        if refusals:
+            raise SimulationError(refusals[0][1])
 
     def _ss_mask_excluding_ar_species(self, mask_selector: list[int] | None) -> list[int] | None:
         """Drop AssignmentRule-target species from the steady-state subspace (#247).

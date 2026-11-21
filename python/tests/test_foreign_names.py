@@ -78,15 +78,18 @@ PINNED = {
         "loada", "run", "seed", "set_seed", "simulate",
     ],
     "Model": [
-        "from_antimony_file", "from_bngl_file", "from_bngl_string", "from_file",
-        "from_net_file", "from_sbml_file", "from_string", "getFloatingSpeciesIds",
-        "getGlobalParameterIds", "getValue", "get_parameter", "n_params", "observables",
-        "parameters", "resetAll", "resetConcentrations", "run", "saveConcentrations",
-        "setConcentration", "setParameter", "setValue", "set_parameter", "set_parameters",
-        "simulate", "species",
+        "compartment_names", "compartments", "from_antimony_file", "from_bngl_file",
+        "from_bngl_string", "from_file", "from_net_file", "from_sbml_file", "from_string",
+        "getCompartmentIds", "getFloatingSpeciesIds", "getGlobalParameterIds", "getInfo",
+        "getNumReactions", "getReactionIds", "getValue", "get_parameter", "info", "n_params",
+        "observables", "parameters", "reaction_names", "reactions", "resetAll",
+        "resetConcentrations", "run", "saveConcentrations", "setConcentration",
+        "setParameter", "setValue", "set_parameter", "set_parameters", "simulate", "species",
+        "species_units", "summary", "to_dict", "units",
     ],
     "Simulator": [
-        "atol", "getFloatingSpeciesIds", "getGlobalParameterIds", "getSteadyStateValues",
+        "atol", "getCompartmentIds", "getFloatingSpeciesIds", "getGlobalParameterIds",
+        "getInfo", "getNumReactions", "getReactionIds", "getSteadyStateValues",
         "getValue", "get_concentration", "get_param", "gillespie", "integrate", "integrator",
         "observable_names", "param_names", "reset", "resetAll", "result", "rtol", "seed",
         "setIntegrator", "setSeed", "setValue", "set_concentration", "set_param",
@@ -241,6 +244,8 @@ def test_every_call_an_entry_names_exists(entry):
             for name in (*fn.RUN_CALLS, "steady_state", "set_tolerances")
         },
         "plot": {"x"},  # pandas
+        "describe": inspect.signature(Model.describe).parameters,
+        "get": {"default"},  # dict.get, whose arguments are positional
     }
     # Each call's keywords, one level of parentheses inside its arguments.
     for call, args in re.findall(r"(\w+)\(((?:[^()]|\([^()]*\))*)\)", text):

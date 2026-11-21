@@ -314,7 +314,7 @@ What to read in it:
   `Model.n_reactions` counts. A compartment size or parameter that a rule or an
   event moves is held as a state; it is listed under `other_states`, not as a
   species.
-- **`methods`**: for `ode`, `ssa`, `psa`, `nf` and `rm`, a `status` with
+- **`methods`**: for `ode`, `ssa`, `psa`, `nf`, `rm` and `steady_state`, a `status` with
   `reasons`. `"ok"` means nothing in the model or this install refuses the method
   before a run. `"refused"` lists the constructs, each with a `code` and the
   message the run would raise, read from the checks the Simulator itself makes,
@@ -328,8 +328,17 @@ What to read in it:
   that refuses every request (a delayed event), `"unavailable"` without a
   compiler, and otherwise `"undecided"`: whether every rate law differentiates to
   closed form is decided when a sensitivity run builds its code, and the run
-  refuses one that does not (`floor`, `min`, `max`, `abs` or a comparison in a
-  rate law).
+  refuses one that does not (a `floor()` in a rate law, for one; `min`, `max`,
+  `abs` and comparisons are taken). Its `refused_parameters` names the
+  parameters a sensitivity run refuses whatever it asks: those folded at load,
+  the compartment sizes `set_param` cannot write, and the parameters a rule or
+  function sets. Any other compartment size's `d/dV` column is computed.
+- **`steady_state`** is `"refused"` for a model with an event, a compartment size
+  that jumps, or a state the time reaches, for one the ODE Simulator refuses, and
+  for one with no species, listing every reason with the message
+  `steady_state()` raises for the first. `"ok"` does not promise a root: the call also checks that the model's
+  conservation laws are kept, which `describe()` leaves out because finding the
+  laws can take gigabytes on a large network, and a solve can fail to converge.
 - **`next_run_starts_from`**: `"live"` where the model's state is not its initial
   state, as after a run or a `set_concentration`: the next `run()` continues from
   it (see `Result.started_from`).
