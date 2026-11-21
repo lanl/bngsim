@@ -8,7 +8,9 @@ Hierarchy::
 
     BngsimError (RuntimeError)
     ├── ModelError            — .net parse failures, invalid model state
-    │   └── UnderSpecifiedModelError — reads a symbol it never defines
+    │   ├── UnderSpecifiedModelError — reads a symbol it never defines
+    │   └── InvalidModelError — a model or a builder's part not well formed
+    │                           (also a ValueError)
     ├── SimulationError       — solver failures (convergence, NaN, etc.)
     │   └── SparseJacobianUnavailableError — force_sparse_linear_solver on a
     │                           model with no sparse Jacobian for KLU
@@ -25,6 +27,13 @@ Hierarchy::
     ├── CodegenToolchainError — the C toolchain cannot build any codegen library
     ├── StopConditionMet      — stop condition triggered (carries partial result)
     ├── UsageError            — an argument a call cannot take (also a ValueError)
+    ├── ArgumentTypeError     — an argument of a type a call does not take
+    │                           (also a TypeError)
+    ├── NotFoundError         — a name or key a lookup does not find (also a
+    │                           KeyError)
+    ├── NotSupportedError     — a call or option this object does not offer
+    │                           (also a NotImplementedError)
+    ├── CodegenBuildError     — the compiled right-hand side could not be built
     ├── DependencyError       — an optional package missing or broken (also an
     │                           ImportError)
     └── MissingFileError      — the file named does not exist (also a
@@ -624,6 +633,69 @@ class UsageError(BngsimError, ValueError):
     """
 
     default_code = "usage.invalid_argument"
+
+
+class ArgumentTypeError(BngsimError, TypeError):
+    """An argument of a type a call does not take: a string where it takes a
+    list, a Result where it takes a Model.
+
+    Also a :class:`TypeError`, as these were raised before they had a type, so
+    an existing ``except TypeError`` still catches it.
+    """
+
+    default_code = "usage.wrong_type"
+
+
+class NotFoundError(BngsimError, KeyError):
+    """A name or key a call looks up and does not find: a column of a result,
+    a run of a protocol, a species. ``details["name"]`` is the name asked for
+    where one is.
+
+    Also a :class:`KeyError`, as these were raised before they had a type, so
+    an existing ``except KeyError`` still catches it, and it prints as one.
+    """
+
+    default_code = "name.not_found"
+
+    def __str__(self) -> str:
+        return KeyError.__str__(self)
+
+
+class NotSupportedError(BngsimError, NotImplementedError):
+    """A call or an option this object does not offer, as written: an
+    interactive helper on a model loaded from XML, say.
+
+    Also a :class:`NotImplementedError`, as these were raised before they had
+    a type, so an existing ``except NotImplementedError`` still catches it.
+    """
+
+    default_code = "usage.not_supported"
+
+
+class InvalidModelError(ModelError, ValueError):
+    """A model, or a part of one given to a builder, that is not well formed:
+    a name defined twice, a reaction that names no rate, a parameter a species
+    starts from that the model does not define.
+
+    Also a :class:`ValueError`, as these were raised before they had a type,
+    so an existing ``except ValueError`` still catches it.
+    """
+
+    default_code = "model.invalid"
+
+
+class CodegenBuildError(BngsimError):
+    """The compiled right-hand side of this model could not be built: the
+    compiler failed on it, or ran out of time. A statement about this build,
+    not the model; the model still runs on the interpreted right-hand side
+    (``codegen=False``). One the toolchain fails on whatever it builds is a
+    :class:`CodegenToolchainError` instead.
+
+    A ``RuntimeError`` (through :class:`BngsimError`), as these were raised
+    before they had a type.
+    """
+
+    default_code = "codegen.build_failed"
 
 
 class DependencyError(BngsimError, ImportError):

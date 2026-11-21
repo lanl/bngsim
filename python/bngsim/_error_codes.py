@@ -109,6 +109,19 @@ _CODES = (
     ),
     # ─── Names ───────────────────────────────────────────────────────────────
     ErrorCode(
+        "model.invalid",
+        "InvalidModelError",
+        "A model, or a part of one given to a builder, is not well formed: a name "
+        "defined twice, a reaction with no rate, a reference to something not defined.",
+        "Fix the model as the message says.",
+    ),
+    ErrorCode(
+        "model.unreadable_file",
+        "ModelError",
+        "A model file is not what its format says, or its reader stops on a fatal error.",
+        "Check the file is the format its name says; the message quotes the reader.",
+    ),
+    ErrorCode(
         "param.not_found",
         "ParameterError",
         "The model has no parameter by that name.",
@@ -124,10 +137,62 @@ _CODES = (
     ),
     # ─── Choosing and setting up a run ───────────────────────────────────────
     ErrorCode(
+        "output.not_found",
+        "NotFoundError",
+        "A name that is none of the result's species, observables or functions.",
+        'Use a name `details["close_matches"]` gives, or one of the result\'s '
+        "`species_names` or `observable_names`.",
+    ),
+    ErrorCode(
+        "name.not_found",
+        "NotFoundError",
+        "A name or key a lookup does not find, of a kind with no code of its own.",
+        "Read the message: it lists the names there are.",
+    ),
+    ErrorCode(
         "usage.missing_argument",
         "UsageError",
         "A call needs an argument it was not given.",
         "Pass the argument ``details['argument']`` names.",
+    ),
+    ErrorCode(
+        "usage.conflicting_arguments",
+        "UsageError",
+        "Two arguments a call takes one or the other of, or that cannot go together, "
+        "were both given.",
+        "Read the message for the pair, and drop one.",
+    ),
+    ErrorCode(
+        "usage.wrong_type",
+        "ArgumentTypeError",
+        "An argument is of a type the call does not take.",
+        "Read the message: it names the type the call takes.",
+    ),
+    ErrorCode(
+        "usage.unknown_method",
+        "UsageError",
+        "A `method=` that BNGsim does not know.",
+        "Pass one the message lists.",
+    ),
+    ErrorCode(
+        "usage.method_unsupported",
+        "UsageError",
+        "A call or option the simulator's method does not offer, such as "
+        "sensitivities on a stochastic method.",
+        "Build the Simulator with the method the remedy names, or leave the option out.",
+    ),
+    ErrorCode(
+        "usage.not_supported",
+        "NotSupportedError",
+        "A call or option this object does not offer, as written.",
+        "Read the message for what does.",
+    ),
+    ErrorCode(
+        "env.feature_not_built",
+        "BngsimError",
+        "A method needs a part of BNGsim this install was built without, such as NFsim "
+        "or RuleMonkey.",
+        "Install a build that has it; `bngsim.capabilities()` lists what this one has.",
     ),
     ErrorCode(
         "ssa.unsupported_construct",
@@ -140,6 +205,14 @@ _CODES = (
         "CodegenDeclinedError",
         "``codegen=True`` on a model codegen declines.",
         "Pass ``codegen=None`` to run it on the interpreter.",
+    ),
+    ErrorCode(
+        "codegen.build_failed",
+        "CodegenBuildError",
+        "Building this model's compiled right-hand side failed or ran out of time; "
+        "the toolchain builds other code.",
+        "Pass `codegen=False` to run on the interpreted right-hand side, or give the "
+        "build more time or cores as the message says.",
     ),
     ErrorCode(
         "solver.sparse_jacobian_unavailable",
@@ -326,6 +399,11 @@ def pass_argument(argument: str, *value: object) -> dict:
     if value:
         remedy["value"] = value[0]
     return remedy
+
+
+def use_method(method: str) -> dict:
+    """The remedy that builds the Simulator with *method* instead."""
+    return {"kind": "use_method", "method": method}
 
 
 def use_name(name: str) -> dict:
