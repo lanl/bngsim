@@ -682,9 +682,13 @@ snapshot calls carry the derivative with the state:
 sim = bngsim.Simulator(model, method="ode", sensitivity_params=["kf", "kr", "kdeg"])
 sim.run(t_span=(0, 1e6), n_points=2, steady_state=True)   # equilibrate once
 
+# The hook does the dosing: in a sensitivity scan, changing L_0 moves no
+# species, so without the hook every point would start the ligand where the
+# equilibration left it, and the scan would warn that the dose is dropped.
 points = sim.parameter_scan(
     "L_0", par_min=1e-3, par_max=1e2, n_scan_pts=12, log_scale=True,
     t_span=(0, 600), n_points=61, steady_state=True,
+    on_point=lambda m, dose: m.set_concentration("L(r)", dose),
 )
 grads = [p.output_sensitivities("observable:pReceptor") for p in points]
 ```

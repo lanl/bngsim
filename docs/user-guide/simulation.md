@@ -64,6 +64,9 @@ results = sim.parameter_scan(
         "L(r,label~cold)", v * NA * Vecf
     ),
 )
+# The hook does the dosing. A scan from a saved state cannot move a species
+# through the parameter that sets its starting amount, and warns if you try.
+# For a dose scan from the initial conditions, call model.reset() first.
 # Each Result has custom_attrs["scan_value"].
 
 # bifurcate() is the continuation scan (reset_conc=>0): each point starts

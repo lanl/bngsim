@@ -340,7 +340,16 @@ Warnings (`UserWarning` subclasses; filter or escalate them with `warnings`):
   behind that time (`set_time` moves it), and once per call by
   `run_replicates`, `parameter_scan` (unless `reset_to` names the start or the scan carries an equilibration's `dx/dθ`),
   `bifurcate` and `run_protocol`'s first run, where `Model.reset()` or
-  `Model.save_concentrations()` says it (issue #1701).
+  `Model.save_concentrations()` says it (issue #1701). A scan that also raises
+  `ScanDoseWarning` names only `Model.reset()`: a saved state does not dose.
+
+- **`ScanDoseWarning`** — `parameter_scan` over a parameter that seeds a
+  species' initial condition cannot move that species: each point starts from
+  the state at the call (or `reset_to`), and after a run, in a sensitivity scan
+  or from a baseline `save_concentrations()` made, a parameter write leaves it
+  where it is. Names the species, once per call, before the first point;
+  `Model.reset()` first, or an `on_point` hook that sets them, doses them. A
+  scan with a hook is not warned about (refs #1643).
 
 - **`OneSidedSensitivityWarning`** — a sensitivity column is a one-sided
   derivative: two rate-law switches share an instant, a rate law composes them,
