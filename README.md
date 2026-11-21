@@ -28,6 +28,11 @@ For BioNetGen users, it replaces `run_network`.
   [guide](https://bngsim.readthedocs.io/en/latest/agent-guide.html) for the
   installed version, with no network. `python -m bngsim guide` prints it, and
   `python -m bngsim skill` prints it as a `SKILL.md` file.
+- The `bngsim` command (also `python -m bngsim`) works from a shell:
+  `bngsim doctor` says what this install can do and what is missing,
+  `bngsim examples` lists the bundled models, and `bngsim inspect MODEL`
+  describes a model. With `--json`, each prints one JSON object. See
+  [the command](https://bngsim.readthedocs.io/en/latest/reference/command-line.html).
 - A call that uses names from libRoadRunner, Tellurium, SciPy or pandas, or
   from BNGL actions (`setParameter`, `t_end`, `n_steps`), raises an error that
   names the BNGsim call to use. The guide also translates from AMICI, COPASI
