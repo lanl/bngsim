@@ -244,6 +244,8 @@ def test_every_call_an_entry_names_exists(entry):
             for name in (*fn.RUN_CALLS, "steady_state", "set_tolerances")
         },
         "plot": {"x"},  # pandas
+        "describe": inspect.signature(Model.describe).parameters,
+        "get": {"default"},  # dict.get, whose arguments are positional
     }
     # Each call's keywords, one level of parentheses inside its arguments.
     for call, args in re.findall(r"(\w+)\(((?:[^()]|\([^()]*\))*)\)", text):

@@ -1384,7 +1384,7 @@ def test_a_steady_state_refusal_is_the_calls_own(code):
     model = _STEADY_STATE_REFUSED[code]()
     verdict = model.describe()["methods"]["steady_state"]
     assert verdict["status"] == "refused"
-    (reason,) = verdict["reasons"]
+    reason = verdict["reasons"][0]  # the one the call raises
     assert reason["code"] == code
     with pytest.raises(bngsim.SimulationError) as ei:
         bngsim.Simulator(model.clone(), method="ode").steady_state()
@@ -1402,7 +1402,8 @@ def test_a_model_with_a_steady_state_says_ok():
     assert bngsim.Simulator(model, method="ode").steady_state().converged
     methods = str(model.describe()).split("Methods:")[1].split("Analytical")[0]
     (line,) = [ln for ln in methods.splitlines() if "steady state" in ln]
-    assert line.endswith(": ok")
+    # The text says what "ok" leaves to the call, as the note does.
+    assert line.endswith(": ok, if a solve converges (the call also checks the conservation laws)")
 
 
 def test_ok_is_not_a_promise_of_convergence(tmp_path):
@@ -1413,3 +1414,79 @@ def test_ok_is_not_a_promise_of_convergence(tmp_path):
     verdict = model.describe()["methods"]["steady_state"]
     assert verdict["status"] == "ok" and "converge" in verdict["note"]
     assert not bngsim.Simulator(model, method="ode").steady_state().converged
+
+
+def test_every_reason_a_steady_state_is_refused_is_listed():
+    """WITH_EVENT has an event and a rate that reads the clock: both are listed,
+    and the call raises the first, the event."""
+    model = bngsim.Model.from_sbml_string(WITH_EVENT)
+    reasons = model.describe()["methods"]["steady_state"]["reasons"]
+    assert [r["code"] for r in reasons] == ["event", "reads_clock"]
+    with pytest.raises(bngsim.SimulationError) as ei:
+        bngsim.Simulator(model, method="ode").steady_state()
+    assert str(ei.value) == reasons[0]["message"]
+
+
+def test_no_steady_state_where_the_ode_simulator_refuses_the_model(monkeypatch):
+    """A steady state is asked of an ODE Simulator, which refuses a fast
+    reaction when it is made: the verdict gives that refusal, in its words."""
+    monkeypatch.delenv("BNGSIM_ALLOW_UNSUPPORTED_CONSTRUCTS", raising=False)
+    model = bngsim.Model.from_sbml_string(FAST_REACTION)
+    verdict = model.describe()["methods"]["steady_state"]
+    assert verdict["status"] == "refused"
+    assert [r["code"] for r in verdict["reasons"]] == ["fast_reaction"]
+    with pytest.raises(bngsim.ModelError) as ei:
+        bngsim.Simulator(model, method="ode").steady_state()
+    assert str(ei.value) == verdict["reasons"][0]["message"]
+
+
+def test_no_steady_state_for_a_model_with_no_species():
+    from bngsim._bngsim_core import ModelBuilder
+
+    b = ModelBuilder()
+    b.add_parameter("k", 1.0)
+    model = bngsim.Model(_core=b.build())
+    (reason,) = model.describe()["methods"]["steady_state"]["reasons"]
+    assert reason["code"] == "no_species"
+    with pytest.raises(bngsim.SimulationError) as ei:
+        bngsim.Simulator(model, method="ode").steady_state()
+    assert str(ei.value) == reason["message"]
+
+
+def test_a_parameter_an_assignment_rule_sets_is_a_refused_parameter():
+    """A function owns it, so no write moves it, and a sensitivity run refuses
+    it by name (issue #329): describe() lists it."""
+    pytest.importorskip("antimony")
+    model = bngsim.Model.from_antimony_string("species A = 3; p := 2*k; J: A -> ; p*A; k = 0.5")
+    refused = model.describe()["methods"]["forward_sensitivities"]["refused_parameters"]
+    assert list(refused) == ["p"]  # not the rates the loader names after J
+    assert "rule or function" in refused["p"]
+    with pytest.raises(ValueError, match="'p'"):
+        sim = bngsim.Simulator(model, method="ode", sensitivity_params=["p"])
+        sim.run(t_span=(0, 1), n_points=2)
+
+
+@pytest.mark.parametrize("fixture", ["net", "sbml"])
+def test_every_describe_hint_of_the_wrong_call_table_runs(tmp_path, fixture):
+    """Each wrong-call hint that names describe() answers when followed, on a
+    network of 119 reactions (more than describe()'s default 50) and on an
+    SBML model: whole lists, and no KeyError where a .net has no compartments
+    (issue #1843 review)."""
+    from bngsim import _foreign_names as fn
+
+    if fixture == "net":
+        model = _chain(tmp_path, 120)
+    else:
+        model = bngsim.Model.from_sbml_string(TWO_COMPARTMENTS)
+    sim = bngsim.Simulator(model.clone(), method="ode")
+    counts = model.describe()["counts"]
+    rows = [e for e in fn.FOREIGN_NAMES if "describe(" in e.use]
+    assert {e.name for e in rows} >= {"compartments", "reactions", "getNumReactions", "summary"}
+    for entry in rows:
+        answer = eval(entry.use, {"model": model, "sim": sim, "print": lambda *a: None})
+        if '["counts"]["reactions"]' in entry.use:
+            assert answer == counts["reactions"], entry
+        elif '["reactions"]' in entry.use:
+            assert len(answer) == counts["reactions"], entry
+        if "compartments" in entry.use:
+            assert len(answer) == counts.get("compartments", 0), entry

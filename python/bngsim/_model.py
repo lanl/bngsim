@@ -1797,7 +1797,7 @@ class Model:
         parameter's (issue #170 stage 3), and matches a central finite
         difference across a rebuild at ``V ± h`` (issue #1845).
 
-        A handful cannot be written even so, and a sensitivity run refuses their
+        Some cannot be written even so, and a sensitivity run refuses their
         column for the same reason; see
         :attr:`unwritable_compartment_size_params`. A steady-state sensitivity
         also refuses a compartment size where the model has a conservation law,
@@ -1842,10 +1842,12 @@ class Model:
         at load and named in the error.
 
         A forward-sensitivity column for one is refused too, since it is the
-        derivative of the same write; the gradient is a difference of rebuilds at
-        ``V ± h``. A subset of :attr:`compartment_size_params`, and usually
-        empty — reload with ``Model.from_sbml(..., compartment_sizes={...})`` to
-        move one.
+        derivative of the same write. A subset of
+        :attr:`compartment_size_params`, empty for most models (not for 9% of
+        the SBML test corpus). To move one, or for its gradient as a difference
+        of rebuilds at ``V ± h``, reload with
+        ``Model.from_sbml(..., compartment_sizes={...})``; that refuses a size an
+        assignment rule sets, which moves with what the rule reads.
 
         Returns
         -------
@@ -3426,14 +3428,16 @@ class Model:
           run builds its code, and a ``note`` says so; it reports the
           ``backend`` that would build it, and ``refused_parameters``: the
           parameters a sensitivity run refuses whatever it asks, those folded at
-          load (:attr:`frozen_params`, with what they went into) and the
+          load (:attr:`frozen_params`, with what they went into), the
           compartment sizes :meth:`set_param` cannot write
-          (:attr:`unwritable_compartment_size_params`), each with why.
-          ``steady_state`` is read from the checks :meth:`Simulator.steady_state`
-          makes of the model alone (an event, a compartment size that jumps, the
-          time reaching the state); its ``note`` says what it leaves to the
-          call: a conservation law the right-hand side does not keep, and
-          whether the solve converges.
+          (:attr:`unwritable_compartment_size_params`), and the parameters a
+          rule or function sets, each with why. ``steady_state`` lists every
+          reason :meth:`Simulator.steady_state` is refused for the model alone,
+          in the order the refusals come: the ODE Simulator's own, then the
+          call's checks (an event, a compartment size that jumps, the time
+          reaching the state), then a model with no species. Its ``note`` says
+          what it leaves to the call: a conservation law the right-hand side
+          does not keep, and whether the solve converges.
         * ``time_dependence``: ``rate_laws_read_clock``,
           ``functions_reading_clock``, ``state_reads_clock`` (which a steady
           state refuses), ``time_tables`` (table functions over time) and

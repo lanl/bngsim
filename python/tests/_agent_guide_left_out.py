@@ -49,6 +49,7 @@ LEFT_OUT = (
     "Model:n_functions",
     "Model:n_observables",
     "Model:n_parameters",
+    "Model:n_reactions",
     "Model:n_species",
     "Model:n_table_functions",
     "Model:param_expressions",
