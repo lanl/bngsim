@@ -229,8 +229,14 @@ BNG2.pl:
   default.
 - A parameter set to an expression, `setParameter("k2","k1*3")`, follows its
   inputs until it is set to a number. So does a species whose amount is a
-  parameter or an expression, until a run makes it a number. A parameter
-  defined through itself is refused.
+  parameter or an expression, until a run makes it a number. Setting a number
+  ends an expression, one the network declares too, even when the number is
+  what the expression gives: with `k2 k1*0.5` declared, `setParameter("k2",0.5)`
+  keeps k2 at 0.5 when `k1` moves, as BNG2.pl does. A parameter defined through
+  itself is refused; an expression a number ended doesn't count for that.
+- `out.model` keeps the values the actions left. `set_param` on it follows its
+  own rule: a derived parameter that holds the number its expression gives
+  still follows that expression, and one set to an expression holds a number.
 - `saveConcentrations`/`resetConcentrations` and
   `saveParameters`/`resetParameters` keep one saved state per label. A reset to a declared value
   that an action before `generate_network` changed is refused.
