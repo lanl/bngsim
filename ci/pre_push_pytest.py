@@ -85,6 +85,28 @@ CACHE_ENV = "BNGSIM_TEST_CACHE_DIR"
 FROM_ENV = "PRE_COMMIT_FROM_REF"
 TO_ENV = "PRE_COMMIT_TO_REF"
 
+# The variables that tell git which repository to use. git exports an absolute
+# GIT_DIR, the main repository's .git/worktrees/<name>, to a hook run from a
+# linked worktree (from the main checkout it exports none). Every git command a
+# test runs in a scratch directory then goes to this repository instead: a
+# fixture's `git init` and `git config user.name` set core.bare=true and the
+# fixture's identity in the real .git/config. So the suite runs without them;
+# the hook's own git calls, which read the push, keep them. The same list as
+# python/tests/_net_corpus.py's _REPO_LOCATING, and test_pre_push_pytest.py
+# holds the two equal.
+REPO_LOCATING = frozenset(
+    {
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_NAMESPACE",
+        "GIT_PREFIX",
+    }
+)
+
 # The paths a push may change without running the suite. A full run that logged
 # every file opened, listed or globbed in every Python process (2026-10-18)
 # touched none of these files. It read changelog.d/ only in
@@ -205,14 +227,20 @@ def shared_cache_dir() -> Path | None:
     return main_root / ".pytest_cache" / "d" / "bngsim"
 
 
+def suite_env() -> dict[str, str]:
+    """The environment the suite runs in: this one minus ``REPO_LOCATING``."""
+    return {k: v for k, v in os.environ.items() if k not in REPO_LOCATING}
+
+
 def run(cmd: list[str]) -> int:
     """Run the suite and return its exit code, letting Ctrl-C reach it first.
 
     ``subprocess.call`` kills its child outright on KeyboardInterrupt. The child
     is in the same process group and has the SIGINT already, so wait for it:
-    xdist then stops its workers and prints what it had.
+    xdist then stops its workers and prints what it had. The child gets
+    :func:`suite_env`, so no test can reach the repository git handed the hook.
     """
-    with subprocess.Popen(cmd) as proc:
+    with subprocess.Popen(cmd, env=suite_env()) as proc:
         try:
             return proc.wait()
         except KeyboardInterrupt:
