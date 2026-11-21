@@ -427,8 +427,11 @@ def reference_page() -> str:
     ]
     from bngsim import _notices
 
+    def cell(text: str) -> str:
+        return text.replace("|", "\\|")
+
     for code, meaning in _notices.CODES.items():
-        lines.append(f"| `{code}` | {meaning} | {_notices.ACTIONS[code]} |")
+        lines.append(f"| `{code}` | {cell(meaning)} | {cell(_notices.ACTIONS[code])} |")
     lines += [
         "",
         "## Remedies",

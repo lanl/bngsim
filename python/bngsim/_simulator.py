@@ -9150,6 +9150,10 @@ class Simulator:
                 # One that turns on the columns asked (issue #1435) is retried
                 # below, as an untyped failure is: a column alone can run.
                 raise exc
+            # What the failed attempt noted before it raised is the recovered
+            # columns' too (issue #1857): it rode on the error, and the
+            # retry's results are where it can go now.
+            _notices.carry(exc)
             # Each column's run is one of this call's: warned of from the
             # stitched result, as a chunk's is.
             with _one_sided_warnings_held():

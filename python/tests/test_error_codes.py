@@ -562,6 +562,24 @@ def test_an_error_raised_from_a_failed_run_carries_its_notices():
         assert e.to_dict()["notices"] == e.notices
 
 
+def test_a_rewrap_without_from_carries_the_notices_too():
+    call = _noting("sens.chunk_split", bngsim.SimulationError("failed"))
+    try:
+        try:
+            call()
+        except bngsim.SimulationError:
+            raise bngsim.ModelError("Failed to run the protocol")  # noqa: B904
+    except bngsim.ModelError as e:
+        assert [n["code"] for n in e.notices] == ["sens.chunk_split"]
+    try:
+        try:
+            call()
+        except bngsim.SimulationError:
+            raise bngsim.ModelError("unrelated") from None
+    except bngsim.ModelError as e:
+        assert e.notices == []
+
+
 def test_an_error_outside_a_run_has_no_notices():
     e = bngsim.ParameterError("p")
     assert e.notices == []

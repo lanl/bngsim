@@ -258,7 +258,7 @@ ACTIONS: dict[str, str] = {
         "Shorten the window; past the stops placed, the integrator approaches each "
         "crossing without one."
     ),
-    "switch.scan_failed": ("Check the result where that condition switches, at a tighter `rtol`."),
+    "switch.scan_failed": "Check the result where that condition switches, at a tighter `rtol`.",
     "switch.unread": "Check the result where that condition switches, at a tighter `rtol`.",
 }
 
@@ -356,6 +356,14 @@ def log(logger: logging.Logger, code: str, msg: str, *args: Any, emit: bool = Tr
     if emit:
         # The record names the line that logged, not this one.
         logger.warning(msg, *args, stacklevel=2)
+
+
+def carry(exc: BaseException) -> None:
+    """Record, with the call being made, the notices a caught error carries
+    (issue #1857): for a call that recovers from a failed attempt, whose
+    notices would otherwise go with the error it discards."""
+    for n in getattr(exc, "notices", ()):
+        note(n["category"], n["code"], n["message"])
 
 
 def seen(code: str) -> bool:

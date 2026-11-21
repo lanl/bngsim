@@ -138,7 +138,11 @@ class BngsimError(RuntimeError):
 
     @property
     def notices(self) -> list[dict[str, str]]:
+        # The error this one was raised from, or raised while handling: a
+        # rewrap without ``from`` chains only through the context.
         cause = self.__cause__
+        if cause is None and not self.__suppress_context__:
+            cause = self.__context__
         inherited = cause.notices if isinstance(cause, BngsimError) else []
         own = [dict(n) for n in self._notices]
         return inherited + [n for n in own if n not in inherited]

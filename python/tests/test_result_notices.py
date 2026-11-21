@@ -506,3 +506,30 @@ def test_a_sensitivity_chunks_notices_reach_the_stitched_result(
         t_span=(0, 1), n_points=3, params=["kf", "A0"], chunk_size=1, n_workers=n_workers
     )
     assert sorted(n["message"] for n in r.notices) == ["a chunk of ['A0']", "a chunk of ['kf']"]
+
+
+@pytest.mark.parametrize("n_workers", [1, 2])
+def test_a_failed_chunks_notices_reach_the_recovered_result(
+    tmp_path: Path, monkeypatch, n_workers
+) -> None:
+    """A chunk that fails is retried a column at a time. What it noted before
+    it failed rides on its error (issue #1857) and lands on the stitched
+    result, not with the discarded error."""
+    import shutil
+
+    if not (shutil.which("cc") or shutil.which("clang") or shutil.which("gcc")):
+        pytest.skip("no C compiler for sensitivities")
+    real = Simulator._run_sensitivity_chunk
+
+    def fails_together(self, params, *args, **kwargs):
+        if len(params) > 1:
+            _notices.note("log", "sens.chunk_split", "noted by the failed chunk")
+            raise bngsim.SimulationError("the chunk failed together")
+        return real(self, params, *args, **kwargs)
+
+    monkeypatch.setattr(Simulator, "_run_sensitivity_chunk", fails_together)
+    sim = Simulator(_net(tmp_path, "ab.net", AB))
+    r = sim.compute_all_sensitivities(
+        t_span=(0, 1), n_points=3, params=["kf", "A0"], chunk_size=2, n_workers=n_workers
+    )
+    assert "noted by the failed chunk" in [n["message"] for n in r.notices]
