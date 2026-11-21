@@ -563,7 +563,7 @@ def _warn_if_rows_start_off_the_current_state(model, what, remedy):
         "start you want, as they are for such a dose.",
         UserWarning,
         code="start.rows_from_initial",
-        stacklevel=_stacklevel_outside_bngsim(),
+        stacklevel=_notices.OUTSIDE,
     )
 
 
@@ -677,7 +677,7 @@ def _warn_if_start_restarts_the_clock(
         "records which start a run had (issue #1701).",
         LiveStartWarning,
         code="start.continues_last_run",
-        stacklevel=_stacklevel_outside_bngsim(),
+        stacklevel=_notices.OUTSIDE,
     )
 
 
@@ -999,6 +999,8 @@ class Simulator:
         "_continues_trajectory",
         # NFsim-specific
         "_xml_path",
+        # Issue #1703: {"path", "sha256"} of the XML a network-free run reads.
+        "_xml_record",
         # PSA-specific
         "_poplevel",
         # ODE Jacobian strategy
@@ -1126,6 +1128,7 @@ class Simulator:
         self._method = dispatch  # internal dispatch key
         self._canonical_method = canonical
         self._xml_path = xml_path
+        self._xml_record: dict[str, Any] | None = None
         self._rm_clock_offset = False
         # nf/rm: the ids of the XML's <Parameter> elements, None when the XML
         # cannot be read (issue #1360).
@@ -4239,6 +4242,24 @@ class Simulator:
             return repr(ExactAtol(self._atol))
         return float(self._atol)
 
+    def _xml_source(self) -> dict[str, Any]:
+        """The BNG-XML file a network-free run read, ``{"path", "sha256"}``,
+        for the run's record (issue #1703): the model the engine ran, where
+        the Model's own source is the network it was loaded from. Hashed once
+        a Simulator, as the engine read it once."""
+        held = self._xml_record
+        if held is None:
+            import hashlib
+
+            path = os.path.abspath(os.fspath(self._xml_path)) if self._xml_path else None
+            try:
+                digest = hashlib.sha256(Path(path).read_bytes()).hexdigest() if path else None
+            except OSError:
+                digest = None
+            held = {"path": path, "sha256": digest}
+            self._xml_record = held
+        return dict(held)
+
     @staticmethod
     def _jacobian_used(opts: Any, core: Any) -> str:
         """The Jacobian an ODE attempt made with *opts* on *core* used, as the
@@ -4288,63 +4309,70 @@ class Simulator:
         ode = self._method == "ode"
         sens = bool(self._sensitivity_params or self._sensitivity_ic)
         info, values = params
-        if ode and resolved is not None:
-            atol_part: dict[str, Any] | None = {
-                "given": self._atol_asked(atol),
-                "scalar": float(resolved.scalar),
-                "tracking_decades": float(resolved.decades),
-            }
-            result._run_atol = None if resolved.vector is None else list(resolved.vector)
-        else:
-            atol_part = None
-        backend: dict[str, Any] = {
-            "rhs": None,
-            "jacobian": None,
-            "jacobian_requested": None,
-            "jacobian_retried": None,
-            "linear_solver": None,
-            "sensitivity_rhs": None,
-            "propensities": None,
-        }
-        if ode:
-            backend["rhs"] = {"exprtk": "interpreted"}.get(
-                self.codegen_backend, self.codegen_backend
-            )
-            backend["jacobian"] = jacobian
-            backend["jacobian_requested"] = self._jacobian
-            backend["jacobian_retried"] = _notices.seen("jacobian.difference_quotient_retry")
-            backend["linear_solver"] = _record.LINEAR_SOLVERS.get(
-                int(result._solver_stats.get("linear_solver", -1))
-            )
-            if sens:
-                backend["sensitivity_rhs"] = (
-                    "analytic" if self._codegen_provides_sens_rhs() else "difference_quotient"
-                )
-        elif self._method in ("ssa", "psa"):
-            backend["propensities"] = result._ssa_diagnostics.get("propensity_backend")
-        result._run_info = {
-            "method": self._method,
-            "requested_method": self._requested_method,
-            "t_start": float(t_start),
-            "t_end": float(t_end),
-            "n_points": int(n_points),
-            "sample_times": None if sample_times is None else [float(t) for t in sample_times],
-            "start": start,
-            "rtol": float(rtol) if ode and rtol is not None else None,
-            "atol": atol_part,
-            "max_steps": int(max_steps) if ode and max_steps is not None else None,
-            "max_step": float(max_step) if ode and max_step is not None else None,
-            "steady_state": bool(steady_state),
-            "steady_state_tol": (
-                float(steady_state_tol) if steady_state and steady_state_tol else None
+        timed = ode and resolved is not None
+        if timed:
+            # The solver's own list, shared, not copied: a run_until loop reuses
+            # one, and nothing writes into one once it is made.
+            result._run_atol = resolved.vector  # type: ignore[union-attr]
+        ssa = self._method in ("ssa", "psa")
+        result._run_info = _record.RunCapture(
+            method=self._method,
+            requested_method=self._requested_method,
+            t_start=t_start,
+            t_end=t_end,
+            n_points=n_points,
+            sample_times=sample_times,
+            start=start,
+            rtol=rtol if ode else None,
+            atol_given=self._atol_asked(atol) if timed else None,
+            atol_scalar=resolved.scalar if timed else None,  # type: ignore[union-attr]
+            atol_decades=resolved.decades if timed else None,  # type: ignore[union-attr]
+            max_steps=max_steps if ode else None,
+            max_step=max_step if ode else None,
+            steady_state=steady_state,
+            steady_state_tol=steady_state_tol if steady_state and steady_state_tol else None,
+            carry_sensitivities=carry_sensitivities,
+            sensitivity_params=tuple(self._sensitivity_params) if ode and sens else (),
+            sensitivity_ic=tuple(self._sensitivity_ic) if ode and sens else (),
+            sensitivity_method=self._sensitivity_method if ode and sens else None,
+            poplevel=self._poplevel if self._method == "psa" else None,
+            stop_conditions=(
+                tuple(sc.label or str(sc) for sc in self._stop_conditions)
+                if self._stop_conditions
+                else ()
             ),
-            "carry_sensitivities": bool(carry_sensitivities),
-            "sensitivity_params": list(self._sensitivity_params) if ode else [],
-            "sensitivity_ic": list(self._sensitivity_ic) if ode else [],
-            "timeout": float(timeout) if timeout else None,
-            "wall_time_s": time.perf_counter() - began,
-            "backend": backend,
-        }
+            xml=self._xml_source() if self._method in ("nfsim", "rulemonkey") else None,
+            timeout=timeout or None,
+            wall_time_s=time.perf_counter() - began,
+            rhs=(
+                ("interpreted" if self.codegen_backend == "exprtk" else self.codegen_backend)
+                if ode
+                else None
+            ),
+            jacobian=jacobian if ode else None,
+            jacobian_requested=self._jacobian if ode else None,
+            jacobian_retried=(
+                _notices.seen("jacobian.difference_quotient_retry") if ode else None
+            ),
+            linear_solver=result._solver_stats.get("linear_solver") if ode else None,
+            linear_solver_requested=(
+                (
+                    "dense"
+                    if self._force_dense_linear_solver
+                    else "sparse"
+                    if self._force_sparse_linear_solver
+                    else "auto"
+                )
+                if ode
+                else None
+            ),
+            sensitivity_rhs=(
+                ("analytic" if self._codegen_provides_sens_rhs() else "difference_quotient")
+                if ode and sens
+                else None
+            ),
+            propensities=result._ssa_diagnostics.get("propensity_backend") if ssa else None,
+        )
         result._run_params = (info.param_names, values)
         result._model_info = info
 
@@ -5698,6 +5726,14 @@ class Simulator:
             # A prior run on this Simulator already proved the analytical attempt
             # is doomed for this model — go straight to FD, no wasted attempt.
             opts.jacobian = "fd"
+            # Said on the run's record only: the retry was logged once already.
+            _notices.note(
+                "notice",
+                "jacobian.difference_quotient_kept",
+                "An earlier run on this Simulator failed with the analytical Jacobian "
+                "and was retried with the finite-difference one (GH#176); this run used "
+                "the finite-difference Jacobian from the start.",
+            )
             return sim.run(times, opts)
         try:
             return sim.run(times, opts)
@@ -6495,6 +6531,9 @@ class Simulator:
         if per_result is None:
             per_result = [atol] * len(results)
         found: dict[str, None] = {}  # ordered, and no list scan per species
+        # Each result's own, for its notice (issue #1703): a batch row that
+        # held every species to its scale is not told of another row's.
+        own_hits: list[tuple[Result, list[str]]] = []
         for result, vector in zip(results, per_result, strict=True):
             own = dict(zip(model.species_names, vector, strict=True)) if vector is not None else {}
             species = np.asarray(result._species, dtype=np.float64)
@@ -6514,15 +6553,37 @@ class Simulator:
                 & (peaks < limits)
                 & (peaks >= self._ATOL_SCALE_RELEVANT * largest)
             )
-            hits = zip(result._species_names, below, strict=True)
-            found.update((name, None) for name, hit in hits if hit)
+            hit = [name for name, flag in zip(result._species_names, below, strict=True) if flag]
+            found.update((name, None) for name in hit)
+            if hit:
+                own_hits.append((result, hit))
         if not found:
             return
-        names = list(found)
+        several = len(results) > 1
+        if several:
+            for result, hit in own_hits:
+                notice = _notices.Notice(
+                    AtolScaleWarning.__name__,
+                    "atol.below_scale",
+                    self._atol_scale_message(hit, call),
+                )
+                result._notices = _notices.unique((*result._notices, notice))
+        # One warning for the call, naming the species of every result. Of a
+        # batch or a scan, each result that holds one has its notice above.
+        _notices.warn(
+            self._atol_scale_message(list(found), call),
+            AtolScaleWarning,
+            code="atol.below_scale",
+            stacklevel=_notices.OUTSIDE,
+            record=not several,
+        )
+
+    def _atol_scale_message(self, names: list[str], call: str) -> str:
+        """The :meth:`_warn_atol_above_scale` warning, of *names*."""
         shown = ", ".join(repr(n) for n in names[:5]) + (
             f" and {len(names) - 5} more" if len(names) > 5 else ""
         )
-        _notices.warn(
+        return (
             f"{len(names)} species of this {call} stay below their absolute tolerance "
             f"(atol={self._atol:g} or less) throughout, while reaching at least "
             f"{self._ATOL_SCALE_RELEVANT:g} of the largest species: {shown}. The run "
@@ -6531,10 +6592,7 @@ class Simulator:
             "species' scale from the state the run starts from, and these start at 0 or "
             "below every scale that state gives; pass atol='tracking' (a tolerance that "
             "follows each species' magnitude), or an atol well below these species "
-            "(issues #1361, #1420).",
-            AtolScaleWarning,
-            code="atol.below_scale",
-            stacklevel=_stacklevel_outside_bngsim(),
+            "(issues #1361, #1420)."
         )
 
     # ─── Batch ──────────────────────────────────────────────────────
@@ -8093,10 +8151,11 @@ class Simulator:
                     result = stop.result
                 result.custom_attrs["scan_parameter"] = parameter
                 result.custom_attrs["scan_value"] = float(value)
-                if result._run_info is not None and result._run_info.get("atol") is not None:
+                held = result._run_info
+                if isinstance(held, _record.RunCapture) and held.atol_scalar is not None:
                     # The point ran at the tolerance the scan resolved; what the
                     # scan was asked is the point's to record (issue #1703).
-                    result._run_info["atol"]["given"] = self._atol_asked(atol)
+                    result._run_info = held._replace(atol_given=self._atol_asked(atol))
                 results.append(result)
                 point_atols.append(point_atol.vector if isinstance(point_atol, _Ceiling) else None)
         finally:
@@ -8248,6 +8307,9 @@ class Simulator:
         clone.set_params(pset)
         clone.reset()
         self._raise_if_row_is_attached_otherwise(index, clone)
+        # Where the row starts, its initial conditions by construction, and
+        # the parameters it starts with, for its record (issues #1701, #1703).
+        row_started, row_start_state = _start_record(clone._core)
         start_params = _record.parameter_values(clone)
 
         times = TimeSpec()
@@ -8414,6 +8476,8 @@ class Simulator:
         # from rows already remapped, where stamping the stack skipped every
         # remap (issue #698).
         result = self._stamp(result, model=clone)
+        result._started_from = row_started
+        result._start_state = row_start_state
         ode = self._method == "ode"
         self._record_run(
             result,
@@ -8437,6 +8501,7 @@ class Simulator:
 
     # ─── Parallel sensitivity ───────────────────────────────────────
 
+    @_notices.collected
     def compute_all_sensitivities(
         self,
         t_span: tuple[float, float] = (0.0, 100.0),
@@ -11691,7 +11756,7 @@ class Simulator:
             f"warnings.simplefilter('ignore', bngsim.DenseSolverFallbackWarning).)",
             DenseSolverFallbackWarning,
             code="linear_solver.dense_without_klu",
-            stacklevel=_stacklevel_outside_bngsim(),
+            stacklevel=3,
             emit=first,
         )
 
@@ -11717,7 +11782,7 @@ class Simulator:
                 "See result.ssa_diagnostics.",
                 SsaBoundaryWarning,
                 code="ssa.negative_count",
-                stacklevel=_stacklevel_outside_bngsim(),
+                stacklevel=3,
             )
         n_rounded = int(diag.get("n_rounded_populations", 0))
         if n_rounded > 0:
@@ -11730,7 +11795,7 @@ class Simulator:
                 "result.ssa_diagnostics.",
                 SsaRoundingWarning,
                 code="ssa.rounded_counts",
-                stacklevel=_stacklevel_outside_bngsim(),
+                stacklevel=3,
             )
         if diag["n_reverse_fires"] > 0:
             rx = diag["first_reverse_reaction"]
@@ -11744,7 +11809,7 @@ class Simulator:
                 "result.ssa_diagnostics.",
                 SsaBoundaryWarning,
                 code="ssa.reverse_fire",
-                stacklevel=_stacklevel_outside_bngsim(),
+                stacklevel=3,
             )
 
     def _stopped(self, result: Result) -> Result:
@@ -11890,6 +11955,7 @@ class Simulator:
         out._run_atol = result._run_atol
         out._model_info = result._model_info
         out._record_frozen = result._record_frozen
+        out._record_differs = result._record_differs
         out._notices = result._notices
         return out
 
@@ -12893,7 +12959,7 @@ class _StopArithmeticErrors:
                 "(issue #1556)",
                 RuntimeWarning,
                 code="stop_condition.non_finite",
-                stacklevel=_stacklevel_outside_bngsim(),
+                stacklevel=_notices.OUTSIDE,
             )
 
 

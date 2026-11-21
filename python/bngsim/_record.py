@@ -61,6 +61,99 @@ class ModelInfo(NamedTuple):
     n_params: int
 
 
+class RunCapture(NamedTuple):
+    """What a run leaves on its Result for the record (``Result._run_info``):
+    the values as the run had them, made into the record's ``run`` and
+    ``backend`` dicts only when the record is read (:func:`run_and_backend`),
+    so a run_until loop of short steps pays for a tuple and no dicts."""
+
+    method: str
+    requested_method: str
+    t_start: float
+    t_end: float
+    n_points: int
+    sample_times: Any
+    start: str | None
+    rtol: float | None
+    atol_given: Any
+    atol_scalar: float | None
+    atol_decades: float | None
+    max_steps: int | None
+    max_step: float | None
+    steady_state: bool
+    steady_state_tol: float | None
+    carry_sensitivities: bool
+    sensitivity_params: tuple[str, ...]
+    sensitivity_ic: tuple[str, ...]
+    sensitivity_method: str | None
+    poplevel: float | None
+    stop_conditions: tuple[str, ...]
+    xml: dict[str, Any] | None
+    timeout: float | None
+    wall_time_s: float
+    rhs: str | None
+    jacobian: str | None
+    jacobian_requested: str | None
+    jacobian_retried: bool | None
+    linear_solver: int | None
+    linear_solver_requested: str | None
+    sensitivity_rhs: str | None
+    propensities: str | None
+
+
+def _num(x: Any, kind: type = float) -> Any:
+    return None if x is None else kind(x)
+
+
+def run_and_backend(info: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The record's ``run`` and ``backend`` parts of a :class:`RunCapture`,
+    or of the dict form a stack of them merged into."""
+    if isinstance(info, dict):
+        return copy.deepcopy(info["run"]), copy.deepcopy(info["backend"])
+    c: RunCapture = info
+    run = {
+        "method": c.method,
+        "requested_method": c.requested_method,
+        "t_start": float(c.t_start),
+        "t_end": float(c.t_end),
+        "n_points": int(c.n_points),
+        "sample_times": None if c.sample_times is None else [float(t) for t in c.sample_times],
+        "start": c.start,
+        "rtol": _num(c.rtol),
+        "atol": None
+        if c.atol_scalar is None
+        else {
+            "given": copy.deepcopy(c.atol_given),
+            "scalar": float(c.atol_scalar),
+            "tracking_decades": float(c.atol_decades or 0.0),
+        },
+        "max_steps": _num(c.max_steps, int),
+        "max_step": _num(c.max_step),
+        "steady_state": bool(c.steady_state),
+        "steady_state_tol": _num(c.steady_state_tol),
+        "carry_sensitivities": bool(c.carry_sensitivities),
+        "sensitivity_params": list(c.sensitivity_params),
+        "sensitivity_ic": list(c.sensitivity_ic),
+        "sensitivity_method": c.sensitivity_method,
+        "poplevel": _num(c.poplevel),
+        "stop_conditions": list(c.stop_conditions),
+        "xml": None if c.xml is None else dict(c.xml),
+        "timeout": _num(c.timeout),
+        "wall_time_s": float(c.wall_time_s),
+    }
+    backend = {
+        "rhs": c.rhs,
+        "jacobian": c.jacobian,
+        "jacobian_requested": c.jacobian_requested,
+        "jacobian_retried": c.jacobian_retried,
+        "linear_solver": None if c.linear_solver is None else LINEAR_SOLVERS.get(c.linear_solver),
+        "linear_solver_requested": c.linear_solver_requested,
+        "sensitivity_rhs": c.sensitivity_rhs,
+        "propensities": c.propensities,
+    }
+    return run, backend
+
+
 def model_info(model: Model) -> ModelInfo:
     """*model*'s :class:`ModelInfo`, made on the first run and kept."""
     info = model._record_info
@@ -227,19 +320,18 @@ def live_parts(result: Result) -> dict[str, Any]:
     run = None
     backend = None
     if run_info is not None:
-        run = {k: copy.deepcopy(v) for k, v in run_info.items() if k != "backend"}
+        run, backend = run_and_backend(run_info)
         atol = result._run_atol
         if run.get("atol") is not None:
             run["atol"]["per_species"] = None if atol is None else [float(x) for x in atol]
         run["parameters"] = run_parameters(result)
-        backend = copy.deepcopy(run_info.get("backend"))
     return {
         "software": {"bngsim": __version__, "build_commit": _build_commit()},
         "model": None if info is None else copy.deepcopy(info.source),
         "run": run,
         "backend": backend,
         "time": None if info is None else {"units": info.time_units},
-        "columns": columns(result, None if run_info is None else run_info.get("method")),
+        "columns": columns(result, None if run is None else run["method"]),
     }
 
 
@@ -257,6 +349,9 @@ def record(result: Result, *, start_state: bool = True) -> dict[str, Any]:
         if start_state:
             held = result._start_state
             run["start_state"] = None if held is None else [float(x) for x in held]
+    # Of a stack, where its rows differ: the paths whose None says so.
+    differs = result._record_differs
+    out["rows_differ"] = None if differs is None else list(differs)
     out["notices"] = [n.as_dict() for n in result._notices]
     return out
 
@@ -284,16 +379,20 @@ def _same(a: Any, b: Any) -> bool:
     return type(a) is type(b) and a == b
 
 
-def _agree(values: list[Any]) -> Any:
+def _agree(values: list[Any], path: str, differ: list[str]) -> Any:
     """What *values* agree on: a dict key by key, and anything else whole,
-    ``None`` where they differ."""
+    ``None`` where they differ, whose *path* is then added to *differ*."""
     first = values[0]
     if all(isinstance(v, dict) for v in values):
         keys = list(dict.fromkeys(k for v in values for k in v))
-        return {k: _agree([v.get(k, _DIFFER) for v in values]) for k in keys}
-    if any(v is _DIFFER for v in values):
+        return {
+            k: _agree([v.get(k, _DIFFER) for v in values], f"{path}.{k}" if path else k, differ)
+            for k in keys
+        }
+    if any(v is _DIFFER for v in values) or not all(_same(v, first) for v in values[1:]):
+        differ.append(path)
         return None
-    return first if all(_same(v, first) for v in values[1:]) else None
+    return first
 
 
 def _same_model(a: ModelInfo | None, b: ModelInfo | None) -> bool:
@@ -324,21 +423,41 @@ def _same_array(arrays: list[Any]) -> Any:
 def squeeze_into(out: Result, results: list[Result]) -> None:
     """Give *out*, the stack of *results*, the record parts they agree on: each
     value they all hold alike, key by key, and ``None`` where they differ (a
-    batch row's own parameter, its wall time). Nothing where a row recorded no
-    run."""
-    if not results or any(r._run_info is None for r in results):
+    batch row's own parameter, its wall time), with where they differ
+    (``_record_differs``). Nothing where a row recorded no run."""
+    if not results:
         return
+    differ: list[str] = []
+    for key, attr in (
+        ("run.seed", "_seed"),
+        ("run.started_from", "_started_from"),
+        ("run.start_state_sha256", "start_state_sha256"),
+    ):
+        if len({getattr(r, attr) for r in results}) > 1:
+            differ.append(key)
+    if "run.start_state_sha256" in differ:
+        differ.append("run.start_state")
     if any(r._record_frozen is not None for r in results):
-        # Rows loaded from files: merge what each file holds.
-        out._record_frozen = _agree(
-            [copy.deepcopy(r._record_frozen) or live_parts(r) for r in results]
-        )
+        # Rows loaded from files, alone or beside live ones: what each holds.
+        parts = [frozen_parts(r) for r in results]
+        if any(part is None for part in parts):
+            return
+        out._record_frozen = _agree(parts, "", differ)
+        out._record_differs = tuple(dict.fromkeys(differ))
+        return
+    if any(r._run_info is None for r in results):
         return
     first = results[0]._model_info
     if all(_same_model(r._model_info, first) for r in results):
         out._model_info = first
-    out._run_info = _agree([r._run_info for r in results])
+    both = [run_and_backend(r._run_info) for r in results]
+    out._run_info = {
+        "run": _agree([b[0] for b in both], "run", differ),
+        "backend": _agree([b[1] for b in both], "backend", differ),
+    }
     out._run_atol = _same_array([r._run_atol for r in results])
+    if out._run_atol is None and any(r._run_atol is not None for r in results):
+        differ.append("run.atol.per_species")
     held = [r._run_params for r in results]
     if all(h is not None and h[0] == held[0][0] for h in held):  # type: ignore[index]
         names = held[0][0]  # type: ignore[index]
@@ -348,3 +467,10 @@ def squeeze_into(out: Result, results: list[Result]) -> None:
             names,
             [float(v) if a else None for v, a in zip(stack[0], alike, strict=True)],
         )
+        compartments = first.compartments if first is not None else {}
+        for name, a in zip(names, alike, strict=True):
+            if not a:
+                differ.append(f"run.parameters.{name}")
+                if name in compartments:
+                    differ.append(f"columns.compartments.{name}.size")
+    out._record_differs = tuple(dict.fromkeys(differ))

@@ -36,14 +36,19 @@ NOT_OF_A_RUN: dict[tuple[str, str], str] = {
     ("_model.py", "Model.add_table_function"): "an edit of the model",
     ("_model.py", "_warn_dropped_state_changes"): "a BNGL load",
     ("_net_reader.py", "parse_net_file"): "a .net load",
-    ("_protocol_run.py", "*"): "a protocol's replay, whose ProtocolResult has no record yet",
+    ("_protocol_run.py", "*"): (
+        "a protocol's reading of its actions (an argument it ignores, a poplevel it "
+        "supplies, an empty interval), not of a run; each run it makes records its own"
+    ),
     ("_result.py", "Result._check_missing_volume_record"): "as_roadrunner(), reading a result",
     ("_result.py", "Result.save"): "writing a file",
     ("_result.py", "_identifiability_from_fim"): "reading a result's sensitivities",
     ("_sbml_loader.py", "*"): "an SBML or Antimony load",
     ("_simulator.py", "Simulator.__init__"): (
         "building the Simulator: what it says then is not of any one run, and its "
-        "SSA validation reads the state at construction, not a run's start"
+        "SSA validation reads the state at construction, not a run's start. A "
+        "sensitivity run_batch builds one for rows of another attachment inside the "
+        "call; what that says of the call's arguments was said when this one was built"
     ),
     ("_simulator.py", "Simulator._note_ss_jacobian_retry"): (
         "steady_state(), whose SteadyStateResult has no record yet"
@@ -384,3 +389,96 @@ def test_each_notice_is_three_strings_and_a_code_of_the_registry(tmp_path: Path)
             assert all(isinstance(v, str) for v in n.values())
             assert n["code"] in _notices.CODES
         assert r.record["notices"] == r.notices
+
+
+# ─── Review round 1 ────────────────────────────────────────────────────
+
+
+def test_a_rows_tolerance_notice_is_on_that_row_alone(tmp_path: Path) -> None:
+    """The batch warns once, naming every row's species; the notice goes to the
+    rows whose species stayed below the tolerance."""
+    sim = Simulator(_net(tmp_path, "source.net", SOURCE))
+    with pytest.warns(bngsim.AtolScaleWarning):
+        rows = sim.run_batch(t_span=(0, 1), n_points=3, params=[{"k": 1e-12}, {"k": 1.0}])
+    assert [_codes(r) for r in rows] == [["atol.below_scale"], []]
+    with pytest.warns(bngsim.AtolScaleWarning):
+        points = sim.parameter_scan("k", [1e-12, 1.0], t_span=(0, 1), n_points=3)
+    assert [_codes(p) for p in points] == [["atol.below_scale"], []]
+
+
+def test_a_logged_notice_names_the_line_that_logged_it(caplog) -> None:
+    sim = Simulator(Model.from_sbml_string(SINK))
+    with caplog.at_level(logging.WARNING, logger="bngsim"):
+        sim.run(t_span=(0, 40), n_points=5)
+    (record,) = [r for r in caplog.records if r.getMessage().startswith("GH#176")]
+    assert (record.filename, record.funcName) == ("_simulator.py", "_ode_attempts")
+
+
+def test_warnings_name_the_lines_they_named_before(tmp_path: Path) -> None:
+    """Wrapping a call to collect its notices moves no warning: a warning
+    raised with a fixed stacklevel inside run() still names the caller's line,
+    and inside a batch row the line in bngsim it named before."""
+    sim = Simulator(_net(tmp_path, "ab.net", AB), method="ssa")
+    sim.model.set_param("A0", 10.5)
+    with pytest.warns(bngsim.SsaRoundingWarning) as shown:
+        sim.run(t_span=(0, 1), n_points=2, seed=1, start="initial")
+    assert [w.filename for w in shown if w.category is bngsim.SsaRoundingWarning] == [__file__]
+    sim.model.reset()
+    with pytest.warns(bngsim.SsaRoundingWarning) as shown:
+        sim.run_batch(t_span=(0, 1), n_points=2, params=[{"kf": 0.1}], seed=1)
+    rounding = [w for w in shown if w.category is bngsim.SsaRoundingWarning]
+    assert [Path(w.filename).name for w in rounding] == ["_simulator.py"]
+
+
+def test_a_run_after_a_retry_says_why_it_used_a_difference_quotient() -> None:
+    sim = Simulator(Model.from_sbml_string(SINK))
+    first = sim.run(t_span=(0, 40), n_points=5)
+    second = sim.run(t_span=(0, 40), n_points=5, start="initial")
+    assert _codes(first) == ["jacobian.difference_quotient_retry"]
+    assert _codes(second) == ["jacobian.difference_quotient_kept"]
+    assert second.notices[0]["category"] == "notice"
+
+
+def test_a_protocol_run_that_reached_no_steady_state_says_so(tmp_path: Path) -> None:
+    from bngsim.convert import parse_bngl_protocol
+
+    model = _net(tmp_path, "growth.net", SOURCE.replace("1 k 1e-12", "1 k 1"))
+    spec = parse_bngl_protocol(
+        'begin actions\nsimulate({method=>"ode",t_end=>1,n_steps=>2,steady_state=>1})\n'
+        "end actions\n"
+    )
+    with pytest.warns(bngsim.ConversionWarning, match="did not reach a steady state"):
+        (run,) = bngsim.run_protocol(model, spec)
+    assert _codes(run.result) == ["protocol.steady_state_not_reached"]
+    assert run.result.record["run"]["steady_state"] is True
+
+
+def test_compute_all_sensitivities_keeps_its_notices(tmp_path: Path) -> None:
+    import shutil
+
+    if not (shutil.which("cc") or shutil.which("clang") or shutil.which("gcc")):
+        pytest.skip("no C compiler for sensitivities")
+    derived = AB.replace("    2 A0 10\n", "    2 A0 10\n    3 twice 2*kf\n")
+    sim = Simulator(_net(tmp_path, "derived.net", derived))
+    with pytest.warns(UserWarning, match="skipping 1 derived"):
+        r = sim.compute_all_sensitivities(t_span=(0, 1), n_points=3)
+    assert "sensitivity.parameters_skipped" in _codes(r)
+
+
+def test_a_threads_pending_switch_notices_are_its_own() -> None:
+    """A batch row places its stops on a worker thread: what one row's scan
+    found and has not said yet is not another's to say."""
+    import threading
+
+    from bngsim import _switch_sensitivity as sw
+
+    sw.say_what_was_read(False)
+    sw._say_once("t > 1", "issue-1703-test", "a condition %s", "here")
+    seen: list[list] = []
+    other = threading.Thread(target=lambda: seen.append(list(sw._pending())))
+    other.start()
+    other.join()
+    assert seen == [[]]
+    assert sw._pending() == [("t > 1", "issue-1703-test", "a condition %s", ("here",))]
+    sw.say_what_was_read(False)
+    assert sw._pending() == []

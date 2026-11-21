@@ -378,6 +378,14 @@ def test_summary_carries_the_record_without_the_start_vector(net_path: Path) -> 
     assert s["record"] == want
 
 
+def test_to_xarray_carries_the_record(net_path: Path) -> None:
+    pytest.importorskip("xarray")
+    r = Simulator(Model.from_net(net_path)).run(t_span=(0, 1), n_points=2)
+    assert (
+        json.loads(r.to_xarray().attrs["record"]) == json.loads(json.dumps(r.summary()))["record"]
+    )
+
+
 def test_each_read_is_a_new_dict(net_path: Path) -> None:
     r = Simulator(Model.from_net(net_path)).run(t_span=(0, 1), n_points=2)
     r.record["run"]["parameters"]["kf"] = -1.0
@@ -489,3 +497,87 @@ def test_a_scan_point_records_the_tolerance_the_scan_was_asked(net_path: Path, a
     assert run["atol"]["scalar"] == (1e-8 if atol is None else atol)
     direct = sim.run(t_span=(0, 1), n_points=2, atol=atol, start="initial")
     assert direct.record["run"]["atol"]["per_species"] == run["atol"]["per_species"]
+
+
+# ─── Review round 1 ────────────────────────────────────────────────────
+
+
+def test_a_stack_of_loaded_rows_keeps_what_they_agree_on(tmp_path: Path, net_path: Path) -> None:
+    pytest.importorskip("h5py")
+    sim = Simulator(Model.from_net(net_path))
+    rows = sim.run_batch(t_span=(0, 1), n_points=3, params=[{"kf": 0.1}, {"kf": 0.2}])
+    loaded = []
+    for i, r in enumerate(rows):
+        r.save(tmp_path / f"{i}.h5")
+        loaded.append(Result.load(tmp_path / f"{i}.h5"))
+    live = Result.squeeze(rows).record
+    for stack in (Result.squeeze(loaded), Result.squeeze([rows[0], loaded[1]])):
+        rec = stack.record
+        assert rec["run"]["method"] == "ode"
+        assert rec["run"]["parameters"] == {"kf": None, "kr": 0.25, "A0": 100.0}
+        assert rec["columns"] == live["columns"]
+        assert {"run.parameters.kf", "run.wall_time_s"} <= set(rec["rows_differ"])
+    stack = Result.squeeze(loaded)
+    stack.save(tmp_path / "stack.h5")
+    assert Result.load(tmp_path / "stack.h5").record == stack.record
+
+
+def test_a_stack_says_where_its_rows_differ(net_path: Path) -> None:
+    """None in a stack's record is ambiguous by itself: per_species None is
+    also a run whose scalar held every species."""
+    sim = Simulator(Model.from_net(net_path))
+    stack = sim.run_batch(
+        t_span=(0, 1), n_points=2, params=[{"kf": 0.1}, {"A0": 1e-9}], squeeze=True
+    )
+    rec = stack.record
+    assert rec["run"]["atol"]["per_species"] is None
+    assert "run.atol.per_species" in rec["rows_differ"]
+    assert {"run.parameters.kf", "run.parameters.A0"} <= set(rec["rows_differ"])
+    assert "run.method" not in rec["rows_differ"]
+    single = sim.run(t_span=(0, 1), n_points=2, start="initial")
+    assert single.record["rows_differ"] is None
+
+
+def test_a_batch_row_records_where_it_started(net_path: Path) -> None:
+    sim = Simulator(Model.from_net(net_path))
+    rows = sim.run_batch(t_span=(0, 1), n_points=2, params=[{"A0": 5.0}, {"A0": 7.0}])
+    assert [r.started_from for r in rows] == ["initial", "initial"]
+    assert [r.record["run"]["start_state"] for r in rows] == [[5.0, 0.0], [7.0, 0.0]]
+    stack = Result.squeeze(rows)
+    assert stack.record["run"]["started_from"] == "initial"
+    assert stack.record["run"]["start_state"] is None
+    assert "run.start_state" in stack.record["rows_differ"]
+
+
+def test_psa_records_its_poplevel(net_path: Path) -> None:
+    model = Model.from_net(net_path)
+    a = Simulator(model, method="psa", poplevel=10).run(t_span=(0, 1), n_points=3, seed=1)
+    b = Simulator(model, method="psa", poplevel=1000).run(
+        t_span=(0, 1), n_points=3, seed=1, start="initial"
+    )
+    assert (a.record["run"]["poplevel"], b.record["run"]["poplevel"]) == (10.0, 1000.0)
+
+
+def test_the_run_names_its_stop_conditions_and_solver_requests(net_path: Path) -> None:
+    sim = Simulator(Model.from_net(net_path), force_dense_linear_solver=True)
+    sim.add_stop_condition("Atot < 1", label="drained")
+    sim.add_stop_condition("Btot > 1e6")
+    r = sim.run(t_span=(0, 1), n_points=2)
+    assert r.record["run"]["stop_conditions"] == ["drained", "Btot > 1e6"]
+    assert r.record["backend"]["linear_solver_requested"] == "dense"
+    assert r.record["backend"]["linear_solver"] == "dense"
+
+
+def test_a_network_free_run_names_the_xml_it_ran(data_dir: Path) -> None:
+    if not bngsim.capabilities()["features"].get("nfsim"):
+        pytest.skip("NFsim not compiled in")
+    net = data_dir / "nfsim" / "model_parameters.net"
+    xml = data_dir / "nfsim" / "model_parameters.xml"
+    sim = Simulator(Model.from_net(net), method="nf", xml_path=str(xml))
+    r = sim.run(t_span=(0, 1), n_points=3, seed=1)
+    assert r.record["run"]["method"] == "nfsim"
+    assert r.record["run"]["xml"] == {
+        "path": str(xml.resolve()),
+        "sha256": hashlib.sha256(xml.read_bytes()).hexdigest(),
+    }
+    assert r.record["model"]["format"] == "net"

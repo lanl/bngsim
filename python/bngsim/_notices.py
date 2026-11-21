@@ -28,6 +28,8 @@ from __future__ import annotations
 import contextvars
 import functools
 import logging
+import sys
+import types
 import warnings
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
@@ -67,6 +69,10 @@ CODES: dict[str, str] = {
         "The analytical Jacobian is not available for this model; the run used a "
         "difference quotient."
     ),
+    "jacobian.difference_quotient_kept": (
+        "An earlier run on this Simulator failed with the analytical Jacobian and was "
+        "retried; this run used the difference quotient from the start."
+    ),
     "jacobian.difference_quotient_retry": (
         "The run failed with the analytical Jacobian and was run again from its start "
         "with a difference quotient, whose result it returned."
@@ -74,6 +80,9 @@ CODES: dict[str, str] = {
     "jax.zero_gradients": "Model functions may give JAX zero gradients at discontinuities.",
     "linear_solver.dense_without_klu": (
         "A large model ran on the dense linear solver because this install has no KLU."
+    ),
+    "protocol.steady_state_not_reached": (
+        "A protocol's run asked to stop at a steady state reached none by its end."
     ),
     "rulemonkey.unsupported": "RuleMonkey reported a construct it does not support as written.",
     "sensitivity.chain_rule_dropped": (
@@ -153,6 +162,15 @@ _collector: contextvars.ContextVar[list[Notice] | None] = contextvars.ContextVar
     "bngsim_notices", default=None
 )
 
+#: The code of :func:`collected`'s wrapper, which every wrapped call shares. A
+#: ``stacklevel`` given to :func:`warn` counts no frame of it, so a warning
+#: names the line it named before the call it is raised in was wrapped.
+WRAPPER_CODES: set[types.CodeType] = set()
+
+#: A ``stacklevel`` for :func:`warn`: the first frame outside bngsim (and
+#: JAX), as ``_simulator._stacklevel_outside_bngsim`` finds it.
+OUTSIDE = -1
+
 
 @contextmanager
 def collecting() -> Iterator[list[Notice]]:
@@ -192,8 +210,24 @@ def warn(
     already, on another thread."""
     if record:
         note(category.__name__, code, str(message))
-    if emit:
-        warnings.warn(message, category, stacklevel=stacklevel + 1)
+    if not emit:
+        return
+    if stacklevel == OUTSIDE:
+        from bngsim._simulator import _stacklevel_outside_bngsim
+
+        # Counted from this frame, the one that calls warnings.warn.
+        warnings.warn(message, category, stacklevel=_stacklevel_outside_bngsim())
+        return
+    # The frame *stacklevel* up from the caller, counting no wrapper frame.
+    frame: types.FrameType | None = sys._getframe(1)
+    level = 2  # warnings.warn's own count: 1 is this frame, 2 the caller
+    for _ in range(stacklevel - 1):
+        frame = frame.f_back if frame is not None else None
+        level += 1
+        while frame is not None and frame.f_code in WRAPPER_CODES:
+            frame = frame.f_back
+            level += 1
+    warnings.warn(message, category, stacklevel=level)
 
 
 def log(logger: logging.Logger, code: str, msg: str, *args: Any, emit: bool = True) -> None:
@@ -201,7 +235,8 @@ def log(logger: logging.Logger, code: str, msg: str, *args: Any, emit: bool = Tr
     records without logging."""
     note("log", code, (msg % args) if args else msg)
     if emit:
-        logger.warning(msg, *args)
+        # The record names the line that logged, not this one.
+        logger.warning(msg, *args, stacklevel=2)
 
 
 def seen(code: str) -> bool:
@@ -238,15 +273,24 @@ def collected(fn: _F) -> _F:
 
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
-        from bngsim._exceptions import StopConditionMet
+        # collecting(), spelled out: a run_until step passes through two of
+        # these, and a generator's context manager costs it a microsecond.
+        notes: list[Notice] = []
+        token = _collector.set(notes)
+        try:
+            out = fn(*args, **kwargs)
+        except BaseException as exc:
+            if notes:
+                from bngsim._exceptions import StopConditionMet
 
-        with collecting() as notes:
-            try:
-                out = fn(*args, **kwargs)
-            except StopConditionMet as stop:
-                attach(stop.result, notes)
-                raise
-        attach(out, notes)
+                if isinstance(exc, StopConditionMet):
+                    attach(exc.result, notes)
+            raise
+        finally:
+            _collector.reset(token)
+        if notes:
+            attach(out, notes)
         return out
 
+    WRAPPER_CODES.add(wrapper.__code__)  # type: ignore[attr-defined]
     return wrapper  # type: ignore[return-value]

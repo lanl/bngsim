@@ -42,6 +42,7 @@ import logging
 import math
 import re
 import sys
+import threading
 import weakref
 from collections.abc import Callable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
@@ -5935,7 +5936,17 @@ _SAID: set[tuple[str, str]] = set()
 
 # What the readings of the run being placed have to say, said once its stops
 # are taken (:func:`say_what_was_read`).
-_PENDING: list[tuple[str, str, str, tuple]] = []
+# Per thread (issue #1703): a batch row places its stops on a worker thread,
+# and each row's notices are its own.
+_PENDING_HERE = threading.local()
+
+
+def _pending() -> list[tuple[str, str, str, tuple]]:
+    held: list[tuple[str, str, str, tuple]] | None = getattr(_PENDING_HERE, "items", None)
+    if held is None:
+        held = []
+        _PENDING_HERE.items = held
+    return held
 
 
 def _say_once(cond: str, kind: str, message: str, *args) -> None:
@@ -5943,14 +5954,14 @@ def _say_once(cond: str, kind: str, message: str, *args) -> None:
     *kind*: a loop of a thousand legs is one warning, not a thousand. Said
     when the run's stops are taken: said as another condition refused the
     run, the warning was spent, and the legs run next had none."""
-    _PENDING.append((cond, kind, message, args))
+    _pending().append((cond, kind, message, args))
 
 
 def say_what_was_read(taken: bool) -> None:
     """Say what the readings of the run just placed found, where its stops
     were *taken*; drop it where they were not."""
-    pending = list(_PENDING)
-    _PENDING.clear()
+    pending = list(_pending())
+    _pending().clear()
     if not taken:
         return
     for cond, kind, message, args in pending:

@@ -159,11 +159,10 @@ def _warn_one_sided(entries: list[tuple[float, dict[str, str]]], *, note: bool =
     """Warn of each one-sided entry, and record it with the run (issue #1703)
     unless *note* is False: a batch row held its warning and recorded it on
     its own thread, and the caller's thread gives the warning alone."""
-    held = getattr(_HELD, "on", False)
     if not entries:
         return
+    held = getattr(_HELD, "on", False)
     from bngsim._exceptions import OneSidedSensitivityWarning
-    from bngsim._simulator import _stacklevel_outside_bngsim
 
     for t, named in entries:
         which = ", ".join(f"'{p}' {direction}" for p, direction in named.items())
@@ -180,7 +179,7 @@ def _warn_one_sided(entries: list[tuple[float, dict[str, str]]], *, note: bool =
             "Result.one_sided_sensitivities lists these.",
             OneSidedSensitivityWarning,
             code="sensitivity.one_sided",
-            stacklevel=_stacklevel_outside_bngsim(),
+            stacklevel=_notices.OUTSIDE,
             emit=not held,
             record=note,
         )
@@ -330,6 +329,7 @@ class Result:
         "_run_atol",
         "_model_info",
         "_record_frozen",
+        "_record_differs",
         "_notices",
         "_time",
         "_species",
@@ -713,11 +713,14 @@ class Result:
         # parameter values (names, values) and per-species atol it started
         # with, and what the model is. A stack or a file holds the parts as a
         # dict instead (_record_frozen). None where nothing recorded them.
-        self._run_info: dict[str, Any] | None = None
+        self._run_info: Any = None
         self._run_params: tuple[tuple[str, ...], Any] | None = None
         self._run_atol: Any = None
         self._model_info: Any = None
         self._record_frozen: dict[str, Any] | None = None
+        # Of a stack (squeeze): the record's paths at which its rows differ,
+        # each None in the stack's record. None for a single run.
+        self._record_differs: tuple[str, ...] | None = None
         # The warnings, fallbacks and complaints of the call that made it,
         # each once, in order (bngsim._notices).
         self._notices: tuple[Notice, ...] = ()
@@ -781,11 +784,11 @@ class Result:
           :meth:`Simulator.run_until` step.
         - ``None``: not recorded. :meth:`Simulator.run` records it, and so do
           the calls made of it (``run_until``, ``parameter_scan``,
-          ``bifurcate``, a protocol's runs), ``run_replicates`` and
-          ``compute_all_sensitivities``. A ``run_batch`` row, which starts
-          from the initial conditions by construction (``Model.reset``), and a
-          file an earlier bngsim saved do not; nor does a :meth:`squeeze` of
-          rows that disagree on it.
+          ``bifurcate``, a protocol's runs), ``run_replicates``,
+          ``compute_all_sensitivities`` and, since issue #1703, a
+          ``run_batch`` row, which starts from the initial conditions by
+          construction (``Model.reset``). A file an earlier bngsim saved does
+          not; nor does a :meth:`squeeze` of rows that disagree on it.
 
         "Initial" means the start vector equals the initial conditions value
         for value. :attr:`start_state_sha256` tells two starts apart further.
@@ -826,8 +829,9 @@ class Result:
         result, not from memory of the script: the quantity each column holds,
         the method, the tolerances as applied, where the run started, which
         code ran, what the run warned of, the model file and the build.
-        :meth:`summary` returns it too, and :meth:`save` keeps it. Each read
-        builds a new dict.
+        :meth:`summary` returns it too, :meth:`save` keeps it, and
+        :meth:`to_xarray` carries it as a JSON string. Each read builds a new
+        dict.
 
         Keys:
 
@@ -841,31 +845,42 @@ class Result:
           (``None`` each for a model built in Python).
         * ``run``: ``method`` (``"ode"``, ``"ssa"``, ``"psa"``, ``"nfsim"``,
           ``"rulemonkey"``) and ``requested_method`` as passed (``"nf"``);
-          ``t_start``, ``t_end``, ``n_points``, and ``sample_times`` where
-          they were given; ``start``, as passed to ``run()``, and
-          ``started_from``, ``start_state_sha256`` and ``start_state``, the
-          state the run began from (ordered like :attr:`Model.species_names`,
-          whose unreported states it includes); ``parameters``, each
-          parameter's value at the start, synthesized slots left out;
-          ``seed`` (as :attr:`seed`); for an ODE run ``rtol``, ``atol``
-          (``given``, what was passed, ``None`` for the default;
-          ``scalar``, ``per_species`` and ``tracking_decades``, what the
-          solver was given: a per-species vector where there is one, which
-          the default and ``"auto"`` scale from the start, issue #1420, and a
-          tracking depth for ``"tracking"``), ``max_steps``, ``max_step``,
-          ``steady_state``, ``steady_state_tol``, ``carry_sensitivities``,
-          ``sensitivity_params`` and ``sensitivity_ic``; ``timeout``; and
+          ``t_start``, ``t_end`` and ``n_points`` the run was asked for, and
+          ``sample_times`` where they were given; ``start``, the ``start=``
+          the run was made with (``run_until`` and a scan's points make theirs
+          with ``"live"``), and ``started_from``, ``start_state_sha256`` and
+          ``start_state``, the state it began from (ordered like
+          :attr:`Model.species_names`, whose unreported states it includes);
+          ``parameters``, each parameter's value at the start, synthesized
+          slots left out; ``seed`` (as :attr:`seed`); for an ODE run
+          ``rtol``, ``atol`` (``given``, what the call or
+          :meth:`Simulator.set_tolerances` asked for, ``None`` for the
+          default; ``scalar``, ``per_species`` and ``tracking_decades``, what
+          the solver was given: ``per_species`` is ``None`` where the scalar
+          held every species, and the default and ``"auto"`` scale it from the
+          start, issue #1420), ``max_steps``, ``max_step``, ``steady_state``
+          and ``steady_state_tol`` (``None``: the default, from ``atol``),
+          ``carry_sensitivities``, ``sensitivity_params``,
+          ``sensitivity_ic`` and ``sensitivity_method``; ``poplevel`` for
+          PSA; ``xml``, the ``path`` and ``sha256`` of the BNG-XML file a
+          network-free method ran; ``stop_conditions``, each registered one
+          by its label (else its expression); ``timeout``; and
           ``wall_time_s``, the seconds the call took to make this result.
+          A result a stop condition cut keeps the record of the run it was
+          cut from: ``time`` and :attr:`stop_condition` say where it ends.
         * ``backend``: which code ran. ``rhs``: ``"interpreted"``, ``"cc"``
           (compiled C) or ``"mir"`` (the in-process JIT); ``jacobian``:
           ``"analytical"``, ``"difference_quotient"`` or ``"jax"``, as used;
-          ``jacobian_requested``; ``jacobian_retried``: True where the
-          analytical attempt failed and the run was made again from its start
-          with a difference quotient (GH #176); ``linear_solver``:
-          ``"dense"``, ``"klu"`` or ``"lapack_dense"``; ``sensitivity_rhs``:
-          ``"analytic"`` or ``"difference_quotient"`` on a sensitivity run;
-          ``propensities`` for SSA and PSA: ``"interpreted"``, ``"cc"`` or
-          ``"mir"``. ``None`` for a part a method does not have.
+          ``jacobian_requested``; ``jacobian_retried``: True where this run's
+          analytical attempt failed and it was made again from its start with
+          a difference quotient (GH #176; a later run on the Simulator uses
+          the difference quotient from the start, and its notices say why);
+          ``linear_solver``: ``"dense"``, ``"klu"`` or ``"lapack_dense"``, and
+          ``linear_solver_requested`` (``"auto"``, ``"dense"``,
+          ``"sparse"``); ``sensitivity_rhs``: ``"analytic"`` or
+          ``"difference_quotient"`` on a sensitivity run; ``propensities``
+          for SSA and PSA: ``"interpreted"``, ``"cc"`` or ``"mir"``. ``None``
+          for a part a method does not have.
         * ``time``: ``units``, the SBML unit id of time where the file
           declares one.
         * ``columns``: for each ``species`` and ``observables`` column, its
@@ -884,17 +899,22 @@ class Result:
           are counts under a stochastic method, and ``None`` under ODE, whose
           numbers are the file's, in units it does not state. bngsim converts
           no unit.
+        * ``rows_differ``: of a :meth:`squeeze`, each path (``"run.seed"``,
+          ``"run.parameters.kf"``) whose value is ``None`` there because the
+          rows differ; ``None`` for a single run.
         * ``notices``: :attr:`notices`.
 
-        ``None`` for a part nothing recorded: a result made other than by
-        :meth:`Simulator.run`, :meth:`~Simulator.run_until`,
-        :meth:`~Simulator.parameter_scan`, :meth:`~Simulator.run_batch` or
-        :meth:`~Simulator.run_replicates` (a protocol's, a network-free
-        session's, :meth:`~Simulator.compute_all_sensitivities`'), or one
-        loaded from a file an earlier bngsim saved. In a :meth:`squeeze`,
-        each value the rows hold alike, and ``None`` where they differ (a
-        batch row's own parameter, its wall time); each row's own record is on
-        the rows ``squeeze=False`` returns.
+        Recorded by :meth:`Simulator.run` and the calls that make their
+        results with it (:meth:`~Simulator.run_until`,
+        :meth:`~Simulator.parameter_scan`, :meth:`~Simulator.bifurcate`, a
+        protocol's simulate actions), and by :meth:`~Simulator.run_batch` and
+        :meth:`~Simulator.run_replicates`. ``None`` for a part nothing
+        recorded: a :meth:`~Simulator.compute_all_sensitivities` result (which
+        has its notices), a network-free session's, a protocol action that
+        runs no time, a result built from arrays, or one loaded from a file an
+        earlier bngsim saved. In a :meth:`squeeze`, each value the rows hold
+        alike, and ``None`` where they differ, which ``rows_differ`` lists;
+        each row's own record is on the rows ``squeeze=False`` returns.
 
         Values are Python floats, so a parameter of ``inf`` is written by
         ``json.dumps`` as ``Infinity``, which strict JSON does not have.
@@ -904,22 +924,28 @@ class Result:
     @property
     def notices(self) -> list[dict[str, str]]:
         """Every warning, fallback and solver complaint of the call that made
-        this result, each once and in order (issue #1703).
+        this result, each once (issue #1703): the run's own in the order it
+        gave them, then those of the call around it (a batch's, a scan's, a
+        ``run_until`` step's).
 
         Each is a dict: ``category``, the warning's class name
-        (``"AtolScaleWarning"``) or ``"log"`` for one the ``bngsim`` logger
-        gave; ``code``, a stable key (``"jacobian.difference_quotient_retry"``,
-        ``"atol.below_scale"``, ``"start.continues_last_run"``, ...) whose
-        wording does not change between releases where the message may; and
-        ``message``. A notice is recorded here whether or not a warnings filter
-        or a logging level let it through: a warning the default filter shows
-        only once is on every result it concerns. A notice of a call that
-        returns several results (a batch's warning about every row) is on each.
+        (``"AtolScaleWarning"``), ``"log"`` for one the ``bngsim`` logger
+        gave, or ``"notice"`` for one given nowhere else; ``code``, a stable
+        key (``"jacobian.difference_quotient_retry"``, ``"atol.below_scale"``,
+        ``"start.continues_last_run"``, ...) whose wording does not change
+        between releases where the message may; and ``message``. A notice is
+        recorded here whether or not a warnings filter or a logging level let
+        it through: a warning the default filter shows only once is on every
+        result it concerns. A notice of a call about all its results (a
+        batch's rows that start from the initial conditions) is on each; one
+        about some of them (a row whose species stay below the tolerance) on
+        those alone.
 
         Not here: what the :class:`Simulator` said when it was built (its SSA
         validation, a compiler it could not use), which :attr:`record`'s
-        ``backend`` reflects; and the lines SUNDIALS writes to standard error
-        itself. An empty list is a run that warned of nothing.
+        ``backend`` reflects; what a protocol says of its actions as it reads
+        them; and the lines SUNDIALS writes to standard error itself. An empty
+        list is a run that warned of nothing else.
         """
         return [n.as_dict() for n in self._notices]
 
@@ -2715,7 +2741,9 @@ class Result:
         :attr:`stop_condition` the result was cut at as
         ``ds.attrs["stop_condition"]``. :attr:`started_from` and
         :attr:`start_state_sha256`, where recorded, are
-        ``ds.attrs["started_from"]`` and ``ds.attrs["start_state_sha256"]``.
+        ``ds.attrs["started_from"]`` and ``ds.attrs["start_state_sha256"]``,
+        and :attr:`record`, as :meth:`summary` gives it (without the start
+        vector), is ``ds.attrs["record"]``, a JSON string.
 
         Returns
         -------
@@ -2832,6 +2860,8 @@ class Result:
             attrs["started_from"] = self._started_from
         if self.start_state_sha256 is not None:
             attrs["start_state_sha256"] = self.start_state_sha256
+        # A string: a netCDF attribute holds no dict (issue #1703).
+        attrs["record"] = json.dumps(_record.record(self, start_state=False))
 
         return xr.Dataset(data_vars=data_vars, coords=coords, attrs=attrs)
 
@@ -3164,7 +3194,15 @@ class Result:
                 f.create_dataset(
                     "record",
                     data=json.dumps(
-                        {"parts": parts, "notices": [n.as_dict() for n in self._notices]}
+                        {
+                            "parts": parts,
+                            "notices": [n.as_dict() for n in self._notices],
+                            "rows_differ": (
+                                None
+                                if self._record_differs is None
+                                else list(self._record_differs)
+                            ),
+                        }
                     ),
                     dtype=h5py.string_dtype(),
                 )
@@ -3509,10 +3547,13 @@ class Result:
             )
             record_parts: dict[str, Any] | None = None
             notices: tuple[Notice, ...] = ()
+            rows_differ: tuple[str, ...] | None = None
             if "record" in f:
                 held = json.loads(_text(f["record"][()]))
                 record_parts = held.get("parts")
                 notices = tuple(Notice(**n) for n in held.get("notices", ()))
+                if held.get("rows_differ") is not None:
+                    rows_differ = tuple(held["rows_differ"])
 
             # GH #155: absent ⇒ None, not recorded, as in a file that predates
             # saving the seed.
@@ -3599,6 +3640,7 @@ class Result:
         result._start_state_sha256 = start_state_sha256
         result._start_state = start_state
         result._record_frozen = record_parts
+        result._record_differs = rows_differ
         result._notices = notices
         logger.info(
             "Loaded result: %d time points, %d species, %d observables",

@@ -53,6 +53,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from bngsim import _notices
 from bngsim._exceptions import ConversionError, ConversionWarning
 from bngsim._seed import derived_seeds
 
@@ -982,11 +983,25 @@ class _Runner:
                 t_span=(t0, t_end), n_points=int(exp.n_points), start="live", **kwargs
             )
         if steady and not result.solver_stats.get("steady_state_reached"):
-            warnings.warn(
+            message = (
                 f"{_describe(exp)} did not reach a steady state by t_end={t_end:g}; "
-                "BNG2.pl stops the protocol there",
+                "BNG2.pl stops the protocol there"
+            )
+            # A notice of the run, which it says of itself (issue #1703).
+            result._notices = _notices.unique(
+                (
+                    *result._notices,
+                    _notices.Notice(
+                        ConversionWarning.__name__, "protocol.steady_state_not_reached", message
+                    ),
+                )
+            )
+            _notices.warn(
+                message,
                 ConversionWarning,
+                code="protocol.steady_state_not_reached",
                 stacklevel=5,
+                record=False,
             )
         # A run reads every amount as a number, and leaves them so (the run
         # writes its end state back to the model).
