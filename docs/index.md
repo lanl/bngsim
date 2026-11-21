@@ -60,6 +60,8 @@ the {doc}`agent-guide`, which `bngsim.agent_guide()` also returns.
 
 installation
 quickstart
+choosing
+features
 agent-guide
 ```
 

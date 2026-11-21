@@ -188,6 +188,14 @@ pip install bngsim[hdf5]     # HDF5 save/load (h5py)
 pip install bngsim[dev]      # all of the above except bngl, + pytest + ruff
 ```
 
+Sensitivities, along a trajectory or at a steady state, compile generated C, so
+they need a C compiler on the machine, or the opt-in MIR JIT in a source build.
+A run without them needs neither. Where a compiler is present, a model of 256
+or more species and an exact stochastic run of a mass-action model are compiled
+too, and the compiled libraries are cached on disk. Without one they run on the
+interpreter
+([compiled RHS](user-guide/codegen.md)).
+
 ## BNGL note
 
 - BNGL loading (`Model.from_bngl`, `Model.load("x.bngl")`) shells out to
