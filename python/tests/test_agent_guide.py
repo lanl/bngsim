@@ -16,17 +16,25 @@ longer comes out, teaches the wrong call with the authority of the docs:
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import importlib.metadata
 import inspect
 import io
+import os
 import re
 import subprocess
 import sys
 import warnings
 
 import bngsim
+import pytest
 from bngsim import _agent_guide
+from bngsim._foreign_names import _ForeignAttribute
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _agent_guide_left_out import LEFT_OUT  # noqa: E402
 
 #: The guide's size budget, in characters: about 8,000 tokens, small enough to
 #: be loaded whole beside a task. Raise it only with something taken out.
@@ -168,17 +176,30 @@ def _checked(code: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def test_every_block_runs_and_prints_what_it_says(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
+@pytest.fixture(scope="module")
+def guide_run(tmp_path_factory) -> tuple[dict[str, object], int]:
+    """The guide's blocks run in page order, in one namespace, in an empty
+    directory, with warnings raised as errors: the namespace they leave, and
+    how many stated values they checked."""
     namespace: dict[str, object] = {"__name__": "__guide__", "_stated": _stated}
     n_checked = 0
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        for _, code in _blocks():
-            checked = _checked(code)
-            n_checked += checked.count("_stated(")
-            with contextlib.redirect_stdout(io.StringIO()):
-                exec(compile(checked, "agent_guide.md", "exec"), namespace)
+    cwd = os.getcwd()
+    os.chdir(tmp_path_factory.mktemp("guide"))
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            for _, code in _blocks():
+                checked = _checked(code)
+                n_checked += checked.count("_stated(")
+                with contextlib.redirect_stdout(io.StringIO()):
+                    exec(compile(checked, "agent_guide.md", "exec"), namespace)
+    finally:
+        os.chdir(cwd)
+    return namespace, n_checked
+
+
+def test_every_block_runs_and_prints_what_it_says(guide_run):
+    _, n_checked = guide_run
     assert n_checked >= 5, "the guide's stated values were not found"
 
 
@@ -203,3 +224,220 @@ def test_python_m_bngsim_with_no_command_says_what_it_takes():
     )
     assert run.returncode == 2
     assert "guide" in run.stderr and "skill" in run.stderr
+
+
+# ─── Coverage: what the guide leaves out, it leaves out on purpose ─────────────
+#
+# The tests above stop the guide saying something wrong. They do not stop it
+# falling silent: a new public call, keyword, simulation method, capability or
+# extra is public the day it merges, and nothing would ask whether an agent
+# reading the guide should hear of it. These ask, owner by owner:
+#
+# * ``bngsim:<name>`` for each name in ``bngsim.__all__``;
+# * ``<Class>:<member>`` for each public member a class the guide uses (names,
+#   or reaches a member of) defines
+#   in bngsim (not one inherited from NumPy or the standard library, and not a
+#   wrong name bngsim answers with an error, which the table covers);
+# * ``<call>(<keyword>)`` for each keyword of a call the guide uses, where the
+#   call is ``Simulator`` (the constructor), ``Simulator.run`` or
+#   ``bngsim.capabilities``;
+# * ``method:``, ``feature:`` and ``extra:`` for each ``Simulator.METHODS``
+#   value (used when quoted), ``capabilities()`` feature (in backticks) and
+#   install extra (as ``bngsim[name]``).
+#
+# A class or call the guide does not use is one line, which stands for its
+# members and keywords. Use is read from the guide's code, its blocks and its
+# backticked spans, with each variable resolved through the namespace the
+# blocks leave: ``ss.converged`` uses ``SteadyStateResult:converged`` because
+# ``ss`` holds one, and ``sim.run(atol=...)`` uses ``Simulator.run(atol)``,
+# not ``Simulator.bifurcate(atol)``. The table's first column, other tools'
+# names, is not use. A keyword with no default is used by any call.
+#
+# Every unused key is listed in _agent_guide_left_out.LEFT_OUT, and the two
+# must match exactly, so a new name fails until the guide uses it or a line
+# lists it, a decision a reviewer sees. The list is not a to-do list: most of the surface is for
+# help(), not for a first read of a page held to a budget.
+
+
+_VARIADIC = (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+
+
+def _guide_code() -> tuple[list[ast.Module], str]:
+    """The guide's code, parsed: each block, and each backticked span outside
+    them that is Python; and the guide's text. Both leave out the table's first
+    column, which is other tools' names, not bngsim's."""
+    blocks = [code for _, code in _blocks()]
+    prose = _FENCE.sub("", bngsim.agent_guide())
+    start, end = prose.index(_agent_guide.TABLE_START), prose.index(_agent_guide.TABLE_END)
+    table, prose = prose[start:end], prose[:start] + prose[end:]
+    cells = [re.split(r"(?<!\\)\|", row)[2] for row in table.splitlines() if row.startswith("| `")]
+    text = "\n".join([*blocks, prose, *cells])
+    trees = [ast.parse(code) for code in blocks]
+    for span in re.findall(r"`([^`\n]+)`", "\n".join([prose, *cells])):
+        with contextlib.suppress(SyntaxError):
+            trees.append(ast.parse(span.replace("\\|", "|")))
+    return trees, text
+
+
+def _public_classes() -> dict[str, type]:
+    return {
+        name: obj
+        for name in bngsim.__all__
+        if inspect.isclass(obj := getattr(bngsim, name)) and not issubclass(obj, BaseException)
+    }
+
+
+class _Uses(ast.NodeVisitor):
+    """The keys the guide's code uses, each variable resolved through *namespace*."""
+
+    def __init__(self, namespace: dict[str, object]) -> None:
+        self.namespace = namespace
+        self.by_name = _public_classes()
+        self.classes = set(self.by_name.values())
+        self.keys: set[str] = set()
+
+    def _owner(self, node: ast.AST) -> object | None:
+        """The module or class an expression is, or the class of what it holds
+        or returns: ``model``, ``Model``, ``bngsim.Model``, ``Simulator(m)``,
+        ``sim.steady_state()``."""
+        if isinstance(node, ast.Name):
+            if node.id == "bngsim":
+                return bngsim
+            if (cls := self.by_name.get(node.id)) is not None:
+                return cls
+            held = self.namespace.get(node.id)
+            return type(held) if type(held) in self.classes else None
+        if isinstance(node, ast.Attribute) and self._owner(node.value) is bngsim:
+            obj = getattr(bngsim, node.attr, None)
+            return obj if obj in self.classes else None
+        if isinstance(node, ast.Call) and (call := self._call(node.func)) is not None:
+            if call in self.by_name:
+                return self.by_name[call]  # a constructor
+            owner, _, method = call.rpartition(".")
+            target = getattr(self.by_name.get(owner, bngsim), method, None)
+            try:
+                returns = inspect.signature(target).return_annotation  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                return None
+            if isinstance(returns, str):
+                returns = self.by_name.get(returns.strip("'\"").rpartition(".")[2])
+            return returns if returns in self.classes else None
+        return None
+
+    def _call(self, node: ast.AST) -> str | None:
+        """The call key of a callee: ``Simulator``, ``Simulator.run``, ``bngsim.f``."""
+        if isinstance(node, ast.Name) and node.id in self.by_name:
+            return node.id
+        if isinstance(node, ast.Attribute) and (owner := self._owner(node.value)) is not None:
+            if owner is bngsim:
+                return (
+                    node.attr
+                    if inspect.isclass(getattr(bngsim, node.attr, None))
+                    else (f"bngsim.{node.attr}")
+                )
+            return f"{owner.__name__}.{node.attr}"
+        return None
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        owner = self._owner(node.value)
+        if owner is bngsim:
+            self.keys.add(f"bngsim:{node.attr}")
+        elif owner is not None:
+            self.keys.add(f"{owner.__name__}:{node.attr}")
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        call = self._call(node.func)
+        if call is not None:
+            self.keys.add(f"{call}()")
+            self.keys.update(f"{call}({kw.arg})" for kw in node.keywords if kw.arg)
+        self.generic_visit(node)
+
+
+def _keywords(target: object) -> list[tuple[str, bool]]:
+    """A callable's keywords, each with whether a call must pass it."""
+    try:
+        params = inspect.signature(target).parameters  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return []
+    return [
+        (name, p.default is p.empty)
+        for name, p in params.items()
+        if name != "self" and not name.startswith("_") and p.kind not in _VARIADIC
+    ]
+
+
+def _coverage(namespace: dict[str, object]) -> tuple[dict[str, bool], set[str]]:
+    """Each key of the public surface, and whether the guide uses it."""
+    trees, text = _guide_code()
+    uses = _Uses(namespace)
+    for tree in trees:
+        uses.visit(tree)
+    used = uses.keys
+    words = "\n".join(ast.unparse(tree) for tree in trees)
+    for name in bngsim.__all__:  # a name imported or passed bare is used too
+        if re.search(rf"\b{re.escape(name)}\b", words):
+            used.add(f"bngsim:{name}")
+
+    surface: dict[str, bool] = {
+        f"bngsim:{name}": f"bngsim:{name}" in used for name in bngsim.__all__
+    }
+    calls: dict[str, object] = {}
+    for cname, cls in _public_classes().items():
+        # A class is used when the guide names it or reaches a member of one.
+        if not (surface[f"bngsim:{cname}"] or any(k.startswith(f"{cname}:") for k in used)):
+            continue
+        calls[cname] = cls
+        for owner in cls.__mro__:
+            if not owner.__module__.startswith("bngsim"):
+                continue
+            for name, value in vars(owner).items():
+                if name.startswith("_") or isinstance(value, _ForeignAttribute):
+                    continue
+                key = f"{cname}:{name}"
+                surface[key] = key in used or f"{cname}.{name}()" in used
+                if surface[key] and callable(getattr(cls, name, None)):
+                    calls[f"{cname}.{name}"] = getattr(cls, name)
+    for name in bngsim.__all__:
+        obj = getattr(bngsim, name)
+        if surface[f"bngsim:{name}"] and inspect.isroutine(obj):
+            calls[f"bngsim.{name}"] = obj
+    for call, target in calls.items():
+        called = f"{call}()" in used
+        for name, required in _keywords(target):
+            key = f"{call}({name})"
+            surface[key] = key in used or (required and called)
+    # A feature is used in "What needs what", where the guide says what each
+    # needs: elsewhere a backticked ``nfsim`` may be the method, not the feature.
+    needs = bngsim.agent_guide().split("## What needs what")[1].split("\n## ")[0]
+    for name in bngsim.Simulator.METHODS:
+        surface[f"method:{name}"] = bool(re.search(rf"[\"']{re.escape(name)}[\"']", text))
+    for name in bngsim.capabilities()["features"]:
+        surface[f"feature:{name}"] = bool(re.search(rf"`{re.escape(name)}`", needs))
+    for name in importlib.metadata.metadata("bngsim").get_all("Provides-Extra") or ():
+        surface[f"extra:{name}"] = bool(re.search(rf"bngsim\[[\w,]*\b{re.escape(name)}\b", text))
+    return surface, used
+
+
+def test_every_public_name_is_in_the_guide_or_left_out_on_purpose(guide_run):
+    namespace, _ = guide_run
+    surface, _ = _coverage(namespace)
+    unused = {key for key, is_used in surface.items() if not is_used}
+    listed = set(LEFT_OUT)
+    new, stale = sorted(unused - listed), sorted(listed - unused)
+    assert not new and not stale, (
+        "the agent guide's coverage changed. Use each new public name in "
+        "python/bngsim/agent_guide.md if an agent meeting bngsim should know it, "
+        "or add its key to LEFT_OUT in python/tests/_agent_guide_left_out.py exactly "
+        "as printed here, "
+        "in Python's sorted() order. A stale line is a name that is gone or that "
+        "the guide now uses: drop it. (Extras are read from the installed "
+        "metadata: reinstall after editing pyproject.toml.)"
+        f"\nnew, in neither: {new}\nstale lines: {stale}"
+    )
+
+
+def test_the_left_out_list_is_sorted_and_has_no_duplicates():
+    assert list(LEFT_OUT) == sorted(set(LEFT_OUT)), (
+        "keep the list in Python's sorted() order, once each"
+    )
