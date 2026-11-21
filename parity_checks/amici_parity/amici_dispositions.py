@@ -49,9 +49,11 @@ is at fault, and whether there is an answer to be at fault about:
                          reference defect is never dressed up as agreement.
 
   NO_GROUND_TRUTH      — over the compared horizon the model has no solution that a
-                         double-precision integrator can follow, so neither engine's
-                         answer is an oracle and their agreement or disagreement is
-                         not evidence about either. Reclassified ``DIFF`` *or*
+                         double-precision integrator can follow, or its SBML text
+                         defines no unique system (MODEL2003040001: a function
+                         definition that declares an argument twice), so neither
+                         engine's answer is an oracle and their agreement or
+                         disagreement is not evidence about either. Reclassified ``DIFF`` *or*
                          ``PASS`` -> ``BAD_TEST`` (non-scoring), this suite's "the
                          model or test is the problem": here the model is. Not
                          REFERENCE_FAILED, which says AMICI could not anchor a run
@@ -136,6 +138,33 @@ NO_GROUND_TRUTH_LABEL = "no ground truth"
 REGIMES = ("ode", "sens")
 
 
+# Shared evidence for the AMICI defects the 2026-11 triage attributed (AMICI
+# pinned at 7fb8c571a; bngsim 0.17.2). Each entry below names its own trigger and
+# numbers and cites one of these. The common test: start both engines at
+# t0 = -1e-9 instead of 0, which moves the trigger off its threshold at the start
+# and changes nothing else in the model; AMICI then agrees with bngsim on the row.
+_STRICT_AT_T0 = (
+    "AMICI reads a strict event trigger whose residual is exactly 0 at t0 as "
+    "true (AMICI-dev/AMICI#3508, open). In SBML L2V4, as here, triggers read "
+    "initialValue = true, so the event's trigger is true before t0 and at it, "
+    "CVODES sees no later sign change, and the event never fires. The SBML "
+    "trigger is false at t0 and true at every t > 0, and RoadRunner's CVODE, the "
+    "third engine, fires it just after t0, as bngsim does (see BIOMD0000000285's "
+    "entry for the reading and for AMICI's behaviour on minimal models). "
+)
+_PIECEWISE_AT_T0 = (
+    "A piecewise condition exactly at its threshold at t0 keeps its t0 value for "
+    "the whole run in AMICI (AMICI-dev/AMICI#3515, open): the condition starts "
+    "on the right branch, but CVODES deactivates a root function that is 0 at "
+    "t0 and never reports the sign change right after it, so AMICI's Heaviside "
+    "variable is never updated. On a minimal model, dx/dt = piecewise(1, "
+    "time > 0, 0) from x(0) = 1 and t0 = 0, AMICI returns x = 1 at t = 0.5 and "
+    "1, and RoadRunner 1.5 and 2, the closed form 1 + t. AMICI main (7fb8c571a) "
+    "fixes the state-dependent case of #3515 (BIOMD0000000161 PASSes on it) but "
+    "not the time-dependent one. "
+)
+
+
 # --------------------------------------------------------------------------- #
 # AMICI ran, and its answer is not a usable oracle -> DIFF becomes
 # REFERENCE_FAILED / invalid_result. Keyed "model_id:regime".
@@ -190,65 +219,12 @@ INVALID_REFERENCE: dict[str, dict] = {
     # right proportions. That is the mechanism, not a confirmed reconstruction —
     # the exact recipe was not recovered, and nothing here depends on it.
     #
-    # MODEL0910846879 is authored on BOTH regimes because the defect is in the
-    # state trajectory: the sens row cannot agree while the x(t) it is taken about
-    # already differs by 92%, so disposing of only `:sens` would leave the `:ode`
-    # row scoring against bngsim for the same one cause.
-    #
-    # Surfaced by issue #382. That fix admits the model's run-constant conditions
-    # and so moved it off CVODES' difference quotient, which is what put a
-    # comparison in front of this row — the DIFF itself is older, and identical
-    # before and after (max_rel 0.918 ode / 1.0 sens either way).
-    "MODEL0910846879:ode": {
-        "issue": "GH #382",
-        "max_rel": 0.9184,
-        "reason": (
-            "AMICI evaluates one <assignmentRule> piecewise as 0 for the whole run "
-            "while its own operand is positive. The oracle here is not another "
-            "engine but the model's CLOSED FORM, which is stronger: the model has "
-            "no reactions and one state, so it reduces exactly. Every assignment "
-            "rule is over constants, giving TVZ = 9.341479411e-4, and the lone "
-            "rateRule dTVD/dt = (TVZ + DR - TVD)/TVDDL then integrates to "
-            "TVD(t) = TVZ + (TVD0 - TVZ)*exp(-t/30) with TVD0 = 9.80838e-4. bngsim "
-            "matches that to 1.9e-9 (integration tolerance) at every output point. "
-            "AMICI decays to 3.499040825e-5 at t=100, which is TVD0*exp(-100/30) to "
-            "10 significant figures — the trajectory for TVZ = 0 exactly. "
-            "AMICI's own expression vector says the same thing internally and is "
-            "the second half of the evidence: it computes TVZ1 = 9.3414794e-4 "
-            "correctly at every time point, then reports TVZ = "
-            "piecewise(0, TVZ1 < 0, TVZ1) as 0 at every time point — the otherwise "
-            "branch of a condition that is false throughout. The control is in the "
-            "same model: AHTH = piecewise(0, AHTH1 < 0, AHTH1) is structurally "
-            "identical and AMICI gets it right (9.5283044e-4), so this is not the "
-            "piecewise shape as such. What separates the two is that TVZ's "
-            "condition reads TVZ1, which is itself a sum over another piecewise "
-            "(AHTH), while AHTH's condition reads a plain expression. Reported "
-            "upstream as AMICI-dev/AMICI#3233, with a minimized reproducer: when a "
-            "piecewise appears inside another piecewise's CONDITION, AMICI takes "
-            "the wrong branch of the outer one. Changing the inner piecewise's "
-            "first-piece value -- which cannot change the inner value, since its "
-            "own condition is false either way -- flips the outer result, which is "
-            "what pins the mechanism. "
-            "No RoadRunner run is needed or would add anything: a closed form is "
-            "not an engine's opinion, and bngsim is not adjudicating its own case "
-            "because the form is derived from the SBML text by hand."
-        ),
-    },
-    "MODEL0910846879:sens": {
-        "issue": "GH #382",
-        "max_rel": 1.0,
-        "reason": (
-            "Downstream of the ':ode' entry on this model, and disposed of for the "
-            "same reason: AMICI holds one <assignmentRule> piecewise (TVZ) at 0 "
-            "though its operand TVZ1 is positive throughout, so its trajectory "
-            "relaxes toward 0 instead of toward TVZ. The row's own comment records "
-            "'state DIFF' with state_max_rel = 0.918 — a sensitivity tensor cannot "
-            "be compared when the trajectory it is differentiated about is already "
-            "92% apart, so the 1.0 here carries no information about d(x)/dp. See "
-            "the ':ode' entry for the closed form and for AMICI's internal "
-            "inconsistency, which is the whole of the evidence."
-        ),
-    },
+    # MODEL0910846879:ode and :sens -- RETIRED 2026-11-16 with the AMICI pin's move
+    # to main (7fb8c571a). They recorded AMICI holding TVZ = piecewise(0, TVZ1 < 0,
+    # TVZ1) at 0 though TVZ1 > 0 (a piecewise inside another piecewise's condition),
+    # reported as AMICI-dev/AMICI#3233 and fixed in AMICI 1.1.0. On this pin the :ode
+    # row PASSes on its own (0 of 101 cells; the sweep flagged the entry STALE), and
+    # the :sens entry's only premise was that trajectory's 92% gap.
     "MODEL2105110001:sens": {
         "issue": "GH #380",
         "max_rel": 1.0,
@@ -339,6 +315,156 @@ INVALID_REFERENCE: dict[str, dict] = {
             "trigger that starts on its threshold, whichever reading is right."
         ),
     },
+    "BIOMD0000000318:ode": {
+        "issue": "AMICI-dev/AMICI#3508",
+        "max_rel": 0.967,
+        "reason": (
+            _STRICT_AT_T0 + "Here the event is e1, time > 0, which sets the "
+            "growth signal S = 20; AMICI never sets it, and MC is off from the "
+            "first sample (t = 0.01). Started at t0 = -1e-9, AMICI agrees with "
+            "RoadRunner except the one sample at t = 5, the onset of the strict "
+            "trigger time > 5 (#1557's reading, which the runner leaves unjudged). "
+            "RoadRunner against bngsim: PASS."
+        ),
+    },
+    "BIOMD0000000338:ode": {
+        "issue": "AMICI-dev/AMICI#3508",
+        "max_rel": 0.9768,
+        "reason": (
+            _STRICT_AT_T0 + "Here the event is dilution_event, time > 0, which "
+            "sets compartment_1 = 3 * compartment_1 (a threefold dilution of the "
+            "blood sample). AMICI never fires it: its compartment_1 is still 1 at "
+            "t_end, every concentration stays undiluted, and the coagulation "
+            "cascade runs on from there (APC_PS 4166x bngsim's). Started at "
+            "t0 = -1e-9, AMICI fires it (compartment_1 = 3) and agrees with "
+            "bngsim to 3e-6 on every species. RoadRunner fails on this model at "
+            "the suite's tolerance, so the third witness is the minimal model "
+            "in BIOMD0000000285's entry, on which RoadRunner fires the same "
+            "trigger and AMICI does not."
+        ),
+    },
+    "BIOMD0000000339:ode": {
+        "issue": "AMICI-dev/AMICI#3508",
+        "max_rel": 0.9461,
+        "reason": (
+            _STRICT_AT_T0 + "338's sibling, with the same dilution_event, "
+            "time > 0, setting compartment_1 = 3 * compartment_1. AMICI never "
+            "fires it (compartment_1 = 1 at t_end); started at t0 = -1e-9 it "
+            "fires it and agrees with bngsim to 2.4e-7 on every species. "
+            "RoadRunner against bngsim: PASS. This replaces the older reading "
+            "of this row (AMICI_KNOWN_ISSUES Class 2, #1304) that the "
+            "disagreement came from the unstable exact solution XIIa = K = "
+            "CA = 0: on this pin AMICI holds those three at 0 too."
+        ),
+    },
+    "BIOMD0000000436:ode": {
+        "issue": "AMICI-dev/AMICI#3508",
+        "max_rel": 0.3154,
+        "reason": (
+            _STRICT_AT_T0 + "Here the first event's trigger is timevalue > t0, "
+            "with the assignment rule timevalue = time + t0, so it is time > 0 "
+            "and resets the LPS, DG and GPCho activity parameters. AMICI never "
+            "fires it, and HETE is off from the first sample. Started at "
+            "t0 = -1e-9, AMICI agrees with RoadRunner on every species away from "
+            "the samples on its later >= triggers' instants. RoadRunner against "
+            "bngsim: PASS."
+        ),
+    },
+    "BIOMD0000000736:ode": {
+        "issue": "AMICI-dev/AMICI#3508",
+        "max_rel": 0.9112,
+        "reason": (
+            _STRICT_AT_T0 + "Here the event is time > 0, which sets Hepcidin = "
+            "1.1e-7 (the anemia condition of Parmar 2017). AMICI never sets it; "
+            "started at t0 = -1e-9 it does, and agrees with RoadRunner to 4e-7 "
+            "on every species. RoadRunner against bngsim: PASS."
+        ),
+    },
+    "BIOMD0000000481:ode": {
+        "issue": "AMICI-dev/AMICI#3515",
+        "max_rel": 1,
+        "reason": (
+            _PIECEWISE_AT_T0 + "Here parameter_4 = piecewise(time - t_D, "
+            "time > t_D, 0) with t_D = 0 drives the rate rule of species_1 "
+            "(PGF_syn). AMICI keeps parameter_4 at 0, so species_1 stays 0 "
+            "(bngsim and RoadRunner: 0.957 at t = 0.01). Started at t0 = -1e-9, "
+            "AMICI agrees with RoadRunner to 1.8e-6. RoadRunner against bngsim: "
+            "PASS."
+        ),
+    },
+    "MODEL2003200002:ode": {
+        "issue": "AMICI-dev/AMICI#3515",
+        "max_rel": 1,
+        "reason": (
+            _PIECEWISE_AT_T0 + "Here the stimulus E1 = piecewise(0, time <= "
+            "ton, piecewise(stim, time <= toff, 0)) with ton = 0 is #3515's own "
+            "first case: time <= 0 is true at t0 and false at every t > 0, so "
+            "the SBML stimulus is stim = 100 on (0, 2] and 0 after; AMICI holds "
+            "it at 0 throughout. Started at t0 = -1e-9, AMICI agrees with bngsim "
+            "to 1.4e-6. RoadRunner fails on this model at t = 0 (repeated error "
+            "test failures), so the witnesses are the SBML math of the condition "
+            "and the minimal model above, not a third run of this one."
+        ),
+    },
+    "BIOMD0000000825:ode": {
+        "issue": "AMICI-dev/AMICI#3586",
+        "max_rel": 0.02089,
+        "reason": (
+            "AMICI fires the event treatment, (Tumor_Volume_V > V_d) && (u == 0), "
+            "at the first output time after Tumor_Volume_V crosses V_d, not at "
+            "the crossing (AMICI-dev/AMICI#3586, open; a maintainer reproduced it "
+            "on main and traced it to u == 0 becoming Min(u, -u), a root function "
+            "that touches 0 and never changes sign). The crossing is at "
+            "t = ln 11 = 2.398 (V = S + R is logistic from 0.01 to the threshold "
+            "0.1); on the job's grid AMICI turns treatment on at t = 2.43, so the "
+            "resistant population R starts growing about 0.03 late (R at "
+            "t = 2.43: bngsim and RoadRunner 4.79e-5, AMICI 2.75e-5). On a minimal "
+            "model, (s > 0.3) && (u == 0) with s = t, AMICI executes at the next "
+            "output time and RoadRunner at 0.3; with u < 0.5 in place of u == 0, "
+            "AMICI executes at 0.3 too. RoadRunner against bngsim: PASS."
+        ),
+    },
+    "MODEL1412200000:ode": {
+        "issue": "AMICI-dev/AMICI#3508",
+        "max_rel": 1,
+        "reason": (
+            _STRICT_AT_T0 + "Here the event is DNAdamage, time > 0, which sets "
+            "the irradiation-induced foci TAF, SLOWi and FASTi. AMICI never fires "
+            "it. Started at t0 = -1e-9, AMICI fires it and agrees with RoadRunner "
+            "to 9.5e-8 on every species (2.5 at t0 = 0, on RP). New on this pin: "
+            "AMICI 1.0.1 could not run the model. RoadRunner against bngsim: PASS."
+        ),
+    },
+    "MODEL1708210000:ode": {
+        "issue": "AMICI-dev/AMICI#3508",
+        "max_rel": 1,
+        "reason": (
+            _STRICT_AT_T0 + "Here the event is Ligand_on_1, time > 0, L3V1 with "
+            "initialValue = true written out and a delay of 0, which sets the "
+            "EGF dose. AMICI never fires it. Started at t0 = -1e-9, AMICI fires "
+            "it and agrees with RoadRunner to 7.8e-8 on every species (7.3 at "
+            "t0 = 0, on pMetEGFRi_ph). New on this pin: AMICI 1.0.1 could not run "
+            "the model. RoadRunner against bngsim: PASS."
+        ),
+    },
+    "MODEL1509020000:ode": {
+        "issue": "lanl/bngsim#1817",
+        "max_rel": 0.02745,
+        "reason": (
+            "AMICI integrates this model's hasOnlySubstanceUnits species as "
+            "amounts, and its compartments are 2.1e-12 and 6.3e-13, so the "
+            "amounts are about 1e-20: eight orders of magnitude below the suite's "
+            "atol of 1e-12, which AMICI's error test therefore never sees. bngsim "
+            "and RoadRunner integrate concentrations, about 1e-8, which the "
+            "tolerance does resolve. The evidence is how far each engine moves "
+            "when atol is tightened from 1e-12 to 1e-30 (rtol 1e-9): AMICI by up "
+            "to 5.1x (species_10), bngsim by 0.24x. At atol 1e-30, bngsim and "
+            "RoadRunner agree to 2.7e-9 and AMICI is still 1.2% off. So AMICI's "
+            "answer at the suite's tolerance is not converged on these species, "
+            "and is not an oracle for them. Not an AMICI defect: a scalar atol "
+            "applied to states whose scale is set by a 1e-12 compartment."
+        ),
+    },
 }
 
 
@@ -397,6 +523,27 @@ NO_GROUND_TRUTH: dict[str, dict] = {
             "bngsim on arm64 holds it and the row reads DIFF 1.0 (676/2929 cells). "
             "On x86-64, and on arm64 before #1076, it does not and the row reads "
             "PASS. Either verdict compares two non-solutions."
+        ),
+    },
+    "MODEL2003040001:ode": {
+        "issue": "no upstream issue: the model is malformed",
+        "reason": (
+            "The SBML text defines no unique system. The function definition "
+            "Rate_Law_for_reaction_for_L declares two of its arguments twice: "
+            "lambda(r1, _betaL_, L, T0, _betaL_, g, r2, _betaN_, TN1, _betaN_, "
+            "mu2, qL, _zetaL, ...), called as (r1, betaL, L, T0, betaL_0, g, r2, "
+            "betaN, TN1, betaN_0, ...), with betaL = 1.3e-7 and betaL_0 = 24. The "
+            "body reads _betaL_ outside the ratio where it cancels, in "
+            "-(1 - qL)*_betaL_*L*T0, so which value it gets decides L's decay. "
+            "MathML does not say which duplicate binds, and libSBML's consistency "
+            "check does not flag it. AMICI binds the first, bngsim and RoadRunner "
+            "the last. RoadRunner, the third engine, shows it on rewritten copies "
+            "of the model: with the second duplicate of each renamed (so the "
+            "first binds), RoadRunner matches AMICI to 1.8e-8; with the first "
+            "renamed, RoadRunner's answer equals its answer on the original. "
+            "L differs by 36x at t = 1 between the two readings. COPASI, the "
+            "fourth engine, refuses the model. Neither engine is wrong, so "
+            "neither is an oracle for the other."
         ),
     },
 }

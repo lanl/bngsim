@@ -1,12 +1,16 @@
-# bngsim
+---
+summary: "What BNGsim is, and a model loaded and run in one block."
+---
 
-**Embeddable simulation engine for BioNetGen reaction networks.**
+# BNGsim
 
-`bngsim` is a high-performance C++ simulation kernel with Python bindings that
-replaces BioNetGen's subprocess-based `run_network` driver. It loads `.net`,
-Antimony, and SBML models, runs ODE (CVODE) and stochastic (Gillespie/PSA)
-simulations in-process, and returns results as NumPy arrays — no file I/O, no
-subprocess spawning, no Perl dependency.
+**A simulator for biochemical reaction networks, as a Python library.**
+
+BNGsim simulates models written in SBML, Antimony, and BNGL. It does ODE
+integration, stochastic simulation (SSA, PSA), and network-free simulation
+(NFsim, RuleMonkey). It also finds steady states, runs parameter scans, and
+computes forward sensitivities. Models are simulated in-process, and results
+are NumPy arrays. For BioNetGen users, it replaces `run_network`.
 
 This runs as written after `pip install bngsim`: it writes a two-species
 network to `model.net`, loads it, and integrates it.
@@ -46,7 +50,9 @@ print(result.observables["A"])    # trajectory of observable "A"
 print(round(float(result.observables["A"][-1]), 4))  # 0.6738, which is 100 * exp(-5)
 ```
 
-New here? Start with {doc}`installation` and the {doc}`quickstart`.
+New here? Start with {doc}`installation` and the {doc}`quickstart`. An AI
+agent, or anyone who would rather read rules than a tutorial, can start with
+the {doc}`agent-guide`, which `bngsim.agent_guide()` also returns.
 
 ```{toctree}
 :caption: Getting started
@@ -54,6 +60,9 @@ New here? Start with {doc}`installation` and the {doc}`quickstart`.
 
 installation
 quickstart
+choosing
+features
+agent-guide
 ```
 
 ```{toctree}

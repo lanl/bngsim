@@ -163,7 +163,9 @@ def run_diffrax(
         )
     # A step or bend call over state is one of these since issue #1068: a pulse
     # written as `max(0, 1 - abs(u)/w)` is stepped over where nothing roots it.
-    state_switches = model.state_switch_root_conditions()
+    # At this run's parameter values: a condition they decide, such as the
+    # `.net` loader's Hill guard at h = 2, switches nothing (issue #1636).
+    state_switches = model._state_switch_roots_at_run_values()
     if state_switches:
         raise ValueError(
             "run_diffrax does not integrate a rate law that switches on the model's state, "

@@ -933,6 +933,22 @@ def _worker(spec: dict, q) -> None:
         return
 
     try:
+        # AMICI's amount species as concentrations, as bngsim reports them, here
+        # rather than in amici_sens so an archived reference (AMICI's output as it
+        # was) is converted the same as a live run.
+        am_x, am_sx, am_names, not_compared, as_amount = asens.amount_states_as_concentrations(
+            am[1], am[2], list(am[3]), _src, shared_ids
+        )
+        am = (am[0], am_x, am_sx, am_names)
+        # Over the species compared, as the ODE job's is.
+        res["am_finite"] = bool(np.isfinite(am_sx).all())
+        empty = asens.ac.nothing_compared(list(bn[3]), am_names, not_compared)
+        if empty:
+            res["status"], res["exception"] = "bad_test", empty[:400]
+            res["exception_class"] = "amount-species:none-sizable"
+            res["not_compared"] = list(not_compared)
+            q.put(res)
+            return
         res.update(
             _compare(
                 bn,
@@ -944,6 +960,18 @@ def _worker(spec: dict, q) -> None:
                 n_instants=(am_timing or {}).get("event_instants", 0),
             )
         )
+        if not_compared:
+            res["comment"] += (
+                "; not compared (amount species, compartment size unknown or sensitized): "
+                + ", ".join(not_compared)
+            )
+            res["not_compared"] = list(not_compared)
+        if as_amount:
+            res["comment"] += (
+                "; compared as amounts (compartment size not a finite positive number): "
+                + ", ".join(as_amount)
+            )
+            res["compared_as_amount"] = list(as_amount)
     except Exception as exc:
         cap = capture_exception("compare", exc)
         res["status"] = "exception"

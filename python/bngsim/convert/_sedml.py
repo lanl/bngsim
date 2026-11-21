@@ -2788,8 +2788,10 @@ class _TaskReader:
             # own seed, or an amount set to an expression (issue #1733). One
             # set at each point of a sweep that goes on is set per point.
             resets = (rt.get("resetModel") or "true").lower() == "true"
+            after_swept = False  # listed after the setValue that sets the swept parameter
             for sv in _findall_local(rt, "setValue"):
                 if sv is swept[0]:
+                    after_swept = True
                     continue
                 if (
                     on is not None
@@ -2825,6 +2827,22 @@ class _TaskReader:
                     continue
                 step = self._change(sv, f"repeatedTask {rid}")
                 if step is not None:
+                    if (
+                        after_swept
+                        and step.kind == "set_concentration"
+                        and step.evaluated_once
+                        and str(sweep["parameter"])
+                        in re.findall(r"(?<![\w.])([A-Za-z_]\w*)(?!\w)", step.value_expr or "")
+                    ):
+                        # A sweep's setValues apply at each iteration, to the
+                        # model as it then stands: listed after the swept one,
+                        # a species set from the swept parameter is set from
+                        # the point's value. A resetting scan does that for a
+                        # species kept as the expression (#1733), so this one
+                        # is kept as one, as it was before issue #1737: read
+                        # as evaluated once, it held the amount of the
+                        # parameter's value before the sweep at every point.
+                        step = dataclasses.replace(step, evaluated_once=False)
                     set_values.append(step)
         if sweep is None:
             iterations = _iterations(rt)
@@ -2973,7 +2991,18 @@ class _TaskReader:
                 else:
                     expr = f"({expr})/{size!r}"
         kind = "add_concentration" if add else "set_concentration"
-        return StateChange(kind=kind, target=name, value=value, value_expr=expr)
+        # Evaluated once, where it applies, as SED-ML evaluates a change, and
+        # as for a parameter above (issue #1737): kept as an expression, a
+        # species a computeChange sets from a parameter followed a scan of it.
+        # The per-point setValue a sweep reads as an expression of its
+        # parameter (``names``) is the exception, as for a parameter (#1733).
+        return StateChange(
+            kind=kind,
+            target=name,
+            value=value,
+            value_expr=expr,
+            evaluated_once=once and expr is not None,
+        )
 
     def _formula(
         self,

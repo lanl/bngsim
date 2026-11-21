@@ -283,6 +283,8 @@ class TestStateLifecycle:
         assert core.has_pending_sensitivity_seed is False
         assert core.ic_state_dirty is False
 
+    # From the equilibrium on purpose (#1701).
+    @pytest.mark.filterwarnings("ignore::bngsim.LiveStartWarning")
     def test_non_sensitivity_run_drops_stale_seed(self):
         """A plain run advances state without tracking dx/dθ, so any seed is
         invalidated → a later carry raises rather than using a stale seed."""
@@ -548,6 +550,8 @@ class TestScanCarryOver:
         with pytest.raises(ValueError, match=r"carries a matching forward-sensitivity"):
             self._scan(sim)
 
+    # From the equilibrium on purpose (#1701).
+    @pytest.mark.filterwarnings("ignore::bngsim.LiveStartWarning")
     def test_plain_run_between_the_phases_refuses(self):
         """A non-sensitivity run drops the carry (it advanced x without dx/dθ), so
         the scan refuses instead of seeding off a stale/absent derivative."""
