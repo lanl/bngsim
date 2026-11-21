@@ -344,3 +344,34 @@ def test_quickstart_sweep_block_runs_on_the_first_blocks_model(
     a = namespace["result2"].observables["A"]  # type: ignore[attr-defined]
     assert float(a[1]) == pytest.approx(float(a[0]) * math.exp(-1.0), rel=1e-4)
     assert namespace["model"].get_param("k") == 0.25  # type: ignore[attr-defined]
+
+
+# An issue or pull request reference in prose, a link or an anchor: "#1846",
+# "lanl/bngsim#1846", "issue 111", "PR 12", ".../issues/1846", ".../pull/12",
+# and a heading anchor built from one, "-issue-111". A Markdown heading's "# "
+# and a code comment's "# 1" have a space after the "#", so they do not match,
+# and neither does an HTML character reference, "&#123;".
+_ISSUE_REFERENCE = re.compile(
+    r"(?<!&)#\d+\b"
+    r"|\b(?:issues?|PRs?|pull requests?)\s+#?\d+\b"
+    r"|/(?:issues|pull)/\d+"
+    r"|\bissue-\d+\b",
+    re.IGNORECASE,
+)
+
+
+def test_user_docs_carry_no_issue_references() -> None:
+    """The user guides, the quickstart and the agent guide describe what BNGsim
+    does, for its users. Issue numbers belong in the changelog and in code
+    comments."""
+    _docs_present()
+    pages = sorted((_ROOT / "docs" / "user-guide").glob("*.md"))
+    pages += [_ROOT / "docs" / "quickstart.md", _ROOT / "python" / "bngsim" / "agent_guide.md"]
+    assert len(pages) > 10
+    found = []
+    for page in pages:
+        text = page.read_text(encoding="utf-8")  # whole, as "issue" can end a line
+        for match in _ISSUE_REFERENCE.finditer(text):
+            line = text.count("\n", 0, match.start()) + 1
+            found.append(f"{page.relative_to(_ROOT)}:{line}: {match.group(0)!r}")
+    assert not found, "issue references in the user docs:\n" + "\n".join(found)

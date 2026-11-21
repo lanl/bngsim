@@ -15,7 +15,7 @@ import sys
 _USAGE = """\
 usage: python -m bngsim {guide,skill}
 
-  guide  print the bngsim agent guide for this version (bngsim.agent_guide())
+  guide  print the BNGsim agent guide for this version (bngsim.agent_guide())
   skill  print the guide as a SKILL.md file for agent harnesses that load skills
 """
 

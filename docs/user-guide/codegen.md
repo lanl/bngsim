@@ -1,16 +1,14 @@
 ---
-summary: "Compiling a model's right-hand side and Jacobian to C: when BNGsim does it, the compiler it needs, the cache, and running on clusters."
+summary: "Compiling a model's right-hand side and Jacobian to C: when BNGsim does it, the compiler it needs, the cache and how to prune it, and compiling large models on clusters."
 ---
 
 # Code-generated ODE RHS
 
-## Code-generated ODE RHS
+For ODE runs, BNGsim can compile a model's rate laws to native C, which runs
+faster than its interpreter on large models. It compiles the model it built,
+whatever it was loaded from: `.net`, BNGL, SBML, Antimony or `ModelBuilder`.
 
-For ODE simulations, BNGsim can compile model rate laws into native C code,
-which is then loaded via `dlopen()`. This eliminates ExprTk bytecode
-interpretation overhead for large models. Codegen compiles the model BNGsim
-built, whatever it was loaded from — `.net`, BNGL, SBML, Antimony or the
-builder — so turning it on is the same argument for every model:
+## Turning it on
 
 ```python
 model = bngsim.Model.from_net("model.net")  # or from_bngl, from_sbml, ...
@@ -19,63 +17,75 @@ sim = bngsim.Simulator(model, method="ode", codegen=True)
 result = sim.run(t_span=(0, 100), n_points=101)
 ```
 
-With `codegen=None` (the default) a model compiles automatically at or above
-`BNGSIM_CODEGEN_THRESHOLD` species (256), where native code beats the
-interpreter. `codegen=False` always runs the interpreter: it never compiles,
-and it ignores code that an earlier Simulator on the same model already
-compiled. A forward-sensitivity run always compiles, because its sensitivity
-RHS is generated code, so it refuses `codegen=False`.
+- `codegen=None`, the default, compiles a model with 256 species or more
+  (`BNGSIM_CODEGEN_THRESHOLD`), where native code beats the interpreter.
+- `codegen=True` always compiles.
+- `codegen=False` never compiles, and ignores code an earlier `Simulator` on the
+  same model compiled.
+- A forward-sensitivity run always compiles, because its sensitivity equations
+  are generated code, so it refuses `codegen=False`.
 
-Until issue #803, a `.net` or BNGL model was compiled from a second reading of
-its `.net` file, by a parser of codegen's own, and wherever that reading
-disagreed with the loader's the compiled model did too (issue #784). There is
-one reading now: `jacobian="jax"` and the diffrax solver read the built model
-too. `bngsim.prepare_codegen(net_path)` remains as a deprecated wrapper that
-loads the file and compiles the model, and `Simulator(net_path=...)` is
-deprecated and ignored.
+`Simulator.codegen_backend` says which engine an ODE run used. For an SSA run,
+`result.ssa_diagnostics["propensity_backend"]` says the same.
 
-Codegen is **enabled by default** in PyBNF's `BngsimModel` (set
-`BNGSIM_NO_CODEGEN=1` to disable). Compiled `.so` files are cached in
-`~/.cache/bngsim/codegen/`, keyed on the model's structure and the codegen
-version — recompilation happens when the model or the generated code changes,
-and a parameter-value change almost never causes one. Compilation builds to a
-process-unique temp file and `os.replace()`s it into the cache, so concurrent
-Dask workers compiling the same model never observe a partial `.so`. Set
-`BNGSIM_CODEGEN_CACHE_DIR` to relocate the cache — point it at fast node-local
-scratch, or at a directory of artifacts pre-warmed on a login node so worker
-jobs never compile (see [Scheduler-free cluster evaluation](pybnf.md#scheduler-free-cluster-evaluation)).
+What to watch out for:
+
+- **You need a C compiler:** `cc` on macOS and Linux, `cl` or `gcc` on Windows,
+  or `$CC`. Without one, `codegen=True` and forward sensitivities raise
+  `bngsim.CodegenToolchainError`, and large models fall back to the interpreter.
+- **On a cluster, compute nodes often have no compiler on `PATH`,** even when
+  the login node does. Load one in the batch job (`module load gcc`), or turn
+  codegen off with `BNGSIM_NO_CODEGEN=1`.
+- **Compiled libraries are cached** in `~/.cache/bngsim/codegen/`, and nothing
+  prunes the cache for you. See
+  [Managing the artifact cache](#managing-the-artifact-cache).
+
+`bngsim.prepare_codegen(net_path)` is deprecated: it loads the file and compiles
+the model. `Simulator(net_path=...)` is deprecated and ignored.
+
+PyBNF's `BngsimModel` turns codegen on by default. Set `BNGSIM_NO_CODEGEN=1`
+to turn it off.
+
+## The cache
+
+A compiled library is keyed on the model's structure and the codegen version,
+so it is rebuilt when the model or the generated code changes. A parameter
+value change almost never causes a rebuild. Each compile writes to a temporary
+file and then renames it into the cache, so parallel workers compiling the same
+model never load a partial library.
+
+Set `BNGSIM_CODEGEN_CACHE_DIR` to move the cache: to fast node-local scratch, or
+to a directory of libraries built ahead of time on a login node so worker jobs
+never compile (see [Scheduler-free cluster
+evaluation](pybnf.md#scheduler-free-cluster-evaluation)). It is read once at
+import, so `export` it before starting Python.
+
+One cache can serve two architectures: a native and a Rosetta Python on an
+Apple Silicon Mac, or x86-64 and aarch64 nodes sharing a home directory. Each
+builds and loads only its own libraries.
 
 ### Managing the artifact cache
 
-The cache is content-addressed and **nothing prunes it automatically** — BNGsim
-never deletes from this directory as a side effect of being used, because the
-failure mode (evicting the artifact another process is about to `dlopen`) is the
-exact class of bug the cache exists to avoid. So it grows until you bound it.
+BNGsim never deletes from the cache as a side effect of using it, since that
+could remove a library another process is about to load. So the cache grows
+until you prune it. It grows fastest on a machine that follows BNGsim
+development: any change to the code generator makes every library on the
+machine stale at once.
 
-It grows faster than "a cache grows" suggests. The key folds a digest of the
-codegen emitters' own source, so *any* edit to `_codegen.py` / `_jacobian.py` /
-`_saturable_jacobian.py` / `_switch_sensitivity.py` / `_term_order.py` — a comment
-included — orphans
-every artifact on the machine at once. That is the right trade (the alternative,
-under-invalidation, is a silently wrong gradient), but on a machine that tracks
-BNGsim development it means a fresh corpus of dead artifacts per emitter edit: six
-weeks of ordinary work left 2.0 GB across 14,377 entries on one developer box.
-
-`bngsim-cache` has four verbs:
+`bngsim-cache` prunes it:
 
 ```bash
 bngsim-cache info                          # path, entries, size, dates, live vs orphaned
-bngsim-cache clean                         # leaked compile partials only
-bngsim-cache prune --orphaned              # every artifact under an older codegen key
-bngsim-cache prune --older-than 30d        # evict artifacts unused for 30 days
+bngsim-cache clean                         # leftovers of interrupted compiles only
+bngsim-cache prune --orphaned              # every library under another codegen key
+bngsim-cache prune --older-than 30d        # libraries unused for 30 days
 bngsim-cache prune --max-size 2G           # ...or until the directory fits
-bngsim-cache clear --yes                   # everything bngsim owns
+bngsim-cache clear --yes                   # everything BNGsim wrote
 ```
 
-**Getting at the command.** `pip install bngsim` puts `bngsim-cache` on your `PATH`.
-If it is not there — a source checkout whose virtualenv is not activated is the usual
-reason — either use the launcher directly or run the module, which needs no console
-script and no reinstall:
+`pip install bngsim` puts `bngsim-cache` on your `PATH`. If it isn't there,
+which is usual in a source checkout without an activated virtualenv, run the
+module or the launcher:
 
 ```bash
 python -m bngsim.cache info
@@ -85,52 +95,10 @@ python -m bngsim.cache info
 .venv/bin/bngsim-cache info
 ```
 
-Whichever Python you invoke it with is the one whose codegen key counts as *live*
-below, so run it from the environment whose cache you mean to sweep.
+The Python you run it with decides which libraries count as live, so run it
+from the environment whose cache you mean to prune.
 
-`info` reports a breakdown by artifact kind — model RHS, SSA propensity, the
-source-hash fallback key, plus the debris of interrupted compiles (`bngsim_shard_*`
-scratch directories and stray `.c`, which nothing else cleans up) — and a second
-breakdown by codegen key.
-
-On Linux and macOS a compile does not outlive the Python process that asked for
-it. It runs under a small supervisor that holds a pipe from that process; when the
-process dies, by a harness's `SIGTERM` at its wall cap or a `SIGKILL` alike, the
-supervisor kills the compiler and its backends and removes the compile's `.c` and
-partial library (issue #1552). Before, the compile ran on to the end, competing
-for the CPU with whatever ran next, and left a library nobody installed. So that
-debris now comes only from a kill that takes the supervisor too, or from a
-compile older than this.
-
-`clean` is safe by construction: it removes only that debris, so no compiled
-artifact is touched and no cache hit is lost. `prune` bounds the cache by orphan
-status, age and/or total size, evicting least-recently-used artifacts first; it runs
-`clean`'s sweep before evicting anything, so `--max-size` is a bound on the whole
-directory. `clear` empties it, which means every model recompiles on its next run.
-
-Every mutating verb takes `--dry-run`, and two guarantees hold across all of them:
-
-- **Only files BNGsim wrote are ever removed.** `BNGSIM_CODEGEN_CACHE_DIR` is a
-  path you choose, and pointing it at shared scratch is normal, so anything
-  unrecognized is reported as `foreign` and left alone — by `clear` as much as by
-  `clean`.
-- **Nothing recently touched is removed.** A compile in flight writes its `.c` and
-  its shard directory into this very directory, so every verb holds off on entries
-  used or written within `--min-age` (default `1h`, comfortably over the 600 s default
-  `BNGSIM_CODEGEN_TIMEOUT`), and on POSIX also holds anything a *running* compile is
-  writing — both its partials and its shard directory carry the PID in their names,
-  which is what that check reads. Raise it if you build genome-scale models with the
-  timeout lifted.
-
-"Least-recently-used" is the newer of a file's access and modification time.
-Whether access times move at all is a property of the mount — a `noatime` Linux
-mount never updates them, and on macOS APFS a plain `read()` leaves `atime` alone
-while `dlopen` advances it, which is the only access that matters here. Where they
-are not recorded the order degrades to build time (a FIFO — still bounded, just
-less well targeted), and `info` says which one you are getting.
-
-The same four verbs are available in-process, for a notebook or a fitting harness
-that wants to bound its own cache without shelling out:
+The same commands work in Python:
 
 ```python
 import bngsim
@@ -141,13 +109,37 @@ print(info.total_bytes, info.by_kind)
 bngsim.prune_codegen_cache(max_size="2G")
 ```
 
-### Which artifacts are dead
+What each command does:
 
-An artifact is named `rhs_<key>_<hash><suffix>`, where `<key>` is the codegen cache
-key described above — the `_CODEGEN_VERSION` constant, a digest of the emitters'
-source, and the architecture the library is built for (`arm64`, `x86-64`,
-`aarch64`). The key is mixed into `<hash>` as well, so it is what decides validity;
-carrying it beside the hash is what makes the dead corpus *countable*:
+- `info` breaks the cache down by kind (model RHS, SSA propensity, and the
+  leftovers of interrupted compiles: `bngsim_shard_*` directories and stray `.c`
+  files) and by codegen key.
+- `clean` removes only those leftovers. No library is touched.
+- `prune` removes libraries by orphan status, age or total size, least recently
+  used first. It runs `clean` first, so `--max-size` bounds the whole directory.
+- `clear` empties the cache, so every model recompiles on its next run.
+
+Every command that deletes takes `--dry-run`, and all of them follow two rules:
+
+- **Only files BNGsim wrote are removed.** Anything else in the directory is
+  reported as `foreign` and left alone, so it is safe to point
+  `BNGSIM_CODEGEN_CACHE_DIR` at shared scratch.
+- **Nothing recently used is removed.** Entries used or written within
+  `--min-age` (default `1h`, over the 600 s default compile timeout) are kept.
+  On Linux and macOS, so is anything a running compile is writing. Raise
+  `--min-age` if you build very large models with the timeout lifted.
+
+"Least recently used" is the later of a file's access and modification times.
+Some file systems don't record access times (a `noatime` Linux mount), and on
+macOS a plain read doesn't update them, though loading the library does. Where
+access times aren't recorded, the order falls back to build time. `info` says
+which one you are getting.
+
+### Which libraries are orphaned
+
+A library is named `rhs_<key>_<hash><suffix>`. The key is the codegen version,
+a digest of the code generator's source, and the architecture (`arm64`,
+`x86-64`, `aarch64`). `info` counts libraries per key:
 
 ```console
 $ bngsim-cache info
@@ -166,171 +158,131 @@ codegen cache: /home/you/.cache/bngsim/codegen
   -                                          4,900    700.0 MiB
 ```
 
-`prune --orphaned` removes exactly that second number: every artifact whose key is
-not this install's, which is precisely the set no run here can load again. It is far
-better targeted than `--older-than`, which keeps orphans that happen to be recent and
-throws away live artifacts that are merely idle.
+`prune --orphaned` removes every library whose key is not this install's, which
+no run here can load again. That targets better than `--older-than`, which keeps
+recent orphans and removes idle live libraries.
 
-The per-key table is what makes a shared or pre-warmed artifact directory auditable —
-which BNGsim's artifacts are in it, and how much each is holding. That matters before
-pruning one: a venv per project is ordinary and each has its own key, so one venv's
-orphans are another's live artifacts. Spare a sibling install's key with `--keep-key`,
-repeatable:
+Each virtualenv has its own key, so one venv's orphans can be another's live
+libraries. Spare another install's key with `--keep-key`, which you can repeat:
 
 ```bash
 bngsim-cache prune --orphaned --keep-key 42+9f0c1de2ab3c4d5e
 ```
 
-One cache can also serve one BNGsim on two architectures: a native and a Rosetta
-Python on an Apple Silicon Mac, or the x86-64 and aarch64 nodes of a cluster that
-share a home directory. Each builds and loads only its own libraries, which the
-architecture in the key keeps apart (issue #1486; before it, the second to run
-loaded the first's and failed with `incompatible architecture`). An artifact whose
-key differs from this install's in the architecture alone is the other
-architecture's build of the same source, so `info` counts it as `other arch`, not
-orphaned, and `prune --orphaned` leaves it alone. Run the prune from that
-architecture's Python to sweep its own.
+A library whose key differs only in the architecture is the other
+architecture's build of the same source. `info` counts it as `other arch`, and
+`prune --orphaned` leaves it alone. Prune from that architecture's Python to
+sweep it.
 
-Artifacts written before this naming landed (issue #363) carry no key at all. They
-count as orphaned — no keyed lookup will ever reach one again — and `info` lists them
-under `-`, which is also what spares them: `--keep-key -`. Landing the scheme was
-therefore a one-time full invalidation: every cache on every machine recompiles once.
+Libraries with no key at all are listed under `-`. They count as orphaned, and
+`--keep-key -` spares them.
 
-> **HPC / cluster note.** The codegen path shells out to a C compiler (`cc`)
-> at `Simulator` construction. On many HPC systems compute nodes have **no
-> compiler on `PATH` by default** even when the login node does — codegen then
-> stalls or fails on the compute node despite working interactively. Ensure a
-> compiler is available inside the batch/allocation environment (e.g.
-> `module load gcc`) before running, or disable codegen with
-> `BNGSIM_NO_CODEGEN=1`.
+## When the compiler fails
 
-**When the toolchain cannot build anything.** A codegen compile that fails is
-followed by a probe: the same command on a trivial C file. If that fails too, the
-failure is the toolchain's, not the model's, and BNGsim says so once per process,
-in a warning that names the compiler, the linker and, on macOS, the SDK, and
-suggests an installed SDK that links when one does. From then on no codegen
-library is compiled while the compiler and its environment (`CC`, `PATH`,
-`SDKROOT`, `DEVELOPER_DIR`, ...) stay as they are, and a model's source is not
-generated either, past its cache lookup: models at or above the
-threshold run on the interpreted RHS, and `codegen=True` and forward
-sensitivities raise `bngsim.CodegenToolchainError` instead of compiling to fail
-again. Libraries already in the cache are still used, and changing one of those
-variables in the process (`os.environ["SDKROOT"] = ...`) gets a fresh attempt.
-The verdict is probed again after 5 minutes, so a toolchain that was broken for
-a while (a full disk) is used again once it builds; a re-probe that fails, or
-proves nothing (it times out), keeps the verdict for another 5 minutes. A
-missing compiler is kept
-the same way. The case that prompted this (issue #1544) is conda-forge's
-ld64-956.6 with the macOS 27 SDK: it cannot read the SDK's `libSystem.tbd`, so it
-links no library at all; `SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk`
-links.
+If a compile fails, BNGsim tries the same command on a trivial C file. If that
+fails too, the toolchain is broken, not the model, and BNGsim warns once per
+process, naming the compiler, the linker and, on macOS, the SDK. It suggests an
+installed SDK that links, if it finds one.
 
-A benchmark or a fit that must not measure the interpreter by accident sets
-`BNGSIM_CODEGEN_STRICT=1`: an automatic build that fails (the ODE RHS at or
-above the threshold, or the SSA propensity library) then raises instead of
-falling back. The SSA library is built for every mass-action model run with
-exact SSA, so strict mode raises on its failure even for a model the SSA engine
-would have run without it (one with events, or more than 64 reactions). A model
-that codegen declines still runs on the interpreter, since that is not a failed
-build; but once the toolchain is known to be broken, a model is refused before
-its source is generated, so one that would have been declined is refused as the
-toolchain's failure, and raises under strict mode too.
-`Simulator.codegen_backend` says which engine an ODE run used, and a result's
-`ssa_diagnostics["propensity_backend"]` which one an SSA run used.
+Then, while the compiler and its environment (`CC`, `PATH`, `SDKROOT`,
+`DEVELOPER_DIR`, ...) stay the same:
 
-A few env vars tune the compile step for large reaction networks, whose flat
-RHS source can be several MB:
+- no library is compiled, and no source is generated past the cache lookup;
+- models at or above the threshold run on the interpreter;
+- `codegen=True` and forward sensitivities raise `bngsim.CodegenToolchainError`;
+- libraries already in the cache are still used.
+
+Changing one of those variables in the process (`os.environ["SDKROOT"] = ...`)
+gets a fresh try. BNGsim also tries again after 5 minutes, so a toolchain that
+was broken for a while (a full disk) is used again once it builds. A missing
+compiler is handled the same way.
+
+One known case: conda-forge's ld64-956.6 with the macOS 27 SDK cannot read the
+SDK's `libSystem.tbd` and links nothing.
+`SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk` links.
+
+On Linux and macOS a compile does not outlive the Python process that started
+it. If the process dies, even by `SIGKILL`, the compiler is killed and its
+partial files are removed.
+
+**Strict mode.** A benchmark or a fit that must not run on the interpreter by
+accident sets `BNGSIM_CODEGEN_STRICT=1`. A failed automatic build then raises
+instead of falling back: the ODE RHS at or above the threshold, or the SSA
+propensity library. The SSA library is built for every mass-action model run
+with exact SSA, so strict mode raises on its failure even for a model the SSA
+engine could run without it (one with events, or more than 64 reactions). A
+model codegen declines still runs on the interpreter, since that is not a
+failed build. But once the toolchain is known to be broken, every model is
+refused before its source is generated, and strict mode raises for those too.
+
+## Large models
+
+### Settings
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `BNGSIM_CODEGEN_CACHE_DIR` | `~/.cache/bngsim/codegen` | Directory for the content-addressed compiled-artifact cache. Redirect it to node-local scratch, or to a read-only dir of pre-warmed artifacts, so cluster jobs reuse one `.so` instead of recompiling. Read once at import — `export` it before launching `python`. |
-| `BNGSIM_CODEGEN_STRICT` | off | `1` makes a failed automatic codegen build (the ODE RHS at or above the threshold, the SSA propensity library) raise instead of falling back to the interpreter. Empty, `0`, `false`, `no` and `off` are off. A decline still falls back. |
-| `BNGSIM_CODEGEN_TIMEOUT` | `600` | Seconds before the `cc` invocation is killed (a timeout raises a `RuntimeError` naming this var). `0` disables the limit. |
-| `BNGSIM_CODEGEN_OPT` | size-based | Optimization level: an integer `0`–`3`, or `high`/`low`/`none`. Sources over ~1 MB default to `low` (`-O1`) since `-O3` costs minutes for negligible runtime gain on a single flat function, and unchunked sources over ~8 MB to `none` (`-O0`). At `-O0` every temporary in a function gets its own stack slot, so a large function's stack frame grows with it; a gcc/clang library with a function whose frame is over 4 MiB (512 KiB on Windows, where a thread's stack is 1 MiB) is refused, as a failed build, rather than installed, since a call to it can overflow the calling thread's stack and crash the process (issue #1566). Overrides the chunking opt level below. |
-| `BNGSIM_CODEGEN_CHUNK` | `2000` | Reaction count at/above which the RHS (and analytical sensitivity) body is split into many small `noinline` helper functions instead of one giant function — see below. `off`/`0` disables; `on` forces chunking at any size; an integer sets the threshold. |
-| `BNGSIM_CODEGEN_CHUNK_SIZE` | `256` | Reactions per chunked helper function. Smaller blocks compile a little faster at a slight call-overhead cost. |
-| `BNGSIM_CODEGEN_JOBS` | allocation-aware | Parallel compiler processes for a chunked source — see below. `auto` (default) sizes the pool from the CPUs the process is actually allocated (`sched_getaffinity` / `SLURM_CPUS_PER_TASK`), never the node's core count; `1` keeps the serial single-`cc` compile; a positive integer caps the pool. |
-| `BNGSIM_CODEGEN_MEM_PER_JOB` | `512` | Estimated peak RAM per parallel compiler, in **MB**. The job count is capped at `available_RAM / this` (honoring cgroup limits) so parallel compiles never oversubscribe memory and OOM a node. Raise it on a RAM-tight node, lower it if you know the compiles are small. |
+| `BNGSIM_CODEGEN_CACHE_DIR` | `~/.cache/bngsim/codegen` | The cache directory. Read once at import. |
+| `BNGSIM_CODEGEN_STRICT` | off | `1` makes a failed automatic build raise instead of falling back. Empty, `0`, `false`, `no` and `off` are off. A decline still falls back. |
+| `BNGSIM_CODEGEN_TIMEOUT` | `600` | Seconds before the compiler is killed. A timeout raises a `RuntimeError` naming this variable. `0` means no limit. |
+| `BNGSIM_CODEGEN_OPT` | by size | Optimization level: `0` to `3`, or `high`, `low`, `none`. Sources over about 1 MB default to `low` (`-O1`), and unchunked sources over about 8 MB to `none` (`-O0`). Overrides the chunking level below. |
+| `BNGSIM_CODEGEN_CHUNK` | `2000` | Reaction count at which the generated code is split into many small functions. `off` or `0` turns it off, `on` always splits, an integer sets the threshold. |
+| `BNGSIM_CODEGEN_CHUNK_SIZE` | `256` | Reactions per small function. Smaller compiles a little faster and runs a little slower. |
+| `BNGSIM_CODEGEN_JOBS` | `auto` | Parallel compilers for a split source. `auto` uses the CPUs the process is allocated, not the node's core count. `1` compiles serially. An integer caps the pool. |
+| `BNGSIM_CODEGEN_MEM_PER_JOB` | `512` | Estimated peak RAM per parallel compiler, in MB. The number of compilers is capped at available RAM (cgroup limits included) divided by this. |
 
-**Large-model chunking.** A flat code-generated RHS over *N* reactions is one
-enormous basic block, and the C optimizer's per-function passes are superlinear
-in function size — so without chunking a ~100k-reaction model can take *hours* to
-compile (a synthetic mass-action RHS scales ≈ O(N^2.5) at `-O1`). At/above
-`BNGSIM_CODEGEN_CHUNK` reactions BNGsim splits the body into small `noinline`
-blocks, which keeps compile time roughly linear and lets the source compile at
-`-O2` at any size (≈ minutes for 100k reactions). The split preserves reaction
-order, so the chunked `.so` is **bit-identical** to the flat one; below the
-threshold the emitted C is byte-identical to prior versions.
+At `-O0` each temporary gets its own stack slot, so a large function's stack
+frame grows with it. A gcc or clang library with a function whose frame is over
+4 MiB (512 KiB on Windows, where a thread's stack is 1 MiB) is refused as a
+failed build, since calling it could overflow the stack and crash the process.
 
-Chunking covers not just the RHS but the whole code-generated translation unit:
-the analytical Jacobian's per-reaction scatter, the output evaluator, and the
-observable/function computation each of them recomputes are all split into
-`noinline` blocks too. Otherwise these would pile up in the single non-sharded
-*driver* function and become the serial compile wall at genome scale even after
-the RHS itself was chunked — a 113k-reaction / 18k-function model's driver was
-~38 MB of C and timed out the compile budget; sharding it shrinks the driver
-~10× so no single translation unit dominates.
+### Splitting and parallel compiles
 
-**Parallel shard compilation.** A chunked source is still one `.c` file compiled
-by a single serial `cc`, which dominates `Simulator` construction at genome
-scale (a 113k-reaction model spent ~52 min almost entirely in that one compile).
-Because the `noinline` blocks are already independent functions, BNGsim compiles
-them as **separate translation units in parallel** (`cc -c` × N) and links the
-`.o` files into the `.so` — the classic `make -j`. Wall-clock drops to roughly
-*(slowest unit + link)* wherever multiple cores are available (the same
-113k-reaction model with the compiled sparse Jacobian now builds in well under a
-minute on 16 cores).
+A C compiler slows down sharply on one huge function. So from
+`BNGSIM_CODEGEN_CHUNK` reactions on, BNGsim splits the generated code (the RHS,
+the analytical Jacobian, the sensitivity equations and the output evaluator)
+into many small functions. This keeps compile time close to linear and lets the
+code compile at `-O2` at any size. The split keeps the reaction order, so the
+result is bit-identical to the unsplit code.
 
-The pool is **allocation-aware**: it is sized from the CPUs the process may
-actually run on (`os.sched_getaffinity` / `SLURM_CPUS_PER_TASK`), never
-`os.cpu_count()`, so a job confined to a small slice of a shared node does not
-spawn one compiler per *node* core. It is also **memory-bounded** (see
-`BNGSIM_CODEGEN_MEM_PER_JOB`) so N parallel compilers cannot OOM the allocation.
-The source partition is independent of the job count, so the linked `.so` is
-**byte-identical regardless of how many compilers run**, and the SHA-256 codegen
-cache keys on source content only — parallelism never changes the cached
-artifact. A 1-core allocation (or `BNGSIM_CODEGEN_JOBS=1`) takes the unchanged
-serial path, so there is no regression where there are no spare cores.
+The small functions compile as separate files in parallel, then link into one
+library, like `make -j`. The pool is sized from the CPUs the process may run on
+(`os.sched_getaffinity`, `SLURM_CPUS_PER_TASK`), not `os.cpu_count()`, and
+bounded by memory. The library is byte-identical whatever the number of
+compilers, so parallelism never changes the cache key. With one CPU, or
+`BNGSIM_CODEGEN_JOBS=1`, it compiles serially.
 
-> **The speed-up requires cores.** On a laptop every core is available, so this
-> is automatic. On HPC it engages **only if the batch allocation requests
-> them** — with `--cpus-per-task=1` there is nothing to parallelize across.
-> Request several CPUs per task (and enough memory for them) to unlock it.
+On a laptop every core is available. On a cluster, the speedup needs a batch
+job that requests several CPUs per task. With `--cpus-per-task=1` there is
+nothing to parallelize.
 
-### Example: Slurm batch script for a large-model fit
+### Example: a Slurm job for a large model
 
-Request multiple CPUs per task so codegen shards across them, and make sure a
-compiler is on `PATH` inside the allocation (compute nodes often lack one by
-default). Memory should cover the parallel compilers — `--mem` ÷
-`BNGSIM_CODEGEN_MEM_PER_JOB` is roughly the most compilers that will run.
+Request several CPUs per task, enough memory for that many compilers, and a
+compiler on the compute node. `--mem` divided by `BNGSIM_CODEGEN_MEM_PER_JOB` is
+about the most compilers that will run.
 
 ```bash
 #!/usr/bin/env bash
 #SBATCH --job-name=bngsim-codegen
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16        # ← codegen shards across these 16 cores
-#SBATCH --mem=32G                 # ≥ cpus-per-task × per-compiler peak RAM
+#SBATCH --cpus-per-task=16        # codegen compiles across these 16 cores
+#SBATCH --mem=32G                 # at least cpus-per-task x RAM per compiler
 #SBATCH --time=02:00:00
 
-# A C compiler must be reachable on the COMPUTE node (not just the login node).
-module load gcc                   # site-specific; provides `cc`/`gcc` on PATH
+# A C compiler must be on PATH on the compute node, not only the login node.
+module load gcc                   # site-specific
 
-# Size the codegen pool from the Slurm allocation. `auto` already reads
-# SLURM_CPUS_PER_TASK / the cgroup cpuset; setting it explicitly is equivalent
-# and self-documenting.
+# `auto` already reads SLURM_CPUS_PER_TASK; setting it makes that explicit.
 export BNGSIM_CODEGEN_JOBS="${SLURM_CPUS_PER_TASK:-auto}"
 
-# Optional: tune the per-compiler RAM estimate that bounds the pool. With
-# --mem=32G and 2 GB/compiler the pool is capped near 16 (= cpus-per-task here).
-export BNGSIM_CODEGEN_MEM_PER_JOB=2048   # MB
+# Optional: RAM per compiler, in MB. 32G / 2048 MB caps the pool near 16.
+export BNGSIM_CODEGEN_MEM_PER_JOB=2048
 
-# Keep BLAS/OpenMP from oversubscribing the same cores at run time.
+# Keep BLAS and OpenMP from oversubscribing the same cores.
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
 
-srun python fit_large_model.py    # builds Simulator(..., codegen=True) inside
+srun python fit_large_model.py    # builds Simulator(..., codegen=True)
 ```
 
-With `--cpus-per-task=1` the same script still runs correctly — codegen just
-falls back to the serial compile (no speed-up, no error). Bump `--cpus-per-task`
-(and `--mem` to match) to shard the compile across more cores.
+With `--cpus-per-task=1` the same script still runs; it just compiles serially.

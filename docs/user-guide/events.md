@@ -1,214 +1,122 @@
 ---
-summary: "SBML and Antimony events: triggers, delays, priorities and assignments, and how runs and sensitivities cross them."
+summary: "SBML and Antimony events: triggers, delays, priorities and assignments, in ODE and stochastic runs, and what BNGsim refuses."
 ---
 
 # Events
 
-## Events (SBML / Antimony)
+An event changes the model's state at once when its trigger turns true: a drug
+dose, a washout, a cell division, a threshold switch. BNGsim reads events from
+SBML and Antimony models, and from models built with `ModelBuilder`.
 
-BNGsim supports SBML events — discrete state changes triggered by boolean
-conditions during simulation. Events are used for drug dosing protocols,
-cell division, threshold switches, and other discontinuous interventions.
+## Running a model with events
 
-Events are automatically parsed from SBML and Antimony models:
+Nothing extra is needed. Load the model and run it:
 
 ```python
 import bngsim
 
-# Antimony: bolus dose at t=10, washout at t=50
+# A bolus at t = 10 and a washout at t = 50.
 model = bngsim.Model.from_antimony_string("""
     S = 100; D = 0;
     k_decay = 0.1;
     J1: S -> ; k_decay * S;
 
-    at (time > 10): D = 50;     # inject drug at t=10
-    at (time > 50): D = 0;      # wash out at t=50
+    at (time > 10): D = 50;
+    at (time > 50): D = 0;
 """)
 
 sim = bngsim.Simulator(model, method="ode")
 result = sim.run(t_span=(0, 100), n_points=201)
-print(f"Model has {model.n_events} events")
+print(model.n_events)  # 2
 ```
 
+An SBML file's `<listOfEvents>` is read the same way:
+
 ```python
-# SBML: events are parsed from <listOfEvents> automatically
 model = bngsim.Model.from_sbml("model_with_events.xml")
-sim = bngsim.Simulator(model, method="ode")
-result = sim.run(t_span=(0, 100), n_points=201)
+result = bngsim.Simulator(model, method="ode").run(t_span=(0, 100), n_points=201)
 ```
 
-### How events work
+An event fires when its trigger goes from false to true. Its assignments are
+applied to the state, and the integrator restarts from there. In an ODE run,
+CVODE's root finder locates the exact time the trigger turns true.
 
-Events fire when a trigger expression transitions from false to true (edge
-detection). When an event fires, its assignment expressions are evaluated and
-applied to the state vector, and the ODE integrator is restarted.
+What to watch out for:
 
-BNGsim's event implementation uses CVODE rootfinding (`CVodeRootInit`) for
-precise event detection — the integrator finds the exact time point where the
-trigger crosses zero, applies the assignments, and restarts.
+- **A trigger on a model variable should be an ordering, not an equality.**
+  `at (x == 2)` on an integrated variable or a species almost never lands on 2
+  exactly. Use `x >= 2`.
+- **An event that re-arms its own trigger is refused.** If an assignment puts
+  the trigger back where the flow makes it true again at once, such as
+  `at (B > 0): B = 0, n = n + 1` with `B' = 1`, the event would fire forever at
+  one instant. An ODE run stops with an error naming the events after 100,000
+  fires in a row, each within the root tolerance of the last. Move the state
+  past the threshold, not onto it. A clamp like `at (X < 0): X = 0` on a
+  decaying X is not refused: once X is far below `atol`, BNGsim stops re-firing
+  it.
+- **`rateOf` is ODE-only.** A model that uses SBML's `rateOf` is refused under
+  SSA and PSA, since a stochastic trajectory has no derivative to read.
 
-#### A trigger that holds at one instant
+## What BNGsim supports
 
-`at (time == 2)` is true at a single time. No root finder brackets it, since
-the trigger reads false on both sides of any step across it, so the run stops
-on the instant instead and the event fires there, on any output grid, in the
-ODE and stochastic engines alike. The instant is the time at which the model's
-evaluator reads the equality as true: for `time == tau/7` that is the
-evaluator's own rounding of `tau/7`, and `time == pi` or `time^2 == 4` is found
-the same way. An equality of things that hold their values, such as
-`floor(time/24) == 3`, is true for a stretch and is an ordinary window.
+| Feature | Notes |
+|---|---|
+| Triggers | any boolean expression of species, parameters and time |
+| Assignments | to species, parameters or compartments; a parameter an event sets becomes part of the state |
+| Delays | a constant or an expression, read when the event triggers |
+| `persistent` | the trigger must stay true through the delay, or the event is canceled |
+| `initialValue` | the trigger's value just before the run starts; a `run_until` leg carries on the previous leg's trigger state instead |
+| `useValuesFromTriggerTime` | default `True`: assigned values are read when the event triggers; `False` reads them when it executes |
+| Priority | read when each event executes; ties are broken by a random draw keyed to the seed |
+| Same-instant cascades | a delay-0 event that an assignment triggers joins the same batch |
+| SSA and PSA | all of the above, delayed events included |
 
-The other side may be a parameter that events set, as in a dose counter:
+## Delayed events
 
-```
-var c = 0.5;
-E: at (time == c && c < 91): dose = dose + 100, c = c + 1;
-```
-
-Between two executions of the events that set `c`, it holds its value, so the
-run stops on each instant in turn: 0.5, 1.5, 2.5 and so on. The same holds
-where `c` is read through an assignment rule, after a delay, for `!=`, and
-for a first dose or a later one (`time == t0 || (time == c + t0 && time <
-t_end)`). The events that set `c` are followed in time order. Each must fire
-at a fixed time (`time >= t1`), on such an instant itself, or on a flag that
-only events set (`on == 1`), in the instant another event raises it; and set
-a value known before the run: numbers, constants, the parameters events set,
-or the time of the instant. Several such events at one instant are taken
-together where none reads or sets what another sets. In a stochastic run, a
-value within rounding of a whole number is kept on the number, as the
-engine stores it. Otherwise the run is refused with an error that names the
-parameter and why: when an event on the state sets it, or reads such a
-parameter; when two events at one instant set what the other reads, or a
-third reads what both set; when a value is frozen at a trigger on the instant
-another event sets what it reads; when an event on `time > t1`, which fires
-at a root a little after t1, makes a trigger rise, or executes beside an
-instant whose order with it matters; in an ODE run, when an instant comes
-within a rounding of another instant's stop, or of a fixed-time event's that
-reads or sets what it does, which the integrator merges with it (every 8 h beside every 12 h, in days, puts 1/3 + 1/3 + ... at
-1.9999999999999998 beside 2.0; a stochastic run takes both); or when the
-events execute more than 10,000 times in one run (run it in shorter legs).
-
-Two cases are outside this:
-
-- An equality that no time satisfies in double arithmetic, such as
-  `time - 1 == 1.3` (2.3 − 1 rounds to 1.2999999999999998, and the next
-  double gives 1.3000000000000003). Where that equality is the whole trigger
-  the event could never fire, and the run is refused with an error that names
-  it. Write the instant on one side (`time == 2.3`), or use `>=`. Inside a
-  larger trigger (`time - 1 == 1.3 || time >= 4`) the event can fire through
-  the rest, and nothing is refused.
-- An equality on a model variable rather than on `time` (`at (x == 2)` with a
-  rate rule `x' = 1`, or on a species). The variable is integrated and does not
-  land on the value exactly; use an ordering.
-
-#### Triggers that start on their threshold
-
-A trigger reading false whose *residual* is exactly zero at the start time is
-not below its threshold, it is sitting on it — `S > 0` with `S(t_start) = 0`.
-BNGsim follows the SBML start rule as the project reads it (issue #934; L3V2
-§3.4.8), which is also what libRoadRunner does: the event fires when the trigger
-turns true, so it fires at the start if the trajectory leaves the threshold into
-the trigger's true side, at whatever order it leaves, and never if it stays on
-the threshold or leaves into the false side:
-
-- **It leaves into the true side.** `time > 0` is this case, and so is a species
-  with a nonzero production rate there, and `A < 10` with `A(t_start) = 10` and A
-  decaying. So is `B > 0` where `dB/dt` is itself 0 at the start and B rises at
-  second order or higher (`B = t²/2`). The event fires at once, however the
-  comparison is written.
-- **It stays on the threshold, or leaves into the false side.** Nothing crosses,
-  and the event does not fire. A later, genuine crossing of the same trigger is
-  unaffected.
-
-`initialValue` does not change this. It gives the trigger's value just before the
-start, so it decides only a trigger that is already true there. A strict
-comparison sitting on its threshold (`S > 0` at `S = 0`) reads false at the start
-whichever way `initialValue` is set; `S >= 0` there reads true, and `initialValue`
-decides it.
-
-Where `t_start` is not 0, the first doubles of the run cannot be read for this:
-the elapsed time there is no larger than its rounding. A trigger on its threshold
-that the flow does not carry into its true side at first order is held false for
-1e4·eps·|t_start| (1.6e-12 from 0.7) and read as it is from there. From
-`t_start = 0` there is no hold.
-
-A forward-sensitivity run refuses an event that fires at the start this way
-without first-order motion, by name: its fire time has no derivative there.
-
-#### An event beside a state-dependent rate-law switch
-
-A forward-sensitivity run stops at a rate-law switch, `if(A < thr, ...)` in a
-rate law, and restarts a step of about 1e-13 of the time scale past it. An event
-whose trigger rises within that step, such as `at (A < thr)` on the same
-threshold, has no located crossing of its own. The run is refused rather than
-the event being dropped. A trigger that falls there is recorded, so its next
-rise fires. Runs without sensitivities are unaffected.
-
-### Supported event features
-
-| Feature | Status | Notes |
-|---------|--------|-------|
-| Trigger expressions | ✅ | Any boolean expression on species/time/params |
-| Event assignments | ✅ | Assign to species, parameters, or compartments |
-| Multiple events | ✅ | Any number of events per model |
-| `persistent` attribute | ✅ | SBML L3: trigger must stay true through delay |
-| `initialValue` attribute | ✅ | Events that can fire at t=0; a `run_until` leg continues the previous leg's trigger state instead (issue #693) |
-| Delay | ✅ | Constant or expression, read at trigger time (queued with cancellation) |
-| Parameter → species promotion | ✅ | Parameters targeted by events auto-promoted |
-| Priority ordering | ✅ | Real-valued priority, read when each event executes; equal-priority ties broken by seed-keyed RNG (§4.11.6) |
-| Same-instant cascade | ✅ | Delay-0 events an assignment triggers join the batch (§4.11.6) |
-| `useValuesFromTriggerTime` | ✅ | SBML L3 default (`True`): assignment RHS frozen at trigger time. `False` evaluates at firing time |
-| SSA / PSA events | ✅ | Delayed events included (issue #526) |
-
-### Delayed events
-
-Events with a delay queue their assignments and apply them after the delay
-period has elapsed. Non-persistent events whose trigger reverts to false
-before the delay expires are canceled.
-
-Everything that executes at one instant is one batch, whether it was triggered
-just then or a delay ago: the event of highest priority executes next, and the
-priorities are read again after each execution, so a priority that changed
-during a delay counts at its value when the event executes. Two events are on
-one instant when their execution times are the same number. Delayed events of
-equal priority execute in the order they were triggered in.
-
-A strict comparison and the non-strict one with the same two sides are the
-exception where the run crosses their threshold. `time/3 > tau` beside
-`time/3 >= tau` (or `tau <= time/3`) can turn true at one read, but the
-non-strict one is true on the crossing and the strict one only past it. So the
-strict one executes after the non-strict one and everything else of the
-instant, and its trigger, values and delay are read at the state they left.
-Where an event of the instant moves either side, the strict one is raised there
-instead, as a cascade, and executes where its priority puts it.
-That holds in ODE and SSA runs, whatever the rounding of the threshold (issue
-#947). Where the two sides jump past each other instead (a reaction firing in
-SSA, a `piecewise` that switches), both turn true at one instant and they are
-one batch. A forward-sensitivity run refuses such a pair by name where the
-strict event reads or writes a species the first ones wrote.
+A delayed event reads its delay, and by default its assigned values, when it
+triggers, then waits and executes at its time. A non-persistent event whose
+trigger turns false before then does not execute.
 
 ```python
-# Antimony delayed event example
 model = bngsim.Model.from_antimony_string("""
     S = 0; k = 0.1;
     J1: -> S; k;
-    at 3 after (time > 5): S = 100;  # trigger at t=5, apply at t=8
+    at 3 after (time > 5): S = 100;  # triggers at t = 5, executes at t = 8
 """)
 ```
 
-### Events under SSA and PSA
+Everything that executes at one instant is one batch, whether it triggered
+then or a delay ago. The event with the highest priority executes next, and
+priorities are read again after each execution, so a priority that changed
+during a delay counts at its value when the event executes. Two events are at
+one instant when their execution times are the same number. Delayed events of
+equal priority execute in the order they triggered.
 
-Events also fire in the stochastic engines. Triggers are checked at every
-reaction-fire boundary, and a time-only trigger is honored at its exact crossing
-time rather than at the next τ-step — so a bolus at `time > 10` lands at `t=10`,
-not somewhere in the interval that straddles it.
+A strict comparison beside its non-strict twin is the one exception. `time/3 >
+tau` and `time/3 >= tau` can turn true at the same reading, but the non-strict
+one is true on the crossing and the strict one only past it. So the strict one
+executes after everything else at that instant, and reads its trigger, values
+and delay from the state they left. If an event at that instant moves either
+side, the strict one is raised there instead, as a cascade, and executes where
+its priority puts it. Where the two sides jump past each other instead (an SSA
+reaction firing, a `piecewise` that switches), both turn true at once and are
+one batch. A forward-sensitivity run refuses such a pair, by name, where the
+strict event reads or writes a species the first ones wrote.
+
+## Events in stochastic runs
+
+Events fire under `method="ssa"` and `method="psa"` too. Triggers are checked
+after every reaction, and a trigger on time alone fires at its exact time, so a
+bolus at `time > 10` lands at t = 10. A delayed execution stops the reaction
+step that would pass it. A sampled row at the execution time shows its effect.
+Executions still waiting at the end of a `run_until` leg carry into the next.
 
 ```python
 model = bngsim.Model.from_antimony_string("""
     S = 100; k_decay = 0.1;
     J1: S -> ; k_decay * S;
 
-    at (time > 10): S = 200;              # bolus
+    at (time > 10): S = 200;             # a bolus
     at 2 after (time > 15): S = S + 50;  # a delayed one
 """)
 
@@ -216,40 +124,9 @@ sim = bngsim.Simulator(model, method="ssa")
 result = sim.run(t_span=(0, 20), n_points=21, seed=42)
 ```
 
-Delayed events run under `method="ssa"` and `method="psa"` as under
-`method="ode"` (issue #526). The delay is read when the event triggers, and
-with `useValuesFromTriggerTime` (the default) so are the assigned values. The
-execution then waits in a queue and is taken at its own time, which stops the
-reaction step that would have passed it. A non-persistent event whose trigger
-goes false before then does not execute. A row sampled at the execution time
-reads its effect. Executions still waiting at the end of a `run_until` leg
-carry into the next.
+## Events in a model built in Python
 
-### Known limitations
-
-- **`rateOf` triggers are ODE-only**: models using the SBML `rateOf` csymbol are
-  rejected under SSA/PSA — the instantaneous dx/dt it refers to has no
-  well-defined value in a discrete stochastic trajectory.
-- **An event that re-arms its own trigger as it fires is refused (Zeno)**: an
-  assignment that puts the trigger back where the flow makes it true again at
-  once — `at (B > 0): B = 0, n = n + 1` with `B' = 1`, or a ring of events each
-  re-arming the next — makes the events fire infinitely often at one instant,
-  and no trajectory continues past it. `method="ode"` stops with an error naming
-  the events after 100000 fires in a row, each within CVODE's root tolerance of
-  the last (issue #1158). Change the assignment or the trigger so the event
-  leaves its trigger false for a time, for example by moving the state past the
-  threshold rather than onto it. Fast event trains spaced by more than the root
-  tolerance are not affected. A clamp like `at (X < 0): X = 0` on a decaying X,
-  whose fires change X by less than the integration tolerance, is not refused:
-  once X has decayed far below `atol` BNGsim stops re-firing it instead.
-- **Cross-validated**: 62/153 (40.5%) BioModels event models pass vs RoadRunner
-  at max_rel_err < 1e-3. Including marginal matches: 79/138 = 57.2%.
-  Remaining failures are due to event timing precision differences between
-  CVODE rootfinding and RoadRunner's event detection algorithm.
-
-### Events in a model built in Python
-
-`ModelBuilder.add_event` adds an event to a model built in Python:
+`ModelBuilder.add_event` adds an event:
 
 ```python
 import bngsim
@@ -264,3 +141,94 @@ b.add_event("time() >= 10", {"S": "200"}, name="bolus")
 
 model = b.build()
 ```
+
+## Details
+
+### A trigger that holds at one instant
+
+`at (time == 2)` is true at a single time, so no root finder can bracket it.
+Instead the run stops on that instant and the event fires there, on any output
+grid, in ODE and stochastic runs alike. The instant is where the model's
+evaluator reads the equality as true: for `time == tau/7`, its own rounding of
+`tau/7`. `time == pi` and `time^2 == 4` work the same way. An equality of things
+that hold their values, such as `floor(time/24) == 3`, is true for a stretch and
+is an ordinary trigger.
+
+The other side may be a parameter that events set, as in a dose counter:
+
+```
+var c = 0.5;
+E: at (time == c && c < 91): dose = dose + 100, c = c + 1;
+```
+
+The run stops on each instant in turn: 0.5, 1.5, 2.5 and so on. This also works
+where `c` is read through an assignment rule, after a delay, with `!=`, and for
+a first dose or a later one (`time == t0 || (time == c + t0 && time < t_end)`).
+In a stochastic run, a value within rounding of a whole number is kept on that
+number.
+
+For this, each event that sets `c` must fire at a fixed time (`time >= t1`), on
+such an instant, or on a flag only events set (`on == 1`) at the instant another
+event raises it. And it must set a value known before the run: numbers,
+constants, parameters events set, or the instant's time. Several such events at
+one instant run together where none reads or sets what another sets.
+
+Otherwise the run is refused, with an error naming the parameter and why. It is
+refused when:
+
+- an event on the state sets the parameter, or reads such a parameter;
+- two events at one instant each set what the other reads, or a third reads
+  what both set;
+- a value is frozen at a trigger on the instant another event sets what it
+  reads;
+- an event on `time > t1`, which fires at a root just after t1, makes a trigger
+  rise, or executes beside an instant where their order matters;
+- in an ODE run, an instant falls within rounding of another instant's stop, or
+  of a fixed-time event that reads or sets what it does, since the integrator
+  merges them (every 8 h beside every 12 h, in days, puts 1/3 + 1/3 + ... at
+  1.9999999999999998 beside 2.0; a stochastic run takes both);
+- the events execute more than 10,000 times in one run. Run it in shorter legs.
+
+An equality that no double satisfies, such as `time - 1 == 1.3`, can never fire.
+Where it is the whole trigger, the run is refused, naming it. Write the instant
+on one side (`time == 2.3`), or use `>=`. Inside a larger trigger
+(`time - 1 == 1.3 || time >= 4`) the rest can still fire it, and nothing is
+refused.
+
+### A trigger that starts on its threshold
+
+A trigger that reads false at the start can sit exactly on its threshold: `S >
+0` with `S = 0`. BNGsim follows the SBML start rule, as libRoadRunner does. The
+event fires at the start if the trajectory leaves the threshold into the
+trigger's true side, at whatever order it leaves, and never if it stays on the
+threshold or leaves into the false side.
+
+- `time > 0` fires at once, and so does a species with a nonzero production
+  rate, `A < 10` with `A = 10` and A decaying, and `B > 0` where B rises at second
+  order (`B = t²/2`).
+- A trigger that stays on the threshold, or leaves into the false side, does not
+  fire. A later real crossing still fires.
+
+`initialValue` gives the trigger's value just before the start, so it decides
+only a trigger that is already true there. `S > 0` at `S = 0` reads false
+whatever `initialValue` is; `S >= 0` there reads true, and `initialValue`
+decides it.
+
+Where `t_start` is not 0, the first steps of the run are too small to read
+against the rounding of the time. So a trigger on its threshold that the flow
+does not carry into its true side at first order is held false for
+1e4·eps·|t_start| (1.6e-12 from 0.7), then read as it is. From `t_start = 0`
+there is no hold.
+
+A forward-sensitivity run refuses, by name, an event that fires at the start
+this way without first-order motion, since its fire time has no derivative
+there.
+
+### An event beside a rate-law switch
+
+A forward-sensitivity run stops at a state-dependent switch in a rate law,
+`if(A < thr, ...)`, and restarts about 1e-13 of the time scale past it. An event
+whose trigger rises inside that step, such as `at (A < thr)` on the same
+threshold, has no crossing of its own to locate, so the run is refused rather
+than the event dropped. A trigger that falls there is recorded, so its next
+rise fires. Runs without sensitivities are not affected.

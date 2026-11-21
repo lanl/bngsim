@@ -1,14 +1,14 @@
 ---
-summary: "Load a .net, SBML, Antimony or BNGL model and run it as ODEs, by SSA or by PSA; change parameters; the seed contract of stochastic runs."
+summary: "Load a .net, SBML, Antimony or BNGL model, run it as ODEs, by SSA or by PSA, change parameters, and reproduce a stochastic run with a seed."
 ---
 
 # Quickstart
 
 ## Load a model and simulate
 
-The block below runs as written after `pip install bngsim`. It first writes
-the model it loads, a two-species network in BioNetGen's `.net` format, so no
-file is needed beforehand; with a `.net` of your own, start at `from_net`.
+The block below runs as written after `pip install bngsim`. It writes its own
+model first, a two-species network in BioNetGen's `.net` format. With a `.net`
+file of your own, start at `from_net`.
 
 ```python
 from pathlib import Path
@@ -54,8 +54,7 @@ print(round(float(result.observables["A"][-1]), 4))  # 0.6738, which is 100 * ex
 
 ## Other model formats
 
-`.net` is the native format. SBML, Antimony and BNGL load through the same
-`Model` interface:
+SBML, Antimony and BNGL load through the same `Model` class:
 
 ```python
 sbml_model = bngsim.Model.from_sbml("model.xml")
@@ -63,21 +62,19 @@ ant_model  = bngsim.Model.from_antimony("model.ant")  # pip install bngsim[antim
 bngl_model = bngsim.Model.from_bngl("model.bngl")   # pip install bngsim[bngl]
 ```
 
-`from_bngl` is not a parser. BNGsim simulates reaction *networks* and BNGL
-describes *rules*, so the model block is handed to `BNG2.pl generate_network`
-and the resulting `.net` is loaded through `from_net`. That makes BNG2.pl a
-requirement: the `bngl` extra supplies it, or point `$BNGPATH` at your own
-install. Generated networks are cached, so a repeated load of an unchanged
-model does not re-run BNG2.pl.
+BNGsim simulates reaction networks, and BNGL describes rules. So `from_bngl`
+hands the model to `BNG2.pl generate_network` and loads the `.net` it writes.
+That needs BNG2.pl: the `bngl` extra supplies it, or set `$BNGPATH` to your own
+BioNetGen install. Generated networks are cached, so loading an unchanged model
+again does not rerun BNG2.pl.
 
-See [Loading models](user-guide/loading-models.md) for the full picture.
+See [Loading models](user-guide/loading-models.md) for more.
 
 ## Parameter sweeps
 
 ```python
-# Update parameters in-memory (no file I/O). A run goes on from the state
-# the last one ended in unless told otherwise: start="initial" runs this
-# one from the initial conditions, so it compares with the first run.
+# Set a parameter in memory. A run goes on from the state the last one
+# ended in; start="initial" runs this one from the initial conditions.
 model.set_param("k", 1.0)
 result2 = sim.run(t_span=(0, 100), n_points=101, start="initial")
 
@@ -97,14 +94,14 @@ result = ssa.run(t_span=(0, 100), n_points=101, seed=42)
 
 ## Stochastic simulation (PSA)
 
-PSA (partial-scaling approximation) accelerates large-population runs by
-leaping reaction firings whose minimum reactant population exceeds
-`poplevel = N_c`. Use it when you care about ensemble means and not variances:
-it keeps the means and runs much faster, but it scales up the fluctuations of
-the scaled channels, so for variances, distributions or rare events use
-`method="ssa"`. The dispatch and
-the `validate_for_ssa` gate are shared with SSA, so the same call shape
-works for `.net`, SBML, and Antimony models:
+PSA, the partial-scaling approximation, speeds up runs with large populations.
+It leaps reaction firings whose smallest reactant population is above
+`poplevel`. It keeps the ensemble means but inflates the fluctuations of the
+scaled channels. Use it for means. For variances, distributions or rare events,
+use `method="ssa"`.
+
+PSA takes the same models and checks as SSA, so the call is the same for
+`.net`, SBML and Antimony models:
 
 ```python
 import bngsim
@@ -114,44 +111,39 @@ net_model = bngsim.Model.from_net("psa/tcr_signaling.net")
 psa = bngsim.Simulator(net_model, method="psa", poplevel=100.0)
 result = psa.run(t_span=(0, 300), n_points=301, seed=42)
 
-# SBML / Antimony — same dispatch
+# SBML or Antimony
 sbml_model = bngsim.Model.from_sbml("ssa_sbml/tcr_signaling.xml")
 psa = bngsim.Simulator(sbml_model, method="psa", poplevel=100.0)
 result = psa.run(t_span=(0, 300), n_points=301, seed=42)
 ```
 
-Choose `N_c` per [Lin, Feng, Hlavacek (2019)](https://doi.org/10.1063/1.5095032);
-accuracy degrades when `N_c` is too small relative to per-species populations.
-SBML/Antimony models with kineticLaw shapes that SSA cannot handle (e.g.
-`reversible_non_mass_action`, `non_integer_stoichiometry`) raise
-`SsaValidationError` at construct time.
+Choose `poplevel` as in [Lin, Feng, Hlavacek (2019)](https://doi.org/10.1063/1.5095032).
+Accuracy drops when it is small next to the species' populations. An SBML or
+Antimony rate law that SSA cannot take (for example a reversible
+non-mass-action law, or a non-integer stoichiometry) raises
+`SsaValidationError` when the `Simulator` is built.
 
-## Seed semantics for stochastic methods
+## Seeds for stochastic runs
 
-The `seed=` keyword on every stochastic entry point follows one contract:
+Every stochastic call takes `seed=`:
 
-- `seed=None` (the default, or omitting `seed=`): BNGsim draws a fresh
-  31-bit seed from system entropy on each call. Two consecutive calls
-  produce independent trajectories.
-- `seed=N` (an integer from 0 to 2**64 - 1): BNGsim passes `N` down to
-  the backend verbatim. A fresh `Simulator` (or `NfsimSession` /
-  `RuleMonkeySession`) initialized with the same `seed=N` reproduces the
-  same trajectory. A seed outside that range raises `ValueError`.
-- NFsim (`method="nf"`, `NfsimSession`) seeds its generators from 32 bits,
-  so it takes a seed from 0 to 2**32 - 1 and raises `ValueError` on a
-  larger one (issue #1515). It used to run such a seed as its low 32 bits,
-  `seed=2**32 + 12345` repeating `seed=12345`, while `Result.seed` reported
-  the value passed. SSA, PSA and RuleMonkey use all 64 bits.
+- `seed=None`, the default: BNGsim draws a fresh 31-bit seed from system
+  entropy on each call, so two calls give independent trajectories.
+- `seed=N`, an integer from 0 to 2**64 - 1: BNGsim passes `N` to the engine
+  as is. The same seed from the same starting state gives the same trajectory.
+  A seed outside that range raises `ValueError`.
+- NFsim (`method="nf"`, `NfsimSession`) takes seeds from 0 to 2**32 - 1 only,
+  and raises `ValueError` on a larger one. SSA, PSA and RuleMonkey use all 64
+  bits.
 
-`Result.seed` exposes the integer that was actually used, so
-caller-generated and bngsim-drawn seeds are equally inspectable:
+`Result.seed` is the seed a run used, whether you gave it or BNGsim drew it:
 
 ```python
 import bngsim
 
 sim = bngsim.Simulator(model, method="ssa")
 
-# Default — fresh seed each call (each run from the initial conditions):
+# Default: a fresh seed each call (each run from the initial conditions).
 r1 = sim.run(t_span=(0, 100), n_points=101, start="initial")
 r2 = sim.run(t_span=(0, 100), n_points=101, start="initial")
 assert r1.seed != r2.seed                        # seeds differ
@@ -165,68 +157,55 @@ assert ra.seed == rb.seed == 42                  # exact reproduction
 assert (ra.species == rb.species).all()
 ```
 
-The same contract applies to `Simulator.run_batch`,
-`NfsimSession.initialize`, and `RuleMonkeySession.initialize`. For
-`run_batch`, `run_replicates` and `parameter_scan`, the resolved value is the
-**base** seed. Row 0 runs at the base itself, so `seed=rows[0].seed` reruns the
-whole call, a drawn base included. Rows 1, 2, … take, in order, the distinct
-values other than the base among the 32-bit words of numpy's
-`SeedSequence(base_seed).generate_state(...)`, each masked to 31 bits. Every
-row's seed is stamped onto its `Result.seed`, so `run(seed=r.seed)` repeats that
-row. Bases next to each other give unrelated seeds, and the seeds of one call are
-distinct. They were `base_seed + i`, which made an ensemble from seed 1 the one
-from seed 0 shifted by a row (issue #1365).
+The same rules hold for `Simulator.run_batch`, `NfsimSession.initialize` and
+`RuleMonkeySession.initialize`.
 
-`Result.seed` is `None` for ODE results and round-trips through HDF5
-`Result.save()` / `Result.load()`. For sessions, the seed used by
-`initialize()` is exposed as `session.seed` and stamped onto every
-`Result` returned by `simulate()`.
+`run_batch`, `run_replicates` and `parameter_scan` take one base seed. Row 0
+runs at the base seed itself, so `seed=rows[0].seed` reruns the whole call,
+even when BNGsim drew the base. Rows 1, 2, … get distinct seeds derived from
+the base with numpy's `SeedSequence(base_seed).generate_state(...)`, each
+masked to 31 bits and none equal to the base. Each row's seed is on its
+`Result.seed`, so `run(seed=r.seed)` repeats that row. Nearby base seeds give
+unrelated rows.
 
-**Reproducibility unit.** The reproducibility contract is:
+`Result.seed` is `None` for an ODE run, and it survives `Result.save()` and
+`Result.load()`. A session's seed is `session.seed`, and it is on every
+`Result` its `simulate()` returns.
 
-> **same starting model state + same `seed=N` → same trajectory**
+## Where a run starts
 
-The Simulator object itself is not the unit. The C++ SSA/PSA backends
-construct a fresh `std::mt19937_64` from the passed seed on every
-`.run()` call, so passing the same explicit `seed=` always seeds the
-RNG identically. What persists across `.run()` calls on the same
-`Simulator` is the *model state* (species concentrations) — that's
-what makes `simulate(...); simulate({continue=>1, ...})` multi-segment
-protocols work. So:
+Reproducing a stochastic run takes the same starting state and the same seed.
+The seed alone is not enough, because the state lives in the `Model`, and every
+run leaves its end state there. That is what lets a run continue the last one,
+as BioNetGen's `simulate({continue=>1})` does.
 
 ```python
 sim = bngsim.Simulator(model, method="ssa")
 
-# First run: from the model's initial state, seed=42. start="initial"
-# resets the model first, whatever the blocks above left it holding.
+# From the initial conditions, with seed 42. start="initial" resets the
+# model first, whatever the blocks above left it holding.
 r1 = sim.run(t_span=(0, 100), n_points=101, seed=42, start="initial")
 
-# Second run on the same sim with seed=42 *continues from r1's end
-# state*, then advances with the seed=42 RNG stream. r2 is correctly a
-# different trajectory because it starts from a different state — not
-# because of any RNG issue. start="live" says the continuation is meant;
-# without it, run() raises a bngsim.LiveStartWarning here.
+# The same seed, but starting from r1's end state, so a different
+# trajectory. start="live" says the continuation is meant; without it,
+# run() warns with bngsim.LiveStartWarning here.
 r2 = sim.run(t_span=(0, 100), n_points=101, seed=42, start="live")
 assert r2.species[0].tolist() == r1.species[-1].tolist()  # state continues
 assert (r1.started_from, r2.started_from) == ("initial", "live")
 
-# To re-run the same trajectory: start from the initial state, which
-# resets the model first (model.reset() does the same).
+# To repeat r1, start from the initial state again (or call model.reset()).
 r3 = sim.run(t_span=(0, 100), n_points=101, seed=42, start="initial")
 assert (r3.species == r1.species).all()  # exactly reproduces r1
 ```
 
-The state lives in the `Model`, not the `Simulator`: a second
-`Simulator` built on the same model also starts from where the last
-run ended. To run two trajectories from the model's initial state,
-pass `start="initial"`, call `model.reset()` between them, or give each
-its own `model.clone()` made before the first run.
+A second `Simulator` on the same model also starts where the last run ended.
+To run two trajectories from the initial state, pass `start="initial"`, call
+`model.reset()` between them, or give each its own `model.clone()` made before
+the first run.
 
-`Result.started_from` says which start a run had, `"initial"` or
-`"live"`, and `summary()` carries it. Where a run starts from exactly
-the state the last run left, before the time that run ended at, `run()`
-raises a `bngsim.LiveStartWarning` before it integrates: running
-`t_span=(0, 5)` twice is the case. A run that continues the clock
-(`t_span=(5, 10)` after it) and a state you changed in between are not
-warned of. `run_until`, `run_replicates`, the scans and `run_protocol`
-ask the same of where they start (issue #1701).
+`Result.started_from` is `"initial"` or `"live"`, and `summary()` shows it.
+`run()` warns with `bngsim.LiveStartWarning` before it runs when it would start
+from exactly the state the last run left, at a time before that run ended:
+running `t_span=(0, 5)` twice, for example. Continuing the clock
+(`t_span=(5, 10)` next) or changing the state in between does not warn.
+`run_until`, `run_replicates`, the scans and `run_protocol` warn the same way.
