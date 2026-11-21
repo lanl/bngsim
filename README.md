@@ -20,18 +20,50 @@ BioNetGen users it replaces the subprocess-based `run_network` driver.
 
 | To | bngsim | Also, or instead |
 |---|---|---|
-| simulate an SBML or Antimony model, as ODEs or stochastically | yes, `Model.load` then `Simulator.run` | libRoadRunner (Antimony through Tellurium); COPASI (SBML) |
+| simulate an SBML or Antimony model, as ODEs or stochastically | yes, `Model.load` then `Simulator.run`; Antimony needs `bngsim[antimony]` | libRoadRunner (Antimony through Tellurium); COPASI (SBML); AMICI (ODEs only) |
 | simulate a rule-based BNGL model, with its network or network-free | yes: ODE, SSA and NFsim or RuleMonkey in one process; BNGL needs `bngsim[bngl]` and Perl | BioNetGen's own `BNG2.pl`, through files and subprocesses |
-| compute forward sensitivities, along a trajectory or at a steady state | yes; it needs a C compiler on the machine | AMICI, libRoadRunner |
-| get gradients for many parameters at once (adjoint sensitivities) | no | AMICI |
+| run many simulations: parameter scans, batches, stochastic replicates | yes, in one process, on threads with the GIL released | COPASI (scans); AMICI (conditions in parallel) |
+| compute forward sensitivities, along a trajectory or at a steady state | yes, with the parameters split across threads; it needs a C compiler on the machine | AMICI, libRoadRunner |
+| get gradients for very many parameters cheaply (adjoint sensitivities) | no; for many parameters it splits forward sensitivities across threads ([below](#choosing-settings)) | AMICI |
 | fit parameters to data | through [PyBNF](https://github.com/lanl/PyBNF), which drives bngsim | COPASI, AMICI with pyPESTO |
 | simulate a model with `delay()`, an algebraic rule or a fast reaction | no: bngsim refuses it and names the construct, rather than simulate a different system | a tool that documents support for the construct |
 | work in a graphical interface | no, it is a Python library | COPASI |
 
-The other tools' formats, methods and sensitivities are as the bngsim paper's
-feature comparison found them, by reading each tool's source code in July 2026
+The other tools' formats, methods, sensitivities and parallelism are as the
+bngsim paper's feature comparison found them, by reading each tool's source code
+in July and August 2026
 (libRoadRunner 2.9.2, AMICI 1.0.1, COPASI 4.46, BioNetGen 2.9.3). They may have
 changed since.
+
+### Choosing settings
+
+- **Compiled code.** With a C compiler on the machine you need do nothing:
+  bngsim compiles a large model's right-hand side and every sensitivity run,
+  and caches what it builds. Without one, plain runs use the interpreter, and
+  sensitivities need a source build with the MIR JIT
+  (`-DBNGSIM_ENABLE_MIR=ON`, then run with `BNGSIM_CODEGEN_JIT=mir`), which
+  compiles in-process. Building that needs a C++ toolchain once.
+- **Linear solver.** Leave it unset and bngsim picks dense LU, sparse KLU or a
+  BLAS dense factor for each model from its size and sparsity.
+  `result.solver_stats["linear_solver"]` says which. If you know better, pass
+  `force_sparse_linear_solver=True` or `force_dense_linear_solver=True` to
+  `Simulator`, and your choice is used.
+- **Many parameters.** `sim.compute_all_sensitivities(t_span=..., n_points=...,
+  n_workers=8)` splits the parameters into chunks and integrates each chunk's
+  sensitivities on its own thread, so wall time falls about as the number of
+  cores grows. It gives the whole sensitivity matrix: every output with respect
+  to every parameter, which a Fisher information matrix, an identifiability
+  check or a least-squares fit needs. Adjoint sensitivities (AMICI) give the
+  gradient of one scalar objective, in time nearly independent of the number
+  of parameters. Sharding divides the time; it does not remove the growth.
+  Sharded forward sensitivities are a practical alternative up to a few
+  hundred parameters on a multi-core machine. For thousands of parameters and
+  one objective, adjoint is the better algorithm.
+- **JAX.** `bngsim.jax.differentiable_solve` (`pip install 'bngsim[jax]'`)
+  makes a CVODE solve a JAX function, so `jax.grad` or `jax.jacfwd` goes
+  through the simulation into a loss written in JAX. Use it when the rest of
+  the pipeline is JAX. Underneath it runs forward sensitivities, with their
+  cost.
 
 > **Status: alpha (0.x).** bngsim is checked every night against BioNetGen,
 > libRoadRunner, AMICI and the SBML test suite, but it is early software, and

@@ -136,8 +136,8 @@ intersphinx_mapping = {
 # root: READTHEDOCS_CANONICAL_URL where it sets it, this otherwise.
 llms_txt_base_url = "https://bngsim.readthedocs.io/en/latest/"
 llms_txt_summary = (
-    "bngsim simulates biochemical reaction networks in Python: BioNetGen (.net, "
-    "BNGL), SBML and Antimony models, run as ODEs, stochastically (SSA, PSA) or "
+    "bngsim simulates biochemical reaction networks in Python: SBML, Antimony and "
+    "BioNetGen (BNGL, .net) models, run as ODEs, stochastically (SSA, PSA) or "
     "network-free, with parameter scans, steady states and sensitivities."
 )
 llms_txt_intro = """
