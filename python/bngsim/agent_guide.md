@@ -61,11 +61,15 @@ print(result.observable_names)      # ['A', 'B']
 print(result.species_names)         # ['A()', 'B()']
 a = result.observables["A"]         # one column, by name
 print(round(float(a[-1]), 2))       # 33.37
+
+d = model.describe()                # what the model is; print(d) is a report
+print(d["methods"]["ssa"]["status"])  # ok
 ```
 
 | to | call |
 |---|---|
 | load a file by its suffix | `bngsim.Model.load(path)` |
+| what the model is, and which methods it admits | `print(model.describe())`; `model.describe()["methods"]["ssa"]` gives a status and the reasons |
 | load one format | `Model.from_net(path)`, `Model.from_bngl(path)`, `Model.from_sbml(path)`, `Model.from_antimony(path)` |
 | load text | `Model.from_sbml_string(text)`, `Model.from_antimony_string(text)`; BNGL only from a file |
 | choose the method | `bngsim.Simulator(model, method="ode")`; `"ssa"`, `"psa"`; network-free `"nf"` (NFsim) and `"rm"` (RuleMonkey) also take `xml_path=`; `Simulator.METHODS` lists all |
@@ -179,7 +183,8 @@ symbol with no value (`bngsim.UnderSpecifiedModelError`), a rate law a
 stochastic method cannot take (`bngsim.SsaValidationError`), a sensitivity
 it cannot compute (`bngsim.SensitivityUnsupportedError`), an SBML package or
 construct it does not support (`bngsim.ModelError`). All derive from
-`bngsim.BngsimError`.
+`bngsim.BngsimError`. To ask before a run, `model.describe()["methods"]`
+gives each method's status and reasons, read from the checks the runs make.
 
 The right report is that **the model cannot be simulated as written by
 bngsim**, naming the construct the error names. Some refusals mention an
