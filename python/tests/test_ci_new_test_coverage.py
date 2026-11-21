@@ -138,7 +138,8 @@ def test_selectors_at_their_edges():
     assert w.node_ids == ["python/tests/test_b.py"]
     # A deselected node id leaves the rest of its file; a deselected file goes.
     # An ignored file is marked: pytest ignores it only where it walks to it.
-    assert w.excluded == ["python/tests/test_e.py", "ignore:python/tests/test_f.py"]
+    # A deselected file is the prefix of its tests' node ids, marked as one.
+    assert w.excluded == ["prefix:python/tests/test_e.py", "ignore:python/tests/test_f.py"]
     assert not w.whole and not w.unreadable
     assert w.names("python/tests/windows/test_x.py") and not w.names("python/tests/test_piped.py")
     assert not w.names("python/tests/test_gx/test_y.py")  # a shell * stays in its directory
@@ -198,6 +199,12 @@ def test_selectors_at_their_edges():
     w = _cmd("python -m pytest 'python/tests/test_a.py::test_b[q]' python/tests/test_c.py")
     assert w.node_ids == ["python/tests/test_a.py"] and w.selectors == ["python/tests/test_c.py"]
     assert not _cmd("python -m pytest 'python/tests/test_q*.py::test_x'").node_ids
+    # One outside python/tests is no test file of the suite's.
+    w = _cmd("python -m pytest 'docs/test_a.py::test_b[q]'")
+    assert not w.node_ids and not w.selectors and not w.whole and not w.unreadable
+    # The mark's own text in a command is a word like any other.
+    w = _cmd("python -m pytest @@quoted:zz@@ --ignore @@quoted:zz@@ python/tests/test_c.py")
+    assert w.selectors == ["python/tests/test_c.py"] and not w.excluded and not w.unreadable
 
 
 @pytest.mark.parametrize(
@@ -370,6 +377,67 @@ def test_ignore_leaves_out_only_what_pytest_walks_down_to():
     )
 
 
+def _runs(command: str, path: str) -> bool:
+    w = _cmd(command)
+    assert not w.unreadable, command
+    w.fires = True
+    return w.runs(path)
+
+
+def test_a_path_given_under_a_directory_given_is_ignored_like_the_rest():
+    # pytest 9 drops a path it is given that lies under a directory it is also
+    # given, as a duplicate (9.0.2's and 9.2.0's --co): the directory is
+    # walked, and --ignore applies to the path as to the rest.
+    x, h3 = "python/tests/sub/test_x.py", "python/tests/sub/test_h3.py"
+    for opt in (f"--ignore {x}", "--ignore-glob '*sub/test_x.py'", f"--ignore={x}"):
+        for given in (x, f"{x}::test_b"):
+            for suite in ("python/tests", "python/tests/sub"):
+                for cmd in (f"{suite} {given} {opt}", f"{given} {opt} {suite}"):
+                    assert not _runs(f"python -m pytest {cmd}", x), cmd
+                    assert _runs(f"python -m pytest {cmd}", h3), cmd
+            # Given alone, it is collected whatever --ignore says.
+            assert _runs(f"python -m pytest {given} {opt}", x), (given, opt)
+    # Of two directories given, the outer one is walked, and the inner one is
+    # asked on the way down like any other.
+    for cmd in ("python/tests python/tests/sub", "python/tests/sub/ python/tests/"):
+        assert not _runs(f"python -m pytest {cmd} --ignore python/tests/sub", x), cmd
+        assert _runs(f"python -m pytest {cmd} --ignore python/tests/sub", "python/tests/test_a.py")
+    # The inner one alone is a directory it is given, and is not asked.
+    assert _runs("python -m pytest python/tests/sub --ignore python/tests/sub", x)
+
+
+def test_deselect_is_a_prefix_of_the_node_ids_as_written():
+    # pytest leaves out each test whose node id starts with the argument
+    # (9.2.0's --co): part of a file's name, or of a directory's, is enough.
+    h1, hx, h3 = (
+        "python/tests/test_h1.py",
+        "python/tests/test_hx.py",
+        "python/tests/sub/test_h3.py",
+    )
+    for form in ("--deselect python/tests/test_h", "--deselect=python/tests/test_h"):
+        cmd = f"python -m pytest python/tests {form}"
+        assert not _runs(cmd, h1) and not _runs(cmd, hx), form
+        assert _runs(cmd, h3) and _runs(cmd, "python/tests/test_a.py"), form
+    assert not _runs("python -m pytest python/tests --deselect python/tests/su", h3)
+    assert _runs("python -m pytest python/tests --deselect python/tests/su", h1)
+    assert not _runs("python -m pytest python/tests --deselect python/te", h1)
+    # It applies to a path pytest is given as well.
+    assert not _runs(f"python -m pytest {h1} {hx} --deselect python/tests/test_h1", h1)
+    assert _runs(f"python -m pytest {h1} {hx} --deselect python/tests/test_h1", hx)
+    # As written: ./ starts no node id, and a node id leaves the rest of its file.
+    assert _runs("python -m pytest python/tests --deselect ./python/tests/test_h1.py", h1)
+    assert _runs(f"python -m pytest python/tests --deselect {h1}::test_x", h1)
+    # A glob after a space is the shell's to expand: the directory it names is
+    # the prefix, and each file it names is read as left out.
+    assert not _runs("python -m pytest python/tests --deselect python/tests/su?", h3)
+    w = _cmd("python -m pytest python/tests --deselect python/tests/test_h*.py")
+    assert w.excluded == ["python/tests/test_h*.py"]
+    for opt in ("--deselect", "--ignore"):
+        # After = the shell expands nothing, quoted or not, and pytest takes
+        # the glob as written: nothing is left out.
+        assert not _cmd(f"python -m pytest python/tests {opt}=python/tests/test_h*.py").excluded
+
+
 @pytest.mark.parametrize(
     "arg,out",
     [
@@ -463,14 +531,19 @@ def test_two_lists_whose_filters_do_not_match_it_are_named_together(tmp_path):
 def test_main_counts_a_file_a_check_runs_only_for_the_other_changes(tmp_path, monkeypatch, capsys):
     new = "python/tests/test_mir_new.py"
     (tmp_path / "w.yml").write_text(_on_paths("src/**") + _RUN_NEW, "utf-8")
-    wfs = ntc.read_workflows([new, "src/a.cpp"], tmp_path)
-    assert _main_with(monkeypatch, [new], ({"a": {new: _c(1, 1)}}, []), wfs, tmp_path) == 0
+    # main hands read_workflows every file the change touches, not the added
+    # test files alone: w.yml runs on this pull request for src/a.cpp.
+    real = ntc.read_workflows
+    monkeypatch.setattr(ntc, "changed_files", lambda b, h: [("A", new), ("M", "src/a.cpp")])
+    monkeypatch.setattr(ntc, "read_reports", lambda r: ({"a": {new: _c(1, 1)}}, []))
+    monkeypatch.setattr(ntc, "read_workflows", lambda changed: real(changed, tmp_path))
+    assert ntc.main(["--reports", str(tmp_path), "--base", "HEAD"]) == 0
     out = capsys.readouterr().out
     assert (
         "1 test file(s) added; 0 that no check on this change runs; "
         "1 that a check runs only for this change's other files"
-    ) in out
-    assert f"::warning file={new}::" in out
+    ) in out.splitlines()
+    assert f"::warning file={new}::" in out and "w.yml runs it on this pull request only" in out
 
 
 def test_every_file_a_list_runs_is_in_that_workflows_paths_filter():
@@ -484,7 +557,10 @@ def test_every_file_a_list_runs_is_in_that_workflows_paths_filter():
     outside = {
         n: sorted(f for f in files if w.names(f) and not w.fires_for(f)) for n, w in lists.items()
     }
-    assert outside == {n: [] for n in lists}
+    assert outside == {n: [] for n in lists}, (
+        "a workflow's pytest list runs a test file its own paths filter does not match; "
+        "add the file to that workflow's paths filter"
+    )
 
 
 def test_forced_jit_runs_a_new_file_when_the_pull_request_edits_it():
@@ -853,7 +929,8 @@ def test_main_prints_a_warning_annotation(tmp_path, monkeypatch, capsys):
     )
     out = capsys.readouterr().out
     assert "::warning file=python/tests/test_mir_new.py::" in out
-    assert "1 test file(s) added; 1 that no check on this change runs" in out
+    # The whole line: nothing of a file run only for the other changes.
+    assert "1 test file(s) added; 1 that no check on this change runs" in out.splitlines()
     # Only two legs' reports, and none of shard 2: said once, at the top.
     assert "::warning::no python-tests report was read from" in out
 
@@ -882,6 +959,7 @@ def test_main_with_a_base_git_cannot_read_warns_and_passes(repo, monkeypatch, ca
     root, _ = repo
     real = ntc.changed_files
     monkeypatch.setattr(ntc, "changed_files", lambda b, h: real(b, h, cwd=root))
+    monkeypatch.setenv("LC_ALL", "C")  # git's own words, whatever the locale
     assert ntc.main(["--reports", str(root), "--base", "0" * 40]) == 0
     out = capsys.readouterr().out
     assert "::warning::the files this change touches could not be read (fatal: " in out
@@ -906,6 +984,26 @@ def test_main_with_a_malformed_report_warns_and_passes(tmp_path, monkeypatch, ca
         "::warning::the python-tests report of ubuntu-latest 1 could not be read"
         in capsys.readouterr().out
     )
+
+
+@pytest.mark.parametrize(
+    ("stderr", "said"),
+    [
+        # git says what failed on its first line; hints follow it.
+        (b"fatal: bad object 0\nhint: a\n", "(fatal: bad object 0); none checked"),
+        # With nothing on stderr, the error as it reads.
+        (b"", "(Command '['git']' returned non-zero exit status 128.); none checked"),
+    ],
+    ids=["first-line", "no-stderr"],
+)
+def test_main_says_why_git_failed_in_one_line(tmp_path, monkeypatch, capsys, stderr, said):
+    def fail(base, head):
+        raise subprocess.CalledProcessError(128, ["git"], stderr=stderr)
+
+    monkeypatch.setattr(ntc, "changed_files", fail)
+    assert ntc.main(["--reports", str(tmp_path), "--base", "HEAD"]) == 0
+    (line,) = capsys.readouterr().out.splitlines()
+    assert line == f"::warning::the files this change touches could not be read {said}"
 
 
 def test_main_without_git_warns_and_passes(tmp_path, monkeypatch, capsys):
