@@ -123,8 +123,12 @@ def run_diffrax(
         :func:`bngsim._jax_rhs.check_rhs_against_engine`).
     """
     if not diffrax_available():
-        raise ImportError(
-            "Diffrax is required for method='diffrax'. Install with: pip install diffrax"
+        from bngsim._error_codes import install
+        from bngsim._exceptions import DependencyError
+
+        raise DependencyError(
+            "Diffrax is required for method='diffrax'. Install with: pip install diffrax",
+            remedies=[install("diffrax")],
         )
 
     import diffrax

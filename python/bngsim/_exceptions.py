@@ -23,7 +23,15 @@ Hierarchy::
     │                           the parameters requested
     ├── CodegenDeclinedError  — codegen=True on a model codegen declines
     ├── CodegenToolchainError — the C toolchain cannot build any codegen library
-    └── StopConditionMet      — stop condition triggered (carries partial result)
+    ├── StopConditionMet      — stop condition triggered (carries partial result)
+    ├── UsageError            — an argument a call cannot take (also a ValueError)
+    ├── DependencyError       — an optional package missing or broken (also an
+    │                           ImportError)
+    └── MissingFileError      — the file named does not exist (also a
+                                FileNotFoundError)
+
+Every one carries a ``code``, ``details``, ``remedies``, ``docs_url`` and
+``to_dict()`` (issue #1702); :mod:`bngsim._error_codes` lists the codes.
 """
 
 from __future__ import annotations
@@ -35,7 +43,93 @@ if TYPE_CHECKING:
 
 
 class BngsimError(RuntimeError):
-    """Base exception for all bngsim errors."""
+    """Base exception for all bngsim errors.
+
+    Besides its message, every one carries what a program needs to act on it
+    without reading the message, which can change between releases:
+
+    Attributes
+    ----------
+    code : str
+        A stable code for the kind of failure, such as ``"param.not_found"``.
+        An error with no code of its own has its class's generic one
+        (``"model.error"``, ``"run.failed"``). An error raised from another
+        BNGsim error, as a loader wraps its parser's, has that one's code.
+    details : dict
+        What the code is about: the name asked for, the path, the constructs.
+    remedies : list of dict
+        Ways to fix it a program can act on, each a dict with a ``kind``:
+        ``install_package``, ``install_compiler``, ``pass_argument``,
+        ``use_name``, ``use_method`` or ``loosen_tolerance``. Empty where BNGsim
+        can name no fix, as for a model it cannot simulate as written.
+    docs_url : str
+        The code's entry on the error-code reference page.
+    """
+
+    #: The code an error of this class carries when it is given none.
+    default_code = "error"
+
+    def __init__(
+        self,
+        *args: object,
+        code: str | None = None,
+        details: dict | None = None,
+        remedies: list[dict] | None = None,
+    ) -> None:
+        super().__init__(*args)
+        self._code = code
+        self._details = details
+        self._remedies = remedies
+
+    def _cause(self) -> BngsimError | None:
+        """The BNGsim error this one was raised from, when this one has no code
+        of its own and that one has a specific code, which this one then
+        carries."""
+        from bngsim._error_codes import GENERIC
+
+        cause = self.__cause__
+        if self._code is None and isinstance(cause, BngsimError) and cause.code not in GENERIC:
+            return cause
+        return None
+
+    @property
+    def code(self) -> str:
+        if self._code is not None:
+            return self._code
+        cause = self._cause()
+        return cause.code if cause is not None else self.default_code
+
+    @property
+    def details(self) -> dict:
+        if self._details is not None:
+            return self._details
+        cause = self._cause()
+        return cause.details if cause is not None else {}
+
+    @property
+    def remedies(self) -> list[dict]:
+        if self._remedies is not None:
+            return self._remedies
+        cause = self._cause()
+        return cause.remedies if cause is not None else []
+
+    @property
+    def docs_url(self) -> str:
+        from bngsim._error_codes import docs_url
+
+        return docs_url(self.code)
+
+    def to_dict(self) -> dict:
+        """The error as plain data: its type, code, message, details, remedies
+        and docs URL, for a log, a tool's error result or an agent."""
+        return {
+            "type": type(self).__name__,
+            "code": self.code,
+            "message": str(self),
+            "details": self.details,
+            "remedies": self.remedies,
+            "docs_url": self.docs_url,
+        }
 
 
 class ModelError(BngsimError):
@@ -46,6 +140,8 @@ class ModelError(BngsimError):
     - A model is in an invalid state for simulation
     - A reserved name conflict is detected
     """
+
+    default_code = "model.error"
 
 
 class UnderSpecifiedModelError(ModelError):
@@ -75,6 +171,8 @@ class UnderSpecifiedModelError(ModelError):
     downgrades this to a warning).
     """
 
+    default_code = "model.unset_symbol"
+
 
 class SimulationError(BngsimError):
     """Error during simulation.
@@ -85,6 +183,35 @@ class SimulationError(BngsimError):
     - Maximum number of steps exceeded
     """
 
+    default_code = "run.failed"
+
+    def __init__(
+        self,
+        *args: object,
+        code: str | None = None,
+        details: dict | None = None,
+        remedies: list[dict] | None = None,
+    ) -> None:
+        # A CVODE failure names SUNDIALS' flag in its message, wherever a wrapper
+        # quotes it: "... with flag=-2 (CV_TOO_MUCH_ACC)." (issue #1702).
+        if code is None and type(self).default_code == "run.failed" and args:
+            import re
+
+            from bngsim._error_codes import SOLVER_FLAGS, pass_argument
+
+            flag = re.search(r"flag=-?\d+ \((CV_[A-Z_]+)\)", str(args[0]))
+            if flag is not None:
+                name = flag.group(1)
+                code = SOLVER_FLAGS.get(name, "solver.failed")
+                if details is None:
+                    details = {"flag": name}
+                if remedies is None:
+                    remedies = {
+                        "solver.too_much_work": [pass_argument("max_steps")],
+                        "solver.too_much_accuracy": [{"kind": "loosen_tolerance"}],
+                    }.get(code, [])
+        super().__init__(*args, code=code, details=details, remedies=remedies)
+
 
 class ParameterError(BngsimError):
     """Error with parameter access.
@@ -93,6 +220,8 @@ class ParameterError(BngsimError):
     - A parameter name is not found in the model
     - A parameter value is invalid (NaN, Inf, wrong type)
     """
+
+    default_code = "param.error"
 
 
 class SsaValidationError(BngsimError):
@@ -109,6 +238,8 @@ class SsaValidationError(BngsimError):
     ``strict_ssa=False`` but the listed codes are non-overridable.
     """
 
+    default_code = "ssa.unsupported_construct"
+
     # Codes that can NEVER be downgraded to a warning, even with
     # ``strict_ssa=False``. Kept here (not in _simulator.py) so that the
     # error envelope can format its hint without a circular import.
@@ -122,7 +253,17 @@ class SsaValidationError(BngsimError):
     ) -> None:
         self.issues = list(issues)
         self.override_attempted = override_attempted
-        super().__init__(self._format(self.issues, override_attempted))
+        super().__init__(
+            self._format(self.issues, override_attempted),
+            details={
+                "issues": [
+                    {"code": i.code, "severity": i.severity, "location": i.location}
+                    for i in self.issues
+                    if i.severity == "error"
+                ]
+            },
+            remedies=[{"kind": "use_method", "method": "ode"}],
+        )
 
     @classmethod
     def _format(cls, issues: list[SsaIssue], override_attempted: bool = False) -> str:
@@ -196,6 +337,8 @@ class SensitivityUnsupportedError(BngsimError, ValueError):
     and stays a plain ``RuntimeError``.
     """
 
+    default_code = "sens.unsupported"
+
 
 class SensitivityRefusedDuringRunError(SensitivityUnsupportedError, SimulationError):
     """A forward-sensitivity run the solver refused partway, by declaration.
@@ -222,6 +365,8 @@ class SensitivityRefusedDuringRunError(SensitivityUnsupportedError, SimulationEr
     the stop, a column that moves it is refused and one that does not runs.
     """
 
+    default_code = "sens.refused_during_run"
+
 
 class SensitivityRefusedForParametersError(SensitivityRefusedDuringRunError):
     """A forward-sensitivity run the solver refused partway, for the parameters
@@ -244,6 +389,8 @@ class SensitivityRefusedForParametersError(SensitivityRefusedDuringRunError):
     still does (issue #1435).
     """
 
+    default_code = "sens.refused_for_parameters"
+
 
 class SparseJacobianUnavailableError(SimulationError):
     """``force_sparse_linear_solver=True`` on a model that cannot supply a sparse
@@ -255,6 +402,8 @@ class SparseJacobianUnavailableError(SimulationError):
     solver. A :class:`SimulationError`, as it was raised before it had a type,
     so an existing ``except SimulationError`` still catches it.
     """
+
+    default_code = "solver.sparse_jacobian_unavailable"
 
 
 class CodegenDeclinedError(BngsimError):
@@ -272,6 +421,8 @@ class CodegenDeclinedError(BngsimError):
     signal to decline, which the prepare calls turn into a ``None`` return; this
     is what a caller who asked for compiled code is told.
     """
+
+    default_code = "codegen.declined"
 
 
 class CodegenToolchainError(BngsimError):
@@ -294,6 +445,25 @@ class CodegenToolchainError(BngsimError):
     raised before it had a type.
     """
 
+    default_code = "env.broken_toolchain"
+
+    #: The words a missing compiler's verdict says, wherever it is quoted.
+    _NO_COMPILER = ("C compiler not found", "No C compiler found")
+
+    def __init__(
+        self,
+        *args: object,
+        code: str | None = None,
+        details: dict | None = None,
+        remedies: list[dict] | None = None,
+    ) -> None:
+        text = str(args[0]) if args else ""
+        if code is None and any(words in text for words in self._NO_COMPILER):
+            code = "env.no_compiler"
+            if remedies is None:
+                remedies = [{"kind": "install_compiler"}]
+        super().__init__(*args, code=code, details=details, remedies=remedies)
+
 
 class SimulationTimeout(BngsimError):
     """Raised when a simulation exceeds its wall-clock budget.
@@ -315,6 +485,8 @@ class SimulationTimeout(BngsimError):
         yet salvage a partial Result from a timed-out run.
     """
 
+    default_code = "run.timeout"
+
     def __init__(
         self,
         message: str,
@@ -323,7 +495,13 @@ class SimulationTimeout(BngsimError):
         elapsed: float = 0.0,
         partial_result: object = None,
     ) -> None:
-        super().__init__(message)
+        from bngsim._error_codes import pass_argument
+
+        super().__init__(
+            message,
+            details={"timeout": float(timeout), "elapsed": float(elapsed)},
+            remedies=[pass_argument("timeout")],
+        )
         self.timeout = float(timeout)
         self.elapsed = float(elapsed)
         self.partial_result = partial_result
@@ -354,8 +532,10 @@ class StopConditionMet(BngsimError):
         Description of the condition that triggered.
     """
 
+    default_code = "run.stop_condition"
+
     def __init__(self, message: str, *, result: object = None, condition: str = "") -> None:
-        super().__init__(message)
+        super().__init__(message, details={"condition": condition})
         self.result = result
         self.condition = condition
 
@@ -374,6 +554,45 @@ class ConversionError(BngsimError):
     Pass ``strict=False`` (API) / ``--allow-lossy`` (CLI) to downgrade these to
     a :class:`ConversionWarning` and emit a best-effort ``.net`` anyway.
     """
+
+    default_code = "conversion.error"
+
+
+class UsageError(BngsimError, ValueError):
+    """An argument a call cannot take: one missing, out of range, or of a kind
+    the call does not accept (issue #1702).
+
+    Also a :class:`ValueError`, as these were raised before they had a type, so
+    an existing ``except ValueError`` still catches it.
+    """
+
+    default_code = "usage.invalid_argument"
+
+
+class DependencyError(BngsimError, ImportError):
+    """A call needs an optional package that is not installed, or that is
+    installed and cannot be imported (issue #1702). Its remedy gives the
+    ``pip install`` command.
+
+    Also an :class:`ImportError`, as these were raised before they had a type,
+    so an existing ``except ImportError`` still catches it.
+    """
+
+    default_code = "env.missing_dependency"
+
+
+class MissingFileError(BngsimError, FileNotFoundError):
+    """The file a call names does not exist (issue #1702). ``details["path"]``
+    is the path it looked for.
+
+    Also a :class:`FileNotFoundError`, as these were raised before they had a
+    type, so an existing ``except FileNotFoundError`` still catches it.
+    """
+
+    default_code = "file.not_found"
+
+    def __init__(self, message: str, path: object = None) -> None:
+        super().__init__(message, details=None if path is None else {"path": str(path)})
 
 
 class ConversionWarning(UserWarning):

@@ -49,7 +49,9 @@ from bngsim._exceptions import (
     ConversionError,
     ConversionWarning,
     DenseSolverFallbackWarning,
+    DependencyError,
     LiveStartWarning,
+    MissingFileError,
     ModelError,
     OneSidedSensitivityWarning,
     ParameterError,
@@ -65,6 +67,7 @@ from bngsim._exceptions import (
     SsaValidationError,
     StopConditionMet,
     UnderSpecifiedModelError,
+    UsageError,
 )
 from bngsim._model import Model
 from bngsim._model_builder import ModelBuilder
@@ -465,6 +468,9 @@ __all__ = [
     "SsaValidationError",
     "StopConditionMet",
     "UnderSpecifiedModelError",
+    "UsageError",
+    "DependencyError",
+    "MissingFileError",
     # SSA validation
     "SsaIssue",
     "validate_for_ssa",

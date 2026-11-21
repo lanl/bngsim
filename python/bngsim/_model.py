@@ -18,6 +18,7 @@ import numpy as np
 
 from bngsim import _foreign_names
 from bngsim._exceptions import (
+    MissingFileError,
     ModelError,
     ParameterError,
     SimulationError,
@@ -528,7 +529,9 @@ class Model:
             raise ModelError(
                 f"Cannot infer a model format from {path.name!r} "
                 f"(suffix {suffix or 'missing'!r}); expected one of: {known}. "
-                f"Use the format-specific factory to load it explicitly."
+                f"Use the format-specific factory to load it explicitly.",
+                code="model.unknown_format",
+                details={"path": str(path), "suffix": suffix, "expected": sorted(_LOAD_DISPATCH)},
             )
         if compartment_sizes and factory in ("from_net", "from_bngl"):
             # Post-BNG2.pl, the compartment volumes are already folded into the
@@ -881,7 +884,7 @@ class Model:
 
         path = Path(path)
         if not path.exists():
-            raise FileNotFoundError(f"Net file not found: {path}")
+            raise MissingFileError(f"Net file not found: {path}", path)
         try:
             core = NetworkModel.from_net(str(path))
         except (ValueError, RuntimeError) as e:
@@ -1808,7 +1811,9 @@ class Model:
         try:
             self._core.set_param(name, float(value), force_override=force_override)
         except (KeyError, RuntimeError) as e:
-            raise ParameterError(self._parameter_not_found(name, value)) from e
+            raise ParameterError(
+                self._parameter_not_found(name, value), **self._not_found(name, "parameter")
+            ) from e
 
     @property
     def frozen_params(self) -> list[str]:
@@ -1997,7 +2002,9 @@ class Model:
         try:
             return self._core.get_param(name)
         except (KeyError, RuntimeError) as e:
-            raise ParameterError(self._parameter_not_found(name)) from e
+            raise ParameterError(
+                self._parameter_not_found(name), **self._not_found(name, "parameter")
+            ) from e
 
     def set_params(self, params: dict[str, float]) -> None:
         """Set multiple parameters from a dict.
@@ -2350,7 +2357,9 @@ class Model:
                     return bare, call(bare)
                 except (KeyError, RuntimeError):
                     pass
-            raise ModelError(self._species_not_found(name, value)) from e
+            raise ModelError(
+                self._species_not_found(name, value), **self._not_found(name, "species")
+            ) from e
 
     def get_state(self) -> np.ndarray:
         """Bulk-copy the full live species-concentration vector (GH #102).
@@ -3412,6 +3421,29 @@ class Model:
             return f"{lead} matches: {_foreign_names.quote_list(close)}."
         return None
 
+    def _not_found(self, name: str, kind: str) -> dict:
+        """The code, details and remedies of the error for a *kind* (``parameter``
+        or ``species``) *name* the model does not have (issue #1702): the
+        keywords :class:`BngsimError` takes. Empty for a parameter the model has,
+        whose failure came after the lookup and is not a missing name."""
+        names = self._core.param_names if kind == "parameter" else self.species_names
+        if name in names:
+            return {}
+        bare = _foreign_names._bare(name)
+        loose = [s for s in names if _foreign_names._bare(s) == bare] if kind == "species" else []
+        close = loose or _foreign_names.near_matches(name, names)
+        is_a = _kind_of(self, name, besides=kind)
+        remedies: list[dict] = [{"kind": "use_name", "name": c} for c in close]
+        if is_a == "species":
+            remedies.append({"kind": "use_call", "call": "set_concentration", "name": name})
+        elif is_a == "parameter":
+            remedies.append({"kind": "use_call", "call": "set_param", "name": name})
+        return {
+            "code": f"{'param' if kind == 'parameter' else 'species'}.not_found",
+            "details": {"name": name, "close_matches": list(close), "is_a": is_a},
+            "remedies": remedies,
+        }
+
     def _species_not_found(self, name: str, value: object = _UNSET) -> str:
         """:meth:`_parameter_not_found` for a species. A species the name
         matches loosely comes first: BNGL's ``Molecules S1 S1()`` makes ``S1``
@@ -3741,6 +3773,23 @@ def _require_core(core: object) -> None:
         "bngsim.Model.from_sbml_string(text) or bngsim.Model.from_antimony_string(text) "
         "for model text."
     )
+
+
+def _kind_of(model: Model, name: str, *, besides: str) -> str | None:
+    """What kind of name *name* is in *model*, other than *besides*:
+    ``"function"``, ``"parameter"``, ``"species"`` or ``"observable"``, or
+    ``None`` (issue #1702). In the order :func:`_what_it_is` looks."""
+    if name in model.function_names:
+        return "function"
+    if besides != "parameter" and name in model._core.param_names:
+        return "parameter"
+    if besides != "species" and (
+        name in model.species_names or _unclamped(name) in model.species_names
+    ):
+        return "species"
+    if name in model.observable_names:
+        return "observable"
+    return None
 
 
 def _what_it_is(

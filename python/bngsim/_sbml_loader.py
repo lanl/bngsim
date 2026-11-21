@@ -34,6 +34,7 @@ except ImportError as _exc:
     raise libsbml_import_failure(_exc) from _exc
 
 from bngsim import _sbml_unsupported
+from bngsim._exceptions import MissingFileError
 from bngsim._switch_sensitivity import _ATOMIC_TOKEN, _condition_key, _fully_parenthesised
 
 logger = logging.getLogger("bngsim")
@@ -929,7 +930,9 @@ def _check_unsupported_constructs(sbml_model, func_defs: dict) -> None:
         "mathematical system with no warning (RoadRunner refuses the same "
         "models). bngsim now refuses rather than return a wrong-but-plausible "
         f"trajectory. To restore the legacy silent-approximation behavior, set "
-        f"{_ALLOW_UNSUPPORTED_ENV}=1."
+        f"{_ALLOW_UNSUPPORTED_ENV}=1.",
+        code="model.unsupported_construct",
+        details={"constructs": [{"construct": c, "where": w} for c, w in offenders]},
     )
 
 
@@ -3305,7 +3308,13 @@ def _check_required_packages(doc, source: str, raw_xml: IO | None = None) -> Non
         f"{_sbml_unsupported.handled_packages_note()}\n"
         "A presentation-only package (layout, render, fbc) declares "
         'required="false" and loads untouched. To read the core layer anyway — '
-        f"knowing the result is not the model on disk — set {_ALLOW_UNSUPPORTED_ENV}=1."
+        f"knowing the result is not the model on disk — set {_ALLOW_UNSUPPORTED_ENV}=1.",
+        code="model.unsupported_construct",
+        details={
+            "constructs": [
+                {"construct": f"SBML package {name}", "where": uri} for name, uri in offenders
+            ]
+        },
     )
 
 
@@ -3455,7 +3464,7 @@ def load_sbml(path: str | Path, compartment_sizes: dict | None = None):
     """
     path = Path(path)
     if not path.exists():
-        raise FileNotFoundError(f"SBML file not found: {path}")
+        raise MissingFileError(f"SBML file not found: {path}", path)
 
     t0 = time.perf_counter()
     doc = libsbml.readSBMLFromFile(str(path))
@@ -3521,17 +3530,25 @@ def _import_antimony():
         import antimony as ant
     except ImportError as exc:
         if isinstance(exc, ModuleNotFoundError) and exc.name == "antimony":
-            raise ImportError(
+            from bngsim._error_codes import install
+            from bngsim._exceptions import DependencyError
+
+            raise DependencyError(
                 "The 'antimony' package is required to load Antimony models. "
-                "Install with: pip install 'bngsim[antimony]'"
+                "Install with: pip install 'bngsim[antimony]'",
+                remedies=[install("antimony", extra="antimony")],
             ) from None
         # The package is there and did not load (a shared library it needs is
         # missing, say). Telling the caller to install it would send them to
         # something they have; relay the cause instead (issue #1760).
-        raise ImportError(
+        from bngsim._exceptions import DependencyError
+
+        raise DependencyError(
             f"antimony is installed, but its compiled module could not be loaded: {exc}. "
             "A shared library it needs is missing from this system, or the module was "
-            "built for another Python; `python -c 'import antimony'` shows the same failure."
+            "built for another Python; `python -c 'import antimony'` shows the same failure.",
+            code="env.broken_dependency",
+            details={"package": "antimony"},
         ) from exc
     return ant
 
@@ -3635,7 +3652,7 @@ def load_antimony_via_sbml(path: str | Path, compartment_sizes: dict | None = No
 
     path = Path(path)
     if not path.exists():
-        raise FileNotFoundError(f"Antimony file not found: {path}")
+        raise MissingFileError(f"Antimony file not found: {path}", path)
 
     ant.clearPreviousLoads()
     with _antimony_numbers_in_c_locale():
