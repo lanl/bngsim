@@ -54,9 +54,11 @@ from bngsim.convert._net_writer import (
     _rateof_refs,
 )
 from bngsim.convert._sbml_writer import (
+    _E_TOKEN,
     _LOG1P_TOKEN,
     _LOG2_TOKEN,
     _LOG_TOKEN,
+    _PI_TOKEN,
     _dedup_functions,
     _rewrite_unary_call,
 )
@@ -100,14 +102,18 @@ def _normalize_bngl_expr(expr: str) -> str:
     stores: the boolean keyword operators ``and``/``or`` must be the symbolic
     ``&&``/``||`` (BNG rejects the barewords with a misleading "missing parenthesis"),
     natural log ``log(`` must be ``ln(`` (BNG has no bareword ``log``), and base-2 /
-    ``log1p`` (no BNG primitive) reduce to their exact ``ln`` identities. The π
-    symbol ``_pi`` is reserved-but-undefined in BNG2.pl (it aborts at network
-    generation whether the name is left bare *or* declared as a parameter), so it is
-    folded to its numeric literal. ``if(…)``, ``time()``, ``^`` and ``log10`` are
+    ``log1p`` (no BNG primitive) reduce to their exact ``ln`` identities. The
+    constants ``_pi`` and ``_e`` are reserved in BNG2.pl, which reads only their
+    call form (``_pi()``) and aborts at network generation on the bare name,
+    whether left bare *or* declared as a parameter; the engine takes both forms.
+    Each is folded to its numeric literal, bare or called (issue #1741: the
+    call's ``()`` was left behind the number, and ``_e`` was not folded).
+    ``if(…)``, ``time()``, ``^`` and ``log10`` are
     accepted verbatim. Word-boundary anchored so ``ligand``/``factor``/``nand`` are
     untouched.
     """
-    expr = re.sub(r"(?<![A-Za-z0-9_])_pi(?![A-Za-z0-9_])", repr(math.pi), expr)
+    expr = _PI_TOKEN.sub(repr(math.pi), expr)
+    expr = _E_TOKEN.sub(repr(math.e), expr)
     out = re.sub(r"(?<![A-Za-z0-9_])and(?![A-Za-z0-9_])", "&&", expr)
     out = re.sub(r"(?<![A-Za-z0-9_])or(?![A-Za-z0-9_])", "||", out)
     out = _rewrite_unary_call(out, _LOG2_TOKEN, lambda a: f"(ln({a}) / ln(2))")
@@ -674,15 +680,15 @@ def write_bngl(
     # The expression takes the same ExprTk→BNGL normalization as the functions
     # block. ``codegen_data`` lists parameters in dependency order, so anything
     # an expression refers to is already declared above it.
+    derived = _derived_parameters(data)
     lines.append("begin parameters")
     k = 0
     for p in params:
         if p["name"] in shadow:
             continue
         k += 1
-        expression = p.get("expression")
-        if not p.get("is_const", True) and expression:
-            lines.append(f"    {k} {p['name']} {_normalize_bngl_expr(expression)}")
+        if p["name"] in derived:
+            lines.append(f"    {k} {p['name']} {_normalize_bngl_expr(derived[p['name']])}")
         else:
             lines.append(f"    {k} {p['name']} {_fmt(p['value'])}")
     lines.append("end parameters")
@@ -797,7 +803,9 @@ def write_bngl(
     # ── actions (SBML events → BNGL protocol, #224 phase 2) ────────────────
     if protocol is not None and not protocol.is_empty:
         lines.append("")
-        lines.append(_actions_block(protocol, mol_names, species_comp, species))
+        # The model's derived parameters, so a warning follows a change made
+        # through one (kd = A0: a species set to kd*2 follows A0).
+        lines.append(_actions_block(protocol, mol_names, species_comp, species, derived))
 
     text = "\n".join(lines) + "\n"
     if out_path is not None:
@@ -805,11 +813,25 @@ def write_bngl(
     return text
 
 
+def _derived_parameters(data: dict[str, Any]) -> dict[str, str]:
+    """A model's derived parameters, name to expression, from its ``codegen_data``:
+    the ones the parameters block writes as an expression, which BNG2.pl
+    recomputes when a parameter read there changes. The actions block's warnings
+    follow a change through each (issue #1737); :func:`write_bngl` and
+    ``omex_to_net`` both take the rule from here, so the two read one rule."""
+    return {
+        p["name"]: p["expression"]
+        for p in data["parameters"]
+        if p.get("expression") and not p.get("is_const", True)
+    }
+
+
 def _actions_block(
     protocol: Any,
     mol_names: list[str],
     species_comp: list[str],
     species: list[dict[str, Any]],
+    derived: dict[str, str] | None = None,
 ) -> str:
     """Serialize ``protocol`` to a ``begin actions`` block with ``setConcentration``
     targets translated from codegen species names to ``@comp:Mol()`` patterns.
@@ -834,6 +856,7 @@ def _actions_block(
                     target=pattern,
                     value=step.value,
                     value_expr=step.value_expr,
+                    evaluated_once=step.evaluated_once,
                 )
         return step
 
@@ -847,7 +870,7 @@ def _actions_block(
         lossy_before_generation=protocol.lossy_before_generation,
         dropped_before_generation=protocol.dropped_before_generation,
     )
-    block = write_bngl_protocol(translated)
+    block = write_bngl_protocol(translated, derived=derived)
     if translated.generation_step:
         return block  # it generates the network where the protocol did
     # Materialize the network before simulating (generate_network is a build

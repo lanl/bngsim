@@ -5,7 +5,7 @@ Cross-engine correctness + efficiency of bngsim's ODE path against
 sibling of `rr_parity` (bngsim vs RoadRunner): same bngsim adapter, same
 `_core.differ` oracle, same SBML corpus and HTML matrix format — only the
 *reference* engine changes. The AMICI reference build is
-pinned to `AMICI-dev/AMICI@667b17b6b` (`v1.0.1-12-g667b17b6b`) — see `AMICI_PIN.json`.
+pinned to `AMICI-dev/AMICI@7fb8c571a` (`v1.2.0-22-g7fb8c571a`, AMICI main; not the 1.2.0 release, which has an event regression) — see `AMICI_PIN.json`.
 
 The suite runs **two independent jobs** over the same corpus:
 

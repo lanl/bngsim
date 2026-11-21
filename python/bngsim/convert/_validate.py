@@ -1503,7 +1503,9 @@ def validate_conversion(
 
     source_path = Path(source_path)
     if not source_path.exists():
-        raise FileNotFoundError(f"no such source model: {source_path}")
+        from bngsim._exceptions import MissingFileError
+
+        raise MissingFileError(f"no such source model: {source_path}", source_path)
     direction = direction or _detect_direction(source_path)
     plan = _build_plan(direction)
     want = _resolve_levels(levels)

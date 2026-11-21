@@ -1,20 +1,26 @@
-"""bngsim — Embeddable simulation engine for BioNetGen reaction networks.
+"""bngsim — simulate SBML, Antimony and BioNetGen (BNGL) models in Python.
 
 Usage::
 
     import bngsim
 
-    model = bngsim.Model.from_net("model.net")
+    model = bngsim.Model.load("model.net")    # also .bngl, .xml, .sbml, .ant
     sim = bngsim.Simulator(model, method="ode")
 
     model.set_param("kf", 0.5)
     result = sim.run(t_span=(0, 1000), n_points=1001)
 
-    result.time         # (1001,) ndarray
-    result.observables  # (1001, n_obs) ndarray
-    result.species      # (1001, n_species) ndarray
+    result.time             # (1001,) ndarray
+    result.observables      # (1001, n_obs) ndarray
+    result.observables["A"] # one observable's column, by name
 
-See the package README for installation, usage, and API overview.
+To learn the library, read ``bngsim.agent_guide()`` (``python -m bngsim
+guide`` prints it): one page, for this version, with the calls, the rules
+that otherwise give wrong answers, what each feature needs, and a translation
+table from libRoadRunner, Tellurium, AMICI, COPASI, BioNetGen and PySB.
+``bngsim.capabilities()`` says what this install can do, ``help()`` on a
+class or method gives its full reference, and the user guides are at
+https://bngsim.readthedocs.io.
 """
 
 from __future__ import annotations
@@ -23,6 +29,7 @@ import importlib.util as _importlib_util
 import logging
 from typing import Any
 
+from bngsim._agent_guide import agent_guide
 from bngsim._atol import (
     AUTO,
     TRACKING,
@@ -42,7 +49,11 @@ from bngsim._exceptions import (
     ConversionError,
     ConversionWarning,
     DenseSolverFallbackWarning,
+    DependencyError,
+    LiveStartWarning,
+    MissingFileError,
     ModelError,
+    OneSidedSensitivityWarning,
     ParameterError,
     RuleMonkeyWarning,
     SensitivityRefusedDuringRunError,
@@ -56,8 +67,10 @@ from bngsim._exceptions import (
     SsaValidationError,
     StopConditionMet,
     UnderSpecifiedModelError,
+    UsageError,
 )
 from bngsim._model import Model
+from bngsim._model_builder import ModelBuilder
 from bngsim._named_array import NamedArray
 from bngsim._net_reader import build_model_from_parsed, parse_net_file
 from bngsim._nfsim_session import NfsimSession
@@ -379,19 +392,29 @@ def __getattr__(name: str) -> object:
     ``$BNGPATH`` at runtime sees the change. That stays cheap: the only expensive
     steps are the first ``import bionetgen`` and the first ``import libsbml``,
     which ``sys.modules`` memoizes.
+
+    A name the module lacks raises ``AttributeError``, which names bngsim's call
+    when the name is one another tool has (``bngsim.load``, ``bngsim.simulate``;
+    issue #1700, ``bngsim._foreign_names``).
     """
     if name == "HAS_BNGL":
         return _bngl_available()
     if name == "HAS_LIBSBML":
         return _libsbml_status() is None
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from bngsim._foreign_names import module_attribute_error
 
+    raise module_attribute_error(__name__, name)
+
+
+from bngsim import examples  # noqa: E402  (its models import bngsim at load)
 
 __all__ = [
     # Version
     "__version__",
     # Core classes
     "Model",
+    "ModelBuilder",
+    "examples",
     "Simulator",
     "ReactionKernel",
     # Coupling / state-exchange layer (GH #102 Stage 1)
@@ -435,7 +458,9 @@ __all__ = [
     "SsaBoundaryWarning",
     "SsaRoundingWarning",
     "DenseSolverFallbackWarning",
+    "OneSidedSensitivityWarning",
     "AtolScaleWarning",
+    "LiveStartWarning",
     "RuleMonkeyWarning",
     "SensitivityRefusedDuringRunError",
     "SensitivityRefusedForParametersError",
@@ -443,6 +468,9 @@ __all__ = [
     "SsaValidationError",
     "StopConditionMet",
     "UnderSpecifiedModelError",
+    "UsageError",
+    "DependencyError",
+    "MissingFileError",
     # SSA validation
     "SsaIssue",
     "validate_for_ssa",
@@ -484,6 +512,8 @@ __all__ = [
     "HAS_BNGL",
     "HAS_LIBSBML",
     "capabilities",
+    # The agent guide (issue #1699)
+    "agent_guide",
     # Codegen
     "prepare_codegen",
     # Codegen artifact cache (issue #205). The cache is content-addressed and

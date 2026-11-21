@@ -1,0 +1,30 @@
+# A -> B -> C. A decay chain.
+# Exact solution: bngsim.examples.exact("chain", t).
+begin model
+begin parameters
+  k1 1.0   # A -> B rate constant
+  k2 0.5   # B -> C rate constant
+  A0 100   # initial A
+end parameters
+begin molecule types
+  A()
+  B()
+  C()
+end molecule types
+begin seed species
+  A() A0
+  B() 0
+  C() 0
+end seed species
+begin observables
+  Molecules A A()
+  Molecules B B()
+  Molecules C C()
+end observables
+begin reaction rules
+  A() -> B() k1
+  B() -> C() k2
+end reaction rules
+end model
+
+generate_network({overwrite=>1})

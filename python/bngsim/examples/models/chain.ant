@@ -1,0 +1,11 @@
+// A -> B -> C. A decay chain.
+// Exact solution: bngsim.examples.exact("chain", t).
+model chain
+  J1: A -> B; k1*A
+  J2: B -> C; k2*B
+  k1 = 1.0   // A -> B rate constant
+  k2 = 0.5   // B -> C rate constant
+  A = 100
+  B = 0
+  C = 0
+end

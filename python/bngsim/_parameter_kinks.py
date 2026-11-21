@@ -79,6 +79,46 @@ def _rate_law_texts(core) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]
     return laws, roots
 
 
+# The guard the `.net` loader writes around every Hill body (issue #1636),
+# `if((s > 0) or (h <= 0) or (h >= 1), V * (s ^ (h - 1)) / ((K ^ h) + (s ^ h)), 0)`,
+# also as `write_net` writes it back, with `||` and no spaces.
+_NAME = r"[A-Za-z_][A-Za-z0-9_]*"
+_OR = r"(?:\bor\b|\|\|)"
+
+
+def _any_spacing(pattern: str) -> str:
+    """*pattern*, written with one space between its tokens, as a pattern that
+    takes any spacing between them."""
+    return r"\s*".join(["", *pattern.split(" "), ""])
+
+
+_HILL_GUARD = re.compile(
+    _any_spacing(
+        rf"if \( \( (?P<s>{_NAME}) > 0 \) {_OR} \( (?P<h>{_NAME}) <= 0 \) {_OR} "
+        rf"\( (?P=h) >= 1 \) , "
+        rf"(?P<body>{_NAME} \* \( (?P=s) \^ \( (?P=h) - 1 \) \) / "
+        rf"\( \( {_NAME} \^ (?P=h) \) \+ \( (?P=s) \^ (?P=h) \) \)) , 0 \)"
+    )
+)
+
+
+def _without_hill_guard(text: str) -> str:
+    """The body of a law that is the `.net` loader's guarded Hill function, and
+    any other *text* as it is.
+
+    The guard's ``h <= 0`` and ``h >= 1`` are comparisons over a parameter
+    alone, and an h of exactly 1 or 0 sits on one. That is no kink of the law:
+    the reaction multiplies the function by s, and for s > 0 the guard is true
+    on both sides of the switch, while at s = 0 and h = 1 the rate is 0 on both.
+    Before issue #1636 an h of 1 or more at load had the bare body, and
+    ``steady_state(sensitivity_params=["h"])`` at h = 1 returned its column;
+    read with the guard, it was refused as on a kink. The body has no bend, so
+    it is not parsed either: with the guard, 300 Hill laws cost 40 ms of every
+    sensitivity run."""
+    m = _HILL_GUARD.fullmatch(text)
+    return m.group("body").strip() if m else text
+
+
 #: Past this many characters, a derived parameter written out in what it is
 #: built from is read as it is written instead: sympy's parse of it does not
 #: finish. One in a corpus model reached 41,048 from 41 (`synthesis_v3.bngl`).
@@ -215,6 +255,7 @@ def parameters_on_a_kink(
 
     # A rate law with no bend and no condition has nothing to sit on, and is not parsed.
     texts, roots = _rate_law_texts(core)
+    texts = [(w, _without_hill_guard(t)) for w, t in texts]
     laws = [(w, t) for w, t in texts if has_bend(t)]
     derived_laws = _derived_bends(texts, roots, derived, has_bend)
     if not laws and not derived_laws:

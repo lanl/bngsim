@@ -1931,8 +1931,8 @@ class _UnbalancedBrackets(Exception):
     """A bracket in a text :func:`_spell_mod` reads has no partner of its kind."""
 
 
-def _spell_mod(text: str) -> str:
-    """*text* with each ``a % b`` written ``mod(a, b)``.
+def _spell_mod(text: str, call: str = "mod") -> str:
+    """*text* with each ``a % b`` written ``mod(a, b)``, or *call* in place of ``mod``.
 
     ExprTk's ``%`` on doubles is ``std::fmod``, which is its ``mod()`` too, so
     the two read the same everywhere. C has no ``%`` on doubles. The stop and
@@ -1950,19 +1950,19 @@ def _spell_mod(text: str) -> str:
     """
     if "%" not in text:
         return text
-    return _spell_mod_cached(text)
+    return _spell_mod_cached(text, call)
 
 
 @functools.lru_cache(maxsize=16384)
-def _spell_mod_cached(text: str) -> str:
+def _spell_mod_cached(text: str, call: str = "mod") -> str:
     try:
-        out, _ = _spell_mod_from(text, 0, None)
+        out, _ = _spell_mod_from(text, 0, None, call)
     except _UnbalancedBrackets:
         return text
     return out
 
 
-def _spell_mod_from(text: str, i: int, closer: str | None) -> tuple[str, int]:
+def _spell_mod_from(text: str, i: int, closer: str | None, call: str = "mod") -> tuple[str, int]:
     """:func:`_spell_mod` of *text* from *i* to *closer*, the bracket that
     closes it (``None``: the end of the text)."""
     out: list[str] = []
@@ -1977,7 +1977,7 @@ def _spell_mod_from(text: str, i: int, closer: str | None) -> tuple[str, int]:
             trail = factor[len(factor.rstrip()) :]
             acc = chain[0][1].strip()
             for o, f in chain[1:]:
-                acc = f"mod({acc}, {f.strip()})" if o == "%" else f"{acc}{o}{f.strip()}"
+                acc = f"{call}({acc}, {f.strip()})" if o == "%" else f"{acc}{o}{f.strip()}"
             out.append(lead + acc + trail)
         else:
             out.append("".join(o + f for o, f in chain))
@@ -1988,7 +1988,7 @@ def _spell_mod_from(text: str, i: int, closer: str | None) -> tuple[str, int]:
     while i < n:
         c = text[i]
         if c in _BRACKET_CLOSES:
-            inner, i = _spell_mod_from(text, i + 1, _BRACKET_CLOSES[c])
+            inner, i = _spell_mod_from(text, i + 1, _BRACKET_CLOSES[c], call)
             factor += c + inner + _BRACKET_CLOSES[c]
             continue
         if c in _CLOSING_BRACKETS:
@@ -3034,7 +3034,12 @@ def _prepare_derived_expr(
     # Pass 1: ExprTk → sympy surface syntax (if→Piecewise, ^→**, logicals →
     # And/Or call form). Applied to the raw string so whole-word matching of
     # ``if`` sees the source as written.
-    s_pre = _preprocess_derived_expr(expr)
+    # ExprTk's `%` is fmod, which sympy would parse as its floored Mod and fold
+    # or simplify at once ((p + 2) % 2 to Mod(p, 2)). Spelled as a call before
+    # the parse, it is read as fmod (issue #1800). The call is a private name,
+    # so a parameter named `mod` is not called, and only this parse sees it: the
+    # clock parser shares _preprocess_derived_expr and reads `%` as before.
+    s_pre = _spell_mod(_preprocess_derived_expr(expr), call=_ENGINE_ROUNDING_NAMES[1])
 
     diff_names = primary_names | set(derived_names)
     referenced = _names_referenced_in(s_pre, diff_names)
@@ -3078,6 +3083,10 @@ def _prepare_derived_expr(
     # ExprTk's calls sympy has under another name or not at all, written out
     # so sympy can differentiate them (issue #1214). Before sym_map too.
     local_dict.update(exprtk_closed_form_bindings(sp))
+    # rint, mod and frac as the engine reads them, so sympy does not fold them
+    # its own way (#1800). Before sym_map too: a parameter named `frac` or
+    # `mod` (neither is reserved by the engine) stays a parameter.
+    local_dict.update(engine_rounding_bindings())
     local_dict.update(sym_map)
     local_dict.update(Piecewise=sp.Piecewise, And=sp.And, Or=sp.Or, Not=sp.Not, Eq=sp.Eq, Ne=sp.Ne)
     # The engine's own functions, which sympy has no counterpart for (issue
@@ -3094,7 +3103,15 @@ def _prepare_derived_expr(
     # followed by `(` is a call and keeps its sympy meaning.
     for m in _DERIVED_BARE_NAME.finditer(s_aliased):
         name = m.group(1)
-        if m.group(2) is None and name not in local_dict and name not in ("True", "False"):
+        if (
+            m.group(2) is None
+            and name not in ("True", "False")
+            and (
+                name not in local_dict or (name in ("rint", "mod", "frac") and name not in sym_map)
+            )
+        ):
+            # A name bound to a call (rint, mod, frac) but read bare is a model
+            # symbol of that name, an observable, not the function (#1800).
             local_dict[name] = sp.Symbol(name)
 
     try:
@@ -3166,6 +3183,149 @@ def _guard_zero_base(deriv):
     return deriv if _folds_nonfinite(guarded) else guarded
 
 
+# The engine's rint, mod and frac, which numpy and sympy each define otherwise
+# (issue #1800). ``rint`` is BNG's floor(x + 0.5), a half rounded up
+# (expr_compat::rint in src/expression.cpp, issue #771), where numpy's rint
+# rounds a half to even; ``mod`` and the ``%`` operator are ExprTk's std::fmod,
+# whose sign follows the first argument, where numpy's mod and sympy's Mod are
+# floored; ``frac`` is ExprTk's x - trunc(x), where sympy's frac is
+# x - floor(x). The C twin and the JAX RHS already read them so; a derived
+# parameter's value and partials read them here, so a seed takes the value the
+# run starts from.
+_ENGINE_ROUNDING_NAMES = ("__bngsim_rint__", "__bngsim_fmod__", "__bngsim_frac__")
+
+
+def _engine_rint(x):
+    import numpy as np
+
+    return np.floor(x + 0.5)
+
+
+def _engine_frac(x):
+    import numpy as np
+
+    return x - np.trunc(x)
+
+
+def _engine_fmod(a, b):
+    import numpy as np
+
+    return np.fmod(a, b)  # C's fmod, exactly
+
+
+# For lambdify: each class below prints as its name, which this binds.
+_ENGINE_ROUNDING_NUMPY = dict(
+    zip(_ENGINE_ROUNDING_NAMES, (_engine_rint, _engine_fmod, _engine_frac), strict=True)
+)
+
+
+def _engine_double(x):
+    """The double the engine reads for the sympy number *x*, or None if *x* is
+    not a number.
+
+    parse_expr keeps a literal of 16 or more digits at 56+ bits, and float() of
+    that rounds twice, which can land on a tie: rint(8192.499999999999) read
+    8193, where strtod, and so the engine, reads 8192.499999999998 and gives
+    8192. A literal's own digits, which str() gives back, are read once, as
+    :func:`bngsim._jacobian.builtin_shadow_bindings` reads them for round()."""
+    import sympy as sp
+
+    if not x.is_Number:
+        return None
+    if x.is_Float and x._prec > 53:
+        text = str(x)
+        if sp.Float(text, precision=x._prec) == x:
+            return float(text)
+    try:
+        return float(x)
+    except (OverflowError, TypeError, ValueError):
+        return None
+
+
+@functools.cache
+def _engine_rounding_classes():
+    """sympy functions for the engine's rint, mod and frac.
+
+    Each folds a numeric argument at once, as the engine computes it: the
+    double the engine reads (:func:`_engine_double`), then BNG's
+    floor(x + 0.5), C's fmod (``math.fmod`` is exact, where
+    ``a - b*trunc(a/b)`` is not when ``a/b`` rounds to a whole number), or
+    x - trunc(x). None has a derivative, so ``diff`` leaves each unevaluated,
+    as sympy left the names they replace: the callers' handling of a step is
+    unchanged."""
+    import math
+
+    import sympy as sp
+
+    def number(v):
+        if math.isnan(v):
+            return sp.nan
+        if math.isinf(v):
+            return sp.oo if v > 0 else -sp.oo
+        return sp.Float(v)
+
+    class Rint(sp.Function):
+        nargs = 1
+
+        @classmethod
+        def eval(cls, x):
+            v = _engine_double(x)
+            if v is None:
+                return None
+            return number(v if math.isinf(v) or math.isnan(v) else math.floor(v + 0.5))
+
+    class Fmod(sp.Function):
+        nargs = 2
+
+        @classmethod
+        def eval(cls, a, b):
+            fa, fb = _engine_double(a), _engine_double(b)
+            if fa is None or fb is None:
+                return None
+            if fb == 0 or math.isinf(fa) or math.isnan(fa) or math.isnan(fb):
+                # C's fmod is nan here (fmod(a, inf) is a). Left unevaluated: a
+                # folded nan absorbs the expression around it, whose partials
+                # then read as a real zero where the value does not evaluate.
+                return None
+            return number(math.fmod(fa, fb))
+
+    class Frac(sp.Function):
+        nargs = 1
+
+        @classmethod
+        def eval(cls, x):
+            v = _engine_double(x)
+            if v is None:
+                return None
+            # A non-finite argument is left unevaluated, as mod's is above.
+            return number(v - math.copysign(math.trunc(v), v)) if math.isfinite(v) else None
+
+    def _eval_evalf(self, prec):
+        # An argument that is a number but no sympy Number (_pi*2, sqrt(2)):
+        # evalf gives its digits, and the fold above takes it from there. Left
+        # to sympy, frac(_pi) evaluated its own way and rint and mod not at all.
+        args = [
+            a if a.is_Number else getattr(a, "_eval_evalf", lambda _p: None)(prec)
+            for a in self.args
+        ]
+        if any(a is None or not a.is_Number for a in args):
+            return None
+        out = self.func(*args)
+        return out if out.is_Number else None  # a non-finite case stays as it is
+
+    for cls, name in zip((Rint, Fmod, Frac), _ENGINE_ROUNDING_NAMES, strict=True):
+        cls.__name__ = name
+        cls._eval_evalf = _eval_evalf
+    return Rint, Fmod, Frac
+
+
+def engine_rounding_bindings() -> dict:
+    """``{name: sympy function}`` for a ``parse_expr`` ``local_dict``, bound before
+    the parse so sympy never folds a constant ``frac(-2.5)`` its own way."""
+    rint, fmod, frac = _engine_rounding_classes()
+    return {"rint": rint, "mod": fmod, "frac": frac, fmod.__name__: fmod}
+
+
 def _partial_value(deriv, subs: dict) -> float:
     """*deriv* at the point *subs*, in IEEE double arithmetic, as the C twin
     computes it (issue #720).
@@ -3186,7 +3346,11 @@ def _partial_value(deriv, subs: dict) -> float:
 
     syms = sorted(deriv.free_symbols, key=str)
     try:
-        fn = sp.lambdify(syms, deriv, modules="numpy")
+        fn = sp.lambdify(
+            syms,
+            deriv,  # rint, mod and frac bound at the parse: the engine's (#1800)
+            modules=[_ENGINE_ROUNDING_NUMPY, "numpy"],
+        )
         with np.errstate(all="ignore"):
             # numpy scalars, not Python floats: `0.0 ** -0.5` raises in Python
             # and is inf in numpy, as in C.
@@ -5898,7 +6062,7 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
         missing = _toolchain.record_missing(compiler)
         if missing is not None:
             raise CodegenToolchainError(missing) from err
-        raise RuntimeError(
+        raise CodegenToolchainError(
             "C compiler not found. Install Xcode Command Line Tools "
             "(macOS), gcc (Linux), or Visual Studio Build Tools (Windows)."
         ) from err

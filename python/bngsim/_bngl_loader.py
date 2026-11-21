@@ -55,7 +55,7 @@ import uuid
 from collections.abc import Mapping
 from pathlib import Path
 
-from bngsim._exceptions import ModelError
+from bngsim._exceptions import MissingFileError, ModelError
 
 #: BNG2.pl is a network generator, not a solver, but a combinatorial rule set can
 #: still keep it busy indefinitely. Ten minutes is long enough for every model in
@@ -585,7 +585,7 @@ def bngl_to_net(
     """
     path = Path(path)
     if not path.exists():
-        raise FileNotFoundError(f"BNGL file not found: {path}")
+        raise MissingFileError(f"BNGL file not found: {path}", path)
     # Absolute, and the environment fixed once, for the key and the run alike:
     # BNG2.pl runs from the model's directory, where a path found relative to
     # this process's names nothing (issue #1494).
@@ -713,7 +713,10 @@ def load_bngl(
     defer_jacobian: bool | None = None,
 ):
     """Generate the network for ``path`` and load it through ``Model.from_net``."""
-    from bngsim._model import Model
+    from bngsim._model import Model, _record_source
 
     net = bngl_to_net(path, bng2_pl=bng2_pl, net_out=net_out, timeout=timeout, cache=cache)
-    return Model.from_net(net, defer_jacobian=defer_jacobian)
+    model = Model.from_net(net, defer_jacobian=defer_jacobian)
+    # Issue #1705: the model came from the .bngl, by way of the network BNG2.pl wrote.
+    _record_source(model, "bngl", path=path, network=os.path.abspath(os.fspath(net)))
+    return model

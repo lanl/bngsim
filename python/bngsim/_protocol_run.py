@@ -423,6 +423,9 @@ class _Runner:
         self._seeds = np.random.SeedSequence(seed)
         self._sims: dict[tuple[str, float | None], Any] = {}
         self.now = 0.0
+        # Issue #1701: whether the replay's first run has been asked where it
+        # starts. Every later one continues the replay on purpose.
+        self._start_asked = False
         # Species whose amount is still an expression BNG2.pl writes into the
         # network each run reads: index → ("param", name, divisor) or ("expr", text).
         self.symbolic: dict[int, tuple] = {
@@ -719,10 +722,15 @@ class _Runner:
             self._follow()
         elif kind == "set_concentration":
             i = self._species(change)
-            if change.value is None and change.value_expr is not None:
+            if (
+                change.value is None
+                and change.value_expr is not None
+                and not change.evaluated_once
+            ):
                 # BNG2.pl keeps an expression amount as one: it follows its
                 # parameters until a run (BNGModel.pm, setConcentration's NewConc),
-                # with its observables and functions read now.
+                # with its observables and functions read now. A SED-ML change
+                # is evaluated once, here, and holds (issue #1737).
                 self.symbolic[i] = ("expr", self._freeze(change.value_expr))
                 value = self._value(change)
             else:
@@ -931,6 +939,7 @@ class _Runner:
                 f"time is {self.now:g}; BNG2.pl refuses a continuation that does not start there"
             )
         t0 = self.now if continued else float(exp.t_span[0])
+        self._ask_where_it_starts(t0)
         if exp.output_start is not None:
             # A SED-ML run whose output starts after it does (issue #1493): the
             # part before outputStartTime is integrated and not output.
@@ -964,10 +973,14 @@ class _Runner:
                 else int(self._seeds.spawn(1)[0].generate_state(1)[0] >> 1)
             )
         self._resolve_symbolic()
+        # A simulate action runs from the state the protocol left, as BNG2.pl's
+        # does, from whatever time it names; the first was asked above (#1701).
         if times is not None:
-            result = sim.run(sample_times=times, **kwargs)
+            result = sim.run(sample_times=times, start="live", **kwargs)
         else:
-            result = sim.run(t_span=(t0, t_end), n_points=int(exp.n_points), **kwargs)
+            result = sim.run(
+                t_span=(t0, t_end), n_points=int(exp.n_points), start="live", **kwargs
+            )
         if steady and not result.solver_stats.get("steady_state_reached"):
             warnings.warn(
                 f"{_describe(exp)} did not reach a steady state by t_end={t_end:g}; "
@@ -980,6 +993,22 @@ class _Runner:
         self.symbolic.clear()
         self.now = float(result.time[-1])
         return result
+
+    def _ask_where_it_starts(self, t0: float) -> None:
+        """Warn where the replay's first run, at *t0*, starts from the end of a run
+        made on the model before the replay, with the clock set back (issue
+        #1701), as a second ``Simulator.run`` is warned. The replay runs on a
+        clone, which holds that state and its record. Its own runs continue the
+        state on purpose, as BNG2.pl's successive ``simulate`` actions do, and
+        pass ``start="live"``."""
+        if self._start_asked:
+            return
+        self._start_asked = True
+        from bngsim._simulator import _MODEL_REMEDY, _warn_if_start_restarts_the_clock
+
+        _warn_if_start_restarts_the_clock(
+            self.model, t0, what="This protocol's first run", remedy=_MODEL_REMEDY
+        )
 
     def _tolerances(self, exp: Experiment) -> dict[str, Any]:
         """An ODE run's rtol and atol: the replay's, else the action's, else
@@ -1014,7 +1043,7 @@ class _Runner:
                 else int(self._seeds.spawn(1)[0].generate_state(1)[0] >> 1)
             )
         self._resolve_symbolic()
-        sim.run(t_span=(t0, t1), n_points=2, **kwargs)
+        sim.run(t_span=(t0, t1), n_points=2, start="live", **kwargs)
         self.symbolic.clear()
         self.now = t1
 
@@ -1029,7 +1058,7 @@ class _Runner:
         state = self._state()
         observables, functions = self._reads_now(state)
         names = [n for n in functions if not n.startswith("_rateLaw")]
-        return Result(
+        result = Result(
             _time=np.array([t0]),
             _species=state[None, :],
             _observables=np.array([observables]),
@@ -1038,6 +1067,11 @@ class _Runner:
             _observable_names=list(self.model.observable_names),
             _expression_names=names,
         )
+        # Its one row is its start, recorded as a run's is (issue #1701).
+        from bngsim._simulator import _start_record
+
+        result._started_from, result._start_state = _start_record(self.model._core, state)
+        return result
 
 
 def _action(change: StateChange | None) -> str:

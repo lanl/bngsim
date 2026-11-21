@@ -355,7 +355,12 @@ UNTYPED = {"' was found triggered at t=": "GH #205/#910, a fire found and not lo
 # two, kept as a reason and thrown at one place. The type says a smaller set of
 # columns may run, so the per-column retry is worth its cost; a refusal reached
 # whatever columns are asked is in TYPED, raised at once.
-REFUSED_FOR_PARAMETERS = 28
+# 29 with #1822's: a left-over crossing in a model whose columns ride in a
+# moving frame. Its other one, a reading that is no jump, is kept as #951's are.
+# 30 with #1828's: a counter crossing inside the run whose time rounds onto the
+# start of a run on the clock it was given, refused only where it moves a
+# requested column.
+REFUSED_FOR_PARAMETERS = 30
 
 _KEPT = re.compile(r"(\w+) = msg\.str\(\);")
 

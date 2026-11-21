@@ -587,30 +587,6 @@ template <class Run> static Result restoring_on_raise(NetworkModel &model, Run &
     }
 }
 
-// Issue #1059: where a run's clock starts. At the end of the run nearer 0,
-// t_start or (for a run at negative times) t_end: counted from there the run's
-// own time is nowhere coarser than the absolute one. Counted from a far negative
-// t_start, the half of a run toward 0 was, and lost its waiting times as a far
-// start had (z = -289 at -2 to 0 from -1e12). That end is rounded toward 0 to a
-// multiple of an ulp at the run's far end, so every time x in the run is on the
-// run's clock exactly, x - origin, and origin + (x - origin) is x: from t_start
-// itself, a row past 2*t_start was read an ulp from the time it reported. A run
-// across 0 keeps 0, as does one whose near end is within 2^20, where the doubles
-// are 1.2e-10 apart: every such run is the one it always was.
-static double ssa_clock_origin(const TimeSpec &times) {
-    constexpr double kElapsedFrom = 1048576.0; // 2^20
-    // (Not `near` and `far`: <windows.h> defines both as empty macros.)
-    const double t_near = times.t_start >= 0.0 ? times.t_start
-                          : times.t_end <= 0.0 ? times.t_end
-                                               : 0.0;
-    if (!(std::fabs(t_near) >= kElapsedFrom) || !std::isfinite(times.t_start) ||
-        !std::isfinite(times.t_end))
-        return 0.0;
-    const double t_far = std::max(std::fabs(times.t_start), std::fabs(times.t_end));
-    const double ulp = std::nextafter(t_far, std::numeric_limits<double>::infinity()) - t_far;
-    return t_near - std::fmod(t_near, ulp);
-}
-
 Result SsaSimulator::run(const TimeSpec &times, uint64_t seed, double timeout_seconds) {
     // poplevel = 0.0 means no scaling (exact SSA)
     return restoring_on_raise(impl_->model,
@@ -655,8 +631,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
     times_in.require_walkable("SsaSimulator::run");
     auto &model = impl_->model;
     // Issue #1059: the run keeps its own clock as time elapsed since an origin
-    // (t_start, see ssa_clock_origin), and hands the model origin + elapsed
-    // wherever the model reads the clock
+    // (t_start, see elapsed_clock_origin in bngsim/types.hpp), and hands the
+    // model origin + elapsed wherever the model reads the clock
     // (evaluate_functions, set_current_time). Far from the origin the doubles
     // are coarse, 1.2e-4 apart at t = 1e12, and the continuous loop placed its
     // firings on panels in absolute time, where a waiting time below that
@@ -666,7 +642,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
     // moves the origin, so every other run is the one it was, to the bit
     // (origin + x == x at origin 0). The rows report the times asked for, and
     // the state and the events carried to the next run their absolute times.
-    const double origin = ssa_clock_origin(times_in);
+    const double origin = elapsed_clock_origin(times_in);
     TimeSpec shifted = times_in;
     if (origin != 0.0) {
         shifted.t_start = times_in.t_start - origin;
@@ -4051,6 +4027,16 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
         // What it holds is this run's storage: counts, read as such by the
         // next SSA run, which continues from them (issue #1463).
         model.set_ssa_counts_stored(true);
+        // A state a run produced, as an ODE run's write-back marks its own
+        // (GH #210, issue #1528): x(θ) with no dx/dθ known, so a forward-
+        // sensitivity run from it is refused rather than seeded with the
+        // fresh start's dx(0)/dθ = 0, and one in the initial conditions
+        // (sensitivity_ic) is refused rather than seeded with e_k, the state
+        // being no longer the baseline (issue #1749). A stochastic sample has
+        // no pathwise dx/dθ to carry, so any seed an earlier run left goes.
+        model.set_ic_state_dirty(true);
+        model.set_advanced_since_baseline(true);
+        model.clear_pending_sens_seed();
         // t_end itself: the next run continues from the time the last row
         // reports (issue #693).
         model.set_current_time(t == times.t_end ? times_in.t_end : origin + t);
@@ -4117,7 +4103,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
     }
 
     // The rows were recorded on the run's clock; they report the times asked
-    // for, origin + elapsed exactly (issue #1059, ssa_clock_origin).
+    // for, origin + elapsed exactly (issue #1059, elapsed_clock_origin).
     if (origin != 0.0) {
         const std::vector<double> t_abs = times_in.output_times();
         for (int k = 0; k < static_cast<int>(t_abs.size()) && k < result.n_times(); ++k)

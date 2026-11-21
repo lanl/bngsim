@@ -1358,6 +1358,35 @@ def _recording(notes: list[str]):
         warnings.warn_explicit(w.message, w.category, w.filename, w.lineno, source=w.source)
 
 
+def _derived_of_the_net(
+    actions: ProtocolSpec, out_path: str | Path | None, net_text: str
+) -> dict[str, str] | None:
+    """The derived parameters of the ``.net`` :func:`omex_to_net` wrote, for its
+    actions block's warnings, as :func:`write_bngl` hands its model's (issue
+    #1737): with ``kd = A0`` in the ``.net``, a species set once to ``kd*2``
+    follows A0 in BNG2.pl. ``None`` where no change is evaluated once (the
+    warnings read none then), or where the ``.net`` does not load back (a
+    ``strict=False`` one may not): the warnings then read each expression's
+    text alone."""
+    from bngsim._exceptions import ModelError
+    from bngsim._model import Model
+    from bngsim.convert._bngl_writer import _derived_parameters
+
+    if not any(
+        isinstance(s, StateChange) and s.evaluated_once and s.value_expr for s in actions.steps
+    ):
+        return None
+    try:
+        if out_path is not None:
+            return _derived_parameters(Model.from_net(out_path)._core.codegen_data())
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "model.net"
+            path.write_text(net_text, encoding="utf-8")
+            return _derived_parameters(Model.from_net(path)._core.codegen_data())
+    except ModelError:
+        return None
+
+
 def omex_to_net(
     omex_path: str | Path,
     out_path: str | Path | None = None,
@@ -1503,7 +1532,8 @@ def omex_to_net(
         if actions is not None and dest is not None:
             from bngsim.convert._protocol import write_bngl_protocol
 
-            text = write_bngl_protocol(actions)
+            derived = _derived_of_the_net(actions, out_path, report.output_text)
+            text = write_bngl_protocol(actions, derived=derived)
             if notes:
                 for note in notes:
                     warnings.warn(note, ConversionWarning, stacklevel=2)
