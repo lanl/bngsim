@@ -779,6 +779,45 @@ def _declared(text: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]] 
     return params, seeds
 
 
+def _write_parameter(work: Any, name: str, value: float) -> bool:
+    """Write one parameter of *work*, a copy made to be read; ``False`` where
+    the model refuses the write."""
+    from bngsim._exceptions import BngsimError
+
+    try:
+        work.set_params({name: value})
+    except (BngsimError, ValueError):
+        return False
+    return True
+
+
+def _at_declared_parameters(model: Any, params: list[tuple[str, str]], moved: set[str]) -> Any:
+    """A copy of *model* with each parameter of *moved*, the ones a
+    ``setParameter`` before ``generate_network`` writes, back at the value the
+    ``.bngl`` declares; ``None`` where one cannot be put back. BNG2.pl's
+    ``.net`` holds such a parameter as the number last set, whether the file
+    declared a number or an expression (``B0 10*k1``, ``B0 5 * 2``), so a
+    declared expression is evaluated here. Every other parameter already holds
+    its value at generation, which is its value at every step before it.
+
+    The copy is only read, never run, so a compartment volume BNG2.pl folded
+    into the rate constants (:attr:`~bngsim.Model.frozen_params`) is written
+    like any other: a seed amount reads the parameter, not a rate constant."""
+    from bngsim._bngl_loader import _value
+
+    declared = [(name, text) for name, text in params if name in moved]
+    if {name for name, _ in declared} != moved:
+        return None
+    work = model.clone()
+    work._frozen_params = {}
+    for _ in declared:  # one pass for each, as a declaration may read one below it
+        for name, text in declared:
+            value = _value(work, text)
+            if value is None or not _write_parameter(work, name, value):
+                return None
+    return work
+
+
 def _not_as_generated(model: Any, bngl: Path, protocol: ProtocolSpec | None) -> list[str]:
     """How the ``.net`` *model* was loaded from differs from the network
     *bngl* generates (issue #1683): each parameter declared as a number, and
@@ -815,14 +854,13 @@ def _not_as_generated(model: Any, bngl: Path, protocol: ProtocolSpec | None) -> 
             want_params[pname] = float(declared_text)
         except ValueError:
             continue  # an expression: it follows the parameters it reads
-    sets: list[StateChange] = []
     for step in before:
         if not isinstance(step, StateChange):
             continue
         if step.kind == "set_parameter" and step.value is not None and step.target:
             want_params[step.target] = float(step.value)
         elif step.kind in ("set_concentration", "add_concentration") and step.target:
-            sets.append(step)
+            continue  # replayed below, in order with the parameters
         else:
             return []
     out: list[str] = []
@@ -834,24 +872,169 @@ def _not_as_generated(model: Any, bngl: Path, protocol: ProtocolSpec | None) -> 
                 out.append(f"parameter {name} is {held:.15g} there, {value:.15g} as declared")
     if out:
         return out  # the seed amounts read the parameters: judged once they agree
-    want_species: dict[str, float] = {}
+    # The actions replayed in order, each with the parameters as they stand at
+    # that step (issue #1740). A seed, and a setConcentration to an expression,
+    # follow their parameters to generation. An addConcentration makes its
+    # species a number, the amount it held then plus what it adds (BNGModel.pm:
+    # addConcentration evaluates $spec->Concentration), which a later
+    # setParameter does not move. Read at the parameters' final values, a seed
+    # B0 that a later setParameter("B0",20) moved gave 80 for BNG2.pl's 70.
+    # Only an addConcentration reads its moment, and only a setParameter makes
+    # a moment differ from generation, so the replay needs its own copy of the
+    # model just where the actions hold both: any other file is read off
+    # *model*, as it was before, and pays for no copy.
+    moved: set[str] = {
+        step.target
+        for step in before
+        if isinstance(step, StateChange)
+        and step.kind == "set_parameter"
+        and step.target is not None
+        and step.target in names
+    }
+    adds = any(isinstance(s, StateChange) and s.kind == "add_concentration" for s in before)
+    work = model
+    if moved and adds:
+        work = _at_declared_parameters(model, params, moved)
+        if work is None:
+            return []
+    # A moved parameter the .bngl declares as an expression (B0 10*k1) follows
+    # the parameters it reads until its own setParameter makes it a number. The
+    # .net holds it as the number last set, so the copy cannot follow it by
+    # itself: it is read again from its declaration after each setParameter.
+    # Read as the number, setParameter("k1",3) did not move B0, and the add
+    # after it gave 21 where BNG2.pl wrote 31.
+    pending: dict[str, str] = {}
+    if work is not model:
+        for pname, declared_text in params:
+            if pname in moved:
+                try:
+                    float(declared_text)
+                except ValueError:
+                    pending[pname] = declared_text
+
+    # In the order they read each other, so one pass writes each from values
+    # already written: parameters are declared without cycles. A pending one
+    # can read another through a parameter no setParameter writes (B0 R*10,
+    # R 2*Q, Q pending), which the copy follows itself, so the reads are taken
+    # through every parameter the .bngl declares as an expression, whatever
+    # order it declares them in. A cycle this reading cannot order gets no
+    # verdict.
+    declared_expr: dict[str, str] = {}
+    for pname, declared_text in params:
+        try:
+            float(declared_text)
+        except ValueError:
+            declared_expr[pname] = declared_text
+
+    def named(text: str) -> set[str]:
+        return {n for n in declared_expr if re.search(rf"(?<![\w.]){re.escape(n)}(?!\w)", text)}
+
+    def reach(pname: str) -> set[str]:
+        seen: set[str] = set()
+        todo = list(named(pending[pname]))
+        while todo:
+            n = todo.pop()
+            if n in seen:
+                continue
+            seen.add(n)
+            if n not in pending:  # through one the copy follows, to what it reads
+                todo.extend(named(declared_expr[n]))
+        return seen
+
+    order: list[str] = []
+    reads = {pname: (reach(pname) & set(pending)) - {pname} for pname in pending}
+    while len(order) < len(pending):
+        ready = [n for n in pending if n not in order and reads[n] <= set(order)]
+        if not ready:
+            return []
+        order.extend(ready)
+
+    def follow() -> bool:
+        """Each pending parameter written from its declaration, as the
+        parameters it reads stand now."""
+        for pname in order:
+            if pname in pending:
+                value = _value(work, pending[pname])
+                if value is None or not _write_parameter(work, pname, value):
+                    return False
+        return True
+
+    # An action's value read from an observable or a function is read by
+    # BNG2.pl from the amounts of that moment, before generation, and here only
+    # from the .net's, after it: no verdict.
+    state_names = [*model.observable_names, *model.function_names]
+
+    def reads_state(text: str | None) -> bool:
+        return bool(text) and any(
+            re.search(rf"(?<![\w.]){re.escape(n)}(?!\w)", text or "") for n in state_names
+        )
+
+    held_as: dict[str, tuple[str, Any]] = {}  # species -> ("expr", text) or ("num", value)
+    seed_of: dict[str, str] = {}
     every_seed_read = True
     for pattern, amount in seeds:
         sname = _species_name(model, pattern)
-        declared_value = _value(model, amount)
-        if sname is not None and declared_value is not None:
-            want_species[sname] = declared_value
+        if sname is not None and _value(work, amount) is not None:
+            seed_of[sname] = amount
+            held_as[sname] = ("expr", amount)
         else:
             every_seed_read = False
-    for step in sets:
-        sname = _species_name(model, step.target or "")
-        set_value = (
-            float(step.value) if step.value is not None else _value(model, step.value_expr or "")
-        )
-        if sname is None or set_value is None:
+
+    def now(entry: tuple[str, Any]) -> float | None:
+        kind, held = entry
+        return held if kind == "num" else _value(work, held)
+
+    for step in before:
+        if not isinstance(step, StateChange):
+            continue
+        if step.kind == "set_parameter":
+            if work is not model and step.target in moved and step.value is not None:
+                pending.pop(step.target or "", None)
+                if (
+                    not _write_parameter(work, step.target or "", float(step.value))
+                    or not follow()
+                ):
+                    return []
+            continue
+        if reads_state(step.value_expr):
             return []
-        base = want_species.get(sname, 0.0) if step.kind == "add_concentration" else 0.0
-        want_species[sname] = base + set_value
+        sname = _species_name(model, step.target or "")
+        if sname is None:
+            return []
+        if step.value is None and step.kind == "set_concentration":
+            if _value(work, step.value_expr or "") is None:
+                return []
+            held_as[sname] = ("expr", step.value_expr)
+            continue
+        set_value = (
+            float(step.value) if step.value is not None else _value(work, step.value_expr or "")
+        )
+        if set_value is None:
+            return []
+        if step.kind == "add_concentration":
+            # What the add adds to: the species' number, or, where it is not a
+            # number, its seed at this step. BNGModel.pm evaluates
+            # $spec->Concentration, the seed, also after a setConcentration to
+            # an expression, which the add so discards.
+            if sname not in held_as and not every_seed_read:
+                return []  # its seed may be one this reading could not match
+            entry = held_as.get(sname, ("num", 0.0))
+            if entry[0] == "expr":
+                if sname not in seed_of:
+                    return []  # BNG2.pl adds to the seed, which was not read
+                entry = ("expr", seed_of[sname])
+            base = now(entry)
+            if base is None:
+                return []
+            held_as[sname] = ("num", base + set_value)
+        else:
+            held_as[sname] = ("num", set_value)
+    want_species: dict[str, float] = {}
+    for sname, entry in held_as.items():
+        reached_amount = now(entry)
+        if reached_amount is None:
+            return []
+        want_species[sname] = reached_amount
     for sname, want in want_species.items():
         held = float(model.get_concentration(sname))
         if not close(held, want):
@@ -1354,6 +1537,35 @@ def _recording(notes: list[str]):
         warnings.warn_explicit(w.message, w.category, w.filename, w.lineno, source=w.source)
 
 
+def _derived_of_the_net(
+    actions: ProtocolSpec, out_path: str | Path | None, net_text: str
+) -> dict[str, str] | None:
+    """The derived parameters of the ``.net`` :func:`omex_to_net` wrote, for its
+    actions block's warnings, as :func:`write_bngl` hands its model's (issue
+    #1737): with ``kd = A0`` in the ``.net``, a species set once to ``kd*2``
+    follows A0 in BNG2.pl. ``None`` where no change is evaluated once (the
+    warnings read none then), or where the ``.net`` does not load back (a
+    ``strict=False`` one may not): the warnings then read each expression's
+    text alone."""
+    from bngsim._exceptions import ModelError
+    from bngsim._model import Model
+    from bngsim.convert._bngl_writer import _derived_parameters
+
+    if not any(
+        isinstance(s, StateChange) and s.evaluated_once and s.value_expr for s in actions.steps
+    ):
+        return None
+    try:
+        if out_path is not None:
+            return _derived_parameters(Model.from_net(out_path)._core.codegen_data())
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "model.net"
+            path.write_text(net_text, encoding="utf-8")
+            return _derived_parameters(Model.from_net(path)._core.codegen_data())
+    except ModelError:
+        return None
+
+
 def omex_to_net(
     omex_path: str | Path,
     out_path: str | Path | None = None,
@@ -1499,7 +1711,8 @@ def omex_to_net(
         if actions is not None and dest is not None:
             from bngsim.convert._protocol import write_bngl_protocol
 
-            text = write_bngl_protocol(actions)
+            derived = _derived_of_the_net(actions, out_path, report.output_text)
+            text = write_bngl_protocol(actions, derived=derived)
             if notes:
                 for note in notes:
                     warnings.warn(note, ConversionWarning, stacklevel=2)

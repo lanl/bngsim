@@ -211,6 +211,26 @@ def known_broken(compiler: list[str]) -> str | None:
         return entry[0]
 
 
+def peek() -> tuple[list[str] | None, str | None]:
+    """The compiler a build would use now and the broken verdict kept on it, or
+    why none can be named, without probing, keeping or logging anything: what
+    :meth:`bngsim.Model.describe` reports (issue #1705). A broken verdict past
+    its time is reported as it stands; a build probes it again."""
+    from bngsim import _codegen as cg
+
+    try:
+        compiler = cg._find_c_compiler()
+    except RuntimeError as err:
+        return None, str(err)
+    if shutil.which(compiler[0]) is None:
+        return compiler, (
+            f"C compiler not found: {compiler[0]!r} is not an executable on PATH"
+            f"{' (from CC)' if os.environ.get('CC') else ''}."
+        )
+    entry = _verdicts.get(toolchain_key(compiler))
+    return compiler, (None if entry is None else entry[0])
+
+
 def record_missing(compiler: list[str]) -> str | None:
     """When ``compiler`` is not an executable where ``subprocess`` would look for
     it, keep that as the toolchain's verdict, log it once, and return it;

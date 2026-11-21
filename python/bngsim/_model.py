@@ -16,7 +16,9 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn, overload
 
 import numpy as np
 
+from bngsim import _foreign_names
 from bngsim._exceptions import (
+    MissingFileError,
     ModelError,
     ParameterError,
     SimulationError,
@@ -47,6 +49,9 @@ if TYPE_CHECKING:
     from bngsim.convert import ProtocolSpec
 
 logger = logging.getLogger("bngsim")
+
+#: No value was given: the call a message suggests says ``value`` (issue #1700).
+_UNSET: Any = object()
 
 # Suffix → factory-method name, for Model.load() dispatch. ``.sbml`` is accepted
 # alongside ``.xml`` because SBML is served under both (BioModels uses .xml).
@@ -149,11 +154,15 @@ class Model:
         "_frozen_params",
         "_loaded_params",
         "_loaded_state",
+        "_last_run_end",
+        "_source",
+        "_sbml_record",
     )
 
     def __init__(
         self, _core: NetworkModel, _guarded: list[tuple[str, str, str]] | None = None
     ) -> None:
+        _require_core(_core)
         self._core = _core
         # Every parameter's value as the model was built, which a network-free
         # run compares the model's values with to find the ones set since, and
@@ -165,6 +174,23 @@ class Model:
         # And every species' amount, which it hands the backend the same way
         # where the model has changed it (issue #1373).
         self._loaded_state: tuple[float, ...] = tuple(float(x) for x in _core.get_state())
+        # Issue #1701: the time the last run that wrote its end state back left
+        # the model at, that state, and the mark of the Simulator that ran it, as
+        # Simulator.run records it. A run that starts before that time from
+        # exactly this state, unchanged since, continues that run with its clock
+        # set back, which run() warns of (LiveStartWarning). None until a run
+        # writes back.
+        self._last_run_end: tuple[float, np.ndarray, object] | None = None
+        # Issue #1705: where the model came from, ``{"format", "path",
+        # "sha256", ...}`` as the loader recorded it (_record_source), or None
+        # for a model built in Python (ModelBuilder, build_model_from_parsed, a
+        # coupling submodel). Read by describe(). A clone keeps its parent's.
+        self._source: dict[str, Any] | None = None
+        # Issue #1705: the SBML loader's record of the file, for describe():
+        # its compartments, each species' compartment, the parameters it
+        # declares and its reactions as written, by the names the model uses
+        # (_sbml_loader._sbml_record). None for every other format.
+        self._sbml_record: dict[str, Any] | None = None
         self._codegen_so_path: str = ""
         # GH #198: whether codegen should emit the expression output-sensitivity
         # evaluator. Set by the Simulator before codegen prep (only a sensitivity
@@ -490,12 +516,22 @@ class Model:
         path = Path(path)
         suffix = path.suffix.lower()
         factory = _LOAD_DISPATCH.get(suffix)
+        if factory is None and not path.exists():
+            from bngsim._biomodels import ID
+
+            if ID.match(path.name):
+                raise ModelError(
+                    f"{path.name!r} is a BioModels id, not a file: "
+                    f"Model.from_biomodels({path.name!r}) fetches it"
+                )
         if factory is None:
             known = ", ".join(sorted(_LOAD_DISPATCH))
             raise ModelError(
                 f"Cannot infer a model format from {path.name!r} "
                 f"(suffix {suffix or 'missing'!r}); expected one of: {known}. "
-                f"Use the format-specific factory to load it explicitly."
+                f"Use the format-specific factory to load it explicitly.",
+                code="model.unknown_format",
+                details={"path": str(path), "suffix": suffix, "expected": sorted(_LOAD_DISPATCH)},
             )
         if compartment_sizes and factory in ("from_net", "from_bngl"):
             # Post-BNG2.pl, the compartment volumes are already folded into the
@@ -607,6 +643,90 @@ class Model:
             raise  # typed refusal — see from_sbml (Antimony loads via SBML)
         except Exception as e:
             raise ModelError(f"Failed to load Antimony string: {e}") from e
+
+    @classmethod
+    def from_biomodels(
+        cls,
+        model_id: str,
+        *,
+        version: int | None = None,
+        cache: bool = True,
+        refresh: bool = False,
+        defer_jacobian: bool | None = None,
+        compartment_sizes: dict[str, float] | None = None,
+    ) -> Model:
+        """Load a model from BioModels by its id, such as ``"BIOMD0000000010"``.
+
+        Fetches the entry's main SBML file from https://www.biomodels.org,
+        checks it against the sha256 BioModels publishes for it, and keeps a
+        copy, so a second call needs no network. Nothing is fetched unless you
+        call this.
+
+        Parameters
+        ----------
+        model_id : str
+            The BioModels id: ``BIOMD`` (curated) or ``MODEL`` (not curated)
+            and ten digits.
+        version : int, optional
+            The entry's version. Default: the latest, or the latest already
+            cached. Pass a version to pin the exact file.
+        cache : bool, optional
+            Read and keep a copy in ``~/.cache/bngsim/biomodels`` (or
+            ``$BNGSIM_BIOMODELS_CACHE_DIR``). Default True. ``False`` fetches
+            the file again and keeps nothing.
+        refresh : bool, optional
+            Fetch again even if a copy is cached, and update the cache. A cached
+            latest version is otherwise used until you refresh it.
+        defer_jacobian, compartment_sizes
+            As for :meth:`from_sbml`.
+
+        Returns
+        -------
+        Model
+            The model. ``model.describe()["source"]`` records the id, the
+            version, the file name and its sha256.
+
+        Raises
+        ------
+        ValueError
+            If ``model_id`` is not a BioModels id.
+        ModelError
+            If BioModels has no such entry, or the file can't be fetched (no
+            network, or a host BioModels refuses) and no copy is cached. The
+            message names the cache directory.
+
+        Examples
+        --------
+        >>> model = bngsim.Model.from_biomodels("BIOMD0000000010")  # doctest: +SKIP
+        """
+        from bngsim import _biomodels
+
+        got = _biomodels.fetch(model_id, version=version, cache=cache, refresh=refresh)
+        if got["path"] is not None:
+            model = cls.from_sbml(
+                got["path"], defer_jacobian=defer_jacobian, compartment_sizes=compartment_sizes
+            )
+        else:
+            model = cls.from_sbml_string(
+                got["data"].decode("utf-8"),
+                defer_jacobian=defer_jacobian,
+                compartment_sizes=compartment_sizes,
+            )
+        # Keep what the SBML load recorded beyond the file (compartment_sizes).
+        loaded = dict(model._source or {})
+        _record_source(
+            model,
+            "sbml",
+            path=got["path"],
+            text=None if got["path"] is not None else got["data"],
+            biomodels_id=got["id"],
+            biomodels_version=got["version"],
+            biomodels_file=got["file"],
+        )
+        assert model._source is not None
+        for key, value in loaded.items():
+            model._source.setdefault(key, value)
+        return model
 
     @classmethod
     def from_sbml(
@@ -764,13 +884,14 @@ class Model:
 
         path = Path(path)
         if not path.exists():
-            raise FileNotFoundError(f"Net file not found: {path}")
+            raise MissingFileError(f"Net file not found: {path}", path)
         try:
             core = NetworkModel.from_net(str(path))
         except (ValueError, RuntimeError) as e:
             raise ModelError(f"Failed to load {path}: {e}") from e
         m = cls(_core=core)
         m._net_path = str(path)
+        _record_source(m, "net", path=path)
         m._ar_report_map = _ar_report_map_from_net(core)
         _mark_ar_targets_continuous(core, m._ar_report_map)
         m._frozen_params = _unit_conversion_folds(_unit_conversions_in(path), core)
@@ -1135,6 +1256,113 @@ class Model:
             self._state_switch_root_covered = covered
         return self._state_switch_root_conditions
 
+    def _decided_at_values(self) -> tuple[bool | None, ...] | None:
+        """The truth, at the current parameter values, of each comparison over
+        parameters alone that can decide an ``if()`` condition of this model
+        (issue #1636), or ``None`` where none decides one, or the model has
+        events, which may move a parameter during the run. Everything a fold at
+        these values does follows from it, so it is the key the folded answers
+        are kept by."""
+        if self._core.n_events:
+            return None
+        from bngsim._switch_sensitivity import parameter_decidable_parts, part_truths_at_values
+
+        parts = self._state_switch_root_memo.get("decidable parts")
+        if parts is None:
+            parts = parameter_decidable_parts(self._core)
+            _remember(self._state_switch_root_memo, "decidable parts", parts)
+        if not parts:
+            return None
+        decided = part_truths_at_values(self._core, parts)
+        if all(d is None for d in decided):
+            return None
+        return decided
+
+    def _state_switch_roots_at_values(
+        self, covered: tuple[str, ...]
+    ) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+        """``(conditions, guards)`` for a plain run at the current parameter
+        values, where some condition is decided by them, or ``None`` where none
+        is and :meth:`_state_switch_roots_beside` stands (issue #1636). Kept by
+        what the values decide, so a fit or a scan that leaves those decisions
+        alone folds once."""
+        decided = self._decided_at_values()
+        if decided is None:
+            return None
+        from bngsim._switch_sensitivity import state_switch_roots_at_values
+
+        key = ("at values", covered, decided)
+        # One read: the memo is shared with clones on worker threads, and
+        # cleared whole at its cap, so a key found may be gone at the next
+        # read. None is an answer here, so the default is not.
+        kept: tuple[tuple[str, ...], tuple[str, ...]] | None = self._state_switch_root_memo.get(
+            key, _NOT_KEPT
+        )
+        if kept is not _NOT_KEPT:
+            return kept
+        try:
+            got = state_switch_roots_at_values(self._core, covered)
+        except Exception as e:  # pragma: no cover - defensive, as for the roots
+            logger.warning(
+                "Folding the conditions parameters decide failed (%s); the run "
+                "roots on every state switch, as it would without it (issue #1636).",
+                e,
+            )
+            got = None
+        kept = None if got is None else (tuple(got[0]), tuple(got[1]))
+        _remember(self._state_switch_root_memo, key, kept)
+        return kept
+
+    def _state_switch_roots_at_run_values(
+        self, covered: tuple[str, ...] | None = None
+    ) -> tuple[str, ...]:
+        """The state-switch roots a solve at the current parameter values
+        watches: :meth:`_state_switch_roots_beside`, less the atoms of a
+        condition those values decide (issue #1636). What a plain run is handed,
+        for the other readers that ask what switches in a solve: a steady-state
+        march, ``run_diffrax``, and a schedule past the stop budget."""
+        if covered is None:
+            # Through the public method, which is what these readers called.
+            conditions = self.state_switch_root_conditions()
+            if not conditions:
+                return ()
+            covered = self.time_discontinuity_conditions()
+        else:
+            conditions = self._state_switch_roots_beside(covered)
+        if conditions:
+            at_values = self._state_switch_roots_at_values(covered)
+            if at_values is not None:
+                return at_values[0]
+        return conditions
+
+    def _rate_laws_at_values(self) -> tuple[tuple[str, ...], dict] | None:
+        """The rate laws and function bodies with each ``if()`` the current
+        parameter values decide written as the branch it takes, for
+        :func:`bngsim._switch_sensitivity.context_with_laws`, or ``None`` where
+        nothing folds (issue #1636). Kept as the roots are."""
+        decided = self._decided_at_values()
+        if decided is None:
+            return None
+        from bngsim._switch_sensitivity import folded_laws_at_values
+
+        key = ("laws at values", decided)
+        kept: tuple[tuple[str, ...], dict] | None = self._state_switch_root_memo.get(
+            key, _NOT_KEPT
+        )
+        if kept is not _NOT_KEPT:
+            return kept
+        try:
+            kept = folded_laws_at_values(self._core, take_branch=True)
+        except Exception as e:  # pragma: no cover - defensive, as for the roots
+            logger.warning(
+                "Folding the conditions parameters decide failed (%s); the run "
+                "roots on every state switch, as it would without it (issue #1636).",
+                e,
+            )
+            kept = None
+        _remember(self._state_switch_root_memo, key, kept)
+        return kept
+
     def _state_switch_guards_beside(self, covered: tuple[str, ...]) -> tuple[str, ...]:
         """Parallel to :meth:`_state_switch_roots_beside`: for each root, the
         ``if()`` branches it switches a rate law in, as an expression that reads
@@ -1359,6 +1587,12 @@ class Model:
         m = Model(_core=self._core.clone(), _guarded=self._guarded_functions)
         m._loaded_params = dict(self._loaded_params)
         m._loaded_state = self._loaded_state
+        # Issue #1701: the clone holds the state the run left, so a run of it
+        # from another time continues that run as the original's would. Shared,
+        # not copied: the vector is read-only, and the record is only replaced.
+        m._last_run_end = self._last_run_end
+        m._source = dict(self._source) if self._source is not None else None
+        m._sbml_record = self._sbml_record  # read-only once the loader made it
         m._net_path = self._net_path
         m._want_output_sens = self._want_output_sens
         m._codegen_so_path = self._codegen_so_path
@@ -1577,7 +1811,9 @@ class Model:
         try:
             self._core.set_param(name, float(value), force_override=force_override)
         except (KeyError, RuntimeError) as e:
-            raise ParameterError(f"Parameter '{name}' not found in model") from e
+            raise ParameterError(
+                self._parameter_not_found(name, value), **self._not_found(name, "parameter")
+            ) from e
 
     @property
     def frozen_params(self) -> list[str]:
@@ -1653,12 +1889,16 @@ class Model:
         a volume decides — the amount↔concentration conversion, an
         amount-declared initial condition, the mass-action scalar's ``Π V^n``,
         the SSA propensity volume — is re-derived from the parameter rather than
-        left at the size the model happened to load at. What they are still not
-        is *differentiable*: forward sensitivity refuses a ``d/dV`` column
-        (issue #170 stage 3), which is why this list is worth having.
+        left at the size the model happened to load at. A forward-sensitivity
+        run differentiates them too: ``d/dV`` is a column like any other
+        parameter's (issue #170 stage 3), and matches a central finite
+        difference across a rebuild at ``V ± h`` (issue #1845).
 
-        A handful cannot be written even so; see
-        :attr:`unwritable_compartment_size_params`.
+        Some cannot be written even so, and a sensitivity run refuses their
+        column for the same reason; see
+        :attr:`unwritable_compartment_size_params`. A steady-state sensitivity
+        also refuses a compartment size where the model has a conservation law,
+        whose conserved total is an amount the size does not move.
 
         Empty for ``.net`` models, and for any compartment the SBML loader
         promoted to a species (rate-rule or event-resized): that one is live
@@ -1698,8 +1938,13 @@ class Model:
         such expression once, at load, against the sizes. All three are decided
         at load and named in the error.
 
-        A subset of :attr:`compartment_size_params`, and usually empty — reload
-        with ``Model.from_sbml(..., compartment_sizes={...})`` to move one.
+        A forward-sensitivity column for one is refused too, since it is the
+        derivative of the same write. A subset of
+        :attr:`compartment_size_params`, empty for most models (not for 9% of
+        the SBML test corpus). To move one, or for its gradient as a difference
+        of rebuilds at ``V ± h``, reload with
+        ``Model.from_sbml(..., compartment_sizes={...})``; that refuses a size an
+        assignment rule sets, which moves with what the rule reads.
 
         Returns
         -------
@@ -1757,7 +2002,9 @@ class Model:
         try:
             return self._core.get_param(name)
         except (KeyError, RuntimeError) as e:
-            raise ParameterError(f"Parameter '{name}' not found in model") from e
+            raise ParameterError(
+                self._parameter_not_found(name), **self._not_found(name, "parameter")
+            ) from e
 
     def set_params(self, params: dict[str, float]) -> None:
         """Set multiple parameters from a dict.
@@ -1792,9 +2039,26 @@ class Model:
         known = set(self._core.param_names)
         unknown = set(params.keys()) - known
         if unknown:
+            why = "".join(
+                f"{text} "
+                for n in sorted(unknown, key=str)
+                if isinstance(n, str) and (text := self._not_a_parameter(n, params[n], among=True))
+            )
+            fields = [
+                self._not_found(n, "parameter")
+                if isinstance(n, str)
+                else {
+                    "details": {"name": repr(n), "close_matches": [], "is_a": None},
+                    "remedies": [],
+                }
+                for n in sorted(unknown, key=str)
+            ]
             raise ParameterError(
-                f"Unknown parameter(s): {', '.join(sorted(unknown))}. "
-                f"Known: {', '.join(sorted(known))}"
+                f"Unknown parameter(s): {', '.join(sorted(map(str, unknown)))}. {why}"
+                f"Known: {', '.join(sorted(known))}",
+                code="param.not_found",
+                details={"names": [f["details"] for f in fields if f]},
+                remedies=[r for f in fields if f for r in f["remedies"]],
             )
         # Phase 2: Convert all values (catches "x", None, etc.)
         converted: dict[str, float] = {}
@@ -2055,7 +2319,7 @@ class Model:
         (issue #1528).
         """
         value = float(value)
-        name = self._species_call(name, lambda n: self._core.set_concentration(n, value))[0]
+        name = self._species_call(name, lambda n: self._core.set_concentration(n, value), value)[0]
         # A fresh assignment supersedes whatever this species' initial condition
         # was declared to depend on; declare again after the write (issue #111).
         self._declared_ic_sens.pop(name, None)
@@ -2088,10 +2352,14 @@ class Model:
         """
         return float(self._species_call(name, self._core.get_concentration)[1])
 
-    def _species_call(self, name: str, call: Callable[[str], Any]) -> tuple[str, Any]:
+    def _species_call(
+        self, name: str, call: Callable[[str], Any], value: object = _UNSET
+    ) -> tuple[str, Any]:
         """``(the model's name, call(it))`` for species *name*: *name* itself,
         or else *name* without a fixed species' ``$``, which the model's names
-        never hold. Raises :class:`ModelError` when neither is a species."""
+        never hold. Raises :class:`ModelError` when neither is a species, saying
+        what the name is if it is something else (issue #1700); *value* is the
+        one a write was given, for the call that message suggests."""
         try:
             return name, call(name)
         except (KeyError, RuntimeError) as e:
@@ -2101,7 +2369,9 @@ class Model:
                     return bare, call(bare)
                 except (KeyError, RuntimeError):
                     pass
-            raise ModelError(f"Species '{name}' not found in model") from e
+            raise ModelError(
+                self._species_not_found(name, value), **self._not_found(name, "species")
+            ) from e
 
     def get_state(self) -> np.ndarray:
         """Bulk-copy the full live species-concentration vector (GH #102).
@@ -3134,6 +3404,95 @@ class Model:
         """Names of all registered table functions."""
         return self._core.table_function_names
 
+    # ─── Names that are not the API (issue #1700) ─────────────────────────
+
+    def _parameter_not_found(self, name: str, value: object = _UNSET) -> str:
+        """The message for a parameter *name* the model does not have: what it
+        is when it is a species, an observable or a function, else the near
+        matches (issue #1700)."""
+        head = f"Parameter '{name}' not found in model."
+        if name in self._core.param_names:
+            # The engine's binding reports any failure after the lookup as a
+            # missing name; a hint would send the caller after a typo there is
+            # none of, so say no more than it did.
+            return head[:-1]
+        why = self._not_a_parameter(name, value)
+        return f"{head} {why or f'Model.param_names lists all {self.n_parameters}.'}"
+
+    def _not_a_parameter(
+        self, name: str, value: object = _UNSET, *, among: bool = False
+    ) -> str | None:
+        """What *name* is instead of a parameter, or its near matches, or
+        ``None``. *among*: the sentence is one of several, so it names *name*."""
+        what = _what_it_is(self, name, value, via="model", besides="parameter")
+        if what is not None:
+            return what
+        close = _foreign_names.near_matches(name, self._core.param_names)
+        if close:
+            lead = f"For {name!r}, close" if among else "Close"
+            return f"{lead} matches: {_foreign_names.quote_list(close)}."
+        return None
+
+    def _not_found(self, name: str, kind: str) -> dict:
+        """The code, details and remedies of the error for a *kind* (``parameter``
+        or ``species``) *name* the model does not have (issue #1702): the
+        keywords :class:`BngsimError` takes. Empty for a parameter the model has,
+        whose failure came after the lookup and is not a missing name."""
+        from bngsim._error_codes import use_call, use_name
+
+        names = self._core.param_names if kind == "parameter" else self.species_names
+        if name in names:
+            return {}
+        # What the message says, in its order: a species the name matches
+        # loosely (for a species), else what the name is instead, else the near
+        # matches.
+        close: list[str] = []
+        is_a, actual = None, name
+        if kind == "species":
+            bare = _foreign_names._bare(name)
+            close = [s for s in names if _foreign_names._bare(s) == bare][:1]
+        if not close:
+            is_a, actual = _kind_of(self, name, besides=kind)
+            if is_a is None:
+                close = list(_foreign_names.near_matches(name, names))
+        remedies: list[dict] = [use_name(c) for c in close]
+        if is_a == "species":
+            remedies.append(use_call("set_concentration", actual))
+        elif is_a == "parameter":
+            remedies.append(use_call("set_param", actual))
+        return {
+            "code": "param.not_found" if kind == "parameter" else "species.not_found",
+            "details": {"name": name, "close_matches": list(close), "is_a": is_a},
+            "remedies": remedies,
+        }
+
+    def _species_not_found(self, name: str, value: object = _UNSET) -> str:
+        """:meth:`_parameter_not_found` for a species. A species the name
+        matches loosely comes first: BNGL's ``Molecules S1 S1()`` makes ``S1``
+        an observable, and the caller wants the species ``S1()``."""
+        head = f"Species '{name}' not found in model"
+        bare = _foreign_names._bare(name)
+        loose = next((s for s in self.species_names if _foreign_names._bare(s) == bare), None)
+        if loose is not None:
+            v = _foreign_names.value_text(value) if value is not _UNSET else "value"
+            return (
+                f"{head}. The species {loose!r} is close: read it with "
+                f"model.get_concentration({loose!r}) and set it with "
+                f"model.set_concentration({loose!r}, {v})."
+            )
+        what = _what_it_is(self, name, value, via="model", besides="species")
+        if what is not None:
+            return f"{head}. {what}"
+        close = _foreign_names.near_matches(name, self.species_names)
+        if close:
+            return f"{head}. Close matches: {_foreign_names.quote_list(close)}."
+        return f"{head}. Model.species_names lists all {self.n_species}."
+
+    def __dir__(self) -> list[str]:
+        # Without the names of bngsim._foreign_names' table, which are on the
+        # class only to say what to call instead (issue #1700).
+        return _foreign_names.public_dir(self)
+
     # ─── Dunder methods ───────────────────────────────────────────────────
 
     def __reduce__(self) -> NoReturn:
@@ -3160,6 +3519,158 @@ class Model:
             "into bngsim's compiled extension)",
             "Use clone() for an independent Model.",
         )
+
+    def describe(self, *, limit: int | None = 50) -> dict[str, Any]:
+        """What the model is, in one call: a JSON-serializable dict whose
+        ``str()`` is a plain-text form (issue #1705).
+
+        Read it before choosing a method or the outputs to report. It is built
+        from what the loader recorded and the model holds, so it neither runs
+        the model nor changes its state or parameters, and it compiles nothing.
+        Most models take under a millisecond; the first call on a model whose
+        rates are many functions also makes the scan of which of them read the
+        clock, which the model keeps (0.5 s on one of 677 functions).
+
+        Keys:
+
+        * ``schema_version``: 1. A change that removes or renames a key, or
+          changes what one holds, increments it.
+        * ``source``: ``format`` (``"sbml"``, ``"antimony"``, ``"net"``,
+          ``"bngl"``, or ``None`` for a model built in Python), the absolute
+          ``path``, and the ``sha256`` of the file, read again after the load
+          (of the text, encoded as UTF-8, for a ``from_*_string`` load). Of the
+          file only: not of a file a ``.bngl`` reads or a table function's data.
+          A ``.bngl`` load adds ``network``, the ``.net`` BNG2.pl generated; a
+          load with ``compartment_sizes=`` records them; an OMEX archive's model
+          adds ``archive_entry``, its path being the extracted copy.
+        * ``counts``: how many entries each list below has before ``limit``
+          cuts it, and ``events`` and ``table_functions``. For SBML they count
+          the file's species and reactions, not the model's channels
+          (:attr:`n_reactions` counts those).
+        * ``next_run_starts_from``: ``"initial"``, or ``"live"`` where the
+          model's state is not its initial state, as after a run or a
+          :meth:`set_concentration`: the next ``run()`` continues from it.
+        * ``species_values``: ``"concentration"`` for an SBML or Antimony
+          model, an amount divided by its compartment's size, for every species
+          the file declares and whatever its quantity, as :meth:`get_concentration`
+          and ``Result.species`` give them. ``None`` for a ``.net`` or BNGL
+          model, whose file states no units, or one built in Python.
+        * ``methods``: for ``ode``, ``ssa``, ``psa``, ``nf``, ``rm``,
+          ``forward_sensitivities`` and ``steady_state``, a ``status`` and
+          ``reasons``, each reason a
+          ``code`` and the ``message`` the run raises (SSA's grouped by code,
+          with a ``count`` and its ``locations``). ``"ok"``: nothing in the
+          model or this install refuses the method before a run; a run can
+          still fail on what depends on its arguments, or on its starting
+          values (a rate that is NaN or infinite at the start fails a
+          stochastic run at its first step). ``"refused"``: the model has a
+          construct the method refuses, read from the check the Simulator
+          makes. ``"needs_input"``: the method needs what the model does not
+          carry (the network-free methods read a BNG-XML file,
+          ``xml_path=``). ``"unavailable"``: this install lacks it. SSA may
+          also carry ``warnings``. ``forward_sensitivities`` is never ``"ok"``:
+          it is ``"undecided"`` where nothing refuses it, since whether the
+          rate laws differentiate to closed form is decided when a sensitivity
+          run builds its code, and a ``note`` says so; it reports the
+          ``backend`` that would build it, and ``refused_parameters``: the
+          parameters a sensitivity run refuses whatever it asks, those folded at
+          load (:attr:`frozen_params`, with what they went into), the
+          compartment sizes :meth:`set_param` cannot write
+          (:attr:`unwritable_compartment_size_params`), and the parameters a
+          rule or function sets, each with why, cut at ``limit`` like a list
+          (``refused_parameters_omitted`` counts the rest). ``steady_state``
+          lists every
+          reason :meth:`Simulator.steady_state` is refused for the model alone,
+          in the order the refusals come: the ODE Simulator's own, then the
+          call's checks (an event, a compartment size that jumps, the time
+          reaching the state), then a model with no species. Its ``note`` says
+          what it leaves to the call: a conservation law the right-hand side
+          does not keep, and whether the solve converges.
+        * ``time_dependence``: ``rate_laws_read_clock``,
+          ``functions_reading_clock``, ``state_reads_clock`` (which a steady
+          state refuses), ``time_tables`` (table functions over time) and
+          ``events``.
+        * ``jacobian``: ``analytical``, the analytical Jacobian's status
+          (``"complete"``, ``"pending"`` or ``"declined"``, with the
+          :attr:`analytical_jacobian_decline` record), which ``describe()``
+          does not derive.
+        * ``parameters``: each one's ``name``, ``value`` and ``kind``:
+          ``"primary"``, ``"derived"`` with its ``expression`` (and
+          ``overridden: True`` where :meth:`set_param` pinned it to a number),
+          or ``"compartment_size"``. ``frozen`` says what a parameter folded
+          at load went into. Synthesized slots (:attr:`param_is_internal`) are
+          left out, and for SBML every parameter the loader made: the list is
+          the file's own, its compartments and its reactions' local ones
+          (``_lp_<reaction>_<id>``).
+        * ``compartments`` (SBML and Antimony only): ``name``, the file's
+          ``id`` where bngsim renamed it, ``size`` (where a run from the
+          initial state starts: the parameter's value, which ``set_param``
+          moves; the state's, for a size a rate rule or event moves; the size
+          at load, for one an assignment rule sets), ``size_declared`` (False
+          where the file gives no usable size and 1 is used) and
+          ``size_set_by``, a list of ``"rate_rule"``, ``"assignment_rule"``
+          and ``"event"``, empty for a constant size.
+        * ``species``: ``name``, ``initial`` (what :meth:`reset` restores and
+          the first row of a run from it), ``fixed`` (no reaction changes it),
+          ``set_by`` (the rules or events that do), and ``reported: False``
+          for one with no column in ``Result.species``. For SBML and Antimony,
+          also ``compartment`` and ``quantity``: ``"amount"`` where the file
+          declares the species in amounts (``hasOnlySubstanceUnits``), with
+          its ``initial_amount``, else ``"concentration"``.
+        * ``other_states`` (SBML and Antimony, where any): a compartment size
+          or parameter a rule or event moves, which bngsim holds as a state
+          and the file does not declare as a species: ``name``, ``initial``,
+          ``holds`` (``"compartment_size"``, ``"parameter"``, ``"other"``),
+          ``set_by``, ``reported``.
+        * ``observables``: each one's ``name`` and what it ``reads``
+          (``A + 2*B``), the columns of ``Result.observables``.
+        * ``functions``: ``name`` and ``expression``; for SBML the file's
+          assignment rules and reaction rates, by its ids. A rule that is a
+          linear sum of species is an observable instead.
+        * ``function_definitions`` (SBML, where any): each one's ``name`` and
+          ``definition``, a lambda, which a ``rate`` calls by name and the
+          model inlines.
+        * ``reactions``: ``reactants``, ``products``, the ``equation`` with its
+          coefficients, ``rate_law`` and ``rate``. For a network:
+          ``"elementary"``, ``"michaelis_menten"``, ``"functional"`` (with the
+          function's ``expression``) or ``"rate_rule"``, and a ``multiplier``
+          other than 1. For SBML, as the file writes them: ``id``,
+          ``rate_law`` ``"kinetic_law"`` with the law as ``rate``, in the
+          model's names (a local parameter as ``_lp_<reaction>_<id>``, the
+          parameter the run reads), ``reversible``, and ``modifiers`` and
+          ``fast`` where set.
+        * ``events``: ``id``, ``trigger``, what it ``assigns``, and its
+          ``delay`` where it has one.
+        * ``omitted``: how many entries each list lost to ``limit``.
+
+        Values are Python floats, so a parameter of ``inf`` is written by
+        ``json.dumps`` as ``Infinity``, which strict JSON does not have.
+
+        Parameters
+        ----------
+        limit : int or None
+            The most entries each list keeps, cut in model order, and the most
+            locations an SSA reason and terms an observable lists; while it is
+            set, an expression keeps its first 200 characters and says how many
+            it lost. ``None`` keeps everything. Default 50.
+
+        Returns
+        -------
+        dict
+            A ``dict`` subclass: ``json.dumps`` writes it, ``==`` compares it
+            as a dict, and ``print`` shows the text form.
+
+        Examples
+        --------
+        >>> model = bngsim.Model.from_sbml("model.xml")      # doctest: +SKIP
+        >>> d = model.describe()                              # doctest: +SKIP
+        >>> d["methods"]["ssa"]["status"]                     # doctest: +SKIP
+        'ok'
+        >>> print(d)                                          # doctest: +SKIP
+        """
+        from bngsim._describe import describe_model
+
+        return describe_model(self, limit=limit)
 
     def __repr__(self) -> str:
         return (
@@ -3192,6 +3703,10 @@ _DERIVATION_MEMO_MAX = 16
 _UNKEYED = object()
 
 
+# What a memo read returns for a key it does not hold, where None is an answer.
+_NOT_KEPT: Any = object()
+
+
 def _remember(memo: dict, key, value) -> None:
     """Keep ``value`` under ``key`` in a memo a model shares with its clones.
     Each step is one dict operation, which is atomic under the GIL, so rows of
@@ -3207,6 +3722,149 @@ def _remember(memo: dict, key, value) -> None:
 _UNIT_CONVERSION = re.compile(r"\bunit_conversion\s*=\s*([^\s#][^#]*?)\s*(?:#|$)")
 # A number first, so that the ``e`` of ``6.0221e+23`` is not read as a name.
 _NUMBER_OR_NAME = re.compile(r"(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?|([A-Za-z_]\w*)")
+
+
+def _record_source(
+    model: Model,
+    fmt: str,
+    *,
+    path: str | Path | None = None,
+    text: str | bytes | None = None,
+    **extra: Any,
+) -> None:
+    """Record where ``model`` came from, for :meth:`Model.describe` (issue
+    #1705): the format, the absolute path, and the SHA-256 of the bytes of the
+    file (re-read here, after the load; ``None`` if it can no longer be read)
+    or of ``text``, encoded as UTF-8 where it is a ``str``. ``extra`` adds what
+    the load did beyond the file, such as the compartment sizes it set. A later
+    call for the same model replaces the record: an Antimony load records
+    itself over the SBML string it made."""
+    import hashlib
+    import os
+
+    where: str | None = None
+    data: bytes | None = None
+    if path is not None:
+        where = os.path.abspath(os.fspath(path))
+        try:
+            data = Path(where).read_bytes()
+        except OSError:
+            data = None
+    elif isinstance(text, str):
+        data = text.encode("utf-8")
+    elif text is not None:
+        # libantimony also takes bytes (issue #1705 review): hashed as given.
+        data = bytes(text)
+    model._source = {
+        "format": fmt,
+        "path": where,
+        "sha256": None if data is None else hashlib.sha256(data).hexdigest(),
+        **{k: v for k, v in extra.items() if v is not None},
+    }
+
+
+def _require_core(core: object) -> None:
+    """Refuse what ``Model(...)`` is given in place of the engine's model: a
+    path or model text, or anything without the ``param_names`` the
+    constructor reads first.
+
+    ``Model(path)`` is what a caller who has not met the factories writes
+    first, and it used to fail inside this constructor with "'str' object has
+    no attribute 'param_names'" (issue #1700). The check is by attribute, not
+    by type, so a stand-in for the engine's model still passes.
+    """
+    if isinstance(core, Model):
+        raise TypeError(
+            "Model() is given a Model: model.clone() makes an independent copy, and "
+            "bngsim.Simulator(model) runs it."
+        )
+    source = _foreign_names.model_source(core)
+    if source is not None:
+        what, loader = source
+        tail = (
+            ", which reads .net, .bngl, .xml, .sbml and .ant files by suffix"
+            if what == "a path"
+            else ""
+        )
+        raise TypeError(f"Model() does not take {what}: use {loader}{tail}.")
+    if hasattr(core, "param_names"):
+        return
+    raise TypeError(
+        f"Model() is built by its loaders, not called with a value of type "
+        f"{type(core).__name__}: use bngsim.Model.load(path), or "
+        "bngsim.Model.from_sbml_string(text) or bngsim.Model.from_antimony_string(text) "
+        "for model text."
+    )
+
+
+def _kind_of(model: Model, name: str, *, besides: str) -> tuple[str | None, str]:
+    """What kind of name *name* is in *model*, other than *besides*, and the
+    model's own spelling of it (issue #1702): ``"function"``, ``"parameter"``,
+    ``"species"`` or ``"observable"``, or ``None``. It looks as
+    :func:`_what_it_is` does, in its order, so the two agree."""
+    if name in model.function_names:
+        return "function", name
+    if besides != "parameter" and name in model._core.param_names:
+        return "parameter", name
+    if besides != "species":
+        species = model.species_names
+        actual = next((n for n in (name, _unclamped(name)) if n in species), None)
+        if actual is None:
+            bare = _foreign_names._bare(name)
+            actual = next((s for s in species if _foreign_names._bare(s) == bare), None)
+        if actual is not None:
+            return "species", actual
+    if name in model.observable_names:
+        return "observable", name
+    return None, name
+
+
+def _what_it_is(
+    model: Model, name: str, value: object = _UNSET, *, via: str, besides: str | None = None
+) -> str | None:
+    """What *name* is in *model*, and the call that reads or sets it, or
+    ``None`` when it is none of the model's names (issue #1700).
+
+    *via* is how the caller reaches the model (``model`` or ``sim.model``).
+    *besides* is the kind the caller asked for and did not find, which is not
+    looked at; ``None`` looks at every kind. A function's value lives in a
+    parameter slot, so functions are looked at before parameters.
+    """
+    v = _foreign_names.value_text(value) if value is not _UNSET else "value"
+    functions = model.function_names
+    if name in functions:
+        return (
+            f"{name!r} is a function, which a run evaluates, so it has no value of its own to "
+            f"set: read it from a run's result.expressions[{name!r}], and set the parameters "
+            "its expression reads."
+        )
+    if besides != "parameter" and name in model._core.param_names:
+        return (
+            f"{name!r} is a parameter: read it with {via}.get_param({name!r}) and set it with "
+            f"{via}.set_param({name!r}, {v})."
+        )
+    if besides != "species":
+        species = model.species_names
+        # The name, or it without a fixed species' $ (the model's names never
+        # hold one), or else one that differs from it only loosely: A for A().
+        actual: str | None = next((n for n in (name, _unclamped(name)) if n in species), None)
+        if actual is None:
+            bare = _foreign_names._bare(name)
+            actual = next((s for s in species if _foreign_names._bare(s) == bare), None)
+        if actual is not None:
+            lead = (
+                f"{name!r} is a species" if actual == name else f"The species {actual!r} is close"
+            )
+            return (
+                f"{lead}: read it with {via}.get_concentration({actual!r}) and set it with "
+                f"{via}.set_concentration({actual!r}, {v})."
+            )
+    if name in model.observable_names:
+        return (
+            f"{name!r} is an observable, which a run computes from the species, so it has no "
+            f"value of its own to set: read it from a run's result.observables[{name!r}]."
+        )
+    return None
 
 
 def _unclamped(name: str) -> str:
@@ -3443,3 +4101,6 @@ def _warn_dropped_state_changes(model: Model, path: str | Path) -> None:
         ConversionWarning,
         stacklevel=_stacklevel_outside_bngsim(),
     )
+
+
+_foreign_names.install(Model, "Model")

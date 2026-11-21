@@ -71,9 +71,9 @@ def _resolve_gate(args: argparse.Namespace) -> str | None:
     return {"none": None, "L1": "L1", "L2": "L2", "full": "full"}[gate]
 
 
-def _build_parser() -> argparse.ArgumentParser:
+def _build_parser(prog: str = "bngsim-sbml2net") -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="bngsim-sbml2net",
+        prog=prog,
         description=(
             "Convert an SBML model to a BioNetGen .net network "
             "(network channel only — species, reactions, parameters, "
@@ -119,8 +119,8 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
+def main(argv: list[str] | None = None, *, prog: str = "bngsim-sbml2net") -> int:
+    args = _build_parser(prog).parse_args(argv)
     # Import here so ``--help`` stays fast and import errors surface as a clean message.
     from bngsim._exceptions import ConversionError
     from bngsim.convert import sbml_to_net
@@ -167,9 +167,9 @@ def main(argv: list[str] | None = None) -> int:
     return 0 if report.ok else 1
 
 
-def _build_net2sbml_parser() -> argparse.ArgumentParser:
+def _build_net2sbml_parser(prog: str = "bngsim-net2sbml") -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="bngsim-net2sbml",
+        prog=prog,
         description=(
             "Convert a BioNetGen .net network to SBML (Level 3 Version 2; "
             "network channel only — species, reactions, parameters, "
@@ -223,8 +223,8 @@ def _build_net2sbml_parser() -> argparse.ArgumentParser:
     return p
 
 
-def net2sbml_main(argv: list[str] | None = None) -> int:
-    args = _build_net2sbml_parser().parse_args(argv)
+def net2sbml_main(argv: list[str] | None = None, *, prog: str = "bngsim-net2sbml") -> int:
+    args = _build_net2sbml_parser(prog).parse_args(argv)
     from bngsim._exceptions import ConversionError
     from bngsim.convert import net_to_sbml
 
@@ -314,9 +314,9 @@ def net2sbml_main(argv: list[str] | None = None) -> int:
     return 0 if report.ok else 1
 
 
-def _build_sbml2bngl_parser() -> argparse.ArgumentParser:
+def _build_sbml2bngl_parser(prog: str = "bngsim-sbml2bngl") -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="bngsim-sbml2bngl",
+        prog=prog,
         description=(
             "Convert an SBML model to a compartmental BioNetGen .bngl model block "
             "(cBNGL — recovers static compartment volumes, GH #224). Unlike "
@@ -366,8 +366,8 @@ def _build_sbml2bngl_parser() -> argparse.ArgumentParser:
     return p
 
 
-def sbml2bngl_main(argv: list[str] | None = None) -> int:
-    args = _build_sbml2bngl_parser().parse_args(argv)
+def sbml2bngl_main(argv: list[str] | None = None, *, prog: str = "bngsim-sbml2bngl") -> int:
+    args = _build_sbml2bngl_parser(prog).parse_args(argv)
     # Import here so ``--help`` stays fast and import errors surface cleanly.
     from bngsim._exceptions import ConversionError
     from bngsim.convert import sbml_to_bngl
@@ -402,9 +402,9 @@ def sbml2bngl_main(argv: list[str] | None = None) -> int:
     return 0 if report.ok else 1
 
 
-def _build_validate_parser() -> argparse.ArgumentParser:
+def _build_validate_parser(prog: str = "bngsim-validate-conversion") -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="bngsim-validate-conversion",
+        prog=prog,
         description=(
             "Validate a format conversion (SBML⇄.net) at levels L0–L4 (GH #217): "
             "L0 syntactic validity, L1 structural equivalence, L2 round-trip "
@@ -457,8 +457,10 @@ def _build_validate_parser() -> argparse.ArgumentParser:
     return p
 
 
-def validate_main(argv: list[str] | None = None) -> int:
-    args = _build_validate_parser().parse_args(argv)
+def validate_main(
+    argv: list[str] | None = None, *, prog: str = "bngsim-validate-conversion"
+) -> int:
+    args = _build_validate_parser(prog).parse_args(argv)
     from bngsim.convert import validate_conversion
 
     if not args.source.exists():
@@ -497,9 +499,9 @@ def validate_main(argv: list[str] | None = None) -> int:
     return 0 if report.ok else 1
 
 
-def _build_omex_parser() -> argparse.ArgumentParser:
+def _build_omex_parser(prog: str = "bngsim-omex") -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="bngsim-omex",
+        prog=prog,
         description=(
             "Pack/unpack a COMBINE archive (.omex) — the standard zip container "
             "bundling SBML + SED-ML + a manifest.xml (GH #219). Container plumbing "
@@ -673,8 +675,8 @@ def _build_omex_parser() -> argparse.ArgumentParser:
     return p
 
 
-def omex_main(argv: list[str] | None = None) -> int:
-    args = _build_omex_parser().parse_args(argv)
+def omex_main(argv: list[str] | None = None, *, prog: str = "bngsim-omex") -> int:
+    args = _build_omex_parser(prog).parse_args(argv)
     from bngsim._exceptions import ConversionError
 
     if args.cmd == "pack":

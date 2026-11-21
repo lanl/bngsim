@@ -1,0 +1,22 @@
+# A -> 0. First-order decay.
+# Exact solution: bngsim.examples.exact("decay", t).
+begin model
+begin parameters
+  k  0.5   # decay rate constant
+  A0 100   # initial A
+end parameters
+begin molecule types
+  A()
+end molecule types
+begin seed species
+  A() A0
+end seed species
+begin observables
+  Molecules A A()
+end observables
+begin reaction rules
+  A() -> 0 k
+end reaction rules
+end model
+
+generate_network({overwrite=>1})

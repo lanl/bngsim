@@ -33,6 +33,7 @@ py:class bngsim._bngsim_core.ResultCore
 py:attr bngsim._bngsim_core.NetworkModel.analytical_jacobian_complete
 py:attr Species.volume_factor
 py:class bngsim._result._ObservableAccessor
+py:class bngsim._result._SpeciesArray
 py:class bngsim._result._XarrayAccessor
 py:class bngsim._switch_sensitivity.UncompensatedCrossingReason
 py:func bngsim._switch_sensitivity.table_function_breaks

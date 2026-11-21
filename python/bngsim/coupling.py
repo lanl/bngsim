@@ -102,6 +102,8 @@ equal to the fractional part (unbiased in expectation, needs an RNG).
 class ConservationError(BngsimError):
     """A conserved moiety drifted beyond tolerance across the exchange boundary."""
 
+    default_code = "coupling.conservation"
+
 
 def _resolve_model(obj: Model | ReactionKernel) -> Model:
     """Accept a :class:`Model` or anything exposing ``.model`` (a kernel)."""

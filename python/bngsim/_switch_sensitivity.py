@@ -341,6 +341,9 @@ def _turning_side(expr: str) -> tuple[str, str] | None:
     return "square", _strip_redundant_parens(base).strip()
 
 
+_MIRRORED_OP = {"<": ">", ">": "<", "<=": ">=", ">=": "<="}
+
+
 def _monotone_pieces(atom: str) -> list[str]:
     """The comparisons whose crossings are this atom's, one per turn of its
     residual, where the atom compares ``abs(u)`` or ``u^2`` with a bound.
@@ -363,12 +366,13 @@ def _monotone_pieces(atom: str) -> list[str]:
     split = _relational_split_op(_strip_redundant_parens(atom))
     if split is None:
         return []
-    lhs, _op, rhs = split
+    lhs, op, rhs = split
     side = _turning_side(lhs)
     bound = rhs
     if side is None:
         side = _turning_side(rhs)
         bound = lhs
+        op = _MIRRORED_OP.get(op, op)  # `b > abs(u)` is `abs(u) < b`
     if side is None or _turning_side(bound) is not None:
         return []
     kind, inner = side
@@ -380,12 +384,21 @@ def _monotone_pieces(atom: str) -> list[str]:
         value = None
     if value is not None and not (0.0 < value < math.inf):
         return []
+    # Each edge keeps the operator the atom was written with, `<=` as `<=` and
+    # `>` as `>` (the far edge mirrored): the crossing stop reads it, and moves
+    # the stop onto the residual's first zero where the edge's truth changes
+    # there (issue #1673). `abs(u) <= b` was registered as `u < b` and
+    # `u > -b`, and its stop was placed by the strict rule, a double after the
+    # zero for some run lengths. An equality has one edge per root either way,
+    # and keeps the strict pair.
+    near = op if op in _MIRRORED_OP else "<"
+    far = _MIRRORED_OP[near]
     if kind == "abs":
-        return [f"({inner})<({bound})", f"({inner})>(-({bound}))"]
+        return [f"({inner}){near}({bound})", f"({inner}){far}(-({bound}))"]
     if value is None:
         return []
     root = repr(math.sqrt(value))
-    return [f"({inner})<({root})", f"({inner})>(-{root})"]
+    return [f"({inner}){near}({root})", f"({inner}){far}(-{root})"]
 
 
 def _relational_split(atom: str) -> tuple[str, str] | None:
@@ -2247,6 +2260,14 @@ _TIME_REF = re.compile(r"(?<![A-Za-z0-9_])time(?:\s*\(\s*\))?(?![A-Za-z0-9_(])")
 # in time, whose crossing this cannot claim to know.
 _CROSSING_RESIDUAL_TOL = 1e-9
 
+# How many doubles from the two-point solve's answer the crossing is walked
+# toward a smaller residual, and how far a run of doubles that all evaluate the
+# residual to 0 is followed down (issue #1673). The solve rounds by an ulp or so according
+# to the scale it probes over; the zero of the residual, as it evaluates, does
+# not move with the scale.
+_CROSSING_SNAP_ULPS = 16
+_CROSSING_ZERO_RUN = 64
+
 # Resolved crossing times, keyed on the text actually solved (function slots and
 # derived names inlined), the run window and the values of every parameter that
 # text reads — which is everything the answer depends on. The inlined text, not
@@ -2304,6 +2325,108 @@ def _inline_function_slots(expr: str, bodies: dict[str, str]) -> str:
     return expr
 
 
+def _snap_to_residual_zero(
+    at, t_star: float, r_star: float | None = None
+) -> tuple[float, float | None]:
+    """``(t, r)``: the double nearest *t_star* at which the residual, as *at*
+    evaluates it, is closest to 0 (the earliest of them on a tie), and the
+    residual there (issue #1673).
+
+    The two-point solve divides by a slope it measures over the run's scale, so
+    its answer moves by an ulp with that scale: ``x' = 1`` from 0.1, at
+    ``x >= 2.6``, was stopped at 2.5000000000000004 for a run to t = 3 or 40
+    and at 2.5 for one to 8, and a row at t = 2.5 read the state before the
+    event or after it according to where the run ended. The zero of the
+    residual as *at* evaluates it is a property of the condition alone: here
+    ``(2.5 + 0.1) - 2.6`` is exactly 0. A residual that is 0 at a run of
+    doubles is placed at the first of them, where a ``>=`` first holds; one
+    that is 0 at none, where it is smallest.
+
+    Each evaluation of the residual costs about a quarter of a millisecond, so
+    the search walks from *t_star* toward the smaller residual, a double at a
+    time, and stops where the next is no smaller: an answer already on the first
+    zero costs one evaluation besides *r_star* (the linearity check's, passed
+    in), the issue's case three. At most ``_CROSSING_SNAP_ULPS`` steps, and a
+    run of zeros followed ``_CROSSING_ZERO_RUN`` doubles, searched at the bound
+    first and then by halves, not a double at a time. A walk that is still going at
+    either bound has not found the place it looks for (a run of zeros longer
+    than that, as ``(t + 1e6) - 1000000.5`` is near 0.5 or ``(t + 0.1) - 0.1``
+    near 0, or a plateau of equal residuals), and stopping there would put the
+    answer at a double that depends on where the solve landed: *t_star* is
+    returned as it was.
+    """
+    seen: dict[float, float | None] = {}
+
+    def size(t: float) -> float | None:
+        if t not in seen:
+            r = at(t)
+            seen[t] = r if r is not None and math.isfinite(r) else None
+        r = seen[t]
+        return None if r is None else abs(r)
+
+    def first_of_zeros(t: float) -> float | None:
+        # The first double of the run of zeros *t* is in, or None where the
+        # run goes on past what is followed. Most runs are a double or two, so the next double
+        # is tried first, which settles those in one evaluation. Past it the
+        # doubles are listed, which costs nothing, and the residual is
+        # evaluated at the bound, then by bisection: a residual's zeros near a
+        # crossing are one run, so a run longer than the bound costs two more
+        # evaluations, and any other about seven, where a double at a time
+        # cost up to 64 (about 16 ms of sympy).
+        doubles = [t, math.nextafter(t, -math.inf)]
+        if size(doubles[1]) != 0.0:
+            return t
+        for _ in range(_CROSSING_ZERO_RUN - 1):
+            doubles.append(math.nextafter(doubles[-1], -math.inf))
+        if size(doubles[-1]) == 0.0:
+            return None
+        zero, nonzero = 1, len(doubles) - 1
+        while nonzero - zero > 1:
+            mid = (zero + nonzero) // 2
+            if size(doubles[mid]) == 0.0:
+                zero = mid
+            else:
+                nonzero = mid
+        return doubles[zero]
+
+    if not math.isfinite(t_star):
+        return t_star, r_star
+    if r_star is not None and math.isfinite(r_star):
+        seen[t_star] = r_star
+    here = size(t_star)
+    if here is None:
+        return t_star, r_star
+    t = t_star
+    if here != 0.0:
+        down = math.nextafter(t, -math.inf)
+        s_down = size(down)
+        if s_down is not None and s_down <= here:
+            step, t, here = -math.inf, down, s_down  # a tie goes to the earlier double
+        else:
+            up = math.nextafter(t, math.inf)
+            s_up = size(up)
+            if s_up is None or s_up >= here:
+                return t_star, r_star  # already the smallest
+            step, t, here = math.inf, up, s_up
+        for _ in range(_CROSSING_SNAP_ULPS):
+            if here == 0.0:
+                break
+            nxt = math.nextafter(t, step)
+            s_nxt = size(nxt)
+            if s_nxt is None or (s_nxt > here if step < 0 else s_nxt >= here):
+                break
+            t, here = nxt, s_nxt
+        else:
+            if here != 0.0:
+                return t_star, r_star  # still shrinking, or level, at the bound
+    if here == 0.0:
+        first = first_of_zeros(t)
+        if first is None:
+            return t_star, r_star
+        t = first
+    return t, seen[t]
+
+
 def _crossing_time_of_condition(
     cond: str,
     scope: SwitchConditionScope,
@@ -2339,10 +2462,10 @@ def _crossing_time_of_condition(
     # The registered text is a whole condition, so it arrives wrapped —
     # `((time()-PdBu_time)<0)` — and the relational splitter only matches at
     # paren depth 0.
-    split = _relational_split(_strip_redundant_parens(cond.strip()))
+    split = _relational_split_op(_strip_redundant_parens(cond.strip()))
     if split is None:
         return None
-    lhs, rhs = split
+    lhs, op, rhs = split
     bodies = bodies or {}
     # A function's slot is a plain parameter as far as the tables below are
     # concerned, and carries a stale number, so it has to be substituted BEFORE
@@ -2370,8 +2493,11 @@ def _crossing_time_of_condition(
     # differ) share an answer instead of each re-parsing the residual three
     # times, which cost a leg ~1.5 ms of sympy.
     scale = 2.0 ** math.ceil(math.log2(max(abs(t_start), abs(t_end), 1.0)))
+    # The operator as well: `x >= 2.6` and `x > 2.6` solve the same residual,
+    # and only the first is moved onto its zero (below).
     key = (
         flat,
+        op,
         scale,
         tuple(sorted((n, scope.values[scope.param_idx[n]]) for n in set(read))),
     )
@@ -2403,6 +2529,53 @@ def _crossing_time_of_condition(
                 t_star,
             )
             return None
+        # The scale above comes from the run's window, and in doubles the
+        # answer moves by an ulp with it (issue #1673). A residual that passed
+        # the check is linear, and is solved again over a scale taken from the
+        # answer itself, the power of two at or above it: the scale is then
+        # the crossing's own at every run length, for every operator. (After
+        # the check, not before: a second line through a curve can land on its
+        # root, and `(time-2)^2 <= 0`, declined over a window that does not end
+        # on its root, was resolved to 2.) The answer is nudged up before its
+        # power of two is read, so that 2.0 and the double after it share a
+        # scale. (Its exponent is bounded first: 2.0 ** 1024 raises
+        # OverflowError rather than give inf, and an answer that far out keeps
+        # the first solve.)
+        # That power of two is read off an answer no window enters, the solve
+        # over a scale of 1. Read off the answer above, it stepped between two
+        # doubles (just below a power of two, with the nudge), and where the
+        # windows' answers fell either side of that step, each was solved
+        # again over a different scale: the stop still moved with the run.
+        # Where the residual at 1 is the same double as at 0 (for a crossing
+        # past about 2**53, say), that solve has no slope, and the answer
+        # above is read instead.
+        seed = t_star
+        r_unit = r1 if scale == 1.0 else at(1.0)
+        if r_unit is not None and r_unit != r0 and abs(r_unit - r0) < float("inf"):
+            seed = -r0 / (r_unit - r0)
+        exponent = math.ceil(math.log2(max(min(abs(seed), 2.0**1023) * (1.0 + 2.0**-40), 1.0)))
+        own = math.ldexp(1.0, exponent) if exponent <= 1023 else math.inf
+        if own != scale and math.isfinite(own):
+            r_own = at(own)
+            if r_own is not None:
+                slope_own = (r_own - r0) / own
+                if slope_own != 0.0 and abs(slope_own) < float("inf"):
+                    again = -r0 / slope_own
+                    check_again = at(again)
+                    if (
+                        check_again is not None
+                        and abs(check_again) <= _CROSSING_RESIDUAL_TOL * abs(slope) * scale
+                    ):
+                        t_star, check = again, check_again
+        # The truth of `>=` and `<` changes at the first double where a rising
+        # residual is 0, and that of `>` and `<=` where a falling one is
+        # (issue #1673). For the other four, and for `==` and `!=`, it changes
+        # after the last zero, or holds only on the run: the solve's answer
+        # stands for those, as it did. (Moved past the last zero, a strict
+        # stop is no longer on the instant the engine fires a strict event at:
+        # 42 tests of events, delays and sensitivities read it there.)
+        if (op in (">=", "<")) if slope > 0 else (op in (">", "<=")):
+            t_star = _snap_to_residual_zero(at, t_star, check)[0]
         return t_star
 
     answer = resolve()
@@ -10408,6 +10581,237 @@ def state_switch_reactions(core, conditions: Sequence[str], ctx=None) -> list[li
     return out
 
 
+def fold_parameter_decided(
+    text: str, constants: frozenset[str], value_of, *, take_branch: bool = False
+) -> str:
+    """*text* with each ``if()`` condition its parameter terms decide written as
+    ``1`` or ``0`` (issue #1636).
+
+    ``(S > 0) or (h <= 0) or (h >= 1)`` at h = 2 is true whatever S is, so the
+    atom ``S > 0`` switches nothing there, and a root on it costs every step it
+    is watched: 300 Hill reactions ran 10x slower with it. A condition whose
+    top level joins its parts by ``or`` is decided where one part that reads
+    only *constants* is true, and one joined by ``and`` where such a part is
+    false. A part counts only as one comparison over constants, each side read
+    by *value_of* (a number, or ``None`` where it cannot be read, which leaves
+    the condition as it is). Nested ``if()`` calls are folded too, inside out;
+    nothing else in *text* changes.
+
+    With ``take_branch`` a decided ``if()`` is written as the branch it takes,
+    in parentheses, so a law whose every condition is decided has no ``if()``
+    left for a scanner to read.
+    """
+    out: list[str] = []
+    cursor = 0
+    while True:
+        m = _IF_CALL.search(text, cursor)
+        if m is None:
+            out.append(text[cursor:])
+            return "".join(out)
+        open_paren = m.end() - 1
+        close_paren = _find_close_paren_strict(text, open_paren)
+        if close_paren < 0:
+            out.append(text[cursor:])
+            return "".join(out)
+        args = _split_top_level_commas(text[open_paren + 1 : close_paren])
+        if len(args) != 3:
+            out.append(text[cursor : close_paren + 1])
+            cursor = close_paren + 1
+            continue
+        cond, yes, no = (
+            fold_parameter_decided(a, constants, value_of, take_branch=take_branch) for a in args
+        )
+        decided = _decided_by_constants(cond, constants, value_of)
+        if decided is not None:
+            cond = "1" if decided else "0"
+        out.append(text[cursor : m.start()])
+        if decided is not None and take_branch:
+            out.append(f"({(yes if decided else no).strip()})")
+        else:
+            out.append(f"if({cond},{yes},{no})")
+        cursor = close_paren + 1
+
+
+def _decided_by_constants(cond: str, constants: frozenset[str], value_of) -> bool | None:
+    """True or False where *cond*'s parameter-only parts decide it, else None."""
+    top = _top_level_parts(_strip_redundant_parens(cond.strip()))
+    if top is None or top[0] not in ("or", "and") or len(top[1]) < 2:
+        return None
+    kind, parts = top
+    for part in parts:
+        split = _relational_split_op(_strip_redundant_parens(part))
+        if split is None:
+            continue
+        lhs, op, rhs = split
+        names = set(_IDENTIFIER.findall(f"{lhs} {rhs}"))
+        if _TIME_REF.search(part) or not names <= constants:
+            continue
+        a, b = value_of(lhs), value_of(rhs)
+        if a is None or b is None:
+            continue
+        truth = _compare(a, op, b)
+        if truth is None:
+            continue
+        if kind == "or" and truth:
+            return True
+        if kind == "and" and not truth:
+            return False
+    return None
+
+
+def _constants_and_values(core):
+    """The names a run cannot move (parameters, less the slots a function owns,
+    which move with the state) and a reader of an expression over them at the
+    model's current values."""
+    names = list(core.param_names)
+    function_names = frozenset(core.function_names)
+    constants = frozenset(n for n in names if n not in function_names)
+    param_idx = {n: i for i, n in enumerate(names)}
+    values = tuple(core.get_param(n) for n in names)
+
+    def value_of(side: str) -> float | None:
+        try:
+            return _evaluate_threshold(side, param_idx, values, {})
+        except Exception:  # pragma: no cover - an unreadable side decides nothing
+            return None
+
+    return constants, value_of
+
+
+def parameter_decidable_parts(core) -> tuple[tuple[str, str, str], ...]:
+    """The comparisons over parameters alone that stand as a part of an
+    ``if()`` condition joined by ``or`` or ``and`` at the top, in the model's
+    functions: the parts some parameter values decide such a condition by
+    (:func:`_decided_by_constants`). Each spelling once, ``(lhs, op, rhs)``.
+    Structural, so a model reads it once; empty for one with none, which then
+    never folds (issue #1636). 300 Hill guards share their two parts."""
+    texts = [*core.function_expressions]
+    if not any(_IF_CALL.search(t) for t in texts):
+        return ()
+    constants = frozenset(n for n in core.param_names if n not in frozenset(core.function_names))
+    found: dict[tuple[str, str, str], None] = {}
+    seen: set[str] = set()
+    for text in texts:
+        for cond in _iter_if_conditions(text):
+            if cond in seen:
+                continue
+            seen.add(cond)
+            top = _top_level_parts(_strip_redundant_parens(cond.strip()))
+            if top is None or top[0] not in ("or", "and") or len(top[1]) < 2:
+                continue
+            for part in top[1]:
+                split = _relational_split_op(_strip_redundant_parens(part))
+                if split is None or _TIME_REF.search(part):
+                    continue
+                if set(_IDENTIFIER.findall(f"{split[0]} {split[2]}")) <= constants:
+                    found[(split[0].strip(), split[1], split[2].strip())] = None
+    return tuple(found)
+
+
+def part_truths_at_values(core, parts: Sequence[tuple[str, str, str]]) -> tuple[bool | None, ...]:
+    """Each of *parts* at the model's current values (None where a side cannot be
+    read): the key a run's folded roots are kept by, since every decision a fold
+    makes follows from these."""
+    # Every run asks this, so it reads the parameters the parts name and no
+    # others: reading all 800 of a model with one Hill law took as long as its
+    # run. The names are parameters, which is what made each a part.
+    names = list(
+        dict.fromkeys(n for lhs, _op, rhs in parts for n in _IDENTIFIER.findall(f"{lhs} {rhs}"))
+    )
+    param_idx = {n: i for i, n in enumerate(names)}
+    values = tuple(core.get_param(n) for n in names)
+
+    def value_of(side: str) -> float | None:
+        try:
+            return _evaluate_threshold(side, param_idx, values, {})
+        except Exception:  # pragma: no cover - an unreadable side decides nothing
+            return None
+
+    out: list[bool | None] = []
+    for lhs, op, rhs in parts:
+        a, b = value_of(lhs), value_of(rhs)
+        out.append(None if a is None or b is None else _compare(a, op, b))
+    return tuple(out)
+
+
+def _compare(a: float, op: str, b: float) -> bool | None:
+    return {"<": a < b, "<=": a <= b, ">": a > b, ">=": a >= b, "==": a == b, "!=": a != b}.get(op)
+
+
+def folded_laws_at_values(
+    core, ctx=None, *, take_branch: bool = False
+) -> tuple[tuple[str, ...], dict] | None:
+    """The functional rate laws, in the context's order, and the function
+    bodies, each folded by :func:`fold_parameter_decided` at the model's
+    current parameter values, or ``None`` where nothing folds (issue #1636).
+    ``take_branch`` is the fold's.
+
+    A model with events is left alone: an event may assign a parameter mid-run,
+    and with it turn a decided condition into an open one.
+    """
+    if core.n_events:
+        return None
+    constants, value_of = _constants_and_values(core)
+    if not constants:
+        return None
+    if ctx is None:
+        ctx = core.functional_jacobian_context()
+    folded_any = False
+    laws = []
+    for rxn in ctx["functional_reactions"]:
+        text = str(rxn.get("rate_expr", ""))
+        folded = (
+            fold_parameter_decided(text, constants, value_of, take_branch=take_branch)
+            if _IF_CALL.search(text)
+            else text
+        )
+        folded_any = folded_any or folded != text
+        laws.append(folded)
+    bodies = {}
+    for name, body in dict(ctx["function_map"]).items():
+        if isinstance(body, str) and _IF_CALL.search(body):
+            folded = fold_parameter_decided(body, constants, value_of, take_branch=take_branch)
+            folded_any = folded_any or folded != body
+            bodies[name] = folded
+        else:
+            bodies[name] = body
+    if not folded_any:
+        return None
+    return tuple(laws), bodies
+
+
+def context_with_laws(ctx, laws: tuple[Sequence[str], dict]):
+    """*ctx* with its rate laws and function bodies replaced by *laws*, as
+    :func:`folded_laws_at_values` gives them."""
+    rate_exprs, bodies = laws
+    reactions = [
+        {**rxn, "rate_expr": text}
+        for rxn, text in zip(ctx["functional_reactions"], rate_exprs, strict=True)
+    ]
+    return {**ctx, "functional_reactions": reactions, "function_map": dict(bodies)}
+
+
+def state_switch_roots_at_values(core, covered: Sequence[str] = ()):
+    """``(conditions, guards)`` of :func:`state_switch_root_conditions` for a
+    plain run at the model's current parameter values, or ``None`` where no
+    condition is decided by them, so the structural set stands (issue #1636).
+
+    The rate laws and the functions they read are folded by
+    :func:`fold_parameter_decided` before the roots are read from them, so an
+    atom that switches nothing at these values is not rooted. A model with
+    events is left alone (:func:`folded_laws_at_values`).
+    """
+    if core.n_events:
+        return None
+    ctx = core.functional_jacobian_context()
+    laws = folded_laws_at_values(core, ctx)
+    if laws is None:
+        return None
+    return state_switch_root_conditions(
+        core, covered=covered, ctx=context_with_laws(ctx, laws), with_guards=True
+    )
+
+
 def state_switch_root_conditions(
     core,
     covered: Sequence[str] = (),
@@ -11063,6 +11467,14 @@ class SwitchCrossing(NamedTuple):
     fixed_on_instant: bool = False
     instant_clocks: list[tuple[int, float]] = []
     instant_other_clocks: list[tuple[int, float]] = []
+    # Read as coming after the one crossing it shares its instant with, which
+    # has no parameter of its own (issue #1822). Where a rate law composes the
+    # two, the core takes this crossing's jump from that side of the kink and
+    # reports the column as one-sided, where it would otherwise refuse (#951).
+    # Bits: 1, read as coming after the other (above); 2, isolated beside a
+    # crossing with no parameter of its own, ``dtstar`` being its own less that
+    # one's; 4, that crossing itself, emitted with the instant's merged jump.
+    instant_role: int = 0
 
 
 class _Crossing(NamedTuple):
@@ -11205,6 +11617,135 @@ _ISOLATION_MIN_ULP = 1024.0
 _EPS = sys.float_info.epsilon
 
 
+def _private_partials(
+    cross: _Crossing, group: Sequence[_Crossing], param_idx: dict[str, int]
+) -> dict[str, float]:
+    """The parameters ``cross``'s threshold depends on and no other threshold in
+    ``group`` does, each with its partial: what can move it alone off the
+    instant."""
+    others: set[str] = set()
+    for other in group:
+        if other is not cross:
+            others |= set(other.partials)
+    return {n: v for n, v in cross.partials.items() if n not in others and n in param_idx}
+
+
+def _unseparable(group: Sequence[_Crossing], lacking: Sequence[_Crossing]) -> str:
+    """The refusal for a group in which more than one crossing has no parameter
+    of its own (issues #375, #1822)."""
+    shared = sorted({n for cross in lacking for n in cross.partials})
+    return (
+        "Forward sensitivity is not supported on this model: the switch times "
+        f"crossing together at t={lacking[0].t_star:.6g} cannot be told apart. bngsim reads "
+        "a crossing's jump by nudging the clock across the threshold, which flips "
+        "every condition thresholding it at that instant at once, so a coinciding "
+        "crossing is separated by moving its threshold off the instant instead "
+        "(issue #375), with a parameter no other threshold on the instant reads. "
+        f"{len(lacking)} of the {len(group)} crossings here have no such parameter"
+        + (
+            " (their thresholds read " + ", ".join(f"'{n}'" for n in shared) + ")"
+            if shared
+            else ""
+        )
+        + ". One crossing without one is taken as what is left of the instant's jump "
+        "once the others are separated (issue #1822); two or more cannot be divided "
+        "between themselves, and returning the merged jump would charge each "
+        "parameter with the other's, so bngsim refuses. The switch times need not "
+        "be equal by accident, a parameter on a bound makes them so; giving each "
+        "threshold a parameter of its own, or moving them apart, makes this model "
+        "supported."
+    )
+
+
+def _outside_the_nudge(remainder: _Crossing, group: Sequence[_Crossing]) -> list[str]:
+    """What the merged jump read about ``remainder`` would leave out (issue #1822).
+
+    The crossing left over is given the instant's merged jump, which the core
+    reads by nudging ``remainder``'s clock 64 ulp either side of it. That
+    flips every crossing on its clock inside the nudge and nothing else. A
+    group holds more than that: crossings within twelve significant digits of
+    each other, and crossings on another clock. One the nudge does not flip is
+    not in the merged jump, and the left-over crossing's column would lack its
+    jump with no error: with ``t_delta = 1e-12`` the ``t0`` column came back 0
+    for 11.8. Each such crossing is named here; the caller refuses.
+    """
+    ulp = _EPS * max(abs(_on_clock(remainder)), 1.0)
+    # Half the nudge, not the whole of it. The core reads on the doubles the
+    # nudge rounds to, and a crossing exactly at its end is read on its own
+    # threshold: a `>=` gate 64 ulp before is made on both sides, and its jump
+    # is not in the difference (found in review: 0 for 11.8 again).
+    reach = 0.5 * _INSTANT_ULPS * ulp
+    out = []
+    # The crossing itself may be several thresholds folded into one, a little
+    # apart: `t0` and `t0 + 5e-14` in two laws. The nudge is about one of them.
+    if any(abs(at - _on_clock(remainder)) > reach for at in _extent(remainder)):
+        out.append("it folds thresholds that are further apart than the nudge reaches")
+    for other in group:
+        if other is remainder:
+            continue
+        if other.clock_idx0 != remainder.clock_idx0:
+            out.append(f"one at {_on_clock(other):.17g} is on another clock")
+        elif any(abs(at - _on_clock(remainder)) > reach for at in _extent(other)):
+            out.append(
+                f"one at {_on_clock(other):.17g} is "
+                f"{abs(_on_clock(other) - _on_clock(remainder)) / ulp:.3g} ulp from it"
+            )
+    return out
+
+
+def _unmerged(remainder: _Crossing, apart: Sequence[str]) -> str:
+    """The refusal for a left-over crossing whose merged jump would leave some of
+    the instant out (issue #1822)."""
+    return (
+        "Forward sensitivity is not supported on this model: the switch times "
+        f"crossing together at t={remainder.t_star:.6g} cannot be told apart. One of them "
+        "has no parameter its threshold alone reads, and is given what is left of the "
+        "instant's jump once the others are separated (issue #1822). That jump is read by "
+        "nudging its clock 64 ulp across it, which flips no crossing on another clock "
+        "and none at the nudge's end or further away, and here "
+        + "; ".join(apart)
+        + ". Set the two switch "
+        "times equal, or move them apart, or drop the parameters that move them from "
+        "sensitivity_params."
+    )
+
+
+# The bits of ``SwitchCrossing.instant_role``, as the core reads them.
+_READ_AFTER = 1
+_BESIDE_LEFT_OVER = 2
+_LEFT_OVER = 4
+
+
+def _comes_after_the_other(cross: _Crossing, group: Sequence[_Crossing]) -> bool:
+    """Whether ``cross`` is the later of the two crossings on its instant by how
+    its threshold is built (issue #1822).
+
+    ``sigma = t0 + t_delta`` reads every parameter ``t0`` reads, and one more.
+    The two coincide where the extra one is 0, a bound, and the order they come
+    apart in is the model's: ``t0``, then ``sigma``. The core reads ``sigma``'s
+    jump with ``t0`` already made, which is its jump on that side. Where a rate
+    law composes the two that side is all there is to return, and the core
+    returns it with a warning in place of the refusal of issue #951.
+
+    Not so for two thresholds that are equal by value, ``tA`` and ``tB``, or a
+    fitted one on a literal: neither is built on the other, there is no order
+    to take, and the refusal stands. Whether the other one's parameters were
+    requested does not come into it: the kink in ``t_delta`` is the same with
+    ``t0`` in ``sensitivity_params`` or out of it. With three on the instant two
+    of them would each be read after the other, and no one order has both.
+    """
+    if len(group) != 2:
+        return False
+    other = group[0] if group[1] is cross else group[1]
+    if not (other.partials and set(other.partials) < set(cross.partials)):
+        return False
+    # And the two are on one clock and inside the nudge that reads them. A
+    # group holds crossings up to twelve digits apart; at t_delta = -1e-12
+    # sigma comes first, the run is not on the kink, and the jump read with
+    # t0 made is the number for t_delta = 0, not for this run.
+    return not _outside_the_nudge(other, group)
+
+
 def _isolation_bump(
     cross: _Crossing,
     group: Sequence[_Crossing],
@@ -11228,27 +11769,11 @@ def _isolation_bump(
     exists the crossings are not separable this way and bngsim refuses rather
     than return the merged answer #375 reported.
     """
-    others: set[str] = set()
-    for other in group:
-        if other is not cross:
-            others |= set(other.partials)
-    private = {n: v for n, v in cross.partials.items() if n not in others and n in param_idx}
+    private = _private_partials(cross, group, param_idx)
     if not private:
-        shared = sorted(set(cross.partials) & others)
-        raise SensitivityUnsupportedError(
-            "Forward sensitivity is not supported on this model: the switch times "
-            f"crossing together at t={cross.t_star:.6g} cannot be told apart. bngsim reads "
-            "a crossing's jump by nudging the clock across the threshold, which flips "
-            "every condition thresholding it at that instant at once, so a coinciding "
-            "crossing is separated by moving its threshold off the instant instead "
-            "(issue #375) — and every parameter this one's threshold depends on ("
-            + ", ".join(f"'{n}'" for n in sorted(cross.partials))
-            + ") is also read by a threshold it coincides with"
-            + (" (" + ", ".join(f"'{n}'" for n in shared) + ")" if shared else "")
-            + ". Returning the merged jump would charge each parameter with the other's, "
-            "so bngsim refuses. Separating the switch times — they are equal only by "
-            "coincidence of value — makes this model supported."
-        )
+        # The caller takes one such crossing as the remainder of the instant's
+        # jump and refuses two; it does not ask for a bump for either.
+        raise SensitivityUnsupportedError(_unseparable(group, [cross]))
     # The largest partial gives the smallest parameter step for a given move of
     # the threshold, so it is the one least able to disturb anything else.
     name = max(private, key=lambda n: abs(private[n]))
@@ -11643,10 +12168,49 @@ def _emit_switch_records(
 
     records: list[SwitchCrossing] = []
     for group in _instant_groups(found):
+        # ── One crossing with no parameter of its own (issue #1822) ──────────
+        # A crossing is isolated by a parameter only its threshold reads. Where
+        # sigma = t0 + t_delta and t_delta is 0, the threshold t0 has none: its
+        # only parameter moves sigma too. But isolating all but one crossing of
+        # an instant is enough. Write M for the instant's merged jump, which the
+        # core reads with nothing isolated, and J_i for the isolated ones. The
+        # one left over has M − ΣJ_i, so a column's jump,
+        #     (M − ΣJ_i)·∂t_R/∂p + Σ J_i·∂t_i/∂p,
+        # is M·∂t_R/∂p + Σ J_i·(∂t_i/∂p − ∂t_R/∂p): the remainder emitted with
+        # the merged jump and its own ∂t*/∂p, and each of the others isolated
+        # as before with the remainder's ∂t*/∂p taken off its own. With
+        # sigma = t0 + t_delta that is M in the t0 column and sigma's jump in
+        # the t_delta column.
+        remainder: _Crossing | None = None
+        if len(group) > 1:
+            lacking = [c for c in group if not _private_partials(c, group, param_idx)]
+            # Asked only where a crossing some requested parameter moves has no
+            # parameter of its own. One that no requested parameter moves, a
+            # literal threshold, has none either, and never needed one: it has
+            # no column, and the others are separated from it as they always
+            # were. Beside one that does lack a parameter it is a second
+            # crossing with nothing to separate it by, and the instant is
+            # refused: the merged jump holds its jump too, which the left-over
+            # crossing's parameters do not move.
+            if any(emits(c) for c in lacking):
+                if len(lacking) > 1 or any(c.clock_idx0 in moved_clocks for c in group):
+                    # On a clock a requested parameter moves, a crossing's
+                    # column is not its ∂t*/∂p times a jump alone, and the
+                    # identity above is not established for it.
+                    raise SensitivityUnsupportedError(_unseparable(group, lacking))
+                apart = _outside_the_nudge(lacking[0], group)
+                if apart:
+                    raise SensitivityUnsupportedError(_unmerged(lacking[0], apart))
+                remainder = lacking[0]
         for cross in group:
-            if not emits(cross):
+            dtstar = cross.dtstar
+            if remainder is not None and cross is not remainder:
+                dtstar = [own - left for own, left in zip(dtstar, remainder.dtstar, strict=True)]
+                if not any(v != 0.0 for v in dtstar):
+                    continue
+            elif not emits(cross):
                 continue
-            if len(group) > 1:
+            if len(group) > 1 and cross is not remainder:
                 idx0, delta = _isolation_bump(
                     cross,
                     group,
@@ -11662,7 +12226,7 @@ def _emit_switch_records(
                     t_star=cross.t_star,
                     clock_idx0=cross.clock_idx0,
                     threshold=cross.threshold,
-                    dtstar=cross.dtstar,
+                    dtstar=dtstar,
                     isolate_param_idx0=isolate_idx,
                     isolate_delta=isolate_delta,
                     fixed_on_instant=any(
@@ -11677,6 +12241,15 @@ def _emit_switch_records(
                             if other.clock_idx0 != cross.clock_idx0
                             for at in _extent(other)
                         }
+                    ),
+                    instant_role=(
+                        (_READ_AFTER if _comes_after_the_other(cross, group) else 0)
+                        | (
+                            _BESIDE_LEFT_OVER
+                            if remainder is not None and cross is not remainder
+                            else 0
+                        )
+                        | (_LEFT_OVER if cross is remainder else 0)
                     ),
                 )
             )
@@ -11730,6 +12303,41 @@ def _dtstar_columns(
             dtstar[col] += float(coeff)
             moved = True
     return dtstar, moved
+
+
+def _placed_in_window(
+    t_start: float,
+    t_end: float,
+    t_star: float,
+    clock_idx0: int,
+    threshold: float,
+    clock_now: float,
+) -> float | None:
+    """Where the run takes a crossing inside its half-open window
+    ``(t_start, t_end]``, or ``None`` for one outside it.
+
+    A crossing on literal time is at *t_star*. One on a counter clock is where
+    the counter reaches *threshold* from *clock_now*: ``threshold - clock_now``
+    after the start (issue #1828). Whether that is inside the run is decided
+    in exact arithmetic (``math.fsum``), and its time is that sum rounded once.
+    The sum was rounded twice, to the doubles at ``t_start`` (16 apart at
+    1e17), and judged by that, one 2.5 after a far start was dropped as on it,
+    one 36 after it in a run of 32 was kept as on the end, and from (0.6, 1.7)
+    one 1.1 after the start, past the end by an ulp, was kept and the run
+    refused. One inside the run whose time rounds onto the start is listed on
+    it: a run the core moves onto its own clock places it from the counter
+    again, as finely as the run from 0, and a run on its given clock is refused,
+    since its jump would be lost (``CvodeSimulator::run``).
+    """
+    if clock_idx0 < 0:
+        return t_star if t_start < t_star <= t_end else None
+    if not (math.isfinite(threshold) and math.isfinite(clock_now)):
+        return None
+    if math.fsum((threshold, -clock_now)) <= 0.0:
+        return None
+    if math.fsum((t_start, threshold, -clock_now, -t_end)) > 0.0:
+        return None
+    return math.fsum((t_start, threshold, -clock_now))
 
 
 def _absorb_schedule_crossings(
@@ -11821,12 +12429,15 @@ def _absorb_schedule_crossings(
         return
 
     for value, partials in edges:
-        t_star = t_start + (value - clock_now)
-        # The same half-open window the rest of the loop applies, re-checked in
-        # time rather than in clock values so a schedule on a counter clock is
-        # filtered by exactly the test a threshold on it would be.
-        if not (t_start < t_star <= t_end):
+        # The same half-open window the rest of the loop applies, so a schedule
+        # on a counter clock is filtered and placed by exactly the test a
+        # threshold on it would be.
+        placed = _placed_in_window(
+            t_start, t_end, t_start + (value - clock_now), clock_idx0, value, clock_now
+        )
+        if placed is None:
             continue
+        t_star = placed
         dtstar, _ = _dtstar_columns(partials, col_of, n_cols)
         _absorb_crossing(
             found,
@@ -11851,8 +12462,13 @@ def compute_switch_time_sens(
     ic_species: Sequence[int] = (),
     declared: Mapping[str, Mapping[str, float]] | None = None,
     uncompensated_out: list[str] | None = None,
+    laws: tuple[Sequence[str], dict] | None = None,
 ) -> tuple[list[SwitchCrossing], list[int]]:
     """Switch-time crossings and their ``∂t*/∂p``, plus the parameters to pin.
+
+    ``laws``, where given, are the rate laws and function bodies to read in
+    place of the model's own (:func:`folded_laws_at_values`): a condition the
+    run's parameter values decide has no crossing (issue #1636).
 
     ``uncompensated_out``, where given, is handed each clock-threshold
     condition and each repeating schedule this pass could not compensate at the
@@ -11924,6 +12540,8 @@ def compute_switch_time_sens(
         return [], []
 
     ctx = core.functional_jacobian_context()
+    if laws is not None:
+        ctx = context_with_laws(ctx, laws)
     # Cheapest possible gate, checked before anything else: a model with no
     # conditional rate law has no switch to find. On the RAW bodies, so a
     # genome-scale model with tens of thousands of functions and no `if()`
@@ -12098,8 +12716,17 @@ def compute_switch_time_sens(
                     # Half-open window, matching the core's own filter: a crossing
                     # on t_end still jumps into the final recorded column; one on
                     # t_start would precede the run's initial recording.
-                    if not (t_start < t_star <= t_end):
+                    placed = _placed_in_window(
+                        t_start,
+                        t_end,
+                        t_star,
+                        clock_idx0,
+                        threshold_value,
+                        clock_now if clock_idx0 >= 0 else t_start,
+                    )
+                    if placed is None:
                         continue
+                    t_star = placed
 
                     _absorb_crossing(
                         found,

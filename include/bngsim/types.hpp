@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <complex>
 #include <cstdint>
@@ -1113,6 +1114,41 @@ struct SwitchTimeSens {
     // nudge of this crossing's clock flips those, and the right-hand side a
     // comoving column enters its frame against has to have them made.
     std::vector<std::pair<int, double>> instant_other_clocks;
+    // This crossing shares its instant with one that has no parameter of its
+    // own, and is read as coming after it (issue #1822). With sigma = t0 +
+    // t_delta and t_delta on its bound of 0, no parameter moves t0 alone; the
+    // detector isolates sigma and emits t0 with the instant's merged jump. The
+    // jump read for this crossing, with the other already made, is then its
+    // jump for a parameter that delays it. Where a rate law composes the two,
+    // a product of their gates, that is one side of a kink and the other side
+    // is another number: the commute test (issue #951) refuses such an instant
+    // otherwise. For such a crossing the core takes the side it read, where
+    // what it read is a jump, and reports it in Result::one_sided_switches.
+    // Whether that side is the feasible one at a bound is not the core's to
+    // know.
+    //
+    // Three things the detector says of a crossing on a shared instant, as bits
+    // of instant_role:
+    //   kReadAfterTheOther (1)  what is described above: one of a pair, read as
+    //       the later. Its reading has to be a jump where a law composes the
+    //       two, and the side read is then taken and reported.
+    //   kBesideALeftOver (2)  it is isolated beside a crossing that has no
+    //       parameter of its own, and dtstar_dp here is its own less that
+    //       one's: not how fast this crossing moves.
+    //   kLeftOver (4)  it is that crossing, emitted with the merged jump.
+    // An instant main refused whole is one with a left-over crossing, bits 2
+    // and 4. What this code cannot do there it refuses; with bit 1 alone, the
+    // other crossing fixed for the columns asked, main ran, and nothing is
+    // refused that main returned.
+    static constexpr int kReadAfterTheOther = 1;
+    static constexpr int kBesideALeftOver = 2;
+    static constexpr int kLeftOver = 4;
+    int instant_role = 0;
+    bool read_after_the_other() const { return (instant_role & kReadAfterTheOther) != 0; }
+    bool beside_a_left_over() const { return (instant_role & kBesideALeftOver) != 0; }
+    bool on_a_left_over_instant() const {
+        return (instant_role & (kBesideALeftOver | kLeftOver)) != 0;
+    }
 };
 
 // One event whose crossing time moves with the sensitivity parameters (issue
@@ -2083,5 +2119,55 @@ struct TimeSpec {
         }
     }
 };
+
+// Where a run that keeps its own clock starts it (issue #1059, for SSA and PSA;
+// whether an ODE run of a model that reads no clock is moved, issue #1681, and
+// see ode_elapsed_clock_origin below for where it starts). At the end of the run nearer 0,
+// t_start or (for a run at negative times) t_end: counted from there the run's
+// own time is nowhere coarser than the absolute one. Counted from a far negative
+// t_start, the half of a run toward 0 was, and lost its waiting times as a far
+// start had (z = -289 at -2 to 0 from -1e12). That end is rounded toward 0 to a
+// multiple of an ulp at the run's far end, so every time x in the run is on the
+// run's clock exactly, x - origin, and origin + (x - origin) is x: from t_start
+// itself, a row past 2*t_start was read an ulp from the time it reported. A run
+// across 0 keeps 0, as does one whose near end is within 2^20, where the doubles
+// are 1.2e-10 apart: every such run is the one it always was.
+inline double elapsed_clock_origin(const TimeSpec &times) {
+    constexpr double kElapsedFrom = 1048576.0; // 2^20
+    // (Not `near` and `far`: <windows.h> defines both as empty macros.)
+    const double t_near = times.t_start >= 0.0 ? times.t_start
+                          : times.t_end <= 0.0 ? times.t_end
+                                               : 0.0;
+    if (!(std::fabs(t_near) >= kElapsedFrom) || !std::isfinite(times.t_start) ||
+        !std::isfinite(times.t_end))
+        return 0.0;
+    const double t_far = std::max(std::fabs(times.t_start), std::fabs(times.t_end));
+    const double ulp = std::nextafter(t_far, std::numeric_limits<double>::infinity()) - t_far;
+    return t_near - std::fmod(t_near, ulp);
+}
+
+// Where an ODE run of a model that reads no clock starts its own clock (issue
+// #1681): moved exactly when elapsed_clock_origin moves a run, and from its
+// start where that leaves every time in it exact, as elapsed_clock_origin's
+// near end does for a run above 0. Below 0 that is a run that starts no more
+// than twice as far from 0 as it ends (2 t_end <= t_start < t_end): every time
+// x in it is within a factor 2 of t_start, so x - t_start is exact, and t_start
+// is on its own spacing. Such a run is the run from 0, but for where its
+// crossing stops land (see CvodeSimulator::run). An ODE run takes its
+// finest steps at its start, and counted from its end it took them where the
+// doubles were a span from 0: a run to -1e17 from 2^46 before it put a
+// crossing 2.5 after its start on doubles 2^-6 apart, and dX/dsigma came back
+// -0.685 for -0.164 with no error. A run below 0 that starts farther out is
+// counted from its end, as elapsed_clock_origin has it: from its start, the
+// times near its end need not all be exact. No one origin is fine at both
+// ends of a long run, so a switch late in one counted from its start is taken
+// where the doubles are coarse, as in a run from 0.
+inline double ode_elapsed_clock_origin(const TimeSpec &times) {
+    const double near_end = elapsed_clock_origin(times);
+    // (Where 2 t_end overflows it is -inf, and the run starts within twice it.)
+    if (near_end == 0.0 || times.t_start >= 0.0 || times.t_start < 2.0 * times.t_end)
+        return near_end;
+    return times.t_start;
+}
 
 } // namespace bngsim
