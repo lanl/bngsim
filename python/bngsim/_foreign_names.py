@@ -127,8 +127,15 @@ _N_REACTIONS_NOTE = (
     "the model counts the channels BNGsim runs, which can be more or fewer."
 )
 _UNITS_NOTE = (
-    "BNGsim reads no SBML unit definitions: species_values says what the numbers are, and "
-    'each entry of model.describe()["species"] whether it is an amount or a concentration.'
+    "BNGsim converts no unit: species_values says what the numbers are, and each entry of "
+    'model.describe()["species"] whether it is an amount or a concentration. A run\'s '
+    'result.record["columns"] names the SBML unit ids the file declares.'
+)
+
+# What a run's columns are, and how it went (issue #1703).
+_RECORD_NOTE = (
+    "Each column's quantity (concentration, amount or count), compartment and size, and the "
+    "SBML unit ids the file declares; BNGsim converts no unit."
 )
 
 
@@ -500,6 +507,16 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
         "Result",
         "guess",
         ("times", "result.time"),
+        # What a run is and how it went (issue #1703): its record says.
+        *((name, 'result.record["columns"]', _RECORD_NOTE) for name in ("units", "species_units")),
+        ("time_units", 'result.record["time"]["units"]'),
+        ("method", 'result.record["run"]["method"]', "result.record says how the run went."),
+        ("metadata", "result.record", "json.dumps(result.record) writes it."),
+        (
+            "warnings",
+            "result.notices",
+            "Every warning of the run, whatever the warning filters showed.",
+        ),
     )
     # ── Simulator.run keywords ───────────────────────────────────────────
     + _entries(

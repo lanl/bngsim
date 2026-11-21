@@ -78,6 +78,7 @@ print(d["methods"]["ssa"]["status"])  # ok
 | choose the method | `bngsim.Simulator(model, method="ode")`; `"ssa"`, `"psa"`; network-free `"nf"` (NFsim) and `"rm"` (RuleMonkey) also take `xml_path=`; `Simulator.METHODS` lists all |
 | run | `sim.run(t_span=(t0, t1), n_points=n)` or `sim.run(sample_times=[...])` |
 | read a run | `result.time`, `result.species`, `result.observables`, `result.expressions`; each takes a name: `result.observables["A"]` |
+| what a run's numbers are and how it went | `result.record`: a JSON-ready dict of each column's quantity and compartment, the method, the tolerances as applied, the start, the code that ran and the model file; `result.notices`, every warning of the run |
 | read names | `model.param_names`, `model.species_names`, `model.observable_names` |
 | a table | `result.dataframe` (a property; needs pandas) |
 | set a parameter | `model.set_param("kf", 1.0)`, `model.set_params({"kf": 1.0, "kr": 0.5})`; read with `model.get_param("kf")` |
@@ -152,7 +153,8 @@ print(reps.observables.shape)  # (50, 11, 2)
    not molecule counts: in a compartment of size 2, an SSA column moves in
    steps of 0.5. `result.as_roadrunner(["time", "A"])` gives amounts. A `.net`
    model has no compartments, so its columns hold the numbers in the file,
-   which a stochastic run treats as molecule counts.
+   which a stochastic run treats as molecule counts. `result.record["columns"]`
+   says which, column by column, with each compartment's size.
 6. **A stochastic run without a seed differs every time.** Pass `seed=n` to
    reproduce one. `result.seed` is the seed a run used, drawn or given. In a
    `run_replicates` or `run_batch` list, each row's `seed` reruns that row.
@@ -163,7 +165,8 @@ print(reps.observables.shape)  # (50, 11, 2)
 8. **A run that fails raises an error.** `run()` returns only runs that
    finished, so there is no `success` flag to check. `bngsim.SimulationError`
    means the solver failed. `bngsim.StopConditionMet` carries the result a stop
-   condition cut short. Read warnings; don't silence them.
+   condition cut short. Read warnings; don't silence them. `result.notices`
+   keeps every warning of the run, whatever the warning filters showed.
 
 ```python
 model.reset()
@@ -392,6 +395,9 @@ print(bngsim.Simulator(built).run(t_span=(0, 2), n_points=3).observables["A"][-1
   Report a mean or a distribution over replicates, with the number of
   replicates and the seed.
 - **The run started where it was meant to:** `result.started_from`.
+- **What the numbers are and how they were made:** `result.record` says it
+  from the result, not from memory of the script; `result.notices` lists what
+  the run warned of.
 
 ```python
 model.reset()
@@ -408,6 +414,10 @@ assert np.allclose(r.observables["A"], closed, rtol=1e-5)
 
 mean_a = reps.observables[:, -1, 0].mean()  # 50 SSA replicates at t = 10
 assert abs(mean_a - closed[-1]) < 5 * np.sqrt(closed[-1])  # within the noise
+
+rec = r.record  # json.dumps(rec) writes it
+print(rec["run"]["method"], rec["run"]["rtol"], rec["backend"]["jacobian"])  # ode 1e-08 analytical
+print(r.notices)  # []
 ```
 
 ## Report a suspected bug
@@ -418,7 +428,7 @@ needs to run it again:
 - `bngsim.capabilities()["version"]` and `["build"]["commit"]`, the Python
   version and the operating system;
 - the model file, or the smallest one that shows the problem;
-- the calls, as code that runs, with every `seed`;
+- the calls, as code that runs, with every `seed`, and `result.record`;
 - what came back, and what was expected and why: a closed form, another
   simulator's answer (name it and its version), or a conservation law.
 

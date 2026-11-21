@@ -47,9 +47,10 @@ import contextlib
 import functools
 import math
 import re
-import warnings
 import weakref
 from typing import Any
+
+from bngsim import _notices
 
 # A rate law with none of these spells no bump, and is not parsed. `_e^q` and
 # `pow(_e, q)` are parsed as exp(q).
@@ -320,13 +321,14 @@ def _resolve(core, t_start: float, t_end: float) -> list[Any]:
             v0, rate, reset = counters[sym]
             when, span = t_start + (centre - v0) / rate, reach / abs(rate)
             if reset:
-                warnings.warn(
+                _notices.warn(
                     f"A smooth bump of {sym} at {sym} = {centre:g} is stopped on "
                     f"where {sym} first reaches it, from its value at the start of "
                     f"the run and its rate; an event assigns {sym}, and a pass "
                     "through the bump after that is not stopped on and may be "
                     "stepped over (issue #1286). Pass max_step no larger than the "
                     f"bump's width in time, {width / abs(rate):g}.",
+                    code="smooth_pulse.event_reset",
                     stacklevel=2,
                 )
         else:

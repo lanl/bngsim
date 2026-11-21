@@ -5,10 +5,10 @@ from __future__ import annotations
 import contextlib
 import logging
 import math
-import warnings
 from pathlib import Path
 from typing import Any, NoReturn
 
+from bngsim import _notices
 from bngsim._exceptions import (
     ParameterError,
     RuleMonkeyWarning,
@@ -31,7 +31,12 @@ def warn_rulemonkey_diagnostics(core: Any, stacklevel: int = 1) -> None:
     :func:`warnings.warn`: 1 points at that caller, 2 at its caller.
     """
     for message in core.unsupported_warnings():
-        warnings.warn(f"RuleMonkey: {message}", RuleMonkeyWarning, stacklevel=stacklevel + 1)
+        _notices.warn(
+            f"RuleMonkey: {message}",
+            RuleMonkeyWarning,
+            code="rulemonkey.unsupported",
+            stacklevel=stacklevel + 1,
+        )
 
 
 def _on_session_clock(t: float, session_t: float) -> bool:
