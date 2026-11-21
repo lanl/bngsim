@@ -324,7 +324,6 @@ LEFT_OUT = (
     "bngsim:NamedArray",
     "bngsim:NfsimSession",
     "bngsim:OneSidedSensitivityWarning",
-    "bngsim:ParameterError",
     "bngsim:ProtocolResult",
     "bngsim:ProtocolRun",
     "bngsim:ReactionKernel",

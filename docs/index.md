@@ -91,6 +91,7 @@ user-guide/pybnf
 
 reference/api
 reference/expressions
+reference/error-codes
 ```
 
 ```{toctree}

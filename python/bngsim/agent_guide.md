@@ -199,6 +199,25 @@ back the approximation the refusal is there to prevent, and the numbers it
 gives must not be reported as the model's. Change the model (give the symbol
 a value, or choose the ODE method), or report the refusal.
 
+Every BNGsim error carries a `code`, such as `param.not_found` or
+`env.missing_dependency`, which stays the same across releases where the
+message may not. Branch on the code, not the message. `details` says what the
+error is about, `remedies` lists fixes a program can act on, each a dict with a
+`kind`, and `to_dict()` gives all of it as plain data. The codes are listed at
+<https://bngsim.readthedocs.io/en/latest/reference/error-codes.html>. A missing
+optional package such as pandas or h5py is a `bngsim.DependencyError` (also an
+`ImportError`), whose remedy gives the `pip install` command. A missing file is a
+`bngsim.MissingFileError` (also a `FileNotFoundError`), and an argument a call
+cannot take is a `bngsim.UsageError` (also a `ValueError`).
+
+```python
+try:
+    model.set_param("kff", 1.0)
+except bngsim.ParameterError as e:
+    print(e.code)                      # param.not_found
+    print(e.details["close_matches"])  # ['kf']
+```
+
 ## What needs what
 
 `bngsim.capabilities()` says what this install can do, and why not when it
