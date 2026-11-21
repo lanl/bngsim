@@ -6,13 +6,11 @@ summary: "What bngsim is, and a model loaded and run in one block."
 
 **A simulator for biochemical reaction networks, as a Python library.**
 
-`bngsim` simulates models written in SBML, Antimony and the BioNetGen language
-(BNGL). It integrates a model as ordinary differential equations (SUNDIALS
-CVODE), runs it as an exact stochastic simulation, or runs a rule-based model
-network-free, and it computes steady states, parameter scans and forward
-sensitivities. A model is loaded once and simulated in-process, and each run
-returns NumPy arrays. For BioNetGen users it replaces the subprocess-based
-`run_network` driver.
+`bngsim` simulates models written in SBML, Antimony, and BNGL. It does ODE
+integration, stochastic simulation (SSA, PSA), and network-free simulation
+(NFsim, RuleMonkey). It also finds steady states, runs parameter scans, and
+computes forward sensitivities. Models are simulated in-process, and results
+are NumPy arrays. For BioNetGen users, it replaces `run_network`.
 
 This runs as written after `pip install bngsim`: it writes a two-species
 network to `model.net`, loads it, and integrates it.

@@ -13,100 +13,67 @@ simulated in-process, and each run returns NumPy arrays.
 
 Beyond time courses, `bngsim` computes forward sensitivities, finds steady
 states, runs parameter scans and thread-parallel batches, and converts models
-between formats. Its engines are C++: CVODE and KINSOL from SUNDIALS for ODEs
-and steady states, its own exact SSA and PSA, and NFsim and RuleMonkey for
-network-free runs. It installs with `pip`. For
-BioNetGen users it replaces the subprocess-based `run_network` driver.
-Two BioNetGen-family tools build on it:
-[PyBioNetGen](https://github.com/RuleWorld/PyBioNetGen) runs simulations through
-it, and [PyBNF](https://github.com/lanl/PyBNF) runs its parameterization,
-uncertainty quantification and model checking on it.
+between formats. It installs with `pip`. For BioNetGen users, it replaces
+`run_network`.
 
-## Is bngsim the right tool?
+bngsim's engines are written in C++. ODE integration and steady-state solving
+use CVODE and KINSOL from SUNDIALS. Stochastic simulation uses bngsim's own SSA
+and PSA. Network-free simulation uses NFsim and RuleMonkey.
 
-| To | bngsim | Also, or instead |
+[PyBioNetGen](https://github.com/RuleWorld/PyBioNetGen) and
+[PyBNF](https://github.com/lanl/PyBNF) use bngsim. PyBNF uses it for
+parameterization, uncertainty quantification, and model checking.
+
+## When to use bngsim
+
+| Task | bngsim | Alternatives |
 |---|---|---|
-| simulate an SBML or Antimony model, as ODEs or stochastically | yes, `Model.load` then `Simulator.run`; Antimony needs `bngsim[antimony]` | libRoadRunner (Antimony through Tellurium); COPASI (SBML); AMICI (ODEs only) |
-| simulate a rule-based BNGL model, with its network or network-free | yes: ODE, SSA and NFsim or RuleMonkey in one process; BNGL needs `bngsim[bngl]` and Perl | BioNetGen's own `BNG2.pl`, through files and subprocesses |
-| run many simulations: parameter scans, batches, stochastic replicates | yes, in one process, on threads with the GIL released | COPASI (scans); AMICI (conditions in parallel) |
-| compute forward sensitivities, along a trajectory or at a steady state | yes, with the parameters split across threads; it needs a C compiler on the machine | AMICI, libRoadRunner |
-| use adjoint sensitivities | no: forward only, which for many parameters it splits across threads ([below](#choosing-settings)) | AMICI |
-| fit parameters to data, quantify their uncertainty, check a model against properties | through [PyBNF](https://github.com/lanl/PyBNF), which drives bngsim | COPASI, AMICI with pyPESTO |
-| simulate a model with `delay()`, an algebraic rule or a fast reaction | no: bngsim refuses it and names the construct, rather than simulate a different system | a tool that documents support for the construct |
-| work in a graphical interface | no, it is a Python library | COPASI |
-| integrate an ODE system you have written as a Python function | no: bngsim reads a model (SBML, Antimony, BNGL), not a function. A reaction network written in Antimony gets a stiff solver, an analytic Jacobian and sensitivities without code | SciPy (`solve_ivp`), Diffrax |
+| Simulate an SBML or Antimony model | Yes (Antimony needs `bngsim[antimony]`) | libRoadRunner, Tellurium, COPASI, AMICI (ODEs only) |
+| Simulate a BNGL model, network-based or network-free | Yes (needs `bngsim[bngl]` and Perl) | BioNetGen |
+| Run many simulations (scans, batches, replicates) | Yes, on parallel threads | COPASI, AMICI |
+| Forward sensitivity analysis | Yes (needs a C compiler) | AMICI, libRoadRunner |
+| Adjoint sensitivity analysis | No | AMICI |
+| Parameterization, uncertainty quantification, model checking | Yes, through PyBNF | COPASI, AMICI with pyPESTO |
+| Models with delays, algebraic rules, or fast reactions | No (bngsim refuses these models) | Other tools |
+| Graphical user interface | No | COPASI |
+| ODEs written as a Python function | No | SciPy (`solve_ivp`), Diffrax |
 
-The other tools' formats, methods, sensitivities and parallelism are as we found
-them by reading each tool's source code in July and August 2026 (libRoadRunner
-2.9.2, AMICI 1.0.1, COPASI 4.46, BioNetGen 2.9.3). They may have changed since.
+Information about other tools comes from our inspection of their source code in
+July and August 2026 (libRoadRunner 2.9.2, AMICI 1.0.1, COPASI 4.46, BioNetGen
+2.9.3).
 
-### Choosing settings
+### Tips
 
-- **Compiled code.** With a C compiler on the machine you need do nothing:
-  bngsim compiles a large model's right-hand side and every sensitivity run,
-  and caches what it builds. Without one, plain runs use the interpreter, and
-  sensitivities need the MIR JIT, which compiles in-process. MIR is a
-  prototype that no published wheel carries: build a wheel with
-  `-DBNGSIM_ENABLE_MIR=ON` on a machine that has a toolchain, then run with
-  `BNGSIM_CODEGEN_JIT=mir`.
-- **Linear solver.** Leave it unset and bngsim picks dense LU, sparse KLU or a
-  BLAS dense factor for each model from its size and sparsity.
-  `result.solver_stats["linear_solver"]` says which: `0` dense LU, `1` KLU,
-  `2` the BLAS factor. If you know better, pass
-  `force_sparse_linear_solver=True` or `force_dense_linear_solver=True` to
-  `Simulator`, and your choice is used.
-- **Many parameters.** `sim.compute_all_sensitivities(t_span=..., n_points=...,
-  n_workers=8)` splits the parameters into chunks and integrates each chunk's
-  sensitivities on its own thread, so wall time falls as cores are added. It
-  gives the whole sensitivity matrix, every output with respect to every
-  parameter, which a Fisher information matrix, an identifiability check or a
-  least-squares fit needs. Adjoint sensitivities, which bngsim does not
-  offer, give only the gradient of one objective, and they integrate backward
-  in time, which brings numerical difficulties that forward sensitivities do
-  not have.
-- **Steady states.** To know that you have a true steady state, call
-  `sim.steady_state()` rather than running for a long time: a long run never
-  tells you whether the model has stopped moving, and `steady_state()` does
-  (`ss.converged`). Its default integrates until the residual is below the
-  tolerance. `method="newton"` (or `"kinsol"`) starts the same way, with a
-  solver run that carries the state into the basin of the steady state the
-  dynamics reach, and only then hands it to KINSOL's Newton solver to polish
-  the root, far below the tolerance. Starting with the run is what keeps
-  Newton's method from converging to an unstable steady state the system
-  would never settle on. To find every steady state, unstable ones included,
-  `sim.steady_states()` runs KINSOL from many starts and reports each root
-  with its stability.
-- **SSA or PSA.** `method="ssa"` is exact, for when fluctuations matter:
-  distributions, variances, rare events, small populations. When you care
-  about means and not variances, `method="psa"` (partial scaling, with
-  `poplevel=`) runs a model with large populations much faster and keeps its
-  ensemble means. It scales up the fluctuations, so do not read variances or
-  distributions from it. Like SSA, it needs a network (`.net`, SBML or
-  Antimony, or a BNGL model that `generate_network` can expand); a network
-  too large to generate runs network-free.
-- **NFsim and RuleMonkey.** bngsim runs a rule-based model network-free with
-  two independent implementations, in process, from the XML BioNetGen writes
-  (`xml_path=`): RuleMonkey (`method="rm"`), first published in 2010 and
-  recently rebuilt from the ground up, and NFsim (`method="nf"`). A
-  network-free result is otherwise essentially impossible to check for
-  correctness, so compare the two engines' results on any result that
-  matters. RuleMonkey runs some energy (`Arrhenius`) rules that NFsim
-  refuses. Neither runs a model with compartments; use its generated network
-  with `ode` or `ssa`.
-- **bngsim's NFsim or the standalone binary.** The NFsim inside bngsim is
-  NFsim with fixes carried on top, and it refuses the constructs on which the
-  standalone NFsim that ships with BioNetGen gives a wrong answer without an
-  error (energy rules, compartments, functions that read an observable outside
-  their argument; RuleWorld/nfsim#102, #104, #106). It also skips the binary's
-  launch and model reparse on every run, which saves time where one model runs
-  many times, as in fitting and ensembles. `nfsim_v1143_compat=True`
-  reproduces NFsim 1.14.3's trajectories seed for seed, for comparison with
-  the binary.
-- **JAX.** `bngsim.jax.differentiable_solve` (`pip install 'bngsim[jax]'`)
-  makes a CVODE solve a JAX function, so `jax.grad` or `jax.jacfwd` goes
-  through the simulation into a loss written in JAX. Use it when the rest of
-  the pipeline is JAX. Underneath it runs forward sensitivities, with their
-  cost.
+- **Compiler.** If a C compiler is available, bngsim uses it automatically.
+  Without one, sensitivity analysis needs the MIR JIT, which is not yet in the
+  published wheels (build with `-DBNGSIM_ENABLE_MIR=ON`, run with
+  `BNGSIM_CODEGEN_JIT=mir`).
+- **Linear solver.** bngsim picks a dense or sparse (KLU) solver for each
+  model. To override, pass `force_dense_linear_solver=True` or
+  `force_sparse_linear_solver=True` to `Simulator`.
+- **Many parameters.** `sim.compute_all_sensitivities(..., n_workers=8)`
+  divides the parameters among threads. bngsim does not do adjoint sensitivity
+  analysis, which gives only the gradient of an objective function and has
+  numerical stability problems.
+- **Steady states.** Use `sim.steady_state()` instead of a long simulation. It
+  tells you whether a steady state was reached (`ss.converged`). With
+  `method="newton"`, bngsim simulates first and then refines the result with
+  KINSOL's Newton solver. Simulating first avoids convergence to an unstable
+  steady state. `sim.steady_states()` finds all steady states, stable and
+  unstable.
+- **SSA vs. PSA.** Use PSA (`method="psa"`) when you care about means, not
+  variances. It is much faster for models with large populations. Use SSA
+  (`method="ssa"`) when fluctuations matter.
+- **NFsim and RuleMonkey.** bngsim includes two independent network-free
+  simulators: RuleMonkey (`method="rm"`), first published in 2010 and recently
+  rewritten, and NFsim (`method="nf"`). Network-free results are otherwise hard
+  to check, so compare the two.
+- **bngsim's NFsim vs. standalone NFsim.** bngsim's NFsim has bug fixes, and it
+  refuses models that standalone NFsim simulates incorrectly without warning.
+  It also skips process launch and model parsing on each run.
+  `nfsim_v1143_compat=True` reproduces NFsim 1.14.3 trajectories.
+- **JAX.** To differentiate through a simulation in a JAX workflow, use
+  `bngsim.jax.differentiable_solve` (`bngsim[jax]`).
 
 > **Status: alpha (0.x).** bngsim is checked every night against BioNetGen,
 > libRoadRunner, AMICI and the SBML test suite, but it is early software, and
@@ -268,9 +235,9 @@ simulation, events, scans and batches.
   is cached too. An NFsim run has effects on the whole process, among them one
   shared random-number stream
   ([what an NFsim run changes](https://bngsim.readthedocs.io/en/latest/user-guide/network-free.html#what-an-nfsim-run-changes-in-your-process)).
-  [PyBNF](https://github.com/lanl/PyBNF) uses bngsim this way for
-  parameterization, uncertainty quantification and model checking ([guide](https://bngsim.readthedocs.io/en/latest/user-guide/pybnf.html)),
-  and [PyBioNetGen](https://github.com/RuleWorld/PyBioNetGen) for simulation.
+  [PyBNF](https://github.com/lanl/PyBNF) and
+  [PyBioNetGen](https://github.com/RuleWorld/PyBioNetGen) use bngsim this way
+  ([PyBNF guide](https://bngsim.readthedocs.io/en/latest/user-guide/pybnf.html)).
 
 ## If you know another tool
 
