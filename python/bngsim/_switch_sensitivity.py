@@ -2535,12 +2535,25 @@ def _crossing_time_of_condition(
         # answer itself, the power of two at or above it: the scale is then
         # the crossing's own at every run length, for every operator. (After
         # the check, not before: a second line through a curve can land on its
-        # root, and `(time-2)^2 <= 0`, declined over any window, was resolved
-        # to 2.) The answer is nudged up before its power of two is read, so
-        # that 2.0 and the double after it share a scale. (Its exponent is
-        # bounded first: 2.0 ** 1024 raises OverflowError rather than give inf,
-        # and an answer that far out keeps the first solve.)
-        exponent = math.ceil(math.log2(max(min(abs(t_star), 2.0**1023) * (1.0 + 2.0**-40), 1.0)))
+        # root, and `(time-2)^2 <= 0`, declined over a window that does not end
+        # on its root, was resolved to 2.) The answer is nudged up before its
+        # power of two is read, so that 2.0 and the double after it share a
+        # scale. (Its exponent is bounded first: 2.0 ** 1024 raises
+        # OverflowError rather than give inf, and an answer that far out keeps
+        # the first solve.)
+        # That power of two is read off an answer no window enters, the solve
+        # over a scale of 1. Read off the answer above, it stepped between two
+        # doubles (just below a power of two, with the nudge), and where the
+        # windows' answers fell either side of that step, each was solved
+        # again over a different scale: the stop still moved with the run.
+        # Where the residual at 1 is the same double as at 0 (for a crossing
+        # past about 2**53, say), that solve has no slope, and the answer
+        # above is read instead.
+        seed = t_star
+        r_unit = r1 if scale == 1.0 else at(1.0)
+        if r_unit is not None and r_unit != r0 and abs(r_unit - r0) < float("inf"):
+            seed = -r0 / (r_unit - r0)
+        exponent = math.ceil(math.log2(max(min(abs(seed), 2.0**1023) * (1.0 + 2.0**-40), 1.0)))
         own = math.ldexp(1.0, exponent) if exponent <= 1023 else math.inf
         if own != scale and math.isfinite(own):
             r_own = at(own)

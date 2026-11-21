@@ -470,5 +470,41 @@ def test_a_residual_that_is_not_linear_is_still_declined(cond):
     assert {_solve(cond, t_end) for t_end in T_ENDS} == {None}
 
 
+def test_a_crossing_beside_the_edge_of_its_own_scale_is_solved_over_one_scale():
+    # The second solve's scale is the power of two above the first answer
+    # nudged up by a part in 2**40, so it steps from 2 to 4 between two doubles
+    # just below 2, not at 2. `x > 2.2999999999981813` from 0.3 crosses there.
+    # Read off the window's answer, which was 1.9999999999981812 for a run to
+    # 32 or 300 and the double after it for the other seven, the scale was 2
+    # for the one and 4 for the other, and the stop and the row still moved
+    # with the run's length. It is read off the solve over 1, which no window
+    # enters.
+    cond = "((time()+(0.3))>2.2999999999981813)"
+    assert len({_solve(cond, t_end) for t_end in T_ENDS}) == 1
+    doc = _doc(_strict("<ci>x</ci>", "2.2999999999981813"), x0="0.3")
+    assert len({_row(doc, 1.9999999999981812, t_end) for t_end in T_ENDS}) == 1
+
+
+def test_a_curve_the_window_s_line_happens_to_solve_keeps_that_answer():
+    # `time*time >= 4` over a scale of 2 (a run to 2): the line through t = 0
+    # and t = 2 ends on the root, so the check passes and the answer is 2. The
+    # second solve, over 4, answers a double below 1, where the residual is
+    # -3: it is checked as the first was, and not taken.
+    assert _solve("((time()*time())>=4)", 2.0) == 2.0
+
+
+@pytest.mark.parametrize("threshold", ["9e307", "1.7976931348623157e308"])
+@pytest.mark.parametrize("op", [">=", ">"])
+def test_an_answer_past_the_last_power_of_two_keeps_the_first_solve(op, threshold):
+    # Over a run to 1e300 the first solve puts `time + 0.1` on the threshold,
+    # which in doubles is the crossing time (0.1 is less than half an ulp
+    # there). The solve over 1 has no slope there (the residual at 1 is the
+    # same double as at 0), so the scale is read off that answer, and its own
+    # power of two would be 2**1024: 2.0 ** 1024 raises OverflowError, and at
+    # the largest double the nudged answer is inf, whose log2 has no integer
+    # ceiling. The bounded exponent keeps the first solve instead of raising.
+    assert _solve(f"((time()+(0.1)){op}{threshold})", 1e300) == float(threshold)
+
+
 def test_the_solve_for_a_trigger_met_on_its_zero_is_the_same_at_every_run_length():
     assert {_solve("((time()+(0.1))>=2.6)", t) for t in T_ENDS} == {2.5}
