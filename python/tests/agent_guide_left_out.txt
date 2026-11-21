@@ -1,10 +1,26 @@
-# Public bngsim names the agent guide leaves out on purpose, one per line.
+# Public bngsim names the agent guide leaves out on purpose, one key per line.
 #
-# test_agent_guide_coverage.py fails when a public name is neither used in
-# python/bngsim/agent_guide.md nor listed here. Adding a public name? Use it in
-# the guide if an agent meeting bngsim for the first time should know it, or
-# add its line here (sorted). This is not a to-do list: the guide is one page
-# held to a budget, and most of these are for help(), not a first read.
+# test_agent_guide.py fails when a public name is neither used in
+# python/bngsim/agent_guide.md nor listed here. A class or call the guide does
+# not use is one line here and stands for its members and keywords, so only a
+# new name on a class or call the guide uses, or a new top-level name, method,
+# feature or extra, needs a decision: use it in the guide if an agent meeting
+# bngsim for the first time should know it, or add its key here, in Python's
+# sorted() order. This is not a to-do list: the guide is one page held to a
+# budget, and most of these are for help(), not a first read.
+Model.from_antimony_string(compartment_sizes)
+Model.from_bngl(bng2_pl)
+Model.from_bngl(cache)
+Model.from_bngl(defer_jacobian)
+Model.from_bngl(net_out)
+Model.from_bngl(protocol)
+Model.from_bngl(timeout)
+Model.from_sbml(compartment_sizes)
+Model.from_sbml(defer_jacobian)
+Model.load(compartment_sizes)
+Model.load(defer_jacobian)
+Model.save_concentrations(label)
+Model.set_param(force_override)
 Model:add_table_function
 Model:analytical_jacobian_decline
 Model:analytical_jacobian_status
@@ -13,6 +29,9 @@ Model:compartment_size_params
 Model:conservation_laws
 Model:declare_ic_sensitivity
 Model:effective_ic_sensitivity
+Model:from_antimony
+Model:from_net
+Model:from_sbml_string
 Model:frozen_params
 Model:function_names
 Model:has_saved_concentrations
@@ -23,8 +42,10 @@ Model:last_jacobian_sec
 Model:last_libsbml_parse_sec
 Model:n_events
 Model:n_functions
+Model:n_observables
 Model:n_parameters
 Model:n_reactions
+Model:n_species
 Model:n_table_functions
 Model:param_expressions
 Model:param_is_expression
@@ -42,6 +63,9 @@ Model:table_function_names
 Model:time_discontinuity_conditions
 Model:unwritable_compartment_size_params
 Model:validate_for_ssa
+Result(core)
+Result(custom_attrs)
+Result.as_roadrunner(selections)
 Result:ar_sensitivity_refused
 Result:chi2_gradient
 Result:custom_attrs
@@ -60,6 +84,9 @@ Result:has_simulation_data
 Result:ic_sensitivity_seed
 Result:identifiability
 Result:n_expressions
+Result:n_observables
+Result:n_species
+Result:n_times
 Result:neg_log_likelihood_gradient
 Result:one_sided_sensitivities
 Result:output_sensitivities
@@ -80,10 +107,13 @@ Result:sensitivities_observables
 Result:sensitivities_observables_ic
 Result:sensitivities_species
 Result:sensitivity_ic_species
+Result:sensitivity_params
 Result:solver_stats
+Result:squeeze
 Result:ssa_diagnostics
 Result:sse_gradient
 Result:start_state_sha256
+Result:state
 Result:state_names
 Result:stop_condition
 Result:summary
@@ -107,6 +137,38 @@ Simulator(sensitivity_ic)
 Simulator(sensitivity_method)
 Simulator(strict_ssa)
 Simulator(traversal_limit)
+Simulator(xml_path)
+Simulator.parameter_scan(atol)
+Simulator.parameter_scan(max_step)
+Simulator.parameter_scan(max_steps)
+Simulator.parameter_scan(on_point)
+Simulator.parameter_scan(par_scan_vals)
+Simulator.parameter_scan(reset_conc)
+Simulator.parameter_scan(reset_to)
+Simulator.parameter_scan(rtol)
+Simulator.parameter_scan(seed)
+Simulator.parameter_scan(squeeze)
+Simulator.parameter_scan(steady_state)
+Simulator.parameter_scan(steady_state_tol)
+Simulator.parameter_scan(timeout)
+Simulator.run(carry_sensitivities)
+Simulator.run(max_step)
+Simulator.run(max_steps)
+Simulator.run(steady_state)
+Simulator.run(steady_state_tol)
+Simulator.run(timeout)
+Simulator.run_replicates(num_processors)
+Simulator.run_replicates(timeout)
+Simulator.steady_state(atol)
+Simulator.steady_state(criterion)
+Simulator.steady_state(mask)
+Simulator.steady_state(max_steps)
+Simulator.steady_state(max_time)
+Simulator.steady_state(method)
+Simulator.steady_state(rtol)
+Simulator.steady_state(sensitivity_params)
+Simulator.steady_state(tol)
+Simulator:METHODS
 Simulator:add_stop_condition
 Simulator:auto_atol
 Simulator:bifurcate
@@ -115,6 +177,7 @@ Simulator:codegen_backend
 Simulator:codegen_cache_hit
 Simulator:compute_all_sensitivities
 Simulator:current_time
+Simulator:get_state
 Simulator:has_analytic_sens_rhs
 Simulator:intervene
 Simulator:jacobian_strategy
@@ -125,14 +188,18 @@ Simulator:last_libsbml_parse_sec
 Simulator:requested_method
 Simulator:restore
 Simulator:restore_concentrations
+Simulator:run_batch
 Simulator:run_until
+Simulator:save_concentrations
 Simulator:sens_rhs_decline_reason
 Simulator:set_max_steps
+Simulator:set_state
 Simulator:set_time
 Simulator:set_tolerances
 Simulator:snapshot
 Simulator:steady_state_batch
 Simulator:steady_states
+SteadyStateResult(core)
 SteadyStateResult:continued_run_distance
 SteadyStateResult:criterion
 SteadyStateResult:eigenvalues
@@ -143,8 +210,10 @@ SteadyStateResult:method_used
 SteadyStateResult:n_residual_species
 SteadyStateResult:n_rhs_evals
 SteadyStateResult:n_state_switch_roots
+SteadyStateResult:n_steps
 SteadyStateResult:n_unstable_roots_rejected
 SteadyStateResult:newton_distance
+SteadyStateResult:observable_names
 SteadyStateResult:output_sensitivities
 SteadyStateResult:residual
 SteadyStateResult:resolve_outputs
@@ -197,16 +266,22 @@ SteadyStateResult:sens_tie_value
 SteadyStateResult:sensitivities_expressions
 SteadyStateResult:sensitivities_observables
 SteadyStateResult:sensitivity
+SteadyStateResult:sensitivity_params
 SteadyStateResult:solver_jacobian_retried
 SteadyStateResult:solver_jacobian_source
+SteadyStateResult:species_names
 SteadyStateResult:state_switch_roots_dropped
 SteadyStateResult:to_dict
 SteadyStateResult:unconverged_pure_sinks
-bifurcate(max_step)
-bifurcate(max_steps)
-bifurcate(par_scan_vals)
-bifurcate(steady_state_tol)
-bifurcate(timeout)
+bngsim.agent_guide(skill)
+bngsim.run_bngl(allow_lossy)
+bngsim.run_bngl(atol)
+bngsim.run_bngl(bng2_pl)
+bngsim.run_bngl(cache)
+bngsim.run_bngl(net_out)
+bngsim.run_bngl(rtol)
+bngsim.run_bngl(seed)
+bngsim.run_bngl(timeout)
 bngsim:AUTO
 bngsim:AtolScaleWarning
 bngsim:CodegenDeclinedError
@@ -275,10 +350,6 @@ bngsim:run_protocol
 bngsim:sbml_to_net
 bngsim:set_compartment_volume
 bngsim:validate_for_ssa
-compute_all_sensitivities(chunk_size)
-compute_all_sensitivities(max_steps)
-compute_all_sensitivities(n_workers)
-compute_all_sensitivities(params)
 extra:benchmarks
 extra:dev
 extra:jax
@@ -307,30 +378,5 @@ method:dynstoc
 method:nf_exact
 method:nf_fixed
 method:nf_reject
-parameter_scan(max_step)
-parameter_scan(max_steps)
-parameter_scan(on_point)
-parameter_scan(par_scan_vals)
-parameter_scan(reset_conc)
-parameter_scan(reset_to)
-parameter_scan(steady_state_tol)
-parameter_scan(timeout)
-run(carry_sensitivities)
-run(max_step)
-run(max_steps)
-run(steady_state_tol)
-run(timeout)
-run_batch(max_step)
-run_batch(max_steps)
-run_batch(num_processors)
-run_batch(params)
-run_batch(steady_state_tol)
-run_batch(timeout)
-run_replicates(num_processors)
-run_replicates(timeout)
-run_until(max_steps)
-steady_state(criterion)
-steady_state(mask)
-steady_state(max_steps)
-steady_state(max_time)
-steady_state(tol)
+method:nfsim
+method:rulemonkey
