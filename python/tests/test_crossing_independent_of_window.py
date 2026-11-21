@@ -110,6 +110,27 @@ def test_a_threshold_off_the_row_reads_as_it_did(threshold, expected):
     assert {_row(doc, 2.5, t_end) for t_end in T_ENDS} == {expected}
 
 
+@pytest.mark.parametrize(
+    ("x0", "threshold", "row"),
+    [("3.0", "3.9", 0.9), ("1000.0", "1002.37", 2.37)],
+    ids=["3.9 from 3", "1002.37 from 1000"],
+)
+def test_a_first_zero_before_the_row_leaves_a_counter_s_row_before_the_event(x0, threshold, row):
+    # x0 + t is the threshold in doubles a double or more before the row as
+    # well, and the stop lands on such a double (0.8999999999999999, and
+    # 2.369999999999999), where the integrated counter has not reached the
+    # threshold: the event is taken after the row, which reads the state before
+    # it at every run length. The trigger written on the clock reads the state
+    # after it. The user guide says so.
+    counter = _doc(_geq("<ci>x</ci>", threshold), x0=x0)
+    clock = _doc(
+        f"<apply><geq/><apply><plus/>{TIME}<cn>{x0}</cn></apply><cn>{threshold}</cn></apply>",
+        counter=False,
+    )
+    assert {_row(counter, row, t_end) for t_end in T_ENDS} == {3.0}
+    assert {_row(clock, row, t_end) for t_end in T_ENDS} == {1.0}
+
+
 def test_the_same_event_on_the_clock_agrees_with_the_counter():
     # `time + 0.1 >= 2.6` is the counter's trigger written on the clock.
     clock = _doc(

@@ -109,18 +109,29 @@ residual, as bngsim's threshold evaluator computes it, is 0 (or, where no double
 makes it 0, the one nearest): for `x >= 2.6` from `x = 0.1` that is t = 2.5,
 because `(2.5 + 0.1) - 2.6` is exactly 0. A row at t = 2.5 then reads the state
 after the event, for a run of any length (issue #1673; before, it read the state
-before the event for some run lengths and after it for others).
+before the event for some run lengths and after it for others). That holds for
+nearly every such row, not for all: where the residual is as small a double
+below the solve's answer as at the answer, and smaller a double above it, the
+stop is moved down, away from that smaller residual, and a row on the double
+above can still read the state before the event for some run lengths
+(`x >= 4.53` from `x = 1.71`, a row at 2.8200000000000003: before it for a run
+to 300, after it for shorter ones).
 
 That evaluator reads a number written with 17 digits (`3.0700000000000003`, or
 a time between two short ones) more finely than a double holds it, so where
 several doubles of t give the threshold exactly, the stop can be several doubles
 after the first of them (up to 15 in a sweep of 400 thresholds, as before this
-fix), and a row on one of those doubles can read the state before the event. A
-trigger written with `abs()` or a square, `abs(x - 3.1) <= 0.5` or
-`(x - 3.1)^2 <= 0.25`, is two such crossings, one per edge, each placed by the
-operator written. A strict `x > 2.6` (or `abs(x - 3.1) < 0.5`) is met only
-after the zero and is stopped where the solve puts it, as before; its row can
-still depend on the run's length.
+fix), and a row on one of those doubles can read the state before the event. The
+stop can also land on one of those doubles before the row, and a counter, whose
+value is integrated, has not reached the threshold at that stop: the event is
+taken after the row, which reads the state before the event at every run length,
+where the same trigger written on the clock reads the state after it (`x >= 3.9`
+from `x = 3`, a row at 0.9; `x >= 1002.37` from `x = 1000`, a row at 2.37). A
+trigger written with `abs()` or a square,
+`abs(x - 3.1) <= 0.5` or `(x - 3.1)^2 <= 0.25`, is two such crossings, one per
+edge, each placed by the operator written. A strict `x > 2.6` (or
+`abs(x - 3.1) < 0.5`) is met only after the zero and is stopped where the solve
+puts it, as before; its row can still depend on the run's length.
 
 Which side the row falls on there is decided in doubles, where `0.1 + 2.5` is
 the double 2.6, so the trigger is met at t = 2.5. The exact sum of those two
