@@ -133,7 +133,8 @@ print(reps.observables.shape)  # (50, 11, 2)
    `result.started_from` says which it was. `run_batch` starts each point
    from the initial conditions. `parameter_scan` and `run_replicates` start
    each point from the model's state at the call, so call `model.reset()`
-   first.
+   first. A scan over a parameter that sets a species' starting amount
+   cannot move that species from there, and warns (`ScanDoseWarning`).
 2. **`n_points` counts the output points, the first included.**
    `t_span=(0, 10), n_points=11` gives `0, 1, ..., 10`. BioNetGen's
    `n_steps=10`, RoadRunner's `steps=10` and basico's `intervals=10` are

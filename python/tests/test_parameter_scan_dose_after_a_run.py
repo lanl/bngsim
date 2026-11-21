@@ -506,3 +506,61 @@ def test_a_compartment_size_is_said_alike_after_a_run_and_after_a_save():
         with pytest.warns(UserWarning, match=DROPS.format("c", "'A'")):
             points = sim.parameter_scan("c", [1.0, 4.0], **SCAN)
         assert [p.species[0, 0] for p in points] == [snap[0], snap[0]]
+
+
+# --- the warning's class, and LiveStartWarning beside it ----------------------
+
+
+def test_the_warning_is_a_scan_dose_warning_on_its_own():
+    """Its own class, exported, so a caller or an agent can promote or silence
+    it alone; still a UserWarning, so every filter written before holds."""
+    assert issubclass(bngsim.ScanDoseWarning, UserWarning)
+    sim, _ = _after_a_run()
+    with pytest.warns(bngsim.ScanDoseWarning, match=DROPS.format("A0", "'A'")):
+        sim.parameter_scan("A0", [5.0, 40.0], **SCAN)
+    sim, _ = _after_a_run()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", bngsim.ScanDoseWarning)
+        with pytest.raises(bngsim.ScanDoseWarning):
+            sim.parameter_scan("A0", [5.0, 40.0], **SCAN)
+
+
+def test_a_dose_scan_that_sets_the_clock_back_draws_both_warnings_and_one_remedy():
+    """From t = 0 after the run to t = 5, the scan continues the run with its
+    clock set back (LiveStartWarning) and drops the dose (ScanDoseWarning).
+    Both stand; LiveStartWarning's remedy leaves out save_concentrations(),
+    which makes the state the baseline and doses nothing."""
+    sim, _ = _after_a_run()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        sim.parameter_scan("A0", [5.0, 40.0], t_span=(0, 1), n_points=2)
+    kinds = {type(w.message) for w in caught}
+    assert {bngsim.ScanDoseWarning, bngsim.LiveStartWarning} <= kinds
+    (live,) = [w for w in caught if isinstance(w.message, bngsim.LiveStartWarning)]
+    assert "Model.reset() first" in str(live.message)
+    assert "save_concentrations" not in str(live.message)
+
+
+def test_a_rate_constant_scan_keeps_live_starts_full_remedy():
+    """A scan over k seeds no species: no dose warning, and LiveStartWarning
+    still offers save_concentrations()."""
+    sim, _ = _after_a_run()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        sim.parameter_scan("k", [0.1, 0.2], t_span=(0, 1), n_points=2)
+    assert not [w for w in caught if isinstance(w.message, bngsim.ScanDoseWarning)]
+    (live,) = [w for w in caught if isinstance(w.message, bngsim.LiveStartWarning)]
+    assert "Model.save_concentrations()" in str(live.message)
+
+
+def test_the_dose_scan_still_stops_under_a_live_start_filter():
+    """Option 1 of the review would have let this scan run: under
+    filterwarnings("error", LiveStartWarning) it must still stop, the dose
+    warning given just before."""
+    sim, _ = _after_a_run()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        warnings.filterwarnings("error", category=bngsim.LiveStartWarning)
+        with pytest.raises(bngsim.LiveStartWarning):
+            sim.parameter_scan("A0", [5.0, 40.0], t_span=(0, 1), n_points=2)
+    assert any(isinstance(w.message, bngsim.ScanDoseWarning) for w in caught)

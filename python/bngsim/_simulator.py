@@ -66,6 +66,7 @@ from bngsim._exceptions import (
     DenseSolverFallbackWarning,
     LiveStartWarning,
     ModelError,
+    ScanDoseWarning,
     SensitivityRefusedDuringRunError,
     SensitivityRefusedForParametersError,
     SensitivityUnsupportedError,
@@ -585,6 +586,9 @@ _MODEL_REMEDY = (
     "Call Model.reset() first to start from the initial conditions, or "
     "Model.save_concentrations() to make this state the model's initial one."
 )
+# ...and a scan whose ScanDoseWarning named a species: saving the state makes it
+# the baseline, which no parameter write moves, so it would not dose them.
+_DOSE_SCAN_REMEDY = "Call Model.reset() first to start from the initial conditions."
 
 
 # Below this many entries, two vectors are compared in Python: numpy's call
@@ -7083,9 +7087,10 @@ class Simulator:
 
     def _warn_if_the_scan_drops_a_dose(
         self, parameter: str, value: float, values: Sequence[float], carried: bool
-    ) -> None:
-        """Warn where a scan over a parameter that seeds a species' initial
-        condition cannot move that species, asked at a point's start.
+    ) -> bool:
+        """Warn (:class:`ScanDoseWarning`) where a scan over a parameter that
+        seeds a species' initial condition cannot move that species, asked at a
+        point's start; ``True`` where it named one.
 
         A point starts from the state at the call (or the ``reset_to``
         snapshot), and a parameter write moves a species only while it sits on
@@ -7154,7 +7159,7 @@ class Simulator:
                 "parameter write leaves such a species where it is"
             )
         if not stuck:
-            return
+            return False
         shown = ", ".join(repr(n) for n in stuck[:3]) + (
             f" and {len(stuck) - 3} more" if len(stuck) > 3 else ""
         )
@@ -7172,9 +7177,10 @@ class Simulator:
             "at the point's value: on_point=lambda model, value: "
             "model.set_concentration(name, value) where that initial condition is the "
             "parameter itself.",
-            UserWarning,
+            ScanDoseWarning,
             stacklevel=_stacklevel_outside_bngsim(),
         )
+        return True
 
     def _species_seeded_through_the_graph(self, parameter: str) -> list[str]:
         """The species whose initial condition names ``parameter``, directly or
@@ -7940,9 +7946,10 @@ class Simulator:
             # and one more), and the reset at the first point puts it back: it
             # comes after the tolerance above is read, which reads the model as
             # the scan found it.
+            dose_dropped = False
             if reset_conc and on_point is None:  # a hook may be what doses them
                 _reset_point()
-                self._warn_if_the_scan_drops_a_dose(
+                dose_dropped = self._warn_if_the_scan_drops_a_dose(
                     parameter, original_value, values, carried=carry_seed is not None
                 )
             for i, value in enumerate(values):
@@ -7983,7 +7990,10 @@ class Simulator:
                             if reset_conc
                             else "The first point of this scan"
                         ),
-                        remedy=_MODEL_REMEDY,
+                        # Both warnings stand: this one says the whole state
+                        # continues the run, the dose warning which species it
+                        # does not move. Only the remedy differs.
+                        remedy=_DOSE_SCAN_REMEDY if dose_dropped else _MODEL_REMEDY,
                     )
                 # Rebuild the backend so the scanned parameter (and any on_point
                 # rate-constant change) is picked up; run() then seeds from the

@@ -771,6 +771,31 @@ class LiveStartWarning(UserWarning):
     """
 
 
+class ScanDoseWarning(UserWarning):
+    """A parameter scan cannot move the species its parameter seeds (refs #1643).
+
+    Each point of :meth:`Simulator.parameter_scan` starts from the state at the
+    call (or the ``reset_to`` snapshot), and a parameter write moves a species
+    only while it sits on its initial condition (:meth:`Model.set_param`).
+    After a run it does not: a scan over ``A0 = 5`` and ``40`` started both
+    points at the run's ``A = 6.07``. In a sensitivity scan no write moves a
+    species at all, and after :meth:`Model.save_concentrations` with no label
+    the saved state is the baseline, which no write moves. The scan keeps its
+    start, which a pre-equilibrated protocol relies on, and this warning names
+    the species whose dose is dropped.
+
+    Raised once per call, before the first point runs, by a resetting scan with
+    no ``on_point`` hook (a hook may be what doses). :meth:`Model.reset` first
+    gives a dose scan from the initial conditions; an ``on_point`` hook that
+    sets each named species doses from the current state. Filter or escalate it
+    like any ``UserWarning``::
+
+        import warnings, bngsim
+        warnings.simplefilter("error", bngsim.ScanDoseWarning)  # promote
+        warnings.simplefilter("ignore", bngsim.ScanDoseWarning)  # silence
+    """
+
+
 class OneSidedSensitivityWarning(UserWarning):
     """A sensitivity column is a one-sided derivative: the run is on a kink (GH #1822).
 
