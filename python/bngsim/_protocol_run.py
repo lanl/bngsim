@@ -988,13 +988,11 @@ class _Runner:
                 "BNG2.pl stops the protocol there"
             )
             # A notice of the run, which it says of itself (issue #1703).
-            result._notices = _notices.unique(
-                (
-                    *result._notices,
-                    _notices.Notice(
-                        ConversionWarning.__name__, "protocol.steady_state_not_reached", message
-                    ),
-                )
+            _notices.add(
+                result,
+                _notices.Notice(
+                    ConversionWarning.__name__, "protocol.steady_state_not_reached", message
+                ),
             )
             _notices.warn(
                 message,

@@ -581,3 +581,45 @@ def test_a_network_free_run_names_the_xml_it_ran(data_dir: Path) -> None:
         "sha256": hashlib.sha256(xml.read_bytes()).hexdigest(),
     }
     assert r.record["model"]["format"] == "net"
+
+
+# ─── Review round 2 ────────────────────────────────────────────────────
+
+
+def test_a_stack_of_two_models_keeps_its_parts_and_says_where_they_differ(
+    tmp_path: Path, net_path: Path
+) -> None:
+    other = tmp_path / "other.net"
+    other.write_text(NET.replace("3 A0 100", "3 A0 50"), encoding="utf-8")
+    one = Simulator(Model.from_net(net_path)).run(t_span=(0, 1), n_points=3)
+    two = Simulator(Model.from_net(other)).run(t_span=(0, 1), n_points=3)
+    rec = Result.squeeze([one, two]).record
+    assert rec["model"] == {"format": "net", "path": None, "sha256": None}
+    assert {"model.path", "model.sha256", "run.parameters.A0"} <= set(rec["rows_differ"])
+    assert rec["columns"] == one.record["columns"]
+    assert rec["time"] == {"units": None}
+
+
+def test_an_unlabeled_callable_stop_condition_is_named_without_an_address(
+    net_path: Path,
+) -> None:
+    def never(result):
+        return False
+
+    records = []
+    for _ in range(2):
+        sim = Simulator(Model.from_net(net_path))
+        sim.add_stop_condition(never)
+        sim.add_stop_condition(lambda result: False)
+        sim.add_stop_condition(lambda result: False, label="mine")
+        records.append(sim.run(t_span=(0, 1), n_points=2).record["run"]["stop_conditions"])
+    qual = never.__qualname__
+    assert (
+        records[0]
+        == records[1]
+        == [
+            f"callable {qual}",
+            f"callable {qual.rsplit('.', 1)[0]}.<lambda>",
+            "mine",
+        ]
+    )

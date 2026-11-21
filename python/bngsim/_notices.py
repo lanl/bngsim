@@ -250,6 +250,12 @@ def unique(notes: Iterable[Notice]) -> tuple[Notice, ...]:
     return tuple(dict.fromkeys(notes))
 
 
+def add(result: Any, notice: Notice) -> None:
+    """Add *notice* to *result*'s own, where it is not among them: for a notice
+    of one result of several that a call decides after they are made."""
+    result._notices = unique((*result._notices, notice))
+
+
 def attach(out: Any, notes: list[Notice]) -> None:
     """Add *notes*, a call's own, to every Result the call returns: *out*
     itself, or each Result in a list or tuple of them."""

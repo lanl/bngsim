@@ -482,3 +482,27 @@ def test_a_threads_pending_switch_notices_are_its_own() -> None:
     assert sw._pending() == [("t > 1", "issue-1703-test", "a condition %s", ("here",))]
     sw.say_what_was_read(False)
     assert sw._pending() == []
+
+
+@pytest.mark.parametrize("n_workers", [1, 2])
+def test_a_sensitivity_chunks_notices_reach_the_stitched_result(
+    tmp_path: Path, monkeypatch, n_workers
+) -> None:
+    """compute_all_sensitivities runs its chunks on worker threads, which have
+    no collector of the call's: each chunk collects its own."""
+    import shutil
+
+    if not (shutil.which("cc") or shutil.which("clang") or shutil.which("gcc")):
+        pytest.skip("no C compiler for sensitivities")
+    real = Simulator._run_sensitivity_chunk
+
+    def noisy(self, params, *args, **kwargs):
+        _notices.note("log", "sensitivity.chunk_split", f"a chunk of {list(params)}")
+        return real(self, params, *args, **kwargs)
+
+    monkeypatch.setattr(Simulator, "_run_sensitivity_chunk", noisy)
+    sim = Simulator(_net(tmp_path, "ab.net", AB))
+    r = sim.compute_all_sensitivities(
+        t_span=(0, 1), n_points=3, params=["kf", "A0"], chunk_size=1, n_workers=n_workers
+    )
+    assert sorted(n["message"] for n in r.notices) == ["a chunk of ['A0']", "a chunk of ['kf']"]

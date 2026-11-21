@@ -437,8 +437,12 @@ def squeeze_into(out: Result, results: list[Result]) -> None:
             differ.append(key)
     if "run.start_state_sha256" in differ:
         differ.append("run.start_state")
-    if any(r._record_frozen is not None for r in results):
-        # Rows loaded from files, alone or beside live ones: what each holds.
+    first = results[0]._model_info
+    if any(r._record_frozen is not None for r in results) or not all(
+        _same_model(r._model_info, first) for r in results
+    ):
+        # Rows loaded from files, alone or beside live ones, or of different
+        # models: what each record holds, merged key by key.
         parts = [frozen_parts(r) for r in results]
         if any(part is None for part in parts):
             return
@@ -447,9 +451,7 @@ def squeeze_into(out: Result, results: list[Result]) -> None:
         return
     if any(r._run_info is None for r in results):
         return
-    first = results[0]._model_info
-    if all(_same_model(r._model_info, first) for r in results):
-        out._model_info = first
+    out._model_info = first
     both = [run_and_backend(r._run_info) for r in results]
     out._run_info = {
         "run": _agree([b[0] for b in both], "run", differ),

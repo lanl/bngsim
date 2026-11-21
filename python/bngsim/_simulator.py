@@ -4337,7 +4337,7 @@ class Simulator:
             sensitivity_method=self._sensitivity_method if ode and sens else None,
             poplevel=self._poplevel if self._method == "psa" else None,
             stop_conditions=(
-                tuple(sc.label or str(sc) for sc in self._stop_conditions)
+                tuple(sc.record_name() for sc in self._stop_conditions)
                 if self._stop_conditions
                 else ()
             ),
@@ -6562,12 +6562,14 @@ class Simulator:
         several = len(results) > 1
         if several:
             for result, hit in own_hits:
-                notice = _notices.Notice(
-                    AtolScaleWarning.__name__,
-                    "atol.below_scale",
-                    self._atol_scale_message(hit, call),
+                _notices.add(
+                    result,
+                    _notices.Notice(
+                        AtolScaleWarning.__name__,
+                        "atol.below_scale",
+                        self._atol_scale_message(hit, call),
+                    ),
                 )
-                result._notices = _notices.unique((*result._notices, notice))
         # One warning for the call, naming the species of every result. Of a
         # batch or a scan, each result that holds one has its notice above.
         _notices.warn(
@@ -8934,6 +8936,9 @@ class Simulator:
         )
         effective_max_steps = max_steps if max_steps is not None else self._max_steps
 
+        # Each chunk collects its own notices, on whatever thread it runs, and
+        # the stitched result gathers them (issue #1703).
+        @_notices.collected
         def _run_chunk(chunk_idx: int) -> Result:
             """Run one sensitivity chunk (thread-safe)."""
             chunk_params = chunks[chunk_idx]
@@ -8948,6 +8953,7 @@ class Simulator:
                     effective_max_steps,
                 )
 
+        @_notices.collected
         def _recover_chunk(chunk_idx: int, exc: BaseException) -> list[Result]:
             """Retry a failed chunk one column at a time (GH #243)."""
             if isinstance(exc, _ConditionReadOtherwise):
@@ -9008,6 +9014,11 @@ class Simulator:
 
         # Stitch sensitivity tensors along param axis
         stitched = self._stitch_sensitivity_results(chunk_results, target_params)
+        # The chunks' notices, but for their one-sided switches, each said of a
+        # chunk's columns: the stitched result says them once, of all of them.
+        stitched._notices = _notices.unique(
+            n for r in chunk_results for n in r._notices if n.code != "sensitivity.one_sided"
+        )
         stitched._one_sided_sensitivities = _merge_one_sided(chunk_results)
         _warn_one_sided(stitched._one_sided_sensitivities)
         # Carry the #198 support map so an unsupported expression selector raises
@@ -12973,6 +12984,11 @@ class _StopCondition:
         """Check condition. Returns time index or None."""
         raise NotImplementedError
 
+    def record_name(self) -> str:
+        """How a run's record names this condition (issue #1703): its label,
+        else its expression."""
+        return self.label or str(self)
+
 
 class _ExpressionStopCondition(_StopCondition):
     """Stop condition based on an expression string.
@@ -13074,6 +13090,16 @@ class _CallableStopCondition(_StopCondition):
     ) -> None:
         super().__init__(label=label or repr(func))
         self._func = func
+        self._labeled = bool(label)
+
+    def record_name(self) -> str:
+        """The label given, else the callable's qualified name: its ``repr``,
+        the label it reports otherwise, holds a memory address, which would
+        make two runs of one script record differently (issue #1703)."""
+        if self._labeled:
+            return self.label
+        name = getattr(self._func, "__qualname__", None) or type(self._func).__qualname__
+        return f"callable {name}"
 
     def check(self, result: Result) -> int | None:
         """Call the function; if it returns a true value, the last time index.
