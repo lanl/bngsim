@@ -1,59 +1,62 @@
 ---
-summary: "Using BNGsim as PyBNF's simulator for parameter fitting: setup, cluster evaluation, and the capability checks a fitting tool gates on."
+summary: "Using BNGsim as PyBNF's simulator for parameter fitting: setup, cluster evaluation, and the capability checks a fitting tool should make."
 ---
 
 # Use with PyBNF
 
-When `bngsim` is installed, [PyBNF](https://github.com/lanl/PyBNF) automatically
-uses it for BNGL model fitting instead of spawning `run_network` subprocesses:
+When BNGsim is installed, [PyBNF](https://github.com/lanl/PyBNF) uses it to
+fit BNGL models instead of starting `run_network` subprocesses:
 
 ```bash
 pip install bngsim
 cd tests/full_tests
 pybnf -c T1-ssprop/polynomial.conf
-# T1 benchmark: 3:16 (was 3+ hours without bngsim)
 ```
 
-No configuration changes needed — PyBNF auto-detects `bngsim` at import time.
+No configuration is needed. PyBNF detects BNGsim when PyBNF is imported.
 
 ## Scheduler-free cluster evaluation
 
-A fitting run distributes thousands of independent evaluations across a cluster.
-BNGsim is the **stateless single-evaluation kernel** for that workload — the
-frontend (PyBNF) owns the scheduler: multistart, bootstrap, profile likelihood,
-Slurm/MPI fan-out. BNGsim adds **no scheduler code**; it exposes the raw output +
-sensitivity *primitives* (the `(n_times, n_outputs, n_param)` tensor), never a
-pre-baked loss — objective/noise/normalization composition stays in the frontend.
+A fit spreads thousands of independent evaluations over a cluster. BNGsim runs
+one evaluation at a time and has no scheduler. The fitting tool (PyBNF) owns
+multistart, bootstrap, profile likelihood and the Slurm or MPI fan-out. BNGsim
+returns outputs and their sensitivities, the `(n_times, n_outputs, n_param)`
+tensor, never a finished loss. The objective, noise model and normalization
+stay in the fitting tool.
 
-**Statelessness / re-entrancy.** Every evaluation runs against an independent
-model clone with no shared mutable state (the C++ engine is instance-based with no
-globals, no file I/O, no stdout). What a model and its clones do share, on the
-Python side, is a memo of the analysis of their functions, which is the same for
-all of them: an entry is read-only once made, and the memo is changed under a lock. `run_batch` clones the model per row, so many
-threads — or many processes — evaluate concurrently against the **one** read-only
-compiled `.so` without interfering. For a fixed `(model, θ, sensitivity set,
-solver options)`, and a `seed` for a stochastic method, the result is
-deterministic, and batch rows are returned in input order regardless of worker
-count.
+### Evaluations are independent
 
-**Shared compiled artifact.** The codegen cache is content-addressed by model
-hash and updated atomically (compile to a process-unique temp file, then
-`os.replace` into the cache), so concurrent jobs racing on the same model never
-observe a partial `.so`. Point `BNGSIM_CODEGEN_CACHE_DIR` at node-local scratch,
-or pre-warm it once on a login node and have worker jobs reuse the artifact:
+Every evaluation runs on its own model clone, with no shared mutable state. The
+C++ engine has no globals, no file I/O and no stdout. A model and its clones
+share one cache of the analysis of their functions, on the Python side; an entry
+is read-only once made, and the cache is changed under a lock. `run_batch`
+clones the model for each row, so many threads or processes can run at once
+against the one read-only compiled `.so`.
+
+For a fixed model, θ, sensitivity set and solver options, plus a `seed` for a
+stochastic method, the result is deterministic. Batch rows come back in input
+order, whatever the number of workers.
+
+### One compiled artifact for every job
+
+The codegen cache is keyed by the model's hash and written atomically (compiled
+to a temporary file, then moved into place), so jobs racing on one model never
+see a partial `.so`. Point `BNGSIM_CODEGEN_CACHE_DIR` at node-local scratch, or
+fill it once on a login node and let the worker jobs reuse it:
 
 ```bash
-# 1. Compile once on the login node into a shared/staged cache.
+# 1. Compile once on the login node into a shared cache.
 export BNGSIM_CODEGEN_CACHE_DIR=/scratch/$USER/bngsim_cache
 python -c "import bngsim; bngsim.Simulator(bngsim.Model.from_net('model.net'), codegen=True)"
 
-# 2. Every worker job inherits the env var and reuses the cached .so (no compile).
+# 2. Every worker job inherits the variable and reuses the cached .so.
 sbatch --export=ALL fit_job.slurm
 ```
 
-**Local batch over a parameter matrix.** A `sensitivity_params`-configured
-`Simulator` yields the full per-row output-sensitivity tensor from `run_batch`,
-reusing the one shared artifact:
+### A batch over a parameter matrix
+
+A `Simulator` built with `sensitivity_params` gives each row's
+output-sensitivity tensor from `run_batch`:
 
 ```python
 sim = bngsim.Simulator(model, method="ode", sensitivity_params=["kf", "kr"])
@@ -62,94 +65,94 @@ rows = sim.run_batch(
     params=[{"kf": kf, "kr": kr} for kf, kr in theta_matrix],
     num_processors=8,           # independent clones, one shared .so
 )
-for r in rows:                  # deterministic input order
+for r in rows:                  # in input order
     g = r.output_sensitivities(["observable:Atot"])   # (n_times, 1, n_param)
 ```
 
-**The `parameter` axis is a total derivative — do not sum it with the `ic`
-axis.** `output_sensitivities(axis="parameter")` carries every path by which θ
-reaches the trajectory, the right-hand side *and* the initial-condition seeding
-`∂x(0)/∂θ` (a `.net` `R() R0` / `R() Rtot`, or an SBML `<initialAssignment>`
-over constant parameters). `axis="ic"` is the companion basis `∂y(t)/∂x_k(0)`
-with the initial value held independent. The two overlap:
+### Do not add the `parameter` axis to the `ic` axis
+
+`output_sensitivities(axis="parameter")` is a total derivative. It includes
+every way θ reaches the trajectory: the right-hand side and the initial
+condition, `∂x(0)/∂θ` (a `.net` `R() R0` or `R() Rtot`, or an SBML
+`<initialAssignment>` over constant parameters). `axis="ic"` is the derivative
+with respect to the initial values themselves, `∂y(t)/∂x_k(0)`. The two
+overlap:
 
 ```text
 d_param[θ] = (right-hand-side path) + Σ_k (∂x_k(0)/∂θ)·d_ic[x_k]
 ```
 
-A gradient path that routes one fitted parameter to every native column it
-reaches and **sums** them therefore double-counts any seeded initial condition.
-The rule is not "drop one axis" — it is *add an `ic` term only for the part of
-`∂x(0)/∂θ` BNGsim does not already carry*. `Model.effective_ic_sensitivity()`
-reports exactly that, from model structure alone, with **no integration**, so
-routing can be built once at setup rather than per evaluation:
+So summing every column a fitted parameter reaches counts a seeded initial
+condition twice. Add an `ic` term only for the part of `∂x(0)/∂θ` that BNGsim
+does not already include. `Model.effective_ic_sensitivity()` tells you that
+part, from the model alone, with no simulation, so you can set up the routing
+once:
 
 ```python
-# once, at fit setup — no simulation needed
+# once, at fit setup; no simulation needed
 seed = model.effective_ic_sensitivity(free_params)   # {'R(r)': {'R0': 1.0}}
 
-def route(theta, d_param, d_ic):                     # per evaluation: tensor reads
+def route(theta, d_param, d_ic):                     # per evaluation
     g = d_param[theta]                               # already a total derivative
     for species, coeff in my_own_ic_map.get(theta, {}).items():
-        if theta not in seed.get(species, {}):       # absent ⇒ not carried...
-            g = g + coeff * d_ic[species]            # ...so supply it
+        if theta not in seed.get(species, {}):       # not included...
+            g = g + coeff * d_ic[species]            # ...so add it
     return g
 ```
 
-Two distinctions the accessor is careful about, because both have bitten
-consumers:
+Two things to get right:
 
-- **Absent is not zero.** A *present* entry valued `0.0` means "seeded, and the
-  coefficient is zero at this state" — a chain-rule factor that vanishes here
-  but need not at the next point, so the column must stay routed. An *absent*
-  entry means there is no seeding path at all. Only the second one is your
-  signal to add an `ic` term.
-- **Ids are the ones you wrote.** A compound `<initialAssignment>` is lowered
-  internally onto a synthetic `_ic_<species>` parameter; the report always names
-  the original symbols, matching how the sensitivity tensor is labeled.
+- **Absent is not zero.** An entry of `0.0` means the initial condition is
+  seeded and its coefficient is zero at this state. It may not be zero at the
+  next point, so keep that column routed. Only an absent entry means there is
+  no seeding, and only then add an `ic` term.
+- **Names are the ones you wrote.** A compound `<initialAssignment>` is stored
+  on an internal `_ic_<species>` parameter, but the report names the original
+  symbols, as the sensitivity tensor does.
 
-The overlap is easy to miss because its commonest case is degenerate: a
-parameter appearing *only* in an initial condition, with coefficient 1, gives a
-`parameter` column **bit-identical** to the seeded species' `ic` column, so
-summing reports that column at exactly 2×. Comparing the two columns is not a
-usable test — it detects nothing once the coefficient differs from 1 (a compound
-`<initialAssignment>`) or the parameter also drives the rate laws.
+The double count is easy to miss. When a parameter appears only in an initial
+condition, with coefficient 1, its `parameter` column equals the species' `ic`
+column exactly, so the sum is exactly twice the right value. Comparing the two
+columns does not catch it in general: they differ once the coefficient is not 1
+or the parameter also appears in the rate laws.
 
-`Result.ic_sensitivity_seed` is the per-run record of the same matrix. Prefer
-the `Model` accessor for routing; reach for the `Result` one to see what a
-*particular* run used, which is the only correct answer for a batch or scan over
-a nonlinear derived initial condition (`Rtot = R0*scale`), where the
-coefficients move from point to point.
+`Result.ic_sensitivity_seed` records the same matrix for one run. Use the
+`Model` call for routing. Use the `Result` one to see what a particular run
+used. For a batch or scan over a nonlinear derived initial condition
+(`Rtot = R0*scale`), the coefficients change from point to point, and the
+`Result` one is the only correct answer.
 
-The alternative integration is to **push instead of subtract**: hand your own
-rows to `Model.declare_ic_sensitivity({species: {param: ∂x(0)/∂θ}})` and read
-`axis="parameter"` alone, never touching the `ic` axis. A declared species' row
-is taken as fully specified — parameters not named get `∂x_k(0)/∂θ = 0` — so it
-*replaces* the model's own row rather than adding to it, matching the semantics
-a PEtab condition-table override already has against an `<initialAssignment>`.
-The cost is that declarations are model *state*, applied per condition and
-carried to workers, where reading is a pure mapping.
+The other way is to supply the rows yourself:
+`Model.declare_ic_sensitivity({species: {param: ∂x(0)/∂θ}})`, then read
+`axis="parameter"` alone and never touch `axis="ic"`. A declared species' row
+replaces the model's own, and parameters it does not name get
+`∂x_k(0)/∂θ = 0`. This matches how a PEtab condition table overrides an
+`<initialAssignment>`. The cost is that declarations are model state, applied
+per condition and sent to the workers.
 
-Gate on the capability rather than a version string:
-`bngsim.capabilities()["features"]["effective_ic_sensitivity"]`. On a build
-without it the seed matrix is not knowable, and every answer a consumer could
-guess is silently wrong — refusing the gradient fit is the honest behavior.
+Check `bngsim.capabilities()["features"]["effective_ic_sensitivity"]`, not a
+version string. On a build without it, the seed matrix cannot be known, so the
+fitting tool should refuse the gradient fit.
 
-On `SteadyStateResult` none of this applies: that `parameter` axis is the
-implicit-function derivative of the algebraic system (`J·∂x*/∂p = −∂f/∂p`), it
-has no seeding term to double-count, and `axis="ic"` raises.
+None of this applies to a `SteadyStateResult`. Its `parameter` axis is the
+implicit-function derivative (`J·∂x*/∂p = −∂f/∂p`), with no initial-condition
+term, and `axis="ic"` raises.
 
-**Checkpoint / restart.** `EvaluationSpec` is a frozen, JSON-serializable record
-of one evaluation — model source (+ optional SHA-256 integrity guard), θ vector,
-time grid, sensitivity set, solver options, output selectors and, for a
-stochastic method, a `seed`. Ship it to a worker or write it to a checkpoint;
-`evaluate()` reconstructs the simulator and runs deterministically. A
-`method="ssa"` spec without a `seed` draws a fresh one on each `evaluate()`, as
-`Simulator.run` does, and reports it on `Result.seed`, so
-`dataclasses.replace(spec, seed=result.seed)` is the spec that reruns that
-trajectory (issue #1517). SED-ML carries the seed as `KISAO:0000488`. Pair a
-spec with the compact `Result.summary()` for cheap indexing/logging without
-re-reading every full HDF5 payload:
+### Checkpoint and restart
+
+`EvaluationSpec` is a frozen, JSON-serializable record of one evaluation: the
+model source (with an optional SHA-256 check), θ, the time grid, the
+sensitivity set, solver options, output selectors, and a `seed` for a
+stochastic method. Send it to a worker or write it to a checkpoint;
+`evaluate()` rebuilds the simulator and runs it.
+
+A `method="ssa"` spec without a `seed` draws a fresh one on each `evaluate()`,
+as `Simulator.run` does, and reports it on `Result.seed`. So
+`dataclasses.replace(spec, seed=result.seed)` reruns that trajectory. SED-ML
+carries the seed as `KISAO:0000488`.
+
+Pair a spec with `Result.summary()` for a small index entry, without reading
+back the full HDF5 file:
 
 ```python
 spec = bngsim.EvaluationSpec(
@@ -158,47 +161,39 @@ spec = bngsim.EvaluationSpec(
     params={"kf": 0.5}, sensitivity_params=("kf",),
     outputs=("observable:Atot",),
 )
-blob = spec.to_json()                              # checkpoint / send to worker
+blob = spec.to_json()                              # checkpoint, or send to a worker
 result = bngsim.EvaluationSpec.from_json(blob).evaluate()
-json.dump(result.summary(), open("eval_0001.json", "w"))   # compact index entry
+json.dump(result.summary(), open("eval_0001.json", "w"))   # small index entry
 result.save("eval_0001.h5")                        # full arrays (HDF5)
 ```
 
-`spec.with_params(theta_row)` stamps a θ row onto a base spec, so a sweep
-serializes one spec plus a matrix rather than thousands of near-duplicates.
+`spec.with_params(theta_row)` puts a θ row on a base spec, so a sweep stores one
+spec and a matrix instead of thousands of near-copies.
 
 ## Gate on what the build computes, not on its version
 
-A frontend that is about to spend hours on a gradient fit has to decide first
-whether this install computes the derivatives it is about to trust. Some of that
-is a compiled backend or an optional package, and `capabilities()["features"]`
-has always answered it. Some of it is a **fix**, and until issue #431 there was
-nothing to read.
-
-A version string cannot stand in. BNGsim bumps `__version__` at the *start* of a
-release cycle, so the string identifies a cycle rather than a build: every
-from-source install made between that bump and a given fix declares the same
-number as the release that finally carries it. A `hasattr` probe cannot stand in
-either, because these fixes change what a build *computes*, not what it
-*exposes* — nothing in the namespace appears or disappears at one.
-
-The **behavior keys** are published for exactly this. Each is `True` or `False`
-on every build, so a `False` is an answer you can act on, where an absent key
-would mean only "too old to have been asked":
+Before a long gradient fit, a fitting tool should check that this install
+computes the derivatives it will trust. `capabilities()["features"]` answers
+this for compiled backends and optional packages. It also has behavior keys for
+derivative behaviors that a version string or `hasattr` cannot reveal:
 
 ```python
 caps = bngsim.capabilities()
 caps["features"]["event_sensitivities"]              # across a discrete event
-caps["features"]["cross_compartment_sensitivities"]  # analytic ∂f/∂p, not DQs
+caps["features"]["cross_compartment_sensitivities"]  # analytic ∂f/∂p, not difference quotients
 caps["features"]["per_species_atol"]                 # run(atol=[...])
 caps["features"]["tracking_atol"]                    # run(atol=TrackingAtol())
 ```
 
-Getting one of these wrong is asymmetric, which is why they are worth a key. A
-build without the fix does not *refuse* the case — it returns a finite tensor
-with a term missing. Guessing "absent" costs a gradient fit; guessing "present"
-costs a fit that converges on the wrong number and reports it with nothing wrong
-on its face.
+Each key is `True` or `False` on every build, so `False` is an answer you can
+act on. A version string does not tell you: BNGsim raises `__version__` at the
+start of a release cycle, so a source install made mid-cycle reports the same
+version as the release. And `hasattr` does not tell you, because these keys
+describe what a build computes, not what it exposes.
+
+They matter because a build without one of these does not refuse the case. It
+returns a finite tensor with a term missing, and a fit on it converges to the
+wrong answer with no sign of trouble.
 
 `caps["build"]` says which build answered:
 
@@ -207,32 +202,26 @@ caps["build"]["commit"]   # what the compiled extension was built from
 caps["build"]["stale"]    # True: that extension is behind the C++ beside it
 ```
 
-Log the commit at job start. It is the only thing here that separates two
-installs reporting the same `version`. Check `stale` there too: in a source
-checkout the compiled extension is built separately and does not rebuild on
-import, so it can lag the Python layer by days while every version-, metadata-
-and feature-based check passes. BNGsim warns about that at import, which for a
-consumer package is while that package is still loading and before its logging
-exists — reading the key lets you raise it again where someone will see it, in
-time to stop a run that would otherwise report conclusions about code that is no
-longer in the tree.
+Log the commit when a job starts. It is the only thing that tells apart two
+installs with the same `version`. Check `stale` too. In a source checkout, the
+compiled extension is built separately and does not rebuild on import, so it can
+lag the Python code while every version and feature check passes. BNGsim warns
+about this at import, but that may be before your package has set up logging.
+Reading the key lets you raise it again where someone will see it.
 
 ## Ask each model whether its gradient is analytic
 
-The keys above are properties of the install. Whether a gradient runs on BNGsim's
-analytic `∂f/∂p` or on CVODES' internal difference quotient is not: it is decided
-per model, at codegen, and two models on one BNGsim get different answers.
+Whether a gradient uses BNGsim's analytic `∂f/∂p` or CVODES' internal
+difference quotient is decided per model, when its code is generated. Two
+models on the same install can get different answers.
 
-`CVodeSensInit1` takes one sensitivity-RHS callback for every column, so a single
-rate law BNGsim cannot differentiate declines the analytic derivative for the
-whole model. There is no per-reaction fallback to mix in. The difference quotient
-that replaces it costs an extra right-hand-side evaluation per column per step, so
-an N-parameter fit pays roughly N times the sensitivity cost. On a fit measured in
-hours that is what ends runs: on `Smith_BMCSystBiol2013` all 25 columns fell back
-and every gradient start timed out.
+CVODES takes one sensitivity right-hand side for all columns, so one rate law
+BNGsim cannot differentiate turns off the analytic derivative for the whole
+model. The difference quotient costs an extra right-hand-side evaluation per
+column per step, so an N-parameter fit pays about N times the sensitivity cost.
+On a long fit, that can be the difference between finishing and timing out.
 
-Two reads answer it, on the Simulator rather than in `capabilities()`, because the
-fact is per run:
+Ask the Simulator, since the answer is per model:
 
 ```python
 sim = bngsim.Simulator(model, method="ode", sensitivity_params=["kf", "kr"])
@@ -240,20 +229,17 @@ sim.has_analytic_sens_rhs     # True: the analytic ∂f/∂p. False: difference 
 sim.sens_rhs_decline_reason   # why, or None
 ```
 
-Ask a Simulator that was built for a sensitivity run. A plain
-`Simulator(model, method="ode")` builds an artifact with no analytic `∂f/∂p` in it
-because nobody asked for one, which reports as `False` and is not a decline.
+Ask a Simulator built for a sensitivity run. A plain
+`Simulator(model, method="ode")` compiles no analytic `∂f/∂p` because none was
+asked for. It reports `False`, which is not a decline.
 
-The verdict is read off the compiled artifact, which either exports the symbol the
-solver resolves or does not, so it is stable whatever the codegen cache did. The
-reason is derived once, while source is being generated, and a warm cache
-generates none — so BNGsim records it beside the artifact and replays it on a
-cache hit. A `None` reason therefore means "nothing recorded" as well as "nothing
-to report", and `has_analytic_sens_rhs` is what separates the two.
+`has_analytic_sens_rhs` is read from the compiled artifact, so it is right
+whatever the codegen cache did. The reason is worked out when the code is
+generated and saved beside the artifact, so a cache hit replays it. A `None`
+reason means either nothing to report or nothing recorded;
+`has_analytic_sens_rhs` tells the two apart.
 
-The reason is the half that is actionable. "uses unsupported construct: `abs()`"
-names the thing to re-encode; "no analytic RHS" only tells someone to wait. It
-also carries the one case where the difference quotient is not merely slower: a
-rate law that branches at a crossing whose time moves gets a gradient that is
-wrong at and after that crossing, and BNGsim refuses such a run rather than return
-it.
+The reason tells you what to change. For example, "uses unsupported construct:
+`abs()`" names the thing to rewrite. One case is worse than slow: a rate law
+that switches at a crossing whose time depends on the parameters would get a
+gradient that is wrong at and after the crossing, so BNGsim refuses that run.

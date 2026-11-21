@@ -1,279 +1,68 @@
 ---
-summary: "Model.load and each format's loader (.net, BNGL through BNG2.pl, SBML, Antimony), what each supports and refuses, and reading a .net file as a dict."
+summary: "Load a model from a file, a string or BioModels: .net, BNGL (through BNG2.pl), SBML and Antimony. What each loader needs and refuses, Model.describe, and reading a .net file as a dict."
 ---
 
 # Loading models
 
-## `Model.load` — dispatch on the file suffix
+This page covers how to load a model, how to see what you loaded, and what
+each format needs.
 
-When you already have a path, `Model.load` picks the right factory for you:
+## Load a model
 
-```python
-model = bngsim.Model.load("model.ant")    # -> Model.from_antimony
-model = bngsim.Model.load("model.xml")    # -> Model.from_sbml  (.sbml too)
-model = bngsim.Model.load("model.net")    # -> Model.from_net
-model = bngsim.Model.load("model.bngl")   # -> Model.from_bngl  (needs BNG2.pl)
-```
-
-Matching is case-insensitive, and `defer_jacobian` is forwarded to the selected
-factory. An unrecognized suffix raises `ModelError` listing the loadable ones.
-The format-specific factories below remain the explicit route when the suffix
-does not match the contents (for example an SBML document saved as `.txt`).
-
-## BNGL model loading
-
-BNGsim simulates reaction *networks*; BNGL describes *rules*. Turning one into
-the other is network generation — BNG2.pl's job — so `Model.from_bngl` runs it
-rather than parsing BNGL itself:
+`Model.load` picks the loader from the file's suffix:
 
 ```python
-model = bngsim.Model.from_bngl("egfr.bngl")
+import bngsim
+
+model = bngsim.Model.load("model.net")    # Model.from_net
+model = bngsim.Model.load("model.xml")    # Model.from_sbml (.sbml too)
+model = bngsim.Model.load("model.ant")    # Model.from_antimony
+model = bngsim.Model.load("model.bngl")   # Model.from_bngl (needs BNG2.pl)
 ```
 
-That needs BNG2.pl on the machine. Either install the extra, which brings
-PyBioNetGen (BNG2.pl is bundled with it):
+The suffix match ignores case. An unknown suffix raises `ModelError`, which
+lists the suffixes BNGsim knows. If the suffix doesn't match the contents, such
+as an SBML file saved as `.txt`, call the loader for the format yourself.
+`Model.load` passes `defer_jacobian=` on to the loader.
 
-```bash
-pip install 'bngsim[bngl]'
-```
-
-...or point at a BioNetGen you already have. The resolution order is
-`bng2_pl=` argument → `$BNG2_PL` → `$BNGPATH` → `BNG2.pl` on `PATH` → installed
-PyBioNetGen, so an environment variable always overrides an installed package:
-
-```bash
-export BNGPATH=/path/to/BioNetGen-2.9.3
-```
-
-BNG2.pl is a Perl script, so `perl` must also be on `PATH` — macOS and most
-Linux distributions ship one; stock Windows does not, and BNGL loading is simply
-unavailable there. `bngsim.HAS_BNGL` is the probe for the whole arrangement
-(both halves, checked at the moment you ask), and when it is `False`,
-`bngsim.capabilities()["missing"]["bngl"]` names every location that was
-searched:
+SBML and Antimony also load from a string, and BioModels entries load by id:
 
 ```python
-if not bngsim.HAS_BNGL:
-    print(bngsim.capabilities()["missing"]["bngl"])
-```
-
-### The actions block is not executed
-
-A `.bngl` in the wild ends in `simulate({...})` or `parameter_scan({...})`.
-Running the file as written would run the author's entire experiment just to
-obtain a network. So the actions stop at the source's first `generate_network`,
-which runs with the source's own `max_iter` / `max_agg` / `max_stoich`, since
-those are what make an unbounded rule set finite. A file with no
-`generate_network` before its first run stops at that run, the state the run
-starts from.
-
-- **Before that point:** actions are applied, as BNG2.pl applies them. A
-  `setParameter` or `setConcentration` there seeds the network. Only file writes,
-  `setOutputDir` and `quit` are left out.
-- **At and after it:** everything is dropped, as the author's experiment.
-
-If that experiment sets a parameter or a concentration before its first run
-(`simulate`, `parameter_scan` or `bifurcate`), the model you get is not the one
-the author first simulated. `from_bngl` warns with a `ConversionWarning` naming
-those actions. It names only the actions that change the state the run starts
-from: a `setConcentration` to the amount the species already holds is not one,
-and neither is a value set and then set back, or a `saveConcentrations()`
-followed by `resetConcentrations()`. Pass `protocol=True` to recover the actions
-instead of losing them:
-
-```python
-model, spec = bngsim.Model.from_bngl("egfr.bngl", protocol=True)
-[e.t_span for e in spec.experiments]   # the simulate(...) calls, as a ProtocolSpec
-```
-
-See [Interchange](interchange.md) for what a `ProtocolSpec` carries.
-
-### Running the file's own experiment
-
-`bngsim.run_bngl` loads a file and runs its actions in order, as BNG2.pl runs
-the file. `bngsim.run_protocol(model, spec)` runs a spec you already hold on a
-copy of the model:
-
-```python
-out = bngsim.run_bngl("egfr_path.bngl")   # equilibrate without EGF, then add it
-out[1].result.observables["Sos_act"]      # the 120 s stimulation, as BNG2.pl runs it
-out.model                                 # the model in the state the file leaves it
-```
-
-There is one entry per `simulate`, `parameter_scan` or `bifurcate`. You can
-index the result by position, or by a run's `suffix`. A scan's points are in
-`scan_results`, one `Result` per value. A bifurcation's sweep back down is in
-`backward_results`. The steps follow BNG2.pl:
-
-- **State between runs.** Each run starts from the state the last one left.
-  `continue=>1` also starts at the time it left; any other run starts at its
-  `t_start`, 0 by default.
-- **Values.** A species whose amount is a parameter or an expression follows it
-  until a run makes it a number. `setParameter`, `setConcentration` and
-  `addConcentration` change the live model. A parameter set to an expression of
-  other parameters, `setParameter("k2","k1*3")`, stays that expression: it
-  follows `k1` through later actions, scans and resets until it is set to a
-  number. One defined through itself, directly or through the network's own
-  expressions, is refused, as BNG2.pl refuses it.
-- **Saved states.** `saveConcentrations`/`resetConcentrations` and
-  `saveParameters`/`resetParameters` keep one saved state per label. A save made
-  before `generate_network` holds the network with the actions that made the
-  saved values applied again; a reset to a value as the model declares it,
-  which an action before generation changed, is refused, since the network no
-  longer holds it.
-- **An actions block alone.** A text with no model block, such as the actions
-  file `omex_to_net` writes beside its `.net`, runs every action on the network
-  you give it; its first run generates nothing.
-- **Scans.** `parameter_scan` resets to its starting state before each point when
-  `reset_conc` is on (the default), and again at the end. The scanned parameter
-  keeps its last value. `bifurcate` never resets.
-- **Tolerances.** ODE runs use `run_network`'s tolerances, 1e-8 absolute and
-  relative, unless the action or the call gives others. `seed=` seeds the
-  stochastic runs.
-
-What BNGsim cannot run as written is refused before anything runs:
-
-- a network-free (NFsim) step, which needs a live NFsim session (issue #1482);
-- PLA, which BNGsim does not have;
-- a run argument such as `stop_if` or `max_sim_steps`;
-- an action that changes results but has no step to run, such as `setVolume`;
-- an argument the protocol holds only approximately.
-
-`allow_lossy=True` runs the last two as nearly as the protocol holds them, with
-a warning. Two things BNG2.pl refuses run here instead: a run that names no
-`method` runs as ODE, and a `steady_state=>1` run that does not reach a steady
-state is warned about while the protocol goes on, where BNG2.pl stops it.
-
-### Generated networks are cached
-
-Network generation is the expensive step, so the emitted `.net` is kept under
-`~/.cache/bngsim/networks` (override with `$BNGSIM_BNGL_CACHE_DIR`) and reused
-when the same BNGL is loaded again. The key is a digest of the flattened model
-text *and* the BioNetGen that produced it (BNG2.pl, and the `Perl2` library and
-`VERSION` it loads, from `$BNGPATH` when that is set), so the cache cannot go
-stale: editing the model — or upgrading BioNetGen — regenerates, while editing
-only the actions block correctly reuses. A model that reads another file before
-`generate_network` — a parameter set with `readFile`, seed amounts with
-`readNFspecies`, in the actions or inside `begin model` — is generated afresh on
-every load, since its network depends on that file and the key cannot see it
-(issue #1494). A relative path it reads resolves against the model's directory.
-
-`Model.from_net` records the path of the network it loaded, so the file is kept
-rather than deleted with a scratch directory. To keep the `.net` as an artifact
-of your own, pass `net_out=`:
-
-```python
-model = bngsim.Model.from_bngl("egfr.bngl", net_out="egfr.net")
-```
-
-`cache=False` regenerates into a per-process directory instead.
-
-### Compartments and errors
-
-Compartmental (cBNGL) models load: BNG2.pl bakes each compartment's volume into
-the generated rate constants, exactly as for a hand-generated `.net`. For that
-reason `Model.load` refuses `compartment_sizes=` on `.bngl` as it does on
-`.net` — the volume has to change in the BNGL source, before generation.
-`set_param` refuses to change a volume for the same reason, and a sensitivity
-column for one is refused (issue #711): the parameter is still in the model, and
-no rate reads it. `Model.frozen_params` lists them.
-
-A model whose network is unbounded hits `timeout=` (600 s by default) and gets a
-`ModelError` saying so; a model BNG2.pl rejects gets one carrying the tail of
-BNG2.pl's own output, which is the only thing that can localize a BNGL syntax
-error.
-
-## Antimony and SBML model loading
-
-BNGsim can load models from Antimony (`.ant`) and SBML (`.xml`) files in addition
-to BNG `.net` files. This uses libantimony for parsing and libsbml for correct
-SBML semantics (compartments, boundary species, initial assignments, piecewise
-functions, function definitions).
-
-```python
-# Load from Antimony file
-model = bngsim.Model.from_antimony("model.ant")
-
-# Load from Antimony string
 model = bngsim.Model.from_antimony_string("""
     S1 = 100; S2 = 0;
     k1 = 0.1; k2 = 0.05;
     J1: S1 -> S2; k1 * S1;
     J2: S2 -> S1; k2 * S2;
 """)
-
-# Load from SBML file
-model = bngsim.Model.from_sbml("model.xml")
-
-# Load from SBML XML string
 model = bngsim.Model.from_sbml_string(sbml_xml_text)
+model = bngsim.Model.from_biomodels("BIOMD0000000010")
+```
 
-# All model types support the same simulation API
+Every model runs the same way after it loads:
+
+```python
 sim = bngsim.Simulator(model, method="ode")
 result = sim.run(t_span=(0, 100), n_points=101)
 ```
 
-An Antimony text with more than one module is loaded at its main module, the one
-libantimony's `getMainModuleName()` names and RoadRunner simulates (issue #1508):
-the model marked `model *m()`, else the top level when a statement stands outside
-every model, else the last model defined. A module instantiated at the top level
-(`A: sub()`) is loaded under its instance's names, `A_S1` for `sub`'s `S1`, as
-RoadRunner names them. Where a stray top-level statement, such as a `unit` line,
-makes the top level the main module with nothing in it that changes over time (no
-reaction, event or rate rule, and no rule that reads the time), the last model
-defined is loaded, and a `ConversionWarning` names any species, parameter or
-compartment the top level held that is left out.
+Watch out for:
 
-Antimony loading requires `bngsim[antimony]`. Direct SBML loading requires
-`python-libsbml>=5.20` (installed automatically with the base package).
+- **BNGL needs BioNetGen.** BNGsim runs BNG2.pl to turn rules into a network,
+  so `.bngl` files need BNG2.pl and Perl. See [BNGL models](#bngl-models).
+- **Antimony needs an extra:** `pip install "bngsim[antimony]"`. SBML needs
+  `python-libsbml>=5.20`, which comes with BNGsim.
+- **`Model.load` reads files only.** `Model.load("BIOMD0000000010")` fetches
+  nothing. Its error tells you to call `Model.from_biomodels`.
+- **`compartment_sizes=`** sets compartment volumes for SBML and Antimony
+  models. It is refused for `.net` and `.bngl`, because BNG2.pl folds the
+  volumes into the rate constants. Change those in the BNGL source.
 
-**SBML Level 3 packages.** A document that declares a package `required="true"`
-— SBML's way of saying the package changes the mathematical meaning of the model
-— is refused by name unless BNGsim accounts for that package. `comp` does load
-(the composition is flattened first); so does `distrib`, whose random draws the
-math translator refuses individually. `multi`, `qual`, `spatial` and the rest are
-refused, because reading only the core `<listOfSpecies>` / `<listOfReactions>` of
-such a document builds a *different* model — a `multi` document's core species are
-rule templates, and a `qual` document's core layer is typically empty. A
-presentation-only package (`layout`, `render`, `fbc`) declares `required="false"`
-and loads untouched.
+## See what you loaded: `Model.describe()`
 
-## Models from BioModels
-
-`Model.from_biomodels` loads a BioModels entry by its id:
-
-```python
-model = bngsim.Model.from_biomodels("BIOMD0000000010")
-```
-
-BNGsim asks BioModels for the entry's main SBML file, downloads it, and checks
-it against the sha256 BioModels publishes. It keeps a copy in
-`~/.cache/bngsim/biomodels` (or `$BNGSIM_BIOMODELS_CACHE_DIR`), so the next call
-needs no network.
-
-- **Versions.** By default you get the latest version. Once cached, that copy
-  is used until you pass `refresh=True`, which fetches again and updates the
-  cache. Pass `version=2` to pin a version.
-- **No cache.** `cache=False` fetches the file again and keeps nothing.
-- **Checking.** When BioModels publishes no sha256 for a file, the file can't
-  be checked, and BNGsim only checks that it is SBML.
-- **Where it came from.** `model.describe()["source"]` records the id, the
-  version, the file name, and its sha256.
-- **No network.** If BioModels can't be reached and no copy is cached, you get
-  an error that says so and names the cache directory. Some cloud hosts are
-  refused by BioModels. There, download the SBML file yourself and load it with
-  `Model.from_sbml(path)`.
-
-`Model.load("BIOMD0000000010")` doesn't fetch anything. It tells you to call
-`Model.from_biomodels`.
-
-## What a loaded model is: `Model.describe()`
-
-`Model.describe()` answers, in one call, the questions a caller has before it
-simulates: where the model came from, what its species and parameters are, what
-kind of quantity each species holds, and which methods it admits. It returns a
-dict that `json.dumps` writes, and `print` shows it as a report. It runs nothing
-and changes neither the model's state nor its parameters (issue #1705).
+`Model.describe()` tells you where the model came from, what its species and
+parameters are, what each species' number means, and which methods it can
+run. It returns a dict you can pass to `json.dumps`, and `print` shows it as a
+report. It runs nothing and doesn't change the model.
 
 ```python
 import bngsim
@@ -304,6 +93,7 @@ Methods:
   ode, ssa, psa: ok
   nf, rm: needs: [needs_bng_xml] The network-free methods read the model's rules from a BNG-XML file, passed as xml_path=..., not from the loaded network. BNG2.pl writes one from the .bngl a network came from, with the writeXML() action.
   forward sensitivities: undecided (backend: cc): nothing refuses them before a run; whether the rate laws differentiate is decided when a sensitivity run builds its code
+  steady state: ok, if a solve converges (the call also checks the conservation laws)
 Analytical Jacobian: complete
 Time: nothing reads the clock
 Species (2):
@@ -317,78 +107,273 @@ Reactions (1):
   A() -> B()  elementary  k
 ```
 
-What to read in it:
+The main fields:
 
-- **`source`**: the format, the absolute path and the SHA-256 of the file (of
-  the text, for a `from_*_string` load), read again after the load. It covers
-  that file only, not one a `.bngl` reads or a table function's data. A `.bngl`
-  load adds the `.net` BNG2.pl generated, a load with `compartment_sizes=`
-  records the sizes it set, and a model from an OMEX archive names its entry. A
-  model built in Python (`ModelBuilder`, `build_model_from_parsed`) has none.
-- **`species_values`**: what a species' number is. For an SBML or Antimony model
-  it is a concentration, an amount divided by its compartment's size, for every
-  species the file declares: the value `get_concentration` and `Result.species`
-  give. A species the file declares in amounts (`hasOnlySubstanceUnits="true"`)
-  has `quantity: "amount"` and its `initial_amount` beside `initial`: in a
-  compartment of size 0.5, an initial amount of 3 is an `initial` of 6. A `.net`
-  or BNGL file states no units, so the field is `None`, and the species carry no
-  `quantity` or `compartment`: they are absent, not guessed.
-- **The file, not bngsim's channels.** For SBML and Antimony, `reactions` are the
-  file's, with their ids, stoichiometry and kinetic laws, and `parameters` and
-  `functions` are the ones the file declares. A law reads in the model's names: a
-  local parameter is the model's `_lp_<reaction>_<id>`, the parameter the run
-  reads, and a function definition it calls is listed under
-  `function_definitions`. bngsim runs some of these as
-  several channels (a reversible law, a rate rule, a dilution term), which
-  `Model.n_reactions` counts. A compartment size or parameter that a rule or an
-  event moves is held as a state; it is listed under `other_states`, not as a
-  species.
-- **`methods`**: for `ode`, `ssa`, `psa`, `nf`, `rm` and `steady_state`, a `status` with
-  `reasons`. `"ok"` means nothing in the model or this install refuses the method
-  before a run. `"refused"` lists the constructs, each with a `code` and the
-  message the run would raise, read from the checks the Simulator itself makes,
-  so the two cannot disagree. `"needs_input"` names what the method needs that
-  the model does not carry, and `"unavailable"` what this install lacks. A run
-  can still fail on what depends on its own arguments, or on the starting values:
-  a rate that is infinite or NaN at the start (a division by a species that
-  starts at 0) fails a stochastic run at its first step, and `describe()` reports
-  `"ok"` for it.
-- **`forward_sensitivities`** is never `"ok"`. It is `"refused"` for a construct
-  that refuses every request (a delayed event), `"unavailable"` without a
-  compiler, and otherwise `"undecided"`: whether every rate law differentiates to
-  closed form is decided when a sensitivity run builds its code, and the run
-  refuses one that does not (a `floor()` in a rate law, for one; `min`, `max`,
-  `abs` and comparisons are taken). Its `refused_parameters` names the
-  parameters a sensitivity run refuses whatever it asks: those folded at load,
-  the compartment sizes `set_param` cannot write, and the parameters a rule or
-  function sets. Any other compartment size's `d/dV` column is computed.
-- **`steady_state`** is `"refused"` for a model with an event, a compartment size
-  that jumps, or a state the time reaches, for one the ODE Simulator refuses, and
-  for one with no species, listing every reason with the message
-  `steady_state()` raises for the first. `"ok"` does not promise a root: the call also checks that the model's
-  conservation laws are kept, which `describe()` leaves out because finding the
-  laws can take gigabytes on a large network, and a solve can fail to converge.
-- **`next_run_starts_from`**: `"live"` where the model's state is not its initial
-  state, as after a run or a `set_concentration`: the next `run()` continues from
-  it (see `Result.started_from`).
+- **`source`**: the format, the absolute path and the SHA-256 of the file (or
+  of the text, for a string load). A `.bngl` load adds the generated `.net`; a
+  BioModels load adds the id and version. A model built in Python has none.
+- **`species_values`**: what a species' number means. For SBML and Antimony it
+  is a concentration, the amount divided by the compartment size, as
+  `get_concentration` and `Result.species` give it. A species declared as an
+  amount also has `quantity: "amount"` and its `initial_amount`. A `.net` or
+  BNGL file states no units, so this is `None`, and its species have no
+  `quantity` or `compartment` key: they are absent, not guessed.
+- **`reactions`**, **`parameters`** and **`functions`**: as the file declares
+  them. A local parameter is named `_lp_<reaction>_<id>`, and a function
+  definition a law calls is listed under `function_definitions`. BNGsim may run one reaction as several channels; `Model.n_reactions`
+  counts those. A size or parameter that a rule or event changes is listed
+  under `other_states`.
+- **`methods`**: a `status` and `reasons` for `ode`, `ssa`, `psa`, `nf`, `rm`
+  and `steady_state`: `"ok"`, `"refused"` (each construct, with a `code` and
+  the message the run would raise), `"needs_input"` or `"unavailable"`. The
+  reasons come from the same checks the Simulator makes. A run can still fail
+  on its arguments or starting values: a rate that is infinite or NaN at the
+  start fails a stochastic run, though `describe()` says `"ok"`.
+- **`forward_sensitivities`** is never `"ok"`. It is `"refused"` for a delayed
+  event, `"unavailable"` without a C compiler, and otherwise `"undecided"`,
+  because a rate law that can't be differentiated, such as one with `floor()`,
+  is found only when the run builds its code. `min`, `max`, `abs` and
+  comparisons do differentiate. `refused_parameters` lists the parameters a
+  sensitivity run always refuses: those folded at load, the compartment sizes
+  `set_param` can't write, and the parameters a rule or function sets. Any
+  other compartment size gets a d/dV column.
+- **`steady_state`** is `"refused"` for a model with an event, a compartment
+  size that jumps, a state that reads time, or no species. `"ok"` doesn't
+  promise that a solve converges.
+- **`next_run_starts_from`**: `"live"` after a run or a `set_concentration`,
+  when the next `run()` continues from the current state.
 
-The size is bounded. Lists longer than `limit` entries (default 50) are cut, in
-model order, and `omitted` says how many each lost; an SSA refusal is listed once
-per kind, with a count and its locations; and an expression keeps its first 200
-characters. `describe(limit=None)` lists everything. It compiles nothing and
-computes nothing that grows with the network beyond reading it: a network of
-6,000 species and 18,000 reactions takes 0.06 s. The first call on a model whose
-rates are many functions also scans which of them read the clock, a scan the
-model keeps: 0.5 s on one of 677 functions.
+Lists longer than `limit` (default 50) are cut, and `omitted` says how many
+were left out. An SSA refusal is listed once per kind, with a count, and an
+expression is cut at 200 characters. `describe(limit=None)` lists everything.
 
-## `.net` files as a dict (`parse_net_file`)
+## BNGL models
 
-`parse_net_file` returns the components of a `.net` file as a plain Python
-dict, which you can inspect, modify and build, or hand to another engine. It is
-the C++ loader's own reading of the file, the one `Model.from_net` builds, with
-the values the built model holds, so the two cannot disagree about what a line
-means, and a file `Model.from_net` refuses is refused here too. It needs
-BNGsim's compiled extension.
+BNGsim simulates reaction networks. BNGL describes rules. BNG2.pl turns rules
+into a network, so `Model.from_bngl` runs BNG2.pl:
+
+```python
+model = bngsim.Model.from_bngl("egfr.bngl")
+```
+
+You need BNG2.pl and Perl. The extra installs PyBioNetGen, which bundles
+BNG2.pl:
+
+```bash
+pip install 'bngsim[bngl]'
+```
+
+Or point to a BioNetGen you already have:
+
+```bash
+export BNGPATH=/path/to/BioNetGen-2.9.3
+```
+
+BNGsim looks in this order: the `bng2_pl=` argument, `$BNG2_PL`, `$BNGPATH`,
+`BNG2.pl` on `PATH`, then an installed PyBioNetGen. An environment variable
+wins over an installed package. `perl` must be on `PATH`. macOS and most Linux
+systems have it; stock Windows doesn't, so BNGL loading is not available there.
+`bngsim.HAS_BNGL` checks both BNG2.pl and Perl when you ask. When it is `False`,
+`bngsim.capabilities()["missing"]["bngl"]` lists every place BNGsim looked:
+
+```python
+if not bngsim.HAS_BNGL:
+    print(bngsim.capabilities()["missing"]["bngl"])
+```
+
+### The actions block
+
+`Model.from_bngl` doesn't run the file's experiment. It runs the actions up to
+the first `generate_network`, with that action's own `max_iter`, `max_agg` and
+`max_stoich`, and stops. If there is no `generate_network` before the first
+run, it stops at that run.
+
+- Actions before that point are applied, as BNG2.pl applies them. A
+  `setParameter` or `setConcentration` there changes the network you get. File
+  writes, `setOutputDir` and `quit` are skipped.
+- Actions from that point on are dropped.
+
+If the dropped actions change a parameter or a concentration before the first
+run (`simulate`, `parameter_scan` or `bifurcate`), the model you get is not the
+one the author first simulated. `from_bngl` warns with a `ConversionWarning`
+that names those actions. It names only actions that change the starting
+state; a value set and then set back is not one. Pass `protocol=True` to get
+the actions as a `ProtocolSpec`:
+
+```python
+model, spec = bngsim.Model.from_bngl("egfr.bngl", protocol=True)
+[e.t_span for e in spec.experiments]   # the simulate(...) calls
+```
+
+See [Interchange](interchange.md) for what a `ProtocolSpec` holds.
+
+### Run the file's own experiment
+
+`bngsim.run_bngl` loads a file and runs its actions in order, as BNG2.pl does.
+`bngsim.run_protocol(model, spec)` runs a spec you already have on a copy of
+the model:
+
+```python
+out = bngsim.run_bngl("egfr_path.bngl")   # equilibrate without EGF, then add it
+out[1].result.observables["Sos_act"]      # the second run
+out.model                                 # the model in the state the file leaves it
+```
+
+There is one entry per `simulate`, `parameter_scan` or `bifurcate`. Index by
+position or by a run's `suffix`. A scan's points are in `scan_results`; a
+bifurcation's sweep back down is in `backward_results`. The runs follow
+BNG2.pl:
+
+- Each run starts from the state the last one left. With `continue=>1` it also
+  starts at the time the last one ended; otherwise at its `t_start`, 0 by
+  default.
+- A parameter set to an expression, `setParameter("k2","k1*3")`, follows its
+  inputs until it is set to a number. So does a species whose amount is a
+  parameter or an expression, until a run makes it a number. A parameter
+  defined through itself is refused.
+- `saveConcentrations`/`resetConcentrations` and
+  `saveParameters`/`resetParameters` keep one saved state per label. A reset to a declared value
+  that an action before `generate_network` changed is refused.
+- `parameter_scan` resets before each point, and again at the end, when
+  `reset_conc` is on (the default). The scanned parameter keeps its last value. `bifurcate` never
+  resets.
+- ODE runs use 1e-8 absolute and relative tolerance unless the action or the
+  call sets others. `seed=` seeds stochastic runs.
+- A file with no model block, such as the actions file `omex_to_net` writes,
+  runs every action on the network you give it.
+
+These are refused before anything runs: a network-free (NFsim) step; PLA;
+run arguments such as `stop_if` or `max_sim_steps`; an action that changes
+results but has no step to run, such as `setVolume`; and an argument the
+protocol can only hold approximately. `allow_lossy=True` runs the last two as
+closely as it can, with a warning. A run with no `method` runs as ODE, and a
+`steady_state=>1` run that doesn't converge warns and goes on; BNG2.pl refuses
+both.
+
+### The network cache
+
+BNGsim keeps each generated `.net` under `~/.cache/bngsim/networks` (set
+`$BNGSIM_BNGL_CACHE_DIR` to move it) and reuses it when you load the same model
+again. The cache key covers the model text and the BioNetGen that made it, so
+editing the model or upgrading BioNetGen regenerates the network. Editing only
+the actions after generation reuses it. A model that reads another file before
+`generate_network` (`readFile`, `readNFspecies`) is generated fresh every time,
+because the key can't see that file. A relative path it reads is resolved
+from the model's directory.
+
+To keep the `.net` yourself, pass `net_out=`:
+
+```python
+model = bngsim.Model.from_bngl("egfr.bngl", net_out="egfr.net")
+```
+
+`cache=False` generates into a temporary directory for this process.
+
+### Compartments and errors
+
+Compartmental BNGL (cBNGL) models load. BNG2.pl builds each compartment's
+volume into the rate constants. So `set_param` refuses to change a volume, and
+a sensitivity for one is refused: the parameter is in the model, but no rate
+reads it. `Model.frozen_params` lists these parameters.
+
+A model whose network never stops growing hits `timeout=` (600 s by default)
+and raises `ModelError`. A model BNG2.pl rejects raises `ModelError` with the
+end of BNG2.pl's output, which is where a BNGL syntax error is reported.
+
+## SBML and Antimony models
+
+BNGsim reads SBML with libsbml and Antimony with libantimony. It handles
+compartments, boundary species, initial assignments, piecewise functions and
+function definitions.
+
+**Antimony with several modules.** BNGsim loads the main module, the one
+libantimony names and RoadRunner runs: the model marked `model *m()`, else the
+top level if a statement sits outside every model, else the last model
+defined. A module instantiated at the top level (`A: sub()`) loads with its
+instance's names: `A_S1` for `sub`'s `S1`. If a stray top-level statement,
+such as a `unit` line, makes the top level the main module, and nothing there
+changes over time (no reaction, event or rate rule, and no rule that reads
+time), BNGsim loads the last model defined instead. A `ConversionWarning` names anything the top
+level held that was left out.
+
+**SBML Level 3 packages.** A document that marks a package
+`required="true"` is refused by name unless BNGsim supports that package.
+`comp` loads; the model is flattened first. `distrib` loads, and its random
+draws are refused one by one. `multi`, `qual`, `spatial` and the rest are
+refused, because reading only the core species and reactions would build a
+different model. Packages marked `required="false"`, such as `layout`,
+`render` and `fbc`, load as if they weren't there.
+
+## Models from BioModels
+
+`Model.from_biomodels` loads a BioModels entry by its id:
+
+```python
+model = bngsim.Model.from_biomodels("BIOMD0000000010")
+```
+
+BNGsim downloads the entry's main SBML file and checks it against the sha256
+BioModels publishes. It keeps a copy in `~/.cache/bngsim/biomodels` (or
+`$BNGSIM_BIOMODELS_CACHE_DIR`), so the next call needs no network.
+
+- **Versions.** You get the latest version, or the latest one already cached.
+  `refresh=True` fetches again and updates the cache. `version=2` pins a
+  version.
+- **No cache.** `cache=False` fetches the file and keeps nothing.
+- **Checking.** If BioModels publishes no sha256 for a file, BNGsim only checks
+  that it is SBML.
+- **Source.** `model.describe()["source"]` records the id, version, file name
+  and sha256.
+- **No network.** If BioModels can't be reached and nothing is cached, the
+  error says so and names the cache directory. BioModels refuses some cloud
+  hosts. There, download the SBML yourself and use `Model.from_sbml(path)`.
+
+## `.net` files
+
+`Model.from_net` reads BioNetGen's network format. It refuses a file it can't
+read correctly, rather than guess:
+
+- **Species index.** A species line is `[<index>] <species> [<concentration>]`.
+  The index may be left off. If it's there, it must equal the line's position:
+  1, 2, 3, ... BioNetGen's two readers disagree when it doesn't, so BNGsim
+  refuses the file.
+- **Reaction lines.** A line is `<index> <reactants> <products> <rate law>`.
+  Only `Sat`, `Hill` and `MM` take more tokens, their constants. Anything else
+  after the rate law is refused, as `run_network` refuses it. BNGsim reads no
+  per-reaction modifiers, such as a delay. A factor before the type
+  (`2*MM kcat Km`) is read as the reaction's statistical factor.
+- **`MM` reactions** take two reactants, an enzyme and a substrate. More are
+  refused. To model several enzymes on one substrate, write a functional rate
+  law over the enzymes' total, such as `S -> P` at
+  `kcat*Etot*r()/(Km+r()*Sobs)`, where `r()` is the free fraction of the
+  substrate, `2*Km/(sqrt((Sobs-Km-Etot)^2+4*Km*Sobs)-(Sobs-Km-Etot))`. Writing
+  it with the fraction avoids 0/0 when `S` is 0.
+- **`Sat` and `Hill`** are deprecated. BNGsim rewrites them as functional rate
+  laws with a warning, adding a one-species observable for each reactant the
+  function reads. A repeated reactant (`A() + A()`) is read position by
+  position, as `run_network` reads it.
+- **`Hill` with 0 < h < 1.** The function `Vmax*S^(h-1)/(Kh^h + S^h)` is
+  infinite at S = 0 when 0 < h < 1. BNGsim guards it so the rate is 0 there,
+  whatever h you set later. `Model.state_switch_root_conditions()` names
+  `S > 0` at every h, and a model with events keeps every root. `run_diffrax`
+  refuses such a model while h is in (0, 1).
+- **Empty files.** A file with none of the parameters, species, functions,
+  reactions and groups blocks is refused, as `run_network` refuses it. An empty
+  block is fine.
+- **Line endings.** LF and CRLF both work. A bare carriage return (classic Mac
+  OS) is read as a space, as BioNetGen reads it, so the file is one line and is
+  refused with an explanation.
+- **Encoding.** The file must be UTF-8. A line in the five blocks that isn't,
+  such as a Latin-1 `µ` in a species name, is refused, with the byte shown as
+  `\xb5`. Save the file as UTF-8. A bad byte in a comment or action line is
+  ignored. `write_net` always writes UTF-8.
+
+### Read a `.net` file as a dict
+
+`parse_net_file` returns a `.net` file's contents as a Python dict you can
+inspect, change, build, or hand to another tool. It is the same reading
+`Model.from_net` uses, with the values the built model holds, and it refuses
+the same files. It needs BNGsim's compiled extension.
 
 ```python
 import bngsim
@@ -397,119 +382,37 @@ parsed = bngsim.parse_net_file("model.net")
 
 print(parsed["parameters"])   # [(name, value, expr, is_expr), ...]
 print(parsed["species"])      # [(name, init_conc, is_fixed), ...]
-print(parsed["species_ic_params"])  # [(sp_idx, param_name), ...] — ICs written
-                              #   as a parameter name rather than a number
+print(parsed["species_ic_params"])  # [(sp_idx, param_name), ...]: initial
+                              #   values written as a parameter name
 print(parsed["observables"])  # [(name, [(sp_idx, factor), ...]), ...]
 print(parsed["functions"])    # [(name, expression), ...]
 print(parsed["reactions"])    # [{"reactants": [...], "products": [...],
                               #   "type": "elementary"|"functional"|"mm",
                               #   "rate_law": "k1", "legacy_constants": [],
                               #   "stat_factor": 1.0}, ...]
-print(parsed["net_file_dir"]) # the file's own directory — what a relative
-                              #   tfun('...') path resolves against
+print(parsed["net_file_dir"]) # the file's directory, which a relative
+                              #   tfun('...') path is read from
 ```
 
 A reaction's `"type"` says how to read its `"rate_law"`:
 
-- `"elementary"`: a parameter name. BNG2.pl writes a numeric prefix on the
-  rate constant, `0.5*k1`, for a symmetry factor or, in a compartmental model,
-  a unit conversion folded into it (`1.6605503e-12*kf`); the dict carries that
-  as `"rate_law": "k1"` and `"stat_factor": 0.5`, so the rate constant is
-  `stat_factor` times the parameter.
-- `"functional"`: a name from the `functions` block. The function's value is a
-  rate constant too: the rate is `stat_factor` times the function times the
-  reactant amounts, as for an elementary reaction (`0.5*f1` comes back as
-  `"rate_law": "f1"`, `"stat_factor": 0.5`).
-- `"mm"`: `"<kcat>,<Km>"` for a `MM kcat Km` rate column, with
-  `"legacy_constants": [kcat, Km]`. BNG2.pl writes a symmetry factor ahead of
-  the type, `2*MM kcat Km`, and it comes back as `"stat_factor": 2.0`, which
-  multiplies the whole rate (likewise `2*Sat k K` and `2*Hill V K h`, whose
-  factor stays the rewritten reaction's `"stat_factor"`).
+- `"elementary"`: a parameter name. A numeric prefix such as `0.5*k1`, a
+  symmetry factor or a unit conversion, comes back as `"rate_law": "k1"` and
+  `"stat_factor": 0.5`. The rate constant is `stat_factor` times the
+  parameter.
+- `"functional"`: a function name. The function is a rate constant too: the
+  rate is `stat_factor` times the function times the reactant amounts.
+- `"mm"`: `"<kcat>,<Km>"`, with `"legacy_constants": [kcat, Km]`. A factor
+  before the type, `2*MM kcat Km`, comes back as `"stat_factor": 2.0` and
+  multiplies the whole rate. `Sat` and `Hill` come back rewritten as
+  `"functional"`, keeping their factor the same way.
 
-Values are evaluated: a parameter's is the number `Model.from_net` puts in its
-slot, and a species whose initial concentration names a parameter carries that
-parameter's value. An initial concentration written as an expression comes back
-as a synthetic `_InitialConc<N>` parameter, as BNG2.pl writes one, named by the
-species.
+Values are numbers: a parameter's value is the one `Model.from_net` uses, and a
+species whose initial value names a parameter carries that parameter's value.
+An initial value written as an expression comes back as a parameter named
+`_InitialConc<N>`, as BNG2.pl writes it.
 
-A species line is `[<index>] <species> [<concentration>]`. The index may be
-left off, and when it is there it must be the line's own number, 1, 2, 3, ...
-in the order the species are listed (issue #1512). Reactions and groups name a
-species by that number, and BioNetGen's two readers disagree on a file whose
-index is not its line: run_network places the species at its index, BNG2.pl's
-`readFile` at its line. `parse_net_file` and `Model.from_net` refuse such a
-file rather than pick one reading.
-
-The deprecated `Sat` and `Hill` rate-law tokens come back rewritten, as
-`Model.from_net` rewrites them, with the same warning: the reaction is
-`"functional"`, driven by an explicit function, and a single-species observable
-is added for each reactant the function reads. A factor ahead of the type
-(`2*Sat k K`, `2*Hill V K h`) stays the reaction's `"stat_factor"`. A repeated
-reactant is read position by position, as run_network reads it, so the line
-`1 1,1 2 0.5*Sat kcat Km` that BNG2.pl writes for
-`A() + A() -> B() Sat(kcat,Km)` loads and gives run_network's trajectory
-(issue #1527).
-
-`Hill Vmax Kh h` is the law `Vmax*S^h/(Kh^h + S^h)`, and the reaction
-multiplies its function by S, so the function is
-`Vmax*S^(h-1)/(Kh^h + S^h)`. For 0 < h < 1 that is infinite at S = 0, where
-the law is 0. So the function is written
-`if((S > 0) or (h <= 0) or (h >= 1), ..., 0)`, whatever h is at load: 0 for
-S <= 0 while h is in (0, 1), and the unguarded function otherwise. A model
-whose h is moved into (0, 1) after loading, by `set_param`, a `run_batch` row,
-`parameter_scan`, or a BNGL `setParameter` or `parameter_scan` after
-`generate_network`, reads the law as 0 at S = 0 too (issue #1636).
-
-Where the guard cannot act, its root is not watched. A run, with or without
-sensitivities, and a steady-state solve root on `S > 0` only while h is in
-(0, 1): at its start, a condition its parameter values already decide, such as
-`(h <= 0) or (h >= 1)` at h = 2, is read as that constant, and adds no root.
-`run_diffrax`, which refuses a model that switches on its state, takes one whose
-h is outside (0, 1) and refuses it inside. (Before #1636 the guard was written
-only where h was in (0, 1) at load, because a root on each of 300 Hill reactions
-with h >= 1 made a run 10x slower.) The comparisons themselves are still
-evaluated: 300 Hill reactions at h = 2 take 3.3 ms a run, against 3.0 ms
-unguarded. A model with events keeps every root, since an event may move h
-during the run. `Model.state_switch_root_conditions()` lists the conditions of
-the laws as written, whatever the parameter values, so it names `S > 0` at every
-h. An h of exactly 1 or 0 sits on the guard's own comparison, which is no kink
-of the law: `steady_state(sensitivity_params=["h"])` returns its column there.
-
-A reaction line is `<index> <reactants> <products> <rate law>`, and only a
-`Sat`, `Hill` or `MM` rate law takes more tokens: its constants.
-`parse_net_file` and `Model.from_net` refuse a line with anything else after
-the rate law, as run_network does, rather than load it without that part.
-BNGsim reads no per-reaction modifiers, such as a delay (issue #505). A stat
-factor ahead of the rate law's type (`2*MM kcat Km`) is read off the first
-token before the type is matched, as run_network reads it.
-
-An `MM` reaction reads two reactants, an enzyme and a substrate, and one with
-more is refused (issue #1502): BNGsim left the others out of its rate, so the
-answer changed with the order the enzymes were listed in. BNG2.pl refuses such a
-rule, and run_network reads the first reactant as the substrate and the total of
-the others as the enzyme. To run that, write the reaction with a functional rate
-law over the enzymes' total, such as `S -> P` at
-`kcat*Etot*r()/(Km+r()*Sobs)`, with `r()` the free fraction of the substrate
-`2*Km/(sqrt((Sobs-Km-Etot)^2+4*Km*Sobs)-(Sobs-Km-Etot))`. The rate law
-multiplies by `S`, so it is written over the fraction rather than as the free
-substrate divided by `Sobs`, which is 0/0, and refused, while `S` is 0.
-
-A file with none of the parameters, species, functions, reactions and groups
-blocks is refused, as run_network refuses it: a 0-byte file, one of comments or
-actions only (issue #1511). A block that is there and empty still loads. Lines
-end at a newline, LF or CRLF. A bare carriage return is read as BNG2.pl and
-run_network read it, as a blank inside its line, so a file saved with classic
-Mac OS line endings is one line, and is refused, with a word on why.
-
-The file is read as UTF-8, as its names and expressions become Python strings.
-A line of the five blocks that is not UTF-8, such as a species name saved in
-Latin-1 (`Aµ()` as the byte 0xb5), is refused, quoting the line with the byte
-shown as `\xb5`; save the file as UTF-8. A byte nothing reads, in a comment,
-a block passed over or an action line, still loads (issue #1653). A refusal
-of a table file a `tfun` reads shows such a byte the same way. `write_net`
-writes UTF-8 whatever the locale.
-
-**Use with BNGsim** (fastest path — C++ CVODE/SSA):
+**Build a model from the dict:**
 
 ```python
 model = bngsim.build_model_from_parsed(parsed)
@@ -517,22 +420,18 @@ sim = bngsim.Simulator(model, method="ode")
 result = sim.run(t_span=(0, 100), n_points=101)
 ```
 
-`build_model_from_parsed` makes the `ModelBuilder` calls the loader makes, so an
-unmodified dict builds the model `Model.from_net` loads, table functions and
-rewritten `Sat`/`Hill` rate laws included; a test pins that over every `.net`
-file in the repository. A modified dict builds the modified model. Three things
-to know when modifying one:
+An unchanged dict builds the same model `Model.from_net` loads, table
+functions and rewritten `Sat` and `Hill` laws included. When you change one:
 
-- A species listed in `species_ic_params` takes its initial concentration from
-  that parameter, so change the parameter, or drop the entry, rather than the
-  number in `species`.
-- A parameter whose `is_expression` is true is evaluated from its expression, so
-  change the expression, or set `is_expression` false with a value.
-- A reaction's rate law is read by what it names: a function in `functions`
-  makes it functional, anything else elementary (`"mm"` aside), whatever its
-  `"type"` says.
+- A species in `species_ic_params` takes its initial value from that
+  parameter. Change the parameter, or drop the entry, not the number in
+  `species`.
+- A parameter whose `is_expression` is true is computed from its expression.
+  Change the expression, or set `is_expression` to false and give a value.
+- A rate law that names a function in `functions` is functional; anything else
+  is elementary (`"mm"` aside), whatever `"type"` says.
 
-**Use with scipy**:
+**Use it with SciPy:**
 
 ```python
 import numpy as np
@@ -543,7 +442,7 @@ y0 = np.array([ic for _, ic, _ in parsed["species"]])
 pvals = {n: v for n, v, _, _ in parsed["parameters"]}
 fixed = [i for i, (_, _, is_fixed) in enumerate(parsed["species"]) if is_fixed]
 
-# Build your own RHS from the parsed data (mass-action reactions only)
+# Your own right-hand side, for mass-action reactions only
 def rhs(t, y):
     dydt = np.zeros(len(y))
     for rxn in parsed["reactions"]:
@@ -556,22 +455,8 @@ def rhs(t, y):
             dydt[ri] -= rate
         for pi in rxn["products"]:
             dydt[pi] += rate
-    dydt[fixed] = 0.0  # a `$`-clamped species holds its value
+    dydt[fixed] = 0.0  # a `$`-fixed species holds its value
     return dydt
 
 sol = solve_ivp(rhs, (0, 100), y0, method='LSODA')
-```
-
-**Use with gillespy2** (Python SSA):
-
-```python
-import gillespy2
-
-parsed = bngsim.parse_net_file("model.net")
-m = gillespy2.Model(name="my_model")
-for name, val, _, _ in parsed["parameters"]:
-    m.add_parameter(gillespy2.Parameter(name=name, expression=str(val)))
-for name, ic, _ in parsed["species"]:
-    m.add_species(gillespy2.Species(name=name, initial_value=int(ic)))
-# ... add reactions from parsed["reactions"], each at stat_factor * rate_law
 ```

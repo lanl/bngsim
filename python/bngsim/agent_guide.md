@@ -1,25 +1,27 @@
-# bngsim agent guide
+# BNGsim agent guide
 
-bngsim simulates biochemical reaction networks in Python: it loads BioNetGen
-(`.net`, `.bngl`), SBML and Antimony models and runs them as ODEs or
-stochastically, in process, returning NumPy arrays. This page is written for
-an AI agent, or anyone, meeting bngsim for the first time: rules and recipes,
-not a tutorial. It is the guide of the installed version:
-`bngsim.agent_guide()` returns it and `python -m bngsim guide` prints it, with
-no network. Each call has a full docstring (`help(bngsim.Simulator.run)`), and
-the user guides are at <https://bngsim.readthedocs.io>, indexed for agents at
+BNGsim simulates biochemical reaction networks in Python. It loads BioNetGen
+(`.net`, `.bngl`), SBML and Antimony models, runs them as ODEs or
+stochastically, in process, and returns NumPy arrays. This page is for an AI
+agent, or anyone, using BNGsim for the first time. It gives rules and recipes,
+not a tutorial.
+
+This is the guide for the installed version. `bngsim.agent_guide()` returns it
+and `python -m bngsim guide` prints it, with no network. Every call has a full
+docstring (`help(bngsim.Simulator.run)`). The user guides are at
+<https://bngsim.readthedocs.io>, with an index for agents at
 <https://bngsim.readthedocs.io/llms.txt>.
 
 Every Python block below runs as written, in order, in an empty directory,
-after `pip install bngsim`, on a machine with a C compiler, which the
-sensitivities need (see "What needs what"); the test suite runs them so. The calls it teaches
-keep their spelling across releases: a call renamed in a later release raises
-an error that names the new spelling, never a silent change.
+after `pip install bngsim`. The sensitivities also need a C compiler (see
+"What needs what"). The test suite runs the blocks this way. The calls on this
+page keep their names across releases: if a later release renames one, the old
+name raises an error that gives the new one.
 
 ## The calls
 
-A model is a `Model`; a `Simulator` runs it; a run returns a `Result`. This
-block writes a small network, `A <-> B`, so the rest of the page has a model.
+A model is a `Model`, a `Simulator` runs it, and a run returns a `Result`.
+This block writes a small network, `A <-> B`, for the rest of the page to use.
 
 ```python
 from pathlib import Path
@@ -89,8 +91,8 @@ print(d["methods"]["ssa"]["status"])  # ok
 | a BNGL file's own actions | `bngsim.run_bngl(path)` |
 | save a result | `result.save("run.h5")`, `bngsim.Result.load("run.h5")` (needs h5py) |
 
-The same model, changed and run again, then scanned, solved for its steady
-state, differentiated and run stochastically:
+The next block changes a parameter and runs again, then scans a parameter,
+finds the steady state, computes sensitivities and runs stochastic replicates:
 
 ```python
 # Change a parameter and run again from the initial conditions.
@@ -124,14 +126,15 @@ print(reps.observables.shape)  # (50, 11, 2)
 ## Rules that otherwise give wrong answers
 
 1. **A run continues from where the last one ended.** The state lives in the
-   `Model`, and every run writes its end state back to it. A second
-   `sim.run(t_span=(0, 10), ...)` starts from the first one's end, at `t = 0`
-   again, and bngsim warns (`LiveStartWarning`). To start over, pass
-   `start="initial"` or call `model.reset()` first; to continue on purpose
-   (equilibrate, then stimulate), pass `start="live"`.
+   `Model`, and each run writes its end state back to it. A second
+   `sim.run(t_span=(0, 10), ...)` starts from the first run's end state with
+   the clock back at `t = 0`, and BNGsim warns (`LiveStartWarning`). To start
+   over, pass `start="initial"` or call `model.reset()` first. To continue on
+   purpose (equilibrate, then stimulate), pass `start="live"`.
    `result.started_from` says which it was. `run_batch` starts each point
-   from the initial conditions; `parameter_scan` and `run_replicates` start
-   each point from the model's state at the call, so `model.reset()` first.
+   from the initial conditions. `parameter_scan` and `run_replicates` start
+   each point from the model's state at the call, so call `model.reset()`
+   first.
 2. **`n_points` counts the output points, the first included.**
    `t_span=(0, 10), n_points=11` gives `0, 1, ..., 10`. BioNetGen's
    `n_steps=10`, RoadRunner's `steps=10` and basico's `intervals=10` are
@@ -145,25 +148,25 @@ print(reps.observables.shape)  # (50, 11, 2)
    `model.set_concentration("A()", ...)`. Read the names before guessing them.
 5. **A species column is a concentration, in a stochastic run too.** For an
    SBML or Antimony model, `result.species` holds each species' amount divided
-   by its compartment's size, whether the species was declared as an amount or
-   a concentration, and a stochastic run reports the same quantity, not
-   molecule counts: in a compartment of size 2, an SSA column moves in steps
-   of 0.5. `result.as_roadrunner(["time", "A"])` gives amounts. A `.net` model
-   has no compartments, so its columns are the numbers the file holds, which a
-   stochastic run takes as molecule counts. `result.record["columns"]` says
-   which, column by column, with each compartment's size.
+   by its compartment's size. That is so whether the species was declared as
+   an amount or a concentration. A stochastic run reports the same quantity,
+   not molecule counts: in a compartment of size 2, an SSA column moves in
+   steps of 0.5. `result.as_roadrunner(["time", "A"])` gives amounts. A `.net`
+   model has no compartments, so its columns hold the numbers in the file,
+   which a stochastic run treats as molecule counts. `result.record["columns"]`
+   says which, column by column, with each compartment's size.
 6. **A stochastic run without a seed differs every time.** Pass `seed=n` to
-   reproduce one; `result.seed` is the seed a run used, drawn or given. In a
-   `run_replicates` or `run_batch` list each row's `seed` reruns that row.
-7. **Set the primary parameters.** `model.primary_param_names` are the ones
-   to set. A parameter defined by an expression of others follows them, and
-   one set directly to a value other than its expression's keeps that value
-   from then on, whatever its inputs do.
-8. **A run that fails raises.** `run()` returns only a run that finished;
-   there is no `success` flag to check. `bngsim.SimulationError` is a failed
-   solve, `bngsim.StopConditionMet` carries the cut result of a stop condition,
-   and a warning is worth reading, not silencing: `result.notices` keeps each
-   warning of the run, whatever the warning filters showed.
+   reproduce one. `result.seed` is the seed a run used, drawn or given. In a
+   `run_replicates` or `run_batch` list, each row's `seed` reruns that row.
+7. **Set the primary parameters.** Set the ones in
+   `model.primary_param_names`. A parameter defined by an expression of others
+   follows them. If you set such a parameter to a value other than its
+   expression's, it keeps that value from then on, whatever its inputs do.
+8. **A run that fails raises an error.** `run()` returns only runs that
+   finished, so there is no `success` flag to check. `bngsim.SimulationError`
+   means the solver failed. `bngsim.StopConditionMet` carries the result a stop
+   condition cut short. Read warnings; don't silence them. `result.notices`
+   keeps every warning of the run, whatever the warning filters showed.
 
 ```python
 model.reset()
@@ -179,30 +182,30 @@ r2 = ssa.run(t_span=(0, 10), n_points=11, seed=r1.seed, start="initial")
 assert (r1.species == r2.species).all()  # the same seed, the same trajectory
 ```
 
-## When bngsim refuses
+## When BNGsim refuses
 
-bngsim refuses a model or a call it cannot answer faithfully, rather than
+BNGsim refuses a model or a call it cannot answer correctly, rather than
 return a plausible wrong number. The error names the construct: an SBML
 symbol with no value (`bngsim.UnderSpecifiedModelError`), a rate law a
 stochastic method cannot take (`bngsim.SsaValidationError`), a sensitivity
-it cannot compute (`bngsim.SensitivityUnsupportedError`), an SBML package or
-construct it does not support (`bngsim.ModelError`). All derive from
-`bngsim.BngsimError`. To ask before a run, `model.describe()["methods"]`
-gives each method's status and reasons, read from the checks the runs make.
+it cannot compute (`bngsim.SensitivityUnsupportedError`), or an SBML package
+or construct it does not support (`bngsim.ModelError`). All derive from
+`bngsim.BngsimError`. To check before a run, `model.describe()["methods"]`
+gives each method's status and the reasons, from the same checks the runs
+make.
 
-The right report is that **the model cannot be simulated as written by
-bngsim**, naming the construct the error names. Some refusals mention an
-environment variable (`BNGSIM_ALLOW_UNSET_PARAMS`,
-`BNGSIM_ALLOW_UNSUPPORTED_CONSTRUCTS`, and others) that restores an older,
-lenient behavior. Setting it is not a fix: it brings back the approximation
-the refusal exists to prevent, and the numbers it gives are not to be
-reported as the model's. Change the model (give the symbol a value, choose
-the ODE method) or report the refusal.
+Report that **BNGsim cannot simulate the model as written**, and name the
+construct the error names. Some refusals mention an environment variable
+(`BNGSIM_ALLOW_UNSET_PARAMS`, `BNGSIM_ALLOW_UNSUPPORTED_CONSTRUCTS` and
+others) that lets the run go ahead anyway. Setting it is not a fix. It brings
+back the approximation the refusal is there to prevent, and the numbers it
+gives must not be reported as the model's. Change the model (give the symbol
+a value, or choose the ODE method), or report the refusal.
 
 ## What needs what
 
-`bngsim.capabilities()` says what this install can do, and why not where it
-cannot:
+`bngsim.capabilities()` says what this install can do, and why not when it
+can't:
 
 ```python
 caps = bngsim.capabilities()
@@ -218,22 +221,23 @@ for feature, why in caps["missing"].items():
 | Antimony | `pip install "bngsim[antimony]"` | `antimony` |
 | `result.dataframe` | `pip install "bngsim[pandas]"` | |
 | `result.save`, `Result.load` (HDF5) | `pip install "bngsim[hdf5]"` | |
-| forward sensitivities | a C compiler: `cc` on macOS and Linux, `cl` or `gcc` on Windows, or `$CC`. bngsim compiles the model's derivatives; without one, `bngsim.CodegenToolchainError`. `capabilities()` does not check for it | |
+| forward sensitivities | a C compiler: `cc` on macOS and Linux, `cl` or `gcc` on Windows, or `$CC`. BNGsim compiles the model's derivatives; without one, `bngsim.CodegenToolchainError`. `capabilities()` does not check for it | |
 | network-free methods `nf`, `rm` | the engines are in the wheels; each run needs `xml_path=`, the model's BioNetGen XML, which BNG2.pl's `writeXML()` action writes from the `.bngl` | `nfsim`, `rulemonkey` |
 
 ## If you know another tool
 
-What a caller of another tool writes, and the bngsim call to write instead.
-The first column is either the tool's habit tried on a bngsim object
-(`bngsim.loada` for Tellurium's `te.loada`, `sim.simulate` for RoadRunner's
-`r.simulate`), which raises an error that says the same thing, or a call on
-the tool's own objects, as that tool spells it.
+This table gives what a user of another tool writes, and the BNGsim call to
+write instead. The first column is one of two things. It is either the other
+tool's habit tried on a BNGsim object (`bngsim.loada` for Tellurium's
+`te.loada`, `sim.simulate` for RoadRunner's `r.simulate`), which raises an
+error that says the same thing, or a call on the other tool's own objects, as
+that tool spells it.
 
 <!-- translation-table: generated from bngsim._foreign_names; do not edit -->
 
 **libRoadRunner**
 
-| you write | in bngsim | note |
+| you write | in BNGsim | note |
 |---|---|---|
 | `bngsim.RoadRunner` | `bngsim.Simulator(bngsim.Model.load(path))` | A Model holds the network and its parameters; a Simulator runs it. |
 | `model.getFloatingSpeciesIds` | `model.species_names` |  |
@@ -243,16 +247,16 @@ the tool's own objects, as that tool spells it.
 | `model.resetAll` | `model.reset()` | It resets the species only; parameters keep the values set since the model was loaded. Set them back with model.set_params({...}). |
 | `model.getInfo` | `model.describe()` | print(model.describe()) is the readable form. |
 | `model.getCompartmentIds` | `model.describe(limit=None).get("compartments", [])` | Each entry is a dict, its name under "name". An SBML or Antimony model has compartments; a .net or BNGL file has none, and the list is empty. |
-| `model.getReactionIds` | `model.describe(limit=None)["reactions"]` | Each entry is a dict; for an SBML or Antimony model, the file's reactions as written, each with its "id". The channels bngsim runs can be more or fewer: n_reactions on the model counts those. |
-| `model.getNumReactions` | `model.describe()["counts"]["reactions"]` | The model's reactions as its file has them, as RoadRunner counts them. n_reactions on the model counts the channels bngsim runs, which can be more or fewer. |
-| `sim.simulate` | `sim.run(t_span=(t0, t1), n_points=n)` | bngsim has no simulate(). n_points counts the output points, the first included: BioNetGen's n_steps=10 and RoadRunner's simulate(0, 10, 11) are both n_points=11. |
+| `model.getReactionIds` | `model.describe(limit=None)["reactions"]` | Each entry is a dict; for an SBML or Antimony model, the file's reactions as written, each with its "id". The channels BNGsim runs can be more or fewer: n_reactions on the model counts those. |
+| `model.getNumReactions` | `model.describe()["counts"]["reactions"]` | The model's reactions as its file has them, as RoadRunner counts them. n_reactions on the model counts the channels BNGsim runs, which can be more or fewer. |
+| `sim.simulate` | `sim.run(t_span=(t0, t1), n_points=n)` | BNGsim has no simulate(). n_points counts the output points, the first included: BioNetGen's n_steps=10 and RoadRunner's simulate(0, 10, 11) are both n_points=11. |
 | `sim.reset` | `sim.model.reset()` | Resetting the species is the Model's: it returns them to their initial conditions, or to the state an unlabeled model.save_concentrations() saved. |
 | `sim.resetAll` | `sim.model.reset()` | It resets the species only; parameters keep the values set since the model was loaded. Set them back with sim.model.set_params({...}). |
 | `sim.steadyState` | `sim.steady_state()` |  |
 | `sim.getInfo` | `sim.model.describe()` | print(sim.model.describe()) is the readable form. |
 | `sim.getCompartmentIds` | `sim.model.describe(limit=None).get("compartments", [])` | Each entry is a dict, its name under "name". An SBML or Antimony model has compartments; a .net or BNGL file has none, and the list is empty. |
-| `sim.getReactionIds` | `sim.model.describe(limit=None)["reactions"]` | Each entry is a dict; for an SBML or Antimony model, the file's reactions as written, each with its "id". The channels bngsim runs can be more or fewer: n_reactions on the model counts those. |
-| `sim.getNumReactions` | `sim.model.describe()["counts"]["reactions"]` | The model's reactions as its file has them, as RoadRunner counts them. n_reactions on the model counts the channels bngsim runs, which can be more or fewer. |
+| `sim.getReactionIds` | `sim.model.describe(limit=None)["reactions"]` | Each entry is a dict; for an SBML or Antimony model, the file's reactions as written, each with its "id". The channels BNGsim runs can be more or fewer: n_reactions on the model counts those. |
+| `sim.getNumReactions` | `sim.model.describe()["counts"]["reactions"]` | The model's reactions as its file has them, as RoadRunner counts them. n_reactions on the model counts the channels BNGsim runs, which can be more or fewer. |
 | `sim.getSteadyStateValues` | `sim.steady_state().concentrations` | steady_state() returns a SteadyStateResult; ss[name] reads one species. |
 | `sim.gillespie` | `bngsim.Simulator(model, method="ssa").run(t_span=(t0, t1), n_points=n)` | The method is chosen when the Simulator is built; Simulator.METHODS lists them. |
 | `sim.setIntegrator` | `bngsim.Simulator(model, method="ssa")` | The method is chosen when the Simulator is built; Simulator.METHODS lists them. |
@@ -269,26 +273,26 @@ the tool's own objects, as that tool spells it.
 | `sim.run(steps=...)` | `n_points=steps + 1` | RoadRunner's steps counts the intervals between output points; n_points counts the points, the first included. |
 | `sim.run(integrator=...)` | `bngsim.Simulator(model, method=...)` | The method is chosen when the Simulator is built; Simulator.METHODS lists them. |
 | `sim.run(selections=...)` | `result.observables[name]` | run() records every species, observable and expression; select from its Result: result.species[name], result.observables[name], result.expressions[name]. |
-| `model.k1 = value` | `model.set_param("k1", value)` | libRoadRunner sets a parameter as an attribute; on a bngsim Model the write fails with Python's own AttributeError. A species: model.set_concentration(name, value). |
+| `model.k1 = value` | `model.set_param("k1", value)` | libRoadRunner sets a parameter as an attribute; on a BNGsim Model the write fails with Python's own AttributeError. A species: model.set_concentration(name, value). |
 | `model.k1` | `model.get_param("k1")` | A species: model.get_concentration(name). |
 | `model["k1"] = value` | `model.set_param("k1", value)` | A species: model.set_concentration(name, value). |
 | `model["S1"]` | `model.get_concentration("S1")` | A parameter: model.get_param(name). |
-| `sim.k1 = value` | `sim.model.set_param("k1", value)` | libRoadRunner's one object is both the model and its simulator; in bngsim, parameters and species are the Model's, and sim.model is it. |
+| `sim.k1 = value` | `sim.model.set_param("k1", value)` | libRoadRunner's one object is both the model and its simulator; in BNGsim, parameters and species are the Model's, and sim.model is it. |
 
 **Tellurium**
 
-| you write | in bngsim | note |
+| you write | in BNGsim | note |
 |---|---|---|
 | `bngsim.loada` | `bngsim.Model.from_antimony_string(text)` |  |
 | `bngsim.loadAntimonyModel` | `bngsim.Model.from_antimony_string(text)` | bngsim.Model.from_antimony(path) reads a file. |
 | `bngsim.loadSBMLModel` | `bngsim.Model.from_sbml(path)` | bngsim.Model.from_sbml_string(text) reads SBML text. |
-| `result.plot` | `result.dataframe.plot(x="time")` | bngsim draws no plots; this needs pandas and matplotlib. |
+| `result.plot` | `result.dataframe.plot(x="time")` | BNGsim draws no plots; this needs pandas and matplotlib. |
 
 **AMICI**
 
-| you write | in bngsim | note |
+| you write | in BNGsim | note |
 |---|---|---|
-| `amici.sim.sundials.run_simulation(model, solver)` | `sim.run(sample_times=times)` | AMICI before 1.0: amici.runAmiciSimulation. There is no import or compile step: bngsim.Model.load(path) reads the SBML, and a Simulator runs it. AMICI integrates from t0; a bngsim run starts at the first sample time, so put t0 first. |
+| `amici.sim.sundials.run_simulation(model, solver)` | `sim.run(sample_times=times)` | AMICI before 1.0: amici.runAmiciSimulation. There is no import or compile step: bngsim.Model.load(path) reads the SBML, and a Simulator runs it. AMICI integrates from t0; a BNGsim run starts at the first sample time, so put t0 first. |
 | `model.set_timepoints(times)` | `sim.run(sample_times=times)` | AMICI before 1.0: setTimepoints. The run starts at the first sample time, so put the start time first. |
 | `model.set_free_parameter_by_name(name, value)` | `model.set_param(name, value)` | AMICI before 1.0: setParameterByName. |
 | `solver.set_sensitivity_order(SensitivityOrder.first)` | `bngsim.Simulator(model, sensitivity_params=[...])` | AMICI before 1.0: setSensitivityOrder. result.sensitivities is (n_times, n_species, n_params); AMICI's rdata.sx is (n_times, n_params, n_species). |
@@ -296,10 +300,10 @@ the tool's own objects, as that tool spells it.
 
 **COPASI (basico)**
 
-| you write | in bngsim | note |
+| you write | in BNGsim | note |
 |---|---|---|
 | `basico.load_model(path)` | `bngsim.Model.load(path)` |  |
-| `basico.run_time_course(duration=d, intervals=n)` | `sim.run(t_span=(0, d), n_points=n + 1)` | intervals counts the steps between output points. basico starts each time course from the initial values; a bngsim run continues from the last one unless start="initial". |
+| `basico.run_time_course(duration=d, intervals=n)` | `sim.run(t_span=(0, d), n_points=n + 1)` | intervals counts the steps between output points. basico starts each time course from the initial values; a BNGsim run continues from the last one unless start="initial". |
 | `basico.run_time_course(method="stochastic")` | `bngsim.Simulator(model, method="ssa")` | The method is chosen when the Simulator is built; Simulator.METHODS lists them. |
 | `basico.set_parameters(name, initial_value=v)` | `model.set_param(name, v)` |  |
 | `basico.set_species(name, initial_concentration=c)` | `model.set_concentration(name, c)` |  |
@@ -307,7 +311,7 @@ the tool's own objects, as that tool spells it.
 
 **BNGL actions**
 
-| you write | in bngsim | note |
+| you write | in BNGsim | note |
 |---|---|---|
 | `bngsim.simulate` | `bngsim.Simulator(bngsim.Model.load(path)).run(t_span=(t0, t1), n_points=n)` | A Model holds the network; a Simulator runs it. n_points counts the output points, the first included: BioNetGen's n_steps=10 and RoadRunner's simulate(0, 10, 11) are both n_points=11. |
 | `model.setParameter` | `model.set_param(name, value)` |  |
@@ -324,7 +328,7 @@ the tool's own objects, as that tool spells it.
 
 **PySB**
 
-| you write | in bngsim | note |
+| you write | in BNGsim | note |
 |---|---|---|
 | `ScipyOdeSimulator(model, tspan=t).run()` | `bngsim.Simulator(model).run(sample_times=t)` | Export the PySB model first: pysb.export.export(model, 'bngl') returns BNGL text, which bngsim.Model.from_bngl(path) reads from a file. |
 | `ScipyOdeSimulator(model).run(param_values={...})` | `model.set_params({name: value, ...})` | Set the parameters on the Model, then run. PySB's values hold for that run only; the Model keeps these. |
@@ -333,20 +337,20 @@ the tool's own objects, as that tool spells it.
 
 **SciPy**
 
-| you write | in bngsim | note |
+| you write | in BNGsim | note |
 |---|---|---|
 | `result.t` | `result.time` |  |
 | `result.y` | `result.species` | Its shape is (n_times, n_species), the transpose of SciPy's sol.y: result.species.T is SciPy's layout. |
 | `result.success` | — | run() raises bngsim.SimulationError when a run fails, so a Result it returns is a run that finished. A stop condition that ends a run early raises bngsim.StopConditionMet, which carries the cut Result. |
 | `result.status` | — | run() raises bngsim.SimulationError when a run fails, so a Result it returns is a run that finished. A stop condition that ends a run early raises bngsim.StopConditionMet, which carries the cut Result. |
 | `result.message` | — | run() raises bngsim.SimulationError when a run fails, so a Result it returns is a run that finished. A stop condition that ends a run early raises bngsim.StopConditionMet, which carries the cut Result. |
-| `sim.run(t_eval=...)` | `sample_times=t_eval` | SciPy integrates from t_span[0]; a bngsim run starts at the first sample time, so put the start time first. |
+| `sim.run(t_eval=...)` | `sample_times=t_eval` | SciPy integrates from t_span[0]; a BNGsim run starts at the first sample time, so put the start time first. |
 | `sim.run(method=...)` | `bngsim.Simulator(model, method=...)` | The method is chosen when the Simulator is built; Simulator.METHODS lists them. |
 | `sim.run(y0=...)` | `model.set_concentration(name, value)` | A run starts from the model's state: set it before run(), all of it at once with model.set_state(values). |
 
 **pandas**
 
-| you write | in bngsim | note |
+| you write | in BNGsim | note |
 |---|---|---|
 | `result.to_dataframe` | `result.dataframe` | It is a property, read without parentheses: time and one column per observable. It needs pandas. |
 | `result.to_pandas` | `result.dataframe` | It is a property, read without parentheses: time and one column per observable. It needs pandas. |
@@ -360,10 +364,10 @@ the tool's own objects, as that tool spells it.
 
 ## Example models, and models built in Python
 
-`bngsim.examples` holds small models that ship with bngsim, each with its
-exact solution: a model to try with no file of your own, and a check that
-bngsim works on this machine. `bngsim.examples.formats(name)` lists the
-formats each comes in. `bngsim.ModelBuilder` builds a model in Python.
+`bngsim.examples` holds small models that ship with BNGsim, each with its
+exact solution. Use one to try BNGsim without a model file of your own, or to
+check that BNGsim works on this machine. `bngsim.examples.formats(name)` lists
+the formats each comes in. `bngsim.ModelBuilder` builds a model in Python.
 
 ```python
 print(bngsim.examples.names())  # ['binding', 'decay', 'chain', 'birth_death', 'bolus', 'schlogl']
@@ -382,14 +386,14 @@ print(bngsim.Simulator(built).run(t_span=(0, 2), n_points=3).observables["A"][-1
 
 ## Check a result before reporting it
 
-- **A conservation law holds.** In this model `A + B` stays 100; a reaction
-  network with a conserved total should conserve it to the tolerance.
+- **A conservation law holds.** In this model `A + B` stays 100. A network
+  with a conserved total should conserve it to within the tolerance.
 - **The answer does not move with the tolerance.** Run again with `rtol` and
-  `atol` ten or a hundred times smaller; a number that moves was not resolved.
-- **A closed form or a steady state agrees** where one is known.
-- **A stochastic answer is an ensemble's.** One trajectory is one draw: report
-  a mean or a distribution over replicates, with the number of replicates, and
-  the seed.
+  `atol` ten or a hundred times smaller. A number that moves was not resolved.
+- **A closed form or a steady state agrees**, where one is known.
+- **A stochastic answer comes from an ensemble.** One trajectory is one draw.
+  Report a mean or a distribution over replicates, with the number of
+  replicates and the seed.
 - **The run started where it was meant to:** `result.started_from`.
 - **What the numbers are and how they were made:** `result.record` says it
   from the result, not from memory of the script; `result.notices` lists what
@@ -418,8 +422,8 @@ print(r.notices)  # []
 
 ## Report a suspected bug
 
-At <https://github.com/lanl/bngsim/issues>, with what a maintainer needs to
-run it again:
+Report it at <https://github.com/lanl/bngsim/issues>, with what a maintainer
+needs to run it again:
 
 - `bngsim.capabilities()["version"]` and `["build"]["commit"]`, the Python
   version and the operating system;
@@ -428,5 +432,5 @@ run it again:
 - what came back, and what was expected and why: a closed form, another
   simulator's answer (name it and its version), or a conservation law.
 
-A refusal (above) is not a bug unless the model is valid and bngsim names the
+A refusal (above) is not a bug unless the model is valid and BNGsim names the
 wrong construct.

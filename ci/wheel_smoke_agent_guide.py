@@ -18,7 +18,7 @@ import sys
 import bngsim
 
 guide = bngsim.agent_guide()
-assert guide.startswith("# bngsim agent guide\n"), guide[:80]
+assert guide.startswith("# BNGsim agent guide\n"), guide[:80]
 assert "translation-table" in guide and "**libRoadRunner**" in guide
 skill = bngsim.agent_guide(skill=True)
 assert skill.startswith("---\nname: bngsim\n") and skill.endswith(guide)
