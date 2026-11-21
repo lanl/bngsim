@@ -230,6 +230,13 @@ for feature, why in caps["missing"].items():
     print(f"{feature}: {why}")
 ```
 
+From a shell, `python -m bngsim doctor` prints the same, with the Python, the
+platform and the C compiler codegen would use. `python -m bngsim inspect
+MODEL` prints `Model.load(MODEL).describe()`. Add `--json` to either for one
+JSON object on standard output; an error is a JSON object on standard error,
+and the exit code says which kind: 3 a refusal, 2 a wrong command line, 1
+another error.
+
 | to | needs | capability |
 |---|---|---|
 | `.net`, SBML, ODE, SSA, PSA, steady state | nothing beyond `pip install bngsim` | |
@@ -237,7 +244,7 @@ for feature, why in caps["missing"].items():
 | Antimony | `pip install "bngsim[antimony]"` | `antimony` |
 | `result.dataframe` | `pip install "bngsim[pandas]"` | |
 | `result.save`, `Result.load` (HDF5) | `pip install "bngsim[hdf5]"` | |
-| forward sensitivities | a C compiler: `cc` on macOS and Linux, `cl` or `gcc` on Windows, or `$CC`. BNGsim compiles the model's derivatives; without one, `bngsim.CodegenToolchainError`. `capabilities()` does not check for it | |
+| forward sensitivities | a C compiler: `cc` on macOS and Linux, `cl` or `gcc` on Windows, or `$CC`. BNGsim compiles the model's derivatives; without one, `bngsim.CodegenToolchainError`. `capabilities()` does not check for it; `python -m bngsim doctor` names the one it would use | |
 | network-free methods `nf`, `rm` | the engines are in the wheels; each run needs `xml_path=`, the model's BioNetGen XML, which BNG2.pl's `writeXML()` action writes from the `.bngl` | `nfsim`, `rulemonkey` |
 
 ## If you know another tool
@@ -434,8 +441,8 @@ assert abs(mean_a - closed[-1]) < 5 * np.sqrt(closed[-1])  # within the noise
 Report it at <https://github.com/lanl/bngsim/issues>, with what a maintainer
 needs to run it again:
 
-- `bngsim.capabilities()["version"]` and `["build"]["commit"]`, the Python
-  version and the operating system;
+- the output of `python -m bngsim doctor`, which gives the version, the build,
+  the Python and the operating system;
 - the model file, or the smallest one that shows the problem;
 - the calls, as code that runs, with every `seed`;
 - what came back, and what was expected and why: a closed form, another

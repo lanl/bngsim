@@ -250,6 +250,10 @@ no-build-isolation-package = ["bionetgen"]
 # that re-resolve. See CONTRIBUTING.md, "Re-locking after a pyproject change".
 
 [project.scripts]
+# The bngsim command (GH #1708): doctor, guide, examples, inspect, and the tools
+# below as `bngsim convert ...` and `bngsim cache ...`. Also runnable as
+# ``python -m bngsim``.
+bngsim = "bngsim._cli:main"
 # SBML → .net network converter (GH #215). Also runnable as
 # ``python -m bngsim.convert``.
 bngsim-sbml2net = "bngsim.convert._cli:main"
