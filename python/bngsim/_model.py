@@ -155,7 +155,7 @@ class Model:
         "_loaded_state",
         "_last_run_end",
         "_source",
-        "_compartments",
+        "_sbml_record",
     )
 
     def __init__(
@@ -185,11 +185,11 @@ class Model:
         # for a model built in Python (ModelBuilder, build_model_from_parsed, a
         # coupling submodel). Read by describe(). A clone keeps its parent's.
         self._source: dict[str, Any] | None = None
-        # Issue #1705: the SBML loader's record of the compartments, for
-        # describe(): each one's size at load and what sets it, and each
-        # species' compartment, by the names the model uses. None for every
-        # other format, which has no compartments to report.
-        self._compartments: dict[str, Any] | None = None
+        # Issue #1705: the SBML loader's record of the file, for describe():
+        # its compartments, each species' compartment, the parameters it
+        # declares and its reactions as written, by the names the model uses
+        # (_sbml_loader._sbml_record). None for every other format.
+        self._sbml_record: dict[str, Any] | None = None
         self._codegen_so_path: str = ""
         # GH #198: whether codegen should emit the expression output-sensitivity
         # evaluator. Set by the Simulator before codegen prep (only a sensitivity
@@ -1497,7 +1497,7 @@ class Model:
         # not copied: the vector is read-only, and the record is only replaced.
         m._last_run_end = self._last_run_end
         m._source = dict(self._source) if self._source is not None else None
-        m._compartments = self._compartments  # read-only once the loader made it
+        m._sbml_record = self._sbml_record  # read-only once the loader made it
         m._net_path = self._net_path
         m._want_output_sens = self._want_output_sens
         m._codegen_so_path = self._codegen_so_path
@@ -3371,83 +3371,120 @@ class Model:
 
         Read it before choosing a method or the outputs to report. It is built
         from what the loader recorded and the model holds, so it neither runs
-        the model nor changes its state or parameters. Most models take under a
-        millisecond. The first call on a model also makes two scans the model
-        keeps for later runs, its conservation laws and whether a rate reads
-        the clock: on a network of 6,047 species that took 2.5 s, and each call
-        after it 0.1 s.
+        the model nor changes its state or parameters, and it compiles nothing.
+        Most models take under a millisecond; the first call on a model whose
+        rates are many functions also makes the scan of which of them read the
+        clock, which the model keeps (0.5 s on one of 677 functions).
 
         Keys:
 
+        * ``schema_version``: 1. A change that removes or renames a key, or
+          changes what one holds, increments it.
         * ``source``: ``format`` (``"sbml"``, ``"antimony"``, ``"net"``,
-          ``"bngl"``, or ``None`` for a model built in Python), ``path`` and
-          the ``sha256`` of the file as it was read (of the text, encoded as
-          UTF-8, for a ``from_*_string`` load). A ``.bngl`` load adds
-          ``network``, the ``.net`` file BNG2.pl generated, and a load with
-          ``compartment_sizes=`` records the sizes it set.
-        * ``counts``: species, reactions, observables, parameters, functions,
-          events, table functions and conservation laws, and compartments for
-          an SBML or Antimony model.
-        * ``parameters``: each one's ``name``, ``value`` and ``kind``
-          (``"primary"``, ``"derived"`` with its ``expression``, or
-          ``"compartment_size"``). ``frozen`` says what a parameter folded at
-          load was folded into (:attr:`frozen_params`). Synthesized slots
-          (:attr:`param_is_internal`) are left out.
-        * ``compartments`` (SBML and Antimony only): each one's ``size`` at load
-          and ``size_set_by``, ``None`` for a constant size, else
-          ``"rate_rule"``, ``"assignment_rule"`` or ``"event"``.
-        * ``species``: each one's ``name``, ``initial`` value (what
-          :meth:`reset` restores and a run from the initial state starts at)
-          and whether it is ``fixed`` (no reaction changes it); ``set_by`` names
-          a rule or event that does, and ``reported: False`` marks a state with
-          no column in ``Result.species``. For an SBML or Antimony model, also its
-          ``compartment`` and ``quantity``: ``"amount"`` where the file
-          declares the species in amounts (``hasOnlySubstanceUnits``), with
-          its ``initial_amount``, else ``"concentration"``. ``species_values``
-          says what the numbers are: ``"concentration"`` for an SBML or
-          Antimony model, an amount divided by its compartment's size, for
-          every species and whatever its quantity, as :meth:`get_concentration`
-          and ``Result.species`` give them; ``None`` for a ``.net`` or BNGL
-          model, whose file states no units.
-        * ``observables`` (what each reads), ``functions`` (each one's
-          expression), ``reactions`` (``reactants``, ``products``, ``rate_law``
-          of ``"elementary"``, ``"michaelis_menten"``, ``"functional"`` or
-          ``"rate_rule"``, and the ``rate``) and ``events``.
-        * ``time_dependence``: whether a rate law reads the clock, the functions
-          that do, whether the clock reaches the state (which a steady state
-          refuses), and the number of events.
-        * ``methods``: for ``ode``, ``ssa``, ``psa``, ``nf`` and ``rm``, and for
-          ``forward_sensitivities``, a ``status`` with ``reasons``. ``"ok"``
-          means nothing in the model or this install refuses the method
-          before a run; a run can still refuse what depends on its own
-          arguments. ``"refused"`` lists the constructs, each with a ``code``
-          and the message the run would raise; ``"needs_input"`` names what
-          the method needs that the model does not carry (the network-free
-          methods read a BNG-XML file, ``xml_path=``); ``"unavailable"`` says
-          what this install lacks.
-        * ``jacobian``: the analytical Jacobian's status
-          (:attr:`analytical_jacobian_status`), which ``describe()`` does not
-          derive.
+          ``"bngl"``, or ``None`` for a model built in Python), the absolute
+          ``path``, and the ``sha256`` of the file, read again after the load
+          (of the text, encoded as UTF-8, for a ``from_*_string`` load). Of the
+          file only: not of a file a ``.bngl`` reads or a table function's data.
+          A ``.bngl`` load adds ``network``, the ``.net`` BNG2.pl generated; a
+          load with ``compartment_sizes=`` records them; an OMEX archive's model
+          adds ``archive_entry``, its path being the extracted copy.
+        * ``counts``: how many entries each list below has before ``limit``
+          cuts it, and ``events`` and ``table_functions``. For SBML they count
+          the file's species and reactions, not the model's channels
+          (:attr:`n_reactions` counts those).
         * ``next_run_starts_from``: ``"initial"``, or ``"live"`` where the
-          model's state is not its initial state, as after a run: the next
-          ``run()`` continues from it (see ``Result.started_from``).
-        * ``load_warnings``: what the loader warned of, where it did.
+          model's state is not its initial state, as after a run or a
+          :meth:`set_concentration`: the next ``run()`` continues from it.
+        * ``species_values``: ``"concentration"`` for an SBML or Antimony
+          model, an amount divided by its compartment's size, for every species
+          the file declares and whatever its quantity, as :meth:`get_concentration`
+          and ``Result.species`` give them. ``None`` for a ``.net`` or BNGL
+          model, whose file states no units, or one built in Python.
+        * ``methods``: for ``ode``, ``ssa``, ``psa``, ``nf``, ``rm`` and
+          ``forward_sensitivities``, a ``status`` and ``reasons``, each reason a
+          ``code`` and the ``message`` the run raises (SSA's grouped by code,
+          with a ``count`` and its ``locations``). ``"ok"``: nothing in the
+          model or this install refuses the method before a run; a run can
+          still fail on what depends on its arguments, or on its starting
+          values (a rate that is NaN or infinite at the start fails a
+          stochastic run at its first step). ``"refused"``: the model has a
+          construct the method refuses, read from the check the Simulator
+          makes. ``"needs_input"``: the method needs what the model does not
+          carry (the network-free methods read a BNG-XML file,
+          ``xml_path=``). ``"unavailable"``: this install lacks it. SSA may
+          also carry ``warnings``. ``forward_sensitivities`` is never ``"ok"``:
+          it is ``"undecided"`` where nothing refuses it, since whether the
+          rate laws differentiate to closed form is decided when a sensitivity
+          run builds its code, and a ``note`` says so; it reports the
+          ``backend`` that would build it, and ``refused_parameters``, those
+          folded at load (:attr:`frozen_params`) with what they went into.
+        * ``time_dependence``: ``rate_laws_read_clock``,
+          ``functions_reading_clock``, ``state_reads_clock`` (which a steady
+          state refuses), ``time_tables`` (table functions over time) and
+          ``events``.
+        * ``jacobian``: ``analytical``, the analytical Jacobian's status
+          (``"complete"``, ``"pending"`` or ``"declined"``, with the
+          :attr:`analytical_jacobian_decline` record), which ``describe()``
+          does not derive.
+        * ``parameters``: each one's ``name``, ``value`` and ``kind``:
+          ``"primary"``, ``"derived"`` with its ``expression`` (and
+          ``overridden: True`` where :meth:`set_param` pinned it to a number),
+          or ``"compartment_size"``. ``frozen`` says what a parameter folded
+          at load went into. Synthesized slots (:attr:`param_is_internal`) are
+          left out, and for SBML every parameter the loader made: the list is
+          the file's own, its compartments and its reactions' local ones
+          (``_lp_<reaction>_<id>``).
+        * ``compartments`` (SBML and Antimony only): ``name``, the file's
+          ``id`` where bngsim renamed it, ``size`` (where a run from the
+          initial state starts: the parameter's value, which ``set_param``
+          moves; the state's, for a size a rate rule or event moves; the size
+          at load, for one an assignment rule sets), ``size_declared`` (False
+          where the file gives no usable size and 1 is used) and
+          ``size_set_by``, a list of ``"rate_rule"``, ``"assignment_rule"``
+          and ``"event"``, empty for a constant size.
+        * ``species``: ``name``, ``initial`` (what :meth:`reset` restores and
+          the first row of a run from it), ``fixed`` (no reaction changes it),
+          ``set_by`` (the rules or events that do), and ``reported: False``
+          for one with no column in ``Result.species``. For SBML and Antimony,
+          also ``compartment`` and ``quantity``: ``"amount"`` where the file
+          declares the species in amounts (``hasOnlySubstanceUnits``), with
+          its ``initial_amount``, else ``"concentration"``.
+        * ``other_states`` (SBML and Antimony, where any): a compartment size
+          or parameter a rule or event moves, which bngsim holds as a state
+          and the file does not declare as a species: ``name``, ``initial``,
+          ``holds`` (``"compartment_size"``, ``"parameter"``, ``"other"``),
+          ``set_by``, ``reported``.
+        * ``observables``: each one's ``name`` and what it ``reads``
+          (``A + 2*B``), the columns of ``Result.observables``.
+        * ``functions``: ``name`` and ``expression``; for SBML the file's
+          assignment rules and reaction rates, by its ids.
+        * ``reactions``: ``reactants``, ``products``, the ``equation`` with its
+          coefficients, ``rate_law`` and ``rate``. For a network:
+          ``"elementary"``, ``"michaelis_menten"``, ``"functional"`` (with the
+          function's ``expression``) or ``"rate_rule"``, and a ``multiplier``
+          other than 1. For SBML, as the file writes them: ``id``,
+          ``rate_law`` ``"kinetic_law"`` with the law as ``rate``,
+          ``reversible``, and ``modifiers`` and ``fast`` where set.
+        * ``events``: ``id``, ``trigger``, what it ``assigns``, and its
+          ``delay`` where it has one.
+        * ``omitted``: how many entries each list lost to ``limit``.
+
+        Values are Python floats, so a parameter of ``inf`` is written by
+        ``json.dumps`` as ``Infinity``, which strict JSON does not have.
 
         Parameters
         ----------
         limit : int or None
-            The most entries listed in each of ``parameters``, ``compartments``,
-            ``species``, ``observables``, ``functions``, ``reactions`` and
-            ``events``, and the most terms an observable lists. Lists longer
-            than that are cut, in model order, and ``omitted`` says how many
-            entries each lost, so a network of thousands of species does not
-            print thousands of lines. ``None`` lists everything. Default 50.
+            The most entries each list keeps, cut in model order, and the most
+            locations an SSA reason and terms an observable lists; while it is
+            set, an expression keeps its first 200 characters and says how many
+            it lost. ``None`` keeps everything. Default 50.
 
         Returns
         -------
         dict
-            A ``dict`` subclass: ``json.dumps`` writes it, and ``print`` shows
-            the text form.
+            A ``dict`` subclass: ``json.dumps`` writes it, ``==`` compares it
+            as a dict, and ``print`` shows the text form.
 
         Examples
         --------
@@ -3518,15 +3555,16 @@ def _record_source(
     fmt: str,
     *,
     path: str | Path | None = None,
-    text: str | None = None,
+    text: str | bytes | None = None,
     **extra: Any,
 ) -> None:
     """Record where ``model`` came from, for :meth:`Model.describe` (issue
     #1705): the format, the absolute path, and the SHA-256 of the bytes of the
-    file (re-read here; ``None`` if it can no longer be read) or of ``text``
-    encoded as UTF-8. ``extra`` adds what the load did beyond the file, such as
-    the compartment sizes it set. A later call for the same model replaces the
-    record: an Antimony load records itself over the SBML string it made."""
+    file (re-read here, after the load; ``None`` if it can no longer be read)
+    or of ``text``, encoded as UTF-8 where it is a ``str``. ``extra`` adds what
+    the load did beyond the file, such as the compartment sizes it set. A later
+    call for the same model replaces the record: an Antimony load records
+    itself over the SBML string it made."""
     import hashlib
     import os
 
@@ -3538,8 +3576,11 @@ def _record_source(
             data = Path(where).read_bytes()
         except OSError:
             data = None
-    elif text is not None:
+    elif isinstance(text, str):
         data = text.encode("utf-8")
+    elif text is not None:
+        # libantimony also takes bytes (issue #1705 review): hashed as given.
+        data = bytes(text)
     model._source = {
         "format": fmt,
         "path": where,

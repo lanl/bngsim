@@ -85,26 +85,38 @@ def _verdict(reasons: list[dict[str, Any]], **extra: Any) -> dict[str, Any]:
     return {"status": "refused" if reasons else "ok", "reasons": reasons, **extra}
 
 
-def _stochastic(model: Model) -> dict[str, Any]:
+def _by_code(issues: list, limit: int | None) -> list[dict[str, Any]]:
+    """SsaIssues as one reason per code: its first message, how many there are,
+    and where, cut at ``limit`` locations. A model can carry one per reaction,
+    each a paragraph long (BIOMD0000000574: 830 KB of them)."""
+    out: dict[str, dict[str, Any]] = {}
+    for i in issues:
+        entry = out.get(i.code)
+        if entry is None:
+            entry = out[i.code] = {"code": i.code, "message": i.message, "count": 0}
+        entry["count"] += 1
+        if i.location:
+            entry.setdefault("locations", []).append(i.location)
+    for entry in out.values():
+        locations = entry.get("locations")
+        if locations and limit is not None and len(locations) > limit:
+            entry["locations_omitted"] = len(locations) - limit
+            entry["locations"] = locations[:limit]
+    return list(out.values())
+
+
+def _stochastic(model: Model, limit: int | None) -> dict[str, Any]:
     """The SSA verdict, which PSA shares: the Simulator's validate_for_ssa
     errors, and the C++ engine's own two refusals."""
     from bngsim._ssa_validation import validate_for_ssa
 
     issues = validate_for_ssa(model)
-    reasons = [
-        {"code": i.code, "message": i.message, **({"location": i.location} if i.location else {})}
-        for i in issues
-        if i.severity == "error"
-    ]
+    reasons = _by_code([i for i in issues if i.severity == "error"], limit)
     if model._core.n_species == 0:
         reasons.append({"code": "no_species", "message": _NO_SPECIES})
     if bool(getattr(model._core, "uses_rateof", False)):
         reasons.append({"code": "rateof", "message": _SSA_RATEOF})
-    warnings = [
-        {"code": i.code, "message": i.message, **({"location": i.location} if i.location else {})}
-        for i in issues
-        if i.severity != "error"
-    ]
+    warnings = _by_code([i for i in issues if i.severity != "error"], limit)
     return _verdict(reasons, **({"warnings": warnings} if warnings else {}))
 
 
@@ -146,19 +158,33 @@ def _network_free(model: Model, canonical: str) -> dict[str, Any]:
     }
 
 
+#: Why a sensitivity verdict that nothing refuses is not "ok".
+_UNDECIDED = (
+    "Nothing in the model or this install refuses forward sensitivities before a "
+    "run, but whether every rate law differentiates to closed form is decided when a "
+    "sensitivity run builds its code, and that run refuses a model whose rate laws do "
+    "not (a floor, min, max, abs or comparison in a rate law). Other refusals depend "
+    "on the parameters and span a run asks for, and the run raises them."
+)
+
+
 def _forward_sensitivities(model: Model) -> dict[str, Any]:
     """What a sensitivity run needs of this install (a codegen backend: a C
-    compiler, or the MIR JIT), and the parameters it refuses whatever the run:
-    those folded at load. Its other refusals depend on the run's parameters and
-    span, and :meth:`Simulator.run` raises them."""
+    compiler, or the MIR JIT), the events that refuse every request (the
+    core's own check, asked as an initial-condition-only run asks it), and the
+    parameters refused whatever the run: those folded at load.
+
+    The status is ``"unavailable"``, ``"refused"``, or ``"undecided"``: never
+    ``"ok"``, since whether the rate laws differentiate is decided only when a
+    run builds the code (:data:`_UNDECIDED`)."""
     from bngsim import _codegen_toolchain
     from bngsim._bngsim_core import HAS_MIR
     from bngsim._codegen import _codegen_jit_backend
 
-    reasons: list[dict[str, Any]] = []
+    install: list[dict[str, Any]] = []
     backend: str | None = None
     if os.environ.get("BNGSIM_NO_CODEGEN"):
-        reasons.append(
+        install.append(
             {
                 "code": "codegen_disabled",
                 "message": "Forward sensitivity analysis requires code generation, but "
@@ -168,9 +194,10 @@ def _forward_sensitivities(model: Model) -> dict[str, Any]:
     elif _codegen_jit_backend() == "mir" and HAS_MIR:
         backend = "mir"
     else:
-        compiler, broken = _codegen_toolchain.check()
+        # What a build would use and the verdict kept on it, with no probe.
+        compiler, broken = _codegen_toolchain.peek()
         if compiler is None or broken is not None:
-            reasons.append(
+            install.append(
                 {
                     "code": "no_compiler",
                     "message": (broken or "No C compiler found.")
@@ -178,14 +205,22 @@ def _forward_sensitivities(model: Model) -> dict[str, Any]:
                     "where bngsim is built with it, the MIR JIT (BNGSIM_CODEGEN_JIT=mir).",
                 }
             )
-        elif (missing := _codegen_toolchain.record_missing(compiler)) is not None:
-            reasons.append({"code": "no_compiler", "message": missing})
         else:
             backend = " ".join(compiler)
-    out: dict[str, Any] = {
-        "status": "unavailable" if reasons else "ok",
-        "reasons": reasons,
-    }
+    model_reasons: list[dict[str, Any]] = []
+    if model._core.n_events > 0:
+        why = model._core.event_sensitivity_unsupported_reason([], [])
+        if why:
+            model_reasons.append({"code": "event", "message": str(why)})
+    if install:
+        status = "unavailable"
+    elif model_reasons:
+        status = "refused"
+    else:
+        status = "undecided"
+    out: dict[str, Any] = {"status": status, "reasons": install + model_reasons}
+    if status == "undecided":
+        out["note"] = _UNDECIDED
     if backend is not None:
         out["backend"] = backend
     frozen = model._frozen_params
@@ -195,6 +230,9 @@ def _forward_sensitivities(model: Model) -> dict[str, Any]:
 
 
 # ─── The description ─────────────────────────────────────────────────────────
+
+#: The most characters an expression keeps while ``limit`` is set.
+TEXT_CAP = 200
 
 
 def _check_limit(limit: Any) -> int | None:
@@ -210,6 +248,13 @@ def _cut(items: list, limit: int | None, key: str, omitted: dict[str, int]) -> l
         return items
     omitted[key] = len(items) - limit
     return items[:limit]
+
+
+def _clip(text: str, limit: int | None) -> str:
+    """``text``, or its first :data:`TEXT_CAP` characters and how many it lost."""
+    if limit is None or len(text) <= TEXT_CAP:
+        return text
+    return f"{text[:TEXT_CAP]} ... ({len(text) - TEXT_CAP} more characters)"
 
 
 def _term(name: str, coeff: float) -> tuple[str, str]:
@@ -238,7 +283,28 @@ def _num(x: float) -> str:
     return f"{x:.6g}"
 
 
-def _parameters(model: Model, cd: dict) -> list[dict[str, Any]]:
+def _side(terms: list[tuple[str, Any]]) -> str:
+    """One side of a reaction: ``2*A + B``, ``0`` when empty."""
+    out = []
+    for name, coeff in terms:
+        if coeff is None or (isinstance(coeff, float) and coeff == 1.0):
+            out.append(name)
+        elif isinstance(coeff, float):
+            out.append(f"{_num(coeff)}*{name}")
+        else:
+            out.append(f"({coeff})*{name}")
+    return " + ".join(out) or "0"
+
+
+def _counted(indices: list) -> list[tuple[int, float]]:
+    """A ``.net`` reaction's species indices as ``(index, count)``, in order."""
+    counts: dict[int, int] = {}
+    for i in indices:
+        counts[int(i)] = counts.get(int(i), 0) + 1
+    return [(i, float(n)) for i, n in counts.items()]
+
+
+def _parameters(model: Model, record: dict | None, limit: int | None) -> list[dict[str, Any]]:
     from bngsim._model import _names_in
 
     core = model._core
@@ -249,22 +315,27 @@ def _parameters(model: Model, cd: dict) -> list[dict[str, Any]]:
     comp = list(getattr(core, "param_is_compartment_size", [False] * len(names)))
     known = set(names) | set(core.species_names) | set(core.observable_names)
     known |= set(core.function_names)
+    # An SBML model's own parameters, compartments and reaction-local ones: not
+    # the ones its loader made (a reversible law's _rateLaw_*, an _ic_ carrier).
+    declared = None if record is None else record["parameters"]
     frozen = model._frozen_params
     out: list[dict[str, Any]] = []
     for i, name in enumerate(names):
         if internal[i]:
             continue
+        if declared is not None and name not in declared and not name.startswith("_lp_"):
+            continue
         entry: dict[str, Any] = {"name": name, "value": float(core.get_param(name))}
         if is_expr[i]:
             entry["kind"] = "derived"
-            entry["expression"] = exprs[i]
+            entry["expression"] = _clip(exprs[i], limit)
         elif comp[i]:
             entry["kind"] = "compartment_size"
         elif exprs[i] and any(n in known and n != name for n in _names_in(exprs[i])):
             # A derived parameter a set_param pinned to a number (issue #188):
             # its expression stays on record, and it no longer follows it.
             entry["kind"] = "derived"
-            entry["expression"] = exprs[i]
+            entry["expression"] = _clip(exprs[i], limit)
             entry["overridden"] = True
         else:
             entry["kind"] = "primary"
@@ -274,7 +345,12 @@ def _parameters(model: Model, cd: dict) -> list[dict[str, Any]]:
     return out
 
 
-def _species(model: Model, cd: dict, record: dict | None) -> list[dict[str, Any]]:
+def _species(
+    model: Model, cd: dict, record: dict | None
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The species, and for an SBML model the other states: a compartment size
+    or a parameter a rule or an event moves, which the loader holds as a state
+    (GH #85, #131) and the file does not declare as a species."""
     core = model._core
     names = list(core.species_names)
     initial = [float(v) for v in core.get_initial_state()]
@@ -284,15 +360,12 @@ def _species(model: Model, cd: dict, record: dict | None) -> list[dict[str, Any]
         int(p) for r in cd["reactions"] if r.get("is_rate_rule_ode") for p in r.get("products", ())
     }
     by_event = {int(i) for i in core.event_assigned_species}
-    in_comp = (record or {}).get("species", {})
-    out: list[dict[str, Any]] = []
+    in_comp = None if record is None else record["species"]
+    species: list[dict[str, Any]] = []
+    other: list[dict[str, Any]] = []
     for i, name in enumerate(names):
         sp = meta[i]
-        entry: dict[str, Any] = {"name": name, "initial": initial[i], "fixed": bool(sp["fixed"])}
-        if not sp.get("reported", True):
-            # Integrator state with no column in Result.species (GH #71): an
-            # event-assigned parameter or compartment the loader promoted.
-            entry["reported"] = False
+        entry: dict[str, Any] = {"name": name, "initial": initial[i]}
         set_by = [
             kind
             for kind, hit in (
@@ -302,40 +375,74 @@ def _species(model: Model, cd: dict, record: dict | None) -> list[dict[str, Any]
             )
             if hit
         ]
+        if in_comp is not None and name not in in_comp:
+            if name in record["compartments"]:  # type: ignore[index]
+                entry["holds"] = "compartment_size"
+            elif name in record["parameters"]:  # type: ignore[index]
+                entry["holds"] = "parameter"
+            else:
+                entry["holds"] = "other"
+            if set_by:
+                entry["set_by"] = set_by
+            if not sp.get("reported", True):
+                entry["reported"] = False
+            other.append(entry)
+            continue
+        entry["fixed"] = bool(sp["fixed"])
         if set_by:
             entry["set_by"] = set_by
-        if record is not None:
-            comp = in_comp.get(name)
-            if comp is None:
-                # A parameter or compartment size a rule or an event moves, held
-                # as a state (GH #85, #131); not a species of the file.
-                entry["sbml_species"] = False
+        if not sp.get("reported", True):
+            # Integrator state with no column in Result.species (GH #71).
+            entry["reported"] = False
+        if in_comp is not None:
+            entry["compartment"] = in_comp[name]
+            if sp.get("amount_valued"):
+                # The stored value is the amount over the size (loader
+                # section 3); the factor follows a write of the size (#170).
+                entry["quantity"] = "amount"
+                entry["initial_amount"] = initial[i] * float(sp["volume_factor"])
             else:
-                entry["compartment"] = comp
-                if sp.get("amount_valued"):
-                    # The stored value is the amount over the size (loader
-                    # section 3); the factor follows a write of the size (#170).
-                    entry["quantity"] = "amount"
-                    entry["initial_amount"] = initial[i] * float(sp["volume_factor"])
-                else:
-                    entry["quantity"] = "concentration"
-        out.append(entry)
-    return out
+                entry["quantity"] = "concentration"
+        species.append(entry)
+    return species, other
 
 
 _RATE_LAWS = {"elementary": "elementary", "mm": "michaelis_menten", "functional": "functional"}
 
 
-def _reactions(model: Model, cd: dict) -> list[dict[str, Any]]:
+def _reactions(model: Model, cd: dict, record: dict | None, limit: int | None) -> list[dict]:
+    """The reactions as the file writes them: an SBML file's from the loader's
+    record, and a network's lines from the model, which holds them as written."""
+    if record is not None:
+        out = []
+        for r in record["reactions"]:
+            entry: dict[str, Any] = {
+                "id": r["id"],
+                "reactants": [n for n, _ in r["reactants"]],
+                "products": [n for n, _ in r["products"]],
+                "equation": _clip(f"{_side(r['reactants'])} -> {_side(r['products'])}", limit),
+                "rate_law": "kinetic_law",
+                "rate": _clip(r["rate"], limit),
+                "reversible": r["reversible"],
+            }
+            if r["modifiers"]:
+                entry["modifiers"] = list(r["modifiers"])
+            if r["fast"]:
+                entry["fast"] = True
+            out.append(entry)
+        return out
     core = model._core
     species = list(core.species_names)
     params = list(core.param_names)
     functions = dict(zip(core.function_names, core.function_expressions, strict=True))
-    out: list[dict[str, Any]] = []
+    out = []
     for r in cd["reactions"]:
-        entry: dict[str, Any] = {
-            "reactants": [species[int(i)] for i in r["reactants"]],
-            "products": [species[int(i)] for i in r["products"]],
+        lhs = [(species[i], n) for i, n in _counted(r["reactants"])]
+        rhs = [(species[i], n) for i, n in _counted(r["products"])]
+        entry = {
+            "reactants": [n for n, _ in lhs],
+            "products": [n for n, _ in rhs],
+            "equation": _clip(f"{_side(lhs)} -> {_side(rhs)}", limit),
         }
         if r.get("is_rate_rule_ode"):
             entry["rate_law"] = "rate_rule"
@@ -347,7 +454,7 @@ def _reactions(model: Model, cd: dict) -> list[dict[str, Any]]:
         else:
             entry["rate"] = fn
             if fn in functions:
-                entry["expression"] = functions[fn]
+                entry["expression"] = _clip(functions[fn], limit)
         factor = float(r.get("stat_factor", 1.0))
         if factor != 1.0:
             entry["multiplier"] = factor
@@ -355,19 +462,45 @@ def _reactions(model: Model, cd: dict) -> list[dict[str, Any]]:
     return out
 
 
-def _events(model: Model) -> list[dict[str, Any]]:
+def _compartments(model: Model, record: dict) -> list[dict[str, Any]]:
+    """Each compartment's size as a run from the initial state starts with it:
+    the parameter's value, which a ``set_param`` moves (issue #170); a state's
+    initial value, for a size a rate rule or an event moves; the size at load,
+    for one an assignment rule sets during the run."""
+    core = model._core
+    params = set(core.param_names)
+    species = list(core.species_names)
+    initial = core.get_initial_state()
+    out = []
+    for name, info in record["compartments"].items():
+        entry: dict[str, Any] = {"name": name}
+        if info["id"] != name:
+            entry["id"] = info["id"]
+        if name in species:
+            entry["size"] = float(initial[species.index(name)])
+        elif name in params and "assignment_rule" not in info["size_set_by"]:
+            entry["size"] = float(core.get_param(name))
+        else:
+            entry["size"] = float(info["size"])
+        entry["size_declared"] = info["size_declared"]
+        entry["size_set_by"] = list(info["size_set_by"])
+        out.append(entry)
+    return out
+
+
+def _events(model: Model, limit: int | None) -> list[dict[str, Any]]:
     species = list(model._core.species_names)
     out: list[dict[str, Any]] = []
     for ev in model._core.events_as_written():
         entry: dict[str, Any] = {
             "id": str(ev["id"]),
-            "trigger": str(ev["trigger"]),
+            "trigger": _clip(str(ev["trigger"]), limit),
             "assigns": [species[int(sp)] for sp, _ in ev["assignments"]],
         }
         delay_expr = str(ev.get("delay_expr") or "")
         delay = float(ev.get("delay") or 0.0)
         if delay_expr:
-            entry["delay"] = delay_expr
+            entry["delay"] = _clip(delay_expr, limit)
         elif delay != 0.0:
             entry["delay"] = delay
         out.append(entry)
@@ -381,50 +514,55 @@ def describe_model(model: Model, *, limit: int | None = 50) -> ModelDescription:
     limit = _check_limit(limit)
     core = model._core
     cd = core.codegen_data()
-    record = model._compartments
+    record = model._sbml_record
     omitted: dict[str, int] = {}
 
     source = dict(model._source) if model._source is not None else None
     if source is None:
         source = {"format": None, "path": None, "sha256": None}
 
-    parameters = _parameters(model, cd)
-    species = _species(model, cd, record)
+    parameters = _parameters(model, record, limit)
+    species, other_states = _species(model, cd, record)
     species_names = list(core.species_names)  # once: each read converts them all
     observables = [
-        {"name": o["name"], "reads": _linear(list(o["entries"]), species_names, limit)}
+        {
+            "name": o["name"],
+            "reads": _clip(_linear(list(o["entries"]), species_names, limit), limit),
+        }
         for o in cd["observables"]
     ]
+    # An SBML model's functions are its assignment rules and its reactions'
+    # rates, by the file's ids; the loader's own (a rate rule's _rhs_, a
+    # dilution's _dil_, a volume-scaled _vd_ rate) are left out.
+    ids = None if record is None else record["ids"]
     functions = [
-        {"name": n, "expression": e}
+        {"name": n, "expression": _clip(e, limit)}
         for n, e in zip(core.function_names, core.function_expressions, strict=True)
+        if ids is None or n in ids
     ]
-    reactions = _reactions(model, cd)
-    events = _events(model)
-    compartments = (
-        None
-        if record is None
-        else [{"name": name, **dict(info)} for name, info in record["compartments"].items()]
-    )
-    laws = model.conservation_laws
+    reactions = _reactions(model, cd, record, limit)
+    events = _events(model, limit)
+    compartments = None if record is None else _compartments(model, record)
     time_tables = [
         str(t["name"]) for t in core.table_function_tables if t.get("index_kind") == "time"
     ]
 
+    # Each count is that of its list, before the cut.
     counts: dict[str, int] = {
-        "species": int(core.n_species),
-        "reactions": int(core.n_reactions),
-        "observables": int(core.n_observables),
+        "species": len(species),
+        "reactions": len(reactions),
+        "observables": len(observables),
         "parameters": len(parameters),
-        "functions": int(core.n_functions),
-        "events": int(core.n_events),
+        "functions": len(functions),
+        "events": len(events),
         "table_functions": int(core.n_table_functions),
-        "conservation_laws": int(laws["n_laws"]),
     }
     if compartments is not None:
         counts["compartments"] = len(compartments)
+    if other_states:
+        counts["other_states"] = len(other_states)
 
-    stochastic = _stochastic(model)
+    stochastic = _stochastic(model, limit)
     decline = model.analytical_jacobian_decline
     out = ModelDescription(
         schema_version=SCHEMA_VERSION,
@@ -458,13 +596,12 @@ def describe_model(model: Model, *, limit: int | None = 50) -> ModelDescription:
     if compartments is not None:
         out["compartments"] = _cut(compartments, limit, "compartments", omitted)
     out["species"] = _cut(species, limit, "species", omitted)
+    if other_states:
+        out["other_states"] = _cut(other_states, limit, "other_states", omitted)
     out["observables"] = _cut(observables, limit, "observables", omitted)
     out["functions"] = _cut(functions, limit, "functions", omitted)
     out["reactions"] = _cut(reactions, limit, "reactions", omitted)
     out["events"] = _cut(events, limit, "events", omitted)
-    warnings = list(core.load_warnings)
-    if warnings:
-        out["load_warnings"] = warnings
     if omitted:
         out["omitted"] = omitted
     return out
@@ -475,13 +612,13 @@ def describe_model(model: Model, *, limit: int | None = 50) -> ModelDescription:
 
 _SINGULAR = {
     "species": "species",
-    "conservation_laws": "conservation law",
     "table_functions": "table function",
+    "other_states": "other state",
 }
 
 
 def _count(n: int, key: str) -> str:
-    """``"1 conservation law"``, ``"3 species"``, ``"2 reactions"``."""
+    """``"1 table function"``, ``"3 species"``, ``"2 reactions"``."""
     if n == 1:
         return f"1 {_SINGULAR.get(key, key[:-1])}"
     return f"{n} {key.replace('_', ' ')}"
@@ -498,10 +635,21 @@ def _status_line(verdict: dict[str, Any]) -> str:
             codes = ", ".join(w["code"] for w in verdict["warnings"])
             extra.append(f"warnings: {codes}")
         return "ok" + (f" ({'; '.join(extra)})" if extra else "")
+    if status == "undecided":
+        via = f" (backend: {verdict['backend']})" if verdict.get("backend") else ""
+        return (
+            f"undecided{via}: nothing refuses them before a run; whether the rate laws "
+            "differentiate is decided when a sensitivity run builds its code"
+        )
     head = {"refused": "refused", "needs_input": "needs", "unavailable": "unavailable"}.get(
         status, status
     )
-    return f"{head}: " + "; ".join(f"[{r['code']}] {r['message']}" for r in reasons)
+
+    def one(r: dict) -> str:
+        more = f" ({r['count']} like it)" if r.get("count", 1) > 1 else ""
+        return f"[{r['code']}] {r['message']}{more}"
+
+    return f"{head}: " + "; ".join(one(r) for r in reasons)
 
 
 def _text(d: dict[str, Any]) -> str:
@@ -529,8 +677,8 @@ def _text(d: dict[str, Any]) -> str:
         "functions",
         "events",
         "compartments",
+        "other_states",
         "table_functions",
-        "conservation_laws",
     )
     # The first four always; the rest where the model has any.
     shown = [k for i, k in enumerate(order) if k in c and (i < 4 or c[k])]
@@ -622,6 +770,8 @@ def _text(d: dict[str, Any]) -> str:
 
     def compartment(cp: dict) -> str:
         s = f"{cp['name']}  size {_num(cp['size'])}"
+        if cp.get("id"):
+            s += f" (the file's {cp['id']})"
         if not cp.get("size_declared", True):
             s += " (not given in the file; 1 used)"
         if cp.get("size_set_by"):
@@ -635,8 +785,8 @@ def _text(d: dict[str, Any]) -> str:
             bits.append(f"in {sp['compartment']}")
         if sp.get("quantity") == "amount":
             bits.append(f"declared as an amount: initial amount {_num(sp['initial_amount'])}")
-        if sp.get("sbml_species") is False:
-            bits.append("a size or parameter held as a state")
+        if sp.get("holds"):
+            bits.append(f"a {sp['holds'].replace('_', ' ')} held as a state")
         if sp.get("reported") is False:
             bits.append("no column in Result.species")
         if sp.get("fixed"):
@@ -646,14 +796,18 @@ def _text(d: dict[str, Any]) -> str:
         return s + (f"  ({'; '.join(bits)})" if bits else "")
 
     def reaction(r: dict) -> str:
-        lhs = " + ".join(r["reactants"]) or "0"
-        rhs = " + ".join(r["products"]) or "0"
         rate = r["rate"]
         if r.get("expression"):
             rate = f"{rate} = {r['expression']}" if rate else r["expression"]
         if r.get("multiplier"):
             rate = f"{_num(r['multiplier'])}*{rate}"
-        return f"{lhs} -> {rhs}  {r['rate_law'].replace('_', '-')}  {rate}"
+        head = f"{r['id']}: " if r.get("id") else ""
+        tail = "".join(
+            f"  [{w}]"
+            for w, on in (("reversible", r.get("reversible")), ("fast", r.get("fast")))
+            if on
+        )
+        return f"{head}{r['equation']}  {r['rate_law'].replace('_', ' ')}  {rate}{tail}"
 
     def event(e: dict) -> str:
         s = f"{e['id'] or '(unnamed)'}: when {e['trigger']}"
@@ -665,14 +819,12 @@ def _text(d: dict[str, Any]) -> str:
 
     section("compartments", "Compartments", compartment)
     section("species", "Species", species)
+    section("other_states", "Other states", species)
     section("parameters", "Parameters", param)
     section("observables", "Observables", lambda o: f"{o['name']} = {o['reads']}")
     section("functions", "Functions", lambda f: f"{f['name']} = {f['expression']}")
     section("reactions", "Reactions", reaction)
     section("events", "Events", event)
-    if d.get("load_warnings"):
-        lines.append("Load warnings:")
-        lines.extend(f"  {w}" for w in d["load_warnings"])
     return "\n".join(lines)
 
 

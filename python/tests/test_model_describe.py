@@ -262,7 +262,6 @@ def test_a_net_model_counts_and_lists(tmp_path):
         "functions": 0,
         "events": 0,
         "table_functions": 0,
-        "conservation_laws": model.conservation_laws["n_laws"],
     }
     # A .net file states no units and has no compartments: absent, not guessed.
     assert d["species_values"] is None
@@ -289,18 +288,34 @@ def test_a_net_model_counts_and_lists(tmp_path):
         {
             "reactants": ["S()", "E()"],
             "products": ["E()", "P()"],
+            "equation": "S() + E() -> E() + P()",
             "rate_law": "michaelis_menten",
             "rate": "kcat, Km",
         },
         {
             "reactants": ["P()"],
             "products": ["S()"],
+            "equation": "P() -> S()",
             "rate_law": "elementary",
             "rate": "kf",
             "multiplier": 2.0,
         },
-        {"reactants": ["C()"], "products": ["P()"], "rate_law": "elementary", "rate": "kr"},
+        {
+            "reactants": ["C()"],
+            "products": ["P()"],
+            "equation": "C() -> P()",
+            "rate_law": "elementary",
+            "rate": "kr",
+        },
     ]
+
+
+def test_a_repeated_reactant_is_counted_in_the_equation(tmp_path):
+    text = NET.replace(" 3 4 3 kr\n", " 3 3,3 1 kr\n")
+    model, _ = _net(tmp_path, text)
+    third = model.describe()["reactions"][2]
+    assert third["reactants"] == ["P()"]
+    assert third["equation"] == "2*P() -> S()"
 
 
 def test_a_derived_parameter_set_to_a_number_says_so(tmp_path):
@@ -501,7 +516,8 @@ def test_non_integer_stoichiometry_refuses_ssa_and_psa_not_ode():
     for method in ("ssa", "psa"):
         assert m[method]["status"] == "refused"
         assert [r["code"] for r in m[method]["reasons"]] == ["non_integer_stoichiometry"]
-        assert m[method]["reasons"][0]["location"]
+        assert m[method]["reasons"][0]["count"] == 1
+        assert m[method]["reasons"][0]["locations"] == ["reaction:J"]
         with pytest.raises(bngsim.SsaValidationError) as ei:
             bngsim.Simulator(
                 model.clone(), method=method, poplevel=10 if method == "psa" else None
@@ -588,8 +604,19 @@ def test_forward_sensitivities_with_a_compiler_found_broken(tmp_path, monkeypatc
     model, _ = _net(tmp_path)
     monkeypatch.delenv("BNGSIM_NO_CODEGEN", raising=False)
     monkeypatch.delenv("BNGSIM_CODEGEN_JIT", raising=False)
+    monkeypatch.delenv("CC", raising=False)
+    from bngsim._codegen import _find_c_compiler
+
+    compiler = _find_c_compiler()
+    if _codegen_toolchain.shutil.which(compiler[0]) is None:
+        pytest.skip("no C compiler: test needs a C compiler on PATH")
     verdict = "cc cannot link a shared library (test)."
-    monkeypatch.setattr(_codegen_toolchain, "check", lambda: (["cc"], verdict))
+    key = _codegen_toolchain.toolchain_key(compiler)
+    monkeypatch.setitem(_codegen_toolchain._verdicts, key, (verdict, 0.0))
+    # describe() reads the kept verdict, even one past its time, and probes nothing.
+    monkeypatch.setattr(
+        _codegen_toolchain, "_probe", lambda *a, **k: pytest.fail("describe() probed")
+    )
     fs = model.describe()["methods"]["forward_sensitivities"]
     assert fs["status"] == "unavailable"
     assert [r["code"] for r in fs["reasons"]] == ["no_compiler"]
@@ -777,23 +804,48 @@ def test_what_sets_a_compartment_or_a_species():
         {"name": "v", "size": 2.0, "size_declared": True, "size_set_by": ["rate_rule"]},
     ]
     species = {s["name"]: s for s in d["species"]}
+    assert list(species) == ["A", "B", "R"]  # the file's three
     assert species["A"]["set_by"] == ["event"]
     assert "set_by" not in species["B"]
     assert species["R"]["set_by"] == ["rate_rule"]
     # The rate-rule compartment and the event-set parameter are states, not
     # species of the file; only q has no column.
-    assert species["v"]["sbml_species"] is False and "reported" not in species["v"]
-    assert species["q"]["sbml_species"] is False and species["q"]["reported"] is False
+    assert d["other_states"] == [
+        {"name": "v", "initial": 2.0, "holds": "compartment_size", "set_by": ["rate_rule"]},
+        {
+            "name": "q",
+            "initial": 1.0,
+            "holds": "parameter",
+            "set_by": ["event"],
+            "reported": False,
+        },
+    ]
+    assert d["counts"]["species"] == 3 and d["counts"]["other_states"] == 2
     row = _first_row(model)
     columns = list(row.species_names)
-    assert [s["name"] for s in d["species"] if s.get("reported", True)] == columns
-    assert "q" not in columns
+    assert columns == ["A", "B", "R", "v"]
+    # The file's parameters only (q is a state), and the file's functions only:
+    # c's assignment rule and J1's rate, not the loader's _rhs_ and _dil_.
+    assert [p["name"] for p in d["parameters"]] == ["k", "p"]
+    assert [f["name"] for f in d["functions"]] == ["c", "J1"]
+    assert d["reactions"] == [
+        {
+            "id": "J1",
+            "reactants": ["A"],
+            "products": ["B"],
+            "equation": "A -> B",
+            "rate_law": "kinetic_law",
+            "rate": "k * A",
+            "reversible": True,
+        }
+    ]
 
     events = {e["id"]: e for e in d["events"]}
     assert events["E1"] == {"id": "E1", "trigger": "(time()>1)", "assigns": ["q"]}
     assert events["E2"] == {"id": "E2", "trigger": "(time()>2)", "assigns": ["A"], "delay": 0.5}
     text = str(d)
     assert "c  size 4, set by assignment rule" in text
+    assert "q  1  (a parameter held as a state; no column in Result.species; set by event)" in text
     assert "E2: when (time()>2), after 0.5 sets A" in text
 
 
@@ -822,3 +874,214 @@ def test_an_unavailable_network_free_method_says_so(tmp_path, monkeypatch):
     }
     with pytest.raises(ValueError, match="RuleMonkey is not present"):
         bngsim.Simulator(model, method="rm", xml_path=str(path))
+
+
+# ─── The file as written, not the model's channels ───────────────────────────
+
+
+def test_an_sbml_files_reactions_as_written():
+    d = bngsim.Model.from_sbml_string(TWO_COMPARTMENTS).describe()
+    assert d["counts"]["reactions"] == 2
+    assert d["reactions"][0] == {
+        "id": "R1",
+        "reactants": ["A"],
+        "products": ["B"],
+        "equation": "A -> B",
+        "rate_law": "kinetic_law",
+        "rate": "k1 * A * cell",
+        "reversible": False,
+    }
+    # A non-unit stoichiometry is in the equation.
+    r = bngsim.Model.from_sbml_string(NON_INTEGER_STOICH).describe()["reactions"][0]
+    assert r["equation"] == "1.5*A -> B"
+
+
+def test_a_reversible_law_lists_the_files_reaction_and_parameters_only():
+    """The loader splits a reversible mass-action law into two channels with
+    rate parameters of its own; describe() reports the file's one reaction and
+    its two parameters."""
+    pytest.importorskip("antimony")
+    model = bngsim.Model.from_antimony_string(
+        "A = 10; B = 0; J: A -> B; kf*A - kr*B; kf = 1; kr = 0.5"
+    )
+    assert model.n_reactions == 2  # the channels
+    d = model.describe()
+    assert d["counts"]["reactions"] == 1
+    assert [r["id"] for r in d["reactions"]] == ["J"]
+    # Antimony's default_compartment is a compartment of the file.
+    assert [p["name"] for p in d["parameters"]] == ["default_compartment", "kf", "kr"]
+    assert any(n.startswith("_") for n in model.param_names)  # the loader's own
+
+
+def test_a_compartment_both_rate_ruled_and_resized_by_an_event():
+    pytest.importorskip("antimony")
+    model = bngsim.Model.from_antimony_string(
+        "compartment v = 2; v' = 0.1; species B in v = 1; E: at (time > 1): v = 3;"
+    )
+    (v,) = model.describe()["compartments"]
+    assert v["size_set_by"] == ["rate_rule", "event"]
+
+
+def test_a_compartment_size_written_after_load():
+    model = bngsim.Model.from_sbml_string(TWO_COMPARTMENTS)
+    model.set_param("nuc", 1.0)
+    d = model.describe()
+    nuc = next(c for c in d["compartments"] if c["name"] == "nuc")
+    assert nuc["size"] == 1.0
+    b = next(s for s in d["species"] if s["name"] == "B")
+    assert b["initial"] == pytest.approx(_first_row(model).species[0][1], rel=1e-12)
+    assert b["initial_amount"] == pytest.approx(3.0)
+
+
+def test_a_non_finite_size_is_not_declared():
+    d = bngsim.Model.from_sbml_string(
+        TWO_COMPARTMENTS.replace('size="0.5"', 'size="NaN"')
+    ).describe()
+    nuc = next(c for c in d["compartments"] if c["name"] == "nuc")
+    assert nuc["size"] == 1.0 and nuc["size_declared"] is False
+
+
+def test_a_renamed_compartment_keeps_the_files_id():
+    """``default`` is an ExprTk word: the model calls it ``_ant_default``."""
+    text = TWO_COMPARTMENTS.replace('"cell"', '"default"').replace(
+        "<ci>cell</ci>", "<ci>default</ci>"
+    )
+    d = bngsim.Model.from_sbml_string(text).describe()
+    first = d["compartments"][0]
+    assert first["name"] == "_ant_default" and first["id"] == "default"
+    assert "(the file's default)" in str(d)
+
+
+def test_many_ssa_refusals_of_one_kind_are_grouped():
+    two = _one_compartment(
+        _AB,
+        _reaction("J1", "A", "B", f"<apply><times/>{_ci('k')}{_ci('A')}</apply>", stoich="1.5")
+        + _reaction("J2", "A", "B", f"<apply><times/>{_ci('k')}{_ci('A')}</apply>", stoich="2.5"),
+    )
+    model = bngsim.Model.from_sbml_string(two)
+    (reason,) = model.describe()["methods"]["ssa"]["reasons"]
+    assert reason["code"] == "non_integer_stoichiometry"
+    assert reason["count"] == 2
+    assert reason["locations"] == ["reaction:J1", "reaction:J2"]
+    (cut,) = model.describe(limit=1)["methods"]["ssa"]["reasons"]
+    assert cut["locations"] == ["reaction:J1"] and cut["locations_omitted"] == 1
+    assert "(2 like it)" in str(model.describe())
+
+
+def test_a_delayed_event_refuses_forward_sensitivities_as_the_run_does():
+    pytest.importorskip("antimony")
+    model = bngsim.Model.from_antimony_string(
+        "species A = 10; J: A -> ; k*A; k = 1; k2 = 3; J2: -> A; k2; "
+        "E: at 0.5 after (time > 1): A = 10;"
+    )
+    fs = model.describe()["methods"]["forward_sensitivities"]
+    if fs["status"] == "unavailable":
+        pytest.skip("no C compiler: the install cannot run forward sensitivities")
+    assert fs["status"] == "refused"
+    (reason,) = fs["reasons"]
+    assert reason["code"] == "event"
+    for params in (["k"], ["k2"]):
+        with pytest.raises(bngsim.SensitivityUnsupportedError) as ei:
+            sim = bngsim.Simulator(model.clone(), method="ode", sensitivity_params=params)
+            sim.run(t_span=(0, 3), n_points=4)
+        assert reason["message"] in str(ei.value)
+
+
+def test_forward_sensitivities_are_never_ok(tmp_path):
+    """Whether the rate laws differentiate is decided when a run builds its
+    code: a floor() in a rate law loads, describes as undecided, and the run
+    refuses it."""
+    pytest.importorskip("antimony")
+    model = bngsim.Model.from_antimony_string(
+        "species A = 10; J: A -> ; k*A*floor(A/p + 1); k = 1; p = 2"
+    )
+    fs = model.describe()["methods"]["forward_sensitivities"]
+    if fs["status"] == "unavailable":
+        pytest.skip("no C compiler: the install cannot run forward sensitivities")
+    assert fs["status"] == "undecided"
+    assert fs["reasons"] == [] and "decided when a" in fs["note"]
+    with pytest.raises(Exception, match="analytic sensitivity right-hand side"):
+        sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k"])
+        sim.run(t_span=(0, 1), n_points=2)
+
+
+def test_antimony_bytes_load_and_are_hashed_as_given():
+    pytest.importorskip("antimony")
+    text = b"species A = 1; J: A -> ; k*A; k = 1"
+    src = bngsim.Model.from_antimony_string(text).describe()["source"]
+    assert src["format"] == "antimony"
+    assert src["sha256"] == hashlib.sha256(text).hexdigest()
+
+
+def test_an_omex_model_names_its_archive_entry(tmp_path):
+    from bngsim.convert import read_omex, write_omex
+
+    out = write_omex(tmp_path / "m.omex", sbml=TWO_COMPARTMENTS)
+    archive = read_omex(out, extract_dir=tmp_path / "x")
+    src = archive.load_model().describe()["source"]
+    assert src["format"] == "sbml"
+    assert src["archive_entry"] == "./model.xml"
+    assert src["sha256"] == hashlib.sha256(TWO_COMPARTMENTS.encode("utf-8")).hexdigest()
+
+
+def test_model_load_records_every_suffix(tmp_path):
+    _, net = _net(tmp_path)
+    assert bngsim.Model.load(net).describe()["source"]["format"] == "net"
+    pytest.importorskip("antimony")
+    ant = tmp_path / "m.ant"
+    ant.write_text("species A = 1; J: A -> ; k*A; k = 1\n", encoding="utf-8")
+    assert bngsim.Model.load(ant).describe()["source"]["format"] == "antimony"
+
+
+def test_limit_zero_lists_nothing_and_counts_everything(tmp_path):
+    model, _ = _net(tmp_path)
+    d = model.describe(limit=0)
+    for key in ("parameters", "species", "observables", "reactions"):
+        assert d[key] == []
+        assert d["omitted"][key] == d["counts"][key] > 0
+
+
+def test_a_long_expression_is_clipped_while_limit_is_set(tmp_path):
+    from bngsim._bngsim_core import ModelBuilder
+    from bngsim._describe import TEXT_CAP
+
+    b = ModelBuilder()
+    x = b.add_species("X", 1.0)
+    b.add_parameter("k", 1.0)
+    long = " + ".join(["k"] * 200)
+    b.add_function("f", long)
+    b.add_reaction([x], [], "functional", "f")
+    model = bngsim.Model(_core=b.build())
+    (f,) = model.describe()["functions"]
+    assert f["expression"] == f"{long[:TEXT_CAP]} ... ({len(long) - TEXT_CAP} more characters)"
+    assert model.describe(limit=None)["functions"][0]["expression"] == long
+
+
+def test_describe_is_cheap_on_a_large_network(tmp_path):
+    """It used to find the conservation laws for a count: gigabytes on a large
+    network (issue #1705 review). It reads nothing that scales like that now."""
+    n, m = 3000, 9000
+    species = "".join(f" {i} S{i}() {10 if i == 1 else 0}\n" for i in range(1, n + 1))
+    reactions = "".join(f" {j} {1 + (7 * j) % n} {1 + (13 * j) % n} k\n" for j in range(1, m + 1))
+    text = (
+        "begin parameters\n 1 k 1\nend parameters\n"
+        f"begin species\n{species}end species\n"
+        f"begin reactions\n{reactions}end reactions\n"
+    )
+    model, _ = _net(tmp_path, text, "big.net")
+    d = model.describe()
+    assert d["counts"]["species"] == n and d["counts"]["reactions"] == m
+    assert "conservation_laws" not in d["counts"]
+
+
+def test_a_file_gone_before_it_is_hashed_records_no_hash(tmp_path):
+    from bngsim._model import _record_source
+
+    model, path = _net(tmp_path)
+    path.unlink()
+    _record_source(model, "net", path=path)
+    assert model.describe()["source"] == {
+        "format": "net",
+        "path": os.path.abspath(path),
+        "sha256": None,
+    }

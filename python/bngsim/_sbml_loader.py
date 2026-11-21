@@ -5314,7 +5314,7 @@ def _fold_stoichiometry_denominators(doc) -> None:
                     )
 
 
-def _compartment_record(
+def _sbml_record(
     sbml_model,
     comp_volumes: dict[str, float],
     species_comp: dict[str, str],
@@ -5322,38 +5322,116 @@ def _compartment_record(
     declared: set[str],
     rate_rule: set[str],
     assignment_rule: set[str],
-    event: set[str],
 ) -> dict:
-    """The compartments as Model.describe() reports them (issue #1705), by the
-    names the model uses: ``{"compartments": {name: {"size", "size_declared",
-    "size_set_by"}}, "species": {species: compartment}}``.
+    """The file as Model.describe() reports it (issue #1705), by the names the
+    model uses (``_safe_name``):
 
-    ``size`` is the size the model was built at (section 1's ``comp_volumes``:
-    the file's, an initialAssignment's, a ``compartment_sizes=`` override's, or
-    the 1.0 used where SBML leaves it undefined). ``size_declared`` is False
-    for that last case: no size, initialAssignment or assignment rule.
-    ``size_set_by`` lists what moves it during a run."""
+    * ``compartments``: ``{name: {"id", "size", "size_declared",
+      "size_set_by"}}``. ``size`` is the size the model was built at (section
+      1's ``comp_volumes``: the file's, an initialAssignment's, a
+      ``compartment_sizes=`` override's, or the 1.0 used where SBML leaves it
+      undefined or gives a non-finite one, which ``size_declared`` is False
+      for). ``size_set_by`` lists what moves it during a run, read from the
+      file: a rate rule, an assignment rule, an event assignment.
+    * ``species``: ``{species: compartment}``, for the file's species, in
+      file order.
+    * ``parameters``: the file's global parameter and compartment ids. The
+      reaction-local ones are the model's ``_lp_<reaction>_<id>``.
+    * ``ids``: every id the file declares.
+    * ``reactions``: each reaction as the file writes it, which the model's
+      reaction channels are not: a reversible reaction or a stoichiometry
+      becomes several channels, and a rate rule or a dilution term one."""
+    import libsbml as _libsbml
+
+    events = {
+        sbml_model.getEvent(i).getEventAssignment(j).getVariable()
+        for i in range(sbml_model.getNumEvents())
+        for j in range(sbml_model.getEvent(i).getNumEventAssignments())
+    }
     compartments: dict[str, dict] = {}
     for i in range(sbml_model.getNumCompartments()):
         c = sbml_model.getCompartment(i)
         cid = c.getId()
         compartments[_safe_name(cid)] = {
+            "id": cid,
             "size": float(comp_volumes.get(cid, 1.0)),
-            "size_declared": bool(c.isSetSize()) or cid in declared,
+            "size_declared": (bool(c.isSetSize()) and _math.isfinite(c.getSize()))
+            or cid in declared,
             "size_set_by": [
                 kind
                 for kind, ids in (
                     ("rate_rule", rate_rule),
                     ("assignment_rule", assignment_rule),
-                    ("event", event),
+                    ("event", events),
                 )
                 if cid in ids
             ],
         }
+
+    def side(refs) -> list[tuple[str, float | str | None]]:
+        out: list[tuple[str, float | str | None]] = []
+        for k in range(refs.size()):
+            sr = refs.get(k)
+            stoich: float | str | None = None
+            if sbml_model.getLevel() < 3 and sr.isSetStoichiometryMath():
+                stoich = _libsbml.formulaToL3String(sr.getStoichiometryMath().getMath())
+            elif sr.isSetId() and _is_assigned(sbml_model, sr.getId()):
+                stoich = sr.getId()
+            elif sr.isSetStoichiometry():
+                stoich = float(sr.getStoichiometry())
+            out.append((_safe_name(sr.getSpecies()), stoich))
+        return out
+
+    reactions = []
+    for i in range(sbml_model.getNumReactions()):
+        r = sbml_model.getReaction(i)
+        kl = r.getKineticLaw()
+        reactions.append(
+            {
+                "id": r.getId(),
+                "reactants": side(r.getListOfReactants()),
+                "products": side(r.getListOfProducts()),
+                "modifiers": [
+                    _safe_name(r.getModifier(k).getSpecies()) for k in range(r.getNumModifiers())
+                ],
+                "rate": (
+                    _libsbml.formulaToL3String(kl.getMath())
+                    if kl is not None and kl.isSetMath()
+                    else ""
+                ),
+                "reversible": bool(r.getReversible()),
+                "fast": bool(r.isSetFast() and r.getFast()),
+            }
+        )
     return {
         "compartments": compartments,
         "species": {_safe_name(s): _safe_name(c) for s, c in species_comp.items()},
+        "parameters": {
+            _safe_name(sbml_model.getParameter(i).getId())
+            for i in range(sbml_model.getNumParameters())
+        }
+        | set(compartments),
+        "reactions": reactions,
+        # Every id the file declares, by the model's names.
+        "ids": {
+            _safe_name(el.getId())
+            for el in sbml_model.getListOfAllElements()
+            if hasattr(el, "isSetId") and el.isSetId()
+        },
     }
+
+
+def _is_assigned(sbml_model, sid: str) -> bool:
+    """Whether an initialAssignment, a rule or an event sets ``sid``: a
+    speciesReference id whose stoichiometry is then not the number it holds."""
+    if sbml_model.getInitialAssignmentBySymbol(sid) is not None:
+        return True
+    if sbml_model.getRuleByVariable(sid) is not None:
+        return True
+    return any(
+        sbml_model.getEvent(i).getEventAssignment(sid) is not None
+        for i in range(sbml_model.getNumEvents())
+    )
 
 
 def _build_model_from_sbml_doc(doc):
@@ -11969,14 +12047,13 @@ def _build_model_from_sbml_doc_in_context(doc):
     core = builder.build()
     model = Model(_core=core)
     # Issue #1705: the compartments, for Model.describe().
-    model._compartments = _compartment_record(
+    model._sbml_record = _sbml_record(
         sbml_model,
         comp_volumes,
         species_comp,
         declared=set(ia_values) | ar_comp_targets,
         rate_rule=rate_rule_comps,
         assignment_rule=ar_comp_targets,
-        event=event_resize_comps,
     )
     # Only what the built model has as a parameter a caller could write.
     _built_params = set(core.param_names)
