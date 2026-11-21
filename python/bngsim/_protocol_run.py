@@ -213,7 +213,9 @@ class ProtocolResult(Sequence[ProtocolRun]):
                     details={"name": key},
                 )
             raise NotFoundError(
-                f"{len(hits)} runs have the suffix {key!r}; index them by position"
+                f"{len(hits)} runs have the suffix {key!r}; index them by position",
+                code="name.ambiguous",
+                details={"name": key, "matches": len(hits)},
             )
         return self._runs[key]
 

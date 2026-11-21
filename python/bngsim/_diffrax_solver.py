@@ -188,7 +188,16 @@ def run_diffrax(
             f"{list(state_switches)}; use Simulator(method='ode')."
         )
     switch_ts = _switch_times(model, float(t_start), float(t_end))
-    rhs = generate_jax_rhs(model)
+    from bngsim._exceptions import UsageError
+
+    try:
+        rhs = generate_jax_rhs(model)
+    except UsageError as e:
+        # The JAX RHS's refusals name jacobian='auto', which run_diffrax does
+        # not take; here the way on is the engine's own integrator.
+        if any(r.get("argument") == "jacobian" for r in e.remedies):
+            raise _use_ode(str(e)) from None
+        raise
     span = float(t_end) - float(t_start)
     check_rhs_against_engine(
         model, rhs, times=[float(t_start) + f * span for f in (0.0, 0.37, 0.81, 1.0)]

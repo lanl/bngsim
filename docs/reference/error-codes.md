@@ -123,30 +123,37 @@ Check the file is the format its name says; the message quotes the reader.
 (code-param-not-found)=
 ### `param.not_found`
 
-Raised as `ParameterError`. The model has no parameter by that name.
+Raised as `ParameterError` or `UsageError`. The model has no parameter by that name.
 
 Use a name from ``Model.param_names``. ``details['close_matches']`` lists near ones, and ``details['is_a']`` says what the name is when it names a species, an observable or a function instead.
 
 (code-species-not-found)=
 ### `species.not_found`
 
-Raised as `ModelError`. The model has no species by that name.
+Raised as `ModelError`, `NotFoundError` or `UsageError`. The model has no species by that name.
 
 Use a name from ``Model.species_names``. ``details['close_matches']`` lists near ones.
 
 (code-output-not-found)=
 ### `output.not_found`
 
-Raised as `NotFoundError`. A name that is none of the result's species, observables or functions.
+Raised as `NotFoundError` or `UsageError`. A name that is none of the result's species, observables or functions.
 
 Use a name `details["close_matches"]` gives, or one of the result's `species_names` or `observable_names`.
 
 (code-name-not-found)=
 ### `name.not_found`
 
-Raised as `NotFoundError`. A name or key a lookup does not find, of a kind with no code of its own.
+Raised as `NotFoundError` or `UsageError`. A name or key a lookup does not find, of a kind with no code of its own.
 
 Read the message: it lists the names there are.
+
+(code-name-ambiguous)=
+### `name.ambiguous`
+
+Raised as `NotFoundError`. A name matches more than one entry, so a lookup by it cannot choose.
+
+Index by position, as the message says.
 
 (code-usage-missing-argument)=
 ### `usage.missing_argument`
@@ -186,14 +193,14 @@ Build the Simulator with the method the remedy names, or leave the option out.
 (code-usage-not-supported)=
 ### `usage.not_supported`
 
-Raised as `NotSupportedError`. A call or option this object does not offer, as written.
+Raised as `NotSupportedError` or `UsageError`. A call or option this object does not offer, as written.
 
 Read the message for what does.
 
 (code-env-feature-not-built)=
 ### `env.feature_not_built`
 
-Raised as `BngsimError`. A method needs a part of BNGsim this install was built without, such as NFsim or RuleMonkey.
+Raised as `BngsimError` or `UsageError`. A method needs a part of BNGsim this install was built without, such as NFsim or RuleMonkey.
 
 Install a build that has it; `bngsim.capabilities()` lists what this one has.
 

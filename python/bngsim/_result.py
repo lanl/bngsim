@@ -1447,11 +1447,15 @@ class Result:
             if axis == "parameter":
                 raise UsageError(
                     "output_sensitivities: no parameter sensitivities were computed for this "
-                    "result. Enable them via Simulator(..., sensitivity_params=[...])."
+                    "result. Enable them via Simulator(..., sensitivity_params=[...]).",
+                    code="sens.not_computed",
+                    remedies=[pass_argument("sensitivity_params")],
                 )
             raise UsageError(
                 "output_sensitivities: no initial-condition sensitivities were computed for this "
-                "result. Enable them via Simulator(..., sensitivity_ic=[...])."
+                "result. Enable them via Simulator(..., sensitivity_ic=[...]).",
+                code="sens.not_computed",
+                remedies=[pass_argument("sensitivity_ic")],
             )
         meta = self.resolve_outputs(selectors)
         if not meta:

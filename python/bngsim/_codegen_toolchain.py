@@ -55,7 +55,7 @@ import time
 from pathlib import Path
 
 from bngsim import _notices
-from bngsim._exceptions import CodegenToolchainError
+from bngsim._exceptions import CodegenBuildError, CodegenToolchainError
 
 # What a compiler or linker writes its messages and paths in: on Windows the
 # OEM code page, in which MSVC's cl and link write to a pipe (not the ANSI one,
@@ -311,7 +311,8 @@ def record_unstartable(compiler: list[str], err: OSError) -> str:
 def strict_refusal(what: str, cause: BaseException | str) -> RuntimeError:
     """The error ``BNGSIM_CODEGEN_STRICT`` makes of an automatic codegen build
     that failed (``what`` names it), in place of the fallback to the interpreter.
-    A :class:`CodegenToolchainError` when the toolchain is what failed."""
+    A :class:`CodegenToolchainError` when the toolchain is what failed, and a
+    :class:`CodegenBuildError` otherwise."""
     detail = f"{type(cause).__name__}: {cause}" if isinstance(cause, BaseException) else cause
     message = (
         f"BNGSIM_CODEGEN_STRICT is set, and {what} failed to build ({detail}). Without "
@@ -319,7 +320,7 @@ def strict_refusal(what: str, cause: BaseException | str) -> RuntimeError:
     )
     if isinstance(cause, CodegenToolchainError):
         return CodegenToolchainError.restated(cause, message)
-    return RuntimeError(message)
+    return CodegenBuildError(message)
 
 
 def _run(cmd: list[str], *, timeout: float = 10.0) -> str:

@@ -172,7 +172,13 @@ class BngsimError(RuntimeError):
         return {
             "type": type(self).__name__,
             "code": self.code,
-            "message": str(self),
+            # The text as given: str() of a NotFoundError quotes it, as a
+            # KeyError's does, which a JSON reader should not see.
+            "message": (
+                self.args[0]
+                if len(self.args) == 1 and isinstance(self.args[0], str)
+                else str(self)
+            ),
             "details": self.details,
             "remedies": self.remedies,
             "docs_url": self.docs_url,

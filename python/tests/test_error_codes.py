@@ -61,8 +61,34 @@ def test_every_class_default_is_registered_and_names_its_class():
         assert cls.default_code in CODES, cls.__name__
     # Each code's "raised as" class exists, so the page names real types.
     for c in CODES.values():
-        assert hasattr(bngsim, c.error) or hasattr(_exceptions, c.error), c.error
+        for name in c.error.split(" or "):
+            assert hasattr(bngsim, name) or hasattr(_exceptions, name), c.error
     assert set(CODES) >= GENERIC
+
+
+def test_a_code_is_raised_only_as_a_class_the_registry_names():
+    """The page tells a caller which ``except`` catches a code: every raise that
+    passes a code names a class the code's entry lists."""
+    wrong = []
+    for path in _PACKAGE.rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Call):
+                continue
+            cls = getattr(node.func, "id", getattr(node.func, "attr", None))
+            if not (cls and cls.endswith("Error")):
+                continue
+            for kw in node.keywords:
+                if kw.arg != "code":
+                    continue
+                values = [
+                    v.value
+                    for v in ast.walk(kw.value)
+                    if isinstance(v, ast.Constant) and isinstance(v.value, str)
+                ]
+                for code in values:
+                    if code in CODES and cls not in CODES[code].error.split(" or "):
+                        wrong.append(f"{path.name}:{node.lineno} {code} as {cls}")
+    assert not wrong, wrong
 
 
 def _string_constants() -> set[str]:
@@ -688,3 +714,27 @@ def test_a_parallel_batch_rows_notices_survive_pickling(tmp_path):
     codes = [n["code"] for n in info.value.notices]
     assert "jacobian.difference_quotient_retry" in codes
     assert pickle.loads(pickle.dumps(info.value)).notices == info.value.notices
+
+
+def test_a_not_found_errors_message_is_its_text_in_to_dict():
+    """str() of a NotFoundError quotes it, as a KeyError's does; the dict a
+    program or the command line reads holds the text as given."""
+    e = bngsim.NotFoundError("Species 'Z' not found.", code="species.not_found")
+    assert str(e) == "\"Species 'Z' not found.\""
+    assert e.to_dict()["message"] == "Species 'Z' not found."
+    assert isinstance(e, KeyError)
+
+
+def test_an_unknown_method_names_it_as_json_can_write(binding):
+    with pytest.raises(bngsim.UsageError) as info:
+        bngsim.Simulator(binding, method=b"ode")
+    assert info.value.code == "usage.unknown_method"
+    json.dumps(info.value.to_dict())
+
+
+def test_a_result_with_no_sensitivities_says_how_to_get_them(binding):
+    r = bngsim.Simulator(binding).run(t_span=(0, 1), n_points=3, start="initial")
+    with pytest.raises(bngsim.UsageError) as info:
+        r.output_sensitivities([binding.observable_names[0]])
+    assert info.value.code == "sens.not_computed"
+    assert info.value.remedies == [{"kind": "pass_argument", "argument": "sensitivity_params"}]

@@ -27,7 +27,10 @@ class ErrorCode:
     """One code: what it means and what to do about it."""
 
     code: str
-    #: The class that raises it, or the most general one that can.
+    #: The class that raises it, or the most general one that can; several,
+    #: joined by " or ", where the code is raised as more than one (a missing
+    #: name is a KeyError where a lookup took one, a ValueError where an
+    #: argument did).
     error: str
     #: What happened, in a sentence.
     meaning: str
@@ -123,7 +126,7 @@ _CODES = (
     ),
     ErrorCode(
         "param.not_found",
-        "ParameterError",
+        "ParameterError or UsageError",
         "The model has no parameter by that name.",
         "Use a name from ``Model.param_names``. ``details['close_matches']`` lists "
         "near ones, and ``details['is_a']`` says what the name is when it names a "
@@ -131,23 +134,29 @@ _CODES = (
     ),
     ErrorCode(
         "species.not_found",
-        "ModelError",
+        "ModelError or NotFoundError or UsageError",
         "The model has no species by that name.",
         "Use a name from ``Model.species_names``. ``details['close_matches']`` lists near ones.",
     ),
     # ─── Choosing and setting up a run ───────────────────────────────────────
     ErrorCode(
         "output.not_found",
-        "NotFoundError",
+        "NotFoundError or UsageError",
         "A name that is none of the result's species, observables or functions.",
         'Use a name `details["close_matches"]` gives, or one of the result\'s '
         "`species_names` or `observable_names`.",
     ),
     ErrorCode(
         "name.not_found",
-        "NotFoundError",
+        "NotFoundError or UsageError",
         "A name or key a lookup does not find, of a kind with no code of its own.",
         "Read the message: it lists the names there are.",
+    ),
+    ErrorCode(
+        "name.ambiguous",
+        "NotFoundError",
+        "A name matches more than one entry, so a lookup by it cannot choose.",
+        "Index by position, as the message says.",
     ),
     ErrorCode(
         "usage.missing_argument",
@@ -183,13 +192,13 @@ _CODES = (
     ),
     ErrorCode(
         "usage.not_supported",
-        "NotSupportedError",
+        "NotSupportedError or UsageError",
         "A call or option this object does not offer, as written.",
         "Read the message for what does.",
     ),
     ErrorCode(
         "env.feature_not_built",
-        "BngsimError",
+        "BngsimError or UsageError",
         "A method needs a part of BNGsim this install was built without, such as NFsim "
         "or RuleMonkey.",
         "Install a build that has it; `bngsim.capabilities()` lists what this one has.",
@@ -436,6 +445,13 @@ SOLVER_FLAGS = {
 PAGE = "docs/reference/error-codes.md"
 
 
+def _classes(error: str) -> str:
+    """*error*'s classes as the page names them: "`A`", "`A` or `B`", "`A`, `B`
+    or `C`"."""
+    names = [f"`{name}`" for name in error.split(" or ")]
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " or " + names[-1]
+
+
 def reference_page() -> str:
     """The text of the error-code reference page (``scripts/error_codes_page.py``
     writes it; a test checks it is current)."""
@@ -490,7 +506,7 @@ def reference_page() -> str:
             f"({anchor(c.code)})=",
             f"### `{c.code}`",
             "",
-            f"Raised as `{c.error}`. {c.meaning}",
+            f"Raised as {_classes(c.error)}. {c.meaning}",
             "",
             c.action,
             "",

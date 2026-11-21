@@ -424,7 +424,7 @@ _PASSED_THROUGH = (SimulationTimeout, SensitivityUnsupportedError, SparseJacobia
 # they were typed. Typed, they are RuntimeErrors too (through BngsimError), so a
 # run's `except RuntimeError` arm would wrap them in a SimulationError, which
 # they fell past before. The run paths pass them through unchanged instead.
-_ONCE_PLAIN = (UsageError, ArgumentTypeError, NotFoundError, InvalidModelError)
+_ONCE_PLAIN = (UsageError, ArgumentTypeError, NotFoundError, InvalidModelError, NotSupportedError)
 
 
 def normalize_method(requested: str) -> tuple[str, str]:
@@ -463,7 +463,7 @@ def normalize_method(requested: str) -> tuple[str, str]:
         raise UsageError(
             f"Unknown method '{requested}'. Supported: {all_known}",
             code="usage.unknown_method",
-            details={"method": requested},
+            details={"method": str(requested)},
         )
 
     # Check availability
@@ -3678,7 +3678,7 @@ class Simulator:
                 )
                 if isinstance(cause, CodegenToolchainError):
                     return CodegenToolchainError.restated(cause, message)
-                return RuntimeError(message)
+                return CodegenBuildError(message)
             if decline is not None:
                 # Codegen declined the whole model (a cyclic function graph, issue
                 # #621, today). Recorded rather than inferred: it used to reach the
@@ -14538,7 +14538,9 @@ class SteadyStateResult:
         if self._sensitivity is None:
             raise UsageError(
                 "output_sensitivities: no steady-state sensitivities were computed for "
-                "this result. Enable them via sim.steady_state(sensitivity_params=[...])."
+                "this result. Enable them via sim.steady_state(sensitivity_params=[...]).",
+                code="sens.not_computed",
+                remedies=[pass_argument("sensitivity_params")],
             )
         n_params = self._sensitivity.shape[1]
         meta = self.resolve_outputs(selectors)
