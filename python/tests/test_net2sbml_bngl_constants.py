@@ -326,12 +326,13 @@ def test_the_issues_network_and_action_through_net_to_omex(tmp_path, fn, tag):
 
     bngl = tmp_path / "m.bngl"
     bngl.write_text(MODEL.format(fn=fn), encoding="utf-8")
-    # BNG2.pl writes the network (the loader runs it, wherever BNGPATH points).
     net = tmp_path / "gen.net"
-    bngsim.Model.from_bngl(bngl, net_out=net, cache=False)
-    assert f"{fn}*k1" in net.read_text(encoding="utf-8")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
+        # BNG2.pl writes the network (the loader runs it, wherever BNGPATH
+        # points), and the loader warns that the setParameter is not applied.
+        bngsim.Model.from_bngl(bngl, net_out=net, cache=False)
+        assert f"{fn}*k1" in net.read_text(encoding="utf-8")
         report = net_to_omex(net, tmp_path / "m.omex", bngl=bngl, gate="none")
     # On main the network was refused, and the action left out as lossy.
     assert report.sedml_lossy == []
@@ -390,6 +391,51 @@ def test_an_observable_or_function_spelled_like_a_constant_is_itself(tmp_path, g
         )
     assert 0 < a.species[-1, 0] < 100
     np.testing.assert_allclose(b.species, a.species, rtol=1e-9, atol=1e-9)
+
+
+CALLED = ["true", "false", "inf", "nan", "Avogadro", "exponentiale", "Pi", "Time", "TIME"]
+
+
+@pytest.mark.parametrize("name", CALLED)
+@pytest.mark.parametrize("kind", ["parameter", "observable"])
+def test_a_symbol_spelled_like_a_constant_and_called_is_itself(tmp_path, kind, name):
+    # BNG2.pl keeps a parameter or an observable called with ``()`` as the model
+    # wrote it (``kf() p*Time()``), and the loader stores the call. The ``()``
+    # is taken off before the symbol is renamed out of the parser's way; in the
+    # other order the bare word was left for the parser to read as its constant.
+    if kind == "parameter":
+        # A -> B at kf = name() = 0.25: A(2) = 100 exp(-0.5).
+        params, groups, body = f"    1 {name} 0.25\n", "    1 Atot 1\n", f"{name}()"
+        closed = 100 * math.exp(-0.5)
+    else:
+        # The observable is A: A' = -0.0025 A^2, A(2) = 100/(1 + 0.0025*100*2).
+        params, groups, body = "    1 p 0.25\n", f"    1 {name} 1\n", f"p*{name}()/100"
+        closed = 100 / 1.5
+    net = tmp_path / "m.net"
+    net.write_text(
+        f"begin parameters\n{params}end parameters\n"
+        "begin species\n    1 A() 100\n    2 B() 0\nend species\n"
+        f"begin groups\n{groups}end groups\n"
+        f"begin functions\n    1 kf() {body}\nend functions\n"
+        "begin reactions\n    1 1 2 kf\nend reactions\n",
+        encoding="utf-8",
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        text = net_to_sbml(str(net), validate=None).output_text
+        xml = tmp_path / "m.xml"
+        xml.write_text(text, encoding="utf-8")
+        a = bngsim.Simulator(bngsim.Model.from_net(str(net)), method="ode").run(
+            t_span=(0, 2), n_points=5
+        )
+        b = bngsim.Simulator(bngsim.Model.from_sbml(str(xml)), method="ode").run(
+            t_span=(0, 2), n_points=5
+        )
+    # The run's default tolerances (rtol 1e-8) against the closed form.
+    assert a.species[-1, 0] == pytest.approx(closed, rel=1e-5)
+    np.testing.assert_allclose(b.species, a.species, rtol=1e-9, atol=1e-9)
+    # ``Time()`` is the model's symbol, not the clock, which is ``time()`` only.
+    assert "symbols/time" not in text
 
 
 # --- the sibling writer: the same expressions as BNGL -----------------------

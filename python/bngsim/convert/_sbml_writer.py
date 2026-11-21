@@ -91,7 +91,8 @@ _E_SENTINEL = "__bngsim_const_e__"
 
 # A model symbol spelled like one of the barewords the parser reads as a
 # constant or csymbol (``exponentiale``, ``avogadro``, ``true``, ``inf``, ...,
-# case-insensitively) is renamed to this prefix plus its name before the parse
+# case-insensitively: :data:`_MATHML_RESERVED_SIDS`, the words an ``SId`` is
+# kept off) is renamed to this prefix plus its name before the parse
 # and back after it (issue #1741). Without it a derived parameter or function
 # that reads a parameter named ``avogadro`` was written with the Avogadro
 # constant in its place, silently. ``time`` is one of the words: the parser
@@ -99,20 +100,6 @@ _E_SENTINEL = "__bngsim_const_e__"
 # bare ``time`` (or ``Time``) the model declares as that symbol. The clock is
 # the call ``time()``, which has its own sentinel and is never renamed.
 _SYMBOL_PREFIX = "__bngsim_symbol__"
-_PARSER_CONSTANT_WORDS = frozenset(
-    {
-        "pi",
-        "exponentiale",
-        "avogadro",
-        "true",
-        "false",
-        "inf",
-        "infinity",
-        "nan",
-        "notanumber",
-        "time",
-    }
-)
 
 # ExprTk function/operator-keyword names we can translate to MathML. Anything
 # else spelled as ``name(`` in an expression is refused (fail-loud) — most
@@ -172,7 +159,10 @@ _SID_BAD = re.compile(r"[^A-Za-z0-9_]")
 # ``SId`` (``pi`` → ``pi_2``) at allocation so no emitted formula token can ever
 # resolve to a constant, fixing every downstream reference at once. Compared
 # lowercased. (``_walk_fix_pi`` still handles genuine π from the ExprTk ``_pi``
-# sentinel; this is the complementary guard for the SId-reference paths.)
+# sentinel; this is the complementary guard for the SId-reference paths.) The
+# same words, where an expression reads a model symbol spelled like one, are
+# renamed out of the parser's way by :func:`_protect_constant_spelled_symbols`
+# (issue #1741); both guards read this one set.
 _MATHML_RESERVED_SIDS = frozenset(
     {
         "pi",
@@ -515,7 +505,7 @@ def _protect_constant_spelled_symbols(expr: str, scalar_names: frozenset[str]) -
         name = m.group(0)
         if (
             name in scalar_names
-            and name.lower() in _PARSER_CONSTANT_WORDS
+            and name.lower() in _MATHML_RESERVED_SIDS
             and not expr[m.end() :].lstrip().startswith("(")
         ):
             return _SYMBOL_PREFIX + name
