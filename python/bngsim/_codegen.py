@@ -6067,10 +6067,15 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
         missing = _toolchain.record_missing(compiler)
         if missing is not None:
             raise CodegenToolchainError(missing) from err
-        raise CodegenToolchainError(
-            "C compiler not found. Install Xcode Command Line Tools "
-            "(macOS), gcc (Linux), or Visual Studio Build Tools (Windows)."
-        ) from err
+        if err.filename in (None, compiler[0]) and _toolchain.found_from_anywhere(compiler):
+            # There, but the system cannot start it. A verdict, kept and logged
+            # once as a missing compiler's is: the fallbacks that catch this
+            # error log only at DEBUG, taking it as said.
+            raise CodegenToolchainError(_toolchain.record_unstartable(compiler, err)) from err
+        # A file of this build's own went missing (the cache directory removed
+        # under it), or a relative CC was not found from a sharded build's
+        # scratch directory: this build's failure, not the toolchain's.
+        raise RuntimeError(f"Codegen compilation failed: {err}") from err
     finally:
         tmp_so_path.unlink(missing_ok=True)
         _unlink_msvc_sidecars(tmp_so_path)
