@@ -354,6 +354,28 @@ the tool's own objects, as that tool spells it.
 
 <!-- end of translation-table -->
 
+## Example models, and models built in Python
+
+`bngsim.examples` holds small models that ship with bngsim, each with its
+exact solution: a model to try with no file of your own, and a check that
+bngsim works on this machine. `bngsim.examples.formats(name)` lists the
+formats each comes in. `bngsim.ModelBuilder` builds a model in Python.
+
+```python
+print(bngsim.examples.names())  # ['binding', 'decay', 'chain', 'birth_death', 'bolus', 'schlogl']
+example = bngsim.examples.load("binding")  # A + B <-> C
+res = bngsim.Simulator(example).run(t_span=(0, 10), n_points=101)
+exact = bngsim.examples.exact("binding", res.time)
+print(np.allclose(res.observables["C"], exact["C"], rtol=1e-4))  # True
+
+b = bngsim.ModelBuilder()
+b.add_parameter("k", 0.5)
+b.add_species("A", 100)  # each species is also an observable
+b.add_reaction(["A"], [], rate="k")  # rate: mass action; law=: the whole rate
+built = b.build()
+print(bngsim.Simulator(built).run(t_span=(0, 2), n_points=3).observables["A"][-1].round(2))  # 36.79
+```
+
 ## Check a result before reporting it
 
 - **A conservation law holds.** In this model `A + B` stays 100; a reaction

@@ -1,0 +1,29 @@
+# A + B <-> C. A and B bind to make the complex C.
+# Exact solution: bngsim.examples.exact("binding", t).
+begin model
+begin parameters
+  kf 0.01   # binding rate constant
+  kr 0.1    # unbinding rate constant
+  A0 100    # initial A
+  B0 80     # initial B
+end parameters
+begin molecule types
+  A(b)
+  B(a)
+end molecule types
+begin seed species
+  A(b) A0
+  B(a) B0
+end seed species
+begin observables
+  Molecules A A(b)
+  Molecules B B(a)
+  Molecules C A(b!1).B(a!1)
+end observables
+begin reaction rules
+  A(b) + B(a) <-> A(b!1).B(a!1) kf, kr
+end reaction rules
+end model
+
+generate_network({overwrite=>1})
+writeXML()
