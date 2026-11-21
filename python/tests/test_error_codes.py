@@ -562,22 +562,39 @@ def test_an_error_raised_from_a_failed_run_carries_its_notices():
         assert e.to_dict()["notices"] == e.notices
 
 
-def test_a_rewrap_without_from_carries_the_notices_too():
-    call = _noting("sens.chunk_split", bngsim.SimulationError("failed"))
+def test_an_error_raised_while_handling_a_run_failure_is_not_about_it():
+    """A caller's retry in its except block: the retry's error is its own, and
+    says nothing of the run it is handling."""
+    call = _noting("start.continues_last_run", bngsim.SimulationError("failed"))
     try:
         try:
             call()
         except bngsim.SimulationError:
-            raise bngsim.ModelError("Failed to run the protocol")  # noqa: B904
-    except bngsim.ModelError as e:
-        assert [n["code"] for n in e.notices] == ["sens.chunk_split"]
-    try:
-        try:
-            call()
-        except bngsim.SimulationError:
-            raise bngsim.ModelError("unrelated") from None
-    except bngsim.ModelError as e:
+            raise bngsim.ParameterError("unknown parameter 'nope'")  # noqa: B904
+    except bngsim.ParameterError as e:
         assert e.notices == []
+        assert e.to_dict()["notices"] == []
+
+
+def test_inherited_notices_survive_pickling():
+    """A process pool's row error is a rewrap ``from`` the row's, and pickle
+    drops ``__cause__``: what it inherits is kept as its own when it leaves the
+    collected call."""
+    from bngsim import _notices
+
+    inner = _noting("sens.chunk_split", bngsim.SimulationError("row failed"))
+
+    @_notices.collected
+    def batch():
+        try:
+            inner()
+        except bngsim.SimulationError as e:
+            raise bngsim.SimulationError("Batch failed") from e
+
+    with pytest.raises(bngsim.SimulationError) as info:
+        batch()
+    back = pickle.loads(pickle.dumps(info.value))
+    assert [n["code"] for n in back.notices] == ["sens.chunk_split"]
 
 
 def test_an_error_outside_a_run_has_no_notices():
@@ -613,3 +630,25 @@ def test_the_page_lists_every_notice_code():
     page = _error_codes.reference_page()
     for code, meaning in _notices.CODES.items():
         assert f"| `{code}` | {meaning} | {_notices.ACTIONS[code]} |" in page
+
+
+def test_a_parallel_batch_rows_notices_survive_pickling(tmp_path):
+    """run_batch over processes raises its row's error rewrapped ``from`` it;
+    a caller's own process pool pickles that, and the notices go with it."""
+    import warnings
+
+    net = tmp_path / "blowup.net"
+    net.write_text(_BLOWUP)
+    sim = bngsim.Simulator(bngsim.Model.from_net(str(net)), method="ode")
+    with warnings.catch_warnings(), pytest.raises(bngsim.SimulationError) as info:
+        warnings.simplefilter("ignore")
+        sim.run_batch(
+            params=[{"k": 1.0}, {"k": 2.0}],
+            t_span=(0, 1e6),
+            n_points=3,
+            max_steps=50,
+            num_processors=2,
+        )
+    codes = [n["code"] for n in info.value.notices]
+    assert "jacobian.difference_quotient_retry" in codes
+    assert pickle.loads(pickle.dumps(info.value)).notices == info.value.notices

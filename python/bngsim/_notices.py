@@ -162,16 +162,18 @@ ACTIONS: dict[str, str] = {
         "The numbers stand; only speed is lost. The message gives the compiler's error."
     ),
     "codegen.skipped": (
-        "The numbers stand; only speed is lost. The earlier `codegen.failed` notice says "
-        "why the build failed."
+        "The numbers stand; only speed is lost. The message gives when and why the "
+        "build failed; pass `codegen=True`, or raise `BNGSIM_CODEGEN_TIMEOUT` or "
+        "`BNGSIM_CODEGEN_JOBS`, to try it again."
     ),
     "codegen.ssa_propensities_interpreted": (
         "The numbers stand; only speed is lost. The message says why."
     ),
     "codegen.toolchain": (
-        "Install or repair the C compiler the message names, as for the errors "
-        "`env.no_compiler` and `env.broken_toolchain`. Until then a run that can go "
-        "on without a compiled library does."
+        "Where the message says the toolchain cannot build, install or repair the C "
+        "compiler it names, as for the errors `env.no_compiler` and "
+        "`env.broken_toolchain`; until then a run that can go on without a compiled "
+        "library does. Where it says codegen resumes, nothing is left to fix."
     ),
     "config.ignored_setting": "Fix or unset the environment variable the message names.",
     "equality.detection_failed": (
@@ -189,8 +191,8 @@ ACTIONS: dict[str, str] = {
         "skip the analytical attempt."
     ),
     "jax.zero_gradients": (
-        "Check gradients near the model's discontinuities by finite differences before "
-        "relying on them."
+        "Nothing to fix: the JAX Jacobian may read zero across a discontinuity, and the "
+        "solver adapts its step there."
     ),
     "linear_solver.dense_without_klu": (
         "The numbers stand. An install with KLU, which `bngsim.capabilities()` reports, "
@@ -203,8 +205,9 @@ ACTIONS: dict[str, str] = {
         "Read the message for the construct; the model may need another method to run as written."
     ),
     "scan.dose_dropped": (
-        "Call `model.reset()` before the scan to dose from the initial conditions, or "
-        "set each seeded species in `on_point`, as the message shows."
+        "Set each seeded species in `on_point`, as the message shows. For a scan that is "
+        "not a sensitivity scan, `model.reset()` before it doses from the initial "
+        "conditions instead."
     ),
     "sens.chain_rule_dropped": (
         "Read sensitivities through that parameter as missing, not zero; check them by "
@@ -217,7 +220,8 @@ ACTIONS: dict[str, str] = {
     "sens.nan_rows": "Leave those rows out: they mark derivatives BNGsim cannot give.",
     "sens.one_sided": "Read those columns as one-sided derivatives at that instant.",
     "sens.output_budget": (
-        "Select only the expression outputs derived in time; the rest refuse when selected."
+        "Raise or disable the budget with `BNGSIM_SENS_DERIV_BUDGET_S`, as the message "
+        "says, or select only the expression outputs derived in time."
     ),
     "sens.parameters_skipped": (
         "The message names the parameters left out and why; the result has no "
@@ -234,8 +238,8 @@ ACTIONS: dict[str, str] = {
         "a stochastic process."
     ),
     "ssa.reverse_fire": (
-        "Fix the rate law so it cannot go negative; the trajectory past it is not a "
-        "stochastic process."
+        "Nothing to fix if the negative rate is meant: the reaction runs in reverse so "
+        "the mean tracks the ODE. Otherwise fix the rate law so it cannot go negative."
     ),
     "ssa.rounded_counts": "Give whole-number initial counts where the rounding matters.",
     "start.continues_last_run": (
@@ -258,7 +262,10 @@ ACTIONS: dict[str, str] = {
         "Shorten the window; past the stops placed, the integrator approaches each "
         "crossing without one."
     ),
-    "switch.scan_failed": "Check the result where that condition switches, at a tighter `rtol`.",
+    "switch.scan_failed": (
+        "Bound the step with `max_step` so the switch is not stepped over, and report the "
+        "failure: it is a defect in BNGsim."
+    ),
     "switch.unread": "Check the result where that condition switches, at a tighter `rtol`.",
 }
 
@@ -414,15 +421,17 @@ def collected(fn: _F) -> _F:
         try:
             out = fn(*args, **kwargs)
         except BaseException as exc:
-            if notes:
-                from bngsim._exceptions import BngsimError, StopConditionMet
+            from bngsim._exceptions import BngsimError, StopConditionMet
 
-                if isinstance(exc, StopConditionMet):
-                    attach(exc.result, notes)
-                # A failed run's notices go on its error (issue #1857); one that
-                # is not a BNGsim error (an interrupt, a bug) is left alone.
-                if isinstance(exc, BngsimError):
-                    exc._add_notices([n.as_dict() for n in unique(notes)])
+            if notes and isinstance(exc, StopConditionMet):
+                attach(exc.result, notes)
+            # A failed run's notices go on its error (issue #1857); one that is
+            # not a BNGsim error (an interrupt, a bug) is left alone. Those it
+            # inherits from the error it was raised from become its own too:
+            # pickle drops __cause__, and a process pool's row error crosses to
+            # the parent by pickle.
+            if isinstance(exc, BngsimError) and (notes or exc.__cause__ is not None):
+                exc._add_notices([n.as_dict() for n in unique(notes)])
             raise
         finally:
             _collector.reset(token)

@@ -138,19 +138,18 @@ class BngsimError(RuntimeError):
 
     @property
     def notices(self) -> list[dict[str, str]]:
-        # The error this one was raised from, or raised while handling: a
-        # rewrap without ``from`` chains only through the context.
+        # Only the error this one was raised *from*: one raised while a caller
+        # handles another (a retry in its except block) is not about that one.
         cause = self.__cause__
-        if cause is None and not self.__suppress_context__:
-            cause = self.__context__
         inherited = cause.notices if isinstance(cause, BngsimError) else []
         own = [dict(n) for n in self._notices]
         return inherited + [n for n in own if n not in inherited]
 
     def _add_notices(self, notices: list[dict[str, str]]) -> None:
-        """Add a call's *notices* to those this error already has, each once."""
-        have = list(self._notices)
-        self._notices = (*have, *(n for n in notices if n not in have))
+        """Add *notices* to those this error has, each once: inherited ones
+        first, as :attr:`notices` gives them."""
+        have = self.notices
+        self._notices = tuple(dict(n) for n in (*have, *(n for n in notices if n not in have)))
 
     @property
     def docs_url(self) -> str:
