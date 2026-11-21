@@ -42,9 +42,13 @@ def _check_jax():
         jax.config.update("jax_enable_x64", True)
         import jax.numpy  # noqa: F401
     except ImportError:
-        raise ImportError(
+        from bngsim._error_codes import install
+        from bngsim._exceptions import DependencyError
+
+        raise DependencyError(
             "JAX is required for bngsim.jax.differentiable_solve(). "
-            "Install with: pip install 'bngsim[jax]'"
+            "Install with: pip install 'bngsim[jax]'",
+            remedies=[install("jax", extra="jax")],
         ) from None
 
 

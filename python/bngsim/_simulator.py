@@ -58,6 +58,7 @@ from bngsim._codegen import (
     read_sens_decline_note,
 )
 from bngsim._describe import ode_refusals, steady_state_refusals
+from bngsim._error_codes import pass_argument
 from bngsim._exceptions import (
     AtolScaleWarning,
     CodegenDeclinedError,
@@ -75,6 +76,7 @@ from bngsim._exceptions import (
     SsaRoundingWarning,
     SsaValidationError,
     StopConditionMet,
+    UsageError,
 )
 from bngsim._extension_handle import raise_cannot_pickle, raise_cannot_shallow_copy
 from bngsim._foreign_names import RUN_CALLS, call_error
@@ -1279,8 +1281,11 @@ class Simulator:
                     "wheel that excludes NFsim."
                 )
             if not xml_path:
-                raise ValueError(
-                    f"method='{method}' requires xml_path=... pointing to a BNG XML file."
+                raise UsageError(
+                    f"method='{method}' requires xml_path=... pointing to a BNG XML file.",
+                    code="usage.missing_argument",
+                    details={"argument": "xml_path", "method": method},
+                    remedies=[pass_argument("xml_path")],
                 )
             from bngsim._bngsim_core import NfsimSimulator
             from bngsim._network_free_checks import (
@@ -1325,8 +1330,11 @@ class Simulator:
                     "wheel that excludes RuleMonkey."
                 )
             if not xml_path:
-                raise ValueError(
-                    f"method='{method}' requires xml_path=... pointing to a BNG XML file."
+                raise UsageError(
+                    f"method='{method}' requires xml_path=... pointing to a BNG XML file.",
+                    code="usage.missing_argument",
+                    details={"argument": "xml_path", "method": method},
+                    remedies=[pass_argument("xml_path")],
                 )
             from bngsim._bngsim_core import RuleMonkeySimulator
             from bngsim._network_free_checks import (
@@ -1682,8 +1690,12 @@ class Simulator:
             )
 
             if not jax_available():
-                raise ImportError(
-                    "JAX is required for jacobian='jax'. Install with: pip install jax jaxlib"
+                from bngsim._error_codes import install
+                from bngsim._exceptions import DependencyError
+
+                raise DependencyError(
+                    "JAX is required for jacobian='jax'. Install with: pip install jax jaxlib",
+                    remedies=[install("jax", command="pip install jax jaxlib")],
                 )
             eval_fn, n_sp = prepare_jax_jacobian(model)
             self._jax_jac_evaluator = eval_fn
@@ -8369,8 +8381,10 @@ class Simulator:
             known = set(all_param_names)
             unknown = set(params) - known
             if unknown:
-                raise ValueError(
-                    f"Unknown parameter(s): {sorted(unknown)}. Known: {sorted(known)}"
+                raise UsageError(
+                    f"Unknown parameter(s): {sorted(unknown)}. Known: {sorted(known)}",
+                    code="param.not_found",
+                    details={"names": [{"name": n} for n in sorted(unknown, key=str)]},
                 )
             target_params = list(params)
             # Issue #164 — an explicit ask gets a hard answer. Issue #170 stage 3
