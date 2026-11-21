@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import posixpath
 import re
 import shlex
 import subprocess
@@ -96,9 +97,14 @@ _FILTER_UNREAD = re.compile(r"[?+\[\]]")
 
 #: A ``${{ ... }}`` expression, swapped for one word before the shell split.
 _EXPR = re.compile(r"\$\{\{\s*(.*?)\s*\}\}")
-#: A word in quotes that holds a glob character, which the shell leaves as is.
+#: A word in quotes that holds a glob character, which the shell leaves as is:
+#: a whole word, or an option's argument after ``=`` (``--ignore='x*.py'``).
 #: A shell expansion (``"${files[@]}"``) is no glob: it is left to be read as one.
-_QUOTED_GLOB = re.compile(r"""(?<!\S)(['"])([^'"\s$]*[*?[][^'"\s$]*)\1(?!\S)""")
+_QUOTED_GLOB = re.compile(r"""(?<![^\s=])(['"])([^'"\s$]*[*?[][^'"\s$]*)\1(?!\S)""")
+#: An ``--ignore`` path in ``Workflow.excluded``. pytest leaves it out only where
+#: it finds it walking down a directory it was given, as with ``--ignore-glob``;
+#: an entry with neither mark is a ``--deselect``, which applies to any test.
+_IGNORE = "ignore:"
 #: The mark a quoted glob carries through the shell split, so that an option's
 #: argument keeps it and a test path does not. Its text follows in hex, so that
 #: no character of it (``#``, ``;``, ``|``) is read as shell syntax.
@@ -167,9 +173,18 @@ class Workflow:
         """It runs on the pull request, its commands read in full, and they run ``path``."""
         if self.fires is not True or self.unreadable:
             return False
-        if any(_excludes(path, g) for g in self.excluded):
+        if any(_deselects(path, g) for g in self.excluded):
             return False
-        return self.whole or self.names(path)
+        # pytest collects a path it is given even where --ignore or
+        # --ignore-glob matches it. They leave out only what it finds walking
+        # down a directory it was given, below that directory.
+        if path in self.node_ids or any(
+            not g.endswith("/**") and matches(path, g) for g in self.selectors
+        ):
+            return True
+        roots = ["python/tests"] if self.whole else []
+        roots += [g[:-3] for g in self.selectors if g.endswith("/**") and matches(path, g)]
+        return any(not any(_ignores(path, root, g) for g in self.excluded) for root in roots)
 
     def fires_for(self, path: str) -> bool:
         """Its trigger fires for a change to ``path`` alone (true where no
@@ -178,16 +193,29 @@ class Workflow:
         return self.text is None or fires_on(self.text, [path])[0] is True
 
 
-def _excludes(path: str, pattern: str) -> bool:
-    """``pattern``, an entry of ``Workflow.excluded``, leaves ``path`` out."""
-    if pattern.startswith(_FNMATCH):
-        # pytest asks it of each directory on the way down as well: a pattern
-        # that matches a directory leaves out everything under it.
-        glob = pattern[len(_FNMATCH) :]
-        parts = path.split("/")
-        tops = ("/".join(parts[:k]) for k in range(1, len(parts) + 1))
+def _deselects(path: str, entry: str) -> bool:
+    """``entry``, a ``--deselect`` entry of ``Workflow.excluded``, leaves ``path`` out."""
+    return not entry.startswith((_FNMATCH, _IGNORE)) and matches(path, entry)
+
+
+def _ignores(path: str, root: str, entry: str) -> bool:
+    """``entry``, an ``--ignore`` or ``--ignore-glob`` entry of ``Workflow.excluded``,
+    leaves ``path`` out of a walk down the directory ``root``. pytest asks it of
+    each directory on the way down as well, so one that matches a directory
+    leaves out everything under it; ``root`` itself, a path it was given, is
+    not asked."""
+    parts = path.split("/")
+    below = len(root.split("/"))
+    tops = ["/".join(parts[:k]) for k in range(below + 1, len(parts) + 1)]
+    if entry.startswith(_FNMATCH):
+        glob = entry[len(_FNMATCH) :]
         return any(fnmatch.fnmatchcase(top, glob) for top in tops)
-    return matches(path, pattern)
+    if entry.startswith(_IGNORE):
+        ignored = entry[len(_IGNORE) :]
+        if ignored.endswith("/**"):
+            return ignored[:-3] in tops
+        return any(matches(top, ignored) for top in tops)
+    return False
 
 
 def _strip_comments(text: str) -> str:
@@ -241,8 +269,13 @@ def read_command(command: str, wf: Workflow, empty: Iterable[str] = ()) -> None:
     # A glob in quotes reaches pytest as written, and pytest does not expand
     # it: as a test path it names no file (pytest stops on the path it cannot
     # find). As an option's argument (``--ignore-glob 'x*.py'``) it is the
-    # pattern pytest itself matches, so it is marked here, not dropped.
-    command = _QUOTED_GLOB.sub(lambda m: f" {_QUOTED}{m[2].encode().hex()}@@ ", command)
+    # pattern pytest itself matches, so it is marked here, not dropped. After
+    # an ``=`` the mark stays joined to its option.
+    def mark(m: re.Match[str]) -> str:
+        joined = m.start() > 0 and m.string[m.start() - 1] == "="
+        return f"{'' if joined else ' '}{_QUOTED}{m[2].encode().hex()}@@ "
+
+    command = _QUOTED_GLOB.sub(mark, command)
 
     def literal(tok: str) -> str:
         """A word as pytest receives it: a marked word's own text."""
@@ -278,11 +311,18 @@ def read_command(command: str, wf: Workflow, empty: Iterable[str] = ()) -> None:
                 wf.unreadable.append(f"`{opt} {arg}` is not read")
             elif opt == "--ignore-glob":
                 # Whatever it starts with: ``*/tests/test_h*.py`` matches too.
-                wf.excluded.append(_FNMATCH + arg)
+                # pytest makes it absolute first, which drops ``./``, ``//``
+                # and a trailing ``/``.
+                wf.excluded.append(_FNMATCH + posixpath.normpath(arg))
             elif raw.startswith(_QUOTED) or whole_quoted:
                 # --ignore and --deselect take a path or a node id as written:
                 # a quoted glob names none, and leaves nothing out.
                 pass
+            elif opt == "--ignore":
+                # Made absolute by pytest as well (``./python/tests/x.py``).
+                path = posixpath.normpath(arg)
+                if path.startswith("python/tests"):
+                    wf.excluded.append(_IGNORE + _selector(path))
             elif arg.startswith("python/tests") and "::" not in arg:
                 # A node id deselects one test, not the file.
                 wf.excluded.append(_selector(arg))
@@ -421,7 +461,8 @@ def read_workflows(changed: list[str], root: Path = WORKFLOWS) -> dict[str, Work
     for path in sorted(root.glob("*.yml")):
         if path.name == SUITE_WORKFLOW:
             continue
-        text = path.read_text(encoding="utf-8")
+        # A byte that is not UTF-8 is replaced, not raised on: the job warns only.
+        text = path.read_text(encoding="utf-8", errors="replace")
         wf = Workflow(path.name, text=text)
         for command in pytest_commands(text):
             read_command(command, wf, dispatch_env(text))
@@ -453,7 +494,9 @@ def read_reports(
         for xml in sorted(d.rglob("*.xml")):
             try:
                 one = count_reports([xml], root)
-            except (ET.ParseError, OSError) as e:
+            # LookupError: an encoding the declaration names that Python lacks;
+            # ValueError: bytes that are not of the declared encoding.
+            except (ET.ParseError, OSError, LookupError, ValueError) as e:
                 unread.append((f"{m['leg']} {m['shard']}", f"{xml.name}: {e}"))
                 continue
             for f, c in one.items():
@@ -560,16 +603,57 @@ def _note(w: Workflow, path: str) -> str:
     return ""
 
 
-def _late_message(path: str, legs: dict[str, Counts], late: list[str], missing: list[str]) -> str:
+def _trigger_gap(w: Workflow, path: str) -> tuple[str, str] | None:
+    """Why a change to ``path`` alone does not fire ``w``, and what would make
+    it, when that is not simply a paths filter that matches nothing of it."""
+    trig = pull_request_trigger(w.text or "") or {}
+    if "paths" in trig:
+        last = None  # the last entry that matches it decides, in order
+        for p in trig["paths"]:
+            negated = p.startswith("!")
+            if matches(path, p[1:] if negated else p):
+                last = p
+        if last is not None and last.startswith("!"):
+            return (
+                f"its paths filter takes it back out with `{last}`",
+                "Take it out of that `!` entry",
+            )
+        return None
+    hit = next((p for p in trig.get("paths-ignore", []) if matches(path, p)), None)
+    if hit is not None:
+        return (
+            f"its paths-ignore filter leaves it out (`{hit}`)",
+            "Take it out of that paths-ignore filter",
+        )
+    return None
+
+
+def _late_message(
+    path: str, legs: dict[str, Counts], late: list[Workflow], missing: list[str]
+) -> str:
     one = len(late) == 1
-    unmatched = "its paths filter does not match" if one else "no paths filter of those matches"
     unread = f" (no report was read from {', '.join(missing)})" if missing else ""
-    return (
-        f"{path} is new, and {_what_ran(path, legs)}{unread}. {', '.join(late)} "
+    head = (
+        f"{path} is new, and {_what_ran(path, legs)}{unread}. {', '.join(w.name for w in late)} "
         f"{'runs' if one else 'run'} it on this pull request only for the pull request's "
-        f"other changes: {unmatched} it, so a later change to it alone will run it nowhere. "
-        f"Add it to {'that paths filter' if one else 'those paths filters'}."
+        "other changes"
     )
+    gaps = [(w.name, _trigger_gap(w, path)) for w in late]
+    if all(gap is None for _, gap in gaps):
+        unmatched = (
+            "its paths filter does not match" if one else "no paths filter of those matches"
+        )
+        return (
+            f"{head}: {unmatched} it, so a later change to it alone will run it nowhere. "
+            f"Add it to {'that paths filter' if one else 'those paths filters'}."
+        )
+    each = " ".join(
+        f"{name}: {gap[0]}. {gap[1]}."
+        if gap
+        else f"{name}: its paths filter does not match it. Add it to that paths filter."
+        for name, gap in gaps
+    )
+    return f"{head}, so a later change to it alone will run it nowhere. {each}"
 
 
 def warnings_for(
@@ -590,7 +674,7 @@ def warnings_for(
             # Run here only because this pull request changes other files its
             # list workflow's paths filter matches: the next change to this file
             # alone runs it nowhere. A whole-suite workflow also runs nightly.
-            late = [w.name for w in running if not w.whole and not w.fires_for(path)]
+            late = [w for w in running if not w.whole and not w.fires_for(path)]
             if len(late) == len(running):
                 out.append((path, _late_message(path, legs, late, missing)))
             continue
@@ -608,6 +692,17 @@ def warnings_for(
     return out
 
 
+def _data(text: str) -> str:
+    """A workflow command's message, escaped as GitHub reads it: a newline
+    would end the command."""
+    return text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
+def _prop(text: str) -> str:
+    """A workflow command's property value (``file=``), escaped as GitHub reads it."""
+    return _data(text).replace(":", "%3A").replace(",", "%2C")
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--reports", type=Path, required=True, help="the legs' shard artifacts")
@@ -620,17 +715,21 @@ def main(argv: list[str] | None = None) -> int:
     except (subprocess.CalledProcessError, OSError) as e:
         why = e.stderr.decode("utf-8", "replace").strip() if getattr(e, "stderr", None) else str(e)
         why = (why.splitlines() or [str(e)])[0]  # git's first line says what failed
-        print(f"::warning::the files this change touches could not be read ({why}); none checked")
+        msg = f"the files this change touches could not be read ({why}); none checked"
+        print(f"::warning::{_data(msg)}")
         return 0
     added = added_tests(changed)
     legs, unread = read_reports(a.reports)
     for shard, why in unread:
-        print(f"::warning::the python-tests report of {shard} could not be read: {why}")
+        print(
+            f"::warning::{_data(f'the python-tests report of {shard} could not be read: {why}')}"
+        )
     if not legs:
-        print(f"::warning::no python-tests reports under {a.reports}; nothing checked")
+        print(f"::warning::{_data(f'no python-tests reports under {a.reports}; nothing checked')}")
         return 0
     suite = WORKFLOWS / SUITE_WORKFLOW
-    expected = expected_shards(suite.read_text(encoding="utf-8")) if suite.is_file() else set()
+    text = suite.read_text(encoding="utf-8", errors="replace") if suite.is_file() else ""
+    expected = expected_shards(text) if text else set()
     missing = missing_shards(a.reports, expected, (s for s, _ in unread))
     if missing:
         print(
@@ -644,7 +743,7 @@ def main(argv: list[str] | None = None) -> int:
     also = f"; {late} that a check runs only for this change's other files" if late else ""
     print(f"{len(added)} test file(s) added; {unrun} that no check on this change runs{also}")
     for path, msg in found:
-        print(f"::warning file={path}::{msg}")
+        print(f"::warning file={_prop(path)}::{_data(msg)}")
     return 0
 
 

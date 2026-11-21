@@ -136,7 +136,8 @@ def test_selectors_at_their_edges():
     ]
     assert w.node_ids == ["python/tests/test_b.py"]
     # A deselected node id leaves the rest of its file; a deselected file goes.
-    assert w.excluded == ["python/tests/test_e.py", "python/tests/test_f.py"]
+    # An ignored file is marked: pytest ignores it only where it walks to it.
+    assert w.excluded == ["python/tests/test_e.py", "ignore:python/tests/test_f.py"]
     assert not w.whole and not w.unreadable
     assert w.names("python/tests/windows/test_x.py") and not w.names("python/tests/test_piped.py")
     assert not w.names("python/tests/test_gx/test_y.py")  # a shell * stays in its directory
@@ -327,6 +328,72 @@ def test_a_trigger_that_cannot_be_read_never_counts():
     assert "Whether w.yml runs on this pull request is not known: its pull_request" in msg
 
 
+def test_a_quoted_argument_after_an_equals_sign_is_the_options_own():
+    # --ignore='x*' reaches pytest as the glob as written, as --ignore 'x*'
+    # does: it names no file and leaves nothing out (pytest 9.0.2's --co).
+    for opt in ("--ignore", "--deselect"):
+        for q in ("'", '"'):
+            w = _cmd(f"python -m pytest python/tests {opt}={q}python/tests/test_h*.py{q}")
+            assert not w.excluded and not w.unreadable, (opt, q)
+            assert _wf(whole=True, excluded=w.excluded).runs("python/tests/test_h1.py")
+    # --ignore-glob='x*' is still the pattern pytest matches, and the word
+    # after it still a test path.
+    w = _cmd("python -m pytest --ignore-glob='python/tests/test_h*.py' python/tests/test_y.py")
+    assert w.excluded == ["fnmatch:python/tests/test_h*.py"]
+    assert w.selectors == ["python/tests/test_y.py"]
+
+
+def test_ignore_leaves_out_only_what_pytest_walks_down_to():
+    # pytest collects a path it is given even where --ignore or --ignore-glob
+    # matches it (pytest 9.0.2's --co); they apply below a directory it walks.
+    for opt in ("--ignore-glob 'python/tests/test_h*.py'", "--ignore python/tests/test_h1.py"):
+        named = _cmd(f"python -m pytest python/tests/test_h1.py python/tests/test_a.py {opt}")
+        assert _wf(selectors=named.selectors, excluded=named.excluded).runs(
+            "python/tests/test_h1.py"
+        ), opt
+        whole = _cmd(f"python -m pytest python/tests {opt}")
+        assert not _wf(whole=True, excluded=whole.excluded).runs("python/tests/test_h1.py"), opt
+    # A directory it is given is not asked either: only what is below it.
+    sub = _cmd("python -m pytest python/tests/sub --ignore-glob 'python/tests/su?'")
+    assert _wf(selectors=sub.selectors, excluded=sub.excluded).runs("python/tests/sub/test_x.py")
+    whole = _cmd("python -m pytest python/tests --ignore-glob 'python/tests/su?'")
+    assert not _wf(whole=True, excluded=whole.excluded).runs("python/tests/sub/test_x.py")
+    # A node id is a path it is given; --deselect applies wherever a test came from.
+    node = _cmd(
+        "python -m pytest python/tests/test_h1.py::test_x --ignore python/tests/test_h1.py"
+    )
+    assert _wf(node_ids=node.node_ids, excluded=node.excluded).runs("python/tests/test_h1.py")
+    gone = _cmd("python -m pytest python/tests/test_h1.py --deselect python/tests/test_h1.py")
+    assert not _wf(selectors=gone.selectors, excluded=gone.excluded).runs(
+        "python/tests/test_h1.py"
+    )
+
+
+@pytest.mark.parametrize(
+    "arg,out",
+    [
+        ("--ignore-glob './python/tests/test_h*.py'", "python/tests/test_h1.py"),
+        ("--ignore-glob 'python/tests//test_h*.py'", "python/tests/test_h1.py"),
+        ("--ignore-glob 'python/tests/sub*/'", "python/tests/sub/test_x.py"),
+        ("--ignore ./python/tests/test_h1.py", "python/tests/test_h1.py"),
+    ],
+)
+def test_ignore_arguments_are_normalised_as_pytest_normalises_them(arg, out):
+    # pytest makes them absolute first, which drops ./, // and a trailing /.
+    w = _wf(whole=True, excluded=_cmd(f"python -m pytest python/tests {arg}").excluded)
+    assert not w.runs(out)
+    assert w.runs("python/tests/test_a.py")
+
+
+@pytest.mark.parametrize(
+    "arg", ['--deselect "$X"', "--ignore-glob '${{ matrix.x }}'", "--ignore=$Y"]
+)
+def test_an_excluding_option_given_a_variable_leaves_the_list_unread(arg):
+    w = _cmd(f"python -m pytest python/tests/test_a.py {arg}")
+    assert w.unreadable and not w.excluded
+    assert not _wf(selectors=w.selectors, unreadable=w.unreadable).runs("python/tests/test_a.py")
+
+
 _RUN_NEW = "jobs:\n  j:\n    steps:\n      - run: python -m pytest python/tests/test_mir_new.py\n"
 
 
@@ -359,6 +426,27 @@ def test_a_list_whose_paths_filter_does_not_match_it_is_warned_about(tmp_path):
     # With the file in w.yml's filter too, nothing to say.
     (tmp_path / "w.yml").write_text(_on_paths(".github/workflows/w.yml", new) + _RUN_NEW, "utf-8")
     assert ntc.warnings_for([new], legs, ntc.read_workflows(changed, tmp_path)) == []
+
+
+def test_the_late_warning_names_what_in_the_trigger_leaves_it_out(tmp_path):
+    # Not a paths filter that misses it: a paths-ignore entry, or a later `!`
+    # entry, is what to change.
+    new = "python/tests/test_mir_new.py"
+    changed = [new, "src/a.cpp"]
+    legs = {"a": {new: _c(2, 2)}}
+    ignore = "on:\n  pull_request:\n    paths-ignore:\n      - 'python/tests/**'\n"
+    (tmp_path / "w.yml").write_text(ignore + _RUN_NEW, "utf-8")
+    ((_, msg),) = ntc.warnings_for([new], legs, ntc.read_workflows(changed, tmp_path))
+    assert (
+        "w.yml: its paths-ignore filter leaves it out (`python/tests/**`). "
+        "Take it out of that paths-ignore filter." in msg
+    )
+    assert "Add it to that paths filter" not in msg
+    paths = _on_paths("src/**", "python/tests/**", "!python/tests/test_mir*.py")
+    (tmp_path / "w.yml").write_text(paths + _RUN_NEW, "utf-8")
+    ((_, msg),) = ntc.warnings_for([new], legs, ntc.read_workflows(changed, tmp_path))
+    assert "its paths filter takes it back out with `!python/tests/test_mir*.py`" in msg
+    assert "Add it to that paths filter" not in msg
 
 
 def test_two_lists_whose_filters_do_not_match_it_are_named_together(tmp_path):
@@ -733,6 +821,41 @@ def test_main_with_a_malformed_report_warns_and_passes(tmp_path, monkeypatch, ca
         "::warning::the python-tests report of ubuntu-latest 1 could not be read"
         in capsys.readouterr().out
     )
+
+
+def test_main_without_git_warns_and_passes(tmp_path, monkeypatch, capsys):
+    def no_git(*args, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory", "git")
+
+    monkeypatch.setattr(ntc.subprocess, "run", no_git)
+    assert ntc.main(["--reports", str(tmp_path), "--base", "HEAD"]) == 0
+    out = capsys.readouterr().out
+    assert "::warning::the files this change touches could not be read (" in out
+    assert "No such file or directory" in out
+
+
+def test_a_workflow_file_that_is_not_utf8_is_read_not_raised_on(tmp_path):
+    body = _on_paths("src/**").encode() + b"# \xff\xfe\n" + _RUN_NEW.encode()
+    (tmp_path / "w.yml").write_bytes(body)
+    assert ntc.read_workflows(["src/a.cpp"], tmp_path)["w.yml"].names(
+        "python/tests/test_mir_new.py"
+    )
+
+
+def test_a_report_in_an_encoding_python_lacks_is_unread_not_raised_on(tmp_path):
+    _shard(tmp_path / "logs", "ubuntu-latest", 1, '<?xml version="1.0" encoding="x-nope"?><a/>')
+    legs, unread = ntc.read_reports(tmp_path / "logs")
+    assert [shard for shard, _ in unread] == ["ubuntu-latest 1"]
+
+
+def test_an_annotation_escapes_what_would_end_or_split_it(tmp_path, monkeypatch, capsys):
+    # GitHub reads a workflow command to the end of its line, and a property
+    # value to the next `:` or `,`: a file name holding them is escaped.
+    odd = "python/tests/test_a\nb,c:d%.py"
+    assert _main_with(monkeypatch, [odd], (LEGS, []), _workflows(), tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "::warning file=python/tests/test_a%0Ab%2Cc%3Ad%25.py::python/tests/test_a%0Ab" in out
+    assert "test_a\nb" not in out
 
 
 # --- the wiring -------------------------------------------------------------
