@@ -1,16 +1,16 @@
 ---
-summary: "What bngsim is, and a model loaded and run in one block."
+summary: "What BNGsim is, and a model loaded and run in one block."
 ---
 
-# bngsim
+# BNGsim
 
-**Embeddable simulation engine for BioNetGen reaction networks.**
+**A simulator for biochemical reaction networks, as a Python library.**
 
-`bngsim` is a high-performance C++ simulation kernel with Python bindings that
-replaces BioNetGen's subprocess-based `run_network` driver. It loads `.net`,
-Antimony, and SBML models, runs ODE (CVODE) and stochastic (Gillespie/PSA)
-simulations in-process, and returns results as NumPy arrays — no file I/O, no
-subprocess spawning, no Perl dependency.
+BNGsim simulates models written in SBML, Antimony, and BNGL. It does ODE
+integration, stochastic simulation (SSA, PSA), and network-free simulation
+(NFsim, RuleMonkey). It also finds steady states, runs parameter scans, and
+computes forward sensitivities. Models are simulated in-process, and results
+are NumPy arrays. For BioNetGen users, it replaces `run_network`.
 
 This runs as written after `pip install bngsim`: it writes a two-species
 network to `model.net`, loads it, and integrates it.
@@ -60,6 +60,8 @@ the {doc}`agent-guide`, which `bngsim.agent_guide()` also returns.
 
 installation
 quickstart
+choosing
+features
 agent-guide
 ```
 

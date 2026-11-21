@@ -2,7 +2,7 @@
 summary: "For contributors: adding a built-in function to the expression language."
 ---
 
-# Extending bngsim
+# Extending BNGsim
 
 ## Adding a New Built-in Function (Developer Guide)
 

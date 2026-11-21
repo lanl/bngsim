@@ -16,7 +16,13 @@ build-backend = "scikit_build_core.build"
 [project]
 name = "bngsim"
 version = "0.17.2"
-description = "Embeddable simulation engine for BioNetGen reaction networks"
+description = "Simulate SBML, Antimony and BioNetGen (BNGL) models in Python: ODE, stochastic (SSA) and network-free simulation, steady states and sensitivities"
+keywords = [
+    "SBML", "Antimony", "BioNetGen", "BNGL", "systems biology", "biochemical reaction network",
+    "simulation", "ODE", "CVODE", "SUNDIALS", "stochastic simulation", "Gillespie", "SSA",
+    "rule-based modeling", "network-free", "NFsim", "sensitivity analysis", "steady state",
+    "parameter estimation",
+]
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"

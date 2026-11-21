@@ -93,21 +93,21 @@ refuses state-triggered events, live volumes, a model with no reactions (BNG2.pl
 refusal to a `ConversionWarning` and emit a best-effort artifact — the validation
 ladder below still catches any numerical drift that results.
 
-**A `.net` only bngsim reads as written.** An SBML species an assignment rule sets
+**A `.net` only BNGsim reads as written.** An SBML species an assignment rule sets
 is written `$`-fixed, beside the observable or function that holds its rule under
-the species' own name. bngsim's reader takes the pair as the rule, so the file is
-exact for bngsim, but BioNetGen's `run_network` holds the species at its initial
-value for the whole run (`B := 2*A`: B = 20 at t = 5 there, 1.64 in bngsim). Its
+the species' own name. BNGsim's reader takes the pair as the rule, so the file is
+exact for BNGsim, but BioNetGen's `run_network` holds the species at its initial
+value for the whole run (`B := 2*A`: B = 20 at t = 5 there, 1.64 in BNGsim). Its
 rate laws read the rule through that observable or function, so only the
 species' own column can be wrong there. The writer warns, with a `ConversionWarning`
 naming those species, and never refuses, `strict=True` included;
 `capability_report` and the reports `sbml_to_net` and `validate_conversion`
 return list them under `bngsim_only`.
 
-**A `.bngl` only bngsim reads back as written.** cBNGL carries such a species the
+**A `.bngl` only BNGsim reads back as written.** cBNGL carries such a species the
 same way. A BNGL species name is a pattern (`@comp1::$B()`), which never equals
 its rule's name, so the writer names the molecule after the rule instead:
-`@comp1:$__ar_B()`, beside the function `B()`. bngsim's reader takes the pair as
+`@comp1:$__ar_B()`, beside the function `B()`. BNGsim's reader takes the pair as
 the rule when it loads the `.net` that BNG2.pl writes from the file, so every
 column comes back. BNG2.pl's own run still holds the species at its initial
 value, so this too is a warning, listed under `bngsim_only`, and never a refusal.
@@ -218,7 +218,7 @@ that reads such an assignment reads the value the SBML holds, without a note;
 none comes from a `.bngl` BNG2.pl accepts, which has no such operators, and
 whose parameters call no functions and do not read time. A `min` or `max`, which that MathML does not have either, is
 written as the `piecewise` it is.
-The bngsim annotation holds the protocol as parsed, with the `.bngl` named by
+The BNGsim annotation holds the protocol as parsed, with the `.bngl` named by
 its file name alone, not the path it was read from.
 
 **Starting from a `.bngl` model (the full export pipeline).** The converter's model
@@ -284,13 +284,13 @@ creation date, a description — the channel BioModels/COMBINE tools read) and a
 `bngsim-conversion.json` carrying the full **faithfulness verdict** — gate level and
 per-level L0–L4 result, `ok` / `rhs_faithful` / `max_rhs_delta`, and any
 dropped/lossy notes. So the validation verdict is auditable by anyone who
-opens the archive, and a future reader can tell which bngsim version produced it.
+opens the archive, and a future reader can tell which BNGsim version produced it.
 `ok` and `lossy` judge the network. What the SED-ML's standard elements do not
 hold of the protocol, such as a `reset_conc=>1` scan that BNG2.pl starts where
 an earlier run left the model, is warned of at export and recorded as
 `sedml_lossy`, in the report and in `bngsim-conversion.json`, and
 `metadata.rdf` says how many such notes there are. A tool that runs the
-standard elements runs something else there; bngsim reads the protocol from
+standard elements runs something else there; BNGsim reads the protocol from
 its annotation.
 The `created` timestamp is injectable (`created="…"` / `--created`) for byte-reproducible archives:
 it is stamped both into the RDF and onto every zip entry, so two builds from the same
@@ -333,7 +333,7 @@ SBML's ids, so it runs on `load_model()`; `load_full_protocol(entry)` names them
 as another model entry does, the bundled `.net` by their BNGL names.
 
 **Reading a SED-ML document another tool wrote.** `read_sedml_protocol` (and an
-archive's `load_full_protocol`) reads a document without bngsim's annotation by
+archive's `load_full_protocol`) reads a document without BNGsim's annotation by
 its tasks (issue #1662): each `task` is a run of its model from that model's
 initial state, with the model's `changeAttribute` and `computeChange` changes
 (a species' initial value, a parameter's value, a kinetic law's local parameter

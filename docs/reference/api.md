@@ -23,7 +23,7 @@ Properties:
 - `species_names`, `param_names`, `observable_names`, `function_names`
 - `analytical_jacobian_status` — `"complete"`, `"pending"` (functional rate laws not derived yet), or `"declined: <reason>"` when the model runs on the finite-difference Jacobian: the rate law and what stopped its derivation, the derivation budget, the C++ attach gate's verdict, or the environment switch. The gate's verdict names the entry it refused, with the probe state and both values — `∂f[B()]/∂[A()] is non-finite (inf) at probe 0 (the seed state) while the RHS is finite`, or `the finite-difference self-check found a trustworthy mismatch at probe 0 (the seed state) in ∂f[LX()]/∂[LX()]: analytical 0, finite-difference -10` (issue #534). The same reason is logged at INFO on the `bngsim` logger when it happens (issue #506)
 - `analytical_jacobian_decline` — the same decline as a dict a census can group by: `None` while the status is `"complete"` or `"pending"`, otherwise `kind` (a stable category from `bngsim._jacobian.DECLINE_KINDS`, such as `budget`, `unresolved_symbol` or the C++ gate's `fd_mismatch`) and `reason` (the status text after `declined: `). The gate's kinds also carry the fields their verdict sets (of `rxn_idx`, `per_observable`, `target_idx`, `row`, `col`, `probe`, `analytical`, `finite_difference`, `n_nonfinite` and `detail`; a field a kind does not set is absent) and the species `row` and `col` name as `row_species` / `col_species`. Group by `kind`, not by the text, whose wording changes (issue #538)
-- `primary_param_names` — the model's independent **knobs**, and the list to hand an optimizer or sampler, less `frozen_params` where a model has any. `param_names` minus two classes, one per flag: `param_is_expression` (a derived `ConstantExpression`, recomputed from the primaries underneath it) and `param_is_internal` (a slot bngsim synthesized — an SBML `_V0_<comp>`, or a function's backing slot — which `set_param` refuses to write). A constant written as arithmetic (`gamma 1/7`) is **not** in either class and is an ordinary knob (issue #227)
+- `primary_param_names` — the model's independent **knobs**, and the list to hand an optimizer or sampler, less `frozen_params` where a model has any. `param_names` minus two classes, one per flag: `param_is_expression` (a derived `ConstantExpression`, recomputed from the primaries underneath it) and `param_is_internal` (a slot BNGsim synthesized — an SBML `_V0_<comp>`, or a function's backing slot — which `set_param` refuses to write). A constant written as arithmetic (`gamma 1/7`) is **not** in either class and is an ordinary knob (issue #227)
 - `frozen_params` — the parameters that a number the model was built with was read from. For SBML (compartment sizes, `speciesReference` ids and a kinetic law's own parameters among them): a compartment size set by an `initialAssignment` or a constant assignment rule, the initial value of a species converted by the size of a compartment that is a state, a stoichiometry, a `conversionFactor`, an initial value that could not be kept symbolic, each followed down through what it reads. For a compartmental BNGL model: the volumes BNG2.pl wrote into the rate constants (each parameter a `unit_conversion=` comment names, and what a derived parameter or a function among them reads). `set_param` refuses to change one and a sensitivity column for one is refused (issues #695, #696, #711). Empty for most models
 
 Methods:
@@ -138,7 +138,7 @@ once, so every point of a batch or scan shares one tolerance. See the
 Properties:
 - `method`, `model`, `current_time`
 - `has_analytic_sens_rhs` (bool) and `sens_rhs_decline_reason` (`str | None`,
-  issue #438) — whether a forward-sensitivity run on this Simulator uses bngsim's
+  issue #438) — whether a forward-sensitivity run on this Simulator uses BNGsim's
   analytic `∂f/∂p` or CVODES' internal difference quotient, and why not when it
   does not. A property of the (build, model) pair rather than of the build, so no
   `capabilities()` key can answer it. Ask a Simulator built for a sensitivity run:
@@ -216,7 +216,7 @@ Session control:
   `bngsim.SimulationTimeout` and the session must be destroyed before
   reuse. A segment that starts at `current_time` runs on the session clock,
   which is model time. One that starts elsewhere continues from
-  `current_time` and is labelled with the times asked for; for a model that
+  `current_time` and is labeled with the times asked for; for a model that
   reads the clock (`time()` or a table function indexed by time) that raises
   `SimulationError`. `solver_stats["n_steps"]` counts the events since
   `initialize`, as an `NfsimSession`'s does.
@@ -288,7 +288,7 @@ Properties:
 - **`unconverged_pure_sinks`** — `list[str]`; on a *failed* solve, the write-only accumulators that were in the test and are carrying flux — i.e. the residual has a structural floor, not a slow tail. Empty otherwise
 - **`sensitivity`** — `ndarray (n_species, n_params)` species `dY_ss/dp` (or `None` if no `sensitivity_params`)
 - **`sensitivity_params`** — `list[str]`
-- **`observable_names`**, **`expression_names`** — `list[str]` labelling the output-sensitivity rows (populated on a sensitivity run; `expression_names` filters the auto-generated `_rateLawN` functions, matching `Result`)
+- **`observable_names`**, **`expression_names`** — `list[str]` labeling the output-sensitivity rows (populated on a sensitivity run; `expression_names` filters the auto-generated `_rateLawN` functions, matching `Result`)
 - **`sensitivities_observables`** — `ndarray (n_observables, n_params)` exact `d(observable)/dp`
 - **`sensitivities_expressions`** — `ndarray (n_expressions, n_params)` `d(function)/dp` total derivative (state chain + explicit `∂func/∂p`)
 - **`rhs_backend`**, **`sens_jacobian_source`**, **`sens_dfdp_source`**, **`sens_output_source`** — which numerical path each piece took. `sens_output_source` (issues #75, #1002) is `"codegen"` / `"partial"` / `"none"` for the `d(function)/dp` block: the compiled `bngsim_codegen_output_sens` chain rule answered every function, some of them, or none. A function it does not answer is a NaN row, refused by name by `output_sensitivities`; it is not differenced
@@ -317,7 +317,7 @@ All inherit from `bngsim.BngsimError` (which inherits `RuntimeError`):
 
 - **`ModelError`** — `.net` parse failures, invalid model state
 - **`SimulationError`** — Solver failures (convergence, NaN)
-  - **`SparseJacobianUnavailableError`** — `force_sparse_linear_solver=True` on a model that cannot supply a sparse Jacobian for KLU: its analytical Jacobian is unavailable (or suppressed by `jacobian="fd"`) and its sparsity pattern has no structural nonzero to colour. A refusal by name, not a solver failure: drop the flag to use the dense solver. A `SimulationError`, as it was raised before it had a type, from `run()` and `run_batch()` alike.
+  - **`SparseJacobianUnavailableError`** — `force_sparse_linear_solver=True` on a model that cannot supply a sparse Jacobian for KLU: its analytical Jacobian is unavailable (or suppressed by `jacobian="fd"`) and its sparsity pattern has no structural nonzero to color. A refusal by name, not a solver failure: drop the flag to use the dense solver. A `SimulationError`, as it was raised before it had a type, from `run()` and `run_batch()` alike.
 - **`SimulationTimeout`** — Wall-clock budget exceeded; `.timeout` and `.elapsed` attributes
 - **`ParameterError`** — Unknown parameter name, invalid value
 - **`SensitivityUnsupportedError`** — Forward sensitivity declined for this model: an event whose crossing time moves in a way `dt*/dp` cannot be computed for, or a rate law that does not differentiate to closed form. A declared capability gap, not a failure — catch it to fall back on a derivative-free optimizer. Also inherits `ValueError` (what both sites raised before the class existed), so `except ValueError` still catches it. A missing compiler/JIT is *not* this exception; that stays a plain `RuntimeError`.
@@ -384,9 +384,9 @@ one. See the [codegen guide](../user-guide/codegen.md#managing-the-artifact-cach
 - **`bngsim.codegen_cache_info(cache_dir=None)`** → `CacheInfo` — path, entry count, `total_bytes`, `by_kind`, `by_key`, `live` / `orphaned` (artifacts under this install's codegen key and under any other, issue #363), `other_arch` (this install's source built for another architecture, which is neither, issue #1486), `built_span` / `used_span`, and `atime_is_live` (whether this filesystem records access times, i.e. whether prune's LRU order is real recency or build order). Reads directory metadata only — the key comes off the artifact's *name*. `.to_dict()` is the JSON form.
 - **`bngsim.clean_codegen_cache(cache_dir=None, *, min_age=3600.0, dry_run=False)`** → `CacheSweep` — remove leaked compile partials only (`bngsim_shard_*` directories, stray `.c`, temp libraries). No compiled artifact is touched, so no cache hit is lost.
 - **`bngsim.prune_codegen_cache(cache_dir=None, *, orphaned=False, keep_keys=(), older_than=None, max_size=None, min_age=3600.0, dry_run=False)`** → `CacheSweep` — bound the cache by orphan status (`orphaned=True` drops every artifact built under another codegen key, the targeted sweep after an emitter edit, but leaves `other_arch` to the install that can load it), age (`older_than="30d"`) and/or total size (`max_size="2G"`), evicting least-recently-used artifacts. At least one bound is required; the partial sweep runs first, so the size cap covers the whole directory. `keep_keys` spares other installs sharing the directory (`None` in it spares the pre-#363 names) and is only accepted with `orphaned=True`.
-- **`bngsim.clear_codegen_cache(cache_dir=None, *, min_age=0.0, dry_run=False)`** → `CacheSweep` — remove every artifact and partial bngsim owns.
+- **`bngsim.clear_codegen_cache(cache_dir=None, *, min_age=0.0, dry_run=False)`** → `CacheSweep` — remove every artifact and partial BNGsim owns.
 
-Beside an artifact whose analytic `∂f/∂p` was declined, bngsim writes a small
+Beside an artifact whose analytic `∂f/∂p` was declined, BNGsim writes a small
 decline note (`rhs_<key>_<hash>.sens.json`, issue #438) so the reason survives a
 warm cache. Beside an artifact built with the output-sensitivity code it writes a
 second note (`rhs_<key>_<hash>.outputs.json`, issue #1004): which functions the
@@ -394,12 +394,12 @@ artifact holds a derivative for, and why not for the others. A process that is
 handed the artifact from the cache reads it, so `output_sensitivities([...])`
 raises the reason the build recorded, and the map is not worked out again. (The
 note answers for a model whose tables are the builder's: one given a table
-function after it ran keeps its artifact and is analysed for itself, beside
+function after it ran keeps its artifact and is analyzed for itself, beside
 what the note says the build has no derivative for.) Both
-are bngsim's own files: counted under one kind, removed by `clear`, and removed by
+are BNGsim's own files: counted under one kind, removed by `clear`, and removed by
 `prune` exactly when the artifact they describe is removed.
 
-Entries bngsim did not write are classified `foreign`, reported, and **never**
+Entries BNGsim did not write are classified `foreign`, reported, and **never**
 removed — by `clear` as much as by `clean` — because `BNGSIM_CODEGEN_CACHE_DIR` is a
 user-supplied path. Nothing modified within `min_age` is removed either, so a sweep
 cannot delete the scratch files of a compile that is still running.
