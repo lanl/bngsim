@@ -40,25 +40,29 @@ changed since.
 - **Compiled code.** With a C compiler on the machine you need do nothing:
   bngsim compiles a large model's right-hand side and every sensitivity run,
   and caches what it builds. Without one, plain runs use the interpreter, and
-  sensitivities need a source build with the MIR JIT
-  (`-DBNGSIM_ENABLE_MIR=ON`, then run with `BNGSIM_CODEGEN_JIT=mir`), which
-  compiles in-process. Building that needs a C++ toolchain once.
+  sensitivities need the MIR JIT, which compiles in-process. MIR is a
+  prototype that no published wheel carries: build a wheel with
+  `-DBNGSIM_ENABLE_MIR=ON` on a machine that has a toolchain, then run with
+  `BNGSIM_CODEGEN_JIT=mir`.
 - **Linear solver.** Leave it unset and bngsim picks dense LU, sparse KLU or a
   BLAS dense factor for each model from its size and sparsity.
-  `result.solver_stats["linear_solver"]` says which. If you know better, pass
+  `result.solver_stats["linear_solver"]` says which: `0` dense LU, `1` KLU,
+  `2` the BLAS factor. If you know better, pass
   `force_sparse_linear_solver=True` or `force_dense_linear_solver=True` to
   `Simulator`, and your choice is used.
 - **Many parameters.** `sim.compute_all_sensitivities(t_span=..., n_points=...,
   n_workers=8)` splits the parameters into chunks and integrates each chunk's
-  sensitivities on its own thread, so wall time falls about as the number of
-  cores grows. It gives the whole sensitivity matrix: every output with respect
-  to every parameter, which a Fisher information matrix, an identifiability
-  check or a least-squares fit needs. Adjoint sensitivities (AMICI) give the
+  sensitivities on its own thread, so wall time falls with more cores, if less
+  than in proportion (3x on 6 cores for a 356-species model). It gives the
+  whole sensitivity matrix, every output with respect to every parameter,
+  which a Fisher information matrix, an identifiability check or a
+  least-squares fit needs. Adjoint sensitivities (AMICI) give the
   gradient of one scalar objective, in time nearly independent of the number
   of parameters. Sharding divides the time; it does not remove the growth.
-  Sharded forward sensitivities are a practical alternative up to a few
-  hundred parameters on a multi-core machine. For thousands of parameters and
-  one objective, adjoint is the better algorithm.
+  Sharded forward sensitivities are practical for tens of parameters, and
+  for a hundred or so on a multi-core machine. Past that, for one objective
+  on a large model, adjoint is the better algorithm; published benchmarks put
+  the crossover at tens to a hundred parameters.
 - **JAX.** `bngsim.jax.differentiable_solve` (`pip install 'bngsim[jax]'`)
   makes a CVODE solve a JAX function, so `jax.grad` or `jax.jacfwd` goes
   through the simulation into a loss written in JAX. Use it when the rest of
