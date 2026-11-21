@@ -1,12 +1,12 @@
 ---
-summary: "What bngsim is, and a model loaded and run in one block."
+summary: "What BNGsim is, and a model loaded and run in one block."
 ---
 
-# bngsim
+# BNGsim
 
 **A simulator for biochemical reaction networks, as a Python library.**
 
-`bngsim` simulates models written in SBML, Antimony, and BNGL. It does ODE
+BNGsim simulates models written in SBML, Antimony, and BNGL. It does ODE
 integration, stochastic simulation (SSA, PSA), and network-free simulation
 (NFsim, RuleMonkey). It also finds steady states, runs parameter scans, and
 computes forward sensitivities. Models are simulated in-process, and results

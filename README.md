@@ -1,10 +1,10 @@
-![bngsim](https://raw.githubusercontent.com/lanl/bngsim/HEAD/docs/bngsim-coyote-logo/bngsim-readme-card-sienna.svg)
+![BNGsim](https://raw.githubusercontent.com/lanl/bngsim/HEAD/docs/bngsim-coyote-logo/bngsim-readme-card-sienna.svg)
 
-# bngsim
+# BNGsim
 
 **A simulator for biochemical reaction networks, as a Python library.**
 
-`bngsim` simulates models written in SBML, Antimony and the BioNetGen language
+BNGsim simulates models written in SBML, Antimony and the BioNetGen language
 (BNGL). It integrates a model as ordinary differential equations or runs it as
 an exact stochastic simulation. A rule-based model can also be run network-free,
 with NFsim or RuleMonkey, from the XML that BioNetGen writes. The same `Model`,
@@ -15,16 +15,16 @@ It also computes forward sensitivities, finds steady states, runs parameter
 scans and batches on parallel threads, and converts models between formats.
 For BioNetGen users, it replaces `run_network`.
 [PyBioNetGen](https://github.com/RuleWorld/PyBioNetGen) and
-[PyBNF](https://github.com/lanl/PyBNF) use bngsim.
+[PyBNF](https://github.com/lanl/PyBNF) use BNGsim.
 
-- [When to use bngsim](https://bngsim.readthedocs.io/en/latest/choosing.html):
+- [When to use BNGsim](https://bngsim.readthedocs.io/en/latest/choosing.html):
   what it does and doesn't do, alternatives, and tips.
-- [What bngsim does](https://bngsim.readthedocs.io/en/latest/features.html):
+- [What BNGsim does](https://bngsim.readthedocs.io/en/latest/features.html):
   features, engines, and what sets it apart.
 - [Agent guide](https://bngsim.readthedocs.io/en/latest/agent-guide.html):
   one page for AI agents.
 
-> **Status: alpha (0.x).** bngsim is checked every night against BioNetGen,
+> **Status: alpha (0.x).** BNGsim is checked every night against BioNetGen,
 > libRoadRunner, AMICI and the SBML test suite, but it is early software, and
 > bugs that give a wrong answer without an error are still open. They carry the
 > [`correctness concern`](https://github.com/lanl/bngsim/issues?q=is%3Aissue%20state%3Aopen%20label%3A%22correctness%20concern%22)
@@ -106,8 +106,8 @@ and lives in [`docs/`](https://github.com/lanl/bngsim/tree/HEAD/docs):
 
 - [Installation](https://bngsim.readthedocs.io/en/latest/installation.html) ·
   [Quickstart](https://bngsim.readthedocs.io/en/latest/quickstart.html) ·
-  [When to use bngsim](https://bngsim.readthedocs.io/en/latest/choosing.html) ·
-  [What bngsim does](https://bngsim.readthedocs.io/en/latest/features.html)
+  [When to use BNGsim](https://bngsim.readthedocs.io/en/latest/choosing.html) ·
+  [What BNGsim does](https://bngsim.readthedocs.io/en/latest/features.html)
 - User guide: [loading models](https://bngsim.readthedocs.io/en/latest/user-guide/loading-models.html),
   [simulation](https://bngsim.readthedocs.io/en/latest/user-guide/simulation.html),
   [network-free](https://bngsim.readthedocs.io/en/latest/user-guide/network-free.html),
@@ -154,13 +154,13 @@ Laboratory open-source release; LANL software release reference **O5098**.
 
 ## Citation
 
-If you use `bngsim` in your research, please cite:
+If you use BNGsim in your research, please cite:
 
 > Preprint coming soon!
 
 ## Acknowledgments
 
-BNGsim was developed and validated against RoadRunner, AMICI, COPASI, BioNetGen,
+BNGsim has been validated against RoadRunner, AMICI, COPASI, BioNetGen,
 and the SBML/DSMTS test suites. See
 [ACKNOWLEDGMENTS.md](https://github.com/lanl/bngsim/blob/HEAD/ACKNOWLEDGMENTS.md) for
 citations.

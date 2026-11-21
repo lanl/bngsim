@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.abspath(os.path.join("..", "python")))
 sys.path.insert(0, os.path.abspath("_ext"))
 
 # -- Project information -----------------------------------------------------
-project = "bngsim"
+project = "BNGsim"
 author = "William S. Hlavacek"
 copyright = "Los Alamos National Laboratory"
 
@@ -136,7 +136,7 @@ intersphinx_mapping = {
 # root: READTHEDOCS_CANONICAL_URL where it sets it, this otherwise.
 llms_txt_base_url = "https://bngsim.readthedocs.io/en/latest/"
 llms_txt_summary = (
-    "bngsim simulates biochemical reaction networks in Python: SBML, Antimony and "
+    "BNGsim simulates biochemical reaction networks in Python: SBML, Antimony and "
     "BioNetGen (BNGL, .net) models, run as ODEs, stochastically (SSA, PSA) or "
     "network-free, with parameter scans, steady states and sensitivities."
 )

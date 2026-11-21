@@ -114,6 +114,6 @@ in `CONTRIBUTING.md`, not on this page.
 
 The third-party software bngsim redistributes, the engines vendored under
 `third_party/` among it, is listed with its license terms in
-[`NOTICE`](https://github.com/lanl/bngsim/blob/HEAD/NOTICE). The tools it was
-developed and validated against are cited in
+[`NOTICE`](https://github.com/lanl/bngsim/blob/HEAD/NOTICE). The tools it
+has been validated against are cited in
 [`ACKNOWLEDGMENTS.md`](https://github.com/lanl/bngsim/blob/HEAD/ACKNOWLEDGMENTS.md).

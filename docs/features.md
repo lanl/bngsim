@@ -1,8 +1,8 @@
 ---
-summary: "What bngsim does: formats, methods, analyses, results and interchange; what sets it apart; its engines; and the tools that use it."
+summary: "What BNGsim does: formats, methods, analyses, results and interchange; what sets it apart; its engines; and the tools that use it."
 ---
 
-# What bngsim does
+# What BNGsim does
 
 | | |
 |---|---|
@@ -15,14 +15,14 @@ summary: "What bngsim does: formats, methods, analyses, results and interchange;
 
 ## Engines
 
-bngsim's engines are written in C++. ODE integration and steady-state solving
-use CVODE and KINSOL from SUNDIALS. Stochastic simulation uses bngsim's own SSA
+BNGsim's engines are written in C++. ODE integration and steady-state solving
+use CVODE and KINSOL from SUNDIALS. Stochastic simulation uses BNGsim's own SSA
 and PSA. Network-free simulation uses NFsim and RuleMonkey.
 
 ## Who uses it
 
 [PyBioNetGen](https://github.com/RuleWorld/PyBioNetGen) and
-[PyBNF](https://github.com/lanl/PyBNF) use bngsim. PyBNF uses it for
+[PyBNF](https://github.com/lanl/PyBNF) use BNGsim. PyBNF uses it for
 parameterization, uncertainty quantification, and model checking
 ([guide](user-guide/pybnf.md)).
 
@@ -35,18 +35,15 @@ parameterization, uncertainty quantification, and model checking
   and RuleMonkey) run in the same process as the rest.
 - **It refuses what it cannot simulate faithfully.** A model with an algebraic
   rule, a `delay()` term, a fast reaction, or an SBML package that changes its meaning
-  raises an error that names the construct. bngsim does not drop the construct
+  raises an error that names the construct. BNGsim does not drop the construct
   and integrate a different system. The same holds for sensitivities: where a
   derivative cannot be computed correctly, the run says so.
-- **Its results are compared with other simulators' every night.** In the
-  nightly sweep, 589 of 592 BNGL models agree with BioNetGen's `run_network` to
-  1e-4 (ODE), and 1,248 of the 1,323 BioModels ODE models agree with
-  libRoadRunner to ~1e-4. Sensitivities are compared with AMICI and with finite
-  differences, and SBML semantics with the SBML test suite. The reference
-  engines run live once a week, and the other nights compare against their
-  recorded results. The counts are read from the committed
-  [baselines](https://github.com/lanl/bngsim/tree/HEAD/parity_checks/nightly/baselines),
-  and a regression raises an alert.
+- **Its results are compared with other simulators' every night.** BNGL models
+  are compared with BioNetGen's `run_network`, SBML models with libRoadRunner,
+  sensitivities with AMICI and finite differences, and SBML semantics with the
+  SBML test suite. A regression raises an alert. Results will be in
+  [bngsim-benchmarks](https://github.com/lanl/bngsim-benchmarks)
+  ([how BNGsim is checked](about/benchmarks.md)).
 - **It is built to be embedded.** A run starts no subprocess and writes no
   result files. The ODE and stochastic engines hold no global state, so many
   models and simulators coexist in one process, and the GIL is released during
@@ -56,5 +53,5 @@ parameterization, uncertainty quantification, and model checking
   shared random-number stream
   ([what an NFsim run changes](https://bngsim.readthedocs.io/en/latest/user-guide/network-free.html#what-an-nfsim-run-changes-in-your-process)).
   [PyBNF](https://github.com/lanl/PyBNF) and
-  [PyBioNetGen](https://github.com/RuleWorld/PyBioNetGen) use bngsim this way
+  [PyBioNetGen](https://github.com/RuleWorld/PyBioNetGen) use BNGsim this way
   ([PyBNF guide](https://bngsim.readthedocs.io/en/latest/user-guide/pybnf.html)).
