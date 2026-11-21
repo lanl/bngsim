@@ -119,6 +119,21 @@ def test_a_row_after_a_run_is_read_from_its_own_start_not_where_the_run_ended(gr
     assert _rel(row.species[-1, 0], _logistic(DOSE, T)) < 1e-5
 
 
+def test_a_row_that_writes_nothing_starts_at_the_initial_conditions_after_a_run(grower):
+    """A row with no writes starts from the initial conditions too, and "auto"
+    is read there: the model declared at X0 = 1e-9 and run to t = 20 holds
+    X = 0.327, and with the row's start read from that live state the row
+    returned 0.622 for 0.327."""
+    fresh = grower(declared=DOSE).run_batch(t_span=(0, T), n_points=2, params=[{}], atol="auto")
+    sim = grower(declared=DOSE)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)  # #1362's: the model is not at its start
+        sim.run(t_span=(0, T), n_points=2)
+        (row,) = sim.run_batch(t_span=(0, T), n_points=2, params=[{}], atol="auto")
+    assert np.array_equal(np.asarray(row.species), np.asarray(fresh[0].species))
+    assert _rel(row.species[-1, 0], _logistic(DOSE, T)) < 1e-5
+
+
 @pytest.mark.parametrize("n_points", [2, 41])
 def test_a_row_is_the_run_from_its_start(n_points, grower):
     """GH #203's contract: a batch row and a run() at that point give the same
@@ -378,6 +393,22 @@ def test_a_point_its_hook_doses_is_judged_by_its_own_tolerance(grower):
             "k", [0.01], t_span=(0, T), n_points=2, on_point=_dose_x
         )
     assert _rel(point.species[-1, 0], _logistic(DOSE, T, k=0.01)) < 1e-5
+
+
+@pytest.mark.parametrize("atol", ["auto", "tracking"])
+def test_a_point_its_hook_doses_is_the_run_from_there(atol, grower):
+    """GH #203's contract for a point whose hook writes its start: the point is
+    the run() from there at the same atol, bit for bit. The scan's vector, or
+    tracking ceiling, read before any hook ran, takes the point's own where it
+    is tighter: with the tracking ceiling not tightened, the point returned
+    0.3266750836788251 for run()'s 0.3266748477158061."""
+    (point,) = grower().parameter_scan(
+        "k", [1.0], t_span=(0, T), n_points=2, atol=atol, on_point=_dose_x
+    )
+    sim = grower()
+    sim.model.set_concentration("X()", DOSE)
+    alone = sim.run(t_span=(0, T), n_points=2, atol=atol)
+    assert np.array_equal(np.asarray(point.species), np.asarray(alone.species))
 
 
 @pytest.mark.parametrize("atol", [None, "auto"])
