@@ -130,17 +130,8 @@ and manage the compiled-code cache (`bngsim-cache`).
 
 ## Benchmarks & validation
 
-`bngsim` is faster than `run_network` on every SSA/PSA model measured
-(geometric-mean speedup ~8.7× SSA), and scores 1577 `Match` on the SBML semantic test
-suite with **zero** wrong-but-plausible answers. The methodology, the reproducible
-harnesses and the figures as of the July 2026 release are in
-[benchmarks & validation](https://bngsim.readthedocs.io/en/latest/about/benchmarks.html).
-Results for an earlier release (0.11.31) are in the
-[SBML Test Suite Database](https://sbml.bioquant.uni-heidelberg.de/Submission/Details/72).
-
-Nightly checks, baselines and how to reproduce them are described in
-[`REPRODUCING.md`](https://github.com/lanl/bngsim/blob/HEAD/REPRODUCING.md) and
-[`parity_checks/nightly/`](https://github.com/lanl/bngsim/blob/HEAD/parity_checks/nightly/README.md).
+Correctness and efficiency results will be in
+[bngsim-benchmarks](https://github.com/lanl/bngsim-benchmarks).
 
 ## Contributing
 
