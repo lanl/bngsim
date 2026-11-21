@@ -130,7 +130,8 @@ Every stochastic call takes `seed=`:
 - `seed=None`, the default: BNGsim draws a fresh 31-bit seed from system
   entropy on each call, so two calls give independent trajectories.
 - `seed=N`, an integer from 0 to 2**64 - 1: BNGsim passes `N` to the engine
-  as is. The same seed from the same starting state gives the same trajectory.
+  as is. `run()` reseeds on every call, so the same seed, starting state and
+  run arguments give the same trajectory.
   A seed outside that range raises `ValueError`.
 - NFsim (`method="nf"`, `NfsimSession`) takes seeds from 0 to 2**32 - 1 only,
   and raises `ValueError` on a larger one. SSA, PSA and RuleMonkey use all 64
@@ -157,8 +158,9 @@ assert ra.seed == rb.seed == 42                  # exact reproduction
 assert (ra.species == rb.species).all()
 ```
 
-The same rules hold for `Simulator.run_batch`, `NfsimSession.initialize` and
-`RuleMonkeySession.initialize`.
+An `NfsimSession` or `RuleMonkeySession` takes its seed once, in
+`initialize(seed)`. A second `simulate()` continues the random stream, so to
+repeat a session's trajectory, call `initialize(seed)` again.
 
 `run_batch`, `run_replicates` and `parameter_scan` take one base seed. Row 0
 runs at the base seed itself, so `seed=rows[0].seed` reruns the whole call,

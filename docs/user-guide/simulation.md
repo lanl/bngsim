@@ -95,9 +95,9 @@ trigger is still true at a step boundary does not fire again there. A delayed
 event pending across a boundary fires in the next step. A change between steps
 that makes a trigger true fires it at the start of the next step.
 
-`snapshot()` and `restore()` save and rewind the events with the state. So does
-rolling the clock back with `set_state(x, time=t)` or `set_time(t)` to where
-one of the last 64 steps ended. Rolling back further warns and starts the
+`snapshot()` and `restore()` save and rewind the events with the state.
+`set_state(x, time=t)` and `set_time(t)` also rewind the events, if `t` is
+where one of the last 64 steps ended. Rolling back further warns and starts the
 events afresh; take a `snapshot()` there instead. A run from any other start
 time, or after `model.reset()`, starts each trigger from its `initialValue`.
 
@@ -228,7 +228,8 @@ propagates.
 row and raise nothing when a condition is met. A row that meets one comes back
 cut there, next to the rows that ran to the end. `Result.stop_condition` names
 the condition it met, or is `None`. Conditions are checked in the order they
-were added, and the first one met cuts the row.
+were added, and the first one met cuts the row. An expression that raises at a
+sample still raises `ValueError` from these calls.
 
 `squeeze=True` is refused while a condition is registered, since a cut row is
 shorter than the rest. `Result.squeeze(rows)` stacks the list when no row was

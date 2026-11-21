@@ -23,6 +23,7 @@ model = bngsim.Model.load("model.bngl")   # Model.from_bngl (needs BNG2.pl)
 The suffix match ignores case. An unknown suffix raises `ModelError`, which
 lists the suffixes BNGsim knows. If the suffix doesn't match the contents, such
 as an SBML file saved as `.txt`, call the loader for the format yourself.
+`Model.load` passes `defer_jacobian=` on to the loader.
 
 SBML and Antimony also load from a string, and BioModels entries load by id:
 
@@ -49,7 +50,7 @@ Watch out for:
 - **BNGL needs BioNetGen.** BNGsim runs BNG2.pl to turn rules into a network,
   so `.bngl` files need BNG2.pl and Perl. See [BNGL models](#bngl-models).
 - **Antimony needs an extra:** `pip install "bngsim[antimony]"`. SBML needs
-  nothing extra; `python-libsbml` comes with BNGsim.
+  `python-libsbml>=5.20`, which comes with BNGsim.
 - **`Model.load` reads files only.** `Model.load("BIOMD0000000010")` fetches
   nothing. Its error tells you to call `Model.from_biomodels`.
 - **`compartment_sizes=`** sets compartment volumes for SBML and Antimony
@@ -115,9 +116,11 @@ The main fields:
   is a concentration, the amount divided by the compartment size, as
   `get_concentration` and `Result.species` give it. A species declared as an
   amount also has `quantity: "amount"` and its `initial_amount`. A `.net` or
-  BNGL file states no units, so this is `None`.
+  BNGL file states no units, so this is `None`, and its species have no
+  `quantity` or `compartment` key: they are absent, not guessed.
 - **`reactions`**, **`parameters`** and **`functions`**: as the file declares
-  them. BNGsim may run one reaction as several channels; `Model.n_reactions`
+  them. A local parameter is named `_lp_<reaction>_<id>`, and a function
+  definition a law calls is listed under `function_definitions`. BNGsim may run one reaction as several channels; `Model.n_reactions`
   counts those. A size or parameter that a rule or event changes is listed
   under `other_states`.
 - **`methods`**: a `status` and `reasons` for `ode`, `ssa`, `psa`, `nf`, `rm`
@@ -129,8 +132,11 @@ The main fields:
 - **`forward_sensitivities`** is never `"ok"`. It is `"refused"` for a delayed
   event, `"unavailable"` without a C compiler, and otherwise `"undecided"`,
   because a rate law that can't be differentiated, such as one with `floor()`,
-  is found only when the run builds its code. `refused_parameters` lists the
-  parameters a sensitivity run always refuses.
+  is found only when the run builds its code. `min`, `max`, `abs` and
+  comparisons do differentiate. `refused_parameters` lists the parameters a
+  sensitivity run always refuses: those folded at load, the compartment sizes
+  `set_param` can't write, and the parameters a rule or function sets. Any
+  other compartment size gets a d/dV column.
 - **`steady_state`** is `"refused"` for a model with an event, a compartment
   size that jumps, a state that reads time, or no species. `"ok"` doesn't
   promise that a solve converges.
@@ -138,7 +144,8 @@ The main fields:
   when the next `run()` continues from the current state.
 
 Lists longer than `limit` (default 50) are cut, and `omitted` says how many
-were left out. `describe(limit=None)` lists everything.
+were left out. An SSA refusal is listed once per kind, with a count, and an
+expression is cut at 200 characters. `describe(limit=None)` lists everything.
 
 ## BNGL models
 
@@ -224,10 +231,11 @@ BNG2.pl:
   inputs until it is set to a number. So does a species whose amount is a
   parameter or an expression, until a run makes it a number. A parameter
   defined through itself is refused.
-- Saves and resets keep one saved state per label. A reset to a declared value
+- `saveConcentrations`/`resetConcentrations` and
+  `saveParameters`/`resetParameters` keep one saved state per label. A reset to a declared value
   that an action before `generate_network` changed is refused.
-- `parameter_scan` resets before each point when `reset_conc` is on (the
-  default). The scanned parameter keeps its last value. `bifurcate` never
+- `parameter_scan` resets before each point, and again at the end, when
+  `reset_conc` is on (the default). The scanned parameter keeps its last value. `bifurcate` never
   resets.
 - ODE runs use 1e-8 absolute and relative tolerance unless the action or the
   call sets others. `seed=` seeds stochastic runs.
@@ -283,8 +291,9 @@ libantimony names and RoadRunner runs: the model marked `model *m()`, else the
 top level if a statement sits outside every model, else the last model
 defined. A module instantiated at the top level (`A: sub()`) loads with its
 instance's names: `A_S1` for `sub`'s `S1`. If a stray top-level statement,
-such as a `unit` line, makes an empty top level the main module, BNGsim loads
-the last model defined instead. A `ConversionWarning` names anything the top
+such as a `unit` line, makes the top level the main module, and nothing there
+changes over time (no reaction, event or rate rule, and no rule that reads
+time), BNGsim loads the last model defined instead. A `ConversionWarning` names anything the top
 level held that was left out.
 
 **SBML Level 3 packages.** A document that marks a package
@@ -322,7 +331,7 @@ BioModels publishes. It keeps a copy in `~/.cache/bngsim/biomodels` (or
 ## `.net` files
 
 `Model.from_net` reads BioNetGen's network format. It refuses a file it can't
-read one way only, rather than guess:
+read correctly, rather than guess:
 
 - **Species index.** A species line is `[<index>] <species> [<concentration>]`.
   The index may be left off. If it's there, it must equal the line's position:
@@ -345,8 +354,9 @@ read one way only, rather than guess:
   position, as `run_network` reads it.
 - **`Hill` with 0 < h < 1.** The function `Vmax*S^(h-1)/(Kh^h + S^h)` is
   infinite at S = 0 when 0 < h < 1. BNGsim guards it so the rate is 0 there,
-  whatever h you set later. `run_diffrax` refuses such a model while h is in
-  (0, 1).
+  whatever h you set later. `Model.state_switch_root_conditions()` names
+  `S > 0` at every h, and a model with events keeps every root. `run_diffrax`
+  refuses such a model while h is in (0, 1).
 - **Empty files.** A file with none of the parameters, species, functions,
   reactions and groups blocks is refused, as `run_network` refuses it. An empty
   block is fine.

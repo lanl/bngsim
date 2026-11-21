@@ -347,12 +347,13 @@ def test_quickstart_sweep_block_runs_on_the_first_blocks_model(
 
 
 # An issue or pull request reference in prose, a link or an anchor: "#1846",
-# "lanl/bngsim#1846", "issue 111", "PR 12", ".../issues/1846", ".../pull/12",
+# "lanl/bngsim#1846", "GH-1846", "issue 111", "PR 12", ".../issues/1846", ".../pull/12",
 # and a heading anchor built from one, "-issue-111". A Markdown heading's "# "
 # and a code comment's "# 1" have a space after the "#", so they do not match,
 # and neither does an HTML character reference, "&#123;".
 _ISSUE_REFERENCE = re.compile(
     r"(?<!&)#\d+\b"
+    r"|\bGH-\d+\b"
     r"|\b(?:issues?|PRs?|pull requests?)\s+#?\d+\b"
     r"|/(?:issues|pull)/\d+"
     r"|\bissue-\d+\b",

@@ -124,15 +124,24 @@ the residual test, is nearer the root, and moves no species more than a
 thousand tolerances. The step decides where the solve stops. It does not
 decide `converged`.
 
-Above 512 unknowns there is no step. A run is taken on from the state first,
-for `max_time` or 1e6, whichever is shorter, and the polish starts from where
-that run ends. If the run cannot reach its time, the unpolished state is
-returned. The returned state is then later in time than the march, for every
-species, so an accumulator left out by `mask=` has gone on growing.
+Sometimes the step cannot be passed: on a continuum of steady states, where
+the Jacobian is singular, or where a species goes to 0 as 1/t. The march then
+goes on to `max_time`. If it ends at a state that fails the residual test, the
+last state that passed it is returned.
+
+Above 512 unknowns there is no step. The state is polished directly if the
+polish converges, lowers the residual and moves no species more than its
+tolerance. Otherwise a run is taken on from the state first, for `max_time` or
+1e6, whichever is shorter, and the polish starts where that run ends and moves
+no species more than a thousand tolerances. If the run cannot reach its time,
+the unpolished state is returned. A state that comes from such a run has
+moved on in time with every species, so an accumulator left out by `mask=`
+has gone on growing.
 
 ### Tolerances
 
-`rtol` defaults to 1e-8. For the run test it is at least 1e-10, because a run
+`rtol` defaults to the Simulator's `rtol`, 1e-8 unless `set_tolerances`
+changed it. For the run test it is at least 1e-10, because a run
 of 1e6 cannot tell a smaller move from its own error.
 
 `atol_i` is the march's absolute tolerance. It is never more than `rtol` times
@@ -161,9 +170,12 @@ state is refused.
 - **A species `mask=` leaves out that overflows within the run** fails the
   run test, and the solve is refused. Pass a `max_time` short enough for it
   to stay finite.
-- **A species `mask=` leaves out is held during the polish.** If it is tied
-  to other species by a sum the reactions do not show, that sum can be off by
-  as much as the polish moves the rest, up to a thousand tolerances.
+- **A species `mask=` leaves out is held during the polish.** If it shares a
+  total with other species that the solver does not know is conserved, that
+  total can be off by as much as the polish moves the rest, up to a thousand
+  tolerances. For example, `X -> 0` and `0 -> Y` at the same rate keep
+  `X + Y` fixed; with `Y` left out, the polish can move `X` and leave the sum
+  short.
   `converged` speaks only for the species the mask keeps.
 - **A species that approaches 0 as 1/t** (`A + B -> C` at equal totals,
   `2A -> C`) is refused if, at `max_time`, it is still more than about 500
@@ -194,8 +206,10 @@ test either way.
 - **The retry.** A rate law with a jump in a state variable can make the
   march fail with the exact Jacobian. Under `jacobian="auto"` the march is
   then retried once on difference quotients, as `run()` does, and
-  `ss.solver_jacobian_retried` is `True`. `jacobian="analytical"` raises
-  instead.
+  `ss.solver_jacobian_retried` is `True`. After one such retry, the
+  Simulator uses difference quotients on its later steady-state solves too.
+  `jacobian="analytical"` does not retry, so the solve comes back with
+  `converged=False`.
 - **The linear solver.** The march picks sparse KLU or a dense LU by the same
   rule as `run()` (see [Linear solver](solvers.md#linear-solver)).
   `force_sparse_linear_solver` and `force_dense_linear_solver` on the
@@ -225,8 +239,9 @@ ss.excluded_species           # indices of the species left out
 ```
 
 `mask` takes a boolean array of length `n_species` (`True` keeps a species)
-or a list of the species names to keep. Integer indices are refused, because
-`[0, 1]` could mean either.
+or a list of the species names to keep. Integer indices raise `TypeError`,
+because `[0, 1]` could mean either. A boolean array of the wrong length, an
+unknown name, or a mask that leaves out every species raises `ValueError`.
 
 What the mask changes:
 
@@ -287,8 +302,9 @@ ss.eigenvalues                # the spectrum the verdict was read from
 - `root_stability` is `"stable"`, `"unstable"` or `"undetermined"` for a root
   Newton returned, and `""` for an integration result. A trajectory cannot
   come to rest on an unstable root, so integration needs no check.
-- `"undetermined"` means no verdict: more than 512 unknowns, or a Jacobian
-  whose spectrum could not be computed. The root is kept.
+- `"undetermined"` means no verdict: more than 512 unknowns, a Jacobian
+  whose spectrum could not be computed, or a Jacobian that is all zeros
+  (whose zero eigenvalues are still reported). The root is kept.
 - `"unstable"` is returned only when your initial condition was already on
   that root. Integration would return the same state, so there is nothing to
   fall back to.
@@ -344,8 +360,8 @@ count in `n_failed` and have basin -1. An accumulator makes every start fail;
 leave it out with `mask=~model.is_pure_sink()`.
 
 **Telling roots apart.** Two roots are the same when every species agrees to
-`dedupe_rtol` (default 1e-6) of its size. Near 0 a small floor applies, set
-by the largest value the species takes at any start, or by double precision
+`dedupe_rtol` (default 1e-6) of its size. Near 0 a small floor applies: 1e-9
+of the largest value the species takes at any converged start, or double precision
 beside the largest value seen. A species in a conservation law also agrees
 to 1e-9 of its smallest law's scale. A continuum of steady states (a zero
 eigenvalue at every root, as on SIR's line of disease-free states) is not a
@@ -404,7 +420,10 @@ print([round(float(r["A(b!1).B(a!1)"]), 2) for r in results])  # [40.0, 62.98, 7
 ```
 
 Each entry clones the model, sets its parameters, resets the clone to its
-initial conditions and solves. It takes the same options as `steady_state()`.
+initial conditions and solves. It takes the same solver options as
+`steady_state()`, but not `sensitivity_params`. It also takes `states=`,
+`n_workers=`, `newton_burst=` and `certify=` (see
+[Every steady state](#every-steady-state-steady_states)).
 
 **Each entry starts from the initial conditions,** not from the model's
 current state. The reset is what makes a dose over an initial-condition
@@ -429,9 +448,9 @@ print(ss.sensitivity_params)  # ['kf', 'A0']
 grad = ss.output_sensitivities(["observable:C"])   # (n_selectors, n_params)
 ```
 
-- **It needs code generation,** as forward sensitivities do. The derivative
-  code is built automatically. `codegen=False`, or `BNGSIM_NO_CODEGEN`,
-  raises.
+- **It needs code generation,** as forward sensitivities do, and so a C
+  compiler (see [Code generation](codegen.md)). The derivative code is built
+  automatically. `codegen=False`, or `BNGSIM_NO_CODEGEN`, raises.
 - **The derivatives are exact.** `J` and `∂f/∂p` come from compiled closed
   forms where the model has them. Where it does not (Michaelis–Menten, a
   condition such as `if()`, a nonsmooth function such as `abs` or `max`, or
@@ -457,7 +476,7 @@ derivatives of observables and expressions, as on a time-course
 [`Result`](sensitivities.md):
 
 ```python
-grad = ss.output_sensitivities(["observable:C", "expression:activity"])
+grad = ss.output_sensitivities(["observable:C"])   # add "expression:name" rows too
 ss.observable_names            # rows of ss.sensitivities_observables
 ss.expression_names            # rows of ss.sensitivities_expressions
 ss.sensitivities_observables   # (n_observables, n_params)
@@ -509,8 +528,9 @@ NaN row, and a compartment sized by such a rule refuses the solve.
 `-J⁻¹·∂f/∂p` is the derivative of the steady state only at an isolated root
 the system rests at, and only when the returned state is on it. It is not
 the derivative when the steady states form a continuum (an epidemic that
-burns out ends at whatever susceptible level it leaves), when two products
-come from one irreversible branch, or when a total is conserved but not by a
+burns out ends at whatever susceptible level it leaves), when one species is
+used up by two irreversible reactions to different products (`A -> B` and
+`A -> C`), or when a total is conserved but not by a
 linear law. BNGsim checks, and raises `SimulationError` if a check fails.
 
 To check, it takes one Newton step from the returned state, and runs on for
@@ -523,9 +543,9 @@ and compartment sizes do not change the verdict. The checks:
 | `sens_root_determinant_ratio` | The Jacobian's determinant after the step over the one before. 1 at an isolated root, near 0 at a singular one, 1/2 at a double root. | outside 0.6 to 1.67 |
 | `sens_root_pivot_share` | The smallest pivot of the factorization, relative to the terms it came from. | below 1e-13 |
 | `sens_root_condition` | How much a relative error in the Jacobian is magnified in the columns. | above 1e13 |
-| `sens_root_column_shift` | How far a column moves in one Newton step, as a fraction of its largest entry (and of no less than `1e-3/\|p\|`). If a column or the state (`sens_root_state_shift`) moves by more than 1%, the state is stepped on, up to ten times (`sens_root_newton_steps`). | still above 0.01 after the steps |
+| `sens_root_column_shift` | How far a column moves in one Newton step, as a fraction of its largest entry (and of no less than `1e-3/\|p\|`). If a column or the state (`sens_root_state_shift`) moves by more than 1%, the state is stepped on, up to ten times (`sens_root_newton_steps`). | the column or the state still moves more than 0.01 after the steps |
 | `sens_root_hold_shift` | How far the columns move after a run of `max_time` from a millionth beside the state. `sens_root_hold_time` is the time the run reached in `max_steps` steps. | above 0.01, NaN, or the run falls short of `max_time` |
-| `sens_root_growth_rate` | The largest real part of the eigenvalues, up to 512 unknowns. `sens_root_spectral_radius` is the largest in size. | times `max_time`, above 0.01 |
+| `sens_root_growth_rate` | The largest real part of the eigenvalues, up to 512 unknowns; above that, of the eigenvalues among the species at 0. `sens_root_spectral_radius` is the largest in size. | times `max_time`, above 0.01 |
 | `sens_root_relaxation` | How much of a column a run of `max_time` would leave unsettled. | above 0.01 |
 
 If one column fails, the whole request is refused, so which parameters you ask
@@ -534,9 +554,10 @@ for together can matter.
 What each failure usually means:
 
 - **Determinant ratio, pivot share or condition number:** the steady state is
-  not an isolated root, or the model's rates are more than about 1e12 apart,
-  so rounding leaves the columns unreliable. When the Jacobian is a difference
-  quotient, the pivot and condition limits are 1e-6 and 1e6. A ratio below 0
+  not an isolated root, or the model's rates are too far apart for the columns
+  to be reliable: more than about 1e12 apart with a closed-form Jacobian, or
+  1e5 with a difference quotient, where the pivot and condition limits are
+  1e-6 and 1e6. A ratio below 0
   or above 1.67 can also mean the state is far from its root (a smaller `tol`
   helps) or a rate law jumps between the two states.
 - **Column shift:** the state is too far from the root. `tol` bounds the
@@ -590,6 +611,7 @@ is then `dx_ss/dθ`, not 0. Pass `carry_sensitivities=True` on the
 measurement run to use it:
 
 ```python
+# A model with the parameters k_prod, k_deg and Ligand_isPresent, and an observable R_active.
 sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k_prod", "k_deg"])
 
 # Phase 1: equilibrate, with the same sensitivity_params, so dx_ss/dθ is kept.
@@ -614,9 +636,11 @@ These raise rather than give a wrong derivative:
   `sensitivity_params`, a run without sensitivities advanced the state, an
   SSA or PSA run advanced it, or a `reset()` cleared it.
 
-To treat a carried state as fixed data instead, with `∂x(0)/∂θ = 0`, call
-`reset()` to a baseline no run advanced, then `set_state()` the state. A
-`set_state()` alone keeps the mark a run left. If `save_concentrations()` made
+A run marks the model's state as carried over, and that mark stays until a
+`reset()` to a baseline no run advanced. `set_state()` and
+`set_concentration()` do not clear it. To treat a carried state as fixed data
+instead, with `∂x(0)/∂θ = 0`, call `reset()` first, then `set_state()` the
+state. If `save_concentrations()` made
 an advanced state the baseline, `reset()` returns to that state, so set the
 values on a fresh `Model` instead. After an SSA or PSA run, set
 `result.species[-1]`, not the model's state, which in a compartment whose
@@ -625,7 +649,8 @@ clock to 0 and drops pending events.
 
 After a run of any method has advanced the state, two more things hold:
 `set_param()` of a parameter that names an initial condition does not re-dose
-that species (`reset()` first, or use `set_concentration()`), and
+that species, even if `set_state()` put it back on its declared value
+(`reset()` first, or use `set_concentration()`), and
 `steady_state(sensitivity_params=...)` of such a parameter, when it sets the
 total of a conservation law, is refused.
 
@@ -653,6 +678,7 @@ snapshot calls carry the derivative with the state:
   model as they found it.
 
 ```python
+# A model with the parameters kf, kr, kdeg and L_0, and an observable pReceptor.
 sim = bngsim.Simulator(model, method="ode", sensitivity_params=["kf", "kr", "kdeg"])
 sim.run(t_span=(0, 1e6), n_points=2, steady_state=True)   # equilibrate once
 
@@ -697,6 +723,7 @@ parameter, or an increment of the carried pool (`x_k + dose`), gets its true
 derivative.
 
 ```python
+# NA is Avogadro's number; Vecf is a fitted volume, and L(r) a species of the model.
 def on_point(model, dose_nM):
     v = dose_nM * 1e-9 * NA * model.get_param("Vecf")   # Vecf is fitted
     model.set_concentration("L(r)", v)
@@ -710,6 +737,6 @@ again. It also measures at two step sizes and raises rather than difference a
 jump: a dose rounded to whole molecules is not differentiable, so declare its
 row.
 
-`declare_ic_sensitivity` works on a plain `run()` too. It is how you give an
-initial condition you set by hand, that depends on a parameter, its
-derivative.
+`declare_ic_sensitivity` works on a plain `run()` too. If you set an initial
+condition by hand from a parameter, declare its derivative this way: outside
+a hook there is nothing to measure.

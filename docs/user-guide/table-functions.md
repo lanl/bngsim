@@ -33,7 +33,7 @@ print(model.table_function_names)   # ['cumNcases', 'response', 'drive', 'inline
 ```
 
 No change to BNG2.pl is needed, so you can add `tfun()` to a `.net` file by
-hand.
+hand or build it through the Python API.
 
 ## Giving a table new data
 
@@ -154,11 +154,15 @@ Between breakpoints, a table over time is flat (`step`) or straight
 (`linear`). An adaptive solver could step right over a short pulse and never
 see it. So BNGsim stops the integration at the breakpoints a step could miss:
 
-- every jump of a `step` table and every sharp bend of a `linear` table that
-  marks a feature, such as the edges of a pulse or the ends of the table. The
-  solver restarts there.
-- on a smooth stretch, a stop each time the table has changed by a twentieth of
-  its range. These only end a step.
+- at each feature: a breakpoint whose break its neighbors do not account
+  for, such as the edges of a pulse or the ends of the table;
+- along a stretch that only rises, falls or bends smoothly, a stop each time
+  the breaks have added up to a twentieth of the table's range.
+
+In a `step` table every stop restarts the solver. In a `linear` table a feature
+restarts it, and a stop along a smooth stretch only ends a step. So a finely
+sampled rising staircase is stopped at its features and about once per
+twentieth of its range, not at every jump.
 
 So a dosing pulse such as
 

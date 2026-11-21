@@ -57,7 +57,8 @@ table function), the whole matrix is differenced and labeled so.
 
 A difference quotient is checked before it is returned, as `steady_state`
 checks it. The columns of species at 0, or far below the state's scale, are
-taken again at the species' own step and at half the first. Where an entry
+differenced again twice: with a step sized to the species itself, and with
+half the first step. Where an entry
 moves by more than 1e-4 of itself (and at least 1e-10 of its column's largest),
 `jacobian` raises `SimulationError` naming the entry and its two values. For
 example, next to a species at 1e8, one near 0 is stepped by 1.5, so a
@@ -110,7 +111,7 @@ than as a factor, is left exactly as written.
 For a `.net` model with volume 1 and no repeated reactant,
 `S @ propensities(y) == rhs(y)`. Observables and function-valued parameters are
 recomputed at `y` first, as in the SSA. Values are read from `y` as given, so
-pass molecule counts for a per-event answer.
+pass molecule counts where the model expects counts.
 
 ## Evaluating along a trajectory
 

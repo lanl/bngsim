@@ -208,16 +208,19 @@ as BNG2.pl does:
   last.
 - Each experiment's report holds time and the observables (or the species, if
   there are no observables).
-- Values that depend on others follow them, as in BNG2.pl. A derived
-  parameter (`setParameter("k2","k1*3")`), a value an `initialAssignment`
-  computes, and a species whose initial amount names a parameter or an
-  expression are set again after each change to what they read. An
-  `initialAssignment` is removed (`removeXML`) before a change to what it
-  sets, so it doesn't override the change.
+- Values that depend on others follow their inputs, as in BNG2.pl. A derived
+  parameter (`setParameter("k2","k1*3")`) and a value an `initialAssignment`
+  computes are set again after each change to what they read. A species whose
+  initial amount names a parameter or an expression follows it only until a
+  run has made its amount a number.
+- A simulator computes an `initialAssignment` only when it loads the model, and
+  the assignment would override a change to what it sets. So the export
+  removes it (`removeXML`) before such a change.
 - An assignment SED-ML can't restate, one that calls an SBML function, reads
   time, or uses `rem`, `quotient` or `implies`, keeps the value the simulator
-  computed. So does an `addConcentration` to a species whose declared amount an
-  action before `generate_network` changed. Both are warned about and recorded
+  computed. So does an `addConcentration` to a species that is still an
+  expression, when an action before `generate_network` changed its declared
+  amount. Both are warned about and recorded
   in `sedml_lossy`. A `.bngl` that BNG2.pl accepts never has the first kind.
 
 ## Read an archive back (OMEX to `.net`)
@@ -252,16 +255,20 @@ names them as another entry does; for the bundled `.net`, by their BNGL names.
 wrote:
 
 - Each `task` runs its model from the model's initial state, with the model's
-  `changeAttribute` and `computeChange` changes applied first. Tasks are
+  `changeAttribute` and `computeChange` changes applied first. A kinetic
+  law's local parameter is named `_lp_<reaction>_<id>`. Tasks are
   independent. A time course no task runs isn't run.
 - A `repeatedTask` that sweeps a parameter is a `parameter_scan`. Each point
   runs the value the `setValue` math gives: `k = 10^x` over x = 0, 1, 2 runs
-  k = 1, 10, 100. A `repeatedTask` that doesn't sweep runs its subtasks in
+  k = 1, 10, 100. A `functionalRange` sweeps the same way. A constant
+  `setValue` beside the sweep runs as a step before it. A `repeatedTask` that doesn't sweep runs its subtasks in
   order on one state, resetting where `resetModel` says.
-- Pass `sbml=` to read a species change written as an amount.
+- Pass `sbml=` to read a species change written as an amount in its
+  compartment. Without it, that change is lossy.
 
-What a replay can't apply, such as a compartment size change, an `addXML`, or
-a task on a second model file, is warned about with a `ConversionWarning` and
+What a replay can't apply, such as a compartment size change, an `addXML`, a
+species' `initialAmount` without the SBML's compartment sizes, or a task on a
+second model file, is warned about with a `ConversionWarning` and
 recorded in the spec's `lossy` list. `run_protocol` refuses a lossy spec
 unless you pass `allow_lossy=True`.
 

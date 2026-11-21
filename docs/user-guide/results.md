@@ -85,8 +85,8 @@ result.to_csv("species.csv", kind="species")      # species
 result.dataframe.to_csv("output.csv", index=False)
 ```
 
-Use `to_csv` for tools that expect plain delimited text, such as RoadRunner
-or Tellurium users. Its first column is `time` (unless `include_time=False`),
+Use `to_csv` for RoadRunner or Tellurium users, or any tool that expects plain
+delimited text. Its first column is `time` (unless `include_time=False`),
 and the rest are the observable or species names, so `pandas.read_csv` or
 `numpy.loadtxt` reads it back as is.
 

@@ -13,7 +13,7 @@ cd tests/full_tests
 pybnf -c T1-ssprop/polynomial.conf
 ```
 
-No configuration is needed. PyBNF finds `bngsim` when it is imported.
+No configuration is needed. PyBNF detects BNGsim when PyBNF is imported.
 
 ## Scheduler-free cluster evaluation
 
@@ -131,8 +131,8 @@ replaces the model's own, and parameters it does not name get
 per condition and sent to the workers.
 
 Check `bngsim.capabilities()["features"]["effective_ic_sensitivity"]`, not a
-version string. On a build without it, the seed matrix cannot be known, and a
-gradient fit should be refused.
+version string. On a build without it, the seed matrix cannot be known, so the
+fitting tool should refuse the gradient fit.
 
 None of this applies to a `SteadyStateResult`. Its `parameter` axis is the
 implicit-function derivative (`J·∂x*/∂p = −∂f/∂p`), with no initial-condition

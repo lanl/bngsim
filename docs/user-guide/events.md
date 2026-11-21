@@ -51,7 +51,8 @@ What to watch out for:
   `at (B > 0): B = 0, n = n + 1` with `B' = 1`, the event would fire forever at
   one instant. An ODE run stops with an error naming the events after 100,000
   fires in a row, each within the root tolerance of the last. Move the state
-  past the threshold, not onto it. A clamp like `at (X < 0): X = 0` on a
+  past the threshold, not onto it. Event trains spaced by more than the root
+  tolerance are not affected. A clamp like `at (X < 0): X = 0` on a
   decaying X is not refused: once X is far below `atol`, BNGsim stops re-firing
   it.
 - **`rateOf` is ODE-only.** A model that uses SBML's `rateOf` is refused under
@@ -98,7 +99,8 @@ one is true on the crossing and the strict one only past it. So the strict one
 executes after everything else at that instant, and reads its trigger, values
 and delay from the state they left. If an event at that instant moves either
 side, the strict one is raised there instead, as a cascade, and executes where
-its priority puts it. Where the two sides jump past each other instead (an SSA
+its priority puts it. This holds in ODE and SSA runs, whatever the rounding of
+the threshold. Where the two sides jump past each other instead (an SSA
 reaction firing, a `piecewise` that switches), both turn true at once and are
 one batch. A forward-sensitivity run refuses such a pair, by name, where the
 strict event reads or writes a species the first ones wrote.

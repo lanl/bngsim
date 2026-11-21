@@ -64,7 +64,7 @@ description: >-
   load BioNetGen (.net, .bngl), SBML or Antimony models, run ODE or
   stochastic (SSA, PSA, network-free) simulations, scan parameters, find
   steady states and compute parameter sensitivities. Use when a task loads,
-  simulates or fits a model with bngsim, or asks for a BioNetGen, SBML or
+  simulates or fits a model with BNGsim, or asks for a BioNetGen, SBML or
   Antimony model to be simulated in Python.
 ---
 

@@ -32,7 +32,9 @@ What to watch out for:
 
 - **ODE only.** Sensitivities need `method="ode"`.
 - **A C compiler.** BNGsim compiles the model's derivatives. Without a
-  compiler, the run raises `bngsim.CodegenToolchainError`.
+  compiler, building the Simulator with `sensitivity_params` raises
+  `bngsim.CodegenToolchainError`. With `codegen=False`, or with
+  `BNGSIM_NO_CODEGEN` set, it raises `ValueError`.
 - **Differentiate the primary parameters.** `model.primary_param_names` lists
   the parameters you can move on their own. A parameter that a function owns
   (a BNGL `functions` entry, or an SBML parameter set by an
@@ -109,15 +111,18 @@ are, and a warning names anything left out. Two kinds are left out:
 
 - **Derived parameters**, such as `_rateLaw1 = chi*kon` from a compound BNGL
   rate law. Their effect is already in the columns of the primaries they are
-  built from, so a column for both would count it twice.
+  built from, so a column for both would count it twice. Writing one with
+  `set_param` pins it to that value and cuts it off from its inputs (see
+  [below](#a-derived-parameter-set-after-the-simulator-is-built)).
 - **Internal slots** (`model.param_is_internal`), which BNGsim creates for its
-  own use. `_V0_<comp>` records a compartment's size at load; differentiate
+  own use. `set_param` refuses to change them, so they are not coordinates you
+  can move. `_V0_<comp>` records a compartment's size at load; differentiate
   the compartment size itself instead. A function's slot is always zero;
   differentiate the parameters its expression reads.
 
-`set_param` refuses to change either kind, so neither is a coordinate you can
-move. This matters most for SBML models driven by assignment rules, where
-derived parameters can outnumber the real ones several to one.
+This matters most for SBML models driven by assignment rules, where the rules'
+targets, which are function slots, can outnumber the real parameters several
+to one.
 
 You can still name a derived parameter, or `_V0_<comp>`, in `params=[...]`.
 You then get its column, treating it as a free axis. A function's slot is the
@@ -347,9 +352,10 @@ def dloss_dV(v, h):
 Some values an SBML model computes from its parameters are worked out once,
 at load, and kept as numbers:
 
-- the size of a compartment holding a species that an `initialAssignment`
-  sets (`c = 2*p`), or that an assignment rule sets from parameters alone
-  (`c := 2*p`);
+- the size of a compartment that an `initialAssignment` sets (`c = 2*p`), or
+  that an assignment rule sets from parameters alone (`c := 2*p`), when the
+  compartment holds a species. A rate law that names such a compartment reads
+  the rule itself;
 - the starting value of a species declared in the unit it is not held in, in a
   compartment that a rate rule or an event resizes and an `initialAssignment`
   sizes, or that an assignment rule sizes from time or the state
@@ -390,27 +396,35 @@ a comment names is in `frozen_params`, along with what a derived parameter or
 function among them reads. This holds for `Model.from_bngl`, for a `.net` file
 BNG2.pl wrote with its expressions kept (the default), and for
 `build_model_from_parsed(parse_net_file(path))`. To move a volume, change the
-BNGL file and generate the network again. Two cases are not covered: a network
-written with `writeNetwork({evaluate_expressions=>1})`, and a model written by
-BNGsim's converters (`write_net`, `net_to_sbml`) and loaded again. In both, the
-volume is an ordinary parameter that nothing reads.
+BNGL file and generate the network again.
+
+Two cases are covered less fully. A network written with
+`writeNetwork({evaluate_expressions=>1})` still has the comments, so the
+parameters they name are in `frozen_params`, but its derived parameters are
+numbers, so what a derived volume reads (`r` in `vol = 4*r^3`) is not known.
+A model written by BNGsim's converters (`write_net`, `net_to_sbml`) and loaded
+again has no comments at all, so its volume is an ordinary parameter that
+nothing reads.
 
 ## A derived parameter set after the Simulator is built
 
 A derived parameter, `k2 = 2*k1`, follows its expression until
-`set_param("k2", 5.0)` pins it, and then `k1` does not reach it. The compiled
-sensitivity code differs between the two, so a Simulator checks when a
-sensitivity run starts and rebuilds the code if needed. You can keep the
-Simulator, the model and its clones across such a write.
+`set_param("k2", 5.0)` pins it, and then `k1` does not reach it. Writing back
+the value its expression gives attaches it again. The compiled sensitivity
+code differs between the two, so a Simulator checks when a sensitivity run
+starts and rebuilds the code if needed. You can keep the Simulator, the model
+and its clones across such a write.
 
 The code also depends on whether each clock condition in a rate law resolves
 to a switch time at the current values. If a write moves a parameter to where
 one does not (`time >= sqrt(E)` at `E = 0`), the next run rebuilds and is
-refused as a freshly loaded model would be. `has_analytic_sens_rhs` describes
-the code in hand, so it changes only at the next run. A Simulator first built
-where a condition does not resolve stays on the
-[fallback](#the-fallback-difference-quotient), as does any later Simulator on
-that model or a clone.
+refused as a freshly loaded model would be. After a write back, the
+Simulator builds the analytic code again at its next run.
+`has_analytic_sens_rhs` describes the code in hand, so it changes only at the
+next run. A Simulator first built where a condition does not resolve stays on
+the [fallback](#the-fallback-difference-quotient), as does any later Simulator
+on that model or a clone. A Simulator on a freshly loaded model gets the
+analytic code.
 
 In `run_batch`, a row that pins or re-attaches a derived parameter a requested
 column runs through gets its own code, built before any row starts. A row at
@@ -476,7 +490,8 @@ gives a zero column.
 
 Each crossing is charged only its own jump, so two crossings at the same
 instant do not merge into one doubled jump. Crossings within 64 ulp of each
-other count as one instant. Crossings further apart, however close, are
+other count as one instant, because that is how far BNGsim nudges the clock to
+read the two branches. Crossings further apart, however close, are
 handled one after the other. The same holds for a crossing just after an
 output time, an event or the start of the run.
 
@@ -498,14 +513,16 @@ BNGsim cannot see your bounds: with `sigma = t0 - t_delta` that direction is
 the other direction is not computed.
 
 This applies only to a pair of crossings on one clock, one of which has no
-parameter of its own, within `32·eps·max(|t|, 1)` of each other. These are
-refused:
+parameter of its own, within half that nudge of each other:
+`32·eps·max(|t|, 1)`. These are refused:
 
 - two combined crossings that each have a parameter of their own and are equal
   in value;
 - a third crossing on the instant of such a pair;
-- such a pair on two clocks, or further apart than that but within about
-  twelve digits;
+- such a pair on two clocks;
+- such a pair that is further apart than half the nudge but agrees to about
+  twelve digits (`t_delta = 1e-12`). Its merged jump would leave one crossing
+  out, or the run is near a kink rather than on it;
 - a crossing read after the other whose rate goes to zero at a window's edge,
   as a power does;
 - an instant with a left-over crossing, in a model that also has a rate law
@@ -605,7 +622,8 @@ condition is checked value by value, up to 64 values. A logistic onset,
 `1/(1+exp(-k*(t-on)))`, never reaches 0 and is not affected.
 
 The shifted column is used when the run has the analytic sensitivity code
-(`sim.has_analytic_sens_rhs`), the model has no events, and the crossing moves
+(`sim.has_analytic_sens_rhs`), the model has no events (a state switch or an
+SBML discontinuity trigger does not count as one), and the crossing moves
 at the shift BNGsim derived from the power's base (`t - on` moves at
 `c = 1`). It covers every rate that reads a counter clock, and a derived onset
 such as `on = lam*1.0` gets its own shifted column.
@@ -618,7 +636,8 @@ These are refused:
   `V`;
 - a column that moves the counter clock itself (its starting value, its rate
   constant or its initial-condition axis) in a model with a singular power of
-  that counter. This includes the counter's rate constant that
+  that counter and a condition in some rate law. This holds whether or not the
+  run reaches the power's zero. It includes the counter's rate constant, which
   `compute_all_sensitivities()` asks for by default, so leave it out. A
   counter that no such power reads keeps its columns;
 - a column whose parameter moves such an edge at a rate that is not constant,
@@ -629,8 +648,8 @@ These are refused:
   does not move its zero, `kk` in `(kk*(1 - s))^(a-1)`, keeps its column;
 - a column that needed `V` in a model where BNGsim could not derive it.
 
-For a counter's own columns, a negative exponent counts too where the base is
-0 at a condition the same rate law has on that counter: `(1 - s)^(a - 1)`
+The counter's own columns are also refused for a negative exponent where the
+base is 0 at a condition the same rate law has on that counter: `(1 - s)^(a - 1)`
 with `a < 1` in a law that closes at `s < 1`. A condition that is not linear
 in the counter, reads the state, is chosen through a selection, or names the
 counter another way is assumed to be on the zero. A gate just short of a
@@ -651,13 +670,16 @@ and the jump `(f⁻ − f⁺)·dt*/dθ` is applied where it crosses. A crossing 
 the rate law is continuous, such as a clamp whose live branch is 0 at the
 threshold, needs no jump. BNGsim decides that from the reactions whose rate
 laws read the condition. Conjunctions and negations are split into their
-comparisons. A parameter that both sets a switch time and acts inside a branch
-gets both terms. The analytic code declines a comparison outside any `if()`,
-such as `k*(X > 1)`, and one whose sides are themselves comparisons, such as
-`(X > 1) == (Y > 1)`. Such a run uses the
-[fallback](#the-fallback-difference-quotient), which refuses them where a
-requested column moves them, and refuses a parameter that both sets a switch
-time and acts inside a branch.
+comparisons.
+
+On the analytic path, a parameter that both sets a switch time and acts inside
+a branch gets both terms. The analytic path declines a comparison outside any
+`if()`, such as `k*(X > 1)`, and one whose sides are themselves comparisons,
+such as `(X > 1) == (Y > 1)`.
+
+On the [fallback](#the-fallback-difference-quotient), those comparisons are
+refused where a requested column moves them, and so is a parameter that both
+sets a switch time and acts inside a branch.
 
 These are refused:
 
@@ -683,8 +705,9 @@ central differences, and across a step or a bend they are not derivatives.
 For example, `u := piecewise(5, time >= T0 + 1, 0)` assigned at
 `time >= T0 + 1`. The error names the event, the species and what the value
 is not smooth in. Move the step away from the event, or leave the parameters
-that reach it out of `sensitivity_params`. A bend that changes the slope by
-less than about 0.8% is not detected.
+that reach it out of `sensitivity_params`. A step or bend that moves exactly
+with the event is refused too, although it has a derivative. A bend that
+changes the slope by less than about 0.8% is not detected.
 
 ### Narrow pulses
 
@@ -701,6 +724,9 @@ still be off:
   wrong columns with no error;
 - a rate law that reads `time()` far from 0, where the clock's rounding error
   is amplified.
+
+A sawtooth of the clock-driven kind at `rtol=1e-11` can fail even without
+sensitivities.
 
 To check such a run, repeat it on a different output grid or at a tighter
 `rtol`. A column that moves by more than the tolerance is one of these. For
@@ -738,7 +764,8 @@ On the fallback, a time course is refused before it starts if the model has:
 - a power under 1, a root or a logarithm of an `abs`, `max` or `min` that may
   be 0, such as `max(thr - X, 0)^0.1`, or an inverse sine or cosine of one;
 - a comparison that is not an `if()` condition, such as `kb*(X > 1)`, or
-  ExprTk's single `=`, on what a column moves;
+  ExprTk's single `=`, on what a column moves, in a rate law or in a derived
+  parameter (`kd = 3*(n > 1)` with `n` requested and close to 1);
 - a call BNGsim does not know, such as `atan2`, on what a column moves;
 - a rate law that could not be read.
 
@@ -754,12 +781,14 @@ A condition is allowed where the law is shown to bend rather than jump:
   signs of numbers and parameters, such as `max(X, 0.01)` or `Km + abs(X)`
   with `Km > 0`. `Km + X` is not known to be nonzero.
 
-Any other bend is refused, such as `if(X < thr, kb*sqrt(thr - X), 0)` or
-`if(S > 0, Vm*Q/S, 0)`. `max` and `min` are continuous and run:
+Any other bend is refused, such as `if(X < thr, kb*sqrt(thr - X), 0)`, a
+power that is a parameter, or `if(S > 0, Vm*Q/S, 0)`. `max` and `min` are continuous and run:
 `kb*max(thr - X, 0)`, `v/max(X, 0.01)`.
 
-A condition on literal time runs. A steady-state solve is not checked; it is
-wrong for a parameter within about 1.5e-8 of itself of a threshold or kink.
+A condition on literal time runs. A steady-state solve is not checked. It
+differences the rate in the parameter by a step of about 1.5e-8 times the
+parameter, so it is wrong for a parameter that close to a threshold or a kink
+of its own, such as `if(n > 1, kb, 0)` at `n = 1`.
 
 The check does not see a jump written with no condition, such as
 `sqrt(X*X)/X`, `(thr - X)/(abs(thr - X) + 1e-9)`, `tanh(1e9*(X - thr))` or

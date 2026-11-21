@@ -5,8 +5,9 @@ summary: "Network-free simulation of rule-based models with NFsim and RuleMonkey
 # Network-free simulation (NFsim and RuleMonkey)
 
 A rule-based model can have too many species to write out as a network.
-BNGsim runs it network-free, with NFsim or RuleMonkey, both built into the
-wheel and run in your Python process.
+BNGsim runs it network-free, with NFsim or RuleMonkey, in your Python process.
+Both are in the wheels; a build from source can leave RuleMonkey out, and
+`bngsim.HAS_RULEMONKEY` says whether it is there.
 
 ## Running a model network-free
 
@@ -84,18 +85,19 @@ sim = bngsim.Simulator(model, method="nf", xml_path="model.xml", connectivity=Tr
 ## What each engine refuses
 
 Each engine refuses a model it would run wrong, when the simulator or session
-is built, with an error that names the rule, function or compartment. In every
-case the way out is the same: simulate the generated network with
-`method="ode"` or `method="ssa"`.
+is built, with an error that names the rule, function or compartment. The way
+out is to use the other engine, where the table shows it runs, or to simulate
+the generated network with `method="ode"` or `method="ssa"`.
 
 | Model feature | NFsim (`nf`) | RuleMonkey (`rm`) |
 |---|---|---|
 | Compartments | refused | refused |
 | A function that reads `time()` | refused | runs |
-| A table function indexed by time | runs | runs |
+| A table function indexed by time | runs, except inside a function with an argument | runs |
 | `Arrhenius` (energy) rate law | refused | runs, with limits (below) |
 | A function with an argument that reads an observable outside it | refused (below) | runs |
-| `MatchOnce` on a reactant that may match twice in a complex | runs | refused (below) |
+| A Michaelis-Menten law, or a local function read on one molecule (`A%x()`), on a whole-complex deletion that may match twice in a complex | refused (below) | runs |
+| `MatchOnce` on a reactant the rule acts on that may match twice in a complex | runs | refused (below) |
 
 NFsim also refuses any rate-law type it does not implement, such as `Hill` or
 `Sat`: it implements `Ele`, `MM` and function rate laws only. Energy patterns
@@ -117,10 +119,15 @@ table function counted by an observable or the clock inside such a rate law.
 
 So NFsim refuses such a read, naming the function or rule and the observable,
 unless the observable can never change. It can't change when each of its
-patterns either names only types no rule names, held only in seed complexes of
-such types, or is a bare `X()` with no compartment, counted by a `Molecules`
-observable, that no rule adds or deletes (alone or with a whole species) and no
-fixed (`$`) seed species holds. Because that count stays constant only while
+patterns is one of these:
+
+- a pattern that names only types no rule names, held only in seed complexes of
+  such types;
+- a bare `X()` with no compartment, counted by a `Molecules` observable, that no
+  rule adds or deletes (alone or with a whole species) and no fixed (`$`) seed
+  species holds.
+
+Because that count stays constant only while
 the rules alone act on it, an `NfsimSession` refuses `add_molecules`,
 `add_species`, `remove_species` and `set_species_count` on a type it counts.
 The check errs toward refusing. A rate law that is a global function of its own,
@@ -131,7 +138,8 @@ such as `g()` reading `MAB`, is updated whenever `MAB` changes and runs.
 RuleMonkey gives an energy rule BioNetGen's rate, `exp(-(Ea0 + phi*dG))`, where
 `dG` is the free-energy change of the reaction the rule writes, and `1-phi` for
 the reverse half of a reversible rule. Energies are in units of RT. There is no
-RT in the formula, and a parameter named `RT` is an ordinary parameter.
+RT in the formula, and a parameter named `RT` is an ordinary parameter. A model
+in kJ/mol divides by its own `RT` where it uses it.
 
 RuleMonkey runs an energy rule that makes one bond between two reactant
 patterns, or breaks one within one, between molecules of two types, and does
@@ -179,8 +187,8 @@ few readings of every propensity instead of one.
 table runs on elapsed time on both engines, so event times stay small at a
 large `t_start`. RuleMonkey does the same for a model whose functions read the
 clock: it places events on elapsed time and reads the clock as `time()` plus the
-start, while every time it takes or reports is model time. A model with a table
-indexed by time runs on model time, and RuleMonkey still places its events on
+start, while every time it takes or reports is model time. On RuleMonkey, a
+model with a table indexed by time runs on model time, and RuleMonkey still places its events on
 the time elapsed since each call, so its waiting times keep their precision.
 `method="ssa"` has a rounding limit on a rate that reads `time()` at very large
 times.
@@ -219,7 +227,9 @@ many matches it holds. That is what BioNetGen's network does, and what
 1/m, where m is the number of matches in the picked complex. A `TotalRate` rule
 is not thinned. RuleMonkey counts a whole-complex deletion once per complex.
 
-Where such a complex may hold two matches, some rules are refused:
+A complex may hold two matches when the pattern has two or more molecules, or
+is one molecule that does not list free every component some bond in the model
+touches. There, some rules are refused:
 
 - `nf` refuses a Michaelis-Menten law, which is not linear so the thinning can't
   correct it, and a local function read on one molecule (`A%x()`), whose value
@@ -255,8 +265,7 @@ with RuleMonkeySession("model.xml") as rm:
 
 - **NFsim's session clock is elapsed time.** A `set_param` reaches every rate
   constant, Michaelis-Menten `kcat` and `Km`, and function, before or after
-  `initialize()`. A compartment-size parameter does not reach the model, since
-  BioNetGen writes the size into the XML as a number.
+  `initialize()`.
 - **RuleMonkey's session clock is model time.** `current_time`, `step_to`, the
   clock read through `evaluate`, and the time in a `save_state` snapshot are all
   model time. `initialize(seed, t_start=5)` puts the seed state at t = 5. Left
@@ -281,7 +290,8 @@ NFsim runs inside your Python process, so a few of its effects are process-wide:
   is captured too. C `printf` and Python's `print` are not affected.
 - **One random-number stream is shared.** Which molecule a rule fires on is
   drawn from NFsim's process-wide generator, which every `initialize()` and
-  `run()` reseeds. So a session stepped over several `simulate()` calls draws
+  `run()` reseeds; the rest of a run draws from its own session's stream. So a
+  session stepped over several `simulate()` calls draws
   differently if another session is prepared between them. This shows in
   aggregation models (BLBR, TLBR). For same-seed reproducibility, run sessions
   one after another or in separate processes.

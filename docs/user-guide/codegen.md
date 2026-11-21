@@ -19,7 +19,9 @@ result = sim.run(t_span=(0, 100), n_points=101)
 
 - `codegen=None`, the default, compiles a model with 256 species or more
   (`BNGSIM_CODEGEN_THRESHOLD`), where native code beats the interpreter.
-- `codegen=True` always compiles.
+- `codegen=True` compiles, or raises: `bngsim.CodegenDeclinedError` if codegen
+  declines the model, and `RuntimeError` or `bngsim.CodegenToolchainError` if
+  the build fails.
 - `codegen=False` never compiles, and ignores code an earlier `Simulator` on the
   same model compiled.
 - A forward-sensitivity run always compiles, because its sensitivity equations
@@ -194,7 +196,8 @@ Then, while the compiler and its environment (`CC`, `PATH`, `SDKROOT`,
 
 Changing one of those variables in the process (`os.environ["SDKROOT"] = ...`)
 gets a fresh try. BNGsim also tries again after 5 minutes, so a toolchain that
-was broken for a while (a full disk) is used again once it builds. A missing
+was broken for a while (a full disk) is used again once it builds. A retry that
+fails, or times out, keeps the verdict for another 5 minutes. A missing
 compiler is handled the same way.
 
 One known case: conda-forge's ld64-956.6 with the macOS 27 SDK cannot read the
@@ -221,6 +224,8 @@ refused before its source is generated, and strict mode raises for those too.
 
 | Variable | Default | Effect |
 | --- | --- | --- |
+| `BNGSIM_CODEGEN_THRESHOLD` | `256` | Species count at which `codegen=None` compiles a model. |
+| `BNGSIM_NO_CODEGEN` | unset | Set it, and `codegen=None` never compiles a model. |
 | `BNGSIM_CODEGEN_CACHE_DIR` | `~/.cache/bngsim/codegen` | The cache directory. Read once at import. |
 | `BNGSIM_CODEGEN_STRICT` | off | `1` makes a failed automatic build raise instead of falling back. Empty, `0`, `false`, `no` and `off` are off. A decline still falls back. |
 | `BNGSIM_CODEGEN_TIMEOUT` | `600` | Seconds before the compiler is killed. A timeout raises a `RuntimeError` naming this variable. `0` means no limit. |
