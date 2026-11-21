@@ -589,8 +589,8 @@ weeks lapses, and anyone may take the issue.
 - For a new public name (a function, class, method, keyword, simulation
   method, capability or extra), decide whether an agent meeting bngsim should
   know it: use it in [`python/bngsim/agent_guide.md`](python/bngsim/agent_guide.md),
-  or add the key the test prints to `python/tests/agent_guide_left_out.txt`.
-  `test_agent_guide.py` fails until one is done. A name on a class or call the
+  or add the key the test prints to `LEFT_OUT` in
+  `python/tests/_agent_guide_left_out.py`. `test_agent_guide.py` fails until one is done. A name on a class or call the
   guide does not use needs neither.
 - Say how the PR was reviewed, under the "Review" heading the PR template gives
   you ([Saying how a PR was reviewed](#saying-how-a-pr-was-reviewed)).

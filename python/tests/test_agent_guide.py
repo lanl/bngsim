@@ -26,12 +26,15 @@ import re
 import subprocess
 import sys
 import warnings
-from pathlib import Path
 
 import bngsim
 import pytest
 from bngsim import _agent_guide
 from bngsim._foreign_names import _ForeignAttribute
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _agent_guide_left_out import LEFT_OUT  # noqa: E402
 
 #: The guide's size budget, in characters: about 8,000 tokens, small enough to
 #: be loaded whole beside a task. Raise it only with something taken out.
@@ -250,13 +253,11 @@ def test_python_m_bngsim_with_no_command_says_what_it_takes():
 # not ``Simulator.bifurcate(atol)``. The table's first column, other tools'
 # names, is not use. A keyword with no default is used by any call.
 #
-# Every unused key is listed in LEFT_OUT, and the two must match exactly, so a
-# new name fails until the guide uses it or a line lists it, a decision a
-# reviewer sees. The list is not a to-do list: most of the surface is for
+# Every unused key is listed in _agent_guide_left_out.LEFT_OUT, and the two
+# must match exactly, so a new name fails until the guide uses it or a line
+# lists it, a decision a reviewer sees. The list is not a to-do list: most of the surface is for
 # help(), not for a first read of a page held to a budget.
 
-#: The names the guide leaves out on purpose, one key per line.
-LEFT_OUT = Path(__file__).with_name("agent_guide_left_out.txt")
 
 _VARIADIC = (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
 
@@ -418,21 +419,17 @@ def _coverage(namespace: dict[str, object]) -> tuple[dict[str, bool], set[str]]:
     return surface, used
 
 
-def _left_out_lines() -> list[str]:
-    lines = LEFT_OUT.read_text(encoding="utf-8").splitlines()
-    return [line.strip() for line in lines if line.strip() and not line.startswith("#")]
-
-
 def test_every_public_name_is_in_the_guide_or_left_out_on_purpose(guide_run):
     namespace, _ = guide_run
     surface, _ = _coverage(namespace)
     unused = {key for key, is_used in surface.items() if not is_used}
-    listed = set(_left_out_lines())
+    listed = set(LEFT_OUT)
     new, stale = sorted(unused - listed), sorted(listed - unused)
     assert not new and not stale, (
         "the agent guide's coverage changed. Use each new public name in "
         "python/bngsim/agent_guide.md if an agent meeting bngsim should know it, "
-        f"or add its key to python/tests/{LEFT_OUT.name} exactly as printed here, "
+        "or add its key to LEFT_OUT in python/tests/_agent_guide_left_out.py exactly "
+        "as printed here, "
         "in Python's sorted() order. A stale line is a name that is gone or that "
         "the guide now uses: drop it. (Extras are read from the installed "
         "metadata: reinstall after editing pyproject.toml.)"
@@ -441,5 +438,6 @@ def test_every_public_name_is_in_the_guide_or_left_out_on_purpose(guide_run):
 
 
 def test_the_left_out_list_is_sorted_and_has_no_duplicates():
-    lines = _left_out_lines()
-    assert lines == sorted(set(lines)), "keep the list in Python's sorted() order, once each"
+    assert list(LEFT_OUT) == sorted(set(LEFT_OUT)), (
+        "keep the list in Python's sorted() order, once each"
+    )
