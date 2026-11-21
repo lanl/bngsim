@@ -5337,7 +5337,9 @@ def _sbml_record(
       file order.
     * ``parameters``: the file's global parameter and compartment ids. The
       reaction-local ones are the model's ``_lp_<reaction>_<id>``.
-    * ``ids``: every id the file declares.
+    * ``ids``: the ids of its parameters, species, compartments and reactions.
+    * ``function_definitions``: each one's id and its lambda, which a rate
+      calls by name.
     * ``reactions``: each reaction as the file writes it, which the model's
       reaction channels are not: a reversible reaction or a stoichiometry
       becomes several channels, and a rate rule or a dilution term one."""
@@ -5368,6 +5370,17 @@ def _sbml_record(
             ],
         }
 
+    # What an initialAssignment, a rule or an event sets: a speciesReference id
+    # among them holds a stoichiometry that is not the number it was given.
+    assigned = (
+        {
+            sbml_model.getInitialAssignment(i).getSymbol()
+            for i in range(sbml_model.getNumInitialAssignments())
+        }
+        | {sbml_model.getRule(i).getVariable() for i in range(sbml_model.getNumRules())}
+        | events
+    )
+
     def side(refs) -> list[tuple[str, float | str | None]]:
         out: list[tuple[str, float | str | None]] = []
         for k in range(refs.size()):
@@ -5375,17 +5388,42 @@ def _sbml_record(
             stoich: float | str | None = None
             if sbml_model.getLevel() < 3 and sr.isSetStoichiometryMath():
                 stoich = _libsbml.formulaToL3String(sr.getStoichiometryMath().getMath())
-            elif sr.isSetId() and _is_assigned(sbml_model, sr.getId()):
+            elif sr.isSetId() and sr.getId() in assigned:
                 stoich = sr.getId()
             elif sr.isSetStoichiometry():
                 stoich = float(sr.getStoichiometry())
             out.append((_safe_name(sr.getSpecies()), stoich))
         return out
 
+    # The file's ids, from the model's indexed lists (getListOfAllElements is a
+    # linked list, quadratic to walk: seconds on a large model, issue #1705
+    # review), and those the model knows by another name (_safe_name).
+    ids: set[str] = set()
+    for count, get in (
+        (sbml_model.getNumParameters(), sbml_model.getParameter),
+        (sbml_model.getNumSpecies(), sbml_model.getSpecies),
+        (sbml_model.getNumCompartments(), sbml_model.getCompartment),
+        (sbml_model.getNumReactions(), sbml_model.getReaction),
+    ):
+        ids.update(get(i).getId() for i in range(count))
+    renamed = {sid: _safe_name(sid) for sid in ids if _safe_name(sid) != sid}
+
+    def law(r) -> tuple[str, list[str]]:
+        """The law as the file writes it, and its local parameters' ids:
+        :func:`sbml_rate_in_model_names` puts them in the model's names when a
+        description shows the reaction, so a load pays for no rename."""
+        kl = r.getKineticLaw()
+        if kl is None or kl.getMath() is None:
+            return "", []
+        return (
+            _libsbml.formulaToL3String(kl.getMath()),
+            [lp.getId() for lp in _kinetic_law_local_params(kl)],
+        )
+
     reactions = []
     for i in range(sbml_model.getNumReactions()):
         r = sbml_model.getReaction(i)
-        kl = r.getKineticLaw()
+        formula, local_ids = law(r)
         reactions.append(
             {
                 "id": r.getId(),
@@ -5394,11 +5432,8 @@ def _sbml_record(
                 "modifiers": [
                     _safe_name(r.getModifier(k).getSpecies()) for k in range(r.getNumModifiers())
                 ],
-                "rate": (
-                    _libsbml.formulaToL3String(kl.getMath())
-                    if kl is not None and kl.isSetMath()
-                    else ""
-                ),
+                "law": formula,
+                "local_ids": local_ids,
                 "reversible": bool(r.getReversible()),
                 "fast": bool(r.isSetFast() and r.getFast()),
             }
@@ -5412,26 +5447,42 @@ def _sbml_record(
         }
         | set(compartments),
         "reactions": reactions,
-        # Every id the file declares, by the model's names.
-        "ids": {
-            _safe_name(el.getId())
-            for el in sbml_model.getListOfAllElements()
-            if hasattr(el, "isSetId") and el.isSetId()
-        },
+        "ids": {_safe_name(sid) for sid in ids},
+        "renamed": renamed,
+        # A rate calls these by name; the model inlines them.
+        "function_definitions": [
+            {
+                "name": sbml_model.getFunctionDefinition(i).getId(),
+                "definition": _libsbml.formulaToL3String(
+                    sbml_model.getFunctionDefinition(i).getMath()
+                )
+                if sbml_model.getFunctionDefinition(i).isSetMath()
+                else "",
+            }
+            for i in range(sbml_model.getNumFunctionDefinitions())
+        ],
     }
 
 
-def _is_assigned(sbml_model, sid: str) -> bool:
-    """Whether an initialAssignment, a rule or an event sets ``sid``: a
-    speciesReference id whose stoichiometry is then not the number it holds."""
-    if sbml_model.getInitialAssignmentBySymbol(sid) is not None:
-        return True
-    if sbml_model.getRuleByVariable(sid) is not None:
-        return True
-    return any(
-        sbml_model.getEvent(i).getEventAssignment(sid) is not None
-        for i in range(sbml_model.getNumEvents())
-    )
+def sbml_rate_in_model_names(reaction: dict, renamed: dict[str, str]) -> str:
+    """A recorded reaction's law in the model's names: each local parameter as
+    the model's ``_lp_<reaction>_<id>`` (so a global of the same id is not read
+    for it, as in _law_math_in_model_scope), and an id the model renamed
+    (_safe_name) as its name there. The law as written where it cannot be
+    parsed back."""
+    import libsbml as _libsbml
+
+    formula = reaction["law"]
+    if not formula or (not reaction["local_ids"] and not renamed):
+        return formula
+    math = _libsbml.parseL3Formula(formula)
+    if math is None:
+        return formula
+    for lid in reaction["local_ids"]:
+        math.renameSIdRefs(lid, f"_lp_{reaction['id']}_{lid}")
+    for sid, safe in renamed.items():
+        math.renameSIdRefs(sid, safe)
+    return _libsbml.formulaToL3String(math)
 
 
 def _build_model_from_sbml_doc(doc):

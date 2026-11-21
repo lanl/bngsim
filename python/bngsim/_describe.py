@@ -163,8 +163,8 @@ _UNDECIDED = (
     "Nothing in the model or this install refuses forward sensitivities before a "
     "run, but whether every rate law differentiates to closed form is decided when a "
     "sensitivity run builds its code, and that run refuses a model whose rate laws do "
-    "not (a floor, min, max, abs or comparison in a rate law). Other refusals depend "
-    "on the parameters and span a run asks for, and the run raises them."
+    "not (a floor() in one, for instance). Other refusals depend on the parameters and "
+    "span a run asks for, and the run raises them."
 )
 
 
@@ -410,19 +410,26 @@ def _species(
 _RATE_LAWS = {"elementary": "elementary", "mm": "michaelis_menten", "functional": "functional"}
 
 
-def _reactions(model: Model, cd: dict, record: dict | None, limit: int | None) -> list[dict]:
-    """The reactions as the file writes them: an SBML file's from the loader's
-    record, and a network's lines from the model, which holds them as written."""
+def _reactions(
+    model: Model, cd: dict, record: dict | None, limit: int | None
+) -> tuple[list[dict], int]:
+    """The reactions as the file writes them, cut at ``limit``, and how many
+    there are: an SBML file's from the loader's record (each shown law put in
+    the model's names here, not at load), and a network's lines from the
+    model, which holds them as written."""
     if record is not None:
+        from bngsim._sbml_loader import sbml_rate_in_model_names
+
         out = []
-        for r in record["reactions"]:
+        shown = record["reactions"] if limit is None else record["reactions"][:limit]
+        for r in shown:
             entry: dict[str, Any] = {
                 "id": r["id"],
                 "reactants": [n for n, _ in r["reactants"]],
                 "products": [n for n, _ in r["products"]],
                 "equation": _clip(f"{_side(r['reactants'])} -> {_side(r['products'])}", limit),
                 "rate_law": "kinetic_law",
-                "rate": _clip(r["rate"], limit),
+                "rate": _clip(sbml_rate_in_model_names(r, record["renamed"]), limit),
                 "reversible": r["reversible"],
             }
             if r["modifiers"]:
@@ -430,7 +437,7 @@ def _reactions(model: Model, cd: dict, record: dict | None, limit: int | None) -
             if r["fast"]:
                 entry["fast"] = True
             out.append(entry)
-        return out
+        return out, len(record["reactions"])
     core = model._core
     species = list(core.species_names)
     params = list(core.param_names)
@@ -459,7 +466,7 @@ def _reactions(model: Model, cd: dict, record: dict | None, limit: int | None) -
         if factor != 1.0:
             entry["multiplier"] = factor
         out.append(entry)
-    return out
+    return out if limit is None else out[:limit], len(out)
 
 
 def _compartments(model: Model, record: dict) -> list[dict[str, Any]]:
@@ -540,7 +547,7 @@ def describe_model(model: Model, *, limit: int | None = 50) -> ModelDescription:
         for n, e in zip(core.function_names, core.function_expressions, strict=True)
         if ids is None or n in ids
     ]
-    reactions = _reactions(model, cd, record, limit)
+    reactions, n_reactions = _reactions(model, cd, record, limit)
     events = _events(model, limit)
     compartments = None if record is None else _compartments(model, record)
     time_tables = [
@@ -550,7 +557,7 @@ def describe_model(model: Model, *, limit: int | None = 50) -> ModelDescription:
     # Each count is that of its list, before the cut.
     counts: dict[str, int] = {
         "species": len(species),
-        "reactions": len(reactions),
+        "reactions": n_reactions,
         "observables": len(observables),
         "parameters": len(parameters),
         "functions": len(functions),
@@ -561,6 +568,8 @@ def describe_model(model: Model, *, limit: int | None = 50) -> ModelDescription:
         counts["compartments"] = len(compartments)
     if other_states:
         counts["other_states"] = len(other_states)
+    if record is not None and record["function_definitions"]:
+        counts["function_definitions"] = len(record["function_definitions"])
 
     stochastic = _stochastic(model, limit)
     decline = model.analytical_jacobian_decline
@@ -600,8 +609,21 @@ def describe_model(model: Model, *, limit: int | None = 50) -> ModelDescription:
         out["other_states"] = _cut(other_states, limit, "other_states", omitted)
     out["observables"] = _cut(observables, limit, "observables", omitted)
     out["functions"] = _cut(functions, limit, "functions", omitted)
-    out["reactions"] = _cut(reactions, limit, "reactions", omitted)
+    out["reactions"] = reactions  # cut by _reactions
+    if n_reactions > len(reactions):
+        omitted["reactions"] = n_reactions - len(reactions)
     out["events"] = _cut(events, limit, "events", omitted)
+    definitions = [] if record is None else record["function_definitions"]
+    if definitions:
+        out["function_definitions"] = _cut(
+            [
+                {"name": f["name"], "definition": _clip(f["definition"], limit)}
+                for f in definitions
+            ],
+            limit,
+            "function_definitions",
+            omitted,
+        )
     if omitted:
         out["omitted"] = omitted
     return out
@@ -614,6 +636,7 @@ _SINGULAR = {
     "species": "species",
     "table_functions": "table function",
     "other_states": "other state",
+    "function_definitions": "function definition",
 }
 
 
@@ -678,6 +701,7 @@ def _text(d: dict[str, Any]) -> str:
         "events",
         "compartments",
         "other_states",
+        "function_definitions",
         "table_functions",
     )
     # The first four always; the rest where the model has any.
@@ -825,6 +849,11 @@ def _text(d: dict[str, Any]) -> str:
     section("functions", "Functions", lambda f: f"{f['name']} = {f['expression']}")
     section("reactions", "Reactions", reaction)
     section("events", "Events", event)
+    section(
+        "function_definitions",
+        "Function definitions (a rate calls them by name)",
+        lambda f: f"{f['name']} = {f['definition']}",
+    )
     return "\n".join(lines)
 
 
