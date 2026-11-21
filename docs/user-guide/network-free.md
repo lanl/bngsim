@@ -206,7 +206,7 @@ which is 0 at the start, turns on at t = 6 (issue #1022).
 RuleMonkey reads the clock as `time()`, a bare `time`, or its alias `t` (or
 `t()`). A bare `time` or `t` that names a parameter, observable or function is
 that symbol instead: BNG2.pl accepts an observable named `time`, and `k*time`
-then reads its count, while `time()` is still the clock. bngsim reads a model
+then reads its count, while `time()` is still the clock. BNGsim reads a model
 the same way when it decides whether the model reads the clock.
 
 NFsim cannot prepare a function that reads `time()`, so `method="nf"` refuses
@@ -241,7 +241,7 @@ Since RuleMonkey 3.12.0 that keeps its waiting times too: RuleMonkey places its
 events, and the panels on which it integrates a rate that reads the clock, on
 the time elapsed since each call starts (richardposner/RuleMonkey#110), and only
 the clock a rate reads is rounded to the doubles near it. From t = 1e13 a step
-table's run matches its closed form, where bngsim used to refuse a span that
+table's run matches its closed form, where BNGsim used to refuse a span that
 short (issue #1063). `method="ssa"` keeps the rounding limit on a rate that
 reads `time()` (issue #1059).
 
@@ -389,8 +389,8 @@ routes through the in-process NFsim backend, and `method=>"rm"` / `"rulemonkey"`
 
 ### What an NFsim run changes in your process
 
-NFsim is a library that bngsim runs inside your own process, so its effects on process-wide state are yours to know about (issue #1314):
+NFsim is a library that BNGsim runs inside your own process, so its effects on process-wide state are yours to know about (issue #1314):
 
-- **The working directory is not changed.** NFsim opens a TFUN's `file=` table by the path as written. bngsim makes each relative `file=` absolute against the directory of the XML you gave, in the copy NFsim reads, so a table beside the XML loads whatever your working directory is. A failed load leaves the directory as it was, and its error names the file.
-- **C++ `std::cout` and `std::cerr` are redirected during an NFsim call.** NFsim prints freely. bngsim captures that output, for the error messages it raises, and restores both streams when the call ends, however it ends. While the call runs, C++ output written to those streams from another thread in your process is captured too. C `stdio` (`printf`) is not redirected, and Python's `print` is not affected.
+- **The working directory is not changed.** NFsim opens a TFUN's `file=` table by the path as written. BNGsim makes each relative `file=` absolute against the directory of the XML you gave, in the copy NFsim reads, so a table beside the XML loads whatever your working directory is. A failed load leaves the directory as it was, and its error names the file.
+- **C++ `std::cout` and `std::cerr` are redirected during an NFsim call.** NFsim prints freely. BNGsim captures that output, for the error messages it raises, and restores both streams when the call ends, however it ends. While the call runs, C++ output written to those streams from another thread in your process is captured too. C `stdio` (`printf`) is not redirected, and Python's `print` is not affected.
 - **One random-number stream is shared.** Which molecule a rule fires on, among those it could, is drawn from NFsim's process-wide generator, which every `initialize()` and `run()` reseeds; the rest of a run draws from its own session's. A session stepped over several `simulate()` calls therefore draws differently if another session is prepared between them. Where the molecules a rule can fire on are interchangeable this does not show, but in an aggregation model (BLBR, TLBR) it does. For same-seed reproducibility, run sessions one after another or in separate processes.

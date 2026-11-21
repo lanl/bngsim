@@ -128,7 +128,7 @@ interpolated value there.
 
 A table over time is constant (`step`) or straight (`linear`) between its
 breakpoints, so over a segment that begins and ends at the same value an
-adaptive integrator sees nothing to resolve and can step across it. bngsim
+adaptive integrator sees nothing to resolve and can step across it. BNGsim
 stops the ODE integration on the breakpoints a step could span unseen. A table
 breaks at a breakpoint where a `step` table's value jumps or a `linear` table's
 slope turns. A feature that leaves and comes back has breaks that differ: a

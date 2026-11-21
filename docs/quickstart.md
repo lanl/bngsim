@@ -130,10 +130,10 @@ SBML/Antimony models with kineticLaw shapes that SSA cannot handle (e.g.
 
 The `seed=` keyword on every stochastic entry point follows one contract:
 
-- `seed=None` (the default, or omitting `seed=`): bngsim draws a fresh
+- `seed=None` (the default, or omitting `seed=`): BNGsim draws a fresh
   31-bit seed from system entropy on each call. Two consecutive calls
   produce independent trajectories.
-- `seed=N` (an integer from 0 to 2**64 - 1): bngsim passes `N` down to
+- `seed=N` (an integer from 0 to 2**64 - 1): BNGsim passes `N` down to
   the backend verbatim. A fresh `Simulator` (or `NfsimSession` /
   `RuleMonkeySession`) initialized with the same `seed=N` reproduces the
   same trajectory. A seed outside that range raises `ValueError`.

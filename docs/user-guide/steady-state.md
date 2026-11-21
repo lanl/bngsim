@@ -1184,7 +1184,7 @@ is resolved by the most specific thing available:
 1. a row the hook installed wholesale
    (`model._core.set_pending_sensitivity_seed(...)` after its writes);
 2. a row **declared** with `model.declare_ic_sensitivity({species: {param: value}})`;
-3. a row **measured through the hook** — bngsim calls the hook at perturbed
+3. a row **measured through the hook** — BNGsim calls the hook at perturbed
    inputs and differences the initial condition it assigns;
 4. otherwise the carried row, bit-exact.
 
@@ -1204,7 +1204,7 @@ def on_point(model, dose_nM):
 
 Measuring invokes the hook several extra times per point on the live model with
 perturbed inputs, so the hook must be a **deterministic** function of
-`(model, value)`; bngsim verifies that by re-running it and comparing. It also
+`(model, value)`; BNGsim verifies that by re-running it and comparing. It also
 checks the measurement at two step sizes and **raises** rather than reporting a
 difference quotient of a jump — a dose rounded to whole molecules is not
 differentiable, and such a row must be declared.

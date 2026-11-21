@@ -105,7 +105,7 @@ Two cases are outside this:
 
 A trigger reading false whose *residual* is exactly zero at the start time is
 not below its threshold, it is sitting on it — `S > 0` with `S(t_start) = 0`.
-bngsim follows the SBML start rule as the project reads it (issue #934; L3V2
+BNGsim follows the SBML start rule as the project reads it (issue #934; L3V2
 §3.4.8), which is also what libRoadRunner does: the event fires when the trigger
 turns true, so it fires at the start if the trajectory leaves the threshold into
 the trigger's true side, at whatever order it leaves, and never if it stays on
@@ -241,7 +241,7 @@ carry into the next.
   threshold rather than onto it. Fast event trains spaced by more than the root
   tolerance are not affected. A clamp like `at (X < 0): X = 0` on a decaying X,
   whose fires change X by less than the integration tolerance, is not refused:
-  once X has decayed far below `atol` bngsim stops re-firing it instead.
+  once X has decayed far below `atol` BNGsim stops re-firing it instead.
 - **Cross-validated**: 62/153 (40.5%) BioModels event models pass vs RoadRunner
   at max_rel_err < 1e-3. Including marginal matches: 79/138 = 57.2%.
   Remaining failures are due to event timing precision differences between

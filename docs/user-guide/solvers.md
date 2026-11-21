@@ -31,14 +31,14 @@ a failed right-hand-side call cut short among them).
 
 Those counters cover the **whole run**. CVODE's own counters restart at every
 re-initialization — an event fire, a rate-law switch crossing and a chatter
-re-arm each force one — so bngsim banks each segment as it closes rather than
+re-arm each force one — so BNGsim banks each segment as it closes rather than
 sampling the counters once at the end, which would report only the span after
 the last restart (issue #182).
 
 ## The default tolerances, and models in small units
 
 The default `rtol` is `1e-8`. The default `atol` is BNG2.pl's scalar `1e-8`, and
-bngsim reads a scalar `atol`, the default or one you pass, as a **ceiling**: each
+BNGsim reads a scalar `atol`, the default or one you pass, as a **ceiling**: each
 species is held to the scalar where that is a tolerance for it, and to a smaller
 one where it is not (issue #1420):
 
@@ -78,7 +78,7 @@ longer, nearly all of it on models that had been wrong.
   `$`-fixed one too, and where every species starts at 0 the default is the
   scalar.
 - **Forward sensitivities on CVODES' difference quotient keep the scalar.**
-  A model whose `∂f/∂p` bngsim cannot derive (`has_analytic_sens_rhs` is
+  A model whose `∂f/∂p` BNGsim cannot derive (`has_analytic_sens_rhs` is
   `False`) runs its sensitivities on the quotient,
   which sizes its increment from the state's error weights. A species held
   tighter is then perturbed by less and carries more roundoff, not more
@@ -297,7 +297,7 @@ absolute 100, and one grown from 0 came out 100% off (MODEL2009230001). Pass
 `floor=` to `auto_atol` to choose differently. Being built from *initial* values, this cannot see a species
 that starts at order one and decays to something tiny; that is a within-species,
 over-time mismatch, and the CVODE construct for it is `CVodeWFtolerances`, which
-bngsim does not expose yet (issue #213). The corollary is worth stating plainly:
+BNGsim does not expose yet (issue #213). The corollary is worth stating plainly:
 on a model whose species all start at similar magnitudes there is no
 cross-species spread to compromise over, so a per-species vector is elementwise
 the scalar it replaces and changes nothing. It is not a general tolerance
@@ -521,7 +521,7 @@ counts the run's own BLAS factorizations.
 A rate law that is flat on both sides of a window, `if(time() >= 100 &&
 time() <= 100.5, k, 0)`, gives an adaptive integrator no error to see, so a
 step can span the whole window and the run returns as if it were never open.
-bngsim finds the times at which a rate law changes branch on the clock before
+BNGsim finds the times at which a rate law changes branch on the clock before
 the run, stops the integration on each, and restarts there. That covers:
 
 - a comparison of the clock with constants, inside an `if()` or used as a
@@ -535,7 +535,7 @@ the run, stops the integration on each, and restarts there. That covers:
 
 A smooth pulse with no switch in it has the same trouble. A narrow Gaussian
 `exp(-((time()-t0)/s)^2)` is exactly 0 in doubles away from itself, so a step
-spanned it whole. bngsim stops on the centre of each such bump in the value of
+spanned it whole. BNGsim stops on the centre of each such bump in the value of
 a rate law (issue #1286). It reads `exp` of a quadratic in the clock with a
 negative leading term (also written `_e^` or `pow(_e, ...)`), and `cosh` or
 `tanh` of a linear function of it, which covers sech² written `1/cosh(u)^2` or
@@ -543,7 +543,7 @@ negative leading term (also written `_e^` or `pow(_e, ...)`), and `cosh` or
 rate, at any rate. A bump centred just past the end of the run, with its rise
 inside the run, gets a stop at the end.
 
-A condition is first read exactly where it has a shape bngsim knows (linear in
+A condition is first read exactly where it has a shape BNGsim knows (linear in
 time, a repeating schedule, a step of a linear argument, a sinusoid, a
 polynomial). Any other is evaluated over the run window with the model's own
 evaluator, and a stop is placed where its value changes. The evaluation is done
@@ -562,7 +562,7 @@ What this does not cover:
 - **A window narrower than 1/8,192 of the run that no sample has any sign
   of**: one made by a smooth residual that is flat to the last bit outside the
   window (`exp(-((time()-t0)/s)^2) > 0.5` with `s` a millionth of the run), or
-  by a discontinuity bngsim does not know the levels of (the `%` operator).
+  by a discontinuity BNGsim does not know the levels of (the `%` operator).
   Windows made by the calls listed above, by a residual that leans toward its
   turn, or at the edge of a `sqrt` or `ln` are found at any width.
 - **A condition whose changes cannot be counted.** `sin(1/(time()-t0)) > 0.5`
@@ -659,13 +659,13 @@ What this does not cover:
   an error that names the condition: run it in shorter legs with `run_until`, or pass
   `max_step` no larger than half the shortest stretch between two switches of
   the rate law, which then stands for the stops. A `max_step` wider than a
-  stretch bngsim knows of is tightened to half of it, and a bound that would
+  stretch BNGsim knows of is tightened to half of it, and a bound that would
   take more than 1e8 steps is refused rather than started.
 
 A condition that is read by evaluating it costs about 2 ms each time its run
 window or a parameter it reads changes (the answer is kept otherwise), which a
 loop of short `run_until` legs or a fit over such a parameter pays on every
-pass. A condition of a shape bngsim knows costs a few microseconds.
+pass. A condition of a shape BNGsim knows costs a few microseconds.
 
 Each stop is a restart of the integrator, and each restart spends about one
 unit of the local error tolerance. With tens of thousands of stops in a run
@@ -822,7 +822,7 @@ one 2.5 after `1e16` was placed at +2, and dX/dsigma came back -0.271 for
 lands the integrator on the switch is still placed on the clock the run was
 given, so from `1e16` on, where the doubles are 2 or more apart, a far run can
 differ from the run from 0: with `X' = k A` past a crossing 2.5 after the start,
-X is 2.7e-5 of its value off the run from 0 at bngsim's default tolerances
+X is 2.7e-5 of its value off the run from 0 at BNGsim's default tolerances
 (9e-11 at rtol 1e-10).
 
 No one clock is fine at both ends of a long run. A switch late in a long run is
@@ -856,7 +856,7 @@ model (issue #1059).
 
 ## When a solve fails on a rate law's domain
 
-bngsim evaluates a rate law literally. A logarithm, a `sqrt` or a fractional
+BNGsim evaluates a rate law literally. A logarithm, a `sqrt` or a fractional
 power of a negative concentration is `nan`, and that `nan` is kept rather than
 papered over — the same policy the SSA's negative-count warning states. What the
 integrator does with it is give up, historically with nothing but a number:
@@ -954,7 +954,7 @@ may well be right (the one above is from `A -> 0` at `k = 1e9` started at
 script. Before issue #1680 the warnings went to standard output.
 
 Two of SUNDIALS' environment variables say where they go instead, and where
-one is set bngsim leaves it in charge:
+one is set BNGsim leaves it in charge:
 
 ```bash
 SUNLOGGER_WARNING_FILENAME=/dev/null python script.py   # drop the warnings (NUL on Windows)
@@ -981,11 +981,11 @@ names the variable.
 
 A model whose rate laws switch on state, or on time in an SBML model, restarts
 the integrator at each switch, which can draw the warning above at every
-restart; bngsim drops the warnings of such a run itself, in a time course and
+restart; BNGsim drops the warnings of such a run itself, in a time course and
 in a steady-state solve, and those of a KINSOL solve, unless
 `SUNLOGGER_WARNING_FILENAME` is set. A BNGL rate law that switches on time is
 taken at a stop instead, and its run keeps its warnings. The `[ERROR]` lines of
-a solve bngsim expects to fail and recovers from (a KINSOL solve it falls back
-from to integration, and the steps of a state-switch run taken while bngsim
+a solve BNGsim expects to fail and recovers from (a KINSOL solve it falls back
+from to integration, and the steps of a state-switch run taken while BNGsim
 watches or holds a switch) are dropped whatever `SUNLOGGER_ERROR_FILENAME`
 says.

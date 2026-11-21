@@ -1,5 +1,5 @@
 ---
-summary: "How to install bngsim: the wheels, a source build, SuiteSparse/KLU for large models, and the optional extras (BNGL, Antimony, pandas, HDF5)."
+summary: "How to install BNGsim: the wheels, a source build, SuiteSparse/KLU for large models, and the optional extras (BNGL, Antimony, pandas, HDF5)."
 ---
 
 # Installation
@@ -67,7 +67,7 @@ Set `-DBNGSIM_USE_SYSTEM_SUNDIALS=ON` to use an environment-managed SUNDIALS
 install instead. See `scripts/SUNDIALS_VENDORING.md` for the supported
 refresh/check workflow.
 The vendored release is the one CI tests. Against a system SUNDIALS of another
-major.minor release, the dense difference quotient bngsim forms for `jacobian="fd"` (or
+major.minor release, the dense difference quotient BNGsim forms for `jacobian="fd"` (or
 for a model whose closed-form Jacobian is declined) still reproduces the vendored
 CVODE's, not that release's. Results stay valid, but can differ from that CVODE's
 own in the last digits, and the configure step warns. A patch release of the
@@ -109,7 +109,7 @@ sudo dnf install suitesparse-devel           # RHEL/Rocky/Fedora
 ```
 
 **HPC / conda (no root, modules-based clusters).** Provide SuiteSparse, then
-build bngsim from source — discovery honors `$CONDA_PREFIX` and
+build BNGsim from source — discovery honors `$CONDA_PREFIX` and
 `CMAKE_PREFIX_PATH` with no explicit paths:
 
 ```bash
@@ -256,7 +256,7 @@ package is installed:
 ## Capability introspection
 
 Downstream tools (PyBNF, PyBioNetGen, etc.) can probe what an installed
-`bngsim` actually supports without a try/except dance. Two surfaces:
+BNGsim actually supports without a try/except dance. Two surfaces:
 
 **Module-level boolean flags** — match the existing pattern; safe to read
 unconditionally.
@@ -341,7 +341,7 @@ Stable feature keys: `nfsim`, `rulemonkey`, `klu`, `lapack_dense`, `mir`,
 not "was this backend compiled in?" but "does this build compute the thing
 correctly?". Each one stands for a fix whose absence is a wrong number rather
 than a refusal, so nothing else can be gated on: a version string identifies a
-release *cycle* rather than a build (bngsim bumps `__version__` at the start of
+release *cycle* rather than a build (BNGsim bumps `__version__` at the start of
 one), and a `hasattr` probe cannot see a change in what a build computes. They
 are `event_sensitivities` (forward sensitivities survive a discrete event),
 `cross_compartment_sensitivities` (a reaction crossing compartments of
@@ -370,5 +370,5 @@ source bytes as the ones it was built from (issue #528). That can happen only in
 a source checkout, where the extension is built separately and does not rebuild
 on import. Every other check here passes on such an install, because nothing in
 the Python layer moved.
-bngsim also warns about it at import — read the key when your own logging is
+BNGsim also warns about it at import — read the key when your own logging is
 ready, and print the warning where someone will see it.

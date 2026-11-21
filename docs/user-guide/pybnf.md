@@ -1,5 +1,5 @@
 ---
-summary: "Using bngsim as PyBNF's simulator for parameter fitting: setup, cluster evaluation, and the capability checks a fitting tool gates on."
+summary: "Using BNGsim as PyBNF's simulator for parameter fitting: setup, cluster evaluation, and the capability checks a fitting tool gates on."
 ---
 
 # Use with PyBNF
@@ -80,7 +80,7 @@ d_param[θ] = (right-hand-side path) + Σ_k (∂x_k(0)/∂θ)·d_ic[x_k]
 A gradient path that routes one fitted parameter to every native column it
 reaches and **sums** them therefore double-counts any seeded initial condition.
 The rule is not "drop one axis" — it is *add an `ic` term only for the part of
-`∂x(0)/∂θ` bngsim does not already carry*. `Model.effective_ic_sensitivity()`
+`∂x(0)/∂θ` BNGsim does not already carry*. `Model.effective_ic_sensitivity()`
 reports exactly that, from model structure alone, with **no integration**, so
 routing can be built once at setup rather than per evaluation:
 
@@ -175,7 +175,7 @@ is a compiled backend or an optional package, and `capabilities()["features"]`
 has always answered it. Some of it is a **fix**, and until issue #431 there was
 nothing to read.
 
-A version string cannot stand in. bngsim bumps `__version__` at the *start* of a
+A version string cannot stand in. BNGsim bumps `__version__` at the *start* of a
 release cycle, so the string identifies a cycle rather than a build: every
 from-source install made between that bump and a given fix declares the same
 number as the release that finally carries it. A `hasattr` probe cannot stand in
@@ -211,7 +211,7 @@ Log the commit at job start. It is the only thing here that separates two
 installs reporting the same `version`. Check `stale` there too: in a source
 checkout the compiled extension is built separately and does not rebuild on
 import, so it can lag the Python layer by days while every version-, metadata-
-and feature-based check passes. bngsim warns about that at import, which for a
+and feature-based check passes. BNGsim warns about that at import, which for a
 consumer package is while that package is still loading and before its logging
 exists — reading the key lets you raise it again where someone will see it, in
 time to stop a run that would otherwise report conclusions about code that is no
@@ -219,12 +219,12 @@ longer in the tree.
 
 ## Ask each model whether its gradient is analytic
 
-The keys above are properties of the install. Whether a gradient runs on bngsim's
+The keys above are properties of the install. Whether a gradient runs on BNGsim's
 analytic `∂f/∂p` or on CVODES' internal difference quotient is not: it is decided
-per model, at codegen, and two models on one bngsim get different answers.
+per model, at codegen, and two models on one BNGsim get different answers.
 
 `CVodeSensInit1` takes one sensitivity-RHS callback for every column, so a single
-rate law bngsim cannot differentiate declines the analytic derivative for the
+rate law BNGsim cannot differentiate declines the analytic derivative for the
 whole model. There is no per-reaction fallback to mix in. The difference quotient
 that replaces it costs an extra right-hand-side evaluation per column per step, so
 an N-parameter fit pays roughly N times the sensitivity cost. On a fit measured in
@@ -247,7 +247,7 @@ because nobody asked for one, which reports as `False` and is not a decline.
 The verdict is read off the compiled artifact, which either exports the symbol the
 solver resolves or does not, so it is stable whatever the codegen cache did. The
 reason is derived once, while source is being generated, and a warm cache
-generates none — so bngsim records it beside the artifact and replays it on a
+generates none — so BNGsim records it beside the artifact and replays it on a
 cache hit. A `None` reason therefore means "nothing recorded" as well as "nothing
 to report", and `has_analytic_sens_rhs` is what separates the two.
 
@@ -255,5 +255,5 @@ The reason is the half that is actionable. "uses unsupported construct: `abs()`"
 names the thing to re-encode; "no analytic RHS" only tells someone to wait. It
 also carries the one case where the difference quotient is not merely slower: a
 rate law that branches at a crossing whose time moves gets a gradient that is
-wrong at and after that crossing, and bngsim refuses such a run rather than return
+wrong at and after that crossing, and BNGsim refuses such a run rather than return
 it.

@@ -6,7 +6,7 @@ summary: "Evaluating a model outside a run: right-hand side, Jacobian, stoichiom
 
 A `Model` can evaluate the functions its integrators integrate, at any state
 you hand it, as NumPy arrays. This is the provider an analysis built outside
-bngsim needs — a continuation code stepping along an equilibrium branch, a
+BNGsim needs — a continuation code stepping along an equilibrium branch, a
 classifier of roots found by another solver, a moment-closure or
 finite-state-projection generator — and each evaluator is the one the
 corresponding engine runs, so they cannot drift from what a solve sees.
@@ -96,7 +96,7 @@ ODE one. Two things differ from the ODE rate of the same reaction:
   over its molecule count — `A + A -> B` fires at `k·n(n−1)/2`, where the ODE
   rate is `k·n²/2`. The count is `n = x·V` for a species stored as a
   concentration in a compartment of size `V`, and `n = x` for a `.net` model.
-  An SBML kinetic law that bngsim does not read as mass action (a boundary
+  An SBML kinetic law that BNGsim does not read as mass action (a boundary
   reactant, a law across compartments of different sizes, an assignment-rule
   compartment) is evaluated as written, but when it is a product of its
   species a species it reads `m ≥ 2` times still takes the falling factorial.
@@ -153,6 +153,6 @@ certificate applies, or to read the spectrum it already computed, see
 ## A CME or moment generator
 
 `stoichiometry_matrix` and `propensities` are all such a generator needs from
-bngsim: the state change of each reaction is a column of `S`, and its rate at
+BNGsim: the state change of each reaction is a column of `S`, and its rate at
 a state is the matching entry of `propensities(y)`. Nothing else in the model
 has to be reconstructed.

@@ -1,13 +1,13 @@
-# Contributing to bngsim
+# Contributing to BNGsim
 
-Thanks for your interest in improving `bngsim`. This file covers the essentials;
+Thanks for your interest in improving BNGsim. This file covers the essentials;
 the full [development documentation](docs/development/building.md) has the project
 layout, extension guides, and CI details.
 
 ## Certificate of origin
 
 Contributions are accepted under the project's [MIT license](LICENSE), the same
-terms bngsim is distributed under.
+terms BNGsim is distributed under.
 
 Please sign off on your commits, certifying that you wrote the contribution or
 otherwise have the right to submit it under that license — the
@@ -23,7 +23,7 @@ which appends a `Signed-off-by:` line using the name and email from your
 
 ## Development setup
 
-`bngsim` uses [uv](https://docs.astral.sh/uv/) for environment and dependency
+BNGsim uses [uv](https://docs.astral.sh/uv/) for environment and dependency
 management.
 
 ```bash
@@ -70,7 +70,7 @@ uv run --no-sync python scripts/rebuild_editable.py
 
 It builds for whichever interpreter runs it, so run it with the venv's: a bare
 `python` may not exist, or may be a different Python. `--no-sync` keeps uv from
-syncing the venv, and possibly reinstalling bngsim, before the fast path starts.
+syncing the venv, and possibly reinstalling BNGsim, before the fast path starts.
 
 That one needs `pybind11` importable in the venv, which is why the `dev` extra
 declares it: `pybind11` is a `[build-system]` requirement, so uv installs it into
@@ -155,7 +155,7 @@ runs in CI and is tolerant of the difference, so it will not fail on either form
 
 ### Legacy BioNetGen (BNG2.pl) for `parity_checks/`
 
-bngsim has no BNGL parser, so every BNGL job shells out to BNG2.pl for network
+BNGsim has no BNGL parser, so every BNGL job shells out to BNG2.pl for network
 generation before simulating in-process — the `parity_checks/` engine tests, the
 cBNGL round-trip gate, and (since #162) `Model.from_bngl` itself. Without it
 those skip. Two ways to supply it — pick either:
@@ -202,7 +202,7 @@ uv sync --extra dev --group amici    # builds the pinned AMICI (~1-4 min)
 ```
 
 It is a group rather than an extra because the pin is a commit, and a direct
-reference in published metadata would make bngsim unpublishable — the same
+reference in published metadata would make BNGsim unpublishable — the same
 trade `parity` makes. The commit must match
 `parity_checks/amici_parity/AMICI_PIN.json`, which is the source of truth;
 `test_amici_pin_agreement.py` fails if they drift. Do not relax it to
@@ -277,12 +277,12 @@ unbalances the shards; it never drops a test.
 
 ### The suite's artifact caches are its own
 
-A pytest session redirects both of bngsim's content-addressed caches — compiled
+A pytest session redirects both of BNGsim's content-addressed caches — compiled
 `.so` artifacts and BNG2.pl-generated networks — away from `~/.cache/bngsim` and
 into a directory the suite owns (issue #372). It is `.pytest_cache/d/bngsim/` by
 default, or a per-run temp directory when the cache provider is off
 (`-p no:cacheprovider`, which every CI leg passes). Both the module attribute and
-the env var are set, so subprocesses that import bngsim land there too.
+the env var are set, so subprocesses that import BNGsim land there too.
 
 The directory is **persistent**, so runs stay warm: a cold full suite measured
 19m19s against roughly 14m warm. Two consequences worth knowing:
@@ -297,7 +297,7 @@ uv run python -m pytest python/tests/ --cache-clear   # force a cold-cache run
 - `BNGSIM_TEST_CACHE_DIR=/path` relocates it — node-local scratch, a cache CI
   restores between runs, or a throwaway directory. It overrides
   `BNGSIM_CODEGEN_CACHE_DIR` / `BNGSIM_BNGL_CACHE_DIR` for the session rather
-  than deferring to them: exporting those points bngsim's *real* cache somewhere,
+  than deferring to them: exporting those points BNGsim's *real* cache somewhere,
   and the suite has no more business writing there than in `~/.cache`.
 - On macOS a cold cache costs more than its compiles. The system checks each
   newly written `.dylib` the first time anything loads it, at 0.5-2.4 s a file
@@ -325,7 +325,7 @@ moment it is written, and it must not be written where anything else will see it
 
 Three tools watch for regressions that unit tests cannot see.
 
-**`benchmarks/perf_ab.py`: did my change slow bngsim down?** A wall-clock A/B of
+**`benchmarks/perf_ab.py`: did my change slow BNGsim down?** A wall-clock A/B of
 two builds on your machine. It interleaves the committed ODE networks in
 `benchmarks/_dev/suite_ode.json` (2 to 3,744 species) across the two sides and
 flags a model only when the slowdown is past 5 %, outside a 99 % bootstrap
@@ -345,15 +345,15 @@ change. Run it for any change to `src/`, `include/`, the code generator, the
 loaders or `Simulator`, and paste the summary into the PR.
 
 **The nightly parity workflow** (`.github/workflows/nightly-parity.yml`) runs
-bngsim against RoadRunner, BNG2.pl/run_network/NFsim, AMICI forward
+BNGsim against RoadRunner, BNG2.pl/run_network/NFsim, AMICI forward
 sensitivities, and the SBML and DSMTS test suites every night. It compares each
-model's verdict and bngsim's solver work with committed baselines and with the
+model's verdict and BNGsim's solver work with committed baselines and with the
 previous night, and opens or updates the issue *Nightly parity: regressions
 detected* when something regresses. It never blocks a PR. When a fix turns
 failing models good, re-baseline so that a later regression of the fix alerts:
 see [`parity_checks/nightly/README.md`](parity_checks/nightly/README.md).
 
-**`ci/sbml_suite_gate.py`: does bngsim still give the SBML Test Suite's
+**`ci/sbml_suite_gate.py`: does BNGsim still give the SBML Test Suite's
 answers?** This one does block a PR. Every leg of `python-tests.yml` runs the
 pinned suite's 1,823 semantic cases (about 5 s locally), whose expected values are the
 suite's own, and fails if any case's outcome differs from
@@ -436,7 +436,7 @@ narrow (issue #431): **does a build without this fix return a wrong number
 instead of refusing?** If so, add a key to `capabilities()["features"]`.
 
 The reason is that nothing else can carry the answer. The version string
-identifies a release *cycle* rather than a build — bngsim bumps `__version__` at
+identifies a release *cycle* rather than a build — BNGsim bumps `__version__` at
 the start of one, so a from-source install made before your fix declares the
 number of the release that carries it — and a `hasattr` probe cannot see a
 change in what a build computes rather than in what it exposes. So a consumer
@@ -587,14 +587,14 @@ weeks lapses, and anyone may take the issue.
 - Stage a changelog fragment (below) and, where user-facing, update the relevant
   page under [`docs/`](docs/).
 - For a new public name (a function, class, method, keyword, simulation
-  method, capability or extra), decide whether an agent meeting bngsim should
+  method, capability or extra), decide whether an agent meeting BNGsim should
   know it: use it in [`python/bngsim/agent_guide.md`](python/bngsim/agent_guide.md),
   or add the key the test prints to `LEFT_OUT` in
   `python/tests/_agent_guide_left_out.py`. `test_agent_guide.py` fails until one is done. A name on a class or call the
   guide does not use needs neither.
 - Say how the PR was reviewed, under the "Review" heading the PR template gives
   you ([Saying how a PR was reviewed](#saying-how-a-pr-was-reviewed)).
-- Begin the PR's title with the part of bngsim it changes, then say what
+- Begin the PR's title with the part of BNGsim it changes, then say what
   changes, and end with every issue it clears: `simulator: read each batch
   row's default atol from its own start (#1660)`. Leave the numbers out only
   when no issue is involved.

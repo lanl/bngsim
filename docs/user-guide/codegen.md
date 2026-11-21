@@ -1,5 +1,5 @@
 ---
-summary: "Compiling a model's right-hand side and Jacobian to C: when bngsim does it, the compiler it needs, the cache, and running on clusters."
+summary: "Compiling a model's right-hand side and Jacobian to C: when BNGsim does it, the compiler it needs, the cache, and running on clusters."
 ---
 
 # Code-generated ODE RHS
@@ -47,7 +47,7 @@ jobs never compile (see [Scheduler-free cluster evaluation](pybnf.md#scheduler-f
 
 ### Managing the artifact cache
 
-The cache is content-addressed and **nothing prunes it automatically** — bngsim
+The cache is content-addressed and **nothing prunes it automatically** — BNGsim
 never deletes from this directory as a side effect of being used, because the
 failure mode (evicting the artifact another process is about to `dlopen`) is the
 exact class of bug the cache exists to avoid. So it grows until you bound it.
@@ -58,7 +58,7 @@ codegen emitters' own source, so *any* edit to `_codegen.py` / `_jacobian.py` /
 included — orphans
 every artifact on the machine at once. That is the right trade (the alternative,
 under-invalidation, is a silently wrong gradient), but on a machine that tracks
-bngsim development it means a fresh corpus of dead artifacts per emitter edit: six
+BNGsim development it means a fresh corpus of dead artifacts per emitter edit: six
 weeks of ordinary work left 2.0 GB across 14,377 entries on one developer box.
 
 `bngsim-cache` has four verbs:
@@ -110,7 +110,7 @@ directory. `clear` empties it, which means every model recompiles on its next ru
 
 Every mutating verb takes `--dry-run`, and two guarantees hold across all of them:
 
-- **Only files bngsim wrote are ever removed.** `BNGSIM_CODEGEN_CACHE_DIR` is a
+- **Only files BNGsim wrote are ever removed.** `BNGSIM_CODEGEN_CACHE_DIR` is a
   path you choose, and pointing it at shared scratch is normal, so anything
   unrecognized is reported as `foreign` and left alone — by `clear` as much as by
   `clean`.
@@ -172,7 +172,7 @@ better targeted than `--older-than`, which keeps orphans that happen to be recen
 throws away live artifacts that are merely idle.
 
 The per-key table is what makes a shared or pre-warmed artifact directory auditable —
-which bngsim's artifacts are in it, and how much each is holding. That matters before
+which BNGsim's artifacts are in it, and how much each is holding. That matters before
 pruning one: a venv per project is ordinary and each has its own key, so one venv's
 orphans are another's live artifacts. Spare a sibling install's key with `--keep-key`,
 repeatable:
@@ -181,7 +181,7 @@ repeatable:
 bngsim-cache prune --orphaned --keep-key 42+9f0c1de2ab3c4d5e
 ```
 
-One cache can also serve one bngsim on two architectures: a native and a Rosetta
+One cache can also serve one BNGsim on two architectures: a native and a Rosetta
 Python on an Apple Silicon Mac, or the x86-64 and aarch64 nodes of a cluster that
 share a home directory. Each builds and loads only its own libraries, which the
 architecture in the key keeps apart (issue #1486; before it, the second to run
