@@ -17,6 +17,7 @@ LEFT_OUT = (
     "Model.from_biomodels(cache)",
     "Model.from_biomodels(compartment_sizes)",
     "Model.from_biomodels(defer_jacobian)",
+    "Model.from_biomodels(refresh)",
     "Model.from_biomodels(version)",
     "Model.from_bngl(bng2_pl)",
     "Model.from_bngl(cache)",

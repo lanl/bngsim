@@ -13,9 +13,12 @@ Each file is kept under its sha256, beside a small record per id and version.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
+import numbers
 import os
 import re
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -73,7 +76,7 @@ def _read_cached(cache_dir: Path, model_id: str, version: int | None) -> dict[st
 
 
 def _write_atomic(path: Path, data: bytes) -> None:
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_bytes(data)
     os.replace(tmp, path)
 
@@ -93,12 +96,22 @@ def _fetch(model_id: str, version: int | None) -> tuple[dict[str, Any], bytes]:
         meta = json.loads(answer)
     except ValueError:
         # A refusal often comes back as a web page with status 200 (#807).
-        raise urllib.error.URLError(
-            f"{BASE} answered with a page that is not its API's JSON, starting {answer[:60]!r}"
-        ) from None
+        raise _Unreachable("it answered with a web page, not its API's JSON") from None
     main = (meta.get("files") or {}).get("main") or []
+    if not main and version is not None:
+        raise ModelError(f"BioModels has no released version {version} of {model_id}")
     if not main:
         raise ModelError(f"BioModels lists no main file for {entry!r}")
+    if len(main) > 1:
+        # BioModels names an entry's SBML file <id>_url.xml.
+        named = [f for f in main if f["name"].endswith("_url.xml")]
+        if len(named) != 1:
+            names = ", ".join(f["name"] for f in main)
+            raise ModelError(
+                f"BioModels lists several main files for {entry!r} ({names}); download "
+                "the one you want and load it with Model.from_sbml(path)"
+            )
+        main = named
     name = main[0]["name"]
     published = main[0].get("sha256sum")
     if version is None:
@@ -121,14 +134,24 @@ def _fetch(model_id: str, version: int | None) -> tuple[dict[str, Any], bytes]:
     return {"id": model_id, "version": version, "file": name, "sha256": sha256}, data
 
 
+class _Unreachable(Exception):
+    """BioModels could not be reached, or answered with something other than its API."""
+
+
 def fetch(
-    model_id: str, *, version: int | None = None, cache: bool = True, cache_dir: Path | None = None
+    model_id: str,
+    *,
+    version: int | None = None,
+    cache: bool = True,
+    refresh: bool = False,
+    cache_dir: Path | None = None,
 ) -> dict[str, Any]:
     """The entry's main SBML file, from the cache or from BioModels.
 
     Returns ``{"id", "version", "file", "sha256", "path"}``, where ``path`` is
-    the cached file. With ``cache=False`` nothing is read from or written to
-    the cache: ``path`` is ``None`` and ``data`` holds the file's bytes.
+    the cached file. ``refresh=True`` fetches again and updates the cache.
+    With ``cache=False`` nothing is read from or written to the cache:
+    ``path`` is ``None`` and ``data`` holds the file's bytes.
     """
     if not isinstance(model_id, str) or not ID.match(model_id):
         raise ValueError(
@@ -136,27 +159,36 @@ def fetch(
             "or 'MODEL1006230000'"
         )
     if version is not None and (
-        isinstance(version, bool) or int(version) != version or version < 1
+        isinstance(version, bool) or not isinstance(version, numbers.Integral) or version < 1
     ):
         raise ValueError(f"version={version!r} is not a version number (1, 2, ...)")
     cache_dir = CACHE_DIR if cache_dir is None else Path(cache_dir)
-    if cache:
+    if version is not None:
+        version = int(version)
+    if cache and not refresh:
         cached = _read_cached(cache_dir, model_id, version)
         if cached is not None:
             return cached
     try:
         record, data = _fetch(model_id, version)
-    except (urllib.error.URLError, OSError, TimeoutError) as exc:
-        cached_note = (
-            f"No copy is cached in {cache_dir}."
-            if cache
-            else "cache=False, so no cached copy was used."
-        )
+    except (_Unreachable, OSError, TimeoutError, http.client.HTTPException) as exc:
+        why = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+        entry = model_id if version is None else f"{model_id} version {version}"
+        if not cache:
+            note = f"With cache=False, the cache in {cache_dir} was not read."
+        else:
+            on_disk = sorted(
+                int(v)
+                for f in cache_dir.glob(f"{model_id}.*.json")
+                if (v := f.name.split(".")[1]).isdigit()
+            )
+            note = f"No copy of it is cached in {cache_dir}."
+            if on_disk:
+                note += f" Cached versions: {', '.join(map(str, on_disk))}; pass version=."
         raise ModelError(
-            f"could not fetch {model_id} from {BASE}: {exc}. Without a network, or "
-            f"where {BASE} refuses the request (some cloud hosts are refused), "
-            f"{cached_note} Download the SBML file yourself and load it with "
-            "Model.from_sbml(path)."
+            f"could not fetch {entry} from {BASE} ({why}). {note} BioModels refuses "
+            "some cloud hosts. You can download the SBML file yourself and load it "
+            "with Model.from_sbml(path)."
         ) from None
     if not cache:
         return {**record, "path": None, "data": data}

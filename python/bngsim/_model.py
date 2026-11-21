@@ -648,6 +648,7 @@ class Model:
         *,
         version: int | None = None,
         cache: bool = True,
+        refresh: bool = False,
         defer_jacobian: bool | None = None,
         compartment_sizes: dict[str, float] | None = None,
     ) -> Model:
@@ -670,6 +671,9 @@ class Model:
             Read and keep a copy in ``~/.cache/bngsim/biomodels`` (or
             ``$BNGSIM_BIOMODELS_CACHE_DIR``). Default True. ``False`` fetches
             the file again and keeps nothing.
+        refresh : bool, optional
+            Fetch again even if a copy is cached, and update the cache. A cached
+            latest version is otherwise used until you refresh it.
         defer_jacobian, compartment_sizes
             As for :meth:`from_sbml`.
 
@@ -694,7 +698,7 @@ class Model:
         """
         from bngsim import _biomodels
 
-        got = _biomodels.fetch(model_id, version=version, cache=cache)
+        got = _biomodels.fetch(model_id, version=version, cache=cache, refresh=refresh)
         if got["path"] is not None:
             model = cls.from_sbml(
                 got["path"], defer_jacobian=defer_jacobian, compartment_sizes=compartment_sizes
@@ -705,6 +709,8 @@ class Model:
                 defer_jacobian=defer_jacobian,
                 compartment_sizes=compartment_sizes,
             )
+        # Keep what the SBML load recorded beyond the file (compartment_sizes).
+        loaded = dict(model._source or {})
         _record_source(
             model,
             "sbml",
@@ -714,6 +720,9 @@ class Model:
             biomodels_version=got["version"],
             biomodels_file=got["file"],
         )
+        assert model._source is not None
+        for key, value in loaded.items():
+            model._source.setdefault(key, value)
         return model
 
     @classmethod

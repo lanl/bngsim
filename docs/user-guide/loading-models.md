@@ -251,9 +251,12 @@ it against the sha256 BioModels publishes. It keeps a copy in
 `~/.cache/bngsim/biomodels` (or `$BNGSIM_BIOMODELS_CACHE_DIR`), so the next call
 needs no network.
 
-- **Versions.** By default you get the latest version, or the latest one
-  already cached. Pass `version=2` to pin a version.
+- **Versions.** By default you get the latest version. Once cached, that copy
+  is used until you pass `refresh=True`, which fetches again and updates the
+  cache. Pass `version=2` to pin a version.
 - **No cache.** `cache=False` fetches the file again and keeps nothing.
+- **Checking.** When BioModels publishes no sha256 for a file, the file can't
+  be checked, and BNGsim only checks that it is SBML.
 - **Where it came from.** `model.describe()["source"]` records the id, the
   version, the file name, and its sha256.
 - **No network.** If BioModels can't be reached and no copy is cached, you get

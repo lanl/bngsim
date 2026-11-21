@@ -1,13 +1,15 @@
 """Model.from_biomodels fetches a BioModels entry by id and keeps a copy (#1706).
 
-The tests replay recorded BioModels responses, so they need no network: CI
-runners can't reach BioModels anyway (#807). A live check was made by hand
-against BIOMD0000000010.
+The tests answer with responses shaped like BioModels' (the entry's JSON and
+its file), so they need no network: CI runners can't reach BioModels anyway
+(#807). The behavior was checked live, at https://www.biomodels.org, against
+BIOMD0000000010 and MODEL1006230000.
 """
 
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import urllib.error
 
@@ -37,12 +39,15 @@ class FakeBioModels:
         self.meta = _meta() if meta is None else meta
         self.data = data
         self.offline = offline
+        self.fail: BaseException | None = None
         self.urls: list[str] = []
 
     def __call__(self, url: str) -> bytes:
         self.urls.append(url)
         if self.offline:
             raise urllib.error.URLError("no network")
+        if self.fail is not None:
+            raise self.fail
         if "?format=json" in url:
             entry = url.split("/")[-1].split("?")[0]
             if not entry.startswith(ID):
@@ -88,7 +93,7 @@ def test_a_version_pins_the_file(biomodels):
     assert biomodels.urls[1].startswith(f"https://www.biomodels.org/model/download/{ID}.2?")
     biomodels.offline = True
     bngsim.Model.from_biomodels(ID, version=2)  # cached by version
-    with pytest.raises(ModelError, match="No copy is cached"):
+    with pytest.raises(ModelError, match="No copy of it is cached"):
         bngsim.Model.from_biomodels(ID, version=1)
 
 
@@ -151,3 +156,54 @@ def test_load_says_to_call_from_biomodels():
 def test_the_request_names_bngsim_and_nothing_about_the_user():
     agent = _biomodels._user_agent()
     assert agent == f"bngsim/{bngsim.__version__} (+https://github.com/lanl/bngsim)"
+
+
+def test_the_compartment_sizes_given_stay_in_the_record(biomodels):
+    model = bngsim.Model.from_biomodels(ID, compartment_sizes={"default_compartment": 2.0})
+    assert model.describe()["source"]["compartment_sizes"] == {"default_compartment": 2.0}
+
+
+def test_a_version_must_be_a_whole_number(biomodels):
+    for bad in (2.0, True, -1):
+        with pytest.raises(ValueError, match="not a version number"):
+            bngsim.Model.from_biomodels(ID, version=bad)
+
+
+def test_an_unreleased_version_is_named(biomodels):
+    biomodels.meta = json.dumps({"files": {"main": []}}).encode()
+    with pytest.raises(ModelError, match="no released version 3 of"):
+        bngsim.Model.from_biomodels(ID, version=3)
+
+
+def test_offline_the_message_lists_the_cached_versions(biomodels):
+    bngsim.Model.from_biomodels(ID, version=2)
+    biomodels.offline = True
+    with pytest.raises(ModelError) as exc:
+        bngsim.Model.from_biomodels(ID)
+    message = str(exc.value)
+    assert "(no network). No copy of it is cached" in message
+    assert "Cached versions: 2; pass version=." in message
+    assert "<urlopen" not in message
+
+
+def test_a_dropped_connection_is_a_failed_fetch(biomodels):
+    biomodels.fail = http.client.IncompleteRead(b"")
+    with pytest.raises(ModelError, match="could not fetch"):
+        bngsim.Model.from_biomodels(ID)
+
+
+def test_several_main_files_take_the_sbml_one_or_refuse(biomodels):
+    other = {"name": "readme.txt", "sha256sum": "0" * 64}
+    biomodels.meta = json.dumps(
+        {"files": {"main": [other, {"name": FILE, "sha256sum": SHA}]}}
+    ).encode()
+    assert bngsim.Model.from_biomodels(ID).describe()["source"]["biomodels_file"] == FILE
+    biomodels.meta = json.dumps({"files": {"main": [other, other]}}).encode()
+    with pytest.raises(ModelError, match="several main files"):
+        bngsim.Model.from_biomodels(ID, refresh=True)
+
+
+def test_refresh_fetches_again_and_updates_the_cache(biomodels):
+    bngsim.Model.from_biomodels(ID)
+    bngsim.Model.from_biomodels(ID, refresh=True)
+    assert len(biomodels.urls) == 4
