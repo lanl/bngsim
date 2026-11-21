@@ -271,9 +271,17 @@ def test_the_suite_does_not_get_the_repository_git_hands_a_worktree_hook(monkeyp
 
 
 def test_the_hooks_repository_variables_are_the_suites():
+    """One list in three places: a name added to one and not the others would
+    leave a git call there pointed at the hook's repository."""
     from _net_corpus import _REPO_LOCATING
 
     assert pre_push.REPO_LOCATING == _REPO_LOCATING
+    gate_path = REPO_ROOT / "ci" / "sbml_suite_gate.py"
+    spec = importlib.util.spec_from_file_location("bngsim_ci_sbml_suite_gate_vars", gate_path)
+    assert spec and spec.loader
+    gate = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gate)
+    assert gate._GIT_REPO_VARS == _REPO_LOCATING
 
 
 def test_the_push_hook_is_this_script():

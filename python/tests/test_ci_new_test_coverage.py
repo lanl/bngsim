@@ -513,6 +513,55 @@ def test_a_repository_in_the_environment_is_not_written_to(tmp_path, monkeypatch
     assert (scratch / ".git" / "config").is_file()
 
 
+def test_this_module_under_a_worktree_hooks_git_dir_passes_and_leaves_that_repository_alone(
+    tmp_path,
+):
+    """The incident, end to end: git hands a pre-push hook run from a linked
+    worktree GIT_DIR=<main>/.git/worktrees/<name>. The rest of this module, run
+    in that environment, must pass and leave that repository as it was."""
+    main = tmp_path / "main"
+    main.mkdir()
+    _git(main, "init", "-q")
+    _git(
+        main,
+        "-c",
+        "user.name=u",
+        "-c",
+        "user.email=u@x",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "a",
+    )
+    _git(main, "worktree", "add", "-q", str(tmp_path / "wt"), "-b", "w")
+    config = main / ".git" / "config"
+    before = config.read_bytes()
+    heads = _git(main, "for-each-ref", "--format=%(objectname)", "refs/heads")
+    env = {**os.environ, "GIT_DIR": str(main / ".git" / "worktrees" / "wt")}
+    done = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            __file__,
+            "-k",
+            "not worktree_hooks_git_dir",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    assert done.returncode == 0, done.stdout[-2000:] + done.stderr[-2000:]
+    assert config.read_bytes() == before
+    assert _git(main, "for-each-ref", "--format=%(objectname)", "refs/heads") == heads
+
+
 @pytest.fixture
 def repo(tmp_path):
     _git(tmp_path, "init", "-q")
