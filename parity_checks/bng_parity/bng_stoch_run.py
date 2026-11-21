@@ -328,10 +328,15 @@ NF_KNOWN_REF = {
 
 # NF models whose legacy NFsim reference cannot be compared against at all, and
 # that no independent oracle runs within the nightly's budget. NF_KNOWN_REF keeps
-# an honest DIFF that a run of both engines produces; here a DIFF would cost
-# more than it tells (every DIFF escalates to 30 replicates), so neither engine
-# runs: the row is REFERENCE_FAILED with reference_refusal "known_invalid" and
-# the reason. An entry comes out when a valid reference for the model exists.
+# an honest DIFF that a run of both engines produces. Here bngsim would need a
+# raised time limit to finish, only to give a DIFF against a wrong reference,
+# and every DIFF escalates to 30 replicates. So neither engine runs: the row is
+# REFERENCE_FAILED with reference_refusal "known_invalid" and the reason.
+#
+# A record night writes no archive entry for such a model, so the next archive
+# also leaves it out of differential_nf, which builds its NFsim-RuleMonkey jobs
+# from the bng_nf archive (differential_run.nf_jobs). An entry comes out when a
+# valid reference for the model exists.
 NF_INVALID_REF = {
     "AMPK_MTORC1_ULK1_v2": {
         "issue": "#1818",
@@ -343,8 +348,8 @@ NF_INVALID_REF = {
         "rate. bngsim-NF froze the same way, every seed between t = 36 and 792, until #1821 "
         "carried the upstream change; it now runs to t = 10,800 at about 11 million firings "
         "per replicate, a few minutes each on the nightly's runners. Its old PASS compared "
-        "two frozen ensembles. The NFsim-RuleMonkey comparison times out on this model at "
-        "its 3,000 s cap.",
+        "two frozen ensembles. The NFsim-RuleMonkey comparison (differential_nf) has timed "
+        "out on this model at its 3,000 s cap every night.",
     },
 }
 
@@ -1081,7 +1086,8 @@ def _worker(spec: dict, q) -> None:
         return
 
     # A catalogued unusable reference (NF_INVALID_REF): nothing to compare, so
-    # neither engine runs and no archive entry is read or written.
+    # neither engine runs and no archive entry is read or written (which also
+    # leaves the model out of the next archive's differential_nf jobs).
     invalid = known_invalid_reference(track, bngl_path.stem)
     if invalid is not None:
         res.update(invalid)

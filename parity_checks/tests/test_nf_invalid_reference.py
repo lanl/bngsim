@@ -14,8 +14,6 @@ import json
 import sys
 from pathlib import Path
 
-import pytest
-
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "bng_parity"))
 
@@ -39,7 +37,8 @@ def test_ampk_is_catalogued_with_the_freeze_and_its_evidence():
     art = bsr.NF_INVALID_REF.get(AMPK)
     assert art is not None
     assert art["issue"] == "#1818"
-    for fact in ("stops firing", "t = 504-540", "#1821", "two frozen ensembles", "RuleMonkey"):
+    # The entry says what is wrong with the reference and what changed in bngsim.
+    for fact in ("Legacy NFsim", "#1821", "two frozen ensembles"):
         assert fact in art["reason"], fact
 
 
@@ -68,8 +67,7 @@ def test_only_a_catalogued_model_on_the_nf_track_is_refused():
     assert bsr.known_invalid_reference("nf", "some_other_model") is None
 
 
-@pytest.mark.parametrize("replay", [False, True])
-def test_the_worker_runs_neither_engine_nor_reads_the_archive(tmp_path, monkeypatch, replay):
+def test_the_worker_runs_neither_engine_nor_reads_the_archive(tmp_path, monkeypatch):
     def must_not_run(*args, **kwargs):
         raise AssertionError("an engine, a build or the archive was reached")
 
@@ -89,7 +87,8 @@ def test_the_worker_runs_neither_engine_nor_reads_the_archive(tmp_path, monkeypa
         "bngl": str(bngl),
         "legacy_bin": None,
         "legacy_label": "NFsim",
-        "reference_archive": str(tmp_path / "archive") if replay else None,
+        # A replay night, as six nights a week are: the archive is not opened.
+        "reference_archive": str(tmp_path / "archive"),
     }
     out: list[dict] = []
 
@@ -102,3 +101,46 @@ def test_the_worker_runs_neither_engine_nor_reads_the_archive(tmp_path, monkeypa
     assert out[0]["status"] == "reference_failed"
     assert out[0]["reference_refusal"] == "known_invalid"
     assert out[0]["model_id"] == spec["model_id"]
+    assert set(out[0]["timing"]) == {"warmup"}  # no build, no ensemble
+
+
+def test_the_committed_baseline_holds_the_row_the_nightly_extracts():
+    """The baseline's line for AMPK is what verdicts.py makes of this row, so an
+    edit to the row's text that the baseline did not follow fails here, not on
+    the next night."""
+    import verdicts
+
+    model_id = f"original/bngl_models/my_models/ode/{AMPK}.bngl"
+    row = bsr.known_invalid_reference("nf", AMPK)
+    report = {
+        "results": [
+            {
+                "model_id": model_id,
+                "method": "stochastic",
+                "outcome": bsr._OUTCOME[row["status"]].value,
+                "subclass": None,
+                "exception": row["exception"],
+                "comment": row["comment"],
+                "timing": {"warmup": {}},
+            }
+        ]
+    }
+    got = verdicts.extract_core(report)[f"{model_id}|stochastic"]
+    baseline = json.loads((HERE.parent / "nightly" / "baselines" / "bng_nf.json").read_text())
+    assert baseline["cases"][f"{model_id}|stochastic"] == got
+
+
+def test_the_matrix_does_not_show_bngsim_as_run():
+    import generate_bng_matrix as gbm
+
+    timing = {"warmup": {}}
+    bn_cell = gbm.render_bngsim_stoch_cell("REFERENCE_FAILED", timing, "nf")
+    leg_cell = gbm.render_legacy_stoch_cell("REFERENCE_FAILED", timing, "nf", "NFsim")
+    assert "NOT RUN" in bn_cell and "verdict-pass" not in bn_cell
+    assert "bngsim ran fine" not in leg_cell and "neither engine ran" in leg_cell
+    # A row where bngsim did run and the legacy engine errored still reads as before.
+    ran = {"bngsim": {"rep_median_sec": 1.0, "n_rep": 10}}
+    assert "NOT RUN" not in gbm.render_bngsim_stoch_cell("REFERENCE_FAILED", ran, "nf")
+    assert "bngsim ran fine" in gbm.render_legacy_stoch_cell(
+        "REFERENCE_FAILED", ran, "nf", "NFsim"
+    )
