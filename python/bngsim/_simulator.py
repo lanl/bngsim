@@ -4223,6 +4223,10 @@ class Simulator:
         """The absolute tolerance a call was asked for, for its record (issue
         #1703): the call's ``atol=``, else the Simulator's
         :meth:`set_tolerances`, else ``None``, the default."""
+        if isinstance(atol, _Ceiling):
+            # A call's own resolved scalar, handed back to run() (a scan's
+            # point); the call that resolved it records what it was asked.
+            return float(atol.scalar)
         if atol is not None:
             return _record.atol_given(atol)
         if not self._atol_set:
@@ -8089,6 +8093,10 @@ class Simulator:
                     result = stop.result
                 result.custom_attrs["scan_parameter"] = parameter
                 result.custom_attrs["scan_value"] = float(value)
+                if result._run_info is not None and result._run_info.get("atol") is not None:
+                    # The point ran at the tolerance the scan resolved; what the
+                    # scan was asked is the point's to record (issue #1703).
+                    result._run_info["atol"]["given"] = self._atol_asked(atol)
                 results.append(result)
                 point_atols.append(point_atol.vector if isinstance(point_atol, _Ceiling) else None)
         finally:

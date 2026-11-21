@@ -270,8 +270,7 @@ def test_a_logged_fallback_is_on_the_result_whatever_the_logging_level() -> None
     """The issue's example: the GH #176 retry is a logged notice, and a run
     that went on to succeed kept no trace of it."""
     sim = Simulator(Model.from_sbml_string(SINK))
-    if sim.jacobian_strategy != "analytical":
-        pytest.skip("the model has no analytical Jacobian on this build")
+    assert sim.jacobian_strategy == "analytical"
     log = logging.getLogger("bngsim")
     level = log.level
     log.setLevel(logging.CRITICAL)

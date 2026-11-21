@@ -143,6 +143,9 @@ _NOT_FORWARDED = {"_core"}
 # The one field a stop sets rather than carries: the condition the result was
 # cut at, None on the full run (issue #1369). Checked on its own below.
 _SET_BY_THE_STOP = {"_stop_condition"}
+# What the record says of a run (issue #1703) holds the run's own wall time,
+# which the two runs compared here do not share; the rest of it is compared.
+_OWN_TO_THE_RUN = {"_run_info": ("wall_time_s",)}
 
 
 def _same(got, want):
@@ -178,6 +181,9 @@ def test_every_field_is_carried_over(net, kw):
             continue
         want = getattr(full, name)
         got = getattr(partial, name)
+        if name in _OWN_TO_THE_RUN and isinstance(want, dict) and isinstance(got, dict):
+            want = {k: v for k, v in want.items() if k not in _OWN_TO_THE_RUN[name]}
+            got = {k: v for k, v in got.items() if k not in _OWN_TO_THE_RUN[name]}
         if isinstance(want, np.ndarray) and want.size and want.shape[0] == full.time.shape[0]:
             want = want[:n]
         if not _same(got, want):

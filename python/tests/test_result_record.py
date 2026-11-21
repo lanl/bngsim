@@ -310,8 +310,7 @@ def test_a_jacobian_retry_is_on_the_result() -> None:
     """The issue's "not checked": a run whose analytical-Jacobian attempt fails
     and whose retry succeeds left no trace on its Result."""
     sim = Simulator(Model.from_sbml_string(SINK), method="ode")
-    if sim.jacobian_strategy != "analytical":
-        pytest.skip("the model has no analytical Jacobian on this build")
+    assert sim.jacobian_strategy == "analytical"
     r = sim.run(t_span=(0, 40), n_points=5)
     backend = r.record["backend"]
     assert backend["jacobian_requested"] == "auto"
@@ -328,20 +327,20 @@ def test_the_backend_names_the_jacobian_and_linear_solver_asked_for(net_path: Pa
     assert fd.record["backend"]["jacobian"] == "difference_quotient"
     assert fd.record["backend"]["jacobian_requested"] == "fd"
     if not bngsim.capabilities()["features"].get("klu"):
-        pytest.skip("this install has no KLU")
+        pytest.skip("KLU not compiled")
     sparse = Simulator(Model.from_net(net_path), force_sparse_linear_solver=True)
     r = sparse.run(t_span=(0, 1), n_points=2)
     assert r.record["backend"]["linear_solver"] == "klu"
 
 
-@pytest.mark.skipif(_CC is None, reason="needs a C compiler for codegen")
+@pytest.mark.skipif(_CC is None, reason="no C compiler for codegen")
 def test_a_compiled_run_names_its_backend(net_path: Path) -> None:
     sim = Simulator(Model.from_net(net_path), codegen=True)
     r = sim.run(t_span=(0, 1), n_points=2)
     assert r.record["backend"]["rhs"] == selected_codegen_backend() == sim.codegen_backend
 
 
-@pytest.mark.skipif(_CC is None, reason="needs a C compiler for sensitivities")
+@pytest.mark.skipif(_CC is None, reason="no C compiler for sensitivities")
 def test_a_sensitivity_run_names_its_sensitivity_rhs(net_path: Path) -> None:
     sim = Simulator(Model.from_net(net_path), sensitivity_params=["kf"])
     r = sim.run(t_span=(0, 1), n_points=3)
@@ -477,3 +476,16 @@ def test_a_scan_point_records_its_value(net_path: Path) -> None:
     sim = Simulator(Model.from_net(net_path))
     points = sim.parameter_scan("kf", [0.1, 0.3], t_span=(0, 1), n_points=2)
     assert [p.record["run"]["parameters"]["kf"] for p in points] == [0.1, 0.3]
+
+
+@pytest.mark.parametrize("atol", [None, 1e-9])
+def test_a_scan_point_records_the_tolerance_the_scan_was_asked(net_path: Path, atol) -> None:
+    """A point runs at the tolerance its scan resolved (B starts at 0, so a
+    scalar is read as a ceiling over a vector); what was asked is the scan's."""
+    sim = Simulator(Model.from_net(net_path))
+    (point,) = sim.parameter_scan("kf", [0.1], t_span=(0, 1), n_points=2, atol=atol)
+    run = point.record["run"]
+    assert run["atol"]["given"] == atol
+    assert run["atol"]["scalar"] == (1e-8 if atol is None else atol)
+    direct = sim.run(t_span=(0, 1), n_points=2, atol=atol, start="initial")
+    assert direct.record["run"]["atol"]["per_species"] == run["atol"]["per_species"]
