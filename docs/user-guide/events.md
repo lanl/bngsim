@@ -1,3 +1,7 @@
+---
+summary: "SBML and Antimony events: triggers, delays, priorities and assignments, and how runs and sensitivities cross them."
+---
+
 # Events
 
 ## Events (SBML / Antimony)

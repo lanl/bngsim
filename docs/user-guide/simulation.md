@@ -1,3 +1,7 @@
+---
+summary: "Batch sweeps with run_batch, parameter scans from a saved pre-equilibrated state, bifurcate for continuation, multi-phase protocols, timeouts and stop conditions."
+---
+
 # Running simulations
 
 ## Batch parameter sweeps

@@ -1,3 +1,7 @@
+---
+summary: "Converting between .net, SBML and compartmental BNGL, and reading and writing SED-ML and COMBINE (OMEX) archives."
+---
+
 # Format conversion & interchange (SBML · SED-ML · OMEX)
 
 BNGsim converts BioNetGen networks to and from the community-standard interchange

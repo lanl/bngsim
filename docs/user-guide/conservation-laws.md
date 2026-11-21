@@ -1,3 +1,7 @@
+---
+summary: "Conservation laws bngsim finds in a network, and parameter_scan over them."
+---
+
 # Conservation laws & parameter scans
 
 ## Conservation laws

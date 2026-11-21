@@ -4,17 +4,23 @@ Usage::
 
     import bngsim
 
-    model = bngsim.Model.from_net("model.net")
+    model = bngsim.Model.load("model.net")    # also .bngl, .xml, .sbml, .ant
     sim = bngsim.Simulator(model, method="ode")
 
     model.set_param("kf", 0.5)
     result = sim.run(t_span=(0, 1000), n_points=1001)
 
-    result.time         # (1001,) ndarray
-    result.observables  # (1001, n_obs) ndarray
-    result.species      # (1001, n_species) ndarray
+    result.time             # (1001,) ndarray
+    result.observables      # (1001, n_obs) ndarray
+    result.observables["A"] # one observable's column, by name
 
-See the package README for installation, usage, and API overview.
+To learn the library, read ``bngsim.agent_guide()`` (``python -m bngsim
+guide`` prints it): one page, for this version, with the calls, the rules
+that otherwise give wrong answers, what each feature needs, and a translation
+table from libRoadRunner, Tellurium, AMICI, COPASI, BioNetGen and PySB.
+``bngsim.capabilities()`` says what this install can do, ``help()`` on a
+class or method gives its full reference, and the user guides are at
+https://bngsim.readthedocs.io.
 """
 
 from __future__ import annotations
@@ -23,6 +29,7 @@ import importlib.util as _importlib_util
 import logging
 from typing import Any
 
+from bngsim._agent_guide import agent_guide
 from bngsim._atol import (
     AUTO,
     TRACKING,
@@ -494,6 +501,8 @@ __all__ = [
     "HAS_BNGL",
     "HAS_LIBSBML",
     "capabilities",
+    # The agent guide (issue #1699)
+    "agent_guide",
     # Codegen
     "prepare_codegen",
     # Codegen artifact cache (issue #205). The cache is content-addressed and

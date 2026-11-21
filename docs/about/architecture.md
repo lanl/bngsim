@@ -1,3 +1,7 @@
+---
+summary: "How bngsim is built: the C++ core, the Python layer, the key design decisions and the vendored dependencies."
+---
+
 # Architecture
 
 ```

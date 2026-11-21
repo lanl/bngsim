@@ -1,3 +1,7 @@
+---
+summary: "Evaluating a model outside a run: right-hand side, Jacobian, stoichiometry matrix and propensities at a given state."
+---
+
 # Model evaluators: RHS, Jacobian, stoichiometry, propensities
 
 A `Model` can evaluate the functions its integrators integrate, at any state

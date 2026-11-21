@@ -1,3 +1,7 @@
+---
+summary: "For contributors: building from source, running the tests and CI locally, and the project layout."
+---
+
 # Building & contributing
 
 `CONTRIBUTING.md` in the repository root is the authoritative build guide. It

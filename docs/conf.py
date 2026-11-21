@@ -11,6 +11,8 @@ import sphinx.util.requests
 # Make the package importable for autodoc even when bngsim isn't pip-installed
 # in the build environment (e.g. local `sphinx-build`, or the RTD mock path).
 sys.path.insert(0, os.path.abspath(os.path.join("..", "python")))
+# This project's own Sphinx extensions (llms_txt).
+sys.path.insert(0, os.path.abspath("_ext"))
 
 # -- Project information -----------------------------------------------------
 project = "bngsim"
@@ -39,6 +41,7 @@ extensions = [
     "sphinx.ext.viewcode",  # "[source]" links
     "sphinx_autodoc_typehints",  # render type hints in signatures
     "sphinx_copybutton",  # copy button on code blocks
+    "llms_txt",  # llms.txt, llms-full.txt and each page's Markdown (issue #1699)
 ]
 
 # the logo dir is assets, not doc pages.
@@ -127,6 +130,25 @@ def _inventory(name: str, url: str) -> str | None:
 intersphinx_mapping = {
     name: (url, _inventory(name, url)) for name, url in _INTERSPHINX_URLS.items()
 }
+
+# -- llms.txt (docs/_ext/llms_txt.py) -----------------------------------------
+# The links are absolute, since Read the Docs serves llms.txt at the domain's
+# root: READTHEDOCS_CANONICAL_URL where it sets it, this otherwise.
+llms_txt_base_url = "https://bngsim.readthedocs.io/en/latest/"
+llms_txt_summary = (
+    "bngsim simulates biochemical reaction networks in Python: BioNetGen (.net, "
+    "BNGL), SBML and Antimony models, run as ODEs, stochastically (SSA, PSA) or "
+    "network-free, with parameter scans, steady states and sensitivities."
+)
+llms_txt_intro = """
+Each link is the page's Markdown. Start with the agent guide: one page with
+the calls, the rules that otherwise give wrong answers and a translation table
+from other simulators. llms-full.txt holds every page below but the optional
+ones in one file. Inside Python, bngsim.agent_guide() returns the agent guide
+of the installed version, and help() on any class or method gives its full
+reference.
+"""
+llms_txt_optional_captions = ["About & development"]
 
 # -- HTML output -------------------------------------------------------------
 html_theme = "furo"

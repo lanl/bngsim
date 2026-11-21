@@ -1,3 +1,7 @@
+---
+summary: "How to install bngsim: the wheels, a source build, SuiteSparse/KLU for large models, and the optional extras (BNGL, Antimony, pandas, HDF5)."
+---
+
 # Installation
 
 

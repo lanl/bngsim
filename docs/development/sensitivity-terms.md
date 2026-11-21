@@ -1,3 +1,7 @@
+---
+summary: "For contributors: every term of a forward-sensitivity column, written down once: seeds, events, switches, clocks."
+---
+
 # Forward-sensitivity terms
 
 This page writes down, once, every term that goes into a forward-sensitivity
