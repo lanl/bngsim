@@ -15,8 +15,8 @@ def build() -> bngsim.Model:
     b.add_parameter("k3", 1000)
     b.add_parameter("k4", 16.5)
     b.add_species("X", 50)
-    b.add_reaction([], ["X"], law="k1*X^2")
-    b.add_reaction(["X"], [], law="k2*X^3")
-    b.add_reaction([], ["X"], law="k3")
-    b.add_reaction(["X"], [], law="k4*X")
+    b.add_reaction(["X", "X"], ["X", "X", "X"], rate="k1")  # 2X -> 3X
+    b.add_reaction(["X", "X", "X"], ["X", "X"], rate="k2")  # 3X -> 2X
+    b.add_reaction([], ["X"], rate="k3")
+    b.add_reaction(["X"], [], rate="k4")
     return b.build()

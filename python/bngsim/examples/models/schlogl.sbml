@@ -16,8 +16,11 @@
     </listOfParameters>
     <listOfReactions>
       <reaction id="J1" reversible="true">
+        <listOfReactants>
+          <speciesReference species="X" stoichiometry="2" constant="true"/>
+        </listOfReactants>
         <listOfProducts>
-          <speciesReference species="X" stoichiometry="1" constant="true"/>
+          <speciesReference species="X" stoichiometry="3" constant="true"/>
         </listOfProducts>
         <kineticLaw>
           <math xmlns="http://www.w3.org/1998/Math/MathML">
@@ -35,8 +38,11 @@
       </reaction>
       <reaction id="J2" reversible="true">
         <listOfReactants>
-          <speciesReference species="X" stoichiometry="1" constant="true"/>
+          <speciesReference species="X" stoichiometry="3" constant="true"/>
         </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="X" stoichiometry="2" constant="true"/>
+        </listOfProducts>
         <kineticLaw>
           <math xmlns="http://www.w3.org/1998/Math/MathML">
             <apply>

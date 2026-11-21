@@ -32,6 +32,9 @@ def _binding_roots(kf: float, kr: float, A0: float, B0: float) -> tuple[float, f
 
 
 def binding(t, kf, kr, A0, B0):
+    if kf == 0:  # nothing binds
+        C = np.zeros_like(t)
+        return {"A": A0 - C, "B": B0 - C, "C": C}
     r1, r2 = _binding_roots(kf, kr, A0, B0)
     e = np.exp(-kf * (r2 - r1) * t)
     C = r1 * r2 * (1 - e) / (r2 - r1 * e)
@@ -44,7 +47,10 @@ def decay(t, k, A0):
 
 def chain(t, k1, k2, A0):
     A = A0 * np.exp(-k1 * t)
-    B = A0 * k1 / (k2 - k1) * (np.exp(-k1 * t) - np.exp(-k2 * t))
+    if k1 == k2:  # the limit of the formula below
+        B = A0 * k1 * t * np.exp(-k1 * t)
+    else:
+        B = A0 * k1 / (k2 - k1) * (np.exp(-k1 * t) - np.exp(-k2 * t))
     return {"A": A, "B": B, "C": A0 - A - B}
 
 
@@ -60,7 +66,7 @@ def bolus(t, k, A0, dose, t_dose):
 
 def steady_states(name: str, p: dict[str, float]) -> list[dict[str, float]]:
     if name == "binding":
-        C = _binding_roots(p["kf"], p["kr"], p["A0"], p["B0"])[0]
+        C = _binding_roots(p["kf"], p["kr"], p["A0"], p["B0"])[0] if p["kf"] else 0.0
         return [{"A": p["A0"] - C, "B": p["B0"] - C, "C": C, "stable": True}]
     if name == "decay" or name == "bolus":
         return [{"A": 0.0, "stable": True}]

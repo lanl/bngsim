@@ -119,7 +119,7 @@ def test_birth_death_keeps_its_exact_mean(method):
     exact = E.exact("birth_death", [10.0])["A"][0]
     assert abs(a.mean() - exact) <= 4 * a.std(ddof=1) / np.sqrt(len(a))
     if method == "ssa":  # started at 0, the count is Poisson
-        assert a.var(ddof=1) == pytest.approx(exact, rel=0.4)
+        assert a.var(ddof=1) == pytest.approx(exact, rel=0.6)  # 4 SE of a variance
 
 
 @pytest.mark.skipif(not bngsim.HAS_NFSIM, reason="NFsim not compiled in")
@@ -142,6 +142,9 @@ def test_nfsim_and_rulemonkey_agree_on_binding():
 def test_exact_takes_parameters_by_name():
     t = np.array([0.0, 1.0])
     assert E.exact("decay", t, k=1.0)["A"][1] == pytest.approx(100 * np.exp(-1))
+    # Edge values have their limits, not a division by zero.
+    assert E.exact("chain", t, k1=1.0, k2=1.0)["B"][1] == pytest.approx(100 * np.exp(-1))
+    assert E.exact("binding", t, kf=0.0)["C"][1] == 0
     with pytest.raises(ValueError, match="no parameter kk"):
         E.exact("decay", t, kk=1.0)
 

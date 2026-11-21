@@ -22,6 +22,7 @@ def _decay(**reaction):
 @pytest.mark.parametrize(
     ("reaction", "rate"),
     [
+        ({"rate": 0.5}, 0.5),  # a number
         ({"rate": "k"}, 0.5),  # a parameter: mass action
         ({"rate": "2*k"}, 1.0),  # an expression: mass action
         ({"law": "k*A"}, 0.5),  # the whole rate
@@ -59,6 +60,14 @@ def test_a_users_name_never_collides_with_a_hidden_one():
     b.add_function("_rate1", "1000*k")  # the builder's own first name
     b.add_reaction(["A"], [], rate="2*k")
     assert _run(b.build()).observables["A"][-1] == pytest.approx(100 * np.exp(-1), rel=1e-7)
+
+
+def test_a_rate_naming_nothing_says_so():
+    b = bngsim.ModelBuilder()
+    b.add_species("A", 1)
+    b.add_reaction(["A"], [], rate="undefined_k")
+    with pytest.raises(ValueError, match="'undefined_k', which is not defined"):
+        b.build()
 
 
 def test_a_reactant_listed_twice_counts_twice():

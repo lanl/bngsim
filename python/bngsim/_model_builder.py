@@ -50,6 +50,8 @@ class ModelBuilder:
         # Names a reaction's rate can name directly: parameters and functions.
         self._rate_names: set[str] = set()
         self._n_hidden = 0
+        # Each hidden function's name, and the rate= or law= it was made from.
+        self._hidden: dict[str, str] = {}
         self._built = False
 
     def _new_name(self, name: str, what: str) -> None:
@@ -78,9 +80,10 @@ class ModelBuilder:
                 self._names.add(name)
                 return name
 
-    def _hidden_function(self, expression: str) -> str:
+    def _hidden_function(self, expression: str, what: str) -> str:
         name = self._hidden_name("rate")
         self._core.add_function(name, expression)
+        self._hidden[name] = f"{what}={expression!r}"
         return name
 
     def add_parameter(self, name: str, value: float) -> None:
@@ -116,30 +119,39 @@ class ModelBuilder:
         reactants: Iterable[str],
         products: Iterable[str],
         *,
-        rate: str | None = None,
-        law: str | None = None,
+        rate: str | float | None = None,
+        law: str | float | None = None,
     ) -> None:
         """Add a reaction. Give either ``rate`` or ``law``.
 
         ``rate`` is a mass-action rate constant: the reaction's rate is ``rate``
         times the amount of each reactant, so ``A + A`` at ``rate="k"`` runs at
-        ``k*A*A``. It can name a parameter or a function, or be an expression.
+        ``k*A*A`` (``k*A*(A - 1)`` in a stochastic run, as stochastic mass
+        action counts pairs). It can be a number, name a parameter, function,
+        observable or species, or be an expression.
 
         ``law`` is the whole rate, as an expression, not multiplied by the
-        reactants: ``law="Vmax*S/(Km + S)"``.
+        reactants: ``law="Vmax*S/(Km + S)"``. A stochastic run uses it as
+        written, so a law that stays above zero when too few reactants remain
+        can fire anyway and drive a count below zero. Use ``rate`` for mass
+        action.
 
         A species listed twice is a reactant or product twice. An empty list is
         nothing: ``add_reaction([], ["A"], rate="k")`` makes A at rate ``k``.
         """
         if (rate is None) == (law is None):
             raise ValueError("give add_reaction either rate= or law=, not both")
+        if isinstance(rate, (int, float)):
+            rate = repr(float(rate))
+        if isinstance(law, (int, float)):
+            law = repr(float(law))
         if self._built:
             raise RuntimeError("this ModelBuilder has built its model; start a new one")
         r = [self._index(s) for s in _names(reactants, "reactants")]
         p = [self._index(s) for s in _names(products, "products")]
         if law is not None:
             self._core.add_reaction(
-                r, p, "functional", self._hidden_function(law), apply_species_factor=False
+                r, p, "functional", self._hidden_function(law, "law"), apply_species_factor=False
             )
             return
         assert rate is not None
@@ -147,7 +159,7 @@ class ModelBuilder:
             # A parameter or a function: the core reads either by its name.
             self._core.add_reaction(r, p, "elementary", rate)
         else:
-            self._core.add_reaction(r, p, "functional", self._hidden_function(rate))
+            self._core.add_reaction(r, p, "functional", self._hidden_function(rate, "rate"))
 
     def add_event(
         self,
@@ -181,7 +193,20 @@ class ModelBuilder:
         if self._built:
             raise RuntimeError("this ModelBuilder has built its model; start a new one")
         self._built = True
-        return Model(_core=self._core.build())
+        try:
+            core = self._core.build()
+        except RuntimeError as exc:
+            message = str(exc)
+            for name, source in self._hidden.items():
+                if f"'{name}'" in message:
+                    symbol = re.search(r"Undefined symbol: '([^']+)'", message)
+                    what = f"{symbol.group(1)!r}, which is" if symbol else "something"
+                    raise ValueError(
+                        f"a reaction's {source} names {what} not defined: add it as a "
+                        "parameter, species, observable or function"
+                    ) from None
+            raise
+        return Model(_core=core)
 
 
 def _names(species: Iterable[str], what: str) -> list[str]:
