@@ -197,13 +197,21 @@ _CODES = (
         "solver.too_much_work",
         "SimulationError",
         "The ODE solver took ``max_steps`` steps without reaching the next output time.",
-        "Pass a larger ``max_steps``, or more output points.",
+        "Read the message. Steps that still advance are retried, so this one did not.",
     ),
     ErrorCode(
         "solver.too_much_accuracy",
         "SimulationError",
         "The tolerances asked for more accuracy than double precision holds.",
         "Loosen ``rtol`` or ``atol``.",
+    ),
+    ErrorCode(
+        "solver.stalled",
+        "SimulationError",
+        "The ODE solver's step size collapsed, so a whole batch of steps advanced "
+        "nothing, typically at a jump in a rate law.",
+        "Loosen ``rtol`` or ``atol``, or move the jump onto an event. A larger "
+        "``max_steps`` does not help.",
     ),
     ErrorCode(
         "solver.error_test_failure",
@@ -320,6 +328,16 @@ def pass_argument(argument: str, *value: object) -> dict:
     return remedy
 
 
+def use_name(name: str) -> dict:
+    """The remedy that uses *name*, a close match, in place of the one given."""
+    return {"kind": "use_name", "name": name}
+
+
+def use_call(call: str, name: str) -> dict:
+    """The remedy that passes *name* to *call*, the method for what it names."""
+    return {"kind": "use_call", "call": call, "name": name}
+
+
 #: SUNDIALS' names for CVODE's hard failures, by the code each gets.
 SOLVER_FLAGS = {
     "CV_TOO_MUCH_WORK": "solver.too_much_work",
@@ -367,8 +385,9 @@ def reference_page() -> str:
         "- `docs_url` points at the code's entry below.",
         "",
         "An error with no code of its own carries its class's generic code, such as "
-        "`model.error` or `run.failed`. An error raised from another BNGsim error, as a "
-        "loader wraps its parser's, carries that error's code, details and remedies.",
+        "`model.error` or `run.failed`. An error of a generic class raised from a BNGsim "
+        "error with a specific code, as a loader wraps its parser's, carries that "
+        "error's code, details and remedies.",
         "",
         "An error of use is a BNGsim class that is also the built-in it replaces, so an "
         "`except` written for the built-in still catches it: `UsageError` is a "

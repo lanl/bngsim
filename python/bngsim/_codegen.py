@@ -6051,7 +6051,7 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
         missing = _toolchain.record_missing(compiler)
         if missing is not None:
             raise CodegenToolchainError(missing) from err
-        raise RuntimeError(
+        raise CodegenToolchainError(
             "C compiler not found. Install Xcode Command Line Tools "
             "(macOS), gcc (Linux), or Visual Studio Build Tools (Windows)."
         ) from err

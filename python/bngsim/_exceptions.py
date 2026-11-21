@@ -36,6 +36,7 @@ Every one carries a ``code``, ``details``, ``remedies``, ``docs_url`` and
 
 from __future__ import annotations
 
+import copy
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -53,15 +54,17 @@ class BngsimError(RuntimeError):
     code : str
         A stable code for the kind of failure, such as ``"param.not_found"``.
         An error with no code of its own has its class's generic one
-        (``"model.error"``, ``"run.failed"``). An error raised from another
-        BNGsim error, as a loader wraps its parser's, has that one's code.
+        (``"model.error"``, ``"run.failed"``). An error of a generic class
+        raised from a BNGsim error with a specific code, as a loader wraps its
+        parser's, carries that one's code, details and remedies.
     details : dict
         What the code is about: the name asked for, the path, the constructs.
     remedies : list of dict
         Ways to fix it a program can act on, each a dict with a ``kind``:
         ``install_package``, ``install_compiler``, ``pass_argument``,
-        ``use_name``, ``use_method`` or ``loosen_tolerance``. Empty where BNGsim
-        can name no fix, as for a model it cannot simulate as written.
+        ``use_name``, ``use_call``, ``use_method`` or ``loosen_tolerance``.
+        Empty where BNGsim can name no fix, as for a model it cannot simulate as
+        written.
     docs_url : str
         The code's entry on the error-code reference page.
     """
@@ -82,13 +85,21 @@ class BngsimError(RuntimeError):
         self._remedies = remedies
 
     def _cause(self) -> BngsimError | None:
-        """The BNGsim error this one was raised from, when this one has no code
-        of its own and that one has a specific code, which this one then
-        carries."""
+        """The BNGsim error this generic one wraps, whose code, details and
+        remedies it then carries: a wrapper of a generic class (a ModelError
+        "Failed to load ...") given none of its own, raised from an error with a
+        specific code. A class with a specific code keeps its own."""
         from bngsim._error_codes import GENERIC
 
         cause = self.__cause__
-        if self._code is None and isinstance(cause, BngsimError) and cause.code not in GENERIC:
+        if (
+            self._code is None
+            and self._details is None
+            and self._remedies is None
+            and type(self).default_code in GENERIC
+            and isinstance(cause, BngsimError)
+            and cause.code not in GENERIC
+        ):
             return cause
         return None
 
@@ -99,17 +110,19 @@ class BngsimError(RuntimeError):
         cause = self._cause()
         return cause.code if cause is not None else self.default_code
 
+    # details and remedies are copies, so a caller that edits what it reads
+    # does not change the error.
     @property
     def details(self) -> dict:
         if self._details is not None:
-            return self._details
+            return copy.deepcopy(self._details)
         cause = self._cause()
         return cause.details if cause is not None else {}
 
     @property
     def remedies(self) -> list[dict]:
         if self._remedies is not None:
-            return self._remedies
+            return copy.deepcopy(self._remedies)
         cause = self._cause()
         return cause.remedies if cause is not None else []
 
@@ -197,19 +210,19 @@ class SimulationError(BngsimError):
         if code is None and type(self).default_code == "run.failed" and args:
             import re
 
-            from bngsim._error_codes import SOLVER_FLAGS, pass_argument
+            from bngsim._error_codes import SOLVER_FLAGS
 
-            flag = re.search(r"flag=-?\d+ \((CV_[A-Z_]+)\)", str(args[0]))
+            text = str(args[0])
+            flag = re.search(r"flag=-?\d+ \((CV_[A-Z_]+)\)", text)
             if flag is not None:
                 name = flag.group(1)
                 code = SOLVER_FLAGS.get(name, "solver.failed")
                 if details is None:
                     details = {"flag": name}
-                if remedies is None:
-                    remedies = {
-                        "solver.too_much_work": [pass_argument("max_steps")],
-                        "solver.too_much_accuracy": [{"kind": "loosen_tolerance"}],
-                    }.get(code, [])
+            elif "CVODE made no progress" in text:
+                code = "solver.stalled"
+            if remedies is None and code in ("solver.too_much_accuracy", "solver.stalled"):
+                remedies = [{"kind": "loosen_tolerance"}]
         super().__init__(*args, code=code, details=details, remedies=remedies)
 
 
@@ -265,6 +278,12 @@ class SsaValidationError(BngsimError):
             remedies=[{"kind": "use_method", "method": "ode"}],
         )
 
+    def __reduce__(self) -> tuple:
+        # BaseException rebuilds an error from its args, here the message, which
+        # __init__ would read as the issues (issue #1702: a worker's error
+        # crosses to its parent by pickle).
+        return (_rebuild_ssa_validation_error, (self.issues, self.override_attempted))
+
     @classmethod
     def _format(cls, issues: list[SsaIssue], override_attempted: bool = False) -> str:
         errors = [i for i in issues if i.severity == "error"]
@@ -301,6 +320,12 @@ class SsaValidationError(BngsimError):
                     + " cannot be overridden — those need a model fix."
                 )
         return "\n".join(lines)
+
+
+def _rebuild_ssa_validation_error(
+    issues: list[SsaIssue], override_attempted: bool
+) -> SsaValidationError:
+    return SsaValidationError(issues, override_attempted=override_attempted)
 
 
 class SensitivityUnsupportedError(BngsimError, ValueError):
@@ -571,14 +596,27 @@ class UsageError(BngsimError, ValueError):
 
 class DependencyError(BngsimError, ImportError):
     """A call needs an optional package that is not installed, or that is
-    installed and cannot be imported (issue #1702). Its remedy gives the
-    ``pip install`` command.
+    installed and cannot be imported (issue #1702). For a missing one, its
+    remedy gives the ``pip install`` command.
 
     Also an :class:`ImportError`, as these were raised before they had a type,
     so an existing ``except ImportError`` still catches it.
     """
 
     default_code = "env.missing_dependency"
+
+    def __init__(
+        self,
+        *args: object,
+        code: str | None = None,
+        details: dict | None = None,
+        remedies: list[dict] | None = None,
+    ) -> None:
+        super().__init__(*args, code=code, details=details, remedies=remedies)
+        # ImportError's own __init__ comes after RuntimeError's in the MRO and
+        # does not run; set what it would.
+        # As ImportError sets it: the one argument, or None; typeshed says str.
+        self.msg = args[0] if len(args) == 1 else None  # type: ignore[assignment]
 
 
 class MissingFileError(BngsimError, FileNotFoundError):

@@ -402,7 +402,8 @@ _DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
         "peak RSS the GH #577 setup-failure probe reads from resource.getrusage, "
         "the /bin/sh stand-in gh the contributors check is tested through, "
         "the /bin/sh fake perl the BNG2.pl compile check is tested with, and the "
-        "working directory removed under it, which Windows refuses (#1761)",
+        "working directory removed under it, which Windows refuses (#1761), and "
+        "the empty PATH the no-compiler error test runs under (#1702)",
     ),
     (
         "RLIMIT_AS",

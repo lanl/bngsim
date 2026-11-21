@@ -22,7 +22,7 @@ except bngsim.BngsimError as e:
 - `remedies` lists fixes a program can act on, each a dict with a `kind`. It is empty where BNGsim can name no fix, as for a model it cannot simulate as written.
 - `docs_url` points at the code's entry below.
 
-An error with no code of its own carries its class's generic code, such as `model.error` or `run.failed`. An error raised from another BNGsim error, as a loader wraps its parser's, carries that error's code, details and remedies.
+An error with no code of its own carries its class's generic code, such as `model.error` or `run.failed`. An error of a generic class raised from a BNGsim error with a specific code, as a loader wraps its parser's, carries that error's code, details and remedies.
 
 An error of use is a BNGsim class that is also the built-in it replaces, so an `except` written for the built-in still catches it: `UsageError` is a `ValueError`, `DependencyError` an `ImportError`, and `MissingFileError` a `FileNotFoundError`.
 
@@ -201,7 +201,7 @@ Fix the toolchain. The message names the compiler, the linker and the SDK.
 
 Raised as `SimulationError`. The ODE solver took ``max_steps`` steps without reaching the next output time.
 
-Pass a larger ``max_steps``, or more output points.
+Read the message. Steps that still advance are retried, so this one did not.
 
 (code-solver-too-much-accuracy)=
 ### `solver.too_much_accuracy`
@@ -209,6 +209,13 @@ Pass a larger ``max_steps``, or more output points.
 Raised as `SimulationError`. The tolerances asked for more accuracy than double precision holds.
 
 Loosen ``rtol`` or ``atol``.
+
+(code-solver-stalled)=
+### `solver.stalled`
+
+Raised as `SimulationError`. The ODE solver's step size collapsed, so a whole batch of steps advanced nothing, typically at a jump in a rate law.
+
+Loosen ``rtol`` or ``atol``, or move the jump onto an event. A larger ``max_steps`` does not help.
 
 (code-solver-error-test-failure)=
 ### `solver.error_test_failure`

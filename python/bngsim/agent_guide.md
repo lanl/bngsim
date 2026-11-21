@@ -205,8 +205,8 @@ message may not. Branch on the code, not the message. `details` says what the
 error is about, `remedies` lists fixes a program can act on, each a dict with a
 `kind`, and `to_dict()` gives all of it as plain data. The codes are listed at
 <https://bngsim.readthedocs.io/en/latest/reference/error-codes.html>. A missing
-optional package is a `bngsim.DependencyError` (also an `ImportError`), whose
-remedy gives the `pip install` command. A missing file is a
+optional package such as pandas or h5py is a `bngsim.DependencyError` (also an
+`ImportError`), whose remedy gives the `pip install` command. A missing file is a
 `bngsim.MissingFileError` (also a `FileNotFoundError`), and an argument a call
 cannot take is a `bngsim.UsageError` (also a `ValueError`).
 

@@ -8381,8 +8381,10 @@ class Simulator:
             known = set(all_param_names)
             unknown = set(params) - known
             if unknown:
-                raise ValueError(
-                    f"Unknown parameter(s): {sorted(unknown)}. Known: {sorted(known)}"
+                raise UsageError(
+                    f"Unknown parameter(s): {sorted(unknown)}. Known: {sorted(known)}",
+                    code="param.not_found",
+                    details={"names": [{"name": n} for n in sorted(unknown, key=str)]},
                 )
             target_params = list(params)
             # Issue #164 — an explicit ask gets a hard answer. Issue #170 stage 3

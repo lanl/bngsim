@@ -11,7 +11,6 @@ it promises, while still being the built-in type an existing ``except`` names.
 from __future__ import annotations
 
 import ast
-import inspect
 import json
 import pickle
 import sys
@@ -25,11 +24,18 @@ from bngsim._error_codes import CODES, GENERIC, REMEDY_KINDS
 _ROOT = Path(__file__).resolve().parents[2]
 _PACKAGE = Path(bngsim.__file__).resolve().parent
 
-_ERROR_CLASSES = [
-    cls
-    for _, cls in inspect.getmembers(_exceptions, inspect.isclass)
-    if issubclass(cls, bngsim.BngsimError)
-]
+
+def _subclasses(cls: type) -> list[type]:
+    found = [cls]
+    for sub in cls.__subclasses__():
+        found += [c for c in _subclasses(sub) if c not in found]
+    return found
+
+
+import bngsim.coupling  # noqa: E402, F401  (defines ConservationError)
+
+#: Every BngsimError class in the package, wherever it is defined.
+_ERROR_CLASSES = [c for c in _subclasses(bngsim.BngsimError) if c.__module__.startswith("bngsim")]
 
 
 def _check_shape(e: bngsim.BngsimError) -> None:
@@ -49,6 +55,8 @@ def _check_shape(e: bngsim.BngsimError) -> None:
 
 
 def test_every_class_default_is_registered_and_names_its_class():
+    assert bngsim.coupling.ConservationError in _ERROR_CLASSES
+    assert bngsim.coupling.ConservationError("x").code == "coupling.conservation"
     for cls in _ERROR_CLASSES:
         assert cls.default_code in CODES, cls.__name__
     # Each code's "raised as" class exists, so the page names real types.
@@ -57,10 +65,32 @@ def test_every_class_default_is_registered_and_names_its_class():
     assert set(CODES) >= GENERIC
 
 
+def _string_constants() -> set[str]:
+    """Every string constant in the package outside the registry module."""
+    found: set[str] = set()
+    for path in _PACKAGE.rglob("*.py"):
+        if path.name == "_error_codes.py":
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                found.add(node.value)
+    return found
+
+
+def test_every_registered_code_can_be_raised():
+    """The other direction: each code in the registry is some class's default, a
+    solver flag's, or a string the package spells, so the page lists no code
+    nothing raises."""
+    reachable = {c.default_code for c in _ERROR_CLASSES}
+    reachable |= set(_error_codes.SOLVER_FLAGS.values())
+    reachable |= _string_constants() & set(CODES)
+    assert set(CODES) - reachable == set()
+
+
 def test_every_code_the_source_passes_is_registered():
     """A ``code="..."`` keyword anywhere in the package, and each solver flag's
     code, is in the registry, so no error carries a code the page lacks."""
-    used = set(_error_codes.SOLVER_FLAGS.values()) | {"solver.failed", "env.no_compiler"}
+    used = set(_error_codes.SOLVER_FLAGS.values())
     for path in _PACKAGE.rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
@@ -71,8 +101,6 @@ def test_every_code_the_source_passes_is_registered():
                 and isinstance(node.value.value, str)
             ):
                 used.add(node.value.value)
-    # The model's own not-found errors build theirs from the kind of name.
-    used |= {"param.not_found", "species.not_found"}
     missing = sorted(c for c in used if c not in CODES and "." in c)
     assert not missing, missing
     assert len(used) > 15
@@ -181,6 +209,8 @@ def test_too_much_accuracy_is_the_solver_flag(binding):
     ],
 )
 def test_each_solver_flag_gets_its_code(flag, code):
+    """The flags as cvode_failure_message in src/cvode_simulator.cpp writes them;
+    the real path is test_too_much_accuracy_is_the_solver_flag."""
     message = f"Simulation failed: CVODE integration failed at t=1.000000 with flag=-3 ({flag})."
     e = bngsim.SimulationError(message)
     assert (e.code, e.details) == (code, {"flag": flag})
@@ -203,7 +233,7 @@ def test_an_unknown_suffix_lists_the_known_ones():
     _check_shape(e)
 
 
-@pytest.mark.skipif(not bngsim.HAS_NFSIM, reason="this build has no NFsim")
+@pytest.mark.skipif(not bngsim.HAS_NFSIM, reason="NFsim not compiled in")
 def test_a_missing_xml_path_is_a_usage_error(binding):
     with pytest.raises(ValueError) as info:  # the type it had before it was typed
         bngsim.Simulator(binding, method="nf")
@@ -265,15 +295,6 @@ def test_the_typed_refusals_carry_their_class_codes():
         "elapsed": 2.5,
     }
     assert bngsim.StopConditionMet("stop", condition="A < 1").details == {"condition": "A < 1"}
-    for cls in _ERROR_CLASSES:
-        if cls in (
-            bngsim.SsaValidationError,
-            bngsim.SimulationTimeout,
-            bngsim.StopConditionMet,
-            bngsim.MissingFileError,
-        ):
-            continue
-        assert cls("x").code == cls.default_code, cls.__name__
 
 
 # ─── How a code travels ───────────────────────────────────────────────────────
@@ -307,3 +328,123 @@ def test_the_fields_survive_pickling():
     ):
         back = pickle.loads(pickle.dumps(e))
         assert back.to_dict() == e.to_dict()
+
+
+def test_a_loose_species_match_agrees_with_the_message():
+    """The details say what the message says: for ``A`` on a model whose species
+    is ``A()``, the species to set, by the model's own spelling."""
+    model = bngsim.examples.load("decay")  # species A(), observable A, parameter k
+    with pytest.raises(bngsim.ParameterError) as info:
+        model.set_param("A", 2.0)
+    e = info.value
+    assert "The species 'A()' is close" in str(e)
+    assert e.details == {"name": "A", "close_matches": [], "is_a": "species"}
+    assert e.remedies == [{"kind": "use_call", "call": "set_concentration", "name": "A()"}]
+    with pytest.raises(bngsim.ModelError) as info:
+        model.set_concentration("a", 2.0)
+    assert info.value.details["close_matches"] == ["A()"]
+    assert info.value.remedies == [{"kind": "use_name", "name": "A()"}]
+
+
+def test_an_ssa_refusal_survives_pickling():
+    from bngsim._ssa_validation import SsaIssue
+
+    issue = SsaIssue(severity="error", code="fast_reaction", message="m", location="r1")
+    e = bngsim.SsaValidationError([issue], override_attempted=True)
+    back = pickle.loads(pickle.dumps(e))
+    assert back.to_dict() == e.to_dict() and back.override_attempted
+    assert back.details == {
+        "issues": [{"code": "fast_reaction", "severity": "error", "location": "r1"}]
+    }
+
+
+def test_editing_what_an_error_gives_does_not_change_it():
+    e = bngsim.ParameterError("p", code="param.not_found", details={"close_matches": ["k"]})
+    e.to_dict()["details"]["close_matches"].clear()
+    e.details["close_matches"].append("x")
+    assert e.details == {"close_matches": ["k"]}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-specific: empty PATH")
+def test_a_run_with_no_compiler_on_path_is_env_no_compiler(tmp_path):
+    """The real path, not a message built by hand: forward sensitivities on a
+    machine with no compiler and an empty codegen cache."""
+    import os
+    import subprocess
+
+    (tmp_path / "bin").mkdir()
+    env = {k: v for k, v in os.environ.items() if k not in ("CC", "BNGSIM_CODEGEN_JIT")}
+    env["PATH"] = str(tmp_path / "bin")
+    env["BNGSIM_CODEGEN_CACHE_DIR"] = str(tmp_path / "cache")
+    script = (
+        "import json, bngsim\n"
+        "m = bngsim.examples.load('decay')\n"
+        "try:\n"
+        "    bngsim.Simulator(m, sensitivity_params=['k']).run(t_span=(0, 1), n_points=2)\n"
+        "except bngsim.BngsimError as e:\n"
+        "    print(json.dumps(e.to_dict()))\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", script], env=env, capture_output=True, text=True, check=True
+    ).stdout
+    d = json.loads(out.strip().splitlines()[-1])
+    assert d["type"] == "CodegenToolchainError"
+    assert d["code"] == "env.no_compiler"
+    assert d["remedies"] == [{"kind": "install_compiler"}]
+
+
+def test_a_stall_is_its_own_code_with_a_tolerance_remedy():
+    """A collapsed step reaches the caller as "CVODE made no progress", not as a
+    flag: the engine retries CV_TOO_MUCH_WORK while the solver advances, so a
+    larger max_steps is no remedy for it."""
+    e = bngsim.SimulationError(
+        "Simulation failed: CVODE made no progress during the run: an entire max_steps "
+        "batch advanced the internal time not at all, at t=1 with step size h=0."
+    )
+    assert e.code == "solver.stalled"
+    assert e.remedies == [{"kind": "loosen_tolerance"}]
+    assert bngsim.SimulationError("x flag=-1 (CV_TOO_MUCH_WORK).").remedies == []
+
+
+def test_a_class_with_its_own_code_keeps_it_when_raised_from_another():
+    def raised_from(outer: bngsim.BngsimError, inner: bngsim.BngsimError):
+        outer.__cause__ = inner
+        return outer
+
+    toolchain = bngsim.CodegenToolchainError("C compiler not found: 'cc'")
+    declined = raised_from(bngsim.CodegenDeclinedError("declined"), toolchain)
+    assert (declined.code, declined.remedies) == ("codegen.declined", [])
+    timeout = raised_from(
+        bngsim.SimulationTimeout("slow", timeout=1.0, elapsed=2.0),
+        bngsim.ParameterError("p", code="param.not_found", details={"name": "k"}),
+    )
+    assert timeout.code == "run.timeout"
+    assert timeout.details == {"timeout": 1.0, "elapsed": 2.0}
+
+
+def test_set_params_names_each_unknown_parameter(binding):
+    with pytest.raises(bngsim.ParameterError) as info:
+        binding.set_params({"kff": 1.0, "kf": 2.0})
+    e = info.value
+    assert e.code == "param.not_found"
+    assert e.details == {"names": [{"name": "kff", "close_matches": ["kf"], "is_a": None}]}
+    assert e.remedies == [{"kind": "use_name", "name": "kf"}]
+    assert binding.get_param("kf") != 2.0  # nothing was set
+
+
+def test_a_dependency_error_reads_as_the_import_error_it_was():
+    message = "pandas is required for Result.dataframe. Install with: pip install bngsim[pandas]"
+    e = bngsim.DependencyError(message)
+    old = ImportError(message)
+    assert (str(e), e.args, e.msg, e.name) == (str(old), old.args, old.msg, old.name)
+
+
+def test_a_missing_antimony_gives_the_install_command(monkeypatch):
+    monkeypatch.setitem(sys.modules, "antimony", None)
+    with pytest.raises(ImportError) as info:
+        bngsim.Model.from_antimony_string("model m\n A -> ; k*A\n A = 1\n k = 1\nend")
+    e = info.value
+    assert isinstance(e, bngsim.DependencyError)
+    assert e.code == "env.missing_dependency"
+    assert e.remedies[0]["command"] == "pip install 'bngsim[antimony]'"
+    _check_shape(e)

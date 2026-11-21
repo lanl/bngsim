@@ -2044,9 +2044,21 @@ class Model:
                 for n in sorted(unknown, key=str)
                 if isinstance(n, str) and (text := self._not_a_parameter(n, params[n], among=True))
             )
+            fields = [
+                self._not_found(n, "parameter")
+                if isinstance(n, str)
+                else {
+                    "details": {"name": repr(n), "close_matches": [], "is_a": None},
+                    "remedies": [],
+                }
+                for n in sorted(unknown, key=str)
+            ]
             raise ParameterError(
                 f"Unknown parameter(s): {', '.join(sorted(map(str, unknown)))}. {why}"
-                f"Known: {', '.join(sorted(known))}"
+                f"Known: {', '.join(sorted(known))}",
+                code="param.not_found",
+                details={"names": [f["details"] for f in fields if f]},
+                remedies=[r for f in fields if f for r in f["remedies"]],
             )
         # Phase 2: Convert all values (catches "x", None, etc.)
         converted: dict[str, float] = {}
@@ -3426,20 +3438,30 @@ class Model:
         or ``species``) *name* the model does not have (issue #1702): the
         keywords :class:`BngsimError` takes. Empty for a parameter the model has,
         whose failure came after the lookup and is not a missing name."""
+        from bngsim._error_codes import use_call, use_name
+
         names = self._core.param_names if kind == "parameter" else self.species_names
         if name in names:
             return {}
-        bare = _foreign_names._bare(name)
-        loose = [s for s in names if _foreign_names._bare(s) == bare] if kind == "species" else []
-        close = loose or _foreign_names.near_matches(name, names)
-        is_a = _kind_of(self, name, besides=kind)
-        remedies: list[dict] = [{"kind": "use_name", "name": c} for c in close]
+        # What the message says, in its order: a species the name matches
+        # loosely (for a species), else what the name is instead, else the near
+        # matches.
+        close: list[str] = []
+        is_a, actual = None, name
+        if kind == "species":
+            bare = _foreign_names._bare(name)
+            close = [s for s in names if _foreign_names._bare(s) == bare][:1]
+        if not close:
+            is_a, actual = _kind_of(self, name, besides=kind)
+            if is_a is None:
+                close = list(_foreign_names.near_matches(name, names))
+        remedies: list[dict] = [use_name(c) for c in close]
         if is_a == "species":
-            remedies.append({"kind": "use_call", "call": "set_concentration", "name": name})
+            remedies.append(use_call("set_concentration", actual))
         elif is_a == "parameter":
-            remedies.append({"kind": "use_call", "call": "set_param", "name": name})
+            remedies.append(use_call("set_param", actual))
         return {
-            "code": f"{'param' if kind == 'parameter' else 'species'}.not_found",
+            "code": "param.not_found" if kind == "parameter" else "species.not_found",
             "details": {"name": name, "close_matches": list(close), "is_a": is_a},
             "remedies": remedies,
         }
@@ -3775,21 +3797,26 @@ def _require_core(core: object) -> None:
     )
 
 
-def _kind_of(model: Model, name: str, *, besides: str) -> str | None:
-    """What kind of name *name* is in *model*, other than *besides*:
-    ``"function"``, ``"parameter"``, ``"species"`` or ``"observable"``, or
-    ``None`` (issue #1702). In the order :func:`_what_it_is` looks."""
+def _kind_of(model: Model, name: str, *, besides: str) -> tuple[str | None, str]:
+    """What kind of name *name* is in *model*, other than *besides*, and the
+    model's own spelling of it (issue #1702): ``"function"``, ``"parameter"``,
+    ``"species"`` or ``"observable"``, or ``None``. It looks as
+    :func:`_what_it_is` does, in its order, so the two agree."""
     if name in model.function_names:
-        return "function"
+        return "function", name
     if besides != "parameter" and name in model._core.param_names:
-        return "parameter"
-    if besides != "species" and (
-        name in model.species_names or _unclamped(name) in model.species_names
-    ):
-        return "species"
+        return "parameter", name
+    if besides != "species":
+        species = model.species_names
+        actual = next((n for n in (name, _unclamped(name)) if n in species), None)
+        if actual is None:
+            bare = _foreign_names._bare(name)
+            actual = next((s for s in species if _foreign_names._bare(s) == bare), None)
+        if actual is not None:
+            return "species", actual
     if name in model.observable_names:
-        return "observable"
-    return None
+        return "observable", name
+    return None, name
 
 
 def _what_it_is(

@@ -6116,7 +6116,8 @@ def _build_model_from_sbml_doc_in_context(doc):
                     "return a wrong-but-plausible trajectory (RoadRunner refuses "
                     "the same model). Set the parameter value or add an "
                     "initialAssignment. To restore the legacy lenient "
-                    "default-to-0 behavior, set BNGSIM_ALLOW_UNSET_PARAMS=1."
+                    "default-to-0 behavior, set BNGSIM_ALLOW_UNSET_PARAMS=1.",
+                    details={"symbols": [{"name": p} for p in _offenders]},
                 )
 
     # ── C2b: a kineticLaw's valueless LOCAL parameter (issue #580) ──
@@ -6194,7 +6195,8 @@ def _build_model_from_sbml_doc_in_context(doc):
                 "to 0.0, which would silently zero out the rate law and return a "
                 "wrong-but-plausible trajectory. Set the parameter value. To "
                 "restore the legacy lenient default-to-0 behavior, set "
-                "BNGSIM_ALLOW_UNSET_PARAMS=1."
+                "BNGSIM_ALLOW_UNSET_PARAMS=1.",
+                details={"symbols": [{"name": lp, "reaction": rid} for rid, lp in _unset_local]},
             )
 
     # ── C2c: a conversionFactor that names a valueless parameter ──
@@ -6256,7 +6258,8 @@ def _build_model_from_sbml_doc_in_context(doc):
                 "return a wrong-but-plausible trajectory (RoadRunner refuses the same "
                 "model). Set the parameter value or add an initialAssignment. To load "
                 "with the factor at 0.0, the legacy lenient default for a parameter "
-                "with no value, set BNGSIM_ALLOW_UNSET_PARAMS=1."
+                "with no value, set BNGSIM_ALLOW_UNSET_PARAMS=1.",
+                details={"symbols": [{"name": p, "where": w} for p, w in _unset_cf]},
             )
 
     # Pre-scan rate-rule targets and event-assignment targets up front so
