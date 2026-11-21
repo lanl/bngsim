@@ -306,7 +306,9 @@ class ReactionKernel:
         # The default atol, named: no integrated row is read, so the
         # AtolScaleWarning a default run raises about those rows (issue #1361)
         # has no place here, on an SSA kernel least of all.
-        row0 = probe.run(t_span=(0.0, 1.0), n_points=2, atol=1e-8).observables[0]
+        # The probe reads the kernel's state where it is, whatever time the
+        # kernel's last step ended at: a live start (issue #1701).
+        row0 = probe.run(t_span=(0.0, 1.0), n_points=2, atol=1e-8, start="live").observables[0]
         self._state_observables = np.asarray(row0, dtype=np.float64)
         return self._state_observables
 

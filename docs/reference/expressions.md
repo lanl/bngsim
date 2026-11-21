@@ -1,3 +1,7 @@
+---
+summary: "The expression language of rate laws and functions: constants, built-in functions, mratio, logical operators, and adding functions from Python."
+---
+
 # Expression language reference
 
 BNGsim uses [ExprTk](https://github.com/ArashPartow/exprtk) as its expression
@@ -57,7 +61,7 @@ BNGsim provides all standard ExprTk functions plus BNG-specific extensions:
 
 **Control flow**:
 - `if(condition, true_value, false_value)` — ternary conditional. Condition is
-  true when it is **nonzero** (`condition != 0`), in every bngsim backend: the
+  true when it is **nonzero** (`condition != 0`), in every BNGsim backend: the
   ODE interpreter, compiled (`codegen=True`) models, SSA, PSA, NFsim and
   RuleMonkey. Example: `if(A_tot > 100, k_fast, k_slow)`
 
@@ -65,7 +69,7 @@ BNGsim provides all standard ExprTk functions plus BNG-specific extensions:
   evaluates to exactly 0 or 1, so this is the same answer BNG2.pl gives. The
   rule matters only for a *bare* number used as the condition: BNG2.pl's
   `run_network` tests `condition > 0.5`, so a condition in `(0, 0.5]` or a
-  negative one takes the true branch in bngsim and the false branch in
+  negative one takes the true branch in BNGsim and the false branch in
   `run_network`. For example, `if(c, 10, 20)` with `c = 0.3` gives 10 here and
   20 there. To get the same result in both, write the comparison you mean,
   e.g. `if(c > 0.5, 10, 20)` or `if(c != 0, 10, 20)`.
@@ -77,7 +81,7 @@ BNGsim provides all standard ExprTk functions plus BNG-specific extensions:
 is left free as an ordinary identifier, so that a model may name a parameter or
 observable `t` (the BNGL counter idiom `Molecules t counter()` is why), matching
 BNG2.pl. A bare `t` in an expression is that model symbol, and `t()` is the same
-symbol written as a zero-argument call — the form BNG2.pl emits and which bngsim
+symbol written as a zero-argument call — the form BNG2.pl emits and which BNGsim
 accepts for any scalar. In a model that defines no `t`, both spellings fail to
 compile rather than falling back to the clock.
 

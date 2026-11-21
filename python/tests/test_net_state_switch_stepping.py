@@ -455,6 +455,78 @@ def test_a_parked_root_does_not_restart_the_run(data_dir, tmp_path, kind, jacobi
         bngsim.Simulator(model, jacobian=jacobian).run(**window)
 
 
+_PARKED_EXACT: dict = {}
+
+
+def _parked_twin_error(data_dir, tmp_path, kind, jacobian, rtol, n_points, n_idle):
+    """The largest |x − exact| / max|exact| over the observables of `kind`'s
+    run, against its exact twin at rtol 1e-12 on the same grid; None where the
+    run is refused as resting on its step (issue #1548), and the error's text
+    where it fails otherwise."""
+    text, exact_text = _ltype_variant((data_dir / _LTYPE).read_text(), kind)
+    window = dict(t_span=(0.0, 150.0), n_points=n_points)
+    key = (kind, n_points)
+    if key not in _PARKED_EXACT:
+        exact_model = _write(tmp_path, exact_text, f"{kind}_exact.net")
+        _PARKED_EXACT[key] = np.asarray(
+            bngsim.Simulator(exact_model).run(**window, rtol=1e-12, atol=1e-12).observables
+        )
+    exact = _PARKED_EXACT[key]
+    model = _write(tmp_path, _with_idle_species(text, n_idle), f"{kind}.net")
+    try:
+        got = bngsim.Simulator(model, jacobian=jacobian).run(**window, rtol=rtol, atol=rtol)
+    except bngsim.SimulationError as e:
+        return None if re.search("come to rest.*Voltage_Level.*issue #1548", str(e)) else str(e)
+    g = np.asarray(got.observables)[:, : exact.shape[1]]
+    return float((np.abs(g - exact) / np.maximum(np.abs(exact).max(axis=0), 1e-12)).max())
+
+
+@pytest.mark.parametrize("rtol", [3e-6, 1e-6, 3e-7, 1e-7, 3e-8, 1e-8, 1e-10])
+@pytest.mark.parametrize("n_points", [2, 11, 301])
+@pytest.mark.parametrize("kind", ["fixture", "split", "ramp", "latch", "damped", "moving"])
+@pytest.mark.parametrize("jacobian", ["auto", "fd"])
+def test_a_parked_twin_is_refused_or_right_at_every_tolerance(
+    data_dir, tmp_path, kind, jacobian, rtol, n_points
+):
+    """Issue #1451: at rtol 3e-6 to 3e-8, 26 of the 60 runs of the twins on
+    301 points returned the branch the exact trajectory never takes, about 63%
+    off, with no error (main at 94233120). Since issue #1548 a run whose state
+    rests within its tolerance of the step is refused by name, at every
+    tolerance and grid here, but for 12 runs of ``moving`` (whose threshold
+    only touches Voltage), and those are within 1e-5 of the exact twin. These
+    pass on main since #1548; they pin the matrix the issue measured, to
+    t = 150. A run of ``moving`` that ends near t = 25 to 60 can still return
+    the far branch with no error, which keeps #1451 open.
+
+    ``damped`` may instead fail CVODE's own test, which is loud: whether it
+    does moves with the tolerance's last digits (none of these cells does on
+    macOS arm64; rtol 1.28e-7 on 2 points does), so the platform's rounding
+    decides it."""
+    err = _parked_twin_error(data_dir, tmp_path, kind, jacobian, rtol, n_points, 0)
+    if isinstance(err, str):
+        assert kind == "damped" and "CVODE integration failed" in err, err
+    else:
+        assert err is None or err <= 1e-5, err
+
+
+@pytest.mark.parametrize("rtol", [3e-6, 1e-7, 1e-8, 1e-10])
+@pytest.mark.parametrize("kind", ["fixture", "split", "ramp", "latch", "damped", "moving"])
+@pytest.mark.parametrize("jacobian", ["auto", "fd"])
+def test_a_parked_twin_beside_idle_species_is_refused_or_right(
+    data_dir, tmp_path, kind, jacobian, rtol
+):
+    """Issue #1451: with 1,000 species that never move beside them, which dilute
+    the error norm, six of the twelve runs at rtol 1e-8 were 13% to 65% off with
+    no error. Each is now refused by name, or right, or for ``damped`` loud:
+    under ``"fd"`` at 1e-8 it fails CVODE's own test on macOS arm64, as it did
+    then, and where it does is the platform's rounding (see above)."""
+    err = _parked_twin_error(data_dir, tmp_path, kind, jacobian, rtol, 301, 1000)
+    if isinstance(err, str):
+        assert kind == "damped" and "CVODE integration failed" in err, err
+    else:
+        assert err is None or err <= 1e-5, err
+
+
 def test_a_grazed_root_does_not_restart_the_run(data_dir, tmp_path):
     """``moving``'s threshold dips to touch Voltage within the tolerance near
     t = 147.5 and rises off it again. Where an output lands near the touch the

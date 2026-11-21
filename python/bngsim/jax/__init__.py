@@ -34,8 +34,12 @@ try:
 
     _jax.config.update("jax_enable_x64", True)
 except ImportError:
-    raise ImportError(
-        "JAX is required for the bngsim.jax submodule. Install with: pip install 'bngsim[jax]'"
+    from bngsim._error_codes import install
+    from bngsim._exceptions import DependencyError
+
+    raise DependencyError(
+        "JAX is required for the bngsim.jax submodule. Install with: pip install 'bngsim[jax]'",
+        remedies=[install("jax", extra="jax")],
     ) from None
 
 from bngsim._jax_bridge import differentiable_solve

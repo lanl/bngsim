@@ -220,6 +220,20 @@ class Result {
                               int n_params);
     void set_sens_param_names(const std::vector<std::string> &names);
     const std::vector<double> &sensitivity_data() const;
+
+    // A switch time whose columns are one-sided derivatives (issue #1822): it
+    // sits on the instant of another switch, a rate law composes the two, and
+    // the run is on a kink in every parameter that moves this one apart from
+    // the other (sigma = 2*t0 + d and t0: both d and t0). `columns` are the parameter columns
+    // (0-based) and `directions` the sign of the step each derivative is for: +1 where the
+    // parameter is increased, -1 where it is decreased.
+    struct OneSidedSwitch {
+        double t = 0.0;
+        std::vector<int> columns;
+        std::vector<int> directions;
+    };
+    void add_one_sided_switch(OneSidedSwitch entry);
+    const std::vector<OneSidedSwitch> &one_sided_switches() const;
     int n_sens_params() const;
     const std::vector<std::string> &sens_param_names() const;
 
@@ -330,6 +344,7 @@ class Result {
     int n_sens_params_ = 0;
     std::vector<double> sensitivities_; // row-major [time][species][param]
     std::vector<std::string> sens_param_names_;
+    std::vector<OneSidedSwitch> one_sided_switches_;
 
     // IC sensitivity data
     int n_sens_ic_species_ = 0;

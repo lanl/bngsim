@@ -1,108 +1,98 @@
+---
+summary: "The conservation laws BNGsim finds in a network, how steady-state solves use them, and BNGL parameter_scan through PyBNF."
+---
+
 # Conservation laws & parameter scans
 
 ## Conservation laws
 
-BNGsim automatically detects conservation laws at model load time via
-Gaussian elimination on the stoichiometry matrix. A conservation law is
-a linear combination of species that remains constant during the dynamics:
+BNGsim finds a model's conservation laws when it loads it. A conservation law
+is a linear combination of species that stays constant in time:
 
 ```
 Σ L[k,i] · y[i] = constant_k    for all time
 ```
 
-Conservation laws arise from molecular conservation (total receptor,
-total ligand, etc.) and are detected for ALL input formats (`.net`,
-Antimony, SBML, programmatic `ModelBuilder`).
+They come from conserved molecules (total receptor, total ligand). BNGsim finds
+them for every input format: `.net`, SBML, Antimony and `ModelBuilder`.
 
 ```python
 model = bngsim.Model.from_net("model.net")
 
-# Inspect conservation laws
 laws = model.conservation_laws
 print(laws["n_laws"])           # number of conservation laws
 print(laws["dependent"])        # dependent species indices (0-based)
 print(laws["independent"])      # independent species indices
-print(laws["constants"])        # conservation constants from ICs
+print(laws["constants"])        # the conserved totals, from the initial conditions
 print(laws["coefficients"])     # n_laws × n_species coefficient matrix
 print(laws["n_species"])        # species count the coefficient rows span
 ```
 
-`dependent` lists the species eliminated by the reduction — one per law, chosen
-as the pivot columns of the row-reduced coefficient matrix, so
-`coefficients[k][dependent[j]]` is `1` when `k == j` and `0` otherwise. That
-invariant is what makes "solve law *k* for its dependent species" a well-posed
-elimination; picking each law's dependent independently does not guarantee it.
+`dependent` lists one species per law, the one the steady-state solver
+eliminates. They are the pivot columns of the row-reduced coefficient matrix,
+so `coefficients[k][dependent[j]]` is `1` when `k == j` and `0` otherwise.
+Each law can therefore be solved for its own dependent species.
 
-**Compartments.** A law is over the state the model stores, what
-`model.get_state()` returns and `model.rhs(y)` takes, so
-`coefficients @ model.rhs(y)` is zero at any state `y`. In an SBML or Antimony
-model a reaction between compartments of different size conserves an amount,
-and each species' coefficient carries its compartment's size: `A` in a
-compartment of size 1 exchanged with `B` in one of size 2 gives `A + 2*B`, not
-`A + B` (issue #758). Where a compartment size is a parameter the laws follow
-it, per model: after `model.set_param("c2", 4)` the law is `A + 4*B` for that
-model and its clones, and each entry of `steady_state_batch` that writes a size
-is solved with its own. A species whose share of such a reaction is divided by
-a size that moves, a concentration in a compartment that a rate rule or an
-event resizes, is in no law. (A `substanceOnly` species there is stored as its
-amount over the size at load, which is what its law is over; a run reports it
-over the size as it is.)
+### Compartments
 
-Before a steady-state solve the rates are evaluated at two states to confirm
-that every reported total is kept; a law that is not kept is a
-`SimulationError`, not a solve on a wrong total. The question is put against
-the fluxes through the species a law holds, so a total that moves by less than
-1e-10 of them is not seen.
+A law is over the state the model stores: what `model.get_state()` returns and
+`model.rhs(y)` takes. So `coefficients @ model.rhs(y)` is zero at any state `y`.
 
-**Impact on the steady-state solver**: Models with conservation laws have
-a rank-deficient Jacobian, which causes standard Newton solvers to fail.
-BNGsim's reduced-space Newton solver automatically handles this:
+In an SBML or Antimony model, a reaction between compartments of different
+sizes conserves an amount, so each species' coefficient carries its
+compartment's size. `A` in a compartment of size 1 exchanged with `B` in one of
+size 2 gives `A + 2*B`, not `A + B`.
 
-1. **Identifies** N - n_laws independent species from the conservation structure
-2. **Builds** a reduced residual function on the independent subspace
-3. **Solves** the non-singular reduced system via KINSOL
-4. **Reconstructs** dependent species from the conservation constraints
+- Where a compartment size is a parameter, the laws follow it, per model.
+  After `model.set_param("c2", 4)` the law is `A + 4*B` for that model and its
+  clones. Each entry of `steady_state_batch` that sets a size is solved with
+  its own.
+- A concentration species in a compartment whose size changes (by a rate rule
+  or an event) is in no law.
+- A `substanceOnly` species there is stored as its amount over the size at
+  load, and its law is over that. A run reports it over the current size.
 
-This is transparent to the user — `sim.steady_state()` just works, regardless
-of whether the model has conservation laws.
+### Steady states
 
-The same reduction carries the steady-state sensitivities: `dY_ss/dp` is solved
-on the independent subspace and the dependent species follow from differentiating
-the constraints. The columns are returned where the steady state is an isolated
-root of that reduced system, and refused where it is one of a continuum — see
-[Steady state](steady-state.md).
+A model with conservation laws has a singular Jacobian, and a plain Newton
+solver fails on it. BNGsim's steady-state solver works on the independent
+species only and fills in the dependent ones from the laws.
+`sim.steady_state()` works the same whether or not the model has laws.
 
-## `parameter_scan` integration
+Before a steady-state solve, BNGsim evaluates the rates at two states to check
+that every total it reports is kept. A law that is not kept raises
+`SimulationError` rather than solving with a wrong total. The check compares
+against the fluxes through the law's species, so a total that moves by less
+than 1e-10 of them is not caught.
 
-BNGsim supports BioNetGen's `parameter_scan` action, commonly used in BNGL
-models for dose-response analysis. When PyBNF encounters a `parameter_scan`
-action in a BNGL model, it automatically routes through BNGsim's batch
-steady-state or time-course infrastructure.
+Steady-state sensitivities use the same reduction. BNGsim returns them where
+the steady state is an isolated root of the reduced system, and refuses them
+where it is one of a continuum. See [Steady state](steady-state.md).
 
-For BNGL models that include:
+## `parameter_scan` in BNGL models through PyBNF
+
+PyBNF's `BngsimModel` runs a BNGL `parameter_scan` action through BNGsim's
+batch steady-state or time-course calls. For example:
+
 ```
 parameter_scan({method=>"ode", parameter=>"L_0", \
     par_min=>0.01, par_max=>100, n_scan_pts=>50, \
     log_scale=>1, steady_state=>1, t_end=>1e6})
 ```
 
-PyBNF's `BngsimModel` parses this action and dispatches to:
-- **strict BNG2.pl parity (default)** when `steady_state=>1`: each scan point
-  runs `sim.run(steady_state=True)` — the same `run_network -c`
-  integrate-to-`||f||_2/n` early-stop BNG2.pl uses.
-- `sim.steady_state_batch()` when the model opts in with `ss_method=>"newton"`
-  (or its alias `ss_method=>"kinsol"`) — the two-tier integrate-then-polish
-  solver, which resolves the root far tighter than the parity criterion asks
-  for. It is *not* a speed accelerator: since the burst is the integration path
-  itself, the polish is net overhead (issue #28).
-- Time-course simulation to `t_end` when `steady_state=>0`.
+- `steady_state=>1` (the default path): each point runs
+  `sim.run(steady_state=True)`. This matches BNG2.pl's `run_network -c`, which
+  integrates until `||f||_2/n` is small.
+- `ss_method=>"newton"` (or its alias `ss_method=>"kinsol"`): each point uses
+  `sim.steady_state_batch()`, which integrates and then polishes the root with
+  Newton. It resolves the root more tightly than BNG2.pl's criterion. It is not
+  faster: the polish is extra work on top of the same integration.
+- `steady_state=>0`: a time course to `t_end`.
 
-`ss_method=>"newton"` is **rejected for `bifurcate` continuation scans**
-(warn + downgrade to the parity path): bifurcate carries state between points
-to detect hysteresis/multistability, and independent-per-point Newton finds
-*a* root — it can jump branches and destroy the hysteresis signal.
+`ss_method=>"newton"` is not used for `bifurcate` scans. PyBNF warns and uses
+the BNG2.pl path instead. A `bifurcate` scan carries the state from point to
+point to show hysteresis, and an independent Newton solve per point can jump
+to another branch and hide it.
 
-The output is a `.scan` file with columns for the scanned parameter and
-all observables/expressions, matching BNG2.pl's `parameter_scan` output
-format. This enables transparent acceleration of existing BNGL workflows
-that use `parameter_scan` for dose-response curve generation.
+The output is a `.scan` file with a column for the scanned parameter and one
+for each observable and expression, in BNG2.pl's `parameter_scan` format.
