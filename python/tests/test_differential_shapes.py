@@ -1977,6 +1977,12 @@ def test_a_base_with_no_reference_is_not_stable_by_default(monkeypatch):
     assert v.status == "skip" and "no reference" in v.note, v
 
 
+#: A solver failure as bngsim raises one: its flag gives it a ``solver.`` code (#1702).
+_SOLVER_FAILURE = (
+    "Simulation failed: CVODE integration failed at t=1.0 with flag=-4 (CV_CONV_FAILURE) (planted)"
+)
+
+
 def _fails_when(monkeypatch, when, error=None):
     """D.run raises where ``when(job)`` holds, as #1751's refusal of a run that
     leaves through minus infinity raises (MODEL1911100005 at rtol x2)."""
@@ -1984,9 +1990,7 @@ def _fails_when(monkeypatch, when, error=None):
 
     def run(job, **kw):
         if when(job):
-            raise error or bngsim.SimulationError(
-                "Simulation failed: CVODE integration failed (planted: non-finite RHS)"
-            )
+            raise error or bngsim.SimulationError(_SOLVER_FAILURE)
         return real(job, **kw)
 
     monkeypatch.setattr(D, "run", run)
@@ -2021,14 +2025,15 @@ def test_a_rerun_that_fails_otherwise_is_still_the_checks_own(monkeypatch):
     assert v.status == "exception" and "RuntimeError" in v.note, v
 
 
-def _second_leg_fails(monkeypatch):
+def _second_leg_fails(monkeypatch, which=2, error=None):
+    """The ``which``-th run_until call raises: 2 is the leg after the stop."""
     real = bngsim.Simulator.run_until
     calls = []
 
     def fails(self, t, **kw):
         calls.append(t)
-        if len(calls) == 2:  # the leg from the middle on
-            raise bngsim.SimulationError("Simulation failed: CVODE integration failed (planted)")
+        if len(calls) == which:
+            raise error or bngsim.SimulationError(_SOLVER_FAILURE)
         return real(self, t, **kw)
 
     monkeypatch.setattr(bngsim.Simulator, "run_until", fails)
@@ -2050,14 +2055,74 @@ def test_a_restart_leg_that_fails_against_a_base_with_no_reference_is_skip(monke
     _second_leg_fails(monkeypatch)
     v = D.check_restart(base)
     assert v.status == "skip", v
-    assert "run_until to the middle and on: no reference" in v.note
-    assert "and this path fails (SimulationError" in v.note
+    assert "run_until to the middle and on: no reference (" in v.note
+    assert "and this path fails (solver.convergence_failure;" in v.note
+    assert ("moves by 4.1e-01" if why == "moves" else "did not complete") in v.note
 
 
 def test_a_restart_leg_that_fails_against_a_judged_base_is_an_exception(monkeypatch):
     _second_leg_fails(monkeypatch)
     v = D.check_restart(_base("equality-dwell"))
     assert v.status == "exception" and "planted" in v.note, v
+
+
+def _no_reference_base(monkeypatch):
+    monkeypatch.setattr(D, "own_drift", lambda job, x: 0.41)
+    return D.Base(SHAPES["equality-dwell"])
+
+
+def test_a_leg_before_the_stop_that_fails_is_an_exception_whatever_the_base(monkeypatch):
+    """The first run_until repeats the base's own first half: its failure is a
+    finding even on a base with no reference."""
+    base = _no_reference_base(monkeypatch)
+    _second_leg_fails(monkeypatch, which=1)
+    v = D.check_restart(base)
+    assert v.status == "exception" and "planted" in v.note, v
+
+
+def test_a_restart_fault_that_is_no_solver_failure_is_an_exception_whatever_the_base(monkeypatch):
+    """Simulator.run raises every C++ error as a SimulationError; one whose code
+    is not solver.* (a lost carry, a failed re-init) is the machinery's, and a
+    finding even on a base with no reference."""
+    base = _no_reference_base(monkeypatch)
+    _second_leg_fails(
+        monkeypatch, error=bngsim.SimulationError("Simulation failed: event carry lost (planted)")
+    )
+    v = D.check_restart(base)
+    assert v.status == "exception" and "event carry lost" in v.note, v
+
+
+def test_a_stable_rerun_that_fails_with_no_solver_failure_is_an_exception(monkeypatch):
+    base = _base("equality-dwell")
+    _fails_when(
+        monkeypatch,
+        lambda job: job.rtol > base.job.rtol * 1.5,
+        bngsim.SimulationError("Simulation failed: event carry lost (planted)"),
+    )
+    v = D.check_stable(base)
+    assert v.status == "exception" and "event carry lost" in v.note, v
+
+
+def _wrapped_timeout() -> Exception:
+    try:
+        raise bngsim.SimulationTimeout("planted: past the model's cap")
+    except bngsim.SimulationTimeout as cause:
+        try:
+            raise bngsim.SimulationError(_SOLVER_FAILURE) from cause
+        except bngsim.SimulationError as e:
+            return e
+
+
+def test_a_timeout_wrapped_as_a_solver_failure_is_a_timeout(monkeypatch):
+    """A cap reached inside a run, whatever error carries it, is the row's
+    TIMEOUT: in a stable rerun and in restart's leg after the stop alike."""
+    base = _base("equality-dwell")
+    _fails_when(monkeypatch, lambda job: job.rtol > base.job.rtol * 1.5, _wrapped_timeout())
+    assert D.check_stable(base).status == "timeout"
+    monkeypatch.undo()
+    base = _no_reference_base(monkeypatch)
+    _second_leg_fails(monkeypatch, error=_wrapped_timeout())
+    assert D.check_restart(base).status == "timeout"
 
 
 def test_the_fresh_models_tail_that_fails_against_a_base_with_no_reference_is_skip(monkeypatch):
@@ -2074,7 +2139,7 @@ def test_the_fresh_models_tail_that_fails_against_a_base_with_no_reference_is_sk
 
     def run(self, *args, **kw):
         if id(self) in restarted:
-            raise bngsim.SimulationError("Simulation failed: CVODE integration failed (planted)")
+            raise bngsim.SimulationError(_SOLVER_FAILURE)
         return real_run(self, *args, **kw)
 
     monkeypatch.setattr(bngsim.Simulator, "set_state", set_state)
@@ -2205,12 +2270,12 @@ def test_a_run_that_fails_from_the_nudged_start_is_contested(monkeypatch):
 
     def fails(job, nudge=0.0, **kw):
         if nudge:
-            raise bngsim.SimulationError("CV_CONV_FAILURE (planted)")
+            raise bngsim.SimulationError(_SOLVER_FAILURE)
         return real(job, **kw)
 
     monkeypatch.setattr(D, "run", fails)
     v = D.check_stable(base)
-    assert v.status == "diff" and "from which the run fails (CV_CONV_FAILURE" in v.note, v
+    assert v.status == "diff" and "from which the run fails (solver.convergence_failure;" in v.note
     assert D.contested({"stable": {"status": "diff", "extra": v.extra}})
 
 

@@ -41,7 +41,9 @@ answers sees:
 Each returns a :class:`Verdict`: ``pass``, ``diff`` (a finding, with its size),
 ``unsupported`` (the path declined by type: not a wrong answer), ``skip`` (the
 path does not apply here, said why), ``exception`` (a path raised where the base
-ran: a finding), ``no_base`` (the model does not load or its plain run does
+ran: a finding; but a solver failure in ``stable``'s reruns marks the model
+contested, and one in ``restart``'s run after the stop is not judged against a
+base with no reference, :func:`_failed_path`), ``no_base`` (the model does not load or its plain run does
 not complete, so there is nothing to compare against: the parity suites own
 that) or ``timeout`` (not finished within the model's cap, or a compile past
 bngsim's own limit: that row only).
@@ -1325,6 +1327,17 @@ def _timeout() -> dict:
     return {"timeout": _left()}
 
 
+def _solver_failed(e: BaseException) -> bool:
+    """A run the solver could not carry on: a ``SimulationError`` whose code
+    bngsim files under ``solver.`` (#1702), as #1751's blow-ups are. Not a
+    fault of the machinery around the solve (a lost event carry, a failed
+    re-init), which ``Simulator.run`` also raises as a ``SimulationError``
+    (``run.failed``), and which the checks report as EXCEPTION."""
+    import bngsim
+
+    return isinstance(e, bngsim.SimulationError) and str(e.code or "").startswith("solver.")
+
+
 def _failed_path(base: Base, label: str, e: Exception) -> Verdict:
     """The row of a path that raised where the base ran, against a base with
     no reference (where ``Base.compare`` says SKIP: its tenfold tighter run
@@ -1336,23 +1349,22 @@ def _failed_path(base: Base, label: str, e: Exception) -> Verdict:
     was that SKIP until then. Asked only of a run after the restart's stop, a
     path the base's own run is not: a reused run repeats the base's, so its
     failure is a finding whatever the base's reference (check_reuse). Against
-    a judged base, and for a timeout, a refusal or an error that is not
-    ``SimulationError``, ``e`` is raised again: the row's, as before."""
-    import bngsim
-
-    if _timed_out(e) or _declined(e) or not isinstance(e, bngsim.SimulationError):
+    a judged base, and for a timeout, a refusal or an error that is not a
+    solver failure (:func:`_solver_failed`), ``e`` is raised again: the row's,
+    as before."""
+    if _timed_out(e) or _declined(e) or not _solver_failed(e):
         raise e
+    # Short, so that the verdict file's 200 characters keep both halves.
     if base.drift_error:
-        why = f"the base at a tenfold tighter tolerance did not complete ({base.drift_error})"
+        why = "the base's run at a tenfold tighter tolerance did not complete"
     elif not base.drift <= UNJUDGEABLE_DRIFT:
-        why = f"the base itself moves by {base.drift:.1e} at a tenfold tighter tolerance"
+        why = f"the base moves by {base.drift:.1e} at a tenfold tighter tolerance"
     else:
         raise e
     return Verdict(
         "skip",
         None,
-        f"{label}no reference: {why}; and this path fails ({type(e).__name__}: "
-        f"{_first_line(e)[:200]})",
+        f"{label}no reference ({why}), and this path fails ({e.code}; {_first_line(e)[:200]})",
     )
 
 
@@ -1540,16 +1552,16 @@ def check_stable(base: Base) -> Verdict:
     twice as many) and tolerance (rtol x0.5, x2), and from a start moved by
     :data:`START_NUDGE` of what a step may err by: a jump past the bound marks
     the model contested, its DIFFs real but unattributed and its PASSes luck.
-    So does any of these reruns that fails where the base ran: since #1751 a
-    run that leaves through minus infinity raises where it returned the
+    So does any of these reruns that the solver cannot carry on where the base
+    ran (bngsim's ``solver.*`` error codes, :func:`_solver_failed`): since
+    #1751 a run that leaves through minus infinity raises where it returned the
     blown-up values, and MODEL1911100005's at rtol x2 is one, on a base that
-    runs. The nudged start's jump counts only where its first row after the
+    runs. Any other error is the check's own, EXCEPTION. The nudged start's jump counts only where its first row after the
     start is still within the bound: the perturbation grew.
     A grid of another length is read at its last point, which every grid
     shares; twice as many at every other point, which are the base's. Each
     rerun has what is left of the model's cap: one it stops makes the check
     TIMEOUT, its own row only."""
-    import bngsim
 
     def go():
         # Where nothing could jump past the bound, SKIP, said why, as
@@ -1570,9 +1582,11 @@ def check_stable(base: Base) -> Verdict:
             try:
                 return _species(fn()[0], base)
             except Exception as e:
-                if _timed_out(e) or not isinstance(e, bngsim.SimulationError):
+                if _timed_out(e) or not _solver_failed(e):
                     raise
-                jumps[f"{label}, from which the run fails ({_first_line(e)[:160]})"] = float("inf")
+                jumps[f"{label}, from which the run fails ({e.code}; {_first_line(e)[:160]})"] = (
+                    float("inf")
+                )
                 return None
 
         for label, m in (
