@@ -97,8 +97,9 @@ PINNED = {
         "steadyState", "timeCourseSelections",
     ],
     "Result": [
-        "as_dataframe", "colnames", "df", "message", "plot", "status", "success",
-        "t", "times", "to_dataframe", "to_df", "to_numpy", "to_pandas", "y",
+        "as_dataframe", "colnames", "df", "message", "metadata", "method", "plot",
+        "species_units", "status", "success", "t", "time_units", "times", "to_dataframe",
+        "to_df", "to_numpy", "to_pandas", "units", "warnings", "y",
     ],
     "Simulator.run": [
         "duration", "end", "integrator", "method", "n_steps", "points", "selections", "steps",

@@ -4235,6 +4235,23 @@ class Simulator:
             return repr(ExactAtol(self._atol))
         return float(self._atol)
 
+    @staticmethod
+    def _jacobian_used(opts: Any, core: Any) -> str:
+        """The Jacobian an ODE attempt made with *opts* on *core* used, as the
+        engine chooses its callback (cvode_simulator.cpp): the analytical one
+        where it was asked for (``"auto"`` or ``"analytical"``) and the model
+        has it complete, else a difference quotient. Read off the attempt that
+        returned, whose ``opts.jacobian`` a GH #176 retry set to ``"fd"``; not
+        off :attr:`jacobian_strategy`, which another row's retry on another
+        thread can change meanwhile (issue #1703)."""
+        if opts.jacobian == "jax":
+            return "jax"
+        if opts.jacobian in ("auto", "analytical") and bool(
+            getattr(core, "analytical_jacobian_complete", False)
+        ):
+            return "analytical"
+        return "difference_quotient"
+
     def _record_run(
         self,
         result: Result,
@@ -4255,13 +4272,15 @@ class Simulator:
         steady_state_tol: float | None = None,
         carry_sensitivities: bool = False,
         start: str | None = None,
+        jacobian: str | None = None,
     ) -> None:
         """Leave on *result* what its record says of its run (issue #1703):
         what the call was asked and what it did, the parameter values it
         started with (*params*, from :func:`bngsim._record.parameter_values`
         before the run), and which code ran. *began* is the call's
         ``time.perf_counter()``. For an ODE run, *resolved* is the absolute
-        tolerance the solver was given."""
+        tolerance the solver was given and *jacobian* the one its returned
+        attempt used (:meth:`_jacobian_used`)."""
         ode = self._method == "ode"
         sens = bool(self._sensitivity_params or self._sensitivity_ic)
         info, values = params
@@ -4287,9 +4306,7 @@ class Simulator:
             backend["rhs"] = {"exprtk": "interpreted"}.get(
                 self.codegen_backend, self.codegen_backend
             )
-            backend["jacobian"] = {"fd": "difference_quotient"}.get(
-                self.jacobian_strategy, self.jacobian_strategy
-            )
+            backend["jacobian"] = jacobian
             backend["jacobian_requested"] = self._jacobian
             backend["jacobian_retried"] = _notices.seen("jacobian.difference_quotient_retry")
             backend["linear_solver"] = _record.LINEAR_SOLVERS.get(
@@ -6149,6 +6166,7 @@ class Simulator:
         eff_max_step: float | None = None
         run_rtol: float | None = None
         run_max_steps: int | None = None
+        run_jacobian: str | None = None
         try:
             if self._method == "ode":
                 from bngsim._bngsim_core import SolverOptions
@@ -6250,6 +6268,7 @@ class Simulator:
                     opts.set_jax_jac_fn(_jax_callback)
 
                 core_result = self._run_ode_with_jacobian_fallback(times, opts)
+                run_jacobian = self._jacobian_used(opts, self._model._core)
             elif self._method == "ssa":
                 self._apply_ssa_breakpoints([self._sim], self._model, t_start, t_end)
                 core_result = self._sim.run(times, used_seed, timeout_seconds)
@@ -6348,6 +6367,7 @@ class Simulator:
             steady_state_tol=ss_tol_value,
             carry_sensitivities=carry_sensitivities,
             start=start,
+            jacobian=run_jacobian,
         )
 
         # Issue #553 — the interactive clock moves with the state, here, rather
@@ -8230,6 +8250,7 @@ class Simulator:
         # This row's ∂x(0)/∂θ rows (issue #155); None for an IC-only request,
         # which has no `parameter` axis to describe.
         row_ic_seed: dict[str, dict[str, float]] | None = None
+        row_jacobian: str | None = None
         try:
             if self._method == "ode":
                 from bngsim._bngsim_core import (
@@ -8324,6 +8345,7 @@ class Simulator:
                     self._restore_carryover_state(start_carry, row_core)
 
                 core_result = self._ode_attempts(times, opts, restore, sim=sim, core=row_core)
+                row_jacobian = self._jacobian_used(opts, row_core)
 
             elif self._method in ("ssa", "psa"):
                 sim = self._new_ssa_engine(clone._core)
@@ -8401,6 +8423,7 @@ class Simulator:
             max_step=max_step if max_step is not None and max_step > 0.0 else None,
             steady_state=steady_state,
             steady_state_tol=steady_state_tol,
+            jacobian=row_jacobian,
         )
         return result
 
