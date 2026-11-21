@@ -7439,7 +7439,7 @@ class Simulator:
         shown = ", ".join(repr(n) for n in stuck[:3]) + (
             f" and {len(stuck) - 3} more" if len(stuck) > 3 else ""
         )
-        warnings.warn(
+        _notices.warn(
             f"parameter_scan over {parameter!r} does not move the species it seeds "
             f"({shown}): {why}, so every point starts them at that state's values and "
             "the dose is dropped. "
@@ -7454,7 +7454,8 @@ class Simulator:
             "model.set_concentration(name, value) where that initial condition is the "
             "parameter itself.",
             ScanDoseWarning,
-            stacklevel=_stacklevel_outside_bngsim(),
+            code="scan.dose_dropped",
+            stacklevel=_notices.OUTSIDE,
         )
         return True
 

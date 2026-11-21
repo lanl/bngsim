@@ -564,3 +564,17 @@ def test_the_dose_scan_still_stops_under_a_live_start_filter():
         with pytest.raises(bngsim.LiveStartWarning):
             sim.parameter_scan("A0", [5.0, 40.0], t_span=(0, 1), n_points=2)
     assert any(isinstance(w.message, bngsim.ScanDoseWarning) for w in caught)
+
+
+def test_each_point_of_the_scan_carries_the_dose_notice():
+    """The warning is a notice of the call (bngsim._notices), so each Result
+    the scan returns says so, whatever the warnings filter."""
+    sim, _ = _after_a_run()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        points = sim.parameter_scan("A0", [5.0, 40.0], **SCAN)
+    for point in points:
+        notes = [n for n in point.notices if n["code"] == "scan.dose_dropped"]
+        assert len(notes) == 1
+        assert notes[0]["category"] == "ScanDoseWarning"
+        assert "'A'" in notes[0]["message"]
