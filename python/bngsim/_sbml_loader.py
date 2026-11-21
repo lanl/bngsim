@@ -5408,9 +5408,10 @@ def _sbml_record(
         ids.update(get(i).getId() for i in range(count))
     renamed = {sid: _safe_name(sid) for sid in ids if _safe_name(sid) != sid}
 
-    # An id the L3 parser would read as one of its words (the clock, pi, ...)
-    # cannot be told from that word in a law's text once it is written.
-    ambiguous = any(sid.lower() in _L3_PARSER_WORDS for sid in renamed)
+    # An id the L3 parser would read as one of its words (the clock, pi, ...),
+    # in any case and whether or not the model renames it, cannot be told from
+    # that word in a law's text once it is written.
+    ambiguous = any(sid.lower() in _L3_PARSER_WORDS for sid in ids)
 
     def law(r) -> tuple[str, list[str], bool]:
         """The law, its local parameters' ids, and whether the law is already

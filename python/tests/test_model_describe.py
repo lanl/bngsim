@@ -1286,3 +1286,19 @@ def test_pi_beside_a_local_named_pi():
     rate = model.describe()["reactions"][0]["rate"]
     assert rate == _ast_renamed(text, {"pi": "_lp_R1_pi"}) == "pi * _lp_R1_pi * A"
     assert model.rhs(model.get_state())[0] == pytest.approx(-math.pi * 0.1 * 100)
+
+
+@pytest.mark.parametrize("word", ["Time", "Avogadro", "Infinity", "NotANumber"])
+def test_a_global_the_model_keeps_spelled_like_a_parser_word(word):
+    """A global the model does not rename, spelled like a word of the L3 parser
+    in another case, stays itself in a law that has a local (issue #1705
+    review): parsed back, the text would read the word."""
+    law = f"<apply><times/>{_ci(word)}{_ci('kl')}{_ci('A')}</apply>"
+    text = _with_local("kl", law).replace(
+        '<parameter id="k" value="5" constant="true"/>',
+        f'<parameter id="k" value="5" constant="true"/><parameter id="{word}" value="0.1"/>',
+    )
+    model = bngsim.Model.from_sbml_string(text)
+    assert word in model.param_names
+    rate = model.describe()["reactions"][0]["rate"]
+    assert rate == _ast_renamed(text, {"kl": "_lp_R1_kl"}) == f"{word} * _lp_R1_kl * A"
