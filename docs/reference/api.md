@@ -350,6 +350,28 @@ Warnings (`UserWarning` subclasses; filter or escalate them with `warnings`):
   or rate law, such as a rule whose products can never be what it writes, which
   it never fires as BioNetGen generates no reaction for it (issue #1022)
 
+## `bngsim.ModelBuilder`
+
+Builds a model in Python. Each species also gets an observable of the same name.
+
+- **`add_parameter(name, value)`**
+- **`add_species(name, initial=0.0, *, fixed=False)`**: a `fixed` species keeps its amount.
+- **`add_observable(name, species)`**: a list of species names, or a dict of name to weight.
+- **`add_function(name, expression)`**: reads parameters, species, observables, other functions, and `time()`.
+- **`add_reaction(reactants, products, *, rate=None, law=None)`**: `rate` is a mass-action rate constant (a parameter, a function, or an expression), multiplied by the reactants. `law` is the whole rate. Give one.
+- **`add_event(trigger, assignments, *, delay=0.0, name=None)`**: when `trigger` becomes true, set species to new values, such as `{"A": "A + 100"}`.
+- **`build()`** → `Model`.
+
+## `bngsim.examples`
+
+Small models that ship with BNGsim, each with its exact solution.
+
+- **`names()`**, **`describe(name)`**, **`formats(name)`**
+- **`path(name, format="net")`** → the model's file. Formats: `net`, `bngl`, `bng-xml`, `sbml`, `antimony`, `python`.
+- **`load(name, format=None)`** → `Model`.
+- **`exact(name, t, **params)`** → each observable at times `t`, as an array.
+- **`steady_states(name, **params)`** → each steady state, with `"stable"`.
+
 ## `.net` files as a dict
 
 - **`bngsim.parse_net_file(path)`** → `dict` — The components of a `.net` file as a plain Python dict with keys `parameters`, `species`, `species_ic_params`, `observables`, `functions`, `reactions` and `net_file_dir`. It is the C++ loader's own reading of the file, the one `Model.from_net` builds, with the values the built model holds, so it needs the compiled extension, raises `ValueError` where `Model.from_net` refuses the file (`FileNotFoundError` or `IsADirectoryError` for a path that is not a file), and reports the numbers `Model.from_net` puts in the same slots. Deprecated `Sat`/`Hill` rate laws come back rewritten as explicit functions, with the loader's warning.

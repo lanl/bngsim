@@ -67,6 +67,7 @@ from bngsim._exceptions import (
     UnderSpecifiedModelError,
 )
 from bngsim._model import Model
+from bngsim._model_builder import ModelBuilder
 from bngsim._named_array import NamedArray
 from bngsim._net_reader import build_model_from_parsed, parse_net_file
 from bngsim._nfsim_session import NfsimSession
@@ -402,11 +403,15 @@ def __getattr__(name: str) -> object:
     raise module_attribute_error(__name__, name)
 
 
+from bngsim import examples  # noqa: E402  (its models import bngsim at load)
+
 __all__ = [
     # Version
     "__version__",
     # Core classes
     "Model",
+    "ModelBuilder",
+    "examples",
     "Simulator",
     "ReactionKernel",
     # Coupling / state-exchange layer (GH #102 Stage 1)

@@ -1,0 +1,15 @@
+// Schlogl's model: a bistable switch with steady states at X = 100 and
+// X = 400 (stable) and X = 250 (unstable).
+// dX/dt = k1*X^2 - k2*X^3 + k3 - k4*X = -1e-4*(X - 100)*(X - 250)*(X - 400)
+// Exact steady states: bngsim.examples.steady_states("schlogl").
+model schlogl
+  J1: -> X; k1*X^2
+  J2: X -> ; k2*X^3
+  J3: -> X; k3
+  J4: X -> ; k4*X
+  k1 = 0.075
+  k2 = 1e-4
+  k3 = 1000
+  k4 = 16.5
+  X = 50
+end

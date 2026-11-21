@@ -247,31 +247,20 @@ carry into the next.
   Remaining failures are due to event timing precision differences between
   CVODE rootfinding and RoadRunner's event detection algorithm.
 
-### Events via the ModelBuilder API
+### Events in a model built in Python
 
-For programmatic model construction, use `builder.add_event()`:
+`ModelBuilder.add_event` adds an event to a model built in Python:
 
 ```python
-from bngsim._bngsim_core import ModelBuilder
+import bngsim
 
-builder = ModelBuilder()
-sp_S = builder.add_species("S", 100.0)
-builder.add_parameter("k", 0.1)
-builder.add_observable("S", [(sp_S, 1.0)])
-builder.add_function("decay", "k*S")
-builder.add_reaction([], [sp_S], "functional", "decay")
+b = bngsim.ModelBuilder()
+b.add_parameter("k", 0.1)
+b.add_species("S", 100)
+b.add_reaction(["S"], [], rate="k")
 
-# Add event: when time > 10, set S = 200
-builder.add_event(
-    "bolus",                    # event id
-    "time()>10",                # trigger expression
-    [(sp_S, "200")],            # [(species_idx, value_expr), ...]
-    delay=0.0,
-    priority=0,
-    persistent=True,
-    initial_value=True,
-    use_values_from_trigger_time=True,  # SBML L3 default; freeze RHS at trigger
-)
+# When time reaches 10, set S to 200.
+b.add_event("time() >= 10", {"S": "200"}, name="bolus")
 
-model = builder.build()
+model = b.build()
 ```

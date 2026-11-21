@@ -412,7 +412,9 @@ environment = { BNGSIM_ENABLE_KLU = "ON", BNGSIM_REQUIRE_KLU = "ON" }
 # ci/wheel_smoke_agent_guide.py reads the agent guide from the installed wheel
 # (issue #1699): the test suites run on the source tree, where the file always
 # is, so only a wheel shows that the guide an agent reads offline shipped.
-test-command = "python {project}/ci/wheel_smoke_klu.py && python {project}/ci/wheel_smoke_stop_condition.py && python {project}/ci/wheel_smoke_agent_guide.py"
+# ci/wheel_smoke_examples.py does the same for the example models (issue
+# #1706), and checks each against its exact solution.
+test-command = "python {project}/ci/wheel_smoke_klu.py && python {project}/ci/wheel_smoke_stop_condition.py && python {project}/ci/wheel_smoke_agent_guide.py && python {project}/ci/wheel_smoke_examples.py"
 
 [tool.cibuildwheel.linux]
 # manylinux_2_28 = AlmaLinux 8 (has dnf); SuiteSparse/KLU comes from EPEL. Its
