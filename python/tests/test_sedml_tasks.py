@@ -413,8 +413,10 @@ def test_a_chain_bngsim_wrote_reads_back_as_the_runs_bngl_made(tmp_path, actions
 
 def test_a_chain_that_repeats_a_lead_runs_it_as_the_document_says(tmp_path):
     """A run that continues a saved state is written as a chain of the runs
-    before it; a reader of the standard elements runs that chain as written,
-    so the lead is run once more, from the same state, with the same numbers."""
+    before it. A reader of the standard elements runs the lead once: the
+    chain's replay names the state it continues from, saved where the lead
+    reached it (issue #1739). It used to run the lead again, from the same
+    state, with the same numbers, which made a fourth experiment."""
     net = tmp_path / "m.net"
     net.write_text(NET)
     actions = (
@@ -435,10 +437,9 @@ def test_a_chain_that_repeats_a_lead_runs_it_as_the_document_says(tmp_path):
         ),
         net,
     )
-    assert len(exact) == 3 and len(back) == 4
-    for a, b in zip(exact, (back[0], back[1], back[3]), strict=True):
+    assert len(exact) == len(back) == 3
+    for a, b in zip(exact, back, strict=True):
         assert np.array_equal(a, b)
-    assert np.array_equal(back[2], back[0])
 
 
 # ── read_sedml (issue #1675) ────────────────────────────────────────────────

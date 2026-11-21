@@ -258,6 +258,13 @@ wrote:
   `changeAttribute` and `computeChange` changes applied first. A kinetic
   law's local parameter is named `_lp_<reaction>_<id>`. Tasks are
   independent. A time course no task runs isn't run.
+- The tasks run in order, each once. A chain replays the tasks it names
+  before its last, as `write_sedml_protocol` writes a run that continues
+  earlier ones. Where the tasks before it left the model at the point the
+  chain continues from, it continues; where they passed that point earlier,
+  the state is saved there and reset to. A chain none of whose start was run
+  runs in full from the initial state. A task or chain that is the start of
+  one already run isn't run again, wherever the document lists it.
 - A `repeatedTask` that sweeps a parameter is a `parameter_scan`. Each point
   runs the value the `setValue` math gives: `k = 10^x` over x = 0, 1, 2 runs
   k = 1, 10, 100. A `functionalRange` sweeps the same way. A constant
