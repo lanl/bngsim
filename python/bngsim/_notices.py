@@ -85,6 +85,10 @@ CODES: dict[str, str] = {
         "A protocol's run asked to stop at a steady state reached none by its end."
     ),
     "rulemonkey.unsupported": "RuleMonkey reported a construct it does not support as written.",
+    "scan.dose_dropped": (
+        "A parameter scan cannot move the species the scanned parameter seeds: each "
+        "point starts them at the state the scan started from, not at their dose."
+    ),
     "sens.chain_rule_dropped": (
         "A derived parameter's expression could not be differentiated; sensitivities "
         "through it read zero along that path."
