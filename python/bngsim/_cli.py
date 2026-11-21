@@ -542,7 +542,7 @@ def _passthrough(command: str, rest: list[str]) -> int:
     if command == "cache":
         from bngsim.cache import main as cache_main
 
-        return _exit_status(cache_main, rest)
+        return _exit_status(cache_main, rest, "bngsim cache")
     if not rest or rest[0] not in _CONVERT_TOOLS:
         tools = ", ".join(_CONVERT_TOOLS)
         if rest and rest[0] in ("-h", "--help"):
@@ -551,12 +551,14 @@ def _passthrough(command: str, rest: list[str]) -> int:
         raise _CommandLineError(f"TOOL is one of {tools}", _CONVERT_USAGE)
     from bngsim.convert import _cli as convert_cli
 
-    return _exit_status(getattr(convert_cli, _CONVERT_TOOLS[rest[0]][0]), rest[1:])
+    entry = getattr(convert_cli, _CONVERT_TOOLS[rest[0]][0])
+    return _exit_status(entry, rest[1:], f"bngsim convert {rest[0]}")
 
 
-def _exit_status(entry: Callable[[list[str]], int], argv: list[str]) -> int:
+def _exit_status(entry: Callable[..., int], argv: list[str], prog: str) -> int:
+    """Run an existing command, its help and usage naming it as ``prog``."""
     try:
-        return int(entry(argv) or 0)
+        return int(entry(argv, prog=prog) or 0)
     except SystemExit as stop:  # argparse's --help and usage errors
         code = stop.code
         return code if isinstance(code, int) else (0 if code is None else EXIT_ERROR)

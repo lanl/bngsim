@@ -1417,9 +1417,9 @@ def _add_common(p: argparse.ArgumentParser, *, min_age: bool = True) -> None:
         )
 
 
-def _build_parser() -> argparse.ArgumentParser:
+def _build_parser(prog: str = "bngsim-cache") -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="bngsim-cache",
+        prog=prog,
         description=(
             "Inspect and prune the code-generated artifact cache "
             "(~/.cache/bngsim/codegen, or $BNGSIM_CODEGEN_CACHE_DIR). Nothing prunes "
@@ -1563,9 +1563,9 @@ def _confirm(info: CacheInfo, *, assume_yes: bool) -> bool:
     return reply.strip().lower() in {"y", "yes"}
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, prog: str = "bngsim-cache") -> int:
     """``bngsim-cache`` / ``python -m bngsim.cache``. Returns the process exit code."""
-    args = _build_parser().parse_args(argv)
+    args = _build_parser(prog).parse_args(argv)
     # `getattr`, not `args.cache_dir`: the post-verb copy of -C is SUPPRESS-defaulted
     # so it cannot clobber a pre-verb one, which also means it may simply be absent.
     cache_dir = getattr(args, "cache_dir", None)

@@ -341,6 +341,39 @@ def test_convert_runs_the_converter(tmp_path):
 
 
 @pytest.mark.parametrize(
+    ("ours", "theirs"),
+    [
+        (["convert", "sbml2net"], ["bngsim.convert"]),
+        (
+            ["convert", "net2sbml"],
+            ["-c", "from bngsim.convert._cli import net2sbml_main as m; m()"],
+        ),
+        (
+            ["convert", "sbml2bngl"],
+            ["-c", "from bngsim.convert._cli import sbml2bngl_main as m; m()"],
+        ),
+        (
+            ["convert", "validate"],
+            ["-c", "from bngsim.convert._cli import validate_main as m; m()"],
+        ),
+        (["convert", "omex"], ["-c", "from bngsim.convert._cli import omex_main as m; m()"]),
+        (["cache"], ["bngsim.cache"]),
+    ],
+)
+def test_convert_and_cache_help_names_the_bngsim_command(ours, theirs):
+    run = _bngsim(*ours, "--help")
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.startswith(f"usage: bngsim {' '.join(ours)} ")
+    # The same help as the old command's, but for its name.
+    cmd = [sys.executable, *(["-m"] if theirs[0] != "-c" else []), *theirs, "--help"]
+    old = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", check=True)
+    old_name = old.stdout.split()[1]
+    assert old_name.startswith("bngsim-")
+    # argparse wraps usage lines at the name's width, so compare the words.
+    assert run.stdout.split() == old.stdout.replace(old_name, f"bngsim {' '.join(ours)}").split()
+
+
+@pytest.mark.parametrize(
     ("args", "usage"),
     [
         (["convert"], "usage: bngsim convert"),

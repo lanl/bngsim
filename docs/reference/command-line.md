@@ -59,9 +59,9 @@ report.
   BNGsim raises on purpose.
 
 `bngsim convert` and `bngsim cache` hand their arguments to the existing
-commands, which keep their own output, exit codes and help, so their help
-names them by their own names (`bngsim-sbml2net`, `bngsim-cache`). Give their
-options after `convert TOOL` or `cache`. A wrong tool name, or an option
+commands, which keep their own output and exit codes; their help and usage
+name them as `bngsim convert TOOL` and `bngsim cache`. Give their options after
+`convert TOOL` or `cache`. A wrong tool name, or an option
 before `convert` or `cache`, is a usage error like any other (JSON with
 `--json`); an error the tool itself reports is its own text.
 
