@@ -13,7 +13,9 @@ simulated in-process, and each run returns NumPy arrays.
 
 Beyond time courses, `bngsim` computes forward sensitivities, finds steady
 states, runs parameter scans and thread-parallel batches, and converts models
-between formats. The engine is C++ on SUNDIALS, and it installs with `pip`. For
+between formats. Its engines are C++: CVODE and KINSOL from SUNDIALS for ODEs
+and steady states, its own exact SSA and PSA, and NFsim and RuleMonkey for
+network-free runs. It installs with `pip`. For
 BioNetGen users it replaces the subprocess-based `run_network` driver.
 Two BioNetGen-family tools build on it:
 [PyBioNetGen](https://github.com/RuleWorld/PyBioNetGen) runs simulations through
@@ -83,23 +85,26 @@ changed since.
   (`.net`, SBML or Antimony, or a BNGL model that `generate_network` can
   expand); a network too large to generate runs network-free (`nf`, `rm`).
 - **NFsim or RuleMonkey.** Both run a rule-based model network-free, in
-  process, from the XML BioNetGen writes (`xml_path=`). `method="nf"` (NFsim,
-  the rejection method) is the default and the faster on most large models.
-  `method="rm"` (RuleMonkey, an exact method) is an independent second
-  engine. It runs energy (`Arrhenius`) rules, which NFsim refuses, and it is
-  the check to run when an NFsim result matters. Its speed against NFsim
-  depends on the model: on the published models timed for the bngsim paper it
-  was slower on most, by up to about 3 times, and faster on a few, by up to 15
-  times. The two agree on 221 of 222 models of a parity
-  suite. Neither runs a model with
-  compartments; use its generated network with `ode` or `ssa`.
+  process, from the XML BioNetGen writes (`xml_path=`). `method="nf"` (NFsim)
+  is the default. `method="rm"` (RuleMonkey) is an independent second engine:
+  it runs some energy (`Arrhenius`) rules, which NFsim refuses, and it is the
+  check to run when an NFsim result matters. Which is faster depends on the
+  model. On 13 published models timed for the bngsim paper, NFsim was faster
+  on 9, RuleMonkey by up to 3 times slower where both finished; on two,
+  RuleMonkey had not finished when the time limit NFsim met ran out.
+  RuleMonkey was faster on 4, by up to 15 times. The two agree on 221 of 222
+  models of a parity suite, and on the one where they disagree the fault is
+  NFsim's. Neither runs a model with compartments; use its generated network
+  with `ode` or `ssa`.
 - **bngsim's NFsim or the standalone binary.** The NFsim inside bngsim is
   NFsim with fixes carried on top, and it refuses the constructs on which the
   standalone NFsim that ships with BioNetGen gives a wrong answer without an
   error (energy rules, compartments, functions that read an observable outside
   their argument; RuleWorld/nfsim#102, #104, #106). It also skips the binary's
-  launch and model reparse on every run, which adds up in fitting and
-  ensembles. `nfsim_v1143_compat=True` reproduces NFsim 1.14.3's trajectories
+  launch and model reparse on every run, which is where it saves time: in
+  fitting and ensembles, where one model runs many times. Run once, it was
+  faster than the binary on 3 of the 13 models in the paper's timings (by up
+  to 4.5 times) and slower on the rest, mostly by under 2 times. `nfsim_v1143_compat=True` reproduces NFsim 1.14.3's trajectories
   seed for seed, for comparison with the binary.
 - **JAX.** `bngsim.jax.differentiable_solve` (`pip install 'bngsim[jax]'`)
   makes a CVODE solve a JAX function, so `jax.grad` or `jax.jacfwd` goes
