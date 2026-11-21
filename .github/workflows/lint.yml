@@ -146,7 +146,7 @@ jobs:
       # serves them at the domain's root (issue #1699).
       - name: llms.txt and llms-full.txt are built
         run: |
-          grep -q '^# bngsim$' docs/_build/html/llms.txt
+          grep -q '^# BNGsim$' docs/_build/html/llms.txt
           grep -q '/agent-guide.md): ' docs/_build/html/llms.txt
           grep -q '^# bngsim agent guide$' docs/_build/html/agent-guide.md
           grep -q '^# bngsim agent guide$' docs/_build/html/llms-full.txt
