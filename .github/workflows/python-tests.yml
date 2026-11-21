@@ -688,10 +688,12 @@ jobs:
   # files and posts a warning, not a failure: a new file may skip everywhere for
   # a reason. All three legs' reports are needed, so this is its own job, and on
   # a pull request the checkout is the test merge, whose first parent is main.
+  # It runs when a leg fails too (!cancelled()): a red shard elsewhere is no
+  # reason to drop the warning, and a shard with no report is named as such.
   new-test-coverage:
     name: New test files run somewhere
     needs: python-tests
-    if: ${{ github.event_name == 'pull_request' }}
+    if: ${{ !cancelled() && github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

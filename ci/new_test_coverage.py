@@ -85,6 +85,9 @@ _TEST_FILE = re.compile(r"^python/tests/(?:.+/)?(?:test_[^/]*|[^/]*_test)\.py$")
 
 #: A ``${{ ... }}`` expression, swapped for one word before the shell split.
 _EXPR = re.compile(r"\$\{\{\s*(.*?)\s*\}\}")
+#: A word in quotes that holds a glob character, which the shell leaves as is.
+#: A shell expansion (``"${files[@]}"``) is no glob: it is left to be read as one.
+_QUOTED_GLOB = re.compile(r"""(?<!\S)(['"])[^'"\s$]*[*?[][^'"\s$]*\1(?!\S)""")
 #: A dispatch input: empty on a pull request.
 _INPUT = re.compile(r"^(?:github\.event\.)?inputs\.[\w-]+$")
 
@@ -194,6 +197,9 @@ def read_command(command: str, wf: Workflow, empty: Iterable[str] = ()) -> None:
     def word(m: re.Match[str]) -> str:
         return " @@input@@ " if _INPUT.match(m[1]) else f"@@expr:{m[1].replace(' ', '')}@@"
 
+    # A glob in quotes reaches pytest as written, and pytest does not expand
+    # it: it names no file (pytest stops on the path it cannot find).
+    command = _QUOTED_GLOB.sub(" ", command)
     lex = shlex.shlex(_EXPR.sub(word, command), posix=True, punctuation_chars=";&|<>")
     lex.whitespace_split = True
     try:
@@ -245,7 +251,9 @@ def read_command(command: str, wf: Workflow, empty: Iterable[str] = ()) -> None:
         elif "::" in tok:
             wf.node_ids.append(path)
         else:
-            wf.selectors.append(_selector(path))
+            # The shell's glob, not GitHub's: without globstar, bash reads ``**``
+            # as ``*``, which stays within one directory.
+            wf.selectors.append(_selector(re.sub(r"\*\*+", "*", path)))
 
 
 # --- does a workflow run on this pull request -------------------------------

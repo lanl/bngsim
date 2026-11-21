@@ -124,7 +124,7 @@ def test_its_lists_equal_the_coverage_tests_parser(wf):
 def test_selectors_at_their_edges():
     w = _cmd(
         "python -m pytest -p no:cacheprovider python/tests/test_a.py "
-        "python/tests/test_b.py::test_one 'python/tests/test_g*.py' "
+        "python/tests/test_b.py::test_one python/tests/test_g*.py 'python/tests/test_q*.py' "
         "--deselect python/tests/test_d.py::test_x --deselect=python/tests/test_e.py "
         "--ignore python/tests/test_f.py --rootdir python/tests -c python/tests/x.ini "
         "python/tests/windows/ -q 2>&1 | tee python/tests/test_piped.py"
@@ -140,6 +140,12 @@ def test_selectors_at_their_edges():
     assert not w.whole and not w.unreadable
     assert w.names("python/tests/windows/test_x.py") and not w.names("python/tests/test_piped.py")
     assert not w.names("python/tests/test_gx/test_y.py")  # a shell * stays in its directory
+    # A glob in quotes reaches pytest unexpanded and names nothing.
+    assert not w.names("python/tests/test_q1.py")
+    # Without globstar, bash reads ** as *: it does not cross a directory.
+    deep = _cmd("python -m pytest python/tests/**/test_w.py")
+    assert deep.names("python/tests/windows/test_w.py")
+    assert not deep.names("python/tests/a/b/test_w.py")
     for suite in ("python/tests", "python/tests/"):
         assert _cmd(f"python -m pytest {suite} -n auto").whole
 
@@ -557,7 +563,7 @@ def test_python_tests_runs_it_after_every_leg_on_a_pull_request():
     body = strip_comments(_read(WORKFLOWS / "python-tests.yml"))
     job = body[body.index("  new-test-coverage:") :]
     assert "needs: python-tests" in job
-    assert "github.event_name == 'pull_request'" in job
+    assert "if: ${{ !cancelled() && github.event_name == 'pull_request' }}" in job
     assert "fetch-depth: 2" in job
     assert "pattern: python-tests-log-*" in job
     assert "python3 ci/new_test_coverage.py --reports logs --base HEAD^1 --head HEAD" in job
