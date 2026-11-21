@@ -223,6 +223,16 @@ def test_too_much_accuracy_is_the_solver_flag(binding):
     _check_shape(e)
 
 
+def test_the_flag_survives_a_run_on_a_moved_clock(binding):
+    """The engine moves a failure onto the run's own clock by throwing it
+    again; the flag goes with it."""
+    sim = bngsim.Simulator(binding, jacobian="fd")
+    with pytest.raises(bngsim.SimulationError) as info:
+        sim.run(t_span=(5, 15), n_points=3, rtol=1e-20, start="initial")
+    assert info.value.code == "solver.too_much_accuracy"
+    assert info.value.details == {"flag": "CV_TOO_MUCH_ACC"}
+
+
 @pytest.mark.parametrize(
     ("flag", "code"),
     [

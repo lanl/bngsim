@@ -30,10 +30,9 @@ from bngsim import _foreign_names, _notices, _record
 from bngsim._error_codes import pass_argument
 from bngsim._exceptions import (
     ArgumentTypeError,
-    BngsimError,
     MissingFileError,
     NotFoundError,
-    SensitivityUnsupportedError,
+    NotSupportedError,
     UsageError,
 )
 from bngsim._extension_handle import raise_cannot_pickle, shallow_copy
@@ -1528,7 +1527,7 @@ class Result:
         # and load.
         live_sized = kind == "species" and meta["name"] in self._ar_sens_blocked
         if live_sized and meta["name"] in self._ar_sens_refused:
-            raise SensitivityUnsupportedError(
+            raise UsageError(
                 f"output_sensitivities: assignment-rule species "
                 f"{meta['selector']!r} is reported over the live size of a "
                 "compartment whose size changes, and its row of "
@@ -1572,7 +1571,7 @@ class Result:
         if kind == "expression":
             reason = self._expression_sens_support.get(meta["name"])
             if reason:
-                raise SensitivityUnsupportedError(
+                raise UsageError(
                     f"output_sensitivities: expression {meta['name']!r} has no output "
                     f"sensitivity — {reason}."
                 )
@@ -2806,11 +2805,10 @@ class Result:
             ) from None
 
         if self._species.ndim != 2:
-            raise BngsimError(
+            raise NotSupportedError(
                 "to_xarray is defined only for single-simulation results "
                 f"(2-D arrays). Got species shape {self._species.shape}; "
                 "for batch results, iterate replicates.",
-                code="usage.not_supported",
             )
 
         data_vars: dict[str, Any] = {}
@@ -2980,12 +2978,11 @@ class Result:
         from bngsim._named_array import NamedArray
 
         if self._species.ndim != 2:
-            raise BngsimError(
+            raise NotSupportedError(
                 "as_roadrunner is defined only for single-simulation "
                 "results (2-D species). Got shape "
                 f"{self._species.shape}; for batch results, iterate "
                 "rows or call as_roadrunner per-replicate.",
-                code="usage.not_supported",
             )
 
         if selections is None:

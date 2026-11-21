@@ -7031,7 +7031,8 @@ class Simulator:
                 for i, future in enumerate(futures):
                     try:
                         results.append(future.result())
-                    except _PASSED_THROUGH:
+                    except _PASSED_THROUGH + _ONCE_PLAIN:
+                        # As the sequential path and a row raise them.
                         raise
                     except Exception as e:
                         raise SimulationError(f"Batch simulation {i} failed: {e}") from e

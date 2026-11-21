@@ -56,11 +56,10 @@ class ModelBuilder:
 
     def _new_name(self, name: str, what: str) -> None:
         if self._built:
-            from bngsim._exceptions import BngsimError
+            from bngsim._exceptions import NotSupportedError
 
-            raise BngsimError(
+            raise NotSupportedError(
                 "this ModelBuilder has built its model; start a new one",
-                code="usage.not_supported",
             )
         if not isinstance(name, str) or not _NAME.match(name):
             from bngsim._exceptions import InvalidModelError
@@ -170,11 +169,10 @@ class ModelBuilder:
         if isinstance(law, (int, float)):
             law = repr(float(law))
         if self._built:
-            from bngsim._exceptions import BngsimError
+            from bngsim._exceptions import NotSupportedError
 
-            raise BngsimError(
+            raise NotSupportedError(
                 "this ModelBuilder has built its model; start a new one",
-                code="usage.not_supported",
             )
         r = [self._index(s) for s in _names(reactants, "reactants")]
         p = [self._index(s) for s in _names(products, "products")]
@@ -205,11 +203,10 @@ class ModelBuilder:
         ``{"A": "A + 100"}`` adds 100 to A.
         """
         if self._built:
-            from bngsim._exceptions import BngsimError
+            from bngsim._exceptions import NotSupportedError
 
-            raise BngsimError(
+            raise NotSupportedError(
                 "this ModelBuilder has built its model; start a new one",
-                code="usage.not_supported",
             )
         if name is None:
             name = self._hidden_name("event")
@@ -225,11 +222,10 @@ class ModelBuilder:
     def build(self) -> Model:
         """The model. A builder builds one model."""
         if self._built:
-            from bngsim._exceptions import BngsimError
+            from bngsim._exceptions import NotSupportedError
 
-            raise BngsimError(
+            raise NotSupportedError(
                 "this ModelBuilder has built its model; start a new one",
-                code="usage.not_supported",
             )
         self._built = True
         try:
