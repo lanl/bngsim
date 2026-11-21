@@ -148,6 +148,54 @@ def test_selectors_at_their_edges():
     assert not deep.names("python/tests/a/b/test_w.py")
     for suite in ("python/tests", "python/tests/"):
         assert _cmd(f"python -m pytest {suite} -n auto").whole
+    # An --ignore-glob argument is left out too; it is not a second selector.
+    w = _cmd("python -m pytest python/tests --ignore-glob 'python/tests/test_h*.py'")
+    assert w.whole and len(w.excluded) == 1 and not w.selectors and not w.unreadable
+    held = _wf(whole=True, excluded=w.excluded)
+    assert not held.runs("python/tests/test_hx.py") and held.runs("python/tests/test_a.py")
+    # It is an fnmatch pattern: its * crosses a directory.
+    w = _cmd("python -m pytest python/tests --ignore-glob 'python/tests/*h3.py'")
+    assert not _wf(whole=True, excluded=w.excluded).runs("python/tests/sub/test_h3.py")
+    # fnmatch's */ needs the slash, ? crosses a directory too, and [..] is a class.
+    for pattern, out, kept in (
+        ("python/tests/*/test_x.py", "python/tests/sub/test_x.py", "python/tests/test_x.py"),
+        ("python/tests/sub?test_x.py", "python/tests/sub/test_x.py", "python/tests/test_x.py"),
+        ("python/tests/test_[ab].py", "python/tests/test_a.py", "python/tests/test_c.py"),
+    ):
+        w = _wf(whole=True, excluded=_cmd(f"python -m pytest --ignore-glob '{pattern}'").excluded)
+        assert not w.runs(out) and w.runs(kept), pattern
+    # A pattern that matches a directory leaves out what is under it, and one
+    # that does not start with python/tests can match there all the same.
+    for pattern in ("python/tests/su?", "python/tests/sub", "*/tests/sub/test_x.py"):
+        w = _wf(whole=True, excluded=_cmd(f"python -m pytest --ignore-glob '{pattern}'").excluded)
+        assert not w.runs("python/tests/sub/test_x.py"), pattern
+        assert w.runs("python/tests/test_x.py"), pattern
+    # A whole option in quotes is still that option.
+    w = _cmd('python -m pytest python/tests "--ignore-glob=python/tests/test_h*.py"')
+    assert not _wf(whole=True, excluded=w.excluded).runs("python/tests/test_hx.py")
+    # --ignore and --deselect take a path or a node id as written: a quoted glob
+    # names none, and pytest leaves nothing out for it.
+    for opt in ("--ignore", "--deselect"):
+        assert not _cmd(f"python -m pytest python/tests {opt} 'python/tests/test_h*.py'").excluded
+        assert not _cmd(f'python -m pytest python/tests "{opt}=python/tests/test_h*.py"').excluded
+    # Quoted, a glob is still the option's argument, and the path after it is
+    # still a test path, not the argument.
+    w = _cmd("python -m pytest --ignore-glob 'python/tests/test_h*.py' python/tests/test_y.py")
+    assert len(w.excluded) == 1 and w.selectors == ["python/tests/test_y.py"]
+    # So is a deselected node id whose test id has brackets, whatever the
+    # brackets hold: the words after it are read as written.
+    for test_id in ("p-1", "#1", "a|b", "a;b"):
+        w = _cmd(
+            "python -m pytest python/tests/test_a.py "
+            f"--deselect 'python/tests/test_a.py::test_b[{test_id}]' python/tests/test_c.py"
+        )
+        assert w.selectors == ["python/tests/test_a.py", "python/tests/test_c.py"], test_id
+        assert not w.excluded and not w.unreadable
+    # A quoted node id selects its file; with the glob in its file part it is
+    # a path pytest does not find.
+    w = _cmd("python -m pytest 'python/tests/test_a.py::test_b[q]' python/tests/test_c.py")
+    assert w.node_ids == ["python/tests/test_a.py"] and w.selectors == ["python/tests/test_c.py"]
+    assert not _cmd("python -m pytest 'python/tests/test_q*.py::test_x'").node_ids
 
 
 @pytest.mark.parametrize(
@@ -218,9 +266,24 @@ jobs: {}
         (_PATHS, ["docs/x/y.md"], True),
         ("on:\n  pull_request:\n    paths-ignore:\n      - 'docs/**'\n", ["docs/a.md"], False),
         ("on:\n  pull_request:\n    paths-ignore:\n      - 'docs/**'\n", ["src/a.cpp"], True),
+        # One changed file the ignore list does not cover is enough.
+        (
+            "on:\n  pull_request:\n    paths-ignore:\n      - 'docs/**'\n",
+            ["docs/a.md", "src/a.cpp"],
+            True,
+        ),
+        (_PATHS, ["README.md"], True),  # `**/` matches no directory as well
         ("on:\n  pull_request:\n  push:\n", ["anything"], True),
         ("on: [push, pull_request]\n", ["anything"], True),
         ("on:\n  push:\n  pull_request_target:\n", ["anything"], False),
+        ("on: [push, pull_request_target]\n", ["anything"], False),
+        ("on: pull_request_target\n", ["anything"], False),
+        # GitHub reads ? as "zero or one of the character before", + as "one or
+        # more", [..] as a class; the script reads none of the three, so it cannot tell.
+        ("on:\n  pull_request:\n    paths:\n      - 'src/ab?.cpp'\n", ["src/abc.cpp"], None),
+        ("on:\n  pull_request:\n    paths:\n      - 'src/a+.cpp'\n", ["src/a+.cpp"], None),
+        ("on:\n  pull_request:\n    paths:\n      - 'src/[ab].cpp'\n", ["src/a.cpp"], None),
+        ("on:\n  pull_request:\n    paths-ignore:\n      - 'doc?/**'\n", ["src/a.cpp"], None),
         ("on:\n  schedule:\n    - cron: '1 1 * * *'\n", ["anything"], False),
         ("on:\n  pull_request:\n    branches: [release]\n", ["anything"], None),
         ("on:\n  pull_request:\n    types: [opened]\n", ["anything"], None),
@@ -245,8 +308,94 @@ def test_a_list_that_names_it_counts_only_where_the_workflow_runs(tmp_path):
     assert w.names(new) and w.fires is False
     ((_, msg),) = ntc.warnings_for([new], legs, {"w.yml": w})
     assert "w.yml names it, but not on this pull request: its paths filter matches no file" in msg
+    # On one that changes src/, w.yml runs it, but only for that change: the
+    # glob is wider than the filter, so a later change to the file alone would not.
     (w,) = ntc.read_workflows([new, "src/a.cpp"], tmp_path).values()
-    assert ntc.warnings_for([new], legs, {"w.yml": w}) == []
+    assert w.runs(new)
+    ((_, msg),) = ntc.warnings_for([new], legs, {"w.yml": w})
+    assert "w.yml runs it on this pull request only for the pull request's other changes" in msg
+
+
+def test_a_trigger_that_cannot_be_read_never_counts():
+    # A branches filter, or types without synchronize: whether the workflow
+    # runs on this pull request is not known, so its list does not count.
+    new = "python/tests/test_mir_new.py"
+    w = _wf(fires=None, selectors=[new])
+    w.why_not = "its pull_request trigger has a branches filter, which is not read"
+    assert not w.runs(new)
+    ((_, msg),) = ntc.warnings_for([new], {"a": {new: _c(2, 2)}}, {"w.yml": w})
+    assert "Whether w.yml runs on this pull request is not known: its pull_request" in msg
+
+
+_RUN_NEW = "jobs:\n  j:\n    steps:\n      - run: python -m pytest python/tests/test_mir_new.py\n"
+
+
+def _on_paths(*paths: str) -> str:
+    return "on:\n  pull_request:\n    paths:\n" + "".join(f"      - '{p}'\n" for p in paths)
+
+
+def test_a_list_whose_paths_filter_does_not_match_it_is_warned_about(tmp_path):
+    # The pull request adds the file to w.yml's list but not to its paths
+    # filter. w.yml runs on this pull request, as its filter matches w.yml
+    # itself, and runs the file; the next change to the file alone would not.
+    new = "python/tests/test_mir_new.py"
+    changed = [new, ".github/workflows/w.yml"]
+    legs = {"a": {new: _c(2, 2)}}
+    (tmp_path / "w.yml").write_text(_on_paths(".github/workflows/w.yml") + _RUN_NEW, "utf-8")
+    wfs = ntc.read_workflows(changed, tmp_path)
+    assert wfs["w.yml"].runs(new) and not wfs["w.yml"].fires_for(new)
+    ((path, msg),) = ntc.warnings_for([new], legs, wfs)
+    assert path == new
+    assert "all 2 of its tests skip on every python-tests leg (a)." in msg
+    assert "w.yml runs it on this pull request only for the pull request's other changes" in msg
+    assert "a later change to it alone will run it nowhere. Add it to that paths filter." in msg
+    # A shard with no report is said here too, as in the other warning.
+    ((_, msg),) = ntc.warnings_for([new], legs, wfs, ["b 2"])
+    assert "(no report was read from b 2). w.yml runs it" in msg
+    # Another list that runs it and whose filter matches it: nothing to say.
+    (tmp_path / "v.yml").write_text(_on_paths("python/tests/test_mir*.py") + _RUN_NEW, "utf-8")
+    assert ntc.warnings_for([new], legs, ntc.read_workflows(changed, tmp_path)) == []
+    (tmp_path / "v.yml").unlink()
+    # With the file in w.yml's filter too, nothing to say.
+    (tmp_path / "w.yml").write_text(_on_paths(".github/workflows/w.yml", new) + _RUN_NEW, "utf-8")
+    assert ntc.warnings_for([new], legs, ntc.read_workflows(changed, tmp_path)) == []
+
+
+def test_two_lists_whose_filters_do_not_match_it_are_named_together(tmp_path):
+    new = "python/tests/test_mir_new.py"
+    for name in ("v.yml", "w.yml"):
+        (tmp_path / name).write_text(_on_paths("src/**") + _RUN_NEW, "utf-8")
+    wfs = ntc.read_workflows([new, "src/a.cpp"], tmp_path)
+    ((_, msg),) = ntc.warnings_for([new], {"a": {new: _c(1, 1)}}, wfs)
+    assert "v.yml, w.yml run it on this pull request only for the pull request's" in msg
+    assert "no paths filter of those matches it" in msg and "those paths filters." in msg
+
+
+def test_main_counts_a_file_a_check_runs_only_for_the_other_changes(tmp_path, monkeypatch, capsys):
+    new = "python/tests/test_mir_new.py"
+    (tmp_path / "w.yml").write_text(_on_paths("src/**") + _RUN_NEW, "utf-8")
+    wfs = ntc.read_workflows([new, "src/a.cpp"], tmp_path)
+    assert _main_with(monkeypatch, [new], ({"a": {new: _c(1, 1)}}, []), wfs, tmp_path) == 0
+    out = capsys.readouterr().out
+    assert (
+        "1 test file(s) added; 0 that no check on this change runs; "
+        "1 that a check runs only for this change's other files"
+    ) in out
+    assert f"::warning file={new}::" in out
+
+
+def test_every_file_a_list_runs_is_in_that_workflows_paths_filter():
+    # The late warning's case, for the files already on a list: a change to one
+    # of those files alone would fire no workflow that runs it.
+    files = [
+        p.relative_to(REPO_ROOT).as_posix() for p in (REPO_ROOT / "python/tests").rglob("*.py")
+    ]
+    lists = {n: w for n, w in ntc.read_workflows([]).items() if w.selectors or w.node_ids}
+    assert {"mir.yml", "windows-klu.yml", "windows-nfsim.yml", "windows-tail.yml"} <= set(lists)
+    outside = {
+        n: sorted(f for f in files if w.names(f) and not w.fires_for(f)) for n, w in lists.items()
+    }
+    assert outside == {n: [] for n in lists}
 
 
 def test_forced_jit_runs_a_new_file_when_the_pull_request_edits_it():
@@ -534,6 +683,36 @@ def test_main_prints_a_warning_annotation(tmp_path, monkeypatch, capsys):
     assert "1 test file(s) added; 1 that no check on this change runs" in out
     # Only two legs' reports, and none of shard 2: said once, at the top.
     assert "::warning::no python-tests report was read from" in out
+
+
+def test_main_checks_only_the_test_files_the_change_adds(tmp_path, monkeypatch, capsys):
+    # An edited test file that now skips, a deleted one and a new helper are not
+    # this check's: main reads the change as added_test_files does.
+    changed = [
+        ("M", "python/tests/test_mir_equivalence.py"),
+        ("D", "python/tests/test_nfsim_new.py"),
+        ("A", "python/tests/helper_new.py"),
+        ("A", "python/tests/test_mir_new.py"),
+    ]
+    monkeypatch.setattr(ntc, "changed_files", lambda b, h: changed)
+    monkeypatch.setattr(ntc, "read_reports", lambda r: (LEGS, []))
+    monkeypatch.setattr(ntc, "read_workflows", lambda changed: _workflows())
+    assert ntc.main(["--reports", str(tmp_path), "--base", "HEAD"]) == 0
+    out = capsys.readouterr().out
+    assert "1 test file(s) added; 1 that no check on this change runs" in out
+    assert out.count("::warning file=") == 1
+
+
+def test_main_with_a_base_git_cannot_read_warns_and_passes(repo, monkeypatch, capsys):
+    # A checkout with no parent (fetch-depth 1), or any git failure: the job
+    # warns and passes, as for a missing report.
+    root, _ = repo
+    real = ntc.changed_files
+    monkeypatch.setattr(ntc, "changed_files", lambda b, h: real(b, h, cwd=root))
+    assert ntc.main(["--reports", str(root), "--base", "0" * 40]) == 0
+    out = capsys.readouterr().out
+    assert "::warning::the files this change touches could not be read (fatal: " in out
+    assert "test file(s) added" not in out
 
 
 @pytest.mark.parametrize("make", ["missing", "empty"])

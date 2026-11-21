@@ -108,6 +108,7 @@ on:
       - "python/tests/test_rulemonkey.py"
       - "python/tests/test_jacobian_c_emitter.py"
       - "python/tests/test_model_codegen_sensitivity.py"
+      - "python/tests/test_periodic_step_stops.py"
       - "python/tests/test_ssa_propensity_export.py"
       - "python/tests/test_timeout.py"
       - "python/tests/test_seed_semantics.py"

@@ -34,9 +34,12 @@ read. Dispatch inputs (``inputs.pytest_args``, and an env var set from one) are
 empty on a pull request, so they are read as nothing.
 
 A file that skipped everywhere and that no running workflow runs gets a
-``::warning::``. A warning, not a failure: a new file may skip everywhere for a
-reason (a quarantine, an optional dependency no leg installs). Nothing here
-fails the job: a missing or unreadable report is itself a warning.
+``::warning::``. So does one that only a list runs, where that workflow runs on
+this pull request for its other changes and its paths filter does not match the
+file: the next change to the file alone would run it nowhere. A warning, not a
+failure: a new file may skip everywhere for a reason (a quarantine, an optional
+dependency no leg installs). Nothing here fails the job: a missing or
+unreadable report is itself a warning, and so is a ``git diff`` that fails.
 
 Stdlib only, like the rest of ci/, plus ``git`` for the changed files.
 """
@@ -44,6 +47,7 @@ Stdlib only, like the rest of ci/, plus ``git`` for the changed files.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import re
 import shlex
 import subprocess
@@ -83,18 +87,35 @@ _COMMAND_ENDS = frozenset({"|", "||", "&&", ";", "&", "|&"})
 #: pytest's default ``python_files`` (pyproject.toml sets none; a test pins it).
 _TEST_FILE = re.compile(r"^python/tests/(?:.+/)?(?:test_[^/]*|[^/]*_test)\.py$")
 
+#: Characters of GitHub's filter patterns this does not read as GitHub does:
+#: ``?`` is zero or one of the character before it there (one character to
+#: bash), ``+`` is one or more of it, and ``[...]`` is a class. A filter that
+#: uses one is not evaluated: a ``?`` read as bash reads it can say a workflow
+#: runs on a change it does not run on.
+_FILTER_UNREAD = re.compile(r"[?+\[\]]")
+
 #: A ``${{ ... }}`` expression, swapped for one word before the shell split.
 _EXPR = re.compile(r"\$\{\{\s*(.*?)\s*\}\}")
 #: A word in quotes that holds a glob character, which the shell leaves as is.
 #: A shell expansion (``"${files[@]}"``) is no glob: it is left to be read as one.
-_QUOTED_GLOB = re.compile(r"""(?<!\S)(['"])[^'"\s$]*[*?[][^'"\s$]*\1(?!\S)""")
+_QUOTED_GLOB = re.compile(r"""(?<!\S)(['"])([^'"\s$]*[*?[][^'"\s$]*)\1(?!\S)""")
+#: The mark a quoted glob carries through the shell split, so that an option's
+#: argument keeps it and a test path does not. Its text follows in hex, so that
+#: no character of it (``#``, ``;``, ``|``) is read as shell syntax.
+_QUOTED = "@@quoted:"
+#: An ``--ignore-glob`` pattern in ``Workflow.excluded``: pytest matches it with
+#: fnmatch, whose ``*`` and ``?`` cross directories and whose ``[...]`` is a class.
+_FNMATCH = "fnmatch:"
 #: A dispatch input: empty on a pull request.
 _INPUT = re.compile(r"^(?:github\.event\.)?inputs\.[\w-]+$")
 
 
 def glob_re(pattern: str) -> re.Pattern[str]:
-    """A path glob as GitHub's filters and bash read it: ``*`` and ``?`` stay
-    within one directory, ``**`` crosses them."""
+    """A path glob: ``*`` and ``?`` stay within one directory, ``**`` crosses
+    directories, as GitHub reads ``*`` and ``**`` in a paths filter. A pytest
+    argument reaches it with ``**`` already read as ``*``, as bash without
+    globstar reads it. GitHub's other filter characters are not read here (see
+    :data:`_FILTER_UNREAD`)."""
     out = []
     i = 0
     while i < len(pattern):
@@ -136,6 +157,8 @@ class Workflow:
     #: Whether it runs on this pull request: True, False, or None (cannot tell).
     fires: bool | None = None
     why_not: str = ""  # why it does not (or may not) run on this pull request
+    #: The workflow file's text, when it was read from one.
+    text: str | None = field(default=None, repr=False)
 
     def names(self, path: str) -> bool:
         return path in self.node_ids or any(matches(path, g) for g in self.selectors)
@@ -144,9 +167,27 @@ class Workflow:
         """It runs on the pull request, its commands read in full, and they run ``path``."""
         if self.fires is not True or self.unreadable:
             return False
-        if any(matches(path, g) for g in self.excluded):
+        if any(_excludes(path, g) for g in self.excluded):
             return False
         return self.whole or self.names(path)
+
+    def fires_for(self, path: str) -> bool:
+        """Its trigger fires for a change to ``path`` alone (true where no
+        workflow text was read, so there is no trigger to ask). Asked only of a
+        workflow that runs on this pull request, whose trigger was read."""
+        return self.text is None or fires_on(self.text, [path])[0] is True
+
+
+def _excludes(path: str, pattern: str) -> bool:
+    """``pattern``, an entry of ``Workflow.excluded``, leaves ``path`` out."""
+    if pattern.startswith(_FNMATCH):
+        # pytest asks it of each directory on the way down as well: a pattern
+        # that matches a directory leaves out everything under it.
+        glob = pattern[len(_FNMATCH) :]
+        parts = path.split("/")
+        tops = ("/".join(parts[:k]) for k in range(1, len(parts) + 1))
+        return any(fnmatch.fnmatchcase(top, glob) for top in tops)
+    return matches(path, pattern)
 
 
 def _strip_comments(text: str) -> str:
@@ -198,8 +239,15 @@ def read_command(command: str, wf: Workflow, empty: Iterable[str] = ()) -> None:
         return " @@input@@ " if _INPUT.match(m[1]) else f"@@expr:{m[1].replace(' ', '')}@@"
 
     # A glob in quotes reaches pytest as written, and pytest does not expand
-    # it: it names no file (pytest stops on the path it cannot find).
-    command = _QUOTED_GLOB.sub(" ", command)
+    # it: as a test path it names no file (pytest stops on the path it cannot
+    # find). As an option's argument (``--ignore-glob 'x*.py'``) it is the
+    # pattern pytest itself matches, so it is marked here, not dropped.
+    command = _QUOTED_GLOB.sub(lambda m: f" {_QUOTED}{m[2].encode().hex()}@@ ", command)
+
+    def literal(tok: str) -> str:
+        """A word as pytest receives it: a marked word's own text."""
+        return bytes.fromhex(tok[len(_QUOTED) : -2]).decode() if tok.startswith(_QUOTED) else tok
+
     lex = shlex.shlex(_EXPR.sub(word, command), posix=True, punctuation_chars=";&|<>")
     lex.whitespace_split = True
     try:
@@ -214,6 +262,9 @@ def read_command(command: str, wf: Workflow, empty: Iterable[str] = ()) -> None:
     for tok in it:
         if tok in _COMMAND_ENDS:
             break
+        whole_quoted = tok.startswith(_QUOTED) and literal(tok).startswith("-")
+        if whole_quoted:
+            tok = literal(tok)  # a whole option in quotes (``"--ignore-glob=x*.py"``)
         if tok in {">", ">>", ">&", "<"}:
             next(it, None)
             continue
@@ -221,9 +272,17 @@ def read_command(command: str, wf: Workflow, empty: Iterable[str] = ()) -> None:
             continue
         opt, eq, val = tok.partition("=")
         if opt in _EXCLUDING:
-            arg = val if eq else next(it, "")
+            raw = val if eq else next(it, "")
+            arg = literal(raw)
             if "$" in arg or "@@expr" in arg:
                 wf.unreadable.append(f"`{opt} {arg}` is not read")
+            elif opt == "--ignore-glob":
+                # Whatever it starts with: ``*/tests/test_h*.py`` matches too.
+                wf.excluded.append(_FNMATCH + arg)
+            elif raw.startswith(_QUOTED) or whole_quoted:
+                # --ignore and --deselect take a path or a node id as written:
+                # a quoted glob names none, and leaves nothing out.
+                pass
             elif arg.startswith("python/tests") and "::" not in arg:
                 # A node id deselects one test, not the file.
                 wf.excluded.append(_selector(arg))
@@ -238,6 +297,14 @@ def read_command(command: str, wf: Workflow, empty: Iterable[str] = ()) -> None:
                 next(it, None)
             continue
         if tok.startswith("-"):
+            continue
+        if tok.startswith(_QUOTED):
+            # A quoted node id whose test id holds the glob character
+            # (``'f.py::test[a-1]'``) selects its file; a quoted glob path
+            # names none.
+            file, sep, _ = literal(tok).partition("::")
+            if sep and file.startswith("python/tests") and not re.search(r"[*?[]", file):
+                wf.node_ids.append(file.rstrip("/"))
             continue
         if "$" in tok or "@@expr" in tok:
             shown = tok.replace("@@expr:", "${{ ").replace("@@", " }}")
@@ -327,6 +394,10 @@ def fires_on(text: str, changed: list[str]) -> tuple[bool | None, str]:
         return None, "its pull_request trigger has a branches filter, which is not read"
     if "types" in trig and "synchronize" not in trig["types"]:
         return None, "its pull_request types leave out synchronize"
+    for key in ("paths", "paths-ignore"):
+        odd = next((p for p in trig.get(key, []) if _FILTER_UNREAD.search(p)), None)
+        if odd is not None:
+            return None, f"its {key} filter has a pattern that is not read (`{odd}`)"
     if "paths" in trig:
         for f in changed:
             on = False
@@ -351,7 +422,7 @@ def read_workflows(changed: list[str], root: Path = WORKFLOWS) -> dict[str, Work
         if path.name == SUITE_WORKFLOW:
             continue
         text = path.read_text(encoding="utf-8")
-        wf = Workflow(path.name)
+        wf = Workflow(path.name, text=text)
         for command in pytest_commands(text):
             read_command(command, wf, dispatch_env(text))
         if not (wf.selectors or wf.node_ids or wf.whole or wf.unreadable):
@@ -443,9 +514,14 @@ def changed_files(base: str, head: str, cwd: Path = REPO_ROOT) -> list[tuple[str
     return [(fields[i], fields[i + 1]) for i in range(0, len(fields) - 1, 2)]
 
 
+def added_tests(changed: Iterable[tuple[str, str]]) -> list[str]:
+    """The python/tests test files among ``changed`` that the change adds."""
+    return sorted(f for s, f in changed if s == "A" and _TEST_FILE.match(f))
+
+
 def added_test_files(base: str, head: str, cwd: Path = REPO_ROOT) -> list[str]:
     """The python/tests test files ``head`` adds over ``base``."""
-    return sorted(f for s, f in changed_files(base, head, cwd) if s == "A" and _TEST_FILE.match(f))
+    return added_tests(changed_files(base, head, cwd))
 
 
 def _what_ran(path: str, legs: dict[str, Counts]) -> str:
@@ -484,6 +560,18 @@ def _note(w: Workflow, path: str) -> str:
     return ""
 
 
+def _late_message(path: str, legs: dict[str, Counts], late: list[str], missing: list[str]) -> str:
+    one = len(late) == 1
+    unmatched = "its paths filter does not match" if one else "no paths filter of those matches"
+    unread = f" (no report was read from {', '.join(missing)})" if missing else ""
+    return (
+        f"{path} is new, and {_what_ran(path, legs)}{unread}. {', '.join(late)} "
+        f"{'runs' if one else 'run'} it on this pull request only for the pull request's "
+        f"other changes: {unmatched} it, so a later change to it alone will run it nowhere. "
+        f"Add it to {'that paths filter' if one else 'those paths filters'}."
+    )
+
+
 def warnings_for(
     added: Iterable[str],
     legs: dict[str, Counts],
@@ -495,7 +583,16 @@ def warnings_for(
     missing = list(missing)
     out = []
     for path in added:
-        if not ran_nothing(path, legs) or any(w.runs(path) for w in workflows.values()):
+        if not ran_nothing(path, legs):
+            continue
+        running = [w for w in workflows.values() if w.runs(path)]
+        if running:
+            # Run here only because this pull request changes other files its
+            # list workflow's paths filter matches: the next change to this file
+            # alone runs it nowhere. A whole-suite workflow also runs nightly.
+            late = [w.name for w in running if not w.whole and not w.fires_for(path)]
+            if len(late) == len(running):
+                out.append((path, _late_message(path, legs, late, missing)))
             continue
         first = f"{path} is new, and {_what_ran(path, legs)}"
         if missing:
@@ -518,8 +615,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--head", default="HEAD")
     a = ap.parse_args(argv)
 
-    changed = changed_files(a.base, a.head)
-    added = sorted(f for s, f in changed if s == "A" and _TEST_FILE.match(f))
+    try:
+        changed = changed_files(a.base, a.head)
+    except (subprocess.CalledProcessError, OSError) as e:
+        why = e.stderr.decode("utf-8", "replace").strip() if getattr(e, "stderr", None) else str(e)
+        why = (why.splitlines() or [str(e)])[0]  # git's first line says what failed
+        print(f"::warning::the files this change touches could not be read ({why}); none checked")
+        return 0
+    added = added_tests(changed)
     legs, unread = read_reports(a.reports)
     for shard, why in unread:
         print(f"::warning::the python-tests report of {shard} could not be read: {why}")
@@ -534,8 +637,12 @@ def main(argv: list[str] | None = None) -> int:
             f"::warning::no python-tests report was read from {', '.join(missing)}; "
             "a new file in those shards may be warned about wrongly"
         )
-    found = warnings_for(added, legs, read_workflows([f for _, f in changed]), missing)
-    print(f"{len(added)} test file(s) added; {len(found)} that no check on this change runs")
+    workflows = read_workflows([f for _, f in changed])
+    found = warnings_for(added, legs, workflows, missing)
+    unrun = sum(1 for f, _ in found if not any(w.runs(f) for w in workflows.values()))
+    late = len(found) - unrun
+    also = f"; {late} that a check runs only for this change's other files" if late else ""
+    print(f"{len(added)} test file(s) added; {unrun} that no check on this change runs{also}")
     for path, msg in found:
         print(f"::warning file={path}::{msg}")
     return 0
