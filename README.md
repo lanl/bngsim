@@ -21,8 +21,18 @@ For BioNetGen users, it replaces `run_network`.
   what it does and doesn't do, alternatives, and tips.
 - [What BNGsim does](https://bngsim.readthedocs.io/en/latest/features.html):
   features, engines, and what sets it apart.
-- [Agent guide](https://bngsim.readthedocs.io/en/latest/agent-guide.html):
-  one page for AI agents.
+
+## For AI agents
+
+- `bngsim.agent_guide()` returns a one-page
+  [guide](https://bngsim.readthedocs.io/en/latest/agent-guide.html) for the
+  installed version, with no network. `python -m bngsim guide` prints it, and
+  `python -m bngsim skill` prints it as a `SKILL.md` file.
+- A call written for libRoadRunner, Tellurium, SciPy, pandas or BioNetGen
+  raises an error that names the BNGsim call to use. The guide also translates
+  from AMICI, COPASI and PySB.
+- BNGsim refuses models it can't simulate correctly, and says why.
+- The docs have an [`llms.txt`](https://bngsim.readthedocs.io/llms.txt) index.
 
 > **Status: alpha (0.x).** BNGsim is checked every night against BioNetGen,
 > libRoadRunner, AMICI and the SBML test suite, but it is early software, and
