@@ -15,6 +15,9 @@ Beyond time courses, `bngsim` computes forward sensitivities, finds steady
 states, runs parameter scans and thread-parallel batches, and converts models
 between formats. The engine is C++ on SUNDIALS, and it installs with `pip`. For
 BioNetGen users it replaces the subprocess-based `run_network` driver.
+Two BioNetGen-family tools build on it:
+[PyBioNetGen](https://github.com/RuleWorld/PyBioNetGen) runs simulations through
+it, and [PyBNF](https://github.com/lanl/PyBNF) fits parameters with it.
 
 ## Is bngsim the right tool?
 
@@ -245,7 +248,8 @@ simulation, events, scans and batches.
   shared random-number stream
   ([what an NFsim run changes](https://bngsim.readthedocs.io/en/latest/user-guide/network-free.html#what-an-nfsim-run-changes-in-your-process)).
   [PyBNF](https://github.com/lanl/PyBNF) uses bngsim this way for parameter
-  fitting ([guide](https://bngsim.readthedocs.io/en/latest/user-guide/pybnf.html)).
+  fitting ([guide](https://bngsim.readthedocs.io/en/latest/user-guide/pybnf.html)),
+  and [PyBioNetGen](https://github.com/RuleWorld/PyBioNetGen) for simulation.
 
 ## If you know another tool
 
