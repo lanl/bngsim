@@ -71,9 +71,12 @@ class TestResetConcSemantics:
         sim = bngsim.Simulator(m, method="ode")
         sim.run_until(5.0)
         a_live = m.get_concentration("A()")
-        results = sim.parameter_scan("k1", [0.1, 0.5], t_span=(0, 10), n_points=6)
+        # ...a run's end, with the clock set back to 0, which it says (#1701).
+        with pytest.warns(bngsim.LiveStartWarning, match="Each point of this scan"):
+            results = sim.parameter_scan("k1", [0.1, 0.5], t_span=(0, 10), n_points=6)
         for r in results:
             assert _A(r)[0] == pytest.approx(a_live, rel=1e-9)
+            assert r.started_from == "live"
 
     def test_on_point_override_tracks_scanned_value(self, simple_decay_net: Path):
         """on_point runs after reset + set_param, so a coupled concentration can
@@ -116,6 +119,8 @@ class TestBifurcate:
 
 
 class TestScanBookkeeping:
+    # From a run's end on purpose (#1701).
+    @pytest.mark.filterwarnings("ignore::bngsim.LiveStartWarning")
     def test_model_left_pristine(self, simple_decay_net: Path):
         """After a scan the persistent model is restored: parameter back to its
         pre-scan value, concentrations back to the invocation state."""

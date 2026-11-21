@@ -141,3 +141,12 @@ jobs:
         env:
           BNGSIM_INTERSPHINX_CACHE: ~/.cache/bngsim-intersphinx
         run: python -m sphinx -W --keep-going -b html docs docs/_build/html
+
+      # docs/_ext/llms_txt.py writes these beside the HTML, and Read the Docs
+      # serves them at the domain's root (issue #1699).
+      - name: llms.txt and llms-full.txt are built
+        run: |
+          grep -q '^# BNGsim$' docs/_build/html/llms.txt
+          grep -q '/agent-guide.md): ' docs/_build/html/llms.txt
+          grep -q '^# BNGsim agent guide$' docs/_build/html/agent-guide.md
+          grep -q '^# BNGsim agent guide$' docs/_build/html/llms-full.txt

@@ -1,3 +1,7 @@
+---
+summary: "For contributors: building from source, running the tests and CI locally, and the project layout."
+---
+
 # Building & contributing
 
 `CONTRIBUTING.md` in the repository root is the authoritative build guide. It
@@ -95,7 +99,7 @@ python scripts/local_ci.py wheel --python 3.12
 
 ## Contributors
 
-bngsim is developed at Los Alamos National Laboratory by William S. Hlavacek.
+BNGsim is developed at Los Alamos National Laboratory by William S. Hlavacek.
 Everyone whose code has merged is named in
 [`CONTRIBUTORS.md`](https://github.com/lanl/bngsim/blob/HEAD/CONTRIBUTORS.md),
 which gains a line when a first contribution merges. The
@@ -108,8 +112,8 @@ a changelog fragment, is under
 [Before opening a PR](https://github.com/lanl/bngsim/blob/HEAD/CONTRIBUTING.md#before-opening-a-pr)
 in `CONTRIBUTING.md`, not on this page.
 
-The third-party software bngsim redistributes, the engines vendored under
+The third-party software BNGsim redistributes, the engines vendored under
 `third_party/` among it, is listed with its license terms in
-[`NOTICE`](https://github.com/lanl/bngsim/blob/HEAD/NOTICE). The tools it was
-developed and validated against are cited in
+[`NOTICE`](https://github.com/lanl/bngsim/blob/HEAD/NOTICE). The tools it
+has been validated against are cited in
 [`ACKNOWLEDGMENTS.md`](https://github.com/lanl/bngsim/blob/HEAD/ACKNOWLEDGMENTS.md).
