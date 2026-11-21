@@ -1416,12 +1416,23 @@ def test_ok_is_not_a_promise_of_convergence(tmp_path):
     assert not bngsim.Simulator(model, method="ode").steady_state().converged
 
 
-def test_every_reason_a_steady_state_is_refused_is_listed():
-    """WITH_EVENT has an event and a rate that reads the clock: both are listed,
-    and the call raises the first, the event."""
-    model = bngsim.Model.from_sbml_string(WITH_EVENT)
+@pytest.mark.parametrize("case", ["event_and_clock", "event_jump_and_clock"])
+def test_every_reason_a_steady_state_is_refused_is_listed(case):
+    """Every reason is listed, in the call's order, and the call raises the
+    first: WITH_EVENT has an event and a rate that reads the clock; the other
+    model adds a compartment an assignment rule sizes, which jumps."""
+    if case == "event_and_clock":
+        model = bngsim.Model.from_sbml_string(WITH_EVENT)
+        want = ["event", "reads_clock"]
+    else:
+        pytest.importorskip("antimony")
+        model = bngsim.Model.from_antimony_string(
+            "compartment c; c := piecewise(1, time < 5, 2); species A in c = 1; "
+            "J: -> A; k; J2: A -> ; kd*A; k = 1; kd = 0.1; E: at (time > 1): k = 2"
+        )
+        want = ["event", "size_jump", "reads_clock"]
     reasons = model.describe()["methods"]["steady_state"]["reasons"]
-    assert [r["code"] for r in reasons] == ["event", "reads_clock"]
+    assert [r["code"] for r in reasons] == want
     with pytest.raises(bngsim.SimulationError) as ei:
         bngsim.Simulator(model, method="ode").steady_state()
     assert str(ei.value) == reasons[0]["message"]
