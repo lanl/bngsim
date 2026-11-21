@@ -10,10 +10,12 @@ from typing import Any, NoReturn
 
 from bngsim import _notices
 from bngsim._exceptions import (
+    BngsimError,
     ParameterError,
     RuleMonkeyWarning,
     SimulationError,
     SimulationTimeout,
+    UsageError,
 )
 from bngsim._extension_handle import raise_cannot_pickle, raise_cannot_shallow_copy
 from bngsim._result import Result
@@ -95,12 +97,13 @@ class RuleMonkeySession:
         from bngsim._bngsim_core import HAS_RULEMONKEY
 
         if not HAS_RULEMONKEY:
-            raise RuntimeError(
+            raise BngsimError(
                 "RuleMonkey support is not present in this bngsim install. "
                 "The vendored RuleMonkey backend at third_party/rulemonkey/ "
                 "is built by default; this install was either configured "
                 "with -DBNGSIM_BUILD_RULEMONKEY=OFF or installed from a "
-                "wheel that excludes RuleMonkey."
+                "wheel that excludes RuleMonkey.",
+                code="env.feature_not_built",
             )
 
         from bngsim._bngsim_core import RuleMonkeySimulator
@@ -201,7 +204,7 @@ class RuleMonkeySession:
         used_seed = _resolve_seed(seed)
         t0 = 0.0 if t_start is None else float(t_start)
         if not math.isfinite(t0):
-            raise ValueError(f"t_start must be finite, got {t_start!r}")
+            raise UsageError(f"t_start must be finite, got {t_start!r}")
         try:
             self._start_core(used_seed, t0)
         except RuntimeError as e:
@@ -275,7 +278,7 @@ class RuleMonkeySession:
         if timeout is not None:
             timeout_seconds = float(timeout)
             if timeout_seconds < 0.0:
-                raise ValueError(f"timeout must be non-negative or None, got {timeout!r}")
+                raise UsageError(f"timeout must be non-negative or None, got {timeout!r}")
 
         # Resolve the output schedule. Explicit sample_times (GH #184) override
         # t_start/t_end/n_points; the C++ core ignores those in that branch but
@@ -287,8 +290,9 @@ class RuleMonkeySession:
             t_end = explicit_times[-1]
             n_points = len(explicit_times)
         elif t_start is None or t_end is None or n_points is None:
-            raise ValueError(
-                "t_start, t_end and n_points are required unless sample_times is given."
+            raise UsageError(
+                "t_start, t_end and n_points are required unless sample_times is given.",
+                code="usage.missing_argument",
             )
 
         moved = self._place_segment(float(t_start))
@@ -326,7 +330,7 @@ class RuleMonkeySession:
         if timeout is not None:
             timeout_seconds = float(timeout)
             if timeout_seconds < 0.0:
-                raise ValueError(f"timeout must be non-negative or None, got {timeout!r}")
+                raise UsageError(f"timeout must be non-negative or None, got {timeout!r}")
 
         self._start_unset = False
         try:
@@ -350,7 +354,7 @@ class RuleMonkeySession:
         self._require_initialized()
         count = round_half_up(count)
         if count <= 0:
-            raise ValueError(f"count must be positive, got {count}")
+            raise UsageError(f"count must be positive, got {count}")
         self._start_unset = False
         self._core.add_molecules(mol_type, count)
 
@@ -412,7 +416,7 @@ class RuleMonkeySession:
         self._require_initialized()
         count = round_half_up(count)
         if count <= 0:
-            raise ValueError(f"count must be positive, got {count}")
+            raise UsageError(f"count must be positive, got {count}")
         self._start_unset = False
         try:
             self._core.add_species(pattern, count)
@@ -434,7 +438,7 @@ class RuleMonkeySession:
         self._require_initialized()
         count = round_half_up(count)
         if count <= 0:
-            raise ValueError(f"count must be positive, got {count}")
+            raise UsageError(f"count must be positive, got {count}")
         self._start_unset = False
         try:
             self._core.remove_species(pattern, count)
@@ -454,7 +458,7 @@ class RuleMonkeySession:
         self._require_initialized()
         count = round_half_up(count)
         if count < 0:
-            raise ValueError(f"count must be nonnegative, got {count}")
+            raise UsageError(f"count must be nonnegative, got {count}")
         self._start_unset = False
         try:
             self._core.set_species_count(pattern, count)

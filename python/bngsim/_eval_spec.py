@@ -172,19 +172,25 @@ class EvaluationSpec:
         # from a dict vs from kwargs compare equal and serialize identically.
         # Frozen dataclass ⇒ assign via object.__setattr__.
         if self.model_format not in _VALID_FORMATS:
-            raise ValueError(
+            from bngsim._exceptions import UsageError
+
+            raise UsageError(
                 f"Unknown model_format {self.model_format!r}. "
                 f"Expected one of {sorted(_VALID_FORMATS)}."
             )
         ts = tuple(float(x) for x in self.t_span)
         if len(ts) != 2:
-            raise ValueError(f"t_span must be a 2-tuple (t_start, t_end), got {self.t_span!r}.")
+            from bngsim._exceptions import UsageError
+
+            raise UsageError(f"t_span must be a 2-tuple (t_start, t_end), got {self.t_span!r}.")
         object.__setattr__(self, "t_span", ts)
         object.__setattr__(self, "n_points", int(self.n_points))
         if self.output_start is not None:
             start = float(self.output_start)
             if not (math.isfinite(start) and ts[0] <= start <= ts[1]):
-                raise ValueError(
+                from bngsim._exceptions import UsageError
+
+                raise UsageError(
                     f"output_start={self.output_start!r} must lie in t_span {ts!r}: the "
                     "run integrates from t_span[0] and outputs from output_start to t_span[1]"
                 )
@@ -203,9 +209,13 @@ class EvaluationSpec:
             except (TypeError, ValueError, OverflowError):  # "abc", nan, inf
                 integral = False
             if not integral:
-                raise ValueError(f"seed must be an integer, got {self.seed!r}")
+                from bngsim._exceptions import UsageError
+
+                raise UsageError(f"seed must be an integer, got {self.seed!r}")
             if not 0 <= seed <= 2**64 - 1:
-                raise ValueError(f"seed must be an integer from 0 to 2**64 - 1, got {seed}")
+                from bngsim._exceptions import UsageError
+
+                raise UsageError(f"seed must be an integer from 0 to 2**64 - 1, got {seed}")
             object.__setattr__(self, "seed", seed)
         # A per-species atol (issue #196) arrives as a list from JSON and as a
         # list/array from a caller; canonicalize to a tuple of floats so a spec
@@ -279,12 +289,16 @@ class EvaluationSpec:
         }
         unknown = set(data) - known
         if unknown:
-            raise ValueError(f"Unknown EvaluationSpec field(s): {sorted(unknown)}")
+            from bngsim._exceptions import UsageError
+
+            raise UsageError(f"Unknown EvaluationSpec field(s): {sorted(unknown)}")
         kwargs = {k: data[k] for k in known if k in data}
         if isinstance(kwargs.get("atol"), Mapping):
             atol = kwargs["atol"]
             if set(atol) != {"exact"}:
-                raise ValueError(
+                from bngsim._exceptions import UsageError
+
+                raise UsageError(
                     f"Unknown atol mapping {dict(atol)!r}; expected {{'exact': value}}."
                 )
             kwargs["atol"] = ExactAtol(atol["exact"])
@@ -335,7 +349,9 @@ class EvaluationSpec:
         if self.model_sha256 is not None:
             actual = self.compute_source_sha256()
             if actual != self.model_sha256:
-                raise ValueError(
+                from bngsim._exceptions import UsageError
+
+                raise UsageError(
                     "EvaluationSpec model source SHA-256 mismatch: expected "
                     f"{self.model_sha256}, got {actual}. The model at "
                     f"{self.model_source!r} differs from the one this spec was "
@@ -379,11 +395,14 @@ class EvaluationSpec:
         :meth:`Result.output_sensitivities` with :attr:`outputs` as selectors.
         """
         if self.output_start is not None and self.sensitivity_ic:
-            raise ValueError(
+            from bngsim._exceptions import UsageError
+
+            raise UsageError(
                 f"sensitivity_ic={list(self.sensitivity_ic)!r} with output_start="
                 f"{self.output_start!r}: the run integrates from t_span[0] to output_start "
                 "before it outputs anything, and IC sensitivities are not carried across "
-                "that boundary (GH #210). Use sensitivity_params, or no output_start."
+                "that boundary (GH #210). Use sensitivity_params, or no output_start.",
+                code="usage.conflicting_arguments",
             )
         sim = self.build_simulator()
         solver: dict[str, Any] = {}

@@ -27,7 +27,15 @@ import numpy as np
 from numpy.typing import NDArray
 
 from bngsim import _foreign_names, _notices, _record
-from bngsim._exceptions import MissingFileError
+from bngsim._error_codes import pass_argument
+from bngsim._exceptions import (
+    ArgumentTypeError,
+    BngsimError,
+    MissingFileError,
+    NotFoundError,
+    SensitivityUnsupportedError,
+    UsageError,
+)
 from bngsim._extension_handle import raise_cannot_pickle, shallow_copy
 from bngsim._notices import Notice
 
@@ -1088,7 +1096,7 @@ class Result:
                 if self._stop_condition is not None
                 else "a loaded or stacked Result"
             )
-            raise ValueError(
+            raise UsageError(
                 f"Result.{what} is only available on a Result returned by a solve; "
                 f"{how} carries only the reported species block (issue #508)."
             )
@@ -1431,18 +1439,18 @@ class Result:
         (11, 1, 1)
         """
         if axis not in ("parameter", "ic"):
-            raise ValueError(
+            raise UsageError(
                 f"output_sensitivities: axis must be 'parameter' or 'ic', got {axis!r}."
             )
         names = self._sensitivity_params if axis == "parameter" else self._sensitivity_ic_species
         n_axis = len(names)
         if n_axis == 0:
             if axis == "parameter":
-                raise ValueError(
+                raise UsageError(
                     "output_sensitivities: no parameter sensitivities were computed for this "
                     "result. Enable them via Simulator(..., sensitivity_params=[...])."
                 )
-            raise ValueError(
+            raise UsageError(
                 "output_sensitivities: no initial-condition sensitivities were computed for this "
                 "result. Enable them via Simulator(..., sensitivity_ic=[...])."
             )
@@ -1520,7 +1528,7 @@ class Result:
         # and load.
         live_sized = kind == "species" and meta["name"] in self._ar_sens_blocked
         if live_sized and meta["name"] in self._ar_sens_refused:
-            raise ValueError(
+            raise SensitivityUnsupportedError(
                 f"output_sensitivities: assignment-rule species "
                 f"{meta['selector']!r} is reported over the live size of a "
                 "compartment whose size changes, and its row of "
@@ -1564,7 +1572,7 @@ class Result:
         if kind == "expression":
             reason = self._expression_sens_support.get(meta["name"])
             if reason:
-                raise ValueError(
+                raise SensitivityUnsupportedError(
                     f"output_sensitivities: expression {meta['name']!r} has no output "
                     f"sensitivity — {reason}."
                 )
@@ -1577,7 +1585,7 @@ class Result:
                 if kind == "expression"
                 else ""
             )
-            raise ValueError(
+            raise UsageError(
                 f"output_sensitivities: no {kind} sensitivities are available for selector "
                 f"{meta['selector']!r}.{extra}"
             )
@@ -1589,7 +1597,7 @@ class Result:
         # its ``species_names`` dropped. Refuse rather than return a silently
         # mismatched slice.
         if block.shape[-2] != len(self._names_for_kind(kind)):
-            raise ValueError(
+            raise UsageError(
                 f"output_sensitivities: cannot address {kind} selector "
                 f"{meta['selector']!r} by index — the {kind} sensitivity block has "
                 f"{block.shape[-2]} rows but this result names "
@@ -1761,18 +1769,20 @@ class Result:
         :meth:`output_sensitivities`, which stacks one slice per selector.
         """
         if axis not in ("parameter", "ic"):
-            raise ValueError(
+            raise UsageError(
                 f"fisher_information: axis must be 'parameter' or 'ic', got {axis!r}."
             )
         have = self.has_sensitivities if axis == "parameter" else self.has_sensitivities_ic
         if not have:
             which = "sensitivity_params=[...]" if axis == "parameter" else "sensitivity_ic=[...]"
-            raise ValueError(
+            raise UsageError(
                 "No sensitivity data available. Run the simulation "
-                f"with {which} to compute sensitivities."
+                f"with {which} to compute sensitivities.",
+                code="sens.not_computed",
+                remedies=[pass_argument(which.split("=")[0])],
             )
         if self._species.ndim != 2:
-            raise ValueError(
+            raise UsageError(
                 "fisher_information is defined only for single-simulation results "
                 f"(2-D arrays). Got species shape {self._species.shape}; for batch "
                 "results, iterate replicates and combine the per-replicate FIMs."
@@ -1795,18 +1805,18 @@ class Result:
         sigma_arr = np.asarray(sigma, dtype=np.float64)
         if sigma_arr.ndim == 0:
             if sigma_arr.item() <= 0:
-                raise ValueError("sigma must be > 0.")
+                raise UsageError("sigma must be > 0.")
             inv_var = np.full(nr, 1.0 / (sigma_arr.item() ** 2))
         elif sigma_arr.ndim == 1:
             if sigma_arr.shape[0] != nr:
-                raise ValueError(
+                raise UsageError(
                     f"sigma array length ({sigma_arr.shape[0]}) must match {row_label} ({nr})."
                 )
             if np.any(sigma_arr <= 0):
-                raise ValueError("All sigma values must be > 0.")
+                raise UsageError("All sigma values must be > 0.")
             inv_var = 1.0 / (sigma_arr**2)
         else:
-            raise ValueError(f"sigma must be a scalar or 1-D array, got shape {sigma_arr.shape}.")
+            raise UsageError(f"sigma must be a scalar or 1-D array, got shape {sigma_arr.shape}.")
 
         # FIM = Σ_t  S_tᵀ diag(1/σ²) S_t = Σ_t (S_t·w)ᵀ S_t with w = 1/σ².
         # Weight every time point, then contract over time + rows via einsum.
@@ -1926,13 +1936,15 @@ class Result:
         (with sufficient cores).
         """
         if not self.has_sensitivities:
-            raise ValueError(
+            raise UsageError(
                 "No sensitivity data available. Run the simulation "
                 "with sensitivity_params or compute_all_sensitivities() "
-                "to compute sensitivities."
+                "to compute sensitivities.",
+                code="sens.not_computed",
+                remedies=[pass_argument("sensitivity_params")],
             )
         if not callable(loss_fn):
-            raise TypeError(f"loss_fn must be callable, got {type(loss_fn).__name__}")
+            raise ArgumentTypeError(f"loss_fn must be callable, got {type(loss_fn).__name__}")
 
         sens = self._sensitivities  # (n_times, n_species, n_params)
         nt, ns, np_ = sens.shape
@@ -1943,7 +1955,7 @@ class Result:
             dtype=np.float64,
         )
         if dL_dY.shape != (nt, ns):
-            raise ValueError(
+            raise UsageError(
                 f"loss_fn must return shape (n_times={nt}, n_species={ns}), got {dL_dY.shape}"
             )
 
@@ -2001,13 +2013,16 @@ class Result:
         gradient of the wrong sign with no warning (issue #1363).
         """
         if not self.has_sensitivities:
-            raise ValueError(
-                "No sensitivity data. Run with sensitivity_params or compute_all_sensitivities()."
+            raise UsageError(
+                "No sensitivity data. Run with sensitivity_params or compute_all_sensitivities().",
+                code="sens.not_computed",
+                remedies=[pass_argument("sensitivity_params")],
             )
         if target == "species":
             if observable_indices is not None:
-                raise ValueError(
-                    "observable_indices selects observables; pass target='observables'"
+                raise UsageError(
+                    "observable_indices selects observables; pass target='observables'",
+                    code="usage.conflicting_arguments",
                 )
             Y = self._species
             sens = self._sensitivities  # (nt, ns, np)
@@ -2015,7 +2030,7 @@ class Result:
             # .h5 written before that carries rows species_names dropped, and
             # species_indices would pick rows from a block they do not address.
             if Y.shape[1] != sens.shape[1]:
-                raise ValueError(
+                raise UsageError(
                     f"{Y.shape[1]} species but {sens.shape[1]} species sensitivity rows "
                     "(GH #202); re-run the simulation"
                 )
@@ -2028,17 +2043,22 @@ class Result:
             return Y, sens, refused
         if target == "observables":
             if species_indices is not None:
-                raise ValueError("species_indices selects species; pass target='species'")
+                raise UsageError(
+                    "species_indices selects species; pass target='species'",
+                    code="usage.conflicting_arguments",
+                )
             if not self.has_sensitivities_observables:
-                raise ValueError(
+                raise UsageError(
                     "No observable sensitivities in this result, so a fit to observable "
                     "data has no gradient. Run with sensitivity_params on a model with "
-                    "observables."
+                    "observables.",
+                    code="sens.not_computed",
+                    remedies=[pass_argument("sensitivity_params")],
                 )
             Y = self._observables
             sens = self._observable_sensitivities  # (nt, n_obs, np)
             if Y.shape[1] != sens.shape[1]:
-                raise ValueError(
+                raise UsageError(
                     f"{Y.shape[1]} observables but {sens.shape[1]} observable sensitivity rows"
                 )
             if observable_indices is not None:
@@ -2052,7 +2072,7 @@ class Result:
             # _contract_dL_dY carries a refused species row.
             unknown = np.isnan(sens).any(axis=(0, 2))
             return Y, sens, unknown if unknown.any() else None
-        raise ValueError(f"target must be 'species' or 'observables', got {target!r}")
+        raise UsageError(f"target must be 'species' or 'observables', got {target!r}")
 
     def _check_data_shape(
         self, data: NDArray[np.float64], Y: NDArray[np.float64], target: str
@@ -2062,7 +2082,7 @@ class Result:
         hint = ""
         if target == "species" and data.shape == self._observables.shape:
             hint = "; it is the shape of the observables: pass target='observables'"
-        raise ValueError(f"data shape {data.shape} != {target} shape {Y.shape}{hint}")
+        raise UsageError(f"data shape {data.shape} != {target} shape {Y.shape}{hint}")
 
     def sse_gradient(
         self,
@@ -2191,7 +2211,7 @@ class Result:
         elif sigma_arr.ndim == 2:
             inv_var = 1.0 / (sigma_arr**2)  # (nt, ns)
         else:
-            raise ValueError(f"sigma must be scalar, 1-D, or 2-D, got shape {sigma_arr.shape}")
+            raise UsageError(f"sigma must be scalar, 1-D, or 2-D, got shape {sigma_arr.shape}")
 
         residual = Y - data
         chi2 = float(np.sum(residual**2 * inv_var))
@@ -2259,7 +2279,7 @@ class Result:
             var = sigma_arr**2
             inv_var = 1.0 / var
         else:
-            raise ValueError(f"sigma must be scalar, 1-D, or 2-D, got shape {sigma_arr.shape}")
+            raise UsageError(f"sigma must be scalar, 1-D, or 2-D, got shape {sigma_arr.shape}")
 
         residual = Y - data
         nt_d, ns_d = Y.shape
@@ -2786,10 +2806,11 @@ class Result:
             ) from None
 
         if self._species.ndim != 2:
-            raise RuntimeError(
+            raise BngsimError(
                 "to_xarray is defined only for single-simulation results "
                 f"(2-D arrays). Got species shape {self._species.shape}; "
-                "for batch results, iterate replicates."
+                "for batch results, iterate replicates.",
+                code="usage.not_supported",
             )
 
         data_vars: dict[str, Any] = {}
@@ -2959,11 +2980,12 @@ class Result:
         from bngsim._named_array import NamedArray
 
         if self._species.ndim != 2:
-            raise RuntimeError(
+            raise BngsimError(
                 "as_roadrunner is defined only for single-simulation "
                 "results (2-D species). Got shape "
                 f"{self._species.shape}; for batch results, iterate "
-                "rows or call as_roadrunner per-replicate."
+                "rows or call as_roadrunner per-replicate.",
+                code="usage.not_supported",
             )
 
         if selections is None:
@@ -2983,7 +3005,11 @@ class Result:
             if sel.startswith("[") and sel.endswith("]"):
                 inner = sel[1:-1]
                 if inner not in sp_idx:
-                    raise ValueError(self._invalid_selection_message(sel))
+                    raise UsageError(
+                        self._invalid_selection_message(sel),
+                        code="output.not_found",
+                        details={"name": sel},
+                    )
                 idx = sp_idx[inner]
                 col = self._species[:, idx]
                 cf = self._varvol_conc_factor
@@ -3018,7 +3044,11 @@ class Result:
                     col = col * vf[idx]
                 cols.append(col)
                 continue
-            raise ValueError(self._invalid_selection_message(sel))
+            raise UsageError(
+                self._invalid_selection_message(sel),
+                code="output.not_found",
+                details={"name": sel},
+            )
 
         data = np.empty((n_t, len(selections)), dtype=np.float64)
         for j, c in enumerate(cols):
@@ -3040,7 +3070,7 @@ class Result:
         amounts = [sel for sel in selections if sel != "time" and sel in sp_idx]
         if amounts:
             name = amounts[0]
-            raise ValueError(
+            raise UsageError(
                 f"as_roadrunner: cannot report the amount {name!r}. This result was loaded "
                 f"from a file written by {writer}, which did not save compartment "
                 "sizes, and an amount is the stored concentration times its compartment's "
@@ -3754,7 +3784,7 @@ class Result:
             # A squeezed run_batch / run_replicates Result holds one trajectory
             # per row; a .cdat file holds one. (It used to fail inside string
             # formatting, with a TypeError that named neither.)
-            raise ValueError(
+            raise UsageError(
                 f"to_cdat writes one trajectory; this Result holds "
                 f"{np.shape(self._species)[0]} (species of shape "
                 f"{np.shape(self._species)}). Write each row's .cdat from the "
@@ -3845,9 +3875,9 @@ class Result:
             result.to_csv("data.csv", header=False)
         """
         if kind not in ("observables", "species"):
-            raise ValueError(f"kind must be 'observables' or 'species', got {kind!r}")
+            raise UsageError(f"kind must be 'observables' or 'species', got {kind!r}")
         if len(sep) != 1:
-            raise ValueError(f"sep must be a single character, got {sep!r}")
+            raise UsageError(f"sep must be a single character, got {sep!r}")
 
         if kind == "observables":
             data = self._observables
@@ -3857,7 +3887,7 @@ class Result:
             names = self._species_names
 
         if data.ndim != 2:
-            raise ValueError(
+            raise UsageError(
                 f"to_csv requires a 2-D single-sim result; got "
                 f"{kind} with shape {data.shape}. For batch results "
                 "(3-D), call to_csv on each replicate Result."
@@ -3918,14 +3948,14 @@ class Result:
             names or blocks differ from the first row's (issue #1513).
         """
         if not results:
-            raise ValueError("Cannot squeeze empty result list")
+            raise UsageError("Cannot squeeze empty result list")
         stopped = [i for i, r in enumerate(results) if r._stop_condition is not None]
         if stopped:
             # A stack has one time axis and says of no row that it stopped
             # (issue #1369). A callable's row keeps every sample, so this is
             # not "cut short" of every row it names.
             rows = ", ".join(map(str, stopped[:10])) + (", ..." if len(stopped) > 10 else "")
-            raise ValueError(
+            raise UsageError(
                 f"Cannot squeeze results that met a stop condition ({len(stopped)} of "
                 f"{len(results)}: rows {rows}): a stack holds rows of one length and "
                 "does not say which stopped. Read them from the list, where "
@@ -4186,9 +4216,11 @@ class Result:
                         if close
                         else f"No column is named {key!r}."
                     )
-                raise TypeError(f"{text} by name. {where}")
+                raise ArgumentTypeError(f"{text} by name. {where}")
             shown = repr(key) if isinstance(key, int) else "..."
-            raise TypeError(f"{text}: result.species[{shown}], result.observables[{shown}].")
+            raise ArgumentTypeError(
+                f"{text}: result.species[{shown}], result.observables[{shown}]."
+            )
 
         # With __getitem__ defined, Python would iterate a Result by calling it
         # with 0, 1, 2, ...; None keeps iter() and ``in`` refusing, as before.
@@ -4301,11 +4333,12 @@ class _SpeciesArray(np.ndarray[Any, np.dtype[np.float64]]):
     def _column(self, name: str) -> int:
         index = self._index
         if index is None:
-            raise KeyError(
+            raise NotFoundError(
                 f"Species {name!r}: this array was derived from result.species, and only "
                 "result.species itself takes a species name, since a copy, a transpose or "
                 "a sort need not keep its columns. Index result.species by name first, "
-                f"then derive: result.species[{name!r}]."
+                f"then derive: result.species[{name!r}].",
+                details={"name": name},
             )
         if name in index:
             return index[name]
@@ -4324,7 +4357,11 @@ class _SpeciesArray(np.ndarray[Any, np.dtype[np.float64]]):
         text = f"Species {name!r} not found."
         if where is not None:
             text += f" {where}"
-        raise KeyError(f"{text} result.species_names lists all {len(index)}.")
+        raise NotFoundError(
+            f"{text} result.species_names lists all {len(index)}.",
+            code="output.not_found",
+            details={"name": name, "close_matches": list(close)},
+        )
 
     def _whole(self) -> NDArray[np.float64]:
         plain = self._plain
@@ -4431,7 +4468,9 @@ class _ObservableAccessor:
     def __getitem__(self, key: str | int | slice) -> NDArray[np.float64]:
         if isinstance(key, str):
             if key not in self._name_to_idx:
-                raise KeyError(self._not_found(key))
+                raise NotFoundError(
+                    self._not_found(key), code="output.not_found", details={"name": key}
+                )
             # Last axis, not the second: see the note above about batches.
             return self._data[..., self._name_to_idx[key]]
         return self._data[key]
@@ -4749,7 +4788,7 @@ def _refuse_disagreeing_rows(results: list[Result]) -> None:
                         )
                         break
         if problem is not None:
-            raise ValueError(
+            raise UsageError(
                 f"Cannot squeeze these results: row {i} {problem}. A stack has one time "
                 "axis and one set of column names, the first row's, and reads every row "
                 "by them, so the rows must agree on both (issue #1513). Read them from "
@@ -4859,12 +4898,12 @@ def _resolve_output_selector(
         "expression": expression_names,
     }
     if not isinstance(selector, str):
-        raise TypeError(
+        raise ArgumentTypeError(
             f"Output selector must be a string, got {type(selector).__name__}: {selector!r}."
         )
     sel = selector.strip()
     if not sel:
-        raise ValueError("Empty output selector.")
+        raise UsageError("Empty output selector.")
 
     if ":" in sel:
         prefix, name = sel.split(":", 1)
@@ -4872,7 +4911,7 @@ def _resolve_output_selector(
         name = name.strip()
         if prefix not in _SELECTOR_PREFIX_ALIASES:
             valid = ", ".join(f"{p}:" for p in _SELECTOR_KINDS)
-            raise ValueError(
+            raise UsageError(
                 f"Unknown selector kind {prefix + ':'!r} in {selector!r}. "
                 f"Valid prefixes: {valid} "
                 f"(aliases: state:→species:, function:→expression:)."
@@ -4886,9 +4925,11 @@ def _resolve_output_selector(
         names = names_by_kind[kind]
         if name in names:
             return _output_meta(kind, name, names.index(name))
-        raise ValueError(
+        raise UsageError(
             f"Unresolved selector {selector!r}: no {kind} named {name!r}. "
-            f"Available {kind} names: {names}"
+            f"Available {kind} names: {names}",
+            code="output.not_found",
+            details={"name": name},
         )
 
     # Bare name: resolve only if unique across all kinds.
@@ -4902,7 +4943,7 @@ def _resolve_output_selector(
         return _output_meta(kind, sel, idx)
     if len(matches) > 1:
         typed = ", ".join(f"{kind}:{sel}" for kind, _ in matches)
-        raise ValueError(
+        raise UsageError(
             f"Ambiguous output selector {sel!r}: matches {typed}. "
             f"Use a typed selector to disambiguate."
         )
@@ -4912,12 +4953,14 @@ def _resolve_output_selector(
         base = sel[:-2].strip()
         if base in expression_names:
             return _output_meta("expression", base, expression_names.index(base))
-    raise ValueError(
+    raise UsageError(
         f"Unresolved output selector {selector!r}: not found among "
         f"species, observables, or expressions.\n"
         f"  species:     {species_names}\n"
         f"  observables: {observable_names}\n"
-        f"  expressions: {expression_names}"
+        f"  expressions: {expression_names}",
+        code="output.not_found",
+        details={"name": sel},
     )
 
 

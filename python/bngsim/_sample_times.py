@@ -52,12 +52,16 @@ def normalize_sample_times(sample_times: Iterable[float]) -> list[float]:
     """
     times = [float(t) for t in sample_times]
     if len(times) < 2:
-        raise ValueError(f"sample_times must contain at least 2 points, got {len(times)}")
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(f"sample_times must contain at least 2 points, got {len(times)}")
     # Checked on the list as given, ahead of the sort: sorted() does not order
     # a list that holds a NaN, so the sorted list's ends say nothing about it.
     bad = [t for t in times if not math.isfinite(t)]
     if bad:
-        raise ValueError(f"sample_times must all be finite, got {bad[0]}")
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(f"sample_times must all be finite, got {bad[0]}")
     return sorted(times)
 
 
@@ -83,17 +87,25 @@ def validate_time_span(t_span: tuple[float, float], n_points: int) -> tuple[floa
         ``n_points < 2``.
     """
     if isinstance(t_span, numbers.Real):
-        raise TypeError(_number_for_t_span(t_span, n_points))
+        from bngsim._exceptions import ArgumentTypeError
+
+        raise ArgumentTypeError(_number_for_t_span(t_span, n_points))
     t_start, t_end = (float(t) for t in t_span)
     # Ahead of the order test: a NaN fails every comparison, so
     # `t_end <= t_start` is false for it and for inf alike, and both used to
     # pass through to the solver (issue #1504).
     if not (math.isfinite(t_start) and math.isfinite(t_end)):
-        raise ValueError(f"t_span must be finite, got ({t_start}, {t_end})")
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(f"t_span must be finite, got ({t_start}, {t_end})")
     if t_end <= t_start:
-        raise ValueError(f"t_end ({t_end}) must be > t_start ({t_start})")
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(f"t_end ({t_end}) must be > t_start ({t_start})")
     if n_points < 2:
-        raise ValueError(f"n_points ({n_points}) must be >= 2")
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(f"n_points ({n_points}) must be >= 2")
     return t_start, t_end, n_points
 
 
@@ -126,5 +138,7 @@ def require_finite_time(name: str, t: float) -> float:
     """``t`` as a float, or ``ValueError`` naming ``name`` unless it is finite."""
     value = float(t)
     if not math.isfinite(value):
-        raise ValueError(f"{name} must be finite, got {value}")
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(f"{name} must be finite, got {value}")
     return value

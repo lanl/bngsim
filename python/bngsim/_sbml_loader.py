@@ -34,7 +34,7 @@ except ImportError as _exc:
     raise libsbml_import_failure(_exc) from _exc
 
 from bngsim import _sbml_unsupported
-from bngsim._exceptions import MissingFileError
+from bngsim._exceptions import InvalidModelError, MissingFileError, UsageError
 from bngsim._switch_sensitivity import _ATOMIC_TOKEN, _condition_key, _fully_parenthesised
 
 logger = logging.getLogger("bngsim")
@@ -3371,7 +3371,9 @@ def _flatten_comp(doc, base_path: str | None = None):
         props.addOption("basePath", base_path)
     status = doc.convert(props)
     if status != libsbml.LIBSBML_OPERATION_SUCCESS:
-        raise RuntimeError(
+        from bngsim._exceptions import ModelError
+
+        raise ModelError(
             f"comp flattening failed (libSBML status {status}); "
             "hierarchical comp model could not be inlined"
         )
@@ -3396,12 +3398,12 @@ def _apply_compartment_size_overrides(doc, compartment_sizes: dict, source: str)
     """
     model = doc.getModel()
     if model is None:  # pragma: no cover - _check_sbml_errors fires first
-        raise ValueError(f"compartment_sizes= given but {source} has no model to apply it to")
+        raise UsageError(f"compartment_sizes= given but {source} has no model to apply it to")
 
     known = {model.getCompartment(i).getId() for i in range(model.getNumCompartments())}
     unknown = sorted(set(compartment_sizes) - known)
     if unknown:
-        raise ValueError(
+        raise UsageError(
             f"compartment_sizes: unknown compartment(s) {unknown} in {source}. "
             f"Known compartments: {sorted(known)}. (These are SBML compartment ids as they "
             f"appear in the document — before bngsim's identifier mangling, and after any "
@@ -3421,7 +3423,7 @@ def _apply_compartment_size_overrides(doc, compartment_sizes: dict, source: str)
     }
     blocked = sorted(set(compartment_sizes) & ar_targets & known)
     if blocked:
-        raise ValueError(
+        raise UsageError(
             f"compartment_sizes: {blocked} is set by an SBML assignment rule, so its size "
             f"attribute does not determine its volume — the rule recomputes it at every "
             f"time point and the override would have no effect. Change the rule's inputs "
@@ -3432,11 +3434,11 @@ def _apply_compartment_size_overrides(doc, compartment_sizes: dict, source: str)
         try:
             size = float(value)
         except (TypeError, ValueError):
-            raise ValueError(
+            raise UsageError(
                 f"compartment_sizes['{cid}']: expected a number, got {value!r}"
             ) from None
         if not _math.isfinite(size) or size <= 0.0:
-            raise ValueError(
+            raise UsageError(
                 f"compartment_sizes['{cid}']: a compartment size must be finite and "
                 f"positive, got {size!r}. (Zero would make the storage divide singular; "
                 f"the loader's amount→concentration conversion divides by it.)"
@@ -3449,7 +3451,7 @@ def _apply_compartment_size_overrides(doc, compartment_sizes: dict, source: str)
             model.removeInitialAssignment(cid)
         comp = model.getCompartment(cid)
         if comp.setSize(size) != libsbml.LIBSBML_OPERATION_SUCCESS:  # pragma: no cover
-            raise ValueError(f"compartment_sizes['{cid}']: libsbml rejected size {size!r}")
+            raise UsageError(f"compartment_sizes['{cid}']: libsbml rejected size {size!r}")
 
 
 def load_sbml(path: str | Path, compartment_sizes: dict | None = None):
@@ -3659,11 +3661,17 @@ def load_antimony_via_sbml(path: str | Path, compartment_sizes: dict | None = No
         ret = ant.loadFile(str(path))
         if ret == -1:
             err = ant.getLastError()
-            raise RuntimeError(f"Failed to parse Antimony file {path}: {err}")
+            from bngsim._exceptions import ModelError
+
+            raise ModelError(
+                f"Failed to parse Antimony file {path}: {err}", code="model.unreadable_file"
+            )
 
         sbml_str = _antimony_main_module_sbml(ant, f"Antimony file {path}")
     if not sbml_str or len(sbml_str) < 10:
-        raise RuntimeError(f"Antimony produced empty SBML for {path}")
+        from bngsim._exceptions import ModelError
+
+        raise ModelError(f"Antimony produced empty SBML for {path}", code="model.unreadable_file")
 
     model = load_sbml_string(sbml_str, compartment_sizes)
     _record_source(model, "antimony", path=path, compartment_sizes=_sizes_set(compartment_sizes))
@@ -3679,11 +3687,17 @@ def load_antimony_string_via_sbml(text: str, compartment_sizes: dict | None = No
         ret = ant.loadString(text)
         if ret == -1:
             err = ant.getLastError()
-            raise RuntimeError(f"Failed to parse Antimony string: {err}")
+            from bngsim._exceptions import ModelError
+
+            raise ModelError(
+                f"Failed to parse Antimony string: {err}", code="model.unreadable_file"
+            )
 
         sbml_str = _antimony_main_module_sbml(ant, "the Antimony string")
     if not sbml_str or len(sbml_str) < 10:
-        raise RuntimeError("Antimony produced empty SBML")
+        from bngsim._exceptions import ModelError
+
+        raise ModelError("Antimony produced empty SBML", code="model.unreadable_file")
 
     model = load_sbml_string(sbml_str, compartment_sizes)
     _record_source(model, "antimony", text=text, compartment_sizes=_sizes_set(compartment_sizes))
@@ -5291,7 +5305,9 @@ def _check_sbml_errors(doc, source, text=None):
     """
     if doc.getNumErrors(libsbml.LIBSBML_SEV_FATAL) > 0:
         msg = doc.getError(0).getMessage()
-        raise RuntimeError(f"Fatal SBML error in {source}: {msg}")
+        from bngsim._exceptions import ModelError
+
+        raise ModelError(f"Fatal SBML error in {source}: {msg}", code="model.unreadable_file")
     model = doc.getModel()
     if model is None or not _model_is_empty(model):
         return
@@ -5309,18 +5325,24 @@ def _check_sbml_errors(doc, source, text=None):
             else "its root element is in no SBML namespace"
         ) + " (libSBML error 20101)"
     if _BNG_XML.search(body):
-        raise RuntimeError(
+        from bngsim._exceptions import ModelError
+
+        raise ModelError(
             f"{source} is BioNetGen's XML (what BNG2.pl's writeXML writes for NFsim and "
             "RuleMonkey), not SBML: it has <ListOfMoleculeTypes> or <ListOfReactionRules>, "
             f"which SBML has not{', and ' + namespace if namespace else ''}. libSBML reads "
             "its <model> element and none of the elements inside it, so loaded as SBML it "
-            f"gave an empty model (issue #1712). {_network_free_routes()}"
+            f"gave an empty model (issue #1712). {_network_free_routes()}",
+            code="model.unreadable_file",
         )
     if bad_namespace:
-        raise RuntimeError(
+        from bngsim._exceptions import ModelError
+
+        raise ModelError(
             f"{source} is not SBML: {namespace}, and libSBML reads nothing from its <model>: "
             "no species, compartments, parameters, reactions or rules. Loaded as SBML it "
-            "gave an empty model (issue #1712)."
+            "gave an empty model (issue #1712).",
+            code="model.unreadable_file",
         )
 
 
@@ -5423,7 +5445,7 @@ def _fold_stoichiometry_denominators(doc) -> None:
                 if denominator == 1 or ref.isSetStoichiometryMath():
                     continue
                 if denominator <= 0:
-                    raise ValueError(
+                    raise InvalidModelError(
                         f"SBML reaction '{reaction.getId()}': species '{ref.getSpecies()}' has "
                         f"stoichiometry denominator {denominator}; it must be a positive integer"
                     )
@@ -5432,7 +5454,9 @@ def _fold_stoichiometry_denominators(doc) -> None:
                     != libsbml.LIBSBML_OPERATION_SUCCESS
                     or ref.setDenominator(1) != libsbml.LIBSBML_OPERATION_SUCCESS
                 ):  # pragma: no cover - libsbml accepts both on a reference it read
-                    raise RuntimeError(
+                    from bngsim._exceptions import ModelError
+
+                    raise ModelError(
                         f"SBML reaction '{reaction.getId()}': could not fold the "
                         f"stoichiometry denominator of species '{ref.getSpecies()}'"
                     )
@@ -5732,7 +5756,9 @@ def _build_model_from_sbml_doc_in_context(doc):
 
     sbml_model = doc.getModel()
     if sbml_model is None:
-        raise RuntimeError("SBML document contains no model")
+        from bngsim._exceptions import ModelError
+
+        raise ModelError("SBML document contains no model")
     # A reference's stoichiometry can be numerator/denominator (Level 1, or a
     # Level 2 rational libSBML read that way); every reader below takes
     # getStoichiometry(), the numerator alone.
@@ -10392,14 +10418,22 @@ def _build_model_from_sbml_doc_in_context(doc):
         # "reaction N (Functional) references unknown function 'rid'"
         # message). Reject loudly with an actionable message instead.
         if rxn.getKineticLaw() is None:
-            raise RuntimeError(
+            from bngsim._exceptions import ModelError
+
+            raise ModelError(
                 f"Reaction '{rid}' has no kineticLaw. bngsim cannot load "
                 "models with rate-less reactions because treating them as "
                 "rate=0 would silently produce wrong dynamics. This pattern "
                 "typically comes from SBML extension packages (e.g. FBC) "
                 "that bngsim does not implement; rewrite the SBML with an "
                 "explicit kineticLaw on each reaction, or simulate with a "
-                "different engine."
+                "different engine.",
+                code="model.unsupported_construct",
+                details={
+                    "constructs": [
+                        {"construct": "reaction with no kineticLaw", "where": f"reaction:{rid}"}
+                    ]
+                },
             )
 
         # Trivially-mass-action kinetic laws (#16) take the Elementary
@@ -11114,12 +11148,23 @@ def _build_model_from_sbml_doc_in_context(doc):
             # _cf_i scales the whole rate). Single-compartment conversion-factor
             # models, the common case, never reach here.
             if _cf_mixed_i:
-                raise RuntimeError(
+                from bngsim._exceptions import ModelError
+
+                raise ModelError(
                     f"Reaction '{rid}' mixes per-species SBML conversionFactors "
                     "across compartments. bngsim supports differing conversion "
                     "factors only within a single compartment; rewrite as "
                     "single-compartment, use a uniform factor, or use another "
-                    "engine."
+                    "engine.",
+                    code="model.unsupported_construct",
+                    details={
+                        "constructs": [
+                            {
+                                "construct": "per-species conversionFactors across compartments",
+                                "where": f"reaction:{rid}",
+                            }
+                        ]
+                    },
                 )
             _xrxn_idx = builder.add_reaction(
                 reactant_mult,

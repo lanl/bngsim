@@ -25,7 +25,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from bngsim._exceptions import ModelError
+from bngsim._exceptions import ModelError, UsageError
 
 #: BioModels' host. The old https://www.ebi.ac.uk/biomodels/ URLs redirect here.
 BASE = "https://www.biomodels.org"
@@ -156,14 +156,14 @@ def fetch(
     ``path`` is ``None`` and ``data`` holds the file's bytes.
     """
     if not isinstance(model_id, str) or not ID.match(model_id):
-        raise ValueError(
+        raise UsageError(
             f"{model_id!r} is not a BioModels id, which looks like 'BIOMD0000000010' "
             "or 'MODEL1006230000'"
         )
     if version is not None and (
         isinstance(version, bool) or not isinstance(version, numbers.Integral) or version < 1
     ):
-        raise ValueError(f"version={version!r} is not a version number (1, 2, ...)")
+        raise UsageError(f"version={version!r} is not a version number (1, 2, ...)")
     cache_dir = CACHE_DIR if cache_dir is None else Path(cache_dir)
     if version is not None:
         version = int(version)

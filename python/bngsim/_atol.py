@@ -153,7 +153,9 @@ class TrackingAtol:
     def __post_init__(self) -> None:
         decades = float(self.decades)
         if not np.isfinite(decades) or decades < 0.0:
-            raise ValueError(
+            from bngsim._exceptions import UsageError
+
+            raise UsageError(
                 f"TrackingAtol.decades must be finite and >= 0, got {self.decades!r}. "
                 "A tracking tolerance with no floor is pure relative error control, "
                 "which has no weight to give a species sitting at exactly zero."
@@ -196,7 +198,9 @@ class ExactAtol:
     def __post_init__(self) -> None:
         value = float(self.value)
         if not np.isfinite(value) or value < 0.0:
-            raise ValueError(f"ExactAtol.value must be finite and >= 0, got {self.value!r}.")
+            from bngsim._exceptions import UsageError
+
+            raise UsageError(f"ExactAtol.value must be finite and >= 0, got {self.value!r}.")
         object.__setattr__(self, "value", value)
 
 
@@ -324,13 +328,17 @@ def derive_atol(
     """
     y = np.abs(np.asarray(state, dtype=np.float64).ravel())
     if not np.all(np.isfinite(y)):
-        raise ValueError(
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(
             "cannot derive a per-species atol from a state containing NaN or inf; "
             "the magnitudes it would be scaled from are not numbers."
         )
     rtol = float(rtol)
     if not np.isfinite(rtol) or rtol <= 0.0:
-        raise ValueError(f"rtol must be finite and > 0 to derive a per-species atol, got {rtol!r}")
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(f"rtol must be finite and > 0 to derive a per-species atol, got {rtol!r}")
 
     if floor is None:
         positive = y[y > 0.0]
@@ -338,7 +346,9 @@ def derive_atol(
     else:
         scale_floor = float(floor)
         if not np.isfinite(scale_floor) or scale_floor <= 0.0:
-            raise ValueError(f"floor must be finite and > 0, got {floor!r}")
+            from bngsim._exceptions import UsageError
+
+            raise UsageError(f"floor must be finite and > 0, got {floor!r}")
 
     return rtol * np.maximum(y, scale_floor)
 
@@ -390,7 +400,9 @@ def normalize_atol_vector(
     """
     arr = np.asarray(atol, dtype=np.float64)
     if arr.ndim != 1:
-        raise ValueError(
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(
             f"{where}: a per-species absolute tolerance must be 1-D, got shape {arr.shape}."
         )
     if arr.size != n_species:
@@ -400,7 +412,9 @@ def normalize_atol_vector(
             if n_species > 3:
                 shown += ", ..."
             hint = f" Species order is [{shown}] (Model.species_names)."
-        raise ValueError(
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(
             f"{where}: per-species absolute tolerance has {arr.size} entries but the "
             f"model has {n_species} species. The vector is positional — entry i is the "
             f"tolerance for species i — so a length mismatch is rejected rather than "
@@ -412,7 +426,9 @@ def normalize_atol_vector(
         name = ""
         if species_names is not None and i < len(species_names):
             name = f" ('{list(species_names)[i]}')"
-        raise ValueError(
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(
             f"{where}: entry {i}{name} is {arr[i]!r}; every per-species absolute "
             f"tolerance must be finite and >= 0. CVODE rejects a negative abstol "
             f"outright, and a NaN would silently disable error control on that species."

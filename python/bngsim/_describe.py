@@ -373,7 +373,9 @@ def _check_limit(limit: Any) -> int | None:
     if limit is None:
         return None
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
-        raise ValueError(f"limit must be a non-negative int or None, not {limit!r}")
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(f"limit must be a non-negative int or None, not {limit!r}")
     return limit
 
 

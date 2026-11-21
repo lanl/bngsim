@@ -984,12 +984,22 @@ def prune_codegen_cache(
         Select and report, delete nothing.
     """
     if older_than is None and max_size is None and not orphaned:
-        raise ValueError(
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(
             "prune needs a bound: pass orphaned=True, older_than= (e.g. '30d'), "
             "max_size= (e.g. '2G'), or a combination"
         )
     if keep_keys and not orphaned:
-        raise ValueError("keep_keys= applies to the orphan pass; pass orphaned=True with it")
+        from bngsim._error_codes import pass_argument
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(
+            "keep_keys= applies to the orphan pass; pass orphaned=True with it",
+            code="usage.missing_argument",
+            details={"argument": "orphaned"},
+            remedies=[pass_argument("orphaned", True)],
+        )
     min_age_s = parse_duration(min_age)
     older_than_s = None if older_than is None else parse_duration(older_than)
     max_size_b = None if max_size is None else parse_size(max_size)
@@ -1126,11 +1136,15 @@ def parse_duration(value: float | str) -> float:
     if not isinstance(value, str):
         seconds = float(value)
         if seconds < 0:
-            raise ValueError("duration must not be negative")
+            from bngsim._exceptions import UsageError
+
+            raise UsageError("duration must not be negative")
         return seconds
     m = _DURATION_RE.match(value)
     if m is None:
-        raise ValueError(
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(
             f"cannot parse duration {value!r}: expected a number with an optional "
             "s/m/h/d/w suffix (e.g. '30d', '12h', '90m'); a bare number means days"
         )
@@ -1160,11 +1174,15 @@ def parse_size(value: int | str) -> int:
         # Compare before truncating: int(-0.5) is 0, so a post-conversion check would
         # wave a negative cap through as "keep nothing" and evict the whole cache.
         if value < 0:
-            raise ValueError("size must not be negative")
+            from bngsim._exceptions import UsageError
+
+            raise UsageError("size must not be negative")
         return int(value)
     m = _SIZE_RE.match(value)
     if m is None:
-        raise ValueError(
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(
             f"cannot parse size {value!r}: expected a number with an optional "
             "K/M/G/T suffix (e.g. '2G', '500MB', '1.5GiB'); a bare number means bytes"
         )

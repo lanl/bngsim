@@ -73,18 +73,26 @@ def psa_cost_decision(
     - ``message`` (str): a human-readable go/no-go summary.
     """
     if not speedup > 0.0:
-        raise ValueError(f"speedup must be > 0, got {speedup!r}")
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(f"speedup must be > 0, got {speedup!r}")
     if not rho > 0.0:
-        raise ValueError(f"rho must be > 0, got {rho!r}")
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(f"rho must be > 0, got {rho!r}")
     if kind not in ("mean", "variance"):
-        raise ValueError(f"kind must be 'mean' or 'variance', got {kind!r}")
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(f"kind must be 'mean' or 'variance', got {kind!r}")
 
     if kind == "mean":
         threshold = rho
         cost_ratio = rho / speedup
     else:
         if not kappa_scaled > 1.0 or not kappa_true > 1.0:
-            raise ValueError(
+            from bngsim._exceptions import UsageError
+
+            raise UsageError(
                 "kappa_scaled and kappa_true must be > 1 for kind='variance', "
                 f"got {kappa_scaled!r}, {kappa_true!r}"
             )

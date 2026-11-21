@@ -85,9 +85,13 @@ class NamedArray(np.ndarray):
     def __new__(cls, data: NDArray[np.float64], colnames: list[str]) -> NamedArray:
         arr = np.asarray(data, dtype=np.float64).view(cls)
         if arr.ndim != 2:
-            raise ValueError(f"NamedArray must be 2-D, got shape {arr.shape}")
+            from bngsim._exceptions import UsageError
+
+            raise UsageError(f"NamedArray must be 2-D, got shape {arr.shape}")
         if arr.shape[1] != len(colnames):
-            raise ValueError(
+            from bngsim._exceptions import UsageError
+
+            raise UsageError(
                 f"colnames length {len(colnames)} does not match number of columns {arr.shape[1]}"
             )
         arr.colnames = list(colnames)
@@ -199,7 +203,13 @@ class NamedArray(np.ndarray):
         try:
             return self.colnames.index(name)
         except ValueError:
-            raise KeyError(self._unknown_selector_message(name)) from None
+            from bngsim._exceptions import NotFoundError
+
+            raise NotFoundError(
+                self._unknown_selector_message(name),
+                code="output.not_found",
+                details={"name": name},
+            ) from None
 
     def _col_by_name(self, name: str) -> NDArray[np.float64]:
         return np.asarray(self)[:, self._col_index(name)]

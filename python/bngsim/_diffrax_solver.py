@@ -72,6 +72,16 @@ def diffrax_available() -> bool:
 # ─── Diffrax solver ─────────────────────────────────────────────────
 
 
+def _use_ode(message: str) -> ValueError:
+    """A refusal that tells the caller to run with ``method='ode'``: a
+    :class:`~bngsim.UsageError` (a ``ValueError``, as it was raised before it
+    had a type; issue #1702)."""
+    from bngsim._error_codes import use_method
+    from bngsim._exceptions import UsageError
+
+    return UsageError(message, code="usage.method_unsupported", remedies=[use_method("ode")])
+
+
 def run_diffrax(
     model,
     param_dict: dict[str, float] | None = None,
@@ -162,7 +172,7 @@ def run_diffrax(
             else "this model keeps the amounts in compartment "
             f"{', '.join(sorted(set(jumps)))} across a jump of its size with one (issue #1054)"
         )
-        raise ValueError(
+        raise _use_ode(
             f"run_diffrax does not implement events, and {has}; use Simulator(method='ode')."
         )
     # A step or bend call over state is one of these since issue #1068: a pulse
@@ -171,7 +181,7 @@ def run_diffrax(
     # `.net` loader's Hill guard at h = 2, switches nothing (issue #1636).
     state_switches = model._state_switch_roots_at_run_values()
     if state_switches:
-        raise ValueError(
+        raise _use_ode(
             "run_diffrax does not integrate a rate law that switches on the model's state, "
             "with a comparison or a step or bend call such as floor(), max() or abs(), "
             "whose switch times are not known before the run, and this model has "
@@ -314,7 +324,7 @@ def run_diffrax(
             tried += n
             if ok:
                 return y_b, tried
-        raise ValueError(
+        raise _use_ode(
             f"run_diffrax could not integrate the run from {a!r} to {b!r}, next to a "
             f"switch, within max_steps={max_steps} and with no step shorter than {dtmin:.3g}; "
             "use Simulator(method='ode')."
@@ -433,14 +443,14 @@ def _switch_times(model, t_start: float, t_end: float) -> list[tuple[float, floa
     rewrites = {c: _rewrite_counter_clock(model._core, c, scope, t_start) for c in conditions}
     unplaced = [c for c, rewrite in rewrites.items() if rewrite is None]
     if unplaced:
-        raise ValueError(
+        raise _use_ode(
             f"run_diffrax cannot place the times these conditions switch at: {unplaced}; "
             "use Simulator(method='ode')."
         )
     backward = t_end < t_start
     if backward and any(rewrite is not None and rewrite[1] >= 0 for rewrite in rewrites.values()):
         # A counter's crossing is placed from its value at t_start, forward.
-        raise ValueError(
+        raise _use_ode(
             "run_diffrax cannot run backward in time on a model that switches on a "
             "counter clock, whose crossings are placed forward; use "
             "Simulator(method='ode') or run forward."
@@ -456,12 +466,12 @@ def _switch_times(model, t_start: float, t_end: float) -> list[tuple[float, floa
             over_budget=over_budget,
         )
     except Exception as e:
-        raise ValueError(
+        raise _use_ode(
             f"run_diffrax could not place the times this model's rate laws switch at ({e}); "
             "use Simulator(method='ode')."
         ) from e
     if over_budget:
-        raise ValueError(
+        raise _use_ode(
             "run_diffrax cannot stop at every switch of this model: "
             f"{len(over_budget)} condition(s) switch more often than a run may stop, or "
             "too irregularly to count; use Simulator(method='ode')."
@@ -472,7 +482,7 @@ def _switch_times(model, t_start: float, t_end: float) -> list[tuple[float, floa
         # Over literal time alone, the crossings are the same either way; a run
         # backward over one is refused, and one with none in it is main's.
         if found:
-            raise ValueError(
+            raise _use_ode(
                 "run_diffrax cannot run backward in time across a switch on the clock, "
                 f"and this run crosses {[t for t, _ in found]}; use "
                 "Simulator(method='ode') or run forward."

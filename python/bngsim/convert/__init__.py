@@ -493,7 +493,9 @@ def sbml_to_net(
             protocol=protocol,
         )
     elif validate is not None:
-        raise ValueError(f"unknown validate={validate!r}; expected None, 'L1', 'L2', or 'full'")
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(f"unknown validate={validate!r}; expected None, 'L1', 'L2', or 'full'")
 
     return ConversionReport(
         source=str(sbml_path),
@@ -582,13 +584,13 @@ def sbml_to_bngl(
         :attr:`max_ar_report_delta` carry the oracle verdict; otherwise they are
         None and ``ok`` reflects the capability check (no fatal ``lossy`` notes).
     """
-    from bngsim._exceptions import ConversionError, ConversionWarning
+    from bngsim._exceptions import ConversionError, ConversionWarning, UsageError
     from bngsim._model import Model
     from bngsim.convert._bngl_writer import _EVENT_GENERIC
     from bngsim.convert._events import sbml_events_to_protocol
 
     if validate not in (None, "bng2"):
-        raise ValueError(f"unknown validate={validate!r}; expected None or 'bng2'")
+        raise UsageError(f"unknown validate={validate!r}; expected None or 'bng2'")
 
     sbml_path = Path(sbml_path)
     model = Model.from_sbml(sbml_path)
@@ -1202,7 +1204,9 @@ def net_to_sbml(
             protocol=protocol,
         )
     elif validate is not None:
-        raise ValueError(f"unknown validate={validate!r}; expected None, 'L1', or 'full'")
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(f"unknown validate={validate!r}; expected None, 'L1', or 'full'")
 
     return ConversionReport(
         source=str(net_path),
@@ -1320,7 +1324,9 @@ def net_to_omex(
     from bngsim.convert._sedml import write_sedml, write_sedml_protocol
 
     if gate not in _GATE_TO_VALIDATE:
-        raise ValueError(f"unknown gate={gate!r}; expected one of {sorted(_GATE_TO_VALIDATE)}")
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(f"unknown gate={gate!r}; expected one of {sorted(_GATE_TO_VALIDATE)}")
     # Parsed here only to reject a malformed `created` now rather than after the
     # whole conversion and gate have run; write_omex parses it again for real.
     _zip_date_time(created)
@@ -1645,10 +1651,10 @@ def omex_to_net(
         emitted actions block when written), ``out_path`` pointing at the written
         ``.net`` (or None when only the in-memory text was requested).
     """
-    from bngsim._exceptions import ConversionError, ConversionWarning
+    from bngsim._exceptions import ConversionError, ConversionWarning, UsageError
 
     if gate not in _GATE_TO_VALIDATE:
-        raise ValueError(f"unknown gate={gate!r}; expected one of {sorted(_GATE_TO_VALIDATE)}")
+        raise UsageError(f"unknown gate={gate!r}; expected one of {sorted(_GATE_TO_VALIDATE)}")
 
     omex_path = Path(omex_path)
     with read_omex(omex_path) as archive:

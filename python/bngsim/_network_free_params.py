@@ -36,7 +36,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
-from bngsim._exceptions import ModelError
+from bngsim._exceptions import ModelError, UsageError
 from bngsim._model import _names_in, _unclamped
 
 
@@ -232,7 +232,7 @@ def species_amounts(
                 "species as a seed species, or start it from the network with "
                 "method='ssa'."
             )
-        raise ValueError(
+        raise UsageError(
             f"method={method!r} cannot start species {name!r} at the amount the model "
             f"holds, {amount:g}: {why}"
         )

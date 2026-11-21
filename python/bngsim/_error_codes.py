@@ -228,6 +228,13 @@ _CODES = (
         "Drop the sensitivity, change the model, or use a derivative-free method.",
     ),
     ErrorCode(
+        "sens.not_computed",
+        "UsageError",
+        "A call reads sensitivities, and the result has none: its run was not asked for them.",
+        "Run again with `sensitivity_params=` on the Simulator, or with "
+        "`compute_all_sensitivities()`.",
+    ),
+    ErrorCode(
         "sens.refused_during_run",
         "SensitivityRefusedDuringRunError",
         "The solver reached, partway through a run, a construct whose derivative "

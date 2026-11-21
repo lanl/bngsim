@@ -396,7 +396,7 @@ class SensitivityUnsupportedError(BngsimError, ValueError):
 
     Environment failures are deliberately NOT this exception: "no C compiler and
     no JIT available" is a fixable local problem, not a property of the model,
-    and stays a plain ``RuntimeError``.
+    and is a :class:`CodegenToolchainError` or :class:`CodegenBuildError`.
     """
 
     default_code = "sens.unsupported"
@@ -475,7 +475,7 @@ class CodegenDeclinedError(BngsimError):
     deprecated :func:`bngsim.prepare_codegen` raises it for a decline too.
 
     Distinct from a codegen *build* failure (a compiler error, a timeout), which
-    says nothing about the model and stays a plain ``RuntimeError``. A
+    says nothing about the model and is a :class:`CodegenBuildError`. A
     ``RuntimeError`` (through :class:`BngsimError`), as it was raised before it
     had a type, so an existing ``except RuntimeError`` still catches it.
 
