@@ -238,6 +238,111 @@ rule templates, and a `qual` document's core layer is typically empty. A
 presentation-only package (`layout`, `render`, `fbc`) declares `required="false"`
 and loads untouched.
 
+## What a loaded model is: `Model.describe()`
+
+`Model.describe()` answers, in one call, the questions a caller has before it
+simulates: where the model came from, what its species and parameters are, what
+kind of quantity each species holds, and which methods it admits. It returns a
+dict that `json.dumps` writes, and `print` shows it as a report. It runs nothing
+and changes neither the model's state nor its parameters (issue #1705).
+
+```python
+import bngsim
+from pathlib import Path
+
+Path("decay.net").write_text(
+    "begin parameters\n 1 k 0.5\nend parameters\n"
+    "begin species\n 1 A() 10\n 2 B() 0\nend species\n"
+    "begin reactions\n 1 1 2 k\nend reactions\n"
+    "begin groups\n 1 Atot 1\nend groups\n"
+)
+model = bngsim.Model.from_net("decay.net")
+print(model.describe())
+
+d = model.describe()
+d["methods"]["ssa"]["status"]  # 'ok'
+d["species"][0]                # {'name': 'A()', 'initial': 10.0, 'fixed': False}
+```
+
+prints
+
+```text
+Model from net: /path/to/decay.net (sha256 e2e0d0740901)
+Size: 2 species, 1 reaction, 1 observable, 1 parameter
+Next run starts from: the initial state
+Species values are as the net file gives them; it states no units.
+Methods:
+  ode, ssa, psa: ok
+  nf, rm: needs: [needs_bng_xml] The network-free methods read the model's rules from a BNG-XML file, passed as xml_path=..., not from the loaded network. BNG2.pl writes one from the .bngl a network came from, with the writeXML() action.
+  forward sensitivities: undecided (backend: cc): nothing refuses them before a run; whether the rate laws differentiate is decided when a sensitivity run builds its code
+Analytical Jacobian: complete
+Time: nothing reads the clock
+Species (2):
+  A()  10
+  B()  0
+Parameters (1):
+  k = 0.5  primary
+Observables (1):
+  Atot = A()
+Reactions (1):
+  A() -> B()  elementary  k
+```
+
+What to read in it:
+
+- **`source`**: the format, the absolute path and the SHA-256 of the file (of
+  the text, for a `from_*_string` load), read again after the load. It covers
+  that file only, not one a `.bngl` reads or a table function's data. A `.bngl`
+  load adds the `.net` BNG2.pl generated, a load with `compartment_sizes=`
+  records the sizes it set, and a model from an OMEX archive names its entry. A
+  model built in Python (`ModelBuilder`, `build_model_from_parsed`) has none.
+- **`species_values`**: what a species' number is. For an SBML or Antimony model
+  it is a concentration, an amount divided by its compartment's size, for every
+  species the file declares: the value `get_concentration` and `Result.species`
+  give. A species the file declares in amounts (`hasOnlySubstanceUnits="true"`)
+  has `quantity: "amount"` and its `initial_amount` beside `initial`: in a
+  compartment of size 0.5, an initial amount of 3 is an `initial` of 6. A `.net`
+  or BNGL file states no units, so the field is `None`, and the species carry no
+  `quantity` or `compartment`: they are absent, not guessed.
+- **The file, not bngsim's channels.** For SBML and Antimony, `reactions` are the
+  file's, with their ids, stoichiometry and kinetic laws, and `parameters` and
+  `functions` are the ones the file declares. A law reads in the model's names: a
+  local parameter is the model's `_lp_<reaction>_<id>`, the parameter the run
+  reads, and a function definition it calls is listed under
+  `function_definitions`. bngsim runs some of these as
+  several channels (a reversible law, a rate rule, a dilution term), which
+  `Model.n_reactions` counts. A compartment size or parameter that a rule or an
+  event moves is held as a state; it is listed under `other_states`, not as a
+  species.
+- **`methods`**: for `ode`, `ssa`, `psa`, `nf` and `rm`, a `status` with
+  `reasons`. `"ok"` means nothing in the model or this install refuses the method
+  before a run. `"refused"` lists the constructs, each with a `code` and the
+  message the run would raise, read from the checks the Simulator itself makes,
+  so the two cannot disagree. `"needs_input"` names what the method needs that
+  the model does not carry, and `"unavailable"` what this install lacks. A run
+  can still fail on what depends on its own arguments, or on the starting values:
+  a rate that is infinite or NaN at the start (a division by a species that
+  starts at 0) fails a stochastic run at its first step, and `describe()` reports
+  `"ok"` for it.
+- **`forward_sensitivities`** is never `"ok"`. It is `"refused"` for a construct
+  that refuses every request (a delayed event), `"unavailable"` without a
+  compiler, and otherwise `"undecided"`: whether every rate law differentiates to
+  closed form is decided when a sensitivity run builds its code, and the run
+  refuses one that does not (`floor`, `min`, `max`, `abs` or a comparison in a
+  rate law).
+- **`next_run_starts_from`**: `"live"` where the model's state is not its initial
+  state, as after a run or a `set_concentration`: the next `run()` continues from
+  it (see `Result.started_from`).
+
+The size is bounded. Lists longer than `limit` entries (default 50) are cut, in
+model order, and `omitted` says how many each lost; an SSA refusal is listed once
+per kind, with a count and its locations; and an expression keeps its first 200
+characters. `describe(limit=None)` lists everything. It compiles nothing and
+computes nothing that grows with the network beyond reading it: a network of
+6,000 species and 18,000 reactions takes 0.06 s. The first call on a model whose
+rates are many functions also scans which of them read the clock, a scan the
+model keeps: 0.5 s on one of 677 functions.
+
 ## `.net` files as a dict (`parse_net_file`)
 
 `parse_net_file` returns the components of a `.net` file as a plain Python
