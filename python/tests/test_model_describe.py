@@ -1501,3 +1501,19 @@ def test_every_describe_hint_of_the_wrong_call_table_runs(tmp_path, fixture):
             assert len(answer) == counts["reactions"], entry
         if "compartments" in entry.use:
             assert len(answer) == counts.get("compartments", 0), entry
+
+
+def test_refused_parameters_are_cut_at_the_limit():
+    """A model of many rules refuses as many parameters (MODEL1006230049: 652):
+    the list is cut like the others, and says how many it left out."""
+    pytest.importorskip("antimony")
+    rules = "".join(f"p{i} := {i}*k; " for i in range(60))
+    reads = " + ".join(f"p{i}" for i in range(60))
+    model = bngsim.Model.from_antimony_string(
+        f"species A = 3; {rules}J: A -> ; ({reads})*A; k = 0.5"
+    )
+    fs = model.describe()["methods"]["forward_sensitivities"]
+    assert len(fs["refused_parameters"]) == 50 and fs["refused_parameters_omitted"] == 10
+    assert "and 10 more" in str(model.describe())
+    full = model.describe(limit=None)["methods"]["forward_sensitivities"]
+    assert len(full["refused_parameters"]) == 60 and "refused_parameters_omitted" not in full

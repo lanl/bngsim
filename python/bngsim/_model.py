@@ -3431,7 +3431,9 @@ class Model:
           load (:attr:`frozen_params`, with what they went into), the
           compartment sizes :meth:`set_param` cannot write
           (:attr:`unwritable_compartment_size_params`), and the parameters a
-          rule or function sets, each with why. ``steady_state`` lists every
+          rule or function sets, each with why, cut at ``limit`` like a list
+          (``refused_parameters_omitted`` counts the rest). ``steady_state``
+          lists every
           reason :meth:`Simulator.steady_state` is refused for the model alone,
           in the order the refusals come: the ODE Simulator's own, then the
           call's checks (an event, a compartment size that jumps, the time

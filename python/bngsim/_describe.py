@@ -266,7 +266,7 @@ _UNDECIDED = (
 )
 
 
-def _forward_sensitivities(model: Model) -> dict[str, Any]:
+def _forward_sensitivities(model: Model, limit: int | None) -> dict[str, Any]:
     """What a sensitivity run needs of this install (a codegen backend: a C
     compiler, or the MIR JIT), the events that refuse every request (the
     core's own check, asked as an initial-condition-only run asks it), and the
@@ -353,7 +353,13 @@ def _forward_sensitivities(model: Model) -> dict[str, Any]:
         if n in frozen or n in unwritable or n in backed
     }
     if refused:
-        out["refused_parameters"] = refused
+        # Cut at limit like a list: a model of many rules has hundreds
+        # (MODEL1006230049: 652), and the size is the point of the limit.
+        names = list(refused)
+        if limit is not None and len(names) > limit:
+            out["refused_parameters_omitted"] = len(names) - limit
+            names = names[:limit]
+        out["refused_parameters"] = {n: refused[n] for n in names}
     return out
 
 
@@ -716,7 +722,7 @@ def describe_model(model: Model, *, limit: int | None = 50) -> ModelDescription:
             "psa": dict(stochastic),
             "nf": _network_free(model, "nf_reject"),
             "rm": _network_free(model, "nf_exact"),
-            "forward_sensitivities": _forward_sensitivities(model),
+            "forward_sensitivities": _forward_sensitivities(model, limit),
             "steady_state": _verdict(_steady_state_reasons(model), note=_STEADY_STATE_NOTE),
         },
         time_dependence={
@@ -881,7 +887,12 @@ def _text(d: dict[str, Any]) -> str:
         lines.append(f"  {', '.join(names)}: {status}")
     refused = d["methods"]["forward_sensitivities"].get("refused_parameters")
     if refused:
-        lines.append("  forward sensitivities refuse the parameters: " + ", ".join(refused))
+        more = d["methods"]["forward_sensitivities"].get("refused_parameters_omitted")
+        lines.append(
+            "  forward sensitivities refuse the parameters: "
+            + ", ".join(refused)
+            + (f" and {more} more" if more else "")
+        )
 
     j = d["jacobian"]
     lines.append(
