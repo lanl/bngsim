@@ -31,6 +31,7 @@ it, and [PyBNF](https://github.com/lanl/PyBNF) fits parameters with it.
 | fit parameters to data | through [PyBNF](https://github.com/lanl/PyBNF), which drives bngsim | COPASI, AMICI with pyPESTO |
 | simulate a model with `delay()`, an algebraic rule or a fast reaction | no: bngsim refuses it and names the construct, rather than simulate a different system | a tool that documents support for the construct |
 | work in a graphical interface | no, it is a Python library | COPASI |
+| integrate an ODE system you have written as a Python function | no: bngsim reads a model (SBML, Antimony, BNGL), not a function. A reaction network written in Antimony gets a stiff solver, an analytic Jacobian and sensitivities without code | SciPy (`solve_ivp`), Diffrax |
 
 The other tools' formats, methods, sensitivities and parallelism are as the
 bngsim paper's feature comparison found them, by reading each tool's source code
@@ -81,6 +82,23 @@ changed since.
   `bngsim.psa_cost_decision(speedup, rho)`. Like SSA, it needs a network
   (`.net`, SBML or Antimony, or a BNGL model that `generate_network` can
   expand); a network too large to generate runs network-free (`nf`, `rm`).
+- **NFsim or RuleMonkey.** Both run a rule-based model network-free, in
+  process, from the XML BioNetGen writes (`xml_path=`). `method="nf"` (NFsim,
+  the rejection method) is the default and the faster on most large models.
+  `method="rm"` (RuleMonkey, an exact method) is an independent second
+  engine. It runs energy (`Arrhenius`) rules, which NFsim refuses; it is much
+  faster on a few models and times out on others; and it is the check to run
+  when an NFsim result matters. The two agree on 221 of 222 models of a parity
+  suite. Neither runs a model with
+  compartments; use its generated network with `ode` or `ssa`.
+- **bngsim's NFsim or the standalone binary.** The NFsim inside bngsim is
+  NFsim with fixes carried on top, and it refuses the constructs on which the
+  standalone NFsim that ships with BioNetGen gives a wrong answer without an
+  error (energy rules, compartments, functions that read an observable outside
+  their argument; RuleWorld/nfsim#102, #104, #106). It also skips the binary's
+  launch and model reparse on every run, which adds up in fitting and
+  ensembles. `nfsim_v1143_compat=True` reproduces NFsim 1.14.3's trajectories
+  seed for seed, for comparison with the binary.
 - **JAX.** `bngsim.jax.differentiable_solve` (`pip install 'bngsim[jax]'`)
   makes a CVODE solve a JAX function, so `jax.grad` or `jax.jacfwd` goes
   through the simulation into a loss written in JAX. Use it when the rest of
