@@ -1333,9 +1333,11 @@ def _failed_path(base: Base, label: str, e: Exception) -> Verdict:
     a run that leaves through minus infinity raises where it returned the
     blown-up values, and BIOMD0000000758's second restart leg at rtol 1e-6 is
     one, on a base that moves by 0.41 at a tenfold tighter tolerance: its row
-    was that SKIP until then. Against a judged base, and for a timeout, a
-    refusal or an error that is not ``SimulationError``, ``e`` is raised again:
-    the row's, as before."""
+    was that SKIP until then. Asked only of a run after the restart's stop, a
+    path the base's own run is not: a reused run repeats the base's, so its
+    failure is a finding whatever the base's reference (check_reuse). Against
+    a judged base, and for a timeout, a refusal or an error that is not
+    ``SimulationError``, ``e`` is raised again: the row's, as before."""
     import bngsim
 
     if _timed_out(e) or _declined(e) or not isinstance(e, bngsim.SimulationError):
@@ -1369,36 +1371,40 @@ def check_restart(base: Base) -> Verdict:
         t_mid = job.t_start + (job.t_end - job.t_start) * m / (n - 1)
         out = []
 
+        # Only the run after the stop is a path the base's run is not: a
+        # failure there is _failed_path's to judge; anywhere else it is the row's.
+        sim = bngsim.Simulator(load(job.path), method="ode", **job.sim)
+        if job.t_start != 0.0:
+            sim.set_time(job.t_start)
+        first = sim.run_until(t_mid, n_points=m + 1, **_solver(job))
         label = "run_until to the middle and on: "
         try:
-            sim = bngsim.Simulator(load(job.path), method="ode", **job.sim)
-            if job.t_start != 0.0:
-                sim.set_time(job.t_start)
-            first = sim.run_until(t_mid, n_points=m + 1, **_solver(job))
             second = sim.run_until(job.t_end, n_points=n - m, **_solver(job))
-            legs = np.vstack([_species(first, base), _species(second, base)[1:]])
-            out.append(("run_until", base.compare(legs, label)))
         except Exception as e:
             out.append(("run_until", _failed_path(base, label, e)))
+        else:
+            legs = np.vstack([_species(first, base), _species(second, base)[1:]])
+            out.append(("run_until", base.compare(legs, label)))
 
         model = load(job.path)
         if model._core.n_events == 0:
+            sim = bngsim.Simulator(model, method="ode", **job.sim)
+            head = sim.run(
+                t_span=(job.t_start, t_mid), n_points=m + 1, **_solver(job), **_timeout()
+            )
+            state = np.asarray(sim.get_state(), dtype=float)
+            fresh = bngsim.Simulator(load(job.path), method="ode", **job.sim)
+            fresh.set_state(state, time=t_mid)
             label = "a fresh model from the middle's state: "
             try:
-                sim = bngsim.Simulator(model, method="ode", **job.sim)
-                head = sim.run(
-                    t_span=(job.t_start, t_mid), n_points=m + 1, **_solver(job), **_timeout()
-                )
-                state = np.asarray(sim.get_state(), dtype=float)
-                fresh = bngsim.Simulator(load(job.path), method="ode", **job.sim)
-                fresh.set_state(state, time=t_mid)
                 tail = fresh.run(
                     t_span=(t_mid, job.t_end), n_points=n - m, **_solver(job), **_timeout()
                 )
-                joined = np.vstack([_species(head, base), _species(tail, base)[1:]])
-                out.append(("fresh", base.compare(joined, label)))
             except Exception as e:
                 out.append(("fresh", _failed_path(base, label, e)))
+            else:
+                joined = np.vstack([_species(head, base), _species(tail, base)[1:]])
+                out.append(("fresh", base.compare(joined, label)))
         return _worst(out)
 
     return _guard(go)
@@ -1418,28 +1424,24 @@ def check_reuse(base: Base) -> Verdict:
         span = {"t_span": (job.t_start, job.t_end), "n_points": job.n_points, **_solver(job)}
         out = []
 
-        label = "a second run() on one Simulator: "
-        try:
-            sim = bngsim.Simulator(load(job.path), method="ode", **job.sim)
-            snap = sim.snapshot()
-            sim.run(**span, **_timeout())
-            sim.restore(snap)
-            again = sim.run(**span, **_timeout())
-            out.append(("run", base.compare(_species(again, base), label)))
-        except Exception as e:
-            out.append(("run", _failed_path(base, label, e)))
+        sim = bngsim.Simulator(load(job.path), method="ode", **job.sim)
+        snap = sim.snapshot()
+        sim.run(**span, **_timeout())
+        sim.restore(snap)
+        again = sim.run(**span, **_timeout())
+        out.append(
+            ("run", base.compare(_species(again, base), "a second run() on one Simulator: "))
+        )
 
-        label = "a second Simulator on one Model: "
-        try:
-            model = load(job.path)
-            first = bngsim.Simulator(model, method="ode", **job.sim)
-            snap = first.snapshot()
-            first.run(**span, **_timeout())
-            first.restore(snap)
-            second = bngsim.Simulator(model, method="ode", **job.sim).run(**span, **_timeout())
-            out.append(("model", base.compare(_species(second, base), label)))
-        except Exception as e:
-            out.append(("model", _failed_path(base, label, e)))
+        model = load(job.path)
+        first = bngsim.Simulator(model, method="ode", **job.sim)
+        snap = first.snapshot()
+        first.run(**span, **_timeout())
+        first.restore(snap)
+        second = bngsim.Simulator(model, method="ode", **job.sim).run(**span, **_timeout())
+        out.append(
+            ("model", base.compare(_species(second, base), "a second Simulator on one Model: "))
+        )
         return _worst(out)
 
     return _guard(go)

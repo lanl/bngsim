@@ -1997,6 +1997,7 @@ def _fails_when(monkeypatch, when, error=None):
     [
         ("rtol x2", lambda base, job: job.rtol > base.job.rtol * 1.5),
         ("rtol x0.5", lambda base, job: job.rtol < base.job.rtol * 0.75),
+        ("n_points-1", lambda base, job: job.n_points == base.job.n_points - 1),
         ("n_points+1", lambda base, job: job.n_points == base.job.n_points + 1),
         ("2x the points", lambda base, job: job.n_points == 2 * base.job.n_points - 1),
     ],
@@ -2059,7 +2060,50 @@ def test_a_restart_leg_that_fails_against_a_judged_base_is_an_exception(monkeypa
     assert v.status == "exception" and "planted" in v.note, v
 
 
-def test_a_reused_run_that_fails_against_a_base_with_no_reference_is_skip(monkeypatch):
+def test_the_fresh_models_tail_that_fails_against_a_base_with_no_reference_is_skip(monkeypatch):
+    """The other restart: a fresh model from the middle's state (equality-dwell
+    has no events), whose run on from there fails."""
+    monkeypatch.setattr(D, "own_drift", lambda job, x: 0.41)
+    base = D.Base(SHAPES["equality-dwell"])
+    real_set, real_run = bngsim.Simulator.set_state, bngsim.Simulator.run
+    restarted = set()
+
+    def set_state(self, state, **kw):
+        restarted.add(id(self))
+        return real_set(self, state, **kw)
+
+    def run(self, *args, **kw):
+        if id(self) in restarted:
+            raise bngsim.SimulationError("Simulation failed: CVODE integration failed (planted)")
+        return real_run(self, *args, **kw)
+
+    monkeypatch.setattr(bngsim.Simulator, "set_state", set_state)
+    monkeypatch.setattr(bngsim.Simulator, "run", run)
+    # The row is the first path's SKIP (no reference); the fresh tail's
+    # failure, raised again, would have made it EXCEPTION.
+    v = D.check_restart(base)
+    assert v.status == "skip", v
+
+
+def test_a_restart_leg_that_times_out_is_a_timeout_whatever_the_base(monkeypatch):
+    monkeypatch.setattr(D, "own_drift", lambda job, x: 0.41)
+    base = D.Base(SHAPES["equality-dwell"])
+    real = bngsim.Simulator.run_until
+    calls = []
+
+    def slow(self, t, **kw):
+        calls.append(t)
+        if len(calls) == 2:
+            raise bngsim.SimulationTimeout("planted: past the model's cap")
+        return real(self, t, **kw)
+
+    monkeypatch.setattr(bngsim.Simulator, "run_until", slow)
+    assert D.check_restart(base).status == "timeout"
+
+
+def test_a_reused_run_that_fails_is_a_finding_whatever_the_base(monkeypatch):
+    """A second run() repeats the base's own: its failure is the reuse bug the
+    check is for (#786's family), even on a base with no reference."""
     monkeypatch.setattr(D, "own_drift", lambda job, x: 0.41)
     base = D.Base(SHAPES["equality-dwell"])
     real = bngsim.Simulator.run
@@ -2073,8 +2117,7 @@ def test_a_reused_run_that_fails_against_a_base_with_no_reference_is_skip(monkey
 
     monkeypatch.setattr(bngsim.Simulator, "run", second_fails)
     v = D.check_reuse(base)
-    assert v.status == "skip" and "a second run() on one Simulator: no reference" in v.note, v
-    assert "and this path fails" in v.note
+    assert v.status == "exception" and "planted" in v.note, v
 
 
 def test_an_answer_that_jumps_with_the_grid_is_contested(monkeypatch):
