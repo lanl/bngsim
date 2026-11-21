@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
 import json
 import math
 import os
@@ -469,6 +470,11 @@ def _write_stdout(stream: Any, text: str) -> None:
         _write(stream, text)
     except BrokenPipeError as error:
         raise _ReaderGone from error
+    except OSError as error:
+        # Windows reports a pipe whose reader has closed as EINVAL.
+        if sys.platform == "win32" and error.errno == errno.EINVAL:
+            raise _ReaderGone from error
+        raise
 
 
 def _flush_c_stdio() -> None:

@@ -253,7 +253,7 @@ _NOISY = textwrap.dedent(
 )
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="ctypes.CDLL(None) is POSIX")
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-specific: ctypes.CDLL(None)")
 def test_what_else_writes_to_stdout_goes_to_stderr():
     run = _bngsim("doctor", "--json", script=_NOISY)
     assert _json_out(run) == {"answer": 42}
@@ -291,7 +291,7 @@ def test_a_broken_pipe_inside_a_command_is_an_error():
     assert error["type"] == "BrokenPipeError"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="a POSIX shell closes the descriptor")
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-specific: a shell closes fd 1")
 def test_a_closed_stdout_is_an_error():
     run = subprocess.run(
         ["sh", "-c", f'"{sys.executable}" -m bngsim --version >&-'],
@@ -357,7 +357,7 @@ def test_convert_and_cache_usage_errors_exit_2(args, usage):
 
 
 def test_the_console_script_is_this_main():
-    tomllib = pytest.importorskip("tomllib")
+    tomllib = pytest.importorskip("tomllib", reason="tomllib is 3.11+")
     pyproject = Path(__file__).parents[2] / "pyproject.toml"
     scripts = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["scripts"]
     assert scripts["bngsim"] == "bngsim._cli:main"
