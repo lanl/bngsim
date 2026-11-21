@@ -403,7 +403,9 @@ _DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
         "the /bin/sh stand-in gh the contributors check is tested through, "
         "the /bin/sh fake perl the BNG2.pl compile check is tested with, and the "
         "working directory removed under it, which Windows refuses (#1761), and "
-        "the empty PATH the no-compiler error test runs under (#1702)",
+        "the empty PATH the no-compiler error test runs under (#1702), and the "
+        "bngsim command's tests that write through C's stdio with ctypes.CDLL(None) "
+        "and close standard output with a shell (#1708)",
     ),
     (
         "RLIMIT_AS",
