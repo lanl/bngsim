@@ -472,3 +472,126 @@ def test_a_missing_antimony_gives_the_install_command(monkeypatch):
     assert e.code == "env.missing_dependency"
     assert e.remedies[0]["command"] == "pip install 'bngsim[antimony]'"
     _check_shape(e)
+
+
+# ─── A failed run's notices (issue #1857) ─────────────────────────────────────
+
+_BLOWUP = """begin parameters
+    1 k 1
+end parameters
+begin species
+    1 X() 1
+end species
+begin reactions
+    1 1 1,1 k
+end reactions
+begin groups
+    1 Xtot 1
+end groups
+"""
+
+
+def test_a_failed_run_keeps_its_notices_on_the_error(tmp_path):
+    """X grows as e^t, so a long window with few steps fails. The second run
+    starts from the first's end state and retries on a difference-quotient
+    Jacobian before it fails; with every warning filtered out, the error alone
+    says both."""
+    import warnings
+
+    net = tmp_path / "blowup.net"
+    net.write_text(_BLOWUP)
+    sim = bngsim.Simulator(bngsim.Model.from_net(str(net)), method="ode")
+    sim.run(t_span=(0, 0.5), n_points=3)
+    with warnings.catch_warnings(), pytest.raises(bngsim.SimulationError) as info:
+        warnings.simplefilter("ignore")
+        sim.run(t_span=(0, 1e6), n_points=3, max_steps=50)
+    e = info.value
+    codes = [n["code"] for n in e.notices]
+    assert codes == ["start.continues_last_run", "jacobian.difference_quotient_retry"]
+    assert e.to_dict()["notices"] == e.notices
+    assert all(set(n) == {"category", "code", "message"} for n in e.notices)
+    assert pickle.loads(pickle.dumps(e)).notices == e.notices
+    json.dumps(e.to_dict())
+
+
+def _noting(code: str, raises: BaseException | None = None):
+    from bngsim import _notices
+
+    @_notices.collected
+    def call(inner=None):
+        _notices.note("notice", code, code)
+        if inner is not None:
+            inner()
+        if raises is not None:
+            raise raises
+        return None
+
+    return call
+
+
+def test_nested_calls_give_each_notice_once_in_order():
+    """The innermost collector takes a notice, so an error raised through two
+    collected calls has the inner call's notices, then the outer's, each once."""
+    inner = _noting("sens.chunk_split", bngsim.SimulationError("failed"))
+    outer = _noting("start.rows_from_initial")
+    with pytest.raises(bngsim.SimulationError) as info:
+        outer(inner)
+    assert [n["code"] for n in info.value.notices] == [
+        "sens.chunk_split",
+        "start.rows_from_initial",
+    ]
+
+
+def test_an_error_that_is_not_bngsims_is_left_alone():
+    call = _noting("sens.chunk_split", KeyError("bug"))
+    with pytest.raises(KeyError) as info:
+        call()
+    assert not hasattr(info.value, "notices")
+
+
+def test_an_error_raised_from_a_failed_run_carries_its_notices():
+    """A wrapper raised from a run's error has that run's notices, first."""
+    call = _noting("sens.chunk_split", bngsim.SimulationError("failed"))
+    try:
+        try:
+            call()
+        except bngsim.SimulationError as cause:
+            raise bngsim.ModelError("Failed to run the protocol") from cause
+    except bngsim.ModelError as e:
+        assert [n["code"] for n in e.notices] == ["sens.chunk_split"]
+        assert e.to_dict()["notices"] == e.notices
+
+
+def test_an_error_outside_a_run_has_no_notices():
+    e = bngsim.ParameterError("p")
+    assert e.notices == []
+    assert e.to_dict()["notices"] == []
+
+
+def test_an_ssa_validation_error_keeps_its_notices_through_pickling():
+    from bngsim._ssa_validation import SsaIssue
+
+    issue = SsaIssue(code="x", severity="error", location="r1", message="m")
+    e = bngsim.SsaValidationError([issue])
+    e._add_notices([{"category": "notice", "code": "ssa.rounded_counts", "message": "m"}])
+    back = pickle.loads(pickle.dumps(e))
+    assert back.to_dict() == e.to_dict()
+    assert back.issues == e.issues
+
+
+# ─── Notice codes on the reference page (issue #1858) ─────────────────────────
+
+
+def test_every_notice_code_says_what_to_do():
+    from bngsim import _notices
+
+    assert list(_notices.ACTIONS) == list(_notices.CODES)
+    assert all(a.strip() for a in _notices.ACTIONS.values())
+
+
+def test_the_page_lists_every_notice_code():
+    from bngsim import _notices
+
+    page = _error_codes.reference_page()
+    for code, meaning in _notices.CODES.items():
+        assert f"| `{code}` | {meaning} | {_notices.ACTIONS[code]} |" in page

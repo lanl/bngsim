@@ -148,6 +148,121 @@ CODES: dict[str, str] = {
 }
 
 
+#: What to do about each notice, as the error-code reference page gives it
+#: (issue #1858); the same keys as :data:`CODES`.
+ACTIONS: dict[str, str] = {
+    "atol.below_scale": (
+        "Pass a smaller `atol`, or one per species, for the species the message names, "
+        "and run again."
+    ),
+    "codegen.cache_key_unavailable": (
+        "Nothing to fix: the cache still works, keyed on the generated source."
+    ),
+    "codegen.failed": (
+        "The numbers stand; only speed is lost. The message gives the compiler's error."
+    ),
+    "codegen.skipped": (
+        "The numbers stand; only speed is lost. The earlier `codegen.failed` notice says "
+        "why the build failed."
+    ),
+    "codegen.ssa_propensities_interpreted": (
+        "The numbers stand; only speed is lost. The message says why."
+    ),
+    "codegen.toolchain": (
+        "Install or repair the C compiler the message names, as for the errors "
+        "`env.no_compiler` and `env.broken_toolchain`. Until then a run that can go "
+        "on without a compiled library does."
+    ),
+    "config.ignored_setting": "Fix or unset the environment variable the message names.",
+    "equality.detection_failed": (
+        "Check the result where the model's rate laws switch, at a tighter `rtol`."
+    ),
+    "jacobian.difference_quotient": (
+        "Nothing to fix: the numbers stand, and a large model runs slower. The message "
+        "says why the analytical Jacobian was not made."
+    ),
+    "jacobian.difference_quotient_kept": (
+        "Nothing to fix: the numbers stand. A new Simulator tries the analytical Jacobian again."
+    ),
+    "jacobian.difference_quotient_retry": (
+        "Nothing to fix: the result is the retry's and stands. Pass `jacobian='fd'` to "
+        "skip the analytical attempt."
+    ),
+    "jax.zero_gradients": (
+        "Check gradients near the model's discontinuities by finite differences before "
+        "relying on them."
+    ),
+    "linear_solver.dense_without_klu": (
+        "The numbers stand. An install with KLU, which `bngsim.capabilities()` reports, "
+        "runs a large model faster."
+    ),
+    "protocol.steady_state_not_reached": (
+        "Lengthen that run's time window, or do not read its end state as steady."
+    ),
+    "rulemonkey.unsupported": (
+        "Read the message for the construct; the model may need another method to run as written."
+    ),
+    "scan.dose_dropped": (
+        "Call `model.reset()` before the scan to dose from the initial conditions, or "
+        "set each seeded species in `on_point`, as the message shows."
+    ),
+    "sens.chain_rule_dropped": (
+        "Read sensitivities through that parameter as missing, not zero; check them by "
+        "finite differences."
+    ),
+    "sens.chunk_split": "Nothing to fix: the columns stand, at more cost.",
+    "sens.detection_failed": (
+        "Check gradients across the model's switches and events by finite differences."
+    ),
+    "sens.nan_rows": "Leave those rows out: they mark derivatives BNGsim cannot give.",
+    "sens.one_sided": "Read those columns as one-sided derivatives at that instant.",
+    "sens.output_budget": (
+        "Select only the expression outputs derived in time; the rest refuse when selected."
+    ),
+    "sens.parameters_skipped": (
+        "The message names the parameters left out and why; the result has no "
+        "sensitivities for them."
+    ),
+    "sens.rhs_difference_quotient": (
+        "Nothing to fix: the sensitivities stand, computed more slowly."
+    ),
+    "smooth_pulse.event_reset": (
+        "Check the pulse's placement where the event assigns the variable."
+    ),
+    "ssa.negative_count": (
+        "Fix the rate laws that let a count go negative; the trajectory past it is not "
+        "a stochastic process."
+    ),
+    "ssa.reverse_fire": (
+        "Fix the rate law so it cannot go negative; the trajectory past it is not a "
+        "stochastic process."
+    ),
+    "ssa.rounded_counts": "Give whole-number initial counts where the rounding matters.",
+    "start.continues_last_run": (
+        "Call `model.reset()` before the run to start from the initial conditions."
+    ),
+    "start.rows_from_initial": (
+        "Call `model.reset()` first where the initial conditions are the start you "
+        "want; the message says how to start from the current state instead."
+    ),
+    "stop_condition.non_finite": (
+        "Check the condition's expression for a division by zero or an overflow."
+    ),
+    "stops.detection_failed": (
+        "Check the result where the model's rate laws switch, at a tighter `rtol`."
+    ),
+    "switch.noisy_trigger": (
+        "Move the threshold off the extremum, or write the trigger so it does not cancel there."
+    ),
+    "switch.over_budget": (
+        "Shorten the window; past the stops placed, the integrator approaches each "
+        "crossing without one."
+    ),
+    "switch.scan_failed": ("Check the result where that condition switches, at a tighter `rtol`."),
+    "switch.unread": "Check the result where that condition switches, at a tighter `rtol`.",
+}
+
+
 class Notice(NamedTuple):
     """One warning, fallback or complaint of a run."""
 
@@ -278,8 +393,9 @@ _F = TypeVar("_F", bound=Callable[..., Any])
 
 def collected(fn: _F) -> _F:
     """Collect the notices of each call of *fn*, and add them to the Result,
-    or the list of Results, it returns, or to the result a
-    :class:`~bngsim.StopConditionMet` it raises carries."""
+    or the list of Results, it returns, to the result a
+    :class:`~bngsim.StopConditionMet` it raises carries, and to any
+    :class:`~bngsim.BngsimError` it raises."""
 
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -291,10 +407,14 @@ def collected(fn: _F) -> _F:
             out = fn(*args, **kwargs)
         except BaseException as exc:
             if notes:
-                from bngsim._exceptions import StopConditionMet
+                from bngsim._exceptions import BngsimError, StopConditionMet
 
                 if isinstance(exc, StopConditionMet):
                     attach(exc.result, notes)
+                # A failed run's notices go on its error (issue #1857); one that
+                # is not a BNGsim error (an interrupt, a bug) is left alone.
+                if isinstance(exc, BngsimError):
+                    exc._add_notices([n.as_dict() for n in unique(notes)])
             raise
         finally:
             _collector.reset(token)

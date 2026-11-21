@@ -1,10 +1,10 @@
 ---
-summary: "The code every BNGsim error carries, what each means and what to do about it, and the remedies a program can act on."
+summary: "The code every BNGsim error and run notice carries, what each means and what to do about it, and the remedies a program can act on."
 # Generated from python/bngsim/_error_codes.py by scripts/error_codes_page.py;
 # edit that module and run the script.
 ---
 
-# Error codes
+# Error and notice codes
 
 Every BNGsim error carries a `code`, a string that stays the same across releases where the message may change. A program should branch on the code, not on the message.
 
@@ -15,12 +15,13 @@ except bngsim.BngsimError as e:
     e.code       # 'param.not_found'
     e.details    # {'name': 'kff', 'close_matches': ['kf'], 'is_a': None}
     e.remedies   # [{'kind': 'use_name', 'name': 'kf'}]
-    e.to_dict()  # type, code, message, details, remedies and docs_url
+    e.to_dict()  # type, code, message, details, remedies, docs_url, notices
 ```
 
 - `details` says what the error is about: the name, the path, the constructs.
 - `remedies` lists fixes a program can act on, each a dict with a `kind`. It is empty where BNGsim can name no fix, as for a model it cannot simulate as written.
 - `docs_url` points at the code's entry below.
+- `notices` lists what the failed run had noted before it raised, such as a start from the last run's end state, each as on a Result; see {ref}`Notice codes <notice-codes>`.
 
 An error with no code of its own carries its class's generic code, such as `model.error` or `run.failed`. An error of a generic class raised from a BNGsim error with a specific code, as a loader wraps its parser's, carries that error's code, details and remedies.
 
@@ -251,6 +252,50 @@ Pass a larger ``timeout``. ``details`` has the budget and the time taken.
 Raised as `StopConditionMet`. A stop condition was met. The error carries the result up to that point.
 
 Read ``e.result``. This is how a stop condition reports, not a failure.
+
+(notice-codes)=
+## Notice codes
+
+A run's warnings and fallbacks are kept on `result.notices`, and on the error of a run that fails, each a dict with a `category`, a `code` and a `message`. A notice's code is stable across releases as an error's is, and no code is both. An error's code names the decision a caller makes; a notice's names the part of the run that noted it, so a compiler a run could not use is the notice `codegen.toolchain`, and the error `env.no_compiler` or `env.broken_toolchain` where a call cannot go on without one.
+
+| code | meaning | what to do |
+|---|---|---|
+| `atol.below_scale` | Species stayed below their absolute tolerance throughout while reaching a share of the largest; their error was not controlled. | Pass a smaller `atol`, or one per species, for the species the message names, and run again. |
+| `codegen.cache_key_unavailable` | The structural codegen cache key could not be made; the generated source was hashed instead. | Nothing to fix: the cache still works, keyed on the generated source. |
+| `codegen.failed` | Building the compiled right-hand side failed; the run used the interpreted one. | The numbers stand; only speed is lost. The message gives the compiler's error. |
+| `codegen.skipped` | The compiled right-hand side was not built, because an earlier build of this model failed; the run used the interpreted one. | The numbers stand; only speed is lost. The earlier `codegen.failed` notice says why the build failed. |
+| `codegen.ssa_propensities_interpreted` | The compiled SSA propensities could not be built; the run evaluated them interpreted. | The numbers stand; only speed is lost. The message says why. |
+| `codegen.toolchain` | The C toolchain could not build a codegen library, or builds one again. | Install or repair the C compiler the message names, as for the errors `env.no_compiler` and `env.broken_toolchain`. Until then a run that can go on without a compiled library does. |
+| `config.ignored_setting` | An environment setting had a value bngsim cannot read; a default was used. | Fix or unset the environment variable the message names. |
+| `equality.detection_failed` | Finding the rate-law equalities a state can leave failed; the run watches fewer of them. | Check the result where the model's rate laws switch, at a tighter `rtol`. |
+| `jacobian.difference_quotient` | The analytical Jacobian is not available for this model; the run used a difference quotient. | Nothing to fix: the numbers stand, and a large model runs slower. The message says why the analytical Jacobian was not made. |
+| `jacobian.difference_quotient_kept` | An earlier run on this Simulator failed with the analytical Jacobian and was retried; this run used the difference quotient from the start. | Nothing to fix: the numbers stand. A new Simulator tries the analytical Jacobian again. |
+| `jacobian.difference_quotient_retry` | The run failed with the analytical Jacobian and was run again from its start with a difference quotient, whose result it returned. | Nothing to fix: the result is the retry's and stands. Pass `jacobian='fd'` to skip the analytical attempt. |
+| `jax.zero_gradients` | Model functions may give JAX zero gradients at discontinuities. | Check gradients near the model's discontinuities by finite differences before relying on them. |
+| `linear_solver.dense_without_klu` | A large model ran on the dense linear solver because this install has no KLU. | The numbers stand. An install with KLU, which `bngsim.capabilities()` reports, runs a large model faster. |
+| `protocol.steady_state_not_reached` | A protocol's run asked to stop at a steady state reached none by its end. | Lengthen that run's time window, or do not read its end state as steady. |
+| `rulemonkey.unsupported` | RuleMonkey reported a construct it does not support as written. | Read the message for the construct; the model may need another method to run as written. |
+| `scan.dose_dropped` | A parameter scan cannot move the species the scanned parameter seeds: each point starts them at the state the scan started from, not at their dose. | Call `model.reset()` before the scan to dose from the initial conditions, or set each seeded species in `on_point`, as the message shows. |
+| `sens.chain_rule_dropped` | A derived parameter's expression could not be differentiated; sensitivities through it read zero along that path. | Read sensitivities through that parameter as missing, not zero; check them by finite differences. |
+| `sens.chunk_split` | A group of sensitivity columns failed together and each was solved on its own. | Nothing to fix: the columns stand, at more cost. |
+| `sens.detection_failed` | Finding the switch, event or state crossings a sensitivity depends on failed; a gradient may miss the jump at one. | Check gradients across the model's switches and events by finite differences. |
+| `sens.nan_rows` | Rows of the sensitivity tensor are NaN or infinite where the chain rule they need is not available. | Leave those rows out: they mark derivatives BNGsim cannot give. |
+| `sens.one_sided` | Sensitivity columns are one-sided derivatives at a switch that shares its instant with another. | Read those columns as one-sided derivatives at that instant. |
+| `sens.output_budget` | Deriving expression output sensitivities ran past its time budget; the functions not reached refuse when selected. | Select only the expression outputs derived in time; the rest refuse when selected. |
+| `sens.parameters_skipped` | Parameters were left out of a sensitivity request because their columns could not mean what they say. | The message names the parameters left out and why; the result has no sensitivities for them. |
+| `sens.rhs_difference_quotient` | The analytic sensitivity right-hand side was declined; CVODES' difference quotient carried the sensitivity columns. | Nothing to fix: the sensitivities stand, computed more slowly. |
+| `smooth_pulse.event_reset` | A smooth bump on a variable an event assigns is placed from the variable's start and rate. | Check the pulse's placement where the event assigns the variable. |
+| `ssa.negative_count` | A species count went negative in a stochastic run. | Fix the rate laws that let a count go negative; the trajectory past it is not a stochastic process. |
+| `ssa.reverse_fire` | A reaction fired in reverse because its rate law evaluated negative. | Fix the rate law so it cannot go negative; the trajectory past it is not a stochastic process. |
+| `ssa.rounded_counts` | Molecule counts that were not whole numbers were rounded at the start. | Give whole-number initial counts where the rounding matters. |
+| `start.continues_last_run` | The run started from the state the last run left, with the clock set back. | Call `model.reset()` before the run to start from the initial conditions. |
+| `start.rows_from_initial` | The rows started from the initial conditions, not the model's current state, which differs from them. | Call `model.reset()` first where the initial conditions are the start you want; the message says how to start from the current state instead. |
+| `stop_condition.non_finite` | A stop condition read NaN or infinity at a sample. | Check the condition's expression for a division by zero or an overflow. |
+| `stops.detection_failed` | Finding where a rate law switches on the clock, a crossing or the state failed; the integrator approaches it without a stop or a root. | Check the result where the model's rate laws switch, at a tighter `rtol`. |
+| `switch.noisy_trigger` | An event trigger crosses its threshold within the rounding of its own evaluation. | Move the threshold off the extremum, or write the trigger so it does not cancel there. |
+| `switch.over_budget` | A condition crosses more often than the stops one run places. | Shorten the window; past the stops placed, the integrator approaches each crossing without one. |
+| `switch.scan_failed` | The scan of a time condition failed; no stop is placed for it. | Check the result where that condition switches, at a tighter `rtol`. |
+| `switch.unread` | A condition on the clock could not be read where the scan asked. | Check the result where that condition switches, at a tighter `rtol`. |
 
 ## Remedies
 

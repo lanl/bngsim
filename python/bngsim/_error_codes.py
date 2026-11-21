@@ -356,13 +356,13 @@ def reference_page() -> str:
     writes it; a test checks it is current)."""
     lines = [
         "---",
-        'summary: "The code every BNGsim error carries, what each means and what to do '
-        'about it, and the remedies a program can act on."',
+        'summary: "The code every BNGsim error and run notice carries, what each means and '
+        'what to do about it, and the remedies a program can act on."',
         "# Generated from python/bngsim/_error_codes.py by scripts/error_codes_page.py;",
         "# edit that module and run the script.",
         "---",
         "",
-        "# Error codes",
+        "# Error and notice codes",
         "",
         "Every BNGsim error carries a `code`, a string that stays the same across "
         "releases where the message may change. A program should branch on the code, "
@@ -375,7 +375,7 @@ def reference_page() -> str:
         "    e.code       # 'param.not_found'",
         "    e.details    # {'name': 'kff', 'close_matches': ['kf'], 'is_a': None}",
         "    e.remedies   # [{'kind': 'use_name', 'name': 'kf'}]",
-        "    e.to_dict()  # type, code, message, details, remedies and docs_url",
+        "    e.to_dict()  # type, code, message, details, remedies, docs_url, notices",
         "```",
         "",
         "- `details` says what the error is about: the name, the path, the constructs.",
@@ -383,6 +383,9 @@ def reference_page() -> str:
         "It is empty where BNGsim can name no fix, as for a model it cannot simulate "
         "as written.",
         "- `docs_url` points at the code's entry below.",
+        "- `notices` lists what the failed run had noted before it raised, such as a "
+        "start from the last run's end state, each as on a Result; see "
+        "{ref}`Notice codes <notice-codes>`.",
         "",
         "An error with no code of its own carries its class's generic code, such as "
         "`model.error` or `run.failed`. An error of a generic class raised from a BNGsim "
@@ -408,6 +411,26 @@ def reference_page() -> str:
             "",
         ]
     lines += [
+        "(notice-codes)=",
+        "## Notice codes",
+        "",
+        "A run's warnings and fallbacks are kept on `result.notices`, and on the error "
+        "of a run that fails, each a dict with a `category`, a `code` and a `message`. "
+        "A notice's code is stable across releases as an error's is, and no code is "
+        "both. An error's code names the decision a caller makes; a notice's names the "
+        "part of the run that noted it, so a compiler a run could not use is the notice "
+        "`codegen.toolchain`, and the error `env.no_compiler` or `env.broken_toolchain` "
+        "where a call cannot go on without one.",
+        "",
+        "| code | meaning | what to do |",
+        "|---|---|---|",
+    ]
+    from bngsim import _notices
+
+    for code, meaning in _notices.CODES.items():
+        lines.append(f"| `{code}` | {meaning} | {_notices.ACTIONS[code]} |")
+    lines += [
+        "",
         "## Remedies",
         "",
         "| kind | keys | meaning |",

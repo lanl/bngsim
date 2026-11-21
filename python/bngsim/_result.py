@@ -946,7 +946,10 @@ class Result:
         validation, a compiler it could not use), which :attr:`record`'s
         ``backend`` reflects; what a protocol says of its actions as it reads
         them; and the lines SUNDIALS writes to standard error itself. An empty
-        list is a run that warned of nothing else.
+        list is a run that warned of nothing else. The error-code reference
+        page lists every notice code with what to do about it, and a run that
+        raises keeps its notices on the error, as :attr:`BngsimError.notices
+        <bngsim.BngsimError.notices>`.
         """
         return [n.as_dict() for n in self._notices]
 

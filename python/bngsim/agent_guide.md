@@ -169,6 +169,8 @@ print(reps.observables.shape)  # (50, 11, 2)
    condition cut short. Read warnings; don't silence them. `result.notices`
    keeps every warning of the run, whatever the warning filters showed, each
    with a `code` such as `atol.below_scale` to branch on, as an error has.
+   The error of a run that fails keeps them too, as `e.notices`. The error-code
+   page lists the notice codes with what to do about each.
 
 ```python
 model.reset()
