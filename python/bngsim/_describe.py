@@ -418,18 +418,19 @@ def _reactions(
     the model's names here, not at load), and a network's lines from the
     model, which holds them as written."""
     if record is not None:
-        from bngsim._sbml_loader import sbml_rate_in_model_names
+        from bngsim._sbml_loader import sbml_rates_in_model_names
 
         out = []
         shown = record["reactions"] if limit is None else record["reactions"][:limit]
-        for r in shown:
+        rates = sbml_rates_in_model_names(shown, record["renamed"])
+        for r, rate in zip(shown, rates, strict=True):
             entry: dict[str, Any] = {
                 "id": r["id"],
                 "reactants": [n for n, _ in r["reactants"]],
                 "products": [n for n, _ in r["products"]],
                 "equation": _clip(f"{_side(r['reactants'])} -> {_side(r['products'])}", limit),
                 "rate_law": "kinetic_law",
-                "rate": _clip(sbml_rate_in_model_names(r, record["renamed"]), limit),
+                "rate": _clip(rate, limit),
                 "reversible": r["reversible"],
             }
             if r["modifiers"]:

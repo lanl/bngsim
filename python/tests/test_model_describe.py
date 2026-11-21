@@ -1167,3 +1167,67 @@ def test_an_sbml_files_reactions_are_cut_at_the_limit():
     d = bngsim.Model.from_sbml_string(TWO_COMPARTMENTS).describe(limit=1)
     assert [r["id"] for r in d["reactions"]] == ["R1"]
     assert d["counts"]["reactions"] == 2 and d["omitted"]["reactions"] == 1
+
+
+def _with_local(local_id: str, law: str, extra: str = "") -> str:
+    """One reaction A -> B whose law reads a local parameter ``local_id`` of
+    0.1, beside a global ``k = 5``; ``extra`` goes before the compartments."""
+    return (
+        _SBML_HEAD + extra + "  <listOfCompartments>\n"
+        '   <compartment id="cell" size="1" constant="true" spatialDimensions="3"/>\n'
+        "  </listOfCompartments>\n"
+        f"  <listOfSpecies>\n{_AB}  </listOfSpecies>\n"
+        '  <listOfParameters><parameter id="k" value="5" constant="true"/></listOfParameters>\n'
+        "  <listOfReactions>\n"
+        '   <reaction id="R1" reversible="false">\n'
+        '    <listOfReactants><speciesReference species="A" stoichiometry="1" '
+        'constant="true"/></listOfReactants>\n'
+        '    <listOfProducts><speciesReference species="B" stoichiometry="1" '
+        'constant="true"/></listOfProducts>\n'
+        f"    <kineticLaw>{_math(law)}<listOfLocalParameters>"
+        f'<localParameter id="{local_id}" value="0.1"/></listOfLocalParameters></kineticLaw>\n'
+        "   </reaction>\n"
+        "  </listOfReactions>\n" + _SBML_TAIL
+    )
+
+
+@pytest.mark.parametrize(
+    "word", ["Pi", "pi", "INF", "infinity", "NaN", "notanumber", "time", "True", "avogadro"]
+)
+def test_a_local_named_like_a_parser_constant_is_renamed(word):
+    """libsbml's formula parser reads these words as constants, in any case: the
+    law is parsed with the ids to rename declared, so each is read as the id."""
+    text = _with_local(word, f"<apply><times/>{_ci(word)}{_ci('A')}</apply>")
+    model = bngsim.Model.from_sbml_string(text)
+    assert f"_lp_R1_{word}" in model.param_names
+    assert model.describe()["reactions"][0]["rate"] == f"_lp_R1_{word} * A"
+    # The run reads the local: 0.1 * 100.
+    assert model.rhs(model.get_state())[0] == pytest.approx(-10.0)
+
+
+def test_a_renamed_species_named_like_a_parser_constant():
+    """BIOMD0000000201 has a species Nan, the model's _ant_Nan."""
+    text = _one_compartment(
+        _species_xml("Nan", 100) + _species_xml("B", 0),
+        _reaction("J", "Nan", "B", f"<apply><times/>{_ci('k')}{_ci('Nan')}</apply>"),
+    )
+    d = bngsim.Model.from_sbml_string(text).describe()
+    assert d["species"][0]["name"] == "_ant_Nan"
+    assert d["reactions"][0]["rate"] == "k * _ant_Nan"
+
+
+def test_a_law_the_parser_cannot_read_back_is_renamed_by_token():
+    """A function definition named log with three arguments writes a law the L3
+    parser cannot read (MODEL2003050002); its local is still renamed."""
+    definition = (
+        "  <listOfFunctionDefinitions>\n"
+        '   <functionDefinition id="log">'
+        + _math(
+            "<lambda><bvar><ci>a</ci></bvar><bvar><ci>b</ci></bvar><bvar><ci>c</ci></bvar>"
+            "<apply><times/><ci>a</ci><ci>b</ci><ci>c</ci></apply></lambda>"
+        )
+        + "</functionDefinition>\n  </listOfFunctionDefinitions>\n"
+    )
+    law = f"<apply><ci>log</ci>{_ci('kl')}{_ci('A')}{_ci('kl')}</apply>"
+    model = bngsim.Model.from_sbml_string(_with_local("kl", law, definition))
+    assert model.describe()["reactions"][0]["rate"] == "log(_lp_R1_kl, A, _lp_R1_kl)"

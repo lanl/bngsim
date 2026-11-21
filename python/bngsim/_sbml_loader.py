@@ -5410,7 +5410,7 @@ def _sbml_record(
 
     def law(r) -> tuple[str, list[str]]:
         """The law as the file writes it, and its local parameters' ids:
-        :func:`sbml_rate_in_model_names` puts them in the model's names when a
+        :func:`sbml_rates_in_model_names` puts them in the model's names when a
         description shows the reaction, so a load pays for no rename."""
         kl = r.getKineticLaw()
         if kl is None or kl.getMath() is None:
@@ -5464,25 +5464,61 @@ def _sbml_record(
     }
 
 
-def sbml_rate_in_model_names(reaction: dict, renamed: dict[str, str]) -> str:
-    """A recorded reaction's law in the model's names: each local parameter as
+def _rename_tokens(formula: str, names: dict[str, str]) -> str:
+    """Each identifier of an L3 formula that ``names`` maps, renamed: a whole
+    token, matched case for case, and not a function's name (one a ``(``
+    follows)."""
+    import re
+
+    def one(match: re.Match[str]) -> str:
+        return names.get(match.group(0), match.group(0))
+
+    return re.sub(r"\b[A-Za-z_]\w*\b(?!\s*\()", one, formula)
+
+
+def sbml_rates_in_model_names(reactions: list[dict], renamed: dict[str, str]) -> list[str]:
+    """Recorded reactions' laws in the model's names: each local parameter as
     the model's ``_lp_<reaction>_<id>`` (so a global of the same id is not read
     for it, as in _law_math_in_model_scope), and an id the model renamed
-    (_safe_name) as its name there. The law as written where it cannot be
-    parsed back."""
+    (_safe_name) as its name there.
+
+    The recorded string is parsed back with a stand-in model that holds every
+    id to rename: libsbml's L3 parser otherwise reads ``pi``, ``inf``, ``nan``,
+    ``true``, ``time``, ``avogadro`` and ``exponentiale`` as constants, in any
+    case (BIOMD0000000201's species ``Nan``), and renameSIdRefs never sees them.
+    A law the parser cannot read back (a function definition named ``log``
+    with three arguments) is renamed token by token instead."""
     import libsbml as _libsbml
 
-    formula = reaction["law"]
-    if not formula or (not reaction["local_ids"] and not renamed):
-        return formula
-    math = _libsbml.parseL3Formula(formula)
-    if math is None:
-        return formula
-    for lid in reaction["local_ids"]:
-        math.renameSIdRefs(lid, f"_lp_{reaction['id']}_{lid}")
-    for sid, safe in renamed.items():
-        math.renameSIdRefs(sid, safe)
-    return _libsbml.formulaToL3String(math)
+    protect = set(renamed)
+    for r in reactions:
+        protect.update(r["local_ids"])
+    settings = None
+    doc = None
+    if protect:
+        doc = _libsbml.SBMLDocument(3, 2)
+        stand_in = doc.createModel()
+        for sid in protect:
+            stand_in.createParameter().setId(sid)
+        settings = _libsbml.L3ParserSettings()
+        settings.setModel(stand_in)
+    out = []
+    for r in reactions:
+        formula = r["law"]
+        names = {lid: f"_lp_{r['id']}_{lid}" for lid in r["local_ids"]}
+        names.update({sid: safe for sid, safe in renamed.items() if sid not in names})
+        if not formula or not names:
+            out.append(formula)
+            continue
+        math = _libsbml.parseL3FormulaWithSettings(formula, settings)
+        if math is None:
+            out.append(_rename_tokens(formula, names))
+            continue
+        for old, new in names.items():
+            math.renameSIdRefs(old, new)
+        out.append(_libsbml.formulaToL3String(math))
+    del doc  # the stand-in model outlives every parse above
+    return out
 
 
 def _build_model_from_sbml_doc(doc):
