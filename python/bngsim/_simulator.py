@@ -388,13 +388,13 @@ def _codegen_refusal(cause: BaseException | None, decline: str | None) -> Runtim
     or a :class:`CodegenToolchainError` when the toolchain cannot build any
     library (#1544)."""
     if cause is not None:
-        failed = (
-            CodegenToolchainError if isinstance(cause, CodegenToolchainError) else RuntimeError
-        )
-        return failed(
+        message = (
             "codegen=True requested, but the codegen build failed "
             f"({type(cause).__name__}: {cause})."
         )
+        if isinstance(cause, CodegenToolchainError):
+            return CodegenToolchainError.restated(cause, message)
+        return RuntimeError(message)
     if decline is not None:
         return CodegenDeclinedError(
             f"codegen=True requested, but codegen declined this model: "
@@ -3624,17 +3624,15 @@ class Simulator:
                 # Same envelope as the try/except above — a build that failed,
                 # whatever swallowed the exception on the way out. A toolchain
                 # that builds nothing keeps its type (issue #1544).
-                failed = (
-                    CodegenToolchainError
-                    if isinstance(cause, CodegenToolchainError)
-                    else RuntimeError
-                )
-                return failed(
+                message = (
                     "Failed to build the analytical sensitivity RHS required for "
                     f"forward sensitivity ({type(cause).__name__}: {cause}). This "
                     "is a BUILD failure, not a statement about the model's "
                     "differentiability."
                 )
+                if isinstance(cause, CodegenToolchainError):
+                    return CodegenToolchainError.restated(cause, message)
+                return RuntimeError(message)
             if decline is not None:
                 # Codegen declined the whole model (a cyclic function graph, issue
                 # #621, today). Recorded rather than inferred: it used to reach the

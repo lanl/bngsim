@@ -33,6 +33,22 @@ namespace bngsim {
 // #243) and re-raises this type without trying. The exception is #1279's
 // refusal of a held equality, typed first: where a restart lands on the stop it
 // turns on whether a requested column moves the restart.
+// A hard failure of the integrator (issue #1702): CVODE gave up with a flag, or
+// a step collapsed so the run made no progress. The message is what it always
+// was; `flag_name` is SUNDIALS' name for the flag ("CV_TOO_MUCH_ACC"), or
+// "stalled" for a collapsed step. The pybind11 layer raises it as
+// bngsim.SimulationError with the code the flag names, so a program need not
+// read the message for it.
+class SolverFailure : public std::runtime_error {
+  public:
+    SolverFailure(const std::string &what, std::string flag_name)
+        : std::runtime_error(what), flag_name_(std::move(flag_name)) {}
+    const std::string &flag_name() const noexcept { return flag_name_; }
+
+  private:
+    std::string flag_name_;
+};
+
 class SensitivityUnsupported : public std::runtime_error {
   public:
     using std::runtime_error::runtime_error;

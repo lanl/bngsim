@@ -230,23 +230,20 @@ class SimulationError(BngsimError):
         code: str | None = None,
         details: dict | None = None,
         remedies: list[dict] | None = None,
+        solver_flag: str | None = None,
     ) -> None:
-        # A CVODE failure names SUNDIALS' flag in its message, wherever a wrapper
-        # quotes it: "... with flag=-2 (CV_TOO_MUCH_ACC)." (issue #1702).
-        if code is None and type(self).default_code == "run.failed" and args:
-            import re
-
+        # The engine raises a hard integrator failure with SUNDIALS' name for
+        # its flag ("CV_TOO_MUCH_ACC"), or "stalled" for a collapsed step, as
+        # data (issue #1702). A wrapper raised from it carries its code.
+        if solver_flag is not None and code is None:
             from bngsim._error_codes import SOLVER_FLAGS
 
-            text = str(args[0])
-            flag = re.search(r"flag=-?\d+ \((CV_[A-Z_]+)\)", text)
-            if flag is not None:
-                name = flag.group(1)
-                code = SOLVER_FLAGS.get(name, "solver.failed")
-                if details is None:
-                    details = {"flag": name}
-            elif "CVODE made no progress" in text:
+            if solver_flag == "stalled":
                 code = "solver.stalled"
+            else:
+                code = SOLVER_FLAGS.get(solver_flag, "solver.failed")
+                if details is None and solver_flag:
+                    details = {"flag": solver_flag}
             if remedies is None and code in ("solver.too_much_accuracy", "solver.stalled"):
                 remedies = [{"kind": "loosen_tolerance"}]
         super().__init__(*args, code=code, details=details, remedies=remedies)
@@ -503,9 +500,6 @@ class CodegenToolchainError(BngsimError):
 
     default_code = "env.broken_toolchain"
 
-    #: The words a missing compiler's verdict says, wherever it is quoted.
-    _NO_COMPILER = ("C compiler not found", "No C compiler found")
-
     def __init__(
         self,
         *args: object,
@@ -513,12 +507,19 @@ class CodegenToolchainError(BngsimError):
         details: dict | None = None,
         remedies: list[dict] | None = None,
     ) -> None:
-        text = str(args[0]) if args else ""
-        if code is None and any(words in text for words in self._NO_COMPILER):
+        # A verdict that the compiler is missing says so as data (issue #1702):
+        # bngsim._codegen_toolchain.Verdict, whose words are the message.
+        if code is None and args and getattr(args[0], "no_compiler", False):
             code = "env.no_compiler"
             if remedies is None:
                 remedies = [{"kind": "install_compiler"}]
         super().__init__(*args, code=code, details=details, remedies=remedies)
+
+    @classmethod
+    def restated(cls, cause: CodegenToolchainError, message: str) -> CodegenToolchainError:
+        """*cause* in a caller's words, as a build that needed the toolchain
+        says it, keeping its code and remedies."""
+        return cls(message, code=cause.code, details=cause.details, remedies=cause.remedies)
 
 
 class SimulationTimeout(BngsimError):

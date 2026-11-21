@@ -5999,7 +5999,7 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
     # there at all) is not asked again.
     compiler, broken = _toolchain.check()
     if broken is not None or compiler is None:
-        raise CodegenToolchainError(broken or "No C compiler found.")
+        raise CodegenToolchainError(broken or _toolchain.no_compiler("No C compiler found."))
     compiler_name = Path(compiler[0]).stem.lower()
     # A chunked source (Tier-1 NOINLINE blocks) compiles at -O2 at any size; the
     # marker is on the first lines of the combined source (RHS is always first).
