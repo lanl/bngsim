@@ -413,6 +413,14 @@ class NfsimSession:
         ------
         SimulationError
             If the session is not initialized or simulation fails.
+            NFsim's total propensity found not finite (a rate law that is
+            NaN or infinite, issue #1818) raises too. Found before the
+            session has stepped, it leaves the session as it was, so a
+            repaired rate (:meth:`set_param`) lets it go on. Found after a
+            step, the session refuses to advance until :meth:`initialize`:
+            NFsim's state from there is not the state at the time reached.
+            An error raised inside a step (the molecule limit, say) leaves a
+            firing partway done, and stops the session the same way.
         SimulationTimeout
             If ``timeout`` is set and the wall-clock budget is exceeded.
         """
@@ -479,6 +487,14 @@ class NfsimSession:
         ------
         SimulationError
             If the session is not initialized.
+            NFsim's total propensity found not finite (a rate law that is
+            NaN or infinite, issue #1818) raises too. Found before the
+            session has stepped, it leaves the session as it was, so a
+            repaired rate (:meth:`set_param`) lets it go on. Found after a
+            step, the session refuses to advance until :meth:`initialize`:
+            NFsim's state from there is not the state at the time reached.
+            An error raised inside a step (the molecule limit, say) leaves a
+            firing partway done, and stops the session the same way.
         """
         self._require_initialized()
         try:

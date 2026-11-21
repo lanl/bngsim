@@ -34,6 +34,7 @@ except ImportError as _exc:
     raise libsbml_import_failure(_exc) from _exc
 
 from bngsim import _sbml_unsupported
+from bngsim._exceptions import MissingFileError
 from bngsim._switch_sensitivity import _ATOMIC_TOKEN, _condition_key, _fully_parenthesised
 
 logger = logging.getLogger("bngsim")
@@ -929,7 +930,9 @@ def _check_unsupported_constructs(sbml_model, func_defs: dict) -> None:
         "mathematical system with no warning (RoadRunner refuses the same "
         "models). bngsim now refuses rather than return a wrong-but-plausible "
         f"trajectory. To restore the legacy silent-approximation behavior, set "
-        f"{_ALLOW_UNSUPPORTED_ENV}=1."
+        f"{_ALLOW_UNSUPPORTED_ENV}=1.",
+        code="model.unsupported_construct",
+        details={"constructs": [{"construct": c, "where": w} for c, w in offenders]},
     )
 
 
@@ -3305,7 +3308,13 @@ def _check_required_packages(doc, source: str, raw_xml: IO | None = None) -> Non
         f"{_sbml_unsupported.handled_packages_note()}\n"
         "A presentation-only package (layout, render, fbc) declares "
         'required="false" and loads untouched. To read the core layer anyway — '
-        f"knowing the result is not the model on disk — set {_ALLOW_UNSUPPORTED_ENV}=1."
+        f"knowing the result is not the model on disk — set {_ALLOW_UNSUPPORTED_ENV}=1.",
+        code="model.unsupported_construct",
+        details={
+            "constructs": [
+                {"construct": f"SBML package {name}", "where": uri} for name, uri in offenders
+            ]
+        },
     )
 
 
@@ -3455,7 +3464,7 @@ def load_sbml(path: str | Path, compartment_sizes: dict | None = None):
     """
     path = Path(path)
     if not path.exists():
-        raise FileNotFoundError(f"SBML file not found: {path}")
+        raise MissingFileError(f"SBML file not found: {path}", path)
 
     t0 = time.perf_counter()
     doc = libsbml.readSBMLFromFile(str(path))
@@ -3469,6 +3478,7 @@ def load_sbml(path: str | Path, compartment_sizes: dict | None = None):
     parse_sec = time.perf_counter() - t0
     model = _build_model_from_sbml_doc(doc)
     model._libsbml_parse_sec = parse_sec
+    _record_source(model, "sbml", path=path, compartment_sizes=_sizes_set(compartment_sizes))
     return model
 
 
@@ -3490,7 +3500,21 @@ def load_sbml_string(text: str, compartment_sizes: dict | None = None):
     parse_sec = time.perf_counter() - t0
     model = _build_model_from_sbml_doc(doc)
     model._libsbml_parse_sec = parse_sec
+    _record_source(model, "sbml", text=text, compartment_sizes=_sizes_set(compartment_sizes))
     return model
+
+
+def _sizes_set(compartment_sizes: dict | None) -> dict | None:
+    """The ``compartment_sizes=`` a load applied, as its source record keeps them
+    (issue #1705), or None where it applied none."""
+    return {str(k): float(v) for k, v in compartment_sizes.items()} if compartment_sizes else None
+
+
+def _record_source(model, fmt: str, **kwargs) -> None:
+    """Record where the model came from (issue #1705); see _model._record_source."""
+    from bngsim._model import _record_source as record
+
+    record(model, fmt, **kwargs)
 
 
 def _import_antimony():
@@ -3506,17 +3530,25 @@ def _import_antimony():
         import antimony as ant
     except ImportError as exc:
         if isinstance(exc, ModuleNotFoundError) and exc.name == "antimony":
-            raise ImportError(
+            from bngsim._error_codes import install
+            from bngsim._exceptions import DependencyError
+
+            raise DependencyError(
                 "The 'antimony' package is required to load Antimony models. "
-                "Install with: pip install 'bngsim[antimony]'"
+                "Install with: pip install 'bngsim[antimony]'",
+                remedies=[install("antimony", extra="antimony")],
             ) from None
         # The package is there and did not load (a shared library it needs is
         # missing, say). Telling the caller to install it would send them to
         # something they have; relay the cause instead (issue #1760).
-        raise ImportError(
+        from bngsim._exceptions import DependencyError
+
+        raise DependencyError(
             f"antimony is installed, but its compiled module could not be loaded: {exc}. "
             "A shared library it needs is missing from this system, or the module was "
-            "built for another Python; `python -c 'import antimony'` shows the same failure."
+            "built for another Python; `python -c 'import antimony'` shows the same failure.",
+            code="env.broken_dependency",
+            details={"package": "antimony"},
         ) from exc
     return ant
 
@@ -3620,7 +3652,7 @@ def load_antimony_via_sbml(path: str | Path, compartment_sizes: dict | None = No
 
     path = Path(path)
     if not path.exists():
-        raise FileNotFoundError(f"Antimony file not found: {path}")
+        raise MissingFileError(f"Antimony file not found: {path}", path)
 
     ant.clearPreviousLoads()
     with _antimony_numbers_in_c_locale():
@@ -3633,7 +3665,9 @@ def load_antimony_via_sbml(path: str | Path, compartment_sizes: dict | None = No
     if not sbml_str or len(sbml_str) < 10:
         raise RuntimeError(f"Antimony produced empty SBML for {path}")
 
-    return load_sbml_string(sbml_str, compartment_sizes)
+    model = load_sbml_string(sbml_str, compartment_sizes)
+    _record_source(model, "antimony", path=path, compartment_sizes=_sizes_set(compartment_sizes))
+    return model
 
 
 def load_antimony_string_via_sbml(text: str, compartment_sizes: dict | None = None):
@@ -3651,7 +3685,9 @@ def load_antimony_string_via_sbml(text: str, compartment_sizes: dict | None = No
     if not sbml_str or len(sbml_str) < 10:
         raise RuntimeError("Antimony produced empty SBML")
 
-    return load_sbml_string(sbml_str, compartment_sizes)
+    model = load_sbml_string(sbml_str, compartment_sizes)
+    _record_source(model, "antimony", text=text, compartment_sizes=_sizes_set(compartment_sizes))
+    return model
 
 
 # The largest species power the SSA falling factorial takes (Reaction stores m
@@ -5402,6 +5438,227 @@ def _fold_stoichiometry_denominators(doc) -> None:
                     )
 
 
+def _sbml_record(
+    sbml_model,
+    comp_volumes: dict[str, float],
+    species_comp: dict[str, str],
+    *,
+    declared: set[str],
+    rate_rule: set[str],
+    assignment_rule: set[str],
+) -> dict:
+    """The file as Model.describe() reports it (issue #1705), by the names the
+    model uses (``_safe_name``):
+
+    * ``compartments``: ``{name: {"id", "size", "size_declared",
+      "size_set_by"}}``. ``size`` is the size the model was built at (section
+      1's ``comp_volumes``: the file's, an initialAssignment's, a
+      ``compartment_sizes=`` override's, or the 1.0 used where SBML leaves it
+      undefined or gives a non-finite one, which ``size_declared`` is False
+      for). ``size_set_by`` lists what moves it during a run, read from the
+      file: a rate rule, an assignment rule, an event assignment.
+    * ``species``: ``{species: compartment}``, for the file's species, in
+      file order.
+    * ``parameters``: the file's global parameter and compartment ids. The
+      reaction-local ones are the model's ``_lp_<reaction>_<id>``.
+    * ``ids``: the ids of its parameters, species, compartments and reactions.
+    * ``function_definitions``: each one's id and its lambda, which a rate
+      calls by name.
+    * ``reactions``: each reaction as the file writes it, which the model's
+      reaction channels are not: a reversible reaction or a stoichiometry
+      becomes several channels, and a rate rule or a dilution term one."""
+    import libsbml as _libsbml
+
+    events = {
+        sbml_model.getEvent(i).getEventAssignment(j).getVariable()
+        for i in range(sbml_model.getNumEvents())
+        for j in range(sbml_model.getEvent(i).getNumEventAssignments())
+    }
+    compartments: dict[str, dict] = {}
+    for i in range(sbml_model.getNumCompartments()):
+        c = sbml_model.getCompartment(i)
+        cid = c.getId()
+        compartments[_safe_name(cid)] = {
+            "id": cid,
+            "size": float(comp_volumes.get(cid, 1.0)),
+            "size_declared": (bool(c.isSetSize()) and _math.isfinite(c.getSize()))
+            or cid in declared,
+            "size_set_by": [
+                kind
+                for kind, ids in (
+                    ("rate_rule", rate_rule),
+                    ("assignment_rule", assignment_rule),
+                    ("event", events),
+                )
+                if cid in ids
+            ],
+        }
+
+    # What an initialAssignment, a rule or an event sets: a speciesReference id
+    # among them holds a stoichiometry that is not the number it was given.
+    assigned = (
+        {
+            sbml_model.getInitialAssignment(i).getSymbol()
+            for i in range(sbml_model.getNumInitialAssignments())
+        }
+        | {sbml_model.getRule(i).getVariable() for i in range(sbml_model.getNumRules())}
+        | events
+    )
+
+    def side(refs) -> list[tuple[str, float | str | None]]:
+        out: list[tuple[str, float | str | None]] = []
+        for k in range(refs.size()):
+            sr = refs.get(k)
+            stoich: float | str | None = None
+            if sbml_model.getLevel() < 3 and sr.isSetStoichiometryMath():
+                stoich = _libsbml.formulaToL3String(sr.getStoichiometryMath().getMath())
+            elif sr.isSetId() and sr.getId() in assigned:
+                stoich = sr.getId()
+            elif sr.isSetStoichiometry():
+                stoich = float(sr.getStoichiometry())
+            out.append((_safe_name(sr.getSpecies()), stoich))
+        return out
+
+    # The file's ids, from the model's indexed lists (getListOfAllElements is a
+    # linked list, quadratic to walk: seconds on a large model, issue #1705
+    # review), and those the model knows by another name (_safe_name).
+    ids: set[str] = set()
+    for count, get in (
+        (sbml_model.getNumParameters(), sbml_model.getParameter),
+        (sbml_model.getNumSpecies(), sbml_model.getSpecies),
+        (sbml_model.getNumCompartments(), sbml_model.getCompartment),
+        (sbml_model.getNumReactions(), sbml_model.getReaction),
+    ):
+        ids.update(get(i).getId() for i in range(count))
+    renamed = {sid: _safe_name(sid) for sid in ids if _safe_name(sid) != sid}
+
+    # An id the L3 parser would read as one of its words (the clock, pi, ...),
+    # in any case and whether or not the model renames it, cannot be told from
+    # that word in a law's text once it is written.
+    ambiguous = any(sid.lower() in _L3_PARSER_WORDS for sid in ids)
+
+    def law(r) -> tuple[str, list[str], bool]:
+        """The law, its local parameters' ids, and whether the law is already
+        in the model's names. Most laws are kept as the file writes them, and
+        :func:`sbml_rates_in_model_names` renames the ones a description shows,
+        so a load pays for no rename. A law whose text could not be read back
+        without ambiguity, because a local or a renamed id is spelled like a
+        word of the L3 parser, is renamed here, on its own math."""
+        kl = r.getKineticLaw()
+        if kl is None or kl.getMath() is None:
+            return "", [], True
+        local_ids = [lp.getId() for lp in _kinetic_law_local_params(kl)]
+        if ambiguous or any(lid.lower() in _L3_PARSER_WORDS for lid in local_ids):
+            math = _law_math_in_model_scope(r)
+            for sid, safe in renamed.items():
+                math.renameSIdRefs(sid, safe)
+            return _libsbml.formulaToL3String(math), local_ids, True
+        return _libsbml.formulaToL3String(kl.getMath()), local_ids, False
+
+    reactions = []
+    for i in range(sbml_model.getNumReactions()):
+        r = sbml_model.getReaction(i)
+        formula, local_ids, in_model_names = law(r)
+        reactions.append(
+            {
+                "id": r.getId(),
+                "reactants": side(r.getListOfReactants()),
+                "products": side(r.getListOfProducts()),
+                "modifiers": [
+                    _safe_name(r.getModifier(k).getSpecies()) for k in range(r.getNumModifiers())
+                ],
+                "law": formula,
+                "local_ids": local_ids,
+                "in_model_names": in_model_names,
+                "reversible": bool(r.getReversible()),
+                "fast": bool(r.isSetFast() and r.getFast()),
+            }
+        )
+    return {
+        "compartments": compartments,
+        "species": {_safe_name(s): _safe_name(c) for s, c in species_comp.items()},
+        "parameters": {
+            _safe_name(sbml_model.getParameter(i).getId())
+            for i in range(sbml_model.getNumParameters())
+        }
+        | set(compartments),
+        "reactions": reactions,
+        "ids": {_safe_name(sid) for sid in ids},
+        "renamed": renamed,
+        # A rate calls these by name; the model inlines them.
+        "function_definitions": [
+            {
+                "name": sbml_model.getFunctionDefinition(i).getId(),
+                "definition": _libsbml.formulaToL3String(
+                    sbml_model.getFunctionDefinition(i).getMath()
+                )
+                if sbml_model.getFunctionDefinition(i).isSetMath()
+                else "",
+            }
+            for i in range(sbml_model.getNumFunctionDefinitions())
+        ],
+    }
+
+
+#: The words libsbml's L3 formula parser reads as constants or as the clock, in
+#: any case, rather than as an id: ``Pi`` is pi, ``Nan`` is NaN.
+_L3_PARSER_WORDS = frozenset(
+    {
+        "pi",
+        "inf",
+        "infinity",
+        "nan",
+        "notanumber",
+        "true",
+        "false",
+        "time",
+        "avogadro",
+        "exponentiale",
+    }
+)
+
+
+def _rename_tokens(formula: str, names: dict[str, str]) -> str:
+    """Each identifier of an L3 formula that ``names`` maps, renamed: a whole
+    token, matched case for case, and not a function's name (one a ``(``
+    follows)."""
+    import re
+
+    def one(match: re.Match[str]) -> str:
+        return names.get(match.group(0), match.group(0))
+
+    return re.sub(r"\b[A-Za-z_]\w*\b(?!\s*\()", one, formula)
+
+
+def sbml_rates_in_model_names(reactions: list[dict], renamed: dict[str, str]) -> list[str]:
+    """Recorded reactions' laws in the model's names: each local parameter as
+    the model's ``_lp_<reaction>_<id>`` (so a global of the same id is not read
+    for it, as in _law_math_in_model_scope), and an id the model renamed
+    (_safe_name) as its name there. A law the record already holds in those
+    names, one whose ids the parser could confuse with its words, is taken as
+    it is; the rest are parsed back and renamed. A law the parser cannot read
+    back (a function definition named ``log`` with three arguments) is
+    renamed token by token."""
+    import libsbml as _libsbml
+
+    out = []
+    for r in reactions:
+        formula = r["law"]
+        names = {lid: f"_lp_{r['id']}_{lid}" for lid in r["local_ids"]}
+        names.update({sid: safe for sid, safe in renamed.items() if sid not in names})
+        if r["in_model_names"] or not formula or not names:
+            out.append(formula)
+            continue
+        math = _libsbml.parseL3Formula(formula)
+        if math is None:
+            out.append(_rename_tokens(formula, names))
+            continue
+        for old, new in names.items():
+            math.renameSIdRefs(old, new)
+        out.append(_libsbml.formulaToL3String(math))
+    return out
+
+
 def _build_model_from_sbml_doc(doc):
     """Build a BNGsim Model from a parsed libsbml Document."""
     # In a context of its own: what the build sets for the emitter
@@ -5966,7 +6223,8 @@ def _build_model_from_sbml_doc_in_context(doc):
                     "return a wrong-but-plausible trajectory (RoadRunner refuses "
                     "the same model). Set the parameter value or add an "
                     "initialAssignment. To restore the legacy lenient "
-                    "default-to-0 behavior, set BNGSIM_ALLOW_UNSET_PARAMS=1."
+                    "default-to-0 behavior, set BNGSIM_ALLOW_UNSET_PARAMS=1.",
+                    details={"symbols": [{"name": p} for p in _offenders]},
                 )
 
     # ── C2b: a kineticLaw's valueless LOCAL parameter (issue #580) ──
@@ -6044,7 +6302,8 @@ def _build_model_from_sbml_doc_in_context(doc):
                 "to 0.0, which would silently zero out the rate law and return a "
                 "wrong-but-plausible trajectory. Set the parameter value. To "
                 "restore the legacy lenient default-to-0 behavior, set "
-                "BNGSIM_ALLOW_UNSET_PARAMS=1."
+                "BNGSIM_ALLOW_UNSET_PARAMS=1.",
+                details={"symbols": [{"name": lp, "reaction": rid} for rid, lp in _unset_local]},
             )
 
     # ── C2c: a conversionFactor that names a valueless parameter ──
@@ -6106,7 +6365,8 @@ def _build_model_from_sbml_doc_in_context(doc):
                 "return a wrong-but-plausible trajectory (RoadRunner refuses the same "
                 "model). Set the parameter value or add an initialAssignment. To load "
                 "with the factor at 0.0, the legacy lenient default for a parameter "
-                "with no value, set BNGSIM_ALLOW_UNSET_PARAMS=1."
+                "with no value, set BNGSIM_ALLOW_UNSET_PARAMS=1.",
+                details={"symbols": [{"name": p, "where": w} for p, w in _unset_cf]},
             )
 
     # Pre-scan rate-rule targets and event-assignment targets up front so
@@ -12014,6 +12274,15 @@ def _build_model_from_sbml_doc_in_context(doc):
     # ── 11. Build ─────────────────────────────────────────────────────
     core = builder.build()
     model = Model(_core=core)
+    # Issue #1705: the compartments, for Model.describe().
+    model._sbml_record = _sbml_record(
+        sbml_model,
+        comp_volumes,
+        species_comp,
+        declared=set(ia_values) | ar_comp_targets,
+        rate_rule=rate_rule_comps,
+        assignment_rule=ar_comp_targets,
+    )
     # Only what the built model has as a parameter a caller could write.
     _built_params = set(core.param_names)
     model._frozen_params = {n: w for n, w in _folded_into.items() if n in _built_params}

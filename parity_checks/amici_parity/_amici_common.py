@@ -534,6 +534,7 @@ def amici_value_of(model, sbml_str: str):
     doc = libsbml.readSBMLFromString(sbml_str)
     sbml = doc.getModel()
     sbml_ids = set() if sbml is None else {e.getId() for e in doc.getListOfAllElements()}
+    declared = sbml_value_of(sbml)
 
     def value_of(i: str) -> float | None:
         if i in values:
@@ -541,6 +542,51 @@ def amici_value_of(model, sbml_str: str):
         renamed = AMICI_ID_PREFIX + i
         if renamed in values and renamed not in sbml_ids:
             return values[renamed]
+        return declared(i)
+
+    return value_of
+
+
+# --------------------------------------------------------------------------- #
+# AMICI keeps a hasOnlySubstanceUnits species as an AMOUNT
+# --------------------------------------------------------------------------- #
+# AMICI's SBML importer makes a species state an amount exactly when the species
+# has hasOnlySubstanceUnits="true", and a concentration otherwise (also in a
+# variable compartment). bngsim and RoadRunner (``[id]``) report every species as
+# a concentration, so an amount state in a compartment whose size is not 1 was
+# compared off by exactly that size: 12 of the 26 AMICI DIFFs in the BioModels
+# coverage sweep (BIOMD0000000197's x5 at 1.5x, in its 1.5 compartment) were this
+# and nothing else. Parameters and compartments that AMICI integrates as states
+# are not species and are left alone. A species whose compartment size cannot be
+# read for certain is dropped and named on the row, never divided by a guess. A
+# size that is read but is no finite positive number anywhere (a compartment
+# declared size="NaN" that nothing assigns, as in MODEL2002070001) has no
+# concentration to convert to: that species is compared as the amount it is, as
+# bngsim reports it there, and named on the row.
+
+
+def amount_species_compartments(sbml_str: str) -> dict[str, str]:
+    """``{species id: compartment id}`` for every species AMICI keeps as an
+    amount (``hasOnlySubstanceUnits="true"``)."""
+    import libsbml
+
+    model = libsbml.readSBMLFromString(sbml_str).getModel()
+    if model is None:
+        return {}
+    return {
+        s.getId(): s.getCompartment()
+        for s in model.getListOfSpecies()
+        if s.getHasOnlySubstanceUnits()
+    }
+
+
+def sbml_value_of(sbml):
+    """``value_of(id)`` from the SBML alone: a parameter's value or a
+    compartment's size as declared, None for an id an ``<initialAssignment>``
+    sets (or that declares no value). The tail of :func:`amici_value_of`, for a
+    caller with no built AMICI model (a replayed sensitivity reference)."""
+
+    def value_of(i: str) -> float | None:
         if sbml is None or sbml.getInitialAssignmentBySymbol(i) is not None:
             return None
         par = sbml.getParameter(i)
@@ -550,6 +596,164 @@ def amici_value_of(model, sbml_str: str):
         return comp.getSize() if comp is not None and comp.isSetSize() else None
 
     return value_of
+
+
+def constant_size(cid: str, sbml, value_of, constant: set[str], deps: set[str] | None = None):
+    """The size of compartment ``cid`` when nothing changes it after the start
+    (``constant``, :func:`rr_parity._rr_common._effectively_constant`):
+    ``value_of(cid)``, else its ``<initialAssignment>``
+    (:func:`_initial_assignment_value`). None for a compartment a rule or an
+    event changes, whatever it was declared with: its declared size is not its
+    size. ``deps``, when given, collects every id the size was read from."""
+    if sbml is None or cid not in constant:
+        return None
+    if deps is not None:
+        deps.add(cid)
+    v = value_of(cid)
+    if v is not None:
+        return v
+    return _initial_assignment_value(cid, sbml, value_of, constant, deps)
+
+
+def _initial_assignment_value(
+    sid: str, sbml, value_of, constant: set[str], deps: set[str] | None = None, _seen=frozenset()
+) -> float | None:
+    """The value ``sid``'s ``<initialAssignment>`` gives, read as a constant
+    :func:`rr_parity._rr_common._affine` form over ids in ``constant`` that
+    ``value_of`` gives or that have such an assignment themselves. None for
+    anything else (a species, a rule- or event-changed id, a function, the
+    clock), so the caller does not use a guess. A constant compartment sized by
+    an initial assignment (``cell = vcyto``) is one AMICI folds into its
+    expressions, so ``amici_value_of`` alone does not give it."""
+    ia = sbml.getInitialAssignmentBySymbol(sid)
+    if ia is None or sid in _seen or not ia.isSetMath():
+        return None
+    seen = _seen | {sid}
+
+    def leaf(name: str) -> float | None:
+        if name not in constant:
+            return None
+        if deps is not None:
+            deps.add(name)
+        v = value_of(name)
+        if v is not None:
+            return v
+        return _initial_assignment_value(name, sbml, value_of, constant, deps, seen)
+
+    form = _rc._affine(ia.getMath(), leaf)
+    if form is None or form[0] != "aff" or form[1] != 0.0 or not np.isfinite(form[2]):
+        return None
+    return float(form[2])
+
+
+def amici_volume_of(model, rdata, sbml_str: str, x: np.ndarray):
+    """``volume_of(compartment id)`` over AMICI's output times: the state column
+    when AMICI integrates the compartment (a rate rule or an event target), the
+    expression column when an assignment rule sets it, else, for a compartment
+    nothing changes, its constant size (:func:`constant_size` over
+    :func:`amici_value_of`). None when none of these gives it."""
+    import libsbml
+
+    # Raw AMICI ids, looked up as amici_value_of does: ``cid`` itself, else
+    # AMICI's rename ``amici_<cid>`` only when the SBML has no element of that
+    # id. Stripping every column instead would read a species whose own id is
+    # ``amici_c`` as compartment ``c``'s size.
+    states = {n: i for i, n in enumerate(rdata.state_ids)}
+    try:
+        expr_ids = list(model.get_expression_ids())
+        w = np.asarray(rdata.w, dtype=float)
+    except Exception:
+        expr_ids, w = [], np.empty((0, 0))
+    usable = w.ndim == 2 and w.shape == (x.shape[0], len(expr_ids))
+    exprs = {n: i for i, n in enumerate(expr_ids)} if usable else {}
+    value_of = amici_value_of(model, sbml_str)
+    doc = libsbml.readSBMLFromString(sbml_str)
+    sbml = doc.getModel()
+    sbml_ids = set() if sbml is None else {e.getId() for e in doc.getListOfAllElements()}
+    constant = _rc._effectively_constant(sbml) if sbml is not None else set()
+
+    def column(cols: dict, cid: str):
+        if cid in cols:
+            return cols[cid]
+        renamed = AMICI_ID_PREFIX + cid
+        return cols[renamed] if renamed in cols and renamed not in sbml_ids else None
+
+    def volume_of(cid: str):
+        if (j := column(states, cid)) is not None:
+            return x[:, j]
+        if (j := column(exprs, cid)) is not None:
+            return w[:, j]
+        return constant_size(cid, sbml, value_of, constant)
+
+    return volume_of
+
+
+def amount_columns(names: list[str], amounts: dict[str, str], volume_of):
+    """Which of AMICI's state columns ``names`` are amounts, and what to divide
+    each by. ``amounts`` is :func:`amount_species_compartments`; ``volume_of(cid)``
+    gives the size as a scalar or one value per output time, or None.
+
+    Returns ``(keep, sizes, dropped, as_amount)``: the column indices to compare,
+    ``{column: size}`` for the amount columns to divide among them, the species
+    ids left out because their size is unknown, raised on, or finite and positive
+    at some times but not others, and the species ids kept undivided because
+    their size is no finite positive number at any time (no concentration exists
+    to convert to). The caller names both lists on the row."""
+    keep: list[int] = []
+    sizes: dict[int, np.ndarray] = {}
+    dropped: list[str] = []
+    as_amount: list[str] = []
+    for j, sid in enumerate(normalize_amici_names(list(names))):
+        cid = amounts.get(sid)
+        if cid is not None:
+            try:
+                size = volume_of(cid)
+            except Exception:
+                size = None
+            if size is None:
+                dropped.append(sid)
+                continue
+            size = np.asarray(size, dtype=float)
+            with np.errstate(invalid="ignore"):
+                good = np.isfinite(size) & (size > 0)
+            if not np.any(good):
+                as_amount.append(sid)
+            elif not np.all(good):
+                dropped.append(sid)
+                continue
+            else:
+                sizes[j] = size
+        keep.append(j)
+    return keep, sizes, dropped, as_amount
+
+
+def amount_states_as_concentrations(
+    x: np.ndarray, names: list[str], amounts: dict[str, str], volume_of
+) -> tuple[np.ndarray, list[str], list[str]]:
+    """Divide AMICI's amount states by their compartment's size, so every species
+    is compared as a concentration, as bngsim and RoadRunner report it
+    (:func:`amount_columns`). Returns ``(x, names, dropped, as_amount)``; the
+    input is not modified."""
+    if not amounts:
+        return x, names, [], []
+    keep, sizes, dropped, as_amount = amount_columns(names, amounts, volume_of)
+    x = np.array(x, dtype=float, copy=True)
+    for j, size in sizes.items():
+        x[:, j] = x[:, j] / size
+    return x[:, keep], [names[j] for j in keep], dropped, as_amount
+
+
+def nothing_compared(bn_names: list[str], am_names: list[str], dropped: list[str]) -> str | None:
+    """A BAD_TEST message when dropping amount species left no species in common,
+    else None. Without it such a row read as a ``disjoint species sets`` DIFF at
+    inf: a verdict against bngsim on a row where nothing was compared."""
+    if not dropped or align_common(bn_names, am_names) is not None:
+        return None
+    if align_common(bn_names, list(am_names) + list(dropped)) is None:
+        return None  # disjoint with or without them: the DIFF it always was
+    return "no species left to compare: amount species with no certain compartment size: " + (
+        ", ".join(dropped)
+    )
 
 
 def amici_literal_of(sbml_str: str):
@@ -910,6 +1114,21 @@ def amici_ode(
 
     names = list(rdata.state_ids)
     x = np.asarray(rdata.x, dtype=float)
+    # AMICI keeps a hasOnlySubstanceUnits species as an amount; bngsim reports a
+    # concentration. Compare like with like (see amount_states_as_concentrations).
+    # Sized only when the model has such a species, and never at the cost of the
+    # run: a size this cannot read drops the species (named on the row).
+    amounts = amount_species_compartments(sbml_str)
+    timing["amount_states_dropped"] = []
+    timing["amount_states_as_amount"] = []
+    if amounts:
+        try:
+            volume_of = amici_volume_of(model, rdata, sbml_str, x)
+        except Exception:
+            volume_of = lambda cid: None  # noqa: E731
+        x, names, timing["amount_states_dropped"], timing["amount_states_as_amount"] = (
+            amount_states_as_concentrations(x, names, amounts, volume_of)
+        )
     rows = job_rows(run_ts, ts)
     if rows is not None:
         x = x[rows]

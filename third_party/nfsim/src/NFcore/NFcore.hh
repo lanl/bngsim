@@ -412,6 +412,35 @@ namespace NFcore
 
 			void update_A_tot(ReactionClass *r, double old_a, double new_a);
 
+			/* A firing takes its product molecules out of their observables,
+			 * transforms them, puts them back, and then puts the products back
+			 * in their reactions, one molecule at a time. Until that is done the
+			 * system is in no state it ever occupies: an observable a single
+			 * molecule keeps nonzero reads 0, and a rate law that divides by it
+			 * is NaN, which a_tot - old + new then keeps for good
+			 * (RuleWorld/nfsim#115).
+			 *
+			 * In that span the update of a reaction whose rate reads an
+			 * observable is held: the reaction is noted, once, and its rate is
+			 * not computed, so the propensity it holds stays the one the
+			 * selector has for it. At the end each noted reaction's propensity
+			 * is computed from the state the firing leaves and given to the
+			 * selector. Each place that updates a propensity in that span asks
+			 * holdFiringPropensityUpdate() first: an observable whose count
+			 * changes, a molecule the transformation deletes, and a product
+			 * molecule's reactions (MoleculeType::updateRxnMembership, and
+			 * updateConnectedRxnMembership under -connect).
+			 *
+			 * A reaction whose rate reads no observable is updated as before,
+			 * and a system with no reaction that reads one has no such span. */
+			void noteObservableDependentReaction() { hasObservableDependentReactions = true; }
+			void beginDeferredFiringPropensityUpdates();
+			bool holdFiringPropensityUpdate(ReactionClass *r) {
+				return deferringFiringPropensityUpdates
+						&& noteHeldFiringPropensityUpdate(r);
+			}
+			void endDeferredFiringPropensityUpdates();
+
 
 
 
@@ -657,6 +686,12 @@ namespace NFcore
 			///////////////////////////////////////////////////////////////////////////
 			// Properties of the system that update in time
 			double a_tot;        /*< the sum of all a's (propensities) of all reactions */
+			/* RuleWorld/nfsim#115: see holdFiringPropensityUpdate(). */
+			bool deferringFiringPropensityUpdates = false;
+			bool hasObservableDependentReactions = false;
+			vector<ReactionClass *> heldFiringReactions;
+			bool noteHeldFiringPropensityUpdate(ReactionClass *r);
+			unsigned long long deferredFiringUpdateGeneration = 0;
 			double current_time; /*< keeps track of the simulation time */
 			ReactionClass * nextReaction;  /*< keeps track of the next reaction to fire */
 			bool pendingStepEventValid = false; /*< cached waiting-time draw for stepTo() */
@@ -1342,6 +1377,19 @@ namespace NFcore
 			void setTraversalLimit(int limit) { this->traversalLimit = limit; };
 
 			double get_a() const { return a; };
+			/* Whether this reaction's rate reads an observable (RuleWorld/nfsim#115). */
+			void markReadsObservable() {
+				readsObservable = true;
+				if (system != 0) system->noteObservableDependentReaction();
+			}
+			bool getReadsObservable() const { return readsObservable; }
+			/* Mark this reaction once per firing whose updates are held. */
+			bool markDeferredFiringUpdate(unsigned long long generation) {
+				if (deferredFiringUpdateGeneration == generation)
+					return false;
+				deferredFiringUpdateGeneration = generation;
+				return true;
+			}
 			virtual void printDetails() const;
 			void fire(double random_A_number);
 			// AS2023 - additional call sig to use with reaction firing tracking. The call
@@ -1455,6 +1503,8 @@ namespace NFcore
 			double baseRate;
 			string baseRateParameterName;
 			double a;
+			bool readsObservable = false;
+			unsigned long long deferredFiringUpdateGeneration = 0;
 			unsigned int fireCounter;
 
 			unsigned int traversalLimit;

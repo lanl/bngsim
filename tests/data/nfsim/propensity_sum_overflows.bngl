@@ -1,0 +1,23 @@
+# Two finite propensities, 1e308 each, whose sum is inf (issue #1818).
+begin model
+begin parameters
+  k 1e308
+end parameters
+begin molecule types
+  A()
+  B()
+end molecule types
+begin seed species
+  A() 1
+  B() 1
+end seed species
+begin observables
+  Molecules A A()
+  Molecules B B()
+end observables
+begin reaction rules
+  A() -> 0 k
+  B() -> 0 k
+end reaction rules
+end model
+writeXML()

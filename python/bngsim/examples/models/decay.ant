@@ -1,0 +1,7 @@
+// A -> 0. First-order decay.
+// Exact solution: bngsim.examples.exact("decay", t).
+model decay
+  J1: A -> ; k*A
+  k = 0.5   // decay rate constant
+  A = 100
+end

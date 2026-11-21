@@ -284,11 +284,12 @@ class TestTheIsolationStep:
             f"{0.25 * gap:g} no longer clears the {floor:g} floor"
         )
 
-    def test_a_coincidence_with_no_private_parameter_is_refused(self):
-        # `t0` and `t0 + gap` with gap = 0 land together, and every parameter t0's
-        # threshold depends on is also read by the other. Raising t0 moves both,
-        # so there is no step that isolates it — bngsim says so rather than
-        # returning the merged jump #375 reported.
+    def test_one_crossing_with_no_private_parameter_takes_what_is_left(self):
+        # `t0` and `t0 + gap` with gap = 0 land together, and every parameter
+        # t0's threshold depends on is also read by the other: no step isolates
+        # it. This was refused. One such crossing is enough to leave: `t0 + gap`
+        # is isolated with `gap`, and `t0` is given the rest of the instant's
+        # jump (issue #1822). X = kA·min(t, t0) and Y = kB·min(t, t0 + gap).
         b = ModelBuilder()
         for name, value in (("t0", 1.0), ("gap", 0.0), ("kA", 2.0), ("kB", 5.0)):
             b.add_parameter(name, value)
@@ -300,8 +301,29 @@ class TestTheIsolationStep:
         b.add_reaction([], [y_idx], "functional", "rateY")
         model = bngsim.Model(_core=b.build())
 
-        with pytest.raises(SensitivityUnsupportedError, match="issue #375"):
-            compute_switch_time_sens(model._core, ["t0", "gap"], 0.0, 2.0)
+        result = bngsim.Simulator(model, method="ode", sensitivity_params=["t0", "gap"]).run(
+            (0.0, 2.0), 3
+        )
+        np.testing.assert_allclose(
+            result.sensitivities[-1], [[2.0, 0.0], [5.0, 5.0]], rtol=1e-9, atol=1e-9
+        )
+
+    def test_two_crossings_with_no_private_parameter_are_refused(self):
+        # `t0`, `t0 + gap` and `t0 + gap + gap2` at gap = gap2 = 0: `t0` moves
+        # all three and `gap` the last two, so two of them have no parameter of
+        # their own and what is left cannot be divided between them.
+        b = ModelBuilder()
+        for name, value in (("t0", 1.0), ("gap", 0.0), ("gap2", 0.0), ("k", 2.0)):
+            b.add_parameter(name, value)
+        idx = [b.add_species(f"{n}()", 0.0) for n in "XYZ"]
+        for n, at in zip("XYZ", ("t0", "(t0+gap)", "(t0+gap+gap2)"), strict=True):
+            b.add_function(f"rate{n}", f"if(time()>={at},0,k)")
+        for i, n in zip(idx, "XYZ", strict=True):
+            b.add_reaction([], [i], "functional", f"rate{n}")
+        model = bngsim.Model(_core=b.build())
+
+        with pytest.raises(SensitivityUnsupportedError, match="2 of the 3 crossings"):
+            compute_switch_time_sens(model._core, ["t0", "gap", "gap2"], 0.0, 2.0)
 
     def test_the_same_pair_is_supported_once_the_switch_times_differ(self):
         # The refusal above is about the coincidence, not about the shape: give

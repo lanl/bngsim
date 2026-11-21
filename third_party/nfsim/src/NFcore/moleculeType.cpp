@@ -572,6 +572,9 @@ void MoleculeType::updateRxnMembership(Molecule * m)
 		ReactionClass * rxn=reactions.at(r);
 		double oldA = rxn->get_a();
 		rxn->tryToAdd(m, reactionPositions.at(r));
+		/* Its rate is computed when the firing is done (RuleWorld/nfsim#115). */
+		if (this->system->holdFiringPropensityUpdate(rxn))
+			continue;
 		double newA = rxn->update_a();
 		this->system->update_A_tot(rxn,oldA,newA);
   	}
@@ -590,6 +593,12 @@ void MoleculeType::updateConnectedRxnMembership(Molecule * m, ReactionClass * fi
 			continue;
 		}
 		int pos = reactionPositions.at(r);
+		if (this->system->holdFiringPropensityUpdate(rxn)) {
+			/* Its rate is computed when the firing is done (RuleWorld/nfsim#115),
+			 * so it has no line in the -trackconnected output. */
+			rxn->tryToAdd(m, pos);
+			continue;
+		}
 		double oldA = rxn->get_a();
 		double oldAwithTotal = rxn->update_a();
 		rxn->tryToAdd(m, pos);
@@ -659,6 +668,13 @@ void MoleculeType::removeFromRxns(Molecule * m)
 	int r=0;
 	for(rxnIter = reactions.begin(); rxnIter != reactions.end(); rxnIter++, r++ )
 	{
+		/* A molecule deleted by a firing leaves its reactions while the
+		 * firing's products are out of the observables: a rate that reads one
+		 * is computed when the firing is done (RuleWorld/nfsim#115). */
+		if (this->system->holdFiringPropensityUpdate(*rxnIter)) {
+			(*rxnIter)->remove(m, reactionPositions.at(r));
+			continue;
+		}
 		double oldA = (*rxnIter)->get_a();
 		(*rxnIter)->remove(m, reactionPositions.at(r));
 		double newA = (*rxnIter)->update_a();

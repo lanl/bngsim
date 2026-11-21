@@ -70,6 +70,7 @@ _TEST_CACHE_ROOT_ENV = "BNGSIM_TEST_CACHE_DIR"
 _REDIRECTED_CACHES: tuple[tuple[str, str, str], ...] = (
     ("BNGSIM_CODEGEN_CACHE_DIR", "bngsim._codegen", "codegen"),
     ("BNGSIM_BNGL_CACHE_DIR", "bngsim._bngl_loader", "networks"),
+    ("BNGSIM_BIOMODELS_CACHE_DIR", "bngsim._biomodels", "biomodels"),
 )
 
 #: Set only when the cache root is a temp directory this session created, in
@@ -401,7 +402,10 @@ _DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
         "peak RSS the GH #577 setup-failure probe reads from resource.getrusage, "
         "the /bin/sh stand-in gh the contributors check is tested through, "
         "the /bin/sh fake perl the BNG2.pl compile check is tested with, and the "
-        "working directory removed under it, which Windows refuses (#1761)",
+        "working directory removed under it, which Windows refuses (#1761), and "
+        "the empty PATH the no-compiler error test runs under (#1702), and the "
+        "bngsim command's tests that write through C's stdio with ctypes.CDLL(None) "
+        "and close standard output with a shell (#1708)",
     ),
     (
         "RLIMIT_AS",
@@ -506,6 +510,19 @@ _DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
         "both are 'nothing to refuse here', not 'the guard is broken'. The guard "
         "itself is tested on a synthesized tensor and never skips, so this cannot "
         "hide the refusal going missing",
+    ),
+    (
+        "SUNDIALS draws no warning on this host",
+        _LOCAL_ONLY,
+        "issue #1680's tests move SUNDIALS' [WARNING] lines between streams, so each "
+        "needs a run that draws one: a state-switch root whose residual is zero from "
+        "the start (structural), and for the cases without roots A -> 0 at k = 1e9 "
+        "from t = 1e6, whose first steps are shorter than the doubles there are "
+        "apart. A SUNDIALS built with SUNDIALS_LOGGING_LEVEL below 2 (a system "
+        "SUNDIALS), or one that steps differently, draws none, and there is nothing "
+        "to move. The probes ask with SUNLOGGER_WARNING_FILENAME=stderr. The "
+        "vendored SUNDIALS every CI leg builds draws both, so a leg that skips has "
+        "broken: local-only",
     ),
     # Missing .net / .xml fixtures. Deliberately last and deliberately narrow:
     # this is the category that rots silently, so it matches the exact phrasings

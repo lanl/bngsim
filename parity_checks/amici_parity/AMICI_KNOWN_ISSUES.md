@@ -13,13 +13,46 @@ by itself a bngsim confirmation. Class 6 is not an AMICI problem either: it is a
 model with no solution for either engine to be checked against. Class 7 is a
 disagreement about one sample, not about the solution.
 
-- **Environment:** AMICI pinned to `AMICI-dev/AMICI@667b17b6b` (`v1.0.1-12-g667b17b6b`,
+- **Environment:** Classes 1-7 were measured with AMICI pinned to `AMICI-dev/AMICI@667b17b6b` (`v1.0.1-12-g667b17b6b`,
   BSD-3; built from source into `bngsim/.venv`, needs `swig`) — see `AMICI_PIN.json` for the
   full pin. bngsim 0.9.51, RoadRunner 2.9.2. Verdict kernel = the shared
   `_core.differ.deterministic_verdict` (rtol=1e-9, atol=1e-12).
 - **Result (1323 models):** **1050 PASS**, 44 DIFF, 165 REFERENCE_FAILED, 8 EXCEPTION,
   42 BAD_TEST, 14 TIMEOUT. So AMICI fails-to-run or diverges on ~20% of the corpus;
   bngsim runs and matches RoadRunner throughout.
+
+## 2026-11 triage, and the pin moving to AMICI main (7fb8c571a)
+
+The BioModels coverage sweep on bngsim 0.17.2 had 26 AMICI DIFFs, 24 of them
+with RoadRunner agreeing with bngsim. Each was re-run on AMICI 1.0.1 (the old
+pin), the 1.2.0 release, and AMICI main at 7fb8c571a, which the pin now is:
+
+| cause | rows | where it went |
+|---|---|---|
+| The adapter compared AMICI's amounts (hasOnlySubstanceUnits species) with bngsim's concentrations | 019, 197, 305, 399, 407, 429, 578, MODEL1102210001, MODEL1112260002, MODEL1509020000, MODEL1509050002, MODEL1710030000 | fixed in the adapter, lanl/bngsim#1817; all PASS but MODEL1509020000 |
+| MODEL1509020000's amounts are ~1e-20, far below atol 1e-12 | MODEL1509020000 | `INVALID_REFERENCE` |
+| AMICI 1.0.1 wrong, fixed by 1.2.0 | MODEL1006230049, -0053, -0077 | PASS on this pin |
+| A time trigger whose threshold the event moves fires once in the 1.2.0 release (AMICI #3397) | 241 | PASS on this pin (fixed on main by AMICI #3490); why the pin is main, not 1.2.0 |
+| A strict trigger exactly at its threshold at t0 never fires (AMICI-dev/AMICI#3508) | 318, 338, 339, 436, 736; MODEL1412200000 and MODEL1708210000, which AMICI 1.0.1 could not run | `INVALID_REFERENCE` |
+| A piecewise condition exactly at its threshold at t0 keeps its t0 value (AMICI-dev/AMICI#3515) | 481, MODEL2003200002; 161 is the state-dependent case, fixed on main | `INVALID_REFERENCE` (161: PASS on this pin) |
+| `(x > c) && (p == 0)` executes at the next output time (AMICI-dev/AMICI#3586) | 825 | `INVALID_REFERENCE` |
+| A function definition declares an argument twice; AMICI binds the first, bngsim and RoadRunner the last | MODEL2003040001 | `NO_GROUND_TRUTH` |
+| No unique solution past t = 8 (rr_parity's own NO_GROUND_TRUTH entry); AMICI 1.0.1 could not run it | MODEL2310250001 | still a scoring DIFF: rr_parity's evidence is each engine failing to converge with itself, and this suite's NO_GROUND_TRUTH asks for a closed form or an integrator outside SUNDIALS |
+| AMICI-dev/AMICI#3233 (Class 4's MODEL0910846879), fixed in AMICI 1.1.0 | MODEL0910846879 | PASS on this pin; its two entries retired |
+
+The full ODE sweep on this pin (bngsim 0.17.2, before these entries): 1106 PASS,
+13 DIFF, 8 TIMEOUT, 25 UNSUPPORTED, 145 REFERENCE_FAILED, 26 BAD_TEST, against
+1070 / 26 / 6 / 25 / 170 / 26 on the old pin. All 13 DIFFs are in the table
+above; with these entries 12 of them are non-scoring and MODEL2310250001 stays. Two of the timeouts (BIOMD0000000470, MODEL1112100000) are cold builds:
+MODEL1112100000's alone takes 196 s on this AMICI, past amici_run's 180 s default,
+and both PASS once built.
+
+The test behind the t0 rows: start both engines at t0 = -1e-9 instead of 0. That
+moves the trigger off its threshold at the start and changes nothing else, and
+AMICI then agrees. Class 2's note on 339 (the unstable exact solution XIIa = K =
+CA = 0) is not why that row differs on this pin: AMICI holds those three at 0
+too, and the difference is its dilution event, `time > 0`, never firing.
+`amici_dispositions.py` carries each entry's evidence.
 
 ## Class 1 — AMICI cannot run the model (173: REFERENCE_FAILED + EXCEPTION)
 

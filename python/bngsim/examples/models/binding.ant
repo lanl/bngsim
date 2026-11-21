@@ -1,0 +1,11 @@
+// A + B <-> C. A and B bind to make the complex C.
+// Exact solution: bngsim.examples.exact("binding", t).
+model binding
+  J1: A + B -> C; kf*A*B
+  J2: C -> A + B; kr*C
+  kf = 0.01   // binding rate constant
+  kr = 0.1    // unbinding rate constant
+  A = 100
+  B = 80
+  C = 0
+end
