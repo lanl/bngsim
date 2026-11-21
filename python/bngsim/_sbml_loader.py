@@ -5408,22 +5408,32 @@ def _sbml_record(
         ids.update(get(i).getId() for i in range(count))
     renamed = {sid: _safe_name(sid) for sid in ids if _safe_name(sid) != sid}
 
-    def law(r) -> tuple[str, list[str]]:
-        """The law as the file writes it, and its local parameters' ids:
-        :func:`sbml_rates_in_model_names` puts them in the model's names when a
-        description shows the reaction, so a load pays for no rename."""
+    # An id the L3 parser would read as one of its words (the clock, pi, ...)
+    # cannot be told from that word in a law's text once it is written.
+    ambiguous = any(sid.lower() in _L3_PARSER_WORDS for sid in renamed)
+
+    def law(r) -> tuple[str, list[str], bool]:
+        """The law, its local parameters' ids, and whether the law is already
+        in the model's names. Most laws are kept as the file writes them, and
+        :func:`sbml_rates_in_model_names` renames the ones a description shows,
+        so a load pays for no rename. A law whose text could not be read back
+        without ambiguity, because a local or a renamed id is spelled like a
+        word of the L3 parser, is renamed here, on its own math."""
         kl = r.getKineticLaw()
         if kl is None or kl.getMath() is None:
-            return "", []
-        return (
-            _libsbml.formulaToL3String(kl.getMath()),
-            [lp.getId() for lp in _kinetic_law_local_params(kl)],
-        )
+            return "", [], True
+        local_ids = [lp.getId() for lp in _kinetic_law_local_params(kl)]
+        if ambiguous or any(lid.lower() in _L3_PARSER_WORDS for lid in local_ids):
+            math = _law_math_in_model_scope(r)
+            for sid, safe in renamed.items():
+                math.renameSIdRefs(sid, safe)
+            return _libsbml.formulaToL3String(math), local_ids, True
+        return _libsbml.formulaToL3String(kl.getMath()), local_ids, False
 
     reactions = []
     for i in range(sbml_model.getNumReactions()):
         r = sbml_model.getReaction(i)
-        formula, local_ids = law(r)
+        formula, local_ids, in_model_names = law(r)
         reactions.append(
             {
                 "id": r.getId(),
@@ -5434,6 +5444,7 @@ def _sbml_record(
                 ],
                 "law": formula,
                 "local_ids": local_ids,
+                "in_model_names": in_model_names,
                 "reversible": bool(r.getReversible()),
                 "fast": bool(r.isSetFast() and r.getFast()),
             }
@@ -5464,6 +5475,24 @@ def _sbml_record(
     }
 
 
+#: The words libsbml's L3 formula parser reads as constants or as the clock, in
+#: any case, rather than as an id: ``Pi`` is pi, ``Nan`` is NaN.
+_L3_PARSER_WORDS = frozenset(
+    {
+        "pi",
+        "inf",
+        "infinity",
+        "nan",
+        "notanumber",
+        "true",
+        "false",
+        "time",
+        "avogadro",
+        "exponentiale",
+    }
+)
+
+
 def _rename_tokens(formula: str, names: dict[str, str]) -> str:
     """Each identifier of an L3 formula that ``names`` maps, renamed: a whole
     token, matched case for case, and not a function's name (one a ``(``
@@ -5480,44 +5509,28 @@ def sbml_rates_in_model_names(reactions: list[dict], renamed: dict[str, str]) ->
     """Recorded reactions' laws in the model's names: each local parameter as
     the model's ``_lp_<reaction>_<id>`` (so a global of the same id is not read
     for it, as in _law_math_in_model_scope), and an id the model renamed
-    (_safe_name) as its name there.
-
-    The recorded string is parsed back with a stand-in model that holds every
-    id to rename: libsbml's L3 parser otherwise reads ``pi``, ``inf``, ``nan``,
-    ``true``, ``time``, ``avogadro`` and ``exponentiale`` as constants, in any
-    case (BIOMD0000000201's species ``Nan``), and renameSIdRefs never sees them.
-    A law the parser cannot read back (a function definition named ``log``
-    with three arguments) is renamed token by token instead."""
+    (_safe_name) as its name there. A law the record already holds in those
+    names, one whose ids the parser could confuse with its words, is taken as
+    it is; the rest are parsed back and renamed. A law the parser cannot read
+    back (a function definition named ``log`` with three arguments) is
+    renamed token by token."""
     import libsbml as _libsbml
 
-    protect = set(renamed)
-    for r in reactions:
-        protect.update(r["local_ids"])
-    settings = None
-    doc = None
-    if protect:
-        doc = _libsbml.SBMLDocument(3, 2)
-        stand_in = doc.createModel()
-        for sid in protect:
-            stand_in.createParameter().setId(sid)
-        settings = _libsbml.L3ParserSettings()
-        settings.setModel(stand_in)
     out = []
     for r in reactions:
         formula = r["law"]
         names = {lid: f"_lp_{r['id']}_{lid}" for lid in r["local_ids"]}
         names.update({sid: safe for sid, safe in renamed.items() if sid not in names})
-        if not formula or not names:
+        if r["in_model_names"] or not formula or not names:
             out.append(formula)
             continue
-        math = _libsbml.parseL3FormulaWithSettings(formula, settings)
+        math = _libsbml.parseL3Formula(formula)
         if math is None:
             out.append(_rename_tokens(formula, names))
             continue
         for old, new in names.items():
             math.renameSIdRefs(old, new)
         out.append(_libsbml.formulaToL3String(math))
-    del doc  # the stand-in model outlives every parse above
     return out
 
 

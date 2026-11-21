@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 
@@ -1235,3 +1236,53 @@ def test_a_law_the_parser_cannot_read_back_is_renamed_by_token():
     law = f"<apply><ci>log</ci>{_ci('log')}{_ci('A')}{_ci('log')}</apply>"
     model = bngsim.Model.from_sbml_string(_with_local("log", law, definition))
     assert model.describe()["reactions"][0]["rate"] == "log(_lp_R1_log, A, _lp_R1_log)"
+
+
+_CLOCK = (
+    '<csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time">time</csymbol>'
+)
+
+
+def _ast_renamed(text: str, names: dict[str, str]) -> str:
+    """The first reaction's law renamed on its own math by libsbml, which tells
+    the clock and pi from ids of the same spelling: the oracle."""
+    import libsbml
+
+    doc = libsbml.readSBMLFromString(text)
+    math = doc.getModel().getReaction(0).getKineticLaw().getMath().deepCopy()
+    for old, new in names.items():
+        math.renameSIdRefs(old, new)
+    return libsbml.formulaToL3String(math)
+
+
+def test_the_clock_beside_a_parameter_named_time():
+    """A model with a parameter ``time`` (the model's ``_ant_time``): a law
+    that reads the clock still reads the clock (issue #1705 review)."""
+    text = _with_local("kl", f"<apply><times/>{_CLOCK}{_ci('A')}</apply>").replace(
+        '<parameter id="k" value="5" constant="true"/>',
+        '<parameter id="k" value="5" constant="true"/><parameter id="time" value="0.1"/>',
+    )
+    model = bngsim.Model.from_sbml_string(text)
+    assert "_ant_time" in model.param_names
+    rate = model.describe()["reactions"][0]["rate"]
+    assert rate == _ast_renamed(text, {"time": "_ant_time"})
+    assert "_ant_time" not in rate
+    # The run reads the clock: the rate is 0 at t = 0.
+    assert model.rhs(model.get_state(), t=0.0)[0] == 0.0
+
+
+def test_the_clock_beside_a_local_named_time():
+    law = f"<apply><times/>{_CLOCK}{_ci('time')}{_ci('A')}</apply>"
+    text = _with_local("time", law)
+    rate = bngsim.Model.from_sbml_string(text).describe()["reactions"][0]["rate"]
+    assert rate == _ast_renamed(text, {"time": "_lp_R1_time"})
+    assert rate.count("_lp_R1_time") == 1
+
+
+def test_pi_beside_a_local_named_pi():
+    law = f"<apply><times/><pi/>{_ci('pi')}{_ci('A')}</apply>"
+    text = _with_local("pi", law)
+    model = bngsim.Model.from_sbml_string(text)
+    rate = model.describe()["reactions"][0]["rate"]
+    assert rate == _ast_renamed(text, {"pi": "_lp_R1_pi"}) == "pi * _lp_R1_pi * A"
+    assert model.rhs(model.get_state())[0] == pytest.approx(-math.pi * 0.1 * 100)
