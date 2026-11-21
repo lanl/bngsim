@@ -1,3 +1,7 @@
+---
+summary: "ODE solver settings: tolerances and their defaults, per-species atol, dense and sparse (KLU) linear solvers, step limits, and solver statistics."
+---
+
 # Solver configuration
 
 ## Solver configuration

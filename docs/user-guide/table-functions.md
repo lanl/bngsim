@@ -1,3 +1,7 @@
+---
+summary: "BioNetGen table functions (TFUN): declaring one, the .tfun file format, its index variable, and giving a table new data."
+---
+
 # Table functions (TFUN)
 
 Table functions interpolate a quantity from tabular data, which is how a model

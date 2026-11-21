@@ -18,8 +18,8 @@ that accepted ``n_steps`` as ``n_points`` would return one row short with
 nothing raised.
 
 :data:`FOREIGN_NAMES` is data so that other text can be generated from it: the
-agent guide's translation table (issue #1699) is to be, and a test pins the
-table and what each entry points at. When bngsim retires a name of its own,
+agent guide's translation table (issue #1699, :mod:`bngsim._agent_guide`) is,
+and a test pins the table and what each entry points at. When bngsim retires a name of its own,
 the name goes in here at removal, with ``origin`` naming the release, so a
 caller who learned the old spelling from an older release, or from text
 written about one, gets the new one in the error. None has been yet: no public
@@ -54,8 +54,11 @@ class ForeignName:
         ``"Simulator.<method>"`` (one of that method's own).
         ``"pattern"`` is a habit no error of bngsim's names the call for
         (:data:`PATTERNS`): listed for the agent guide only.
+        ``"translation"`` is another tool's call on that tool's own objects,
+        which no bngsim object could meet: listed for the agent guide only.
     name : str
-        The name as the caller wrote it; for a ``"pattern"``, the code.
+        The name as the caller wrote it; for a ``"pattern"`` or a
+        ``"translation"``, the code.
     use : str
         bngsim's call, as code, written over ``model``, ``sim`` and ``result``;
         empty where no one call replaces it and :attr:`note` says what does.
@@ -64,7 +67,8 @@ class ForeignName:
         translation is not one-to-one, the difference.
     origin : str
         Where the habit comes from: a tool (``"libRoadRunner"``,
-        ``"Tellurium"``, ``"SciPy"``, ``"BioNetGen"``, ``"pandas"``),
+        ``"Tellurium"``, ``"AMICI"``, ``"COPASI (basico)"``, ``"BioNetGen"``,
+        ``"PySB"``, ``"SciPy"``, ``"pandas"``),
         ``"bngsim"`` for a bngsim name asked of the wrong object,
         ``"guess"`` for a name no tool has that callers try anyway, or
         ``"bngsim X.Y"`` for a name of bngsim's own that release removed.
@@ -480,7 +484,12 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
     + _entries(
         "Simulator.run",
         "SciPy",
-        ("t_eval", "sample_times=t_eval"),
+        (
+            "t_eval",
+            "sample_times=t_eval",
+            "SciPy integrates from t_span[0]; a bngsim run starts at the first sample time, so "
+            "put the start time first.",
+        ),
         ("method", "bngsim.Simulator(model, method=...)", _BUILT),
         (
             "y0",
@@ -665,6 +674,110 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
             "Python reports a name a module lacks, imported with from ... import, as a bare "
             "ImportError, without the hint the same name read as an attribute gets.",
         ),
+    )
+    # ── Translations: for the agent guide only ───────────────────────────
+    #
+    # Another tool's call, written as that tool spells it, on that tool's
+    # objects. No bngsim object has the name, so no error of bngsim's can
+    # meet it; the guide's table is where it is translated.
+    + _entries(
+        "translation",
+        "AMICI",
+        (
+            "amici.sim.sundials.run_simulation(model, solver)",
+            "sim.run(sample_times=times)",
+            "AMICI before 1.0: amici.runAmiciSimulation. There is no import or compile step: "
+            "bngsim.Model.load(path) reads the SBML, and a Simulator runs it. AMICI integrates "
+            "from t0; a bngsim run starts at the first sample time, so put t0 first.",
+        ),
+        (
+            "model.set_timepoints(times)",
+            "sim.run(sample_times=times)",
+            "AMICI before 1.0: setTimepoints. The run starts at the first sample time, so put "
+            "the start time first.",
+        ),
+        (
+            "model.set_free_parameter_by_name(name, value)",
+            "model.set_param(name, value)",
+            "AMICI before 1.0: setParameterByName.",
+        ),
+        (
+            "solver.set_sensitivity_order(SensitivityOrder.first)",
+            "bngsim.Simulator(model, sensitivity_params=[...])",
+            "AMICI before 1.0: setSensitivityOrder. result.sensitivities is "
+            "(n_times, n_species, n_params); AMICI's rdata.sx is (n_times, n_params, n_species).",
+        ),
+        ("rdata.x", "result.species"),
+    )
+    + _entries(
+        "translation",
+        "COPASI (basico)",
+        ("basico.load_model(path)", "bngsim.Model.load(path)"),
+        (
+            "basico.run_time_course(duration=d, intervals=n)",
+            "sim.run(t_span=(0, d), n_points=n + 1)",
+            "intervals counts the steps between output points. basico starts each time course "
+            "from the initial values; a bngsim run continues from the last one unless "
+            'start="initial".',
+        ),
+        (
+            'basico.run_time_course(method="stochastic")',
+            'bngsim.Simulator(model, method="ssa")',
+            _BUILT,
+        ),
+        ("basico.set_parameters(name, initial_value=v)", "model.set_param(name, v)"),
+        ("basico.set_species(name, initial_concentration=c)", "model.set_concentration(name, c)"),
+        ("basico.run_steadystate()", "sim.steady_state()"),
+    )
+    + _entries(
+        "translation",
+        "BioNetGen",
+        (
+            'simulate({method=>"ode", t_end=>T, n_steps=>N})',
+            'bngsim.Simulator(model, method="ode").run(t_span=(0, T), n_points=N + 1)',
+            "bngsim.run_bngl(path) runs the actions a .bngl file holds, as written.",
+        ),
+        (
+            "simulate({..., continue=>1})",
+            "sim.run(t_span=(t_end, t_next), n_points=n)",
+            "Every run goes on from the model's state; a t_span that starts where the last one "
+            "ended continues its clock too.",
+        ),
+        (
+            'parameter_scan({parameter=>"k", par_min=>a, par_max=>b, n_scan_pts=>n, '
+            "log_scale=>1, t_end=>T, n_steps=>N})",
+            'sim.parameter_scan("k", par_min=a, par_max=b, n_scan_pts=n, log_scale=True, '
+            "t_span=(0, T), n_points=N + 1)",
+            "It returns one Result per point and writes no files. Without t_span and n_points "
+            "it runs (0, 100) at 101 points.",
+        ),
+        (
+            "generate_network({overwrite=>1})",
+            "bngsim.Model.from_bngl(path)",
+            "It runs BNG2.pl's generate_network and loads the network; a repeated load of an "
+            "unchanged file reads a cache.",
+        ),
+    )
+    + _entries(
+        "translation",
+        "PySB",
+        (
+            "ScipyOdeSimulator(model, tspan=t).run()",
+            "bngsim.Simulator(model).run(sample_times=t)",
+            "Export the PySB model first: pysb.export.export(model, 'bngl') returns BNGL text, "
+            "which bngsim.Model.from_bngl(path) reads from a file.",
+        ),
+        (
+            "ScipyOdeSimulator(model).run(param_values={...})",
+            "model.set_params({name: value, ...})",
+            "Set the parameters on the Model, then run. PySB's values hold for that run only; "
+            "the Model keeps these.",
+        ),
+        (
+            'BngSimulator(model).run(method="ssa", n_runs=n)',
+            'bngsim.Simulator(model, method="ssa").run_replicates(n, t_span=(t0, t1), n_points=m)',
+        ),
+        ('res.observables["obs"]', 'result.observables["obs"]', "A numpy column."),
     )
 )
 

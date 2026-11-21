@@ -1,3 +1,7 @@
+---
+summary: "For contributors: adding a built-in function to the expression language."
+---
+
 # Extending bngsim
 
 ## Adding a New Built-in Function (Developer Guide)

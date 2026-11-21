@@ -1,3 +1,7 @@
+---
+summary: "Network-free simulation of rule-based models with NFsim and RuleMonkey: the methods, sessions, and how a rule's rate is counted."
+---
+
 # Network-free simulation (NFsim & RuleMonkey)
 
 ## Network-free simulation (NFsim and RuleMonkey)

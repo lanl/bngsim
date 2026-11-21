@@ -1,3 +1,7 @@
+---
+summary: "Speed and accuracy against BioNetGen's run_network and libRoadRunner, and the SBML test-suite results."
+---
+
 # Benchmarks & validation
 
 BNGsim's SSA (Gillespie direct method with dependency graph + 4-ary sum tree) and

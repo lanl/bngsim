@@ -1,3 +1,7 @@
+---
+summary: "Compiling a model's right-hand side and Jacobian to C: when bngsim does it, the compiler it needs, the cache, and running on clusters."
+---
+
 # Code-generated ODE RHS
 
 ## Code-generated ODE RHS

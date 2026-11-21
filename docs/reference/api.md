@@ -1,3 +1,7 @@
+---
+summary: "Every public class, method and exception, summarized, then the full reference generated from the docstrings."
+---
+
 # API reference
 
 
