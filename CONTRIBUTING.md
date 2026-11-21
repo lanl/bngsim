@@ -586,6 +586,11 @@ weeks lapses, and anyone may take the issue.
   ([Checking performance and parity](#checking-performance-and-parity)).
 - Stage a changelog fragment (below) and, where user-facing, update the relevant
   page under [`docs/`](docs/).
+- For a new public name (a function, method, keyword, simulation method,
+  capability or extra), decide whether an agent meeting bngsim should know it:
+  use it in [`python/bngsim/agent_guide.md`](python/bngsim/agent_guide.md), or
+  add its line to `python/tests/agent_guide_left_out.txt`.
+  `test_agent_guide_coverage.py` fails until one is done.
 - Say how the PR was reviewed, under the "Review" heading the PR template gives
   you ([Saying how a PR was reviewed](#saying-how-a-pr-was-reviewed)).
 - Begin the PR's title with the part of bngsim it changes, then say what
