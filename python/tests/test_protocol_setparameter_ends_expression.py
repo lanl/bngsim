@@ -323,6 +323,21 @@ def test_a_held_parameter_that_reads_another_holds_when_the_write_leaves_it_be(
     assert out.model.get_param("kr") == number
 
 
+def test_three_held_parameters_in_a_chain_hold_until_none_moves(tmp_path):
+    # k2 k1*0.5, kf k2/k1 and kr kf-k2/k1+1, each set to the number it gives
+    # (0.5, 0.5 and 1). k1 = 3 moves k2 alone; writing k2 back moves kf alone,
+    # to 0.5/3; writing kf back moves kr, to 0.5 - 0.5/3 + 1. Each write-back
+    # uncovers the next, so it takes a pass for each of the three.
+    model = _model3(tmp_path, "k2/k1", "kf-k2/k1+1")
+    sets = [_set("k2", 0.5), _set("kf", 0.5), _set("kr", 1)]
+    out = _replay(model, *sets, _set("k1", 3), _run(0.25))
+    assert [out.model.get_param(n) for n in ("k2", "kf", "kr")] == [0.5, 0.5, 1.0]
+    assert _end(out[0].result) == pytest.approx(a_at(0.25, 0.5, 1.0), rel=1e-8)
+    # Not where one pass leaves the three (kf at 0.5/3), nor two (kr at 4/3).
+    for kf, kr in ((0.5 / 3, 1.0), (0.5, 0.5 - 0.5 / 3 + 1)):
+        assert _end(out[0].result) != pytest.approx(a_at(0.25, kf, kr), rel=1e-3)
+
+
 def test_a_held_parameter_set_to_a_second_number_takes_it(tmp_path):
     # The first number's hold must not write itself back over the second: the
     # run is at k2 = 0.7, then at 0.5 again.
