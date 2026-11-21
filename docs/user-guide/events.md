@@ -109,13 +109,10 @@ residual, as bngsim's threshold evaluator computes it, is 0 (or, where no double
 makes it 0, the one nearest): for `x >= 2.6` from `x = 0.1` that is t = 2.5,
 because `(2.5 + 0.1) - 2.6` is exactly 0. A row at t = 2.5 then reads the state
 after the event, for a run of any length (issue #1673; before, it read the state
-before the event for some run lengths and after it for others). That holds for
-nearly every such row, not for all: where the residual is as small a double
-below the solve's answer as at the answer, and smaller a double above it, the
-stop is moved down, away from that smaller residual, and a row on the double
-above can still read the state before the event for some run lengths
-(`x >= 4.53` from `x = 1.71`, a row at 2.8200000000000003: before it for a run
-to 300, after it for shorter ones).
+before the event for some run lengths and after it for others). The time is
+solved over a scale taken from the crossing itself, the power of two at or
+above it, not from the run's end, so the same trigger gives the same stop in
+every run that reaches it, whatever the run's length, for every operator.
 
 That evaluator reads a number written with 17 digits (`3.0700000000000003`, or
 a time between two short ones) more finely than a double holds it, so where
@@ -131,7 +128,8 @@ trigger written with `abs()` or a square,
 `abs(x - 3.1) <= 0.5` or `(x - 3.1)^2 <= 0.25`, is two such crossings, one per
 edge, each placed by the operator written. A strict `x > 2.6` (or
 `abs(x - 3.1) < 0.5`) is met only after the zero and is stopped where the solve
-puts it, as before; its row can still depend on the run's length.
+puts it, the same double at every run length; for `x > 2.6` from `x = 0.1` that
+is the double after t = 2.5, so a row at 2.5 reads the state before the event.
 
 Which side the row falls on there is decided in doubles, where `0.1 + 2.5` is
 the double 2.6, so the trigger is met at t = 2.5. The exact sum of those two

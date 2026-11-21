@@ -422,11 +422,52 @@ def _solve(cond: str, t_end: float) -> float | None:
 def test_a_strict_comparison_and_an_equality_keep_the_solve_s_answer(op):
     """A strict stop moved past the last zero, where its truth changes, is no
     longer on the instant the engine fires a strict event at, and `==` holds
-    only on the run: these keep the solve's answer, which still moves with the
-    scale (2.5 for a run to 8, the double after it for 4 or 64)."""
+    only on the run: these keep the solve's answer. Solved again over the
+    answer's own scale, that answer is the double after 2.5 at every run length
+    (over the window's scale alone it was 2.5 for a run to 8, and the double
+    after it for 4 or 64)."""
     cond = f"((time()+(0.1)){op}2.6)"
-    after = math.nextafter(2.5, math.inf)
-    assert [_solve(cond, t_end) for t_end in (4.0, 8.0, 64.0)] == [after, 2.5, after]
+    assert {_solve(cond, t_end) for t_end in T_ENDS} == {math.nextafter(2.5, math.inf)}
+
+
+# ── The answer's own scale (Ely's review of 93daf254) ──────────────────────
+
+
+def test_a_strict_row_reads_the_same_at_every_run_length():
+    # `x > 2.6` is first true after 2.5, where `(2.5 + 0.1) - 2.6` is 0, so the
+    # row at 2.5 reads the state before the event. Over the window's scale the
+    # stop was 2.5 for some run lengths, and the row then read 1.
+    doc = _doc(_strict("<ci>x</ci>", "2.6"))
+    assert {_row(doc, 2.5, t_end) for t_end in T_ENDS} == {3.0}
+
+
+def test_a_tie_the_walk_broke_downward_reads_the_same_at_every_run_length():
+    # x' = 1 from 1.71, `x >= 4.53`, a row at 2.8200000000000003. Over a scale
+    # of 512 (a run to 300) the solve gave 2.82, where the residual is as small
+    # as a double below it, and the walk went down to 2.8199999999999994: the
+    # row read 3 for that run, and 1 for shorter ones.
+    row = 2.8200000000000003
+    assert {_solve("((time()+(1.71))>=4.53)", t_end) for t_end in T_ENDS} == {row}
+    doc = _doc(_geq("<ci>x</ci>", "4.53"), x0="1.71")
+    assert {_row(doc, row, t_end) for t_end in T_ENDS} == {1.0}
+
+
+def test_a_crossing_on_a_power_of_two_is_solved_over_one_scale():
+    # The answer is nudged up before its power of two is read, so 2.0 and the
+    # double after it are solved over the same scale (4), not 2 and 4.
+    after = math.nextafter(2.0, math.inf)
+    assert {_solve("((time()+(0.1))>2.1)", t_end) for t_end in T_ENDS} == {after}
+    assert {_solve("((time()+(0.1))>=2.1)", t_end) for t_end in T_ENDS} == {2.0}
+    doc = _doc(_strict("<ci>x</ci>", "2.1"))
+    assert {_row(doc, 2.0, t_end) for t_end in T_ENDS} == {3.0}
+
+
+@pytest.mark.parametrize("cond", ["(((time()-2)^2)<=0)", "((time()*time())>=4)"])
+def test_a_residual_that_is_not_linear_is_still_declined(cond):
+    # The second solve comes after the linearity check: a line through a curve
+    # can land on its root, and `(time-2)^2 <= 0` was resolved to 2 when it
+    # came first.
+    assert {_solve(cond, t_end) for t_end in T_ENDS} == {None}
 
 
 def test_the_solve_for_a_trigger_met_on_its_zero_is_the_same_at_every_run_length():

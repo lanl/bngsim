@@ -2529,6 +2529,31 @@ def _crossing_time_of_condition(
                 t_star,
             )
             return None
+        # The scale above comes from the run's window, and in doubles the
+        # answer moves by an ulp with it (issue #1673). A residual that passed
+        # the check is linear, and is solved again over a scale taken from the
+        # answer itself, the power of two at or above it: the scale is then
+        # the crossing's own at every run length, for every operator. (After
+        # the check, not before: a second line through a curve can land on its
+        # root, and `(time-2)^2 <= 0`, declined over any window, was resolved
+        # to 2.) The answer is nudged up before its power of two is read, so
+        # that 2.0 and the double after it share a scale. (Its exponent is
+        # bounded first: 2.0 ** 1024 raises OverflowError rather than give inf,
+        # and an answer that far out keeps the first solve.)
+        exponent = math.ceil(math.log2(max(min(abs(t_star), 2.0**1023) * (1.0 + 2.0**-40), 1.0)))
+        own = math.ldexp(1.0, exponent) if exponent <= 1023 else math.inf
+        if own != scale and math.isfinite(own):
+            r_own = at(own)
+            if r_own is not None:
+                slope_own = (r_own - r0) / own
+                if slope_own != 0.0 and abs(slope_own) < float("inf"):
+                    again = -r0 / slope_own
+                    check_again = at(again)
+                    if (
+                        check_again is not None
+                        and abs(check_again) <= _CROSSING_RESIDUAL_TOL * abs(slope) * scale
+                    ):
+                        t_star, check = again, check_again
         # The truth of `>=` and `<` changes at the first double where a rising
         # residual is 0, and that of `>` and `<=` where a falling one is
         # (issue #1673). For the other four, and for `==` and `!=`, it changes
