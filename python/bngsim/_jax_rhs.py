@@ -862,8 +862,12 @@ def generate_jax_rhs(model: Any) -> Any:
         ``_refuse_unsupported``) or an expression it cannot translate.
     """
     if not jax_available():
-        raise ImportError(
-            "JAX is required for jacobian='jax'. Install with: pip install jax jaxlib"
+        from bngsim._error_codes import install
+        from bngsim._exceptions import DependencyError
+
+        raise DependencyError(
+            "JAX is required for jacobian='jax'. Install with: pip install jax jaxlib",
+            remedies=[install("jax", command="pip install jax jaxlib")],
         )
 
     import jax.numpy as jnp
@@ -1130,8 +1134,12 @@ def generate_jax_jacobian(model: Any) -> Any:
     correctness.
     """
     if not jax_available():
-        raise ImportError(
-            "JAX is required for jacobian='jax'. Install with: pip install jax jaxlib"
+        from bngsim._error_codes import install
+        from bngsim._exceptions import DependencyError
+
+        raise DependencyError(
+            "JAX is required for jacobian='jax'. Install with: pip install jax jaxlib",
+            remedies=[install("jax", command="pip install jax jaxlib")],
         )
 
     # Screen for discontinuities — warn but don't reject.
@@ -1196,8 +1204,12 @@ def prepare_jax_jacobian(model: Any) -> tuple:
         a callable (y_flat, t, param_flat) -> flat_jac_array.
     """
     if not jax_available():
-        raise ImportError(
-            "JAX is required for jacobian='jax'. Install with: pip install jax jaxlib"
+        from bngsim._error_codes import install
+        from bngsim._exceptions import DependencyError
+
+        raise DependencyError(
+            "JAX is required for jacobian='jax'. Install with: pip install jax jaxlib",
+            remedies=[install("jax", command="pip install jax jaxlib")],
         )
 
     import jax

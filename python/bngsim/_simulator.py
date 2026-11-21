@@ -58,6 +58,7 @@ from bngsim._codegen import (
     read_sens_decline_note,
 )
 from bngsim._describe import ode_refusals, steady_state_refusals
+from bngsim._error_codes import pass_argument
 from bngsim._exceptions import (
     AtolScaleWarning,
     CodegenDeclinedError,
@@ -75,6 +76,7 @@ from bngsim._exceptions import (
     SsaRoundingWarning,
     SsaValidationError,
     StopConditionMet,
+    UsageError,
 )
 from bngsim._extension_handle import raise_cannot_pickle, raise_cannot_shallow_copy
 from bngsim._foreign_names import RUN_CALLS, call_error
@@ -1286,8 +1288,11 @@ class Simulator:
                     "wheel that excludes NFsim."
                 )
             if not xml_path:
-                raise ValueError(
-                    f"method='{method}' requires xml_path=... pointing to a BNG XML file."
+                raise UsageError(
+                    f"method='{method}' requires xml_path=... pointing to a BNG XML file.",
+                    code="usage.missing_argument",
+                    details={"argument": "xml_path", "method": method},
+                    remedies=[pass_argument("xml_path")],
                 )
             from bngsim._bngsim_core import NfsimSimulator
             from bngsim._network_free_checks import (
@@ -1332,8 +1337,11 @@ class Simulator:
                     "wheel that excludes RuleMonkey."
                 )
             if not xml_path:
-                raise ValueError(
-                    f"method='{method}' requires xml_path=... pointing to a BNG XML file."
+                raise UsageError(
+                    f"method='{method}' requires xml_path=... pointing to a BNG XML file.",
+                    code="usage.missing_argument",
+                    details={"argument": "xml_path", "method": method},
+                    remedies=[pass_argument("xml_path")],
                 )
             from bngsim._bngsim_core import RuleMonkeySimulator
             from bngsim._network_free_checks import (
@@ -1689,8 +1697,12 @@ class Simulator:
             )
 
             if not jax_available():
-                raise ImportError(
-                    "JAX is required for jacobian='jax'. Install with: pip install jax jaxlib"
+                from bngsim._error_codes import install
+                from bngsim._exceptions import DependencyError
+
+                raise DependencyError(
+                    "JAX is required for jacobian='jax'. Install with: pip install jax jaxlib",
+                    remedies=[install("jax", command="pip install jax jaxlib")],
                 )
             eval_fn, n_sp = prepare_jax_jacobian(model)
             self._jax_jac_evaluator = eval_fn
@@ -2460,7 +2472,7 @@ class Simulator:
             # failed now. Warn rather than silently zero the event-time column.
             _notices.log(
                 logger,
-                "sensitivity.detection_failed",
+                "sens.detection_failed",
                 "Event-time sensitivity detection failed (%s); any event-time "
                 "parameter's gradient will be zero (issue #49).",
                 e,
@@ -3126,7 +3138,7 @@ class Simulator:
             # silent zero.
             _notices.log(
                 logger,
-                "sensitivity.detection_failed",
+                "sens.detection_failed",
                 "Switch-time sensitivity detection failed (%s); any switch-time "
                 "parameter's gradient will be zero (issue #48).",
                 e,
@@ -3283,7 +3295,7 @@ class Simulator:
             # this is the difference between a gradient and a wrong gradient.
             _notices.log(
                 logger,
-                "sensitivity.detection_failed",
+                "sens.detection_failed",
                 "State-switch sensitivity detection failed (%s); a rate-law condition "
                 "that reads model state will not have its crossing jump applied "
                 "(issue #150).",
@@ -3330,7 +3342,7 @@ class Simulator:
                 # over the whole right-hand side, as it did before issue #763.
                 _notices.log(
                     logger,
-                    "sensitivity.detection_failed",
+                    "sens.detection_failed",
                     "State-switch reaction map failed (%s); continuity at each "
                     "crossing is judged over every species (issue #763).",
                     e,
@@ -4682,7 +4694,7 @@ class Simulator:
                 "a gradient. Result.ar_sensitivity_refused lists them, and "
                 "Result.output_sensitivities('species:<name>') raises with the "
                 "specific reason.",
-                code="sensitivity.nan_rows",
+                code="sens.nan_rows",
                 stacklevel=2,
             )
 
@@ -4901,7 +4913,7 @@ class Simulator:
                 "expression, or codegen declined it (GH #198). NaN rather than the "
                 "derivative of the stored amount, which is what the row held before (issue "
                 "#742). Result.ar_sensitivity_refused lists them.",
-                code="sensitivity.nan_rows",
+                code="sens.nan_rows",
                 stacklevel=2,
             )
 
@@ -8684,8 +8696,10 @@ class Simulator:
             known = set(all_param_names)
             unknown = set(params) - known
             if unknown:
-                raise ValueError(
-                    f"Unknown parameter(s): {sorted(unknown)}. Known: {sorted(known)}"
+                raise UsageError(
+                    f"Unknown parameter(s): {sorted(unknown)}. Known: {sorted(known)}",
+                    code="param.not_found",
+                    details={"names": [{"name": n} for n in sorted(unknown, key=str)]},
                 )
             target_params = list(params)
             # Issue #164 — an explicit ask gets a hard answer. Issue #170 stage 3
@@ -8751,7 +8765,7 @@ class Simulator:
                     "Model.frozen_params). The returned tensor has "
                     f"{len(target_params)} parameter columns; result.sensitivity_params "
                     "lists them.",
-                    code="sensitivity.parameters_skipped",
+                    code="sens.parameters_skipped",
                     stacklevel=2,
                 )
             skipped = sorted(refused_sizes)
@@ -8767,7 +8781,7 @@ class Simulator:
                     f"to make the refusal explicit, or finite-difference through a "
                     f"rebuild (Model.from_sbml(..., compartment_sizes={{...}}) at "
                     f"V ± h).",
-                    code="sensitivity.parameters_skipped",
+                    code="sens.parameters_skipped",
                     stacklevel=2,
                 )
             if derived:
@@ -8786,7 +8800,7 @@ class Simulator:
                     f"d(x)/d(that parameter) on its own terms — a column that treats "
                     f"it as an independent axis, which is what it becomes once "
                     f"set_param overrides its expression.",
-                    code="sensitivity.parameters_skipped",
+                    code="sens.parameters_skipped",
                     stacklevel=2,
                 )
             if internal:
@@ -8824,7 +8838,7 @@ class Simulator:
                     f"meaning (issue #203).{why} The returned tensor has "
                     f"{len(target_params)} parameter columns; "
                     f"result.sensitivity_params lists them.",
-                    code="sensitivity.parameters_skipped",
+                    code="sens.parameters_skipped",
                     stacklevel=2,
                 )
 
@@ -9017,7 +9031,7 @@ class Simulator:
         # The chunks' notices, but for their one-sided switches, each said of a
         # chunk's columns: the stitched result says them once, of all of them.
         stitched._notices = _notices.unique(
-            n for r in chunk_results for n in r._notices if n.code != "sensitivity.one_sided"
+            n for r in chunk_results for n in r._notices if n.code != "sens.one_sided"
         )
         stitched._one_sided_sensitivities = _merge_one_sided(chunk_results)
         _warn_one_sided(stitched._one_sided_sensitivities)
@@ -9126,7 +9140,7 @@ class Simulator:
                     f"controlled together and can decide whether the step is accepted "
                     f"(issue #243). Underlying failure: {exc}",
                     # user → compute_all_sensitivities → _recover_chunk → here
-                    code="sensitivity.chunk_split",
+                    code="sens.chunk_split",
                     stacklevel=4,
                 )
                 return solo_results

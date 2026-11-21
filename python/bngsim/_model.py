@@ -18,6 +18,7 @@ import numpy as np
 
 from bngsim import _foreign_names, _notices
 from bngsim._exceptions import (
+    MissingFileError,
     ModelError,
     ParameterError,
     SimulationError,
@@ -533,7 +534,9 @@ class Model:
             raise ModelError(
                 f"Cannot infer a model format from {path.name!r} "
                 f"(suffix {suffix or 'missing'!r}); expected one of: {known}. "
-                f"Use the format-specific factory to load it explicitly."
+                f"Use the format-specific factory to load it explicitly.",
+                code="model.unknown_format",
+                details={"path": str(path), "suffix": suffix, "expected": sorted(_LOAD_DISPATCH)},
             )
         if compartment_sizes and factory in ("from_net", "from_bngl"):
             # Post-BNG2.pl, the compartment volumes are already folded into the
@@ -886,7 +889,7 @@ class Model:
 
         path = Path(path)
         if not path.exists():
-            raise FileNotFoundError(f"Net file not found: {path}")
+            raise MissingFileError(f"Net file not found: {path}", path)
         try:
             core = NetworkModel.from_net(str(path))
         except (ValueError, RuntimeError) as e:
@@ -1822,7 +1825,9 @@ class Model:
         try:
             self._core.set_param(name, float(value), force_override=force_override)
         except (KeyError, RuntimeError) as e:
-            raise ParameterError(self._parameter_not_found(name, value)) from e
+            raise ParameterError(
+                self._parameter_not_found(name, value), **self._not_found(name, "parameter")
+            ) from e
 
     @property
     def frozen_params(self) -> list[str]:
@@ -2011,7 +2016,9 @@ class Model:
         try:
             return self._core.get_param(name)
         except (KeyError, RuntimeError) as e:
-            raise ParameterError(self._parameter_not_found(name)) from e
+            raise ParameterError(
+                self._parameter_not_found(name), **self._not_found(name, "parameter")
+            ) from e
 
     def set_params(self, params: dict[str, float]) -> None:
         """Set multiple parameters from a dict.
@@ -2051,9 +2058,21 @@ class Model:
                 for n in sorted(unknown, key=str)
                 if isinstance(n, str) and (text := self._not_a_parameter(n, params[n], among=True))
             )
+            fields = [
+                self._not_found(n, "parameter")
+                if isinstance(n, str)
+                else {
+                    "details": {"name": repr(n), "close_matches": [], "is_a": None},
+                    "remedies": [],
+                }
+                for n in sorted(unknown, key=str)
+            ]
             raise ParameterError(
                 f"Unknown parameter(s): {', '.join(sorted(map(str, unknown)))}. {why}"
-                f"Known: {', '.join(sorted(known))}"
+                f"Known: {', '.join(sorted(known))}",
+                code="param.not_found",
+                details={"names": [f["details"] for f in fields if f]},
+                remedies=[r for f in fields if f for r in f["remedies"]],
             )
         # Phase 2: Convert all values (catches "x", None, etc.)
         converted: dict[str, float] = {}
@@ -2364,7 +2383,9 @@ class Model:
                     return bare, call(bare)
                 except (KeyError, RuntimeError):
                     pass
-            raise ModelError(self._species_not_found(name, value)) from e
+            raise ModelError(
+                self._species_not_found(name, value), **self._not_found(name, "species")
+            ) from e
 
     def get_state(self) -> np.ndarray:
         """Bulk-copy the full live species-concentration vector (GH #102).
@@ -3426,6 +3447,39 @@ class Model:
             return f"{lead} matches: {_foreign_names.quote_list(close)}."
         return None
 
+    def _not_found(self, name: str, kind: str) -> dict:
+        """The code, details and remedies of the error for a *kind* (``parameter``
+        or ``species``) *name* the model does not have (issue #1702): the
+        keywords :class:`BngsimError` takes. Empty for a parameter the model has,
+        whose failure came after the lookup and is not a missing name."""
+        from bngsim._error_codes import use_call, use_name
+
+        names = self._core.param_names if kind == "parameter" else self.species_names
+        if name in names:
+            return {}
+        # What the message says, in its order: a species the name matches
+        # loosely (for a species), else what the name is instead, else the near
+        # matches.
+        close: list[str] = []
+        is_a, actual = None, name
+        if kind == "species":
+            bare = _foreign_names._bare(name)
+            close = [s for s in names if _foreign_names._bare(s) == bare][:1]
+        if not close:
+            is_a, actual = _kind_of(self, name, besides=kind)
+            if is_a is None:
+                close = list(_foreign_names.near_matches(name, names))
+        remedies: list[dict] = [use_name(c) for c in close]
+        if is_a == "species":
+            remedies.append(use_call("set_concentration", actual))
+        elif is_a == "parameter":
+            remedies.append(use_call("set_param", actual))
+        return {
+            "code": "param.not_found" if kind == "parameter" else "species.not_found",
+            "details": {"name": name, "close_matches": list(close), "is_a": is_a},
+            "remedies": remedies,
+        }
+
     def _species_not_found(self, name: str, value: object = _UNSET) -> str:
         """:meth:`_parameter_not_found` for a species. A species the name
         matches loosely comes first: BNGL's ``Molecules S1 S1()`` makes ``S1``
@@ -3755,6 +3809,28 @@ def _require_core(core: object) -> None:
         "bngsim.Model.from_sbml_string(text) or bngsim.Model.from_antimony_string(text) "
         "for model text."
     )
+
+
+def _kind_of(model: Model, name: str, *, besides: str) -> tuple[str | None, str]:
+    """What kind of name *name* is in *model*, other than *besides*, and the
+    model's own spelling of it (issue #1702): ``"function"``, ``"parameter"``,
+    ``"species"`` or ``"observable"``, or ``None``. It looks as
+    :func:`_what_it_is` does, in its order, so the two agree."""
+    if name in model.function_names:
+        return "function", name
+    if besides != "parameter" and name in model._core.param_names:
+        return "parameter", name
+    if besides != "species":
+        species = model.species_names
+        actual = next((n for n in (name, _unclamped(name)) if n in species), None)
+        if actual is None:
+            bare = _foreign_names._bare(name)
+            actual = next((s for s in species if _foreign_names._bare(s) == bare), None)
+        if actual is not None:
+            return "species", actual
+    if name in model.observable_names:
+        return "observable", name
+    return None, name
 
 
 def _what_it_is(

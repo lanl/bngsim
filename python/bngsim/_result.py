@@ -27,6 +27,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from bngsim import _foreign_names, _notices, _record
+from bngsim._exceptions import MissingFileError
 from bngsim._extension_handle import raise_cannot_pickle, shallow_copy
 from bngsim._notices import Notice
 
@@ -178,7 +179,7 @@ def _warn_one_sided(entries: list[tuple[float, dict[str, str]]], *, note: bool =
             "Every other column is an ordinary derivative (issue #1822). "
             "Result.one_sided_sensitivities lists these.",
             OneSidedSensitivityWarning,
-            code="sensitivity.one_sided",
+            code="sens.one_sided",
             stacklevel=_notices.OUTSIDE,
             emit=not held,
             record=note,
@@ -2678,8 +2679,13 @@ class Result:
         try:
             import pandas as pd
         except ImportError:
-            raise ImportError(
-                "pandas is required for Result.dataframe. Install with: pip install bngsim[pandas]"
+            from bngsim._error_codes import install
+            from bngsim._exceptions import DependencyError
+
+            raise DependencyError(
+                "pandas is required for Result.dataframe. "
+                "Install with: pip install bngsim[pandas]",
+                remedies=[install("pandas", extra="pandas")],
             ) from None
 
         data = {"time": self._time}
@@ -2767,9 +2773,13 @@ class Result:
         try:
             import xarray as xr
         except ImportError:
-            raise ImportError(
+            from bngsim._error_codes import install
+            from bngsim._exceptions import DependencyError
+
+            raise DependencyError(
                 "xarray is required for Result.to_xarray() and Result.xr. "
-                "Install with: pip install 'bngsim[xarray]'"
+                "Install with: pip install 'bngsim[xarray]'",
+                remedies=[install("xarray", extra="xarray")],
             ) from None
 
         if self._species.ndim != 2:
@@ -3150,8 +3160,12 @@ class Result:
         try:
             import h5py
         except ImportError:
-            raise ImportError(
-                "h5py is required for Result.save(). Install with: pip install bngsim[hdf5]"
+            from bngsim._error_codes import install
+            from bngsim._exceptions import DependencyError
+
+            raise DependencyError(
+                "h5py is required for Result.save(). Install with: pip install bngsim[hdf5]",
+                remedies=[install("h5py", extra="hdf5")],
             ) from None
 
         path = Path(path)
@@ -3423,13 +3437,17 @@ class Result:
         try:
             import h5py
         except ImportError:
-            raise ImportError(
-                "h5py is required for Result.load(). Install with: pip install bngsim[hdf5]"
+            from bngsim._error_codes import install
+            from bngsim._exceptions import DependencyError
+
+            raise DependencyError(
+                "h5py is required for Result.load(). Install with: pip install bngsim[hdf5]",
+                remedies=[install("h5py", extra="hdf5")],
             ) from None
 
         path = Path(path)
         if not path.exists():
-            raise FileNotFoundError(f"Result file not found: {path}")
+            raise MissingFileError(f"Result file not found: {path}", path)
 
         logger.info("Loading result from %s", path)
 
@@ -4503,8 +4521,12 @@ class _XarrayAccessor:
         try:
             import xarray as xr
         except ImportError:
-            raise ImportError(
-                "xarray is required for Result.xr. Install with: pip install 'bngsim[xarray]'"
+            from bngsim._error_codes import install
+            from bngsim._exceptions import DependencyError
+
+            raise DependencyError(
+                "xarray is required for Result.xr. Install with: pip install 'bngsim[xarray]'",
+                remedies=[install("xarray", extra="xarray")],
             ) from None
 
         result = self._result

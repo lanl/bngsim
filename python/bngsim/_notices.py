@@ -85,34 +85,34 @@ CODES: dict[str, str] = {
         "A protocol's run asked to stop at a steady state reached none by its end."
     ),
     "rulemonkey.unsupported": "RuleMonkey reported a construct it does not support as written.",
-    "sensitivity.chain_rule_dropped": (
+    "sens.chain_rule_dropped": (
         "A derived parameter's expression could not be differentiated; sensitivities "
         "through it read zero along that path."
     ),
-    "sensitivity.chunk_split": (
+    "sens.chunk_split": (
         "A group of sensitivity columns failed together and each was solved on its own."
     ),
-    "sensitivity.detection_failed": (
+    "sens.detection_failed": (
         "Finding the switch, event or state crossings a sensitivity depends on failed; "
         "a gradient may miss the jump at one."
     ),
-    "sensitivity.nan_rows": (
+    "sens.nan_rows": (
         "Rows of the sensitivity tensor are NaN or infinite where the chain rule they "
         "need is not available."
     ),
-    "sensitivity.one_sided": (
+    "sens.one_sided": (
         "Sensitivity columns are one-sided derivatives at a switch that shares its "
         "instant with another."
     ),
-    "sensitivity.output_budget": (
+    "sens.output_budget": (
         "Deriving expression output sensitivities ran past its time budget; the "
         "functions not reached refuse when selected."
     ),
-    "sensitivity.parameters_skipped": (
+    "sens.parameters_skipped": (
         "Parameters were left out of a sensitivity request because their columns could "
         "not mean what they say."
     ),
-    "sensitivity.rhs_difference_quotient": (
+    "sens.rhs_difference_quotient": (
         "The analytic sensitivity right-hand side was declined; CVODES' difference "
         "quotient carried the sensitivity columns."
     ),

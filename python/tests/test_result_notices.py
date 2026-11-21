@@ -462,7 +462,7 @@ def test_compute_all_sensitivities_keeps_its_notices(tmp_path: Path) -> None:
     sim = Simulator(_net(tmp_path, "derived.net", derived))
     with pytest.warns(UserWarning, match="skipping 1 derived"):
         r = sim.compute_all_sensitivities(t_span=(0, 1), n_points=3)
-    assert "sensitivity.parameters_skipped" in _codes(r)
+    assert "sens.parameters_skipped" in _codes(r)
 
 
 def test_a_threads_pending_switch_notices_are_its_own() -> None:
@@ -497,7 +497,7 @@ def test_a_sensitivity_chunks_notices_reach_the_stitched_result(
     real = Simulator._run_sensitivity_chunk
 
     def noisy(self, params, *args, **kwargs):
-        _notices.note("log", "sensitivity.chunk_split", f"a chunk of {list(params)}")
+        _notices.note("log", "sens.chunk_split", f"a chunk of {list(params)}")
         return real(self, params, *args, **kwargs)
 
     monkeypatch.setattr(Simulator, "_run_sensitivity_chunk", noisy)

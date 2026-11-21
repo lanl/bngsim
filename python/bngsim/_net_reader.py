@@ -112,17 +112,23 @@ def parse_net_file(path: str | Path) -> dict[str, Any]:
     try:
         from bngsim._bngsim_core import net_file_structure
     except ImportError as exc:
-        raise ImportError(
+        from bngsim._exceptions import DependencyError
+
+        raise DependencyError(
             "parse_net_file reads a .net file with bngsim's compiled .net loader, and "
             f"bngsim._bngsim_core is not available ({exc}). Since issue #803 there is no "
-            "pure-Python reading of the format to fall back on."
+            "pure-Python reading of the format to fall back on.",
+            code="env.broken_dependency",
+            details={"package": "bngsim._bngsim_core"},
         ) from exc
 
     path = Path(path)
     # The errors a missing file raised when this module read the text itself, and
     # Model.from_net's for a missing one.
     if not path.exists():
-        raise FileNotFoundError(f"Net file not found: {path}")
+        from bngsim._exceptions import MissingFileError
+
+        raise MissingFileError(f"Net file not found: {path}", path)
     if path.is_dir():
         raise IsADirectoryError(f"{path} is a directory, not a .net file")
     parsed = net_file_structure(os.fspath(path))

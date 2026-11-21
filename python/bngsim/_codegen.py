@@ -2475,7 +2475,7 @@ def _warn_chain_rule_dropped(expr: str, referenced: list[str], reason: str) -> N
     """
     _notices.log(
         logger,
-        "sensitivity.chain_rule_dropped",
+        "sens.chain_rule_dropped",
         "Forward sensitivity: could not differentiate the derived parameter "
         "expression %r (%s). The chain rule through it is dropped, so "
         "sensitivities w.r.t. %s will read as exactly zero along this path "
@@ -6067,7 +6067,7 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
         missing = _toolchain.record_missing(compiler)
         if missing is not None:
             raise CodegenToolchainError(missing) from err
-        raise RuntimeError(
+        raise CodegenToolchainError(
             "C compiler not found. Install Xcode Command Line Tools "
             "(macOS), gcc (Linux), or Visual Studio Build Tools (Windows)."
         ) from err
@@ -9514,7 +9514,7 @@ def _warn_functional_sens_rhs_refused(reason: str) -> None:
         )
         _notices.log(
             logger,
-            "sensitivity.rhs_difference_quotient",
+            "sens.rhs_difference_quotient",
             "Forward sensitivity: %s. The analytic sensitivity RHS is declined for this "
             "model, and CVODES' internal difference quotient — which is used instead — "
             "does NOT recover the missing term: it integrates the variational equation "
@@ -9528,7 +9528,7 @@ def _warn_functional_sens_rhs_refused(reason: str) -> None:
         return
     _notices.log(
         logger,
-        "sensitivity.rhs_difference_quotient",
+        "sens.rhs_difference_quotient",
         "Forward sensitivity: %s, so the analytic sensitivity RHS is declined for "
         "this model and CVODES' internal difference quotient is used instead "
         "(correct, but slower, where every rate law is continuous in the state along "
@@ -13168,7 +13168,7 @@ def _compute_output_sens_analysis(model, core) -> dict:
         # override, in addition to the per-function reason the Result raises.
         _notices.log(
             logger,
-            "sensitivity.output_budget",
+            "sens.output_budget",
             "Expression output sensitivities: %s. The functions derived before the "
             "deadline are unaffected; the rest raise this reason when selected.",
             budget_reason,
