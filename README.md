@@ -19,7 +19,8 @@ network-free runs. It installs with `pip`. For
 BioNetGen users it replaces the subprocess-based `run_network` driver.
 Two BioNetGen-family tools build on it:
 [PyBioNetGen](https://github.com/RuleWorld/PyBioNetGen) runs simulations through
-it, and [PyBNF](https://github.com/lanl/PyBNF) fits parameters with it.
+it, and [PyBNF](https://github.com/lanl/PyBNF) runs its parameterization,
+uncertainty quantification and model checking on it.
 
 ## Is bngsim the right tool?
 
@@ -30,7 +31,7 @@ it, and [PyBNF](https://github.com/lanl/PyBNF) fits parameters with it.
 | run many simulations: parameter scans, batches, stochastic replicates | yes, in one process, on threads with the GIL released | COPASI (scans); AMICI (conditions in parallel) |
 | compute forward sensitivities, along a trajectory or at a steady state | yes, with the parameters split across threads; it needs a C compiler on the machine | AMICI, libRoadRunner |
 | use adjoint sensitivities | no: forward only, which for many parameters it splits across threads ([below](#choosing-settings)) | AMICI |
-| fit parameters to data | through [PyBNF](https://github.com/lanl/PyBNF), which drives bngsim | COPASI, AMICI with pyPESTO |
+| fit parameters to data, quantify their uncertainty, check a model against properties | through [PyBNF](https://github.com/lanl/PyBNF), which drives bngsim | COPASI, AMICI with pyPESTO |
 | simulate a model with `delay()`, an algebraic rule or a fast reaction | no: bngsim refuses it and names the construct, rather than simulate a different system | a tool that documents support for the construct |
 | work in a graphical interface | no, it is a Python library | COPASI |
 | integrate an ODE system you have written as a Python function | no: bngsim reads a model (SBML, Antimony, BNGL), not a function. A reaction network written in Antimony gets a stiff solver, an analytic Jacobian and sensitivities without code | SciPy (`solve_ivp`), Diffrax |
@@ -272,8 +273,8 @@ simulation, events, scans and batches.
   is cached too. An NFsim run has effects on the whole process, among them one
   shared random-number stream
   ([what an NFsim run changes](https://bngsim.readthedocs.io/en/latest/user-guide/network-free.html#what-an-nfsim-run-changes-in-your-process)).
-  [PyBNF](https://github.com/lanl/PyBNF) uses bngsim this way for parameter
-  fitting ([guide](https://bngsim.readthedocs.io/en/latest/user-guide/pybnf.html)),
+  [PyBNF](https://github.com/lanl/PyBNF) uses bngsim this way for
+  parameterization, uncertainty quantification and model checking ([guide](https://bngsim.readthedocs.io/en/latest/user-guide/pybnf.html)),
   and [PyBioNetGen](https://github.com/RuleWorld/PyBioNetGen) for simulation.
 
 ## If you know another tool
