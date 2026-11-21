@@ -1161,3 +1161,9 @@ def test_function_definitions_a_rate_calls_are_listed():
     assert d["function_definitions"] == [{"name": "twice", "definition": "lambda(x, 2 * x)"}]
     assert d["counts"]["function_definitions"] == 1
     assert "twice = lambda(x, 2 * x)" in str(d)
+
+
+def test_an_sbml_files_reactions_are_cut_at_the_limit():
+    d = bngsim.Model.from_sbml_string(TWO_COMPARTMENTS).describe(limit=1)
+    assert [r["id"] for r in d["reactions"]] == ["R1"]
+    assert d["counts"]["reactions"] == 2 and d["omitted"]["reactions"] == 1
