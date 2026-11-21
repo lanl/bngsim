@@ -237,10 +237,18 @@ the tool's own objects, as that tool spells it.
 | `model.getValue` | `model.get_param(name)` | model.get_concentration(name) reads a species. |
 | `model.setValue` | `model.set_param(name, value)` | model.set_concentration(name, value) sets a species. |
 | `model.resetAll` | `model.reset()` | It resets the species only; parameters keep the values set since the model was loaded. Set them back with model.set_params({...}). |
+| `model.getInfo` | `model.describe()` | print(model.describe()) is the readable form. |
+| `model.getCompartmentIds` | `model.describe()["compartments"]` |  |
+| `model.getReactionIds` | `model.describe()["reactions"]` | For an SBML or Antimony model these are the file's reactions as written; bngsim may run one as several channels, which model.n_reactions counts. |
+| `model.getNumReactions` | `model.n_reactions` | It counts the channels bngsim runs. For an SBML or Antimony model, model.describe()["counts"]["reactions"] counts the file's reactions, which can be fewer. |
 | `sim.simulate` | `sim.run(t_span=(t0, t1), n_points=n)` | bngsim has no simulate(). n_points counts the output points, the first included: BioNetGen's n_steps=10 and RoadRunner's simulate(0, 10, 11) are both n_points=11. |
 | `sim.reset` | `sim.model.reset()` | Resetting the species is the Model's: it returns them to their initial conditions, or to the state an unlabeled model.save_concentrations() saved. |
 | `sim.resetAll` | `sim.model.reset()` | It resets the species only; parameters keep the values set since the model was loaded. Set them back with sim.model.set_params({...}). |
 | `sim.steadyState` | `sim.steady_state()` |  |
+| `sim.getInfo` | `sim.model.describe()` | print(sim.model.describe()) is the readable form. |
+| `sim.getCompartmentIds` | `sim.model.describe()["compartments"]` |  |
+| `sim.getReactionIds` | `sim.model.describe()["reactions"]` | For an SBML or Antimony model these are the file's reactions as written; bngsim may run one as several channels, which model.n_reactions counts. |
+| `sim.getNumReactions` | `sim.model.n_reactions` | It counts the channels bngsim runs. For an SBML or Antimony model, model.describe()["counts"]["reactions"] counts the file's reactions, which can be fewer. |
 | `sim.getSteadyStateValues` | `sim.steady_state().concentrations` | steady_state() returns a SteadyStateResult; ss[name] reads one species. |
 | `sim.gillespie` | `bngsim.Simulator(model, method="ssa").run(t_span=(t0, t1), n_points=n)` | The method is chosen when the Simulator is built; Simulator.METHODS lists them. |
 | `sim.setIntegrator` | `bngsim.Simulator(model, method="ssa")` | The method is chosen when the Simulator is built; Simulator.METHODS lists them. |

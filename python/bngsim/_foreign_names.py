@@ -109,6 +109,19 @@ _N_POINTS = (
 _RUN = "sim.run(t_span=(t0, t1), n_points=n)"
 _BUILT = "The method is chosen when the Simulator is built; Simulator.METHODS lists them."
 _ON_MODEL = "Parameters and species are the Model's, and sim.model is the one this Simulator runs."
+# What describe() says of a model's reactions and units (issue #1843).
+_REACTIONS_NOTE = (
+    "For an SBML or Antimony model these are the file's reactions as written; bngsim may run "
+    "one as several channels, which model.n_reactions counts."
+)
+_N_REACTIONS_NOTE = (
+    "It counts the channels bngsim runs. For an SBML or Antimony model, "
+    'model.describe()["counts"]["reactions"] counts the file\'s reactions, which can be fewer.'
+)
+_UNITS_NOTE = (
+    "bngsim reads no SBML unit definitions: species_values says what the numbers are, and "
+    'each entry of model.describe()["species"] whether it is an amount or a concentration.'
+)
 
 
 def _entries(owner: str, origin: str, *rows: tuple[str, str] | tuple[str, str, str]) -> list:
@@ -234,6 +247,32 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
             "model.observable_names",
             "A run computes their values: result.observables[name].",
         ),
+        # What a model is, in one call (issue #1843): describe() holds it all.
+        (
+            "summary",
+            "print(model.describe())",
+            "model.describe() is the same as a dict; result.summary() describes a run.",
+        ),
+        *(
+            (name, "model.describe()", "print(model.describe()) is the readable form.")
+            for name in ("info", "to_dict")
+        ),
+        *(
+            (
+                name,
+                'model.describe()["compartments"]',
+                "SBML and Antimony models have compartments; a .net or BNGL file has none.",
+            )
+            for name in ("compartments", "compartment_names")
+        ),
+        *(
+            (name, 'model.describe()["reactions"]', _REACTIONS_NOTE)
+            for name in ("reactions", "reaction_names")
+        ),
+        *(
+            (name, 'model.describe()["species_values"]', _UNITS_NOTE)
+            for name in ("units", "species_units")
+        ),
     )
     + _entries(
         "Model",
@@ -279,6 +318,10 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
             "It resets the species only; parameters keep the values set since the model was "
             "loaded. Set them back with model.set_params({...}).",
         ),
+        ("getInfo", "model.describe()", "print(model.describe()) is the readable form."),
+        ("getCompartmentIds", 'model.describe()["compartments"]'),
+        ("getReactionIds", 'model.describe()["reactions"]', _REACTIONS_NOTE),
+        ("getNumReactions", "model.n_reactions", _N_REACTIONS_NOTE),
     )
     # ── Simulator ────────────────────────────────────────────────────────
     + _entries(
@@ -298,6 +341,10 @@ FOREIGN_NAMES: tuple[ForeignName, ...] = tuple(
             "loaded. Set them back with sim.model.set_params({...}).",
         ),
         ("steadyState", "sim.steady_state()"),
+        ("getInfo", "sim.model.describe()", "print(sim.model.describe()) is the readable form."),
+        ("getCompartmentIds", 'sim.model.describe()["compartments"]'),
+        ("getReactionIds", 'sim.model.describe()["reactions"]', _REACTIONS_NOTE),
+        ("getNumReactions", "sim.model.n_reactions", _N_REACTIONS_NOTE),
         (
             "getSteadyStateValues",
             "sim.steady_state().concentrations",
