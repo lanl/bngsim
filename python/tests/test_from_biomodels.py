@@ -120,6 +120,14 @@ def test_a_file_that_is_not_sbml_is_refused(biomodels):
         bngsim.Model.from_biomodels(ID)
 
 
+def test_a_web_page_in_place_of_the_api_is_a_failed_fetch(biomodels):
+    biomodels.meta = b"<html>Request blocked</html>"
+    with pytest.raises(ModelError, match="could not fetch.*not its API's JSON"):
+        bngsim.Model.from_biomodels(ID)
+    with pytest.raises(ValueError, match="not a version number"):
+        bngsim.Model.from_biomodels(ID, version=0)
+
+
 def test_no_network_and_no_copy_says_so_and_names_the_cache(biomodels, tmp_path):
     biomodels.offline = True
     with pytest.raises(ModelError, match="could not fetch") as exc:

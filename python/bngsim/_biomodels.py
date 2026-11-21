@@ -82,13 +82,20 @@ def _fetch(model_id: str, version: int | None) -> tuple[dict[str, Any], bytes]:
     """The entry's main file: its record (file, version, sha256) and its bytes."""
     entry = model_id if version is None else f"{model_id}.{version}"
     try:
-        meta = json.loads(_get(f"{BASE}/{urllib.parse.quote(entry)}?format=json"))
+        answer = _get(f"{BASE}/{urllib.parse.quote(entry)}?format=json")
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             raise ModelError(
                 f"BioModels has no entry {entry!r} ({BASE}/{entry} answered 404)"
             ) from None
         raise
+    try:
+        meta = json.loads(answer)
+    except ValueError:
+        # A refusal often comes back as a web page with status 200 (#807).
+        raise urllib.error.URLError(
+            f"{BASE} answered with a page that is not its API's JSON, starting {answer[:60]!r}"
+        ) from None
     main = (meta.get("files") or {}).get("main") or []
     if not main:
         raise ModelError(f"BioModels lists no main file for {entry!r}")
@@ -128,6 +135,10 @@ def fetch(
             f"{model_id!r} is not a BioModels id, which looks like 'BIOMD0000000010' "
             "or 'MODEL1006230000'"
         )
+    if version is not None and (
+        isinstance(version, bool) or int(version) != version or version < 1
+    ):
+        raise ValueError(f"version={version!r} is not a version number (1, 2, ...)")
     cache_dir = CACHE_DIR if cache_dir is None else Path(cache_dir)
     if cache:
         cached = _read_cached(cache_dir, model_id, version)
