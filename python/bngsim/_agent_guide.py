@@ -34,7 +34,7 @@ TOOLS = (
     "Tellurium",
     "AMICI",
     "COPASI (basico)",
-    "BioNetGen",
+    "BNGL actions",
     "PySB",
     "SciPy",
     "pandas",
@@ -123,7 +123,7 @@ def agent_guide(*, skill: bool = False) -> str:
     bngsim for the first time: the dozen calls that load, run, read and change
     a model; the rules that otherwise cause wrong answers; what a refusal
     means; what each feature needs installed; a translation table from
-    libRoadRunner, Tellurium, AMICI, COPASI, BioNetGen and PySB; how to check
+    libRoadRunner, Tellurium, AMICI, COPASI, BNGL actions and PySB; how to check
     a result; and how to report a bug. It is the guide of the installed
     version, read from the package, with no network.
 
