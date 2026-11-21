@@ -17,6 +17,7 @@ Factory methods:
 - **`Model.from_antimony_string(text)`** — Load from Antimony string
 - **`Model.from_sbml(path)`** — Load from SBML `.xml` file (requires `python-libsbml`)
 - **`Model.from_sbml_string(text)`** — Load from SBML XML string
+- **`Model.from_biomodels(model_id, *, version=None, cache=True, refresh=False)`** — Load a BioModels entry by id, such as `"BIOMD0000000010"`. The file is checked against BioModels' published sha256 and cached in `~/.cache/bngsim/biomodels` (or `$BNGSIM_BIOMODELS_CACHE_DIR`). `refresh=True` fetches again.
 
 Properties:
 - `n_species`, `n_reactions`, `n_observables`, `n_parameters`, `n_functions`, `n_events`

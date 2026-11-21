@@ -35,7 +35,8 @@ For BioNetGen users, it replaces `run_network`.
 - BNGsim refuses models it can't simulate correctly, and says why.
 - `bngsim.examples` has small models with exact solutions, to try BNGsim with
   no model file and check its answers. `bngsim.ModelBuilder` builds a model in
-  Python.
+  Python, and `bngsim.Model.from_biomodels("BIOMD0000000010")` loads a
+  BioModels entry by its id.
 - The docs have an [`llms.txt`](https://bngsim.readthedocs.io/llms.txt) index.
 
 > **Status: alpha (0.x).** BNGsim is checked every night against BioNetGen,

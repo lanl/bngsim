@@ -14,6 +14,11 @@ budget, and most of these are for help(), not a first read.
 LEFT_OUT = (
     "Model.from_antimony(compartment_sizes)",
     "Model.from_antimony_string(compartment_sizes)",
+    "Model.from_biomodels(cache)",
+    "Model.from_biomodels(compartment_sizes)",
+    "Model.from_biomodels(defer_jacobian)",
+    "Model.from_biomodels(refresh)",
+    "Model.from_biomodels(version)",
     "Model.from_bngl(bng2_pl)",
     "Model.from_bngl(cache)",
     "Model.from_bngl(defer_jacobian)",
