@@ -261,19 +261,21 @@ LEFT_OUT = Path(__file__).with_name("agent_guide_left_out.txt")
 _VARIADIC = (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
 
 
-def _guide_code() -> list[ast.Module]:
+def _guide_code() -> tuple[list[ast.Module], str]:
     """The guide's code, parsed: each block, and each backticked span outside
-    them that is Python, the table's "in bngsim" column only."""
-    text = bngsim.agent_guide()
-    trees = [ast.parse(code) for _, code in _blocks()]
-    prose = _FENCE.sub("", text)
+    them that is Python; and the guide's text. Both leave out the table's first
+    column, which is other tools' names, not bngsim's."""
+    blocks = [code for _, code in _blocks()]
+    prose = _FENCE.sub("", bngsim.agent_guide())
     start, end = prose.index(_agent_guide.TABLE_START), prose.index(_agent_guide.TABLE_END)
     table, prose = prose[start:end], prose[:start] + prose[end:]
     cells = [re.split(r"(?<!\\)\|", row)[2] for row in table.splitlines() if row.startswith("| `")]
-    for span in re.findall(r"`([^`\n]+)`", prose + "\n".join(cells)):
+    text = "\n".join([*blocks, prose, *cells])
+    trees = [ast.parse(code) for code in blocks]
+    for span in re.findall(r"`([^`\n]+)`", "\n".join([prose, *cells])):
         with contextlib.suppress(SyntaxError):
             trees.append(ast.parse(span.replace("\\|", "|")))
-    return trees
+    return trees, text
 
 
 def _public_classes() -> dict[str, type]:
@@ -289,23 +291,42 @@ class _Uses(ast.NodeVisitor):
 
     def __init__(self, namespace: dict[str, object]) -> None:
         self.namespace = namespace
-        self.classes = set(_public_classes().values())
+        self.by_name = _public_classes()
+        self.classes = set(self.by_name.values())
         self.keys: set[str] = set()
 
     def _owner(self, node: ast.AST) -> object | None:
-        """The module or class an expression is, or the class of what it holds."""
+        """The module or class an expression is, or the class of what it holds
+        or returns: ``model``, ``Model``, ``bngsim.Model``, ``Simulator(m)``,
+        ``sim.steady_state()``."""
         if isinstance(node, ast.Name):
             if node.id == "bngsim":
                 return bngsim
+            if (cls := self.by_name.get(node.id)) is not None:
+                return cls
             held = self.namespace.get(node.id)
             return type(held) if type(held) in self.classes else None
         if isinstance(node, ast.Attribute) and self._owner(node.value) is bngsim:
             obj = getattr(bngsim, node.attr, None)
             return obj if obj in self.classes else None
+        if isinstance(node, ast.Call) and (call := self._call(node.func)) is not None:
+            if call in self.by_name:
+                return self.by_name[call]  # a constructor
+            owner, _, method = call.rpartition(".")
+            target = getattr(self.by_name.get(owner, bngsim), method, None)
+            try:
+                returns = inspect.signature(target).return_annotation  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                return None
+            if isinstance(returns, str):
+                returns = self.by_name.get(returns.strip("'\"").rpartition(".")[2])
+            return returns if returns in self.classes else None
         return None
 
     def _call(self, node: ast.AST) -> str | None:
         """The call key of a callee: ``Simulator``, ``Simulator.run``, ``bngsim.f``."""
+        if isinstance(node, ast.Name) and node.id in self.by_name:
+            return node.id
         if isinstance(node, ast.Attribute) and (owner := self._owner(node.value)) is not None:
             if owner is bngsim:
                 return (
@@ -347,7 +368,7 @@ def _keywords(target: object) -> list[tuple[str, bool]]:
 
 def _coverage(namespace: dict[str, object]) -> tuple[dict[str, bool], set[str]]:
     """Each key of the public surface, and whether the guide uses it."""
-    trees = _guide_code()
+    trees, text = _guide_code()
     uses = _Uses(namespace)
     for tree in trees:
         uses.visit(tree)
@@ -385,13 +406,15 @@ def _coverage(namespace: dict[str, object]) -> tuple[dict[str, bool], set[str]]:
         for name, required in _keywords(target):
             key = f"{call}({name})"
             surface[key] = key in used or (required and called)
-    code = "\n".join(code for _, code in _blocks()) + _FENCE.sub("", bngsim.agent_guide())
+    # A feature is used in "What needs what", where the guide says what each
+    # needs: elsewhere a backticked ``nfsim`` may be the method, not the feature.
+    needs = bngsim.agent_guide().split("## What needs what")[1].split("\n## ")[0]
     for name in bngsim.Simulator.METHODS:
-        surface[f"method:{name}"] = bool(re.search(rf"[\"']{re.escape(name)}[\"']", code))
+        surface[f"method:{name}"] = bool(re.search(rf"[\"']{re.escape(name)}[\"']", text))
     for name in bngsim.capabilities()["features"]:
-        surface[f"feature:{name}"] = bool(re.search(rf"`{re.escape(name)}`", code))
+        surface[f"feature:{name}"] = bool(re.search(rf"`{re.escape(name)}`", needs))
     for name in importlib.metadata.metadata("bngsim").get_all("Provides-Extra") or ():
-        surface[f"extra:{name}"] = bool(re.search(rf"bngsim\[[\w,]*\b{re.escape(name)}\b", code))
+        surface[f"extra:{name}"] = bool(re.search(rf"bngsim\[[\w,]*\b{re.escape(name)}\b", text))
     return surface, used
 
 

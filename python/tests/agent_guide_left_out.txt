@@ -8,6 +8,7 @@
 # bngsim for the first time should know it, or add its key here, in Python's
 # sorted() order. This is not a to-do list: the guide is one page held to a
 # budget, and most of these are for help(), not a first read.
+Model.from_antimony(compartment_sizes)
 Model.from_antimony_string(compartment_sizes)
 Model.from_bngl(bng2_pl)
 Model.from_bngl(cache)
@@ -15,8 +16,11 @@ Model.from_bngl(defer_jacobian)
 Model.from_bngl(net_out)
 Model.from_bngl(protocol)
 Model.from_bngl(timeout)
+Model.from_net(defer_jacobian)
 Model.from_sbml(compartment_sizes)
 Model.from_sbml(defer_jacobian)
+Model.from_sbml_string(compartment_sizes)
+Model.from_sbml_string(defer_jacobian)
 Model.load(compartment_sizes)
 Model.load(defer_jacobian)
 Model.save_concentrations(label)
@@ -29,9 +33,6 @@ Model:compartment_size_params
 Model:conservation_laws
 Model:declare_ic_sensitivity
 Model:effective_ic_sensitivity
-Model:from_antimony
-Model:from_net
-Model:from_sbml_string
 Model:frozen_params
 Model:function_names
 Model:has_saved_concentrations
@@ -168,7 +169,6 @@ Simulator.steady_state(method)
 Simulator.steady_state(rtol)
 Simulator.steady_state(sensitivity_params)
 Simulator.steady_state(tol)
-Simulator:METHODS
 Simulator:add_stop_condition
 Simulator:auto_atol
 Simulator:bifurcate
