@@ -1977,6 +1977,106 @@ def test_a_base_with_no_reference_is_not_stable_by_default(monkeypatch):
     assert v.status == "skip" and "no reference" in v.note, v
 
 
+def _fails_when(monkeypatch, when, error=None):
+    """D.run raises where ``when(job)`` holds, as #1751's refusal of a run that
+    leaves through minus infinity raises (MODEL1911100005 at rtol x2)."""
+    real = D.run
+
+    def run(job, **kw):
+        if when(job):
+            raise error or bngsim.SimulationError(
+                "Simulation failed: CVODE integration failed (planted: non-finite RHS)"
+            )
+        return real(job, **kw)
+
+    monkeypatch.setattr(D, "run", run)
+
+
+@pytest.mark.parametrize(
+    "label,when",
+    [
+        ("rtol x2", lambda base, job: job.rtol > base.job.rtol * 1.5),
+        ("rtol x0.5", lambda base, job: job.rtol < base.job.rtol * 0.75),
+        ("n_points+1", lambda base, job: job.n_points == base.job.n_points + 1),
+        ("2x the points", lambda base, job: job.n_points == 2 * base.job.n_points - 1),
+    ],
+)
+def test_a_rerun_that_fails_where_the_base_ran_is_contested(monkeypatch, label, when):
+    """A jittered grid or tolerance that tips the run into failure marks the
+    model contested, as a failing nudged start does: not the check's EXCEPTION."""
+    base = _base("equality-dwell")
+    _fails_when(monkeypatch, lambda job: when(base, job))
+    v = D.check_stable(base)
+    assert v.status == "diff" and f"{label}, from which the run fails (" in v.note, v
+    assert D.contested({"stable": {"status": "diff", "extra": v.extra}})
+
+
+def test_a_rerun_that_fails_otherwise_is_still_the_checks_own(monkeypatch):
+    base = _base("equality-dwell")
+    _fails_when(
+        monkeypatch, lambda job: job.rtol > base.job.rtol * 1.5, RuntimeError("not a solver error")
+    )
+    v = D.check_stable(base)
+    assert v.status == "exception" and "RuntimeError" in v.note, v
+
+
+def _second_leg_fails(monkeypatch):
+    real = bngsim.Simulator.run_until
+    calls = []
+
+    def fails(self, t, **kw):
+        calls.append(t)
+        if len(calls) == 2:  # the leg from the middle on
+            raise bngsim.SimulationError("Simulation failed: CVODE integration failed (planted)")
+        return real(self, t, **kw)
+
+    monkeypatch.setattr(bngsim.Simulator, "run_until", fails)
+
+
+@pytest.mark.parametrize("why", ["moves", "no tighter run"])
+def test_a_restart_leg_that_fails_against_a_base_with_no_reference_is_skip(monkeypatch, why):
+    """BIOMD0000000758 after #1751: its second leg leaves through minus infinity
+    and now raises, on a base that moves by 0.41 at a tenfold tighter tolerance.
+    Its answer would not have been judged there, so neither is its failure."""
+
+    def own_drift(job, x):
+        if why == "moves":
+            return 0.41
+        raise bngsim.SimulationError("CVODE integration failed (planted)")
+
+    monkeypatch.setattr(D, "own_drift", own_drift)
+    base = D.Base(SHAPES["equality-dwell"])
+    _second_leg_fails(monkeypatch)
+    v = D.check_restart(base)
+    assert v.status == "skip", v
+    assert "run_until to the middle and on: no reference" in v.note
+    assert "and this path fails (SimulationError" in v.note
+
+
+def test_a_restart_leg_that_fails_against_a_judged_base_is_an_exception(monkeypatch):
+    _second_leg_fails(monkeypatch)
+    v = D.check_restart(_base("equality-dwell"))
+    assert v.status == "exception" and "planted" in v.note, v
+
+
+def test_a_reused_run_that_fails_against_a_base_with_no_reference_is_skip(monkeypatch):
+    monkeypatch.setattr(D, "own_drift", lambda job, x: 0.41)
+    base = D.Base(SHAPES["equality-dwell"])
+    real = bngsim.Simulator.run
+    runs = []
+
+    def second_fails(self, *args, **kw):
+        runs.append(1)
+        if len(runs) == 2:
+            raise bngsim.SimulationError("Simulation failed: CVODE integration failed (planted)")
+        return real(self, *args, **kw)
+
+    monkeypatch.setattr(bngsim.Simulator, "run", second_fails)
+    v = D.check_reuse(base)
+    assert v.status == "skip" and "a second run() on one Simulator: no reference" in v.note, v
+    assert "and this path fails" in v.note
+
+
 def test_an_answer_that_jumps_with_the_grid_is_contested(monkeypatch):
     base = _base("equality-dwell")
     real = D.run

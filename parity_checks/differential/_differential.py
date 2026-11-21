@@ -1325,6 +1325,35 @@ def _timeout() -> dict:
     return {"timeout": _left()}
 
 
+def _failed_path(base: Base, label: str, e: Exception) -> Verdict:
+    """The row of a path that raised where the base ran, against a base with
+    no reference (where ``Base.compare`` says SKIP: its tenfold tighter run
+    failed, or it moves past :data:`UNJUDGEABLE_DRIFT`). Its answer would not
+    be judged there, so neither is its failure: SKIP, saying both. Since #1751
+    a run that leaves through minus infinity raises where it returned the
+    blown-up values, and BIOMD0000000758's second restart leg at rtol 1e-6 is
+    one, on a base that moves by 0.41 at a tenfold tighter tolerance: its row
+    was that SKIP until then. Against a judged base, and for a timeout, a
+    refusal or an error that is not ``SimulationError``, ``e`` is raised again:
+    the row's, as before."""
+    import bngsim
+
+    if _timed_out(e) or _declined(e) or not isinstance(e, bngsim.SimulationError):
+        raise e
+    if base.drift_error:
+        why = f"the base at a tenfold tighter tolerance did not complete ({base.drift_error})"
+    elif not base.drift <= UNJUDGEABLE_DRIFT:
+        why = f"the base itself moves by {base.drift:.1e} at a tenfold tighter tolerance"
+    else:
+        raise e
+    return Verdict(
+        "skip",
+        None,
+        f"{label}no reference: {why}; and this path fails ({type(e).__name__}: "
+        f"{_first_line(e)[:200]})",
+    )
+
+
 def check_restart(base: Base) -> Verdict:
     """A run to the middle sample, continued to the end, is the base. Leg by
     leg with ``run_until`` on one Simulator, which carries the events' trigger
@@ -1340,28 +1369,36 @@ def check_restart(base: Base) -> Verdict:
         t_mid = job.t_start + (job.t_end - job.t_start) * m / (n - 1)
         out = []
 
-        sim = bngsim.Simulator(load(job.path), method="ode", **job.sim)
-        if job.t_start != 0.0:
-            sim.set_time(job.t_start)
-        first = sim.run_until(t_mid, n_points=m + 1, **_solver(job))
-        second = sim.run_until(job.t_end, n_points=n - m, **_solver(job))
-        legs = np.vstack([_species(first, base), _species(second, base)[1:]])
-        out.append(("run_until", base.compare(legs, "run_until to the middle and on: ")))
+        label = "run_until to the middle and on: "
+        try:
+            sim = bngsim.Simulator(load(job.path), method="ode", **job.sim)
+            if job.t_start != 0.0:
+                sim.set_time(job.t_start)
+            first = sim.run_until(t_mid, n_points=m + 1, **_solver(job))
+            second = sim.run_until(job.t_end, n_points=n - m, **_solver(job))
+            legs = np.vstack([_species(first, base), _species(second, base)[1:]])
+            out.append(("run_until", base.compare(legs, label)))
+        except Exception as e:
+            out.append(("run_until", _failed_path(base, label, e)))
 
         model = load(job.path)
         if model._core.n_events == 0:
-            sim = bngsim.Simulator(model, method="ode", **job.sim)
-            head = sim.run(
-                t_span=(job.t_start, t_mid), n_points=m + 1, **_solver(job), **_timeout()
-            )
-            state = np.asarray(sim.get_state(), dtype=float)
-            fresh = bngsim.Simulator(load(job.path), method="ode", **job.sim)
-            fresh.set_state(state, time=t_mid)
-            tail = fresh.run(
-                t_span=(t_mid, job.t_end), n_points=n - m, **_solver(job), **_timeout()
-            )
-            joined = np.vstack([_species(head, base), _species(tail, base)[1:]])
-            out.append(("fresh", base.compare(joined, "a fresh model from the middle's state: ")))
+            label = "a fresh model from the middle's state: "
+            try:
+                sim = bngsim.Simulator(model, method="ode", **job.sim)
+                head = sim.run(
+                    t_span=(job.t_start, t_mid), n_points=m + 1, **_solver(job), **_timeout()
+                )
+                state = np.asarray(sim.get_state(), dtype=float)
+                fresh = bngsim.Simulator(load(job.path), method="ode", **job.sim)
+                fresh.set_state(state, time=t_mid)
+                tail = fresh.run(
+                    t_span=(t_mid, job.t_end), n_points=n - m, **_solver(job), **_timeout()
+                )
+                joined = np.vstack([_species(head, base), _species(tail, base)[1:]])
+                out.append(("fresh", base.compare(joined, label)))
+            except Exception as e:
+                out.append(("fresh", _failed_path(base, label, e)))
         return _worst(out)
 
     return _guard(go)
@@ -1381,24 +1418,28 @@ def check_reuse(base: Base) -> Verdict:
         span = {"t_span": (job.t_start, job.t_end), "n_points": job.n_points, **_solver(job)}
         out = []
 
-        sim = bngsim.Simulator(load(job.path), method="ode", **job.sim)
-        snap = sim.snapshot()
-        sim.run(**span, **_timeout())
-        sim.restore(snap)
-        again = sim.run(**span, **_timeout())
-        out.append(
-            ("run", base.compare(_species(again, base), "a second run() on one Simulator: "))
-        )
+        label = "a second run() on one Simulator: "
+        try:
+            sim = bngsim.Simulator(load(job.path), method="ode", **job.sim)
+            snap = sim.snapshot()
+            sim.run(**span, **_timeout())
+            sim.restore(snap)
+            again = sim.run(**span, **_timeout())
+            out.append(("run", base.compare(_species(again, base), label)))
+        except Exception as e:
+            out.append(("run", _failed_path(base, label, e)))
 
-        model = load(job.path)
-        first = bngsim.Simulator(model, method="ode", **job.sim)
-        snap = first.snapshot()
-        first.run(**span, **_timeout())
-        first.restore(snap)
-        second = bngsim.Simulator(model, method="ode", **job.sim).run(**span, **_timeout())
-        out.append(
-            ("model", base.compare(_species(second, base), "a second Simulator on one Model: "))
-        )
+        label = "a second Simulator on one Model: "
+        try:
+            model = load(job.path)
+            first = bngsim.Simulator(model, method="ode", **job.sim)
+            snap = first.snapshot()
+            first.run(**span, **_timeout())
+            first.restore(snap)
+            second = bngsim.Simulator(model, method="ode", **job.sim).run(**span, **_timeout())
+            out.append(("model", base.compare(_species(second, base), label)))
+        except Exception as e:
+            out.append(("model", _failed_path(base, label, e)))
         return _worst(out)
 
     return _guard(go)
@@ -1497,9 +1538,11 @@ def check_stable(base: Base) -> Verdict:
     twice as many) and tolerance (rtol x0.5, x2), and from a start moved by
     :data:`START_NUDGE` of what a step may err by: a jump past the bound marks
     the model contested, its DIFFs real but unattributed and its PASSes luck.
-    So does a run from the nudged start that fails where the base ran. The
-    nudged start's jump counts only where its first row after the start is
-    still within the bound: the perturbation grew.
+    So does any of these reruns that fails where the base ran: since #1751 a
+    run that leaves through minus infinity raises where it returned the
+    blown-up values, and MODEL1911100005's at rtol x2 is one, on a base that
+    runs. The nudged start's jump counts only where its first row after the
+    start is still within the bound: the perturbation grew.
     A grid of another length is read at its last point, which every grid
     shares; twice as many at every other point, which are the base's. Each
     rerun has what is left of the model's cap: one it stops makes the check
@@ -1517,6 +1560,19 @@ def check_stable(base: Base) -> Verdict:
         job, jumps = base.job, {}
         atol = PATH_RTOL_FACTOR * job.atol
         n = job.n_points
+
+        def rerun(label: str, fn):
+            """The rerun's species, or None where it fails where the base ran,
+            which is recorded as a jump. A timeout or any other error is the
+            check's own (TIMEOUT, EXCEPTION)."""
+            try:
+                return _species(fn()[0], base)
+            except Exception as e:
+                if _timed_out(e) or not isinstance(e, bngsim.SimulationError):
+                    raise
+                jumps[f"{label}, from which the run fails ({_first_line(e)[:160]})"] = float("inf")
+                return None
+
         for label, m in (
             ("n_points-1", n - 1),
             ("n_points+1", n + 1),
@@ -1524,24 +1580,23 @@ def check_stable(base: Base) -> Verdict:
         ):
             if m < 2:
                 continue
-            x = _species(run(Job(**{**job.__dict__, "n_points": m}))[0], base)
+            x = rerun(label, lambda m=m: run(Job(**{**job.__dict__, "n_points": m})))
+            if x is None:
+                continue
             g = gap(x[::2], base.x, atol) if m == 2 * n - 1 else gap(x[-1:], base.x[-1:], atol)
             if g > base.limit:
                 jumps[label] = g
         for f in JITTER_RTOL:
             jittered = Job(**{**job.__dict__, "rtol": job.rtol * f, "atol": job.atol * f})
-            x = _species(run(jittered)[0], base)
+            x = rerun(f"rtol x{f:g}", lambda j=jittered: run(j))
+            if x is None:
+                continue
             g = gap(x, base.x, atol)
             if g > max(base.limit, f * base.limit):
                 jumps[f"rtol x{f:g}"] = g
         nudged = f"a start nudged by {START_NUDGE:g} of a step's allowance"
-        try:
-            x = _species(run(job, nudge=START_NUDGE)[0], base)
-        except Exception as e:
-            if _timed_out(e) or not isinstance(e, bngsim.SimulationError):
-                raise
-            jumps[f"{nudged}, from which the run fails ({_first_line(e)[:160]})"] = float("inf")
-        else:
+        x = rerun(nudged, lambda: run(job, nudge=START_NUDGE))
+        if x is not None:
             # Only a departure the nudge grew into counts. One already past the
             # bound at the first row after the start is the model's own laws
             # telling the two starts apart, `if(Bobs==0, kb, 0)` on a B its law
