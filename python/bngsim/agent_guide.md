@@ -234,7 +234,8 @@ From a shell, `python -m bngsim doctor` prints the same, with the Python, the
 platform and the C compiler codegen would use. `python -m bngsim inspect
 MODEL` prints `Model.load(MODEL).describe()`. Add `--json` to either for one
 JSON object on standard output; an error is a JSON object on standard error,
-and the exit code says whether it was a refusal (3) or another error (1).
+and the exit code says which kind: 3 a refusal, 2 a wrong command line, 1
+another error.
 
 | to | needs | capability |
 |---|---|---|

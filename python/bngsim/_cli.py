@@ -267,8 +267,8 @@ def _doctor(args: argparse.Namespace) -> tuple[Any, str]:
     from bngsim import _codegen_toolchain
 
     report: dict[str, Any] = dict(bngsim.capabilities())
-    compiler, problem = _codegen_toolchain.peek()
-    report["compiler"] = {"command": compiler, "problem": problem}
+    report["compiler"] = _compiler_report(_codegen_toolchain)
+    compiler, problem = report["compiler"]["command"], report["compiler"]["problem"]
     report["python"] = {
         "version": platform.python_version(),
         "implementation": platform.python_implementation(),
@@ -292,6 +292,7 @@ def _doctor(args: argparse.Namespace) -> tuple[Any, str]:
         f"{report['platform']['machine']}",
         "C compiler for codegen: "
         + (" ".join(compiler) if compiler else "none")
+        + {True: ", builds a test library", False: "", None: ""}[report["compiler"]["builds"]]
         + (f"\n  problem: {problem}" if problem else ""),
         "",
         "Available: " + ", ".join(k for k, v in report["features"].items() if v),
@@ -303,6 +304,22 @@ def _doctor(args: argparse.Namespace) -> tuple[Any, str]:
     else:
         lines.append("Missing: nothing")
     return report, "\n".join(lines) + "\n"
+
+
+def _compiler_report(toolchain: Any) -> dict[str, Any]:
+    """The C compiler codegen would use, and whether it builds: a trivial C file
+    built with the command every codegen library is built with. ``builds`` is
+    ``None`` where that proves nothing (no compiler, or the probe timed out)."""
+    compiler, problem = toolchain.peek()
+    builds: bool | None = None
+    if compiler is not None and problem is None:
+        ok, detail = toolchain._probe(compiler)
+        builds = ok
+        if ok is False:
+            problem = toolchain._broken_message(compiler, detail)
+        elif ok is None:
+            problem = f"the compiler could not be tried: {detail}"
+    return {"command": compiler, "builds": builds, "problem": problem}
 
 
 def _guide(args: argparse.Namespace) -> tuple[Any, str]:
@@ -412,6 +429,8 @@ def _stdout_to_stderr() -> Iterator[Callable[[str], None]]:
             saved = os.dup(fd)
             os.dup2(sys.stderr.fileno(), fd)
         except (AttributeError, OSError, ValueError):
+            if saved is not None:
+                os.close(saved)
             saved = None
     real_stdout = sys.stdout
     sys.stdout = sys.stderr
@@ -419,12 +438,33 @@ def _stdout_to_stderr() -> Iterator[Callable[[str], None]]:
     try:
         yield pending.append
     finally:
+        # Everything written so far goes out while fd 1 is still standard
+        # error: what Python holds for sys.stdout and for the stream it
+        # replaced (a handler that kept the original), and what C's stdio holds.
         sys.stdout.flush()
         sys.stdout = real_stdout
+        with contextlib.suppress(OSError, ValueError):
+            real_stdout.flush()
+        _flush_c_stdio()
         if saved is not None:
             os.dup2(saved, fd)  # type: ignore[arg-type]
             os.close(saved)
     _write(real_stdout, "".join(pending))
+
+
+def _flush_c_stdio() -> None:
+    """Flush every C stdio stream, so what C code has buffered for standard
+    output is written now, not at exit after fd 1 is the real one again."""
+    import ctypes
+
+    try:
+        if sys.platform == "win32":
+            libc = ctypes.CDLL("ucrtbase")
+        else:
+            libc = ctypes.CDLL(None)
+        libc.fflush(None)
+    except (OSError, AttributeError):
+        pass
 
 
 def _write(stream: Any, text: str) -> None:
@@ -450,6 +490,14 @@ def _report_error(error: BaseException, as_json: bool) -> int:
         usage = f"{error.usage}\n" if error.usage else ""
         _write(sys.stderr, f"{usage}bngsim: error: {error}\n")
         return exit_code
+    from bngsim._exceptions import BngsimError
+
+    if not isinstance(error, BngsimError):
+        # Not an error BNGsim raises on purpose, so probably a bug in it: the
+        # traceback is what a report needs.
+        import traceback
+
+        _write(sys.stderr, "".join(traceback.format_exception(error)))
     d = error_dict(error)
     lines = [f"bngsim: error [{d['code']}]: {d['message']}"]
     for remedy in d.get("remedies") or []:
@@ -500,7 +548,11 @@ def main(argv: list[str] | None = None) -> int:
     as_json = "--json" in args_list
     try:
         i = _command_word(args_list)
-        if i is not None and args_list[i] in ("convert", "cache"):
+        if (
+            i is not None
+            and args_list[i] in ("convert", "cache")
+            and not {"-h", "--help"} & set(args_list[:i])
+        ):
             if i > 0:
                 raise _CommandLineError(
                     f"`bngsim {args_list[i]}` takes no options before `{args_list[i]}`; "

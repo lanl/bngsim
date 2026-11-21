@@ -13,7 +13,7 @@ of its own, so what it prints is what the call returns.
 
 | command | what it does | Python call behind it |
 |---|---|---|
-| `bngsim doctor` | what this install can do, what is missing, and the fix for each; with the Python, the platform and the C compiler codegen would use | `bngsim.capabilities()` |
+| `bngsim doctor` | what this install can do, what is missing, and the fix for each; with the Python, the platform, and the C compiler codegen would use and whether it builds a test library | `bngsim.capabilities()` |
 | `bngsim guide` | prints the agent guide of this version | `bngsim.agent_guide()` |
 | `bngsim skill` | prints the guide as a `SKILL.md` file | `bngsim.agent_guide(skill=True)` |
 | `bngsim examples [NAME]` | lists the example models that ship with BNGsim, with their formats and files | `bngsim.examples` |
@@ -53,11 +53,13 @@ report.
   The codes are listed in [Error codes](error-codes.md). A command line the
   command cannot take is a `UsageError` with the code `usage.invalid_argument`,
   and its `details["usage"]` is the usage line. Without `--json`, an error is a
-  line of text on standard error.
+  line of text on standard error, after the traceback when the error is not one
+  BNGsim raises on purpose.
 
 `bngsim convert` and `bngsim cache` hand their arguments to the existing
-commands, which keep their own output and exit codes. Give their options after
-`convert TOOL` or `cache`.
+commands, which keep their own output, exit codes and help, so their help
+names them by their own names (`bngsim-sbml2net`, `bngsim-cache`). Give their
+options after `convert TOOL` or `cache`.
 
 ## Exit codes
 

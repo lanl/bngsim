@@ -75,7 +75,9 @@ def test_doctor_is_capabilities_with_the_python_platform_and_compiler():
         assert report[key] == _plain(caps[key]), key
     assert report["python"]["executable"] == sys.executable
     assert Path(report["package_path"]) == Path(bngsim.__file__).resolve().parent
-    assert set(report["compiler"]) == {"command", "problem"}
+    assert set(report["compiler"]) == {"command", "builds", "problem"}
+    # A compiler that builds has no problem; one that does not says why.
+    assert (report["compiler"]["builds"] is True) == (report["compiler"]["problem"] is None)
     assert set(report["platform"]) == {"system", "release", "machine"}
 
 
@@ -241,9 +243,8 @@ _NOISY = textwrap.dedent(
         print("python noise")
         sys.stdout.flush()
         os.write(1, b"fd noise\\n")
-        libc = ctypes.CDLL(None)
-        libc.puts(b"c noise")
-        libc.fflush(None)
+        sys.__stdout__.write("held noise\\n")  # buffered, not flushed
+        ctypes.CDLL(None).puts(b"c noise")  # buffered by C's stdio, not flushed
         return {"answer": 42}, "text\\n"
 
     _cli._COMMANDS["doctor"] = noisy
@@ -255,7 +256,7 @@ _NOISY = textwrap.dedent(
 def test_what_else_writes_to_stdout_goes_to_stderr():
     run = _bngsim("doctor", "--json", script=_NOISY)
     assert _json_out(run) == {"answer": 42}
-    for noise in ("python noise", "fd noise", "c noise"):
+    for noise in ("python noise", "fd noise", "held noise", "c noise"):
         assert noise in run.stderr
 
 
