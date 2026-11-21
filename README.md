@@ -24,7 +24,7 @@ BioNetGen users it replaces the subprocess-based `run_network` driver.
 | simulate a rule-based BNGL model, with its network or network-free | yes: ODE, SSA and NFsim or RuleMonkey in one process; BNGL needs `bngsim[bngl]` and Perl | BioNetGen's own `BNG2.pl`, through files and subprocesses |
 | run many simulations: parameter scans, batches, stochastic replicates | yes, in one process, on threads with the GIL released | COPASI (scans); AMICI (conditions in parallel) |
 | compute forward sensitivities, along a trajectory or at a steady state | yes, with the parameters split across threads; it needs a C compiler on the machine | AMICI, libRoadRunner |
-| get gradients for very many parameters cheaply (adjoint sensitivities) | no; for many parameters it splits forward sensitivities across threads ([below](#choosing-settings)) | AMICI |
+| use adjoint sensitivities | no: forward only, which for many parameters it splits across threads ([below](#choosing-settings)) | AMICI |
 | fit parameters to data | through [PyBNF](https://github.com/lanl/PyBNF), which drives bngsim | COPASI, AMICI with pyPESTO |
 | simulate a model with `delay()`, an algebraic rule or a fast reaction | no: bngsim refuses it and names the construct, rather than simulate a different system | a tool that documents support for the construct |
 | work in a graphical interface | no, it is a Python library | COPASI |
@@ -56,13 +56,19 @@ changed since.
   than in proportion (3x on 6 cores for a 356-species model). It gives the
   whole sensitivity matrix, every output with respect to every parameter,
   which a Fisher information matrix, an identifiability check or a
-  least-squares fit needs. Adjoint sensitivities (AMICI) give the
-  gradient of one scalar objective, in time nearly independent of the number
-  of parameters. Sharding divides the time; it does not remove the growth.
-  Sharded forward sensitivities are practical for tens of parameters, and
-  for a hundred or so on a multi-core machine. Past that, for one objective
-  on a large model, adjoint is the better algorithm; published benchmarks put
-  the crossover at tens to a hundred parameters.
+  least-squares fit needs. Adjoint sensitivities, which bngsim does not
+  offer, give only the gradient of one objective, and they integrate backward
+  in time, which brings numerical difficulties that forward sensitivities do
+  not have.
+- **SSA or PSA.** `method="ssa"` is exact: use it for distributions,
+  variances, rare events and small populations. `method="psa"` (partial
+  scaling, with `poplevel=`) runs a model with large populations faster and
+  keeps the ensemble mean, but it inflates the fluctuations, so it needs more
+  replicates for the same precision. It pays for a mean only when its speedup
+  exceeds that inflation: measure both against a few SSA runs and ask
+  `bngsim.psa_cost_decision(speedup, rho)`. Like SSA, it needs a network
+  (`.net`, SBML or Antimony, or a BNGL model that `generate_network` can
+  expand); a network too large to generate runs network-free (`nf`, `rm`).
 - **JAX.** `bngsim.jax.differentiable_solve` (`pip install 'bngsim[jax]'`)
   makes a CVODE solve a JAX function, so `jax.grad` or `jax.jacfwd` goes
   through the simulation into a loss written in JAX. Use it when the rest of
