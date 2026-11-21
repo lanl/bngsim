@@ -32,6 +32,7 @@ import os
 import re
 from typing import Any
 
+from bngsim import _notices
 from bngsim._codegen import (
     _BUILTIN_CONSTANT_VALUES,
     _RATEOF_PREFIX,
@@ -1140,7 +1141,9 @@ def generate_jax_jacobian(model: Any) -> Any:
     model = _as_model(model)
     problems = screen_for_discontinuities(model)
     if problems:
-        logger.warning(
+        _notices.log(
+            logger,
+            "jax.zero_gradients",
             "Model functions may produce zero JAX AD gradients at "
             "discontinuities (CVODE will adapt step size):\n  %s",
             "\n  ".join(problems),

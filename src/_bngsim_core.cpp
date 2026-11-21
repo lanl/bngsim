@@ -2030,6 +2030,24 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_property_readonly("param_names", &bngsim::NetworkModel::param_names,
                                "List of all parameter names")
 
+        // Issue #1703: every parameter's value in one call, for the record a
+        // run keeps of the values it started from. A loop of get_param costs
+        // about 60 ns a parameter, which a run_until loop of short steps pays
+        // on every step.
+        .def(
+            "get_param_values",
+            [](const bngsim::NetworkModel &self) {
+                const auto &params = self.parameters();
+                py::array_t<double> arr(static_cast<py::ssize_t>(params.size()));
+                auto *out = static_cast<double *>(arr.request().ptr);
+                for (std::size_t i = 0; i < params.size(); ++i)
+                    out[i] = params[i].value;
+                return arr;
+            },
+            "Bulk-copy every parameter's value into a new float64 ndarray, ordered "
+            "like param_names: what get_param returns for each, in one call "
+            "(issue #1703).")
+
         .def_property_readonly(
             "param_is_expression",
             [](const bngsim::NetworkModel &self) {

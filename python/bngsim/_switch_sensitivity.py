@@ -47,7 +47,7 @@ from collections.abc import Callable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from typing import NamedTuple
 
-from bngsim import _term_order
+from bngsim import _notices, _term_order
 from bngsim._codegen import (
     _BUILTIN_CONSTANT_VALUES,
     _DERIVED_BARE_NAME,
@@ -5759,7 +5759,9 @@ def _engine_scan_stop_times(
             # leaves a run (`Simulator._apply_crossing_stops`), and said so
             # as that is: declined in silence, an IndexError in here was a
             # window stepped over with no word.
-            logger.warning(
+            _notices.log(
+                logger,
+                "switch.scan_failed",
                 "The scan of the time condition %r failed (%s: %s). No stop is placed for "
                 "it, and a rate law that switches on it may be stepped over: bound the "
                 "step with max_step. This is a defect in bngsim; please report it.",
@@ -5941,8 +5943,7 @@ def _say_once(cond: str, kind: str, message: str, *args) -> None:
     *kind*: a loop of a thousand legs is one warning, not a thousand. Said
     when the run's stops are taken: said as another condition refused the
     run, the warning was spent, and the legs run next had none."""
-    if (cond, kind) not in _SAID:
-        _PENDING.append((cond, kind, message, args))
+    _PENDING.append((cond, kind, message, args))
 
 
 def say_what_was_read(taken: bool) -> None:
@@ -5953,9 +5954,10 @@ def say_what_was_read(taken: bool) -> None:
     if not taken:
         return
     for cond, kind, message, args in pending:
-        if (cond, kind) not in _SAID:
-            _SAID.add((cond, kind))
-            logger.warning(message, *args)
+        # Recorded with each run (issue #1703), logged once a session.
+        first = (cond, kind) not in _SAID
+        _SAID.add((cond, kind))
+        _notices.log(logger, "switch.unread", message, *args, emit=first)
 
 
 def _three_places_down(x: float) -> str:
@@ -6857,20 +6859,24 @@ def _warn_noisy_trigger(cond) -> None:
     (`sin(time) + cos(time) > 1.4142135623`) reads true and false by turns
     across a band ~1e-9 wide, and the event fires as many times as the rounding
     decides (23 for 16, or 0), on any engine that evaluates it in doubles."""
-    if cond in _NOISY_TRIGGERS_WARNED:
-        return
+    first = cond not in _NOISY_TRIGGERS_WARNED
     _NOISY_TRIGGERS_WARNED.add(cond)
-    logger.warning(
+    _notices.log(
+        logger,
+        "switch.noisy_trigger",
         "The event trigger %r crosses its threshold within the rounding of its own "
         "evaluation: near each crossing it reads true and false by turns, and the "
         "event can fire more or fewer times than it crosses. Move the threshold off "
         "the extremum or write the trigger so it does not cancel there.",
         cond,
+        emit=first,
     )
 
 
 def _warn_over_budget(cond, n, t_start, t_end) -> None:
-    logger.warning(
+    _notices.log(
+        logger,
+        "switch.over_budget",
         "The condition %r crosses about %d times in (%g, %g], past the %d stops "
         "placed in one run; the integrator approaches them unclamped and can step "
         "over a narrow window.",

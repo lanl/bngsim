@@ -287,6 +287,10 @@ class NetworkModel:
         """
         Get a parameter value by name
         """
+    def get_param_values(self) -> numpy.typing.NDArray[numpy.float64]:
+        """
+        Bulk-copy every parameter's value into a new float64 ndarray, ordered like param_names: what get_param returns for each, in one call (issue #1703).
+        """
     def get_state(self) -> numpy.typing.NDArray[numpy.float64]:
         """
         Bulk-copy all species concentrations into a new float64 ndarray, ordered like species_names(). O(n_species), one Python call (GH #102).

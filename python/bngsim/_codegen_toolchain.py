@@ -54,6 +54,7 @@ import threading
 import time
 from pathlib import Path
 
+from bngsim import _notices
 from bngsim._exceptions import CodegenToolchainError
 
 logger = logging.getLogger("bngsim")
@@ -177,8 +178,7 @@ def check() -> tuple[list[str] | None, str | None]:
         message = f"{err} {_FALLBACK}"
         with _lock:
             first = _keep_broken(toolchain_key(None), message)
-        if first:
-            logger.warning("%s", message)
+        _notices.log(logger, "codegen.toolchain", "%s", message, emit=first)
         return None, message
     return compiler, known_broken(compiler)
 
@@ -205,7 +205,11 @@ def known_broken(compiler: list[str]) -> str | None:
         if ok:
             del _verdicts[key]
             _warned.discard(key)
-            logger.warning("The C toolchain builds a codegen library again; codegen resumes.")
+            _notices.log(
+                logger,
+                "codegen.toolchain",
+                "The C toolchain builds a codegen library again; codegen resumes.",
+            )
             return None
         _verdicts[key] = (entry[0], time.monotonic())
         return entry[0]
@@ -245,8 +249,7 @@ def record_missing(compiler: list[str]) -> str | None:
     )
     with _lock:
         first = _keep_broken(toolchain_key(compiler), message)
-    if first:
-        logger.warning("%s", message)
+    _notices.log(logger, "codegen.toolchain", "%s", message, emit=first)
     return message
 
 
@@ -466,6 +469,5 @@ def classify_failure(compiler: list[str]) -> str | None:
             return None
         message = _broken_message(compiler, detail)
         first = _keep_broken(key, message)
-    if first:
-        logger.warning("%s", message)
+    _notices.log(logger, "codegen.toolchain", "%s", message, emit=first)
     return message
