@@ -236,7 +236,15 @@ def test_the_schema_version_and_keys(tmp_path):
         "events",
     ):
         assert key in d, key
-    assert set(d["methods"]) == {"ode", "ssa", "psa", "nf", "rm", "forward_sensitivities"}
+    assert set(d["methods"]) == {
+        "ode",
+        "ssa",
+        "psa",
+        "nf",
+        "rm",
+        "forward_sensitivities",
+        "steady_state",
+    }
 
 
 # ─── A .net model ────────────────────────────────────────────────────────────
@@ -1351,3 +1359,57 @@ def test_unwritable_compartment_sizes_are_refused_parameters():
         ):
             sim = bngsim.Simulator(model.clone(), method="ode", sensitivity_params=[name])
             sim.run(t_span=(0, 1), n_points=2)
+
+
+# ─── Steady state (issue #1844) ──────────────────────────────────────────────
+
+_STEADY_STATE_REFUSED = {
+    "event": lambda: bngsim.Model.from_sbml_string(WITH_EVENT),
+    "reads_clock": lambda: bngsim.Model.from_antimony_string(
+        "species A = 1; J: -> A; k*time; k = 0.1; J2: A -> ; kd*A; kd = 1"
+    ),
+    "size_jump": lambda: bngsim.Model.from_antimony_string(
+        "compartment c; c := piecewise(1, time < 5, 2); species A in c = 1; "
+        "J: -> A; k; J2: A -> ; kd*A; k = 1; kd = 0.1"
+    ),
+}
+
+
+@pytest.mark.parametrize("code", sorted(_STEADY_STATE_REFUSED))
+def test_a_steady_state_refusal_is_the_calls_own(code):
+    """describe()'s steady-state verdict is read from the check steady_state()
+    and steady_state_batch() raise from: the same code, the same words."""
+    if code != "event":
+        pytest.importorskip("antimony")
+    model = _STEADY_STATE_REFUSED[code]()
+    verdict = model.describe()["methods"]["steady_state"]
+    assert verdict["status"] == "refused"
+    (reason,) = verdict["reasons"]
+    assert reason["code"] == code
+    with pytest.raises(bngsim.SimulationError) as ei:
+        bngsim.Simulator(model.clone(), method="ode").steady_state()
+    assert str(ei.value) == reason["message"]
+    with pytest.raises(bngsim.SimulationError) as ei:
+        bngsim.Simulator(model.clone(), method="ode").steady_state_batch([{}])
+    assert str(ei.value) == reason["message"].replace("steady_state()", "steady_state_batch()")
+
+
+def test_a_model_with_a_steady_state_says_ok():
+    model = bngsim.Model.from_sbml_string(TWO_COMPARTMENTS)
+    verdict = model.describe()["methods"]["steady_state"]
+    assert verdict["status"] == "ok" and verdict["reasons"] == []
+    assert "conservation law" in verdict["note"]  # what the verdict does not cover
+    assert bngsim.Simulator(model, method="ode").steady_state().converged
+    methods = str(model.describe()).split("Methods:")[1].split("Analytical")[0]
+    (line,) = [ln for ln in methods.splitlines() if "steady state" in ln]
+    assert line.endswith(": ok")
+
+
+def test_ok_is_not_a_promise_of_convergence(tmp_path):
+    """The .net model's fixed source C feeds P without end, so it has no steady
+    state: nothing refuses the solve, which runs and does not converge, as the
+    note says it may."""
+    model, _ = _net(tmp_path)
+    verdict = model.describe()["methods"]["steady_state"]
+    assert verdict["status"] == "ok" and "converge" in verdict["note"]
+    assert not bngsim.Simulator(model, method="ode").steady_state().converged

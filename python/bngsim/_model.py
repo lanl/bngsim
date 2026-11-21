@@ -3407,8 +3407,9 @@ class Model:
           the file declares and whatever its quantity, as :meth:`get_concentration`
           and ``Result.species`` give them. ``None`` for a ``.net`` or BNGL
           model, whose file states no units, or one built in Python.
-        * ``methods``: for ``ode``, ``ssa``, ``psa``, ``nf``, ``rm`` and
-          ``forward_sensitivities``, a ``status`` and ``reasons``, each reason a
+        * ``methods``: for ``ode``, ``ssa``, ``psa``, ``nf``, ``rm``,
+          ``forward_sensitivities`` and ``steady_state``, a ``status`` and
+          ``reasons``, each reason a
           ``code`` and the ``message`` the run raises (SSA's grouped by code,
           with a ``count`` and its ``locations``). ``"ok"``: nothing in the
           model or this install refuses the method before a run; a run can
@@ -3428,6 +3429,11 @@ class Model:
           load (:attr:`frozen_params`, with what they went into) and the
           compartment sizes :meth:`set_param` cannot write
           (:attr:`unwritable_compartment_size_params`), each with why.
+          ``steady_state`` is read from the checks :meth:`Simulator.steady_state`
+          makes of the model alone (an event, a compartment size that jumps, the
+          time reaching the state); its ``note`` says what it leaves to the
+          call: a conservation law the right-hand side does not keep, and
+          whether the solve converges.
         * ``time_dependence``: ``rate_laws_read_clock``,
           ``functions_reading_clock``, ``state_reads_clock`` (which a steady
           state refuses), ``time_tables`` (table functions over time) and

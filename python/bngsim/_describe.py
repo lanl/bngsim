@@ -81,6 +81,78 @@ def ode_refusals(model: Model) -> list[tuple[str, str]]:
     return out
 
 
+def steady_state_refusals(model: Model, where: str = "steady_state()") -> list[tuple[str, str]]:
+    """``(code, message)`` for each reason a steady-state solve of ``model`` is
+    refused whatever it asks, in the order :meth:`Simulator.steady_state` and
+    :meth:`Simulator.steady_state_batch` check them; each raises the first as a
+    :class:`~bngsim.SimulationError` (issues #710, #961, #1054). ``where`` names
+    the call in the message.
+
+    * ``event``: the model has an event, which a root of ``f(y)`` never fires.
+    * ``size_jump``: a compartment an assignment rule sizes jumps where a
+      piecewise the rule reads switches, and the solvers make no rescale there.
+    * ``reads_clock``: the time reaches the state
+      (``NetworkModel.state_reads_clock``), so there is no ``f(y) = 0`` to
+      solve without a time being chosen.
+
+    Not here: a conservation law the right-hand side does not keep (issue #758),
+    which the call checks by finding the laws, gigabytes on a large network.
+    """
+    core = model._core
+    # A compartment size that jumps keeps the amounts in it through an event
+    # the loader adds (issue #1054), which is no event of the model's own.
+    jumps = list(core.event_size_jump_compartments)
+    n_events = sum(1 for comp in jumps if not comp)
+    if n_events:
+        return [
+            (
+                "event",
+                f"{where} is not supported for this model: it has {n_events} "
+                f"event{'s' if n_events != 1 else ''}. The steady-state solvers look for a "
+                "root of the right-hand side and fire no event, so an event's assignment is "
+                "never made, and the state they return is one the model's dynamics may never "
+                "reach (issue #710). Integrate the model with run() over a span long enough "
+                "for the trajectory to settle, and read the state where it ends.",
+            )
+        ]
+    if jumps:
+        comps = sorted(set(jumps))
+        what = (
+            f"the size of compartment {comps[0]}, which an assignment rule sets, jumps "
+            "where a piecewise the rule reads switches, and the amounts in it are"
+            if len(comps) == 1
+            else f"the sizes of compartments {', '.join(comps)}, which assignment rules "
+            "set, jump where a piecewise a rule reads switches, and the amounts in them are"
+        )
+        return [
+            (
+                "size_jump",
+                f"{where} is not supported for this model: {what} kept across a jump by a "
+                "rescale of their concentrations there (issue #1054). The steady-state "
+                "solvers look for a root of the right-hand side and make no such rescale, so "
+                "the state they return can hold the concentrations from the wrong side of a "
+                "jump (issue #710). Integrate the model with run() over a span long enough for "
+                "the trajectory to settle, and read the state where it ends.",
+            )
+        ]
+    if core.state_reads_clock:
+        return [
+            (
+                "reads_clock",
+                f"{where} is not supported for this model: it reads the time, through time() "
+                "or a table function indexed by time, in a rate law, a rule a species or a "
+                "compartment size is reported through, or what one of those reads. The "
+                "steady-state solvers look for a root of f(y) with everything read at t = 0, "
+                "which is the model's steady state only where nothing changes with the time "
+                "after that: a rate that is 0 at t = 0 returned the initial state as "
+                "converged, and a species set by a rule on the time its value at t = 0 "
+                "(issue #710). Integrate the model with run() over a span long enough for the "
+                "trajectory to settle, and read the state where it ends.",
+            )
+        ]
+    return []
+
+
 def _verdict(reasons: list[dict[str, Any]], **extra: Any) -> dict[str, Any]:
     return {"status": "refused" if reasons else "ok", "reasons": reasons, **extra}
 
@@ -157,6 +229,14 @@ def _network_free(model: Model, canonical: str) -> dict[str, Any]:
         ],
     }
 
+
+#: What a steady-state verdict does not cover.
+_STEADY_STATE_NOTE = (
+    "From the checks steady_state() makes of the model alone. The call also refuses a "
+    "conservation law the model's own right-hand side does not keep (issue #758), which "
+    "it finds by computing the laws, not done here; and a solve can still fail to "
+    "converge, or find a root the run does not reach."
+)
 
 #: Why a sensitivity verdict that nothing refuses is not "ok".
 _UNDECIDED = (
@@ -603,6 +683,10 @@ def describe_model(model: Model, *, limit: int | None = 50) -> ModelDescription:
             "nf": _network_free(model, "nf_reject"),
             "rm": _network_free(model, "nf_exact"),
             "forward_sensitivities": _forward_sensitivities(model),
+            "steady_state": _verdict(
+                [{"code": c, "message": m} for c, m in steady_state_refusals(model)],
+                note=_STEADY_STATE_NOTE,
+            ),
         },
         time_dependence={
             "rate_laws_read_clock": bool(core.rate_laws_read_clock),
@@ -752,6 +836,7 @@ def _text(d: dict[str, Any]) -> str:
         "nf": "nf",
         "rm": "rm",
         "forward_sensitivities": "forward sensitivities",
+        "steady_state": "steady state",
     }
     # Methods with the same verdict share a line: nf and rm, ssa and psa.
     grouped: dict[str, list[str]] = {}
@@ -870,4 +955,10 @@ def _text(d: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-__all__ = ["SCHEMA_VERSION", "ModelDescription", "describe_model", "ode_refusals"]
+__all__ = [
+    "SCHEMA_VERSION",
+    "ModelDescription",
+    "describe_model",
+    "ode_refusals",
+    "steady_state_refusals",
+]
