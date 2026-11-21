@@ -40,6 +40,7 @@ from _ci_workflow import (  # noqa: E402
     pytest_selectors,
     strip_comments,
 )
+from _net_corpus import _REPO_LOCATING, git_env  # noqa: E402
 
 SCRIPT = REPO_ROOT / "ci" / "new_test_coverage.py"
 
@@ -471,10 +472,94 @@ def test_a_missing_shard_is_said_in_the_warning():
 # --- the added files, and the script end to end -----------------------------
 
 
+@pytest.fixture(autouse=True)
+def _no_inherited_repository(monkeypatch):
+    """git exports an absolute GIT_DIR to a hook run from a linked worktree, and
+    the pre-push hook runs this suite. ``ntc.main``'s own git calls and the
+    child pytest below would then read that repository, so no test here sees it.
+    """
+    for name in _REPO_LOCATING:
+        monkeypatch.delenv(name, raising=False)
+
+
 def _git(cwd: Path, *args: str) -> str:
+    # git_env(): an exported GIT_DIR sends every command to that repository
+    # whatever the cwd, and this fixture's `git init` once made the developer's
+    # checkout bare. No hooks and no signing in a scratch repository.
+    cfg = ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false"]
     return subprocess.run(
-        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True, timeout=60
+        ["git", *cfg, *args],
+        cwd=cwd,
+        env=git_env(),
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
     ).stdout.strip()
+
+
+def test_a_repository_in_the_environment_is_not_written_to(tmp_path, monkeypatch):
+    other = tmp_path / "other"
+    other.mkdir()
+    _git(other, "init", "-q")
+    config = other / ".git" / "config"
+    before = config.read_bytes()
+    monkeypatch.setenv("GIT_DIR", str(other / ".git"))
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    _git(scratch, "init", "-q")
+    _git(scratch, "config", "user.name", "ci")
+    assert config.read_bytes() == before
+    assert (scratch / ".git" / "config").is_file()
+
+
+def test_this_module_under_a_worktree_hooks_git_dir_passes_and_leaves_that_repository_alone(
+    tmp_path,
+):
+    """The incident, end to end: git hands a pre-push hook run from a linked
+    worktree GIT_DIR=<main>/.git/worktrees/<name>. The rest of this module, run
+    in that environment, must pass and leave that repository as it was."""
+    main = tmp_path / "main"
+    main.mkdir()
+    _git(main, "init", "-q")
+    _git(
+        main,
+        "-c",
+        "user.name=u",
+        "-c",
+        "user.email=u@x",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "a",
+    )
+    _git(main, "worktree", "add", "-q", str(tmp_path / "wt"), "-b", "w")
+    config = main / ".git" / "config"
+    before = config.read_bytes()
+    heads = _git(main, "for-each-ref", "--format=%(objectname)", "refs/heads")
+    env = {**os.environ, "GIT_DIR": str(main / ".git" / "worktrees" / "wt")}
+    done = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            __file__,
+            "-k",
+            "not worktree_hooks_git_dir",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    assert done.returncode == 0, done.stdout[-2000:] + done.stderr[-2000:]
+    assert config.read_bytes() == before
+    assert _git(main, "for-each-ref", "--format=%(objectname)", "refs/heads") == heads
 
 
 @pytest.fixture

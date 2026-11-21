@@ -250,6 +250,40 @@ def test_run_returns_the_childs_exit_code():
     assert pre_push.run([sys.executable, "-c", "raise SystemExit(5)"]) == 5
 
 
+def test_the_suite_does_not_get_the_repository_git_hands_a_worktree_hook(monkeypatch, tmp_path):
+    """git exports an absolute GIT_DIR to a hook run from a linked worktree. A
+    test that runs `git init` in a scratch directory under it wrote to the real
+    repository and made it bare, so the suite runs without the variables that
+    pick a repository, and keeps the rest of git's settings."""
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "main" / ".git" / "worktrees" / "wt"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(tmp_path))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    seen = tmp_path / "env.txt"
+    probe = (
+        "import os, sys; "
+        "names = sorted(k for k in os.environ if k.startswith('GIT_')); "
+        "open(sys.argv[1], 'w').write('\\n'.join(names))"
+    )
+    assert pre_push.run([sys.executable, "-c", probe, str(seen)]) == 0
+    names = set(seen.read_text().split())
+    assert names.isdisjoint(pre_push.REPO_LOCATING), names
+    assert "GIT_CONFIG_GLOBAL" in names
+
+
+def test_the_hooks_repository_variables_are_the_suites():
+    """One list in three places: a name added to one and not the others would
+    leave a git call there pointed at the hook's repository."""
+    from _net_corpus import _REPO_LOCATING
+
+    assert pre_push.REPO_LOCATING == _REPO_LOCATING
+    gate_path = REPO_ROOT / "ci" / "sbml_suite_gate.py"
+    spec = importlib.util.spec_from_file_location("bngsim_ci_sbml_suite_gate_vars", gate_path)
+    assert spec and spec.loader
+    gate = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gate)
+    assert gate._GIT_REPO_VARS == _REPO_LOCATING
+
+
 def test_the_push_hook_is_this_script():
     """The hook's entry is the script, and it stays a push-only hook."""
     config = REPO_ROOT / ".pre-commit-config.yaml"
