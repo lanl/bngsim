@@ -25,6 +25,13 @@ lists the suffixes BNGsim knows. If the suffix doesn't match the contents, such
 as an SBML file saved as `.txt`, call the loader for the format yourself.
 `Model.load` passes `defer_jacobian=` on to the loader.
 
+The `.xml` that BNG2.pl's `writeXML` writes for NFsim and RuleMonkey isn't
+SBML, even though its root element is `<sbml>`. `Model.load` refuses it
+instead of loading an empty model. Run it network-free: open it
+with `NfsimSession` or `RuleMonkeySession`, or pass it as `xml_path=` to a
+`Simulator` built from the `.net` written beside it
+([Network-free simulation](network-free.md)).
+
 SBML and Antimony also load from a string, and BioModels entries load by id:
 
 ```python
