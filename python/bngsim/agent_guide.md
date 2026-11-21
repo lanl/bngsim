@@ -69,7 +69,7 @@ print(d["methods"]["ssa"]["status"])  # ok
 | to | call |
 |---|---|
 | load a file by its suffix | `bngsim.Model.load(path)` |
-| what the model is, and which methods it admits | `print(model.describe())`; `model.describe()["methods"]["ssa"]` gives a status and the reasons |
+| what the model is, and which methods it admits | `print(model.describe())`; `model.describe()["methods"]["ssa"]` gives a status and the reasons; lists past 50 entries are cut, and `model.describe(limit=None)` keeps all |
 | load one format | `Model.from_net(path)`, `Model.from_bngl(path)`, `Model.from_sbml(path)`, `Model.from_antimony(path)` |
 | load text | `Model.from_sbml_string(text)`, `Model.from_antimony_string(text)`; BNGL only from a file |
 | choose the method | `bngsim.Simulator(model, method="ode")`; `"ssa"`, `"psa"`; network-free `"nf"` (NFsim) and `"rm"` (RuleMonkey) also take `xml_path=`; `Simulator.METHODS` lists all |
