@@ -60,6 +60,15 @@ changed since.
   offer, give only the gradient of one objective, and they integrate backward
   in time, which brings numerical difficulties that forward sensitivities do
   not have.
+- **Steady states.** The default, `sim.steady_state()`, integrates the model
+  until it stops moving, and is the one to use unless you have a reason not
+  to. `method="newton"` (or `"kinsol"`) integrates the same way, then polishes
+  the root with KINSOL's Newton solver: use it when you need the root far below
+  the tolerance (a residual near `1e-13` rather than `1e-9`), or when you have
+  cut `max_time` short. On six published dose-response models it cost 1.4 to
+  3.9 times the default. For every steady state of a model, including
+  unstable ones a simulation never settles on, `sim.steady_states()` runs
+  KINSOL from many starts and reports each root with its stability.
 - **SSA or PSA.** `method="ssa"` is exact: use it for distributions,
   variances, rare events and small populations. `method="psa"` (partial
   scaling, with `poplevel=`) runs a model with large populations faster and
