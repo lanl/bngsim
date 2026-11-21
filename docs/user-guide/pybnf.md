@@ -106,7 +106,7 @@ consumers:
   signal to add an `ic` term.
 - **Ids are the ones you wrote.** A compound `<initialAssignment>` is lowered
   internally onto a synthetic `_ic_<species>` parameter; the report always names
-  the original symbols, matching how the sensitivity tensor is labelled.
+  the original symbols, matching how the sensitivity tensor is labeled.
 
 The overlap is easy to miss because its commonest case is degenerate: a
 parameter appearing *only* in an initial condition, with coefficient 1, gives a
@@ -133,7 +133,7 @@ carried to workers, where reading is a pure mapping.
 Gate on the capability rather than a version string:
 `bngsim.capabilities()["features"]["effective_ic_sensitivity"]`. On a build
 without it the seed matrix is not knowable, and every answer a consumer could
-guess is silently wrong — refusing the gradient fit is the honest behaviour.
+guess is silently wrong — refusing the gradient fit is the honest behavior.
 
 On `SteadyStateResult` none of this applies: that `parameter` axis is the
 implicit-function derivative of the algebraic system (`J·∂x*/∂p = −∂f/∂p`), it
@@ -182,7 +182,7 @@ number as the release that finally carries it. A `hasattr` probe cannot stand in
 either, because these fixes change what a build *computes*, not what it
 *exposes* — nothing in the namespace appears or disappears at one.
 
-The **behaviour keys** are published for exactly this. Each is `True` or `False`
+The **behavior keys** are published for exactly this. Each is `True` or `False`
 on every build, so a `False` is an answer you can act on, where an absent key
 would mean only "too old to have been asked":
 

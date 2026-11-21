@@ -337,7 +337,7 @@ Stable feature keys: `nfsim`, `rulemonkey`, `klu`, `lapack_dense`, `mir`,
 `effective_ic_sensitivity`, `event_sensitivities`,
 `cross_compartment_sensitivities`, `per_species_atol`, `tracking_atol`.
 
-**Behaviour keys** — the last four answer a different question from the rest:
+**Behavior keys** — the last four answer a different question from the rest:
 not "was this backend compiled in?" but "does this build compute the thing
 correctly?". Each one stands for a fix whose absence is a wrong number rather
 than a refusal, so nothing else can be gated on: a version string identifies a
@@ -347,7 +347,7 @@ are `event_sensitivities` (forward sensitivities survive a discrete event),
 `cross_compartment_sensitivities` (a reaction crossing compartments of
 different size keeps the analytic ∂f/∂p rather than putting the whole model on
 difference quotients), `per_species_atol` (`run(atol=...)` takes a vector) and
-`tracking_atol` (`run(atol=TrackingAtol(...))` is honoured). All four are
+`tracking_atol` (`run(atol=TrackingAtol(...))` is honored). All four are
 published on every build, so a `False` is an answer you can act on — an absent
 key would mean only "too old to have been asked".
 

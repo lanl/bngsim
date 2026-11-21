@@ -164,7 +164,7 @@ rise fires. Runs without sensitivities are unaffected.
 
 Events with a delay queue their assignments and apply them after the delay
 period has elapsed. Non-persistent events whose trigger reverts to false
-before the delay expires are cancelled.
+before the delay expires are canceled.
 
 Everything that executes at one instant is one batch, whether it was triggered
 just then or a delay ago: the event of highest priority executes next, and the

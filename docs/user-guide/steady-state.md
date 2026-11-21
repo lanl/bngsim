@@ -470,7 +470,7 @@ trajectory rather than a reported failure.
 
 A species an assignment rule defines is the mirror image of an accumulator, and
 it is handled the same way — automatically, because it is structural rather than
-a judgement call. Such a species has no equation of its own: BNGsim emits its
+a judgment call. Such a species has no equation of its own: BNGsim emits its
 slot `fixed` and its value comes from the rule, so its RHS row, and therefore its
 Jacobian row, is identically zero. An accumulator contributes a zero *column*; a
 rule target contributes a zero *row*; either one makes the system singular.
@@ -568,7 +568,7 @@ the next section.
 2. It runs KINSOL from each one with no integration burst.
 3. It clusters the roots it reaches.
 
-The burst is what carries `steady_state(method="newton")` into an attractor's basin, and the certificate is what turns a saddle down. Here neither applies: every root reached is kept and labelled.
+The burst is what carries `steady_state(method="newton")` into an attractor's basin, and the certificate is what turns a saddle down. Here neither applies: every root reached is kept and labeled.
 
 ```python
 roots = sim.steady_states(n_starts=200, seed=0)   # the Gardner toggle at alpha_2 = 53.53
@@ -1209,7 +1209,7 @@ checks the measurement at two step sizes and **raises** rather than reporting a
 difference quotient of a jump — a dose rounded to whole molecules is not
 differentiable, and such a row must be declared.
 
-`declare_ic_sensitivity` is honoured on a plain `run()` too, which is the way to
+`declare_ic_sensitivity` is honored on a plain `run()` too, which is the way to
 give a **hand-assigned** θ-dependent initial condition its derivative: outside a
 hook there is nothing to probe, and the parameter-graph seeding differentiates
 the `.net` IC *expression*, which a `set_concentration` has replaced.

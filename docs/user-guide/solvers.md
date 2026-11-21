@@ -284,7 +284,7 @@ Two things worth knowing:
   unset it silently reverts to the default `1e-8`, and on a model whose states
   are themselves ~1e-8 that criterion is already satisfied at *t* = 0: the
   relaxation returns the initial state and calls it the steady state. That reads
-  as a modelling problem rather than a tolerance one, which is why it is worth
+  as a modeling problem rather than a tolerance one, which is why it is worth
   one kwarg to rule out.
 
 `atol="auto"` derives `rtol * max(|y_i|, floor)`, where `floor` defaults to the
@@ -535,12 +535,12 @@ the run, stops the integration on each, and restarts there. That covers:
 
 A smooth pulse with no switch in it has the same trouble. A narrow Gaussian
 `exp(-((time()-t0)/s)^2)` is exactly 0 in doubles away from itself, so a step
-spanned it whole. BNGsim stops on the centre of each such bump in the value of
+spanned it whole. BNGsim stops on the center of each such bump in the value of
 a rate law (issue #1286). It reads `exp` of a quadratic in the clock with a
 negative leading term (also written `_e^` or `pow(_e, ...)`), and `cosh` or
 `tanh` of a linear function of it, which covers sech² written `1/cosh(u)^2` or
 `1 - tanh(u)^2`. The clock is `time()` or a counter species fed at a constant
-rate, at any rate. A bump centred just past the end of the run, with its rise
+rate, at any rate. A bump centered just past the end of the run, with its rise
 inside the run, gets a stop at the end.
 
 A condition is first read exactly where it has a shape BNGsim knows (linear in

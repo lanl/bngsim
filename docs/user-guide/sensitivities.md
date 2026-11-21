@@ -220,7 +220,7 @@ A model with `if()` conditions but **no fitted switch time** yields no records
 at all, and its stepping stays bit-for-bit identical to a run without
 sensitivities.
 
-### Clock forms that are recognised
+### Clock forms that are recognized
 
 The crossing has to be solved for from the condition. These forms are handled:
 
@@ -782,7 +782,7 @@ anything dropped is named in a warning. Two classes come out:
   `set_param` refuses a value-changing write to either kind, so neither is a
   coordinate that can move on its own. `_V0_<comp>` is BNGsim's record of a
   compartment's size at load, which the rate constants in that compartment are
-  normalised against — differentiate the compartment size itself, an ordinary
+  normalized against — differentiate the compartment size itself, an ordinary
   writable parameter. And every **function** has one, holding the value it last
   evaluated to; the engine rewrites it from the function's own expression before
   every derivative evaluation, so that column is identically zero (issue #227) —

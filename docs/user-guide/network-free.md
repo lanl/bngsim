@@ -137,10 +137,10 @@ not on the finished propensity (issue #282). The factor corrects a match
 multiplicity, so the law is being handed `2N` where `N` exists, and
 `σ·MM(2N, E)` equals `MM(σ·2N, E)` only where the law is linear. Above
 saturation the two placements genuinely differ. Only the substrate needs it: an
-MM rule does not transform its enzyme, and BNG counts reaction-centre
+MM rule does not transform its enzyme, and BNG counts reaction-center
 automorphisms, so an enzyme-side symmetry arrives as `symmetry_factor="1"`.
 
-### Reactant patterns with no reaction centre
+### Reactant patterns with no reaction center
 
 A reactant pattern that the rule never modifies is pure *context* — a
 multi-subunit scaffold a rule reads but does not touch. Such a pattern is
@@ -184,7 +184,7 @@ network runs it at k.
 Under `TotalRate` the rate law states the whole propensity of the rule outright.
 There is no match count to correct, so **the symmetry factor is not applied at
 all** (issue #426). Applying it ran a `TotalRate` rule with a symmetric reaction
-centre at half the rate the model asks for.
+center at half the rate the model asks for.
 
 Two cautions on `TotalRate` generally. BioNetGen does not implement it for
 network simulations — `RxnRule.pm` carries the note that it is implemented only
@@ -370,9 +370,9 @@ allows (see "Rate laws that read `time()`" above). `initialize(seed,
 t_start=5)` puts the seed state at t = 5; left unset, the first `simulate` sets it from its own
 start for a model that reads the clock, provided nothing has moved the session
 first. A segment that starts at `current_time` runs on the clock. One that
-starts elsewhere continues from `current_time` and is labelled with the times
+starts elsewhere continues from `current_time` and is labeled with the times
 asked for, which a model that reads the clock refuses, since its rows would not
-be labelled with the times it read. An NFsim session's clock is elapsed time.
+be labeled with the times it read. An NFsim session's clock is elapsed time.
 On both, a result's `solver_stats["n_steps"]` counts the events since
 `initialize`, not the segment's alone.
 

@@ -159,7 +159,7 @@ has to refresh the `rateOf` buffer.
     2.3, 0)` fired at T0 + 1 = 2.3 returns 0.5 for 0 or 1;
   - a smooth value whose difference rounds, in line, by more than it resolves:
     `(1 − exp(−k·time))/k` at k = 1e-10 returns 1.11 for 1;
-  - a feature centred on the point, narrower than 0.6 of the step, that
+  - a feature centered on the point, narrower than 0.6 of the step, that
     returns to the point's value at both ends of it:
     `piecewise(X − 3, abs(X − 3) < 3e-7, 0)` at X = 3 returns 0 for 1;
   - a sawtooth whose period divides the step, riding on a slope:
@@ -182,7 +182,7 @@ joins the batch. Each instance's assignment reads the state at its own trigger
 time when `useValuesFromTriggerTime=true`: that is the pre-batch state for an
 instance armed before the batch, and the state after the arming fire for a
 cascaded one. With `false`, it reads the state the earlier fires left. A
-non-persistent instance whose trigger an earlier fire made false is cancelled.
+non-persistent instance whose trigger an earlier fire made false is canceled.
 The jump composes in *execution* order:
 
 ```
@@ -192,7 +192,7 @@ D_k = D_{k−1}, except on the rows fire k assigns:
       D_read = D₀       UVFTT=true, armed before the batch
              = D_j      UVFTT=true, armed by fire j of this batch
              = D_{k−1}  UVFTT=false
-      (a cancelled instance contributes nothing)
+      (a canceled instance contributes nothing)
 s⁺ = D_n − f⁺·τ                                     f⁺ after the whole batch
 ```
 

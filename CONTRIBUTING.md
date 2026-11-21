@@ -454,7 +454,7 @@ When you add one:
 - Give `missing[name]` a sentence that says what goes wrong and what to do.
 - Measure what the key claims in `python/tests/test_behaviour_capability_keys.py`
   and assert the key against the measurement, so the key cannot outlive the
-  behaviour.
+  behavior.
 - Names are permanent: `capabilities()` promises that existing keys are never
   renamed or removed.
 
@@ -467,7 +467,7 @@ reviews of our own fixes, and each fix opened more issues than it closed.
 ### Fix review findings in the PR; do not file them
 
 A finding from a review of your PR is fixed in that PR, even outside the issue's
-original scope, when it is in code the PR touches or behaviour it changes, or is
+original scope, when it is in code the PR touches or behavior it changes, or is
 the same kind of bug in a neighbouring path. Filing it instead turns one unit of
 work into several, each with its own branch, review, CI run and merge, and loses
 the context the reviewer had.

@@ -215,7 +215,7 @@ Session control:
   `bngsim.SimulationTimeout` and the session must be destroyed before
   reuse. A segment that starts at `current_time` runs on the session clock,
   which is model time. One that starts elsewhere continues from
-  `current_time` and is labelled with the times asked for; for a model that
+  `current_time` and is labeled with the times asked for; for a model that
   reads the clock (`time()` or a table function indexed by time) that raises
   `SimulationError`. `solver_stats["n_steps"]` counts the events since
   `initialize`, as an `NfsimSession`'s does.
@@ -287,7 +287,7 @@ Properties:
 - **`unconverged_pure_sinks`** — `list[str]`; on a *failed* solve, the write-only accumulators that were in the test and are carrying flux — i.e. the residual has a structural floor, not a slow tail. Empty otherwise
 - **`sensitivity`** — `ndarray (n_species, n_params)` species `dY_ss/dp` (or `None` if no `sensitivity_params`)
 - **`sensitivity_params`** — `list[str]`
-- **`observable_names`**, **`expression_names`** — `list[str]` labelling the output-sensitivity rows (populated on a sensitivity run; `expression_names` filters the auto-generated `_rateLawN` functions, matching `Result`)
+- **`observable_names`**, **`expression_names`** — `list[str]` labeling the output-sensitivity rows (populated on a sensitivity run; `expression_names` filters the auto-generated `_rateLawN` functions, matching `Result`)
 - **`sensitivities_observables`** — `ndarray (n_observables, n_params)` exact `d(observable)/dp`
 - **`sensitivities_expressions`** — `ndarray (n_expressions, n_params)` `d(function)/dp` total derivative (state chain + explicit `∂func/∂p`)
 - **`rhs_backend`**, **`sens_jacobian_source`**, **`sens_dfdp_source`**, **`sens_output_source`** — which numerical path each piece took. `sens_output_source` (issues #75, #1002) is `"codegen"` / `"partial"` / `"none"` for the `d(function)/dp` block: the compiled `bngsim_codegen_output_sens` chain rule answered every function, some of them, or none. A function it does not answer is a NaN row, refused by name by `output_sensitivities`; it is not differenced
@@ -316,7 +316,7 @@ All inherit from `bngsim.BngsimError` (which inherits `RuntimeError`):
 
 - **`ModelError`** — `.net` parse failures, invalid model state
 - **`SimulationError`** — Solver failures (convergence, NaN)
-  - **`SparseJacobianUnavailableError`** — `force_sparse_linear_solver=True` on a model that cannot supply a sparse Jacobian for KLU: its analytical Jacobian is unavailable (or suppressed by `jacobian="fd"`) and its sparsity pattern has no structural nonzero to colour. A refusal by name, not a solver failure: drop the flag to use the dense solver. A `SimulationError`, as it was raised before it had a type, from `run()` and `run_batch()` alike.
+  - **`SparseJacobianUnavailableError`** — `force_sparse_linear_solver=True` on a model that cannot supply a sparse Jacobian for KLU: its analytical Jacobian is unavailable (or suppressed by `jacobian="fd"`) and its sparsity pattern has no structural nonzero to color. A refusal by name, not a solver failure: drop the flag to use the dense solver. A `SimulationError`, as it was raised before it had a type, from `run()` and `run_batch()` alike.
 - **`SimulationTimeout`** — Wall-clock budget exceeded; `.timeout` and `.elapsed` attributes
 - **`ParameterError`** — Unknown parameter name, invalid value
 - **`SensitivityUnsupportedError`** — Forward sensitivity declined for this model: an event whose crossing time moves in a way `dt*/dp` cannot be computed for, or a rate law that does not differentiate to closed form. A declared capability gap, not a failure — catch it to fall back on a derivative-free optimizer. Also inherits `ValueError` (what both sites raised before the class existed), so `except ValueError` still catches it. A missing compiler/JIT is *not* this exception; that stays a plain `RuntimeError`.
@@ -393,7 +393,7 @@ artifact holds a derivative for, and why not for the others. A process that is
 handed the artifact from the cache reads it, so `output_sensitivities([...])`
 raises the reason the build recorded, and the map is not worked out again. (The
 note answers for a model whose tables are the builder's: one given a table
-function after it ran keeps its artifact and is analysed for itself, beside
+function after it ran keeps its artifact and is analyzed for itself, beside
 what the note says the build has no derivative for.) Both
 are BNGsim's own files: counted under one kind, removed by `clear`, and removed by
 `prune` exactly when the artifact they describe is removed.
