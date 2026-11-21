@@ -36,11 +36,9 @@ uncertainty quantification and model checking on it.
 | work in a graphical interface | no, it is a Python library | COPASI |
 | integrate an ODE system you have written as a Python function | no: bngsim reads a model (SBML, Antimony, BNGL), not a function. A reaction network written in Antimony gets a stiff solver, an analytic Jacobian and sensitivities without code | SciPy (`solve_ivp`), Diffrax |
 
-The other tools' formats, methods, sensitivities and parallelism are as the
-bngsim paper's feature comparison found them, by reading each tool's source code
-in July and August 2026
-(libRoadRunner 2.9.2, AMICI 1.0.1, COPASI 4.46, BioNetGen 2.9.3). They may have
-changed since.
+The other tools' formats, methods, sensitivities and parallelism are as we found
+them by reading each tool's source code in July and August 2026 (libRoadRunner
+2.9.2, AMICI 1.0.1, COPASI 4.46, BioNetGen 2.9.3). They may have changed since.
 
 ### Choosing settings
 
@@ -90,9 +88,9 @@ changed since.
   is the default. `method="rm"` (RuleMonkey) is an independent second engine:
   it runs some energy (`Arrhenius`) rules, which NFsim refuses, and it is the
   check to run when an NFsim result matters. Which is faster depends on the
-  model. On 13 published models timed for the bngsim paper, NFsim was faster
-  on 9, RuleMonkey by up to 3 times slower where both finished; on two,
-  RuleMonkey had not finished when the time limit NFsim met ran out.
+  model. On 13 published models we timed, NFsim was faster on 9, RuleMonkey
+  by up to 3 times slower where both finished; on two, RuleMonkey had not
+  finished when the time limit NFsim met ran out.
   RuleMonkey was faster on 4, by up to 15 times. The two agree on 221 of 222
   models of a parity suite, and on the one where they disagree the fault is
   NFsim's. Neither runs a model with compartments; use its generated network
@@ -104,8 +102,9 @@ changed since.
   their argument; RuleWorld/nfsim#102, #104, #106). It also skips the binary's
   launch and model reparse on every run, which is where it saves time: in
   fitting and ensembles, where one model runs many times. Run once, it was
-  faster than the binary on 3 of the 13 models in the paper's timings (by up
-  to 4.5 times) and slower on the rest, mostly by under 2 times. `nfsim_v1143_compat=True` reproduces NFsim 1.14.3's trajectories
+  faster than the binary on 3 of those 13 models (by up to 4.5 times) and
+  slower on the rest, mostly by under 2 times. `nfsim_v1143_compat=True`
+  reproduces NFsim 1.14.3's trajectories
   seed for seed, for comparison with the binary.
 - **JAX.** `bngsim.jax.differentiable_solve` (`pip install 'bngsim[jax]'`)
   makes a CVODE solve a JAX function, so `jax.grad` or `jax.jacfwd` goes
