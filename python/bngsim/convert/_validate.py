@@ -1276,7 +1276,7 @@ def _grade_target(
                     )
                 )
             else:
-                report.levels.append(_check_l0_sbml(target_path.read_text()))
+                report.levels.append(_check_l0_sbml(target_path.read_text(encoding="utf-8")))
         else:
             report.levels.append(_check_l0_net(target_model, load_error))
 
@@ -1427,7 +1427,7 @@ def grade_conversion(
             work.mkdir(parents=True, exist_ok=True)
 
         target_path = work / (source_stem + plan.target_suffix)
-        target_path.write_text(target_text)
+        target_path.write_text(target_text, encoding="utf-8")
 
         return _grade_target(
             plan,

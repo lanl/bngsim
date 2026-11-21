@@ -176,13 +176,15 @@ def roundtrip_deltas(
     d = Path(tempfile.mkdtemp())
     try:
         bp = d / f"{stem}.bngl"
-        bp.write_text(bngl_text + "\ngenerate_network({overwrite=>1})\n")
+        bp.write_text(bngl_text + "\ngenerate_network({overwrite=>1})\n", encoding="utf-8")
         try:
             proc = subprocess.run(
                 [str(bng2), "--outdir", str(d), str(bp)],
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                encoding="utf-8",
+                errors="replace",
             )
         except subprocess.TimeoutExpired as e:
             raise ConversionError(

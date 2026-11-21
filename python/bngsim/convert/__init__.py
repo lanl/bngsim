@@ -404,7 +404,9 @@ def sbml_to_net(
             if out_path is not None:
                 net_model = Model.from_net(out_path)
             else:
-                with tempfile.NamedTemporaryFile("w", suffix=".net", delete=False) as tmp:
+                with tempfile.NamedTemporaryFile(
+                    "w", suffix=".net", delete=False, encoding="utf-8"
+                ) as tmp:
                     tmp.write(net_text)
                     tmp_path = tmp.name
                 try:
@@ -832,7 +834,7 @@ def _not_as_generated(model: Any, bngl: Path, protocol: ProtocolSpec | None) -> 
     from bngsim._bngl_loader import _species_name, _value
 
     try:
-        text = bngl.read_text()
+        text = bngl.read_text(encoding="utf-8", errors="replace")
     except (OSError, UnicodeDecodeError):
         return []
     declared = _declared(text)
@@ -1173,7 +1175,9 @@ def net_to_sbml(
         if out_path is not None:
             sbml_model = Model.from_sbml(out_path)
         else:
-            with tempfile.NamedTemporaryFile("w", suffix=".xml", delete=False) as tmp:
+            with tempfile.NamedTemporaryFile(
+                "w", suffix=".xml", delete=False, encoding="utf-8"
+            ) as tmp:
                 tmp.write(sbml_text)
                 tmp_path = tmp.name
             try:
@@ -1720,7 +1724,7 @@ def omex_to_net(
                 # The note travels with the file, for whoever runs it.
                 comment = "".join(f"# bngsim: {n}\n" for n in notes)
                 text = text.replace("begin actions\n", "begin actions\n" + comment, 1)
-            Path(dest).write_text(text)
+            Path(dest).write_text(text, encoding="utf-8")
             report.bngl_out = str(dest)
 
     # Re-label the source so the report reads as an OMEX unpack, not a bare SBML.
