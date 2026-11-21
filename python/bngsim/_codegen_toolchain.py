@@ -56,6 +56,11 @@ from pathlib import Path
 
 from bngsim._exceptions import CodegenToolchainError
 
+# What a compiler or linker writes its messages and paths in: the ANSI code
+# page on Windows, UTF-8 elsewhere, whatever the locale says (issue #1665).
+# Read with errors="replace", so a byte outside it is never a decode error.
+TOOL_OUTPUT_ENCODING = "mbcs" if os.name == "nt" else "utf-8"
+
 logger = logging.getLogger("bngsim")
 
 #: The environment variables that decide what the compiler driver and the linker
@@ -268,7 +273,15 @@ def _run(cmd: list[str], *, timeout: float = 10.0) -> str:
     """stdout and stderr of a short diagnostic command (``ld -v`` prints to
     stderr), or ``""`` when it cannot run or fails."""
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+        out = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            encoding=TOOL_OUTPUT_ENCODING,
+            errors="replace",
+        )
     except (OSError, subprocess.SubprocessError, ValueError):
         return ""
     if out.returncode != 0:

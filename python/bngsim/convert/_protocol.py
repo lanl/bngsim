@@ -1289,7 +1289,7 @@ def write_bngl_protocol(
     lines.append("end actions")
     text = "\n".join(lines) + "\n"
     if out_path is not None:
-        Path(out_path).write_text(text)
+        Path(out_path).write_text(text, encoding="utf-8")
     return text
 
 
@@ -1952,8 +1952,8 @@ def _looks_like_path(source: str | Path) -> bool:
 
 def _read_text(source: str | Path) -> str:
     if isinstance(source, Path):
-        return source.read_text()
+        return source.read_text(encoding="utf-8")
     s = str(source)
     if "\n" in s or s.lstrip().startswith(("begin", "#")):
         return s
-    return Path(s).read_text()
+    return Path(s).read_text(encoding="utf-8")

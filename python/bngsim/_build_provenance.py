@@ -386,6 +386,8 @@ def _head_commit(root: Path) -> str | None:
             capture_output=True,
             text=True,
             timeout=2,
+            encoding="utf-8",
+            errors="replace",
         )
     except Exception:
         return None

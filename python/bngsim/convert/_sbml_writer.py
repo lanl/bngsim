@@ -1079,7 +1079,7 @@ def write_sbml(
     # ── serialize ──────────────────────────────────────────────────────────
     text = libsbml.writeSBMLToString(doc)
     if out_path is not None:
-        Path(out_path).write_text(text)
+        Path(out_path).write_text(text, encoding="utf-8")
     return text
 
 

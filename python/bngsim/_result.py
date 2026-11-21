@@ -3633,7 +3633,7 @@ class Result:
         n_t = self._time.shape[0]
         n_cols = data.shape[1]
 
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             if header:
                 cols = (["time"] if include_time else []) + list(names)
                 f.write(sep.join(cols) + "\n")
@@ -4742,7 +4742,7 @@ def _write_bng_file(
 ) -> None:
     """Write BNG-format (.gdat/.cdat) file from arrays."""
     path = Path(path)
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         # Header
         header = "# " + " ".join(["time"] + names)
         f.write(header + "\n")
