@@ -217,7 +217,8 @@ def test_exit_codes_are_distinct_and_documented():
         encoding="utf-8"
     )
     for code in codes:
-        assert f"| {code} |" in page, code
+        # Each row starts with the meaning's first words, as --help gives them.
+        assert f"| {code} | {_cli.EXIT_CODES[code].split(':')[0]}" in page, code
 
 
 def test_an_error_that_is_not_bngsims_has_the_same_keys():
@@ -260,6 +261,55 @@ def test_what_else_writes_to_stdout_goes_to_stderr():
         assert noise in run.stderr
 
 
+def test_a_reader_that_goes_away_is_not_an_error():
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "bngsim", "guide"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert proc.stdout is not None and proc.stderr is not None
+    proc.stdout.readline()
+    proc.stdout.close()  # as `bngsim guide | head -1` does
+    stderr = proc.stderr.read()
+    assert proc.wait(timeout=120) == 0
+    assert stderr == b""
+
+
+def test_a_broken_pipe_inside_a_command_is_an_error():
+    script = textwrap.dedent(
+        """
+        from bngsim import _cli
+
+        def fails(args):
+            raise BrokenPipeError("a subprocess's pipe")
+
+        _cli._COMMANDS["doctor"] = fails
+        """
+    )
+    run = _bngsim("doctor", "--json", script=script)
+    error = _json_error(run, 1, "error")
+    assert error["type"] == "BrokenPipeError"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a POSIX shell closes the descriptor")
+def test_a_closed_stdout_is_an_error():
+    run = subprocess.run(
+        ["sh", "-c", f'"{sys.executable}" -m bngsim --version >&-'],
+        capture_output=True,
+        text=True,
+    )
+    assert run.returncode == 1
+    assert run.stderr == "bngsim: error: standard output is closed\n"
+
+
+def test_an_error_with_details_json_has_no_form_for_is_still_json():
+    error = bngsim.ModelError("x", details={"path": Path("/a"), "names": {"b", "a"}})
+    assert json.loads(_cli._dumps(_cli.error_dict(error)))["details"] == {
+        "path": str(Path("/a")),
+        "names": ["a", "b"],
+    }
+
+
 def test_numbers_json_cannot_hold_are_strings():
     text = _cli._dumps({"a": float("nan"), "b": np.float64("inf"), "c": [-np.inf, np.int64(3)]})
     assert json.loads(text) == {"a": "nan", "b": "inf", "c": ["-inf", 3]}
@@ -290,10 +340,20 @@ def test_convert_runs_the_converter(tmp_path):
     assert ours.read_text(encoding="utf-8") == theirs.read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("args", [["convert"], ["convert", "nope"], ["--json", "cache", "info"]])
-def test_convert_and_cache_usage_errors_exit_2(args):
+@pytest.mark.parametrize(
+    ("args", "usage"),
+    [
+        (["convert"], "usage: bngsim convert"),
+        (["convert", "nope"], "usage: bngsim convert"),
+        (["--quiet", "cache", "info"], "usage: bngsim cache"),
+    ],
+)
+def test_convert_and_cache_usage_errors_exit_2(args, usage):
     run = _bngsim(*args)
     assert run.returncode == 2 and run.stdout == ""
+    assert run.stderr.startswith(usage)
+    error = _json_error(_bngsim(*args, "--json"), 2, "usage.invalid_argument")
+    assert error["details"]["usage"].startswith(usage)
 
 
 def test_the_console_script_is_this_main():

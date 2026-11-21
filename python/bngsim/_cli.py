@@ -392,8 +392,9 @@ _COMMANDS: dict[str, Callable[[argparse.Namespace], tuple[Any, str]]] = {
 
 
 def _json_safe(value: Any) -> Any:
-    """``value`` with every float JSON cannot hold as a string, and NumPy
-    scalars and arrays as Python values."""
+    """``value`` as JSON can hold it: a float JSON has no number for as a
+    string, NumPy scalars and arrays as Python values, a set as a list, and
+    anything else JSON has no form for (a ``Path``) as its ``str()``."""
     if isinstance(value, float):
         if math.isfinite(value):
             return value
@@ -402,10 +403,14 @@ def _json_safe(value: Any) -> Any:
         return {str(k): _json_safe(v) for k, v in value.items()}
     if isinstance(value, list | tuple):
         return [_json_safe(v) for v in value]
+    if isinstance(value, set | frozenset):
+        return [_json_safe(v) for v in sorted(value, key=str)]
     tolist = getattr(value, "tolist", None)  # a NumPy scalar or array
     if callable(tolist) and type(value).__module__ == "numpy":
         return _json_safe(tolist())
-    return value
+    if value is None or isinstance(value, str | int):
+        return value
+    return str(value)  # a Path, or anything else JSON has no form for
 
 
 def _dumps(payload: Any) -> str:
@@ -449,7 +454,21 @@ def _stdout_to_stderr() -> Iterator[Callable[[str], None]]:
         if saved is not None:
             os.dup2(saved, fd)  # type: ignore[arg-type]
             os.close(saved)
-    _write(real_stdout, "".join(pending))
+    _write_stdout(real_stdout, "".join(pending))
+
+
+class _ReaderGone(Exception):
+    """Standard output's reader went away before the command's output was
+    written (``bngsim guide | head``)."""
+
+
+def _write_stdout(stream: Any, text: str) -> None:
+    """The command's own output, to standard output. Only a broken pipe here
+    is the reader going away; one inside a command is an error of the command."""
+    try:
+        _write(stream, text)
+    except BrokenPipeError as error:
+        raise _ReaderGone from error
 
 
 def _flush_c_stdio() -> None:
@@ -484,7 +503,11 @@ def _write(stream: Any, text: str) -> None:
 def _report_error(error: BaseException, as_json: bool) -> int:
     exit_code = exit_code_for(error)
     if as_json:
-        _write(sys.stderr, _dumps(error_dict(error)))
+        try:
+            text = _dumps(error_dict(error))
+        except Exception as failure:  # the report must not fail on the error it reports
+            text = _dumps(error_dict(RuntimeError(f"{error} (and to_dict() failed: {failure})")))
+        _write(sys.stderr, text)
         return exit_code
     if isinstance(error, _CommandLineError):
         usage = f"{error.usage}\n" if error.usage else ""
@@ -506,6 +529,9 @@ def _report_error(error: BaseException, as_json: bool) -> int:
     return exit_code
 
 
+_CONVERT_USAGE = "usage: bngsim convert TOOL [ARGS ...]"
+
+
 def _passthrough(command: str, rest: list[str]) -> int:
     if command == "cache":
         from bngsim.cache import main as cache_main
@@ -514,13 +540,9 @@ def _passthrough(command: str, rest: list[str]) -> int:
     if not rest or rest[0] not in _CONVERT_TOOLS:
         tools = ", ".join(_CONVERT_TOOLS)
         if rest and rest[0] in ("-h", "--help"):
-            _write(sys.stdout, f"usage: bngsim convert TOOL [ARGS ...]\n\ntools: {tools}\n")
+            _write_stdout(sys.stdout, f"{_CONVERT_USAGE}\n\ntools: {tools}\n")
             return EXIT_OK
-        _write(
-            sys.stderr,
-            f"usage: bngsim convert TOOL [ARGS ...]\nbngsim: error: TOOL is one of {tools}\n",
-        )
-        return EXIT_USAGE
+        raise _CommandLineError(f"TOOL is one of {tools}", _CONVERT_USAGE)
     from bngsim.convert import _cli as convert_cli
 
     return _exit_status(getattr(convert_cli, _CONVERT_TOOLS[rest[0]][0]), rest[1:])
@@ -546,6 +568,12 @@ def main(argv: list[str] | None = None) -> int:
     """``bngsim`` and ``python -m bngsim``. Returns the exit code."""
     args_list = list(sys.argv[1:] if argv is None else argv)
     as_json = "--json" in args_list
+    if sys.stdout is None or sys.stderr is None:
+        # Started with standard output or error closed (`bngsim doctor >&-`):
+        # there is nowhere to write the answer. Say so where that is possible.
+        if sys.stderr is not None:
+            _write(sys.stderr, "bngsim: error: standard output is closed\n")
+        return EXIT_ERROR
     try:
         i = _command_word(args_list)
         if (
@@ -556,7 +584,10 @@ def main(argv: list[str] | None = None) -> int:
             if i > 0:
                 raise _CommandLineError(
                     f"`bngsim {args_list[i]}` takes no options before `{args_list[i]}`; "
-                    "give them after it"
+                    "give them after it",
+                    _CONVERT_USAGE
+                    if args_list[i] == "convert"
+                    else "usage: bngsim cache [ARGS ...]",
                 )
             return _passthrough(args_list[i], args_list[i + 1 :])
         parser = _build_parser()
@@ -569,9 +600,9 @@ def main(argv: list[str] | None = None) -> int:
             import bngsim
 
             if as_json:
-                _write(sys.stdout, _dumps({"version": bngsim.__version__}))
+                _write_stdout(sys.stdout, _dumps({"version": bngsim.__version__}))
             else:
-                _write(sys.stdout, f"bngsim {bngsim.__version__}\n")
+                _write_stdout(sys.stdout, f"bngsim {bngsim.__version__}\n")
             return EXIT_OK
         if args.command is None:
             raise _CommandLineError(
@@ -582,7 +613,7 @@ def main(argv: list[str] | None = None) -> int:
             payload, text = _COMMANDS[args.command](args)
             emit(_dumps(payload) if as_json else text)
         return EXIT_OK
-    except BrokenPipeError:
+    except _ReaderGone:
         # The reader went away (`bngsim guide | head`). Point standard output
         # at nothing, so the interpreter's own flush at exit does not fail too.
         with contextlib.suppress(OSError, ValueError):

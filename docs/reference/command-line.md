@@ -33,7 +33,9 @@ report.
   and nothing else goes there. Anything else written to standard output while
   the command works, by Python or by compiled code, goes to standard error. A
   number JSON cannot hold (NaN, an infinity) is written as the string `"nan"`,
-  `"inf"` or `"-inf"`.
+  `"inf"` or `"-inf"`; a value JSON has no form for (a path) is written as its
+  text. On Windows, compiled code that writes through a C runtime other than
+  Python's is not redirected; that is not tested there.
 - `--json` can come before or after the command: `bngsim --json doctor` and
   `bngsim doctor --json` are the same.
 - An error prints nothing on standard output. With `--json`, it is one JSON
@@ -59,7 +61,9 @@ report.
 `bngsim convert` and `bngsim cache` hand their arguments to the existing
 commands, which keep their own output, exit codes and help, so their help
 names them by their own names (`bngsim-sbml2net`, `bngsim-cache`). Give their
-options after `convert TOOL` or `cache`.
+options after `convert TOOL` or `cache`. A wrong tool name, or an option
+before `convert` or `cache`, is a usage error like any other (JSON with
+`--json`); an error the tool itself reports is its own text.
 
 ## Exit codes
 
