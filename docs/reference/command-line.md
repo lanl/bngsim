@@ -48,11 +48,13 @@ report.
     "message": "SBML file not found: /data/model.xml",
     "details": {"path": "/data/model.xml"},
     "remedies": [],
-    "docs_url": "https://bngsim.readthedocs.io/en/latest/reference/error-codes.html#code-file-not-found"
+    "docs_url": "https://bngsim.readthedocs.io/en/latest/reference/error-codes.html#code-file-not-found",
+    "notices": []
   }
   ```
 
-  The codes are listed in [Error codes](error-codes.md). A command line the
+  `notices` holds what a run that failed had noted before it raised. The codes
+  are listed in [Error and notice codes](error-codes.md). A command line the
   command cannot take is a `UsageError` with the code `usage.invalid_argument`,
   and its `details["usage"]` is the usage line. Without `--json`, an error is a
   line of text on standard error, after the traceback when the error is not one
