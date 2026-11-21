@@ -342,6 +342,9 @@ def _turning_side(expr: str) -> tuple[str, str] | None:
     return "square", _strip_redundant_parens(base).strip()
 
 
+_MIRRORED_OP = {"<": ">", ">": "<", "<=": ">=", ">=": "<="}
+
+
 def _monotone_pieces(atom: str) -> list[str]:
     """The comparisons whose crossings are this atom's, one per turn of its
     residual, where the atom compares ``abs(u)`` or ``u^2`` with a bound.
@@ -364,12 +367,13 @@ def _monotone_pieces(atom: str) -> list[str]:
     split = _relational_split_op(_strip_redundant_parens(atom))
     if split is None:
         return []
-    lhs, _op, rhs = split
+    lhs, op, rhs = split
     side = _turning_side(lhs)
     bound = rhs
     if side is None:
         side = _turning_side(rhs)
         bound = lhs
+        op = _MIRRORED_OP.get(op, op)  # `b > abs(u)` is `abs(u) < b`
     if side is None or _turning_side(bound) is not None:
         return []
     kind, inner = side
@@ -381,12 +385,21 @@ def _monotone_pieces(atom: str) -> list[str]:
         value = None
     if value is not None and not (0.0 < value < math.inf):
         return []
+    # Each edge keeps the operator the atom was written with, `<=` as `<=` and
+    # `>` as `>` (the far edge mirrored): the crossing stop reads it, and moves
+    # the stop onto the residual's first zero where the edge's truth changes
+    # there (issue #1673). `abs(u) <= b` was registered as `u < b` and
+    # `u > -b`, and its stop was placed by the strict rule, a double after the
+    # zero for some run lengths. An equality has one edge per root either way,
+    # and keeps the strict pair.
+    near = op if op in _MIRRORED_OP else "<"
+    far = _MIRRORED_OP[near]
     if kind == "abs":
-        return [f"({inner})<({bound})", f"({inner})>(-({bound}))"]
+        return [f"({inner}){near}({bound})", f"({inner}){far}(-({bound}))"]
     if value is None:
         return []
     root = repr(math.sqrt(value))
-    return [f"({inner})<({root})", f"({inner})>(-{root})"]
+    return [f"({inner}){near}({root})", f"({inner}){far}(-{root})"]
 
 
 def _relational_split(atom: str) -> tuple[str, str] | None:
@@ -2248,6 +2261,14 @@ _TIME_REF = re.compile(r"(?<![A-Za-z0-9_])time(?:\s*\(\s*\))?(?![A-Za-z0-9_(])")
 # in time, whose crossing this cannot claim to know.
 _CROSSING_RESIDUAL_TOL = 1e-9
 
+# How many doubles from the two-point solve's answer the crossing is walked
+# toward a smaller residual, and how far a run of doubles that all evaluate the
+# residual to 0 is followed down (issue #1673). The solve rounds by an ulp or so according
+# to the scale it probes over; the zero of the residual, as it evaluates, does
+# not move with the scale.
+_CROSSING_SNAP_ULPS = 16
+_CROSSING_ZERO_RUN = 64
+
 # Resolved crossing times, keyed on the text actually solved (function slots and
 # derived names inlined), the run window and the values of every parameter that
 # text reads — which is everything the answer depends on. The inlined text, not
@@ -2305,6 +2326,108 @@ def _inline_function_slots(expr: str, bodies: dict[str, str]) -> str:
     return expr
 
 
+def _snap_to_residual_zero(
+    at, t_star: float, r_star: float | None = None
+) -> tuple[float, float | None]:
+    """``(t, r)``: the double nearest *t_star* at which the residual, as *at*
+    evaluates it, is closest to 0 (the earliest of them on a tie), and the
+    residual there (issue #1673).
+
+    The two-point solve divides by a slope it measures over the run's scale, so
+    its answer moves by an ulp with that scale: ``x' = 1`` from 0.1, at
+    ``x >= 2.6``, was stopped at 2.5000000000000004 for a run to t = 3 or 40
+    and at 2.5 for one to 8, and a row at t = 2.5 read the state before the
+    event or after it according to where the run ended. The zero of the
+    residual as *at* evaluates it is a property of the condition alone: here
+    ``(2.5 + 0.1) - 2.6`` is exactly 0. A residual that is 0 at a run of
+    doubles is placed at the first of them, where a ``>=`` first holds; one
+    that is 0 at none, where it is smallest.
+
+    Each evaluation of the residual costs about a quarter of a millisecond, so
+    the search walks from *t_star* toward the smaller residual, a double at a
+    time, and stops where the next is no smaller: an answer already on the first
+    zero costs one evaluation besides *r_star* (the linearity check's, passed
+    in), the issue's case three. At most ``_CROSSING_SNAP_ULPS`` steps, and a
+    run of zeros followed ``_CROSSING_ZERO_RUN`` doubles, searched at the bound
+    first and then by halves, not a double at a time. A walk that is still going at
+    either bound has not found the place it looks for (a run of zeros longer
+    than that, as ``(t + 1e6) - 1000000.5`` is near 0.5 or ``(t + 0.1) - 0.1``
+    near 0, or a plateau of equal residuals), and stopping there would put the
+    answer at a double that depends on where the solve landed: *t_star* is
+    returned as it was.
+    """
+    seen: dict[float, float | None] = {}
+
+    def size(t: float) -> float | None:
+        if t not in seen:
+            r = at(t)
+            seen[t] = r if r is not None and math.isfinite(r) else None
+        r = seen[t]
+        return None if r is None else abs(r)
+
+    def first_of_zeros(t: float) -> float | None:
+        # The first double of the run of zeros *t* is in, or None where the
+        # run goes on past what is followed. Most runs are a double or two, so the next double
+        # is tried first, which settles those in one evaluation. Past it the
+        # doubles are listed, which costs nothing, and the residual is
+        # evaluated at the bound, then by bisection: a residual's zeros near a
+        # crossing are one run, so a run longer than the bound costs two more
+        # evaluations, and any other about seven, where a double at a time
+        # cost up to 64 (about 16 ms of sympy).
+        doubles = [t, math.nextafter(t, -math.inf)]
+        if size(doubles[1]) != 0.0:
+            return t
+        for _ in range(_CROSSING_ZERO_RUN - 1):
+            doubles.append(math.nextafter(doubles[-1], -math.inf))
+        if size(doubles[-1]) == 0.0:
+            return None
+        zero, nonzero = 1, len(doubles) - 1
+        while nonzero - zero > 1:
+            mid = (zero + nonzero) // 2
+            if size(doubles[mid]) == 0.0:
+                zero = mid
+            else:
+                nonzero = mid
+        return doubles[zero]
+
+    if not math.isfinite(t_star):
+        return t_star, r_star
+    if r_star is not None and math.isfinite(r_star):
+        seen[t_star] = r_star
+    here = size(t_star)
+    if here is None:
+        return t_star, r_star
+    t = t_star
+    if here != 0.0:
+        down = math.nextafter(t, -math.inf)
+        s_down = size(down)
+        if s_down is not None and s_down <= here:
+            step, t, here = -math.inf, down, s_down  # a tie goes to the earlier double
+        else:
+            up = math.nextafter(t, math.inf)
+            s_up = size(up)
+            if s_up is None or s_up >= here:
+                return t_star, r_star  # already the smallest
+            step, t, here = math.inf, up, s_up
+        for _ in range(_CROSSING_SNAP_ULPS):
+            if here == 0.0:
+                break
+            nxt = math.nextafter(t, step)
+            s_nxt = size(nxt)
+            if s_nxt is None or (s_nxt > here if step < 0 else s_nxt >= here):
+                break
+            t, here = nxt, s_nxt
+        else:
+            if here != 0.0:
+                return t_star, r_star  # still shrinking, or level, at the bound
+    if here == 0.0:
+        first = first_of_zeros(t)
+        if first is None:
+            return t_star, r_star
+        t = first
+    return t, seen[t]
+
+
 def _crossing_time_of_condition(
     cond: str,
     scope: SwitchConditionScope,
@@ -2340,10 +2463,10 @@ def _crossing_time_of_condition(
     # The registered text is a whole condition, so it arrives wrapped —
     # `((time()-PdBu_time)<0)` — and the relational splitter only matches at
     # paren depth 0.
-    split = _relational_split(_strip_redundant_parens(cond.strip()))
+    split = _relational_split_op(_strip_redundant_parens(cond.strip()))
     if split is None:
         return None
-    lhs, rhs = split
+    lhs, op, rhs = split
     bodies = bodies or {}
     # A function's slot is a plain parameter as far as the tables below are
     # concerned, and carries a stale number, so it has to be substituted BEFORE
@@ -2371,8 +2494,11 @@ def _crossing_time_of_condition(
     # differ) share an answer instead of each re-parsing the residual three
     # times, which cost a leg ~1.5 ms of sympy.
     scale = 2.0 ** math.ceil(math.log2(max(abs(t_start), abs(t_end), 1.0)))
+    # The operator as well: `x >= 2.6` and `x > 2.6` solve the same residual,
+    # and only the first is moved onto its zero (below).
     key = (
         flat,
+        op,
         scale,
         tuple(sorted((n, scope.values[scope.param_idx[n]]) for n in set(read))),
     )
@@ -2404,6 +2530,53 @@ def _crossing_time_of_condition(
                 t_star,
             )
             return None
+        # The scale above comes from the run's window, and in doubles the
+        # answer moves by an ulp with it (issue #1673). A residual that passed
+        # the check is linear, and is solved again over a scale taken from the
+        # answer itself, the power of two at or above it: the scale is then
+        # the crossing's own at every run length, for every operator. (After
+        # the check, not before: a second line through a curve can land on its
+        # root, and `(time-2)^2 <= 0`, declined over a window that does not end
+        # on its root, was resolved to 2.) The answer is nudged up before its
+        # power of two is read, so that 2.0 and the double after it share a
+        # scale. (Its exponent is bounded first: 2.0 ** 1024 raises
+        # OverflowError rather than give inf, and an answer that far out keeps
+        # the first solve.)
+        # That power of two is read off an answer no window enters, the solve
+        # over a scale of 1. Read off the answer above, it stepped between two
+        # doubles (just below a power of two, with the nudge), and where the
+        # windows' answers fell either side of that step, each was solved
+        # again over a different scale: the stop still moved with the run.
+        # Where the residual at 1 is the same double as at 0 (for a crossing
+        # past about 2**53, say), that solve has no slope, and the answer
+        # above is read instead.
+        seed = t_star
+        r_unit = r1 if scale == 1.0 else at(1.0)
+        if r_unit is not None and r_unit != r0 and abs(r_unit - r0) < float("inf"):
+            seed = -r0 / (r_unit - r0)
+        exponent = math.ceil(math.log2(max(min(abs(seed), 2.0**1023) * (1.0 + 2.0**-40), 1.0)))
+        own = math.ldexp(1.0, exponent) if exponent <= 1023 else math.inf
+        if own != scale and math.isfinite(own):
+            r_own = at(own)
+            if r_own is not None:
+                slope_own = (r_own - r0) / own
+                if slope_own != 0.0 and abs(slope_own) < float("inf"):
+                    again = -r0 / slope_own
+                    check_again = at(again)
+                    if (
+                        check_again is not None
+                        and abs(check_again) <= _CROSSING_RESIDUAL_TOL * abs(slope) * scale
+                    ):
+                        t_star, check = again, check_again
+        # The truth of `>=` and `<` changes at the first double where a rising
+        # residual is 0, and that of `>` and `<=` where a falling one is
+        # (issue #1673). For the other four, and for `==` and `!=`, it changes
+        # after the last zero, or holds only on the run: the solve's answer
+        # stands for those, as it did. (Moved past the last zero, a strict
+        # stop is no longer on the instant the engine fires a strict event at:
+        # 42 tests of events, delays and sensitivities read it there.)
+        if (op in (">=", "<")) if slope > 0 else (op in (">", "<=")):
+            t_star = _snap_to_residual_zero(at, t_star, check)[0]
         return t_star
 
     answer = resolve()

@@ -197,6 +197,46 @@ on one side (`time == 2.3`), or use `>=`. Inside a larger trigger
 (`time - 1 == 1.3 || time >= 4`) the rest can still fire it, and nothing is
 refused.
 
+### A trigger met on an output row
+
+An event whose trigger is first met at the time of an output row fires before
+the row is taken, so the row holds the state after the event. That
+includes a trigger on a counter, a variable whose rate rule is 1 (`x' = 1`):
+BNGsim solves the time at which such a trigger is met
+before the run and stops there. For `>=` and `<` on a rising counter, and `>`
+and `<=` on a falling one, the time is the first double at which the trigger's
+residual, as BNGsim's threshold evaluator computes it, is 0 (or, where no double
+makes it 0, the one nearest): for `x >= 2.6` from `x = 0.1` that is t = 2.5,
+because `(2.5 + 0.1) - 2.6` is exactly 0. A row at t = 2.5 then reads the state
+after the event, for a run of any length (in earlier versions it read the state
+before the event for some run lengths and after it for others). The time is
+solved over a scale taken from the crossing itself, the power of two at or
+above it, not from the run's end, so the same trigger gives the same stop in
+every run that reaches it, whatever the run's length, for every operator.
+
+That evaluator reads a number written with 17 digits (`3.0700000000000003`, or
+a time between two short ones) more finely than a double holds it, so where
+several doubles of t give the threshold exactly, the stop can be several doubles
+after the first of them (up to 15 in a sweep of 400 thresholds, as in earlier
+versions), and a row on one of those doubles can read the state before the event. The
+stop can also land on one of those doubles before the row, and a counter, whose
+value is integrated, has not reached the threshold at that stop: the event is
+taken after the row, which reads the state before the event at every run length,
+where the same trigger written on the clock reads the state after it (`x >= 3.9`
+from `x = 3`, a row at 0.9; `x >= 1002.37` from `x = 1000`, a row at 2.37). A
+trigger written with `abs()` or a square,
+`abs(x - 3.1) <= 0.5` or `(x - 3.1)^2 <= 0.25`, is two such crossings, one per
+edge, each placed by the operator written. A strict `x > 2.6` (or
+`abs(x - 3.1) < 0.5`) is met only after the zero and is stopped where the solve
+puts it, the same double at every run length; for `x > 2.6` from `x = 0.1` that
+is the double after t = 2.5, so a row at 2.5 reads the state before the event.
+
+Which side the row falls on there is decided in doubles, where `0.1 + 2.5` is
+the double 2.6, so the trigger is met at t = 2.5. The exact sum of those two
+doubles is 8.3e-17 below the double 2.6, and libRoadRunner, which integrates the
+counter, reports the row before the event. A threshold a hair either side of the
+row (`x >= 2.6 + 1e-9`) does not depend on this, and reads the same in both.
+
 ### A trigger that starts on its threshold
 
 A trigger that reads false at the start can sit exactly on its threshold: `S >
