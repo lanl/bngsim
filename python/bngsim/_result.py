@@ -3346,7 +3346,8 @@ class Result:
               time a value is NaN or infinite), ``negative`` and ``constant``
               (the column never moves);
             - with ``sensitivities=True``, ``sensitivity``: ``None`` where the
-              run has no sensitivity block for the column, else ``y`` (its
+              result holds neither its parameter nor its initial-amount block
+              for the column's kind, else ``y`` (its
               value at the last time), ``resolved`` (whether ``|y|`` exceeds
               the column's absolute tolerance, a species' own as applied and an
               observable's by the run's rule, so the run told it from 0;

@@ -396,39 +396,23 @@ def test_an_event_at_the_first_time_does_not_move_the_initial_amount():
 
 
 def test_observables_and_species_read_their_own_blocks():
-    try:
-        m = examples.load("binding")
-        r = Simulator(
-            m,
-            method="ode",
-            sensitivity_params=["kf", "kr", "A0", "B0"],
-            sensitivity_ic=["A(b)", "B(a)"],
-        ).run(t_span=(0, 5), n_points=6)
-    except bngsim.CodegenToolchainError:
-        pytest.skip("no C compiler for forward sensitivities")
-    d = r.digest(sensitivities=True, species=True, max_parameters=10)
-    blocks = {
-        "observables": (
-            r.observable_names,
-            r.sensitivities_observables,
-            r.sensitivities_observables_ic,
-        ),
-        "species": (r.species_names, r.sensitivities, r.sensitivities_ic),
-    }
-    seen = 0
-    for kind, (names, par, ic) in blocks.items():
-        for row in d[kind]["columns"]:
-            j = names.index(row["name"])
-            s = row["sensitivity"]
-            for e in s["parameters"]:
-                assert e["dy_dp"] == par[-1, j, r.sensitivity_params.index(e["name"])]
-                seen += 1
-            for e in s["initial_amounts"]:
-                assert e["dy_dp"] == ic[-1, j, r.sensitivity_ic_species.index(e["name"])]
-                seen += 1
-    assert seen > 10
-    # an observable that is no species reads otherwise than any species row
-    assert set(r.observable_names).isdisjoint(r.species_names)
+    # Observable blocks set apart from the species blocks: each kind must read
+    # its own, for parameters and initial amounts alike.
+    r = _sens(
+        [2.0, 1.0],
+        [[3.0], [1.0]],
+        {"a": 1.0},
+        ic={"s0": 4.0, "s1": 1.0},
+        ic_last=[[0.5, 7.0], [0.25, 3.0]],
+    )
+    r._observable_sensitivities = -2.0 * r._sensitivities
+    r._observable_sensitivities_ic = 3.0 * r._sensitivities_ic
+    d = r.digest(sensitivities=True, species=True)
+    obs, sp = _col(d, "s0"), _col(d, "s0", "species")
+    assert sp["parameters"][0]["dy_dp"] == 3.0
+    assert obs["parameters"][0]["dy_dp"] == -6.0
+    assert [e["dy_dp"] for e in sp["initial_amounts"]] == [7.0, 0.5]
+    assert [e["dy_dp"] for e in obs["initial_amounts"]] == [21.0, 1.5]
 
 
 def test_a_kink_past_the_last_time_does_not_make_a_column_one_sided():
