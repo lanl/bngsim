@@ -81,6 +81,9 @@ _TAKES_ARG = frozenset(
     {"-p", "-c", "-o", "-n", "-W", "--rootdir", "--confcutdir", "--basetemp", "--junitxml"}
     | {"--dist", "--tb", "--durations", "--maxfail", "--max-worker-restart", "--cov"}
     | {"--cov-report", "--override-ini", "--config-file", "--log-file", "--import-mode"}
+    # A path each, which is no test path: ``.`` or ``python`` after one is not
+    # the suite.
+    | {"--junit-xml", "--rsyncdir", "--cov-config"}
 )
 #: Shell words that end a command: what follows is another command.
 _COMMAND_ENDS = frozenset({"|", "||", "&&", ";", "&", "|&"})
@@ -102,9 +105,12 @@ _EXPR = re.compile(r"\$\{\{\s*(.*?)\s*\}\}")
 #: A shell expansion (``"${files[@]}"``) is no glob: it is left to be read as one.
 _QUOTED_GLOB = re.compile(r"""(?<![^\s=])(['"])([^'"\s$]*[*?[][^'"\s$]*)\1(?!\S)""")
 #: An ``--ignore`` path in ``Workflow.excluded``. pytest leaves it out only where
-#: it finds it walking down a directory it was given, as with ``--ignore-glob``;
-#: an entry with neither mark is a ``--deselect``, which applies to any test.
+#: it finds it walking down a directory it was given, as with ``--ignore-glob``.
 _IGNORE = "ignore:"
+#: A ``--deselect`` argument in ``Workflow.excluded``, as written: pytest leaves
+#: out each test whose node id starts with it, wherever the test came from. An
+#: entry with no mark is a ``--deselect`` glob the shell expands first.
+_PREFIX = "prefix:"
 #: The mark a quoted glob carries through the shell split, so that an option's
 #: argument keeps it and a test path does not. Its text follows in hex, so that
 #: no character of it (``#``, ``;``, ``|``) is read as shell syntax.
@@ -158,6 +164,11 @@ class Workflow:
     selectors: list[str] = field(default_factory=list)  # globs over file paths
     node_ids: list[str] = field(default_factory=list)  # files a node id names
     whole: bool = False  # a command runs the whole of python/tests
+    #: Named directories above python/tests (``.``, ``python``): walked from there.
+    above: list[str] = field(default_factory=list)
+    #: A command passes ``--keep-duplicates``: pytest keeps every path it is
+    #: given, so a named path under a named directory is not dropped.
+    keep_duplicates: bool = False
     excluded: list[str] = field(default_factory=list)  # --deselect/--ignore files
     unreadable: list[str] = field(default_factory=list)  # why its commands are unknown
     #: Whether it runs on this pull request: True, False, or None (cannot tell).
@@ -175,16 +186,21 @@ class Workflow:
             return False
         if any(_deselects(path, g) for g in self.excluded):
             return False
-        # pytest collects a path it is given even where --ignore or
-        # --ignore-glob matches it. They leave out only what it finds walking
-        # down a directory it was given, below that directory.
-        if path in self.node_ids or any(
+        named = path in self.node_ids or any(
             not g.endswith("/**") and matches(path, g) for g in self.selectors
-        ):
-            return True
-        roots = ["python/tests"] if self.whole else []
+        )
+        roots = list(self.above) + (["python/tests"] if self.whole else [])
         roots += [g[:-3] for g in self.selectors if g.endswith("/**") and matches(path, g)]
-        return any(not any(_ignores(path, root, g) for g in self.excluded) for root in roots)
+        if not roots or (named and self.keep_duplicates):
+            # pytest collects a path it is given even where --ignore or
+            # --ignore-glob matches it.
+            return path in self.node_ids or any(matches(path, g) for g in self.selectors)
+        # They leave out what pytest finds walking down a directory it was
+        # given, below that directory. A path given as well that lies under
+        # that directory is dropped as a duplicate of it (pytest 9), so they
+        # apply to it like the rest; of two directories, the outer is walked.
+        outer = min(roots, key=len)
+        return not any(_ignores(path, outer, g) for g in self.excluded)
 
     def fires_for(self, path: str) -> bool:
         """Its trigger fires for a change to ``path`` alone (true where no
@@ -195,7 +211,14 @@ class Workflow:
 
 def _deselects(path: str, entry: str) -> bool:
     """``entry``, a ``--deselect`` entry of ``Workflow.excluded``, leaves ``path`` out."""
-    return not entry.startswith((_FNMATCH, _IGNORE)) and matches(path, entry)
+    if entry.startswith(_PREFIX):
+        # Every node id of the file starts with ``path::``.
+        return (path + "::").startswith(entry[len(_PREFIX) :])
+    if entry.startswith((_FNMATCH, _IGNORE)):
+        return False
+    # A glob the shell expands: each word it expands to is a prefix of the node
+    # ids, so a file, a directory, or a sibling that shares the prefix.
+    return any(matches(path[:k], entry) for k in range(1, len(path) + 1))
 
 
 def _ignores(path: str, root: str, entry: str) -> bool:
@@ -205,7 +228,7 @@ def _ignores(path: str, root: str, entry: str) -> bool:
     leaves out everything under it; ``root`` itself, a path it was given, is
     not asked."""
     parts = path.split("/")
-    below = len(root.split("/"))
+    below = 0 if root == "." else len(root.split("/"))
     tops = ["/".join(parts[:k]) for k in range(below + 1, len(parts) + 1)]
     if entry.startswith(_FNMATCH):
         glob = entry[len(_FNMATCH) :]
@@ -279,7 +302,12 @@ def read_command(command: str, wf: Workflow, empty: Iterable[str] = ()) -> None:
 
     def literal(tok: str) -> str:
         """A word as pytest receives it: a marked word's own text."""
-        return bytes.fromhex(tok[len(_QUOTED) : -2]).decode() if tok.startswith(_QUOTED) else tok
+        if not tok.startswith(_QUOTED):
+            return tok
+        try:
+            return bytes.fromhex(tok[len(_QUOTED) : -2]).decode()
+        except ValueError:  # the mark's own text, written in a command
+            return tok
 
     lex = shlex.shlex(_EXPR.sub(word, command), posix=True, punctuation_chars=";&|<>")
     lex.whitespace_split = True
@@ -314,18 +342,25 @@ def read_command(command: str, wf: Workflow, empty: Iterable[str] = ()) -> None:
                 # pytest makes it absolute first, which drops ``./``, ``//``
                 # and a trailing ``/``.
                 wf.excluded.append(_FNMATCH + posixpath.normpath(arg))
-            elif raw.startswith(_QUOTED) or whole_quoted:
+            elif raw.startswith(_QUOTED) or whole_quoted or (eq and re.search(r"[*?[]", arg)):
                 # --ignore and --deselect take a path or a node id as written:
-                # a quoted glob names none, and leaves nothing out.
+                # a glob the shell leaves alone (in quotes, or after ``=``)
+                # names none, and leaves nothing out.
                 pass
             elif opt == "--ignore":
                 # Made absolute by pytest as well (``./python/tests/x.py``).
                 path = posixpath.normpath(arg)
-                if path.startswith("python/tests"):
+                if path == "python" or path.startswith("python/tests"):
                     wf.excluded.append(_IGNORE + _selector(path))
-            elif arg.startswith("python/tests") and "::" not in arg:
-                # A node id deselects one test, not the file.
+            elif "::" in arg.rstrip(":"):
+                pass  # a node id deselects one test, not the file
+            elif re.search(r"[*?[]", arg):
+                # After a space the shell expands it, and the first match is
+                # the argument: each match is read as left out.
                 wf.excluded.append(_selector(arg))
+            else:
+                # A prefix of the node ids as written, whatever it starts with.
+                wf.excluded.append(_PREFIX + arg)
             continue
         if opt in _NARROWING:
             if not eq:
@@ -336,6 +371,9 @@ def read_command(command: str, wf: Workflow, empty: Iterable[str] = ()) -> None:
             if not eq:
                 next(it, None)
             continue
+        if tok == "--keep-duplicates":
+            wf.keep_duplicates = True
+            continue
         if tok.startswith("-"):
             continue
         if tok.startswith(_QUOTED):
@@ -343,16 +381,24 @@ def read_command(command: str, wf: Workflow, empty: Iterable[str] = ()) -> None:
             # (``'f.py::test[a-1]'``) selects its file; a quoted glob path
             # names none.
             file, sep, _ = literal(tok).partition("::")
+            # Made absolute by pytest, as an unquoted path is (below).
+            file = posixpath.normpath(file) if file else file
             if sep and file.startswith("python/tests") and not re.search(r"[*?[]", file):
-                wf.node_ids.append(file.rstrip("/"))
+                wf.node_ids.append(file)
             continue
         if "$" in tok or "@@expr" in tok:
             shown = tok.replace("@@expr:", "${{ ").replace("@@", " }}")
             wf.unreadable.append(f"it passes `{shown}`, which is not read")
             continue
-        if not tok.startswith("python/tests"):
+        # Made absolute by pytest, so ``./python/tests`` and ``python//tests`` are
+        # python/tests, and ``.`` or ``python`` is a directory above it.
+        path = posixpath.normpath(tok.split("::", 1)[0])
+        if path in (".", "python"):
+            wf.whole = True
+            wf.above.append(path)
             continue
-        path = tok.split("::", 1)[0].rstrip("/")
+        if not path.startswith("python/tests"):
+            continue
         if path == "python/tests":
             wf.whole = True
         elif "::" in tok:
