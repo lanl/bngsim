@@ -218,6 +218,7 @@ def test_exit_codes_are_distinct_and_documented():
         _cli.EXIT_REFUSED,
         _cli.EXIT_RUN_FAILED,
         _cli.EXIT_TIMEOUT,
+        _cli.EXIT_CHECK_FAILED,
     ]
     assert len(set(codes)) == len(codes)
     assert sorted(_cli.EXIT_CODES) == sorted(codes)
