@@ -86,6 +86,7 @@ LEFT_OUT = (
     "Result.check(checks)",
     "Result.check(replicates)",
     "Result.digest(max_columns)",
+    "Result.digest(max_parameters)",
     "Result.digest(species)",
     "Result.to_csv(header)",
     "Result.to_csv(include_time)",
