@@ -11,6 +11,7 @@ not run.
 from __future__ import annotations
 
 import copy
+import warnings
 
 import numpy as np
 import pytest
@@ -174,7 +175,10 @@ def test_a_run_klu_cannot_make_is_a_skip_that_says_why(monkeypatch, has_klu: boo
     # cannot take does: dense.
     monkeypatch.setitem(_rerun.LINEAR_SOLVERS, "klu", (False, False))
     monkeypatch.setattr("bngsim._simulator._HAS_KLU", has_klu)
-    rep = _decay().check("linear_solver")
+    r = _decay()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # the skip says it; no warning says it again
+        rep = r.check("linear_solver")
     (c,) = rep["checks"]
     assert c["status"] == "skip", c
     assert c["changed"] == {"linear_solver": "klu"}
