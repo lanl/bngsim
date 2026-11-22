@@ -24,7 +24,14 @@ import re
 from pathlib import Path
 from typing import NoReturn
 
-from bngsim._exceptions import ModelError, ParameterError, SimulationError, SimulationTimeout
+from bngsim._exceptions import (
+    BngsimError,
+    ModelError,
+    ParameterError,
+    SimulationError,
+    SimulationTimeout,
+    UsageError,
+)
 from bngsim._extension_handle import raise_cannot_pickle, raise_cannot_shallow_copy
 from bngsim._result import Result
 from bngsim._rounding import round_half_up
@@ -133,12 +140,13 @@ class NfsimSession:
         from bngsim._bngsim_core import HAS_NFSIM
 
         if not HAS_NFSIM:
-            raise RuntimeError(
+            raise BngsimError(
                 "NFsim support is not present in this bngsim install. "
                 "The vendored NFsim backend at third_party/nfsim/ is built "
                 "by default; this install was either configured with "
                 "-DBNGSIM_BUILD_NFSIM=OFF or installed from a wheel that "
-                "excludes NFsim."
+                "excludes NFsim.",
+                code="env.feature_not_built",
             )
 
         from bngsim._bngsim_core import NfsimSimulator
@@ -431,7 +439,7 @@ class NfsimSession:
         if timeout is not None:
             timeout_seconds = float(timeout)
             if timeout_seconds < 0.0:
-                raise ValueError(f"timeout must be non-negative or None, got {timeout!r}")
+                raise UsageError(f"timeout must be non-negative or None, got {timeout!r}")
 
         # Resolve the output schedule. Explicit sample_times (GH #184) override
         # t_start/t_end/n_points; the C++ core ignores those in that branch but
@@ -439,9 +447,10 @@ class NfsimSession:
         explicit_times: list[float] = []
         if sample_times is not None:
             if relative_time:
-                raise ValueError(
+                raise UsageError(
                     "sample_times and relative_time are mutually exclusive: "
-                    "sample_times are treated as absolute output instants."
+                    "sample_times are treated as absolute output instants.",
+                    code="usage.conflicting_arguments",
                 )
             explicit_times = normalize_sample_times(sample_times)
             t_start = explicit_times[0]
@@ -449,8 +458,9 @@ class NfsimSession:
             n_points = len(explicit_times)
         else:
             if t_start is None or t_end is None or n_points is None:
-                raise ValueError(
-                    "t_start, t_end and n_points are required unless sample_times is given."
+                raise UsageError(
+                    "t_start, t_end and n_points are required unless sample_times is given.",
+                    code="usage.missing_argument",
                 )
 
         try:
@@ -559,7 +569,7 @@ class NfsimSession:
         self._refuse_edit_of_constant_reads("add_molecules", mol_type)
         count = round_half_up(count)
         if count <= 0:
-            raise ValueError(
+            raise UsageError(
                 f"count must be positive, got {count}. "
                 "Use remove_species() for exact species removal."
             )
@@ -610,7 +620,7 @@ class NfsimSession:
         self._refuse_edit_of_constant_reads("add_species", pattern)
         count = round_half_up(count)
         if count <= 0:
-            raise ValueError(f"count must be positive, got {count}")
+            raise UsageError(f"count must be positive, got {count}")
         try:
             self._core.add_species(pattern, count)
         except RuntimeError as e:
@@ -631,7 +641,7 @@ class NfsimSession:
         self._refuse_edit_of_constant_reads("remove_species", pattern)
         count = round_half_up(count)
         if count <= 0:
-            raise ValueError(f"count must be positive, got {count}")
+            raise UsageError(f"count must be positive, got {count}")
         try:
             self._core.remove_species(pattern, count)
         except RuntimeError as e:
@@ -648,7 +658,7 @@ class NfsimSession:
         self._refuse_edit_of_constant_reads("set_species_count", pattern)
         count = round_half_up(count)
         if count < 0:
-            raise ValueError(f"count must be nonnegative, got {count}")
+            raise UsageError(f"count must be nonnegative, got {count}")
         try:
             self._core.set_species_count(pattern, count)
         except RuntimeError as e:

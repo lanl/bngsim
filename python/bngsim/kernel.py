@@ -99,7 +99,9 @@ class ReactionKernel:
 
     def __init__(self, model: Model, *, method: str = "ode", **simulator_kwargs) -> None:
         if not isinstance(model, Model):
-            raise TypeError(f"model must be a bngsim.Model, got {type(model).__name__}")
+            from bngsim._exceptions import ArgumentTypeError
+
+            raise ArgumentTypeError(f"model must be a bngsim.Model, got {type(model).__name__}")
         self._sim = Simulator(model, method=method, **simulator_kwargs)
         self._last_result: Result | None = None
         # Whether the live state is still the one _last_result ended at: set by
@@ -130,7 +132,9 @@ class ReactionKernel:
         ReactionKernel
         """
         if not isinstance(simulator, Simulator):
-            raise TypeError(
+            from bngsim._exceptions import ArgumentTypeError
+
+            raise ArgumentTypeError(
                 f"simulator must be a bngsim.Simulator, got {type(simulator).__name__}"
             )
         self = cls.__new__(cls)
@@ -234,7 +238,9 @@ class ReactionKernel:
             which has no stateful per-step API.
         """
         if self._sim.method in _STATELESS_BACKENDS:
-            raise NotImplementedError(
+            from bngsim._exceptions import NotSupportedError
+
+            raise NotSupportedError(
                 f"ReactionKernel.advance is not supported for the "
                 f"network-free '{self._sim.requested_method}' backend "
                 "(no stateful per-step API). Wrap a stateful method "
@@ -242,7 +248,9 @@ class ReactionKernel:
                 "directly for independent network-free trajectories."
             )
         if dt <= 0.0:
-            raise ValueError(f"dt must be > 0, got {dt}")
+            from bngsim._exceptions import UsageError
+
+            raise UsageError(f"dt must be > 0, got {dt}")
 
         target = self._sim.current_time + dt
         # The state is about to move. A run_until that raises can still have

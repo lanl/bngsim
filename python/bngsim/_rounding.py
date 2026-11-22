@@ -70,5 +70,7 @@ def round_half_up(value: float) -> int:
     """
     x = float(value)
     if not math.isfinite(x):
-        raise ValueError(f"cannot round non-finite molecule count {value!r}")
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(f"cannot round non-finite molecule count {value!r}")
     return int(math.floor(x + 0.5)) if x >= 0.0 else int(math.ceil(x - 0.5))

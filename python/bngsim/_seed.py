@@ -39,7 +39,9 @@ def _check_seed(seed: int) -> int:
     """
     value = int(seed)
     if not 0 <= value <= _MAX_SEED:
-        raise ValueError(f"seed must be an integer from 0 to 2**64 - 1, got {value}")
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(f"seed must be an integer from 0 to 2**64 - 1, got {value}")
     return value
 
 

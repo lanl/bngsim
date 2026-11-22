@@ -27,7 +27,10 @@ class ErrorCode:
     """One code: what it means and what to do about it."""
 
     code: str
-    #: The class that raises it, or the most general one that can.
+    #: The class that raises it, or the most general one that can; several,
+    #: joined by " or ", where the code is raised as more than one (a missing
+    #: name is a KeyError where a lookup took one, a ValueError where an
+    #: argument did).
     error: str
     #: What happened, in a sentence.
     meaning: str
@@ -109,8 +112,21 @@ _CODES = (
     ),
     # ─── Names ───────────────────────────────────────────────────────────────
     ErrorCode(
+        "model.invalid",
+        "InvalidModelError",
+        "A model, or a part of one given to a builder, is not well formed: a name "
+        "defined twice, a reaction with no rate, a reference to something not defined.",
+        "Fix the model as the message says.",
+    ),
+    ErrorCode(
+        "model.unreadable_file",
+        "ModelError",
+        "A model file is not what its format says, or its reader stops on a fatal error.",
+        "Check the file is the format its name says; the message quotes the reader.",
+    ),
+    ErrorCode(
         "param.not_found",
-        "ParameterError",
+        "ParameterError or UsageError",
         "The model has no parameter by that name.",
         "Use a name from ``Model.param_names``. ``details['close_matches']`` lists "
         "near ones, and ``details['is_a']`` says what the name is when it names a "
@@ -118,16 +134,74 @@ _CODES = (
     ),
     ErrorCode(
         "species.not_found",
-        "ModelError",
+        "ModelError or NotFoundError or UsageError",
         "The model has no species by that name.",
         "Use a name from ``Model.species_names``. ``details['close_matches']`` lists near ones.",
     ),
     # ─── Choosing and setting up a run ───────────────────────────────────────
     ErrorCode(
+        "output.not_found",
+        "NotFoundError or UsageError",
+        "A name that is none of the result's species, observables or functions.",
+        'Use a name `details["close_matches"]` gives, or one of the result\'s '
+        "`species_names` or `observable_names`.",
+    ),
+    ErrorCode(
+        "name.not_found",
+        "NotFoundError or UsageError",
+        "A name or key a lookup does not find, of a kind with no code of its own.",
+        "Read the message: it lists the names there are.",
+    ),
+    ErrorCode(
+        "name.ambiguous",
+        "NotFoundError",
+        "A name matches more than one entry, so a lookup by it cannot choose.",
+        "Index by position, as the message says.",
+    ),
+    ErrorCode(
         "usage.missing_argument",
         "UsageError",
         "A call needs an argument it was not given.",
         "Pass the argument ``details['argument']`` names.",
+    ),
+    ErrorCode(
+        "usage.conflicting_arguments",
+        "UsageError",
+        "Two arguments a call takes one or the other of, or that cannot go together, "
+        "were both given.",
+        "Read the message for the pair, and drop one.",
+    ),
+    ErrorCode(
+        "usage.wrong_type",
+        "ArgumentTypeError",
+        "An argument is of a type the call does not take.",
+        "Read the message: it names the type the call takes.",
+    ),
+    ErrorCode(
+        "usage.unknown_method",
+        "UsageError",
+        "A `method=` that BNGsim does not know.",
+        "Pass one the message lists.",
+    ),
+    ErrorCode(
+        "usage.method_unsupported",
+        "UsageError",
+        "A call or option the simulator's method does not offer, such as "
+        "sensitivities on a stochastic method.",
+        "Build the Simulator with the method the remedy names, or leave the option out.",
+    ),
+    ErrorCode(
+        "usage.not_supported",
+        "NotSupportedError or UsageError",
+        "A call or option this object does not offer, as written.",
+        "Read the message for what does.",
+    ),
+    ErrorCode(
+        "env.feature_not_built",
+        "BngsimError or UsageError",
+        "A method needs a part of BNGsim this install was built without, such as NFsim "
+        "or RuleMonkey.",
+        "Install a build that has it; `bngsim.capabilities()` lists what this one has.",
     ),
     ErrorCode(
         "ssa.unsupported_construct",
@@ -142,6 +216,14 @@ _CODES = (
         "Pass ``codegen=None`` to run it on the interpreter.",
     ),
     ErrorCode(
+        "codegen.build_failed",
+        "CodegenBuildError",
+        "Building this model's compiled right-hand side failed or ran out of time; "
+        "the toolchain builds other code.",
+        "Pass `codegen=False` to run on the interpreted right-hand side, or give the "
+        "build more time or cores as the message says.",
+    ),
+    ErrorCode(
         "solver.sparse_jacobian_unavailable",
         "SparseJacobianUnavailableError",
         "``force_sparse_linear_solver=True`` on a model with no sparse Jacobian.",
@@ -153,6 +235,13 @@ _CODES = (
         "SensitivityUnsupportedError",
         "BNGsim cannot compute a requested sensitivity correctly for this model.",
         "Drop the sensitivity, change the model, or use a derivative-free method.",
+    ),
+    ErrorCode(
+        "sens.not_computed",
+        "UsageError",
+        "A call reads sensitivities, and the result has none: its run was not asked for them.",
+        "Run again with `sensitivity_params=` on the Simulator, or with "
+        "`compute_all_sensitivities()`.",
     ),
     ErrorCode(
         "sens.refused_during_run",
@@ -328,6 +417,11 @@ def pass_argument(argument: str, *value: object) -> dict:
     return remedy
 
 
+def use_method(method: str) -> dict:
+    """The remedy that builds the Simulator with *method* instead."""
+    return {"kind": "use_method", "method": method}
+
+
 def use_name(name: str) -> dict:
     """The remedy that uses *name*, a close match, in place of the one given."""
     return {"kind": "use_name", "name": name}
@@ -349,6 +443,13 @@ SOLVER_FLAGS = {
 
 #: The reference page, generated from this module.
 PAGE = "docs/reference/error-codes.md"
+
+
+def _classes(error: str) -> str:
+    """*error*'s classes as the page names them: "`A`", "`A` or `B`", "`A`, `B`
+    or `C`"."""
+    names = [f"`{name}`" for name in error.split(" or ")]
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " or " + names[-1]
 
 
 def reference_page() -> str:
@@ -405,7 +506,7 @@ def reference_page() -> str:
             f"({anchor(c.code)})=",
             f"### `{c.code}`",
             "",
-            f"Raised as `{c.error}`. {c.meaning}",
+            f"Raised as {_classes(c.error)}. {c.meaning}",
             "",
             c.action,
             "",

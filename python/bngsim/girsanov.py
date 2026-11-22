@@ -142,9 +142,13 @@ def scores(
         reaction's rate constant.
     """
     if not result.has_reaction_stats:
-        raise ValueError(
+        from bngsim._error_codes import pass_argument
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(
             "scores() needs the per-reaction statistics: run with "
-            "Simulator(model, method='ssa', reaction_stats=True)"
+            "Simulator(model, method='ssa', reaction_stats=True)",
+            remedies=[pass_argument("reaction_stats", True)],
         )
     names, reactions = _reaction_table(model)
     non_elementary = [
@@ -153,7 +157,9 @@ def scores(
         if rxn["type"] != "elementary"
     ]
     if non_elementary:
-        raise ValueError(
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(
             "scores() is defined for mass-action rate laws only; the score of a "
             "functional or Michaelis-Menten reaction depends on the state at every "
             "firing, which the recorded statistics do not carry. Non-elementary: "
@@ -163,7 +169,9 @@ def scores(
     counts = np.asarray(result.reaction_firing_counts, dtype=float)
     integrals = np.asarray(result.reaction_propensity_integrals, dtype=float)
     if counts.shape[-1] != len(reactions):
-        raise ValueError(
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(
             f"result has statistics for {counts.shape[-1]} reactions but the model "
             f"has {len(reactions)}; score against the model the run was made from"
         )
@@ -172,7 +180,13 @@ def scores(
     out = np.zeros(compensated.shape[:-1] + (len(params),))
     for j, name in enumerate(params):
         if name not in names:
-            raise ValueError(f"{name!r} is not a parameter of the model")
+            from bngsim._exceptions import UsageError
+
+            raise UsageError(
+                f"{name!r} is not a parameter of the model",
+                code="param.not_found",
+                details={"name": name},
+            )
         derivs = _rate_constant_derivatives(model, name, rate_constants)
         block = np.zeros(compensated.shape[:-1])
         touched = False
@@ -181,7 +195,9 @@ def scores(
                 continue
             value = float(model.get_param(c))
             if value == 0.0:
-                raise ValueError(
+                from bngsim._exceptions import UsageError
+
+                raise UsageError(
                     f"rate constant {c!r} is 0, so the score with respect to a parameter "
                     "that sets it is undefined"
                 )
@@ -189,7 +205,9 @@ def scores(
             block += (dc / value) * compensated[..., by_param[c]].sum(axis=-1)
         if not touched:
             known = ", ".join(rate_constants) or "(none)"
-            raise ValueError(
+            from bngsim._exceptions import UsageError
+
+            raise UsageError(
                 f"{name!r} sets no elementary reaction's rate constant, directly or through "
                 f"a parameter expression; the rate constants are: {known}"
             )
@@ -230,14 +248,18 @@ def gradient(
     if squeeze:
         values = values[:, :, None]
     if values.ndim != 3 or score.ndim != 3 or values.shape[:2] != score.shape[:2]:
-        raise ValueError(
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(
             "values must be (n_sims, n_times[, n_outputs]) and score (n_sims, n_times, "
             f"n_params) over the same replicates and times; got {values.shape} and "
             f"{score.shape}"
         )
     n = values.shape[0]
     if n < 2:
-        raise ValueError("gradient() needs at least two replicates")
+        from bngsim._exceptions import UsageError
+
+        raise UsageError("gradient() needs at least two replicates")
     centred = values - values.mean(axis=0, keepdims=True)
     products = centred[:, :, :, None] * score[:, :, None, :]  # (sims, times, outputs, params)
     grad = products.sum(axis=0) / (n - 1)

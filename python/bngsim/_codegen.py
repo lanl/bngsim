@@ -39,7 +39,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from bngsim import _codegen_toolchain as _toolchain
 from bngsim import _notices, _term_order
-from bngsim._exceptions import CodegenToolchainError
+from bngsim._exceptions import CodegenBuildError, CodegenToolchainError
 
 if TYPE_CHECKING:
     # Import-time cycle: _switch_sensitivity imports this module. Only the
@@ -5152,7 +5152,7 @@ _GCC_FUNCTION_CONTEXT = re.compile(r"In function ['‘`]([^'’`]+)['’`]")
 class _FrameTooLarge(RuntimeError):
     """A library the compiler built with a function whose stack frame is past
     :data:`_CODEGEN_MAX_FRAME_BYTES` (issue #1566). :func:`compile_rhs` installs
-    no such library, and raises this on as a plain ``RuntimeError``."""
+    no such library, and raises this on as a :class:`CodegenBuildError`."""
 
 
 def _oversized_frames(stderr: str) -> list[tuple[str, int | None]]:
@@ -5826,7 +5826,7 @@ class _CompileFailed(RuntimeError):
     """A codegen compile or link that the compiler refused (a non-zero exit), as
     against one that timed out or never ran. Only this kind is put to the
     toolchain probe (issue #1544). It does not leave :func:`compile_rhs`, which
-    raises it on as the plain ``RuntimeError`` it was before."""
+    raises it on as a :class:`CodegenBuildError`, still a ``RuntimeError``."""
 
 
 def _compile_one_object(
@@ -5999,7 +5999,7 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
     # there at all) is not asked again.
     compiler, broken = _toolchain.check()
     if broken is not None or compiler is None:
-        raise CodegenToolchainError(broken or "No C compiler found.")
+        raise CodegenToolchainError(broken or _toolchain.no_compiler("No C compiler found."))
     compiler_name = Path(compiler[0]).stem.lower()
     # A chunked source (Tier-1 NOINLINE blocks) compiles at -O2 at any size; the
     # marker is on the first lines of the combined source (RHS is always first).
@@ -6055,13 +6055,14 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
         if verdict is not None:
             raise CodegenToolchainError(verdict) from RuntimeError(str(err))
         # The model's own failure, reported as it always was.
-        raise RuntimeError(str(err)) from None
+        raise CodegenBuildError(str(err)) from None
     except _FrameTooLarge as err:
         # Issue #1566: the model's own failure too, and not the toolchain's: the
-        # compiler built it. Reported as a plain RuntimeError, as a timeout is.
-        raise RuntimeError(str(err)) from None
+        # compiler built it. Reported as a CodegenBuildError (still a
+        # RuntimeError), as a timeout is.
+        raise CodegenBuildError(str(err)) from None
     except subprocess.TimeoutExpired as err:
-        raise RuntimeError(
+        raise CodegenBuildError(
             f"Codegen compilation timed out after {timeout:g} s "
             f"({len(c_source) / 1e6:.1f} MB C source at {opt_flag}). The RHS, the "
             "analytical Jacobian, and the output evaluator (including their "
@@ -6086,7 +6087,7 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
         # A file of this build's own went missing (the cache directory removed
         # under it), or a relative CC was not found from a sharded build's
         # scratch directory: this build's failure, not the toolchain's.
-        raise RuntimeError(f"Codegen compilation failed: {err}") from err
+        raise CodegenBuildError(f"Codegen compilation failed: {err}") from err
     finally:
         tmp_so_path.unlink(missing_ok=True)
         _unlink_msvc_sidecars(tmp_so_path)
@@ -14220,13 +14221,19 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
             # the check below; this wrapper promised a ValueError for it. A .net
             # the loader refuses comes here too, so the message says only that
             # the file did not load, and why.
-            raise ValueError(
+            from bngsim._exceptions import UsageError
+
+            # usage.invalid_argument is generic, so the loader's own code shows
+            # through (issue #1702).
+            raise UsageError(
                 f"codegen could not load net_path as a BioNetGen .net file: {e}. For "
                 "SBML or Antimony models, load the model first and use Simulator(..., "
                 "codegen=True) without passing the SBML/XML file as net_path."
             ) from e
     if model.n_species == 0 or model.n_reactions == 0:
-        raise ValueError(
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(
             "codegen net_path must point to a BioNetGen .net file with non-empty "
             f"species and reactions sections; loaded {net_path!r} as "
             f"{model.n_species} species and {model.n_reactions} reactions. For SBML "
@@ -14239,12 +14246,17 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
     if so_path is None:
         cause = last_codegen_error()
         if cause is not None:
-            raise RuntimeError(f"codegen build failed for {net_path}: {cause}") from cause
+            from bngsim._exceptions import BngsimError
+
+            # A toolchain verdict keeps its own code: a plain BngsimError takes
+            # its cause's (issue #1702).
+            failed = BngsimError if isinstance(cause, CodegenToolchainError) else CodegenBuildError
+            raise failed(f"codegen build failed for {net_path}: {cause}") from cause
+        from bngsim._exceptions import CodegenDeclinedError
+
         decline = last_codegen_decline()
         if decline is not None:
-            from bngsim._exceptions import CodegenDeclinedError
-
             # a statement about the model, typed as codegen=True's is (#1313)
             raise CodegenDeclinedError(f"codegen declined {net_path}: {decline}")
-        raise RuntimeError(f"codegen declined {net_path}: no reason was recorded")
+        raise CodegenDeclinedError(f"codegen declined {net_path}: no reason was recorded")
     return so_path

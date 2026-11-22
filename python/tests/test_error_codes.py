@@ -61,8 +61,34 @@ def test_every_class_default_is_registered_and_names_its_class():
         assert cls.default_code in CODES, cls.__name__
     # Each code's "raised as" class exists, so the page names real types.
     for c in CODES.values():
-        assert hasattr(bngsim, c.error) or hasattr(_exceptions, c.error), c.error
+        for name in c.error.split(" or "):
+            assert hasattr(bngsim, name) or hasattr(_exceptions, name), c.error
     assert set(CODES) >= GENERIC
+
+
+def test_a_code_is_raised_only_as_a_class_the_registry_names():
+    """The page tells a caller which ``except`` catches a code: every raise that
+    passes a code names a class the code's entry lists."""
+    wrong = []
+    for path in _PACKAGE.rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Call):
+                continue
+            cls = getattr(node.func, "id", getattr(node.func, "attr", None))
+            if not (cls and cls.endswith("Error")):
+                continue
+            for kw in node.keywords:
+                if kw.arg != "code":
+                    continue
+                values = [
+                    v.value
+                    for v in ast.walk(kw.value)
+                    if isinstance(v, ast.Constant) and isinstance(v.value, str)
+                ]
+                for code in values:
+                    if code in CODES and cls not in CODES[code].error.split(" or "):
+                        wrong.append(f"{path.name}:{node.lineno} {code} as {cls}")
+    assert not wrong, wrong
 
 
 def _string_constants() -> set[str]:
@@ -223,6 +249,16 @@ def test_too_much_accuracy_is_the_solver_flag(binding):
     _check_shape(e)
 
 
+def test_the_flag_survives_a_run_on_a_moved_clock(binding):
+    """The engine moves a failure onto the run's own clock by throwing it
+    again; the flag goes with it."""
+    sim = bngsim.Simulator(binding, jacobian="fd")
+    with pytest.raises(bngsim.SimulationError) as info:
+        sim.run(t_span=(5, 15), n_points=3, rtol=1e-20, start="initial")
+    assert info.value.code == "solver.too_much_accuracy"
+    assert info.value.details == {"flag": "CV_TOO_MUCH_ACC"}
+
+
 @pytest.mark.parametrize(
     ("flag", "code"),
     [
@@ -233,12 +269,17 @@ def test_too_much_accuracy_is_the_solver_flag(binding):
     ],
 )
 def test_each_solver_flag_gets_its_code(flag, code):
-    """The flags as cvode_failure_message in src/cvode_simulator.cpp writes them;
-    the real path is test_too_much_accuracy_is_the_solver_flag."""
-    message = f"Simulation failed: CVODE integration failed at t=1.000000 with flag=-3 ({flag})."
-    e = bngsim.SimulationError(message)
+    """The flag as the engine's SolverFailure carries it, through a wrapper
+    raised from it as run() raises one; the real path is
+    test_too_much_accuracy_is_the_solver_flag."""
+    message = f"CVODE integration failed at t=1.000000 with flag=-3 ({flag})."
+    e = bngsim.SimulationError(message, solver_flag=flag)
     assert (e.code, e.details) == (code, {"flag": flag})
     _check_shape(e)
+    try:
+        raise bngsim.SimulationError(f"Simulation failed: {message}") from e
+    except bngsim.SimulationError as wrapper:
+        assert (wrapper.code, wrapper.details) == (code, {"flag": flag})
     # A subclass with a code of its own keeps it.
     assert bngsim.SparseJacobianUnavailableError(message).code == (
         "solver.sparse_jacobian_unavailable"
@@ -301,14 +342,28 @@ def test_a_missing_file_gives_its_path(tmp_path):
 
 
 def test_a_missing_compiler_is_told_from_a_broken_one():
-    missing = bngsim.CodegenToolchainError(
+    """The verdict says whether the compiler is missing as data, and a build
+    that restates it in its own words keeps the code; the words alone decide
+    nothing (issue #1702)."""
+    from bngsim import _codegen_toolchain as toolchain
+
+    verdict = toolchain.no_compiler("C compiler not found: 'cc' is not an executable on PATH.")
+    missing = bngsim.CodegenToolchainError.restated(
+        bngsim.CodegenToolchainError(verdict),
         "Failed to build the analytical sensitivity RHS required for forward sensitivity "
-        "(CodegenToolchainError: C compiler not found: 'cc' is not an executable on PATH)."
+        f"(CodegenToolchainError: {verdict}).",
     )
     assert missing.code == "env.no_compiler"
     assert missing.remedies == [{"kind": "install_compiler"}]
+    assert str(missing).startswith("Failed to build")
     broken = bngsim.CodegenToolchainError("ld: cannot read libSystem.tbd")
     assert broken.code == "env.broken_toolchain" and broken.remedies == []
+    assert bngsim.CodegenToolchainError("C compiler not found: 'cc'").code == (
+        "env.broken_toolchain"
+    )
+    assert pickle.loads(pickle.dumps(bngsim.CodegenToolchainError(verdict))).code == (
+        "env.no_compiler"
+    )
     _check_shape(missing)
     _check_shape(broken)
 
@@ -348,7 +403,7 @@ def test_the_fields_survive_pickling():
     for e in (
         bngsim.ParameterError("p", code="param.not_found", details={"name": "k"}),
         bngsim.MissingFileError("SBML file not found: x.xml", "x.xml"),
-        bngsim.SimulationError("CVODE failed with flag=-2 (CV_TOO_MUCH_ACC)."),
+        bngsim.SimulationError("CVODE failed.", solver_flag="CV_TOO_MUCH_ACC"),
     ):
         back = pickle.loads(pickle.dumps(e))
         assert back.to_dict() == e.to_dict()
@@ -421,13 +476,20 @@ def test_a_stall_is_its_own_code_with_a_tolerance_remedy():
     """A collapsed step reaches the caller as "CVODE made no progress", not as a
     flag: the engine retries CV_TOO_MUCH_WORK while the solver advances, so a
     larger max_steps is no remedy for it."""
-    e = bngsim.SimulationError(
-        "Simulation failed: CVODE made no progress during the run: an entire max_steps "
-        "batch advanced the internal time not at all, at t=1 with step size h=0."
-    )
+    e = bngsim.SimulationError("CVODE made no progress during the run.", solver_flag="stalled")
     assert e.code == "solver.stalled"
+    assert e.details == {}
     assert e.remedies == [{"kind": "loosen_tolerance"}]
-    assert bngsim.SimulationError("x flag=-1 (CV_TOO_MUCH_WORK).").remedies == []
+    too_much = bngsim.SimulationError("x", solver_flag="CV_TOO_MUCH_WORK")
+    assert too_much.remedies == []
+
+
+def test_the_code_does_not_hang_on_the_message():
+    """The flag comes as data from the engine (issue #1702): a message that
+    quotes one is not read for it."""
+    e = bngsim.SimulationError("CVODE integration failed with flag=-2 (CV_TOO_MUCH_ACC).")
+    assert e.code == "run.failed"
+    assert e.details == {}
 
 
 def test_a_class_with_its_own_code_keeps_it_when_raised_from_another():
@@ -652,3 +714,27 @@ def test_a_parallel_batch_rows_notices_survive_pickling(tmp_path):
     codes = [n["code"] for n in info.value.notices]
     assert "jacobian.difference_quotient_retry" in codes
     assert pickle.loads(pickle.dumps(info.value)).notices == info.value.notices
+
+
+def test_a_not_found_errors_message_is_its_text_in_to_dict():
+    """str() of a NotFoundError quotes it, as a KeyError's does; the dict a
+    program or the command line reads holds the text as given."""
+    e = bngsim.NotFoundError("Species 'Z' not found.", code="species.not_found")
+    assert str(e) == "\"Species 'Z' not found.\""
+    assert e.to_dict()["message"] == "Species 'Z' not found."
+    assert isinstance(e, KeyError)
+
+
+def test_an_unknown_method_names_it_as_json_can_write(binding):
+    with pytest.raises(bngsim.UsageError) as info:
+        bngsim.Simulator(binding, method=b"ode")
+    assert info.value.code == "usage.unknown_method"
+    json.dumps(info.value.to_dict())
+
+
+def test_a_result_with_no_sensitivities_says_how_to_get_them(binding):
+    r = bngsim.Simulator(binding).run(t_span=(0, 1), n_points=3, start="initial")
+    with pytest.raises(bngsim.UsageError) as info:
+        r.output_sensitivities([binding.observable_names[0]])
+    assert info.value.code == "sens.not_computed"
+    assert info.value.remedies == [{"kind": "pass_argument", "argument": "sensitivity_params"}]

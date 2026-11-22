@@ -110,6 +110,16 @@ def _codegen_data(model: Any) -> dict:
     return (model._core if hasattr(model, "_core") else model).codegen_data()
 
 
+def _use_auto_jacobian(message: str) -> ValueError:
+    """A refusal of the JAX RHS that tells the caller to use ``jacobian='auto'``:
+    a :class:`~bngsim.UsageError` (a ``ValueError``, as it was raised before it
+    had a type; issue #1702)."""
+    from bngsim._error_codes import pass_argument
+    from bngsim._exceptions import UsageError
+
+    return UsageError(message, remedies=[pass_argument("jacobian", "auto")])
+
+
 def _refuse_unsupported(data: dict) -> None:
     """Raise ``ValueError`` naming the first construct the JAX RHS does not implement.
 
@@ -126,7 +136,7 @@ def _refuse_unsupported(data: dict) -> None:
     """
 
     def refuse(what: str) -> None:
-        raise ValueError(
+        raise _use_auto_jacobian(
             f"the JAX RHS (jacobian='jax', run_diffrax) does not implement {what}. "
             "Use jacobian='auto' (the default), which evaluates this model through the "
             "engine instead."
@@ -814,7 +824,7 @@ def _reject_untranslated_names(expr: str, translated: str) -> None:
         }
     )
     if unknown:
-        raise ValueError(
+        raise _use_auto_jacobian(
             f"jacobian='jax' cannot translate {', '.join(repr(u) for u in unknown)} "
             f"in the expression {expr!r}: no jax.numpy equivalent is mapped for it. "
             "Use jacobian='auto' (the default), which evaluates this model through "
@@ -906,7 +916,9 @@ def generate_jax_rhs(model: Any) -> Any:
     try:
         order = _topological_function_order(list(functions))
     except CodegenDeclined as exc:
-        raise ValueError(f"the JAX RHS cannot order this model's functions: {exc}") from exc
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(f"the JAX RHS cannot order this model's functions: {exc}") from exc
     func_exprs = []
     for i in order:
         f = functions[i]
@@ -1093,7 +1105,7 @@ def check_rhs_against_engine(model: Any, rhs: Any, times: Any = None) -> None:
         )
         if not agree.all():
             i = int(np.argmin(agree))
-            raise ValueError(
+            raise _use_auto_jacobian(
                 f"the JAX RHS disagrees with the engine's for species {names[i]} at "
                 f"t = {t:g} (JAX {f_jax[i]!r}, engine {f_eng[i]!r}), so it would "
                 "describe a different model; refusing. Use jacobian='auto' (the default)."

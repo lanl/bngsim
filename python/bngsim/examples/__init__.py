@@ -60,7 +60,12 @@ def names() -> list[str]:
 
 def _check(name: str) -> None:
     if name not in _NAMES:
-        raise ValueError(f"no example named {name!r}; the examples are {', '.join(_NAMES)}")
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(
+            f"no example named {name!r}; the examples are {', '.join(_NAMES)}",
+            details={"name": name},
+        )
 
 
 def describe(name: str) -> str:
@@ -80,10 +85,14 @@ def path(name: str, format: str = "net") -> Path:
     """The model's file in one format, for tools that want a path."""
     _check(name)
     if format not in _SUFFIX:
-        raise ValueError(f"format {format!r} is not one of {', '.join(_SUFFIX)}")
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(f"format {format!r} is not one of {', '.join(_SUFFIX)}")
     file = _DIR / f"{name}{_SUFFIX[format]}"
     if not file.is_file():
-        raise ValueError(
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(
             f"{name!r} does not come in {format!r}; it comes in {', '.join(formats(name))}"
         )
     return file
@@ -102,7 +111,9 @@ def load(name: str, format: str | None = None) -> Model:
     if format is None:
         format = next(f for f in ("net", "sbml", "python") if f in formats(name))
     if format == "bng-xml":
-        raise ValueError(
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(
             "a BNG-XML file is read by the network-free engines, not loaded as a "
             f"model: load the network with bngsim.examples.load({name!r}, 'net'), then "
             f"bngsim.Simulator(model, method='nf', xml_path=bngsim.examples.path({name!r}, "
@@ -126,7 +137,9 @@ def exact(name: str, t, **params: float) -> dict[str, np.ndarray]:
     """
     _check(name)
     if name not in _exact.SOLUTIONS:
-        raise ValueError(
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(
             f"{name!r} has no closed-form time course; "
             f"bngsim.examples.steady_states({name!r}) has its exact steady states"
         )
@@ -143,7 +156,9 @@ def _params(name: str, params: dict[str, float]) -> dict[str, float]:
     defaults = _exact.DEFAULTS[name]
     unknown = set(params) - set(defaults)
     if unknown:
-        raise ValueError(
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(
             f"{name!r} has no parameter {', '.join(sorted(unknown))}; "
             f"its parameters are {', '.join(defaults)}"
         )

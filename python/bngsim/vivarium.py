@@ -117,19 +117,26 @@ class BngsimProcess(Process):
         kernel = parameters.get("kernel")
         if kernel is not None:
             if not isinstance(kernel, ReactionKernel):
-                raise TypeError(
+                from bngsim._exceptions import ArgumentTypeError
+
+                raise ArgumentTypeError(
                     f"parameters['kernel'] must be a bngsim.ReactionKernel, "
                     f"got {type(kernel).__name__}"
                 )
             return kernel
         model = parameters.get("model")
         if model is None:
-            raise ValueError(
+            from bngsim._exceptions import UsageError
+
+            raise UsageError(
                 "BngsimProcess requires either parameters['kernel'] (a ReactionKernel) "
-                "or parameters['model'] (a bngsim.Model)."
+                "or parameters['model'] (a bngsim.Model).",
+                code="usage.missing_argument",
             )
         if not isinstance(model, Model):
-            raise TypeError(
+            from bngsim._exceptions import ArgumentTypeError
+
+            raise ArgumentTypeError(
                 f"parameters['model'] must be a bngsim.Model, got {type(model).__name__}"
             )
         return ReactionKernel(

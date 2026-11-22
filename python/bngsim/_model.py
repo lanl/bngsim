@@ -18,11 +18,14 @@ import numpy as np
 
 from bngsim import _foreign_names, _notices
 from bngsim._exceptions import (
+    ArgumentTypeError,
+    InvalidModelError,
     MissingFileError,
     ModelError,
     ParameterError,
     SimulationError,
     UnderSpecifiedModelError,
+    UsageError,
 )
 from bngsim._extension_handle import raise_cannot_pickle, raise_cannot_shallow_copy
 
@@ -3370,13 +3373,14 @@ class Model:
         >>> model.add_table_function("drive", times=[0, 1, 2], values=[0, 5, 10])
         """
         if file is not None and times is not None:
-            raise ValueError(
-                "Cannot specify both 'file' and 'times'/'values'. Use one or the other."
+            raise UsageError(
+                "Cannot specify both 'file' and 'times'/'values'. Use one or the other.",
+                code="usage.conflicting_arguments",
             )
         # "" asks the core for the table's own method (linear for a new one).
         normalized_method = "" if method is None else method.strip().lower()
         if method is not None and normalized_method not in {"linear", "step"}:
-            raise ValueError(
+            raise UsageError(
                 "Invalid table function interpolation method. Expected 'linear' or 'step'."
             )
         if file is not None:
@@ -3393,7 +3397,16 @@ class Model:
             except (ValueError, RuntimeError) as e:
                 raise ModelError(f"Failed to add table function '{name}': {e}") from e
         else:
-            raise ValueError("Must specify either 'file' or both 'times' and 'values'.")
+            from bngsim._error_codes import pass_argument
+
+            # Neither, or one of times/values without the other.
+            missing = "values" if times is not None else "times" if values is not None else "file"
+            raise UsageError(
+                "Must specify either 'file' or both 'times' and 'values'.",
+                code="usage.missing_argument",
+                details={"argument": missing},
+                remedies=[pass_argument(missing)],
+            )
         # The breakpoints the run stops on are read from the tables' data
         # (issue #709), and new data under a table's name moves them.
         self._table_breaks = None
@@ -3788,7 +3801,7 @@ def _require_core(core: object) -> None:
     by type, so a stand-in for the engine's model still passes.
     """
     if isinstance(core, Model):
-        raise TypeError(
+        raise ArgumentTypeError(
             "Model() is given a Model: model.clone() makes an independent copy, and "
             "bngsim.Simulator(model) runs it."
         )
@@ -3800,10 +3813,10 @@ def _require_core(core: object) -> None:
             if what == "a path"
             else ""
         )
-        raise TypeError(f"Model() does not take {what}: use {loader}{tail}.")
+        raise ArgumentTypeError(f"Model() does not take {what}: use {loader}{tail}.")
     if hasattr(core, "param_names"):
         return
-    raise TypeError(
+    raise ArgumentTypeError(
         f"Model() is built by its loaders, not called with a value of type "
         f"{type(core).__name__}: use bngsim.Model.load(path), or "
         "bngsim.Model.from_sbml_string(text) or bngsim.Model.from_antimony_string(text) "
@@ -3983,7 +3996,7 @@ def _unit_conversion_folds(conversions, core: Any) -> dict[str, str]:
         try:
             index, expression = entry
         except (TypeError, ValueError):
-            raise ValueError(
+            raise InvalidModelError(
                 f"unit_conversions: {entry!r} is not a (reaction, expression) pair"
             ) from None
         for name in _names_in(str(expression)):

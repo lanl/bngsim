@@ -373,7 +373,7 @@ def test_a_model_failure_is_not_blamed_on_the_toolchain(clean, monkeypatch, capl
             with pytest.raises(RuntimeError, match="Codegen compilation failed") as err:
                 bngsim.Simulator(_chain(n), method="ode", codegen=True)
             assert not isinstance(err.value, bngsim.CodegenToolchainError)
-            assert "(RuntimeError: Codegen compilation failed" in str(err.value)
+            assert "(CodegenBuildError: Codegen compilation failed" in str(err.value)
     assert cc.calls() == ["model", "probe", "model"]
     assert _verdict_warnings(caplog) == []
     # A working verdict expires too: the next failure is probed again.

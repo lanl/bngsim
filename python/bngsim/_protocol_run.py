@@ -54,7 +54,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from bngsim import _notices
-from bngsim._exceptions import ConversionError, ConversionWarning
+from bngsim._exceptions import ConversionError, ConversionWarning, NotFoundError
 from bngsim._seed import derived_seeds
 
 if TYPE_CHECKING:
@@ -208,8 +208,15 @@ class ProtocolResult(Sequence[ProtocolRun]):
             if len(hits) == 1:
                 return hits[0]
             if not hits:
-                raise KeyError(f"no run has the suffix {key!r}; suffixes: {self.labels}")
-            raise KeyError(f"{len(hits)} runs have the suffix {key!r}; index them by position")
+                raise NotFoundError(
+                    f"no run has the suffix {key!r}; suffixes: {self.labels}",
+                    details={"name": key},
+                )
+            raise NotFoundError(
+                f"{len(hits)} runs have the suffix {key!r}; index them by position",
+                code="name.ambiguous",
+                details={"name": key, "matches": len(hits)},
+            )
         return self._runs[key]
 
     def __repr__(self) -> str:

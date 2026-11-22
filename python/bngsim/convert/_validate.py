@@ -858,7 +858,9 @@ def _detect_direction(source: Path) -> str:
         return "sbml2net"
     if suffix == ".net":
         return "net2sbml"
-    raise ValueError(
+    from bngsim._exceptions import UsageError
+
+    raise UsageError(
         f"cannot infer conversion direction from {source.name!r}: expected a "
         "'.xml'/'.sbml' (sbml2net) or '.net' (net2sbml) source; pass "
         "direction= explicitly"
@@ -915,7 +917,9 @@ def _build_plan(direction: str) -> _Plan:
             back_suffix=".xml",
             target_is_sbml=False,
         )
-    raise ValueError(f"unknown direction {direction!r}; expected 'sbml2net' or 'net2sbml'")
+    from bngsim._exceptions import UsageError
+
+    raise UsageError(f"unknown direction {direction!r}; expected 'sbml2net' or 'net2sbml'")
 
 
 # ─── Per-level checks ──────────────────────────────────────────────────────
@@ -1194,7 +1198,9 @@ def _resolve_levels(levels: tuple[str, ...] | str) -> list[str]:
     want = [lv.upper() for lv in levels]
     unknown = [lv for lv in want if lv not in _ALL_LEVELS]
     if unknown:
-        raise ValueError(f"unknown level(s) {unknown}; valid: {_ALL_LEVELS}")
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(f"unknown level(s) {unknown}; valid: {_ALL_LEVELS}")
     return want
 
 

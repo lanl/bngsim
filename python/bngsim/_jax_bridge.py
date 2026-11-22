@@ -297,7 +297,9 @@ def differentiable_solve(
 
     params = jnp.asarray(params, dtype=jnp.float64)
     if int(params.shape[0]) != len(diff_param_names):
-        raise ValueError(
+        from bngsim._exceptions import UsageError
+
+        raise UsageError(
             f"params length ({int(params.shape[0])}) doesn't match "
             f"the {'flat parameter set' if flat else 'primary parameter set'} "
             f"({len(diff_param_names)}). "

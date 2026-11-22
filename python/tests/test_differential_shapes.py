@@ -1983,6 +1983,11 @@ _SOLVER_FAILURE = (
 )
 
 
+def _solver_failure() -> bngsim.SimulationError:
+    """The failure above as the engine raises it, with its flag as data."""
+    return bngsim.SimulationError(_SOLVER_FAILURE, solver_flag="CV_CONV_FAILURE")
+
+
 def _fails_when(monkeypatch, when, error=None):
     """D.run raises where ``when(job)`` holds, as #1751's refusal of a run that
     leaves through minus infinity raises (MODEL1911100005 at rtol x2)."""
@@ -1990,7 +1995,7 @@ def _fails_when(monkeypatch, when, error=None):
 
     def run(job, **kw):
         if when(job):
-            raise error or bngsim.SimulationError(_SOLVER_FAILURE)
+            raise error or _solver_failure()
         return real(job, **kw)
 
     monkeypatch.setattr(D, "run", run)
@@ -2033,7 +2038,7 @@ def _second_leg_fails(monkeypatch, which=2, error=None):
     def fails(self, t, **kw):
         calls.append(t)
         if len(calls) == which:
-            raise error or bngsim.SimulationError(_SOLVER_FAILURE)
+            raise error or _solver_failure()
         return real(self, t, **kw)
 
     monkeypatch.setattr(bngsim.Simulator, "run_until", fails)
@@ -2108,7 +2113,7 @@ def _wrapped_timeout() -> Exception:
         raise bngsim.SimulationTimeout("planted: past the model's cap")
     except bngsim.SimulationTimeout as cause:
         try:
-            raise bngsim.SimulationError(_SOLVER_FAILURE) from cause
+            raise _solver_failure() from cause
         except bngsim.SimulationError as e:
             return e
 
@@ -2139,7 +2144,7 @@ def test_the_fresh_models_tail_that_fails_against_a_base_with_no_reference_is_sk
 
     def run(self, *args, **kw):
         if id(self) in restarted:
-            raise bngsim.SimulationError(_SOLVER_FAILURE)
+            raise _solver_failure()
         return real_run(self, *args, **kw)
 
     monkeypatch.setattr(bngsim.Simulator, "set_state", set_state)
@@ -2270,7 +2275,7 @@ def test_a_run_that_fails_from_the_nudged_start_is_contested(monkeypatch):
 
     def fails(job, nudge=0.0, **kw):
         if nudge:
-            raise bngsim.SimulationError(_SOLVER_FAILURE)
+            raise _solver_failure()
         return real(job, **kw)
 
     monkeypatch.setattr(D, "run", fails)

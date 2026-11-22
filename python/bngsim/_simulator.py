@@ -58,14 +58,20 @@ from bngsim._codegen import (
     read_sens_decline_note,
 )
 from bngsim._describe import ode_refusals, steady_state_refusals
-from bngsim._error_codes import pass_argument
+from bngsim._error_codes import pass_argument, use_method
 from bngsim._exceptions import (
+    ArgumentTypeError,
     AtolScaleWarning,
+    BngsimError,
+    CodegenBuildError,
     CodegenDeclinedError,
     CodegenToolchainError,
     DenseSolverFallbackWarning,
+    InvalidModelError,
     LiveStartWarning,
     ModelError,
+    NotFoundError,
+    NotSupportedError,
     ScanDoseWarning,
     SensitivityRefusedDuringRunError,
     SensitivityRefusedForParametersError,
@@ -384,17 +390,17 @@ def _codegen_refusal(cause: BaseException | None, decline: str | None) -> Runtim
     codegen declined the model (``decline``,
     :func:`bngsim._codegen.last_codegen_decline`). Both are read, never inferred
     from the other's absence. A decline is a :class:`CodegenDeclinedError`, a
-    statement about the model; a failed build a plain ``RuntimeError`` (#1313),
-    or a :class:`CodegenToolchainError` when the toolchain cannot build any
-    library (#1544)."""
+    statement about the model; a failed build a :class:`CodegenBuildError`, a
+    ``RuntimeError`` (#1313), or a :class:`CodegenToolchainError` when the
+    toolchain cannot build any library (#1544)."""
     if cause is not None:
-        failed = (
-            CodegenToolchainError if isinstance(cause, CodegenToolchainError) else RuntimeError
-        )
-        return failed(
+        message = (
             "codegen=True requested, but the codegen build failed "
             f"({type(cause).__name__}: {cause})."
         )
+        if isinstance(cause, CodegenToolchainError):
+            return CodegenToolchainError.restated(cause, message)
+        return CodegenBuildError(message)
     if decline is not None:
         return CodegenDeclinedError(
             f"codegen=True requested, but codegen declined this model: "
@@ -413,6 +419,12 @@ def _codegen_refusal(cause: BaseException | None, decline: str | None) -> Runtim
 # run_batch's thread pool each re-raise these, from one tuple: three kept by hand
 # drifted apart, and the thread pool wrapped SimulationTimeout.
 _PASSED_THROUGH = (SimulationTimeout, SensitivityUnsupportedError, SparseJacobianUnavailableError)
+
+# Issue #1702: refusals that were a plain ValueError/TypeError/KeyError before
+# they were typed. Typed, they are RuntimeErrors too (through BngsimError), so a
+# run's `except RuntimeError` arm would wrap them in a SimulationError, which
+# they fell past before. The run paths pass them through unchanged instead.
+_ONCE_PLAIN = (UsageError, ArgumentTypeError, NotFoundError, InvalidModelError, NotSupportedError)
 
 
 def normalize_method(requested: str) -> tuple[str, str]:
@@ -448,11 +460,18 @@ def normalize_method(requested: str) -> tuple[str, str]:
     if canonical is None:
         # Build helpful error with all known tokens
         all_known = sorted({"ode", "ssa", "psa"} | set(_NF_METHOD_ALIASES.keys()))
-        raise ValueError(f"Unknown method '{requested}'. Supported: {all_known}")
+        raise UsageError(
+            f"Unknown method '{requested}'. Supported: {all_known}",
+            code="usage.unknown_method",
+            details={"method": str(requested)},
+        )
 
     # Check availability
     if canonical in _UNAVAILABLE_NF_METHODS:
-        raise ValueError(_UNAVAILABLE_NF_METHODS[canonical])
+        raise UsageError(
+            _UNAVAILABLE_NF_METHODS[canonical],
+            code="env.feature_not_built" if canonical == "nf_exact" else "usage.not_supported",
+        )
 
     assert canonical in _AVAILABLE_NF_METHODS
     dispatch = {
@@ -1095,10 +1114,12 @@ class Simulator:
         # reaction channels, so the request is refused rather than answered with
         # a block that means something else.
         if reaction_stats and dispatch != "ssa":
-            raise ValueError(
+            raise UsageError(
                 "reaction_stats=True records the exact SSA's per-reaction firing counts "
                 f"and propensity integrals; method={method!r} does not run one "
-                "(use method='ssa')"
+                "(use method='ssa')",
+                code="usage.method_unsupported",
+                remedies=[use_method("ssa")],
             )
         self._reaction_stats = bool(reaction_stats)
         # Set here, ahead of the rest of the codegen state below, because the SSA
@@ -1160,23 +1181,27 @@ class Simulator:
         # Validate PSA-specific options
         if dispatch == "psa":
             if poplevel is None:
-                raise ValueError(
+                raise UsageError(
                     "method='psa' requires poplevel=N_c (critical "
                     "population size). Typical values: 100–1000. "
                     "See Lin, Feng, Hlavacek, J. Chem. Phys. 150, "
-                    "244101 (2019)."
+                    "244101 (2019).",
+                    code="usage.missing_argument",
+                    remedies=[pass_argument("poplevel")],
                 )
             if not poplevel > 1.0:  # NaN too: it ran as exact SSA
-                raise ValueError(
+                raise UsageError(
                     f"poplevel must be > 1 for PSA. Got {poplevel}. "
                     "For exact stochastic simulation, use method='ssa'."
                 )
             self._poplevel = float(poplevel)
         elif poplevel is not None:
-            raise ValueError(
+            raise UsageError(
                 f"poplevel is only valid for method='psa', "
                 f"not method='{method}'. Use method='psa' to "
-                "enable partial scaling."
+                "enable partial scaling.",
+                code="usage.method_unsupported",
+                remedies=[use_method("psa")],
             )
 
         # Create the appropriate C++ simulator based on dispatch key
@@ -1284,12 +1309,13 @@ class Simulator:
             from bngsim._bngsim_core import HAS_NFSIM
 
             if not HAS_NFSIM:
-                raise RuntimeError(
+                raise BngsimError(
                     "NFsim support is not present in this bngsim install. "
                     "The vendored NFsim backend at third_party/nfsim/ is "
                     "built by default; this install was either configured "
                     "with -DBNGSIM_BUILD_NFSIM=OFF or installed from a "
-                    "wheel that excludes NFsim."
+                    "wheel that excludes NFsim.",
+                    code="env.feature_not_built",
                 )
             if not xml_path:
                 raise UsageError(
@@ -1332,13 +1358,14 @@ class Simulator:
             from bngsim._bngsim_core import HAS_RULEMONKEY
 
             if not HAS_RULEMONKEY:
-                raise RuntimeError(
+                raise BngsimError(
                     "RuleMonkey support is not present in this bngsim "
                     "install. The vendored RuleMonkey backend at "
                     "third_party/rulemonkey/ is built by default; this "
                     "install was either configured with "
                     "-DBNGSIM_BUILD_RULEMONKEY=OFF or installed from a "
-                    "wheel that excludes RuleMonkey."
+                    "wheel that excludes RuleMonkey.",
+                    code="env.feature_not_built",
                 )
             if not xml_path:
                 raise UsageError(
@@ -1404,10 +1431,11 @@ class Simulator:
         # auto-selected numbers back under a "forced" label would be worse than
         # one that failed. Refuse at construction rather than letting either win.
         if force_dense_linear_solver and force_sparse_linear_solver:
-            raise ValueError(
+            raise UsageError(
                 "force_dense_linear_solver and force_sparse_linear_solver are "
                 "mutually exclusive; pass at most one. Omit both for the "
-                "size/density auto-selection."
+                "size/density auto-selection.",
+                code="usage.conflicting_arguments",
             )
         self._force_dense_linear_solver = bool(force_dense_linear_solver)
         self._force_sparse_linear_solver = bool(force_sparse_linear_solver)
@@ -1576,7 +1604,11 @@ class Simulator:
                 self._codegen_built_for(model)
                 logger.info("Codegen .so ready: %s", self._codegen_so_path)
         elif codegen and dispatch != "ode":
-            raise ValueError("codegen=True is only supported for method='ode'.")
+            raise UsageError(
+                "codegen=True is only supported for method='ode'.",
+                code="usage.method_unsupported",
+                remedies=[use_method("ode")],
+            )
 
         # Reuse model-based codegen output when the model already prepared it.
         # Prefer the JIT source when the JIT backend is active and the model
@@ -1650,9 +1682,17 @@ class Simulator:
         self._fallback_scan_cache: dict | None = None
         self._branch_scan_cache: dict | None = None
         if self._sensitivity_params and dispatch != "ode":
-            raise ValueError("sensitivity_params is only supported for method='ode'.")
+            raise UsageError(
+                "sensitivity_params is only supported for method='ode'.",
+                code="usage.method_unsupported",
+                remedies=[use_method("ode")],
+            )
         if self._sensitivity_ic and dispatch != "ode":
-            raise ValueError("sensitivity_ic is only supported for method='ode'.")
+            raise UsageError(
+                "sensitivity_ic is only supported for method='ode'.",
+                code="usage.method_unsupported",
+                remedies=[use_method("ode")],
+            )
         self._raise_if_compartment_size_params(self._sensitivity_params)
         self._raise_if_folded_at_load_params(self._sensitivity_params)
         self._raise_if_function_backed_params(self._sensitivity_params)
@@ -1677,7 +1717,7 @@ class Simulator:
 
         # Validate and store sensitivity method
         if sensitivity_method not in ("staggered", "simultaneous"):
-            raise ValueError(
+            raise UsageError(
                 f"sensitivity_method must be 'staggered' or 'simultaneous', "
                 f"got '{sensitivity_method}'"
             )
@@ -1712,7 +1752,11 @@ class Simulator:
             self._jax_jac_evaluator = eval_fn
             logger.info("JAX AD Jacobian ready for %d species", n_sp)
         elif jacobian == "jax" and dispatch != "ode":
-            raise ValueError("jacobian='jax' is only supported for method='ode'.")
+            raise UsageError(
+                "jacobian='jax' is only supported for method='ode'.",
+                code="usage.method_unsupported",
+                remedies=[use_method("ode")],
+            )
 
         logger.debug(
             "Created Simulator(method='%s', dispatch='%s'%s) for %r",
@@ -1830,9 +1874,10 @@ class Simulator:
         actual knobs are zero, which a finite difference through bngsim's own
         trajectory confirms. What was missing was this refusal.
 
-        A plain ``ValueError``, not :class:`SensitivityUnsupportedError`. That
-        type means "bngsim declares it cannot differentiate this construct", and
-        the ``amici_parity`` sweep buckets it as non-scoring UNSUPPORTED. Nothing
+        A :class:`UsageError` (a ``ValueError``), not
+        :class:`SensitivityUnsupportedError`. That type means "bngsim declares
+        it cannot differentiate this construct", and the ``amici_parity`` sweep
+        buckets it as non-scoring UNSUPPORTED. Nothing
         here is undifferentiable; the *name* is not a coordinate. Same category
         as :meth:`_raise_if_compartment_size_params`, and it raises the same way.
 
@@ -1866,7 +1911,7 @@ class Simulator:
             by_name = {}
         shown = "; ".join(f"{n} = {by_name[n]}" for n in bad[:3] if by_name.get(n))
         defined = f"These are defined as: {shown}. " if shown else ""
-        raise ValueError(
+        raise UsageError(
             f"Forward sensitivity is not supported for {_abbreviate(bad)}: a "
             f"function of each name owns that parameter slot — bngsim stores the "
             f"function's evaluated value there and recomputes it from the "
@@ -1919,7 +1964,7 @@ class Simulator:
             return
         bad = sorted(set(param_names) & self._unwritable_compartment_size_params())
         if bad:
-            raise ValueError(
+            raise UsageError(
                 f"Forward sensitivity is not supported for compartment size(s) "
                 f"{bad}: this model cannot resolve them to live volumes, so "
                 f"set_param refuses to write them (see "
@@ -3544,16 +3589,17 @@ class Simulator:
         # cc, or the in-process MIR JIT where no compiler exists, so this does not
         # require a system compiler.
         if self._codegen is False:
-            raise ValueError(
+            raise UsageError(
                 "Forward sensitivity analysis requires code generation, but "
                 "codegen=False was passed. The analytical sensitivity RHS is "
                 "built automatically — remove codegen=False, or drop the "
                 "sensitivity request. (The interpreted finite-difference "
                 "sensitivity path was retired because it silently fails at tight "
-                "tolerances; GH #214.)"
+                "tolerances; GH #214.)",
+                code="usage.conflicting_arguments",
             )
         if os.environ.get("BNGSIM_NO_CODEGEN"):
-            raise ValueError(
+            raise UsageError(
                 "Forward sensitivity analysis requires code generation, but "
                 "BNGSIM_NO_CODEGEN is set. Unset it for sensitivity runs (the "
                 "interpreted finite-difference sensitivity path was retired "
@@ -3584,7 +3630,7 @@ class Simulator:
             # A backend/compile failure (e.g. no C compiler and no JIT) — not a
             # differentiability issue. Refuse loudly rather than silently fall to
             # the finite-difference sensitivity path (GH #214).
-            raise RuntimeError(
+            raise BngsimError(
                 "Failed to build the analytical sensitivity RHS required for "
                 f"forward sensitivity ({type(e).__name__}: {e}). This needs a "
                 "codegen backend: a C compiler, or BNGSIM_CODEGEN_JIT=mir for the "
@@ -3624,17 +3670,15 @@ class Simulator:
                 # Same envelope as the try/except above — a build that failed,
                 # whatever swallowed the exception on the way out. A toolchain
                 # that builds nothing keeps its type (issue #1544).
-                failed = (
-                    CodegenToolchainError
-                    if isinstance(cause, CodegenToolchainError)
-                    else RuntimeError
-                )
-                return failed(
+                message = (
                     "Failed to build the analytical sensitivity RHS required for "
                     f"forward sensitivity ({type(cause).__name__}: {cause}). This "
                     "is a BUILD failure, not a statement about the model's "
                     "differentiability."
                 )
+                if isinstance(cause, CodegenToolchainError):
+                    return CodegenToolchainError.restated(cause, message)
+                return CodegenBuildError(message)
             if decline is not None:
                 # Codegen declined the whole model (a cyclic function graph, issue
                 # #621, today). Recorded rather than inferred: it used to reach the
@@ -5147,7 +5191,7 @@ class Simulator:
         if self._method not in ("nfsim", "rulemonkey"):
             return
 
-        raise NotImplementedError(
+        raise NotSupportedError(
             "Interactive simulation helpers are not supported for XML-backed "
             "network-free backends. Use run() for independent trajectories, "
             "or use the low-level session APIs on NfsimSimulator directly."
@@ -5271,7 +5315,7 @@ class Simulator:
         """Turn a non-scalar ``atol`` request into a validated per-species list."""
         if isinstance(requested, str):
             if requested != _ATOL_AUTO:
-                raise ValueError(
+                raise UsageError(
                     f"{where}: unknown atol token {requested!r}. Pass a float for a "
                     f'scalar tolerance, a sequence of n_species values, "{_ATOL_AUTO}" '
                     f"to derive one from the model (see Simulator.auto_atol), or "
@@ -5341,7 +5385,7 @@ class Simulator:
                 continue
             names = self._model.species_names
             name = f" ('{names[i]}')" if i < len(names) else ""
-            raise ValueError(
+            raise UsageError(
                 f"{where}: tracking ceiling entry {i}{name} is {v!r}, but every entry "
                 f"must be strictly > 0 under a tracking absolute tolerance. The floor "
                 f"is the ceiling {spec.decades:g} decades down, so a zero ceiling is a "
@@ -6063,19 +6107,21 @@ class Simulator:
         if timeout is not None:
             timeout_seconds = float(timeout)
             if timeout_seconds < 0.0:
-                raise ValueError(f"timeout must be non-negative or None, got {timeout!r}")
+                raise UsageError(f"timeout must be non-negative or None, got {timeout!r}")
 
         if steady_state and self._method != "ode":
-            raise ValueError(
+            raise UsageError(
                 "steady_state=True is only supported for method='ode' "
                 f"(got method='{self._method}'). BNG2.pl ties the steady_state "
-                "early-stop to the CVODE integrator only."
+                "early-stop to the CVODE integrator only.",
+                code="usage.method_unsupported",
+                remedies=[use_method("ode")],
             )
         ss_tol_value: float = 0.0
         if steady_state_tol is not None:
             ss_tol_value = float(steady_state_tol)
             if ss_tol_value < 0.0:
-                raise ValueError(
+                raise UsageError(
                     f"steady_state_tol must be non-negative or None, got {steady_state_tol!r}"
                 )
 
@@ -6088,16 +6134,17 @@ class Simulator:
                 if isinstance(start, (int, float)) and not isinstance(start, bool)
                 else ""
             )
-            raise ValueError(
+            raise UsageError(
                 f"start must be None, 'live' or 'initial', got {start!r}: 'initial' runs "
                 "from the model's initial conditions (Model.reset() first), 'live' from "
                 f"the state the model holds now, which is where the last run ended.{when}"
             )
         if start == "initial" and carry_sensitivities:
-            raise ValueError(
+            raise UsageError(
                 "start='initial' with carry_sensitivities=True: a reset discards the "
                 "pre-equilibrated state and its dx/dθ that carry_sensitivities "
-                "continues (GH #210). Drop one of them."
+                "continues (GH #210). Drop one of them.",
+                code="usage.conflicting_arguments",
             )
 
         # GH #205 — event-time output-sensitivity correctness. Events
@@ -6121,16 +6168,20 @@ class Simulator:
         # meaningful for the ODE forward-sensitivity path; validate early.
         if carry_sensitivities:
             if self._method != "ode":
-                raise ValueError(
+                raise UsageError(
                     "carry_sensitivities=True is only supported for method='ode' "
                     f"(got method='{self._method}'). Pre-equilibration output "
-                    "sensitivities ride the CVODES forward-sensitivity path (GH #210)."
+                    "sensitivities ride the CVODES forward-sensitivity path (GH #210).",
+                    code="usage.method_unsupported",
+                    remedies=[use_method("ode")],
                 )
             if not self._sensitivity_params:
-                raise ValueError(
+                raise UsageError(
                     "carry_sensitivities=True requires sensitivity_params on the "
                     "Simulator: there are no sensitivity columns to seed across the "
-                    "pre-equilibration boundary (GH #210)."
+                    "pre-equilibration boundary (GH #210).",
+                    code="usage.missing_argument",
+                    remedies=[pass_argument("sensitivity_params")],
                 )
 
         # Resolve the run seed. Stochastic methods draw a fresh seed from entropy
@@ -6363,7 +6414,7 @@ class Simulator:
                 core_result = self._sim.run(times, used_seed, timeout_seconds)
             else:
                 raise ValueError(f"Unknown method: {self._method}")
-        except _PASSED_THROUGH:
+        except _PASSED_THROUGH + _ONCE_PLAIN:
             # Already a typed bngsim exception (raised via the C++ translator)
             # — pass through unchanged so callers can classify wall-clock
             # terminations, and a refusal by name (#1313), distinctly from
@@ -6756,36 +6807,40 @@ class Simulator:
             # Each point builds an engine on a clone of the model's network, and a
             # network-free backend is built from the XML, not the network: this
             # failed at the first point as "Unknown method: nfsim" (issue #1360).
-            raise ValueError(
+            raise UsageError(
                 f"run_batch does not run method={self._requested_method!r}. Scan a "
                 "network-free model point by point: set each point's parameters "
                 "with Model.set_param and call Simulator.run, which hands the "
-                "backend every parameter the model has changed."
+                "backend every parameter the model has changed.",
+                code="usage.method_unsupported",
             )
         if params is None or len(params) == 0:
-            raise ValueError("params must be a non-empty sequence of dicts")
+            raise UsageError("params must be a non-empty sequence of dicts")
 
         t_start, t_end, n_points = validate_time_span(t_span, n_points)
 
         if steady_state and self._method != "ode":
-            raise ValueError(
+            raise UsageError(
                 "steady_state=True is only supported for method='ode' "
                 f"(got method='{self._method}'). BNG2.pl ties the steady_state "
-                "early-stop to the CVODE integrator only."
+                "early-stop to the CVODE integrator only.",
+                code="usage.method_unsupported",
+                remedies=[use_method("ode")],
             )
         if steady_state and squeeze:
-            raise ValueError(
+            raise UsageError(
                 "run_batch(steady_state=True, squeeze=True) is not supported: "
                 "each parameter point truncates to its own equilibration row "
                 "count, so the per-Result trajectories cannot be stacked into a "
-                "single 3D array. Use squeeze=False (the default)."
+                "single 3D array. Use squeeze=False (the default).",
+                code="usage.conflicting_arguments",
             )
         self._refuse_squeeze_with_stop_conditions("run_batch", squeeze)
         ss_tol_value: float = 0.0
         if steady_state_tol is not None:
             ss_tol_value = float(steady_state_tol)
             if ss_tol_value < 0.0:
-                raise ValueError(
+                raise UsageError(
                     f"steady_state_tol must be non-negative or None, got {steady_state_tol!r}"
                 )
 
@@ -6897,7 +6952,7 @@ class Simulator:
         if timeout is not None:
             effective_timeout = float(timeout)
             if effective_timeout < 0.0:
-                raise ValueError(f"timeout must be non-negative or None, got {timeout!r}")
+                raise UsageError(f"timeout must be non-negative or None, got {timeout!r}")
 
         # Resolve the base seed once per batch. ODE doesn't use a seed,
         # but resolving anyway keeps the per-sim derivation deterministic
@@ -6976,7 +7031,8 @@ class Simulator:
                 for i, future in enumerate(futures):
                     try:
                         results.append(future.result())
-                    except _PASSED_THROUGH:
+                    except _PASSED_THROUGH + _ONCE_PLAIN:
+                        # As the sequential path and a row raise them.
                         raise
                     except Exception as e:
                         raise SimulationError(f"Batch simulation {i} failed: {e}") from e
@@ -7083,13 +7139,14 @@ class Simulator:
                 "run_replicates", _SIGNATURES["run_replicates"], locals(), _extra, _foreign
             )
         if self._method not in ("ssa", "psa"):
-            raise ValueError(
+            raise UsageError(
                 "run_replicates is for stochastic methods (method='ssa' or "
                 f"'psa'); got method={self._method!r}. Use run_batch for ODE "
-                "parameter scans."
+                "parameter scans.",
+                code="usage.method_unsupported",
             )
         if n_replicates < 1:
-            raise ValueError(f"n_replicates must be >= 1, got {n_replicates}")
+            raise UsageError(f"n_replicates must be >= 1, got {n_replicates}")
         t_start, t_end, n_points = validate_time_span(t_span, n_points)
         self._refuse_squeeze_with_stop_conditions("run_replicates", squeeze)
 
@@ -7097,7 +7154,7 @@ class Simulator:
         if timeout is not None:
             eff_timeout = float(timeout)
             if eff_timeout < 0.0:
-                raise ValueError(f"timeout must be non-negative or None, got {timeout!r}")
+                raise UsageError(f"timeout must be non-negative or None, got {timeout!r}")
 
         base_seed = _resolve_seed(seed)
 
@@ -7259,20 +7316,21 @@ class Simulator:
         if par_scan_vals is not None:
             vals = [float(v) for v in par_scan_vals]
             if not vals:
-                raise ValueError("par_scan_vals must be a non-empty sequence")
+                raise UsageError("par_scan_vals must be a non-empty sequence")
             return vals
         if par_min is None or par_max is None or n_scan_pts is None:
-            raise ValueError(
-                "Provide either par_scan_vals, or all of par_min, par_max, and n_scan_pts."
+            raise UsageError(
+                "Provide either par_scan_vals, or all of par_min, par_max, and n_scan_pts.",
+                code="usage.missing_argument",
             )
         n = int(n_scan_pts)
         if n < 1:
-            raise ValueError(f"n_scan_pts must be >= 1, got {n}")
+            raise UsageError(f"n_scan_pts must be >= 1, got {n}")
         if n == 1:
             return [float(par_min)]
         if log_scale:
             if par_min <= 0.0 or par_max <= 0.0:
-                raise ValueError(
+                raise UsageError(
                     "log_scale=True requires positive par_min and par_max "
                     f"(got par_min={par_min}, par_max={par_max})."
                 )
@@ -7308,25 +7366,27 @@ class Simulator:
             # The IC axis (∂y/∂y_k(0)) is meaningless across the boundary: the
             # snapshot each point starts from is no longer the model's IC, so e_k
             # is not a seed. Same posture as the single-run carry path in C++.
-            raise ValueError(
+            raise UsageError(
                 "parameter_scan / bifurcate do not support sensitivity_ic "
                 "(initial-condition axis) sensitivities: each point starts from a "
                 "snapshot rather than the model's initial conditions, so ∂y/∂y_k(0) "
                 "has no meaning across that boundary. Use sensitivity_params only, "
-                "or run_batch (which resets each point to the seed) for the IC axis."
+                "or run_batch (which resets each point to the seed) for the IC axis.",
+                code="usage.conflicting_arguments",
             )
         if parameter in names:
             # The scan overwrites the parameter per point, so the snapshot's
             # ∂x/∂(that parameter) was taken at a different value of the same
             # symbol — the two cannot be composed into one derivative.
-            raise ValueError(
+            raise UsageError(
                 f"parameter_scan / bifurcate cannot scan {parameter!r}: it is also a "
                 "sensitivity_params entry, and each point overwrites it. The carried "
                 f"∂x/∂{parameter} was accumulated at the pre-scan value, so composing it "
                 "with a point that pins the parameter to a scan value would mix two "
                 "values of one symbol. Scan a parameter you are not differentiating "
                 "(the usual dose / condition), or use run_batch for a sweep of a "
-                "differentiated parameter (each row re-seeds from the model seed)."
+                "differentiated parameter (each row re-seeds from the model seed).",
+                code="usage.conflicting_arguments",
             )
 
         core = self._model._core
@@ -7348,7 +7408,7 @@ class Simulator:
             )
         if seed is None or list(seed_names) != names:
             have = ", ".join(seed_names) if seed_names else "(none)"
-            raise ValueError(
+            raise UsageError(
                 "parameter_scan / bifurcate can only carry output sensitivities "
                 f"into a scan when {source} carries a matching forward-sensitivity "
                 "matrix dx/dθ: each point starts from that state, so its ∂x(0)/∂θ is "
@@ -7571,7 +7631,7 @@ class Simulator:
 
         for name, before in zip(names, params_before, strict=True):
             if model.get_param(name) != before:
-                raise ValueError(
+                raise UsageError(
                     f"on_point changed the sensitivity parameter {name!r} "
                     f"({before!r} → {model.get_param(name)!r}). The carried "
                     f"∂x/∂{name} was accumulated at the pre-hook value, so a point that "
@@ -7686,7 +7746,7 @@ class Simulator:
         self._replay_on_point(on_point, value, base_state, names, nominal_params)
         again = np.asarray(model.get_state(), dtype=np.float64)
         if not np.array_equal(again, post_state):
-            raise ValueError(
+            raise UsageError(
                 "on_point is not a deterministic function of (model, value): re-running "
                 "it on the same inputs produced a different initial condition. bngsim "
                 "calls the hook at perturbed inputs to measure ∂x(0)/∂θ for the initial "
@@ -7767,7 +7827,7 @@ class Simulator:
             floor = 8.0 * float(np.finfo(float).eps) * max(fine_mag[i], coarse_mag[i]) / (2.0 * h)
             tol = _IC_SENS_PROBE_TOL * max(abs(fine[i]), abs(coarse[i])) + floor
             if abs(fine[i] - coarse[i]) > tol:
-                raise ValueError(
+                raise UsageError(
                     f"on_point's initial condition for {self._model.species_names[i]!r} is "
                     f"not differentiable in {name!r} at this scan point: the measured "
                     f"{what} is {fine[i]:.6g} at step {h:.3g} but {coarse[i]:.6g} at step "
@@ -7803,7 +7863,7 @@ class Simulator:
             try:
                 on_point(model, float(value))
             except Exception as e:
-                raise ValueError(
+                raise UsageError(
                     f"on_point raised while bngsim measured d(initial condition)/d{name} "
                     f"through it ({type(e).__name__}: {e}). The hook is called with "
                     "perturbed inputs to obtain ∂x(0)/∂θ for the initial conditions it "
@@ -8075,9 +8135,11 @@ class Simulator:
             )
         self._require_interactive_backend_support()
         if steady_state and self._method != "ode":
-            raise ValueError(
+            raise UsageError(
                 "steady_state=True is only supported for method='ode' "
-                f"(got method='{self._method}')."
+                f"(got method='{self._method}').",
+                code="usage.method_unsupported",
+                remedies=[use_method("ode")],
             )
         self._refuse_squeeze_with_stop_conditions("parameter_scan", squeeze)
         # Before anything below snapshots or moves the model (issue #1504): every
@@ -8094,10 +8156,12 @@ class Simulator:
         use_named = reset_to is not None
         if use_named and not self._model.has_saved_concentrations(reset_to):
             known = ", ".join(self._model.saved_concentration_labels) or "(none)"
-            raise ValueError(
+            raise UsageError(
                 f"reset_to={reset_to!r}: no saved concentration state by that "
                 f"name. Saved states: {known}. Call save_concentrations({reset_to!r}) "
-                "before the scan."
+                "before the scan.",
+                code="name.not_found",
+                details={"name": reset_to},
             )
         # Snapshot the live state at invocation as the reset target (and as the
         # post-scan restore point). Captured even for reset_conc=False so the
@@ -8626,7 +8690,7 @@ class Simulator:
             # can turn on the row's values, and a scan has to say which row. A
             # runtime_error said so as "Batch simulation N failed".
             raise type(e)(f"run_batch row {index}: {e}") from None
-        except _PASSED_THROUGH:
+        except _PASSED_THROUGH + _ONCE_PLAIN:
             # A timeout or a refusal is the row's, as it is from run().
             raise
         except RuntimeError as e:
@@ -8833,13 +8897,15 @@ class Simulator:
         import os
 
         if self._method != "ode":
-            raise ValueError(
+            raise UsageError(
                 "compute_all_sensitivities() is only supported "
-                f"for method='ode', not method='{self._method}'."
+                f"for method='ode', not method='{self._method}'.",
+                code="usage.method_unsupported",
+                remedies=[use_method("ode")],
             )
 
         if chunk_size < 1:
-            raise ValueError(f"chunk_size must be >= 1, got {chunk_size}")
+            raise UsageError(f"chunk_size must be >= 1, got {chunk_size}")
         # Issue #1523 — run()'s refusals, which this entry point never made: the
         # chunks build their own TimeSpec and call the core directly, so an empty
         # grid (n_points=0) reached CvodeSimulator::run, which read the ends of
@@ -9009,13 +9075,13 @@ class Simulator:
             # parameters of which none is an independent knob. Say which, so the
             # second does not read as "this model has no parameters".
             if params is None and all_param_names:
-                raise ValueError(
+                raise UsageError(
                     f"No independent parameters to compute sensitivities for: all "
                     f"{len(all_param_names)} of this model's parameters were dropped "
                     f"from the default column set (see the warnings above). Pass "
                     f"params=[...] to ask for a specific column on its own terms."
                 )
-            raise ValueError("No parameters to compute sensitivities for.")
+            raise UsageError("No parameters to compute sensitivities for.")
 
         # GH #205 — events: allowed only for the subclasses whose ∂t*/∂p is
         # known (fixed-time; issue #49 thresholds; issue #144 state-dependent
@@ -9829,8 +9895,10 @@ class Simulator:
         differences anything.
         """
         if self._method != "ode":
-            raise ValueError(
-                f"steady_state() is only supported for method='ode', not method='{self._method}'."
+            raise UsageError(
+                f"steady_state() is only supported for method='ode', not method='{self._method}'.",
+                code="usage.method_unsupported",
+                remedies=[use_method("ode")],
             )
         self._raise_if_no_steady_state_to_solve_for("steady_state()")
         self._raise_if_a_conservation_law_is_not_conserved("steady_state()")
@@ -11326,29 +11394,31 @@ class Simulator:
         rather than once for the batch. ``r.rhs_backend`` reports what ran.
         """
         if self._method != "ode":
-            raise ValueError(
+            raise UsageError(
                 "steady_state_batch() is only supported for "
-                f"method='ode', not method='{self._method}'."
+                f"method='ode', not method='{self._method}'.",
+                code="usage.method_unsupported",
+                remedies=[use_method("ode")],
             )
         if states is not None:
             states = np.asarray(states, dtype=np.float64)
             n_sp = self._model.n_species
             if states.ndim != 2 or states.shape[1] != n_sp or states.shape[0] == 0:
-                raise ValueError(
+                raise UsageError(
                     f"states must have shape (n_entries, {n_sp}), one row per entry "
                     f"ordered like species_names; got {states.shape}"
                 )
             if params is None:
                 params = [{}] * states.shape[0]
             elif len(params) != states.shape[0]:
-                raise ValueError(
+                raise UsageError(
                     f"params and states pair up row by row: {len(params)} parameter "
                     f"sets for {states.shape[0]} states"
                 )
         if not params:
-            raise ValueError("params must be non-empty")
+            raise UsageError("params must be non-empty")
         if not (certify is True or certify is False or certify == "start"):
-            raise ValueError(f'certify must be True, False or "start", not {certify!r}')
+            raise UsageError(f'certify must be True, False or "start", not {certify!r}')
         # Issue #710 — a row sets parameter values, not what the rates read.
         self._raise_if_no_steady_state_to_solve_for("steady_state_batch()")
 
@@ -11603,7 +11673,7 @@ class Simulator:
         SteadyStates
         """
         if n_starts < 1:
-            raise ValueError("n_starts must be at least 1")
+            raise UsageError("n_starts must be at least 1")
         y0, L, held, in_law = _manifold_partition(self._model, mask)
         alone = ~held & ~in_law
         # One ordinary solve, for two things. Its root is an extra start (issue
@@ -11860,7 +11930,7 @@ class Simulator:
         elif callable(condition):
             sc = _CallableStopCondition(condition, label=label)
         else:
-            raise TypeError(
+            raise ArgumentTypeError(
                 "condition must be a string expression or callable, "
                 f"got {type(condition).__name__}"
             )
@@ -12046,13 +12116,14 @@ class Simulator:
         reason (issue #1369).
         """
         if squeeze and self._stop_conditions:
-            raise ValueError(
+            raise UsageError(
                 f"{where}(squeeze=True) is refused while stop conditions are "
                 "registered: a row a condition cuts is shorter than the rest, and a "
                 "stack does not say which stopped (issue #1369). Use squeeze=False, "
                 "where Result.stop_condition names the condition each row met, and "
                 "Result.squeeze(rows) to stack them when none did; or call "
-                "clear_stop_conditions() first."
+                "clear_stop_conditions() first.",
+                code="usage.conflicting_arguments",
             )
 
     @staticmethod
@@ -12225,7 +12296,7 @@ class Simulator:
         # for it, and failed only by accident at int(dt).
         t = require_finite_time("Target time", t)
         if t <= self._current_time:
-            raise ValueError(f"Target time ({t}) must be > current time ({self._current_time})")
+            raise UsageError(f"Target time ({t}) must be > current time ({self._current_time})")
 
         dt = t - self._current_time
         if n_points is None:
@@ -12918,22 +12989,24 @@ def _require_model(model: object) -> None:
     path or model text, or anything without the engine handle a Model holds.
     A stand-in that has one passes, as a test double of a Model does."""
     if isinstance(model, Simulator):
-        raise TypeError(
+        raise ArgumentTypeError(
             "Simulator() is given a Simulator: its model is sim.model, so "
             "bngsim.Simulator(sim.model, method=...) runs the same Model another way."
         )
     if isinstance(model, Result):
-        raise TypeError(
+        raise ArgumentTypeError(
             "Simulator() is given a Result, a run's output: pass the Model that ran it, "
             "bngsim.Simulator(model)."
         )
     source = _foreign_names.model_source(model, lambda load: f"bngsim.Simulator({load})")
     if source is not None:
         what, call = source
-        raise TypeError(f"Simulator() runs a Model, not {what}: build the Model first, {call}.")
+        raise ArgumentTypeError(
+            f"Simulator() runs a Model, not {what}: build the Model first, {call}."
+        )
     if hasattr(model, "_core"):
         return
-    raise TypeError(
+    raise ArgumentTypeError(
         f"Simulator() runs a bngsim.Model, not a value of type {type(model).__name__}: "
         "bngsim.Simulator(bngsim.Model.load(path))."
     )
@@ -13050,14 +13123,14 @@ def _refuse_stop_expression_shape(expression: str, tree: ast.Expression) -> None
     """Refuse the two shapes that read as a different condition from the one
     written, before any sample (issue #1509)."""
     if any(isinstance(n, ast.BinOp) and isinstance(n.op, ast.BitXor) for n in ast.walk(tree)):
-        raise ValueError(
+        raise UsageError(
             f"stop condition {expression!r} uses ^, which Python reads as bitwise XOR, "
             "not as a power: write ** (A_tot**2 < 100), or != between two conditions "
             "for their exclusive or (issue #1509)"
         )
     kind = _STOP_CONTAINER_KINDS.get(type(tree.body))
     if kind is not None:
-        raise ValueError(
+        raise UsageError(
             f"stop condition {expression!r} is {kind}, not one truth value or number: "
             "join conditions with 'and' or 'or' (issue #1509)"
         )
@@ -13072,7 +13145,7 @@ def _stop_value_met(value: Any, expression: str, time: np.ndarray, t_idx: int) -
         return bool(value)
     if isinstance(value, (int, float, np.integer, np.floating)):
         return bool(value > 0)
-    raise ValueError(
+    raise UsageError(
         f"stop condition {expression!r} gives {type(value).__name__} at "
         f"t={float(time[t_idx]):g}, not a truth value or a real number (issue #1509)"
     )
@@ -13198,7 +13271,7 @@ class _ExpressionStopCondition(_StopCondition):
         if names is not None:
             unknown = sorted(loads - binds - names.readable())
             if unknown:
-                raise ValueError(_unreadable_stop_names_message(expression, unknown, names))
+                raise UsageError(_unreadable_stop_names_message(expression, unknown, names))
 
     def check(self, result: Result) -> int | None:
         """Evaluate expression at each time point."""
@@ -13243,7 +13316,7 @@ class _ExpressionStopCondition(_StopCondition):
                             "and later a warning issued inside one needs it"
                         )
                         issue = "issues #1509, #1556"
-                    raise ValueError(
+                    raise UsageError(
                         f"stop condition {self._expression!r} could not be evaluated at "
                         f"t={float(time[t_idx]):g}: {why} ({issue})"
                     ) from exc
@@ -13319,7 +13392,7 @@ def _resolve_ss_mask(mask, model: Model) -> list[int] | None:
     arr = np.asarray(mask)
     if arr.dtype == np.bool_:
         if arr.ndim != 1 or arr.size != ns:
-            raise ValueError(
+            raise UsageError(
                 f"steady_state(mask=...): a boolean mask must have one entry per "
                 f"species, got shape {arr.shape} for a model with {ns} species."
             )
@@ -13329,16 +13402,18 @@ def _resolve_ss_mask(mask, model: Model) -> list[int] | None:
         index = {n: i for i, n in enumerate(names)}
         unknown = [n for n in wanted if n not in index]
         if unknown:
-            raise ValueError(
+            raise UsageError(
                 f"steady_state(mask=...): unknown species name(s) "
                 f"{unknown[:5]}{', ...' if len(unknown) > 5 else ''}. Names must "
-                f"match Model.species_names exactly."
+                f"match Model.species_names exactly.",
+                code="species.not_found",
+                details={"names": [{"name": n} for n in unknown]},
             )
         keep = [0] * ns
         for n in wanted:
             keep[index[n]] = 1
     else:
-        raise TypeError(
+        raise ArgumentTypeError(
             "steady_state(mask=...) takes either a boolean array of length "
             f"n_species ({ns}) or a sequence of species names to keep, not "
             f"{arr.dtype!r}. Integer indices are rejected as ambiguous — build a "
@@ -13346,7 +13421,7 @@ def _resolve_ss_mask(mask, model: Model) -> list[int] | None:
         )
 
     if not any(keep):
-        raise ValueError(
+        raise UsageError(
             "steady_state(mask=...) excludes every species: there is no subspace "
             "left to solve f(y) = 0 on."
         )
@@ -14450,7 +14525,7 @@ class SteadyStateResult:
         (2, 1)
         """
         if axis == "ic":
-            raise ValueError(
+            raise UsageError(
                 "output_sensitivities: the 'ic' (initial-condition) axis is not "
                 "available on a steady-state result. A stable steady state keeps "
                 "nothing of its initial conditions but the conserved totals, and the "
@@ -14459,11 +14534,13 @@ class SteadyStateResult:
                 "parameter column (issue #704)."
             )
         if axis != "parameter":
-            raise ValueError(f"output_sensitivities: axis must be 'parameter', got {axis!r}.")
+            raise UsageError(f"output_sensitivities: axis must be 'parameter', got {axis!r}.")
         if self._sensitivity is None:
-            raise ValueError(
+            raise UsageError(
                 "output_sensitivities: no steady-state sensitivities were computed for "
-                "this result. Enable them via sim.steady_state(sensitivity_params=[...])."
+                "this result. Enable them via sim.steady_state(sensitivity_params=[...]).",
+                code="sens.not_computed",
+                remedies=[pass_argument("sensitivity_params")],
             )
         n_params = self._sensitivity.shape[1]
         meta = self.resolve_outputs(selectors)
@@ -14478,7 +14555,7 @@ class SteadyStateResult:
             if (reason := self._no_derivative_reason(m, row)) is not None
         ]
         if reasons:
-            raise ValueError("\n".join(reasons))
+            raise UsageError("\n".join(reasons))
         return np.stack(rows, axis=0)
 
     def _caller_masked_species(self) -> list[str]:
@@ -14634,7 +14711,7 @@ class SteadyStateResult:
             self._observable_sensitivity if kind == "observable" else self._expression_sensitivity
         )
         if block.size == 0:
-            raise ValueError(
+            raise UsageError(
                 f"output_sensitivities: no {kind} sensitivities are available for "
                 f"selector {meta['selector']!r} on this steady-state result."
             )
@@ -14643,7 +14720,11 @@ class SteadyStateResult:
     def __getitem__(self, key: str) -> float:
         """Get steady-state concentration by species name."""
         if key not in self._name_to_idx:
-            raise KeyError(f"Species '{key}' not found. Available: {self._species_names}")
+            raise NotFoundError(
+                f"Species '{key}' not found. Available: {self._species_names}",
+                code="species.not_found",
+                details={"name": key},
+            )
         return float(self._concentrations[self._name_to_idx[key]])
 
     def to_dict(self) -> dict[str, float]:

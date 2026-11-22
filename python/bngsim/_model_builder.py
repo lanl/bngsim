@@ -56,21 +56,33 @@ class ModelBuilder:
 
     def _new_name(self, name: str, what: str) -> None:
         if self._built:
-            raise RuntimeError("this ModelBuilder has built its model; start a new one")
+            from bngsim._exceptions import NotSupportedError
+
+            raise NotSupportedError(
+                "this ModelBuilder has built its model; start a new one",
+            )
         if not isinstance(name, str) or not _NAME.match(name):
-            raise ValueError(
+            from bngsim._exceptions import InvalidModelError
+
+            raise InvalidModelError(
                 f"{what} name {name!r} is not a name: use letters, digits and "
                 "underscores, starting with a letter or underscore"
             )
         if name in self._names:
-            raise ValueError(f"{name!r} is already defined")
+            from bngsim._exceptions import InvalidModelError
+
+            raise InvalidModelError(f"{name!r} is already defined")
         self._names.add(name)
 
     def _index(self, name: str) -> int:
         try:
             return self._species[name]
         except KeyError:
-            raise ValueError(f"no species named {name!r}; add it with add_species") from None
+            from bngsim._exceptions import InvalidModelError
+
+            raise InvalidModelError(
+                f"no species named {name!r}; add it with add_species"
+            ) from None
 
     def _hidden_name(self, stem: str) -> str:
         while True:
@@ -140,13 +152,28 @@ class ModelBuilder:
         nothing: ``add_reaction([], ["A"], rate="k")`` makes A at rate ``k``.
         """
         if (rate is None) == (law is None):
-            raise ValueError("give add_reaction either rate= or law=, not both")
+            from bngsim._exceptions import UsageError
+
+            if rate is None:  # neither given
+                raise UsageError(
+                    "give add_reaction either rate= or law=, not both",
+                    code="usage.missing_argument",
+                    details={"argument": "rate"},
+                )
+            raise UsageError(
+                "give add_reaction either rate= or law=, not both",
+                code="usage.conflicting_arguments",
+            )
         if isinstance(rate, (int, float)):
             rate = repr(float(rate))
         if isinstance(law, (int, float)):
             law = repr(float(law))
         if self._built:
-            raise RuntimeError("this ModelBuilder has built its model; start a new one")
+            from bngsim._exceptions import NotSupportedError
+
+            raise NotSupportedError(
+                "this ModelBuilder has built its model; start a new one",
+            )
         r = [self._index(s) for s in _names(reactants, "reactants")]
         p = [self._index(s) for s in _names(products, "products")]
         if law is not None:
@@ -176,7 +203,11 @@ class ModelBuilder:
         ``{"A": "A + 100"}`` adds 100 to A.
         """
         if self._built:
-            raise RuntimeError("this ModelBuilder has built its model; start a new one")
+            from bngsim._exceptions import NotSupportedError
+
+            raise NotSupportedError(
+                "this ModelBuilder has built its model; start a new one",
+            )
         if name is None:
             name = self._hidden_name("event")
         else:
@@ -191,7 +222,11 @@ class ModelBuilder:
     def build(self) -> Model:
         """The model. A builder builds one model."""
         if self._built:
-            raise RuntimeError("this ModelBuilder has built its model; start a new one")
+            from bngsim._exceptions import NotSupportedError
+
+            raise NotSupportedError(
+                "this ModelBuilder has built its model; start a new one",
+            )
         self._built = True
         try:
             core = self._core.build()
@@ -201,7 +236,9 @@ class ModelBuilder:
                 if f"'{name}'" in message:
                     symbol = re.search(r"Undefined symbol: '([^']+)'", message)
                     what = f"{symbol.group(1)!r}, which is" if symbol else "something"
-                    raise ValueError(
+                    from bngsim._exceptions import InvalidModelError
+
+                    raise InvalidModelError(
                         f"a reaction's {source} names {what} not defined: add it as a "
                         "parameter, species, observable or function"
                     ) from None
@@ -211,5 +248,9 @@ class ModelBuilder:
 
 def _names(species: Iterable[str], what: str) -> list[str]:
     if isinstance(species, str):
-        raise TypeError(f"{what} is a list of species names, such as ['A', 'B'], not a string")
+        from bngsim._exceptions import ArgumentTypeError
+
+        raise ArgumentTypeError(
+            f"{what} is a list of species names, such as ['A', 'B'], not a string"
+        )
     return list(species)

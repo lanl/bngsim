@@ -254,8 +254,9 @@ static void retry_while_advancing(void *cvode_mem, sunrealtype t_target, N_Vecto
             << "leaves the right-hand side smooth in t and applies the jump at the root, which "
             << "an output point does NOT do (CV_NORMAL interpolates output points, so a sample "
             << "time at the crossing does not bound the step that spans it).";
-        throw std::runtime_error(msg.str() + sensitivity_restart_hint(t_after, data) +
-                                 nonfinite_witness_suffix(data));
+        throw SolverFailure(msg.str() + sensitivity_restart_hint(t_after, data) +
+                                nonfinite_witness_suffix(data),
+                            "stalled");
     }
 }
 
@@ -1991,6 +1992,17 @@ static void rethrow_pending_callback_error(CvodeUserData &data) {
         data.callback_error = nullptr;
         std::rethrow_exception(err);
     }
+}
+
+// SUNDIALS' name for a CVODE return flag ("CV_TOO_MUCH_ACC"), which a
+// SolverFailure carries (issue #1702); empty where SUNDIALS names none.
+static std::string cvode_flag_name(int flag) {
+    std::string name;
+    if (char *raw = CVodeGetReturnFlagName(static_cast<long int>(flag))) {
+        name = raw;
+        std::free(raw);
+    }
+    return name;
 }
 
 // The message a CVODE hard failure raises with. `flag` gains SUNDIALS' own name
@@ -5989,7 +6001,8 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
                                   });
             if (flag < 0) {
                 rethrow_pending_callback_error(w.user_data);
-                throw std::runtime_error(cvode_failure_message(t_out[i], flag, w.user_data));
+                throw SolverFailure(cvode_failure_message(t_out[i], flag, w.user_data),
+                                    cvode_flag_name(flag));
             }
         }
 
@@ -17632,6 +17645,9 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             rethrow_on_the_runs_clock(e, back(0.0));
         } catch (const SensitivityUnsupported &e) {
             rethrow_on_the_runs_clock(e, back(0.0));
+        } catch (const SolverFailure &e) {
+            // A solver failure keeps its flag (issue #1702) on the run's clock.
+            throw SolverFailure(on_the_runs_clock(e.what(), back(0.0)), e.flag_name());
         } catch (const std::runtime_error &e) {
             // The other subclasses (a timeout, a sparse solver refused) name
             // no time of the run.
@@ -22403,8 +22419,9 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 rethrow_pending_callback_error(user_data);
                 sunrealtype t_internal = t_now;
                 CVodeGetCurrentTime(cvode_mem, &t_internal);
-                throw std::runtime_error(cvode_failure_message(t_target, flag, user_data,
-                                                               static_cast<double>(t_internal)));
+                throw SolverFailure(cvode_failure_message(t_target, flag, user_data,
+                                                          static_cast<double>(t_internal)),
+                                    cvode_flag_name(flag));
             }
             t_now = t_ret;
             // A window a switch opened and closed inside the step just taken

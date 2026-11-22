@@ -55,7 +55,7 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, NamedTuple, overload
 
-from bngsim._exceptions import ConversionError, ConversionWarning
+from bngsim._exceptions import ConversionError, ConversionWarning, UsageError
 
 __all__ = [
     "ProtocolSpec",
@@ -351,14 +351,15 @@ class Experiment:
         start = float(self.output_start)
         t0, t_end = (float(t) for t in self.t_span)
         if not (math.isfinite(start) and t0 <= start <= t_end):
-            raise ValueError(
+            raise UsageError(
                 f"output_start={self.output_start!r} must lie in t_span ({t0:g}, {t_end:g}): "
                 "the run integrates from t_span[0] and outputs from output_start to t_span[1]"
             )
         if self.sample_times is not None:
-            raise ValueError(
+            raise UsageError(
                 "an experiment takes output_start or sample_times, not both: "
-                "sample_times already names every output time"
+                "sample_times already names every output time",
+                code="usage.conflicting_arguments",
             )
         # An output that starts where the run does is the plain experiment, and
         # compares equal to it.

@@ -64,7 +64,14 @@ from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 
-from bngsim._exceptions import BngsimError
+from bngsim._error_codes import pass_argument
+from bngsim._exceptions import (
+    ArgumentTypeError,
+    BngsimError,
+    NotFoundError,
+    NotSupportedError,
+    UsageError,
+)
 from bngsim._model import Model
 
 if TYPE_CHECKING:
@@ -112,7 +119,7 @@ def _resolve_model(obj: Model | ReactionKernel) -> Model:
     inner = getattr(obj, "model", None)
     if isinstance(inner, Model):
         return inner
-    raise TypeError(f"expected a bngsim.Model or ReactionKernel, got {type(obj).__name__}")
+    raise ArgumentTypeError(f"expected a bngsim.Model or ReactionKernel, got {type(obj).__name__}")
 
 
 def _species_codegen(model: Model) -> list[dict]:
@@ -156,15 +163,15 @@ class UnitConverter:
     def __init__(self, volume_factors: ArrayLike, *, names: Sequence[str] | None = None) -> None:
         vf = np.asarray(volume_factors, dtype=np.float64)
         if vf.ndim != 1:
-            raise ValueError(f"volume_factors must be 1-D, got shape {vf.shape}")
+            raise UsageError(f"volume_factors must be 1-D, got shape {vf.shape}")
         if not np.all(np.isfinite(vf)) or np.any(vf <= 0.0):
-            raise ValueError("volume_factors must all be finite and > 0")
+            raise UsageError("volume_factors must all be finite and > 0")
         self._vf = vf
         self._n = vf.shape[0]
         self._names = list(names) if names is not None else None
         if self._names is not None:
             if len(self._names) != self._n:
-                raise ValueError(
+                raise UsageError(
                     f"names length {len(self._names)} != volume_factors length {self._n}"
                 )
             self._name_to_idx = {n: i for i, n in enumerate(self._names)}
@@ -201,7 +208,7 @@ class UnitConverter:
 
     def _check_len(self, arr: NDArray[np.float64], what: str) -> NDArray[np.float64]:
         if arr.ndim != 1 or arr.shape[0] != self._n:
-            raise ValueError(
+            raise UsageError(
                 f"{what} must be a 1-D array of length {self._n}, got shape {arr.shape}"
             )
         return arr
@@ -219,12 +226,12 @@ class UnitConverter:
         if v.ndim == 0:
             v = np.full(self._n, float(v))
         elif v.shape != (self._n,):
-            raise ValueError(
+            raise UsageError(
                 f"volume override must be a scalar or a length-{self._n} array, "
                 f"got shape {v.shape}"
             )
         if not np.all(np.isfinite(v)) or np.any(v <= 0.0):
-            raise ValueError("volume override must be finite and > 0")
+            raise UsageError("volume override must be finite and > 0")
         return v
 
     # amount ↔ storage — volume-invariant; no override (amount is how storage is
@@ -285,11 +292,15 @@ class UnitConverter:
     def for_species(self, names: Sequence[str]) -> UnitConverter:
         """A sub-converter over ``names`` (must have been supplied at build)."""
         if self._names is None:
-            raise ValueError("this UnitConverter has no species names; pass names= to subset it")
+            raise UsageError("this UnitConverter has no species names; pass names= to subset it")
         try:
             idx = [self._name_to_idx[n] for n in names]
         except KeyError as e:
-            raise KeyError(f"species {e.args[0]!r} not in this converter") from None
+            raise NotFoundError(
+                f"species {e.args[0]!r} not in this converter",
+                code="species.not_found",
+                details={"name": e.args[0]},
+            ) from None
         return UnitConverter(self._vf[idx], names=list(names))
 
     def __len__(self) -> int:
@@ -325,13 +336,17 @@ class CouplingMap:
     def __init__(self, all_names: Sequence[str], shared_names: Sequence[str]) -> None:
         name_to_idx = {n: i for i, n in enumerate(all_names)}
         if len(name_to_idx) != len(all_names):
-            raise ValueError("all_names contains duplicate species names")
+            raise UsageError("all_names contains duplicate species names")
         shared = list(shared_names)
         if len(set(shared)) != len(shared):
-            raise ValueError("shared_names contains duplicates")
+            raise UsageError("shared_names contains duplicates")
         missing = [n for n in shared if n not in name_to_idx]
         if missing:
-            raise KeyError(f"shared species not in the state vector: {missing}")
+            raise NotFoundError(
+                f"shared species not in the state vector: {missing}",
+                code="species.not_found",
+                details={"names": missing},
+            )
         self._shared = shared
         self._idx = np.array([name_to_idx[n] for n in shared], dtype=np.intp)
         self._n_full = len(all_names)
@@ -366,7 +381,7 @@ class CouplingMap:
 
     def _check_full(self, state: NDArray[np.float64]) -> NDArray[np.float64]:
         if state.ndim != 1 or state.shape[0] != self._n_full:
-            raise ValueError(
+            raise UsageError(
                 f"state must be a 1-D array of length {self._n_full}, got shape {state.shape}"
             )
         return state
@@ -387,7 +402,7 @@ class CouplingMap:
         s = self._check_full(np.asarray(state, dtype=np.float64))
         v = np.asarray(values, dtype=np.float64)
         if v.shape != (self.n_shared,):
-            raise ValueError(f"values must be a length-{self.n_shared} array, got shape {v.shape}")
+            raise UsageError(f"values must be a length-{self.n_shared} array, got shape {v.shape}")
         if copy:
             s = s.copy()
         s[self._idx] = v
@@ -450,11 +465,16 @@ def round_to_counts(
         return np.ceil(a)
     if policy == "stochastic":
         if rng is None:
-            raise ValueError("policy='stochastic' requires an rng (numpy.random.Generator)")
+            raise UsageError(
+                "policy='stochastic' requires an rng (numpy.random.Generator)",
+                code="usage.missing_argument",
+                details={"argument": "rng"},
+                remedies=[pass_argument("rng")],
+            )
         lo = np.floor(a)
         frac = a - lo
         return lo + (rng.random(a.shape) < frac).astype(np.float64)
-    raise ValueError(f"unknown rounding policy {policy!r}")
+    raise UsageError(f"unknown rounding policy {policy!r}")
 
 
 class DiscreteExchange:
@@ -518,7 +538,7 @@ class DiscreteExchange:
         rng: np.random.Generator | None = None,
     ) -> None:
         if n_species < 0:
-            raise ValueError("n_species must be >= 0")
+            raise UsageError("n_species must be >= 0")
         self._n = int(n_species)
         self._policy: RoundingPolicy = policy
         self._dither = bool(dither)
@@ -538,7 +558,7 @@ class DiscreteExchange:
         """
         a = np.asarray(amounts, dtype=np.float64)
         if a.shape != (self._n,):
-            raise ValueError(f"amounts must be a length-{self._n} array, got shape {a.shape}")
+            raise UsageError(f"amounts must be a length-{self._n} array, got shape {a.shape}")
         biased = a + self._carry if self._dither else a
         counts = round_to_counts(biased, self._policy, rng=self._rng)
         if self._nonneg:
@@ -599,7 +619,7 @@ def moiety_total(state: ArrayLike, weights: ArrayLike | None = None) -> float:
         return float(s.sum())
     w = np.asarray(weights, dtype=np.float64)
     if w.shape != s.shape:
-        raise ValueError(f"weights shape {w.shape} != state shape {s.shape}")
+        raise UsageError(f"weights shape {w.shape} != state shape {s.shape}")
     return float(np.dot(w, s))
 
 
@@ -740,7 +760,7 @@ class Divider:
         rng: np.random.Generator | None = None,
     ) -> None:
         if method not in ("binomial", "multinomial", "deterministic"):
-            raise ValueError(f"unknown divide method {method!r}")
+            raise UsageError(f"unknown divide method {method!r}")
         self._method = method
         self._rng = rng
 
@@ -772,15 +792,15 @@ class Divider:
             partitioned species the daughters sum exactly to the parent count.
         """
         if n_daughters < 1:
-            raise ValueError("n_daughters must be >= 1")
+            raise UsageError("n_daughters must be >= 1")
         a = np.asarray(counts, dtype=np.float64)
         if a.ndim != 1:
-            raise ValueError(f"counts must be 1-D, got shape {a.shape}")
+            raise UsageError(f"counts must be 1-D, got shape {a.shape}")
         if np.any(a < 0):
-            raise ValueError("counts must be non-negative")
+            raise UsageError("counts must be non-negative")
         rounded = np.rint(a)
         if not np.allclose(a, rounded):
-            raise ValueError("counts must be integer-valued; discretize before dividing")
+            raise UsageError("counts must be integer-valued; discretize before dividing")
         ints = rounded.astype(np.int64)
         n = ints.shape[0]
 
@@ -789,7 +809,7 @@ class Divider:
         else:
             mask = np.asarray(partition_mask, dtype=bool)
             if mask.shape != (n,):
-                raise ValueError(f"partition_mask must be length {n}, got shape {mask.shape}")
+                raise UsageError(f"partition_mask must be length {n}, got shape {mask.shape}")
 
         if self._method == "deterministic":
             shares = self._divide_deterministic(ints[mask], n_daughters)
@@ -806,7 +826,12 @@ class Divider:
     def _divide_stochastic(self, pool: NDArray[np.int64], k: int) -> list[NDArray[np.int64]]:
         """Multinomial split: each molecule to a uniformly-random daughter."""
         if self._rng is None:
-            raise ValueError(f"method={self._method!r} requires an rng (numpy.random.Generator)")
+            raise UsageError(
+                f"method={self._method!r} requires an rng (numpy.random.Generator)",
+                code="usage.missing_argument",
+                details={"argument": "rng"},
+                remedies=[pass_argument("rng")],
+            )
         remaining = pool.copy()
         shares: list[NDArray[np.int64]] = []
         for d in range(k - 1):
@@ -861,7 +886,7 @@ def set_compartment_volume(model: Model | ReactionKernel, name: str, volume: flo
     using the live volume are Stage 2.
     """
     if not np.isfinite(volume) or volume <= 0.0:
-        raise ValueError(f"volume must be finite and > 0, got {volume}")
+        raise UsageError(f"volume must be finite and > 0, got {volume}")
     _resolve_model(model).set_param(name, float(volume))
 
 
@@ -942,20 +967,20 @@ def make_subset_model(
         ("n_table_functions", "table functions (tfun)"),
     ):
         if getattr(core, attr, 0):
-            raise NotImplementedError(
+            raise NotSupportedError(
                 f"make_subset_model cannot reconstruct a model with {label}; "
                 "build the operator-split subsets directly with ModelBuilder"
             )
     for s in cgd["species"]:
         if s.get("amount_valued", False):
-            raise NotImplementedError(
+            raise NotSupportedError(
                 "make_subset_model cannot reconstruct amount_valued species "
                 f"({s['name']!r}, GH #75); build the subset with ModelBuilder"
             )
     if getattr(core, "has_baseline_sensitivity_seed", False):
         # reset() on the model restores that dx/dθ with the state; the subset
         # would reset to the state with dx/dθ = 0, a fresh start it is not.
-        raise NotImplementedError(
+        raise NotSupportedError(
             "make_subset_model cannot carry the forward-sensitivity seed saved with "
             "this model's baseline (save_concentrations() after a sensitivity "
             "pre-equilibration, issue #81); build the subset before saving, or with "
@@ -972,7 +997,11 @@ def make_subset_model(
     known = {s["name"] for s in species}
     unknown = fixed_set - known
     if unknown:
-        raise KeyError(f"fixed_species not in the model: {sorted(unknown)}")
+        raise NotFoundError(
+            f"fixed_species not in the model: {sorted(unknown)}",
+            code="species.not_found",
+            details={"names": sorted(unknown)},
+        )
 
     kept_idx = list(range(len(reactions)) if keep_reactions is None else keep_reactions)
     for ri in kept_idx:
@@ -1043,12 +1072,12 @@ def make_subset_model(
         r = reactions[ri]
         rtype = r["type"]
         if rtype not in _REBUILDABLE_RXN_TYPES:
-            raise NotImplementedError(
+            raise NotSupportedError(
                 f"make_subset_model cannot reconstruct a {rtype!r} reaction "
                 "(only elementary / functional / mm); build the subset with ModelBuilder"
             )
         if r.get("per_species_volume_scaling", False):
-            raise NotImplementedError(
+            raise NotSupportedError(
                 "make_subset_model cannot reconstruct a per_species_volume_scaling "
                 "reaction (mixed-compartment SBML); build the subset with ModelBuilder"
             )
@@ -1060,7 +1089,7 @@ def make_subset_model(
             # roles are re-derived from the (order-preserved) reactant list.
             rp = r["rate_param_indices"]
             if len(rp) < 2:
-                raise NotImplementedError(
+                raise NotSupportedError(
                     "make_subset_model cannot reconstruct a Michaelis–Menten "
                     "reaction missing its [kcat, Km] parameters"
                 )

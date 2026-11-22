@@ -232,12 +232,16 @@ def build_model_from_parsed(parsed: dict[str, Any]):
         # ModelBuilder refuses both of these as well (issue #863); checking here
         # first names the dict field the caller got wrong.
         if param_name not in declared:
-            raise ValueError(
+            from bngsim._exceptions import InvalidModelError
+
+            raise InvalidModelError(
                 f"species_ic_params names parameter {param_name!r}, which the parameters "
                 "do not declare"
             )
         if not 0 <= species_idx0 < len(parsed["species"]):
-            raise ValueError(f"species_ic_params names species index {species_idx0}")
+            from bngsim._exceptions import InvalidModelError
+
+            raise InvalidModelError(f"species_ic_params names species index {species_idx0}")
         builder.add_species_param_ref(species_idx0, param_name)
 
     # A function whose expression calls `tfun(...)` needs its table registered
@@ -271,7 +275,9 @@ def build_model_from_parsed(parsed: dict[str, Any]):
         rtype = rxn["type"]
         rate_law = rxn["rate_law"]
         if rtype == "legacy":
-            raise ValueError(
+            from bngsim._exceptions import InvalidModelError
+
+            raise InvalidModelError(
                 f"reaction {i + 1} has type 'legacy' ({rate_law!r}), which "
                 "build_model_from_parsed does not build. parse_net_file rewrites a "
                 "deprecated Sat or Hill rate law into an explicit function; in a "
@@ -280,7 +286,9 @@ def build_model_from_parsed(parsed: dict[str, Any]):
             )
         if not rate_law.strip():
             # ModelBuilder's validation passes an empty name over, so refuse it here.
-            raise ValueError(f"reaction {i + 1} has an empty rate_law")
+            from bngsim._exceptions import InvalidModelError
+
+            raise InvalidModelError(f"reaction {i + 1} has an empty rate_law")
         # By what the rate law names, not by the label, and by ModelBuilder's
         # rule rather than a copy of it: an elementary rate that names a
         # function is resolved to functional in build(), exactly as the loader

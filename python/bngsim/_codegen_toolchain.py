@@ -55,7 +55,7 @@ import time
 from pathlib import Path
 
 from bngsim import _notices
-from bngsim._exceptions import CodegenToolchainError
+from bngsim._exceptions import CodegenBuildError, CodegenToolchainError
 
 # What a compiler or linker writes its messages and paths in: on Windows the
 # OEM code page, in which MSVC's cl and link write to a pipe (not the ANSI one,
@@ -163,6 +163,21 @@ def toolchain_key(compiler: list[str] | None) -> tuple:
     )
 
 
+class Verdict(str):
+    """A broken-toolchain verdict: its message, and whether it is that no
+    compiler is there (issue #1702), as data a :class:`CodegenToolchainError`
+    raised with it reads for its code."""
+
+    no_compiler: bool = False
+
+
+def no_compiler(message: str) -> Verdict:
+    """The verdict that no C compiler is there, in *message*'s words."""
+    verdict = Verdict(message)
+    verdict.no_compiler = True
+    return verdict
+
+
 def _keep_broken(key: tuple, message: str) -> bool:
     """Keep a broken verdict (the caller holds the lock); whether it is the first
     for this key, and so the one to log."""
@@ -182,7 +197,7 @@ def check() -> tuple[list[str] | None, str | None]:
     try:
         compiler = cg._find_c_compiler()
     except RuntimeError as err:
-        message = f"{err} {_FALLBACK}"
+        message = no_compiler(f"{err} {_FALLBACK}")
         with _lock:
             first = _keep_broken(toolchain_key(None), message)
         _notices.log(logger, "codegen.toolchain", "%s", message, emit=first)
@@ -248,7 +263,7 @@ def record_missing(compiler: list[str]) -> str | None:
     ``None`` when it is there."""
     if shutil.which(compiler[0]) is not None:
         return None
-    message = (
+    message = no_compiler(
         f"C compiler not found: {compiler[0]!r} is not an executable on PATH"
         f"{' (from CC)' if os.environ.get('CC') else ''}. Install Xcode Command Line "
         "Tools (macOS), gcc (Linux), or Visual Studio Build Tools (Windows), or set CC. "
@@ -296,15 +311,16 @@ def record_unstartable(compiler: list[str], err: OSError) -> str:
 def strict_refusal(what: str, cause: BaseException | str) -> RuntimeError:
     """The error ``BNGSIM_CODEGEN_STRICT`` makes of an automatic codegen build
     that failed (``what`` names it), in place of the fallback to the interpreter.
-    A :class:`CodegenToolchainError` when the toolchain is what failed."""
+    A :class:`CodegenToolchainError` when the toolchain is what failed, and a
+    :class:`CodegenBuildError` otherwise."""
     detail = f"{type(cause).__name__}: {cause}" if isinstance(cause, BaseException) else cause
     message = (
         f"BNGSIM_CODEGEN_STRICT is set, and {what} failed to build ({detail}). Without "
         "it the run falls back to the interpreter; unset it to allow that (issue #1544)."
     )
     if isinstance(cause, CodegenToolchainError):
-        return CodegenToolchainError(message)
-    return RuntimeError(message)
+        return CodegenToolchainError.restated(cause, message)
+    return CodegenBuildError(message)
 
 
 def _run(cmd: list[str], *, timeout: float = 10.0) -> str:

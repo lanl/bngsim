@@ -215,7 +215,17 @@ error is about, `remedies` lists fixes a program can act on, each a dict with a
 optional package such as pandas or h5py is a `bngsim.DependencyError` (also an
 `ImportError`), whose remedy gives the `pip install` command. A missing file is a
 `bngsim.MissingFileError` (also a `FileNotFoundError`), and an argument a call
-cannot take is a `bngsim.UsageError` (also a `ValueError`).
+cannot take is a `bngsim.UsageError` (also a `ValueError`). One of the wrong
+type is a `bngsim.ArgumentTypeError` (also a `TypeError`), a name a lookup does
+not find a `bngsim.NotFoundError` (also a `KeyError`), and an option an object
+does not offer a `bngsim.NotSupportedError` (also a `NotImplementedError`). A
+model that is not well formed is a `bngsim.InvalidModelError` (a `ModelError`
+and a `ValueError`), and a compiled right-hand side that fails to build is a
+`bngsim.CodegenBuildError`; the model still runs with `codegen=False`. Each is a
+`bngsim.BngsimError` and still the built-in it was, so `except bngsim.BngsimError`
+catches the errors of a model, a run or an argument. Because every
+`BngsimError` is a `RuntimeError`, an `except RuntimeError` catches these
+too.
 
 ```python
 try:

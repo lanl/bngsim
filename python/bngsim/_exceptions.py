@@ -8,7 +8,9 @@ Hierarchy::
 
     BngsimError (RuntimeError)
     ├── ModelError            — .net parse failures, invalid model state
-    │   └── UnderSpecifiedModelError — reads a symbol it never defines
+    │   ├── UnderSpecifiedModelError — reads a symbol it never defines
+    │   └── InvalidModelError — a model or a builder's part not well formed
+    │                           (also a ValueError)
     ├── SimulationError       — solver failures (convergence, NaN, etc.)
     │   └── SparseJacobianUnavailableError — force_sparse_linear_solver on a
     │                           model with no sparse Jacobian for KLU
@@ -25,6 +27,13 @@ Hierarchy::
     ├── CodegenToolchainError — the C toolchain cannot build any codegen library
     ├── StopConditionMet      — stop condition triggered (carries partial result)
     ├── UsageError            — an argument a call cannot take (also a ValueError)
+    ├── ArgumentTypeError     — an argument of a type a call does not take
+    │                           (also a TypeError)
+    ├── NotFoundError         — a name or key a lookup does not find (also a
+    │                           KeyError)
+    ├── NotSupportedError     — a call or option this object does not offer
+    │                           (also a NotImplementedError)
+    ├── CodegenBuildError     — the compiled right-hand side could not be built
     ├── DependencyError       — an optional package missing or broken (also an
     │                           ImportError)
     └── MissingFileError      — the file named does not exist (also a
@@ -163,7 +172,13 @@ class BngsimError(RuntimeError):
         return {
             "type": type(self).__name__,
             "code": self.code,
-            "message": str(self),
+            # The text as given: str() of a NotFoundError quotes it, as a
+            # KeyError's does, which a JSON reader should not see.
+            "message": (
+                self.args[0]
+                if len(self.args) == 1 and isinstance(self.args[0], str)
+                else str(self)
+            ),
             "details": self.details,
             "remedies": self.remedies,
             "docs_url": self.docs_url,
@@ -230,23 +245,20 @@ class SimulationError(BngsimError):
         code: str | None = None,
         details: dict | None = None,
         remedies: list[dict] | None = None,
+        solver_flag: str | None = None,
     ) -> None:
-        # A CVODE failure names SUNDIALS' flag in its message, wherever a wrapper
-        # quotes it: "... with flag=-2 (CV_TOO_MUCH_ACC)." (issue #1702).
-        if code is None and type(self).default_code == "run.failed" and args:
-            import re
-
+        # The engine raises a hard integrator failure with SUNDIALS' name for
+        # its flag ("CV_TOO_MUCH_ACC"), or "stalled" for a collapsed step, as
+        # data (issue #1702). A wrapper raised from it carries its code.
+        if solver_flag is not None and code is None:
             from bngsim._error_codes import SOLVER_FLAGS
 
-            text = str(args[0])
-            flag = re.search(r"flag=-?\d+ \((CV_[A-Z_]+)\)", text)
-            if flag is not None:
-                name = flag.group(1)
-                code = SOLVER_FLAGS.get(name, "solver.failed")
-                if details is None:
-                    details = {"flag": name}
-            elif "CVODE made no progress" in text:
+            if solver_flag == "stalled":
                 code = "solver.stalled"
+            else:
+                code = SOLVER_FLAGS.get(solver_flag, "solver.failed")
+                if details is None and solver_flag:
+                    details = {"flag": solver_flag}
             if remedies is None and code in ("solver.too_much_accuracy", "solver.stalled"):
                 remedies = [{"kind": "loosen_tolerance"}]
         super().__init__(*args, code=code, details=details, remedies=remedies)
@@ -390,7 +402,7 @@ class SensitivityUnsupportedError(BngsimError, ValueError):
 
     Environment failures are deliberately NOT this exception: "no C compiler and
     no JIT available" is a fixable local problem, not a property of the model,
-    and stays a plain ``RuntimeError``.
+    and is a :class:`CodegenToolchainError` or :class:`CodegenBuildError`.
     """
 
     default_code = "sens.unsupported"
@@ -469,7 +481,7 @@ class CodegenDeclinedError(BngsimError):
     deprecated :func:`bngsim.prepare_codegen` raises it for a decline too.
 
     Distinct from a codegen *build* failure (a compiler error, a timeout), which
-    says nothing about the model and stays a plain ``RuntimeError``. A
+    says nothing about the model and is a :class:`CodegenBuildError`. A
     ``RuntimeError`` (through :class:`BngsimError`), as it was raised before it
     had a type, so an existing ``except RuntimeError`` still catches it.
 
@@ -503,9 +515,6 @@ class CodegenToolchainError(BngsimError):
 
     default_code = "env.broken_toolchain"
 
-    #: The words a missing compiler's verdict says, wherever it is quoted.
-    _NO_COMPILER = ("C compiler not found", "No C compiler found")
-
     def __init__(
         self,
         *args: object,
@@ -513,12 +522,19 @@ class CodegenToolchainError(BngsimError):
         details: dict | None = None,
         remedies: list[dict] | None = None,
     ) -> None:
-        text = str(args[0]) if args else ""
-        if code is None and any(words in text for words in self._NO_COMPILER):
+        # A verdict that the compiler is missing says so as data (issue #1702):
+        # bngsim._codegen_toolchain.Verdict, whose words are the message.
+        if code is None and args and getattr(args[0], "no_compiler", False):
             code = "env.no_compiler"
             if remedies is None:
                 remedies = [{"kind": "install_compiler"}]
         super().__init__(*args, code=code, details=details, remedies=remedies)
+
+    @classmethod
+    def restated(cls, cause: CodegenToolchainError, message: str) -> CodegenToolchainError:
+        """*cause* in a caller's words, as a build that needed the toolchain
+        says it, keeping its code and remedies."""
+        return cls(message, code=cause.code, details=cause.details, remedies=cause.remedies)
 
 
 class SimulationTimeout(BngsimError):
@@ -623,6 +639,69 @@ class UsageError(BngsimError, ValueError):
     """
 
     default_code = "usage.invalid_argument"
+
+
+class ArgumentTypeError(BngsimError, TypeError):
+    """An argument of a type a call does not take: a string where it takes a
+    list, a Result where it takes a Model.
+
+    Also a :class:`TypeError`, as these were raised before they had a type, so
+    an existing ``except TypeError`` still catches it.
+    """
+
+    default_code = "usage.wrong_type"
+
+
+class NotFoundError(BngsimError, KeyError):
+    """A name or key a call looks up and does not find: a column of a result,
+    a run of a protocol, a species. ``details["name"]`` is the name asked for
+    where one is.
+
+    Also a :class:`KeyError`, as these were raised before they had a type, so
+    an existing ``except KeyError`` still catches it, and it prints as one.
+    """
+
+    default_code = "name.not_found"
+
+    def __str__(self) -> str:
+        return KeyError.__str__(self)
+
+
+class NotSupportedError(BngsimError, NotImplementedError):
+    """A call or an option this object does not offer, as written: an
+    interactive helper on a model loaded from XML, say.
+
+    Also a :class:`NotImplementedError`, as these were raised before they had
+    a type, so an existing ``except NotImplementedError`` still catches it.
+    """
+
+    default_code = "usage.not_supported"
+
+
+class InvalidModelError(ModelError, ValueError):
+    """A model, or a part of one given to a builder, that is not well formed:
+    a name defined twice, a reaction that names no rate, a parameter a species
+    starts from that the model does not define.
+
+    Also a :class:`ValueError`, as these were raised before they had a type,
+    so an existing ``except ValueError`` still catches it.
+    """
+
+    default_code = "model.invalid"
+
+
+class CodegenBuildError(BngsimError):
+    """The compiled right-hand side of this model could not be built: the
+    compiler failed on it, or ran out of time. A statement about this build,
+    not the model; the model still runs on the interpreted right-hand side
+    (``codegen=False``). One the toolchain fails on whatever it builds is a
+    :class:`CodegenToolchainError` instead.
+
+    A ``RuntimeError`` (through :class:`BngsimError`), as these were raised
+    before they had a type.
+    """
+
+    default_code = "codegen.build_failed"
 
 
 class DependencyError(BngsimError, ImportError):

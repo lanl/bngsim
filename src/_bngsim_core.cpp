@@ -908,6 +908,12 @@ PYBIND11_MODULE(_bngsim_core, m) {
             py::object cls = py::module_::import("bngsim._exceptions")
                                  .attr("SensitivityRefusedForParametersError");
             PyErr_SetObject(cls.ptr(), cls(py::str(e.what())).ptr());
+        } catch (const bngsim::SolverFailure &e) {
+            // Issue #1702: the flag travels as data, so the code does not hang
+            // on the message's wording.
+            py::object cls = py::module_::import("bngsim._exceptions").attr("SimulationError");
+            py::object exc = cls(py::str(e.what()), py::arg("solver_flag") = e.flag_name());
+            PyErr_SetObject(cls.ptr(), exc.ptr());
         } catch (const bngsim::SensitivityUnsupported &e) {
             // Issue #1279: a refusal the solver reaches mid-run is typed as the
             // ones raised before a run are, and is still the SimulationError the

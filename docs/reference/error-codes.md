@@ -106,19 +106,54 @@ Raised as `UnderSpecifiedModelError`. The model reads a symbol it never gives a 
 
 Give the symbol a value in the model, or report the refusal.
 
+(code-model-invalid)=
+### `model.invalid`
+
+Raised as `InvalidModelError`. A model, or a part of one given to a builder, is not well formed: a name defined twice, a reaction with no rate, a reference to something not defined.
+
+Fix the model as the message says.
+
+(code-model-unreadable-file)=
+### `model.unreadable_file`
+
+Raised as `ModelError`. A model file is not what its format says, or its reader stops on a fatal error.
+
+Check the file is the format its name says; the message quotes the reader.
+
 (code-param-not-found)=
 ### `param.not_found`
 
-Raised as `ParameterError`. The model has no parameter by that name.
+Raised as `ParameterError` or `UsageError`. The model has no parameter by that name.
 
 Use a name from ``Model.param_names``. ``details['close_matches']`` lists near ones, and ``details['is_a']`` says what the name is when it names a species, an observable or a function instead.
 
 (code-species-not-found)=
 ### `species.not_found`
 
-Raised as `ModelError`. The model has no species by that name.
+Raised as `ModelError`, `NotFoundError` or `UsageError`. The model has no species by that name.
 
 Use a name from ``Model.species_names``. ``details['close_matches']`` lists near ones.
+
+(code-output-not-found)=
+### `output.not_found`
+
+Raised as `NotFoundError` or `UsageError`. A name that is none of the result's species, observables or functions.
+
+Use a name `details["close_matches"]` gives, or one of the result's `species_names` or `observable_names`.
+
+(code-name-not-found)=
+### `name.not_found`
+
+Raised as `NotFoundError` or `UsageError`. A name or key a lookup does not find, of a kind with no code of its own.
+
+Read the message: it lists the names there are.
+
+(code-name-ambiguous)=
+### `name.ambiguous`
+
+Raised as `NotFoundError`. A name matches more than one entry, so a lookup by it cannot choose.
+
+Index by position, as the message says.
 
 (code-usage-missing-argument)=
 ### `usage.missing_argument`
@@ -126,6 +161,48 @@ Use a name from ``Model.species_names``. ``details['close_matches']`` lists near
 Raised as `UsageError`. A call needs an argument it was not given.
 
 Pass the argument ``details['argument']`` names.
+
+(code-usage-conflicting-arguments)=
+### `usage.conflicting_arguments`
+
+Raised as `UsageError`. Two arguments a call takes one or the other of, or that cannot go together, were both given.
+
+Read the message for the pair, and drop one.
+
+(code-usage-wrong-type)=
+### `usage.wrong_type`
+
+Raised as `ArgumentTypeError`. An argument is of a type the call does not take.
+
+Read the message: it names the type the call takes.
+
+(code-usage-unknown-method)=
+### `usage.unknown_method`
+
+Raised as `UsageError`. A `method=` that BNGsim does not know.
+
+Pass one the message lists.
+
+(code-usage-method-unsupported)=
+### `usage.method_unsupported`
+
+Raised as `UsageError`. A call or option the simulator's method does not offer, such as sensitivities on a stochastic method.
+
+Build the Simulator with the method the remedy names, or leave the option out.
+
+(code-usage-not-supported)=
+### `usage.not_supported`
+
+Raised as `NotSupportedError` or `UsageError`. A call or option this object does not offer, as written.
+
+Read the message for what does.
+
+(code-env-feature-not-built)=
+### `env.feature_not_built`
+
+Raised as `BngsimError` or `UsageError`. A method needs a part of BNGsim this install was built without, such as NFsim or RuleMonkey.
+
+Install a build that has it; `bngsim.capabilities()` lists what this one has.
 
 (code-ssa-unsupported-construct)=
 ### `ssa.unsupported_construct`
@@ -141,6 +218,13 @@ Raised as `CodegenDeclinedError`. ``codegen=True`` on a model codegen declines.
 
 Pass ``codegen=None`` to run it on the interpreter.
 
+(code-codegen-build-failed)=
+### `codegen.build_failed`
+
+Raised as `CodegenBuildError`. Building this model's compiled right-hand side failed or ran out of time; the toolchain builds other code.
+
+Pass `codegen=False` to run on the interpreted right-hand side, or give the build more time or cores as the message says.
+
 (code-solver-sparse-jacobian-unavailable)=
 ### `solver.sparse_jacobian_unavailable`
 
@@ -154,6 +238,13 @@ Leave out ``force_sparse_linear_solver`` to use the dense solver.
 Raised as `SensitivityUnsupportedError`. BNGsim cannot compute a requested sensitivity correctly for this model.
 
 Drop the sensitivity, change the model, or use a derivative-free method.
+
+(code-sens-not-computed)=
+### `sens.not_computed`
+
+Raised as `UsageError`. A call reads sensitivities, and the result has none: its run was not asked for them.
+
+Run again with `sensitivity_params=` on the Simulator, or with `compute_all_sensitivities()`.
 
 (code-sens-refused-during-run)=
 ### `sens.refused_during_run`
