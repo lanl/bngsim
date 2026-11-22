@@ -693,3 +693,36 @@ def test_the_per_species_atol_is_matched_by_name_where_the_state_holds_more(tmp_
     )
     ctx = _check._Context(r, r.record, None)
     assert ctx.atols.tolist() == pytest.approx([1e-14, 1e-10])
+
+
+def test_a_path_within_the_runs_spread_at_its_tolerance_is_not_a_finding(monkeypatch):
+    # Issue #1887: a run whose own error is small by luck has a small drift at
+    # the tighter tolerance, and a correct path that errs as a run at this
+    # tolerance does read as a DIFF against it. The run at twice the tolerance
+    # 1e-4 off says how far a correct run strays here: a path 2e-5 off, past
+    # 1e3·(atol + rtol·peak) alone, is within ten times half that.
+    r = _run()
+    _perturbing(monkeypatch, lambda c: c.get("jacobian") == "fd", 1 + 2e-5)
+    (c,) = r.check("jacobian")["checks"]
+    assert c["status"] == "diff", c  # the tighter run's drift alone: a finding
+    real = Result.rerun
+
+    def rerun(self, **changes):
+        out = real(self, **changes)
+        if changes.get("rtol") == pytest.approx(2e-8) or changes.get("jacobian") == "fd":
+            f = 1 + 1e-4 if changes.get("rtol") == pytest.approx(2e-8) else 1 + 2e-5
+            out = copy.copy(out)
+            out._species = np.asarray(out._species, dtype=float) * f
+        return out
+
+    monkeypatch.setattr(Result, "rerun", rerun)
+    (c,) = r.check("jacobian")["checks"]
+    assert c["status"] == "pass", c
+
+
+def test_spread_reads_half_the_move_at_twice_the_tolerance():
+    tight = np.array([1e-6, 1e-3, 0.0])
+    loose = np.array([1e-4, 1e-4, np.inf])
+    assert _check.spread(tight, loose).tolist() == [5e-5, 1e-3, np.inf]
+    assert _check.spread(tight, None) is tight
+    assert _check.SPREAD_FACTOR == 2.0

@@ -18,7 +18,8 @@ and each column's absolute floor is the atol the run applied to that species:
   allowance ``max(min(PATH_RTOL_FACTOR·(atol_j + rtol·peak_j),
   max(PATH_CEILING·peak_j, atol_j)), PATH_ATOL_FACTOR·atol_j,
   DRIFT_FACTOR·d_j)``, where ``d_j`` is how far the column itself moves at the
-  tighter tolerance: two correct paths each err by about the tolerance, scaled
+  tighter tolerance, or half how far at twice the tolerance, whichever is
+  larger (:func:`spread`): two correct paths each err by about the tolerance, scaled
   by the problem's conditioning, which the drift measures, and never by more
   than 1% of the column's peak for the tolerance alone, unless the column is
   within ``PATH_ATOL_FACTOR`` atol of zero, which resolves it no better;
@@ -70,6 +71,14 @@ CHECK_VERSION = 1
 PATH_RTOL_FACTOR = 1e3
 #: And how many times past a column's own move at a tenfold tighter tolerance.
 DRIFT_FACTOR = 10.0
+#: A path's allowance reads a column's drift as the larger of its move at the
+#: tenfold tighter tolerance and its move at this many times the tolerance,
+#: over this factor: how far a correct run strays at the run's tolerance, which
+#: one tighter run measures only from the run's own error, small by luck as
+#: often as not. MODEL1912090001's x15_PI34P2 at rtol 1e-6 erred by 9.5e-5 of
+#: its peak, and by 1.0e-3 at half the tolerance and 9.6e-4 at twice it; a
+#: compiled run at 1.6e-3 was another correct run, not a finding (issue #1887).
+SPREAD_FACTOR = 2.0
 #: A column that moves by more than this share of its peak at a tenfold tighter
 #: tolerance is not converged at the run's own (the harness's
 #: ``UNJUDGEABLE_DRIFT``): the tolerance check fails, and no path is judged on
@@ -182,6 +191,15 @@ def resolved(
     """The columns the run resolves: not within :data:`TRACE_ATOLS` of their
     atol of zero where that atol, not rtol, holds them."""
     return ~((peak <= TRACE_ATOLS * atol) & (atol > rtol * peak))
+
+
+def spread(tight: NDArray[np.float64], loose: NDArray[np.float64] | None) -> NDArray[np.float64]:
+    """Each column's drift for a path's allowance: its move at the tighter
+    tolerance, or its move at :data:`SPREAD_FACTOR` times the tolerance over
+    that factor, whichever is larger (*loose* None where that run failed)."""
+    if loose is None:
+        return tight
+    return np.maximum(tight, np.asarray(loose, dtype=float) / SPREAD_FACTOR)
 
 
 def path_margins(
@@ -449,6 +467,7 @@ class _Context:
         n = len(self.names)
         self.atols = column_atols(result, self.names, self.per_species, self.atol)
         self.drift_abs: NDArray[np.float64] | None = None
+        self.spread_abs: NDArray[np.float64] | None = None
         self.moved: NDArray[np.float64] | None = None
         self.relevant: NDArray[np.bool_] = np.ones(n, dtype=bool)
         self.tol_error = ""
@@ -537,6 +556,21 @@ class _Context:
             self.moved = np.where(self.relevant, moves(d, peak, self.atols), 0.0)
         return self.tol_error or None
 
+    def _ensure_spread(self) -> NDArray[np.float64]:
+        """The drift a path's allowance reads (:func:`spread`), made once; the
+        tighter run's alone where the looser one raises."""
+        assert self.drift_abs is not None
+        if self.spread_abs is None:
+            try:
+                loose = self.rerun(**self._tighter(1.0 / SPREAD_FACTOR))
+            except _Out:
+                raise
+            except Exception:  # noqa: BLE001 - the tighter run's drift stands
+                self.spread_abs = self.drift_abs
+            else:
+                self.spread_abs = spread(self.drift_abs, differences(self._view(loose), self.x)[0])
+        return self.spread_abs
+
     def _worst(self, score: NDArray[np.float64]) -> str | None:
         if not score.size or not (score > 0).any():
             return None
@@ -571,7 +605,9 @@ class _Context:
         # run's whole scale.
         judged = converged | ~self.relevant
         d, peak = differences(x, self.x)
-        ratio, rel = path_margins(d, peak, self.atols, float(self.rtol), self.drift_abs, judged)
+        ratio, rel = path_margins(
+            d, peak, self.atols, float(self.rtol), self._ensure_spread(), judged
+        )
         worst = self._worst(ratio)
         margin = float(ratio.max()) if ratio.size else 0.0
         value = float(rel.max()) if rel.size else 0.0

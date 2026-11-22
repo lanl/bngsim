@@ -2762,3 +2762,21 @@ def test_a_run_to_equilibrium_past_the_cap_is_a_timeout(monkeypatch):
     monkeypatch.setattr(D, "_steady_run", spent)
     v = D.check_steady(base, "integration")
     assert v.status == "timeout" and "the model's cap" in v.note, v
+
+
+def test_a_path_within_the_bases_spread_at_its_tolerance_is_not_a_finding(monkeypatch):
+    """Issue #1887: a base whose own error is small by luck moves little at a
+    tenfold tighter tolerance; a correct path that errs as a run at the job's
+    tolerance does is no finding. Half the base's move at twice the tolerance
+    is the drift a path is judged on; stable reads the tighter run's alone."""
+    base = D.Base(_pool_and_trace())
+    p = base.species_names.index("P")
+    off = base.x.copy()
+    off[:, p] *= 1 + 5e-5  # past 1e3·(atol + rtol·peak) = 1e-5 of P's peak
+    lucky = base.against(base.x)
+    lucky.drift_abs = np.zeros_like(base.drift_abs)
+    lucky.spread_abs = lucky.drift_abs
+    assert lucky.compare(off).status == "diff"
+    lucky.spread_abs = D._check.spread(lucky.drift_abs, 2e-5 * base.peak)
+    assert lucky.compare(off).status == "pass"
+    assert lucky.margin(off, drift=lucky.drift_abs)[0] > 1.0

@@ -342,6 +342,16 @@ def step_atol(sim, job: Job) -> float | np.ndarray:
     return job.atol if vector is None else np.asarray(vector, dtype=float)
 
 
+def own_spread(job: Job, base: np.ndarray) -> np.ndarray:
+    """How far each species of the base moves at ``_check.SPREAD_FACTOR``
+    times the tolerance: what a correct run strays by there, which the tighter
+    run alone can understate (``_check.spread``)."""
+    f = _check.SPREAD_FACTOR
+    loose = Job(**{**job.__dict__, "rtol": job.rtol * f, "atol": job.atol * f, "sim": job.sim})
+    x, _ = run(loose)
+    return _check.differences(np.asarray(x.species, dtype=float), base)[0]
+
+
 def own_drift(job: Job, base: np.ndarray) -> np.ndarray:
     """How far each species of the base moves at a tenfold tighter tolerance:
     its largest absolute difference over the trajectory (``inf`` where the two
@@ -399,6 +409,17 @@ class Base:
         except Exception as e:  # noqa: BLE001 - recorded on every comparison's note
             self.drift_abs = np.full(self.x.shape[-1] if self.x.ndim == 2 else 0, np.inf)
             self.drift_error = f"{type(e).__name__}: {_first_line(e)}"
+        # What a path's allowance reads: the tighter run's drift, or half the
+        # move at twice the tolerance where that is larger. A looser run that
+        # fails leaves the tighter run's; one past the model's cap is its row's
+        # TIMEOUT, as any run of the base's is.
+        self.spread_abs = self.drift_abs
+        if not self.drift_error:
+            try:
+                self.spread_abs = _check.spread(self.drift_abs, own_spread(job, self.x))
+            except Exception as e:  # noqa: BLE001 - the tighter run's drift stands
+                if _timed_out(e):
+                    raise
 
     # -- each species' standing, against the reference ``x`` -----------------
 
@@ -469,6 +490,7 @@ class Base:
         peak: np.ndarray | None = None,
         mask: np.ndarray | None = None,
         scale: float = 1.0,
+        drift: np.ndarray | None = None,
     ) -> tuple[float, float, int | None]:
         """How far ``x`` is from ``ref`` (default the base's trajectory; or a
         slice of it, of the same columns), as the largest ratio of a species'
@@ -477,15 +499,17 @@ class Base:
         species. ``peak`` is each species' peak, by default the base's over its
         whole trajectory, also where ``ref`` is a slice of it: a row's own
         values would hold a species to its value at that row. ``scale`` widens
-        every allowance (a rerun at a looser tolerance). A margin over 1 is a
-        difference past the bound; a shape or finiteness mismatch is ``inf``."""
+        every allowance (a rerun at a looser tolerance). ``drift`` is each
+        species' drift the allowance reads, by default the spread
+        (``_check.spread``); ``stable`` reads the tighter run's alone, as the
+        looser run is one of its own jitters. A margin over 1 is a difference
+        past the bound; a shape or finiteness mismatch is ``inf``."""
         ref = self.x if ref is None else np.asarray(ref, dtype=float)
         d, _ = _check.differences(np.asarray(x, dtype=float), ref)
         peak = self.peak if peak is None else peak
         mask = self.judged(peak) if mask is None else mask
-        ratio, rel = _check.path_margins(
-            d / scale, peak, self.atols, self.job.rtol, self.drift_abs, mask
-        )
+        drift = self.spread_abs if drift is None else drift
+        ratio, rel = _check.path_margins(d / scale, peak, self.atols, self.job.rtol, drift, mask)
         if not ratio.size:
             return 0.0, 0.0, None
         j = int(np.argmax(ratio))
@@ -1715,6 +1739,9 @@ def check_stable(base: Base) -> Verdict:
         job, jumps = base.job, {}
         n = job.n_points
         every = np.ones(base.atols.shape, dtype=bool)
+        # The tighter run's drift alone: the spread reads the run at twice the
+        # tolerance, one of this check's own jitters, which would forgive it.
+        tight = base.drift_abs
 
         def rerun(label: str, fn):
             """The rerun's species, or None where it fails where the base ran,
@@ -1741,9 +1768,9 @@ def check_stable(base: Base) -> Verdict:
             if x is None:
                 continue
             if m == 2 * n - 1:
-                g = base.margin(x[::2], mask=every)[0]
+                g = base.margin(x[::2], mask=every, drift=tight)[0]
             else:
-                g = base.margin(x[-1:], base.x[-1:], mask=every)[0]
+                g = base.margin(x[-1:], base.x[-1:], mask=every, drift=tight)[0]
             if g > 1.0:
                 jumps[label] = g
         for f in JITTER_RTOL:
@@ -1751,7 +1778,7 @@ def check_stable(base: Base) -> Verdict:
             x = rerun(f"rtol x{f:g}", lambda j=jittered: run(j))
             if x is None:
                 continue
-            g = base.margin(x, mask=every, scale=max(1.0, f))[0]
+            g = base.margin(x, mask=every, scale=max(1.0, f), drift=tight)[0]
             if g > 1.0:
                 jumps[f"rtol x{f:g}"] = g
         nudged = f"a start nudged by {START_NUDGE:g} of a step's allowance"
@@ -1761,8 +1788,8 @@ def check_stable(base: Base) -> Verdict:
             # bound at the first row after the start is the model's own laws
             # telling the two starts apart, `if(Bobs==0, kb, 0)` on a B its law
             # holds at exactly 0 (#1228), which no rounding breaks.
-            g = base.margin(x, mask=every)[0]
-            if g > 1.0 and base.margin(x[1:2], base.x[1:2], mask=every)[0] <= 1.0:
+            g = base.margin(x, mask=every, drift=tight)[0]
+            if g > 1.0 and base.margin(x[1:2], base.x[1:2], mask=every, drift=tight)[0] <= 1.0:
                 jumps[nudged] = g
         if jumps:
             shown = ", ".join(f"{k} {g:.1e}" if np.isfinite(g) else k for k, g in jumps.items())
