@@ -10,6 +10,15 @@ number, at the saved value, and stopped following: wrong results with no
 error, in some processes and not in others (the order follows the string
 hash seed).
 
+A parameter an action set to an expression (``setParameter("k3","k1*9")``,
+issue #1682) is written back with the constants as its saved number, which
+re-attaches it to the network's expression where the two agree before what
+that one reads is back. It then followed that expression until the next
+``setParameter``, and a derived parameter that read it in the meantime stayed
+a number, in every process. The reset now has it follow its own expression
+again before the second write, and a value that does not evaluate partway
+through is refused only if it still does not once none moves (issue #1876).
+
 Oracle: the closed form for ``A <-> B`` at ``kf``, ``kr`` from ``A(0) = 100``,
 at the rates the network's expressions give once the reset has put them back.
 BNG2.pl 2.9.3 on the issue's file restores both expressions (the ``.net`` it
@@ -69,8 +78,13 @@ def _set(name: str, value: float) -> StateChange:
     return StateChange(kind="set_parameter", target=name, value=float(value))
 
 
+def _expr(name: str, text: str) -> StateChange:
+    return StateChange(kind="set_parameter", target=name, value_expr=text)
+
+
 SAVE = StateChange(kind="save_parameters")
 RESET = StateChange(kind="reset_parameters")
+AGAIN = StateChange(kind="reset_concentrations")
 RUN = Experiment(kind="simulate", method="ode", t_span=(0.0, 0.25), n_points=2)
 
 
@@ -177,15 +191,130 @@ def test_a_parameter_overridden_before_the_save_stays_a_number(tmp_path):
     assert _end(out[0]) == pytest.approx(a_at(0.25, 0.7, 1.4), rel=REL)
 
 
-def test_a_derived_parameter_that_is_nan_does_not_keep_the_reset_going(tmp_path):
+def test_a_derived_parameter_that_is_nan_is_not_reattached_and_the_rest_are(tmp_path):
     # k2 k1*0/0 is NaN, and NaN equals nothing: writing it back never
-    # re-attaches k2. The reset ends all the same, and k3, overridden as well,
-    # follows k1 again.
+    # re-attaches k2. k3, overridden as well, follows k1 again.
     model = _model(tmp_path, [("k1", "1"), ("k2", "k1*0/0"), ("k3", "k1*2")], "k1", "k3")
     out = _replay(model, SAVE, _set("k2", 4), _set("k3", 5), RESET, _set("k1", 3), RUN)
-    assert math.isnan(out.model.get_param("k2"))
+    assert math.isnan(out.model.get_param("k2")) and not _live(out.model)["k2"]
     assert _live(out.model)["k3"] and out.model.get_param("k3") == 6.0
     assert _end(out[0]) == pytest.approx(a_at(0.25, 3.0, 6.0), rel=REL)
+
+
+def test_an_expression_a_set_parameter_gave_is_not_swapped_for_the_declared_one(tmp_path):
+    # At the save k3 is "k1*9", an action's expression (9), where the network
+    # declares k3 k2*3 (6). After it, k2 = 3 makes k2*3 give 9 as well, so the
+    # reset's write of 9 re-attaches k3 to k2*3 before k2 is back, and k4,
+    # which reads k3, then stays a number. BNG2.pl 2.9.3 on the same actions:
+    # k3 9 and k4 18, then 18 and 36 at k1 = 2.
+    chain = [("k1", "1"), ("k2", "k1*2"), ("k3", "k2*3"), ("k4", "k3*2")]
+    model = _model(tmp_path, chain, "k3", "k4")
+    sets = [_set("k2", 3), _set("k3", 1), _set("k4", 7)]
+    out = _replay(model, _expr("k3", "k1*9"), SAVE, *sets, RESET, RUN, _set("k1", 2), AGAIN, RUN)
+    assert _end(out[0]) == pytest.approx(a_at(0.25, 9.0, 18.0), rel=REL)
+    assert [out.model.get_param(n) for n in ("k3", "k4")] == [18.0, 36.0]
+    assert _end(out[1]) == pytest.approx(a_at(0.25, 18.0, 36.0), rel=REL)
+
+
+def test_an_expression_a_set_parameter_gave_is_put_back_with_none_overridden(tmp_path):
+    # The same with no derived parameter overridden: the network lists k3
+    # kp*3 before kp, so the reset writes k3's saved 9 while kp is still 3,
+    # where kp*3 gives 9 as well. BNG2.pl 2.9.3 on the same actions, in its
+    # own order: k3 9 at kp 2.
+    model = _model(tmp_path, [("k3", "kp*3"), ("kp", "2"), ("k1", "1")], "k3", "kp")
+    out = _replay(model, _expr("k3", "k1*9"), SAVE, _set("kp", 3), _set("k1", 2), RESET, RUN)
+    assert [out.model.get_param(n) for n in ("k3", "kp")] == [9.0, 2.0]
+    assert _end(out[0]) == pytest.approx(a_at(0.25, 9.0, 2.0), rel=REL)
+
+
+def test_a_parameter_held_at_its_number_stays_there_after_the_reset(tmp_path):
+    # k3 = 9 is a number at the save (k2*3 gives 6). After it, k2 = 3 and
+    # k3 = 9 again, which k2*3 gives too, so k3 is attached again and held at
+    # 9. The reset writes k2 back to 2, which moves k2*3 off 9 to 6, and the
+    # hold keeps k3 at 9. BNG2.pl 2.9.3 on the same actions: k2 2 and k3 9.
+    model = _model(tmp_path, [("k1", "1"), ("k2", "k1*2"), ("k3", "k2*3")], "k2", "k3")
+    out = _replay(model, _set("k3", 9), SAVE, _set("k2", 3), _set("k3", 9), RESET, RUN)
+    assert [out.model.get_param(n) for n in ("k2", "k3")] == [2.0, 9.0]
+    assert _end(out[0]) == pytest.approx(a_at(0.25, 2.0, 9.0), rel=REL)
+
+
+def test_two_expressions_actions_gave_both_come_back_with_the_reader_listed_first(tmp_path):
+    # q is "k1*9" and p "k1*12" at the save, where the network declares q e*3
+    # and p q*2 and lists p, the reader, first. After it, e = 3 makes e*3
+    # give 9, q's saved value, so writing the constants back re-attaches q to
+    # e*3, and writing e back moves q to 6. q*2 then gives 12, p's saved
+    # value, so p has to stay a number while q follows its own expression
+    # again. BNG2.pl 2.9.3 on the same actions, in its own order: q 9, p 12
+    # and r 13, then 18, 24 and 25 at k1 = 2.
+    declared = [("k1", "1"), ("p", "q*2"), ("e", "k1*2"), ("q", "e*3"), ("r", "p+1")]
+    model = _model(tmp_path, declared, "q", "p")
+    exprs = [_expr("q", "k1*9"), _expr("p", "k1*12")]
+    sets = [_set("e", 3), _set("q", 1), _set("p", 1)]
+    out = _replay(model, *exprs, SAVE, *sets, RESET, RUN, _set("k1", 2), AGAIN, RUN)
+    assert _end(out[0]) == pytest.approx(a_at(0.25, 9.0, 12.0), rel=REL)
+    assert [out.model.get_param(n) for n in ("q", "p", "r")] == [18.0, 24.0, 25.0]
+    assert _end(out[1]) == pytest.approx(a_at(0.25, 18.0, 24.0), rel=REL)
+
+
+# p2 reads p1 through d: sqrt(d) is NaN while p1 is below 7.
+ROOT = [("k1", "1"), ("k2", "k1*2"), ("p1", "k2*3"), ("d", "p1-7"), ("p2", "1")]
+
+
+def test_a_value_that_is_nan_only_partway_through_the_reset_is_not_refused(tmp_path):
+    # p1 is "k1*9" (9) at the save and p2 "sqrt(d)" (sqrt 2), p1 set last.
+    # After it, k2 = 3 makes the network's k2*3 give 9 as well, so writing the
+    # constants back re-attaches p1 to k2*3, and writing k2 back moves p1 to
+    # 6 and d to -1: sqrt(d) is NaN until p1 is back. BNG2.pl 2.9.3 on the
+    # same actions: p1 18, d 11 and p2 sqrt(11) at k1 = 2.
+    model = _model(tmp_path, ROOT, "p1", "p2")
+    exprs = [_expr("p1", "k1*9"), _expr("p2", "sqrt(d)"), _expr("p1", "k1*9")]
+    out = _replay(model, *exprs, SAVE, _set("k2", 3), _set("p1", 8), RESET, _set("k1", 2), RUN)
+    assert [out.model.get_param(n) for n in ("p1", "d")] == [18.0, 11.0]
+    assert out.model.get_param("p2") == pytest.approx(math.sqrt(11), rel=1e-15)
+    assert _end(out[0]) == pytest.approx(a_at(0.25, 18.0, math.sqrt(11)), rel=REL)
+
+
+def test_a_value_that_is_nan_only_partway_through_a_set_parameter_is_not_refused(tmp_path):
+    # The same without a reset: at k2 = 3, p1 = "k1*9" re-attaches p1 to
+    # k2*3 (both 9), so k2 = 2 moves p1 to 6 and d to -1 until p1 follows its
+    # own expression again. BNG2.pl 2.9.3 on the same actions: p1 9, d 2 and
+    # p2 sqrt(2).
+    model = _model(tmp_path, ROOT, "p1", "p2")
+    exprs = [_expr("p1", "k1*9"), _expr("p2", "sqrt(d)")]
+    out = _replay(model, *exprs, _set("k2", 3), _expr("p1", "k1*9"), _set("k2", 2), RUN)
+    assert [out.model.get_param(n) for n in ("p1", "d")] == [9.0, 2.0]
+    assert out.model.get_param("p2") == pytest.approx(math.sqrt(2), rel=1e-15)
+    assert _end(out[0]) == pytest.approx(a_at(0.25, 9.0, math.sqrt(2)), rel=REL)
+
+
+# A catalyst A, whose declared amount is the derived k3, makes P at kc A.
+NET_AMOUNT = """begin parameters
+    1 k1 1
+    2 k2 k1*2
+    3 k3 k2*3
+    4 kc 1
+end parameters
+begin species
+    1 A() k3
+    2 P() 0
+end species
+begin reactions
+    1 1 1,2 kc
+end reactions
+"""
+
+
+def test_a_species_amount_set_as_a_number_stays_after_the_reset(tmp_path):
+    # A() k3, set to 5 while k3 is overridden at 5: the reset puts k3's
+    # expression back (6), and A, a number since, stays at 5. BNG2.pl 2.9.3
+    # on the same actions: A 5 and P 1.25 at t = 0.25.
+    net = tmp_path / "m.net"
+    net.write_text(NET_AMOUNT, encoding="utf-8")
+    model = bngsim.Model.from_net(str(net))
+    amount = StateChange(kind="set_concentration", target="A()", value=5.0)
+    out = _replay(model, SAVE, _set("k3", 5), amount, RESET, RUN)
+    assert out.model.get_param("k3") == 6.0
+    assert out[0].result.species[-1].tolist() == pytest.approx([5.0, 1.25], rel=REL)
 
 
 # --- BNG2.pl itself, where it is installed -----------------------------------
