@@ -3380,6 +3380,85 @@ class Result:
 
         return _digest.digest(self, species=species, max_columns=max_columns)
 
+    def check(
+        self,
+        checks: str | list[str] | None = None,
+        *,
+        budget: float | None = None,
+        replicates: int = 10,
+    ) -> dict[str, Any]:
+        """Make this run again with one setting changed, and say whether the
+        answer moved (issue #1707).
+
+        Each check is a :meth:`rerun` from the state this run started from, on
+        a fresh model: the session's model is neither read nor changed. A
+        disagreement is reported, not raised.
+
+        Parameters
+        ----------
+        checks : None, "all", str or list of str
+            Which checks to run. ``None`` (default) runs the cheap ones that
+            catch the common case: ``"tolerance"`` and ``"grid"`` of an ODE
+            run, ``"replicates"`` of a stochastic one. ``"all"`` runs every
+            check that applies. The checks:
+
+            - ``"tolerance"``: the run at ``rtol/10`` and ``atol/10`` (and at
+              ``/100``, where the budget allows); passes when the answer moves
+              by at most ``1e3·rtol`` of its peak. How far it moves is the
+              run's own *drift*, which the other checks are judged by.
+            - ``"grid"``: the run at 8x the output points, read at its own
+              times; an output point is a stop the integrator lands on.
+            - ``"jacobian"``: the run on a difference-quotient Jacobian.
+            - ``"backend"``: compiled against interpreted, where a C compiler
+              is present.
+            - ``"second_engine"``: the model run in libRoadRunner, where it is
+              installed, for an SBML or Antimony model run from its initial
+              state at the file's parameters. The other checks all read the
+              model as bngsim loaded it; only this one does not.
+            - ``"replicates"``: a stochastic run made again at ``replicates``
+              other seeds; for each observable at the last time, the mean
+              over them, its standard error, and how many standard errors this
+              run is from it.
+        budget : float, optional
+            Seconds of wall time for all the checks. A check that does not
+            fit reports ``"timeout"``; none is dropped.
+        replicates : int
+            The reruns of the replicates check (default 10, at least 2).
+
+        Returns
+        -------
+        dict
+            JSON-ready; ``str()`` of it is a plain-text form. ``check_version``
+            (1), ``ok`` (a check passed, and none moved the answer past its
+            bound or raised), ``method``, ``stochastic``, ``rtol``, ``atol``,
+            ``drift`` and ``bound``, ``checks`` (in the order run, each with
+            ``name``, ``status``, ``value``, ``worst_column``, ``changed``
+            (the setting changed) and ``note``), ``n_pass``, ``n_diff`` and
+            ``next``, what to do. A status is ``"pass"``, ``"diff"`` (the
+            answer moved past the bound), ``"skip"`` (with the reason),
+            ``"unsupported"``, ``"exception"`` (the changed run raised),
+            ``"no_base"`` (the run is not converged at its own tolerance:
+            its drift is past 1e-3 of its peak, so no path is judged) or
+            ``"timeout"``.
+
+        Raises
+        ------
+        UsageError
+            On a stack of runs, or an argument it does not take.
+
+        Notes
+        -----
+        A path passes when its largest difference from this run, past an
+        absolute floor of ``1e3·atol``, is at most ``max(1e3·rtol, 10·drift)``
+        of the run's peak: the rule the developer-side differential harness
+        (issue #1257) judges two paths of one model by, imported from the
+        same place. A ``"diff"`` between two bngsim paths on a model bngsim
+        accepts is a bug worth reporting, with ``json.dumps(report)``.
+        """
+        from bngsim import _check
+
+        return _check.check(self, checks=checks, budget=budget, replicates=replicates)
+
     def _save_npz(self, path: Path) -> None:
         """:meth:`save` to a ``.npz`` file, with NumPy alone (issue #1704)."""
         logger.info("Saving result to %s", path)
