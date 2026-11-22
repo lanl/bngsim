@@ -440,3 +440,61 @@ def test_replicate_seeds_wrap_and_are_listed():
     (c,) = r.check(replicates=3)["checks"]
     assert c["seeds"] == [2**31 - 2, 0, 1]
     assert "2147483646, ..., 1" in c["note"]
+
+
+def test_a_steady_state_run_is_compared_by_its_last_state_alone(monkeypatch):
+    # A rerun that reached the steady state in fewer output rows, at the same
+    # state, agrees.
+    r = Simulator(examples.load("chain", format="sbml"), method="ode").run(
+        t_span=(0, 2000), n_points=21, steady_state=True
+    )
+    real = Result.rerun
+
+    def rerun(self, **changes):
+        out = real(self, **changes)
+        if changes.get("jacobian") == "fd":
+            out = copy.copy(out)
+            out._species = np.asarray(out._species, dtype=float)[-1:]
+        return out
+
+    monkeypatch.setattr(Result, "rerun", rerun)
+    (c,) = r.check("jacobian")["checks"]
+    assert c["status"] == "pass", c
+
+
+def test_a_runs_own_timeout_still_bounds_its_reruns(monkeypatch):
+    seen = []
+    real = Result.rerun
+
+    def rerun(self, **changes):
+        seen.append(changes.get("timeout"))
+        return real(self, **changes)
+
+    monkeypatch.setattr(Result, "rerun", rerun)
+    _run(timeout=5.0).check("tolerance", budget=600)
+    assert seen and all(t is not None and t <= 5.0 for t in seen)
+
+
+def test_a_species_not_converged_is_not_judged(monkeypatch):
+    # B moves 1% at the tighter tolerance (made so): it is not converged at
+    # the run's own, so a path 20% off in B (past even 10x its own move) is not
+    # held against the run;
+    # the report says one column was not judged.
+    r = _run()
+    jb = r.species_names.index("B")
+    real = Result.rerun
+
+    def rerun(self, **changes):
+        out = real(self, **changes)
+        if changes.get("rtol") == pytest.approx(1e-9) or changes.get("jacobian") == "fd":
+            out = copy.copy(out)
+            sp = np.asarray(out._species, dtype=float).copy()
+            sp[:, jb] *= 1.01 if "rtol" in changes else 1.2
+            out._species = sp
+        return out
+
+    monkeypatch.setattr(Result, "rerun", rerun)
+    rep = r.check(["tolerance", "jacobian"])
+    tol, jac = rep["checks"]
+    assert tol["status"] == "diff" and tol["worst_column"] == "B"
+    assert jac["status"] == "pass" and jac["n_not_judged"] == 1, jac
