@@ -171,6 +171,7 @@ def test_a_steady_state_run():
         (["run", BIRTH_DEATH, "--method", "ssa", "--t-end", "1", "--rtol", "1e-9"], "--rtol"),
         (["run", BIRTH_DEATH, "--method", "ssa", "--t-end", "1", "--atol", "1e-3"], "--atol"),
         (["run", CHAIN, "--t-end", "1", "--xml", "m.xml"], "--xml"),
+        (["run", CHAIN, "--t-end", "1", "--seed", "3"], "--seed"),
         (["run", CHAIN, "--t-end", "1", "--poplevel", "10"], "--poplevel"),
         (["run", CHAIN, "--method", "psa", "--t-end", "1"], "--poplevel"),
         (["run", CHAIN, "--sample-times", "0,1", "--t-end", "5"], "--t-end"),
@@ -206,11 +207,16 @@ def test_a_wrong_run_command_line_exits_2(args, argument, tmp_path):
         ["--sample-times", "1,b"],
         ["--rtol", "nan"],
         ["--rtol", "-1"],
+        ["--atol", "-1"],
+        ["--atol", "nan"],
+        ["--poplevel", "0"],
     ],
 )
 def test_bad_option_values_exit_2(args):
     run = _bngsim("run", CHAIN, "--t-end", "1", *args, "--json")
-    _error(run, _cli.EXIT_USAGE, "usage.invalid_argument")
+    error = _error(run, _cli.EXIT_USAGE, "usage.invalid_argument")
+    assert error["details"]["argument"] == args[0]
+    assert ("seconds" in error["message"]) is (args[0] == "--timeout")
 
 
 def test_an_unknown_name_in_set_names_the_close_ones():
@@ -358,7 +364,11 @@ def test_replicates_share_the_time_limit():
                   "--timeout", "1", "--replicates", "8", "--seed", "1", "--json")  # fmt: skip
     elapsed = time.monotonic() - start
     assert run.returncode == _cli.EXIT_TIMEOUT, run.stderr
-    assert elapsed < 30  # not 8 x 1 s of runs past start-up
+    assert json.loads(run.stderr)["details"]["timeout"] == pytest.approx(1 / 8)
+    assert elapsed < 30
+    d = _json(_bngsim("run", BIRTH_DEATH, "--method", "ssa", "--t-end", "1", "--replicates", "3",
+                      "--timeout", "600", "--json"))  # fmt: skip
+    assert d["record"]["run"]["timeout"] == pytest.approx(200.0)
 
 
 def test_psa_takes_its_population_level():
@@ -440,3 +450,18 @@ def test_a_warning_of_a_successful_json_run_still_reaches_stderr(tmp_path):
     d = _json(run)
     assert d["digest"]["n_points"] == 101
     assert "'B'" in run.stderr and "initial" in run.stderr
+
+
+def test_an_exit_mid_command_still_writes_what_was_held(tmp_path):
+    # A run that writes to stderr and then exits: under --json the held text
+    # reaches stderr before the process stops, as without --json.
+    script = """
+import sys, bngsim
+def run(self, *a, **k):
+    print('held line', file=sys.stderr, flush=True)
+    raise SystemExit(7)
+bngsim.Simulator.run = run
+"""
+    run = _bngsim("run", CHAIN, "--t-end", "1", "--json", script=script)
+    assert run.returncode == 7
+    assert "held line" in run.stderr

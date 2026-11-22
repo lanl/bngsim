@@ -131,7 +131,14 @@ def error_dict(error: BaseException) -> dict[str, Any]:
 
     if isinstance(error, _CommandLineError):
         # As the UsageError a Python call raises for an argument it cannot take.
-        error = UsageError(str(error), details={"usage": error.usage} if error.usage else None)
+        details: dict[str, Any] = {"usage": error.usage} if error.usage else {}
+        # argparse names the option a bad value was given to: say which.
+        import re
+
+        named = re.match(r"argument (--[\w-]+)", str(error))
+        if named:
+            details["argument"] = named.group(1)
+        error = UsageError(str(error), details=details or None)
     to_dict = getattr(error, "to_dict", None)
     if callable(to_dict):
         return dict(to_dict())
@@ -279,7 +286,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     check.add_argument(
         "--budget",
-        type=_positive,
+        type=_seconds,
         default=_DEFAULT_TIMEOUT,
         help=f"seconds for all the checks' reruns (default {_DEFAULT_TIMEOUT:g})",
     )
@@ -347,11 +354,11 @@ def _run_arguments(p: argparse.ArgumentParser) -> None:
         type=_positive_int,
         default=None,
         help="N stochastic runs from N seeds, digested as a stack (run only; N = 1 "
-        "is one run); --timeout bounds all N together",
+        "is one run); each may take --timeout/N, so all N together keep --timeout",
     )
     p.add_argument(
         "--timeout",
-        type=_positive,
+        type=_seconds,
         default=_DEFAULT_TIMEOUT,
         help=f"seconds the run may take (default {_DEFAULT_TIMEOUT:g}); exit 5 past it. "
         "Loading the model is not counted.",
@@ -386,14 +393,18 @@ def _floats(text: str) -> list[float]:
     return values
 
 
-def _positive(text: str) -> float:
+def _positive(text: str, what: str = "a number") -> float:
     try:
         value = float(text)
     except ValueError:
         value = -1.0
     if not value > 0 or not math.isfinite(value):
-        raise argparse.ArgumentTypeError(f"expected a number of seconds > 0, not {text!r}")
+        raise argparse.ArgumentTypeError(f"expected {what} > 0, not {text!r}")
     return value
+
+
+def _seconds(text: str) -> float:
+    return _positive(text, "a number of seconds")
 
 
 def _positive_int(text: str) -> int:
@@ -410,11 +421,14 @@ def _atol(text: str) -> float | str:
     if text in ("auto", "tracking"):
         return text
     try:
-        return float(text)
+        value = float(text)
     except ValueError:
+        value = -1.0
+    if not value > 0 or not math.isfinite(value):
         raise argparse.ArgumentTypeError(
-            f"expected a number, 'auto' or 'tracking', not {text!r}"
-        ) from None
+            f"expected a number > 0, 'auto' or 'tracking', not {text!r}"
+        )
+    return value
 
 
 def _limit(text: str) -> int | None:
@@ -598,6 +612,8 @@ def _validate(args: argparse.Namespace) -> None:
             _refuse("--sample-times must increase", "--sample-times", value=times)
     if args.n_points is not None and args.n_points < 2:
         _refuse("--n-points takes 2 or more", "--n-points")
+    if method not in _STOCHASTIC_METHODS and args.seed is not None:
+        _refuse(f"--seed is a stochastic run's; a {method} run takes none", "--seed")
     if method in _STOCHASTIC_METHODS:
         for flag, value in (("--rtol", args.rtol), ("--atol", args.atol)):
             if value is not None:
@@ -938,8 +954,14 @@ def _stderr_captured(enabled: bool) -> Iterator[list[str]]:
     with tempfile.TemporaryFile() as held:
         saved = os.dup(fd)
         os.dup2(held.fileno(), fd)
+        dying = False
         try:
             yield box
+        except BaseException as stop:
+            # An interrupt or an exit, not an error the command reports: what
+            # was held goes out to standard error before it propagates.
+            dying = not isinstance(stop, Exception)
+            raise
         finally:
             with contextlib.suppress(OSError, ValueError):
                 sys.stderr.flush()
@@ -948,6 +970,8 @@ def _stderr_captured(enabled: bool) -> Iterator[list[str]]:
             os.close(saved)
             held.seek(0)
             box.append(held.read().decode("utf-8", "replace"))
+            if dying:
+                _write(sys.stderr, box[-1])
 
 
 class _ReaderGone(Exception):
