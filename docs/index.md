@@ -99,6 +99,7 @@ reference/command-line
 :caption: About & development
 :maxdepth: 1
 
+about/why
 about/architecture
 about/benchmarks
 development/building
