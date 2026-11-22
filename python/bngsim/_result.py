@@ -3301,19 +3301,21 @@ class Result:
             ``n_sensitivity_params``, ``n_sensitivity_ic_species``,
             ``n_notices``, ``notices`` (the first 20 of :attr:`notices`, each
             message cut at 500 characters), ``kinds``, the kinds listed, and
-            ``rtol`` and ``atol``, the tolerances the readings are judged by
-            (``None`` where the record gives none).
+            ``rtol`` (floored at 1e-10) and ``atol`` (the run's scalar, its
+            ceiling), whence each column's tolerance (see Notes); ``None``
+            where the record gives none.
             Then for each kind (``"observables"``, ``"species"``)
             ``{"n_columns", "n_left_out", "columns"}``, where each column is a
             dict with its ``name`` and:
 
             - of one deterministic run: ``first``, ``last``, ``min`` and
               ``t_min``, ``max`` and ``t_max``, ``monotone``,
-              ``n_interior_extrema``, ``tail_change`` (how far any value from
-              the last sample at or before the start of the last tenth of the
-              window is from the last value, as a share of the column's range)
-              and ``settled``; ``t_min`` and ``t_max`` are the first times the
-              extremes are reached;
+              ``n_interior_extrema``, ``tail_from`` (the last sample at or
+              before the start of the last tenth of the window, so later than
+              a tenth back where the grid is coarse), ``tail_change`` (how far
+              any value from ``tail_from`` on is from the last value, as a
+              share of the column's range) and ``settled``; ``t_min`` and
+              ``t_max`` are the first times the extremes are reached;
             - of one stochastic run, or a run whose method or tolerances the
               result does not record: ``first``, ``last``, ``min`` and ``max``
               alone, as its shape is noise or cannot be judged;
@@ -3339,11 +3341,13 @@ class Result:
         digest's own: a move at a value ``y`` is within it when at most
         ``rtol·|y| + min(atol, rtol·largest)``, with the run's ``rtol`` (at
         least 1e-10) and absolute tolerance (a species' own as applied; an
-        observable, a sum of species, the tightest any species had), and
+        observable, whose species the record does not name, what the run's
+        rule gives a species of its size: the smaller of the scalar ``atol``
+        and ``rtol`` times its largest magnitude, not under 1e-6 of
+        ``largest``), and
         ``largest`` the largest magnitude of any column of that kind over the
-        run. A column is ``settled`` when no value from the last sample at or
-        before the start of the last tenth of the window on is further than
-        that from the last value. That is a reading of the window the run had:
+        run. A column is ``settled`` when no value from ``tail_from`` on is
+        further than that from the last value. That is a reading of the window the run had:
         a column still moving slower than its tolerance per tenth of the
         window reads as settled, and a longer run, or
         :meth:`Simulator.steady_state`, tells. An interior extremum is an

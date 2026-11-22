@@ -9,9 +9,10 @@ Where a reading needs a threshold, it takes the one the steady-state code's
 ``criterion="scaled"`` takes (issue #1001; ``ss_scaled_tolerance`` in
 ``src/steady_state.cpp``): a move of a value ``y`` is within tolerance when it is
 at most ``rtol·|y| + min(atol, rtol·largest)``, with the run's ``rtol`` (at least
-1e-10) and ``atol`` (a species' own as applied; for an observable, a sum of
-species, the tightest any species had), and ``largest`` the largest magnitude of
-any column of the same kind over the run. That one tolerance decides
+1e-10) and ``atol`` (a species' own as applied; for an observable, whose species
+the record does not name, what the run's rule gives a species of its size: see
+:func:`_column_atol`), and ``largest`` the largest magnitude of any column of the
+same kind over the run. That one tolerance decides
 
 - whether a column has *settled*: no value from the last sample at or before
   the start of the last tenth of the window on is further from the last value
@@ -64,6 +65,11 @@ TAIL_FRACTION = 0.1
 #: ``src/steady_state.cpp``, under which a run does not tell a move from its
 #: own error.
 RTOL_LEAST = 1e-10
+
+#: The share of the largest value under which the run's atol rule
+#: (``Simulator._ATOL_SCALE_RELEVANT``, issue #1361) gives a species no scale
+#: of its own.
+ATOL_SCALE_RELEVANT = 1e-6
 
 #: How many of a result's notices a digest lists, in their order, and the
 #: length a notice's message is cut to; ``Result.notices`` holds them whole.
@@ -170,15 +176,18 @@ def _n_turns(col: NDArray[np.float64], rtol: float, floor: float) -> int:
     return n
 
 
-def _column_atol(atol_vec: Any, atol: float, j: int, species: bool) -> float:
-    """The absolute tolerance column *j* was held to: a species' own as
-    applied; an observable or expression, a sum of species, the tightest any
-    species had (the scalar where the record holds no per-species values)."""
-    if atol_vec is None or len(atol_vec) == 0:
-        return atol
-    if species:
-        return float(atol_vec[j]) if j < len(atol_vec) else atol
-    return float(min(atol_vec))
+def _column_atol(
+    atol_vec: Any, atol: float, j: int, species: bool, scale: float, largest: float, rtol: float
+) -> float:
+    """The absolute tolerance column *j* is judged by: a species' own as the
+    run applied it; any other column (an observable sums species the record
+    does not name) the one the run's rule gives a species of its size (issue
+    #1420, ``Simulator._atol_from_scale``): ``rtol`` times its largest
+    magnitude, but not under :data:`ATOL_SCALE_RELEVANT` of *largest*, and
+    never over the scalar ``atol``, the run's ceiling."""
+    if species and atol_vec is not None and j < len(atol_vec):
+        return float(atol_vec[j])
+    return min(atol, rtol * max(scale, ATOL_SCALE_RELEVANT * largest))
 
 
 def _notice(n: dict[str, str]) -> dict[str, str]:
@@ -291,7 +300,8 @@ def _kind(
     lo = np.where(finite, data, np.inf).min(axis=axes)
     hi = np.where(finite, data, -np.inf).max(axis=axes)
     span = hi - lo  # inf for a column with no finite value
-    largest = float(np.abs(np.where(finite, data, 0.0)).max())
+    magnitude = np.abs(np.where(finite, data, 0.0)).max(axis=axes)
+    largest = float(magnitude.max())
     chosen = _rank(nonfinite, np.where(np.isfinite(span), span, np.inf), max_columns)
 
     tail = None
@@ -306,7 +316,8 @@ def _kind(
 
     columns = []
     for j in chosen:
-        floor = min(_column_atol(atol_vec, atol, j, species), rtol * largest)
+        own = _column_atol(atol_vec, atol, j, species, float(magnitude[j]), largest, rtol)
+        floor = min(own, rtol * largest)
         mn, mx = float(lo[j]), float(hi[j])
         any_finite = math.isfinite(mn)
         row: dict[str, Any] = {"name": names[j]}
@@ -335,18 +346,26 @@ def _kind(
         if reads:
             col = data[:, j]
             if nonfinite[j]:
-                row.update(monotone=None, n_interior_extrema=None, tail_change=None, settled=None)
+                row.update(
+                    monotone=None,
+                    n_interior_extrema=None,
+                    tail_from=None,
+                    tail_change=None,
+                    settled=None,
+                )
             else:
                 n = _n_turns(col, rtol, floor)
                 row["monotone"] = n == 0
                 row["n_interior_extrema"] = n
                 if tail is None:
+                    row["tail_from"] = None
                     row["tail_change"] = None
                     row["settled"] = None
                 else:
                     last = float(col[-1])
                     move = float(np.abs(col[tail] - last).max())
                     rng = mx - mn
+                    row["tail_from"] = _num(time[tail.start])
                     row["tail_change"] = _num(move / rng) if rng > 0 else 0.0
                     row["settled"] = bool(move <= rtol * abs(last) + floor)
         row["non_finite"] = bool(nonfinite[j])
@@ -464,7 +483,9 @@ def _row_text(row: dict[str, Any]) -> str:
         )
     if "settled" in row and row["settled"] is not None:
         state = "settled" if row["settled"] else "not settled"
-        parts.append(f"last-tenth change {_g(row['tail_change'])} of range, {state}")
+        parts.append(
+            f"change since t={_g(row['tail_from'])} {_g(row['tail_change'])} of range, {state}"
+        )
     flags = []
     if row["non_finite"]:
         flags.append(f"non-finite from t={_g(row['t_non_finite'])}")

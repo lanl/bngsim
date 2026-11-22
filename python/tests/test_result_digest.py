@@ -54,6 +54,7 @@ DETERMINISTIC_KEYS = [
     "t_max",
     "monotone",
     "n_interior_extrema",
+    "tail_from",
     "tail_change",
     "settled",
     *FLAGS,
@@ -277,14 +278,14 @@ def test_the_tail_spans_the_whole_last_tenth_however_the_grid_falls():
     col = np.asarray(r.observables)[:, 0]
     row = _row(r.digest(), "A")
     assert row["tail_change"] == pytest.approx((col[3] - col[4]) / (col[0] - col[4]), rel=1e-12)
-    assert row["settled"] is False and row["monotone"] is True
+    assert row["settled"] is False and row["monotone"] is True and row["tail_from"] == 7.5
     # Two samples a nanosecond apart at the end of [0, 3] are no tail: the
     # column, at 22 and falling, is read from t = 2.
     sim = Simulator(examples.load("decay"), method="ode")
     r = sim.run(sample_times=[0, 1, 2, 3 - 1e-9, 3])
     col = np.asarray(r.observables)[:, 0]
     row = _row(r.digest(), "A")
-    assert row["settled"] is False
+    assert row["settled"] is False and row["tail_from"] == 2.0
     assert row["tail_change"] == pytest.approx((col[2] - col[4]) / (col[0] - col[4]), rel=1e-12)
     # A grid of 19 intervals reads as one of 10 or 100 does, to within the
     # one sample before the cut it adds.
@@ -327,29 +328,40 @@ def test_a_model_in_small_units_is_read_at_its_own_scale():
         assert _row(loose.digest(), "y")["monotone"] is flat, amp
 
 
-def test_a_species_is_held_to_its_own_atol_and_an_observable_to_the_tightest():
-    # The record's per-species atol (as applied) is a species' floor, capped
-    # at rtol·largest; an observable, a sum of species, takes the tightest any
-    # species had, so an observable that is one species reads as it does. A
-    # species at 1e-12 beside one at 1, held to its own 1e-14, turns.
+def test_a_species_is_held_to_its_own_atol_and_an_observable_to_the_runs_rule():
+    # A species is held to its per-species atol as the run applied it; an
+    # observable, whose species the record does not name, to what the run's
+    # rule gives a species of its size: min(atol, rtol·max(its largest,
+    # 1e-6·largest)). A column at 1e-12 beside one at 1 is held to 1e-14.
     t = np.linspace(0, 10, 1001)
-    cols = {"big": np.ones_like(t), "y": 1e-12 * np.sin(5 * t)}
-    r = _synthetic(cols, t, atol=1e-8)
-    r._record_frozen["run"]["atol"]["per_species"] = [1e-8, 1e-14]
-    d = r.digest(species=True)
-    for kind in ("species", "observables"):
-        assert _row(d, "y", kind)["n_interior_extrema"] == 16  # 5t = π/2 + kπ, k = 0..15
-        assert _row(d, "y", kind)["negative"] is True
-    # A species "z" at 1e-12 held to its own 1e-8 does not turn, where an
-    # observable of it, held to the tightest species' 1e-14, does.
-    r = _synthetic({**cols, "z": cols["y"]}, t, atol=1e-8)
+    wobble = 1e-12 * np.sin(5 * t)
+    r = _synthetic({"big": np.ones_like(t), "y": wobble, "z": wobble}, t, atol=1e-8)
     r._record_frozen["run"]["atol"]["per_species"] = [1e-8, 1e-14, 1e-8]
     d = r.digest(species=True)
-    assert _row(d, "z", "species")["monotone"] is True
-    assert _row(d, "z", "observables")["n_interior_extrema"] == 16
-    # Without per-species values, the scalar.
-    r = _synthetic(cols, t, atol=1e-8)
-    assert _row(r.digest(), "y")["monotone"] is True
+    assert _row(d, "y", "species")["n_interior_extrema"] == 16  # 5t = π/2 + kπ, k = 0..15
+    assert _row(d, "y", "species")["negative"] is True
+    assert _row(d, "z", "species")["monotone"] is True  # its own 1e-8
+    for name in ("y", "z"):
+        assert _row(d, name, "observables")["n_interior_extrema"] == 16
+    # A vector atol a caller chose does not reach the observables: the
+    # observable of a species held to 1e-30 is still held to the run's rule.
+    r = _synthetic({"big": np.ones_like(t), "y": 1e-15 * np.sin(5 * t)}, t, atol=1e-8)
+    r._record_frozen["run"]["atol"]["per_species"] = [1e-30, 1e-30]
+    d = r.digest(species=True)
+    assert _row(d, "y", "species")["n_interior_extrema"] == 16
+    assert _row(d, "y", "observables")["monotone"] is True  # rtol·1e-6·largest = 1e-14
+
+
+def test_a_vector_atol_does_not_leak_into_other_observables():
+    # chain at atol [1e-3, 1e-6, 1e-30]: observable A, which is species A
+    # alone, reads as species A does, not at C's 1e-30.
+    r = Simulator(examples.load("chain"), method="ode").run(
+        t_span=(0, 60), n_points=601, atol=[1e-3, 1e-6, 1e-30]
+    )
+    d = r.digest(species=True)
+    a = _row(d, "A")
+    assert a["monotone"] is True and a["negative"] is False and a["settled"] is True
+    assert _row(d, "A()", "species")["monotone"] is True
 
 
 def test_an_observable_that_is_one_species_reads_as_the_species():
