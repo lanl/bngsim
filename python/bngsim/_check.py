@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import math
 import time
+import warnings
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -107,7 +108,7 @@ DEFAULT_REPLICATES = 10
 
 #: The checks, in the order they run; ``tolerance`` first, as the others are
 #: judged against its drift.
-DETERMINISTIC = ("tolerance", "grid", "jacobian", "backend", "second_engine")
+DETERMINISTIC = ("tolerance", "grid", "jacobian", "linear_solver", "backend", "second_engine")
 STOCHASTIC = ("replicates",)
 #: What ``checks=None`` runs: the cheap checks that catch the common case.
 DEFAULT_DETERMINISTIC = ("tolerance", "grid")
@@ -752,6 +753,46 @@ class _Context:
         changed = {"jacobian": "fd"}
         return self.compare("jacobian", self.rerun(jacobian="fd"), changed)
 
+    def check_linear_solver(self) -> dict[str, Any]:
+        skip = self._deterministic("linear_solver")
+        if skip:
+            return skip
+        used = (self.rec.get("backend") or {}).get("linear_solver")
+        if used is None:
+            return _verdict(
+                "linear_solver", "unsupported", note="the record does not say which solver ran"
+            )
+        other = "dense" if used == "klu" else "klu"
+        changed = {"linear_solver": other}
+        from bngsim._exceptions import SparseJacobianUnavailableError
+
+        try:
+            with warnings.catch_warnings():
+                # A solver that did not run is this check's skip, said once.
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"This rerun ran other code than the run it repeats: "
+                    r"linear_solver '\w+' for 'klu' asked;",
+                )
+                again = self.rerun(linear_solver=other)
+        except SparseJacobianUnavailableError as e:
+            return _verdict(
+                "linear_solver",
+                "skip",
+                note="KLU cannot run this model: it gives no sparse Jacobian to factorize "
+                f"({type(e).__name__})",
+                changed=changed,
+            )
+        ran = (again.record.get("backend") or {}).get("linear_solver")
+        if (ran == "klu") != (other == "klu"):
+            return _verdict(
+                "linear_solver",
+                "skip",
+                note=f"linear_solver={other!r} ran {ran!r}: {_no_klu(self.result, self.rec)}",
+                changed=changed,
+            )
+        return self.compare("linear_solver", again, changed)
+
     def check_backend(self) -> dict[str, Any]:
         skip = self._deterministic("backend")
         if skip:
@@ -925,6 +966,17 @@ def _second_engine(ctx: _Context) -> dict[str, Any]:
         )
     v = ctx.compare_x(name, x, {"engine": f"libRoadRunner {roadrunner.__version__}"})
     return v
+
+
+def _no_klu(result: Result, rec: dict[str, Any]) -> str:
+    """Why a run asked onto KLU ran dense."""
+    from bngsim._simulator import _HAS_KLU
+
+    if not _HAS_KLU:
+        return "this bngsim was built without KLU"
+    if (rec.get("backend") or {}).get("jacobian") == "jax":
+        return "a JAX Jacobian runs dense only"
+    return "KLU needs the model's sparse Jacobian pattern, which this model does not give it"
 
 
 def _timed_out(e: BaseException) -> bool:

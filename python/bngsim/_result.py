@@ -973,8 +973,14 @@ class Result:
             :class:`Simulator` takes: ``t_span``, ``n_points``,
             ``sample_times``, ``seed``, ``rtol``, ``atol``, ``max_steps``,
             ``max_step``, ``timeout``, ``steady_state``, ``steady_state_tol``,
-            ``method``, ``poplevel``, ``jacobian``, ``codegen``. Every other
-            setting is kept:
+            ``method``, ``poplevel``, ``jacobian``, ``codegen``; and
+            ``linear_solver`` (an ODE run's: ``"dense"``, ``"klu"``, or
+            ``"auto"`` for the Simulator's own rule; the Simulator's
+            ``force_dense_linear_solver`` and ``force_sparse_linear_solver``:
+            ``"klu"`` runs dense on a build without KLU or with a JAX
+            Jacobian, with a ``rerun.different_backend`` notice, and raises
+            :class:`SparseJacobianUnavailableError` for a model with no
+            sparse Jacobian to give KLU). Every other setting is kept:
             ``rerun(rtol=1e-10)`` keeps the absolute tolerances the run was
             given. A new ``method`` drops the settings of the old one it does
             not take (an ODE run's tolerances under ``"ssa"``).
@@ -1018,6 +1024,7 @@ class Result:
         >>> again = result.rerun()  # the same numbers
         >>> tight = result.rerun(rtol=1e-10)  # the same run, at a tighter rtol
         >>> other = result.rerun(seed=7)  # a stochastic run's other realization
+        >>> dense = result.rerun(linear_solver="dense")  # the same run, not on KLU
         """
         from bngsim._rerun import rerun
 
@@ -3479,6 +3486,10 @@ class Result:
               for a run that stopped at a steady state, whose other checks
               compare the state it stopped at.
             - ``"jacobian"``: the run on a difference-quotient Jacobian.
+            - ``"linear_solver"``: the run on the other linear solver, dense
+              for a run on KLU and KLU for a dense one; ``skip`` with the
+              reason where KLU cannot run it (a build without KLU, a model
+              with no sparse Jacobian for it, a JAX Jacobian).
             - ``"backend"``: compiled against interpreted, where a C compiler
               is present.
             - ``"second_engine"``: the model run in libRoadRunner, where it is

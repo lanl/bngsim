@@ -425,9 +425,9 @@ print(bngsim.Simulator(built).run(t_span=(0, 2), n_points=3).observables["A"][-1
 - **A conservation law holds.** In this model `A + B` stays 100. A network
   with a conserved total should conserve it to within the tolerance.
 - **The answer does not move with the tolerance.** `print(r.check())` runs it
-  again at a tenth of `rtol` and `atol` and at 8x the points, and says whether
-  the answer moved; `r.check("all")` adds the Jacobian, the compiled code and
-  libRoadRunner. Report a `diff` between two BNGsim paths as a bug.
+  again at a tenth of `rtol` and `atol` and at 8x the points, and says if the
+  answer moved; `r.check("all")` adds the Jacobian, linear solver, compiled
+  code and libRoadRunner. A `diff` between two BNGsim paths is a bug.
 - **A closed form or a steady state agrees**, where one is known.
 - **A stochastic answer comes from an ensemble.** One trajectory is one draw.
   Report a mean or a distribution over replicates, with the number of
