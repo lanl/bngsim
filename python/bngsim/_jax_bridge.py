@@ -88,6 +88,7 @@ def _write_params(clone, names, values, flat: bool) -> None:
     differs from the one such a parameter holds would be taken and move nothing
     it was folded into, and the solve returned the trajectory of the old value.
     """
+    clone._maybe_pinned = True
     for i, name in enumerate(names):
         value = float(values[i])
         clone._raise_if_folded_at_load(name, value)

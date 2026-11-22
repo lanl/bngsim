@@ -159,6 +159,10 @@ class Model:
         "_loaded_state",
         "_last_run_end",
         "_source",
+        "_source_text",
+        "_edits",
+        "_loaded_attachment",
+        "_maybe_pinned",
         "_sbml_record",
         "_record_info",
     )
@@ -178,6 +182,17 @@ class Model:
         # And every species' amount, which it hands the backend the same way
         # where the model has changed it (issue #1373).
         self._loaded_state: tuple[float, ...] = tuple(float(x) for x in _core.get_state())
+        # And which parameters were attached to an expression (issue #1703): a
+        # run's record names the ones a set_param has pinned since, which a
+        # model built again from the source has to have pinned too.
+        # Empty where none was, which every run then reads at no cost.
+        attached = tuple(bool(x) for x in getattr(_core, "param_is_expression", ()))
+        self._loaded_attachment: tuple[bool, ...] = attached if any(attached) else ()
+        # Whether a write may have pinned one since: set by every write to the
+        # core's parameters (test_result_rerun holds the sites to it), and
+        # never cleared, so a run reads the core's flags only once one may
+        # differ. A clone keeps its parent's.
+        self._maybe_pinned = False
         # Issue #1701: the time the last run that wrote its end state back left
         # the model at, that state, and the mark of the Simulator that ran it, as
         # Simulator.run records it. A run that starts before that time from
@@ -190,6 +205,14 @@ class Model:
         # for a model built in Python (ModelBuilder, build_model_from_parsed, a
         # coupling submodel). Read by describe(). A clone keeps its parent's.
         self._source: dict[str, Any] | None = None
+        # Issue #1703: the text the model was loaded from, where it came from a
+        # string and not a file, which Result.rerun() builds it again from. A
+        # clone keeps its parent's.
+        self._source_text: str | bytes | None = None
+        # Issue #1703: the calls that changed the model's equations or data
+        # since its load, which its source does not hold (add_table_function),
+        # so that Result.rerun() refuses a model it cannot build again.
+        self._edits: tuple[str, ...] = ()
         # Issue #1705: the SBML loader's record of the file, for describe():
         # its compartments, each species' compartment, the parameters it
         # declares and its reactions as written, by the names the model uses
@@ -1603,11 +1626,15 @@ class Model:
         m = Model(_core=self._core.clone(), _guarded=self._guarded_functions)
         m._loaded_params = dict(self._loaded_params)
         m._loaded_state = self._loaded_state
+        m._loaded_attachment = self._loaded_attachment
+        m._maybe_pinned = self._maybe_pinned
         # Issue #1701: the clone holds the state the run left, so a run of it
         # from another time continues that run as the original's would. Shared,
         # not copied: the vector is read-only, and the record is only replaced.
         m._last_run_end = self._last_run_end
         m._source = dict(self._source) if self._source is not None else None
+        m._source_text = self._source_text
+        m._edits = self._edits
         m._sbml_record = self._sbml_record  # read-only once the loader made it
         m._record_info = self._record_info  # of the model's structure, read-only
         m._net_path = self._net_path
@@ -1825,6 +1852,7 @@ class Model:
         round-trip above is the one to rely on.
         """
         self._raise_if_folded_at_load(name, float(value))
+        self._maybe_pinned = True
         try:
             self._core.set_param(name, float(value), force_override=force_override)
         except (KeyError, RuntimeError) as e:
@@ -2098,6 +2126,7 @@ class Model:
             if name in refused and value != self._core.get_param(name):
                 self.set_param(name, value)  # raises with the full explanation
         # Phase 3: Apply atomically (all validation passed)
+        self._maybe_pinned = True
         for name, value in converted.items():
             self._core.set_param(name, value)
 
@@ -3410,6 +3439,11 @@ class Model:
         # The breakpoints the run stops on are read from the tables' data
         # (issue #709), and new data under a table's name moves them.
         self._table_breaks = None
+        # Data the source does not hold (issue #1703): a Result.rerun() of a
+        # run from now on refuses, and the record says why.
+        if "add_table_function" not in self._edits:
+            self._edits = (*self._edits, "add_table_function")
+            self._record_info = None
         read = [t["name"] for t in self._core.table_function_tables if t["read"]]
         if name not in read:
             warnings.warn(
@@ -3782,6 +3816,7 @@ def _record_source(
     elif text is not None:
         # libantimony also takes bytes (issue #1705 review): hashed as given.
         data = bytes(text)
+    model._source_text = None if path is not None else text
     model._source = {
         "format": fmt,
         "path": where,

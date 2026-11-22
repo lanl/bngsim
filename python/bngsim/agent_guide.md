@@ -76,9 +76,10 @@ print(d["methods"]["ssa"]["status"])  # ok
 | load text | `Model.from_sbml_string(text)`, `Model.from_antimony_string(text)`; BNGL only from a file |
 | load a BioModels entry | `Model.from_biomodels("BIOMD0000000010")`: fetched once, then cached |
 | choose the method | `bngsim.Simulator(model, method="ode")`; `"ssa"`, `"psa"`; network-free `"nf"` (NFsim) and `"rm"` (RuleMonkey) also take `xml_path=`; `Simulator.METHODS` lists all |
-| run | `sim.run(t_span=(t0, t1), n_points=n)` or `sim.run(sample_times=[...])` |
+| run | `sim.run(t_span=(t0, t1), n_points=n)` or `sim.run(sample_times=[...])`; tolerances `sim.run(t_span=(0, 10), rtol=1e-8, atol=1e-10)` |
 | read a run | `result.time`, `result.species`, `result.observables`, `result.expressions`; each takes a name: `result.observables["A"]` |
 | what a run's numbers are and how it went | `result.record`: a JSON-ready dict of each column's quantity and compartment, the method, the tolerances as applied, the start, the code that ran and the model file; `result.notices`, every warning of the run |
+| make the same run again | `result.rerun()`, from the recorded file, parameters and start state, on a fresh model; `result.rerun(rtol=1e-10)` changes one setting and keeps the rest |
 | read names | `model.param_names`, `model.species_names`, `model.observable_names` |
 | a table | `result.dataframe` (a property; needs pandas) |
 | set a parameter | `model.set_param("kf", 1.0)`, `model.set_params({"kf": 1.0, "kr": 0.5})`; read with `model.get_param("kf")` |
@@ -428,8 +429,10 @@ print(bngsim.Simulator(built).run(t_span=(0, 2), n_points=3).observables["A"][-1
 
 - **A conservation law holds.** In this model `A + B` stays 100. A network
   with a conserved total should conserve it to within the tolerance.
-- **The answer does not move with the tolerance.** Run again with `rtol` and
-  `atol` ten or a hundred times smaller. A number that moves was not resolved.
+- **The answer does not move with the tolerance.** Run it again with `rtol` and
+  `atol` ten or a hundred times smaller: `result.rerun(rtol=..., atol=...)`
+  makes the same run, from the same start, with those two changed. A number
+  that moves was not resolved.
 - **A closed form or a steady state agrees**, where one is known.
 - **A stochastic answer comes from an ensemble.** One trajectory is one draw.
   Report a mean or a distribution over replicates, with the number of
@@ -445,7 +448,7 @@ r = sim.run(t_span=(0, 10), n_points=101)
 total = r.observables["A"] + r.observables["B"]
 assert np.allclose(total, 100.0, rtol=1e-6)
 
-tight = sim.run(t_span=(0, 10), n_points=101, rtol=1e-10, atol=1e-12, start="initial")
+tight = r.rerun(rtol=1e-10, atol=1e-12)
 assert np.allclose(r.observables, tight.observables, rtol=1e-5, atol=1e-6)
 
 kf, kr = 0.5, 0.25

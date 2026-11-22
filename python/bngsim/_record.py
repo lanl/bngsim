@@ -59,6 +59,18 @@ class ModelInfo(NamedTuple):
     param_index: NDArray[np.intp]
     #: ``len(core.param_names)`` when this was made.
     n_params: int
+    #: The text the model was loaded from, where it was loaded from a string:
+    #: what :meth:`Result.rerun` builds it again from. Not in the record.
+    source_text: str | bytes | None = None
+    #: The calls that changed the model's equations or data since its load
+    #: (``Model._edits``), which its source does not hold.
+    edits: tuple[str, ...] = ()
+    #: The sha256 of the model's table functions' data (:func:`tables_sha256`):
+    #: a table read from a file of its own is in no source's hash.
+    tables_sha256: str | None = None
+    #: Which parameters were attached to an expression at load
+    #: (``Model._loaded_attachment``).
+    loaded_attachment: tuple[bool, ...] = ()
 
 
 class RunCapture(NamedTuple):
@@ -99,6 +111,21 @@ class RunCapture(NamedTuple):
     linear_solver_requested: str | None
     sensitivity_rhs: str | None
     propensities: str | None
+    #: The event state the run started from, ``(core.event_carry(),
+    #: core.ssa_counts_stored)``, as :func:`start_carry` takes it.
+    start_carry: Any = None
+    #: Whether :meth:`Model.declare_ic_sensitivity` had declared rows the run
+    #: seeded its sensitivities from, which no record holds.
+    declared_ic_sensitivity: bool = False
+    #: Of a :meth:`Result.rerun`: ``{"record_sha256", "changed"}``.
+    rerun_of: dict[str, Any] | None = None
+    #: The Simulator's ``codegen=``, ``strict_ssa=`` and ``reaction_stats=``.
+    codegen_requested: bool | None = None
+    strict_ssa: bool = True
+    reaction_stats: bool = False
+    #: Which parameters were attached to an expression when the run started
+    #: (:func:`attachment`); empty where none was at load.
+    attachment: tuple[bool, ...] = ()
 
 
 def _num(x: Any, kind: type = float) -> Any:
@@ -140,6 +167,11 @@ def run_and_backend(info: Any) -> tuple[dict[str, Any], dict[str, Any]]:
         "xml": None if c.xml is None else dict(c.xml),
         "timeout": _num(c.timeout),
         "wall_time_s": float(c.wall_time_s),
+        "start_carry": start_carry(c.start_carry),
+        "strict_ssa": bool(c.strict_ssa),
+        "reaction_stats": bool(c.reaction_stats),
+        "declared_ic_sensitivity": bool(c.declared_ic_sensitivity),
+        "rerun_of": copy.deepcopy(c.rerun_of),
     }
     backend = {
         "rhs": c.rhs,
@@ -148,6 +180,7 @@ def run_and_backend(info: Any) -> tuple[dict[str, Any], dict[str, Any]]:
         "jacobian_retried": c.jacobian_retried,
         "linear_solver": None if c.linear_solver is None else LINEAR_SOLVERS.get(c.linear_solver),
         "linear_solver_requested": c.linear_solver_requested,
+        "rhs_requested": c.codegen_requested,
         "sensitivity_rhs": c.sensitivity_rhs,
         "propensities": c.propensities,
     }
@@ -203,6 +236,10 @@ def model_info(model: Model) -> ModelInfo:
         param_names=tuple(names[i] for i in keep),
         param_index=np.asarray(keep, dtype=np.intp),
         n_params=len(names),
+        source_text=model._source_text,
+        edits=tuple(model._edits),
+        tables_sha256=tables_sha256(model),
+        loaded_attachment=tuple(model._loaded_attachment),
     )
     model._record_info = info
     return info
@@ -217,6 +254,91 @@ def parameter_values(model: Model) -> tuple[ModelInfo, NDArray[np.float64]]:
         model._record_info = None
         info = model_info(model)
     return info, values[info.param_index]
+
+
+def tables_sha256(model: Model) -> str | None:
+    """The sha256 of *model*'s table functions' data, as JSON, or ``None``
+    where it has none."""
+    tables = list(getattr(model._core, "table_function_tables", ()))
+    if not tables:
+        return None
+    import hashlib
+    import json
+
+    keep = ("name", "index_kind", "method", "xs", "ys")
+    text = json.dumps([{k: t.get(k) for k in keep} for t in tables], sort_keys=True, default=list)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def attachment(model: Model) -> tuple[bool, ...]:
+    """Which of *model*'s parameters are attached to an expression now, for a
+    run's record; ``()`` where none was at load, or no write to its
+    parameters may have pinned one since: the core's list costs a run some
+    3 ns a parameter, which a model of 20,000 noticed."""
+    if not model._loaded_attachment or not model._maybe_pinned:
+        return ()
+    return tuple(model._core.param_is_expression)
+
+
+def pinned_parameters(info: ModelInfo | None, run_info: Any) -> list[str] | None:
+    """The parameters a record lists that were attached to an expression at
+    load and pinned to a number when the run started, or ``None`` where that
+    was not recorded."""
+    if isinstance(run_info, dict):
+        return copy.deepcopy(run_info["run"].get("parameters_pinned"))
+    if info is None:
+        return None
+    if not info.loaded_attachment:
+        return []
+    now, then = run_info.attachment, info.loaded_attachment
+    return [
+        info.param_names[k]
+        for k, i in enumerate(info.param_index)
+        if i < len(then) and i < len(now) and then[i] and not now[i]
+    ]
+
+
+def start_carry(state: Any) -> dict[str, Any] | None:
+    """The event state a run starts from, as a record holds it: ``None`` where
+    there is none (a fresh start), else ``{"events", "ssa_counts"}``.
+    ``events`` is ``None`` or ``{"t", "triggers", "pending"}``, each pending
+    execution ``{"event", "apply_time", "values"}``: the delayed executions not
+    yet applied, which a run that starts at ``t`` applies, and each trigger's
+    truth at ``t``. ``ssa_counts`` says the state is an SSA run's counts.
+    *state* is ``(core.event_carry(), core.ssa_counts_stored)``."""
+    if state is None or isinstance(state, dict):
+        return copy.deepcopy(state)
+    carry, counts = state
+    events = None
+    if carry is not None:
+        t, triggers, pending = carry
+        events = {
+            "t": float(t),
+            "triggers": [bool(x) for x in triggers],
+            "pending": [
+                {"event": int(i), "apply_time": float(at), "values": [float(v) for v in vals]}
+                for i, at, vals in pending
+            ],
+        }
+    if events is None and not counts:
+        return None
+    return {"events": events, "ssa_counts": bool(counts)}
+
+
+def carry_state(held: dict[str, Any] | None) -> Any:
+    """What ``core.set_event_carry_state`` takes for a record's
+    ``start_carry`` (:func:`start_carry`'s inverse)."""
+    if held is None:
+        return None
+    events = held["events"]
+    carry = None
+    if events is not None:
+        carry = (
+            events["t"],
+            list(events["triggers"]),
+            [(p["event"], p["apply_time"], list(p["values"])) for p in events["pending"]],
+        )
+    return (carry, [], -math.inf, bool(held["ssa_counts"]))
 
 
 def atol_given(atol: Any) -> Any:
@@ -325,9 +447,15 @@ def live_parts(result: Result) -> dict[str, Any]:
         if run.get("atol") is not None:
             run["atol"]["per_species"] = None if atol is None else [float(x) for x in atol]
         run["parameters"] = run_parameters(result)
+        run["parameters_pinned"] = pinned_parameters(info, run_info)
+    model = None
+    if info is not None:
+        model = copy.deepcopy(info.source)
+        model["edits"] = list(info.edits)
+        model["tables_sha256"] = info.tables_sha256
     return {
         "software": {"bngsim": __version__, "build_commit": _build_commit()},
-        "model": None if info is None else copy.deepcopy(info.source),
+        "model": model,
         "run": run,
         "backend": backend,
         "time": None if info is None else {"units": info.time_units},
@@ -457,6 +585,12 @@ def squeeze_into(out: Result, results: list[Result]) -> None:
         "run": _agree([b[0] for b in both], "run", differ),
         "backend": _agree([b[1] for b in both], "backend", differ),
     }
+    pins = [pinned_parameters(r._model_info, r._run_info) for r in results]
+    if all(p == pins[0] for p in pins):
+        out._run_info["run"]["parameters_pinned"] = pins[0]
+    else:
+        out._run_info["run"]["parameters_pinned"] = None
+        differ.append("run.parameters_pinned")
     out._run_atol = _same_array([r._run_atol for r in results])
     if out._run_atol is None and any(r._run_atol is not None for r in results):
         differ.append("run.atol.per_species")
