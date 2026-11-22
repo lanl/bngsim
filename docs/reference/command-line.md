@@ -1,10 +1,10 @@
 ---
-summary: "The bngsim command (also python -m bngsim): doctor, guide, examples, inspect, convert and cache; one JSON object on standard output with --json, errors as JSON on standard error, and an exit code for each outcome."
+summary: "The bngsim command (also python -m bngsim): doctor, guide, examples, inspect, run, check, convert and cache; one JSON object on standard output with --json, errors as JSON on standard error, and an exit code for each outcome."
 ---
 
 # The `bngsim` command
 
-`bngsim` inspects a model and this install of BNGsim from a shell. It is also
+`bngsim` inspects and runs a model, and this install of BNGsim, from a shell. It is also
 `python -m bngsim`, which works wherever BNGsim is installed, even where the
 console script is not on `PATH`.
 
@@ -18,6 +18,8 @@ of its own, so what it prints is what the call returns.
 | `bngsim skill` | prints the guide as a `SKILL.md` file | `bngsim.agent_guide(skill=True)` |
 | `bngsim examples [NAME]` | lists the example models that ship with BNGsim, with their formats and files | `bngsim.examples` |
 | `bngsim inspect MODEL [--limit N\|all]` | what the model is, and which methods it admits and why not. Runs nothing. | `bngsim.Model.load(MODEL).describe()` |
+| `bngsim run MODEL --t-end T [...]` | one run from the model's initial state: its record and a digest of its values, the arrays to `--out` | `bngsim.Simulator(bngsim.Model.load(MODEL), ...).run(...)`, `Result.record`, `Result.digest()` |
+| `bngsim check MODEL --t-end T [...]` | the run, then the run made again with one setting changed; exits 6 when the check is not ok | the same, then `Result.check()` |
 | `bngsim convert TOOL ...` | the converters: `sbml2net`, `net2sbml`, `sbml2bngl`, `validate`, `omex` | `bngsim-sbml2net`, `bngsim-net2sbml`, `bngsim-sbml2bngl`, `bngsim-validate-conversion`, `bngsim-omex` |
 | `bngsim cache ...` | the codegen artifact cache | `bngsim-cache` |
 
@@ -26,6 +28,26 @@ report.
 
 `bngsim inspect` on a `.bngl` file runs BNG2.pl to generate the network, as
 `Model.load` does, and describes that network.
+
+## Running a model
+
+`bngsim run` makes one run and prints what it did, never the arrays:
+
+```bash
+bngsim run model.xml --t-end 100 --n-points 101 --json
+bngsim run model.xml --sample-times 0,1,5,10 --set kf=2 --set A=50 --out run.npz
+bngsim run model.net --method ssa --t-end 10 --replicates 20 --seed 1
+bngsim check model.xml --t-end 100 --checks all --json
+```
+
+- **What it prints:** with `--json`, `{"model", "record", "digest", "out"}`. `record` is `Result.record` without the start vector, `digest` is `Result.digest()` (`--species` and `--max-columns` pass through), and `out` is the absolute path `--out` wrote, or `null`. `check` adds `"check"`, the `Result.check()` report. Without `--json`, the digest's text form, and for `check` the report's.
+- **The run:** `--method` (`ode`, `ssa`, `psa`, `nf` or `rm`, the last two with `--xml`), `--t-start`, `--t-end` and `--n-points`, or `--sample-times`. `--seed`, `--rtol` and `--atol` (a number, `auto` or `tracking`). `--steady-state` stops at a steady state.
+- **The model:** `--set NAME=VALUE` sets a parameter, or a species' initial amount, before the run; it is repeatable, and a name the model does not have is a usage error that names the close ones. Each command loads the model fresh, so each run starts from its initial state.
+- **Replicates:** `bngsim run --replicates N` makes N stochastic runs (`run_replicates`) and digests them as a stack: statistics across runs at the last time. It takes no `--sample-times`, tolerances or `--steady-state`, as `run_replicates` takes none.
+- **The arrays:** `--out FILE` writes them: `.npz` with NumPy alone, `.h5` with h5py (which `Result.load` reads back), or `.csv`/`.tsv` (one kind of column, `--out-kind observables` or `species`; one run only).
+- **A time limit, always:** every run has a wall-clock limit, `--timeout` seconds, 600 by default; past it, exit 5. `check`'s reruns share `--budget` seconds (600 by default); a check that does not fit is reported as `timeout`, and the check is not ok.
+- **A `.bngl` file** can mean one run of the network BNG2.pl generates, or the file's own actions. `bngsim run` makes the first, and asks for `--network` to say so; the second is `bngsim.run_bngl(path)` in Python.
+- **Not commands yet:** `run_batch`, `parameter_scan`, `run_until` and the `steady_state` family. Use Python for those.
 
 ## Output a program can read
 
