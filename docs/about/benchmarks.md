@@ -33,7 +33,7 @@ dispatch as `.net`, sharing the `validate_for_ssa` gate at construct time
 (`reversible_non_mass_action`, `non_integer_stoichiometry`, etc. raise
 `SsaValidationError` before the simulator is built). PSA semantics for `N_c`
 are identical to the `.net` path; choose per [Lin, Feng, Hlavacek
-(2019)](https://doi.org/10.1063/1.5095032) — accuracy degrades when `N_c` is
+(2019)](https://doi.org/10.1063/1.5096774) — accuracy degrades when `N_c` is
 too small relative to per-species populations (e.g. `erk_activation` requires
 `N_c ≳ 100` to track the network reference).
 

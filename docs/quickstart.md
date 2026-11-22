@@ -117,7 +117,7 @@ psa = bngsim.Simulator(sbml_model, method="psa", poplevel=100.0)
 result = psa.run(t_span=(0, 300), n_points=301, seed=42)
 ```
 
-Choose `poplevel` as in [Lin, Feng, Hlavacek (2019)](https://doi.org/10.1063/1.5095032).
+Choose `poplevel` as in [Lin, Feng, Hlavacek (2019)](https://doi.org/10.1063/1.5096774).
 Accuracy drops when it is small next to the species' populations. An SBML or
 Antimony rate law that SSA cannot take (for example a reversible
 non-mass-action law, or a non-integer stoichiometry) raises

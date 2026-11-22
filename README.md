@@ -17,6 +17,17 @@ For BioNetGen users, it replaces `run_network`.
 [PyBioNetGen](https://github.com/RuleWorld/PyBioNetGen) and
 [PyBNF](https://github.com/lanl/PyBNF) use BNGsim.
 
+BNGsim integrates ODEs with CVODES, which needs code that evaluates the
+right-hand side of the ODEs and works best when also given the Jacobian and, for
+sensitivity analysis, the derivatives with respect to parameters. A model file
+provides none of these. BNGsim derives them from the model where it can. It also
+handles what the solver leaves to its caller: events, discontinuities in rate
+laws, sensitivities across those discontinuities, and methods other than ODE
+integration.
+[Why BNGsim?](https://bngsim.readthedocs.io/en/latest/about/why.html) explains
+why this layer is needed, why it is hard to get right, and what BNGsim offers
+beyond SciPy and NumPy.
+
 - [When to use BNGsim](https://bngsim.readthedocs.io/en/latest/choosing.html):
   what it does and doesn't do, alternatives, and tips.
 - [What BNGsim does](https://bngsim.readthedocs.io/en/latest/features.html):
