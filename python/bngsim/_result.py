@@ -3360,7 +3360,7 @@ class Result:
         ode run, t 0 to 10, 101 points
         notices: none
         observables: 2 of 2
-          A: first 100, last 33.3712; min 33.3712 at t=10, max 100 at t=0; monotone; ...
+          A: first 100, last 33.3702; min 33.3702 at t=10, max 100 at t=0; monotone; ...
         """
         from bngsim import _digest
 
