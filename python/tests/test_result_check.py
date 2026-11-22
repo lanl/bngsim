@@ -751,9 +751,11 @@ def test_spread_reads_half_the_move_at_twice_the_tolerance():
     loose = np.array([1e-4, 1e-4, np.inf])
     assert _check.spread(tight, loose).tolist() == [5e-5, 1e-3, 0.0]  # inf says nothing
     assert _check.spread(tight, None) is tight
-    # a looser run not converged itself (past 1e-3 of the peak) widens nothing
+    # a looser run not converged itself widens a column by at most 1e-3 of its
+    # peak: clamped, not discarded, so there is no cliff at the cap
     peak = np.array([1.0, 1.0, 1.0])
-    assert _check.spread(tight, np.array([1e-2, 1e-4, 1e-4]), peak).tolist() == [1e-6, 1e-3, 5e-5]
+    got = _check.spread(tight, np.array([1e-2, 1e-4, 1e-4]), peak).tolist()
+    assert got == pytest.approx([1e-3, 1e-3, 5e-5])
     assert _check.SPREAD_FACTOR == 2.0
 
 

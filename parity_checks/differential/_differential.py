@@ -559,7 +559,10 @@ class Base:
         )
         n_out = int((self.resolved() & ~self.converged()).sum()) if not self.drift_error else 0
         if n_out:
-            note += f"; {n_out} species not converged at the run's tolerance, not judged"
+            note += (
+                f"; {n_out} species not converged at the run's tolerance, judged on the "
+                f"run's whole scale"
+            )
         n_trace = int((~self.resolved()).sum())
         if n_trace:
             note += (
@@ -896,8 +899,9 @@ class _Rest:
         self.settle_abs = np.abs(y[-1] - y[-2])
         self.drift_abs = np.abs(tight - y[-1])
         # A species that moves past its allowance over the last quarter has not
-        # settled: it is left out, as a path leaves out a species that is not
-        # converged, and the rest are judged.
+        # settled: it is judged on the run's whole scale (and its own move),
+        # as a path judges a species that is not converged, so that a solve
+        # that blows up in it still fails; the settled ones on their own.
         self.keep = np.asarray(keep, dtype=bool)
         still = np.zeros_like(self.settle_abs)
         ratio, _ = _check.path_margins(
@@ -906,7 +910,7 @@ class _Rest:
         settled = ratio <= 1.0
         self.n_unsettled = int((self.keep & ~settled).sum())
         self.settle = float(ratio[self.keep].max()) if self.keep.any() else 0.0
-        self.keep = self.keep & settled
+        self.own = self.keep & settled
         self.spread = np.maximum(self.settle_abs, self.drift_abs)
 
     def margin(self, x, ref=None, drift=None) -> tuple[float, int | None]:
@@ -924,7 +928,8 @@ class _Rest:
         d = np.abs(x - ref)
         d = np.where(np.isfinite(d), d, np.inf)
         drift = self.spread if drift is None else drift
-        ratio, _ = _check.path_margins(d, peak, self.atols, self.rtol, drift, self.keep)
+        own = self.own & _check.resolved(peak, self.atols, self.rtol)
+        ratio, _ = _check.path_margins(d, peak, self.atols, self.rtol, drift, self.keep, own=own)
         if not ratio.size:
             return 0.0, None
         j = int(np.argmax(ratio))
@@ -968,7 +973,7 @@ def _settled_run(base: Base):
             largest = float(both[np.isfinite(both)].max(initial=0.0))
             floor = min(job.atol, max(job.rtol, SOLVE_RTOL_LEAST) * largest)
             rest = _Rest(y, np.maximum(atols, floor), tight, keep, job.rtol)
-            if not rest.keep.any():
+            if not rest.own.any():
                 raise _Unsettled(
                     f"the run has not settled by t={STEADY_HORIZON:g}: over the last "
                     f"quarter a species moves {rest.settle:.1e} times its allowance"
@@ -1887,8 +1892,10 @@ def check_stable(base: Base) -> Verdict:
         # Each tolerance jitter is read against the scatter the OTHER one
         # shows (_check.spread): one tighter run understates what a correct run
         # strays by, and a jitter read against its own move forgives itself.
-        # BIOMD0000000787 at rtol x2 moved 3.0e-3 of a species' peak where the
-        # tighter run moved 1.2e-4.
+        # Where the other jitter moves less than the tighter run, the tighter
+        # run's drift stands: BIOMD0000000787 at rtol x2 moves 3.0e-3 of a
+        # species' peak where the x0.5 run moves 9e-5 and the tighter 1.2e-4,
+        # and stays contested (runs at x1.5 and x3 do not clear it either).
         runs = {}
         for f in JITTER_RTOL:
             jittered = Job(**{**job.__dict__, "rtol": job.rtol * f, "atol": job.atol * f})

@@ -204,17 +204,18 @@ def spread(
     """Each column's drift for a path's allowance: its move at the tighter
     tolerance, or its move at :data:`SPREAD_FACTOR` times the tolerance over
     that factor, whichever is larger (*loose* None where that run failed).
-    The looser run widens a column only where its move is finite and, over
-    the factor, within :data:`TOLERANCE_MOVE` of the column's *peak*: a
-    looser run that blows up, or is not converged itself, says nothing of a
-    correct run's scatter, and would forgive any path."""
+    The looser run widens a column only where its move is finite, and by at
+    most :data:`TOLERANCE_MOVE` of the column's *peak*: a looser run that
+    blows up says nothing of a correct run's scatter, and one not converged
+    itself would forgive any path."""
     if loose is None:
         return tight
     half = np.asarray(loose, dtype=float) / SPREAD_FACTOR
     ok = np.isfinite(half)
+    half = np.where(ok, half, 0.0)
     if peak is not None:
-        ok &= half <= TOLERANCE_MOVE * np.asarray(peak, dtype=float)
-    return np.where(ok, np.maximum(tight, np.where(ok, half, 0.0)), tight)
+        half = np.minimum(half, TOLERANCE_MOVE * np.asarray(peak, dtype=float))
+    return np.maximum(tight, half)
 
 
 def path_margins(

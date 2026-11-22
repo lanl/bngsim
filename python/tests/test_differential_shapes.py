@@ -2998,3 +2998,20 @@ def test_a_tolerance_jitter_is_read_against_the_other_jitters_scatter(monkeypatc
     monkeypatch.setattr(D, "run", jitters)
     v = D.check_stable(base)
     assert v.status == status, v
+
+
+def test_a_species_still_moving_at_rest_that_blows_up_in_the_solve_is_a_finding(monkeypatch):
+    """Fable's review: a species still moving over the run's last quarter was
+    dropped, so a solve that came back NaN in it passed. It is judged on the
+    run's whole scale, as a path judges an unconverged species."""
+    base = D.Base(_pool_at_rest())
+    rest, _ = D._settled_run(base)
+    s = base.species_names.index("S()")
+    rest.own = rest.own.copy()
+    rest.own[s] = False  # as if S still moved
+    assert rest.margin(rest.end)[0] == 0.0
+    blown = rest.end.copy()
+    blown[s] = np.nan
+    assert rest.margin(blown)[0] > 1.0
+    blown[s] = 1e3 * rest.end[s] + 1.0
+    assert rest.margin(blown)[0] > 1.0
