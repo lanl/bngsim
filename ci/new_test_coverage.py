@@ -85,6 +85,14 @@ _TAKES_ARG = frozenset(
     # the suite.
     | {"--junit-xml", "--rsyncdir", "--cov-config"}
 )
+#: pytest options after which it runs no test: it reports and stops.
+_RUNS_NONE = frozenset(
+    {"--version", "-V", "-h", "--help", "--fixtures", "--funcargs", "--fixtures-per-test"}
+    | {"--markers", "--co", "--collect-only", "--setup-plan"}
+)
+#: pyproject.toml's ``testpaths`` (a test pins it): what pytest runs when its
+#: command names no path.
+_TESTPATHS = ("python/tests",)
 #: Shell words that end a command: what follows is another command.
 _COMMAND_ENDS = frozenset({"|", "||", "&&", ";", "&", "|&"})
 
@@ -254,7 +262,7 @@ def pytest_commands(text: str) -> list[str]:
     for i, line in enumerate(lines):
         # ``python -m pytest``, or ``pytest`` as the line's first word: not a
         # step name or an input's description that mentions pytest.
-        if not re.search(r"-m\s+pytest\b|^\s*(?:-\s*run:\s*)?pytest\s", line):
+        if not re.search(r"-m\s+pytest\b|^\s*(?:-\s*run:\s*)?pytest(?:\s|$)", line):
             continue
         block = [line]
         while block[-1].rstrip().endswith("\\") and i + len(block) < len(lines):
@@ -319,7 +327,19 @@ def read_command(command: str, wf: Workflow, empty: Iterable[str] = ()) -> None:
     start = next((i for i, t in enumerate(tokens) if t == "pytest" or t.endswith("/pytest")), None)
     if start is None:
         return
-    it = iter(tokens[start + 1 :])
+    words = tokens[start + 1 :]
+    # A redirect's file descriptor (``2>&1`` splits as 2, >&, 1) is no argument.
+    redirects = {">", ">>", ">&", "<"}
+    words = [
+        w
+        for i, w in enumerate(words)
+        if not (w.isdigit() and i + 1 < len(words) and words[i + 1] in redirects)
+    ]
+    it = iter(words)
+    # Whether the command names a path, or something that may be one; with
+    # none, pytest runs testpaths. An empty input or variable names none.
+    named = False
+    runs_none = False
     for tok in it:
         if tok in _COMMAND_ENDS:
             break
@@ -374,8 +394,12 @@ def read_command(command: str, wf: Workflow, empty: Iterable[str] = ()) -> None:
         if tok == "--keep-duplicates":
             wf.keep_duplicates = True
             continue
+        if tok in _RUNS_NONE:
+            runs_none = True
+            continue
         if tok.startswith("-"):
             continue
+        named = True
         if tok.startswith(_QUOTED):
             # A quoted node id whose test id holds the glob character
             # (``'f.py::test[a-1]'``) selects its file; a quoted glob path
@@ -407,6 +431,14 @@ def read_command(command: str, wf: Workflow, empty: Iterable[str] = ()) -> None:
             # The shell's glob, not GitHub's: without globstar, bash reads ``**``
             # as ``*``, which stays within one directory.
             wf.selectors.append(_selector(re.sub(r"\*\*+", "*", path)))
+    if not named and not runs_none:
+        # ``pytest -x`` alone runs testpaths, from the repository's root
+        # (where a step runs unless it says otherwise).
+        for path in _TESTPATHS:
+            if path == "python/tests":
+                wf.whole = True
+            else:
+                wf.selectors.append(_selector(path))
 
 
 # --- does a workflow run on this pull request -------------------------------

@@ -24,6 +24,7 @@ What is pinned here:
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -970,6 +971,53 @@ def test_added_files_are_new_test_files_and_renames(repo):
         "python/tests/test_renamed.py",
         "python/tests/test_ünï.py",
     ]
+
+
+def test_pyproject_testpaths_is_what_the_script_reads():
+    # A command that names no path runs testpaths; the script holds a copy.
+    want = "testpaths = " + json.dumps(list(ntc._TESTPATHS))
+    assert want in _read(REPO_ROOT / "pyproject.toml").splitlines()
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python -m pytest",
+        "pytest",
+        "python -m pytest -x -p no:cacheprovider -n auto",
+        "python -m pytest -x 2>&1 | tee pytest.log",
+        "python -m pytest --junitxml=r.xml > pytest.log",
+        # A dispatch input, empty on a pull request.
+        "python -m pytest ${{ inputs.pytest_args }}",
+        "python -m pytest $EXTRA",
+    ],
+)
+def test_a_command_that_names_no_path_runs_testpaths(command):
+    w = _cmd(command, empty=["EXTRA"])
+    assert w.whole and not w.selectors and not w.node_ids and not w.unreadable, command
+    w.fires = True
+    assert w.runs(_H1)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # A path of any kind, the suite's or not: pytest runs that, not testpaths.
+        "python -m pytest docs/test_a.py",
+        "python -m pytest python/tests/test_a.py 2>&1",
+        "python -m pytest --pyargs bngsim",
+        # These run no test at all.
+        "python -m pytest --version",
+        "python -m pytest --collect-only -q",
+        "python -m pytest --fixtures",
+    ],
+)
+def test_a_command_that_names_a_path_or_runs_none_is_not_testpaths(command):
+    assert not _cmd(command).whole, command
+
+
+def test_a_lone_pytest_line_is_a_command():
+    assert ntc.pytest_commands("    steps:\n      - run: pytest\n") == ["      - run: pytest"]
 
 
 def test_pyproject_keeps_pytests_default_python_files():
