@@ -302,12 +302,18 @@ def test_a_species_not_converged_at_the_run_tolerance_is_left_out_not_the_base()
     shaky = base.against(base.x)
     shaky.drift_abs = base.drift_abs.copy()
     shaky.drift_abs[s] = 0.1 * base.peak[s]
-    assert not shaky.judged()[s] and shaky.judged().any()
+    assert not shaky.converged()[s] and shaky.converged().any()
     off = base.x.copy()
     off[:, s] *= 1.5  # within ten times its own drift: not judged anyway
     p = base.species_names.index("P")
     v = shaky.compare(off)
     assert v.status == "pass" and "1 species not converged" in v.note, v
+    # but one that blows up there is still a finding (Fable's review: left
+    # out, S = NaN, -1e300 or 1e6 passed)
+    for bad in (np.nan, -1e300, 1e6):
+        blown = base.x.copy()
+        blown[5:, s] = bad
+        assert shaky.compare(blown).status == "diff", bad
     off[:, p] *= 1.01
     assert shaky.compare(off).status == "diff"
 
@@ -2907,3 +2913,88 @@ def test_a_steady_state_is_held_to_the_solves_own_tolerance_too(monkeypatch):
     _plant(monkeypatch, state=lambda x: x + np.array([0.0, 5e-9]))
     v = D.check_steady(base, "integration")
     assert v.status == "pass", v
+
+
+def _bistable(name: str, x0: float) -> D.Job:
+    """X rests at about 1e-3 from 0, and at about 1e3 from 3000."""
+    path = _DIR / f"{name}.net"
+    path.write_text(
+        "begin parameters\n 1 k0 1e-6\n 2 k1 1.001001e-3\n 3 k2 1.001001e-3\n 4 k3 1e-6\n"
+        "end parameters\n"
+        f"begin species\n 1 X() {x0}\n 2 Y() 5\nend species\n"
+        "begin reactions\n 1 0 1 k0\n 2 1 0 k1\n 3 1,1 1,1,1 k2\n 4 1,1,1 1,1 k3\n"
+        " 5 0 2 k0\n 6 2 0 k1\nend reactions\n"
+    )
+    return D.Job(name, path, 0.0, 10.0, 21)
+
+
+def test_a_second_stable_state_is_read_on_its_own_scale(monkeypatch):
+    """Fable's review of #1887: a run from the solve's state (X at 1e3) was
+    judged on the scale of the run's end (X at 1e-3), and its rounding read as
+    a run that does not rest: DIFF. On its own scale it rests: the model's
+    bistability, SKIP."""
+    hi = bngsim.Simulator(bngsim.Model.from_net(str(_bistable("bi-hi", 3000).path)))
+    x_hi = np.asarray(hi.steady_state(method="newton", rtol=1e-8, atol=1e-10).concentrations)
+    base = D.Base(_bistable("bi-lo", 0))
+    _plant(monkeypatch, state=lambda x: x_hi * (1 + 5e-9))
+    v = D.check_steady(base, "newton")
+    assert v.status == "skip" and "two stable states" in v.note, v
+
+
+def test_the_solve_floor_reads_the_start_as_steady_state_cpp_does(monkeypatch):
+    """ss_largest_species takes the start's largest species too: A at 1 drains
+    to 0 and B rests at 2e-6, so the solve's floor is min(1e-10, 1e-8·1), not
+    2e-14. B off by 5e-11 is inside it."""
+    path = _DIR / "drain.net"
+    path.write_text(
+        "begin parameters\n 1 ka 1\n 2 ks 2e-8\n 3 kd 0.01\nend parameters\n"
+        "begin species\n 1 A() 1\n 2 B() 1e-6\nend species\n"
+        "begin reactions\n 1 1 0 ka\n 2 0 2 ks\n 3 2 0 kd\nend reactions\n"
+    )
+    base = D.Base(D.Job("drain", path, 0.0, 10.0, 21))
+    _plant(monkeypatch, state=lambda x: x + np.array([0.0, 5e-11]))
+    v = D.check_steady(base, "integration")
+    assert v.status == "pass", v
+
+
+def test_the_whole_scale_reads_only_converged_drift():
+    """Fable's review: a species at 0 took the largest drift of ANY resolved
+    column, an unconverged one's included, and departed to four times the
+    largest peak within it."""
+    ratio, _ = D._check.path_margins(
+        np.array([0.0, 0.0, 4.0]),
+        np.array([1.0, 1.0, 0.0]),
+        np.full(3, 1e-10),
+        1e-8,
+        np.array([0.0, 0.5, 0.0]),
+        np.ones(3, dtype=bool),
+        own=np.array([True, False, False]),
+    )
+    assert ratio[2] > 1.0, ratio
+
+
+@pytest.mark.parametrize(("half", "status"), [(3e-4, "pass"), (0.0, "diff")])
+def test_a_tolerance_jitter_is_read_against_the_other_jitters_scatter(monkeypatch, half, status):
+    """Fable's review: BIOMD0000000787 at rtol x2 moved 3.0e-3 of a species'
+    peak where the tighter run moved 1.2e-4, and read as contested. Each
+    tolerance jitter is read against the other's scatter: P at rtol x2 off by
+    2e-3 is within ten times a 3e-4 move at rtol x0.5, and past it where the
+    x0.5 run does not move."""
+    base = D.Base(_pool_and_trace())
+    p = base.species_names.index("P")
+    real = D.run
+
+    def jitters(job, **kw):
+        result, sim = real(job, **kw)
+        f = {2 * base.job.rtol: 1 + 2e-3, 0.5 * base.job.rtol: 1 + half}
+        hit = next((v for k, v in f.items() if job.rtol == pytest.approx(k)), None)
+        if hit is not None and not kw:
+            scale = np.where(np.arange(len(result.species_names)) == p, hit, 1.0)
+            result = types.SimpleNamespace(
+                species=np.asarray(result.species) * scale, species_names=result.species_names
+            )
+        return result, sim
+
+    monkeypatch.setattr(D, "run", jitters)
+    v = D.check_stable(base)
+    assert v.status == status, v

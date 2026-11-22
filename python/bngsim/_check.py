@@ -31,8 +31,10 @@ and each column's absolute floor is the atol the run applied to that species:
   it departs from zero as far as the run's own species are large is one
   (issue #1887);
 - a column that is not converged at the run's own tolerance (its move past
-  :data:`TOLERANCE_MOVE`) is not judged; where no column is, the verdict is
-  ``no_base``, and a report on a run that is not converged is never ok.
+  :data:`TOLERANCE_MOVE`) is judged on the run's whole scale, as one not
+  resolved is: a path on which it blows up still fails. Where no column is
+  converged, the verdict is ``no_base``, and a report on a run that is not
+  converged is never ok.
 
 The constants are the developer-side differential harness's
 (``parity_checks/differential``, issue #1257). Its comparison is over the whole
@@ -189,17 +191,30 @@ def resolved(
     peak: NDArray[np.float64], atol: NDArray[np.float64], rtol: float
 ) -> NDArray[np.bool_]:
     """The columns the run resolves: not within :data:`TRACE_ATOLS` of their
-    atol of zero where that atol, not rtol, holds them."""
-    return ~((peak <= TRACE_ATOLS * atol) & (atol > rtol * peak))
+    atol of zero where that atol, not rtol, holds them (a column at 0 with an
+    atol of 0 resolves nothing either)."""
+    return ~((peak <= TRACE_ATOLS * atol) & ((atol > rtol * peak) | (peak == 0)))
 
 
-def spread(tight: NDArray[np.float64], loose: NDArray[np.float64] | None) -> NDArray[np.float64]:
+def spread(
+    tight: NDArray[np.float64],
+    loose: NDArray[np.float64] | None,
+    peak: NDArray[np.float64] | None = None,
+) -> NDArray[np.float64]:
     """Each column's drift for a path's allowance: its move at the tighter
     tolerance, or its move at :data:`SPREAD_FACTOR` times the tolerance over
-    that factor, whichever is larger (*loose* None where that run failed)."""
+    that factor, whichever is larger (*loose* None where that run failed).
+    The looser run widens a column only where its move is finite and, over
+    the factor, within :data:`TOLERANCE_MOVE` of the column's *peak*: a
+    looser run that blows up, or is not converged itself, says nothing of a
+    correct run's scatter, and would forgive any path."""
     if loose is None:
         return tight
-    return np.maximum(tight, np.asarray(loose, dtype=float) / SPREAD_FACTOR)
+    half = np.asarray(loose, dtype=float) / SPREAD_FACTOR
+    ok = np.isfinite(half)
+    if peak is not None:
+        ok &= half <= TOLERANCE_MOVE * np.asarray(peak, dtype=float)
+    return np.where(ok, np.maximum(tight, np.where(ok, half, 0.0)), tight)
 
 
 def path_margins(
@@ -209,30 +224,36 @@ def path_margins(
     rtol: float,
     drift: NDArray[np.float64],
     judged: NDArray[np.bool_],
+    own: NDArray[np.bool_] | None = None,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
     """Per column: its difference *d* over its allowance, and over its scale,
-    each 0 where *judged* is False. A resolved column's allowance and scale are
-    its own (:func:`allowance`, its peak). One the run does not resolve
-    (:func:`resolved`) is held to the run's whole scale: the allowance of a
-    column at the largest peak and atol with the largest drift of a resolved
-    column, and the largest peak; within its own atols it is noise, past the
-    run's scale it is a finding. Shared by :meth:`bngsim.Result.check` and the
-    developer-side differential harness, so a verdict means one thing in both
-    (issue #1887)."""
-    own = allowance(peak, atol, rtol, drift)
+    each 0 where *judged* is False. A column in *own* (default: those the run
+    resolves, :func:`resolved`) is held to its own allowance and peak. Any
+    other, one the run does not resolve or one not converged at its
+    tolerance, is held to the run's whole scale as well: the larger of its own
+    allowance and that of a column at the largest peak and atol with the
+    largest drift of an *own* column, read on the largest peak. Within its
+    atols, or its own scatter, it is noise; past the run's scale it is a
+    finding, and so is a value non-finite where the reference's is not.
+    Shared by :meth:`bngsim.Result.check` and the developer-side differential
+    harness, so a verdict means one thing in both (issue #1887)."""
+    mine = resolved(peak, atol, rtol) if own is None else np.asarray(own, dtype=bool)
+    allow = allowance(peak, atol, rtol, drift)
     scale = peak
-    trace = ~resolved(peak, atol, rtol)
-    if trace.any() and peak.size:
-        keep = np.isfinite(drift) & ~trace
+    other = ~mine
+    if other.any() and peak.size:
+        keep = np.isfinite(drift) & mine
         dmax = float(drift[keep].max()) if keep.any() else 0.0
         largest = float(peak.max())
         whole = allowance(
             np.array([largest]), np.array([float(atol.max())]), rtol, np.array([dmax])
         )[0]
-        own = np.where(trace, np.maximum(own, whole), own)
-        scale = np.where(trace, largest, peak)
+        allow = np.where(other, np.maximum(allow, whole), allow)
+        scale = np.where(other, largest, peak)
     with np.errstate(divide="ignore", invalid="ignore"):
-        ratio = np.where(own > 0, d / np.where(own > 0, own, 1.0), np.where(d > 0, np.inf, 0.0))
+        ratio = np.where(
+            allow > 0, d / np.where(allow > 0, allow, 1.0), np.where(d > 0, np.inf, 0.0)
+        )
         rel = np.where(scale > atol, d / np.where(scale > 0, scale, 1.0), 0.0)
     ratio = np.where(judged, np.nan_to_num(ratio, nan=np.inf), 0.0)
     return ratio, np.where(judged, rel, 0.0)
@@ -568,7 +589,8 @@ class _Context:
             except Exception:  # noqa: BLE001 - the tighter run's drift stands
                 self.spread_abs = self.drift_abs
             else:
-                self.spread_abs = spread(self.drift_abs, differences(self._view(loose), self.x)[0])
+                d, peak = differences(self._view(loose), self.x)
+                self.spread_abs = spread(self.drift_abs, d, peak)
         return self.spread_abs
 
     def _worst(self, score: NDArray[np.float64]) -> str | None:
@@ -601,12 +623,13 @@ class _Context:
                 f"{TOLERANCE_MOVE:g} of its peak at a tenfold tighter one): no path is judged",
                 changed=changed,
             )
-        # The converged columns, and those the run does not resolve, on the
-        # run's whole scale.
-        judged = converged | ~self.relevant
+        # Every column: a converged one on its own allowance, any other (not
+        # resolved, or not converged at the run's tolerance) on the run's
+        # whole scale too, so that a path on which it blows up still fails.
+        judged = np.ones(converged.shape, dtype=bool)
         d, peak = differences(x, self.x)
         ratio, rel = path_margins(
-            d, peak, self.atols, float(self.rtol), self._ensure_spread(), judged
+            d, peak, self.atols, float(self.rtol), self._ensure_spread(), judged, own=converged
         )
         worst = self._worst(ratio)
         margin = float(ratio.max()) if ratio.size else 0.0
@@ -618,7 +641,10 @@ class _Context:
             f"{margin:.2g} of its allowance"
         )
         if n_out:
-            note += f"; {n_out} column(s) not judged, not converged at the run's tolerance"
+            note += (
+                f"; {n_out} column(s) not converged at the run's tolerance, judged on the "
+                f"run's whole scale"
+            )
         n_trace = int((~self.relevant).sum())
         if n_trace:
             note += (

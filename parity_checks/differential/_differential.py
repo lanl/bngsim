@@ -415,7 +415,7 @@ class Base:
         self.spread_abs = self.drift_abs
         if not self.drift_error:
             try:
-                self.spread_abs = _check.spread(self.drift_abs, own_spread(job, self.x))
+                self.spread_abs = _check.spread(self.drift_abs, own_spread(job, self.x), self.peak)
             except Exception as e:  # noqa: BLE001 - the tighter run's drift stands
                 if _timed_out(e):
                     raise
@@ -457,12 +457,13 @@ class Base:
         return self.resolved(peak) & (self.moved(peak) <= UNJUDGEABLE_DRIFT)
 
     def judged(self, peak: np.ndarray | None = None) -> np.ndarray:
-        """The species a path is judged on: the converged ones, and those the run
-        does not resolve, on the run's whole scale (``_check.path_margins``);
-        none where the base is no reference."""
+        """The species a path is judged on: every one, the converged ones on
+        their own allowance and the rest on the run's whole scale
+        (``_check.path_margins``), so a path on which an unconverged species
+        blows up still fails; none where the base is no reference."""
         if self.drift_error or not self.converged(peak).any():
             return np.zeros(self.atols.shape, dtype=bool)
-        return self.converged(peak) | ~self.resolved(peak)
+        return np.ones(self.atols.shape, dtype=bool)
 
     @property
     def unjudgeable(self) -> str:
@@ -490,6 +491,7 @@ class Base:
         mask: np.ndarray | None = None,
         scale: float = 1.0,
         drift: np.ndarray | None = None,
+        own: np.ndarray | None = None,
     ) -> tuple[float, float, int | None]:
         """How far ``x`` is from ``ref`` (default the base's trajectory; or a
         slice of it, of the same columns), as the largest ratio of a species'
@@ -508,7 +510,10 @@ class Base:
         peak = self.peak if peak is None else peak
         mask = self.judged(peak) if mask is None else mask
         drift = self.spread_abs if drift is None else drift
-        ratio, rel = _check.path_margins(d / scale, peak, self.atols, self.job.rtol, drift, mask)
+        own = self.converged(peak) if own is None else own
+        ratio, rel = _check.path_margins(
+            d / scale, peak, self.atols, self.job.rtol, drift, mask, own=own
+        )
         if not ratio.size:
             return 0.0, 0.0, None
         j = int(np.argmax(ratio))
@@ -834,7 +839,8 @@ def check_grid(base: Base) -> Verdict:
 def _steady_run(job: Job, state=None, rtol_scale: float = 1.0, with_atols: bool = False):
     """A run to :data:`STEADY_HORIZON` from the model's initial state, or from
     ``state``: its samples at 0, 1/4, ..., all of the horizon; with
-    ``with_atols``, also each species' atol as the run applied it."""
+    ``with_atols``, also each species' atol as the run applied it, and the
+    columns' names."""
     import bngsim
 
     model = load(job.path)
@@ -853,7 +859,19 @@ def _steady_run(job: Job, state=None, rtol_scale: float = 1.0, with_atols: bool 
     if not with_atols:
         return y
     names = list(r.species_names)
-    return y, _check.column_atols(r, names, getattr(r, "_run_atol", None), job.atol * rtol_scale)
+    atols = _check.column_atols(r, names, getattr(r, "_run_atol", None), job.atol * rtol_scale)
+    return y, atols, names
+
+
+def _fixed(model, names) -> np.ndarray:
+    """Which of ``names`` the model holds fixed (a boundary or constant
+    species): none where ``describe()`` does not say."""
+    try:
+        rows = model.describe(limit=None)["species"]
+        fixed = {r["name"] for r in rows if r.get("fixed")}
+    except Exception:  # noqa: BLE001 - a model that cannot describe itself
+        fixed = set()
+    return np.array([n in fixed for n in names], dtype=bool)
 
 
 def _judged(model) -> np.ndarray:
@@ -893,12 +911,20 @@ class _Rest:
 
     def margin(self, x, ref=None, drift=None) -> tuple[float, int | None]:
         """The largest ratio of a judged species' difference from ``ref`` (the
-        end) to its allowance, and which species."""
-        ref = self.end if ref is None else ref
-        d = np.abs(np.asarray(x, dtype=float) - ref)
+        end) to its allowance, and which species. Against another state (the
+        solve's, the start), each species is read on that state's scale: a run
+        from a second stable state at 1e3 is not held to the 1e-3 the run
+        rests at."""
+        x = np.asarray(x, dtype=float)
+        if ref is None:
+            ref, peak = self.end, self.peak
+        else:
+            ref = np.asarray(ref, dtype=float)
+            peak = np.maximum(np.abs(ref), np.where(np.isfinite(x), np.abs(x), 0.0))
+        d = np.abs(x - ref)
         d = np.where(np.isfinite(d), d, np.inf)
         drift = self.spread if drift is None else drift
-        ratio, _ = _check.path_margins(d, self.peak, self.atols, self.rtol, drift, self.keep)
+        ratio, _ = _check.path_margins(d, peak, self.atols, self.rtol, drift, self.keep)
         if not ratio.size:
             return 0.0, None
         j = int(np.argmax(ratio))
@@ -914,9 +940,11 @@ def _settled_run(base: Base):
     if not hasattr(base, "_steady"):
         try:
             job = base.job
-            keep = _judged(load(job.path))
+            model = load(job.path)
+            keep = _judged(model)
+
             try:
-                y, atols = _steady_run(job, with_atols=True)
+                y, atols, names = _steady_run(job, with_atols=True)
                 tight = _steady_run(job, rtol_scale=0.1)[-1]
             except Exception as e:  # noqa: BLE001 - the parity suites own a run that fails
                 if _timed_out(e):
@@ -933,7 +961,11 @@ def _settled_run(base: Base):
             # coarser of the two. BIOMD0000000609's
             # Sulphate_PAPS at 1.3e-14, which the run holds to 1.3e-20, came
             # back -1.5e-14 from a solve whose floor was 1e-9.
-            largest = float(np.abs(y[-1][np.isfinite(y[-1])]).max(initial=0.0))
+            # ss_largest_species: the start's and the state's, fixed species
+            # left out.
+            fixed = _fixed(model, names)
+            both = np.abs(np.concatenate([y[0][~fixed], y[-1][~fixed]]))
+            largest = float(both[np.isfinite(both)].max(initial=0.0))
             floor = min(job.atol, max(job.rtol, SOLVE_RTOL_LEAST) * largest)
             rest = _Rest(y, np.maximum(atols, floor), tight, keep, job.rtol)
             if not rest.keep.any():
@@ -1735,7 +1767,9 @@ def check_batch(base: Base) -> Verdict:
             ref = _species(b, base)
             peak = _check.differences(ref, ref)[1]
             every = np.full(peak.shape, not base.drift_error)
-            m, rel, j = base.margin(_species(a, base), ref, peak=peak, mask=every)
+            m, rel, j = base.margin(
+                _species(a, base), ref, peak=peak, mask=every, own=base.resolved(peak)
+            )
             who = f" ({base.species_names[j]})" if j is not None else ""
             note = (
                 f"point {i} on {BATCH_THREADS} threads against one at a time: {rel:.2e} of a "
@@ -1818,6 +1852,7 @@ def check_stable(base: Base) -> Verdict:
         # The tighter run's drift alone: the spread reads the run at twice the
         # tolerance, one of this check's own jitters, which would forgive it.
         tight = base.drift_abs
+        mine = base.resolved()
 
         def rerun(label: str, fn):
             """The rerun's species, or None where it fails where the base ran,
@@ -1844,17 +1879,32 @@ def check_stable(base: Base) -> Verdict:
             if x is None:
                 continue
             if m == 2 * n - 1:
-                g = base.margin(x[::2], mask=every, drift=tight)[0]
+                g = base.margin(x[::2], mask=every, drift=tight, own=mine)[0]
             else:
-                g = base.margin(x[-1:], base.x[-1:], mask=every, drift=tight)[0]
+                g = base.margin(x[-1:], base.x[-1:], mask=every, drift=tight, own=mine)[0]
             if g > 1.0:
                 jumps[label] = g
+        # Each tolerance jitter is read against the scatter the OTHER one
+        # shows (_check.spread): one tighter run understates what a correct run
+        # strays by, and a jitter read against its own move forgives itself.
+        # BIOMD0000000787 at rtol x2 moved 3.0e-3 of a species' peak where the
+        # tighter run moved 1.2e-4.
+        runs = {}
         for f in JITTER_RTOL:
             jittered = Job(**{**job.__dict__, "rtol": job.rtol * f, "atol": job.atol * f})
-            x = rerun(f"rtol x{f:g}", lambda j=jittered: run(j))
+            runs[f] = rerun(f"rtol x{f:g}", lambda j=jittered: run(j))
+        for f, x in runs.items():
             if x is None:
                 continue
-            g = base.margin(x, mask=every, scale=max(1.0, f), drift=tight)[0]
+            drift = tight
+            for g_, other in runs.items():
+                if g_ != f and other is not None:
+                    d_other, _ = _check.differences(other, base.x)
+                    # the other run's move, as a scatter at the base's tolerance
+                    drift = _check.spread(
+                        drift, d_other * _check.SPREAD_FACTOR / max(g_, 1.0), base.peak
+                    )
+            g = base.margin(x, mask=every, scale=max(1.0, f), drift=drift, own=mine)[0]
             if g > 1.0:
                 jumps[f"rtol x{f:g}"] = g
         nudged = f"a start nudged by {START_NUDGE:g} of a step's allowance"
@@ -1864,8 +1914,11 @@ def check_stable(base: Base) -> Verdict:
             # bound at the first row after the start is the model's own laws
             # telling the two starts apart, `if(Bobs==0, kb, 0)` on a B its law
             # holds at exactly 0 (#1228), which no rounding breaks.
-            g = base.margin(x, mask=every, drift=tight)[0]
-            if g > 1.0 and base.margin(x[1:2], base.x[1:2], mask=every, drift=tight)[0] <= 1.0:
+            g = base.margin(x, mask=every, drift=tight, own=mine)[0]
+            if (
+                g > 1.0
+                and base.margin(x[1:2], base.x[1:2], mask=every, drift=tight, own=mine)[0] <= 1.0
+            ):
                 jumps[nudged] = g
         if jumps:
             shown = ", ".join(f"{k} {g:.1e}" if np.isfinite(g) else k for k, g in jumps.items())
