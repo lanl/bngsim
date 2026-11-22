@@ -234,9 +234,110 @@ def test_the_sensitivity_rhs_is_analytic(shape):
 def test_a_path_off_by_more_than_the_bound_is_a_finding():
     base = D.Base(SHAPES["triangle-maxabs"])
     assert base.compare(base.x).status == "pass"
-    off = base.x * (1 + 10 * base.limit)
+    # Every species 1% off: past 1e3·(atol + rtol·peak) at rtol 1e-8.
+    v = base.compare(base.x * 1.01)
+    assert v.status == "diff" and v.extra["margin"] > 1.0, v
+    assert v.value == pytest.approx(0.01, rel=1e-6), v
+
+
+def _pool_and_trace() -> D.Job:
+    """A large pool beside a small species: P at 1e3 decays slowly, S at
+    about 1e-5 is made from it and decays fast."""
+    return D.Job(
+        "pool-and-trace",
+        _sbml(
+            "pool_and_trace",
+            "P = 1000; S = 0; kp = 0.01; ks = 1e-8; kd = 1;"
+            " J1: P -> ; kp*P; J2: -> S; ks*P; J3: S -> ; kd*S;",
+        ),
+        0.0,
+        10.0,
+        21,
+        1e-8,
+        1e-10,
+    )
+
+
+def test_a_small_species_beside_a_large_pool_is_judged_on_its_own_scale():
+    """Issue #1887: against the largest species' peak, S (1e-5 beside P at 1e3)
+    a hundredfold wrong was 0.1 of 1e-6 of the trajectory's peak, and passed.
+    Judged on its own peak, it is a finding, and named."""
+    base = D.Base(_pool_and_trace())
+    s = base.species_names.index("S")
+    assert 1e-6 < base.peak[s] < 1e-4 and base.peak[s] < 1e-7 * base.peak.max()
+    off = base.x.copy()
+    off[:, s] *= 100.0
+    # what the whole-trajectory rule said: within its bound
+    old_floor = D.PATH_RTOL_FACTOR * base.job.atol
+    assert D.gap(off, base.x, old_floor) <= D.PATH_RTOL_FACTOR * base.job.rtol
     v = base.compare(off)
-    assert v.status == "diff" and v.value > base.limit, v
+    assert v.status == "diff" and v.extra["worst"] == "S", v
+    # and a small error in S still passes: its allowance is its own
+    near = base.x.copy()
+    near[:, s] *= 1 + 1e-6
+    assert base.compare(near).status == "pass"
+
+
+def test_a_species_within_its_atol_of_zero_is_judged_on_the_runs_scale_only():
+    """A species the run holds within a hundred atols of zero is resolved no
+    better: a path that differs there by its whole value is not a finding,
+    and the note counts it."""
+    base = D.Base(_pool_and_trace())
+    tiny = base.against(base.x.copy())
+    s = base.species_names.index("S")
+    tiny.x[:, s] = base.x[:, s] * 1e-9  # a peak ~1e-12, under 100 x its atol
+    assert not tiny.resolved()[s]
+    off = tiny.x.copy()
+    off[:, s] *= 3.0
+    v = tiny.compare(off)
+    assert v.status == "pass" and "within 100 atol of zero, judged on the run's whole" in v.note, v
+
+
+def test_a_species_not_converged_at_the_run_tolerance_is_left_out_not_the_base():
+    """One species that moves past UNJUDGEABLE_DRIFT at the tighter tolerance
+    is not judged; the base is still a reference for the rest. The old rule
+    made the whole base no reference."""
+    base = D.Base(_pool_and_trace())
+    s = base.species_names.index("S")
+    shaky = base.against(base.x)
+    shaky.drift_abs = base.drift_abs.copy()
+    shaky.drift_abs[s] = 0.1 * base.peak[s]
+    assert not shaky.converged()[s] and shaky.converged().any()
+    off = base.x.copy()
+    off[:, s] *= 1.5  # within ten times its own drift: not judged anyway
+    p = base.species_names.index("P")
+    v = shaky.compare(off)
+    assert v.status == "pass" and "1 species not converged" in v.note, v
+    # but one that blows up there is still a finding (Fable's review: left
+    # out, S = NaN, -1e300 or 1e6 passed)
+    for bad in (np.nan, -1e300, 1e6):
+        blown = base.x.copy()
+        blown[5:, s] = bad
+        assert shaky.compare(blown).status == "diff", bad
+    off[:, p] *= 1.01
+    assert shaky.compare(off).status == "diff"
+
+
+def test_the_per_species_atol_is_matched_by_name_where_the_state_holds_more():
+    """A parameter an event promotes joins the state after the species, so the
+    run's atol vector is longer than the species: matched by name, A keeps its
+    own 1e-14, not the scalar ceiling 1e-10."""
+    job = D.Job(
+        "promoted",
+        _sbml(
+            "promoted",
+            "A = 1e-6; B = 1; k = 1; J0: A -> ; k*A; J1: B -> ; 0.1*B; E1: at time > 1: k = 2;",
+        ),
+        0.0,
+        5.0,
+        11,
+        1e-8,
+        1e-10,
+    )
+    result, _ = D.run(job)
+    assert list(result.species_names) == ["A", "B"] and list(result.state_names) == ["A", "B", "k"]
+    base = D.Base(job)
+    assert base.atols.tolist() == pytest.approx([1e-14, 1e-10]), base.atols
 
 
 def test_a_path_within_atol_is_not_a_finding():
@@ -802,7 +903,8 @@ def test_the_conditioning_gate_keeps_a_chaotic_model_from_a_false_finding(monkey
     monkeypatch.setattr(D, "UNJUDGEABLE_DRIFT", float("inf"))
     bounded = D.check_ajac(D.Base(job))
     assert bounded.status == "pass", bounded
-    monkeypatch.setattr(D, "DRIFT_FACTOR", 0.0)
+    # The rule is bngsim._check's (issue #1887): its drift factor is the one read.
+    monkeypatch.setattr(D._check, "DRIFT_FACTOR", 0.0)
     ungated = D.check_ajac(D.Base(job))
     assert ungated.status == "diff", ungated
 
@@ -903,15 +1005,52 @@ def test_a_nanomolar_state_is_stepped_on_its_own_scale():
     assert D.sparsity_misses(Nano(_csc([[1, 0], [1, 0]])), y) == [(0, 1)]
 
 
-def test_a_trajectory_wholly_under_the_floor_is_not_a_pass():
-    """A BioModel in molar units peaks under 1e3·atol: every path inside the
-    floor read PASS, a path of all zeros included. It is SKIP, said why; a path
-    that clears the floor is still judged."""
+def test_a_trajectory_wholly_within_its_atols_is_not_a_pass():
+    """A base whose every species is within a hundred atols of zero resolves
+    nothing: a path of all zeros read PASS. It is SKIP, said why."""
     base = D.Base(SHAPES["triangle-maxabs"])
-    tiny = base.against(base.x * 1e-12)  # a peak of ~1e-11 under a floor of 1e-7
+    tiny = base.against(base.x * 1e-12)  # a peak of ~1e-11, atols of 1e-10
     v = tiny.compare(np.zeros_like(base.x))
-    assert v.status == "skip" and "under the absolute floor" in v.note, v
-    assert tiny.compare(tiny.x + 1.0).status == "diff"
+    assert v.status == "skip" and "within 100 times its atol of zero" in v.note, v
+
+
+def test_a_model_in_molar_units_is_judged_at_the_atols_its_run_applied():
+    """A BioModel in molar units peaks under 1e3·atol, the old rule's floor, so
+    no path of it could fail. Each species' atol as the run applied it is rtol
+    of its own scale (#1420): a 1% error in P at 1e-8 M is a finding."""
+    job = D.Job(
+        "molar",
+        _sbml("molar", "P = 1e-8; S = 0; kp = 0.1; kd = 1; J1: P -> S; kp*P; J2: S -> ; kd*S;"),
+        0.0,
+        10.0,
+        21,
+        1e-8,
+        1e-10,
+    )
+    base = D.Base(job)
+    assert base.peak.max() < D.PATH_RTOL_FACTOR * job.atol
+    assert D.gap(base.x * 1.01, base.x, D.PATH_RTOL_FACTOR * job.atol) == 0.0  # the old rule
+    v = base.compare(base.x * 1.01)
+    assert v.status == "diff", v
+    assert base.compare(base.x * (1 + 1e-7)).status == "pass"
+
+
+def test_a_species_at_zero_that_departs_on_the_runs_scale_is_a_finding():
+    """A species the base holds at 0 is not resolved, and its noise is no
+    finding; a path on which it departs as far as the run's species are large
+    is one, on the run's whole scale (``_check.path_margins``)."""
+    base = D.Base(_pool_and_trace())
+    zero = base.against(base.x.copy())
+    s = base.species_names.index("S")
+    zero.x[:, s] = 0.0
+    assert not zero.resolved()[s]
+    noisy = zero.x.copy()
+    noisy[:, s] = 1e-12
+    assert zero.compare(noisy).status == "pass"
+    gone = zero.x.copy()
+    gone[:, s] = 1.0  # 1e-3 of P's 1e3: past 1e3·rtol of the run's scale
+    v = zero.compare(gone)
+    assert v.status == "diff" and v.extra["worst"] == "S", v
 
 
 def test_a_state_the_rule_cannot_reach_is_left_out_not_an_exception(monkeypatch):
@@ -1798,7 +1937,10 @@ def test_a_skip_against_the_base_does_not_hide_a_threaded_points_diff(monkeypatc
     """Point 0 is judged against the base, and reads SKIP where the base moves
     past UNJUDGEABLE_DRIFT at a tighter tolerance; a threaded point against
     the same point run alone needs no base, and its DIFF is the row's."""
-    monkeypatch.setattr(D, "own_drift", lambda job, x: 2.0 * D.UNJUDGEABLE_DRIFT)
+    # Each species moves twice UNJUDGEABLE_DRIFT of its peak.
+    monkeypatch.setattr(
+        D, "own_drift", lambda job, x: 2.0 * D.UNJUDGEABLE_DRIFT * np.abs(x).max(axis=0)
+    )
     base = D.Base(SHAPES["equality-dwell"])
     assert base.compare(base.x).status == "skip"
     _threaded_point_1_doubled(monkeypatch)
@@ -1880,7 +2022,11 @@ def test_an_arm_takes_a_side_within_the_bound_and_none_past_it():
     base = _base("derived-log10")
     ref, path = base.x, base.x * 1.5
     v = _verdict(ref, path)
-    near, far = 1.0 + 0.5 * base.limit, 1.0 + 2.0 * base.limit
+    # Every species is off by the same share of its peak; the tightest
+    # species' allowance, as that share, is the bound the arms straddle.
+    allow = D._check.allowance(base.peak, base.atols, base.job.rtol, base.drift_abs)
+    bound = float(np.min(allow / base.peak))
+    near, far = 1.0 + 0.5 * bound, 1.0 + 2.0 * bound
     a = D.attribute(base, v, {"tighter": path * near, "dense": ref * near})
     assert a["verdict"] == "split", a
     assert a["arms"]["tighter"]["side"] == "path" and a["arms"]["dense"]["side"] == "reference", a
@@ -2052,7 +2198,7 @@ def test_a_restart_leg_that_fails_against_a_base_with_no_reference_is_skip(monke
 
     def own_drift(job, x):
         if why == "moves":
-            return 0.41
+            return 0.41 * np.abs(x).max(axis=0)  # each species 41% of its peak
         raise bngsim.SimulationError("CVODE integration failed (planted)")
 
     monkeypatch.setattr(D, "own_drift", own_drift)
@@ -2491,7 +2637,8 @@ def test_steady_state_is_where_a_run_comes_to_rest(method):
 @pytest.mark.parametrize(
     ("method", "why"),
     [
-        ("integration", "a run from its state moves 1.0e+00; X() at 5.00022e-10"),
+        # X() at 5e-10, about to leave for 1e-9: tens of thousands of its allowance
+        ("integration", "times a species' allowance; X() at 5.00022e-10"),
         # a run from the root itself stays: the spectrum is what sees it
         ("newton", "an unstable root (an eigenvalue of 2.10e-01), where the run comes"),
     ],
@@ -2568,8 +2715,9 @@ def test_an_initial_state_on_an_unstable_root_is_not_a_finding(monkeypatch):
     base = D.Base(job)
     real = D._steady_run
 
-    def rounding(job, state=None, rtol_scale=1.0):
-        return real(job, state if state is not None else [0.3e-9 * (1 + 1e-6)], rtol_scale)
+    def rounding(job, state=None, rtol_scale=1.0, with_atols=False):
+        start = state if state is not None else [0.3e-9 * (1 + 1e-6)]
+        return real(job, start, rtol_scale, with_atols=with_atols)
 
     monkeypatch.setattr(D, "_steady_run", rounding)
     _plant(monkeypatch, state=lambda x: np.full_like(x, 0.3e-9))
@@ -2622,3 +2770,248 @@ def test_a_run_to_equilibrium_past_the_cap_is_a_timeout(monkeypatch):
     monkeypatch.setattr(D, "_steady_run", spent)
     v = D.check_steady(base, "integration")
     assert v.status == "timeout" and "the model's cap" in v.note, v
+
+
+def test_a_path_within_the_bases_spread_at_its_tolerance_is_not_a_finding(monkeypatch):
+    """Issue #1887: a base whose own error is small by luck moves little at a
+    tenfold tighter tolerance; a correct path that errs as a run at the job's
+    tolerance does is no finding. Half the base's move at twice the tolerance
+    is the drift a path is judged on; stable reads the tighter run's alone."""
+    base = D.Base(_pool_and_trace())
+    p = base.species_names.index("P")
+    off = base.x.copy()
+    off[:, p] *= 1 + 5e-5  # past 1e3·(atol + rtol·peak) = 1e-5 of P's peak
+    lucky = base.against(base.x)
+    lucky.drift_abs = np.zeros_like(base.drift_abs)
+    lucky.spread_abs = lucky.drift_abs
+    assert lucky.compare(off).status == "diff"
+    lucky.spread_abs = D._check.spread(lucky.drift_abs, 2e-5 * base.peak)
+    assert lucky.compare(off).status == "pass"
+    assert lucky.margin(off, drift=lucky.drift_abs)[0] > 1.0
+
+
+def _pool_at_rest() -> D.Job:
+    """P made at 10 and lost at 0.01 rests at 1e3; S, made from it at 1e-8
+    and lost at 1, rests at 1e-5."""
+    path = _DIR / "pool-at-rest.net"
+    path.write_text(
+        "begin parameters\n 1 kin 10\n 2 kp 0.01\n 3 ks 1e-8\n 4 kd 1\nend parameters\n"
+        "begin species\n 1 P() 0\n 2 S() 0\nend species\n"
+        "begin reactions\n 1 0 1 kin\n 2 1 0 kp\n 3 1 1,2 ks\n 4 2 0 kd\nend reactions\n"
+    )
+    return D.Job("pool-at-rest", path, 0.0, 10.0, 21)
+
+
+def test_a_small_species_at_rest_beside_a_large_pool_is_judged_on_its_own_scale(monkeypatch):
+    """Issue #1887, at rest: S a hundredfold off its 1e-5 beside P at 1e3 was
+    1e-6 of the state's peak, under the old 1e3·rtol, and passed. On its own
+    scale it is a finding; a state within its allowance still passes."""
+    base = D.Base(_pool_at_rest())
+    v = D.check_steady(base, "integration")
+    assert v.status == "pass", v
+    off = lambda x: x * np.array([1.0, 100.0])  # noqa: E731
+    end = np.array([1e3, 1e-5])
+    assert D.gap(off(end), end, D.PATH_RTOL_FACTOR * base.job.atol) < D.PATH_RTOL_FACTOR * 1e-8
+    _plant(monkeypatch, state=off)
+    v = D.check_steady(base, "integration")
+    assert v.status == "diff" and "S() at" in v.note, v
+    monkeypatch.undo()  # a second plant would wrap the first
+    _plant(monkeypatch, state=lambda x: x * np.array([1.0, 1 + 1e-7]))
+    assert D.check_steady(base, "integration").status == "pass"
+
+
+@pytest.mark.parametrize("planted", ["solver", "other"])
+def test_a_converged_from_which_a_run_fails_is_a_finding(monkeypatch, planted):
+    """BIOMD0000000609: steady_state() came back converged with four species
+    below zero, and a run from there failed (paracetamol to -5e133). A run that
+    cannot carry on from the solve's state does not rest there: DIFF. Any other
+    error is the check's own, EXCEPTION."""
+    base = D.Base(_pool_at_rest())
+    real = D._steady_run
+
+    def fails_from_the_solve(job, state=None, *a, **kw):
+        if state is not None:
+            raise _solver_failure() if planted == "solver" else RuntimeError("planted")
+        return real(job, state, *a, **kw)
+
+    monkeypatch.setattr(D, "_steady_run", fails_from_the_solve)
+    _plant(monkeypatch, state=lambda x: x * np.array([1.0, 100.0]))
+    v = D.check_steady(base, "integration")
+    if planted == "solver":
+        assert v.status == "diff" and "converged where a run fails (solver." in v.note, v
+    else:
+        assert v.status == "exception" and "planted" in v.note, v
+
+
+def test_stable_reads_the_tighter_runs_drift_not_the_spread(monkeypatch):
+    """The spread reads the base at twice the tolerance, one of stable's own
+    jitters: read there, a jump at rtol x2 would forgive itself."""
+    base = D.Base(_pool_and_trace())
+    p = base.species_names.index("P")
+    real = D.run
+
+    def jumps(job, **kw):
+        result, sim = real(job, **kw)
+        if job.rtol == pytest.approx(2 * base.job.rtol):
+            result = types.SimpleNamespace(
+                species=np.asarray(result.species) * np.where(np.arange(2) == p, 1.01, 1.0),
+                species_names=result.species_names,
+            )
+        return result, sim
+
+    base.spread_abs = np.maximum(base.drift_abs, 0.01 * base.peak)  # as if x2 had moved
+    monkeypatch.setattr(D, "run", jumps)
+    v = D.check_stable(base)
+    assert v.status == "diff" and "rtol x2" in v.note, v
+
+
+def test_a_base_wholly_within_its_atols_is_no_reference_for_stable_or_a_failed_path():
+    base = D.Base(SHAPES["triangle-maxabs"])
+    tiny = base.against(base.x * 1e-12)  # a peak of ~1e-11, atols of 1e-10
+    v = D.check_stable(tiny)
+    assert v.status == "skip" and "within 100 times its atol of zero" in v.note, v
+    v = D._failed_path(tiny, "leg: ", _solver_failure())
+    assert v.status == "skip" and "within its atol of zero" in v.note, v
+
+
+def test_a_row_is_judged_on_the_species_peak_over_the_whole_trajectory():
+    """stable reads a rerun at its last row: a species that peaked at 1 and
+    ends at 1e-6 is held there to what its peak allows, not to 1e-6."""
+    base = D.Base.__new__(D.Base)
+    base.x = np.array([[1.0, 1.0], [1.0, 1e-6]])
+    base.species_names = ["A", "B"]
+    base.atols = np.full(2, 1e-10)
+    base.job = D.Job("rows", Path("x"), rtol=1e-8)
+    base.drift_error = ""
+    base.drift_abs = base.spread_abs = np.zeros(2)
+    end = base.x[-1:].copy()
+    end[0, 1] += 1e-7  # 1e-7 of B's peak of 1; a tenth of B's last value
+    assert base.margin(end, base.x[-1:])[0] <= 1.0
+    assert base.margin(end, base.x[-1:], peak=np.array([1.0, 1e-6]))[0] > 1.0
+
+
+def _small_at_rest() -> D.Job:
+    """As _pool_at_rest, from rest: S starts at its 1e-5, so the run holds it
+    to rtol of that scale, 1e-13, under steady_state()'s ceiling of 1e-10."""
+    path = _DIR / "small-at-rest.net"
+    path.write_text(
+        "begin parameters\n 1 kin 10\n 2 kp 0.01\n 3 ks 1e-8\n 4 kd 1\nend parameters\n"
+        "begin species\n 1 P() 1000\n 2 S() 1e-5\nend species\n"
+        "begin reactions\n 1 0 1 kin\n 2 1 0 kp\n 3 1 1,2 ks\n 4 2 0 kd\nend reactions\n"
+    )
+    return D.Job("small-at-rest", path, 0.0, 10.0, 21)
+
+
+def test_a_steady_state_is_held_to_the_solves_own_tolerance_too(monkeypatch):
+    """steady_state() solves to min(atol_i, rtol·largest), atol_i at most the
+    atol given (1e-10), not to the 1e-13 the run applies to S: S off by 5e-9
+    is within what the solve resolves, and no finding."""
+    base = D.Base(_small_at_rest())
+    rest, _ = D._settled_run(base)
+    s = base.species_names.index("S()")
+    assert rest.atols[s] == pytest.approx(1e-10)
+    _plant(monkeypatch, state=lambda x: x + np.array([0.0, 5e-9]))
+    v = D.check_steady(base, "integration")
+    assert v.status == "pass", v
+
+
+def _bistable(name: str, x0: float) -> D.Job:
+    """X rests at about 1e-3 from 0, and at about 1e3 from 3000."""
+    path = _DIR / f"{name}.net"
+    path.write_text(
+        "begin parameters\n 1 k0 1e-6\n 2 k1 1.001001e-3\n 3 k2 1.001001e-3\n 4 k3 1e-6\n"
+        "end parameters\n"
+        f"begin species\n 1 X() {x0}\n 2 Y() 5\nend species\n"
+        "begin reactions\n 1 0 1 k0\n 2 1 0 k1\n 3 1,1 1,1,1 k2\n 4 1,1,1 1,1 k3\n"
+        " 5 0 2 k0\n 6 2 0 k1\nend reactions\n"
+    )
+    return D.Job(name, path, 0.0, 10.0, 21)
+
+
+def test_a_second_stable_state_is_read_on_its_own_scale(monkeypatch):
+    """Fable's review of #1887: a run from the solve's state (X at 1e3) was
+    judged on the scale of the run's end (X at 1e-3), and its rounding read as
+    a run that does not rest: DIFF. On its own scale it rests: the model's
+    bistability, SKIP."""
+    hi = bngsim.Simulator(bngsim.Model.from_net(str(_bistable("bi-hi", 3000).path)))
+    x_hi = np.asarray(hi.steady_state(method="newton", rtol=1e-8, atol=1e-10).concentrations)
+    base = D.Base(_bistable("bi-lo", 0))
+    _plant(monkeypatch, state=lambda x: x_hi * (1 + 5e-9))
+    v = D.check_steady(base, "newton")
+    assert v.status == "skip" and "two stable states" in v.note, v
+
+
+def test_the_solve_floor_reads_the_start_as_steady_state_cpp_does(monkeypatch):
+    """ss_largest_species takes the start's largest species too: A at 1 drains
+    to 0 and B rests at 2e-6, so the solve's floor is min(1e-10, 1e-8·1), not
+    2e-14. B off by 5e-11 is inside it."""
+    path = _DIR / "drain.net"
+    path.write_text(
+        "begin parameters\n 1 ka 1\n 2 ks 2e-8\n 3 kd 0.01\nend parameters\n"
+        "begin species\n 1 A() 1\n 2 B() 1e-6\nend species\n"
+        "begin reactions\n 1 1 0 ka\n 2 0 2 ks\n 3 2 0 kd\nend reactions\n"
+    )
+    base = D.Base(D.Job("drain", path, 0.0, 10.0, 21))
+    _plant(monkeypatch, state=lambda x: x + np.array([0.0, 5e-11]))
+    v = D.check_steady(base, "integration")
+    assert v.status == "pass", v
+
+
+def test_the_whole_scale_reads_only_converged_drift():
+    """Fable's review: a species at 0 took the largest drift of ANY resolved
+    column, an unconverged one's included, and departed to four times the
+    largest peak within it."""
+    ratio, _ = D._check.path_margins(
+        np.array([0.0, 0.0, 4.0]),
+        np.array([1.0, 1.0, 0.0]),
+        np.full(3, 1e-10),
+        1e-8,
+        np.array([0.0, 0.5, 0.0]),
+        np.ones(3, dtype=bool),
+        own=np.array([True, False, False]),
+    )
+    assert ratio[2] > 1.0, ratio
+
+
+@pytest.mark.parametrize(("half", "status"), [(3e-4, "pass"), (0.0, "diff")])
+def test_a_tolerance_jitter_is_read_against_the_other_jitters_scatter(monkeypatch, half, status):
+    """Fable's review: BIOMD0000000787 at rtol x2 moved 3.0e-3 of a species'
+    peak where the tighter run moved 1.2e-4, and read as contested. Each
+    tolerance jitter is read against the other's scatter: P at rtol x2 off by
+    2e-3 is within ten times a 3e-4 move at rtol x0.5, and past it where the
+    x0.5 run does not move."""
+    base = D.Base(_pool_and_trace())
+    p = base.species_names.index("P")
+    real = D.run
+
+    def jitters(job, **kw):
+        result, sim = real(job, **kw)
+        f = {2 * base.job.rtol: 1 + 2e-3, 0.5 * base.job.rtol: 1 + half}
+        hit = next((v for k, v in f.items() if job.rtol == pytest.approx(k)), None)
+        if hit is not None and not kw:
+            scale = np.where(np.arange(len(result.species_names)) == p, hit, 1.0)
+            result = types.SimpleNamespace(
+                species=np.asarray(result.species) * scale, species_names=result.species_names
+            )
+        return result, sim
+
+    monkeypatch.setattr(D, "run", jitters)
+    v = D.check_stable(base)
+    assert v.status == status, v
+
+
+def test_a_species_still_moving_at_rest_that_blows_up_in_the_solve_is_a_finding(monkeypatch):
+    """Fable's review: a species still moving over the run's last quarter was
+    dropped, so a solve that came back NaN in it passed. It is judged on the
+    run's whole scale, as a path judges an unconverged species."""
+    base = D.Base(_pool_at_rest())
+    rest, _ = D._settled_run(base)
+    s = base.species_names.index("S()")
+    rest.own = rest.own.copy()
+    rest.own[s] = False  # as if S still moved
+    assert rest.margin(rest.end)[0] == 0.0
+    blown = rest.end.copy()
+    blown[s] = np.nan
+    assert rest.margin(blown)[0] > 1.0
+    blown[s] = 1e3 * rest.end[s] + 1.0
+    assert rest.margin(blown)[0] > 1.0

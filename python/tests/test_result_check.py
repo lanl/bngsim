@@ -479,11 +479,14 @@ def test_a_runs_own_timeout_still_bounds_its_reruns(monkeypatch):
     assert seen and all(t is not None and t <= 5.0 for t in seen)
 
 
-def test_a_species_not_converged_is_not_judged(monkeypatch):
+@pytest.mark.parametrize("off, status", [(1.05, "pass"), (1.2, "diff")])
+def test_a_species_not_converged_is_judged_on_its_scatter_and_the_runs_scale(
+    monkeypatch, off, status
+):
     # B moves 1% at the tighter tolerance (made so): it is not converged at
-    # the run's own, so a path 20% off in B (past even 10x its own move) is not
-    # held against the run;
-    # the report says one column was not judged.
+    # the run's own, so it is held only to ten times that move or the run's
+    # whole scale, whichever is larger. 5% off is within it; 20% is past even
+    # that, a finding (#1887: left out, a path that blew up in B passed).
     r = _run()
     jb = r.species_names.index("B")
     real = Result.rerun
@@ -493,7 +496,7 @@ def test_a_species_not_converged_is_not_judged(monkeypatch):
         if changes.get("rtol") == pytest.approx(1e-9) or changes.get("jacobian") == "fd":
             out = copy.copy(out)
             sp = np.asarray(out._species, dtype=float).copy()
-            sp[:, jb] *= 1.01 if "rtol" in changes else 1.2
+            sp[:, jb] *= 1.01 if "rtol" in changes else off
             out._species = sp
         return out
 
@@ -501,7 +504,30 @@ def test_a_species_not_converged_is_not_judged(monkeypatch):
     rep = r.check(["tolerance", "jacobian"])
     tol, jac = rep["checks"]
     assert tol["status"] == "diff" and tol["worst_column"] == "B"
-    assert jac["status"] == "pass" and jac["n_not_judged"] == 1, jac
+    assert jac["status"] == status and jac["n_not_judged"] == 1, jac
+    assert "not converged at the run's tolerance, judged on the run's whole scale" in jac["note"]
+
+
+def test_a_species_not_converged_that_goes_non_finite_fails_the_check(monkeypatch):
+    r = _run()
+    jb = r.species_names.index("B")
+    real = Result.rerun
+
+    def rerun(self, **changes):
+        out = real(self, **changes)
+        if changes.get("rtol") == pytest.approx(1e-9) or changes.get("jacobian") == "fd":
+            out = copy.copy(out)
+            sp = np.asarray(out._species, dtype=float).copy()
+            if "rtol" in changes:
+                sp[:, jb] *= 1.01
+            else:
+                sp[5:, jb] = np.nan
+            out._species = sp
+        return out
+
+    monkeypatch.setattr(Result, "rerun", rerun)
+    (_, jac) = r.check(["tolerance", "jacobian"])["checks"]
+    assert jac["status"] == "diff" and jac["worst_column"] == "B", jac
 
 
 def _trace_model(eps: float) -> bngsim.Model:
@@ -658,3 +684,112 @@ def test_a_run_that_cannot_be_made_again_is_unsupported_not_an_exception(monkeyp
     (c,) = rep["checks"]
     assert c["status"] == "unsupported" and "no rerun" in c["note"], c
     assert rep["ok"] is False and "No check could run" in rep["next"]
+
+
+def test_the_per_species_atol_is_matched_by_name_where_the_state_holds_more(tmp_path):
+    # A parameter an event promotes joins the state: 3 atols for 2 species.
+    # Matched by name, A keeps its own 1e-14; by length alone, every species
+    # took the scalar ceiling. A saved and loaded Result has no state names:
+    # its species come first, so the vector's prefix.
+    import antimony
+
+    antimony.clearPreviousLoads()
+    assert (
+        antimony.loadAntimonyString(
+            "model m\nA = 1e-6; B = 1; k = 1; J0: A -> ; k*A; J1: B -> ; 0.1*B;"
+            " E1: at time > 1: k = 2;\nend"
+        )
+        >= 0
+    )
+    path = tmp_path / "promoted.xml"
+    path.write_text(antimony.getSBMLString("m"))
+    r = bngsim.Simulator(bngsim.Model.load(str(path))).run(
+        t_span=(0, 5), n_points=11, rtol=1e-8, atol=1e-10
+    )
+    per = r.record["run"]["atol"]["per_species"]
+    assert len(per) == 3 and list(r.state_names) == ["A", "B", "k"]
+    got = _check.column_atols(r, ["A", "B"], per, 1e-10)
+    assert got.tolist() == pytest.approx([1e-14, 1e-10])
+    assert _check.column_atols(r, ["B"], per, 1e-10).tolist() == pytest.approx([1e-10])
+    assert _check.column_atols(r, ["A", "Q"], per, 1e-10).tolist() == pytest.approx([1e-14, 1e-10])
+    assert _check.column_atols(r, ["A", "B"], None, 1e-10).tolist() == [1e-10, 1e-10]
+    # no state names (a loaded or stacked Result): the prefix
+    assert _check.column_atols(object(), ["A", "B"], per, 1e-10).tolist() == pytest.approx(
+        [1e-14, 1e-10]
+    )
+    ctx = _check._Context(r, r.record, None)
+    assert ctx.atols.tolist() == pytest.approx([1e-14, 1e-10])
+
+
+def test_a_path_within_the_runs_spread_at_its_tolerance_is_not_a_finding(monkeypatch):
+    # Issue #1887: a run whose own error is small by luck has a small drift at
+    # the tighter tolerance, and a correct path that errs as a run at this
+    # tolerance does read as a DIFF against it. The run at twice the tolerance
+    # 1e-4 off says how far a correct run strays here: a path 2e-5 off, past
+    # 1e3·(atol + rtol·peak) alone, is within ten times half that.
+    r = _run()
+    _perturbing(monkeypatch, lambda c: c.get("jacobian") == "fd", 1 + 2e-5)
+    (c,) = r.check("jacobian")["checks"]
+    assert c["status"] == "diff", c  # the tighter run's drift alone: a finding
+    real = Result.rerun
+
+    def rerun(self, **changes):
+        out = real(self, **changes)
+        if changes.get("rtol") == pytest.approx(2e-8) or changes.get("jacobian") == "fd":
+            f = 1 + 1e-4 if changes.get("rtol") == pytest.approx(2e-8) else 1 + 2e-5
+            out = copy.copy(out)
+            out._species = np.asarray(out._species, dtype=float) * f
+        return out
+
+    monkeypatch.setattr(Result, "rerun", rerun)
+    (c,) = r.check("jacobian")["checks"]
+    assert c["status"] == "pass", c
+
+
+def test_spread_reads_half_the_move_at_twice_the_tolerance():
+    tight = np.array([1e-6, 1e-3, 0.0])
+    loose = np.array([1e-4, 1e-4, np.inf])
+    assert _check.spread(tight, loose).tolist() == [5e-5, 1e-3, 0.0]  # inf says nothing
+    assert _check.spread(tight, None) is tight
+    # a looser run not converged itself widens a column by at most 1e-3 of its
+    # peak: clamped, not discarded, so there is no cliff at the cap
+    peak = np.array([1.0, 1.0, 1.0])
+    got = _check.spread(tight, np.array([1e-2, 1e-4, 1e-4]), peak).tolist()
+    assert got == pytest.approx([1e-3, 1e-3, 5e-5])
+    assert _check.SPREAD_FACTOR == 2.0
+
+
+def test_a_column_the_run_does_not_resolve_is_held_to_the_runs_whole_scale():
+    # Column 1 peaks at 1e-8, within 100 times its atol: its allowance and its
+    # scale are those of a column at the largest peak (100), so 1e-6 there is
+    # 1e-8 of that scale and under 1e-3 of its allowance, not 100 of its own.
+    d = np.array([0.0, 1e-6])
+    peak = np.array([100.0, 1e-8])
+    atol = np.array([1e-8, 1e-8])
+    ratio, rel = _check.path_margins(d, peak, atol, 1e-8, np.zeros(2), np.ones(2, dtype=bool))
+    assert rel[1] == pytest.approx(1e-8)
+    assert ratio[1] == pytest.approx(1e-6 / 1.01e-3, rel=1e-6)
+
+
+def test_a_species_at_zero_that_departs_in_a_rerun_fails_the_check(monkeypatch):
+    # I sits within its atol of zero (eps = 1e-15): not resolved, and its
+    # noise is no finding. A rerun on which it reaches 1.0, beside A at 100,
+    # is one: the run's whole scale allows about 1e-3.
+    r = Simulator(_trace_model(1e-15), method="ode").run(t_span=(0, 30), n_points=31)
+    ji = r.species_names.index("I")
+    real = Result.rerun
+
+    def rerun(self, **changes):
+        out = real(self, **changes)
+        if changes.get("jacobian") == "fd":
+            out = copy.copy(out)
+            sp = np.asarray(out._species, dtype=float).copy()
+            sp[:, ji] = 1.0
+            out._species = sp
+        return out
+
+    monkeypatch.setattr(Result, "rerun", rerun)
+    rep = r.check("jacobian")
+    (c,) = rep["checks"]
+    assert "I" in rep["not_resolved"]
+    assert c["status"] == "diff" and c["worst_column"] == "I", c

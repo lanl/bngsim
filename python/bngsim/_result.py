@@ -3443,7 +3443,8 @@ class Result:
             (whether every species is under it; a report on a run that is
             not converged is never ``ok``, whichever checks ran),
             ``n_not_resolved`` and ``not_resolved`` (the first 20 species
-            within 100 times their atol of zero, which no check judges),
+            within 100 times their atol of zero, which a check judges on
+            the run's whole scale alone),
             ``checks``
             (in the order run, each with ``name``, ``status``, ``value``,
             ``worst_column``, ``changed`` (the setting changed) and
@@ -3474,10 +3475,12 @@ class Result:
         itself at the tighter tolerance (``d_j``). A species whose peak is
         within 100 times its atol, where that atol is larger than
         ``rtol·peak_j`` (the absolute tolerance, not the relative one, holds
-        it), is not resolved by the run, is not judged, and is named in
-        ``not_resolved`` (and ``next``). The
-        factors are the developer-side differential harness's (issue #1257),
-        whose comparison is over the whole trajectory at once. A ``"diff"``
+        it), is not resolved by the run, and is named in ``not_resolved``
+        (and ``next``); a path judges it on the run's whole scale alone, as a
+        species at the largest peak and atol, so its noise near zero is no
+        finding and a departure as large as the run's species is one. The
+        factors and the rule are the developer-side differential harness's
+        (issues #1257, #1887). A ``"diff"``
         between two bngsim paths on a model bngsim accepts is a bug worth
         reporting, with ``json.dumps(report)``.
         """

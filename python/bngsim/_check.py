@@ -18,16 +18,23 @@ and each column's absolute floor is the atol the run applied to that species:
   allowance ``max(min(PATH_RTOL_FACTOR·(atol_j + rtol·peak_j),
   max(PATH_CEILING·peak_j, atol_j)), PATH_ATOL_FACTOR·atol_j,
   DRIFT_FACTOR·d_j)``, where ``d_j`` is how far the column itself moves at the
-  tighter tolerance: two correct paths each err by about the tolerance, scaled
+  tighter tolerance, or half how far at twice the tolerance, whichever is
+  larger (:func:`spread`): two correct paths each err by about the tolerance, scaled
   by the problem's conditioning, which the drift measures, and never by more
   than 1% of the column's peak for the tolerance alone, unless the column is
   within ``PATH_ATOL_FACTOR`` atol of zero, which resolves it no better;
 - a column whose peak is within :data:`TRACE_ATOLS` times its atol, where the
   atol and not rtol holds it (``atol_j > rtol·peak_j``), is not resolved by
-  the run: no check judges it, and the report names it;
+  the run, and the report names it. It is judged on the run's whole scale
+  alone: against the allowance of a column at the largest peak and atol, with
+  the largest drift, so its solver noise is no finding, and a path on which
+  it departs from zero as far as the run's own species are large is one
+  (issue #1887);
 - a column that is not converged at the run's own tolerance (its move past
-  :data:`TOLERANCE_MOVE`) is not judged; where no column is, the verdict is
-  ``no_base``, and a report on a run that is not converged is never ok.
+  :data:`TOLERANCE_MOVE`) is judged on the run's whole scale, as one not
+  resolved is: a path on which it blows up still fails. Where no column is
+  converged, the verdict is ``no_base``, and a report on a run that is not
+  converged is never ok.
 
 The constants are the developer-side differential harness's
 (``parity_checks/differential``, issue #1257). Its comparison is over the whole
@@ -66,6 +73,14 @@ CHECK_VERSION = 1
 PATH_RTOL_FACTOR = 1e3
 #: And how many times past a column's own move at a tenfold tighter tolerance.
 DRIFT_FACTOR = 10.0
+#: A path's allowance reads a column's drift as the larger of its move at the
+#: tenfold tighter tolerance and its move at this many times the tolerance,
+#: over this factor: how far a correct run strays at the run's tolerance, which
+#: one tighter run measures only from the run's own error, small by luck as
+#: often as not. MODEL1912090001's x15_PI34P2 at rtol 1e-6 erred by 9.5e-5 of
+#: its peak, and by 1.0e-3 at half the tolerance and 9.6e-4 at twice it; a
+#: compiled run at 1.6e-3 was another correct run, not a finding (issue #1887).
+SPREAD_FACTOR = 2.0
 #: A column that moves by more than this share of its peak at a tenfold tighter
 #: tolerance is not converged at the run's own (the harness's
 #: ``UNJUDGEABLE_DRIFT``): the tolerance check fails, and no path is judged on
@@ -100,6 +115,33 @@ DEFAULT_STOCHASTIC = ("replicates",)
 
 _STATUSES = ("pass", "diff", "skip", "unsupported", "exception", "no_base", "timeout")
 _NOT_OK = ("diff", "exception", "timeout")
+
+
+def column_atols(
+    result: Result, names: list[str], per_species: Any, scalar: float | None
+) -> NDArray[np.float64]:
+    """Each of *names*' atol as the run applied it. The per-species vector runs
+    over the run's state (:attr:`Result.state_names`), which holds more than
+    the species where an event or a rule promotes a parameter into it
+    (BIOMD0000000001: 12 species, 20 entries), so it is matched by name. A
+    Result with no state names (loaded, stacked) has its species first and the
+    promoted entries after them, so the vector's first ``len(names)``. A
+    column the vector does not cover takes the scalar, the run's ceiling."""
+    n = len(names)
+    fill = float(scalar) if scalar is not None else 0.0
+    if per_species is None:
+        return np.full(n, fill)
+    per = [float(a) for a in per_species]
+    try:
+        state = list(result.state_names)
+    except Exception:  # noqa: BLE001 - a loaded or stacked Result holds none
+        state = []
+    if len(state) == len(per):
+        index = {name: i for i, name in enumerate(state)}
+        return np.asarray([per[index[c]] if c in index else fill for c in names], dtype=float)
+    if len(per) >= n:
+        return np.asarray(per[:n], dtype=float)
+    return np.full(n, fill)
 
 
 def differences(
@@ -143,6 +185,79 @@ def allowance(
         PATH_RTOL_FACTOR * (atol + rtol * peak), np.maximum(PATH_CEILING * peak, atol)
     )
     return np.maximum(np.maximum(by_tol, PATH_ATOL_FACTOR * atol), DRIFT_FACTOR * drift)
+
+
+def resolved(
+    peak: NDArray[np.float64], atol: NDArray[np.float64], rtol: float
+) -> NDArray[np.bool_]:
+    """The columns the run resolves: not within :data:`TRACE_ATOLS` of their
+    atol of zero where that atol, not rtol, holds them (a column at 0 with an
+    atol of 0 resolves nothing either)."""
+    return ~((peak <= TRACE_ATOLS * atol) & ((atol > rtol * peak) | (peak == 0)))
+
+
+def spread(
+    tight: NDArray[np.float64],
+    loose: NDArray[np.float64] | None,
+    peak: NDArray[np.float64] | None = None,
+) -> NDArray[np.float64]:
+    """Each column's drift for a path's allowance: its move at the tighter
+    tolerance, or its move at :data:`SPREAD_FACTOR` times the tolerance over
+    that factor, whichever is larger (*loose* None where that run failed).
+    The looser run widens a column only where its move is finite, and by at
+    most :data:`TOLERANCE_MOVE` of the column's *peak*: a looser run that
+    blows up says nothing of a correct run's scatter, and one not converged
+    itself would forgive any path."""
+    if loose is None:
+        return tight
+    half = np.asarray(loose, dtype=float) / SPREAD_FACTOR
+    ok = np.isfinite(half)
+    half = np.where(ok, half, 0.0)
+    if peak is not None:
+        half = np.minimum(half, TOLERANCE_MOVE * np.asarray(peak, dtype=float))
+    return np.maximum(tight, half)
+
+
+def path_margins(
+    d: NDArray[np.float64],
+    peak: NDArray[np.float64],
+    atol: NDArray[np.float64],
+    rtol: float,
+    drift: NDArray[np.float64],
+    judged: NDArray[np.bool_],
+    own: NDArray[np.bool_] | None = None,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Per column: its difference *d* over its allowance, and over its scale,
+    each 0 where *judged* is False. A column in *own* (default: those the run
+    resolves, :func:`resolved`) is held to its own allowance and peak. Any
+    other, one the run does not resolve or one not converged at its
+    tolerance, is held to the run's whole scale as well: the larger of its own
+    allowance and that of a column at the largest peak and atol with the
+    largest drift of an *own* column, read on the largest peak. Within its
+    atols, or its own scatter, it is noise; past the run's scale it is a
+    finding, and so is a value non-finite where the reference's is not.
+    Shared by :meth:`bngsim.Result.check` and the developer-side differential
+    harness, so a verdict means one thing in both (issue #1887)."""
+    mine = resolved(peak, atol, rtol) if own is None else np.asarray(own, dtype=bool)
+    allow = allowance(peak, atol, rtol, drift)
+    scale = peak
+    other = ~mine
+    if other.any() and peak.size:
+        keep = np.isfinite(drift) & mine
+        dmax = float(drift[keep].max()) if keep.any() else 0.0
+        largest = float(peak.max())
+        whole = allowance(
+            np.array([largest]), np.array([float(atol.max())]), rtol, np.array([dmax])
+        )[0]
+        allow = np.where(other, np.maximum(allow, whole), allow)
+        scale = np.where(other, largest, peak)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio = np.where(
+            allow > 0, d / np.where(allow > 0, allow, 1.0), np.where(d > 0, np.inf, 0.0)
+        )
+        rel = np.where(scale > atol, d / np.where(scale > 0, scale, 1.0), 0.0)
+    ratio = np.where(judged, np.nan_to_num(ratio, nan=np.inf), 0.0)
+    return ratio, np.where(judged, rel, 0.0)
 
 
 def _num(x: Any) -> float | None:
@@ -319,7 +434,8 @@ def _next(out: Report) -> str:
             f"{names} {'stays' if out['n_not_resolved'] == 1 else 'stay'} within "
             f"{TRACE_ATOLS:g} times {'its' if out['n_not_resolved'] == 1 else 'their'} atol "
             "of zero, which the run does not resolve, and "
-            f"{'was' if out['n_not_resolved'] == 1 else 'were'} not judged: to report "
+            f"{'was' if out['n_not_resolved'] == 1 else 'were'} judged only against the "
+            "run's largest values: to report "
             f"{'it' if out['n_not_resolved'] == 1 else 'them'}, rerun with an atol well "
             f"below {'it' if out['n_not_resolved'] == 1 else 'them'} "
             "(result.rerun(atol=...)) and check that."
@@ -371,11 +487,9 @@ class _Context:
         self.per_species = None if per is None else [float(a) for a in per]
         self.atol: float | None = atol.get("scalar")
         n = len(self.names)
-        if self.per_species is not None and len(self.per_species) == n:
-            self.atols = np.asarray(self.per_species, dtype=float)
-        else:
-            self.atols = np.full(n, float(self.atol) if self.atol is not None else 0.0)
+        self.atols = column_atols(result, self.names, self.per_species, self.atol)
         self.drift_abs: NDArray[np.float64] | None = None
+        self.spread_abs: NDArray[np.float64] | None = None
         self.moved: NDArray[np.float64] | None = None
         self.relevant: NDArray[np.bool_] = np.ones(n, dtype=bool)
         self.tol_error = ""
@@ -460,11 +574,25 @@ class _Context:
             # not rtol, holds the column (a loose rtol makes every atol a
             # large share of its species, and those columns are resolved to
             # that share, which the tolerance check judges).
-            rtol = float(self.rtol or 0.0)
-            unresolved = (peak <= TRACE_ATOLS * self.atols) & (self.atols > rtol * peak)
-            self.relevant = ~unresolved
+            self.relevant = resolved(peak, self.atols, float(self.rtol or 0.0))
             self.moved = np.where(self.relevant, moves(d, peak, self.atols), 0.0)
         return self.tol_error or None
+
+    def _ensure_spread(self) -> NDArray[np.float64]:
+        """The drift a path's allowance reads (:func:`spread`), made once; the
+        tighter run's alone where the looser one raises."""
+        assert self.drift_abs is not None
+        if self.spread_abs is None:
+            try:
+                loose = self.rerun(**self._tighter(1.0 / SPREAD_FACTOR))
+            except _Out:
+                raise
+            except Exception:  # noqa: BLE001 - the tighter run's drift stands
+                self.spread_abs = self.drift_abs
+            else:
+                d, peak = differences(self._view(loose), self.x)
+                self.spread_abs = spread(self.drift_abs, d, peak)
+        return self.spread_abs
 
     def _worst(self, score: NDArray[np.float64]) -> str | None:
         if not score.size or not (score > 0).any():
@@ -487,8 +615,8 @@ class _Context:
                 changed=changed,
             )
         assert self.drift_abs is not None and self.moved is not None and self.rtol is not None
-        judged = self.relevant & (self.moved <= TOLERANCE_MOVE)
-        if not judged.any():
+        converged = self.relevant & (self.moved <= TOLERANCE_MOVE)
+        if not converged.any():
             return _verdict(
                 name,
                 "no_base",
@@ -496,29 +624,34 @@ class _Context:
                 f"{TOLERANCE_MOVE:g} of its peak at a tenfold tighter one): no path is judged",
                 changed=changed,
             )
+        # Every column: a converged one on its own allowance, any other (not
+        # resolved, or not converged at the run's tolerance) on the run's
+        # whole scale too, so that a path on which it blows up still fails.
+        judged = np.ones(converged.shape, dtype=bool)
         d, peak = differences(x, self.x)
-        allow = allowance(peak, self.atols, float(self.rtol), self.drift_abs)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            ratio = np.where(
-                allow > 0, d / np.where(allow > 0, allow, 1.0), np.where(d > 0, np.inf, 0.0)
-            )
-            rel = np.where(peak > self.atols, d / np.where(peak > 0, peak, 1.0), 0.0)
-        ratio = np.where(judged, ratio, 0.0)
-        rel = np.where(judged, rel, 0.0)
+        ratio, rel = path_margins(
+            d, peak, self.atols, float(self.rtol), self._ensure_spread(), judged, own=converged
+        )
         worst = self._worst(ratio)
         margin = float(ratio.max()) if ratio.size else 0.0
         value = float(rel.max()) if rel.size else 0.0
         status = "pass" if margin <= 1.0 else "diff"
-        n_out = int((self.relevant & ~judged).sum())
+        n_out = int((self.relevant & ~converged).sum())
         note = (
             f"{value:.2e} of a column's peak at most; the largest difference is "
             f"{margin:.2g} of its allowance"
         )
         if n_out:
-            note += f"; {n_out} column(s) not judged, not converged at the run's tolerance"
+            note += (
+                f"; {n_out} column(s) not converged at the run's tolerance, judged on the "
+                f"run's whole scale"
+            )
         n_trace = int((~self.relevant).sum())
         if n_trace:
-            note += f"; {n_trace} column(s) within {TRACE_ATOLS:g} atol of zero not judged"
+            note += (
+                f"; {n_trace} column(s) within {TRACE_ATOLS:g} atol of zero, judged on the "
+                f"run's whole scale"
+            )
         return _verdict(
             name,
             status,
