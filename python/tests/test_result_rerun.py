@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import sys
 from pathlib import Path
 
 import bngsim
@@ -193,6 +194,27 @@ def test_a_steady_state_run_and_a_step_bound(net_path: Path) -> None:
     _same(r, r.rerun())
     r = Simulator(Model.from_net(net_path)).run(t_span=(0, 5), n_points=4, max_step=0.1)
     _same(r, r.rerun())
+
+
+def test_a_run_made_without_the_models_own_step_bound_is_made_without_it() -> None:
+    """A periodic schedule gives the model a step bound (GH #88) that a run
+    takes unless it passes ``max_step <= 0``. The record says ``None`` for no
+    bound, and a rerun that passed ``None`` on would take the model's."""
+    sys.path.insert(0, str(Path(__file__).parent))
+    from test_sbml_periodic_floor_dosing import _EQ_GATED_PULSE
+
+    model = Model.from_sbml_string(_EQ_GATED_PULSE)
+    assert model._periodic_disc_max_step is not None
+    sim = Simulator(model)
+    unbounded = sim.run(t_span=(0, 3), n_points=7, max_step=0)
+    assert unbounded.record["run"]["max_step"] is None
+    bounded = sim.run(t_span=(0, 3), n_points=7, start="initial")
+    assert bounded.record["run"]["max_step"] == model._periodic_disc_max_step
+    # The bound does not bind on this schedule, so the record tells them apart.
+    again = unbounded.rerun()
+    assert again.record["run"]["max_step"] is None
+    _same(unbounded, again)
+    assert bounded.rerun().record["run"]["max_step"] == model._periodic_disc_max_step
 
 
 def test_the_jacobian_a_retried_run_used_is_the_one_used_again() -> None:
