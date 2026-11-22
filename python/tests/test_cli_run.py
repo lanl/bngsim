@@ -53,7 +53,7 @@ def _plain(value):
 
 def test_run_prints_the_record_and_the_digest_of_the_python_call():
     d = _json(_bngsim("run", CHAIN, "--t-end", "20", "--n-points", "21", "--json"))
-    assert list(d) == ["model", "record", "digest", "out"]
+    assert list(d) == ["model", "record", "digest", "out", "set"]
     r = Simulator(Model.load(CHAIN), method="ode").run(t_span=(0, 20), n_points=21, timeout=600)
     assert d["digest"] == _plain(r.digest())
     assert d["record"]["run"]["method"] == "ode"
@@ -70,24 +70,27 @@ def test_run_without_json_prints_the_digest_text_and_no_arrays():
     assert run.stdout == f"chain.sbml: {r.digest(species=True)}\n"
 
 
-@pytest.mark.parametrize("suffix", [".npz", ".csv", ".tsv"])
+@pytest.mark.parametrize("suffix", [".npz", ".csv", ".tsv", ".NPZ"])
 def test_run_writes_the_arrays_to_out(tmp_path, suffix):
     out = tmp_path / f"run{suffix}"
-    args = ["run", CHAIN, "--t-end", "5", "--n-points", "6", "--out", str(out), "--json"]
+    args = ["run", BIRTH_DEATH, "--t-end", "5", "--n-points", "6", "--out", str(out), "--json"]
     if suffix == ".tsv":
         args += ["--out-kind", "species"]
     d = _json(_bngsim(*args))
     assert d["out"] == str(out.resolve())
-    r = Simulator(Model.load(CHAIN), method="ode").run(t_span=(0, 5), n_points=6)
-    if suffix == ".npz":
+    r = Simulator(Model.load(BIRTH_DEATH), method="ode").run(t_span=(0, 5), n_points=6)
+    if suffix.lower() == ".npz":
         with np.load(out, allow_pickle=False) as f:
             assert np.array_equal(f["observables"], np.asarray(r.observables))
             assert np.array_equal(f["time"], r.time)
-    else:
-        sep = "," if suffix == ".csv" else "\t"
-        back = np.loadtxt(out, delimiter=sep, skiprows=1)
-        block = r.observables if suffix == ".csv" else r.species
-        assert np.allclose(back[:, 1:], np.asarray(block), rtol=1e-11)
+        return
+    sep = "," if suffix == ".csv" else "\t"
+    header = out.read_text().splitlines()[0].split(sep)
+    names = r.observable_names if suffix == ".csv" else r.species_names
+    assert header == ["time", *names]  # A for observables, A() for species
+    back = np.loadtxt(out, delimiter=sep, skiprows=1)
+    block = r.observables if suffix == ".csv" else r.species
+    assert np.allclose(back[:, 1:], np.asarray(block), rtol=1e-11)
 
 
 def test_run_writes_hdf5_where_h5py_is_installed(tmp_path):
@@ -107,10 +110,13 @@ def test_run_takes_sample_times_and_set():
     m = Model.load(CHAIN)
     m.set_param("k1", 2.0)
     m.set_concentration("A", 50.0)
+    m.save_concentrations()  # the command's set species are the initial state
     r = Simulator(m, method="ode").run(sample_times=[0, 1, 3, 7])
     assert d["digest"] == _plain(r.digest())
     assert d["digest"]["n_points"] == 4
     assert d["record"]["run"]["parameters"]["k1"] == 2.0
+    assert d["record"]["run"]["started_from"] == "initial"
+    assert d["set"] == {"k1": 2.0, "A": 50.0}
 
 
 def test_run_seeds_a_stochastic_run():
@@ -130,6 +136,7 @@ def test_run_replicates_digest_a_stack(tmp_path):
         )
     )  # fmt: skip
     assert d["digest"]["n_runs"] == 6
+    assert len(d["seeds"]) == 6 and d["seeds"][0] == 3
     (row,) = d["digest"]["observables"]["columns"]
     with np.load(out, allow_pickle=False) as f:
         last = f["observables"][:, -1, 0]
@@ -151,27 +158,32 @@ def test_a_steady_state_run():
         (["run", CHAIN], "--t-end"),
         (["run", CHAIN, "--t-end", "1", "--set", "k1"], "--set"),
         (["run", CHAIN, "--t-end", "1", "--set", "k1=x"], "--set"),
+        (["run", CHAIN, "--t-end", "1", "--set", "A=nan"], "--set"),
         (["run", CHAIN, "--t-end", "1", "--set", "nope=2"], "--set"),
-        (["run", BIRTH_DEATH, "--t-end", "1", "--replicates", "3", "--rtol", "1e-6"], "--rtol"),
-        (
-            [
-                "run",
-                BIRTH_DEATH,
-                "--method",
-                "ssa",
-                "--t-end",
-                "1",
-                "--replicates",
-                "2",
-                "--out",
-                "x.csv",
-            ],
-            "--out",
-        ),
+        (["run", BIRTH_DEATH, "--method", "ssa", "--t-end", "1", "--replicates", "3",
+          "--steady-state"], "--steady-state"),
+        (["run", BIRTH_DEATH, "--t-end", "1", "--replicates", "3"], "--replicates"),
+        (["run", BIRTH_DEATH, "--method", "ssa", "--t-end", "1", "--replicates", "2",
+          "--out", "x.csv"], "--out"),
         (["check", BIRTH_DEATH, "--t-end", "1", "--replicates", "2"], "--replicates"),
         (["run", "model.bngl", "--t-end", "1"], "--network"),
+        (["run", CHAIN, "--t-end", "1", "--network"], "--network"),
+        (["run", BIRTH_DEATH, "--method", "ssa", "--t-end", "1", "--rtol", "1e-9"], "--rtol"),
+        (["run", BIRTH_DEATH, "--method", "ssa", "--t-end", "1", "--atol", "1e-3"], "--atol"),
+        (["run", CHAIN, "--t-end", "1", "--xml", "m.xml"], "--xml"),
+        (["run", CHAIN, "--t-end", "1", "--poplevel", "10"], "--poplevel"),
+        (["run", CHAIN, "--method", "psa", "--t-end", "1"], "--poplevel"),
+        (["run", CHAIN, "--sample-times", "0,1", "--t-end", "5"], "--t-end"),
+        (["run", CHAIN, "--sample-times", "0,1", "--n-points", "5"], "--n-points"),
+        (["run", CHAIN, "--sample-times", "0,1", "--t-start", "0"], "--t-start"),
+        (["run", CHAIN, "--sample-times", "3,1,2"], "--sample-times"),
+        (["run", CHAIN, "--t-end", "1", "--out", "x.txt"], "--out"),
+        (["run", CHAIN, "--t-end", "1", "--out", "noext"], "--out"),
+        (["run", CHAIN, "--t-end", "1", "--out", "nodir/x.npz"], "--out"),
+        (["run", CHAIN, "--t-end", "1", "--out", "."], "--out"),
+        (["run", CHAIN, "--t-end", "1", "--out", "x.npz", "--out-kind", "species"], "--out-kind"),
     ],
-)
+)  # fmt: skip
 def test_a_wrong_run_command_line_exits_2(args, argument, tmp_path):
     run = subprocess.run(
         [sys.executable, "-m", "bngsim", *args, "--json"],
@@ -192,6 +204,8 @@ def test_a_wrong_run_command_line_exits_2(args, argument, tmp_path):
         ["--replicates", "0"],
         ["--atol", "loose"],
         ["--sample-times", "1,b"],
+        ["--rtol", "nan"],
+        ["--rtol", "-1"],
     ],
 )
 def test_bad_option_values_exit_2(args):
@@ -241,7 +255,7 @@ def test_the_timeout_option_reaches_the_run():
 
 def test_check_prints_the_report_and_exits_0_when_ok():
     d = _json(_bngsim("check", CHAIN, "--t-end", "20", "--n-points", "21", "--json"))
-    assert list(d) == ["model", "record", "digest", "out", "check"]
+    assert list(d) == ["model", "record", "digest", "out", "set", "check"]
     r = Simulator(Model.load(CHAIN), method="ode").run(t_span=(0, 20), n_points=21)
     rep = r.check()
     assert d["check"]["ok"] is True
@@ -290,7 +304,9 @@ def test_check_all_on_a_stochastic_run_reports_replicates():
 
 def test_help_lists_run_and_check_and_exit_6():
     run = _bngsim("--help")
-    assert "run" in run.stdout and "check" in run.stdout
+    lines = [line.split() for line in run.stdout.splitlines()]
+    assert ["run", "run", "a", "model;"] in [w[:4] for w in lines if w]
+    assert any(w[:2] == ["check", "run"] for w in lines if w)
     assert "6 check not ok" in run.stdout
 
 
@@ -312,3 +328,97 @@ def test_the_budget_reaches_the_check():
         _cli.EXIT_CHECK_FAILED,
     )
     assert {c["status"] for c in d["check"]["checks"]} == {"timeout"}
+
+
+# ─── The review's cases ──────────────────────────────────────────────────────
+
+
+def test_a_real_solver_failure_exits_4_with_one_json_object_on_stderr(tmp_path):
+    model = tmp_path / "m.ant"
+    model.write_text("compartment c = 2; species A in c; A = 10; k1 = 1; J: A -> ; k1*A\n")
+    run = _bngsim("run", str(model), "--t-end", "1", "--set", "A=1e308", "--set", "k1=1e308",
+                  "--json")  # fmt: skip
+    assert run.returncode == _cli.EXIT_RUN_FAILED and run.stdout == ""
+    error = json.loads(run.stderr)  # SUNDIALS' own lines are inside it, not before it
+    assert error["code"].startswith("solver.") or error["code"] == "run.failed", error
+    assert "log" in error and error["log"]
+
+
+def test_a_real_timeout_exits_5():
+    run = _bngsim("run", BIRTH_DEATH, "--method", "ssa", "--t-end", "1000", "--set", "ksyn=1e6",
+                  "--timeout", "0.5", "--json")  # fmt: skip
+    _error(run, _cli.EXIT_TIMEOUT, "run.timeout")
+
+
+def test_replicates_share_the_time_limit():
+    import time
+
+    start = time.monotonic()
+    run = _bngsim("run", BIRTH_DEATH, "--method", "ssa", "--t-end", "20", "--set", "ksyn=1e6",
+                  "--timeout", "1", "--replicates", "8", "--seed", "1", "--json")  # fmt: skip
+    elapsed = time.monotonic() - start
+    assert run.returncode == _cli.EXIT_TIMEOUT, run.stderr
+    assert elapsed < 30  # not 8 x 1 s of runs past start-up
+
+
+def test_psa_takes_its_population_level():
+    d = _json(_bngsim("run", str(examples.path("schlogl", "sbml")), "--method", "psa",
+                      "--poplevel", "10", "--t-end", "5", "--seed", "1", "--json"))  # fmt: skip
+    assert d["record"]["run"]["method"] == "psa"
+    assert d["record"]["run"]["poplevel"] == 10.0
+
+
+def test_a_network_free_run_checks_as_unsupported_not_failed():
+    xml = str(examples.path("binding", "bng-xml"))
+    net = str(examples.path("binding", "net"))
+    run = _bngsim("check", net, "--method", "nf", "--xml", xml, "--t-end", "5", "--seed", "1",
+                  "--json")  # fmt: skip
+    d = _json(run, _cli.EXIT_CHECK_FAILED)  # no check could run: not ok, but no exception
+    assert {c["status"] for c in d["check"]["checks"]} == {"unsupported"}
+
+
+def test_a_species_set_is_a_concentration_and_the_initial_state(tmp_path):
+    # A species declared in amounts, 100 in a compartment of size 2: --set A=7
+    # is Model.set_concentration's 7, and the run starts from it.
+    model = tmp_path / "amt.ant"
+    model.write_text(
+        "compartment c = 2; species A in c; substanceOnly species A; A = 100; k = 0.1;"
+        " J: A -> ; k*A\n"
+    )
+    d = _json(_bngsim("run", str(model), "--t-end", "1", "--set", "A=7", "--species", "--json"))
+    m = Model.load(str(model))
+    m.set_concentration("A", 7.0)
+    m.save_concentrations()
+    r = Simulator(m, method="ode").run(t_span=(0, 1), n_points=101)
+    assert d["digest"] == _plain(r.digest(species=True))
+    assert d["record"]["run"]["started_from"] == "initial"
+
+
+def test_a_derived_parameter_in_set_is_a_usage_error(tmp_path):
+    model = tmp_path / "d.ant"
+    model.write_text(
+        "compartment c = 1; species A in c; A = 1; k1 = 1; kd := 2*k1; J: A -> ; kd*A\n"
+    )
+    error = _error(_bngsim("run", str(model), "--t-end", "1", "--set", "kd=5", "--json"),
+                   _cli.EXIT_USAGE, "usage.invalid_argument")  # fmt: skip
+    assert error["details"]["argument"] == "--set"
+
+
+def test_h5_without_h5py_is_refused_before_the_run(tmp_path):
+    script = """
+import sys, bngsim
+sys.modules['h5py'] = None
+def run(self, *a, **k):
+    raise AssertionError('ran')
+bngsim.Simulator.run = run
+"""
+    run = _bngsim("run", CHAIN, "--t-end", "1", "--out", str(tmp_path / "x.h5"), "--json",
+                  script=script)  # fmt: skip
+    _error(run, _cli.EXIT_ERROR, "env.missing_dependency")
+
+
+def test_one_replicate_is_one_run():
+    # Result.squeeze of one run is that run: a digest of one run, with its seed.
+    d = _json(_bngsim("run", BIRTH_DEATH, "--method", "ssa", "--t-end", "2", "--replicates", "1",
+                      "--seed", "4", "--json"))  # fmt: skip
+    assert d["digest"]["n_runs"] is None and d["seeds"] == [4]

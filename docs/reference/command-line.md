@@ -40,12 +40,13 @@ bngsim run model.net --method ssa --t-end 10 --replicates 20 --seed 1
 bngsim check model.xml --t-end 100 --checks all --json
 ```
 
-- **What it prints:** with `--json`, `{"model", "record", "digest", "out"}`. `record` is `Result.record` without the start vector, `digest` is `Result.digest()` (`--species` and `--max-columns` pass through), and `out` is the absolute path `--out` wrote, or `null`. `check` adds `"check"`, the `Result.check()` report. Without `--json`, the digest's text form, and for `check` the report's.
-- **The run:** `--method` (`ode`, `ssa`, `psa`, `nf` or `rm`, the last two with `--xml`), `--t-start`, `--t-end` and `--n-points`, or `--sample-times`. `--seed`, `--rtol` and `--atol` (a number, `auto` or `tracking`). `--steady-state` stops at a steady state.
-- **The model:** `--set NAME=VALUE` sets a parameter, or a species' initial amount, before the run; it is repeatable, and a name the model does not have is a usage error that names the close ones. Each command loads the model fresh, so each run starts from its initial state.
-- **Replicates:** `bngsim run --replicates N` makes N stochastic runs (`run_replicates`) and digests them as a stack: statistics across runs at the last time. It takes no `--sample-times`, tolerances or `--steady-state`, as `run_replicates` takes none.
-- **The arrays:** `--out FILE` writes them: `.npz` with NumPy alone, `.h5` with h5py (which `Result.load` reads back), or `.csv`/`.tsv` (one kind of column, `--out-kind observables` or `species`; one run only).
-- **A time limit, always:** every run has a wall-clock limit, `--timeout` seconds, 600 by default; past it, exit 5. `check`'s reruns share `--budget` seconds (600 by default); a check that does not fit is reported as `timeout`, and the check is not ok.
+- **What it prints:** with `--json`, `{"model", "record", "digest", "out", "set"}`, and `"seeds"` after `--replicates`. `record` is `Result.record` without the start vector, `digest` is `Result.digest()` (`--species` and `--max-columns` pass through), `out` is the absolute path `--out` wrote, or `null`, `set` is what `--set` set, and `seeds` each replicate's seed. `check` adds `"check"`, the `Result.check()` report. Without `--json`, the digest's text form, and for `check` the report's.
+- **The run:** `--method` (`ode`, `ssa`, `psa` with `--poplevel N`, `nf` or `rm` with `--xml FILE`), `--t-start`, `--t-end` and `--n-points`, or `--sample-times` (increasing; in place of the other three). `--seed`; `--rtol` and `--atol` (a number, `auto` or `tracking`) for an ODE run. `--steady-state` stops at a steady state.
+- **The model:** `--set NAME=VALUE` sets a parameter (`Model.set_param`) or a species' starting concentration (`Model.set_concentration`: the amount over the compartment's size, which for a species declared in amounts in a compartment of size 2 is half its amount). It is repeatable, the value must be a finite number, and a name the model does not have, or a parameter defined by an expression, is a usage error. A species set this way becomes the model's initial state, so the run starts from it, and the record says `started_from: "initial"`.
+- **An option the run would not use is refused, not dropped:** `--rtol` or `--atol` with a stochastic method, `--xml` with a method other than `nf` or `rm`, `--poplevel` with one other than `psa`, `--network` with a file that is not `.bngl`, `--out-kind` with an `--out` that is not `.csv` or `.tsv`, and `--sample-times` beside `--t-start`, `--t-end` or `--n-points` are usage errors (exit 2).
+- **Replicates:** `bngsim run --replicates N` makes N stochastic runs (`run_replicates`) and digests them as a stack: statistics across runs at the last time. `--replicates 1` is one run. It takes no `--sample-times` or `--steady-state`, as `run_replicates` takes none.
+- **The arrays:** `--out FILE` writes them, replacing any file of that name: `.npz` with NumPy alone, `.h5` or `.hdf5` with h5py (which `Result.load` reads back), or `.csv`/`.tsv` (one kind of column, `--out-kind observables` or `species`; one run only). Any other name, a directory, a missing directory, or `.h5` without h5py is refused before the run.
+- **A time limit, always:** every run has a wall-clock limit, `--timeout` seconds, 600 by default; past it, exit 5. `--replicates N` shares it among the N runs. Loading the model is not counted (a `.bngl` file's BNG2.pl has its own limit). `check`'s reruns share `--budget` seconds (600 by default), on top of the run's; a check that does not fit is reported as `timeout`, and the check is not ok.
 - **A `.bngl` file** can mean one run of the network BNG2.pl generates, or the file's own actions. `bngsim run` makes the first, and asks for `--network` to say so; the second is `bngsim.run_bngl(path)` in Python.
 - **Not commands yet:** `run_batch`, `parameter_scan`, `run_until` and the `steady_state` family. Use Python for those.
 
@@ -75,7 +76,11 @@ bngsim check model.xml --t-end 100 --checks all --json
   }
   ```
 
-  `notices` holds what a run that failed had noted before it raised. The codes
+  `notices` holds what a run that failed had noted before it raised. With
+  `--json`, whatever else was written to standard error while the command
+  worked (Python's warnings and log, the solver's own lines) is held, and
+  written to standard error after a success, or put in the error object as
+  `log` after a failure, so the error is the only thing there. The codes
   are listed in [Error and notice codes](error-codes.md). A command line the
   command cannot take is a `UsageError` with the code `usage.invalid_argument`,
   and its `details["usage"]` is the usage line. Without `--json`, an error is a
@@ -102,4 +107,4 @@ without reading any text.
 | 3 | refusal: the model holds a construct BNGsim cannot simulate faithfully. The model, not the command, has to change. |
 | 4 | failed run: a run started and the solver gave up |
 | 5 | timeout: a run took longer than its wall-clock limit |
-| 6 | check not ok: `bngsim check` finished, and the run's answer moved when a setting changed, a changed run raised or ran out of time, or the run is not converged at its own tolerance. The report is on standard output, as for success. |
+| 6 | check not ok: `bngsim check` finished, and the run's answer moved when a setting changed, a changed run raised or ran out of time, the run is not converged at its own tolerance, or no check asked for applies to the run. The report is on standard output, as for success. |
