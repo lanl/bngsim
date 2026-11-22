@@ -17,6 +17,7 @@ refuses with a code rather than run something else.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import math
@@ -48,11 +49,18 @@ SETTINGS = (
     "method",
     "poplevel",
     "jacobian",
+    "linear_solver",
     "codegen",
 )
 
 #: The settings that are a :class:`Simulator`'s, not a run's.
-_SIMULATOR = ("method", "poplevel", "jacobian", "codegen")
+_SIMULATOR = ("method", "poplevel", "jacobian", "linear_solver", "codegen")
+
+#: ``linear_solver=`` values, and the :class:`Simulator` force flags each sets
+#: (dense, sparse): ``"auto"`` the Simulator's own rule, ``"dense"`` a dense
+#: direct solver (the BLAS one where the Simulator's rule picks it), ``"klu"``
+#: sparse KLU where the build, the model's sparsity and the Jacobian allow it.
+LINEAR_SOLVERS = {"auto": (False, False), "dense": (True, False), "klu": (False, True)}
 
 #: The settings ``None`` is a value of: a fresh seed, no wall-clock budget, no
 #: step bound, the default steady-state tolerance, codegen as the method
@@ -341,8 +349,12 @@ def _simulator_options(
     if method == "psa" and same and run.get("poplevel") is not None:
         opts["poplevel"] = run["poplevel"]
     for key in _SIMULATOR:
-        if key in changes and key != "method":
+        if key in changes and key not in ("method", "linear_solver"):
             opts[key] = changes[key]
+    if "linear_solver" in changes:
+        dense, sparse = LINEAR_SOLVERS[changes["linear_solver"]]
+        opts["force_dense_linear_solver"] = dense
+        opts["force_sparse_linear_solver"] = sparse
     return opts
 
 
@@ -428,6 +440,31 @@ def _check_changes(run: dict[str, Any], changes: dict[str, Any]) -> None:
             details={"arguments": empty},
             remedies=[],
         )
+    if "linear_solver" in changes:
+        solver = changes["linear_solver"]
+        if not isinstance(solver, str) or solver not in LINEAR_SOLVERS:
+            raise UsageError(
+                f"Result.rerun(linear_solver=...) takes {', '.join(map(repr, LINEAR_SOLVERS))}, "
+                f"got {solver!r}.",
+                code="usage.invalid_argument",
+                details={"arguments": ["linear_solver"], "accepted": list(LINEAR_SOLVERS)},
+                remedies=[],
+            )
+        method = changes.get("method", run.get("method"))
+        if isinstance(method, str):
+            from bngsim._simulator import normalize_method
+
+            # A method it does not know, the Simulator refuses in its own words.
+            with contextlib.suppress(Exception):
+                method = normalize_method(method)[0]
+        if method != "ode":
+            raise UsageError(
+                f"Result.rerun(linear_solver=...) changes an ODE run's linear solver; this "
+                f"rerun's method is {method!r}, which has none.",
+                code="usage.invalid_argument",
+                details={"arguments": ["linear_solver"], "method": method},
+                remedies=[],
+            )
     if "sample_times" in changes and "n_points" in changes:
         raise UsageError(
             "Result.rerun() takes sample_times or n_points, not both.",
@@ -512,7 +549,7 @@ def rerun(result: Result, **changes: Any) -> Result:
             code="rerun.different_build",
             stacklevel=_notices.OUTSIDE,
         )
-    if method == run["method"] and not ({"jacobian", "codegen"} & set(changes)):
+    if method == run["method"] and not ({"jacobian", "linear_solver", "codegen"} & set(changes)):
         then = rec["backend"] or {}
         ran = again.record["backend"] or {}
         moved = [k for k in _BACKEND if then.get(k) != ran.get(k)]

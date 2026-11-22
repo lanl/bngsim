@@ -282,7 +282,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--checks",
         default=None,
         help="'all', or check names separated by commas (tolerance, grid, jacobian, "
-        "backend, second_engine, replicates); default: the cheap ones for the method",
+        "linear_solver, backend, second_engine, replicates); default: the cheap ones for "
+        "the method",
     )
     check.add_argument(
         "--budget",
