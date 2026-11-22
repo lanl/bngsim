@@ -72,7 +72,7 @@ def test_a_stochastic_run_rerun_as_ode_takes_a_solver() -> None:
     assert _solver(again) == ("klu", "sparse")
 
 
-@pytest.mark.parametrize("value", ["sparse", "KLU", "", 1, True])
+@pytest.mark.parametrize("value", ["sparse", "KLU", "", 1, True, ["klu"]])
 def test_a_solver_it_does_not_know_is_refused(value) -> None:
     with pytest.raises(UsageError) as e:
         _decay().rerun(linear_solver=value)
