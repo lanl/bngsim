@@ -210,7 +210,7 @@ def test_past_max_parameters_the_rest_are_counted():
 
 
 def test_a_value_within_its_tolerance_of_zero_has_no_scaled_value_but_a_rank():
-    # floor = min(atol, rtol·largest) = min(1e-8, 1e-6·1) = 1e-8: y0 = 1e-9 is under it.
+    # y0's atol by the run's rule is min(1e-8, 1e-6·1) = 1e-8: y0 = 1e-9 is under it.
     r = _sens([1e-9, 1.0], [[1.0, -3.0], [1.0, 1.0]], {"a": 1.0, "b": 1.0})
     d = r.digest(sensitivities=True)
     s = _col(d, "y0")
@@ -229,6 +229,21 @@ def test_just_past_the_floor_is_resolved():
     assert _col(r.digest(sensitivities=True), "y0")["resolved"] is False
 
 
+def test_a_species_is_resolved_against_its_own_atol():
+    # A species held to atol 1e-3 at 1e-5 was not told from 0, though the
+    # digest's floor min(atol, rtol·largest) = 1e-6 lies under it; one held to
+    # 1e-8 was.
+    r = _sens([1e-5, 1e-5, 1.0], [[1.0], [1.0], [1.0]], {"a": 1.0})
+    r._record_frozen["run"]["atol"] = {
+        "given": [1e-3, 1e-8, 1e-8],
+        "scalar": 1e-8,
+        "per_species": [1e-3, 1e-8, 1e-8],
+    }
+    d = r.digest(sensitivities=True, species=True)
+    assert _col(d, "y0", "species")["resolved"] is False
+    assert _col(d, "y1", "species")["resolved"] is True
+
+
 def test_a_non_finite_derivative_is_counted_not_ranked():
     # An assignment-rule species whose row is refused holds NaN.
     r = _sens([1.0], [[np.nan, 2.0, np.inf]], {"a": 1.0, "b": 1.0, "c": 1.0})
@@ -238,6 +253,9 @@ def test_a_non_finite_derivative_is_counted_not_ranked():
     assert [e["name"] for e in s["parameters"]] == ["b"]
     assert s["n_parameters_non_finite"] == 2
     assert "2 not finite" in str(d)
+    # neither is it one left out past the bound
+    one = _col(r.digest(sensitivities=True, max_parameters=1), "y0")
+    assert one["n_parameters_left_out"] == 0 and one["n_parameters_non_finite"] == 2
 
 
 def test_a_parameter_the_record_gives_no_value_is_listed_apart():

@@ -3348,8 +3348,9 @@ class Result:
             - with ``sensitivities=True``, ``sensitivity``: ``None`` where the
               run has no sensitivity block for the column, else ``y`` (its
               value at the last time), ``resolved`` (whether ``|y|`` exceeds
-              its tolerance floor, ``min(atol, rtol·largest)``; ``None`` where
-              the tolerances are not recorded), ``parameters`` and
+              the column's absolute tolerance, a species' own as applied and an
+              observable's by the run's rule, so the run told it from 0;
+              ``None`` where the tolerances are not recorded), ``parameters`` and
               ``initial_amounts``, each at most ``max_parameters`` entries,
               largest ``|dy_dlnp|`` first, of ``name``, ``dy_dp`` (the
               derivative as :attr:`sensitivities` holds it), ``dy_dlnp``

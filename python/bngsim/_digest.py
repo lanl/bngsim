@@ -39,8 +39,9 @@ says which parameters, and which initial amounts, move it most at the last
 time. Raw ``dY/dp`` would rank parameters by their units, so the rank is by
 ``|p·dY/dp|`` (``dY/dln p``): within one column that is the order of the scaled
 sensitivity ``(p/y)·dY/dp`` too, and it needs no division by ``y``. The scaled
-value is given where ``|y|`` exceeds the column's tolerance floor
-(``min(atol, rtol·largest)``), and is ``None`` where ``y`` is not told from 0. A
+value is given where ``|y|`` exceeds the column's absolute tolerance (a
+species' own as applied, an observable's by the run's rule: see
+:func:`_column_atol`), and is ``None`` where the run did not tell ``y`` from 0. A
 parameter at 0, or one whose value the record does not give, has no ``dY/dln
 p``: it is listed apart, never ranked. A derivative that is not finite (an
 assignment-rule species whose row is refused, ``Result.ar_sensitivity_refused``)
@@ -449,7 +450,7 @@ def _kind(
             row["negative"] = bool(any_finite and mn < 0.0)
             row["constant"] = bool(not nonfinite[j] and mx == mn)
         if sens is not None:
-            row["sensitivity"] = sens(j, floor if tol_known else None)
+            row["sensitivity"] = sens(j, own if tol_known else None)
         columns.append(row)
     return {"n_columns": n_cols, "n_left_out": n_cols - len(chosen), "columns": columns}
 
@@ -513,8 +514,8 @@ class _Sens:
         }
 
     def of(self, kind: str) -> Any:
-        """A function of a column of *kind* and its tolerance floor that gives
-        the column's ``sensitivity`` entry."""
+        """A function of a column of *kind* and its absolute tolerance that
+        gives the column's ``sensitivity`` entry."""
         if self.reason is not None:
             return lambda j, floor: None
         if kind == "species":
@@ -536,11 +537,11 @@ class _Sens:
             dtype=np.float64,
         )
 
-        def entry(j: int, floor: float | None) -> dict[str, Any] | None:
+        def entry(j: int, atol: float | None) -> dict[str, Any] | None:
             if (self.params and par is None) or (self.ics and ic is None):
                 return None
             y = float(values[-1, j])
-            resolved = None if floor is None or not math.isfinite(y) else bool(abs(y) > floor)
+            resolved = None if atol is None or not math.isfinite(y) else bool(abs(y) > atol)
             out: dict[str, Any] = {"y": _num(y), "resolved": resolved}
             p_rows = par[j] if par is not None else np.empty(0)
             i_rows = ic[j] if ic is not None else np.empty(0)
