@@ -3301,9 +3301,11 @@ class Result:
             ``n_sensitivity_params``, ``n_sensitivity_ic_species``,
             ``n_notices``, ``notices`` (the first 20 of :attr:`notices`, each
             message cut at 500 characters), ``kinds``, the kinds listed, and
-            ``rtol`` (floored at 1e-10) and ``atol`` (the run's scalar, its
-            ceiling), whence each column's tolerance (see Notes); ``None``
-            where the record gives none.
+            ``rtol`` (floored at 1e-10) and ``atol``, the run's ceiling on any
+            species' atol (its scalar, or the largest per-species value where
+            the caller gave a vector, ``"auto"`` or a tracking atol), whence
+            each column's tolerance (see Notes); ``None`` where the record
+            gives none.
             Then for each kind (``"observables"``, ``"species"``)
             ``{"n_columns", "n_left_out", "columns"}``, where each column is a
             dict with its ``name`` and:
@@ -3342,8 +3344,8 @@ class Result:
         ``rtol·|y| + min(atol, rtol·largest)``, with the run's ``rtol`` (at
         least 1e-10) and absolute tolerance (a species' own as applied; an
         observable, whose species the record does not name, what the run's
-        rule gives a species of its size: the smaller of the scalar ``atol``
-        and ``rtol`` times its largest magnitude, not under 1e-6 of
+        rule gives a species of its size: the smaller of the run's ``atol``
+        ceiling and ``rtol`` times its largest magnitude, not under 1e-6 of
         ``largest``), and
         ``largest`` the largest magnitude of any column of that kind over the
         run. A column is ``settled`` when no value from ``tail_from`` on is

@@ -352,6 +352,23 @@ def test_a_species_is_held_to_its_own_atol_and_an_observable_to_the_runs_rule():
     assert _row(d, "y", "observables")["monotone"] is True  # rtol·1e-6·largest = 1e-14
 
 
+def test_an_atol_vector_is_the_ceiling_of_the_observables():
+    # A vector atol leaves the record's scalar at its default 1e-8, which the
+    # run never used: the observables are held to the vector's largest entry.
+    r = Simulator(examples.load("chain"), method="ode").run(
+        t_span=(0, 60), n_points=601, rtol=1e-4, atol=[1e-3, 1e-3, 1e-3]
+    )
+    assert r.record["run"]["atol"]["scalar"] == 1e-8
+    d = r.digest(species=True)
+    assert d["atol"] == 1e-3
+    keys = ("monotone", "n_interior_extrema", "settled", "negative", "constant")
+    for obs, sp in (("A", "A()"), ("B", "B()"), ("C", "C()")):
+        assert {k: _row(d, obs)[k] for k in keys} == {
+            k: _row(d, sp, "species")[k] for k in keys
+        }, obs
+    assert "atol 0.001" in str(d).splitlines()[0]
+
+
 def test_a_vector_atol_does_not_leak_into_other_observables():
     # chain at atol [1e-3, 1e-6, 1e-30]: observable A, which is species A
     # alone, reads as species A does, not at C's 1e-30.
@@ -824,8 +841,8 @@ def test_save_npz_keeps_sensitivities(tmp_path):
     try:
         sim = Simulator(examples.load("decay"), method="ode", sensitivity_params=["k"])
         r = sim.run(t_span=(0, 1), n_points=3)
-    except bngsim.BngsimError as e:  # no compiler on this machine
-        pytest.skip(f"forward sensitivities unavailable here: {e}")
+    except bngsim.CodegenToolchainError:
+        pytest.skip("no C compiler for forward sensitivities")
     r.save(tmp_path / "s.npz")
     with np.load(tmp_path / "s.npz", allow_pickle=False) as f:
         assert list(f["sensitivity_params"]) == ["k"]

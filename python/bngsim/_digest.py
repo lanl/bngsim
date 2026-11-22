@@ -111,7 +111,7 @@ def _num(x: Any) -> float | None:
 
 
 def _run_fields(result: Result) -> tuple[str | None, float | None, float | None, Any]:
-    """``(method, rtol, atol scalar, per-species atol)`` as *result*'s record
+    """``(method, rtol, atol ceiling, per-species atol)`` as *result*'s record
     holds them, each ``None`` where it holds none (or a stack's rows differ),
     without building the record."""
     frozen = result._record_frozen
@@ -119,14 +119,32 @@ def _run_fields(result: Result) -> tuple[str | None, float | None, float | None,
     if frozen is not None:
         run = frozen.get("run") or {}
         atol = run.get("atol") or {}
-        return run.get("method"), run.get("rtol"), atol.get("scalar"), atol.get("per_species")
+        per = atol.get("per_species")
+        ceiling = _ceiling(atol.get("given"), atol.get("scalar"), per)
+        return run.get("method"), run.get("rtol"), ceiling, per
     if info is None:
         return None, None, None, None
     if isinstance(info, dict):  # a stack's merged record (_record.squeeze_into)
         run = info.get("run") or {}
         atol = run.get("atol") or {}
-        return run.get("method"), run.get("rtol"), atol.get("scalar"), result._run_atol
-    return info.method, info.rtol, info.atol_scalar, result._run_atol
+        per = result._run_atol
+        ceiling = _ceiling(atol.get("given"), atol.get("scalar"), per)
+        return run.get("method"), run.get("rtol"), ceiling, per
+    per = result._run_atol
+    return info.method, info.rtol, _ceiling(info.atol_given, info.atol_scalar, per), per
+
+
+def _ceiling(given: Any, scalar: float | None, per_species: Any) -> float | None:
+    """The run's ceiling on any species' atol: the scalar where the caller gave
+    a number or nothing (each species took the smaller of it and its own
+    scale's), and the largest per-species value where the caller gave its own
+    answer (a vector, ``"auto"``, a tracking atol), which the record's scalar,
+    left at the default, is no ceiling of."""
+    if given is None or isinstance(given, int | float):
+        return scalar
+    if per_species is not None and len(per_species):
+        return float(max(per_species))
+    return scalar
 
 
 def _n_turns(col: NDArray[np.float64], rtol: float, floor: float) -> int:
