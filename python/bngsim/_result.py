@@ -3270,21 +3270,184 @@ class Result:
             "record": _record.record(self, start_state=False),
         }
 
+    def digest(self, *, species: bool = False, max_columns: int = 20) -> dict[str, Any]:
+        """A small, deterministic description of this result's values, for a
+        caller that cannot look at a plot (issue #1704).
+
+        A dict, JSON-ready (``json.dumps(d, allow_nan=False)`` writes it: every
+        number is finite or ``None``); ``str()`` of it, or ``print()``, is its
+        plain-text form, one line per column. It gives numbers and counts, and
+        never a word such as "oscillates" or "bistable": a reader draws that
+        from the counts.
+
+        Parameters
+        ----------
+        species : bool
+            Also list the species. The observables are listed always, or the
+            species alone where the result has no observables.
+        max_columns : int
+            How many columns of each kind to list, at most (default 20). Past
+            it the digest lists the columns with the largest range, any column
+            holding a non-finite value first, in column order, and gives how
+            many it left out.
+
+        Returns
+        -------
+        dict
+            For the run: ``digest_version`` (1; a key removed or changed in
+            meaning changes it, a key added does not), ``method``,
+            ``stochastic``, ``n_runs`` (a stack's number of runs, else
+            ``None``), ``t_start``, ``t_end``, ``n_points``,
+            ``n_sensitivity_params``, ``n_sensitivity_ic_species``,
+            ``notices`` (:attr:`notices`) and ``kinds``, the kinds listed.
+            Then for each kind (``"observables"``, ``"species"``)
+            ``{"n_columns", "n_left_out", "columns"}``, where each column is a
+            dict with its ``name`` and:
+
+            - of one deterministic run: ``first``, ``last``, ``min`` and
+              ``t_min``, ``max`` and ``t_max``, ``monotone``,
+              ``n_interior_extrema``, ``tail_change`` (how far any value in
+              the last tenth of the window is from the last value, as a share
+              of the column's range) and ``settled``;
+            - of one stochastic run, or a run whose method the result does not
+              record: ``first``, ``last``, ``min`` and ``max`` alone, as its
+              shape is noise;
+            - of a stack of runs (:meth:`squeeze`, ``run_batch(squeeze=True)``):
+              statistics across the runs at the last time, ``last_mean``,
+              ``last_std`` (the sample standard deviation; ``None`` of one run),
+              ``last_min``, ``last_q05``, ``last_q25``, ``last_median``,
+              ``last_q75``, ``last_q95``, ``last_max`` and ``last_n_finite``
+              (the runs whose last value is finite, which the statistics are
+              over), with ``min`` and ``max`` over every run and time;
+            - always, the flags ``non_finite`` (with ``t_non_finite``, the first
+              time a value is NaN or infinite), ``negative`` and ``constant``
+              (the column never moves).
+
+            ``min`` and ``max`` are over the finite values; a ``first`` or
+            ``last`` that is not finite is ``None``, as are the readings of
+            shape of a column holding a non-finite value.
+
+        Notes
+        -----
+        What counts is decided by the tolerance of the steady-state code's
+        ``criterion="scaled"`` (issue #1001), not a threshold of the
+        digest's own: a move at a value ``y`` is within it when at most
+        ``rtol·|y| + min(atol, rtol·largest)``, with the run's ``rtol`` (at
+        least 1e-10) and absolute tolerance (a species' own as applied, an
+        observable the scalar), and ``largest`` the largest magnitude of any
+        column of that kind over the run. A column is ``settled`` when no
+        value over the last tenth of the window is further than that from the
+        last value. That is a reading of the window the run had: a column
+        still moving slower than its tolerance per tenth of the window reads
+        as settled, and a longer run, or :meth:`Simulator.steady_state`,
+        tells. An interior extremum is a turn whose swing back exceeds the
+        tolerance at the extreme, so an integrator's wobble about a value it
+        has reached is no turn, and ``monotone`` is no turn. ``negative`` is a
+        minimum below ``-min(atol, rtol·largest)``, and ``constant`` a range
+        within the tolerance. Of a stochastic run, or one whose method is not
+        recorded, ``negative`` is any value below 0 and ``constant`` a column
+        whose values are all equal.
+
+        Nothing is computed until this is called, and the readings of shape
+        are made for the listed columns alone.
+
+        Examples
+        --------
+        >>> d = result.digest()
+        >>> d["observables"]["columns"][0]["last"]
+        4.54e-03
+        >>> print(d)  # the plain-text form
+        """
+        from bngsim import _digest
+
+        return _digest.digest(self, species=species, max_columns=max_columns)
+
+    def _save_npz(self, path: Path) -> None:
+        """:meth:`save` to a ``.npz`` file, with NumPy alone (issue #1704)."""
+        logger.info("Saving result to %s", path)
+        arrays: dict[str, NDArray[Any]] = {
+            "time": np.asarray(self._time),
+            "species": np.asarray(self._species),
+            "observables": np.asarray(self._observables),
+            "expressions": np.asarray(self._expressions),
+            "species_names": np.array(list(self._species_names), dtype=str),
+            "observable_names": np.array(list(self._observable_names), dtype=str),
+            "expression_names": np.array(list(self._expression_names), dtype=str),
+        }
+        blocks = (
+            ("sensitivities_species", "sensitivities"),
+            ("sensitivities_observables", "sensitivities_observables"),
+            ("sensitivities_expressions", "sensitivities_expressions"),
+            ("sensitivities_species_ic", "sensitivities_ic"),
+            ("sensitivities_observables_ic", "sensitivities_observables_ic"),
+            ("sensitivities_expressions_ic", "sensitivities_expressions_ic"),
+        )
+        for key, attr in blocks:
+            has = "has_sensitivities" if attr == "sensitivities" else f"has_{attr}"
+            if getattr(self, has):
+                arrays[key] = np.asarray(getattr(self, attr))
+        for key, names in (
+            ("sensitivity_params", self._sensitivity_params),
+            ("sensitivity_ic_species", self._sensitivity_ic_species),
+        ):
+            if names:
+                arrays[key] = np.array(list(names), dtype=str)
+        arrays["record"] = np.array(json.dumps(self.record))
+        # A file object, so NumPy adds no second ".npz" to a path ending ".NPZ".
+        with open(path, "wb") as f:
+            np.savez(f, **arrays)
+
     # ─── HDF5 save / load ──────────────────────────────────────────
 
     def save(self, path: str | Path) -> None:
-        """Save result to HDF5 file.
+        """Save result to an HDF5 file, or to a NumPy ``.npz`` file.
 
         Parameters
         ----------
         path : str or Path
-            Output file path (e.g. ``"results.h5"``).
+            Output file path. A path ending ``.npz`` is written with NumPy
+            alone (issue #1704); any other is HDF5 (e.g. ``"results.h5"``),
+            which needs h5py. A path ending ``.csv`` or ``.tsv`` is refused:
+            :meth:`to_csv` writes those, one kind of column at a time.
 
         Raises
         ------
-        ImportError
-            If h5py is not installed.
+        DependencyError
+            If h5py is not installed and *path* is not ``.npz``. Also an
+            :class:`ImportError`.
+        UsageError
+            If *path* ends ``.csv`` or ``.tsv``.
+
+        Notes
+        -----
+        HDF5 keeps everything: :meth:`Result.load` reads it back as a Result
+        whose record, notices, sensitivities and volume record are as saved.
+        A ``.npz`` file is for ``numpy.load(path)``, with no pickled object in
+        it (``allow_pickle=False`` reads it): ``time``, ``species``,
+        ``observables`` and ``expressions`` (a stack's with a leading run
+        axis), ``species_names``, ``observable_names`` and
+        ``expression_names``, each sensitivity block the result holds
+        (``sensitivities_species``, ``sensitivities_observables``,
+        ``sensitivities_expressions`` and their ``_ic`` forms) with
+        ``sensitivity_params`` and ``sensitivity_ic_species``, and ``record``,
+        :attr:`record` and :attr:`notices` as one JSON string
+        (``json.loads(str(f["record"]))``). :meth:`Result.load` does not read
+        it back.
         """
+        suffix = Path(path).suffix.lower()
+        if suffix == ".npz":
+            self._save_npz(Path(path))
+            return
+        if suffix in (".csv", ".tsv"):
+            from bngsim._error_codes import use_call
+
+            raise UsageError(
+                f"Result.save({str(path)!r}) writes HDF5 or .npz, not a delimited "
+                f"text file. Result.to_csv(path, kind='observables' or 'species') "
+                f"writes {suffix}, one kind of column at a time; "
+                f"Result.save('....npz') keeps every array with NumPy alone.",
+                remedies=[use_call("Result.to_csv", str(path))],
+            )
         try:
             import h5py
         except ImportError:
@@ -3579,6 +3742,15 @@ class Result:
         a bare-id amount selector and warns on a ``"[X]"`` one; the arrays
         themselves are as they were saved.
         """
+        if Path(path).suffix.lower() == ".npz":
+            from bngsim._error_codes import use_call
+
+            raise UsageError(
+                f"Result.load({str(path)!r}) reads the HDF5 files Result.save writes; "
+                f"a .npz file is for numpy.load(path), which gives its arrays, "
+                f"names and record (issue #1704).",
+                remedies=[use_call("numpy.load", str(path))],
+            )
         try:
             import h5py
         except ImportError:

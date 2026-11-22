@@ -1,0 +1,431 @@
+"""A digest of a Result's values, bounded in size (issue #1704).
+
+:meth:`bngsim.Result.digest` is built here. It is for a caller that cannot look
+at a plot (an AI agent, a ``bngsim`` command's ``--json``, a tool server): the
+dozen numbers per column such a caller looks for, and no reading of them beyond
+what the run's own tolerances allow.
+
+Where a reading needs a threshold, it takes the one the steady-state code's
+``criterion="scaled"`` takes (issue #1001; ``ss_scaled_tolerance`` in
+``src/steady_state.cpp``): a move of a value ``y`` is within tolerance when it is
+at most ``rtol·|y| + min(atol, rtol·largest)``, with the run's ``rtol`` (at least
+1e-10) and ``atol``, and ``largest`` the largest magnitude of any column of the
+same kind over the run. That one tolerance decides
+
+- whether a column has *settled*: no value over the last tenth of the window is
+  further from the last value than the tolerance (the run test of
+  ``criterion="scaled"``, taken over the run's own tail in place of a run taken
+  on from its end);
+- what counts as an *interior extremum*: a turn whose swing, back from the
+  extreme it turns at, exceeds the tolerance there, so an integrator's wobble
+  around a value it has reached is not counted (and *monotone* is no such turn);
+- whether a column *never moves* (its range is within the tolerance) or is
+  *negative* (its minimum is below ``-min(atol, rtol·largest)``).
+
+A stochastic run's values are counts that move by whole molecules, so of a
+single stochastic trajectory the digest gives the first, last, minimum and
+maximum values and the flags, and reads nothing from its shape. A stack of runs
+(``Result.squeeze``, ``run_batch(squeeze=True)``) gets statistics across its
+runs at the last time.
+"""
+
+from __future__ import annotations
+
+import math
+from typing import TYPE_CHECKING, Any
+
+import numpy as np
+
+from bngsim import _record
+from bngsim._exceptions import UsageError
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
+
+    from bngsim._result import Result
+
+#: Incremented by a change that removes or renames a key, or changes what one
+#: holds. A key added is no change of version.
+DIGEST_VERSION = 1
+
+#: How many columns of each kind a digest lists by default.
+DEFAULT_MAX_COLUMNS = 20
+
+#: The share of the window, at its end, that ``settled`` and ``tail_change``
+#: read.
+TAIL_FRACTION = 0.1
+
+#: The finest rtol the tolerance takes: ``kCriterionRtolLeast`` in
+#: ``src/steady_state.cpp``, under which a run does not tell a move from its
+#: own error.
+RTOL_LEAST = 1e-10
+
+#: A run's ``rtol`` and scalar ``atol`` where its record does not say them (a
+#: stack whose rows ran at different tolerances): the defaults of a run.
+_RTOL_DEFAULT = 1e-8
+_ATOL_DEFAULT = 1e-8
+
+#: The quantiles a stack's statistics give at the last time, by key.
+QUANTILES = (("q05", 0.05), ("q25", 0.25), ("median", 0.5), ("q75", 0.75), ("q95", 0.95))
+
+#: The kinds of column a digest can list, with the Result's attributes for
+#: their values and names.
+_KINDS = {
+    "observables": ("_observables", "_observable_names"),
+    "species": ("_species", "_species_names"),
+}
+
+
+class Digest(dict):  # type: ignore[type-arg]
+    """:meth:`Result.digest`'s dict, whose ``str()`` is its plain-text form.
+
+    It is a ``dict`` in every other way: ``json.dumps(digest, allow_nan=False)``
+    writes it, and every number in it is finite or ``None``.
+    """
+
+    __slots__ = ()
+
+    def __str__(self) -> str:
+        return text(self)
+
+    def text(self) -> str:
+        """The plain-text form, as ``str()`` gives it."""
+        return text(self)
+
+
+def _num(x: Any) -> float | None:
+    """*x* as a float, or ``None`` where it is not finite (JSON has no NaN)."""
+    v = float(x)
+    return v if math.isfinite(v) else None
+
+
+def _run_fields(result: Result) -> tuple[str | None, float | None, float | None, Any]:
+    """``(method, rtol, atol scalar, per-species atol)`` as *result*'s record
+    holds them, each ``None`` where it holds none (or a stack's rows differ),
+    without building the record."""
+    frozen = result._record_frozen
+    info = result._run_info
+    if frozen is not None:
+        run = frozen.get("run") or {}
+        atol = run.get("atol") or {}
+        return run.get("method"), run.get("rtol"), atol.get("scalar"), atol.get("per_species")
+    if info is None:
+        return None, None, None, None
+    if isinstance(info, dict):  # a stack's merged record (_record.squeeze_into)
+        run = info.get("run") or {}
+        atol = run.get("atol") or {}
+        return run.get("method"), run.get("rtol"), atol.get("scalar"), result._run_atol
+    return info.method, info.rtol, info.atol_scalar, result._run_atol
+
+
+def _n_turns(col: NDArray[np.float64], rtol: float, floor: float) -> int:
+    """The interior extrema of *col* (all finite): turns whose swing back from
+    the extreme they turn at exceeds the tolerance there."""
+    d = np.diff(col)
+    moving = np.flatnonzero(d)
+    if moving.size < 2:
+        return 0
+    sign = np.sign(d[moving])
+    flips = np.flatnonzero(sign[1:] != sign[:-1])
+    if flips.size == 0:
+        return 0
+    # The first point, each local extreme (a plateau's first point), the last:
+    # between two of them the column moves one way, so a turn can only be at one.
+    at = np.concatenate(([0], moving[flips] + 1, [col.size - 1]))
+    values = col[at].tolist()
+    ref = values[0]
+    way = 0
+    ext = ref
+    n = 0
+    for x in values[1:]:
+        if way == 0:
+            tol = rtol * abs(ref) + floor
+            if x > ref + tol:
+                way, ext = 1, x
+            elif x < ref - tol:
+                way, ext = -1, x
+        elif way > 0:
+            if x > ext:
+                ext = x
+            elif ext - x > rtol * abs(ext) + floor:
+                n += 1
+                way, ext = -1, x
+        else:
+            if x < ext:
+                ext = x
+            elif x - ext > rtol * abs(ext) + floor:
+                n += 1
+                way, ext = 1, x
+    return n
+
+
+def _rank(nonfinite: NDArray[np.bool_], span: NDArray[np.float64], n: int) -> list[int]:
+    """The indices of the *n* columns to list, in column order: those holding a
+    non-finite value first, then by range, largest first, ties by index."""
+    if n >= span.size:
+        return list(range(span.size))
+    order = np.lexsort((np.arange(span.size), -np.nan_to_num(span, nan=0.0), ~nonfinite))
+    return sorted(int(i) for i in order[:n])
+
+
+def digest(
+    result: Result, *, species: bool = False, max_columns: int = DEFAULT_MAX_COLUMNS
+) -> Digest:
+    """:meth:`Result.digest`."""
+    if not isinstance(species, bool):
+        raise UsageError(f"digest(species=...) takes True or False, got {species!r}")
+    if isinstance(max_columns, bool) or not isinstance(max_columns, int | np.integer):
+        raise UsageError(f"digest(max_columns=...) takes a whole number, got {max_columns!r}")
+    if max_columns < 0:
+        raise UsageError(f"digest(max_columns=...) takes 0 or more, got {max_columns}")
+    max_columns = int(max_columns)
+
+    method, rtol, atol, atol_vec = _run_fields(result)
+    stochastic = None if method is None else method in _record.STOCHASTIC
+    time = np.asarray(result._time, dtype=np.float64)
+    stack = result._species.ndim == 3
+    n_points = int(time.shape[-1]) if time.size else 0
+    t_start = _num(time[0]) if n_points else None
+    t_end = _num(time[-1]) if n_points else None
+
+    out = Digest()
+    out["digest_version"] = DIGEST_VERSION
+    out["method"] = method
+    out["stochastic"] = stochastic
+    out["n_runs"] = int(result._species.shape[0]) if stack else None
+    out["t_start"] = t_start
+    out["t_end"] = t_end
+    out["n_points"] = n_points
+    out["n_sensitivity_params"] = len(result._sensitivity_params)
+    out["n_sensitivity_ic_species"] = len(result._sensitivity_ic_species)
+    out["notices"] = [n.as_dict() for n in result._notices]
+
+    kinds = ["observables"] if len(result._observable_names) else ["species"]
+    if species and "species" not in kinds:
+        kinds.append("species")
+    out["kinds"] = list(kinds)
+
+    # Readings of shape need tolerances, a deterministic method and one run.
+    reads = stochastic is False and not stack
+    tol_known = stochastic is False
+    r = max(_RTOL_DEFAULT if rtol is None else float(rtol), RTOL_LEAST)
+    a = _ATOL_DEFAULT if atol is None else float(atol)
+    for kind in kinds:
+        values_attr, names_attr = _KINDS[kind]
+        data = np.asarray(getattr(result, values_attr), dtype=np.float64)
+        names = list(getattr(result, names_attr))
+        out[kind] = _kind(
+            data,
+            names,
+            time,
+            kind=kind,
+            stack=stack,
+            reads=reads,
+            tol_known=tol_known,
+            rtol=r,
+            atol=a,
+            atol_vec=atol_vec if kind == "species" else None,
+            max_columns=max_columns,
+        )
+    return out
+
+
+def _kind(
+    data: NDArray[np.float64],
+    names: list[str],
+    time: NDArray[np.float64],
+    *,
+    kind: str,
+    stack: bool,
+    reads: bool,
+    tol_known: bool,
+    rtol: float,
+    atol: float,
+    atol_vec: Any,
+    max_columns: int,
+) -> dict[str, Any]:
+    n_cols = len(names)
+    n_points = int(time.shape[-1]) if time.size else 0
+    if n_cols == 0 or n_points == 0 or data.size == 0:
+        return {"n_columns": n_cols, "n_left_out": 0, "columns": []}
+    axes = (0, 1) if stack else (0,)
+    finite = np.isfinite(data)
+    nonfinite = ~finite.all(axis=axes)
+    lo = np.where(finite, data, np.inf).min(axis=axes)
+    hi = np.where(finite, data, -np.inf).max(axis=axes)
+    span = hi - lo  # inf for a column with no finite value
+    largest = float(np.abs(np.where(finite, data, 0.0)).max())
+    chosen = _rank(nonfinite, np.where(np.isfinite(span), span, np.inf), max_columns)
+
+    tail = None
+    if reads and n_points >= 2:
+        t0, t1 = float(time[0]), float(time[-1])
+        cut = t1 - TAIL_FRACTION * (t1 - t0)
+        tail = time >= cut - 1e-12 * max(abs(cut), abs(t1 - t0))
+        if int(tail.sum()) < 2:
+            tail = None
+
+    columns = []
+    for j in chosen:
+        own = atol_vec is not None and j < len(atol_vec)
+        floor = min(float(atol_vec[j]) if own else atol, rtol * largest)
+        mn, mx = float(lo[j]), float(hi[j])
+        any_finite = math.isfinite(mn)
+        row: dict[str, Any] = {"name": names[j]}
+        if stack:
+            row.update(_stack_stats(data[:, -1, j]))
+            row["min"] = _num(mn)
+            row["max"] = _num(mx)
+        else:
+            col = data[:, j]
+            row["first"] = _num(col[0])
+            row["last"] = _num(col[-1])
+            row["min"] = _num(mn)
+            if reads:
+                row["t_min"] = (
+                    _num(time[int(np.argmin(np.where(finite[:, j], col, np.inf)))])
+                    if any_finite
+                    else None
+                )
+            row["max"] = _num(mx)
+            if reads:
+                row["t_max"] = (
+                    _num(time[int(np.argmax(np.where(finite[:, j], col, -np.inf)))])
+                    if any_finite
+                    else None
+                )
+        if reads:
+            col = data[:, j]
+            if nonfinite[j]:
+                row.update(monotone=None, n_interior_extrema=None, tail_change=None, settled=None)
+            else:
+                n = _n_turns(col, rtol, floor)
+                row["monotone"] = n == 0
+                row["n_interior_extrema"] = n
+                if tail is None:
+                    row["tail_change"] = None
+                    row["settled"] = None
+                else:
+                    last = float(col[-1])
+                    move = float(np.abs(col[tail] - last).max())
+                    rng = mx - mn
+                    row["tail_change"] = _num(move / rng) if rng > 0 else 0.0
+                    row["settled"] = bool(move <= rtol * abs(last) + floor)
+        row["non_finite"] = bool(nonfinite[j])
+        if nonfinite[j]:
+            bad = ~finite[:, :, j].all(axis=0) if stack else ~finite[:, j]
+            row["t_non_finite"] = _num(time[int(np.argmax(bad))])
+        else:
+            row["t_non_finite"] = None
+        if tol_known:
+            row["negative"] = bool(any_finite and mn < -floor)
+            row["constant"] = bool(
+                not nonfinite[j] and mx - mn <= rtol * max(abs(mn), abs(mx)) + floor
+            )
+        else:
+            row["negative"] = bool(any_finite and mn < 0.0)
+            row["constant"] = bool(not nonfinite[j] and mx == mn)
+        columns.append(row)
+    return {"n_columns": n_cols, "n_left_out": n_cols - len(chosen), "columns": columns}
+
+
+def _stack_stats(last: NDArray[np.float64]) -> dict[str, Any]:
+    """Statistics across a stack's runs of one column at the last time."""
+    ok = last[np.isfinite(last)]
+    stats: dict[str, Any] = {"last_n_finite": int(ok.size)}
+    if ok.size == 0:
+        stats["last_mean"] = None
+        stats["last_std"] = None
+        for key, _ in QUANTILES:
+            stats[f"last_{key}"] = None
+        stats["last_min"] = None
+        stats["last_max"] = None
+        return stats
+    stats["last_mean"] = _num(ok.mean())
+    stats["last_std"] = _num(ok.std(ddof=1)) if ok.size > 1 else None
+    qs = np.quantile(ok, [q for _, q in QUANTILES])
+    stats["last_min"] = _num(ok.min())
+    for (key, _), v in zip(QUANTILES, qs, strict=True):
+        stats[f"last_{key}"] = _num(v)
+    stats["last_max"] = _num(ok.max())
+    return stats
+
+
+def _g(x: Any) -> str:
+    return "?" if x is None else f"{x:.6g}"
+
+
+def text(d: dict[str, Any]) -> str:
+    """The plain-text form of a digest: one line for the run, one per notice,
+    and one per column."""
+    lines = []
+    method = d.get("method") or "unknown method"
+    runs = f", {d['n_runs']} runs" if d.get("n_runs") is not None else ""
+    if d.get("n_points"):
+        window = f"t {_g(d['t_start'])} to {_g(d['t_end'])}, {d['n_points']} points"
+    else:
+        window = "no time points"
+    head = f"{method} run{runs}, {window}"
+    if d.get("n_sensitivity_params") or d.get("n_sensitivity_ic_species"):
+        head += (
+            f"; sensitivities to {d['n_sensitivity_params']} parameters and "
+            f"{d['n_sensitivity_ic_species']} initial amounts"
+        )
+    lines.append(head)
+    notices = d.get("notices") or []
+    if not notices:
+        lines.append("notices: none")
+    for n in notices:
+        lines.append(f"notice {n['code']}: {n['message']}")
+    for kind in d.get("kinds", []):
+        block = d[kind]
+        shown = len(block["columns"])
+        line = f"{kind}: {shown} of {block['n_columns']}"
+        if block["n_left_out"]:
+            line += f" ({block['n_left_out']} with smaller ranges left out)"
+        lines.append(line)
+        for row in block["columns"]:
+            lines.append("  " + _row_text(row))
+    return "\n".join(lines)
+
+
+def _row_text(row: dict[str, Any]) -> str:
+    parts = []
+    if "last_mean" in row:
+        parts.append(
+            f"at the last time over {row['last_n_finite']} finite runs: mean "
+            f"{_g(row['last_mean'])}, sd {_g(row['last_std'])}, min {_g(row['last_min'])}, "
+            f"q05 {_g(row['last_q05'])}, q25 {_g(row['last_q25'])}, median "
+            f"{_g(row['last_median'])}, q75 {_g(row['last_q75'])}, q95 {_g(row['last_q95'])}, "
+            f"max {_g(row['last_max'])}"
+        )
+        parts.append(f"over all runs min {_g(row['min'])}, max {_g(row['max'])}")
+    else:
+        parts.append(f"first {_g(row['first'])}, last {_g(row['last'])}")
+        if "t_min" in row:
+            parts.append(
+                f"min {_g(row['min'])} at t={_g(row['t_min'])}, "
+                f"max {_g(row['max'])} at t={_g(row['t_max'])}"
+            )
+        else:
+            parts.append(f"min {_g(row['min'])}, max {_g(row['max'])}")
+    if row.get("monotone") is not None:
+        n = row["n_interior_extrema"]
+        parts.append(
+            "monotone"
+            if row["monotone"]
+            else f"{n} interior {'extremum' if n == 1 else 'extrema'}"
+        )
+    if "settled" in row and row["settled"] is not None:
+        state = "settled" if row["settled"] else "not settled"
+        parts.append(f"last-tenth change {_g(row['tail_change'])} of range, {state}")
+    flags = []
+    if row["non_finite"]:
+        flags.append(f"non-finite from t={_g(row['t_non_finite'])}")
+    if row["negative"]:
+        flags.append("negative")
+    if row["constant"]:
+        flags.append("never moves")
+    if flags:
+        parts.append("FLAGS: " + ", ".join(flags))
+    return f"{row['name']}: " + "; ".join(parts)
