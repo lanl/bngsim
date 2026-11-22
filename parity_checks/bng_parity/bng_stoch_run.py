@@ -48,7 +48,10 @@ SSA one from ``SSA_KNOWN_DISPOSITION``): the row keeps its honest DIFF, with
 ``subclass="ref_bscb"`` / ``"known_artifact"``, so the matrix renders it KNOWN REF /
 KNOWN ARTIFACT — non-scoring, not a bngsim bug. Each entry names the independent
 oracle that shows the reference is the outlier (BNG2.pl's network, RuleMonkey,
-COPASI, an analytic answer). See GH #183 / #118 / #69 / #1549.
+COPASI, an analytic answer). See GH #183 / #118 / #69 / #1549. A model whose legacy
+reference cannot be compared against at all, with no oracle that fits the budget,
+is in ``NF_INVALID_REF``: neither engine runs, and the row is REFERENCE_FAILED with
+``reference_refusal="known_invalid"`` (#1818).
 
 Usage
 -----
@@ -321,6 +324,61 @@ NF_KNOWN_REF = {
         "delta() -> 0 at 2*kd, reproduces the legacy rate. Legacy is the outlier.",
     },
 }
+
+
+# NF models whose legacy NFsim reference cannot be compared against at all, and
+# that no independent oracle runs within the nightly's budget. NF_KNOWN_REF keeps
+# an honest DIFF that a run of both engines produces. Here bngsim would need a
+# raised time limit to finish, only to give a DIFF against a wrong reference,
+# and every DIFF escalates to 30 replicates. So neither engine runs: the row is
+# REFERENCE_FAILED with reference_refusal "known_invalid" and the reason.
+#
+# A record night writes no archive entry for such a model, so the next archive
+# also leaves it out of differential_nf, which builds its NFsim-RuleMonkey jobs
+# from the bng_nf archive (differential_run.nf_jobs). An entry comes out when a
+# valid reference for the model exists.
+NF_INVALID_REF = {
+    "AMPK_MTORC1_ULK1_v2": {
+        "issue": "#1818",
+        "reason": "Legacy NFsim v1.14.3 stops firing partway through every run of this model "
+        "and repeats that state to t = 10,800: at seeds 1-3 it fires about 500,000 times, "
+        "and nothing changes after t = 504-540. That is the freeze #1818 describes, from a "
+        "rate law read while a firing has its molecules out of the observables "
+        "(RuleWorld/nfsim#115); AMPK_boost_factor() = 1+9*TSC2_S1387_P/TSC2tot is such a "
+        "rate. bngsim-NF froze the same way, every seed between t = 36 and 792, until #1821 "
+        "carried the upstream change; it now runs to t = 10,800 at about 11 million firings "
+        "per replicate, a few minutes each on the nightly's runners. Its old PASS compared "
+        "two frozen ensembles. The NFsim-RuleMonkey comparison (differential_nf) has timed "
+        "out on this model at its 3,000 s cap every night.",
+    },
+}
+
+
+def known_invalid_reference(track: str, stem: str) -> dict | None:
+    """The row of a model whose legacy reference is catalogued as unusable, or None.
+
+    A model in ``NF_INVALID_REF`` on the nf track gets ``status="reference_failed"``
+    and ``reference_refusal="known_invalid"``; the caller runs neither engine. The
+    exception text, which a verdict file keeps as the row's note, says so first.
+    """
+    if track != "nf":
+        return None
+    art = NF_INVALID_REF.get(stem)
+    if art is None:
+        return None
+    return {
+        "status": "reference_failed",
+        "reference_refusal": "known_invalid",
+        "value": None,
+        "exception": (
+            f"NFsim (legacy): known_invalid: legacy NFsim is no reference for this model "
+            f"({art['issue']}); see NF_INVALID_REF. Neither engine ran."
+        ),
+        "comment": (
+            f"The legacy NFsim reference is known to be wrong for this model: {art['reason']} "
+            "Neither engine ran; unscored."
+        ),
+    }
 
 
 # SSA dispositions folded from parity_diff.py's KNOWN_STOCHASTIC_ARTIFACTS (GH #69),
@@ -1024,6 +1082,16 @@ def _worker(spec: dict, q) -> None:
         res["status"] = "bad_test"
         res["comment"] = "BNGL file could not be read."
         res["exception"] = f"unreadable BNGL: {type(exc).__name__}: {exc}"[:300]
+        q.put(res)
+        return
+
+    # A catalogued unusable reference (NF_INVALID_REF): nothing to compare, so
+    # neither engine runs and no archive entry is read or written (which also
+    # leaves the model out of the next archive's differential_nf jobs).
+    invalid = known_invalid_reference(track, bngl_path.stem)
+    if invalid is not None:
+        res.update(invalid)
+        res["timing"] = _with_settings({"warmup": warmup})
         q.put(res)
         return
 

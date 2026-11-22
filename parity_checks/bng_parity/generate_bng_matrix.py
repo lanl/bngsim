@@ -1121,6 +1121,10 @@ def render_bngsim_stoch_cell(
     cfg = bn.get("config", {})
     badge_text, badge_css = stoch_verdict_badge(outcome, "bngsim", subclass)
     has = bool(bn) and bn.get("rep_median_sec") is not None
+    if outcome == "REFERENCE_FAILED" and not has:
+        # No ensemble: bngsim did not run (a catalogued unusable reference,
+        # NF_INVALID_REF), so the row must not read as a bngsim PASS.
+        badge_text, badge_css = "NOT RUN", "verdict-refused"
 
     parts = [
         '<div class="engine-cell">',
@@ -1142,6 +1146,7 @@ def render_bngsim_stoch_cell(
             "TIMEOUT": "bngsim's ensemble did not finish within the per-model wall (TIMEOUT — a coverage gap, not a failure)",
             "UNSUPPORTED": "bngsim cleanly declined this model (documented limitation)",
             "BAD_TEST": "the model failed to build — neither engine ran",
+            "REFERENCE_FAILED": "bngsim did not run: there is no usable reference to compare against, so the row is unscored",
         }.get(outcome, "bngsim recorded no ensemble timing for this run")
         parts.append(f'<div class="error-msg">{_esc(_msg)}</div>')
         parts.append("</div>")
@@ -1210,8 +1215,11 @@ def render_legacy_stoch_cell(
         f'<div class="verdict {badge_css}">{badge_text}</div>',
     ]
     if not has:
+        bn_ran = (timing.get("bngsim") or {}).get("rep_median_sec") is not None
         _msg = {
-            "REFERENCE_FAILED": f"{legacy_label} errored — no reference ensemble to compare (a reference-side failure; bngsim ran fine, so the row is unscored)",
+            "REFERENCE_FAILED": f"{legacy_label} errored — no reference ensemble to compare (a reference-side failure; bngsim ran fine, so the row is unscored)"
+            if bn_ran
+            else f"no usable {legacy_label} reference for this model — neither engine ran, so the row is unscored",
             "TIMEOUT": f"{legacy_label} did not finish the ensemble within the wall (TIMEOUT)",
             "BAD_TEST": "the model failed to build — neither engine ran",
         }.get(outcome, f"{legacy_label} recorded no ensemble timing for this run")
