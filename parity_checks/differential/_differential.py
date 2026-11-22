@@ -67,10 +67,14 @@ it moves itself at the tenfold tighter tolerance. The trajectory's largest
 species sets no one else's bound: judged against it, a species at 1e-3 beside
 one at 1e3 could be wrong a hundredfold and pass. A species that moves by more
 than :data:`UNJUDGEABLE_DRIFT` of its peak at the tighter tolerance is not
-converged and is not judged; nor is one within 100 times its atol of zero,
-where that atol, not rtol, holds it (it is not resolved). A base with no
-species left to judge is no reference: its paths are SKIP, said why. A model
-in molar units, wholly within its atols, is one.
+converged and is not judged. One within 100 times its atol of zero, where
+that atol, not rtol, holds it, is not resolved: it is judged on the run's
+whole scale alone, so its noise is no finding and a departure from zero as
+large as the run's species is one. A base with no resolved species converged
+is no reference: its paths are SKIP, said why. The per-species atols are the
+run's own (rtol of each species' scale, under the scalar), so a model in
+molar units, which no path could fail against the old absolute floor of
+``1e3·atol``, is judged.
 
 Sensitivities against central differences are ``fd_sens``'s, not this module's:
 one oracle with one set of rules (``parity_checks/fd_sens``).
