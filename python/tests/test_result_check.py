@@ -658,3 +658,38 @@ def test_a_run_that_cannot_be_made_again_is_unsupported_not_an_exception(monkeyp
     (c,) = rep["checks"]
     assert c["status"] == "unsupported" and "no rerun" in c["note"], c
     assert rep["ok"] is False and "No check could run" in rep["next"]
+
+
+def test_the_per_species_atol_is_matched_by_name_where_the_state_holds_more(tmp_path):
+    # A parameter an event promotes joins the state: 3 atols for 2 species.
+    # Matched by name, A keeps its own 1e-14; by length alone, every species
+    # took the scalar ceiling. A saved and loaded Result has no state names:
+    # its species come first, so the vector's prefix.
+    import antimony
+
+    antimony.clearPreviousLoads()
+    assert (
+        antimony.loadAntimonyString(
+            "model m\nA = 1e-6; B = 1; k = 1; J0: A -> ; k*A; J1: B -> ; 0.1*B;"
+            " E1: at time > 1: k = 2;\nend"
+        )
+        >= 0
+    )
+    path = tmp_path / "promoted.xml"
+    path.write_text(antimony.getSBMLString("m"))
+    r = bngsim.Simulator(bngsim.Model.load(str(path))).run(
+        t_span=(0, 5), n_points=11, rtol=1e-8, atol=1e-10
+    )
+    per = r.record["run"]["atol"]["per_species"]
+    assert len(per) == 3 and list(r.state_names) == ["A", "B", "k"]
+    got = _check.column_atols(r, ["A", "B"], per, 1e-10)
+    assert got.tolist() == pytest.approx([1e-14, 1e-10])
+    assert _check.column_atols(r, ["B"], per, 1e-10).tolist() == pytest.approx([1e-10])
+    assert _check.column_atols(r, ["A", "Q"], per, 1e-10).tolist() == pytest.approx([1e-14, 1e-10])
+    assert _check.column_atols(r, ["A", "B"], None, 1e-10).tolist() == [1e-10, 1e-10]
+    # no state names (a loaded or stacked Result): the prefix
+    assert _check.column_atols(object(), ["A", "B"], per, 1e-10).tolist() == pytest.approx(
+        [1e-14, 1e-10]
+    )
+    ctx = _check._Context(r, r.record, None)
+    assert ctx.atols.tolist() == pytest.approx([1e-14, 1e-10])

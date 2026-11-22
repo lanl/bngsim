@@ -24,7 +24,11 @@ and each column's absolute floor is the atol the run applied to that species:
   within ``PATH_ATOL_FACTOR`` atol of zero, which resolves it no better;
 - a column whose peak is within :data:`TRACE_ATOLS` times its atol, where the
   atol and not rtol holds it (``atol_j > rtol·peak_j``), is not resolved by
-  the run: no check judges it, and the report names it;
+  the run, and the report names it. It is judged on the run's whole scale
+  alone: against the allowance of a column at the largest peak and atol, with
+  the largest drift, so its solver noise is no finding, and a path on which
+  it departs from zero as far as the run's own species are large is one
+  (issue #1887);
 - a column that is not converged at the run's own tolerance (its move past
   :data:`TOLERANCE_MOVE`) is not judged; where no column is, the verdict is
   ``no_base``, and a report on a run that is not converged is never ok.
@@ -102,6 +106,33 @@ _STATUSES = ("pass", "diff", "skip", "unsupported", "exception", "no_base", "tim
 _NOT_OK = ("diff", "exception", "timeout")
 
 
+def column_atols(
+    result: Result, names: list[str], per_species: Any, scalar: float | None
+) -> NDArray[np.float64]:
+    """Each of *names*' atol as the run applied it. The per-species vector runs
+    over the run's state (:attr:`Result.state_names`), which holds more than
+    the species where an event or a rule promotes a parameter into it
+    (BIOMD0000000001: 12 species, 20 entries), so it is matched by name. A
+    Result with no state names (loaded, stacked) has its species first and the
+    promoted entries after them, so the vector's first ``len(names)``. A
+    column the vector does not cover takes the scalar, the run's ceiling."""
+    n = len(names)
+    fill = float(scalar) if scalar is not None else 0.0
+    if per_species is None:
+        return np.full(n, fill)
+    per = [float(a) for a in per_species]
+    try:
+        state = list(result.state_names)
+    except Exception:  # noqa: BLE001 - a loaded or stacked Result holds none
+        state = []
+    if len(state) == len(per):
+        index = {name: i for i, name in enumerate(state)}
+        return np.asarray([per[index[c]] if c in index else fill for c in names], dtype=float)
+    if len(per) >= n:
+        return np.asarray(per[:n], dtype=float)
+    return np.full(n, fill)
+
+
 def differences(
     x: NDArray[np.float64], ref: NDArray[np.float64]
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
@@ -143,6 +174,50 @@ def allowance(
         PATH_RTOL_FACTOR * (atol + rtol * peak), np.maximum(PATH_CEILING * peak, atol)
     )
     return np.maximum(np.maximum(by_tol, PATH_ATOL_FACTOR * atol), DRIFT_FACTOR * drift)
+
+
+def resolved(
+    peak: NDArray[np.float64], atol: NDArray[np.float64], rtol: float
+) -> NDArray[np.bool_]:
+    """The columns the run resolves: not within :data:`TRACE_ATOLS` of their
+    atol of zero where that atol, not rtol, holds them."""
+    return ~((peak <= TRACE_ATOLS * atol) & (atol > rtol * peak))
+
+
+def path_margins(
+    d: NDArray[np.float64],
+    peak: NDArray[np.float64],
+    atol: NDArray[np.float64],
+    rtol: float,
+    drift: NDArray[np.float64],
+    judged: NDArray[np.bool_],
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Per column: its difference *d* over its allowance, and over its scale,
+    each 0 where *judged* is False. A resolved column's allowance and scale are
+    its own (:func:`allowance`, its peak). One the run does not resolve
+    (:func:`resolved`) is held to the run's whole scale: the allowance of a
+    column at the largest peak and atol with the largest drift of a resolved
+    column, and the largest peak; within its own atols it is noise, past the
+    run's scale it is a finding. Shared by :meth:`bngsim.Result.check` and the
+    developer-side differential harness, so a verdict means one thing in both
+    (issue #1887)."""
+    own = allowance(peak, atol, rtol, drift)
+    scale = peak
+    trace = ~resolved(peak, atol, rtol)
+    if trace.any() and peak.size:
+        keep = np.isfinite(drift) & ~trace
+        dmax = float(drift[keep].max()) if keep.any() else 0.0
+        largest = float(peak.max())
+        whole = allowance(
+            np.array([largest]), np.array([float(atol.max())]), rtol, np.array([dmax])
+        )[0]
+        own = np.where(trace, np.maximum(own, whole), own)
+        scale = np.where(trace, largest, peak)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio = np.where(own > 0, d / np.where(own > 0, own, 1.0), np.where(d > 0, np.inf, 0.0))
+        rel = np.where(scale > atol, d / np.where(scale > 0, scale, 1.0), 0.0)
+    ratio = np.where(judged, np.nan_to_num(ratio, nan=np.inf), 0.0)
+    return ratio, np.where(judged, rel, 0.0)
 
 
 def _num(x: Any) -> float | None:
@@ -319,7 +394,8 @@ def _next(out: Report) -> str:
             f"{names} {'stays' if out['n_not_resolved'] == 1 else 'stay'} within "
             f"{TRACE_ATOLS:g} times {'its' if out['n_not_resolved'] == 1 else 'their'} atol "
             "of zero, which the run does not resolve, and "
-            f"{'was' if out['n_not_resolved'] == 1 else 'were'} not judged: to report "
+            f"{'was' if out['n_not_resolved'] == 1 else 'were'} judged only against the "
+            "run's largest values: to report "
             f"{'it' if out['n_not_resolved'] == 1 else 'them'}, rerun with an atol well "
             f"below {'it' if out['n_not_resolved'] == 1 else 'them'} "
             "(result.rerun(atol=...)) and check that."
@@ -371,10 +447,7 @@ class _Context:
         self.per_species = None if per is None else [float(a) for a in per]
         self.atol: float | None = atol.get("scalar")
         n = len(self.names)
-        if self.per_species is not None and len(self.per_species) == n:
-            self.atols = np.asarray(self.per_species, dtype=float)
-        else:
-            self.atols = np.full(n, float(self.atol) if self.atol is not None else 0.0)
+        self.atols = column_atols(result, self.names, self.per_species, self.atol)
         self.drift_abs: NDArray[np.float64] | None = None
         self.moved: NDArray[np.float64] | None = None
         self.relevant: NDArray[np.bool_] = np.ones(n, dtype=bool)
@@ -460,9 +533,7 @@ class _Context:
             # not rtol, holds the column (a loose rtol makes every atol a
             # large share of its species, and those columns are resolved to
             # that share, which the tolerance check judges).
-            rtol = float(self.rtol or 0.0)
-            unresolved = (peak <= TRACE_ATOLS * self.atols) & (self.atols > rtol * peak)
-            self.relevant = ~unresolved
+            self.relevant = resolved(peak, self.atols, float(self.rtol or 0.0))
             self.moved = np.where(self.relevant, moves(d, peak, self.atols), 0.0)
         return self.tol_error or None
 
@@ -487,8 +558,8 @@ class _Context:
                 changed=changed,
             )
         assert self.drift_abs is not None and self.moved is not None and self.rtol is not None
-        judged = self.relevant & (self.moved <= TOLERANCE_MOVE)
-        if not judged.any():
+        converged = self.relevant & (self.moved <= TOLERANCE_MOVE)
+        if not converged.any():
             return _verdict(
                 name,
                 "no_base",
@@ -496,20 +567,16 @@ class _Context:
                 f"{TOLERANCE_MOVE:g} of its peak at a tenfold tighter one): no path is judged",
                 changed=changed,
             )
+        # The converged columns, and those the run does not resolve, on the
+        # run's whole scale.
+        judged = converged | ~self.relevant
         d, peak = differences(x, self.x)
-        allow = allowance(peak, self.atols, float(self.rtol), self.drift_abs)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            ratio = np.where(
-                allow > 0, d / np.where(allow > 0, allow, 1.0), np.where(d > 0, np.inf, 0.0)
-            )
-            rel = np.where(peak > self.atols, d / np.where(peak > 0, peak, 1.0), 0.0)
-        ratio = np.where(judged, ratio, 0.0)
-        rel = np.where(judged, rel, 0.0)
+        ratio, rel = path_margins(d, peak, self.atols, float(self.rtol), self.drift_abs, judged)
         worst = self._worst(ratio)
         margin = float(ratio.max()) if ratio.size else 0.0
         value = float(rel.max()) if rel.size else 0.0
         status = "pass" if margin <= 1.0 else "diff"
-        n_out = int((self.relevant & ~judged).sum())
+        n_out = int((self.relevant & ~converged).sum())
         note = (
             f"{value:.2e} of a column's peak at most; the largest difference is "
             f"{margin:.2g} of its allowance"
@@ -518,7 +585,10 @@ class _Context:
             note += f"; {n_out} column(s) not judged, not converged at the run's tolerance"
         n_trace = int((~self.relevant).sum())
         if n_trace:
-            note += f"; {n_trace} column(s) within {TRACE_ATOLS:g} atol of zero not judged"
+            note += (
+                f"; {n_trace} column(s) within {TRACE_ATOLS:g} atol of zero, judged on the "
+                f"run's whole scale"
+            )
         return _verdict(
             name,
             status,

@@ -55,14 +55,22 @@ from bngsim. So a disagreement between two paths counts only past how far the
 reference moves by itself at a tenfold tighter tolerance (:func:`own_drift`):
 a model that amplifies every difference, a fast oscillator, makes two correct
 paths disagree by that much, and so does one path against a tighter self
-(``LV``: 3e-6 apart at rtol 1e-12, 76% at 1e-8). A base that moves by more
-than :data:`UNJUDGEABLE_DRIFT` that way is no reference at all, and its paths
-are not judged (SKIP, said why). And a cell is judged on the
-trajectory's own scale, past an absolute floor of the run's ``atol`` scaled as
-``rtol`` is (:data:`PATH_RTOL_FACTOR`), so a state of 1e6 is not held to an
-absolute 1e-3. A trajectory wholly under that floor (a BioModel in molar units,
-1e-6 at its atol of 1e-9) shows no difference inside it, so a path that stays
-inside is SKIP, said why, not PASS; one that clears it is still judged.
+(``LV``: 3e-6 apart at rtol 1e-12, 76% at 1e-8).
+
+Each species is judged on its own scale, by :meth:`bngsim.Result.check`'s rule
+(``bngsim._check``, issue #1887), so a verdict here means what it means in a
+user's session. A species' path may differ from its reference by its
+allowance, ``max(min(PATH_RTOL_FACTOR·(atol_j + rtol·peak_j),
+max(1%·peak_j, atol_j)), 100·atol_j, DRIFT_FACTOR·d_j)``: ``atol_j`` the atol
+the run applied to that species (#1420), ``peak_j`` its peak, ``d_j`` how far
+it moves itself at the tenfold tighter tolerance. The trajectory's largest
+species sets no one else's bound: judged against it, a species at 1e-3 beside
+one at 1e3 could be wrong a hundredfold and pass. A species that moves by more
+than :data:`UNJUDGEABLE_DRIFT` of its peak at the tighter tolerance is not
+converged and is not judged; nor is one within 100 times its atol of zero,
+where that atol, not rtol, holds it (it is not resolved). A base with no
+species left to judge is no reference: its paths are SKIP, said why. A model
+in molar units, wholly within its atols, is one.
 
 Sensitivities against central differences are ``fd_sens``'s, not this module's:
 one oracle with one set of rules (``parity_checks/fd_sens``).
@@ -83,23 +91,26 @@ from pathlib import Path
 
 import numpy as np
 from _transforms import TRANSFORMS, Inapplicable, transform
+from bngsim import _check
 
-#: How many times the run's rtol two correct paths may differ by, before the
-#: reference's own drift is counted: their errors are each about rtol, scaled by
-#: the problem's conditioning, which a tolerance does not bound.
-PATH_RTOL_FACTOR = 1e3
-#: And how far past the reference's own drift at a tenfold tighter tolerance.
-DRIFT_FACTOR = 10.0
-#: A base that moves by more than this at a tenfold tighter tolerance is not
-#: converged at its own: no path is judged against it. MODEL2310250001 drives a
+#: How many times the run's tolerance two correct paths may differ by, before
+#: the reference's own drift is counted: their errors are each about the
+#: tolerance, scaled by the problem's conditioning, which a tolerance does not
+#: bound. ``bngsim._check``'s, which judges a path by it (issue #1887).
+PATH_RTOL_FACTOR = _check.PATH_RTOL_FACTOR
+#: And how far past a species' own drift at a tenfold tighter tolerance.
+DRIFT_FACTOR = _check.DRIFT_FACTOR
+#: A species that moves by more than this share of its peak at a tenfold
+#: tighter tolerance is not converged at the run's own: no path is judged on
+#: it, and a base with none left is no reference. MODEL2310250001 drives a
 #: species through a pole of its uptake law; its plain run moves 2.6% at a
 #: tighter tolerance, libRoadRunner's -1.4 to -4.6 across three, and its
 #: sensitivity run 359 times the trajectory's peak.
-UNJUDGEABLE_DRIFT = 1e-3
+UNJUDGEABLE_DRIFT = _check.TOLERANCE_MOVE
 #: The parameters a sensitivity run takes, at most.
 MAX_SENS_PARAMS = 3
 #: The grid check's output points, as a multiple of the base's intervals.
-GRID_FACTOR = 8
+GRID_FACTOR = _check.GRID_FACTOR
 #: How long the steady-state checks' run is taken: ``steady_state()``'s own
 #: default ``max_time``, so the run has the time the solve has.
 STEADY_HORIZON = 1e6
@@ -327,13 +338,15 @@ def step_atol(sim, job: Job) -> float | np.ndarray:
     return job.atol if vector is None else np.asarray(vector, dtype=float)
 
 
-def own_drift(job: Job, base: np.ndarray) -> float:
-    """How far the base moves at a tenfold tighter tolerance, on its own scale."""
+def own_drift(job: Job, base: np.ndarray) -> np.ndarray:
+    """How far each species of the base moves at a tenfold tighter tolerance:
+    its largest absolute difference over the trajectory (``inf`` where the two
+    are not finite at the same cells, or a shape differs)."""
     tight = Job(
         **{**job.__dict__, "rtol": job.rtol / 10.0, "atol": job.atol / 10.0, "sim": job.sim}
     )
     x, _ = run(tight)
-    return gap(np.asarray(x.species, dtype=float), base, job.atol)
+    return _check.differences(np.asarray(x.species, dtype=float), base)[0]
 
 
 def gap(x: np.ndarray, ref: np.ndarray, atol: float) -> float:
@@ -352,7 +365,9 @@ def gap(x: np.ndarray, ref: np.ndarray, atol: float) -> float:
 
 
 class Base:
-    """The base run, and the bound two paths may differ by, computed once."""
+    """The base run, and what each species of it may differ by, computed once:
+    the atol the run applied to it, its peak, and how far it moves at a
+    tenfold tighter tolerance (``bngsim._check``'s rule, issue #1887)."""
 
     def __init__(self, job: Job):
         result, sim = run(job)
@@ -365,54 +380,161 @@ class Base:
         # attribution can run it on the other one (#1309).
         self.linear_solver = int(result.solver_stats.get("linear_solver", 0))
         self.backend = sim.codegen_backend
+        # Each species' atol as the run applied it: a scalar is a ceiling, each
+        # species taking at most rtol of its own scale (#1420), and judged past
+        # the ceiling, a species at 1e-12 has nothing to fail.
+        self.atols = _check.column_atols(
+            result, self.species_names, getattr(result, "_run_atol", None), job.atol
+        )
         # A tenfold tighter run that does not complete leaves the base no
         # reference, not the model unrun: the checks that compare no answers
         # (sparsity, backend, a sensitivity run's refusal) still apply.
         self.drift_error = ""
         try:
-            self.drift = own_drift(job, self.x)
+            self.drift_abs = np.asarray(own_drift(job, self.x), dtype=float)
         except Exception as e:  # noqa: BLE001 - recorded on every comparison's note
-            self.drift = float("inf")
+            self.drift_abs = np.full(self.x.shape[-1] if self.x.ndim == 2 else 0, np.inf)
             self.drift_error = f"{type(e).__name__}: {_first_line(e)}"
-        self.limit = max(PATH_RTOL_FACTOR * job.rtol, DRIFT_FACTOR * self.drift)
+
+    # -- each species' standing, against the reference ``x`` -----------------
+
+    @property
+    def peak(self) -> np.ndarray:
+        """Each species' peak ``|x|`` over the reference's finite cells."""
+        return _check.differences(self.x, self.x)[1]
+
+    def resolved(self, peak: np.ndarray | None = None) -> np.ndarray:
+        """The species the run resolves: not within ``TRACE_ATOLS`` of their
+        atol of zero where that atol, not rtol, holds them."""
+        peak = self.peak if peak is None else peak
+        return _check.resolved(peak, self.atols, self.job.rtol)
+
+    def moved(self, peak: np.ndarray | None = None) -> np.ndarray:
+        """Each species' move at the tenfold tighter tolerance, past its atol,
+        over its peak: 0 for one not resolved."""
+        peak = self.peak if peak is None else peak
+        return np.where(self.resolved(peak), _check.moves(self.drift_abs, peak, self.atols), 0.0)
+
+    @property
+    def drift(self) -> float:
+        """The largest move of a resolved species at the tighter tolerance:
+        ``inf`` where that run failed, 0 where nothing is resolved."""
+        if self.drift_error:
+            return float("inf")
+        m = self.moved()
+        return float(m.max()) if m.size else 0.0
+
+    def converged(self, peak: np.ndarray | None = None) -> np.ndarray:
+        """The species the run resolves that are converged at its tolerance (a
+        move of at most :data:`UNJUDGEABLE_DRIFT`), at the base's peaks or at
+        ``peak``."""
+        if self.drift_error:
+            return np.zeros(self.atols.shape, dtype=bool)
+        return self.resolved(peak) & (self.moved(peak) <= UNJUDGEABLE_DRIFT)
+
+    def judged(self, peak: np.ndarray | None = None) -> np.ndarray:
+        """The species a path is judged on: the converged ones, and those the run
+        does not resolve, on the run's whole scale (``_check.path_margins``);
+        none where the base is no reference."""
+        if self.drift_error or not self.converged(peak).any():
+            return np.zeros(self.atols.shape, dtype=bool)
+        return self.converged(peak) | ~self.resolved(peak)
+
+    @property
+    def unjudgeable(self) -> str:
+        """Why no path is judged against this base, or ``""``."""
+        if self.drift_error:
+            return f"the base at a tenfold tighter tolerance did not complete ({self.drift_error})"
+        if self.converged().any():
+            return ""
+        if not self.resolved().any():
+            return (
+                f"every species is within {_check.TRACE_ATOLS:g} times its atol of zero, "
+                f"which resolves it no better"
+            )
+        return (
+            f"the base itself moves by {self.drift:.1e} at a tenfold tighter tolerance "
+            f"in every species it resolves"
+        )
+
+    def margin(
+        self,
+        x,
+        ref=None,
+        *,
+        peak: np.ndarray | None = None,
+        mask: np.ndarray | None = None,
+        scale: float = 1.0,
+    ) -> tuple[float, float, int | None]:
+        """How far ``x`` is from ``ref`` (default the base's trajectory; or a
+        slice of it, of the same columns), as the largest ratio of a species'
+        difference to its allowance over the species in ``mask`` (default
+        :meth:`judged` at ``peak``); its difference over its peak; and which
+        species. ``peak`` is each species' peak, by default the base's over its
+        whole trajectory, also where ``ref`` is a slice of it: a row's own
+        values would hold a species to its value at that row. ``scale`` widens
+        every allowance (a rerun at a looser tolerance). A margin over 1 is a
+        difference past the bound; a shape or finiteness mismatch is ``inf``."""
+        ref = self.x if ref is None else np.asarray(ref, dtype=float)
+        d, _ = _check.differences(np.asarray(x, dtype=float), ref)
+        peak = self.peak if peak is None else peak
+        mask = self.judged(peak) if mask is None else mask
+        ratio, rel = _check.path_margins(
+            d / scale, peak, self.atols, self.job.rtol, self.drift_abs, mask
+        )
+        if not ratio.size:
+            return 0.0, 0.0, None
+        j = int(np.argmax(ratio))
+        return float(ratio[j]), float(rel.max()), (j if ratio[j] > 0 else None)
 
     def against(self, x) -> Base:
-        """This base's bound and drift, with ``x`` as the reference: another path
+        """This base's atols and drift, with ``x`` as the reference: another path
         of the same model (the dense solver, the interpreter, cc)."""
         ref = Base.__new__(Base)
         ref.__dict__.update(self.__dict__, x=np.asarray(x, dtype=float))
         return ref
 
     def compare(self, x, label: str = "") -> Verdict:
-        floor = PATH_RTOL_FACTOR * self.job.atol
-        g = gap(x, self.x, floor)
-        note = f"{g:.2e} of the trajectory's peak (bound {self.limit:.1e}, own drift {self.drift:.1e})"
-        if self.drift_error:
-            return Verdict(
-                "skip",
-                g,
-                f"{label}no reference: the base at a tenfold tighter tolerance did not "
-                f"complete ({self.drift_error}); {note}",
-            )
-        if not self.drift <= UNJUDGEABLE_DRIFT:
-            return Verdict(
-                "skip",
-                g,
-                f"{label}no reference: the base itself moves by {self.drift:.1e} at a tenfold tighter tolerance; {note}",
-            )
-        finite = np.abs(self.x[np.isfinite(self.x)])
-        peak = float(finite.max()) if finite.size else 0.0
-        if g == 0.0 and not peak > floor:
-            return Verdict(
-                "skip",
-                g,
-                f"{label}nothing could count: the trajectory's peak {peak:.1e} is under the "
-                f"absolute floor {floor:.1e} ({PATH_RTOL_FACTOR:g}·atol); {note}",
-            )
-        status = "pass" if g <= self.limit else "diff"
+        why = self.unjudgeable
+        try:
+            m, rel, j = self.margin(x)
+        except ValueError:  # a ragged or wrongly shaped path
+            m, rel, j = float("inf"), float("inf"), None
+        note = self._note(m, rel, j)
+        if why:
+            return Verdict("skip", rel, f"{label}no reference: {why}; {note}")
+        status = "pass" if m <= 1.0 else "diff"
+        extra = {"margin": m, "worst": None if j is None else self.species_names[j]}
+        n_out = int((self.resolved() & ~self.converged()).sum())
+        if n_out:
+            extra["n_not_converged"] = n_out
         return Verdict(
-            status, g, f"{label}{note}", ref_x=self.x, path_x=np.asarray(x, dtype=float)
+            status,
+            rel,
+            f"{label}{note}",
+            extra,
+            ref_x=self.x,
+            path_x=np.asarray(x, dtype=float),
         )
+
+    def _note(self, m: float, rel: float, j: int | None) -> str:
+        who = (
+            f" ({self.species_names[j]})" if j is not None and j < len(self.species_names) else ""
+        )
+        note = (
+            f"{rel:.2e} of a species' peak at most; the largest difference is {m:.2g} of its "
+            f"allowance{who} (own drift {self.drift:.1e})"
+        )
+        n_out = int((self.resolved() & ~self.converged()).sum()) if not self.drift_error else 0
+        if n_out:
+            note += f"; {n_out} species not converged at the run's tolerance, not judged"
+        n_trace = int((~self.resolved()).sum())
+        if n_trace:
+            note += (
+                f"; {n_trace} within {_check.TRACE_ATOLS:g} atol of zero, judged on the "
+                f"run's whole scale"
+            )
+        return note
 
 
 def _first_line(e: BaseException) -> str:
@@ -1340,24 +1462,27 @@ def _solver_failed(e: BaseException) -> bool:
 
 def _failed_path(base: Base, label: str, e: Exception) -> Verdict:
     """The row of a path that raised where the base ran, against a base with
-    no reference (where ``Base.compare`` says SKIP: its tenfold tighter run
-    failed, or it moves past :data:`UNJUDGEABLE_DRIFT`). Its answer would not
-    be judged there, so neither is its failure: SKIP, saying both. Since #1751
-    a run that leaves through minus infinity raises where it returned the
-    blown-up values, and BIOMD0000000758's second restart leg at rtol 1e-6 is
-    one, on a base that moves by 0.41 at a tenfold tighter tolerance: its row
-    was that SKIP until then. Asked only of a run after the restart's stop, a
-    path the base's own run is not: a reused run repeats the base's, so its
-    failure is a finding whatever the base's reference (check_reuse). Against
-    a judged base, and for a timeout, a refusal or an error that is not a
-    solver failure (:func:`_solver_failed`), ``e`` is raised again: the row's,
-    as before."""
+        no reference (where ``Base.compare`` says SKIP: its tenfold tighter run
+        failed, or no species it resolves moves by at most
+    :data:`UNJUDGEABLE_DRIFT` at it). Its answer would not
+        be judged there, so neither is its failure: SKIP, saying both. Since #1751
+        a run that leaves through minus infinity raises where it returned the
+        blown-up values, and BIOMD0000000758's second restart leg at rtol 1e-6 is
+        one, on a base that moves by 0.41 at a tenfold tighter tolerance: its row
+        was that SKIP until then. Asked only of a run after the restart's stop, a
+        path the base's own run is not: a reused run repeats the base's, so its
+        failure is a finding whatever the base's reference (check_reuse). Against
+        a judged base, and for a timeout, a refusal or an error that is not a
+        solver failure (:func:`_solver_failed`), ``e`` is raised again: the row's,
+        as before."""
     if _timed_out(e) or _declined(e) or not _solver_failed(e):
         raise e
     # Short, so that the verdict file's 200 characters keep both halves.
     if base.drift_error:
         why = "the base's run at a tenfold tighter tolerance did not complete"
-    elif not base.drift <= UNJUDGEABLE_DRIFT:
+    elif not base.resolved().any():
+        why = "every species of the base is within its atol of zero"
+    elif not base.judged().any():
         why = f"the base moves by {base.drift:.1e} at a tenfold tighter tolerance"
     else:
         raise e
@@ -1498,11 +1623,21 @@ def check_batch(base: Base) -> Verdict:
         threaded = sim.run_batch(num_processors=BATCH_THREADS, **kw, **_timeout())
         out = [("point 0", base.compare(_species(threaded[0], base), "the batch's own point: "))]
         for i, (a, b) in enumerate(zip(threaded, serial, strict=True)):
-            g = gap(_species(a, base), _species(b, base), PATH_RTOL_FACTOR * job.atol)
+            # Each point on its own species' peaks: a point is the base's model
+            # at another parameter, so its own values, not the base's, are the
+            # scale a difference is read on.
+            # Every species, on its own move at the tighter tolerance: this
+            # needs no converged base, only the two runs of one point.
+            ref = _species(b, base)
+            peak = _check.differences(ref, ref)[1]
+            every = np.full(peak.shape, not base.drift_error)
+            m, rel, j = base.margin(_species(a, base), ref, peak=peak, mask=every)
+            who = f" ({base.species_names[j]})" if j is not None else ""
             note = (
-                f"point {i} on {BATCH_THREADS} threads against one at a time: {g:.2e} of its peak"
+                f"point {i} on {BATCH_THREADS} threads against one at a time: {rel:.2e} of a "
+                f"species' peak, {m:.2g} of its allowance{who}"
             )
-            out.append((f"point {i}", Verdict("pass" if g <= base.limit else "diff", g, note)))
+            out.append((f"point {i}", Verdict("pass" if m <= 1.0 else "diff", rel, note)))
         return _worst(out)
 
     return _guard(go)
@@ -1528,16 +1663,16 @@ def contested(rows: dict[str, dict]) -> bool:
 def attribute(base: Base, v: Verdict, arms: dict[str, np.ndarray] | None = None) -> dict:
     """Which side of a DIFF each third arm agrees with: the comparison's
     ``reference`` (the base, or the path it was judged against), its
-    ``path``, ``both`` (the two are within the bound of the arm), or
+    ``path``, ``both`` (the arm is within every species' allowance of each), or
     ``neither``. Its ``verdict`` is the one side every arm that took one
     took, ``split`` where they differ (the model is contested), or
     ``unattributed``."""
     arms = _arm_runs(base) if arms is None else arms
-    atol = PATH_RTOL_FACTOR * base.job.atol
     sides = {}
     for name, x in arms.items():
-        to_ref, to_path = gap(x, v.ref_x, atol), gap(x, v.path_x, atol)
-        near_ref, near_path = to_ref <= base.limit, to_path <= base.limit
+        # Each as a share of the species' allowance, the comparison's own bound.
+        to_ref, to_path = base.margin(x, v.ref_x)[0], base.margin(x, v.path_x)[0]
+        near_ref, near_path = to_ref <= 1.0, to_path <= 1.0
         side = {(True, False): "reference", (False, True): "path", (True, True): "both"}.get(
             (near_ref, near_path), "neither"
         )
@@ -1565,15 +1700,17 @@ def check_stable(base: Base) -> Verdict:
 
     def go():
         # Where nothing could jump past the bound, SKIP, said why, as
-        # Base.compare says it: a base whose tighter run failed (base.limit is
-        # inf) or one wholly under the absolute floor. A base that moves past
-        # UNJUDGEABLE_DRIFT is judged: a jump past ten times that is contested.
-        unjudged = base.compare(base.x, "stable: ")
-        if unjudged.status == "skip" and (base.drift_error or base.drift <= UNJUDGEABLE_DRIFT):
-            return unjudged
+        # Base.compare says it: a base whose tighter run failed (every
+        # allowance is inf) or one whose every species is within its atol of
+        # zero. Every species is judged here, one that moves past
+        # UNJUDGEABLE_DRIFT on an allowance of ten times its move, one the run
+        # does not resolve on the run's whole scale: a jump past that is
+        # contested.
+        if base.drift_error or not base.resolved().any():
+            return base.compare(base.x, "stable: ")
         job, jumps = base.job, {}
-        atol = PATH_RTOL_FACTOR * job.atol
         n = job.n_points
+        every = np.ones(base.atols.shape, dtype=bool)
 
         def rerun(label: str, fn):
             """The rerun's species, or None where it fails where the base ran,
@@ -1599,16 +1736,19 @@ def check_stable(base: Base) -> Verdict:
             x = rerun(label, lambda m=m: run(Job(**{**job.__dict__, "n_points": m})))
             if x is None:
                 continue
-            g = gap(x[::2], base.x, atol) if m == 2 * n - 1 else gap(x[-1:], base.x[-1:], atol)
-            if g > base.limit:
+            if m == 2 * n - 1:
+                g = base.margin(x[::2], mask=every)[0]
+            else:
+                g = base.margin(x[-1:], base.x[-1:], mask=every)[0]
+            if g > 1.0:
                 jumps[label] = g
         for f in JITTER_RTOL:
             jittered = Job(**{**job.__dict__, "rtol": job.rtol * f, "atol": job.atol * f})
             x = rerun(f"rtol x{f:g}", lambda j=jittered: run(j))
             if x is None:
                 continue
-            g = gap(x, base.x, atol)
-            if g > max(base.limit, f * base.limit):
+            g = base.margin(x, mask=every, scale=max(1.0, f))[0]
+            if g > 1.0:
                 jumps[f"rtol x{f:g}"] = g
         nudged = f"a start nudged by {START_NUDGE:g} of a step's allowance"
         x = rerun(nudged, lambda: run(job, nudge=START_NUDGE))
@@ -1617,15 +1757,15 @@ def check_stable(base: Base) -> Verdict:
             # bound at the first row after the start is the model's own laws
             # telling the two starts apart, `if(Bobs==0, kb, 0)` on a B its law
             # holds at exactly 0 (#1228), which no rounding breaks.
-            g = gap(x, base.x, atol)
-            if g > base.limit and gap(x[1:2], base.x[1:2], atol) <= base.limit:
+            g = base.margin(x, mask=every)[0]
+            if g > 1.0 and base.margin(x[1:2], base.x[1:2], mask=every)[0] <= 1.0:
                 jumps[nudged] = g
         if jumps:
             shown = ", ".join(f"{k} {g:.1e}" if np.isfinite(g) else k for k, g in jumps.items())
             return Verdict(
                 "diff",
                 max(jumps.values()),
-                f"contested: the answer jumps past its bound {base.limit:.1e} under {shown}",
+                f"contested: the answer jumps past its allowance (times it) under {shown}",
                 {"contested": True, "jumps": jumps},
             )
         return Verdict("pass", 0.0, "the answer holds under a jittered grid, tolerance and start")
