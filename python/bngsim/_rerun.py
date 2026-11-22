@@ -17,7 +17,6 @@ refuses with a code rather than run something else.
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import json
 import math
@@ -451,13 +450,15 @@ def _check_changes(run: dict[str, Any], changes: dict[str, Any]) -> None:
                 remedies=[],
             )
         method = changes.get("method", run.get("method"))
+        known = True
         if isinstance(method, str):
             from bngsim._simulator import normalize_method
 
-            # A method it does not know, the Simulator refuses in its own words.
-            with contextlib.suppress(Exception):
+            try:
                 method = normalize_method(method)[0]
-        if method != "ode":
+            except Exception:  # noqa: BLE001 - the Simulator refuses it in its own words
+                known = False
+        if known and method != "ode":
             raise UsageError(
                 f"Result.rerun(linear_solver=...) changes an ODE run's linear solver; this "
                 f"rerun's method is {method!r}, which has none.",
@@ -549,17 +550,27 @@ def rerun(result: Result, **changes: Any) -> Result:
             code="rerun.different_build",
             stacklevel=_notices.OUTSIDE,
         )
-    if method == run["method"] and not ({"jacobian", "linear_solver", "codegen"} & set(changes)):
-        then = rec["backend"] or {}
-        ran = again.record["backend"] or {}
-        moved = [k for k in _BACKEND if then.get(k) != ran.get(k)]
-        if moved:
-            _notices.warn(
-                "This rerun ran other code than the run it repeats: "
-                + ", ".join(f"{k} {ran.get(k)!r} for {then.get(k)!r}" for k in moved)
-                + f"; {differ}.",
-                UserWarning,
-                code="rerun.different_backend",
-                stacklevel=_notices.OUTSIDE,
-            )
+    then = rec["backend"] or {}
+    ran = again.record["backend"] or {}
+    asked = changes.get("linear_solver")
+    moved: list[tuple[str, Any]] = []
+    if method == run["method"] and not ({"jacobian", "codegen"} & set(changes)):
+        moved = [
+            (k, then.get(k))
+            for k in _BACKEND
+            if then.get(k) != ran.get(k) and not (k == "linear_solver" and asked is not None)
+        ]
+    if asked in ("dense", "klu") and (asked == "klu") != (ran.get("linear_solver") == "klu"):
+        # A solver asked for that did not run: "klu" on a build without KLU,
+        # or with a JAX Jacobian, runs dense.
+        moved.append(("linear_solver", asked))
+    if moved:
+        _notices.warn(
+            "This rerun ran other code than the run it repeats: "
+            + ", ".join(f"{k} {ran.get(k)!r} for {want!r}" for k, want in moved)
+            + f"; {differ}.",
+            UserWarning,
+            code="rerun.different_backend",
+            stacklevel=_notices.OUTSIDE,
+        )
     return again

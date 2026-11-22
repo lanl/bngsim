@@ -976,10 +976,11 @@ class Result:
             ``method``, ``poplevel``, ``jacobian``, ``codegen``; and
             ``linear_solver`` (an ODE run's: ``"dense"``, ``"klu"``, or
             ``"auto"`` for the Simulator's own rule; the Simulator's
-            ``force_dense_linear_solver`` and ``force_sparse_linear_solver``,
-            so ``"klu"`` runs dense where the build has no KLU or the model no
-            sparse Jacobian for it, and the result's :attr:`record` says which
-            ran). Every other setting is kept:
+            ``force_dense_linear_solver`` and ``force_sparse_linear_solver``:
+            ``"klu"`` runs dense on a build without KLU or with a JAX
+            Jacobian, with a ``rerun.different_backend`` notice, and raises
+            :class:`SparseJacobianUnavailableError` for a model with no
+            sparse Jacobian to give KLU). Every other setting is kept:
             ``rerun(rtol=1e-10)`` keeps the absolute tolerances the run was
             given. A new ``method`` drops the settings of the old one it does
             not take (an ODE run's tolerances under ``"ssa"``).

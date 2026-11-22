@@ -207,3 +207,78 @@ def test_all_runs_it_after_the_jacobian() -> None:
     names = [c["name"] for c in _decay().check("all")["checks"]]
     assert names[:4] == ["tolerance", "grid", "jacobian", "linear_solver"]
     assert "linear_solver" not in [c["name"] for c in _decay().check()["checks"]]
+
+
+# ─── A model KLU routes itself to, and one it cannot take ────────────────────
+
+N_CHAIN = 60
+K_CHAIN = 0.7
+
+
+def _chain_model():
+    """``X0 -> X1 -> ... -> X59``, each at rate ``k``: from ``X0 = 1``,
+    ``X_i(t) = exp(-k t) (k t)^i / i!`` for ``i < 59``, a Poisson law."""
+    from bngsim import Model
+
+    lines = ["model m", f"  k = {K_CHAIN}"]
+    lines += [f"  species X{i} = {1 if i == 0 else 0}" for i in range(N_CHAIN)]
+    lines += [f"  X{i} -> X{i + 1}; k*X{i}" for i in range(N_CHAIN - 1)]
+    lines.append("end")
+    return Model.from_antimony_string("\n".join(lines))
+
+
+def _poisson(r: Result) -> None:
+    from math import factorial
+
+    t = np.asarray(r.time)
+    x = np.asarray(r.species)
+    for i in range(N_CHAIN - 1):
+        expect = np.exp(-K_CHAIN * t) * (K_CHAIN * t) ** i / factorial(i)
+        np.testing.assert_allclose(x[:, i], expect, rtol=0, atol=1e-7, err_msg=f"X{i}")
+
+
+@needs_klu
+def test_a_run_the_simulator_put_on_klu_is_checked_dense() -> None:
+    r = Simulator(_chain_model(), method="ode").run(
+        t_span=(0, 10), n_points=21, rtol=1e-10, atol=1e-13
+    )
+    assert _solver(r) == ("klu", "auto")
+    _poisson(r)
+    dense = r.rerun(linear_solver="dense")
+    assert _solver(dense) == ("dense", "dense")
+    _poisson(dense)
+    assert np.abs(np.asarray(dense.species) - np.asarray(r.species)).max() > 0
+    (c,) = r.check("linear_solver")["checks"]
+    assert (c["status"], c["changed"]) == ("pass", {"linear_solver": "dense"}), c
+
+
+@needs_klu
+def test_a_model_with_no_sparse_jacobian_for_klu_is_a_skip() -> None:
+    from bngsim import Model, SparseJacobianUnavailableError
+
+    m = Model.from_antimony_string("model m\n species A; A = 1; k = 1;\nend\n")
+    r = Simulator(m, method="ode", jacobian="fd").run(t_span=(0, 1), n_points=3)
+    with pytest.raises(SparseJacobianUnavailableError):
+        r.rerun(linear_solver="klu")
+    (c,) = r.check("linear_solver")["checks"]
+    assert c["status"] == "skip", c
+    assert c["changed"] == {"linear_solver": "klu"}
+    assert c["note"].startswith("KLU cannot run this model: ")
+
+
+def test_klu_asked_for_that_ran_dense_says_so(monkeypatch) -> None:
+    monkeypatch.setitem(_rerun.LINEAR_SOLVERS, "klu", (False, False))
+    with pytest.warns(UserWarning, match="linear_solver 'dense' for 'klu'"):
+        again = _decay().rerun(linear_solver="klu")
+    assert [n["code"] for n in again.notices] == ["rerun.different_backend"]
+    # Dense asked for and run: nothing to say.
+    assert "rerun.different_backend" not in [
+        n["code"] for n in _decay().rerun(linear_solver="dense").notices
+    ]
+
+
+def test_a_method_it_does_not_know_is_refused_as_a_method() -> None:
+    with pytest.raises(Exception) as e:
+        _decay().rerun(method="bogus", linear_solver="klu")
+    assert "linear_solver" not in str(e.value)
+    assert "bogus" in str(e.value)

@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import math
 import time
+import warnings
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -763,7 +764,20 @@ class _Context:
             )
         other = "dense" if used == "klu" else "klu"
         changed = {"linear_solver": other}
-        again = self.rerun(linear_solver=other)
+        from bngsim._exceptions import SparseJacobianUnavailableError
+
+        try:
+            with warnings.catch_warnings():
+                # A solver that did not run is this check's skip, said once.
+                warnings.filterwarnings("ignore", message="This rerun ran other code")
+                again = self.rerun(linear_solver=other)
+        except SparseJacobianUnavailableError as e:
+            return _verdict(
+                "linear_solver",
+                "skip",
+                note=f"KLU cannot run this model: {_first_line(e)}",
+                changed=changed,
+            )
         ran = (again.record.get("backend") or {}).get("linear_solver")
         if (ran == "klu") != (other == "klu"):
             return _verdict(
