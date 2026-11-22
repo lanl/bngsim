@@ -564,3 +564,26 @@ def test_an_unconverged_run_is_not_ok_whichever_checks_ran(monkeypatch):
     assert rep["checks"][0]["status"] == "pass"
     assert rep["converged"] is False and rep["ok"] is False
     assert "not converged" in rep["next"]
+
+
+def test_a_trace_species_moving_at_a_tighter_tolerance_is_not_a_finding(monkeypatch):
+    # I is trace (2e-8 of A's peak): doubled in the tighter run, it is still
+    # the run's rounding, and the tolerance check passes, saying so.
+    r = Simulator(_trace_model(1e-6), method="ode").run(t_span=(0, 30), n_points=31)
+    ji = r.species_names.index("I")
+    real = Result.rerun
+
+    def rerun(self, **changes):
+        out = real(self, **changes)
+        if "rtol" in changes:
+            out = copy.copy(out)
+            sp = np.asarray(out._species, dtype=float).copy()
+            sp[:, ji] *= 2
+            out._species = sp
+        return out
+
+    monkeypatch.setattr(Result, "rerun", rerun)
+    rep = r.check("tolerance")
+    (c,) = rep["checks"]
+    assert c["status"] == "pass" and c["n_trace"] >= 1, c
+    assert rep["converged"] is True and rep["ok"] is True
