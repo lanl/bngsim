@@ -292,3 +292,23 @@ def test_help_lists_run_and_check_and_exit_6():
     run = _bngsim("--help")
     assert "run" in run.stdout and "check" in run.stdout
     assert "6 check not ok" in run.stdout
+
+
+def test_a_start_time_and_a_relative_out_path(tmp_path):
+    run = subprocess.run(
+        [sys.executable, "-m", "bngsim", "run", CHAIN, "--t-start", "5", "--t-end", "10",
+         "--n-points", "6", "--out", "rel.npz", "--json"],
+        capture_output=True, text=True, cwd=tmp_path, timeout=300,
+    )  # fmt: skip
+    d = _json(run)
+    assert d["digest"]["t_start"] == 5.0 and d["record"]["run"]["t_start"] == 5.0
+    assert d["out"] == str((tmp_path / "rel.npz").resolve())
+
+
+def test_the_budget_reaches_the_check():
+    # A budget spent before the first rerun: every check times out, not ok.
+    d = _json(
+        _bngsim("check", CHAIN, "--t-end", "5", "--budget", "1e-9", "--json"),
+        _cli.EXIT_CHECK_FAILED,
+    )
+    assert {c["status"] for c in d["check"]["checks"]} == {"timeout"}

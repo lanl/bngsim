@@ -183,7 +183,8 @@ _EPILOG = (
 def _build_parser() -> argparse.ArgumentParser:
     parser = _Parser(
         prog="bngsim",
-        description="Inspect a model and this install of BNGsim. Also runs as `python -m bngsim`.",
+        description="Inspect and run a model, and this install of BNGsim. "
+        "Also runs as `python -m bngsim`.",
         epilog=_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
