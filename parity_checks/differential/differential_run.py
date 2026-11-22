@@ -25,6 +25,9 @@ One row per (model, check), its ``method`` the check:
     the path does not apply here (no KLU, no MIR),
       or the model does not load or run at all ....... SKIP
     it raised where the base ran .................... EXCEPTION
+      (a solver failure in stable's reruns: DIFF,
+      contested; in restart's run after the stop,
+      on a base with no reference: SKIP)
     it did not finish within the model's cap, or its
       compile within bngsim's own limit ............. TIMEOUT
 

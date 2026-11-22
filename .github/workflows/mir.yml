@@ -132,6 +132,9 @@ on:
       - "python/tests/test_mir_vendoring.py"
       - "python/tests/test_comma_decimal_locale.py"
       - "python/tests/test_ssa_codegen_false_is_interpreted.py"
+      # On the pytest list below too, so that a change to either alone runs it.
+      - "python/tests/test_model_codegen_sensitivity.py"
+      - "python/tests/test_periodic_step_stops.py"
       # Issue #1257 — cc against MIR on each shape, and codegen=False still the
       # interpreter on a MIR build (#1213's check); the only leg where both run.
       - "python/tests/test_differential_shapes.py"

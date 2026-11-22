@@ -55,7 +55,15 @@ def _json_error(run: subprocess.CompletedProcess, exit_code: int, code: str) -> 
     assert run.returncode == exit_code, (run.returncode, run.stderr)
     assert run.stdout == ""
     error = json.loads(run.stderr)
-    assert set(error) == {"type", "code", "message", "details", "remedies", "docs_url"}
+    assert set(error) == {
+        "type",
+        "code",
+        "message",
+        "details",
+        "remedies",
+        "docs_url",
+        "notices",
+    }
     assert error["code"] == code
     return error
 
@@ -230,6 +238,7 @@ def test_an_error_that_is_not_bngsims_has_the_same_keys():
         "details": {},
         "remedies": [],
         "docs_url": None,
+        "notices": [],
     }
 
 

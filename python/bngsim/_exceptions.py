@@ -67,10 +67,20 @@ class BngsimError(RuntimeError):
         written.
     docs_url : str
         The code's entry on the error-code reference page.
+    notices : list of dict
+        The notices the failed call had collected when it raised, as
+        :attr:`Result.notices <bngsim.Result.notices>` would have held them:
+        that the run started from the last run's end state, say, or retried on
+        a difference-quotient Jacobian. With them are those of the error this
+        one was raised from. Empty for an error raised outside a run.
     """
 
     #: The code an error of this class carries when it is given none.
     default_code = "error"
+
+    #: The notices of the call that raised it (issue #1857), each a dict as on
+    #: a Result; set by bngsim._notices.collected.
+    _notices: tuple[dict[str, str], ...] = ()
 
     def __init__(
         self,
@@ -127,14 +137,29 @@ class BngsimError(RuntimeError):
         return cause.remedies if cause is not None else []
 
     @property
+    def notices(self) -> list[dict[str, str]]:
+        # Only the error this one was raised *from*: one raised while a caller
+        # handles another (a retry in its except block) is not about that one.
+        cause = self.__cause__
+        inherited = cause.notices if isinstance(cause, BngsimError) else []
+        own = [dict(n) for n in self._notices]
+        return inherited + [n for n in own if n not in inherited]
+
+    def _add_notices(self, notices: list[dict[str, str]]) -> None:
+        """Add *notices* to those this error has, each once: inherited ones
+        first, as :attr:`notices` gives them."""
+        have = self.notices
+        self._notices = tuple(dict(n) for n in (*have, *(n for n in notices if n not in have)))
+
+    @property
     def docs_url(self) -> str:
         from bngsim._error_codes import docs_url
 
         return docs_url(self.code)
 
     def to_dict(self) -> dict:
-        """The error as plain data: its type, code, message, details, remedies
-        and docs URL, for a log, a tool's error result or an agent."""
+        """The error as plain data: its type, code, message, details, remedies,
+        docs URL and notices, for a log, a tool's error result or an agent."""
         return {
             "type": type(self).__name__,
             "code": self.code,
@@ -142,6 +167,7 @@ class BngsimError(RuntimeError):
             "details": self.details,
             "remedies": self.remedies,
             "docs_url": self.docs_url,
+            "notices": self.notices,
         }
 
 
@@ -282,7 +308,12 @@ class SsaValidationError(BngsimError):
         # BaseException rebuilds an error from its args, here the message, which
         # __init__ would read as the issues (issue #1702: a worker's error
         # crosses to its parent by pickle).
-        return (_rebuild_ssa_validation_error, (self.issues, self.override_attempted))
+        # The state carries what was set after __init__, as the notices.
+        return (
+            _rebuild_ssa_validation_error,
+            (self.issues, self.override_attempted),
+            self.__dict__,
+        )
 
     @classmethod
     def _format(cls, issues: list[SsaIssue], override_attempted: bool = False) -> str:

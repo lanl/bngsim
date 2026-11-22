@@ -27,7 +27,8 @@ The rules for output, which are what let a program use the command:
   ``"inf"`` or ``"-inf"``.
 * An error prints nothing on standard output. It goes to standard error: with
   ``--json`` as one JSON object, :meth:`bngsim.BngsimError.to_dict` (``type``,
-  ``code``, ``message``, ``details``, ``remedies``, ``docs_url``), and otherwise
+  ``code``, ``message``, ``details``, ``remedies``, ``docs_url``, ``notices``),
+  and otherwise
   as a line of text.
 * The exit code says what happened, so a caller need not read any text. See
   :data:`EXIT_CODES`.
@@ -133,6 +134,7 @@ def error_dict(error: BaseException) -> dict[str, Any]:
         "details": {},
         "remedies": [],
         "docs_url": None,
+        "notices": [],
     }
 
 

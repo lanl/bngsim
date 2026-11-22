@@ -9131,6 +9131,10 @@ class Simulator:
         @_notices.collected
         def _recover_chunk(chunk_idx: int, exc: BaseException) -> list[Result]:
             """Retry a failed chunk one column at a time (GH #243)."""
+            # What the failed attempt noted before it raised is this call's
+            # (issue #1857): it rode on the error, and goes on the recovered
+            # columns or on the error raised here.
+            _notices.carry(exc)
             if isinstance(exc, _ConditionReadOtherwise):
                 # No column runs alone either: the code is not the code for the
                 # model as it is, and the pass ahead of the chunks did not say.
