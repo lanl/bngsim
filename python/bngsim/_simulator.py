@@ -4462,7 +4462,7 @@ class Simulator:
             codegen_requested=self._codegen,
             strict_ssa=self._strict_ssa,
             reaction_stats=self._reaction_stats,
-            attachment=_attachment(self._model if model is None else model),
+            attachment=_record.attachment(self._model if model is None else model),
         )
         result._run_params = (info.param_names, values)
         result._model_info = info

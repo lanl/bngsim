@@ -124,7 +124,7 @@ class RunCapture(NamedTuple):
     strict_ssa: bool = True
     reaction_stats: bool = False
     #: Which parameters were attached to an expression when the run started
-    #: (``core.param_is_expression``), shared and not copied.
+    #: (:func:`attachment`); empty where none was at load.
     attachment: tuple[bool, ...] = ()
 
 
@@ -270,14 +270,26 @@ def tables_sha256(model: Model) -> str | None:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def attachment(model: Model) -> tuple[bool, ...]:
+    """Which of *model*'s parameters are attached to an expression now, for a
+    run's record; ``()`` where none was at load, or no write to its
+    parameters may have pinned one since: the core's list costs a run some
+    3 ns a parameter, which a model of 20,000 noticed."""
+    if not model._loaded_attachment or not model._maybe_pinned:
+        return ()
+    return tuple(model._core.param_is_expression)
+
+
 def pinned_parameters(info: ModelInfo | None, run_info: Any) -> list[str] | None:
     """The parameters a record lists that were attached to an expression at
     load and pinned to a number when the run started, or ``None`` where that
     was not recorded."""
     if isinstance(run_info, dict):
         return copy.deepcopy(run_info["run"].get("parameters_pinned"))
-    if info is None or not run_info.attachment or not info.loaded_attachment:
+    if info is None:
         return None
+    if not info.loaded_attachment:
+        return []
     now, then = run_info.attachment, info.loaded_attachment
     return [
         info.param_names[k]
@@ -573,6 +585,12 @@ def squeeze_into(out: Result, results: list[Result]) -> None:
         "run": _agree([b[0] for b in both], "run", differ),
         "backend": _agree([b[1] for b in both], "backend", differ),
     }
+    pins = [pinned_parameters(r._model_info, r._run_info) for r in results]
+    if all(p == pins[0] for p in pins):
+        out._run_info["run"]["parameters_pinned"] = pins[0]
+    else:
+        out._run_info["run"]["parameters_pinned"] = None
+        differ.append("run.parameters_pinned")
     out._run_atol = _same_array([r._run_atol for r in results])
     if out._run_atol is None and any(r._run_atol is not None for r in results):
         differ.append("run.atol.per_species")

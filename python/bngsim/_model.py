@@ -162,6 +162,7 @@ class Model:
         "_source_text",
         "_edits",
         "_loaded_attachment",
+        "_maybe_pinned",
         "_sbml_record",
         "_record_info",
     )
@@ -184,9 +185,14 @@ class Model:
         # And which parameters were attached to an expression (issue #1703): a
         # run's record names the ones a set_param has pinned since, which a
         # model built again from the source has to have pinned too.
-        self._loaded_attachment: tuple[bool, ...] = tuple(
-            bool(x) for x in getattr(_core, "param_is_expression", ())
-        )
+        # Empty where none was, which every run then reads at no cost.
+        attached = tuple(bool(x) for x in getattr(_core, "param_is_expression", ()))
+        self._loaded_attachment: tuple[bool, ...] = attached if any(attached) else ()
+        # Whether a write may have pinned one since: set by every write to the
+        # core's parameters (test_result_rerun holds the sites to it), and
+        # never cleared, so a run reads the core's flags only once one may
+        # differ. A clone keeps its parent's.
+        self._maybe_pinned = False
         # Issue #1701: the time the last run that wrote its end state back left
         # the model at, that state, and the mark of the Simulator that ran it, as
         # Simulator.run records it. A run that starts before that time from
@@ -1621,6 +1627,7 @@ class Model:
         m._loaded_params = dict(self._loaded_params)
         m._loaded_state = self._loaded_state
         m._loaded_attachment = self._loaded_attachment
+        m._maybe_pinned = self._maybe_pinned
         # Issue #1701: the clone holds the state the run left, so a run of it
         # from another time continues that run as the original's would. Shared,
         # not copied: the vector is read-only, and the record is only replaced.
@@ -1845,6 +1852,7 @@ class Model:
         round-trip above is the one to rely on.
         """
         self._raise_if_folded_at_load(name, float(value))
+        self._maybe_pinned = True
         try:
             self._core.set_param(name, float(value), force_override=force_override)
         except (KeyError, RuntimeError) as e:
@@ -2118,6 +2126,7 @@ class Model:
             if name in refused and value != self._core.get_param(name):
                 self.set_param(name, value)  # raises with the full explanation
         # Phase 3: Apply atomically (all validation passed)
+        self._maybe_pinned = True
         for name, value in converted.items():
             self._core.set_param(name, value)
 

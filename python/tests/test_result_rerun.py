@@ -820,3 +820,71 @@ def test_a_record_the_rebuilt_model_cannot_hold(net_path: Path, tamper, code: st
     with pytest.raises((UsageError, ModelError)) as e:
         r.rerun()
     assert e.value.code == code
+
+
+# ─── What the second review found ──────────────────────────────────────
+
+DERIVED = (
+    "begin parameters\n    1 kf 0.5\n    2 kd 2*kf\nend parameters\n"
+    "begin species\n    1 A() 10\n    2 B() 0\nend species\n"
+    "begin reactions\n    1 1 2 kf\n    2 2 0 kd\nend reactions\n"
+)
+
+
+def test_a_batch_row_that_pins_a_derived_parameter(tmp_path: Path) -> None:
+    """The row's clone is pinned, not its parent: the row's record reads the
+    clone's, and a stack of rows that differ there says so."""
+    net = tmp_path / "d.net"
+    net.write_text(DERIVED, encoding="utf-8")
+    sim = Simulator(Model.from_net(net), sensitivity_params=["kf"])
+    rows = sim.run_batch((0, 5), 4, params=[{"kd": 7.0}, {"kf": 2.0}], squeeze=False)
+    assert [r.record["run"]["parameters_pinned"] for r in rows] == [["kd"], []]
+    for row in rows:
+        again = row.rerun()
+        _same(row, again)
+        np.testing.assert_array_equal(
+            np.asarray(again.sensitivities), np.asarray(row.sensitivities)
+        )
+    stack = Result.squeeze(rows)
+    assert stack.record["run"]["parameters_pinned"] is None
+    assert "run.parameters_pinned" in stack.record["rows_differ"]
+    same = sim.run_batch((0, 5), 4, params=[{"kf": 7.0}, {"kf": 2.0}], squeeze=True)
+    assert same.record["run"]["parameters_pinned"] == []
+
+
+def test_a_model_with_no_derived_parameter_records_none_pinned(net_path: Path) -> None:
+    r = Simulator(Model.from_net(net_path)).run(t_span=(0, 1), n_points=2)
+    assert r.record["run"]["parameters_pinned"] == []
+    _same(r, r.rerun())
+
+
+def test_reaction_stats_are_not_asked_of_another_method(net_path: Path) -> None:
+    r = Simulator(Model.from_net(net_path), method="ssa", reaction_stats=True).run(
+        t_span=(0, 3), n_points=4
+    )
+    ode = r.rerun(method="ode")
+    assert ode.record["run"]["method"] == "ode"
+    assert ode.record["run"]["reaction_stats"] is False
+
+
+def test_every_write_to_a_models_core_parameters_says_it_may_pin() -> None:
+    """A run reads which parameters are pinned only once a write may have
+    pinned one (``Model._maybe_pinned``). A write to a model's core that did
+    not set it would leave a pin out of the record, and its rerun would follow
+    the expression the run did not. The NFsim and RuleMonkey sessions write
+    cores of their own, which no record reads."""
+    import re
+
+    root = Path(bngsim.__file__).parent
+    sessions = {"_nfsim_session.py", "_rulemonkey_session.py"}
+    sites = []
+    for path in sorted(root.glob("*.py")):
+        if path.name in sessions:
+            continue
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for i, line in enumerate(lines):
+            if re.search(r"_core\.set_params?\(", line):
+                before = "\n".join(lines[max(0, i - 6) : i])
+                sites.append((path.name, i + 1, "_maybe_pinned = True" in before))
+    assert sites, "no write to a core's parameters found: the pattern is stale"
+    assert [s for s in sites if not s[2]] == []
