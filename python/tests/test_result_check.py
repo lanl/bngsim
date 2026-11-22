@@ -544,6 +544,8 @@ def test_a_trace_species_is_counted_not_judged(monkeypatch):
     (c,) = rep["checks"]
     assert c["status"] == "pass" and c["n_trace"] >= 1 and "atol of zero" in c["note"]
     assert "I" in rep["not_resolved"] and "I" in rep["next"]
+    n = rep["n_not_resolved"]
+    assert str(rep).startswith(f"OK: 1 passed, 0 moved the answer, {n} species not resolved")
 
 
 def test_an_unconverged_run_is_not_ok_whichever_checks_ran(monkeypatch):

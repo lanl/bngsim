@@ -316,9 +316,13 @@ def _next(out: Report) -> str:
         names = ", ".join(trace) + (f" and {more} more" if more > 0 else "")
         return (
             "No check moved the answer past its bound, but "
-            f"{names} stay within {TRACE_ATOLS:g} times their atol of zero, which the run "
-            "does not resolve, and were not judged: to report them, rerun with an atol "
-            "well below them (result.rerun(atol=...)) and check that."
+            f"{names} {'stays' if out['n_not_resolved'] == 1 else 'stay'} within "
+            f"{TRACE_ATOLS:g} times {'its' if out['n_not_resolved'] == 1 else 'their'} atol "
+            "of zero, which the run does not resolve, and "
+            f"{'was' if out['n_not_resolved'] == 1 else 'were'} not judged: to report "
+            f"{'it' if out['n_not_resolved'] == 1 else 'them'}, rerun with an atol well "
+            f"below {'it' if out['n_not_resolved'] == 1 else 'them'} "
+            "(result.rerun(atol=...)) and check that."
         )
     return "No check moved the answer past its bound."
 
@@ -807,6 +811,8 @@ def text(r: dict[str, Any]) -> str:
     lines = []
     verdict = "OK" if r.get("ok") else "NOT OK"
     head = f"{verdict}: {r.get('n_pass', 0)} passed, {r.get('n_diff', 0)} moved the answer"
+    if r.get("n_not_resolved"):
+        head += f", {r['n_not_resolved']} species not resolved"
     if r.get("method"):
         head += f" ({r['method']} run"
         if r.get("rtol") is not None:
