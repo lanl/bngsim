@@ -422,3 +422,21 @@ def test_one_replicate_is_one_run():
     d = _json(_bngsim("run", BIRTH_DEATH, "--method", "ssa", "--t-end", "2", "--replicates", "1",
                       "--seed", "4", "--json"))  # fmt: skip
     assert d["digest"]["n_runs"] is None and d["seeds"] == [4]
+
+
+def test_an_out_that_is_a_directory_is_refused(tmp_path):
+    (tmp_path / "x.npz").mkdir()
+    error = _error(_bngsim("run", CHAIN, "--t-end", "1", "--out", str(tmp_path / "x.npz"),
+                           "--json"), _cli.EXIT_USAGE, "usage.invalid_argument")  # fmt: skip
+    assert "directory" in error["message"]
+
+
+def test_a_warning_of_a_successful_json_run_still_reaches_stderr(tmp_path):
+    # B has no initial value: the load warns. With --json the warning is held
+    # while the command works, and written to stderr after it succeeds.
+    model = tmp_path / "w.ant"
+    model.write_text("compartment c = 1; species A in c, B in c; A = 1; k = 1; J: A -> B; k*A\n")
+    run = _bngsim("run", str(model), "--t-end", "1", "--json")
+    d = _json(run)
+    assert d["digest"]["n_points"] == 101
+    assert "'B'" in run.stderr and "initial" in run.stderr
