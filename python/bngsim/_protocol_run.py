@@ -641,9 +641,26 @@ class _Runner:
         """Write each pinned parameter back to its number where a write moved it:
         its expression followed what it reads, which BNG2.pl's would not have.
         Once it differs from its expression, set_param overrides it (#188)."""
-        moved = {n: v for n, v in self.pinned.items() if float(self.model.get_param(n)) != v}
-        if moved:
+        # More than once: writing one back can move another that sat on its
+        # number only because of what the first had become (``k3 k2/k1`` at 0.5
+        # while k2 followed k1; with k2 back at 0.5 it is 0.5/k1). A network's
+        # expressions read no parameter through itself, so each pass settles at
+        # least one more of them, and the bound is not reached.
+        for _ in range(len(self.pinned) + 1):
+            moved = {n: v for n, v in self.pinned.items() if float(self.model.get_param(n)) != v}
+            if not moved:
+                return
             self.model.set_params(moved)
+        # Reached anyway: a run now would read a parameter off its number, with
+        # no word of it. Say so, as _follow does where its chain does not settle.
+        unsettled = sorted(
+            n for n, v in self.pinned.items() if float(self.model.get_param(n)) != v
+        )
+        if unsettled:
+            raise ConversionError(
+                f"the parameters {unsettled}, each set to a number, do not hold it: writing "
+                "them back keeps moving them"
+            )
 
     def _pin(self, name: str, value: float | None) -> None:
         """Record that *name* now holds *value* as a number (``None``: it holds an
