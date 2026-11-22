@@ -116,6 +116,19 @@ def _run_fields(result: Result) -> tuple[str | None, float | None, float | None,
     without building the record."""
     frozen = result._record_frozen
     info = result._run_info
+    # A stack whose rows ran at different absolute tolerances merges them to
+    # None, and its "given" None is no "the caller gave nothing": no ceiling.
+    differs = result._record_differs or ()
+    atol_differs = any(path.startswith("run.atol") for path in differs)
+    method, rtol, ceiling, per = _recorded(result, frozen, info)
+    if atol_differs:
+        return method, rtol, None, None
+    return method, rtol, ceiling, per
+
+
+def _recorded(
+    result: Result, frozen: Any, info: Any
+) -> tuple[str | None, float | None, float | None, Any]:
     if frozen is not None:
         run = frozen.get("run") or {}
         atol = run.get("atol") or {}

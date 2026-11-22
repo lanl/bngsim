@@ -369,6 +369,20 @@ def test_an_atol_vector_is_the_ceiling_of_the_observables():
     assert "atol 0.001" in str(d).splitlines()[0]
 
 
+def test_a_stack_of_rows_at_different_atol_vectors_judges_nothing_by_one():
+    sim = Simulator(examples.load("chain"), method="ode")
+    rows = [
+        sim.run(t_span=(0, 60), n_points=601, rtol=1e-4, atol=[a] * 3, start="initial")
+        for a in (1e-3, 1e-4)
+    ]
+    stack = Result.squeeze(rows)
+    d = stack.digest()
+    assert d["atol"] is None and d["rtol"] is None
+    assert "atol" not in str(d).splitlines()[0]
+    # Exact flags: a minimum of -7e-6, within both rows' tolerances, is below 0.
+    assert _row(d, "A")["negative"] is bool(np.asarray(stack.observables)[:, :, 0].min() < 0)
+
+
 def test_a_vector_atol_does_not_leak_into_other_observables():
     # chain at atol [1e-3, 1e-6, 1e-30]: observable A, which is species A
     # alone, reads as species A does, not at C's 1e-30.
