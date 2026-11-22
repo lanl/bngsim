@@ -161,6 +161,11 @@ class Workflow:
     selectors: list[str] = field(default_factory=list)  # globs over file paths
     node_ids: list[str] = field(default_factory=list)  # files a node id names
     whole: bool = False  # a command runs the whole of python/tests
+    #: Named directories above python/tests (``.``, ``python``): walked from there.
+    above: list[str] = field(default_factory=list)
+    #: A command passes ``--keep-duplicates``: pytest keeps every path it is
+    #: given, so a named path under a named directory is not dropped.
+    keep_duplicates: bool = False
     excluded: list[str] = field(default_factory=list)  # --deselect/--ignore files
     unreadable: list[str] = field(default_factory=list)  # why its commands are unknown
     #: Whether it runs on this pull request: True, False, or None (cannot tell).
@@ -178,9 +183,12 @@ class Workflow:
             return False
         if any(_deselects(path, g) for g in self.excluded):
             return False
-        roots = ["python/tests"] if self.whole else []
+        named = path in self.node_ids or any(
+            not g.endswith("/**") and matches(path, g) for g in self.selectors
+        )
+        roots = list(self.above) + (["python/tests"] if self.whole else [])
         roots += [g[:-3] for g in self.selectors if g.endswith("/**") and matches(path, g)]
-        if not roots:
+        if not roots or (named and self.keep_duplicates):
             # pytest collects a path it is given even where --ignore or
             # --ignore-glob matches it.
             return path in self.node_ids or any(matches(path, g) for g in self.selectors)
@@ -201,13 +209,13 @@ class Workflow:
 def _deselects(path: str, entry: str) -> bool:
     """``entry``, a ``--deselect`` entry of ``Workflow.excluded``, leaves ``path`` out."""
     if entry.startswith(_PREFIX):
-        return path.startswith(entry[len(_PREFIX) :])
+        # Every node id of the file starts with ``path::``.
+        return (path + "::").startswith(entry[len(_PREFIX) :])
     if entry.startswith((_FNMATCH, _IGNORE)):
         return False
-    # A glob the shell expands: a file it names, or a directory, whose tests'
-    # node ids all start with it.
-    parts = path.split("/")
-    return any(matches("/".join(parts[:k]), entry) for k in range(1, len(parts) + 1))
+    # A glob the shell expands: each word it expands to is a prefix of the node
+    # ids, so a file, a directory, or a sibling that shares the prefix.
+    return any(matches(path[:k], entry) for k in range(1, len(path) + 1))
 
 
 def _ignores(path: str, root: str, entry: str) -> bool:
@@ -217,7 +225,7 @@ def _ignores(path: str, root: str, entry: str) -> bool:
     leaves out everything under it; ``root`` itself, a path it was given, is
     not asked."""
     parts = path.split("/")
-    below = len(root.split("/"))
+    below = 0 if root == "." else len(root.split("/"))
     tops = ["/".join(parts[:k]) for k in range(below + 1, len(parts) + 1)]
     if entry.startswith(_FNMATCH):
         glob = entry[len(_FNMATCH) :]
@@ -339,15 +347,14 @@ def read_command(command: str, wf: Workflow, empty: Iterable[str] = ()) -> None:
             elif opt == "--ignore":
                 # Made absolute by pytest as well (``./python/tests/x.py``).
                 path = posixpath.normpath(arg)
-                if path.startswith("python/tests"):
+                if path == "python" or path.startswith("python/tests"):
                     wf.excluded.append(_IGNORE + _selector(path))
-            elif "::" in arg:
+            elif "::" in arg.rstrip(":"):
                 pass  # a node id deselects one test, not the file
             elif re.search(r"[*?[]", arg):
                 # After a space the shell expands it, and the first match is
                 # the argument: each match is read as left out.
-                if arg.startswith("python/tests"):
-                    wf.excluded.append(_selector(arg))
+                wf.excluded.append(_selector(arg))
             else:
                 # A prefix of the node ids as written, whatever it starts with.
                 wf.excluded.append(_PREFIX + arg)
@@ -360,6 +367,9 @@ def read_command(command: str, wf: Workflow, empty: Iterable[str] = ()) -> None:
         if opt in _TAKES_ARG:
             if not eq:
                 next(it, None)
+            continue
+        if tok == "--keep-duplicates":
+            wf.keep_duplicates = True
             continue
         if tok.startswith("-"):
             continue
@@ -375,9 +385,15 @@ def read_command(command: str, wf: Workflow, empty: Iterable[str] = ()) -> None:
             shown = tok.replace("@@expr:", "${{ ").replace("@@", " }}")
             wf.unreadable.append(f"it passes `{shown}`, which is not read")
             continue
-        if not tok.startswith("python/tests"):
+        # Made absolute by pytest, so ``./python/tests`` and ``python//tests`` are
+        # python/tests, and ``.`` or ``python`` is a directory above it.
+        path = posixpath.normpath(tok.split("::", 1)[0])
+        if path in (".", "python"):
+            wf.whole = True
+            wf.above.append(path)
             continue
-        path = tok.split("::", 1)[0].rstrip("/")
+        if not path.startswith("python/tests"):
+            continue
         if path == "python/tests":
             wf.whole = True
         elif "::" in tok:

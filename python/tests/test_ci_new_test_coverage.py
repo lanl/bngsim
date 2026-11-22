@@ -563,6 +563,54 @@ def test_every_file_a_list_runs_is_in_that_workflows_paths_filter():
     )
 
 
+_X = "python/tests/sub/test_x.py"
+_H1 = "python/tests/test_h1.py"
+
+
+def test_a_named_directory_counts_however_it_is_spelled():
+    # pytest makes each path absolute, so each of these holds _X, which it then
+    # drops as a duplicate and walks to: the --ignore applies to it.
+    for d in ("./python/tests", "python//tests", "python/tests/sub/../sub", "python", "."):
+        assert not _runs(f"python -m pytest {d} {_X} --ignore {_X}", _X), d
+        assert _runs(f"python -m pytest {d} {_X} --ignore {_X}", "python/tests/sub/test_w.py"), d
+    # Walked from ., the directory python is asked too.
+    assert not _runs("python -m pytest . --ignore python", "python/tests/test_a.py")
+    # Named alone, ./python/tests/sub/test_x.py is that file.
+    assert _runs(f"python -m pytest ./{_X}", _X)
+    # Each runs the whole suite, so the workflow counts for every file.
+    for d in ("./python/tests", "python/tests/", "python", "."):
+        assert _cmd(f"python -m pytest {d}").whole, d
+
+
+def test_of_two_nested_directories_the_outer_is_walked_whichever_comes_first():
+    deep = "python/tests/sub/deep/test_d.py"
+    cmd = "python -m pytest python/tests/sub/deep python/tests/sub --ignore=python/tests/sub/deep"
+    assert not _runs(cmd, deep)
+    assert _runs(cmd, _X)
+
+
+def test_deselect_leaves_out_every_node_id_that_starts_with_it():
+    # Bash expands su? to python/tests/sub, which also starts subx's node ids.
+    assert not _runs(
+        "python -m pytest python/tests --deselect python/tests/su?", "python/tests/subx/test_y.py"
+    )
+    # A glob that does not start with python/tests can expand to a path that does.
+    assert not _runs("python -m pytest python/tests --deselect */tests/test_h1.py", _H1)
+    # A trailing : or :: starts every node id of the file; a node id does not.
+    for arg in (f" {_H1}::", f" {_H1}:", f"={_H1}::"):
+        assert not _runs(f"python -m pytest python/tests --deselect{arg}", _H1), arg
+    assert _runs(f"python -m pytest python/tests --deselect {_H1}::test_a", _H1)
+
+
+def test_keep_duplicates_keeps_a_named_path_under_a_named_directory():
+    assert not _runs(f"python -m pytest python/tests --ignore={_X} {_X}", _X)
+    assert _runs(f"python -m pytest python/tests --ignore={_X} --keep-duplicates {_X}", _X)
+    # A path it is not given is still walked to and asked (pytest 9.2.0's --co).
+    for suite in ("python/tests", "python/tests/sub", "python/tests/sub/"):
+        assert not _runs(f"python -m pytest {suite} --keep-duplicates --ignore {_X}", _X), suite
+    assert _runs("python -m pytest python/tests --keep-duplicates", "python/tests/test_a.py")
+
+
 def test_forced_jit_runs_a_new_file_when_the_pull_request_edits_it():
     new = "python/tests/test_brand_new_1764.py"
     wfs = ntc.read_workflows([".github/workflows/forced-jit.yml", new])
