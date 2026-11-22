@@ -118,9 +118,6 @@ GRID_FACTOR = _check.GRID_FACTOR
 #: How long the steady-state checks' run is taken: ``steady_state()``'s own
 #: default ``max_time``, so the run has the time the solve has.
 STEADY_HORIZON = 1e6
-#: A run has settled when its last quarter of the horizon moves it by no more
-#: than this many times its rtol, on its own scale.
-SETTLED_RTOL_FACTOR = PATH_RTOL_FACTOR
 #: A root is unstable where its Jacobian has an eigenvalue whose real part is
 #: past this share of the spectrum's largest magnitude: a conservation law's
 #: zero is rounding, nowhere near it.
@@ -832,9 +829,10 @@ def check_grid(base: Base) -> Verdict:
     return _guard(go)
 
 
-def _steady_run(job: Job, state=None, rtol_scale: float = 1.0) -> np.ndarray:
+def _steady_run(job: Job, state=None, rtol_scale: float = 1.0, with_atols: bool = False):
     """A run to :data:`STEADY_HORIZON` from the model's initial state, or from
-    ``state``: its samples at 0, 1/4, ..., all of the horizon."""
+    ``state``: its samples at 0, 1/4, ..., all of the horizon; with
+    ``with_atols``, also each species' atol as the run applied it."""
     import bngsim
 
     model = load(job.path)
@@ -849,7 +847,11 @@ def _steady_run(job: Job, state=None, rtol_scale: float = 1.0) -> np.ndarray:
         max_steps=job.max_steps,
         timeout=_left(),
     )
-    return np.asarray(r.species, dtype=float)
+    y = np.asarray(r.species, dtype=float)
+    if not with_atols:
+        return y
+    names = list(r.species_names)
+    return y, _check.column_atols(r, names, getattr(r, "_run_atol", None), job.atol * rtol_scale)
 
 
 def _judged(model) -> np.ndarray:
@@ -863,17 +865,45 @@ class _Unsettled(RuntimeError):
     """The run has no state to compare against: it has not settled."""
 
 
+class _Rest:
+    """Where the run to equilibrium comes to rest, and what each species may be
+    off by there: ``bngsim._check``'s rule, on the end state (issue #1887)."""
+
+    def __init__(self, y: np.ndarray, atols: np.ndarray, tight: np.ndarray, keep, rtol: float):
+        self.end, self.start, self.keep, self.atols, self.rtol = y[-1], y[0], keep, atols, rtol
+        # Each species' scale is its value at rest, or over the last quarter.
+        self.peak = np.maximum(np.abs(y[-1]), np.abs(y[-2]))
+        self.settle_abs = np.abs(y[-1] - y[-2])
+        self.drift_abs = np.abs(tight - y[-1])
+        self.settle = self.margin(y[-2], drift=np.zeros_like(self.settle_abs))[0]
+        self.spread = np.maximum(self.settle_abs, self.drift_abs)
+
+    def margin(self, x, ref=None, drift=None) -> tuple[float, int | None]:
+        """The largest ratio of a judged species' difference from ``ref`` (the
+        end) to its allowance, and which species."""
+        ref = self.end if ref is None else ref
+        d = np.abs(np.asarray(x, dtype=float) - ref)
+        d = np.where(np.isfinite(d), d, np.inf)
+        drift = self.spread if drift is None else drift
+        ratio, _ = _check.path_margins(d, self.peak, self.atols, self.rtol, drift, self.keep)
+        if not ratio.size:
+            return 0.0, None
+        j = int(np.argmax(ratio))
+        return float(ratio[j]), (j if ratio[j] > 0 else None)
+
+
 def _settled_run(base: Base):
-    """The run to equilibrium, once per base: its end, the species judged (those
-    not write-only accumulators, which settle nowhere), and the bound two
-    answers may differ by there, past how far the end moves at a tenfold
-    tighter tolerance and over the horizon's last quarter."""
+    """The run to equilibrium, once per base: a :class:`_Rest` (its end, the
+    species judged, those not write-only accumulators, which settle nowhere,
+    and each species' allowance there, past how far it moves at a tenfold
+    tighter tolerance and over the horizon's last quarter), the conserved
+    totals' bound, and the start."""
     if not hasattr(base, "_steady"):
         try:
             job = base.job
             keep = _judged(load(job.path))
             try:
-                y = _steady_run(job)
+                y, atols = _steady_run(job, with_atols=True)
                 tight = _steady_run(job, rtol_scale=0.1)[-1]
             except Exception as e:  # noqa: BLE001 - the parity suites own a run that fails
                 if _timed_out(e):
@@ -882,16 +912,19 @@ def _settled_run(base: Base):
                     f"no reference: the run to t={STEADY_HORIZON:g}, or at a tenfold tighter "
                     f"tolerance, did not complete ({type(e).__name__}: {_first_line(e)})"
                 ) from e
+            rest = _Rest(y, atols, tight, keep, job.rtol)
+            if not rest.settle <= 1.0:
+                raise _Unsettled(
+                    f"the run has not settled by t={STEADY_HORIZON:g}: over the last "
+                    f"quarter a species moves {rest.settle:.1e} times its allowance"
+                )
+            # The conserved totals are no species: judged as before, on the
+            # whole state's scale.
             floor = PATH_RTOL_FACTOR * job.atol
             settle = gap(y[-1][keep], y[-2][keep], floor)
-            if not settle <= SETTLED_RTOL_FACTOR * job.rtol:
-                raise _Unsettled(
-                    f"the run has not settled by t={STEADY_HORIZON:g}: it moves "
-                    f"{settle:.1e} of its peak over the last quarter"
-                )
             drift = gap(tight[keep], y[-1][keep], floor)
             limit = max(PATH_RTOL_FACTOR * job.rtol, DRIFT_FACTOR * max(settle, drift))
-            base._steady = (y[-1], keep, limit, settle, drift, y[0])
+            base._steady = (rest, limit)
         except Exception as e:  # noqa: BLE001 - every steady check reads it
             base._steady = e
     if isinstance(base._steady, Exception):
@@ -917,8 +950,10 @@ def check_steady(base: Base, method: str) -> Verdict:
     """``steady_state(method=...)`` is where a long run from the same initial
     state comes to rest (#1311). Judged only where both say they have arrived:
     the solve's ``converged``, and the run's last quarter of
-    :data:`STEADY_HORIZON` moving it by no more than
-    :data:`SETTLED_RTOL_FACTOR` times its rtol. Where the two differ, a run from
+    :data:`STEADY_HORIZON` moving no species by more than its allowance
+    (``bngsim._check``'s, on its value at rest, issue #1887). Each species is
+    judged on its own scale, past how far it moves over that quarter and at a
+    tenfold tighter tolerance. Where the two differ, a run from
     the solve's state says which it is: one a run leaves is a ``converged`` that
     is not (DIFF), and so is one off the initial state's conserved totals or an
     unstable root; one the system rests at too is another stable state, the
@@ -950,26 +985,28 @@ def check_steady(base: Base, method: str) -> Verdict:
                 note=f"steady_state(method={method!r}) did not converge (residual {ss.residual:.1e})",
             )
         try:
-            end, _, limit, settle, drift, start = _settled_run(base)
+            rest, limit = _settled_run(base)
         except _Unsettled as e:
             return Verdict("skip", note=str(e))
+        end, start = rest.end, rest.start
         x = np.asarray(ss.concentrations, dtype=float)
         floor = PATH_RTOL_FACTOR * job.atol
-        g = gap(x[keep], end[keep], floor)
+        g, j = rest.margin(x)
+        who = f" ({ss.species_names[j]})" if j is not None else ""
         note = (
-            f"{g:.2e} of the run's peak (bound {limit:.1e}; the run moves {settle:.1e} "
-            f"over its last quarter, {drift:.1e} at a tenfold tighter tolerance)"
+            f"{g:.2g} of a species' allowance at most{who}, past how far it moves over "
+            f"the run's last quarter and at a tenfold tighter tolerance"
         )
-        if g <= limit:
+        if g <= 1.0:
             return Verdict("pass", g, note)
         where = _largest(x, end, ss.species_names, keep)
-        stays = gap(_steady_run(job, state=x)[-1][keep], x[keep], floor)
-        if not stays <= limit:
+        stays = rest.margin(_steady_run(job, state=x)[-1], ref=x)[0]
+        if not stays <= 1.0:
             return Verdict(
                 "diff",
                 g,
                 f"steady_state() converged where a run does not rest: a run from its state "
-                f"moves {stays:.1e}; {where} at the run's end; {note}",
+                f"moves {stays:.1e} times a species' allowance; {where} at the run's end; {note}",
             )
         # Another state of the same system keeps the initial state's conserved
         # totals, which the run keeps: one that does not is another system's.
@@ -1003,7 +1040,7 @@ def check_steady(base: Base, method: str) -> Verdict:
         lam = np.linalg.eigvals(jac)
         top = float(lam.real.max()) if lam.size else 0.0
         if top > UNSTABLE_SHARE * float(np.abs(lam).max()):
-            if gap(x[keep], start[keep], floor) <= limit:
+            if rest.margin(x, ref=start)[0] <= 1.0:
                 # The initial state is that root: the solve stays, as the
                 # trajectory does in exact arithmetic, and the run leaves it on
                 # rounding alone (BIOMD0000000518, at an eigenvalue of 5.6e-4).

@@ -2631,7 +2631,8 @@ def test_steady_state_is_where_a_run_comes_to_rest(method):
 @pytest.mark.parametrize(
     ("method", "why"),
     [
-        ("integration", "a run from its state moves 1.0e+00; X() at 5.00022e-10"),
+        # X() at 5e-10, about to leave for 1e-9: tens of thousands of its allowance
+        ("integration", "times a species' allowance; X() at 5.00022e-10"),
         # a run from the root itself stays: the spectrum is what sees it
         ("newton", "an unstable root (an eigenvalue of 2.10e-01), where the run comes"),
     ],
@@ -2708,8 +2709,9 @@ def test_an_initial_state_on_an_unstable_root_is_not_a_finding(monkeypatch):
     base = D.Base(job)
     real = D._steady_run
 
-    def rounding(job, state=None, rtol_scale=1.0):
-        return real(job, state if state is not None else [0.3e-9 * (1 + 1e-6)], rtol_scale)
+    def rounding(job, state=None, rtol_scale=1.0, with_atols=False):
+        start = state if state is not None else [0.3e-9 * (1 + 1e-6)]
+        return real(job, start, rtol_scale, with_atols=with_atols)
 
     monkeypatch.setattr(D, "_steady_run", rounding)
     _plant(monkeypatch, state=lambda x: np.full_like(x, 0.3e-9))
@@ -2780,3 +2782,33 @@ def test_a_path_within_the_bases_spread_at_its_tolerance_is_not_a_finding(monkey
     lucky.spread_abs = D._check.spread(lucky.drift_abs, 2e-5 * base.peak)
     assert lucky.compare(off).status == "pass"
     assert lucky.margin(off, drift=lucky.drift_abs)[0] > 1.0
+
+
+def _pool_at_rest() -> D.Job:
+    """P made at 10 and lost at 0.01 rests at 1e3; S, made from it at 1e-8
+    and lost at 1, rests at 1e-5."""
+    path = _DIR / "pool-at-rest.net"
+    path.write_text(
+        "begin parameters\n 1 kin 10\n 2 kp 0.01\n 3 ks 1e-8\n 4 kd 1\nend parameters\n"
+        "begin species\n 1 P() 0\n 2 S() 0\nend species\n"
+        "begin reactions\n 1 0 1 kin\n 2 1 0 kp\n 3 1 1,2 ks\n 4 2 0 kd\nend reactions\n"
+    )
+    return D.Job("pool-at-rest", path, 0.0, 10.0, 21)
+
+
+def test_a_small_species_at_rest_beside_a_large_pool_is_judged_on_its_own_scale(monkeypatch):
+    """Issue #1887, at rest: S a hundredfold off its 1e-5 beside P at 1e3 was
+    1e-6 of the state's peak, under the old 1e3·rtol, and passed. On its own
+    scale it is a finding; a state within its allowance still passes."""
+    base = D.Base(_pool_at_rest())
+    v = D.check_steady(base, "integration")
+    assert v.status == "pass", v
+    off = lambda x: x * np.array([1.0, 100.0])  # noqa: E731
+    end = np.array([1e3, 1e-5])
+    assert D.gap(off(end), end, D.PATH_RTOL_FACTOR * base.job.atol) < D.PATH_RTOL_FACTOR * 1e-8
+    _plant(monkeypatch, state=off)
+    v = D.check_steady(base, "integration")
+    assert v.status == "diff" and "S() at" in v.note, v
+    monkeypatch.undo()  # a second plant would wrap the first
+    _plant(monkeypatch, state=lambda x: x * np.array([1.0, 1 + 1e-7]))
+    assert D.check_steady(base, "integration").status == "pass"
