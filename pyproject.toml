@@ -98,7 +98,7 @@ xarray = ["xarray>=2024.7"]
 # `bionetgen` 0.8.6 is a 12.8 MB wheel requiring cement, nbopen, numpy, pyyaml,
 # colorlog, xmltodict, seaborn, libroadrunner, sympy, lxml, networkx,
 # python-libsbml, pylru, pyparsing. Promoting it would pull **libroadrunner**
-# into every install -- contradicting the `roadrunner` extra's stated policy
+# into every install -- contradicting the `roadrunner` extra's opt-in policy
 # three stanzas down -- add seaborn and networkx to a core scientific install,
 # add a Perl runtime requirement (BNG2.pl is Perl: fine on macOS/Linux, absent
 # on stock Windows), and invert the layering, since PyBioNetGen *consumes*
@@ -149,9 +149,12 @@ vivarium = ["vivarium-core>=1.6"]
 benchmarks = [
     "bioservices>=1.11",
 ]
-# Reference engine for the parity_checks/ cross-validation suites (and a few
-# cross-validate tests that skip when it is absent). DEVELOPER-ONLY: RoadRunner
-# is never a base dependency, so regular users never receive it in any form. The
+# libRoadRunner, the independent engine Result.check("all")'s `second_engine`
+# check runs an SBML or Antimony model on (`pip install 'bngsim[roadrunner]'`;
+# the check skips, naming this extra, where it is absent). It is also the
+# reference engine for the parity_checks/ cross-validation suites and a few
+# cross-validate tests that skip without it. OPT-IN: RoadRunner is never a base
+# dependency, so a user receives it only by asking for this extra. The
 # rr_parity matrix's per-model RoadRunner *load* timing additionally needs the
 # source-instrumented fork (parity_checks/rr_parity/INSTRUMENTED_ROADRUNNER.md +
 # dev/notes/build_instrumented_roadrunner.sh); stock libroadrunner here covers
