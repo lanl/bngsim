@@ -769,13 +769,18 @@ class _Context:
         try:
             with warnings.catch_warnings():
                 # A solver that did not run is this check's skip, said once.
-                warnings.filterwarnings("ignore", message="This rerun ran other code")
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"This rerun ran other code than the run it repeats: "
+                    r"linear_solver '\w+' for 'klu' asked;",
+                )
                 again = self.rerun(linear_solver=other)
         except SparseJacobianUnavailableError as e:
             return _verdict(
                 "linear_solver",
                 "skip",
-                note=f"KLU cannot run this model: {_first_line(e)}",
+                note="KLU cannot run this model: it gives no sparse Jacobian to factorize "
+                f"({type(e).__name__})",
                 changed=changed,
             )
         ran = (again.record.get("backend") or {}).get("linear_solver")

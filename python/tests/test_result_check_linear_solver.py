@@ -267,12 +267,15 @@ def test_a_model_with_no_sparse_jacobian_for_klu_is_a_skip() -> None:
     (c,) = r.check("linear_solver")["checks"]
     assert c["status"] == "skip", c
     assert c["changed"] == {"linear_solver": "klu"}
-    assert c["note"].startswith("KLU cannot run this model: ")
+    assert c["note"] == (
+        "KLU cannot run this model: it gives no sparse Jacobian to factorize "
+        "(SparseJacobianUnavailableError)"
+    )
 
 
 def test_klu_asked_for_that_ran_dense_says_so(monkeypatch) -> None:
     monkeypatch.setitem(_rerun.LINEAR_SOLVERS, "klu", (False, False))
-    with pytest.warns(UserWarning, match="linear_solver 'dense' for 'klu'"):
+    with pytest.warns(UserWarning, match="linear_solver 'dense' for 'klu' asked;"):
         again = _decay().rerun(linear_solver="klu")
     assert [n["code"] for n in again.notices] == ["rerun.different_backend"]
     # Dense asked for and run: nothing to say.

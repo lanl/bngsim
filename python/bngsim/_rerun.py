@@ -553,21 +553,21 @@ def rerun(result: Result, **changes: Any) -> Result:
     then = rec["backend"] or {}
     ran = again.record["backend"] or {}
     asked = changes.get("linear_solver")
-    moved: list[tuple[str, Any]] = []
+    moved: list[tuple[str, str]] = []
     if method == run["method"] and not ({"jacobian", "codegen"} & set(changes)):
         moved = [
-            (k, then.get(k))
+            (k, repr(then.get(k)))
             for k in _BACKEND
             if then.get(k) != ran.get(k) and not (k == "linear_solver" and asked is not None)
         ]
     if asked in ("dense", "klu") and (asked == "klu") != (ran.get("linear_solver") == "klu"):
         # A solver asked for that did not run: "klu" on a build without KLU,
         # or with a JAX Jacobian, runs dense.
-        moved.append(("linear_solver", asked))
+        moved.append(("linear_solver", f"{asked!r} asked"))
     if moved:
         _notices.warn(
             "This rerun ran other code than the run it repeats: "
-            + ", ".join(f"{k} {ran.get(k)!r} for {want!r}" for k, want in moved)
+            + ", ".join(f"{k} {ran.get(k)!r} for {want}" for k, want in moved)
             + f"; {differ}.",
             UserWarning,
             code="rerun.different_backend",
