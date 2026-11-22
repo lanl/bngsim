@@ -424,10 +424,10 @@ print(bngsim.Simulator(built).run(t_span=(0, 2), n_points=3).observables["A"][-1
 
 - **A conservation law holds.** In this model `A + B` stays 100. A network
   with a conserved total should conserve it to within the tolerance.
-- **The answer does not move with the tolerance.** Run it again with `rtol` and
-  `atol` ten or a hundred times smaller: `result.rerun(rtol=..., atol=...)`
-  makes the same run, from the same start, with those two changed. A number
-  that moves was not resolved.
+- **The answer does not move with the tolerance.** `print(r.check())` runs it
+  again at a tenth of `rtol` and `atol` and at 8x the points, and says whether
+  the answer moved; `r.check("all")` adds the Jacobian, the compiled code and
+  libRoadRunner. Report a `diff` between two BNGsim paths as a bug.
 - **A closed form or a steady state agrees**, where one is known.
 - **A stochastic answer comes from an ensemble.** One trajectory is one draw.
   Report a mean or a distribution over replicates, with the number of
@@ -444,8 +444,7 @@ r = sim.run(t_span=(0, 10), n_points=101)
 total = r.observables["A"] + r.observables["B"]
 assert np.allclose(total, 100.0, rtol=1e-6)
 
-tight = r.rerun(rtol=1e-10, atol=1e-12)
-assert np.allclose(r.observables, tight.observables, rtol=1e-5, atol=1e-6)
+print(r.check()["ok"])  # True
 
 kf, kr = 0.5, 0.25
 closed = 100 * (kr + kf * np.exp(-(kf + kr) * r.time)) / (kf + kr)
