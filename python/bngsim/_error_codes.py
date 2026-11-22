@@ -347,8 +347,9 @@ _CODES = (
         "rerun.unsupported",
         "UsageError",
         "The record cannot promise the same run (``details['reason']``): a stack of runs, a "
-        "network-free run, stop conditions, carried or declared sensitivities, or a model "
-        "changed after its load.",
+        "network-free run, stop conditions, carried or declared sensitivities, sensitivities "
+        "seeded otherwise on the rebuilt model, a model changed after its load, or one built "
+        "in Python with no source.",
         "Rerun one row of a stack; run the others again with ``Simulator.run``.",
     ),
     ErrorCode(
@@ -361,7 +362,8 @@ _CODES = (
         "rerun.model_changed",
         "ModelError",
         "The model file's sha256 differs from the record's, or the model built from the "
-        "recorded source is not the one the run used.",
+        "recorded source is not the one the run used: its table data, parameters or species "
+        "differ (``details``).",
         "Load the file as it is now and run it with ``Simulator.run``, or put back the "
         "file the run used.",
     ),

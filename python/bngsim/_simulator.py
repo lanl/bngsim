@@ -994,6 +994,7 @@ class Simulator:
 
     __slots__ = (
         "_reaction_stats",
+        "_strict_ssa",
         # The cc propensity library __init__ built for an exact SSA, or "" (GH
         # #190); _new_ssa_engine hands it to every engine.
         "_ssa_propensity_lib",
@@ -1136,6 +1137,7 @@ class Simulator:
                 remedies=[use_method("ssa")],
             )
         self._reaction_stats = bool(reaction_stats)
+        self._strict_ssa = bool(strict_ssa)
         # Set here, ahead of the rest of the codegen state below, because the SSA
         # branch's _new_ssa_engine reads both.
         self._codegen = codegen
@@ -4384,7 +4386,8 @@ class Simulator:
         ``time.perf_counter()``. For an ODE run, *resolved* is the absolute
         tolerance the solver was given and *jacobian* the one its returned
         attempt used (:meth:`_jacobian_used`). *carry* is the event state the
-        run started from (``core.event_carry_state()``), and *model* the one it
+        run started from, ``(core.event_carry(), core.ssa_counts_stored)``, and
+        *model* the one it
         ran, where that is not this Simulator's own (a batch row's clone)."""
         ode = self._method == "ode"
         sens = bool(self._sensitivity_params or self._sensitivity_ic)
@@ -4452,10 +4455,14 @@ class Simulator:
                 else None
             ),
             propensities=result._ssa_diagnostics.get("propensity_backend") if ssa else None,
-            start_carry=_record.start_carry(carry),
+            start_carry=carry,
             declared_ic_sensitivity=bool(
                 ode and sens and (self._model if model is None else model)._declared_ic_sens
             ),
+            codegen_requested=self._codegen,
+            strict_ssa=self._strict_ssa,
+            reaction_stats=self._reaction_stats,
+            attachment=_attachment(self._model if model is None else model),
         )
         result._run_params = (info.param_names, values)
         result._model_info = info
@@ -6259,7 +6266,7 @@ class Simulator:
         # And the parameter values and event state it starts with, for its
         # record (issue #1703).
         start_params = _record.parameter_values(self._model)
-        start_carry = core.event_carry_state()
+        start_carry = (core.event_carry(), core.ssa_counts_stored)
         # A sensitivity run from a carried state is refused by the engine, with
         # its own remedy (carry_sensitivities=True, GH #210; issue #1528), which
         # a warning first would only bury, and stop under `-W error`.
@@ -7263,7 +7270,7 @@ class Simulator:
                 n_points=n_points,
                 sample_times=None,
                 timeout=eff_timeout,
-                carry=start_carry[3],
+                carry=(None if start_carry[3] is None else (start_carry[3][0], start_carry[3][3])),
             )
             self._warn_ssa_boundary(r)
             return r
@@ -8580,7 +8587,7 @@ class Simulator:
         # the parameters it starts with, for its record (issues #1701, #1703).
         row_started, row_start_state = _start_record(clone._core)
         start_params = _record.parameter_values(clone)
-        row_carry = clone._core.event_carry_state()
+        row_carry = (clone._core.event_carry(), clone._core.ssa_counts_stored)
 
         times = TimeSpec()
         times.t_start = t_span[0]

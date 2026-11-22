@@ -232,12 +232,28 @@ def test_the_jacobian_a_retried_run_used_is_the_one_used_again() -> None:
     _same(kept, kept.rerun())
 
 
-def test_an_interpreted_run_stays_interpreted(net_path: Path) -> None:
-    r = Simulator(Model.from_net(net_path), codegen=False).run(t_span=(0, 5), n_points=4)
-    assert r.record["backend"]["rhs"] == "interpreted"
-    again = r.rerun()
-    assert again.record["backend"]["rhs"] == "interpreted"
-    _same(r, again)
+_CC = shutil.which("cc") or shutil.which("clang") or shutil.which("gcc")
+
+
+@pytest.mark.skipif(_CC is None, reason="no C compiler for codegen")
+@pytest.mark.parametrize("method", ["ode", "ssa"])
+def test_the_code_a_run_was_asked_for_is_asked_for_again(
+    net_path: Path, method: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With the threshold at 1 this model compiles under "auto": a run made
+    with codegen=False must be made interpreted again, and one made compiled
+    (codegen=True; SSA takes only "auto") compiled again."""
+    monkeypatch.setenv("BNGSIM_CODEGEN_THRESHOLD", "1")
+    part = "rhs" if method == "ode" else "propensities"
+    for asked in (False, True if method == "ode" else None):
+        r = Simulator(Model.from_net(net_path), method=method, codegen=asked).run(
+            t_span=(0, 5), n_points=4
+        )
+        assert (r.record["backend"][part] == "interpreted") is (asked is False)
+        again = r.rerun()
+        assert again.record["backend"][part] == r.record["backend"][part]
+        assert again.notices == []
+        _same(r, again)
 
 
 @pytest.mark.parametrize("solver", ["dense", "fd"])
@@ -246,7 +262,47 @@ def test_the_requested_linear_solver_and_jacobian(net_path: Path, solver: str) -
     r = Simulator(Model.from_net(net_path), **kw).run(t_span=(0, 5), n_points=4)
     again = r.rerun()
     _same(r, again)
-    assert again.record["backend"] == {**r.record["backend"]}
+    # All but what the Simulator was asked for codegen: a run interpreted
+    # under "auto" is made again with codegen=False, to run interpreted again.
+    then, now = r.record["backend"], again.record["backend"]
+    assert {k: v for k, v in now.items() if k != "rhs_requested"} == {
+        k: v for k, v in then.items() if k != "rhs_requested"
+    }
+
+
+def test_every_setting_off_its_default_is_given_back(net_path: Path) -> None:
+    """Each a setting a rerun that took its default would make otherwise."""
+    model = Model.from_net(net_path)
+    sim = Simulator(
+        model,
+        sensitivity_params=["kf"],
+        sensitivity_ic=["A()"],
+        sensitivity_method="simultaneous",
+        force_sparse_linear_solver=True,
+    )
+    r = sim.run(
+        t_span=(0, 50),
+        n_points=6,
+        max_steps=777,
+        timeout=600.0,
+        steady_state=True,
+        steady_state_tol=1e-5,
+    )
+    again = r.rerun()
+    _same(r, again)
+    np.testing.assert_array_equal(np.asarray(again.sensitivities), np.asarray(r.sensitivities))
+    keep = (
+        "max_steps",
+        "timeout",
+        "steady_state",
+        "steady_state_tol",
+        "sensitivity_params",
+        "sensitivity_ic",
+        "sensitivity_method",
+    )
+    assert {k: again.record["run"][k] for k in keep} == {k: r.record["run"][k] for k in keep}
+    assert again.record["backend"]["linear_solver_requested"] == "sparse"
+    assert again.record["run"]["start"] == "live"
 
 
 def test_a_sensitivity_run_comes_back_with_its_sensitivities(net_path: Path) -> None:
@@ -417,7 +473,7 @@ def test_a_model_built_in_python() -> None:
     r = Simulator(builder.build()).run(t_span=(0, 1), n_points=2)
     with pytest.raises(UsageError) as e:
         r.rerun()
-    assert _code(e) == ("rerun.not_recorded", {"missing": "model source"})
+    assert _code(e) == ("rerun.unsupported", {"reason": "no_source"})
 
 
 def test_a_run_with_stop_conditions(net_path: Path) -> None:
@@ -548,3 +604,198 @@ def test_a_bngl_model_reruns_from_its_file() -> None:
     sim.run(t_span=(0, 1), n_points=2)
     r = sim.run(t_span=(1, 4), n_points=4)
     _same(r, r.rerun())
+
+
+# ─── What the first review found (each its repro) ──────────────────────
+
+
+def test_a_model_from_bytes_not_utf8_saves_and_reruns(tmp_path: Path) -> None:
+    """libantimony takes bytes, hashed as given. Saving one with a Latin-1 byte
+    decoded it as UTF-8, raised partway, and left the file it overwrote
+    unreadable."""
+    pytest.importorskip("h5py")
+    text = "// caf\xe9\nmodel m\n J1: A -> B; k*A\n k = 0.3; A = 100; B = 0\nend\n"
+    path = tmp_path / "r.h5"
+    Simulator(Model.from_antimony_string(text)).run(t_span=(0, 5), n_points=4).save(path)
+    r = Simulator(Model.from_antimony_string(text.encode("latin-1"))).run(
+        t_span=(0, 5), n_points=4
+    )
+    r.save(path)
+    loaded = Result.load(path)
+    assert loaded._source_text == text.encode("latin-1")
+    _same(r, r.rerun())
+    _same(r, loaded.rerun())
+
+
+def test_table_data_read_from_a_file_of_its_own(tmp_path: Path) -> None:
+    """A .net's tfun reads a second file, which is in no hash of the .net:
+    a changed table made the rerun another model, silently."""
+    (tmp_path / "g.tfun").write_text("# time g\n0 0\n1 1\n2 2\n", encoding="utf-8")
+    net = tmp_path / "g.net"
+    net.write_text(
+        "begin parameters\n    1 k 1\nend parameters\n"
+        "begin functions\n    1 g() tfun('g.tfun', time)\nend functions\n"
+        "begin species\n    1 A() 1\n    2 B() 0\nend species\n"
+        "begin reactions\n    1 1 1,2 g\nend reactions\n",
+        encoding="utf-8",
+    )
+    r = Simulator(Model.from_net(net)).run(t_span=(0, 2), n_points=3)
+    assert r.record["model"]["tables_sha256"] is not None
+    _same(r, r.rerun())
+    (tmp_path / "g.tfun").write_text("# time g\n0 0\n1 5\n2 9\n", encoding="utf-8")
+    with pytest.raises(ModelError) as e:
+        r.rerun()
+    assert e.value.code == "rerun.model_changed"
+    assert e.value.details["reason"] == "table_data"
+
+
+@pytest.mark.parametrize("method", ["ODE", "Ode"])
+def test_the_methods_own_name_in_another_spelling_keeps_its_settings(
+    net_path: Path, method: str
+) -> None:
+    r = Simulator(Model.from_net(net_path), jacobian="fd", force_dense_linear_solver=True).run(
+        t_span=(0, 5), n_points=4, rtol=1e-3, atol=1e-3, max_steps=1234
+    )
+    again = r.rerun(method=method)
+    _same(r, again)
+    assert again.record["run"]["max_steps"] == 1234
+    assert again.record["run"]["rerun_of"]["changed"] == {"method": "ode"}
+
+
+def test_a_baseline_saved_before_a_sensitivity_run_is_refused(tmp_path: Path) -> None:
+    """save_concentrations() retires the initial-condition seed, which the
+    rebuilt model, with no such baseline, would seed: other sensitivities."""
+    net = tmp_path / "s.net"
+    net.write_text(
+        "begin parameters\n    1 A0 4\n    2 B0 A0/4\n    3 k 0.5\nend parameters\n"
+        "begin species\n    1 A() A0\n    2 B() B0\n    3 C() 0\nend species\n"
+        "begin reactions\n    1 1 3 k\n    2 2 3 k\nend reactions\n",
+        encoding="utf-8",
+    )
+    model = Model.from_net(net)
+    model.save_concentrations()
+    r = Simulator(model, sensitivity_params=["A0"]).run(t_span=(0, 5), n_points=4)
+    with pytest.raises(UsageError) as e:
+        r.rerun()
+    assert e.value.code == "rerun.unsupported"
+    assert e.value.details["reason"] == "ic_sensitivity_seed"
+    # Without the baseline, the same run reruns.
+    r = Simulator(Model.from_net(net), sensitivity_params=["A0"]).run(t_span=(0, 5), n_points=4)
+    _same(r, r.rerun())
+
+
+@pytest.mark.parametrize("how", ["pinned_at_its_value", "pinned_then_primary_moved"])
+def test_a_derived_parameter_pinned_to_a_number_is_pinned_again(tmp_path: Path, how: str) -> None:
+    """``kd = 2*kf``. Pinned, kd no longer follows kf, and its sensitivity to
+    kf is zero: a rebuilt model where it still follows gives others."""
+    net = tmp_path / "d.net"
+    net.write_text(
+        "begin parameters\n    1 kf 0.5\n    2 kd 2*kf\nend parameters\n"
+        "begin species\n    1 A() 10\n    2 B() 0\nend species\n"
+        "begin reactions\n    1 1 2 kf\n    2 2 0 kd\nend reactions\n",
+        encoding="utf-8",
+    )
+    model = Model.from_net(net)
+    if how == "pinned_at_its_value":
+        model.set_param("kd", model.get_param("kd"), force_override=True)
+    else:
+        model.set_param("kd", 3.0)
+        model.set_param("kf", 1.5)
+    r = Simulator(model, sensitivity_params=["kf"]).run(t_span=(0, 5), n_points=4)
+    assert r.record["run"]["parameters_pinned"] == ["kd"]
+    again = r.rerun()
+    _same(r, again)
+    np.testing.assert_array_equal(np.asarray(again.sensitivities), np.asarray(r.sensitivities))
+    assert again.record["run"]["parameters_pinned"] == ["kd"]
+    # Unpinned, it is listed as following its expression.
+    plain = Simulator(Model.from_net(net)).run(t_span=(0, 1), n_points=2)
+    assert plain.record["run"]["parameters_pinned"] == []
+
+
+def test_strict_ssa_and_reaction_stats_are_given_back(net_path: Path) -> None:
+    r = Simulator(Model.from_net(net_path), method="ssa", reaction_stats=True).run(
+        t_span=(0, 3), n_points=4
+    )
+    again = r.rerun()
+    _same(r, again)
+    assert again.has_reaction_stats and r.record["run"]["reaction_stats"] is True
+    r = Simulator(Model.from_net(net_path), method="ssa", strict_ssa=False).run(
+        t_span=(0, 3), n_points=4
+    )
+    assert r.rerun().record["run"]["strict_ssa"] is False
+
+
+def test_a_new_span_for_a_run_at_sample_times(net_path: Path) -> None:
+    r = Simulator(Model.from_net(net_path)).run(sample_times=[0.0, 1.0, 2.5, 4.0])
+    with pytest.raises(UsageError) as e:
+        r.rerun(t_span=(0, 10))
+    assert e.value.code == "usage.conflicting_arguments"
+    assert r.rerun(t_span=(0, 10), n_points=3).time[-1] == 10.0
+
+
+def test_none_where_it_means_nothing_and_a_new_poplevel(net_path: Path) -> None:
+    r = Simulator(Model.from_net(net_path)).run(t_span=(0, 3), n_points=4)
+    for key in ("sample_times", "jacobian", "t_span", "rtol"):
+        with pytest.raises(UsageError) as e:
+            r.rerun(**{key: None})
+        assert e.value.code == "usage.invalid_argument"
+    psa = r.rerun(method="psa", poplevel=20, seed=4)
+    assert psa.record["run"]["poplevel"] == 20
+
+
+def test_a_batch_row_records_its_own_clones_declarations(net_path: Path) -> None:
+    """A batch row's clone is reset, which drops the parent's declared rows:
+    the row's record reads its clone's."""
+    model = Model.from_net(net_path)
+    model.declare_ic_sensitivity({"A()": {"kf": 2.0}})
+    sim = Simulator(model, sensitivity_params=["kf"])
+    rows = sim.run_batch((0, 1), 2, params=[{"kf": 0.2}], squeeze=False)
+    assert rows[0].record["run"]["declared_ic_sensitivity"] is False
+    _same(rows[0], rows[0].rerun())
+
+
+def test_a_replicate_continuing_a_pending_event_carries_it() -> None:
+    sim = Simulator(Model.from_antimony_string(DELAYED), method="ssa")
+    sim.run(t_span=(0, 1), n_points=2, seed=1)
+    reps = sim.run_replicates(2, t_span=(1, 3), n_points=5, squeeze=False)
+    for rep in reps:
+        assert rep.record["run"]["start_carry"]["events"]["pending"]
+        _same(rep, rep.rerun())
+
+
+def test_a_clone_keeps_its_parents_edits(tmp_path: Path) -> None:
+    net = tmp_path / "t.net"
+    net.write_text(
+        "begin parameters\n    1 k 1\nend parameters\n"
+        "begin functions\n    1 f() tfun([0, 10], [1, 2], time)\nend functions\n"
+        "begin species\n    1 A() 10\nend species\n"
+        "begin reactions\n    1 1 0 f\nend reactions\n",
+        encoding="utf-8",
+    )
+    model = Model.from_net(net)
+    Simulator(model).run(t_span=(0, 1), n_points=2)  # its record info is made here
+    model.add_table_function(model.table_function_names[0], times=[0.0, 10.0], values=[3.0, 4.0])
+    for m in (model, model.clone()):
+        r = Simulator(m).run(t_span=(0, 1), n_points=2, start="initial")
+        assert r.record["model"]["edits"] == ["add_table_function"]
+
+
+@pytest.mark.parametrize(
+    "tamper, code",
+    [
+        (lambda p, r: p["run"]["parameters"].update(nope=1.0), "rerun.model_changed"),
+        (lambda p, r: setattr(r, "_start_state", np.ones(1)), "rerun.model_changed"),
+        (lambda p, r: p["run"]["parameters"].update(kf=None), "rerun.not_recorded"),
+    ],
+    ids=["unknown_parameter", "species_count", "parameter_none"],
+)
+def test_a_record_the_rebuilt_model_cannot_hold(net_path: Path, tamper, code: str) -> None:
+    from bngsim import _record
+
+    r = Simulator(Model.from_net(net_path)).run(t_span=(0, 1), n_points=2)
+    parts = _record.frozen_parts(r)
+    tamper(parts, r)
+    r._record_frozen = parts
+    with pytest.raises((UsageError, ModelError)) as e:
+        r.rerun()
+    assert e.value.code == code

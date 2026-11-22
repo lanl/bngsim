@@ -46,9 +46,18 @@ SETTINGS = (
     "steady_state",
     "steady_state_tol",
     "method",
+    "poplevel",
     "jacobian",
     "codegen",
 )
+
+#: The settings that are a :class:`Simulator`'s, not a run's.
+_SIMULATOR = ("method", "poplevel", "jacobian", "codegen")
+
+#: The settings ``None`` is a value of: a fresh seed, no wall-clock budget, no
+#: step bound, the default steady-state tolerance, codegen as the method
+#: chooses. For the rest it says nothing.
+_NONE_TAKEN = ("seed", "timeout", "max_step", "steady_state_tol", "codegen")
 
 #: The settings that are an ODE run's alone, left out where a rerun changes
 #: the method away from ``"ode"`` and does not name them.
@@ -65,8 +74,8 @@ def _missing(part: str) -> Exception:
     return UsageError(
         f"This result's record has no {part}, which a rerun needs to make the same run "
         "again: it was made by a call that records no run (compute_all_sensitivities, a "
-        "network-free session) or loaded from a file written before bngsim recorded it. "
-        "Run the model again with Simulator.run.",
+        "network-free session, a result built from arrays) or loaded from a file an "
+        "earlier bngsim wrote. Run the model again with Simulator.run.",
         code="rerun.not_recorded",
         details={"missing": part},
         remedies=[],
@@ -111,8 +120,14 @@ def _check_refusals(result: Result, rec: dict[str, Any]) -> None:
     if run is None:
         raise _missing("run")
     model = rec["model"]
-    if model is None or model.get("format") is None:
-        raise _missing("model source")
+    if model is not None and model.get("format") is None:
+        raise _unsupported(
+            "no_source",
+            "This run's model was built in Python (ModelBuilder or the like), not "
+            "loaded from a file or text, so there is no source to build it again from.",
+        )
+    if model is None:
+        raise _missing("model")
     if run["method"] in _NETWORK_FREE:
         raise _unsupported(
             "network_free",
@@ -149,11 +164,14 @@ def _check_refusals(result: Result, rec: dict[str, Any]) -> None:
             "this run used.",
             edits=list(edits),
         )
-    for key in ("parameters", "start_state", "t_start", "t_end", "n_points"):
+    for key in ("parameters", "parameters_pinned", "start_state", "t_start", "t_end", "n_points"):
         if run.get(key) is None:
             raise _missing(f"run.{key}")
-    if "start_carry" not in run:
-        raise _missing("run.start_carry")
+    for key in ("start_carry", "strict_ssa", "reaction_stats"):
+        if key not in run:
+            raise _missing(f"run.{key}")
+    if "tables_sha256" not in model:
+        raise _missing("model.tables_sha256")
     for name, value in run["parameters"].items():
         if value is None:
             raise _missing(f"run.parameters.{name}")
@@ -209,48 +227,78 @@ def build_model(result: Result, source: dict[str, Any]) -> Model:
     data = text.encode("utf-8") if isinstance(text, str) else bytes(text)
     if hashlib.sha256(data).hexdigest() != sha:  # pragma: no cover - kept beside its hash
         raise _missing("model source text matching its sha256")
-    if isinstance(text, bytes):
-        text = text.decode("utf-8")
-    if fmt == "sbml":
-        return Model.from_sbml_string(text, compartment_sizes=sizes)
     if fmt == "antimony":
-        return Model.from_antimony_string(text, compartment_sizes=sizes)
+        # libantimony takes the bytes as given, as the load did.
+        return Model.from_antimony_string(text, compartment_sizes=sizes)  # type: ignore[arg-type]
+    if fmt == "sbml":
+        if isinstance(text, bytes):
+            # A BioModels file, which the load read as UTF-8.
+            text = text.decode("utf-8")
+        return Model.from_sbml_string(text, compartment_sizes=sizes)
     raise _missing(f"model loader for text of format {fmt!r}")  # pragma: no cover
 
 
-def _put_start(model: Model, run: dict[str, Any]) -> None:
-    """Give *model* the parameter values, state and event state *run* started
-    with, and refuse where the model cannot hold them."""
+def _model_changed(message: str, **details: Any) -> Exception:
     from bngsim._exceptions import ModelError
 
+    return ModelError(
+        f"{message}, so the model built from the recorded source is not the one the run used.",
+        code="rerun.model_changed",
+        details=details,
+        remedies=[],
+    )
+
+
+def _put_start(model: Model, rec: dict[str, Any]) -> None:
+    """Give *model* the table data, parameter values, state and event state
+    *rec*'s run started with, and refuse where the model cannot hold them."""
+    from bngsim._simulator import _attachment
+
+    run = rec["run"]
     core = model._core
-    names = set(core.param_names)
-    params: dict[str, float] = run["parameters"]
-    unknown = sorted(n for n in params if n not in names)
-    if unknown:
-        raise ModelError(
-            f"The model built from the recorded source has no parameter {unknown[0]!r}, "
-            "which the run had, so it is not the model the run used.",
-            code="rerun.model_changed",
-            details={"parameters": unknown},
-            remedies=[],
+    tables = _record.tables_sha256(model)
+    if tables != rec["model"]["tables_sha256"]:
+        raise _model_changed(
+            "Its table functions' data differs from the run's (a table read from a "
+            "file of its own may have changed)",
+            reason="table_data",
+            recorded_sha256=rec["model"]["tables_sha256"],
+            sha256=tables,
         )
-    # Only the values that differ: a set_param pins a derived parameter's value
-    # and detaches it from its expression.
+    names = list(core.param_names)
+    params: dict[str, float] = run["parameters"]
+    unknown = sorted(n for n in params if n not in set(names))
+    if unknown:
+        raise _model_changed(f"It has no parameter {unknown[0]!r}", parameters=unknown)
+    # The primary parameters first, then each derived one the run had pinned
+    # to a number, pinned again. A set_param of a derived parameter would pin
+    # it too, so one that follows its expression is left to follow it.
     differ = {n: float(v) for n, v in params.items() if not _same(core.get_param(n), float(v))}
     for name in [n for n in model.primary_param_names if n in differ]:
         model.set_param(name, differ[name])
-    left = {n: v for n, v in differ.items() if not _same(core.get_param(n), v)}
-    if left:
-        model.set_params(left)
+    pinned = list(run["parameters_pinned"])
+    for name in pinned:
+        model.set_param(name, float(params[name]), force_override=True)
+    left = sorted(n for n, v in params.items() if not _same(core.get_param(n), float(v)))
+    attached = _attachment(model)
+    now_pinned = [
+        n
+        for n, then, now in zip(names, model._loaded_attachment, attached, strict=False)
+        if then and not now and n in params
+    ]
+    if left or sorted(now_pinned) != sorted(pinned):
+        raise _model_changed(
+            "Its parameters cannot be given the values the run started with",
+            parameters=left,
+            pinned=sorted(now_pinned),
+            recorded_pinned=sorted(pinned),
+        )
     state = np.asarray(run["start_state"], dtype=np.float64)
     if state.shape[0] != model.n_species:
-        raise ModelError(
-            f"The model built from the recorded source has {model.n_species} species and "
-            f"the run started from {state.shape[0]}, so it is not the model the run used.",
-            code="rerun.model_changed",
-            details={"n_species": model.n_species, "recorded": int(state.shape[0])},
-            remedies=[],
+        raise _model_changed(
+            f"It has {model.n_species} species and the run started from {state.shape[0]}",
+            n_species=model.n_species,
+            recorded=int(state.shape[0]),
         )
     now = np.asarray(core.get_state(), dtype=np.float64)
     if not np.array_equal(now, state, equal_nan=True):
@@ -265,7 +313,17 @@ def _simulator_options(
 ) -> dict[str, Any]:
     """The :class:`Simulator` keywords that make *run* again under *method*."""
     same = method == run["method"]
-    opts: dict[str, Any] = {}
+    opts: dict[str, Any] = {
+        "strict_ssa": bool(run["strict_ssa"]),
+        "reaction_stats": bool(run["reaction_stats"]) and method == "ssa",
+    }
+    if same and backend is not None:
+        # The right-hand side or propensities as asked for, and interpreted
+        # where they ran interpreted (a compile that failed, or a model codegen
+        # declines under "auto").
+        opts["codegen"] = backend.get("rhs_requested")
+        if "interpreted" in (backend.get("rhs"), backend.get("propensities")):
+            opts["codegen"] = False
     if method == "ode" and same and backend is not None:
         # The Jacobian the run used: a difference quotient where it retried on
         # one, or where the Simulator kept one from an earlier retry.
@@ -275,8 +333,6 @@ def _simulator_options(
         solver = backend.get("linear_solver_requested")
         opts["force_dense_linear_solver"] = solver == "dense"
         opts["force_sparse_linear_solver"] = solver == "sparse"
-        if backend.get("rhs") == "interpreted":
-            opts["codegen"] = False
     if method == "ode" and (run.get("sensitivity_params") or run.get("sensitivity_ic")):
         opts["sensitivity_params"] = list(run["sensitivity_params"]) or None
         opts["sensitivity_ic"] = list(run["sensitivity_ic"]) or None
@@ -284,17 +340,9 @@ def _simulator_options(
             opts["sensitivity_method"] = run["sensitivity_method"]
     if method == "psa" and same and run.get("poplevel") is not None:
         opts["poplevel"] = run["poplevel"]
-    for key in ("jacobian", "codegen"):
-        if key in changes:
+    for key in _SIMULATOR:
+        if key in changes and key != "method":
             opts[key] = changes[key]
-    # A stochastic run's propensities, interpreted where its code was.
-    if (
-        same
-        and "codegen" not in changes
-        and backend is not None
-        and backend.get("propensities") == "interpreted"
-    ):
-        opts["codegen"] = False
     return opts
 
 
@@ -327,7 +375,7 @@ def _run_options(run: dict[str, Any], method: str, changes: dict[str, Any]) -> d
         if run.get("steady_state_tol") is not None:
             opts["steady_state_tol"] = run["steady_state_tol"]
     for key in SETTINGS:
-        if key in changes and key not in ("method", "jacobian", "codegen"):
+        if key in changes and key not in _SIMULATOR:
             opts[key] = changes[key]
     if "t_span" in changes:
         opts["t_span"] = tuple(changes["t_span"])
@@ -357,16 +405,10 @@ def _changed(changes: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-#: What a rerun's notices compare between the two records' backends.
-_BACKEND = ("rhs", "jacobian", "linear_solver", "sensitivity_rhs", "propensities")
-
-
-@_notices.collected
-def rerun(result: Result, **changes: Any) -> Result:
-    """:meth:`Result.rerun`."""
+def _check_changes(run: dict[str, Any], changes: dict[str, Any]) -> None:
+    """Refuse settings :func:`rerun` does not take, or cannot read."""
     from bngsim._error_codes import pass_argument
     from bngsim._exceptions import UsageError
-    from bngsim._simulator import Simulator
 
     unknown = sorted(set(changes) - set(SETTINGS))
     if unknown:
@@ -377,6 +419,15 @@ def rerun(result: Result, **changes: Any) -> Result:
             details={"settings": unknown, "accepted": list(SETTINGS)},
             remedies=[pass_argument(name) for name in SETTINGS],
         )
+    empty = sorted(k for k, v in changes.items() if v is None and k not in _NONE_TAKEN)
+    if empty:
+        raise UsageError(
+            f"Result.rerun({empty[0]}=None) changes nothing: leave a setting out to keep "
+            "the run's.",
+            code="usage.invalid_argument",
+            details={"arguments": empty},
+            remedies=[],
+        )
     if "sample_times" in changes and "n_points" in changes:
         raise UsageError(
             "Result.rerun() takes sample_times or n_points, not both.",
@@ -384,18 +435,70 @@ def rerun(result: Result, **changes: Any) -> Result:
             details={"arguments": ["sample_times", "n_points"]},
             remedies=[],
         )
+    if (
+        "t_span" in changes
+        and run.get("sample_times") is not None
+        and not {"sample_times", "n_points"} & set(changes)
+    ):
+        raise UsageError(
+            "This run was made at sample_times, which a new t_span does not move: pass "
+            "sample_times, or n_points to sample the new span evenly.",
+            code="usage.conflicting_arguments",
+            details={"arguments": ["t_span", "sample_times"]},
+            remedies=[pass_argument("sample_times"), pass_argument("n_points")],
+        )
+
+
+def _check_ic_seed(result: Result, again: Result) -> None:
+    """Refuse a rerun whose sensitivities were seeded otherwise than the run's
+    (``∂x(0)/∂θ``): the seed comes of model state no record holds, such as a
+    baseline :meth:`Model.save_concentrations` made."""
+    then, now = result._ic_sensitivity_seed, again._ic_sensitivity_seed
+    if then == now:
+        return
+    raise _unsupported(
+        "ic_sensitivity_seed",
+        "The rerun's sensitivities start from another dx(0)/dθ than the run's "
+        f"({then} then, {now} now): the run's model held state its record does not "
+        "(a baseline save_concentrations() made, say), so the two are not one run.",
+        recorded=then,
+        seed=now,
+    )
+
+
+#: What a rerun's notices compare between the two records' backends.
+_BACKEND = ("rhs", "jacobian", "linear_solver", "sensitivity_rhs", "propensities")
+
+
+@_notices.collected
+def rerun(result: Result, **changes: Any) -> Result:
+    """:meth:`Result.rerun`."""
+    from bngsim._simulator import Simulator, normalize_method
+
     rec = result.record
-    _check_refusals(result, rec)
     run = rec["run"]
+    _check_changes(run or {}, changes)
+    if "method" in changes:
+        # The Simulator's own spelling, so "ODE" is "ode" (and keeps its settings).
+        changes = {**changes, "method": normalize_method(changes["method"])[0]}
+    _check_refusals(result, rec)
     method = changes.get("method", run["method"])
     model = build_model(result, rec["model"])
-    _put_start(model, run)
+    _put_start(model, rec)
     options = _simulator_options(run, rec["backend"], method, changes)
     sim = Simulator(model, method=method, **options)
     again = sim.run(start="live", **_run_options(run, method, changes))
+    if method == "ode" and run["method"] == "ode" and run.get("sensitivity_params"):
+        _check_ic_seed(result, again)
 
     again._run_info = again._run_info._replace(
         rerun_of={"record_sha256": _record_sha256(rec), "changed": _changed(changes)}
+    )
+    stochastic = method in _record.STOCHASTIC
+    differ = (
+        "a stochastic run can take another path from the first difference on"
+        if stochastic
+        else "an ODE run may differ in its last digits"
     )
     software = rec["software"] or {}
     now = again.record["software"]
@@ -404,8 +507,7 @@ def rerun(result: Result, **changes: Any) -> Result:
         _notices.warn(
             f"This rerun ran on bngsim {now['bngsim']} (build {now['build_commit']}), and "
             f"the run it repeats on {software.get('bngsim')} (build "
-            f"{software.get('build_commit')}): a stochastic run reproduces exactly only on "
-            "the same build, and an ODE run may differ in its last digits.",
+            f"{software.get('build_commit')}): {differ}.",
             UserWarning,
             code="rerun.different_build",
             stacklevel=_notices.OUTSIDE,
@@ -418,7 +520,7 @@ def rerun(result: Result, **changes: Any) -> Result:
             _notices.warn(
                 "This rerun ran other code than the run it repeats: "
                 + ", ".join(f"{k} {ran.get(k)!r} for {then.get(k)!r}" for k in moved)
-                + ". Its numbers may differ in their last digits.",
+                + f"; {differ}.",
                 UserWarning,
                 code="rerun.different_backend",
                 stacklevel=_notices.OUTSIDE,

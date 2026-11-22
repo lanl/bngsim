@@ -161,6 +161,7 @@ class Model:
         "_source",
         "_source_text",
         "_edits",
+        "_loaded_attachment",
         "_sbml_record",
         "_record_info",
     )
@@ -180,6 +181,12 @@ class Model:
         # And every species' amount, which it hands the backend the same way
         # where the model has changed it (issue #1373).
         self._loaded_state: tuple[float, ...] = tuple(float(x) for x in _core.get_state())
+        # And which parameters were attached to an expression (issue #1703): a
+        # run's record names the ones a set_param has pinned since, which a
+        # model built again from the source has to have pinned too.
+        self._loaded_attachment: tuple[bool, ...] = tuple(
+            bool(x) for x in getattr(_core, "param_is_expression", ())
+        )
         # Issue #1701: the time the last run that wrote its end state back left
         # the model at, that state, and the mark of the Simulator that ran it, as
         # Simulator.run records it. A run that starts before that time from
@@ -1613,6 +1620,7 @@ class Model:
         m = Model(_core=self._core.clone(), _guarded=self._guarded_functions)
         m._loaded_params = dict(self._loaded_params)
         m._loaded_state = self._loaded_state
+        m._loaded_attachment = self._loaded_attachment
         # Issue #1701: the clone holds the state the run left, so a run of it
         # from another time continues that run as the original's would. Shared,
         # not copied: the vector is read-only, and the record is only replaced.

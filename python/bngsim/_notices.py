@@ -86,7 +86,8 @@ CODES: dict[str, str] = {
     ),
     "rerun.different_backend": (
         "A Result.rerun() ran other code (right-hand side, Jacobian, linear solver or "
-        "propensities) than the run it repeats; its numbers may differ in their last digits."
+        "propensities) than the run it repeats: an ODE run's numbers may differ in their last "
+        "digits, and a stochastic run can take another path."
     ),
     "rerun.different_build": (
         "A Result.rerun() ran on another bngsim version or build than the run it repeats."
@@ -209,8 +210,9 @@ ACTIONS: dict[str, str] = {
         "Lengthen that run's time window, or do not read its end state as steady."
     ),
     "rerun.different_backend": (
-        "Nothing to fix where last digits do not matter; to match the run exactly, pass "
-        "the `codegen` or `jacobian` its record's `backend` names."
+        "Nothing to fix where last digits do not matter; to match the run exactly, run it "
+        "where the code its record's `backend` names is available (a C compiler, the same "
+        "`BNGSIM_CODEGEN_JIT`)."
     ),
     "rerun.different_build": (
         "Nothing to fix for an ODE run; for a stochastic run, compare the two as "

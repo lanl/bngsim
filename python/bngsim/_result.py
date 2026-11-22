@@ -854,10 +854,13 @@ class Result:
           commit the compiled extension was built from (``None`` where the
           build did not record one).
         * ``model``: where the model came from, as :meth:`Model.describe`'s
-          ``source`` gives it: ``format``, ``path`` and the file's ``sha256``
-          (``None`` each for a model built in Python); and ``edits``, the
-          calls that changed the model's equations or data after its load
-          (``"add_table_function"``), which its source does not hold.
+          ``source`` gives it (``format``, ``path`` and the file's ``sha256``,
+          ``None`` each for a model built in Python), and two keys
+          ``describe()`` does not have: ``edits``, the calls that changed the
+          model's equations or data after its load (``"add_table_function"``),
+          which its source does not hold; and ``tables_sha256``, a hash of its
+          table functions' data (``None`` where it has none), which a table
+          read from a file of its own keeps out of the source's hash.
         * ``run``: ``method`` (``"ode"``, ``"ssa"``, ``"psa"``, ``"nfsim"``,
           ``"rulemonkey"``) and ``requested_method`` as passed (``"nf"``);
           ``t_start``, ``t_end`` and ``n_points`` the run was asked for, and
@@ -867,7 +870,9 @@ class Result:
           ``start_state``, the state it began from (ordered like
           :attr:`Model.species_names`, whose unreported states it includes);
           ``parameters``, each parameter's value at the start, synthesized
-          slots left out; ``seed`` (as :attr:`seed`); for an ODE run
+          slots left out, and ``parameters_pinned``, the derived ones a
+          ``set_param`` had pinned to a number so that they no longer follow
+          their expressions; ``seed`` (as :attr:`seed`); for an ODE run
           ``rtol``, ``atol`` (``given``, what the call or
           :meth:`Simulator.set_tolerances` asked for, ``None`` for the
           default; ``scalar``, ``per_species`` and ``tracking_decades``, what
@@ -886,7 +891,8 @@ class Result:
           continues it at, each event's trigger truth there and its delayed
           executions not yet applied) and ``ssa_counts`` (the state is an SSA
           run's counts); ``declared_ic_sensitivity``, whether the run seeded
-          its sensitivities from :meth:`Model.declare_ic_sensitivity`; and
+          its sensitivities from :meth:`Model.declare_ic_sensitivity`;
+          ``strict_ssa`` and ``reaction_stats``, the Simulator's; and
           ``rerun_of``, of a :meth:`rerun`: the ``record_sha256`` of the
           record it repeated (as JSON with sorted keys) and the settings it
           ``changed``, else ``None``.
@@ -901,7 +907,8 @@ class Result:
           the difference quotient from the start, and its notices say why);
           ``linear_solver``: ``"dense"``, ``"klu"`` or ``"lapack_dense"``, and
           ``linear_solver_requested`` (``"auto"``, ``"dense"``,
-          ``"sparse"``); ``sensitivity_rhs``: ``"analytic"`` or
+          ``"sparse"``); ``rhs_requested``, the Simulator's ``codegen=``
+          (``None`` for the default); ``sensitivity_rhs``: ``"analytic"`` or
           ``"difference_quotient"`` on a sensitivity run; ``propensities``
           for SSA and PSA: ``"interpreted"``, ``"cc"`` or ``"mir"``. ``None``
           for a part a method does not have.
@@ -966,7 +973,8 @@ class Result:
             :class:`Simulator` takes: ``t_span``, ``n_points``,
             ``sample_times``, ``seed``, ``rtol``, ``atol``, ``max_steps``,
             ``max_step``, ``timeout``, ``steady_state``, ``steady_state_tol``,
-            ``method``, ``jacobian``, ``codegen``. Every other setting is kept:
+            ``method``, ``poplevel``, ``jacobian``, ``codegen``. Every other
+            setting is kept:
             ``rerun(rtol=1e-10)`` keeps the absolute tolerances the run was
             given. A new ``method`` drops the settings of the old one it does
             not take (an ODE run's tolerances under ``"ssa"``).
@@ -985,15 +993,21 @@ class Result:
             needs (``details["missing"]``); ``rerun.unsupported`` for a run a
             record cannot make again (``details["reason"]``: a stack, a
             network-free run, stop conditions, carried or declared
-            sensitivities, a model changed after its load);
+            sensitivities, sensitivities the rebuilt model seeds otherwise, a
+            model changed after its load or built in Python);
             ``rerun.unknown_setting`` for a setting it does not change.
         ModelError
             ``rerun.model_changed`` where the model file's sha256 differs from
             the record's, or the model built from the source is not the one the
-            run used; ``rerun.model_missing`` where the file cannot be read.
+            run used (its table data, parameters or species differ);
+            ``rerun.model_missing`` where the file cannot be read.
 
         Notes
         -----
+        A model loaded from a string keeps its text for this, for as long as
+        the model or a result of it lives, and :meth:`save` writes the text
+        into the file: a saved result of such a model carries the model.
+
         A rerun on another bngsim version or build than the run's, or one
         that ran other code (a compiled right-hand side where the run's was
         interpreted), runs and says so in its :attr:`notices`
@@ -3285,7 +3299,21 @@ class Result:
         path = Path(path)
         logger.info("Saving result to %s", path)
 
+        from bngsim._rerun import source_text
         from bngsim._version import __version__ as _bngsim_version
+
+        # The model's text, where it was loaded from a string, which rerun()
+        # builds it from: kept as the bytes it hashes to, a str as UTF-8, so
+        # text of any encoding is written whole. Made before the file is opened.
+        held_text = source_text(self)
+        text_bytes = (
+            None
+            if held_text is None
+            else np.frombuffer(
+                held_text.encode("utf-8") if isinstance(held_text, str) else bytes(held_text),
+                dtype=np.uint8,
+            )
+        )
 
         with h5py.File(path, "w") as f:
             # Version for forward compatibility. v2 (GH #196) adds the optional
@@ -3317,17 +3345,9 @@ class Result:
             # the format version stands.
             if self._start_state is not None:
                 f.create_dataset("start_state", data=np.asarray(self._start_state, dtype="<f8"))
-            # And the model's text, where it was loaded from a string, which
-            # rerun() builds it from.
-            from bngsim._rerun import source_text
-
-            text = source_text(self)
-            if text is not None:
-                f.create_dataset(
-                    "model_text",
-                    data=text if isinstance(text, str) else text.decode("utf-8"),
-                    dtype=h5py.string_dtype(),
-                )
+            if text_bytes is not None:
+                ds = f.create_dataset("model_text", data=text_bytes)
+                ds.attrs["type"] = "str" if isinstance(held_text, str) else "bytes"
             parts = _record.frozen_parts(self)
             if parts is not None or self._notices:
                 f.create_dataset(
@@ -3688,7 +3708,11 @@ class Result:
             start_state = (
                 np.asarray(f["start_state"][()], dtype=np.float64) if "start_state" in f else None
             )
-            model_text = _text(f["model_text"][()]) if "model_text" in f else None
+            model_text: str | bytes | None = None
+            if "model_text" in f:
+                raw = bytes(np.asarray(f["model_text"][()], dtype=np.uint8))
+                kind = _text(f["model_text"].attrs.get("type", "bytes"))
+                model_text = raw.decode("utf-8") if kind == "str" else raw
             record_parts: dict[str, Any] | None = None
             notices: tuple[Notice, ...] = ()
             rows_differ: tuple[str, ...] | None = None
