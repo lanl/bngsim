@@ -2835,3 +2835,75 @@ def test_a_converged_from_which_a_run_fails_is_a_finding(monkeypatch, planted):
         assert v.status == "diff" and "converged where a run fails (solver." in v.note, v
     else:
         assert v.status == "exception" and "planted" in v.note, v
+
+
+def test_stable_reads_the_tighter_runs_drift_not_the_spread(monkeypatch):
+    """The spread reads the base at twice the tolerance, one of stable's own
+    jitters: read there, a jump at rtol x2 would forgive itself."""
+    base = D.Base(_pool_and_trace())
+    p = base.species_names.index("P")
+    real = D.run
+
+    def jumps(job, **kw):
+        result, sim = real(job, **kw)
+        if job.rtol == pytest.approx(2 * base.job.rtol):
+            result = types.SimpleNamespace(
+                species=np.asarray(result.species) * np.where(np.arange(2) == p, 1.01, 1.0),
+                species_names=result.species_names,
+            )
+        return result, sim
+
+    base.spread_abs = np.maximum(base.drift_abs, 0.01 * base.peak)  # as if x2 had moved
+    monkeypatch.setattr(D, "run", jumps)
+    v = D.check_stable(base)
+    assert v.status == "diff" and "rtol x2" in v.note, v
+
+
+def test_a_base_wholly_within_its_atols_is_no_reference_for_stable_or_a_failed_path():
+    base = D.Base(SHAPES["triangle-maxabs"])
+    tiny = base.against(base.x * 1e-12)  # a peak of ~1e-11, atols of 1e-10
+    v = D.check_stable(tiny)
+    assert v.status == "skip" and "within 100 times its atol of zero" in v.note, v
+    v = D._failed_path(tiny, "leg: ", _solver_failure())
+    assert v.status == "skip" and "within its atol of zero" in v.note, v
+
+
+def test_a_row_is_judged_on_the_species_peak_over_the_whole_trajectory():
+    """stable reads a rerun at its last row: a species that peaked at 1 and
+    ends at 1e-6 is held there to what its peak allows, not to 1e-6."""
+    base = D.Base.__new__(D.Base)
+    base.x = np.array([[1.0, 1.0], [1.0, 1e-6]])
+    base.species_names = ["A", "B"]
+    base.atols = np.full(2, 1e-10)
+    base.job = D.Job("rows", Path("x"), rtol=1e-8)
+    base.drift_error = ""
+    base.drift_abs = base.spread_abs = np.zeros(2)
+    end = base.x[-1:].copy()
+    end[0, 1] += 1e-7  # 1e-7 of B's peak of 1; a tenth of B's last value
+    assert base.margin(end, base.x[-1:])[0] <= 1.0
+    assert base.margin(end, base.x[-1:], peak=np.array([1.0, 1e-6]))[0] > 1.0
+
+
+def _small_at_rest() -> D.Job:
+    """As _pool_at_rest, from rest: S starts at its 1e-5, so the run holds it
+    to rtol of that scale, 1e-13, under steady_state()'s ceiling of 1e-10."""
+    path = _DIR / "small-at-rest.net"
+    path.write_text(
+        "begin parameters\n 1 kin 10\n 2 kp 0.01\n 3 ks 1e-8\n 4 kd 1\nend parameters\n"
+        "begin species\n 1 P() 1000\n 2 S() 1e-5\nend species\n"
+        "begin reactions\n 1 0 1 kin\n 2 1 0 kp\n 3 1 1,2 ks\n 4 2 0 kd\nend reactions\n"
+    )
+    return D.Job("small-at-rest", path, 0.0, 10.0, 21)
+
+
+def test_a_steady_state_is_held_to_the_solves_own_tolerance_too(monkeypatch):
+    """steady_state() solves to min(atol_i, rtol·largest), atol_i at most the
+    atol given (1e-10), not to the 1e-13 the run applies to S: S off by 5e-9
+    is within what the solve resolves, and no finding."""
+    base = D.Base(_small_at_rest())
+    rest, _ = D._settled_run(base)
+    s = base.species_names.index("S()")
+    assert rest.atols[s] == pytest.approx(1e-10)
+    _plant(monkeypatch, state=lambda x: x + np.array([0.0, 5e-9]))
+    v = D.check_steady(base, "integration")
+    assert v.status == "pass", v

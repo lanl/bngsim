@@ -726,3 +726,39 @@ def test_spread_reads_half_the_move_at_twice_the_tolerance():
     assert _check.spread(tight, loose).tolist() == [5e-5, 1e-3, np.inf]
     assert _check.spread(tight, None) is tight
     assert _check.SPREAD_FACTOR == 2.0
+
+
+def test_a_column_the_run_does_not_resolve_is_held_to_the_runs_whole_scale():
+    # Column 1 peaks at 1e-8, within 100 times its atol: its allowance and its
+    # scale are those of a column at the largest peak (100), so 1e-6 there is
+    # 1e-8 of that scale and under 1e-3 of its allowance, not 100 of its own.
+    d = np.array([0.0, 1e-6])
+    peak = np.array([100.0, 1e-8])
+    atol = np.array([1e-8, 1e-8])
+    ratio, rel = _check.path_margins(d, peak, atol, 1e-8, np.zeros(2), np.ones(2, dtype=bool))
+    assert rel[1] == pytest.approx(1e-8)
+    assert ratio[1] == pytest.approx(1e-6 / 1.01e-3, rel=1e-6)
+
+
+def test_a_species_at_zero_that_departs_in_a_rerun_fails_the_check(monkeypatch):
+    # I sits within its atol of zero (eps = 1e-15): not resolved, and its
+    # noise is no finding. A rerun on which it reaches 1.0, beside A at 100,
+    # is one: the run's whole scale allows about 1e-3.
+    r = Simulator(_trace_model(1e-15), method="ode").run(t_span=(0, 30), n_points=31)
+    ji = r.species_names.index("I")
+    real = Result.rerun
+
+    def rerun(self, **changes):
+        out = real(self, **changes)
+        if changes.get("jacobian") == "fd":
+            out = copy.copy(out)
+            sp = np.asarray(out._species, dtype=float).copy()
+            sp[:, ji] = 1.0
+            out._species = sp
+        return out
+
+    monkeypatch.setattr(Result, "rerun", rerun)
+    rep = r.check("jacobian")
+    (c,) = rep["checks"]
+    assert "I" in rep["not_resolved"]
+    assert c["status"] == "diff" and c["worst_column"] == "I", c
