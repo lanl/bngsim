@@ -87,7 +87,7 @@ print(d["methods"]["ssa"]["status"])  # ok
 | back to the initial conditions | `model.reset()` (species only; parameters keep their values) |
 | scan a parameter | `sim.parameter_scan("kf", [0.1, 1.0], t_span=..., n_points=...)`, or `par_min=`, `par_max=`, `n_scan_pts=`, `log_scale=True` |
 | steady state | `sim.steady_state()`: `ss.converged`, `ss["A()"]`, `ss.concentrations` |
-| sensitivities | `bngsim.Simulator(model, sensitivity_params=["kf"])`, then `result.sensitivities` |
+| sensitivities | `bngsim.Simulator(model, sensitivity_params=["kf"])`, `result.sensitivities`; `result.digest(sensitivities=True)` |
 | stochastic replicates | `bngsim.Simulator(model, method="ssa").run_replicates(n, t_span=..., n_points=..., seed=...)` |
 | a BNGL file's own actions | `bngsim.run_bngl(path)` |
 | save a result | `result.save("run.npz")`, for `numpy.load`; `result.save("run.h5")` and `bngsim.Result.load("run.h5")` keep everything (need h5py) |
