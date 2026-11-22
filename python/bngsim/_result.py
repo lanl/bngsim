@@ -3403,11 +3403,14 @@ class Result:
             check that applies. The checks:
 
             - ``"tolerance"``: the run at ``rtol/10`` and ``atol/10`` (and at
-              ``/100``, where the budget allows); passes when the answer moves
-              by at most ``1e3·rtol`` of its peak. How far it moves is the
-              run's own *drift*, which the other checks are judged by.
+              ``/100``, where the budget allows); passes when no species moves
+              by more than 1e-3 of its own peak, past the atol the run applied
+              to it. How far each moves is the run's own *drift*, which the
+              other checks are judged by.
             - ``"grid"``: the run at 8x the output points, read at its own
-              times; an output point is a stop the integrator lands on.
+              times; an output point is a stop the integrator lands on. Not
+              for a run that stopped at a steady state, whose other checks
+              compare the state it stopped at.
             - ``"jacobian"``: the run on a difference-quotient Jacobian.
             - ``"backend"``: compiled against interpreted, where a C compiler
               is present.
@@ -3418,10 +3421,14 @@ class Result:
             - ``"replicates"``: a stochastic run made again at ``replicates``
               other seeds; for each observable at the last time, the mean
               over them, its standard error, and how many standard errors this
-              run is from it.
+              run is from it. It reports, and judges nothing: it passes when
+              its reruns complete.
         budget : float, optional
-            Seconds of wall time for all the checks. A check that does not
-            fit reports ``"timeout"``; none is dropped.
+            Seconds of wall time for all the bngsim reruns (a run's own
+            recorded ``timeout`` still applies where it is shorter). A check
+            that does not fit reports ``"timeout"``, none is dropped, and the
+            report is then not ``ok``. Loading the model and running
+            libRoadRunner are not bounded.
         replicates : int
             The reruns of the replicates check (default 10, at least 2).
 
@@ -3430,16 +3437,18 @@ class Result:
         dict
             JSON-ready; ``str()`` of it is a plain-text form. ``check_version``
             (1), ``ok`` (a check passed, and none moved the answer past its
-            bound or raised), ``method``, ``stochastic``, ``rtol``, ``atol``,
-            ``drift`` and ``bound``, ``checks`` (in the order run, each with
+            bound, raised or ran out of budget), ``method``, ``stochastic``,
+            ``rtol``, ``atol``, ``drift`` (the largest move of a species at
+            the tighter tolerance) and ``bound`` (1e-3), ``checks`` (in the order run, each with
             ``name``, ``status``, ``value``, ``worst_column``, ``changed``
             (the setting changed) and ``note``), ``n_pass``, ``n_diff`` and
             ``next``, what to do. A status is ``"pass"``, ``"diff"`` (the
             answer moved past the bound), ``"skip"`` (with the reason),
             ``"unsupported"``, ``"exception"`` (the changed run raised),
-            ``"no_base"`` (the run is not converged at its own tolerance:
-            its drift is past 1e-3 of its peak, so no path is judged) or
-            ``"timeout"``.
+            ``"no_base"`` (no species is converged at the run's own
+            tolerance, so no path is judged) or ``"timeout"``. A path's
+            verdict also gives ``margin`` (its largest difference over the
+            allowance; at most 1 passes) and ``n_not_judged``.
 
         Raises
         ------
@@ -3448,12 +3457,18 @@ class Result:
 
         Notes
         -----
-        A path passes when its largest difference from this run, past an
-        absolute floor of ``1e3·atol``, is at most ``max(1e3·rtol, 10·drift)``
-        of the run's peak: the rule the developer-side differential harness
-        (issue #1257) judges two paths of one model by, imported from the
-        same place. A ``"diff"`` between two bngsim paths on a model bngsim
-        accepts is a bug worth reporting, with ``json.dumps(report)``.
+        Every comparison is made species by species, each on its own scale,
+        so a species far smaller than the largest is judged as carefully. A
+        path passes when, in every species converged at the run's tolerance
+        (its move under 1e-3), its largest difference from this run is at
+        most ``max(min(1e3·(atol_j + rtol·peak_j), max(0.01·peak_j,
+        atol_j)), 10·d_j)``: a thousand times what the tolerances allow, but
+        never more than 1% of the species' peak (or its atol), or ten times
+        how far it moves itself at the tighter tolerance (``d_j``). The
+        factors are the developer-side differential harness's (issue #1257),
+        whose comparison is over the whole trajectory at once. A ``"diff"``
+        between two bngsim paths on a model bngsim accepts is a bug worth
+        reporting, with ``json.dumps(report)``.
         """
         from bngsim import _check
 

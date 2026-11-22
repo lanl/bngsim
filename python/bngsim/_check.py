@@ -5,25 +5,33 @@ setting changed (:meth:`Result.rerun`, issue #1703) and says whether the answer
 moved. Each rerun starts from the state the run started from, on a fresh model,
 so a check costs the session nothing and compares like with like.
 
-The rule two paths of one run are held to is the developer-side differential
-harness's (``parity_checks/differential``, issue #1257), which imports it from
-here, so a verdict means the same in a user's session and in the nightly:
+Every comparison is made column by column (species), each on its own scale, so
+a species at 1e-3 beside one at 1e3 is judged as carefully as the large one,
+and each column's absolute floor is the atol the run applied to that species:
 
-- :func:`gap`: the largest cell-wise difference, past an absolute
-  :func:`floor` of ``PATH_RTOL_FACTOR`` times the run's atol (at most
-  ``PATH_CEILING`` of the peak), over the reference's peak;
-- the run's own drift: the gap between the run and the run at a tenfold tighter
-  ``rtol`` and ``atol``;
-- a path passes when its gap is at most ``max(min(PATH_RTOL_FACTOR·rtol,
-  PATH_CEILING), DRIFT_FACTOR·drift)``: two correct paths each err by about
-  ``rtol``, scaled by the problem's conditioning, which the drift measures, and
-  never by more than ``PATH_CEILING`` of the peak for the rtol alone;
-- a run whose drift is past ``UNJUDGEABLE_DRIFT`` is not converged at its own
-  tolerance, and no path is judged against it.
+- the *tolerance* check makes the run at a tenth of its ``rtol`` and atol. A
+  column's *move* is its largest difference from the run, past its atol, over
+  its peak; the check fails where a column moves by more than
+  :data:`TOLERANCE_MOVE` (0.1% of its peak), which says the run is not
+  converged at its own tolerance. That move is also the run's *drift*;
+- every other check (a *path*) is judged column by column against the
+  allowance ``max(min(PATH_RTOL_FACTOR·(atol_j + rtol·peak_j),
+  max(PATH_CEILING·peak_j, atol_j)), DRIFT_FACTOR·d_j)``, where ``d_j`` is how
+  far the column itself moves at the tighter tolerance: two correct paths each
+  err by about the tolerance, scaled by the problem's conditioning, which the
+  drift measures, and never by more than 1% of the column's peak (or its atol)
+  for the tolerance alone. A column that is not converged at the run's own
+  tolerance (its move past :data:`TOLERANCE_MOVE`) is not judged; where no
+  column is, the verdict is ``no_base``.
+
+The constants are the developer-side differential harness's
+(``parity_checks/differential``, issue #1257). Its comparison is over the whole
+trajectory at once, against the largest value of any species, which a column
+far smaller than the largest cannot fail; this one is per column.
 
 Verdicts: ``pass``, ``diff``, ``skip`` (with the reason), ``unsupported`` (the
 check does not apply to this run), ``exception`` (the changed run raised),
-``no_base`` (the run is not converged enough to judge a path against) and
+``no_base`` (no column is converged enough to judge a path against) and
 ``timeout`` (the ``budget`` ran out).
 """
 
@@ -47,19 +55,20 @@ if TYPE_CHECKING:
 #: holds. A key added is no change of version.
 CHECK_VERSION = 1
 
-#: How many times the run's rtol two correct paths may differ by, before the
-#: run's own drift is counted: their errors are each about rtol, scaled by the
-#: problem's conditioning, which a tolerance does not bound.
+#: How many times the run's tolerance two correct paths may differ by: their
+#: errors are each about the tolerance, scaled by the problem's conditioning,
+#: which a tolerance does not bound.
 PATH_RTOL_FACTOR = 1e3
-#: And how far past the run's own drift at a tenfold tighter tolerance.
+#: And how many times past a column's own move at a tenfold tighter tolerance.
 DRIFT_FACTOR = 10.0
-#: A run that moves by more than this at a tenfold tighter tolerance is not
-#: converged at its own: no path is judged against it.
-UNJUDGEABLE_DRIFT = 1e-3
-#: The most the ``PATH_RTOL_FACTOR·rtol`` term may forgive, as a share of the
-#: peak. At the nightly's rtol of 1e-8 it is 1e-5 and this never bites; at a
-#: caller's rtol of 1e-3 the term alone is the whole peak, and no path could
-#: fail.
+#: A column that moves by more than this share of its peak at a tenfold tighter
+#: tolerance is not converged at the run's own (the harness's
+#: ``UNJUDGEABLE_DRIFT``): the tolerance check fails, and no path is judged on
+#: that column.
+TOLERANCE_MOVE = 1e-3
+#: The most the tolerance alone may forgive a path, as a share of a column's
+#: peak. At an rtol of 1e-8 the first term is 1e-5 and this never bites; at a
+#: caller's rtol of 1e-3 the first term alone is the whole peak.
 PATH_CEILING = 1e-2
 #: The grid check's output points, as a multiple of the run's intervals.
 GRID_FACTOR = 8
@@ -75,52 +84,50 @@ DEFAULT_DETERMINISTIC = ("tolerance", "grid")
 DEFAULT_STOCHASTIC = ("replicates",)
 
 _STATUSES = ("pass", "diff", "skip", "unsupported", "exception", "no_base", "timeout")
-_FAILING = ("diff", "exception")
+_NOT_OK = ("diff", "exception", "timeout")
 
 
-def gap(x: NDArray[np.float64], ref: NDArray[np.float64], atol: float) -> float:
-    """``max |x - ref|`` over the reference's peak, past an absolute floor of
-    ``atol``: 0 where every cell is within atol. A shape or finiteness mismatch
-    is ``inf``."""
+def differences(
+    x: NDArray[np.float64], ref: NDArray[np.float64]
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Per column: the largest ``|x - ref|`` over time (``inf`` where the two
+    are not finite at the same cells), and the reference's peak ``|ref|``.
+    Arrays of another shape are ``inf`` everywhere."""
     x, ref = np.asarray(x, dtype=float), np.asarray(ref, dtype=float)
-    if x.shape != ref.shape or not np.array_equal(np.isfinite(x), np.isfinite(ref)):
-        return float("inf")
-    finite = np.isfinite(ref)
-    if not finite.any():
-        return 0.0
-    over = np.abs(x - ref)[finite] - atol
-    peak = float(np.abs(ref[finite]).max())
-    return float(max(over.max(), 0.0) / max(peak, atol))
+    n = ref.shape[-1] if ref.ndim == 2 else 0
+    fin = np.isfinite(ref)
+    peak = np.where(fin, np.abs(ref), 0.0).max(axis=0) if ref.size else np.zeros(n)
+    if x.shape != ref.shape:
+        return np.full(n, np.inf), peak
+    same = (np.isfinite(x) == fin).all(axis=0)
+    d = (
+        np.where(fin & np.isfinite(x), np.abs(x - ref), 0.0).max(axis=0)
+        if ref.size
+        else np.zeros(n)
+    )
+    return np.where(same, d, np.inf), peak
 
 
-def floor(atol: float, ref: NDArray[np.float64]) -> float:
-    """The absolute difference :func:`gap` forgives two paths of a run at
-    *atol* whose reference is *ref*: ``PATH_RTOL_FACTOR·atol``, but at most
-    ``PATH_CEILING`` of the reference's peak (at a caller's atol of 1e-2 the
-    first alone is 10 on a peak of 100)."""
-    ref = np.asarray(ref, dtype=float)
-    finite = np.abs(ref[np.isfinite(ref)])
-    peak = float(finite.max()) if finite.size else 0.0
-    cap = PATH_CEILING * peak
-    return min(PATH_RTOL_FACTOR * atol, cap) if cap > 0 else PATH_RTOL_FACTOR * atol
+def moves(
+    d: NDArray[np.float64], peak: NDArray[np.float64], atol: NDArray[np.float64]
+) -> NDArray[np.float64]:
+    """Each column's difference past its atol, over its peak; 0 for a column
+    whose peak is within its atol (nothing in it can count)."""
+    over = np.maximum(d - atol, 0.0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rel = np.where(peak > atol, over / np.where(peak > 0, peak, 1.0), 0.0)
+    return np.where(np.isinf(d), np.inf, rel)
 
 
-def bound(rtol: float, drift: float) -> float:
-    """How far two correct paths of a run at *rtol* whose own drift is *drift*
-    may be apart, as :func:`gap` measures it."""
-    return max(min(PATH_RTOL_FACTOR * rtol, PATH_CEILING), DRIFT_FACTOR * drift)
-
-
-def _worst(x: NDArray[np.float64], ref: NDArray[np.float64], names: list[str]) -> str | None:
-    """The column of the largest difference, by name."""
-    if x.shape != ref.shape or not names:
-        return None
-    d = np.abs(np.asarray(x, dtype=float) - np.asarray(ref, dtype=float))
-    d = np.where(np.isfinite(d), d, np.inf)
-    if not d.size:
-        return None
-    j = int(np.unravel_index(int(np.argmax(d)), d.shape)[-1])
-    return names[j] if j < len(names) else None
+def allowance(
+    peak: NDArray[np.float64], atol: NDArray[np.float64], rtol: float, drift: NDArray[np.float64]
+) -> NDArray[np.float64]:
+    """How far two correct paths may be apart in each column: see the module
+    docstring."""
+    by_tol = np.minimum(
+        PATH_RTOL_FACTOR * (atol + rtol * peak), np.maximum(PATH_CEILING * peak, atol)
+    )
+    return np.maximum(by_tol, DRIFT_FACTOR * drift)
 
 
 def _num(x: Any) -> float | None:
@@ -165,7 +172,9 @@ def check(
             "(the list run_batch or run_replicates returns without squeeze=True).",
             code="usage.invalid_argument",
         )
-    if budget is not None and not (isinstance(budget, int | float) and budget > 0):
+    if budget is not None and (
+        isinstance(budget, bool) or not isinstance(budget, int | float) or not budget > 0
+    ):
         raise UsageError(f"check(budget=...) takes seconds > 0 or None, got {budget!r}")
     if isinstance(replicates, bool) or not isinstance(replicates, int) or replicates < 2:
         raise UsageError(
@@ -218,14 +227,15 @@ def check(
     for name in order:
         v = ctx.run_check(name, replicates)
         out["checks"].append(v)
-    out["drift"] = _num(ctx.drift)
-    out["bound"] = _num(ctx.limit)
+    if ctx.moved is not None and ctx.moved.size:
+        out["drift"] = _num(ctx.moved.max())
+    out["bound"] = TOLERANCE_MOVE
     return _finish(out)
 
 
 def _finish(out: Report) -> Report:
     statuses = [c["status"] for c in out["checks"]]
-    out["ok"] = bool(statuses) and "pass" in statuses and not any(s in _FAILING for s in statuses)
+    out["ok"] = bool(statuses) and "pass" in statuses and not any(s in _NOT_OK for s in statuses)
     out["n_pass"] = statuses.count("pass")
     out["n_diff"] = statuses.count("diff")
     out["next"] = _next(out)
@@ -253,12 +263,23 @@ def _next(out: Report) -> str:
             "json.dumps(report), result.record and the model file. Do not report the "
             "number as resolved."
         )
+    timed = [c["name"] for c in out["checks"] if c["status"] == "timeout"]
+    if timed:
+        return (
+            f"The budget ran out before {', '.join(timed)}: the result is not checked until "
+            "they run; pass a larger budget=."
+        )
     if any(c["status"] == "exception" for c in out["checks"]):
         return "A changed run raised: read its note before relying on the result."
     if any(c["status"] == "no_base" for c in out["checks"]):
         return (
             "The run is not converged at its own tolerance, so no path could be judged: "
             "rerun at a tighter rtol and atol and check that."
+        )
+    if any(c["name"] == "replicates" and c["status"] == "pass" for c in out["checks"]):
+        return (
+            "A stochastic run is one draw: report the mean over replicates with its "
+            "standard error, not this trajectory."
         )
     if not out["ok"]:
         return "No check could run on this result: see each check's note."
@@ -291,7 +312,7 @@ def _verdict(
 
 class _Context:
     """The run a result records, and what its checks share: the tolerances, the
-    drift and the bound."""
+    columns' atols and the drift."""
 
     def __init__(self, result: Result, rec: dict[str, Any], deadline: float | None) -> None:
         self.result = result
@@ -300,17 +321,28 @@ class _Context:
         self.deadline = deadline
         self.method = self.run.get("method")
         self.stochastic = self.method in _record.STOCHASTIC
-        self.x = np.asarray(result._species, dtype=float)
+        self.steady = bool(self.run.get("steady_state"))
         self.names = list(result._species_names)
+        self.x = self._view(result)
         atol = self.run.get("atol") or {}
         self.rtol: float | None = self.run.get("rtol")
         per = atol.get("per_species")
         self.per_species = None if per is None else [float(a) for a in per]
         self.atol: float | None = atol.get("scalar")
-        self.drift: float | None = None
-        self.tight_x: NDArray[np.float64] = self.x
-        self.limit: float | None = None
+        n = len(self.names)
+        if self.per_species is not None and len(self.per_species) == n:
+            self.atols = np.asarray(self.per_species, dtype=float)
+        else:
+            self.atols = np.full(n, float(self.atol) if self.atol is not None else 0.0)
+        self.drift_abs: NDArray[np.float64] | None = None
+        self.moved: NDArray[np.float64] | None = None
         self.tol_error = ""
+
+    def _view(self, result: Result) -> NDArray[np.float64]:
+        """What is compared of *result*: its species, or of a run that stopped
+        at a steady state, the state it stopped at."""
+        x = np.asarray(result._species, dtype=float)
+        return x[-1:] if self.steady else x
 
     # --- running ---------------------------------------------------------
 
@@ -325,7 +357,8 @@ class _Context:
     def rerun(self, **changes: Any) -> Result:
         left = self._left()
         if left is not None:
-            changes["timeout"] = left
+            own = self.run.get("timeout")
+            changes["timeout"] = left if own is None else min(left, float(own))
         try:
             return self.result.rerun(**changes)
         except Exception as e:
@@ -348,19 +381,13 @@ class _Context:
     def _deterministic(self, name: str) -> dict[str, Any] | None:
         if self.stochastic:
             return _verdict(
-                name,
-                "unsupported",
-                note=f"a {self.method} run is stochastic: see the replicates check",
+                name, "unsupported", note=f"a {self.method} run is stochastic: see replicates"
             )
         if self.method != "ode":
             return _verdict(name, "unsupported", note=f"the run's method is {self.method!r}")
         if self.rtol is None or self.atol is None:
             return _verdict(name, "unsupported", note="the record gives no rtol or atol")
         return None
-
-    def _floor(self) -> float:
-        assert self.atol is not None
-        return floor(float(self.atol), self.x)
 
     def _tighter(self, by: float) -> dict[str, Any]:
         assert self.rtol is not None and self.atol is not None
@@ -371,21 +398,31 @@ class _Context:
         return {"rtol": float(self.rtol) / by, "atol": atol}
 
     def _ensure_drift(self) -> str | None:
-        """The run's own drift, made once; the reason there is none, or None."""
-        if self.drift is None and not self.tol_error:
+        """Each column's move at a tenfold tighter tolerance, made once; the
+        reason there is none, or None."""
+        if self.drift_abs is None and not self.tol_error:
             try:
                 tight = self.rerun(**self._tighter(10.0))
-                self.tight_x = np.asarray(tight._species, dtype=float)
-                self.drift = gap(self.tight_x, self.x, self._floor())
-                assert self.rtol is not None
-                self.limit = bound(float(self.rtol), self.drift)
             except _Out:
                 raise
             except Exception as e:  # noqa: BLE001 - recorded on every check's note
                 self.tol_error = f"{type(e).__name__}: {_first_line(e)}"
+                return self.tol_error
+            d, peak = differences(self._view(tight), self.x)
+            self.drift_abs = d
+            self.moved = moves(d, peak, self.atols)
         return self.tol_error or None
 
-    def compare(
+    def _worst(self, score: NDArray[np.float64]) -> str | None:
+        if not score.size or not (score > 0).any():
+            return None
+        j = int(np.argmax(np.where(np.isnan(score), np.inf, score)))
+        return self.names[j] if j < len(self.names) else None
+
+    def compare(self, name: str, again: Result, changed: dict[str, Any]) -> dict[str, Any]:
+        return self.compare_x(name, self._view(again), changed)
+
+    def compare_x(
         self, name: str, x: NDArray[np.float64], changed: dict[str, Any]
     ) -> dict[str, Any]:
         err = self._ensure_drift()
@@ -396,24 +433,44 @@ class _Context:
                 note=f"the run at a tenfold tighter tolerance raised ({err})",
                 changed=changed,
             )
-        assert self.drift is not None and self.limit is not None
-        if not self.drift <= UNJUDGEABLE_DRIFT:
+        assert self.drift_abs is not None and self.moved is not None and self.rtol is not None
+        judged = self.moved <= TOLERANCE_MOVE
+        if not judged.any():
             return _verdict(
                 name,
                 "no_base",
-                note=f"the run itself moves by {self.drift:.2e} of its peak at a tenfold tighter "
-                f"tolerance, past {UNJUDGEABLE_DRIFT:g}: no path is judged against it",
+                note=f"no column is converged at the run's tolerance (each moves past "
+                f"{TOLERANCE_MOVE:g} of its peak at a tenfold tighter one): no path is judged",
                 changed=changed,
             )
-        g = gap(x, self.x, self._floor())
-        worst = _worst(x, self.x, self.names) if g > 0 else None
-        status = "pass" if g <= self.limit else "diff"
+        d, peak = differences(x, self.x)
+        allow = allowance(peak, self.atols, float(self.rtol), self.drift_abs)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio = np.where(
+                allow > 0, d / np.where(allow > 0, allow, 1.0), np.where(d > 0, np.inf, 0.0)
+            )
+            rel = np.where(peak > self.atols, d / np.where(peak > 0, peak, 1.0), 0.0)
+        ratio = np.where(judged, ratio, 0.0)
+        rel = np.where(judged, rel, 0.0)
+        worst = self._worst(ratio)
+        margin = float(ratio.max()) if ratio.size else 0.0
+        value = float(rel.max()) if rel.size else 0.0
+        status = "pass" if margin <= 1.0 else "diff"
+        n_out = int((~judged).sum())
         note = (
-            f"{g:.2e} of the trajectory's peak "
-            f"(bound {self.limit:.1e}, own drift {self.drift:.1e})"
+            f"{value:.2e} of a column's peak at most; the largest difference is "
+            f"{margin:.2g} of its allowance"
         )
+        if n_out:
+            note += f"; {n_out} column(s) not judged, not converged at the run's tolerance"
         return _verdict(
-            name, status, g, note, worst=worst, changed=changed, extra={"bound": _num(self.limit)}
+            name,
+            status,
+            value,
+            note,
+            worst=worst,
+            changed=changed,
+            extra={"margin": _num(margin), "n_not_judged": n_out},
         )
 
     # --- the checks ------------------------------------------------------
@@ -422,8 +479,8 @@ class _Context:
         skip = self._deterministic("tolerance")
         if skip:
             return skip
-        err = self._ensure_drift()
         changed = self._tighter(10.0)
+        err = self._ensure_drift()
         if err:
             return _verdict(
                 "tolerance",
@@ -431,30 +488,28 @@ class _Context:
                 note=f"the run at a tenfold tighter tolerance raised: {err}",
                 changed=changed,
             )
-        assert self.drift is not None and self.atol is not None
-        # The move at the run's own atol, not the paths' floor of 1e3·atol: a
-        # species that moves by 0.05 where atol is 1e-4 has moved.
-        moved = gap(self.tight_x, self.x, float(self.atol))
-        limit = UNJUDGEABLE_DRIFT
-        extra: dict[str, Any] = {"bound": _num(limit), "value_100": None}
+        assert self.moved is not None
+        moved = float(self.moved.max()) if self.moved.size else 0.0
+        extra: dict[str, Any] = {"bound": TOLERANCE_MOVE, "value_100": None}
         # A hundredfold tighter too, where the budget allows: whether the
         # answer keeps moving, or has stopped.
         try:
             tighter = self.rerun(**self._tighter(100.0))
-            extra["value_100"] = _num(
-                gap(np.asarray(tighter._species, dtype=float), self.x, float(self.atol))
-            )
+            d, peak = differences(self._view(tighter), self.x)
+            m100 = moves(d, peak, self.atols)
+            extra["value_100"] = _num(m100.max()) if m100.size else 0.0
         except _Out:
             pass
         except Exception:  # noqa: BLE001 - the tenfold run decides; this one adds
             pass
-        status = "pass" if moved <= limit else "diff"
+        status = "pass" if moved <= TOLERANCE_MOVE else "diff"
         note = (
-            f"the answer moves by {moved:.2e} of its peak at rtol/10 and atol/10 (bound {limit:g})"
+            f"the answer moves by {moved:.2e} of a column's peak at rtol/10 and atol/10 "
+            f"(bound {TOLERANCE_MOVE:g})"
         )
         if extra["value_100"] is not None:
             note += f", by {extra['value_100']:.2e} at rtol/100"
-        worst = _worst(self.tight_x, self.x, self.names) if moved > 0 else None
+        worst = self._worst(self.moved)
         return _verdict(
             "tolerance", status, moved, note, worst=worst, changed=changed, extra=extra
         )
@@ -463,17 +518,16 @@ class _Context:
         skip = self._deterministic("grid")
         if skip:
             return skip
+        if self.steady:
+            return _verdict("grid", "unsupported", note="the run stopped at a steady state")
         t = np.asarray(self.result._time, dtype=float)
         if t.size < 2:
             return _verdict("grid", "unsupported", note="the run has fewer than two time points")
         if self.run.get("sample_times") is not None:
-            fine = np.concatenate(
-                [
-                    np.linspace(a, b, GRID_FACTOR + 1)[:-1]
-                    for a, b in zip(t[:-1], t[1:], strict=True)
-                ]
-                + [t[-1:]]
-            )
+            pieces = [
+                np.linspace(a, b, GRID_FACTOR + 1)[:-1] for a, b in zip(t[:-1], t[1:], strict=True)
+            ]
+            fine = np.concatenate([*pieces, t[-1:]])
             changed: dict[str, Any] = {"sample_times": f"{GRID_FACTOR}x the points"}
             again = self.rerun(sample_times=[float(v) for v in fine])
         else:
@@ -481,20 +535,21 @@ class _Context:
             changed = {"n_points": n}
             again = self.rerun(n_points=n)
         x = np.asarray(again._species, dtype=float)[::GRID_FACTOR]
-        return self.compare("grid", x, changed)
+        return self.compare_x("grid", x, changed)
 
     def check_jacobian(self) -> dict[str, Any]:
         skip = self._deterministic("jacobian")
         if skip:
             return skip
         backend = self.rec.get("backend") or {}
-        if backend.get("jacobian") == "fd":
+        if backend.get("jacobian") in ("fd", "difference_quotient") or backend.get(
+            "jacobian_retried"
+        ):
             return _verdict(
                 "jacobian", "skip", note="the run already used a difference-quotient Jacobian"
             )
         changed = {"jacobian": "fd"}
-        again = self.rerun(jacobian="fd")
-        return self.compare("jacobian", np.asarray(again._species, dtype=float), changed)
+        return self.compare("jacobian", self.rerun(jacobian="fd"), changed)
 
     def check_backend(self) -> dict[str, Any]:
         skip = self._deterministic("backend")
@@ -519,7 +574,7 @@ class _Context:
         else:
             changed = {"codegen": False}
             again = self.rerun(codegen=False)
-        return self.compare("backend", np.asarray(again._species, dtype=float), changed)
+        return self.compare("backend", again, changed)
 
     def check_second_engine(self) -> dict[str, Any]:
         skip = self._deterministic("second_engine")
@@ -538,14 +593,15 @@ class _Context:
         if not names:
             obs, names = self.x, self.names
         last = np.empty((n, len(names)))
-        for i in range(n):
-            again = self.rerun(seed=(int(seed) + 1 + i) % (2**31 - 1))
+        seeds = [(int(seed) + 1 + i) % (2**31 - 1) for i in range(n)]
+        for i, s in enumerate(seeds):
+            again = self.rerun(seed=s)
             block = again._observables if self.result._observable_names else again._species
             last[i] = np.asarray(block, dtype=float)[-1]
         mean = last.mean(axis=0)
         se = last.std(axis=0, ddof=1) / math.sqrt(n)
         mine = obs[-1]
-        z = np.where(se > 0, (mine - mean) / np.where(se > 0, se, 1.0), 0.0)
+        z = np.where(se > 0, (mine - mean) / np.where(se > 0, se, 1.0), np.nan)
         cols = [
             {
                 "name": names[j],
@@ -556,20 +612,21 @@ class _Context:
             }
             for j in range(len(names))
         ]
-        worst = int(np.argmax(np.abs(z))) if len(names) else None
+        absz = np.where(np.isfinite(z), np.abs(z), -1.0)
+        worst = int(np.argmax(absz)) if len(names) and (absz >= 0).any() else None
         note = (
-            f"{n} reruns at seeds {int(seed) + 1} to {int(seed) + n}: at the last time each "
+            f"{n} reruns at seeds {seeds[0]}, ..., {seeds[-1]}: at the last time each "
             "observable's mean over them, its standard error, and how many standard errors "
-            "this run is from it; one trajectory is one draw, so report a mean over replicates"
+            "this run is from it (None where they all agree); it reports, and judges nothing"
         )
         return _verdict(
             "replicates",
             "pass",
-            None if worst is None else float(abs(z[worst])),
+            None if worst is None else float(absz[worst]),
             note,
             worst=None if worst is None else names[worst],
             changed={"seed": f"{n} others"},
-            extra={"n_replicates": n, "columns": cols},
+            extra={"n_replicates": n, "seeds": seeds, "columns": cols},
         )
 
 
@@ -626,6 +683,15 @@ def _second_engine(ctx: _Context) -> dict[str, Any]:
                 return _verdict(
                     name, "skip", note=f"the run's parameter {p} = {a:g} is not the file's {b:g}"
                 )
+    start = ctx.run.get("start_state")
+    if start is None or not np.allclose(
+        np.asarray(start, dtype=float),
+        np.asarray(fresh.get_state(), dtype=float),
+        rtol=1e-12,
+        atol=0.0,
+        equal_nan=True,
+    ):
+        return _verdict(name, "skip", note="the run did not start from the file's initial state")
     try:
         if fmt == "antimony":
             import antimony
@@ -654,7 +720,7 @@ def _second_engine(ctx: _Context) -> dict[str, Any]:
             "skip",
             note=f"libRoadRunner could not run it: {type(e).__name__}: {_first_line(e)}",
         )
-    v = ctx.compare(name, x, {"engine": f"libRoadRunner {roadrunner.__version__}"})
+    v = ctx.compare_x(name, x, {"engine": f"libRoadRunner {roadrunner.__version__}"})
     return v
 
 

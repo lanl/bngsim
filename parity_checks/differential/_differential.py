@@ -84,23 +84,22 @@ from pathlib import Path
 import numpy as np
 from _transforms import TRANSFORMS, Inapplicable, transform
 
-# The rule two paths of one run are held to lives in the package, which
-# Result.check() (issue #1707) judges a caller's run by, so a verdict means the
-# same in a user's session and here: PATH_RTOL_FACTOR, DRIFT_FACTOR,
-# UNJUDGEABLE_DRIFT (MODEL2310250001 drives a species through a pole of its
-# uptake law; its plain run moves 2.6% at a tighter tolerance) and gap(). The
-# caps Result.check() adds for a caller's loose tolerances (PATH_CEILING) are
-# not applied here: at this harness's rtol of 1e-8 they never bite.
-from bngsim._check import (  # noqa: E402
-    DRIFT_FACTOR,
-    GRID_FACTOR,
-    PATH_RTOL_FACTOR,
-    UNJUDGEABLE_DRIFT,
-    gap,
-)
-
+#: How many times the run's rtol two correct paths may differ by, before the
+#: reference's own drift is counted: their errors are each about rtol, scaled by
+#: the problem's conditioning, which a tolerance does not bound.
+PATH_RTOL_FACTOR = 1e3
+#: And how far past the reference's own drift at a tenfold tighter tolerance.
+DRIFT_FACTOR = 10.0
+#: A base that moves by more than this at a tenfold tighter tolerance is not
+#: converged at its own: no path is judged against it. MODEL2310250001 drives a
+#: species through a pole of its uptake law; its plain run moves 2.6% at a
+#: tighter tolerance, libRoadRunner's -1.4 to -4.6 across three, and its
+#: sensitivity run 359 times the trajectory's peak.
+UNJUDGEABLE_DRIFT = 1e-3
 #: The parameters a sensitivity run takes, at most.
 MAX_SENS_PARAMS = 3
+#: The grid check's output points, as a multiple of the base's intervals.
+GRID_FACTOR = 8
 #: How long the steady-state checks' run is taken: ``steady_state()``'s own
 #: default ``max_time``, so the run has the time the solve has.
 STEADY_HORIZON = 1e6
@@ -335,6 +334,21 @@ def own_drift(job: Job, base: np.ndarray) -> float:
     )
     x, _ = run(tight)
     return gap(np.asarray(x.species, dtype=float), base, job.atol)
+
+
+def gap(x: np.ndarray, ref: np.ndarray, atol: float) -> float:
+    """``max |x - ref|`` over the reference's peak, past an absolute floor of
+    ``atol``: 0 where every cell is within atol. A shape or finiteness mismatch
+    is ``inf``."""
+    x, ref = np.asarray(x, dtype=float), np.asarray(ref, dtype=float)
+    if x.shape != ref.shape or not np.array_equal(np.isfinite(x), np.isfinite(ref)):
+        return float("inf")
+    finite = np.isfinite(ref)
+    if not finite.any():
+        return 0.0
+    over = np.abs(x - ref)[finite] - atol
+    peak = float(np.abs(ref[finite]).max())
+    return float(max(over.max(), 0.0) / max(peak, atol))
 
 
 class Base:

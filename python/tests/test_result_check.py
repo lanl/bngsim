@@ -118,45 +118,50 @@ def test_a_result_with_no_record_has_nothing_to_check():
     assert "No check could run" in rep["next"]
 
 
-# ─── The rule, against the arrays ────────────────────────────────────────────
-
-
-def test_gap_floor_and_bound():
+def test_differences_moves_and_allowance():
     ref = np.array([[0.0, 100.0], [50.0, 10.0]])
-    assert _check.gap(ref, ref, 0.0) == 0.0
-    x = ref + np.array([[0.0, 2.0], [0.0, 0.0]])
-    assert _check.gap(x, ref, 0.0) == pytest.approx(2.0 / 100.0)
-    assert _check.gap(x, ref, 1.0) == pytest.approx(1.0 / 100.0)
-    assert _check.gap(x, ref, 5.0) == 0.0
-    assert _check.gap(x[:1], ref, 0.0) == math.inf
+    d, peak = _check.differences(ref, ref)
+    assert d.tolist() == [0.0, 0.0] and peak.tolist() == [50.0, 100.0]
+    x = ref + np.array([[0.0, 2.0], [1.0, 0.0]])
+    d, peak = _check.differences(x, ref)
+    assert d.tolist() == [1.0, 2.0]
+    # Each column over its own peak, past its own atol.
+    assert _check.moves(d, peak, np.array([0.0, 0.0])).tolist() == [1.0 / 50, 2.0 / 100]
+    assert _check.moves(d, peak, np.array([0.5, 2.0])).tolist() == [0.5 / 50, 0.0]
+    # A column within its atol has nothing that counts.
+    assert _check.moves(np.array([1.0]), np.array([1e-9]), np.array([1e-8])).tolist() == [0.0]
+    # Another shape, or a NaN on one side only, is inf.
+    assert np.isinf(_check.differences(x[:1], ref)[0]).all()
     y = ref.copy()
     y[0, 0] = np.nan
-    assert _check.gap(y, ref, 0.0) == math.inf
-    # The floor is 1e3·atol, but at most 1% of the peak.
-    assert _check.floor(1e-8, ref) == pytest.approx(1e-5)
-    assert _check.floor(1e-2, ref) == pytest.approx(1.0)
-    assert _check.floor(1e-2, np.zeros((2, 2))) == pytest.approx(10.0)
-    # The bound is 1e3·rtol (at most 1%) or ten times the drift.
-    assert _check.bound(1e-8, 0.0) == pytest.approx(1e-5)
-    assert _check.bound(1e-3, 0.0) == pytest.approx(1e-2)
-    assert _check.bound(1e-8, 1e-4) == pytest.approx(1e-3)
+    assert _check.differences(y, ref)[0].tolist()[0] == math.inf
+    assert _check.differences(y, ref)[0].tolist()[1] == 0.0
+    # The allowance: 1e3·(atol + rtol·peak), at most 1% of the peak (or atol),
+    # or ten times the column's own move.
+    peak = np.array([100.0, 100.0, 0.0])
+    atol = np.array([1e-8, 1e-2, 1e-8])
+    a = _check.allowance(peak, atol, 1e-8, np.zeros(3))
+    assert a.tolist() == pytest.approx([1e3 * (1e-8 + 1e-6), 1.0, 1e-8])
+    a = _check.allowance(peak, atol, 1e-8, np.array([1e-3, 0, 0]))
+    assert a[0] == pytest.approx(1e-2)
 
 
-def test_the_differential_harness_judges_by_the_same_rule():
+def test_the_constants_are_the_differential_harnesss():
     root = Path(__file__).resolve().parents[2]
     sys.path.insert(0, str(root / "parity_checks" / "differential"))
     try:
         import _differential as D
     finally:
         sys.path.pop(0)
-    assert D.gap is _check.gap
-    for name in ("PATH_RTOL_FACTOR", "DRIFT_FACTOR", "UNJUDGEABLE_DRIFT", "GRID_FACTOR"):
-        assert getattr(D, name) == getattr(_check, name), name
+    assert D.PATH_RTOL_FACTOR == _check.PATH_RTOL_FACTOR
+    assert D.DRIFT_FACTOR == _check.DRIFT_FACTOR
+    assert D.UNJUDGEABLE_DRIFT == _check.TOLERANCE_MOVE
+    assert D.GRID_FACTOR == _check.GRID_FACTOR
 
 
-def test_a_path_is_judged_against_the_bound(monkeypatch):
-    # The run's own drift at rtol 1e-8 is under the floor, so the bound is
-    # 1e3·rtol = 1e-5 of the peak (100): a path 0.5e-5 off passes, 2e-5 fails.
+def test_a_path_is_judged_against_the_allowance(monkeypatch):
+    # At rtol = atol = 1e-8, A (peak 100) is allowed 1e3·(1e-8 + 1e-6) =
+    # 1.01e-3: a path 0.5e-5 of its peak off passes, one 2e-5 off fails.
     r = _run()
     for factor, status in ((1 + 0.5e-5, "pass"), (1 + 2e-5, "diff")):
         with monkeypatch.context() as m:
@@ -164,21 +169,22 @@ def test_a_path_is_judged_against_the_bound(monkeypatch):
             rep = r.check("jacobian")
         (c,) = rep["checks"]
         assert c["status"] == status, (factor, c)
-        assert c["bound"] == pytest.approx(1e-5)
+        assert (c["margin"] <= 1.0) is (status == "pass")
         assert rep["ok"] is (status == "pass")
     assert c["worst_column"] in ("A", "B", "C")
-    assert c["value"] == pytest.approx(2e-5 - _check.floor(1e-8, r.species) / 100, rel=1e-3)
+    assert c["value"] == pytest.approx(2e-5, rel=1e-6)
     assert "Two bngsim paths disagree (jacobian)" in rep["next"]
     assert "NOT OK" in str(rep)
 
 
 def test_a_path_two_percent_off_fails_even_at_a_loose_tolerance(monkeypatch):
-    # At rtol 1e-3 the 1e3·rtol term is the whole peak; capped at 1%, a path
-    # 2% off still fails.
-    r = _run(rtol=1e-3, atol=1e-6)
-    _perturbing(monkeypatch, lambda c: c.get("jacobian") == "fd", 1.02)
+    # At rtol = atol = 1e-3 the 1e3·(atol + rtol·peak) term is the whole peak;
+    # capped at 1%, a path 1.9% off still fails, and the atol is not forgiven
+    # on top of it.
+    r = _run(rtol=1e-3, atol=1e-3)
+    _perturbing(monkeypatch, lambda c: c.get("jacobian") == "fd", 1.019)
     (c,) = r.check("jacobian")["checks"]
-    assert c["status"] == "diff" and c["bound"] == pytest.approx(1e-2, rel=0.2)
+    assert c["status"] == "diff", c
 
 
 def test_a_run_not_converged_at_its_tolerance_judges_no_path(monkeypatch):
@@ -211,17 +217,19 @@ def test_a_rerun_that_raises_is_an_exception_not_a_crash(monkeypatch):
 
 
 def test_a_loose_tolerance_moves_the_answer():
-    # chain at rtol = atol = 1e-2: B moves by 0.4% of the peak at rtol/10.
+    # chain at rtol = atol = 1e-2: B moves by about 0.9% of its peak at rtol/10.
     r = _run(rtol=1e-2, atol=1e-2)
     rep = r.check("tolerance")
     (c,) = rep["checks"]
     tight = r.rerun(rtol=1e-3, atol=1e-3)
-    expected = _check.gap(np.asarray(tight.species), np.asarray(r.species), 1e-2)
-    assert c["value"] == pytest.approx(expected, rel=1e-12)
-    assert c["status"] == "diff" and c["bound"] == _check.UNJUDGEABLE_DRIFT
-    assert c["worst_column"] == "B"
+    d, peak = _check.differences(np.asarray(tight.species), np.asarray(r.species))
+    expected = _check.moves(d, peak, np.full(3, 1e-2))
+    assert c["value"] == pytest.approx(expected.max(), rel=1e-12)
+    assert c["status"] == "diff" and c["bound"] == _check.TOLERANCE_MOVE
+    assert c["worst_column"] == r.species_names[int(np.argmax(expected))]
     assert c["changed"] == {"rtol": 1e-3, "atol": 1e-3}
     assert c["value_100"] is not None
+    assert rep["drift"] == pytest.approx(expected.max())
     # The default tolerances do not move it.
     assert _run().check("tolerance")["checks"][0]["status"] == "pass"
 
@@ -335,3 +343,100 @@ def test_a_budget_reports_what_did_not_fit():
     timed = [c for c in rep["checks"] if c["status"] == "timeout"]
     assert timed and all("budget" in c["note"] for c in timed)
     assert rep["ok"] is False
+
+
+# ─── The review's cases ──────────────────────────────────────────────────────
+
+
+def test_a_small_species_is_judged_on_its_own_scale(monkeypatch):
+    # A at 1000 beside X at 1e-3: a path that has X 100x off must fail, though
+    # X is a millionth of the largest value.
+    m = bngsim.Model.from_antimony_string("A -> B; k*A; X -> Y; k*X; A = 1000; X = 0.001; k = 0.5")
+    r = Simulator(m, method="ode").run(t_span=(0, 5), n_points=11, rtol=1e-6, atol=1e-12)
+    names = r.species_names
+    jx = names.index("X")
+    real = Result.rerun
+
+    def rerun(self, **changes):
+        out = real(self, **changes)
+        if changes.get("jacobian") == "fd":
+            out = copy.copy(out)
+            sp = np.asarray(out._species, dtype=float).copy()
+            sp[:, jx] *= 100
+            out._species = sp
+        return out
+
+    monkeypatch.setattr(Result, "rerun", rerun)
+    (c,) = r.check("jacobian")["checks"]
+    assert c["status"] == "diff" and c["worst_column"] == "X", c
+
+
+def test_a_run_unconverged_in_small_units_fails_the_tolerance_check():
+    # Robertson's problem at nanomolar scale, at rtol 0.1: the run is far off,
+    # and its species sit under the scalar atol of 1e-8. Judged at the atol the
+    # run applied to each species, the tolerance check fails.
+    m = bngsim.Model.from_antimony_string(
+        "y1 -> y2; 0.04*y1; y2 + y2 -> y3 + y2; 3e16*y2*y2; y2 + y3 -> y1 + y3; 1e13*y2*y3;"
+        " y1 = 1e-9; y2 = 0; y3 = 0"
+    )
+    with pytest.warns(bngsim.AtolScaleWarning):
+        r = Simulator(m, method="ode").run(t_span=(0, 40), n_points=41, rtol=0.1)
+    rep = r.check()
+    assert _by_name(rep)["tolerance"]["status"] == "diff", rep
+    assert rep["ok"] is False
+
+
+def test_a_steady_state_run_compares_where_it_stopped():
+    r = Simulator(examples.load("chain", format="sbml"), method="ode").run(
+        t_span=(0, 2000), n_points=21, steady_state=True
+    )
+    rep = r.check("all")
+    by = _by_name(rep)
+    assert by["grid"]["status"] == "unsupported"
+    for name in ("tolerance", "jacobian"):
+        assert by[name]["status"] == "pass", by[name]
+    assert rep["ok"] is True
+
+
+def test_a_run_on_a_difference_quotient_jacobian_skips_that_check():
+    r = Simulator(examples.load("chain", format="sbml"), method="ode", jacobian="fd").run(
+        t_span=(0, 20), n_points=21
+    )
+    assert r.record["backend"]["jacobian"] == "difference_quotient"
+    (c,) = r.check("jacobian")["checks"]
+    assert c["status"] == "skip"
+    assert r.check(["tolerance", "jacobian"])["ok"] is True
+
+
+def test_the_second_engine_skips_a_run_from_a_saved_state():
+    pytest.importorskip("roadrunner")
+    m = examples.load("chain", format="sbml")
+    m.set_concentration("A", 3.0)
+    m.save_concentrations()
+    r = Simulator(m, method="ode").run(t_span=(0, 5), n_points=6)
+    (c,) = r.check("second_engine")["checks"]
+    assert c["status"] == "skip" and "file's initial state" in c["note"], c
+
+
+def test_a_partial_budget_is_not_ok(monkeypatch):
+    # The tolerance check finishes; the budget runs out before the grid.
+    real = _check._Context.check_grid
+
+    def slow(self):
+        self.deadline = 0.0  # spent
+        return real(self)
+
+    monkeypatch.setattr(_check._Context, "check_grid", slow)
+    rep = _run().check(["tolerance", "grid"], budget=60)
+    assert [c["status"] for c in rep["checks"]] == ["pass", "timeout"]
+    assert rep["ok"] is False and "budget ran out before grid" in rep["next"]
+    with pytest.raises(UsageError):
+        _run().check(budget=True)
+
+
+def test_replicate_seeds_wrap_and_are_listed():
+    sim = Simulator(examples.load("birth_death"), method="ssa")
+    r = sim.run(t_span=(0, 1), n_points=3, seed=2**31 - 3)
+    (c,) = r.check(replicates=3)["checks"]
+    assert c["seeds"] == [2**31 - 2, 0, 1]
+    assert "2147483646, ..., 1" in c["note"]
