@@ -295,6 +295,26 @@ def test_a_saved_result_of_a_file_model_reruns(net_path: Path, tmp_path: Path) -
     _same(r, Result.load(tmp_path / "r.h5").rerun())
 
 
+@pytest.mark.parametrize("from_text", [False, True], ids=["file", "text"])
+def test_the_compartment_sizes_a_load_set_are_set_again(from_text: bool) -> None:
+    """``compartment_sizes=`` at load scales the initial amounts: the source
+    record keeps them, and the rebuild passes them back."""
+    from bngsim.examples import path as example_path
+
+    file = example_path("chain", "sbml")
+    sizes = {"default_compartment": 3.0}
+    model = (
+        Model.from_sbml_string(file.read_text(), compartment_sizes=sizes)
+        if from_text
+        else Model.from_sbml(file, compartment_sizes=sizes)
+    )
+    r = Simulator(model).run(t_span=(0, 5), n_points=4)
+    assert r.record["model"]["compartment_sizes"] == sizes
+    again = r.rerun()
+    _same(r, again)
+    assert again.record["columns"]["compartments"]["default_compartment"]["size"] == 3.0
+
+
 def test_a_derived_parameter_set_by_hand_is_set_again() -> None:
     """``k2 = 2*k`` follows ``k`` unless set itself; the rerun sets only what
     differs, the primary parameter first, so neither reading is lost."""
