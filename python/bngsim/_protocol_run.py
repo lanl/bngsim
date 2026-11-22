@@ -889,11 +889,19 @@ class _Runner:
         if primary:
             self._set_params(primary)
         # A derived parameter a setParameter overrode since the save: writing back
-        # the value its expression gives re-attaches it (issue #188).
+        # the value its expression gives re-attaches it (issue #188). Its
+        # expression gives that value only once what it reads is back, so one
+        # written before a parameter it reads stays a number, at the saved
+        # value. Hence twice: the first write puts every value back, and at the
+        # second each expression gives its own, whatever order they are in
+        # (the model's; a set's follows the hash seed, issue #1870).
         expr_now = dict(zip(names, self.model.param_is_expression, strict=True))
-        for n in derived:
-            if n in values and not expr_now.get(n, True):
-                self._set_params({n: values[n]})
+        overridden = {
+            n: values[n] for n in names if n in derived and n in values and not expr_now[n]
+        }
+        if overridden:
+            self._set_params(overridden)
+            self._set_params(overridden)
 
     # ── runs ──────────────────────────────────────────────────────────────
     def _experiment(self, exp: Experiment) -> ProtocolRun:
