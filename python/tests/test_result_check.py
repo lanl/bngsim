@@ -287,7 +287,7 @@ def test_the_second_engine_says_why_it_did_not_run(monkeypatch):
     with monkeypatch.context() as m:
         m.setitem(sys.modules, "roadrunner", None)
         (c,) = _run().check("second_engine")["checks"]
-    assert c["status"] == "skip" and "pip install libroadrunner" in c["note"]
+    assert c["status"] == "skip" and "pip install 'bngsim[roadrunner]'" in c["note"]
     pytest.importorskip("roadrunner")
     sim = Simulator(examples.load("chain", format="sbml"), method="ode")
     sim.run(t_span=(0, 1), n_points=3)

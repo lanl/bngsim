@@ -1,5 +1,5 @@
 ---
-summary: "How to install BNGsim: the wheels, a source build, SuiteSparse/KLU for large models, and the optional extras (BNGL, Antimony, pandas, HDF5)."
+summary: "How to install BNGsim: the wheels, a source build, SuiteSparse/KLU for large models, and the optional extras (BNGL, Antimony, pandas, HDF5, libRoadRunner)."
 ---
 
 # Installation
@@ -185,6 +185,7 @@ pip install bngsim[antimony]  # Antimony .ant loading
 pip install bngsim[bngl]      # BNGL .bngl loading (PyBioNetGen, for BNG2.pl)
 pip install bngsim[pandas]   # pandas DataFrame support
 pip install bngsim[hdf5]     # HDF5 save/load (h5py)
+pip install bngsim[roadrunner]  # libRoadRunner, for Result.check("all")'s second engine
 pip install bngsim[dev]      # all of the above except bngl, + pytest + ruff
 ```
 
@@ -212,7 +213,7 @@ interpreter
 - The extra is deliberately **not** a base dependency and is **not** folded into
   `dev`. `bionetgen` is a 12.8 MB wheel that requires `libroadrunner`, `seaborn`
   and `networkx`, so promoting it would put RoadRunner into every install —
-  contradicting the `roadrunner` extra's developer-only policy (see
+  contradicting the `roadrunner` extra's opt-in policy (see
   `pyproject.toml`) — and add a
   Perl runtime requirement to a package that runs fine without one. It also
   inverts the layering: PyBioNetGen *consumes* BNGsim through its in-Python

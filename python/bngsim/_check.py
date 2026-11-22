@@ -717,7 +717,7 @@ def _second_engine(ctx: _Context) -> dict[str, Any]:
         return _verdict(
             name,
             "skip",
-            note="libRoadRunner is not installed (pip install libroadrunner): the model as "
+            note="libRoadRunner is not installed (pip install 'bngsim[roadrunner]'): the model as "
             "bngsim read it was not checked against an independent reader",
         )
     if ctx.run.get("started_from") != "initial":
