@@ -3354,9 +3354,13 @@ class Result:
         Examples
         --------
         >>> d = result.digest()
-        >>> d["observables"]["columns"][0]["last"]
-        4.54e-03
-        >>> print(d)  # the plain-text form
+        >>> d["observables"]["columns"][0]["n_interior_extrema"]
+        0
+        >>> print(d)  # the plain-text form, one line per column
+        ode run, t 0 to 10, 101 points
+        notices: none
+        observables: 2 of 2
+          A: first 100, last 33.3712; min 33.3712 at t=10, max 100 at t=0; monotone; ...
         """
         from bngsim import _digest
 

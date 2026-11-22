@@ -3,8 +3,7 @@
 BNGsim simulates biochemical reaction networks in Python. It loads BioNetGen
 (`.net`, `.bngl`), SBML and Antimony models, runs them as ODEs or
 stochastically, in process, and returns NumPy arrays. This page is for an AI
-agent, or anyone, using BNGsim for the first time. It gives rules and recipes,
-not a tutorial.
+agent, or anyone, new to BNGsim: rules and recipes, not a tutorial.
 
 This is the guide for the installed version. `bngsim.agent_guide()` returns it
 and `python -m bngsim guide` prints it, with no network. Every call has a full
@@ -14,7 +13,7 @@ docstring (`help(bngsim.Simulator.run)`). The user guides are at
 
 Every Python block below runs as written, in order, in an empty directory,
 after `pip install bngsim`. The sensitivities also need a C compiler (see
-"What needs what"). The test suite runs the blocks this way. The calls on this
+"What needs what"). The calls on this
 page keep their names across releases: if a later release renames one, the old
 name raises an error that gives the new one.
 
@@ -78,10 +77,11 @@ print(d["methods"]["ssa"]["status"])  # ok
 | choose the method | `bngsim.Simulator(model, method="ode")`; `"ssa"`, `"psa"`; network-free `"nf"` (NFsim) and `"rm"` (RuleMonkey) also take `xml_path=`; `Simulator.METHODS` lists all |
 | run | `sim.run(t_span=(t0, t1), n_points=n)` or `sim.run(sample_times=[...])`; tolerances `sim.run(t_span=(0, 10), rtol=1e-8, atol=1e-10)` |
 | read a run | `result.time`, `result.species`, `result.observables`, `result.expressions`; each takes a name: `result.observables["A"]` |
-| what a run's numbers are and how it went | `result.record`: a JSON-ready dict of each column's quantity and compartment, the method, the tolerances as applied, the start, the code that ran and the model file; `result.notices`, every warning of the run |
+| what a run's numbers are and how it went | `result.record`: a JSON-ready dict of what each column is, the method, the tolerances as applied, the start and the model file; `result.notices`, every warning of the run |
 | make the same run again | `result.rerun()`, from the recorded file, parameters and start state, on a fresh model; `result.rerun(rtol=1e-10)` changes one setting and keeps the rest |
+| what the values did, without a plot | `print(result.digest())`: per column first, last, extremes, turns and whether it settled; a JSON-ready dict |
 | read names | `model.param_names`, `model.species_names`, `model.observable_names` |
-| a table | `result.dataframe` (a property; needs pandas) |
+| a table | `result.dataframe` (needs pandas); `result.to_csv("run.csv")` |
 | set a parameter | `model.set_param("kf", 1.0)`, `model.set_params({"kf": 1.0, "kr": 0.5})`; read with `model.get_param("kf")` |
 | set a species | `model.set_concentration("A()", 50.0)`; read with `model.get_concentration("A()")`; all at once `model.get_state()`, `model.set_state(array)` |
 | back to the initial conditions | `model.reset()` (species only; parameters keep their values) |
@@ -90,7 +90,7 @@ print(d["methods"]["ssa"]["status"])  # ok
 | sensitivities | `bngsim.Simulator(model, sensitivity_params=["kf"])`, then `result.sensitivities` |
 | stochastic replicates | `bngsim.Simulator(model, method="ssa").run_replicates(n, t_span=..., n_points=..., seed=...)` |
 | a BNGL file's own actions | `bngsim.run_bngl(path)` |
-| save a result | `result.save("run.h5")`, `bngsim.Result.load("run.h5")` (needs h5py) |
+| save a result | `result.save("run.npz")`, for `numpy.load`; `result.save("run.h5")` and `bngsim.Result.load("run.h5")` keep everything (need h5py) |
 
 The next block changes a parameter and runs again, then scans a parameter,
 finds the steady state, computes sensitivities and runs stochastic replicates:
@@ -150,10 +150,9 @@ print(reps.observables.shape)  # (50, 11, 2)
    `model.set_concentration("A()", ...)`. Read the names before guessing them.
 5. **A species column is a concentration, in a stochastic run too.** For an
    SBML or Antimony model, `result.species` holds each species' amount divided
-   by its compartment's size. That is so whether the species was declared as
-   an amount or a concentration. A stochastic run reports the same quantity,
-   not molecule counts: in a compartment of size 2, an SSA column moves in
-   steps of 0.5. `result.as_roadrunner(["time", "A"])` gives amounts. A `.net`
+   by its compartment's size, however the species was declared. A stochastic
+   run reports the same quantity, not molecule counts: in a compartment of
+   size 2, an SSA column moves in steps of 0.5. `result.as_roadrunner(["time", "A"])` gives amounts. A `.net`
    model has no compartments, so its columns hold the numbers in the file,
    which a stochastic run treats as molecule counts. `result.record["columns"]`
    says which, column by column, with each compartment's size.
@@ -207,9 +206,8 @@ back the approximation the refusal is there to prevent, and the numbers it
 gives must not be reported as the model's. Change the model (give the symbol
 a value, or choose the ODE method), or report the refusal.
 
-Every BNGsim error carries a `code`, such as `param.not_found` or
-`env.missing_dependency`, which stays the same across releases where the
-message may not. Branch on the code, not the message. `details` says what the
+Every BNGsim error carries a `code`, such as `param.not_found`, which stays the
+same across releases where the message may not. Branch on the code. `details` says what the
 error is about, `remedies` lists fixes a program can act on, each a dict with a
 `kind`, and `to_dict()` gives all of it as plain data. The codes are listed at
 <https://bngsim.readthedocs.io/en/latest/reference/error-codes.html>. A missing
@@ -223,10 +221,7 @@ does not offer a `bngsim.NotSupportedError` (also a `NotImplementedError`). A
 model that is not well formed is a `bngsim.InvalidModelError` (a `ModelError`
 and a `ValueError`), and a compiled right-hand side that fails to build is a
 `bngsim.CodegenBuildError`; the model still runs with `codegen=False`. Each is a
-`bngsim.BngsimError` and still the built-in it was, so `except bngsim.BngsimError`
-catches the errors of a model, a run or an argument. Because every
-`BngsimError` is a `RuntimeError`, an `except RuntimeError` catches these
-too.
+`bngsim.BngsimError`, so also a `RuntimeError`, and still the built-in it was.
 
 ```python
 try:
@@ -441,6 +436,7 @@ print(bngsim.Simulator(built).run(t_span=(0, 2), n_points=3).observables["A"][-1
 - **What the numbers are and how they were made:** `result.record` says it
   from the result, not from memory of the script; `result.notices` lists what
   the run warned of.
+- **What the values did:** `result.digest()`, not printed arrays.
 
 ```python
 model.reset()
@@ -461,6 +457,7 @@ assert abs(mean_a - closed[-1]) < 5 * np.sqrt(closed[-1])  # within the noise
 rec = r.record  # json.dumps(rec) writes it
 print(rec["run"]["method"], rec["run"]["rtol"], rec["backend"]["jacobian"])  # ode 1e-08 analytical
 print(r.notices)  # []
+print(r.digest()["observables"]["columns"][0]["monotone"])  # True
 ```
 
 ## Report a suspected bug
