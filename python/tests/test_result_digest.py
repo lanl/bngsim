@@ -18,6 +18,7 @@ import os
 import subprocess
 import sys
 import time
+import warnings
 
 import bngsim
 import numpy as np
@@ -275,6 +276,53 @@ def test_a_tail_of_one_sample_reads_nothing():
     assert row["monotone"] is True
 
 
+def test_a_model_in_small_units_is_read_at_its_own_scale():
+    # Issue #1001's trap: a model whose values sit near 1e-9 is held to
+    # rtol·largest, not to the scalar atol of 1e-8, which is larger than the
+    # whole column. Its turns count, and a move of 1e-12 is not "settled".
+    t = np.linspace(0, 10, 1001)
+    y = 1e-9 * (1.0 + 0.5 * np.sin(t))
+    row = _row(_synthetic({"y": y}, t, atol=1e-8).digest(), "y")
+    assert row["n_interior_extrema"] == 3 and row["settled"] is False
+    assert row["constant"] is False
+    still = 1e-9 + 1e-12 * (t >= 9.5)
+    row = _row(_synthetic({"y": still}, t, atol=1e-8).digest(), "y")
+    assert row["settled"] is False and row["constant"] is False
+    # Large values: a move of 1e-4 at 1e6 is under rtol·|y| = 1e-2.
+    big = 1e6 + 1e-4 * np.sin(37 * t)
+    row = _row(_synthetic({"y": big}, t, atol=1e-8).digest(), "y")
+    assert row["constant"] is True and row["monotone"] is True and row["settled"] is True
+    # A loose atol, under rtol·largest, is the floor: wobble of 1e-5 is none.
+    loose = _synthetic({"y": big + 1e-5 * np.sin(5 * t)}, t, rtol=1e-12, atol=1e-3)
+    assert _row(loose.digest(), "y")["monotone"] is True
+
+
+def test_a_species_is_held_to_its_own_atol_and_an_observable_to_the_scalar():
+    # The record's per-species atol (as applied) is a species' floor, capped
+    # at rtol·largest; an observable, a sum of species, takes the scalar. A
+    # species at 1e-12 beside one at 1 is held to its own 1e-14, and turns.
+    t = np.linspace(0, 10, 1001)
+    cols = {"big": np.ones_like(t), "y": 1e-12 * np.sin(5 * t)}
+    r = _synthetic(cols, t, atol=1e-8)
+    r._record_frozen["run"]["atol"]["per_species"] = [1e-8, 1e-14]
+    d = r.digest(species=True)
+    assert _row(d, "y", "species")["n_interior_extrema"] == 16  # 5t = π/2 + kπ, k = 0..15
+    assert _row(d, "y", "species")["negative"] is True
+    assert _row(d, "y", "observables")["monotone"] is True
+    assert _row(d, "y", "observables")["negative"] is False
+
+
+def test_tail_change_reads_the_whole_tail():
+    # The last tenth starts and ends at 1 and swings to 1.5 in between.
+    t = np.linspace(0, 10, 101)
+    y = np.ones_like(t)
+    y[95] = 1.5
+    y[0] = 0.0
+    row = _row(_synthetic({"y": y}, t).digest(), "y")
+    assert row["tail_change"] == pytest.approx(0.5 / 1.5)
+    assert row["settled"] is False
+
+
 # ─── Noise on a deterministic column is not a turn ───────────────────────────
 
 
@@ -309,6 +357,10 @@ def test_a_turn_is_counted_where_the_swing_back_just_exceeds_the_tolerance():
     assert _digest._n_turns(np.array([1.0, 1.0 + 1e-9, 0.0]), 1e-8, 1e-8) == 0
     # A fall then a rise, from below: one minimum.
     assert _digest._n_turns(np.array([1.0, 0.0, 1.0]), 1e-8, 1e-8) == 1
+    # The extreme a turn is measured from follows the column past a dip too
+    # small to count: from 3 back to 2.2 is a turn of 0.8, though 2.2 is above 1.
+    assert _digest._n_turns(np.array([0.0, 1.0, 0.9, 3.0, 2.2]), 0.0, 0.5) == 1
+    assert _digest._n_turns(np.array([0.0, -1.0, -0.9, -3.0, -2.2]), 0.0, 0.5) == 1
 
 
 # ─── Flags ───────────────────────────────────────────────────────────────────
@@ -324,6 +376,8 @@ def test_flags_non_finite_negative_and_constant():
         "truly_negative": np.array([1.0, 0.5, -0.01, 0.2, 0.1]),
         "constant": np.full(5, 3.0),
         "moves_by_dust": 3.0 + np.array([0, 1e-12, 0, 0, 0]),
+        "constant_but_nan": np.array([3.0, 3.0, np.nan, 3.0, 3.0]),
+        "minus_inf_at_1": np.array([1.0, -np.inf, 3.0, 4.0, 5.0]),
     }
     d = _synthetic(cols, t).digest()
     json.dumps(d, allow_nan=False)
@@ -343,8 +397,17 @@ def test_flags_non_finite_negative_and_constant():
     assert _row(d, "constant")["settled"] is None
     assert _row(d, "moves_by_dust")["constant"] is True
     assert _row(d, "truly_negative")["constant"] is False
+    assert _row(d, "constant_but_nan")["constant"] is False
+    row = _row(d, "minus_inf_at_1")
+    assert (row["min"], row["t_min"], row["t_non_finite"]) == (1.0, 0.0, 1.0)
+    assert row["negative"] is False
+    lines = str(d).splitlines()
+    assert [x for x in lines if x.startswith("  truly_negative:")][0].endswith("FLAGS: negative")
+    assert [x for x in lines if x.startswith("  constant:")][0].endswith("FLAGS: never moves")
+    assert "FLAGS: non-finite from t=2" in str(d)
+    bad = ("nan_at_2", "inf_at_3", "all_nan", "constant_but_nan", "minus_inf_at_1")
     for name in cols:
-        assert _row(d, name)["non_finite"] is (name in ("nan_at_2", "inf_at_3", "all_nan"))
+        assert _row(d, name)["non_finite"] is (name in bad)
 
 
 def test_a_stochastic_run_flags_any_negative_and_any_move():
@@ -477,19 +540,19 @@ def test_a_batch_stack_of_deterministic_rows_gives_statistics_too():
 def test_a_stack_of_one_has_no_standard_deviation_and_counts_non_finite_runs():
     t = np.linspace(0, 1, 3)
     one = np.array([[[1.0], [2.0], [3.0]]])
-    r = Result(
-        _time=t, _species=one, _observables=one, _species_names=["y"], _observable_names=["y"]
-    )
-    row = _row(r.digest(), "y")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # no "degrees of freedom" warning
+        row = _row(_stack(t, one).digest(), "y")
     assert row["last_std"] is None and row["last_mean"] == 3.0
     two = np.array([[[1.0], [2.0], [3.0]], [[1.0], [np.nan], [np.nan]]])
-    r = Result(
-        _time=t, _species=two, _observables=two, _species_names=["y"], _observable_names=["y"]
-    )
-    d = r.digest()
+    d = _stack(t, two).digest()
     json.dumps(d, allow_nan=False)
     row = _row(d, "y")
     assert row["last_n_finite"] == 1 and row["non_finite"] is True and row["t_non_finite"] == 0.5
+    three = np.array([[[1.0], [2.0], [3.0]], [[1.0], [2.0], [np.inf]], [[1.0], [2.0], [5.0]]])
+    row = _row(_stack(t, three).digest(), "y")
+    assert row["last_n_finite"] == 2 and row["last_mean"] == 4.0 and row["last_max"] == 5.0
+    assert row["t_non_finite"] == 1.0
 
 
 # ─── What else it says, and what it refuses ──────────────────────────────────
@@ -586,6 +649,29 @@ def test_save_npz_holds_the_arrays_names_and_record(tmp_path):
         assert "sensitivity_params" not in f.files
     assert record == json.loads(json.dumps(r.record))
     assert record["run"]["method"] == "ode"
+
+
+def test_save_npz_keeps_each_block_apart(tmp_path):
+    t = np.linspace(0, 1, 4)
+    sp = np.arange(8.0).reshape(4, 2)
+    ob = 100 + np.arange(4.0).reshape(4, 1)
+    ex = -np.arange(12.0).reshape(4, 3)
+    r = Result(
+        _time=t,
+        _species=sp,
+        _observables=ob,
+        _expressions=ex,
+        _species_names=["a", "b"],
+        _observable_names=["o"],
+        _expression_names=["e1", "e2", "e3"],
+    )
+    r.save(tmp_path / "r.npz")
+    with np.load(tmp_path / "r.npz", allow_pickle=False) as f:
+        assert np.array_equal(f["species"], sp)
+        assert np.array_equal(f["observables"], ob)
+        assert np.array_equal(f["expressions"], ex)
+        assert list(f["expression_names"]) == ["e1", "e2", "e3"]
+        assert list(f["species_names"]) == ["a", "b"]
 
 
 def test_save_npz_needs_no_h5py(tmp_path, monkeypatch):
