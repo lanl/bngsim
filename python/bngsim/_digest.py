@@ -9,16 +9,18 @@ Where a reading needs a threshold, it takes the one the steady-state code's
 ``criterion="scaled"`` takes (issue #1001; ``ss_scaled_tolerance`` in
 ``src/steady_state.cpp``): a move of a value ``y`` is within tolerance when it is
 at most ``rtol·|y| + min(atol, rtol·largest)``, with the run's ``rtol`` (at least
-1e-10) and ``atol``, and ``largest`` the largest magnitude of any column of the
-same kind over the run. That one tolerance decides
+1e-10) and ``atol`` (a species' own as applied; for an observable, a sum of
+species, the tightest any species had), and ``largest`` the largest magnitude of
+any column of the same kind over the run. That one tolerance decides
 
-- whether a column has *settled*: no value over the last tenth of the window is
-  further from the last value than the tolerance (the run test of
-  ``criterion="scaled"``, taken over the run's own tail in place of a run taken
-  on from its end);
-- what counts as an *interior extremum*: a turn whose swing, back from the
-  extreme it turns at, exceeds the tolerance there, so an integrator's wobble
-  around a value it has reached is not counted (and *monotone* is no such turn);
+- whether a column has *settled*: no value from the last sample at or before
+  the start of the last tenth of the window on is further from the last value
+  than the tolerance (the run test of ``criterion="scaled"``, taken over the
+  run's own tail in place of a run taken on from its end);
+- what counts as an *interior extremum*: an extreme the column reaches by more
+  than the tolerance and leaves by more than the tolerance at it, so an
+  integrator's wobble around a value it has reached is not counted, whatever
+  phase a periodic column starts in (and *monotone* is no such turn);
 - whether a column *never moves* (its range is within the tolerance) or is
   *negative* (its minimum is below ``-min(atol, rtol·largest)``).
 
@@ -26,7 +28,10 @@ A stochastic run's values are counts that move by whole molecules, so of a
 single stochastic trajectory the digest gives the first, last, minimum and
 maximum values and the flags, and reads nothing from its shape. A stack of runs
 (``Result.squeeze``, ``run_batch(squeeze=True)``) gets statistics across its
-runs at the last time.
+runs at the last time. Where the record gives no ``rtol`` or ``atol`` (an older
+file, a stack whose rows ran at different ones) nothing is judged against a
+tolerance: there are no readings of shape, and the flags take any value below 0
+as negative and any move as a move.
 """
 
 from __future__ import annotations
@@ -60,10 +65,10 @@ TAIL_FRACTION = 0.1
 #: own error.
 RTOL_LEAST = 1e-10
 
-#: A run's ``rtol`` and scalar ``atol`` where its record does not say them (a
-#: stack whose rows ran at different tolerances): the defaults of a run.
-_RTOL_DEFAULT = 1e-8
-_ATOL_DEFAULT = 1e-8
+#: How many of a result's notices a digest lists, in their order, and the
+#: length a notice's message is cut to; ``Result.notices`` holds them whole.
+MAX_NOTICES = 20
+MAX_NOTICE_CHARS = 500
 
 #: The quantiles a stack's statistics give at the last time, by key.
 QUANTILES = (("q05", 0.05), ("q25", 0.25), ("median", 0.5), ("q75", 0.75), ("q95", 0.95))
@@ -133,17 +138,23 @@ def _n_turns(col: NDArray[np.float64], rtol: float, floor: float) -> int:
     # between two of them the column moves one way, so a turn can only be at one.
     at = np.concatenate(([0], moving[flips] + 1, [col.size - 1]))
     values = col[at].tolist()
-    ref = values[0]
+    # Until the column has moved by more than the tolerance it has no way: the
+    # extremes it has reached so far, either of which it may leave from. The
+    # one it leaves from is no turn (it was reached by less than the
+    # tolerance), whichever comes first, so the count does not depend on the
+    # phase a periodic column starts in.
+    hi = lo = values[0]
     way = 0
-    ext = ref
+    ext = hi
     n = 0
     for x in values[1:]:
         if way == 0:
-            tol = rtol * abs(ref) + floor
-            if x > ref + tol:
+            if x - lo > rtol * abs(lo) + floor:
                 way, ext = 1, x
-            elif x < ref - tol:
+            elif hi - x > rtol * abs(hi) + floor:
                 way, ext = -1, x
+            else:
+                hi, lo = max(hi, x), min(lo, x)
         elif way > 0:
             if x > ext:
                 ext = x
@@ -156,6 +167,25 @@ def _n_turns(col: NDArray[np.float64], rtol: float, floor: float) -> int:
             elif x - ext > rtol * abs(ext) + floor:
                 n += 1
                 way, ext = 1, x
+    return n
+
+
+def _column_atol(atol_vec: Any, atol: float, j: int, species: bool) -> float:
+    """The absolute tolerance column *j* was held to: a species' own as
+    applied; an observable or expression, a sum of species, the tightest any
+    species had (the scalar where the record holds no per-species values)."""
+    if atol_vec is None or len(atol_vec) == 0:
+        return atol
+    if species:
+        return float(atol_vec[j]) if j < len(atol_vec) else atol
+    return float(min(atol_vec))
+
+
+def _notice(n: dict[str, str]) -> dict[str, str]:
+    """A notice with its message cut at :data:`MAX_NOTICE_CHARS`."""
+    msg = n.get("message", "")
+    if len(msg) > MAX_NOTICE_CHARS:
+        n = {**n, "message": msg[: MAX_NOTICE_CHARS - 1] + "…"}
     return n
 
 
@@ -198,18 +228,25 @@ def digest(
     out["n_points"] = n_points
     out["n_sensitivity_params"] = len(result._sensitivity_params)
     out["n_sensitivity_ic_species"] = len(result._sensitivity_ic_species)
-    out["notices"] = [n.as_dict() for n in result._notices]
+    out["n_notices"] = len(result._notices)
+    out["notices"] = [_notice(n.as_dict()) for n in result._notices[:MAX_NOTICES]]
 
     kinds = ["observables"] if len(result._observable_names) else ["species"]
     if species and "species" not in kinds:
         kinds.append("species")
     out["kinds"] = list(kinds)
 
-    # Readings of shape need tolerances, a deterministic method and one run.
-    reads = stochastic is False and not stack
-    tol_known = stochastic is False
-    r = max(_RTOL_DEFAULT if rtol is None else float(rtol), RTOL_LEAST)
-    a = _ATOL_DEFAULT if atol is None else float(atol)
+    # Readings against the tolerance need a deterministic method whose rtol and
+    # atol the record gives (a stack whose rows ran at different ones gives
+    # none); readings of shape, one run besides.
+    tol_known = False
+    r = a = 0.0
+    if stochastic is False and rtol is not None and atol is not None:
+        tol_known = True
+        r, a = max(float(rtol), RTOL_LEAST), float(atol)
+    reads = tol_known and not stack
+    out["rtol"] = r if tol_known else None
+    out["atol"] = a if tol_known else None
     for kind in kinds:
         values_attr, names_attr = _KINDS[kind]
         data = np.asarray(getattr(result, values_attr), dtype=np.float64)
@@ -218,13 +255,13 @@ def digest(
             data,
             names,
             time,
-            kind=kind,
             stack=stack,
             reads=reads,
             tol_known=tol_known,
             rtol=r,
             atol=a,
-            atol_vec=atol_vec if kind == "species" else None,
+            atol_vec=atol_vec if tol_known else None,
+            species=kind == "species",
             max_columns=max_columns,
         )
     return out
@@ -235,13 +272,13 @@ def _kind(
     names: list[str],
     time: NDArray[np.float64],
     *,
-    kind: str,
     stack: bool,
     reads: bool,
     tol_known: bool,
     rtol: float,
     atol: float,
     atol_vec: Any,
+    species: bool,
     max_columns: int,
 ) -> dict[str, Any]:
     n_cols = len(names)
@@ -258,17 +295,18 @@ def _kind(
     chosen = _rank(nonfinite, np.where(np.isfinite(span), span, np.inf), max_columns)
 
     tail = None
-    if reads and n_points >= 2:
+    if reads and n_points >= 2 and time[-1] > time[0]:
+        # From the last sample at or before the start of the last tenth, so
+        # the samples read span the whole tenth however the grid falls.
         t0, t1 = float(time[0]), float(time[-1])
         cut = t1 - TAIL_FRACTION * (t1 - t0)
-        tail = time >= cut - 1e-12 * max(abs(cut), abs(t1 - t0))
-        if int(tail.sum()) < 2:
-            tail = None
+        cut += 1e-12 * max(abs(cut), t1 - t0)  # a sample on the cut, give or take
+        first = int(np.searchsorted(time, cut, side="right")) - 1
+        tail = slice(max(first, 0), None)
 
     columns = []
     for j in chosen:
-        own = atol_vec is not None and j < len(atol_vec)
-        floor = min(float(atol_vec[j]) if own else atol, rtol * largest)
+        floor = min(_column_atol(atol_vec, atol, j, species), rtol * largest)
         mn, mx = float(lo[j]), float(hi[j])
         any_finite = math.isfinite(mn)
         row: dict[str, Any] = {"name": names[j]}
@@ -366,6 +404,8 @@ def text(d: dict[str, Any]) -> str:
     else:
         window = "no time points"
     head = f"{method} run{runs}, {window}"
+    if d.get("rtol") is not None:
+        head += f", rtol {_g(d['rtol'])}, atol {_g(d['atol'])}"
     if d.get("n_sensitivity_params") or d.get("n_sensitivity_ic_species"):
         head += (
             f"; sensitivities to {d['n_sensitivity_params']} parameters and "
@@ -377,12 +417,18 @@ def text(d: dict[str, Any]) -> str:
         lines.append("notices: none")
     for n in notices:
         lines.append(f"notice {n['code']}: {n['message']}")
+    more = d.get("n_notices", len(notices)) - len(notices)
+    if more > 0:
+        lines.append(f"{more} more notices in Result.notices")
     for kind in d.get("kinds", []):
         block = d[kind]
         shown = len(block["columns"])
         line = f"{kind}: {shown} of {block['n_columns']}"
         if block["n_left_out"]:
-            line += f" ({block['n_left_out']} with smaller ranges left out)"
+            line += (
+                f" ({block['n_left_out']} left out; listed are any with a non-finite "
+                f"value, then the widest ranges)"
+            )
         lines.append(line)
         for row in block["columns"]:
             lines.append("  " + _row_text(row))

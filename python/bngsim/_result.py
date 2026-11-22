@@ -3299,19 +3299,24 @@ class Result:
             ``stochastic``, ``n_runs`` (a stack's number of runs, else
             ``None``), ``t_start``, ``t_end``, ``n_points``,
             ``n_sensitivity_params``, ``n_sensitivity_ic_species``,
-            ``notices`` (:attr:`notices`) and ``kinds``, the kinds listed.
+            ``n_notices``, ``notices`` (the first 20 of :attr:`notices`, each
+            message cut at 500 characters), ``kinds``, the kinds listed, and
+            ``rtol`` and ``atol``, the tolerances the readings are judged by
+            (``None`` where the record gives none).
             Then for each kind (``"observables"``, ``"species"``)
             ``{"n_columns", "n_left_out", "columns"}``, where each column is a
             dict with its ``name`` and:
 
             - of one deterministic run: ``first``, ``last``, ``min`` and
               ``t_min``, ``max`` and ``t_max``, ``monotone``,
-              ``n_interior_extrema``, ``tail_change`` (how far any value in
-              the last tenth of the window is from the last value, as a share
-              of the column's range) and ``settled``;
-            - of one stochastic run, or a run whose method the result does not
-              record: ``first``, ``last``, ``min`` and ``max`` alone, as its
-              shape is noise;
+              ``n_interior_extrema``, ``tail_change`` (how far any value from
+              the last sample at or before the start of the last tenth of the
+              window is from the last value, as a share of the column's range)
+              and ``settled``; ``t_min`` and ``t_max`` are the first times the
+              extremes are reached;
+            - of one stochastic run, or a run whose method or tolerances the
+              result does not record: ``first``, ``last``, ``min`` and ``max``
+              alone, as its shape is noise or cannot be judged;
             - of a stack of runs (:meth:`squeeze`, ``run_batch(squeeze=True)``):
               statistics across the runs at the last time, ``last_mean``,
               ``last_std`` (the sample standard deviation; ``None`` of one run),
@@ -3333,19 +3338,22 @@ class Result:
         ``criterion="scaled"`` (issue #1001), not a threshold of the
         digest's own: a move at a value ``y`` is within it when at most
         ``rtol·|y| + min(atol, rtol·largest)``, with the run's ``rtol`` (at
-        least 1e-10) and absolute tolerance (a species' own as applied, an
-        observable the scalar), and ``largest`` the largest magnitude of any
-        column of that kind over the run. A column is ``settled`` when no
-        value over the last tenth of the window is further than that from the
-        last value. That is a reading of the window the run had: a column
-        still moving slower than its tolerance per tenth of the window reads
-        as settled, and a longer run, or :meth:`Simulator.steady_state`,
-        tells. An interior extremum is a turn whose swing back exceeds the
-        tolerance at the extreme, so an integrator's wobble about a value it
-        has reached is no turn, and ``monotone`` is no turn. ``negative`` is a
-        minimum below ``-min(atol, rtol·largest)``, and ``constant`` a range
-        within the tolerance. Of a stochastic run, or one whose method is not
-        recorded, ``negative`` is any value below 0 and ``constant`` a column
+        least 1e-10) and absolute tolerance (a species' own as applied; an
+        observable, a sum of species, the tightest any species had), and
+        ``largest`` the largest magnitude of any column of that kind over the
+        run. A column is ``settled`` when no value from the last sample at or
+        before the start of the last tenth of the window on is further than
+        that from the last value. That is a reading of the window the run had:
+        a column still moving slower than its tolerance per tenth of the
+        window reads as settled, and a longer run, or
+        :meth:`Simulator.steady_state`, tells. An interior extremum is an
+        extreme the column reaches by more than the tolerance and leaves by
+        more than the tolerance at it, so an integrator's wobble about a value
+        it has reached is no turn, and ``monotone`` is no turn. ``negative``
+        is a minimum below ``-min(atol, rtol·largest)``, and ``constant`` a
+        range within the tolerance. Of a stochastic run, or one whose method
+        or tolerances are not recorded (a stack whose rows ran at different
+        ones), ``negative`` is any value below 0 and ``constant`` a column
         whose values are all equal.
 
         Nothing is computed until this is called, and the readings of shape
@@ -3357,7 +3365,7 @@ class Result:
         >>> d["observables"]["columns"][0]["n_interior_extrema"]
         0
         >>> print(d)  # the plain-text form, one line per column
-        ode run, t 0 to 10, 101 points
+        ode run, t 0 to 10, 101 points, rtol 1e-08, atol 1e-08
         notices: none
         observables: 2 of 2
           A: first 100, last 33.3702; min 33.3702 at t=10, max 100 at t=0; monotone; ...

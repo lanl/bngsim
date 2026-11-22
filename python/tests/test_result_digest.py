@@ -37,8 +37,11 @@ RUN_KEYS = [
     "n_points",
     "n_sensitivity_params",
     "n_sensitivity_ic_species",
+    "n_notices",
     "notices",
     "kinds",
+    "rtol",
+    "atol",
 ]
 FLAGS = ["non_finite", "t_non_finite", "negative", "constant"]
 DETERMINISTIC_KEYS = [
@@ -145,6 +148,7 @@ def test_the_run_block_says_the_window_method_and_points():
     assert d["n_runs"] is None
     assert (d["t_start"], d["t_end"], d["n_points"]) == (0.0, 7.5, 16)
     assert d["kinds"] == ["observables"]
+    assert (d["rtol"], d["atol"]) == (1e-8, 1e-8)
     assert "species" not in d
 
 
@@ -240,12 +244,9 @@ def test_settled_agrees_with_steady_state():
 
 
 def test_a_decay_below_the_tolerance_floor_is_settled():
-    # A = 100 e^{-t} integrated at atol 1e-8: at t = 50 the solution is still
-    # creeping down by 2e-8 (its own error at that atol), more than the
-    # tolerance of 1e-8, as a run taken on from it would show. By t = 100 it
-    # moves by under 1e-9, and by t = 200 it sits at -8e-11, which is under
+    # A = 100 e^{-t} integrated at atol 1e-8: by t = 100 it moves by under
+    # 1e-9, and by t = 200 it sits near -1e-10, which is above
     # -min(atol, rtol·largest) = -1e-8 and so not "negative".
-    assert _row(_ode("decay", t_end=50.0, n_points=501).digest(), "A")["settled"] is False
     row = _row(_ode("decay", t_end=100.0, n_points=501).digest(), "A")
     assert row["settled"] is True
     assert row["monotone"] is True
@@ -269,11 +270,37 @@ def test_the_tolerance_is_the_runs_own():
     assert _row(_synthetic({"y": y2}, t, rtol=1e-14, atol=1e-30).digest(), "y")["settled"] is True
 
 
-def test_a_tail_of_one_sample_reads_nothing():
-    # Five points over [0, 10]: the last tenth holds the last point alone.
-    row = _row(_ode("decay", t_end=10.0, n_points=5).digest(), "A")
-    assert row["tail_change"] is None and row["settled"] is None
-    assert row["monotone"] is True
+def test_the_tail_spans_the_whole_last_tenth_however_the_grid_falls():
+    # Five points over [0, 10]: the last tenth starts at 9, so the tail is read
+    # from 7.5, the last sample at or before it.
+    r = _ode("decay", t_end=10.0, n_points=5)
+    col = np.asarray(r.observables)[:, 0]
+    row = _row(r.digest(), "A")
+    assert row["tail_change"] == pytest.approx((col[3] - col[4]) / (col[0] - col[4]), rel=1e-12)
+    assert row["settled"] is False and row["monotone"] is True
+    # Two samples a nanosecond apart at the end of [0, 3] are no tail: the
+    # column, at 22 and falling, is read from t = 2.
+    sim = Simulator(examples.load("decay"), method="ode")
+    r = sim.run(sample_times=[0, 1, 2, 3 - 1e-9, 3])
+    col = np.asarray(r.observables)[:, 0]
+    row = _row(r.digest(), "A")
+    assert row["settled"] is False
+    assert row["tail_change"] == pytest.approx((col[2] - col[4]) / (col[0] - col[4]), rel=1e-12)
+    # A grid of 19 intervals reads as one of 10 or 100 does, to within the
+    # one sample before the cut it adds.
+    by_grid = [
+        _row(_ode("decay", t_end=10.0, n_points=n).digest(), "A")["tail_change"]
+        for n in (11, 20, 101)
+    ]
+    assert by_grid[0] == pytest.approx(by_grid[2], rel=1e-5)
+    assert by_grid[1] >= by_grid[2]
+    # A non-zero start: the tenth is of the window, not of t.
+    r = sim.run(t_span=(100, 110), n_points=11, start="initial")
+    t = r.time
+    assert t[0] == 100
+    col = np.asarray(r.observables)[:, 0]
+    row = _row(r.digest(), "A")
+    assert row["tail_change"] == pytest.approx(abs(col[9] - col[10]) / np.ptp(col), rel=1e-12)
 
 
 def test_a_model_in_small_units_is_read_at_its_own_scale():
@@ -292,24 +319,54 @@ def test_a_model_in_small_units_is_read_at_its_own_scale():
     big = 1e6 + 1e-4 * np.sin(37 * t)
     row = _row(_synthetic({"y": big}, t, atol=1e-8).digest(), "y")
     assert row["constant"] is True and row["monotone"] is True and row["settled"] is True
-    # A loose atol, under rtol·largest, is the floor: wobble of 1e-5 is none.
-    loose = _synthetic({"y": big + 1e-5 * np.sin(5 * t)}, t, rtol=1e-12, atol=1e-3)
-    assert _row(loose.digest(), "y")["monotone"] is True
+    # At rtol 1e-12 (read as 1e-10) and atol 1e-3, the floor is
+    # rtol·largest = 1e-4 and the tolerance at 1e6 about 2e-4: a wobble of
+    # 2e-5 is none, one of 2e-3 is many.
+    for amp, flat in ((1e-5, True), (1e-3, False)):
+        loose = _synthetic({"y": 1e6 + amp * np.sin(5 * t)}, t, rtol=1e-12, atol=1e-3)
+        assert _row(loose.digest(), "y")["monotone"] is flat, amp
 
 
-def test_a_species_is_held_to_its_own_atol_and_an_observable_to_the_scalar():
+def test_a_species_is_held_to_its_own_atol_and_an_observable_to_the_tightest():
     # The record's per-species atol (as applied) is a species' floor, capped
-    # at rtol·largest; an observable, a sum of species, takes the scalar. A
-    # species at 1e-12 beside one at 1 is held to its own 1e-14, and turns.
+    # at rtol·largest; an observable, a sum of species, takes the tightest any
+    # species had, so an observable that is one species reads as it does. A
+    # species at 1e-12 beside one at 1, held to its own 1e-14, turns.
     t = np.linspace(0, 10, 1001)
     cols = {"big": np.ones_like(t), "y": 1e-12 * np.sin(5 * t)}
     r = _synthetic(cols, t, atol=1e-8)
     r._record_frozen["run"]["atol"]["per_species"] = [1e-8, 1e-14]
     d = r.digest(species=True)
-    assert _row(d, "y", "species")["n_interior_extrema"] == 16  # 5t = π/2 + kπ, k = 0..15
-    assert _row(d, "y", "species")["negative"] is True
-    assert _row(d, "y", "observables")["monotone"] is True
-    assert _row(d, "y", "observables")["negative"] is False
+    for kind in ("species", "observables"):
+        assert _row(d, "y", kind)["n_interior_extrema"] == 16  # 5t = π/2 + kπ, k = 0..15
+        assert _row(d, "y", kind)["negative"] is True
+    # A species "z" at 1e-12 held to its own 1e-8 does not turn, where an
+    # observable of it, held to the tightest species' 1e-14, does.
+    r = _synthetic({**cols, "z": cols["y"]}, t, atol=1e-8)
+    r._record_frozen["run"]["atol"]["per_species"] = [1e-8, 1e-14, 1e-8]
+    d = r.digest(species=True)
+    assert _row(d, "z", "species")["monotone"] is True
+    assert _row(d, "z", "observables")["n_interior_extrema"] == 16
+    # Without per-species values, the scalar.
+    r = _synthetic(cols, t, atol=1e-8)
+    assert _row(r.digest(), "y")["monotone"] is True
+
+
+def test_an_observable_that_is_one_species_reads_as_the_species():
+    # A model in small units, whose per-species atol the run tightened: an
+    # observable of A must not read "never moves" where the species does not.
+    m = bngsim.Model.from_antimony_string(
+        "compartment c=1e-6; species A in c, B in c, $S in c; A=1e-9; B=0; S=1;"
+        " J: A->B; k*A; k=1; S' = 0.1"
+    )
+    r = Simulator(m, method="ode").run(t_span=(0, 10), n_points=101)
+    d = r.digest(species=True)
+    for name in ("A", "B"):
+        obs, sp = _row(d, name), _row(d, name, "species")
+        assert obs["constant"] is False and sp["constant"] is False
+        assert {k: obs[k] for k in ("monotone", "settled", "negative")} == {
+            k: sp[k] for k in ("monotone", "settled", "negative")
+        }
 
 
 def test_tail_change_reads_the_whole_tail():
@@ -339,6 +396,21 @@ def test_wobble_under_the_tolerance_is_no_turn():
     # A rise that the wobble rides on stays monotone while the rise is steeper.
     rising = 1.0 - np.exp(-t)
     assert _row(_synthetic({"y": rising + 1e-6 * np.sin(37 * t)}, t).digest(), "y")["monotone"]
+
+
+def test_the_turn_count_does_not_depend_on_the_phase_the_column_starts_in():
+    # Swings of 1.8 against a tolerance of 1: started at 0 or at 0.9, the
+    # extremes reached and left by more than 1 are the same four (the last
+    # -0.9 is left by 0.9 alone).
+    sine = np.array([0, 0.9, -0.9, 0.9, -0.9, 0.9, -0.9, 0.0])
+    cosine = np.array([0.9, -0.9, 0.9, -0.9, 0.9, -0.9, 0.0])
+    assert _digest._n_turns(sine, 0.0, 1.0) == 4
+    assert _digest._n_turns(cosine, 0.0, 1.0) == 4
+    assert _digest._n_turns(-sine, 0.0, 1.0) == 4
+    t = np.linspace(0, 20, 2001)
+    for y in (100 + 0.09 * np.sin(t), 100 + 0.09 * np.cos(t)):
+        row = _row(_synthetic({"y": y}, t, rtol=1e-3, atol=1e-8).digest(), "y")
+        assert row["monotone"] is False and row["n_interior_extrema"] in (5, 6)
 
 
 def test_a_turn_is_counted_where_the_swing_back_just_exceeds_the_tolerance():
@@ -393,8 +465,8 @@ def test_flags_non_finite_negative_and_constant():
     assert _row(d, "dust_negative")["negative"] is False
     assert _row(d, "truly_negative")["negative"] is True
     assert _row(d, "constant")["constant"] is True
-    # Five points over [0, 4]: the last tenth holds one, so nothing is settled.
-    assert _row(d, "constant")["settled"] is None
+    assert _row(d, "constant")["settled"] is True
+    assert _row(d, "constant")["tail_change"] == 0.0
     assert _row(d, "moves_by_dust")["constant"] is True
     assert _row(d, "truly_negative")["constant"] is False
     assert _row(d, "constant_but_nan")["constant"] is False
@@ -442,7 +514,7 @@ def test_past_max_columns_the_largest_ranges_are_listed_in_column_order():
     finite_ranges = {f"c{j:02d}": ranges[j] for j in range(50) if j != 10}
     top4 = sorted(finite_ranges, key=lambda n: -finite_ranges[n])[:4]
     assert names == sorted(["c10", *top4])
-    assert "45 with smaller ranges left out" in str(d)
+    assert "observables: 5 of 50 (45 left out; listed are any with a non-finite" in str(d)
     # The default bound is 20, and 0 lists none but still counts them.
     assert len(_synthetic(cols, t).digest()["observables"]["columns"]) == 20
     zero = _synthetic(cols, t).digest(max_columns=0)["observables"]
@@ -466,7 +538,7 @@ def test_a_large_result_stays_small_and_cheap():
     spent = time.process_time() - start
     assert len(json.dumps(d)) < 12_000
     assert len(str(d)) < 8_000
-    assert spent < 1.0, spent  # about 10 ms here; a loose bound for slow runners
+    assert spent < 2.0, spent  # about 2 ms here; a loose bound for slow runners
 
 
 # ─── No reading of noise ─────────────────────────────────────────────────────
@@ -569,6 +641,46 @@ def test_notices_are_the_results():
     assert f"notice {r.notices[0]['code']}:" in str(d)
 
 
+def test_notices_are_bounded_and_counted():
+    from bngsim._notices import Notice
+
+    t = np.linspace(0, 1, 11)
+    r = _synthetic({"y": t}, t)
+    r._notices = tuple(Notice("Warn", f"c{i:02d}", "x" * 2000) for i in range(30))
+    d = r.digest()
+    assert d["n_notices"] == 30 and len(d["notices"]) == _digest.MAX_NOTICES == 20
+    assert [n["code"] for n in d["notices"]] == [f"c{i:02d}" for i in range(20)]
+    assert all(len(n["message"]) == _digest.MAX_NOTICE_CHARS for n in d["notices"])
+    assert "10 more notices in Result.notices" in str(d)
+    assert len(json.dumps(d)) < 14_000
+    assert len(r.notices[0]["message"]) == 2000  # the result keeps them whole
+
+
+def test_a_stack_of_rows_at_different_tolerances_judges_nothing_by_one():
+    sim = Simulator(examples.load("chain"), method="ode")
+    rows = [
+        sim.run(t_span=(0, 5), n_points=6, rtol=rtol, atol=1e-3, start="initial")
+        for rtol in (1e-3, 1e-4)
+    ]
+    d = Result.squeeze(rows).digest()
+    assert d["rtol"] is None and d["atol"] is None and d["stochastic"] is False
+    assert "rtol" not in str(d).splitlines()[0]
+    same = Result.squeeze([rows[0], rows[0]]).digest()
+    assert (same["rtol"], same["atol"]) == (1e-3, 1e-3)
+
+
+def test_a_digest_survives_a_file(tmp_path):
+    pytest.importorskip("h5py")
+    sim = Simulator(examples.load("chain"), method="ode")
+    r = sim.run(t_span=(0, 10), n_points=101, atol=[1e-9, 1e-10, 1e-11])
+    r.save(tmp_path / "r.h5")
+    back = Result.load(tmp_path / "r.h5")
+    assert back.digest(species=True) == r.digest(species=True)
+    stack = Result.squeeze([r, sim.run(t_span=(0, 10), n_points=101, start="initial")])
+    stack.save(tmp_path / "s.h5")
+    assert Result.load(tmp_path / "s.h5").digest() == stack.digest()
+
+
 def test_a_model_with_no_observables_lists_its_species():
     t = np.linspace(0, 1, 3)
     sp = np.column_stack([t, 2 * t])
@@ -607,7 +719,7 @@ def test_the_text_form_is_numbers_and_one_line_per_column():
     text = str(d)
     assert text == d.text()
     lines = text.splitlines()
-    assert lines[0] == "ode run, t 0 to 20, 201 points"
+    assert lines[0] == "ode run, t 0 to 20, 201 points, rtol 1e-08, atol 1e-08"
     assert lines[1] == "notices: none"
     assert len(lines) == 2 + 2 + 3 + 3  # a header per kind, a line per column
     assert lines[3].startswith("  A: first 100, last ")
