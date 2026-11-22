@@ -31,6 +31,7 @@ KEYS = [
     "atol",
     "drift",
     "bound",
+    "converged",
     "checks",
     "n_pass",
     "n_diff",
@@ -141,7 +142,8 @@ def test_differences_moves_and_allowance():
     peak = np.array([100.0, 100.0, 0.0])
     atol = np.array([1e-8, 1e-2, 1e-8])
     a = _check.allowance(peak, atol, 1e-8, np.zeros(3))
-    assert a.tolist() == pytest.approx([1e3 * (1e-8 + 1e-6), 1.0, 1e-8])
+    # ... and never under 100 atol: the third column, at 0, is allowed 1e-6.
+    assert a.tolist() == pytest.approx([1e3 * (1e-8 + 1e-6), 1.0, 1e-6])
     a = _check.allowance(peak, atol, 1e-8, np.array([1e-3, 0, 0]))
     assert a[0] == pytest.approx(1e-2)
 
@@ -349,9 +351,9 @@ def test_a_budget_reports_what_did_not_fit():
 
 
 def test_a_small_species_is_judged_on_its_own_scale(monkeypatch):
-    # A at 1000 beside X at 1e-3: a path that has X 100x off must fail, though
-    # X is a millionth of the largest value.
-    m = bngsim.Model.from_antimony_string("A -> B; k*A; X -> Y; k*X; A = 1000; X = 0.001; k = 0.5")
+    # A at 1000 beside X at 1e-2: a path that has X 100x off must fail, though
+    # X is 1e-5 of the largest value.
+    m = bngsim.Model.from_antimony_string("A -> B; k*A; X -> Y; k*X; A = 1000; X = 0.01; k = 0.5")
     r = Simulator(m, method="ode").run(t_span=(0, 5), n_points=11, rtol=1e-6, atol=1e-12)
     names = r.species_names
     jx = names.index("X")
@@ -498,3 +500,67 @@ def test_a_species_not_converged_is_not_judged(monkeypatch):
     tol, jac = rep["checks"]
     assert tol["status"] == "diff" and tol["worst_column"] == "B"
     assert jac["status"] == "pass" and jac["n_not_judged"] == 1, jac
+
+
+def _trace_model(eps: float) -> bngsim.Model:
+    # A decays into B; a slow leak at eps*A makes I, a trace species degraded
+    # fast, which feeds a trace Z -> W chain.
+    return bngsim.Model.from_antimony_string(
+        "J1: A -> B; 0.1*A; J2: A -> A + I; eps*A; J3: I -> ; 50*I; J4: I -> Z; 1*I;"
+        f" J5: Z -> W; 1*Z; J6: W -> ; 1*W; A = 100; eps = {eps}"
+    )
+
+
+@pytest.mark.parametrize("eps, rtol", [(1e-6, 1e-8), (1e-6, 1e-4), (1e-9, 1e-8), (1e-15, 1e-8)])
+def test_trace_species_raise_no_spurious_finding(eps, rtol):
+    # The review's case: trace species at tens to hundreds of atol, whose
+    # solver noise read as a path disagreement or an unconverged run.
+    r = Simulator(_trace_model(eps), method="ode").run(t_span=(0, 30), n_points=31, rtol=rtol)
+    rep = r.check(["tolerance", "grid", "jacobian", "backend"])
+    assert rep["ok"] is True, str(rep)
+    assert rep["converged"] is True
+
+
+def test_a_trace_species_is_counted_not_judged(monkeypatch):
+    # I peaks near 2e-6 beside A at 100, 2e-8 of it: a trace column. A path
+    # 10x off in I alone passes, and the note says so.
+    r = Simulator(_trace_model(1e-6), method="ode").run(t_span=(0, 30), n_points=31)
+    ji = r.species_names.index("I")
+    real = Result.rerun
+
+    def rerun(self, **changes):
+        out = real(self, **changes)
+        if changes.get("jacobian") == "fd":
+            out = copy.copy(out)
+            sp = np.asarray(out._species, dtype=float).copy()
+            sp[:, ji] *= 10
+            out._species = sp
+        return out
+
+    monkeypatch.setattr(Result, "rerun", rerun)
+    (c,) = r.check("jacobian")["checks"]
+    assert c["status"] == "pass" and c["n_trace"] >= 1 and "trace column" in c["note"]
+
+
+def test_an_unconverged_run_is_not_ok_whichever_checks_ran(monkeypatch):
+    # Only the jacobian check asked for, on a run whose B moves 1% when the
+    # tolerance is tightened: the path passes on the other columns, but the
+    # report is not ok, and says why.
+    r = _run()
+    jb = r.species_names.index("B")
+    real = Result.rerun
+
+    def rerun(self, **changes):
+        out = real(self, **changes)
+        if changes.get("rtol") == pytest.approx(1e-9):
+            out = copy.copy(out)
+            sp = np.asarray(out._species, dtype=float).copy()
+            sp[:, jb] *= 1.01
+            out._species = sp
+        return out
+
+    monkeypatch.setattr(Result, "rerun", rerun)
+    rep = r.check("jacobian")
+    assert rep["checks"][0]["status"] == "pass"
+    assert rep["converged"] is False and rep["ok"] is False
+    assert "not converged" in rep["next"]

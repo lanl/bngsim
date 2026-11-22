@@ -16,13 +16,17 @@ and each column's absolute floor is the atol the run applied to that species:
   converged at its own tolerance. That move is also the run's *drift*;
 - every other check (a *path*) is judged column by column against the
   allowance ``max(min(PATH_RTOL_FACTOR·(atol_j + rtol·peak_j),
-  max(PATH_CEILING·peak_j, atol_j)), DRIFT_FACTOR·d_j)``, where ``d_j`` is how
-  far the column itself moves at the tighter tolerance: two correct paths each
-  err by about the tolerance, scaled by the problem's conditioning, which the
-  drift measures, and never by more than 1% of the column's peak (or its atol)
-  for the tolerance alone. A column that is not converged at the run's own
-  tolerance (its move past :data:`TOLERANCE_MOVE`) is not judged; where no
-  column is, the verdict is ``no_base``.
+  max(PATH_CEILING·peak_j, atol_j)), PATH_ATOL_FACTOR·atol_j,
+  DRIFT_FACTOR·d_j)``, where ``d_j`` is how far the column itself moves at the
+  tighter tolerance: two correct paths each err by about the tolerance, scaled
+  by the problem's conditioning, which the drift measures, and never by more
+  than 1% of the column's peak for the tolerance alone, unless the column is
+  within ``PATH_ATOL_FACTOR`` atol of zero, which resolves it no better;
+- a column whose peak is under :data:`RELEVANT_SHARE` of the largest column's
+  is the run's rounding: no check judges it, and the report counts it;
+- a column that is not converged at the run's own tolerance (its move past
+  :data:`TOLERANCE_MOVE`) is not judged; where no column is, the verdict is
+  ``no_base``, and a report on a run that is not converged is never ok.
 
 The constants are the developer-side differential harness's
 (``parity_checks/differential``, issue #1257). Its comparison is over the whole
@@ -70,6 +74,13 @@ TOLERANCE_MOVE = 1e-3
 #: peak. At an rtol of 1e-8 the first term is 1e-5 and this never bites; at a
 #: caller's rtol of 1e-3 the first term alone is the whole peak.
 PATH_CEILING = 1e-2
+#: But a path may always differ by this many times a column's atol: a column
+#: whose peak is within a few hundred atol of zero is resolved to no better.
+PATH_ATOL_FACTOR = 100.0
+#: A column whose peak is under this share of the largest column's is the
+#: run's rounding (the share the run's atol rule calls irrelevant,
+#: ``Simulator._ATOL_SCALE_RELEVANT``, issue #1361): no check judges it.
+RELEVANT_SHARE = 1e-6
 #: The grid check's output points, as a multiple of the run's intervals.
 GRID_FACTOR = 8
 #: How many reruns the replicates check makes of a stochastic run.
@@ -127,7 +138,7 @@ def allowance(
     by_tol = np.minimum(
         PATH_RTOL_FACTOR * (atol + rtol * peak), np.maximum(PATH_CEILING * peak, atol)
     )
-    return np.maximum(by_tol, DRIFT_FACTOR * drift)
+    return np.maximum(np.maximum(by_tol, PATH_ATOL_FACTOR * atol), DRIFT_FACTOR * drift)
 
 
 def _num(x: Any) -> float | None:
@@ -211,6 +222,7 @@ def check(
     out["atol"] = None
     out["drift"] = None
     out["bound"] = None
+    out["converged"] = None
     out["checks"] = []
 
     if run is None:
@@ -229,13 +241,19 @@ def check(
         out["checks"].append(v)
     if ctx.moved is not None and ctx.moved.size:
         out["drift"] = _num(ctx.moved.max())
+        out["converged"] = bool(ctx.moved.max() <= TOLERANCE_MOVE)
     out["bound"] = TOLERANCE_MOVE
     return _finish(out)
 
 
 def _finish(out: Report) -> Report:
     statuses = [c["status"] for c in out["checks"]]
-    out["ok"] = bool(statuses) and "pass" in statuses and not any(s in _NOT_OK for s in statuses)
+    out["ok"] = (
+        bool(statuses)
+        and "pass" in statuses
+        and not any(s in _NOT_OK for s in statuses)
+        and out.get("converged") is not False
+    )
     out["n_pass"] = statuses.count("pass")
     out["n_diff"] = statuses.count("diff")
     out["next"] = _next(out)
@@ -271,7 +289,7 @@ def _next(out: Report) -> str:
         )
     if any(c["status"] == "exception" for c in out["checks"]):
         return "A changed run raised: read its note before relying on the result."
-    if any(c["status"] == "no_base" for c in out["checks"]):
+    if any(c["status"] == "no_base" for c in out["checks"]) or out.get("converged") is False:
         return (
             "The run is not converged at its own tolerance, so no path could be judged: "
             "rerun at a tighter rtol and atol and check that."
@@ -336,6 +354,7 @@ class _Context:
             self.atols = np.full(n, float(self.atol) if self.atol is not None else 0.0)
         self.drift_abs: NDArray[np.float64] | None = None
         self.moved: NDArray[np.float64] | None = None
+        self.relevant: NDArray[np.bool_] = np.ones(n, dtype=bool)
         self.tol_error = ""
 
     def _view(self, result: Result) -> NDArray[np.float64]:
@@ -410,7 +429,9 @@ class _Context:
                 return self.tol_error
             d, peak = differences(self._view(tight), self.x)
             self.drift_abs = d
-            self.moved = moves(d, peak, self.atols)
+            top = float(peak.max()) if peak.size else 0.0
+            self.relevant = peak >= RELEVANT_SHARE * top if top > 0 else np.zeros(peak.size, bool)
+            self.moved = np.where(self.relevant, moves(d, peak, self.atols), 0.0)
         return self.tol_error or None
 
     def _worst(self, score: NDArray[np.float64]) -> str | None:
@@ -434,7 +455,7 @@ class _Context:
                 changed=changed,
             )
         assert self.drift_abs is not None and self.moved is not None and self.rtol is not None
-        judged = self.moved <= TOLERANCE_MOVE
+        judged = self.relevant & (self.moved <= TOLERANCE_MOVE)
         if not judged.any():
             return _verdict(
                 name,
@@ -456,13 +477,18 @@ class _Context:
         margin = float(ratio.max()) if ratio.size else 0.0
         value = float(rel.max()) if rel.size else 0.0
         status = "pass" if margin <= 1.0 else "diff"
-        n_out = int((~judged).sum())
+        n_out = int((self.relevant & ~judged).sum())
         note = (
             f"{value:.2e} of a column's peak at most; the largest difference is "
             f"{margin:.2g} of its allowance"
         )
         if n_out:
             note += f"; {n_out} column(s) not judged, not converged at the run's tolerance"
+        n_trace = int((~self.relevant).sum())
+        if n_trace:
+            note += (
+                f"; {n_trace} trace column(s), under {RELEVANT_SHARE:g} of the largest, not judged"
+            )
         return _verdict(
             name,
             status,
@@ -470,7 +496,11 @@ class _Context:
             note,
             worst=worst,
             changed=changed,
-            extra={"margin": _num(margin), "n_not_judged": n_out},
+            extra={
+                "margin": _num(margin),
+                "n_not_judged": n_out,
+                "n_trace": int((~self.relevant).sum()),
+            },
         )
 
     # --- the checks ------------------------------------------------------
@@ -490,13 +520,17 @@ class _Context:
             )
         assert self.moved is not None
         moved = float(self.moved.max()) if self.moved.size else 0.0
-        extra: dict[str, Any] = {"bound": TOLERANCE_MOVE, "value_100": None}
+        extra: dict[str, Any] = {
+            "bound": TOLERANCE_MOVE,
+            "value_100": None,
+            "n_trace": int((~self.relevant).sum()),
+        }
         # A hundredfold tighter too, where the budget allows: whether the
         # answer keeps moving, or has stopped.
         try:
             tighter = self.rerun(**self._tighter(100.0))
             d, peak = differences(self._view(tighter), self.x)
-            m100 = moves(d, peak, self.atols)
+            m100 = np.where(self.relevant, moves(d, peak, self.atols), 0.0)
             extra["value_100"] = _num(m100.max()) if m100.size else 0.0
         except _Out:
             pass
@@ -509,6 +543,11 @@ class _Context:
         )
         if extra["value_100"] is not None:
             note += f", by {extra['value_100']:.2e} at rtol/100"
+        if extra["n_trace"]:
+            note += (
+                f"; {extra['n_trace']} trace column(s), under {RELEVANT_SHARE:g} of the "
+                "largest, not judged"
+            )
         worst = self._worst(self.moved)
         return _verdict(
             "tolerance", status, moved, note, worst=worst, changed=changed, extra=extra
@@ -708,7 +747,9 @@ def _second_engine(ctx: _Context) -> dict[str, Any]:
             return _verdict(name, "skip", note=f"libRoadRunner has no species {missing[0]!r}")
         assert ctx.rtol is not None and ctx.atol is not None
         rr.integrator.relative_tolerance = float(ctx.rtol)
-        rr.integrator.absolute_tolerance = float(ctx.atol)
+        rr.integrator.absolute_tolerance = (
+            float(ctx.atols.min()) if ctx.atols.size else float(ctx.atol)
+        )
         sel = ["time"] + [f"[{s}]" for s in ctx.names]
         out = rr.simulate(
             float(ctx.run["t_start"]), float(ctx.run["t_end"]), int(ctx.run["n_points"]), sel

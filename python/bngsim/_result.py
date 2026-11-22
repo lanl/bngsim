@@ -3439,16 +3439,19 @@ class Result:
             (1), ``ok`` (a check passed, and none moved the answer past its
             bound, raised or ran out of budget), ``method``, ``stochastic``,
             ``rtol``, ``atol``, ``drift`` (the largest move of a species at
-            the tighter tolerance) and ``bound`` (1e-3), ``checks`` (in the order run, each with
-            ``name``, ``status``, ``value``, ``worst_column``, ``changed``
-            (the setting changed) and ``note``), ``n_pass``, ``n_diff`` and
+            the tighter tolerance), ``bound`` (1e-3) and ``converged``
+            (whether every species is under it; a report on a run that is
+            not converged is never ``ok``, whichever checks ran), ``checks``
+            (in the order run, each with ``name``, ``status``, ``value``,
+            ``worst_column``, ``changed`` (the setting changed) and
+            ``note``), ``n_pass``, ``n_diff`` and
             ``next``, what to do. A status is ``"pass"``, ``"diff"`` (the
             answer moved past the bound), ``"skip"`` (with the reason),
             ``"unsupported"``, ``"exception"`` (the changed run raised),
             ``"no_base"`` (no species is converged at the run's own
             tolerance, so no path is judged) or ``"timeout"``. A path's
             verdict also gives ``margin`` (its largest difference over the
-            allowance; at most 1 passes) and ``n_not_judged``.
+            allowance; at most 1 passes), ``n_not_judged`` and ``n_trace``.
 
         Raises
         ------
@@ -3462,9 +3465,11 @@ class Result:
         path passes when, in every species converged at the run's tolerance
         (its move under 1e-3), its largest difference from this run is at
         most ``max(min(1e3·(atol_j + rtol·peak_j), max(0.01·peak_j,
-        atol_j)), 10·d_j)``: a thousand times what the tolerances allow, but
-        never more than 1% of the species' peak (or its atol), or ten times
-        how far it moves itself at the tighter tolerance (``d_j``). The
+        atol_j)), 100·atol_j, 10·d_j)``: a thousand times what the
+        tolerances allow, but never more than 1% of the species' peak
+        (unless it is within 100 atol of zero), or ten times how far it moves
+        itself at the tighter tolerance (``d_j``). A species under 1e-6 of
+        the largest species' peak is the run's rounding and is not judged. The
         factors are the developer-side differential harness's (issue #1257),
         whose comparison is over the whole trajectory at once. A ``"diff"``
         between two bngsim paths on a model bngsim accepts is a bug worth
