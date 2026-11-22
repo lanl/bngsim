@@ -24,6 +24,7 @@ from pathlib import Path
 import bngsim
 import numpy as np
 import pytest
+from bngsim._exceptions import ConversionError
 from bngsim.convert._protocol import Experiment, ProtocolSpec, StateChange
 
 NET = """begin parameters
@@ -336,6 +337,20 @@ def test_three_held_parameters_in_a_chain_hold_until_none_moves(tmp_path):
     # Not where one pass leaves the three (kf at 0.5/3), nor two (kr at 4/3).
     for kf, kr in ((0.5 / 3, 1.0), (0.5, 0.5 - 0.5 / 3 + 1)):
         assert _end(out[0].result) != pytest.approx(a_at(0.25, kf, kr), rel=1e-3)
+
+
+def test_a_hold_that_does_not_settle_is_refused_not_run(tmp_path, monkeypatch):
+    # A model that drops the write-back of k2's number: the hold cannot settle,
+    # and the replay says so instead of running at k2 = k1*0.5.
+    real = bngsim.Model.set_params
+
+    def drops_k2(self, values):
+        real(self, {n: v for n, v in values.items() if (n, v) != ("k2", 0.5)})
+
+    monkeypatch.setattr(bngsim.Model, "set_params", drops_k2)
+    model = _model(tmp_path, "k1*0.5")
+    with pytest.raises(ConversionError, match=r"\['k2'\], each set to a number, do not hold"):
+        _replay(model, _set("k2", 0.5), _set("k1", 3), _run())
 
 
 def test_a_held_parameter_set_to_a_second_number_takes_it(tmp_path):

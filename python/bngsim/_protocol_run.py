@@ -644,6 +644,16 @@ class _Runner:
             if not moved:
                 return
             self.model.set_params(moved)
+        # Reached anyway: a run now would read a parameter off its number, with
+        # no word of it. Say so, as _follow does where its chain does not settle.
+        unsettled = sorted(
+            n for n, v in self.pinned.items() if float(self.model.get_param(n)) != v
+        )
+        if unsettled:
+            raise ConversionError(
+                f"the parameters {unsettled}, each set to a number, do not hold it: writing "
+                "them back keeps moving them"
+            )
 
     def _pin(self, name: str, value: float | None) -> None:
         """Record that *name* now holds *value* as a number (``None``: it holds an
