@@ -643,3 +643,18 @@ def test_a_species_two_hundred_atol_from_zero_is_judged(monkeypatch):
     rep = r.check("jacobian")
     assert "I" not in rep["not_resolved"]
     assert rep["checks"][0]["status"] == "diff" and rep["checks"][0]["worst_column"] == "I"
+
+
+def test_a_run_that_cannot_be_made_again_is_unsupported_not_an_exception(monkeypatch):
+    # A network-free run, a stop condition: rerun() refuses by design, and a
+    # check that would rerun it does not apply.
+    def refuse(self, **changes):
+        raise bngsim.BngsimError("a network-free run is not made again", code="rerun.unsupported")
+
+    sim = Simulator(examples.load("birth_death"), method="ssa")
+    r = sim.run(t_span=(0, 1), n_points=3, seed=1)
+    monkeypatch.setattr(Result, "rerun", refuse)
+    rep = r.check()
+    (c,) = rep["checks"]
+    assert c["status"] == "unsupported" and "no rerun" in c["note"], c
+    assert rep["ok"] is False and "No check could run" in rep["next"]

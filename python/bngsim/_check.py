@@ -416,6 +416,10 @@ class _Context:
         except _Out:
             return _verdict(name, "timeout", note="the budget ran out before this check finished")
         except Exception as e:  # noqa: BLE001 - a check that raises is a finding
+            if getattr(e, "code", None) in ("rerun.unsupported", "rerun.not_recorded"):
+                # The run cannot be made again from its record (a network-free
+                # run, a stop condition, ...): the check does not apply.
+                return _verdict(name, "unsupported", note=f"no rerun: {_first_line(e)}")
             return _verdict(name, "exception", note=f"{type(e).__name__}: {_first_line(e)}")
 
     # --- the reference ---------------------------------------------------
