@@ -3355,12 +3355,17 @@ class Result:
               largest ``|dy_dlnp|`` first, of ``name``, ``dy_dp`` (the
               derivative as :attr:`sensitivities` holds it), ``dy_dlnp``
               (``p·dy_dp``, with ``p`` the parameter's value as the run started
-              or the species' value at the first time), ``dlny_dlnp`` (the
+              or the species' amount the run started from, before any event at
+              the first time), ``dlny_dlnp`` (the
               scaled sensitivity ``(p/y)·dy_dp``, ``None`` unless ``resolved``)
-              and ``one_sided`` (the side a one-sided column is taken from,
-              :attr:`one_sided_sensitivities`, else ``None``); and
-              ``n_parameters_left_out``, ``n_parameters_non_finite`` and the
-              same two of ``initial_amounts``.
+              and ``one_sided`` (the side a one-sided column is taken from at
+              the last time, by the kinks of :attr:`one_sided_sensitivities`
+              at or before it; ``"mixed"`` where two took opposite sides; else
+              ``None``); and ``n_parameters_left_out``,
+              ``n_parameters_non_finite`` (a derivative, or its product with
+              ``p``, that is not finite) and the same two of
+              ``initial_amounts``. A block the result does not hold for the
+              column's kind (an older file) gives ``None`` for its three keys.
 
             With ``sensitivities=True`` the run block has ``sensitivity`` too:
             ``t`` (the last time), ``max_parameters``, ``reason`` (why there is
@@ -3369,7 +3374,8 @@ class Result:
             initial amounts, that are not ranked because their value is 0
             (``at_zero``, ``initial_at_zero``) or not recorded (``unvalued``,
             ``initial_unvalued``), each list at most 20 long with its count
-            (``n_at_zero`` …), and ``one_sided``, ``{parameter: side}``.
+            (``n_at_zero`` …), and ``one_sided``, ``{parameter: side}`` at the
+            last time, at most 20, with ``n_one_sided``.
 
             ``min`` and ``max`` are over the finite values; a ``first`` or
             ``last`` that is not finite is ``None``, as are the readings of
@@ -3409,8 +3415,11 @@ class Result:
         ``|dY/dln p| = |p·dY/dp|``, which within one column is the order of the
         scaled sensitivity ``(p/y)·dY/dp`` and needs no division by ``y``. A
         parameter at 0 has no ``dY/dln p`` however much it matters, and one
-        whose value the record does not give (a stack's rows started at
-        different ones) cannot be scaled: they are listed apart, not ranked.
+        whose value the record does not give (a hidden internal parameter, or
+        a result with no record of its run's parameters, such as
+        :meth:`Simulator.compute_all_sensitivities`' or a file written before
+        the record held them) cannot be scaled: they are listed apart, not
+        ranked.
         A derivative that is not finite (an assignment-rule species whose row
         is refused, :attr:`ar_sensitivity_refused`, or an observable summing
         one) is counted and not ranked. The parameter axis is the total

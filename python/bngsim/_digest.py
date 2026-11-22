@@ -471,21 +471,33 @@ class _Sens:
         elif n_points == 0:
             self.reason = "the result has no time points"
         # The values each column is scaled by: a parameter's as the run started,
-        # an initial amount's the species' value at the first time.
+        # an initial amount's as the run started too (the start state, which
+        # holds the species in their reported order before any promoted symbol,
+        # and is the state before an event at the first time fires), or where
+        # the result does not hold it, the species' value at the first time.
         values = _param_values(result) or {}
         self.p = [_value(values.get(name)) for name in self.params]
         names = list(result._species_names)
-        first = np.asarray(result._species, dtype=np.float64)
+        start = result._start_state
+        x0: NDArray[np.float64] | None
+        if start is not None and len(start) >= len(names):
+            x0 = np.asarray(start, dtype=np.float64)[: len(names)]
+        else:
+            first = np.asarray(result._species, dtype=np.float64)
+            x0 = first[0] if first.ndim == 2 and first.shape[0] else None
         self.x0 = [
-            _value(first[0, names.index(n)])
-            if n in names and first.ndim == 2 and first.size
-            else None
-            for n in self.ics
+            _value(x0[names.index(n)]) if x0 is not None and n in names else None for n in self.ics
         ]
+        # A column is one-sided at the last time where a kink at or before it
+        # made it so; a kink past it (a result cut short keeps the whole run's)
+        # does not, and two kinks taking opposite sides leave it "mixed".
+        t_end = float(np.asarray(result._time)[-1]) if n_points else -math.inf
         one_sided: dict[str, str] = {}
-        for _t, columns in getattr(result, "_one_sided_sensitivities", ()):
+        for t, columns in getattr(result, "_one_sided_sensitivities", ()):
+            if float(t) > t_end:
+                continue
             for name, side in dict(columns).items():
-                one_sided.setdefault(name, side)
+                one_sided[name] = side if one_sided.get(name, side) == side else "mixed"
         self.one_sided = one_sided
 
     def head(self, t_end: float | None) -> dict[str, Any]:
@@ -496,6 +508,7 @@ class _Sens:
         unvalued = [n for n, v in zip(self.params, self.p, strict=True) if v is None]
         ic_zero = [n for n, v in zip(self.ics, self.x0, strict=True) if v == 0.0]
         ic_unvalued = [n for n, v in zip(self.ics, self.x0, strict=True) if v is None]
+        sided = [(n, self.one_sided[n]) for n in self.params if n in self.one_sided]
         return {
             "t": t_end,
             "max_parameters": self.k,
@@ -510,7 +523,8 @@ class _Sens:
             "initial_at_zero": ic_zero[:MAX_NOTICES],
             "n_initial_unvalued": len(ic_unvalued),
             "initial_unvalued": ic_unvalued[:MAX_NOTICES],
-            "one_sided": {n: self.one_sided[n] for n in self.params if n in self.one_sided},
+            "n_one_sided": len(sided),
+            "one_sided": dict(sided[:MAX_NOTICES]),
         }
 
     def of(self, kind: str) -> Any:
@@ -538,15 +552,21 @@ class _Sens:
         )
 
         def entry(j: int, atol: float | None) -> dict[str, Any] | None:
-            if (self.params and par is None) or (self.ics and ic is None):
+            if par is None and ic is None:
                 return None
             y = float(values[-1, j])
             resolved = None if atol is None or not math.isfinite(y) else bool(abs(y) > atol)
             out: dict[str, Any] = {"y": _num(y), "resolved": resolved}
-            p_rows = par[j] if par is not None else np.empty(0)
-            i_rows = ic[j] if ic is not None else np.empty(0)
-            out.update(self._ranked(p_rows, self.params, self.p, y, resolved, "parameters"))
-            out.update(self._ranked(i_rows, self.ics, self.x0, y, resolved, "initial_amounts"))
+            # A block the result does not hold for this kind (an older file)
+            # is None, and the other is still ranked.
+            for rows, names, scale, key in (
+                (par, self.params, self.p, "parameters"),
+                (ic, self.ics, self.x0, "initial_amounts"),
+            ):
+                if rows is None:
+                    out.update({key: None, f"n_{key}_left_out": None, f"n_{key}_non_finite": None})
+                else:
+                    out.update(self._ranked(rows[j], names, scale, y, resolved, key))
             return out
 
         return entry
@@ -562,11 +582,18 @@ class _Sens:
     ) -> dict[str, Any]:
         """The *k* entries of the largest ``|scale·d|``, largest first, ties by
         index, with how many were left out and how many are not finite."""
-        finite = np.isfinite(d)
+        # A derivative that is not finite, or whose product with its value
+        # overflows, is counted and not ranked.
+        with np.errstate(over="ignore", invalid="ignore"):
+            prod = np.array(
+                [float(scale[i] or 0.0) * float(d[i]) for i in range(len(names))],
+                dtype=np.float64,
+            )
+        finite = np.isfinite(d) & np.isfinite(prod)
         ok = [
             i for i in range(len(names)) if finite[i] and scale[i] is not None and scale[i] != 0.0
         ]
-        weighed = np.array([float(scale[i] or 0.0) * float(d[i]) for i in ok], dtype=np.float64)
+        weighed = prod[ok]
         order = sorted(range(len(ok)), key=lambda m: (-abs(weighed[m]), ok[m]))
         listed = []
         for m in order[: self.k]:
@@ -681,8 +708,9 @@ def text(d: dict[str, Any]) -> str:
         lines.append(line)
         for row in block["columns"]:
             lines.append("  " + _row_text(row))
-            if "sensitivity" in row:
-                lines.append("    " + _sens_text(row["sensitivity"], d.get("sensitivity")))
+            head_s = d.get("sensitivity")
+            if "sensitivity" in row and not (head_s and head_s.get("reason")):
+                lines.append("    " + _sens_text(row["sensitivity"], head_s))
     head_sens = d.get("sensitivity")
     if head_sens is not None:
         if head_sens.get("reason"):
@@ -710,6 +738,9 @@ def _sens_text(s: dict[str, Any] | None, head: dict[str, Any] | None) -> str:
     parts = []
     for key, label in (("parameters", "parameters"), ("initial_amounts", "initial amounts")):
         entries = s[key]
+        if entries is None:
+            parts.append(f"{label}: no block for this column")
+            continue
         left, bad = s[f"n_{key}_left_out"], s[f"n_{key}_non_finite"]
         if not entries and not left and not bad:
             continue
@@ -725,7 +756,7 @@ def _sens_text(s: dict[str, Any] | None, head: dict[str, Any] | None) -> str:
             extra.append(f"{bad} not finite")
         parts.append(f"{label} {listed or '-'}" + (f" ({', '.join(extra)})" if extra else ""))
     note = "" if scaled else ("; y within its tolerance of 0" if s["resolved"] is False else "")
-    return f"at t={t} by {what}{note}: " + "; ".join(parts)
+    return f"at t={t} by {what}{note}: " + ("; ".join(parts) or "none ranked")
 
 
 def _row_text(row: dict[str, Any]) -> str:

@@ -42,6 +42,7 @@ HEAD_KEYS = [
     "initial_at_zero",
     "n_initial_unvalued",
     "initial_unvalued",
+    "n_one_sided",
     "one_sided",
 ]
 
@@ -290,7 +291,7 @@ def test_a_one_sided_column_is_ranked_with_its_side():
     assert "a 1 (increasing side)" in str(d)
 
 
-def test_initial_amounts_are_scaled_by_the_first_value():
+def test_initial_amounts_are_scaled_by_the_first_value_where_no_start_is_held():
     # x0 = 4 for s0 and 0 for s1: s1 has no dY/dln x0.
     r = _sens(
         [2.0, 1.0],
@@ -327,13 +328,13 @@ def test_a_stack_says_so():
     assert _col(d, "y0") is None
 
 
-def test_a_column_whose_block_is_missing_has_none():
+def test_a_column_whose_block_is_missing_has_none_for_it():
     r = _sens([1.0], [[1.0]], {"a": 1.0})
     r._observable_sensitivities = np.empty((0, 0, 0))
     d = r.digest(sensitivities=True, species=True)
-    assert _col(d, "y0") is None
-    assert _col(d, "y0", "species") is not None
-    assert "sensitivity: none for this column" in str(d)
+    assert _col(d, "y0")["parameters"] is None
+    assert _col(d, "y0", "species")["parameters"][0]["name"] == "a"
+    assert "parameters: no block for this column" in str(d)
 
 
 def test_without_the_option_nothing_changes():
@@ -355,3 +356,152 @@ def test_without_the_option_nothing_changes():
 def test_bad_arguments_are_refused(kwargs):
     with pytest.raises(UsageError):
         _sens([1.0], [[1.0]], {"a": 1.0}).digest(**kwargs)
+
+
+def test_initial_amounts_are_scaled_by_the_start_state():
+    # The start state holds the species in order, then a promoted symbol.
+    r = _sens(
+        [2.0, 1.0],
+        [[0.0], [0.0]],
+        {"a": 1.0},
+        ic={"s0": 4.0, "s1": 0.0},
+        ic_last=[[0.5, 7.0], [0.25, 3.0]],
+    )
+    r._start_state = np.array([8.0, 1.0, 99.0])
+    d = r.digest(sensitivities=True)
+    s = _col(d, "s0")
+    assert [(e["name"], e["dy_dlnp"]) for e in s["initial_amounts"]] == [("s1", 7.0), ("s0", 4.0)]
+    assert d["sensitivity"]["n_initial_at_zero"] == 0
+
+
+def test_an_event_at_the_first_time_does_not_move_the_initial_amount():
+    # A = 10 declared; an event at t=0 adds 5, so A(t) = (A0 + 5)·exp(-k·t):
+    # dA/dA0 = exp(-k·t), and the scale is the declared 10, not the 15 the
+    # first sample holds.
+    try:
+        model = bngsim.Model.from_antimony_string(
+            "species A; A = 10; k = 0.5; J1: A -> ; k*A;\nE: at (time >= 0), t0=false: A = A + 5;"
+        )
+        r = Simulator(model, method="ode", sensitivity_ic=["A"]).run(
+            t_span=(0, 4), n_points=5, rtol=1e-10, atol=1e-12
+        )
+    except (ImportError, bngsim.CodegenToolchainError) as e:
+        pytest.skip(f"needs antimony and a C compiler: {e}")
+    assert r.species[0, 0] == pytest.approx(15.0)
+    (x0,) = _col(r.digest(sensitivities=True, species=True), "A", "species")["initial_amounts"]
+    e2 = math.exp(-2.0)
+    assert x0["dy_dp"] == pytest.approx(e2, rel=1e-6)
+    assert x0["dy_dlnp"] == pytest.approx(10.0 * e2, rel=1e-6)
+    assert x0["dlny_dlnp"] == pytest.approx(10.0 / 15.0, rel=1e-6)
+
+
+def test_observables_and_species_read_their_own_blocks():
+    try:
+        m = examples.load("binding")
+        r = Simulator(
+            m,
+            method="ode",
+            sensitivity_params=["kf", "kr", "A0", "B0"],
+            sensitivity_ic=["A(b)", "B(a)"],
+        ).run(t_span=(0, 5), n_points=6)
+    except bngsim.CodegenToolchainError:
+        pytest.skip("no C compiler for forward sensitivities")
+    d = r.digest(sensitivities=True, species=True, max_parameters=10)
+    blocks = {
+        "observables": (
+            r.observable_names,
+            r.sensitivities_observables,
+            r.sensitivities_observables_ic,
+        ),
+        "species": (r.species_names, r.sensitivities, r.sensitivities_ic),
+    }
+    seen = 0
+    for kind, (names, par, ic) in blocks.items():
+        for row in d[kind]["columns"]:
+            j = names.index(row["name"])
+            s = row["sensitivity"]
+            for e in s["parameters"]:
+                assert e["dy_dp"] == par[-1, j, r.sensitivity_params.index(e["name"])]
+                seen += 1
+            for e in s["initial_amounts"]:
+                assert e["dy_dp"] == ic[-1, j, r.sensitivity_ic_species.index(e["name"])]
+                seen += 1
+    assert seen > 10
+    # an observable that is no species reads otherwise than any species row
+    assert set(r.observable_names).isdisjoint(r.species_names)
+
+
+def test_a_kink_past_the_last_time_does_not_make_a_column_one_sided():
+    # A result cut short keeps the whole run's kinks.
+    r = _sens([1.0], [[1.0, 2.0]], {"a": 1.0, "b": 1.0})
+    r._one_sided_sensitivities = [(5.0, {"a": "increasing"})]
+    d = r.digest(sensitivities=True)
+    assert all(e["one_sided"] is None for e in _col(d, "y0")["parameters"])
+    assert d["sensitivity"]["one_sided"] == {} and d["sensitivity"]["n_one_sided"] == 0
+
+
+def test_kinks_on_opposite_sides_are_mixed_and_the_same_side_stays():
+    r = _sens([1.0], [[1.0, 2.0]], {"a": 1.0, "b": 1.0})
+    r._one_sided_sensitivities = [
+        (0.2, {"a": "increasing", "b": "decreasing"}),
+        (0.7, {"a": "decreasing", "b": "decreasing"}),
+    ]
+    d = r.digest(sensitivities=True)
+    assert d["sensitivity"]["one_sided"] == {"a": "mixed", "b": "decreasing"}
+    assert {e["name"]: e["one_sided"] for e in _col(d, "y0")["parameters"]} == {
+        "a": "mixed",
+        "b": "decreasing",
+    }
+
+
+def test_the_one_sided_list_is_bounded_and_counted():
+    params = {f"p{i}": 1.0 for i in range(30)}
+    r = _sens([1.0], [[1.0] * 30], params)
+    r._one_sided_sensitivities = [(0.5, dict.fromkeys(params, "increasing"))]
+    head = r.digest(sensitivities=True)["sensitivity"]
+    assert head["n_one_sided"] == 30 and len(head["one_sided"]) == 20
+
+
+def test_a_product_that_overflows_is_counted_not_ranked():
+    r = _sens([1.0], [[1e300, 2.0]], {"a": 1e300, "b": 1.0})
+    d = r.digest(sensitivities=True)
+    json.dumps(d, allow_nan=False)
+    s = _col(d, "y0")
+    assert [e["name"] for e in s["parameters"]] == ["b"]
+    assert s["n_parameters_non_finite"] == 1
+
+
+def test_a_missing_block_leaves_the_other_ranked():
+    r = _sens(
+        [2.0, 1.0],
+        [[3.0], [1.0]],
+        {"a": 1.0},
+        ic={"s0": 4.0, "s1": 1.0},
+        ic_last=[[0.5, 7.0], [0.25, 3.0]],
+    )
+    r._observable_sensitivities_ic = np.empty((0, 0, 0))
+    d = r.digest(sensitivities=True)
+    s = _col(d, "s0")
+    assert [e["name"] for e in s["parameters"]] == ["a"]
+    assert s["initial_amounts"] is None and s["n_initial_amounts_left_out"] is None
+    assert "initial amounts: no block for this column" in str(d)
+
+
+def test_a_result_with_no_record_of_its_parameters_ranks_none_and_says_so():
+    try:
+        r = Simulator(examples.load("chain")).compute_all_sensitivities(
+            t_span=(0, 10), n_points=11
+        )
+    except bngsim.CodegenToolchainError:
+        pytest.skip("no C compiler for forward sensitivities")
+    d = r.digest(sensitivities=True)
+    assert d["sensitivity"]["n_unvalued"] == len(r.sensitivity_params) > 0
+    text = str(d)
+    assert "none ranked" in text and "parameters of no recorded value" in text
+
+
+def test_no_sensitivities_says_so_once():
+    r = Simulator(examples.load("chain"), method="ode").run(t_span=(0, 1), n_points=3)
+    text = str(r.digest(sensitivities=True, species=True))
+    assert text.count("sensitivities: none read") == 1
+    assert "none for this column" not in text
