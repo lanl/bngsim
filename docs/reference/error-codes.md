@@ -344,6 +344,41 @@ Raised as `StopConditionMet`. A stop condition was met. The error carries the re
 
 Read ``e.result``. This is how a stop condition reports, not a failure.
 
+(code-rerun-not-recorded)=
+### `rerun.not_recorded`
+
+Raised as `UsageError`. The result's record lacks a part a rerun needs (``details['missing']``): it was made by a call that records no run, or loaded from a file an earlier bngsim wrote.
+
+Run the model again with ``Simulator.run``.
+
+(code-rerun-unsupported)=
+### `rerun.unsupported`
+
+Raised as `UsageError`. The record cannot promise the same run (``details['reason']``): a stack of runs, a network-free run, stop conditions, carried or declared sensitivities, or a model changed after its load.
+
+Rerun one row of a stack; run the others again with ``Simulator.run``.
+
+(code-rerun-unknown-setting)=
+### `rerun.unknown_setting`
+
+Raised as `UsageError`. ``Result.rerun()`` was given a setting it does not change.
+
+Use one of ``details['accepted']``.
+
+(code-rerun-model-changed)=
+### `rerun.model_changed`
+
+Raised as `ModelError`. The model file's sha256 differs from the record's, or the model built from the recorded source is not the one the run used.
+
+Load the file as it is now and run it with ``Simulator.run``, or put back the file the run used.
+
+(code-rerun-model-missing)=
+### `rerun.model_missing`
+
+Raised as `ModelError`. The model file the run used cannot be read.
+
+Put the file back at ``details['path']``.
+
 (notice-codes)=
 ## Notice codes
 
@@ -365,6 +400,8 @@ A run's warnings and fallbacks are kept on `result.notices`, and on the error of
 | `jax.zero_gradients` | Model functions may give JAX zero gradients at discontinuities. | Nothing to fix: the JAX Jacobian may read zero across a discontinuity, and the solver adapts its step there. |
 | `linear_solver.dense_without_klu` | A large model ran on the dense linear solver because this install has no KLU. | The numbers stand. An install with KLU, which `bngsim.capabilities()` reports, runs a large model faster. |
 | `protocol.steady_state_not_reached` | A protocol's run asked to stop at a steady state reached none by its end. | Lengthen that run's time window, or do not read its end state as steady. |
+| `rerun.different_backend` | A Result.rerun() ran other code (right-hand side, Jacobian, linear solver or propensities) than the run it repeats; its numbers may differ in their last digits. | Nothing to fix where last digits do not matter; to match the run exactly, pass the `codegen` or `jacobian` its record's `backend` names. |
+| `rerun.different_build` | A Result.rerun() ran on another bngsim version or build than the run it repeats. | Nothing to fix for an ODE run; for a stochastic run, compare the two as realizations, not as one run. |
 | `rulemonkey.unsupported` | RuleMonkey reported a construct it does not support as written. | Read the message for the construct; the model may need another method to run as written. |
 | `scan.dose_dropped` | A parameter scan cannot move the species the scanned parameter seeds: each point starts them at the state the scan started from, not at their dose. | Set each seeded species in `on_point`, as the message shows. For a scan that is not a sensitivity scan, `model.reset()` before it doses from the initial conditions instead. |
 | `sens.chain_rule_dropped` | A derived parameter's expression could not be differentiated; sensitivities through it read zero along that path. | Read sensitivities through that parameter as missing, not zero; check them by finite differences. |

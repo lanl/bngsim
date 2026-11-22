@@ -159,6 +159,8 @@ class Model:
         "_loaded_state",
         "_last_run_end",
         "_source",
+        "_source_text",
+        "_edits",
         "_sbml_record",
         "_record_info",
     )
@@ -190,6 +192,14 @@ class Model:
         # for a model built in Python (ModelBuilder, build_model_from_parsed, a
         # coupling submodel). Read by describe(). A clone keeps its parent's.
         self._source: dict[str, Any] | None = None
+        # Issue #1703: the text the model was loaded from, where it came from a
+        # string and not a file, which Result.rerun() builds it again from. A
+        # clone keeps its parent's.
+        self._source_text: str | bytes | None = None
+        # Issue #1703: the calls that changed the model's equations or data
+        # since its load, which its source does not hold (add_table_function),
+        # so that Result.rerun() refuses a model it cannot build again.
+        self._edits: tuple[str, ...] = ()
         # Issue #1705: the SBML loader's record of the file, for describe():
         # its compartments, each species' compartment, the parameters it
         # declares and its reactions as written, by the names the model uses
@@ -1608,6 +1618,8 @@ class Model:
         # not copied: the vector is read-only, and the record is only replaced.
         m._last_run_end = self._last_run_end
         m._source = dict(self._source) if self._source is not None else None
+        m._source_text = self._source_text
+        m._edits = self._edits
         m._sbml_record = self._sbml_record  # read-only once the loader made it
         m._record_info = self._record_info  # of the model's structure, read-only
         m._net_path = self._net_path
@@ -3410,6 +3422,11 @@ class Model:
         # The breakpoints the run stops on are read from the tables' data
         # (issue #709), and new data under a table's name moves them.
         self._table_breaks = None
+        # Data the source does not hold (issue #1703): a Result.rerun() of a
+        # run from now on refuses, and the record says why.
+        if "add_table_function" not in self._edits:
+            self._edits = (*self._edits, "add_table_function")
+            self._record_info = None
         read = [t["name"] for t in self._core.table_function_tables if t["read"]]
         if name not in read:
             warnings.warn(
@@ -3782,6 +3799,7 @@ def _record_source(
     elif text is not None:
         # libantimony also takes bytes (issue #1705 review): hashed as given.
         data = bytes(text)
+    model._source_text = None if path is not None else text
     model._source = {
         "format": fmt,
         "path": where,

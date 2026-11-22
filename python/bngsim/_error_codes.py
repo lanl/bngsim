@@ -335,6 +335,42 @@ _CODES = (
         "A stop condition was met. The error carries the result up to that point.",
         "Read ``e.result``. This is how a stop condition reports, not a failure.",
     ),
+    # ─── Making a run again (Result.rerun) ───────────────────────────────────
+    ErrorCode(
+        "rerun.not_recorded",
+        "UsageError",
+        "The result's record lacks a part a rerun needs (``details['missing']``): it was "
+        "made by a call that records no run, or loaded from a file an earlier bngsim wrote.",
+        "Run the model again with ``Simulator.run``.",
+    ),
+    ErrorCode(
+        "rerun.unsupported",
+        "UsageError",
+        "The record cannot promise the same run (``details['reason']``): a stack of runs, a "
+        "network-free run, stop conditions, carried or declared sensitivities, or a model "
+        "changed after its load.",
+        "Rerun one row of a stack; run the others again with ``Simulator.run``.",
+    ),
+    ErrorCode(
+        "rerun.unknown_setting",
+        "UsageError",
+        "``Result.rerun()`` was given a setting it does not change.",
+        "Use one of ``details['accepted']``.",
+    ),
+    ErrorCode(
+        "rerun.model_changed",
+        "ModelError",
+        "The model file's sha256 differs from the record's, or the model built from the "
+        "recorded source is not the one the run used.",
+        "Load the file as it is now and run it with ``Simulator.run``, or put back the "
+        "file the run used.",
+    ),
+    ErrorCode(
+        "rerun.model_missing",
+        "ModelError",
+        "The model file the run used cannot be read.",
+        "Put the file back at ``details['path']``.",
+    ),
 )
 
 #: The generic codes: an error raised from one with a code outside these carries

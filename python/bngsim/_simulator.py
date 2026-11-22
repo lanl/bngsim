@@ -198,6 +198,20 @@ class _Ceiling(NamedTuple):
     vector: list[float]
 
 
+class _Recorded(NamedTuple):
+    """An absolute tolerance as a run's record says the solver was given it,
+    handed to :meth:`Simulator.run` by :meth:`Result.rerun` (issue #1703): the
+    scalar, the per-species vector and the tracking depth, used as they are,
+    since a scalar read as a ceiling again, or a tracking ceiling made again
+    from the start, would be a second reading. ``given`` is the ``atol=`` the
+    run recorded, for the rerun's own record."""
+
+    scalar: float
+    vector: list[float] | None
+    decades: float
+    given: Any
+
+
 class _ResolvedAtol(NamedTuple):
     """One call's absolute tolerance, resolved into what SolverOptions takes.
 
@@ -4290,6 +4304,8 @@ class Simulator:
             # A call's own resolved scalar, handed back to run() (a scan's
             # point); the call that resolved it records what it was asked.
             return float(atol.scalar)
+        if isinstance(atol, _Recorded):
+            return copy.deepcopy(atol.given)
         if atol is not None:
             return _record.atol_given(atol)
         if not self._atol_set:
@@ -4358,6 +4374,8 @@ class Simulator:
         carry_sensitivities: bool = False,
         start: str | None = None,
         jacobian: str | None = None,
+        carry: Any = None,
+        model: Model | None = None,
     ) -> None:
         """Leave on *result* what its record says of its run (issue #1703):
         what the call was asked and what it did, the parameter values it
@@ -4365,7 +4383,9 @@ class Simulator:
         before the run), and which code ran. *began* is the call's
         ``time.perf_counter()``. For an ODE run, *resolved* is the absolute
         tolerance the solver was given and *jacobian* the one its returned
-        attempt used (:meth:`_jacobian_used`)."""
+        attempt used (:meth:`_jacobian_used`). *carry* is the event state the
+        run started from (``core.event_carry_state()``), and *model* the one it
+        ran, where that is not this Simulator's own (a batch row's clone)."""
         ode = self._method == "ode"
         sens = bool(self._sensitivity_params or self._sensitivity_ic)
         info, values = params
@@ -4432,6 +4452,10 @@ class Simulator:
                 else None
             ),
             propensities=result._ssa_diagnostics.get("propensity_backend") if ssa else None,
+            start_carry=_record.start_carry(carry),
+            declared_ic_sensitivity=bool(
+                ode and sens and (self._model if model is None else model)._declared_ic_sens
+            ),
         )
         result._run_params = (info.param_names, values)
         result._model_info = info
@@ -5639,6 +5663,8 @@ class Simulator:
             requested = atol
         if isinstance(requested, _Ceiling):
             return _ResolvedAtol(requested.scalar, requested.vector, 0.0)
+        if isinstance(requested, _Recorded):
+            return _ResolvedAtol(requested.scalar, requested.vector, requested.decades)
         # `isinstance` first: `requested` can be a numpy array here, and
         # `array == "tracking"` is an elementwise comparison whose truth value
         # is ambiguous, not False.
@@ -6230,8 +6256,10 @@ class Simulator:
             undo_reset = self._capture_start_undo()
             self._model.reset()
         started_from, start_state = _start_record(core)
-        # And the parameter values it starts with, for its record (issue #1703).
+        # And the parameter values and event state it starts with, for its
+        # record (issue #1703).
         start_params = _record.parameter_values(self._model)
+        start_carry = core.event_carry_state()
         # A sensitivity run from a carried state is refused by the engine, with
         # its own remedy (carry_sensitivities=True, GH #210; issue #1528), which
         # a warning first would only bury, and stop under `-W error`.
@@ -6475,6 +6503,7 @@ class Simulator:
             carry_sensitivities=carry_sensitivities,
             start=start,
             jacobian=run_jacobian,
+            carry=start_carry,
         )
 
         # Issue #553 — the interactive clock moves with the state, here, rather
@@ -7234,6 +7263,7 @@ class Simulator:
                 n_points=n_points,
                 sample_times=None,
                 timeout=eff_timeout,
+                carry=start_carry[3],
             )
             self._warn_ssa_boundary(r)
             return r
@@ -8550,6 +8580,7 @@ class Simulator:
         # the parameters it starts with, for its record (issues #1701, #1703).
         row_started, row_start_state = _start_record(clone._core)
         start_params = _record.parameter_values(clone)
+        row_carry = clone._core.event_carry_state()
 
         times = TimeSpec()
         times.t_start = t_span[0]
@@ -8735,6 +8766,8 @@ class Simulator:
             steady_state=steady_state,
             steady_state_tol=steady_state_tol,
             jacobian=row_jacobian,
+            carry=row_carry,
+            model=clone,
         )
         return result
 
@@ -12216,6 +12249,7 @@ class Simulator:
         out._run_atol = result._run_atol
         out._model_info = result._model_info
         out._record_frozen = result._record_frozen
+        out._source_text = result._source_text
         out._record_differs = result._record_differs
         out._notices = result._notices
         return out

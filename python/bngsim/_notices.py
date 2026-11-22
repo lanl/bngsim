@@ -84,6 +84,13 @@ CODES: dict[str, str] = {
     "protocol.steady_state_not_reached": (
         "A protocol's run asked to stop at a steady state reached none by its end."
     ),
+    "rerun.different_backend": (
+        "A Result.rerun() ran other code (right-hand side, Jacobian, linear solver or "
+        "propensities) than the run it repeats; its numbers may differ in their last digits."
+    ),
+    "rerun.different_build": (
+        "A Result.rerun() ran on another bngsim version or build than the run it repeats."
+    ),
     "rulemonkey.unsupported": "RuleMonkey reported a construct it does not support as written.",
     "scan.dose_dropped": (
         "A parameter scan cannot move the species the scanned parameter seeds: each "
@@ -200,6 +207,14 @@ ACTIONS: dict[str, str] = {
     ),
     "protocol.steady_state_not_reached": (
         "Lengthen that run's time window, or do not read its end state as steady."
+    ),
+    "rerun.different_backend": (
+        "Nothing to fix where last digits do not matter; to match the run exactly, pass "
+        "the `codegen` or `jacobian` its record's `backend` names."
+    ),
+    "rerun.different_build": (
+        "Nothing to fix for an ODE run; for a stochastic run, compare the two as "
+        "realizations, not as one run."
     ),
     "rulemonkey.unsupported": (
         "Read the message for the construct; the model may need another method to run as written."

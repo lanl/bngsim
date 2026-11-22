@@ -59,6 +59,12 @@ class ModelInfo(NamedTuple):
     param_index: NDArray[np.intp]
     #: ``len(core.param_names)`` when this was made.
     n_params: int
+    #: The text the model was loaded from, where it was loaded from a string:
+    #: what :meth:`Result.rerun` builds it again from. Not in the record.
+    source_text: str | bytes | None = None
+    #: The calls that changed the model's equations or data since its load
+    #: (``Model._edits``), which its source does not hold.
+    edits: tuple[str, ...] = ()
 
 
 class RunCapture(NamedTuple):
@@ -99,6 +105,14 @@ class RunCapture(NamedTuple):
     linear_solver_requested: str | None
     sensitivity_rhs: str | None
     propensities: str | None
+    #: The event state the run started from (``core.event_carry_state()``):
+    #: ``None`` for a fresh start, else what :func:`start_carry` makes of it.
+    start_carry: Any = None
+    #: Whether :meth:`Model.declare_ic_sensitivity` had declared rows the run
+    #: seeded its sensitivities from, which no record holds.
+    declared_ic_sensitivity: bool = False
+    #: Of a :meth:`Result.rerun`: ``{"record_sha256", "changed"}``.
+    rerun_of: dict[str, Any] | None = None
 
 
 def _num(x: Any, kind: type = float) -> Any:
@@ -140,6 +154,9 @@ def run_and_backend(info: Any) -> tuple[dict[str, Any], dict[str, Any]]:
         "xml": None if c.xml is None else dict(c.xml),
         "timeout": _num(c.timeout),
         "wall_time_s": float(c.wall_time_s),
+        "start_carry": copy.deepcopy(c.start_carry),
+        "declared_ic_sensitivity": bool(c.declared_ic_sensitivity),
+        "rerun_of": copy.deepcopy(c.rerun_of),
     }
     backend = {
         "rhs": c.rhs,
@@ -203,6 +220,8 @@ def model_info(model: Model) -> ModelInfo:
         param_names=tuple(names[i] for i in keep),
         param_index=np.asarray(keep, dtype=np.intp),
         n_params=len(names),
+        source_text=model._source_text,
+        edits=tuple(model._edits),
     )
     model._record_info = info
     return info
@@ -217,6 +236,50 @@ def parameter_values(model: Model) -> tuple[ModelInfo, NDArray[np.float64]]:
         model._record_info = None
         info = model_info(model)
     return info, values[info.param_index]
+
+
+def start_carry(state: Any) -> dict[str, Any] | None:
+    """The event state a run starts from, as a record holds it: ``None`` where
+    there is none (a fresh start), else ``{"events", "ssa_counts"}``.
+    ``events`` is ``None`` or ``{"t", "triggers", "pending"}``, each pending
+    execution ``{"event", "apply_time", "values"}``: the delayed executions not
+    yet applied, which a run that starts at ``t`` applies, and each trigger's
+    truth at ``t``. ``ssa_counts`` says the state is an SSA run's counts.
+    *state* is ``core.event_carry_state()``; the leg ends a rollback returns to
+    are left out, as no single run reads them."""
+    if state is None:
+        return None
+    carry, _history, _evicted, counts = state
+    events = None
+    if carry is not None:
+        t, triggers, pending = carry
+        events = {
+            "t": float(t),
+            "triggers": [bool(x) for x in triggers],
+            "pending": [
+                {"event": int(i), "apply_time": float(at), "values": [float(v) for v in vals]}
+                for i, at, vals in pending
+            ],
+        }
+    if events is None and not counts:
+        return None
+    return {"events": events, "ssa_counts": bool(counts)}
+
+
+def carry_state(held: dict[str, Any] | None) -> Any:
+    """What ``core.set_event_carry_state`` takes for a record's
+    ``start_carry`` (:func:`start_carry`'s inverse)."""
+    if held is None:
+        return None
+    events = held["events"]
+    carry = None
+    if events is not None:
+        carry = (
+            events["t"],
+            list(events["triggers"]),
+            [(p["event"], p["apply_time"], list(p["values"])) for p in events["pending"]],
+        )
+    return (carry, [], -math.inf, bool(held["ssa_counts"]))
 
 
 def atol_given(atol: Any) -> Any:
@@ -325,9 +388,13 @@ def live_parts(result: Result) -> dict[str, Any]:
         if run.get("atol") is not None:
             run["atol"]["per_species"] = None if atol is None else [float(x) for x in atol]
         run["parameters"] = run_parameters(result)
+    model = None
+    if info is not None:
+        model = copy.deepcopy(info.source)
+        model["edits"] = list(info.edits)
     return {
         "software": {"bngsim": __version__, "build_commit": _build_commit()},
-        "model": None if info is None else copy.deepcopy(info.source),
+        "model": model,
         "run": run,
         "backend": backend,
         "time": None if info is None else {"units": info.time_units},

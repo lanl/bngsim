@@ -359,6 +359,7 @@ def test_the_model_and_software_parts(net_path: Path) -> None:
         "format": "net",
         "path": str(net_path.resolve()),
         "sha256": hashlib.sha256(net_path.read_bytes()).hexdigest(),
+        "edits": [],
     }
     assert r.record["software"] == {
         "bngsim": bngsim.__version__,
@@ -594,7 +595,7 @@ def test_a_stack_of_two_models_keeps_its_parts_and_says_where_they_differ(
     one = Simulator(Model.from_net(net_path)).run(t_span=(0, 1), n_points=3)
     two = Simulator(Model.from_net(other)).run(t_span=(0, 1), n_points=3)
     rec = Result.squeeze([one, two]).record
-    assert rec["model"] == {"format": "net", "path": None, "sha256": None}
+    assert rec["model"] == {"format": "net", "path": None, "sha256": None, "edits": []}
     assert {"model.path", "model.sha256", "run.parameters.A0"} <= set(rec["rows_differ"])
     assert rec["columns"] == one.record["columns"]
     assert rec["time"] == {"units": None}
