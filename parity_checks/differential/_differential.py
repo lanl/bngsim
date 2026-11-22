@@ -1058,7 +1058,7 @@ def check_steady(base: Base, method: str) -> Verdict:
             f"the run's last quarter and at a tenfold tighter tolerance"
         )
         if rest.n_unsettled:
-            note += f"; {rest.n_unsettled} species still moving over the last quarter, not judged"
+            note += f"; {rest.n_unsettled} species still moving over the last quarter, judged on the run's whole scale"
         if g <= 1.0:
             return Verdict("pass", g, note)
         where = _largest(x, end, ss.species_names, rest.keep)
