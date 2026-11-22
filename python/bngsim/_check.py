@@ -22,8 +22,9 @@ and each column's absolute floor is the atol the run applied to that species:
   by the problem's conditioning, which the drift measures, and never by more
   than 1% of the column's peak for the tolerance alone, unless the column is
   within ``PATH_ATOL_FACTOR`` atol of zero, which resolves it no better;
-- a column whose peak is under :data:`RELEVANT_SHARE` of the largest column's
-  is the run's rounding: no check judges it, and the report counts it;
+- a column whose peak is within :data:`TRACE_ATOLS` times its atol, where the
+  atol and not rtol holds it (``atol_j > rtol·peak_j``), is not resolved by
+  the run: no check judges it, and the report names it;
 - a column that is not converged at the run's own tolerance (its move past
   :data:`TOLERANCE_MOVE`) is not judged; where no column is, the verdict is
   ``no_base``, and a report on a run that is not converged is never ok.
@@ -77,10 +78,13 @@ PATH_CEILING = 1e-2
 #: But a path may always differ by this many times a column's atol: a column
 #: whose peak is within a few hundred atol of zero is resolved to no better.
 PATH_ATOL_FACTOR = 100.0
-#: A column whose peak is under this share of the largest column's is the
-#: run's rounding (the share the run's atol rule calls irrelevant,
-#: ``Simulator._ATOL_SCALE_RELEVANT``, issue #1361): no check judges it.
-RELEVANT_SHARE = 1e-6
+#: A column whose peak is within this many times the atol the run applied to
+#: it, where that atol (not rtol) holds it, is not resolved by the run: its
+#: values are within the solver's absolute error of zero. No check judges it,
+#: and the report names it.
+TRACE_ATOLS = 100.0
+#: How many such columns a report names.
+MAX_NAMED = 20
 #: The grid check's output points, as a multiple of the run's intervals.
 GRID_FACTOR = 8
 #: How many reruns the replicates check makes of a stochastic run.
@@ -223,6 +227,8 @@ def check(
     out["drift"] = None
     out["bound"] = None
     out["converged"] = None
+    out["n_not_resolved"] = None
+    out["not_resolved"] = []
     out["checks"] = []
 
     if run is None:
@@ -242,6 +248,9 @@ def check(
     if ctx.moved is not None and ctx.moved.size:
         out["drift"] = _num(ctx.moved.max())
         out["converged"] = bool(ctx.moved.max() <= TOLERANCE_MOVE)
+        trace = [n for n, keep in zip(ctx.names, ctx.relevant, strict=True) if not keep]
+        out["n_not_resolved"] = len(trace)
+        out["not_resolved"] = trace[:MAX_NAMED]
     out["bound"] = TOLERANCE_MOVE
     return _finish(out)
 
@@ -301,6 +310,16 @@ def _next(out: Report) -> str:
         )
     if not out["ok"]:
         return "No check could run on this result: see each check's note."
+    trace = out.get("not_resolved") or []
+    if trace:
+        more = out["n_not_resolved"] - len(trace)
+        names = ", ".join(trace) + (f" and {more} more" if more > 0 else "")
+        return (
+            "No check moved the answer past its bound, but "
+            f"{names} stay within {TRACE_ATOLS:g} times their atol of zero, which the run "
+            "does not resolve, and were not judged: to report them, rerun with an atol "
+            "well below them (result.rerun(atol=...)) and check that."
+        )
     return "No check moved the answer past its bound."
 
 
@@ -429,8 +448,13 @@ class _Context:
                 return self.tol_error
             d, peak = differences(self._view(tight), self.x)
             self.drift_abs = d
-            top = float(peak.max()) if peak.size else 0.0
-            self.relevant = peak >= RELEVANT_SHARE * top if top > 0 else np.zeros(peak.size, bool)
+            # Not resolved: within TRACE_ATOLS atol of zero, where the atol,
+            # not rtol, holds the column (a loose rtol makes every atol a
+            # large share of its species, and those columns are resolved to
+            # that share, which the tolerance check judges).
+            rtol = float(self.rtol or 0.0)
+            unresolved = (peak <= TRACE_ATOLS * self.atols) & (self.atols > rtol * peak)
+            self.relevant = ~unresolved
             self.moved = np.where(self.relevant, moves(d, peak, self.atols), 0.0)
         return self.tol_error or None
 
@@ -486,9 +510,7 @@ class _Context:
             note += f"; {n_out} column(s) not judged, not converged at the run's tolerance"
         n_trace = int((~self.relevant).sum())
         if n_trace:
-            note += (
-                f"; {n_trace} trace column(s), under {RELEVANT_SHARE:g} of the largest, not judged"
-            )
+            note += f"; {n_trace} column(s) within {TRACE_ATOLS:g} atol of zero not judged"
         return _verdict(
             name,
             status,
@@ -545,8 +567,7 @@ class _Context:
             note += f", by {extra['value_100']:.2e} at rtol/100"
         if extra["n_trace"]:
             note += (
-                f"; {extra['n_trace']} trace column(s), under {RELEVANT_SHARE:g} of the "
-                "largest, not judged"
+                f"; {extra['n_trace']} column(s) within {TRACE_ATOLS:g} atol of zero not judged"
             )
         worst = self._worst(self.moved)
         return _verdict(

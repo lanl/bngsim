@@ -32,6 +32,8 @@ KEYS = [
     "drift",
     "bound",
     "converged",
+    "n_not_resolved",
+    "not_resolved",
     "checks",
     "n_pass",
     "n_diff",
@@ -522,9 +524,9 @@ def test_trace_species_raise_no_spurious_finding(eps, rtol):
 
 
 def test_a_trace_species_is_counted_not_judged(monkeypatch):
-    # I peaks near 2e-6 beside A at 100, 2e-8 of it: a trace column. A path
-    # 10x off in I alone passes, and the note says so.
-    r = Simulator(_trace_model(1e-6), method="ode").run(t_span=(0, 30), n_points=31)
+    # I peaks near 2e-7, within 100 times its atol of 1e-8: not resolved by
+    # the run. A path 10x off in I alone passes, and the report names I.
+    r = Simulator(_trace_model(1e-7), method="ode").run(t_span=(0, 30), n_points=31)
     ji = r.species_names.index("I")
     real = Result.rerun
 
@@ -538,8 +540,10 @@ def test_a_trace_species_is_counted_not_judged(monkeypatch):
         return out
 
     monkeypatch.setattr(Result, "rerun", rerun)
-    (c,) = r.check("jacobian")["checks"]
-    assert c["status"] == "pass" and c["n_trace"] >= 1 and "trace column" in c["note"]
+    rep = r.check("jacobian")
+    (c,) = rep["checks"]
+    assert c["status"] == "pass" and c["n_trace"] >= 1 and "atol of zero" in c["note"]
+    assert "I" in rep["not_resolved"] and "I" in rep["next"]
 
 
 def test_an_unconverged_run_is_not_ok_whichever_checks_ran(monkeypatch):
@@ -567,9 +571,9 @@ def test_an_unconverged_run_is_not_ok_whichever_checks_ran(monkeypatch):
 
 
 def test_a_trace_species_moving_at_a_tighter_tolerance_is_not_a_finding(monkeypatch):
-    # I is trace (2e-8 of A's peak): doubled in the tighter run, it is still
-    # the run's rounding, and the tolerance check passes, saying so.
-    r = Simulator(_trace_model(1e-6), method="ode").run(t_span=(0, 30), n_points=31)
+    # I is within 100 atol of zero: doubled in the tighter run, it is still
+    # not resolved, and the tolerance check passes, naming it.
+    r = Simulator(_trace_model(1e-7), method="ode").run(t_span=(0, 30), n_points=31)
     ji = r.species_names.index("I")
     real = Result.rerun
 
@@ -587,3 +591,53 @@ def test_a_trace_species_moving_at_a_tighter_tolerance_is_not_a_finding(monkeypa
     (c,) = rep["checks"]
     assert c["status"] == "pass" and c["n_trace"] >= 1, c
     assert rep["converged"] is True and rep["ok"] is True
+
+
+def test_a_small_species_the_run_resolves_is_judged_beside_a_large_pool(monkeypatch):
+    # The review's case: nanomolar Robertson beside an unused pool at 1e-3. The
+    # run holds y2 and y3 to their own tiny atols, so they are judged, however
+    # small beside the pool: a path 100x off in y3 fails.
+    m = bngsim.Model.from_antimony_string(
+        "y1 -> y2; 0.04*y1; y2 + y2 -> y3 + y2; 3e16*y2*y2; y2 + y3 -> y1 + y3; 1e13*y2*y3;"
+        " y1 = 1e-9; y2 = 0; y3 = 0; species ATP; ATP = 1e-3"
+    )
+    r = Simulator(m, method="ode").run(t_span=(0, 40), n_points=41)
+    j3 = r.species_names.index("y3")
+    real = Result.rerun
+
+    def rerun(self, **changes):
+        out = real(self, **changes)
+        if changes.get("jacobian") == "fd":
+            out = copy.copy(out)
+            sp = np.asarray(out._species, dtype=float).copy()
+            sp[:, j3] *= 100
+            out._species = sp
+        return out
+
+    monkeypatch.setattr(Result, "rerun", rerun)
+    rep = r.check("jacobian")
+    assert "y3" not in rep["not_resolved"]
+    assert rep["checks"][0]["status"] == "diff" and rep["checks"][0]["worst_column"] == "y3"
+
+
+def test_a_species_two_hundred_atol_from_zero_is_judged(monkeypatch):
+    # I peaks near 2e-6, 200 times its atol of 1e-8: resolved, so a path 10x
+    # off in I alone fails.
+    r = Simulator(_trace_model(1e-6), method="ode").run(t_span=(0, 30), n_points=31)
+    ji = r.species_names.index("I")
+    assert 100 * 1e-8 < np.asarray(r.species)[:, ji].max() < 1e3 * 1e-8
+    real = Result.rerun
+
+    def rerun(self, **changes):
+        out = real(self, **changes)
+        if changes.get("jacobian") == "fd":
+            out = copy.copy(out)
+            sp = np.asarray(out._species, dtype=float).copy()
+            sp[:, ji] *= 10
+            out._species = sp
+        return out
+
+    monkeypatch.setattr(Result, "rerun", rerun)
+    rep = r.check("jacobian")
+    assert "I" not in rep["not_resolved"]
+    assert rep["checks"][0]["status"] == "diff" and rep["checks"][0]["worst_column"] == "I"

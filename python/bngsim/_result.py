@@ -3441,7 +3441,10 @@ class Result:
             ``rtol``, ``atol``, ``drift`` (the largest move of a species at
             the tighter tolerance), ``bound`` (1e-3) and ``converged``
             (whether every species is under it; a report on a run that is
-            not converged is never ``ok``, whichever checks ran), ``checks``
+            not converged is never ``ok``, whichever checks ran),
+            ``n_not_resolved`` and ``not_resolved`` (the first 20 species
+            within 100 times their atol of zero, which no check judges),
+            ``checks``
             (in the order run, each with ``name``, ``status``, ``value``,
             ``worst_column``, ``changed`` (the setting changed) and
             ``note``), ``n_pass``, ``n_diff`` and
@@ -3468,8 +3471,11 @@ class Result:
         atol_j)), 100·atol_j, 10·d_j)``: a thousand times what the
         tolerances allow, but never more than 1% of the species' peak
         (unless it is within 100 atol of zero), or ten times how far it moves
-        itself at the tighter tolerance (``d_j``). A species under 1e-6 of
-        the largest species' peak is the run's rounding and is not judged. The
+        itself at the tighter tolerance (``d_j``). A species whose peak is
+        within 100 times its atol, where that atol is larger than
+        ``rtol·peak_j`` (the absolute tolerance, not the relative one, holds
+        it), is not resolved by the run, is not judged, and is named in
+        ``not_resolved`` (and ``next``). The
         factors are the developer-side differential harness's (issue #1257),
         whose comparison is over the whole trajectory at once. A ``"diff"``
         between two bngsim paths on a model bngsim accepts is a bug worth
