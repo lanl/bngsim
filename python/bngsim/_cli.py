@@ -12,6 +12,10 @@ command             Python call behind it
 ``skill``           ``bngsim.agent_guide(skill=True)``
 ``examples``        :mod:`bngsim.examples`
 ``inspect MODEL``   ``bngsim.Model.load(MODEL).describe()``
+``run MODEL``       ``Simulator(Model.load(MODEL), ...).run(...)``: the
+                    run's record and :meth:`~bngsim.Result.digest`, the arrays
+                    to ``--out``
+``check MODEL``     the run, then :meth:`~bngsim.Result.check`
 ``convert TOOL``    the ``bngsim-sbml2net``, ``bngsim-net2sbml``,
                     ``bngsim-sbml2bngl``, ``bngsim-validate-conversion`` and
                     ``bngsim-omex`` commands, unchanged
@@ -65,6 +69,9 @@ EXIT_REFUSED = 3
 EXIT_RUN_FAILED = 4
 #: A run took longer than its wall-clock limit.
 EXIT_TIMEOUT = 5
+#: ``bngsim check``: the run finished and its check is not ok (an answer moved,
+#: a changed run raised or ran out of time, or the run is not converged).
+EXIT_CHECK_FAILED = 6
 
 #: Each exit code and what it means, as the documentation lists them.
 EXIT_CODES: dict[int, str] = {
@@ -74,6 +81,7 @@ EXIT_CODES: dict[int, str] = {
     EXIT_REFUSED: "refusal: the model cannot be simulated faithfully",
     EXIT_RUN_FAILED: "failed run: the solver gave up",
     EXIT_TIMEOUT: "timeout: a run took longer than its limit",
+    EXIT_CHECK_FAILED: "check not ok: the run's answer moved, or could not be checked",
 }
 
 #: The error codes that are refusals of the model. A SensitivityUnsupportedError
@@ -242,8 +250,157 @@ def _build_parser() -> argparse.ArgumentParser:
         description="tools: "
         + "; ".join(f"{tool}: {what}" for tool, (_, what) in _CONVERT_TOOLS.items()),
     )
+    runner = _Parser(add_help=False)
+    _run_arguments(runner)
+    run = sub.add_parser(
+        "run",
+        parents=[common, runner],
+        help="run a model; print its record and a digest of its values",
+        description="Run a model once from its initial state (Simulator.run()) and "
+        "print the run's record and a digest of its values (Result.record, "
+        "Result.digest()). Arrays never go to the terminal: --out writes them. "
+        "Every run has a wall-clock limit (--timeout).",
+    )
+    del run
+    check = sub.add_parser(
+        "check",
+        parents=[common, runner],
+        help="run a model, then check the run (Result.check())",
+        description="Run a model as `bngsim run` does, then make the run again with "
+        "one setting changed and say whether the answer moved (Result.check()). "
+        "Exits 6 when the check is not ok.",
+    )
+    check.add_argument(
+        "--checks",
+        default=None,
+        help="'all', or check names separated by commas (tolerance, grid, jacobian, "
+        "backend, second_engine, replicates); default: the cheap ones for the method",
+    )
+    check.add_argument(
+        "--budget",
+        type=_positive,
+        default=_DEFAULT_TIMEOUT,
+        help=f"seconds for all the checks' reruns (default {_DEFAULT_TIMEOUT:g})",
+    )
     sub.add_parser("cache", help="the codegen artifact cache (bngsim cache --help)")
     return parser
+
+
+#: The wall-clock limit of a run, and of a check's reruns, where the command
+#: line gives none: a command that hangs costs an agent its turn.
+_DEFAULT_TIMEOUT = 600.0
+
+
+def _run_arguments(p: argparse.ArgumentParser) -> None:
+    """The options ``run`` and ``check`` share: what to run and how."""
+    p.add_argument("model", metavar="MODEL", help="a model file (.xml, .sbml, .net, .ant, .bngl)")
+    p.add_argument(
+        "--network",
+        action="store_true",
+        help="for a .bngl file: one run of the network BNG2.pl generates, not the "
+        "file's own actions (required for .bngl)",
+    )
+    p.add_argument("--method", default="ode", help="ode (default), ssa, psa, nf, rm")
+    p.add_argument("--xml", default=None, help="the BioNetGen XML a network-free method reads")
+    p.add_argument("--t-start", type=float, default=0.0, help="the start time (default 0)")
+    p.add_argument("--t-end", type=float, default=None, help="the end time")
+    p.add_argument(
+        "--n-points", type=int, default=101, help="output points, the first included (default 101)"
+    )
+    p.add_argument(
+        "--sample-times",
+        type=_floats,
+        default=None,
+        help="output times, separated by commas, in place of --t-end and --n-points",
+    )
+    p.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="NAME=VALUE",
+        help="set a parameter, or a species' initial amount, before the run (repeatable)",
+    )
+    p.add_argument("--seed", type=int, default=None, help="the seed of a stochastic run")
+    p.add_argument("--rtol", type=float, default=None, help="relative tolerance of an ODE run")
+    p.add_argument(
+        "--atol",
+        type=_atol,
+        default=None,
+        help="absolute tolerance: a number, 'auto' or 'tracking'",
+    )
+    p.add_argument(
+        "--steady-state", action="store_true", help="stop the run once it reaches a steady state"
+    )
+    p.add_argument(
+        "--replicates",
+        type=_positive_int,
+        default=None,
+        help="N stochastic runs from N seeds, digested as a stack (run only)",
+    )
+    p.add_argument(
+        "--timeout",
+        type=_positive,
+        default=_DEFAULT_TIMEOUT,
+        help=f"seconds the run may take (default {_DEFAULT_TIMEOUT:g}); exit 5 past it",
+    )
+    p.add_argument("--species", action="store_true", help="digest the species too")
+    p.add_argument(
+        "--max-columns", type=int, default=20, help="columns of each kind the digest lists"
+    )
+    p.add_argument(
+        "--out",
+        default=None,
+        help="write the arrays: .npz (NumPy alone), .h5 (needs h5py), or .csv",
+    )
+    p.add_argument(
+        "--out-kind",
+        choices=("observables", "species"),
+        default="observables",
+        help="which columns a .csv holds (default observables)",
+    )
+
+
+def _floats(text: str) -> list[float]:
+    try:
+        values = [float(v) for v in text.split(",") if v.strip()]
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"expected numbers separated by commas, not {text!r}"
+        ) from None
+    if not values:
+        raise argparse.ArgumentTypeError("expected at least one time")
+    return values
+
+
+def _positive(text: str) -> float:
+    try:
+        value = float(text)
+    except ValueError:
+        value = -1.0
+    if not value > 0 or not math.isfinite(value):
+        raise argparse.ArgumentTypeError(f"expected a number of seconds > 0, not {text!r}")
+    return value
+
+
+def _positive_int(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError:
+        value = 0
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"expected a whole number >= 1, not {text!r}")
+    return value
+
+
+def _atol(text: str) -> float | str:
+    if text in ("auto", "tracking"):
+        return text
+    try:
+        return float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"expected a number, 'auto' or 'tracking', not {text!r}"
+        ) from None
 
 
 def _limit(text: str) -> int | None:
@@ -379,8 +536,186 @@ def _inspect(args: argparse.Namespace) -> tuple[Any, str]:
     return dict(description), str(description) + "\n"
 
 
+def _load_for_run(args: argparse.Namespace) -> Any:
+    """The model ``run`` and ``check`` run, with the ``--set`` values."""
+    from bngsim import Model
+    from bngsim._exceptions import BngsimError, UsageError
+
+    if str(args.model).lower().endswith(".bngl") and not args.network:
+        raise UsageError(
+            "a .bngl file can mean one run of its generated network or the file's own "
+            "actions; `bngsim run` makes one run of the network: pass --network. The "
+            "file's own actions are bngsim.run_bngl(path) in Python.",
+            details={"argument": "--network"},
+            remedies=[{"kind": "pass_argument", "argument": "--network"}],
+        )
+    model = Model.load(args.model)
+    for item in args.set:
+        name, sep, value = item.partition("=")
+        name = name.strip()
+        try:
+            number = float(value)
+        except ValueError:
+            number = None
+        if not sep or not name or number is None:
+            raise UsageError(
+                f"--set takes NAME=VALUE with a number, not {item!r}",
+                details={"argument": "--set", "value": item},
+            )
+        try:
+            if name in model.species_names:
+                model.set_concentration(name, number)
+            else:
+                model.set_param(name, number)
+        except BngsimError as error:
+            raise UsageError(
+                f"--set {item}: {error}",
+                details={"argument": "--set", "value": item, **dict(error.details or {})},
+                remedies=list(error.remedies or []),
+            ) from error
+    return model
+
+
+def _do_run(args: argparse.Namespace) -> Any:
+    """The run ``run`` and ``check`` make: a Result."""
+    from bngsim import Result, Simulator
+    from bngsim._exceptions import UsageError
+
+    if args.sample_times is None and args.t_end is None:
+        raise UsageError(
+            "give --t-end (with --n-points) or --sample-times",
+            details={"argument": "--t-end"},
+            remedies=[{"kind": "pass_argument", "argument": "--t-end"}],
+        )
+    if args.command == "check" and args.replicates is not None:
+        raise UsageError(
+            "`bngsim check` checks one run; --replicates is for `bngsim run` (the "
+            "replicates check reruns a stochastic run at other seeds itself)",
+            details={"argument": "--replicates"},
+        )
+    if (
+        args.replicates is not None
+        and args.replicates > 1
+        and args.out is not None
+        and args.out.lower().endswith((".csv", ".tsv"))
+    ):
+        raise UsageError(
+            "a .csv holds one run; write a stack of runs to .npz or .h5",
+            details={"argument": "--out", "value": args.out},
+        )
+    model = _load_for_run(args)
+    sim_kwargs: dict[str, Any] = {"method": args.method}
+    if args.xml is not None:
+        sim_kwargs["xml_path"] = args.xml
+    sim = Simulator(model, **sim_kwargs)
+    kw: dict[str, Any] = {"timeout": args.timeout}
+    if args.sample_times is not None:
+        kw["sample_times"] = args.sample_times
+    else:
+        kw["t_span"] = (args.t_start, args.t_end)
+        kw["n_points"] = args.n_points
+    for name in ("seed", "rtol", "atol"):
+        if getattr(args, name) is not None:
+            kw[name] = getattr(args, name)
+    if args.steady_state:
+        kw["steady_state"] = True
+    if args.replicates is not None:
+        given = [k for k in ("sample_times", "rtol", "atol", "steady_state") if k in kw]
+        if given:
+            flag = "--" + given[0].replace("_", "-")
+            raise UsageError(
+                f"--replicates runs run_replicates(), which takes no {flag}",
+                details={"argument": flag},
+            )
+        rows = sim.run_replicates(args.replicates, **kw)
+        assert isinstance(rows, list)
+        return Result.squeeze(rows) if len(rows) > 1 else rows[0]
+    return sim.run(**kw)
+
+
+def _write_out(result: Any, args: argparse.Namespace) -> str | None:
+    from bngsim._exceptions import UsageError
+
+    if args.out is None:
+        return None
+    if args.out.lower().endswith((".csv", ".tsv")):
+        if result._species.ndim == 3:
+            raise UsageError(
+                "a .csv holds one run; write a stack of runs to .npz or .h5",
+                details={"argument": "--out", "value": args.out},
+            )
+        result.to_csv(
+            args.out, kind=args.out_kind, sep="\t" if args.out.lower().endswith(".tsv") else ","
+        )
+    else:
+        result.save(args.out)
+    return os.path.abspath(args.out)
+
+
+def _run_payload(result: Any, args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
+    from bngsim import _record
+
+    digest = result.digest(species=args.species, max_columns=args.max_columns)
+    out = _write_out(result, args)
+    payload = {
+        "model": os.path.abspath(args.model),
+        "record": _record.record(result, start_state=False),
+        "digest": dict(digest),
+        "out": out,
+    }
+    lines = [f"{os.path.basename(args.model)}: {digest}"]
+    if out:
+        lines.append(f"arrays written to {out}")
+    return payload, lines
+
+
+def _run(args: argparse.Namespace) -> tuple[Any, str]:
+    result = _do_run(args)
+    payload, lines = _run_payload(result, args)
+    return payload, "\n".join(lines) + "\n"
+
+
+class _CheckNotOk(Exception):
+    """``bngsim check`` finished and its check is not ok: the payload is
+    written, and the exit code says so."""
+
+    def __init__(self, payload: Any, text: str) -> None:
+        super().__init__("the check is not ok")
+        self.payload = payload
+        self.text = text
+
+
+def _check(args: argparse.Namespace) -> tuple[Any, str]:
+    from bngsim._exceptions import UsageError
+
+    checks: Any = args.checks
+    if checks is not None and checks != "all":
+        checks = [c.strip() for c in checks.split(",") if c.strip()]
+        if not checks:
+            raise UsageError("--checks takes 'all' or names separated by commas")
+    result = _do_run(args)
+    payload, lines = _run_payload(result, args)
+    report = result.check(checks, budget=args.budget)
+    payload["check"] = dict(report)
+    lines.append(str(report))
+    text = "\n".join(lines) + "\n"
+    if not report["ok"]:
+        raise _CheckNotOk(payload, text)
+    return payload, text
+
+
 #: Every command, in the order --help lists them.
-_ALL_COMMANDS = ("doctor", "guide", "skill", "examples", "inspect", "convert", "cache")
+_ALL_COMMANDS = (
+    "doctor",
+    "guide",
+    "skill",
+    "examples",
+    "inspect",
+    "run",
+    "check",
+    "convert",
+    "cache",
+)
 
 _COMMANDS: dict[str, Callable[[argparse.Namespace], tuple[Any, str]]] = {
     "doctor": _doctor,
@@ -388,6 +723,8 @@ _COMMANDS: dict[str, Callable[[argparse.Namespace], tuple[Any, str]]] = {
     "skill": _guide,
     "examples": _examples,
     "inspect": _inspect,
+    "run": _run,
+    "check": _check,
 }
 
 
@@ -620,9 +957,15 @@ def main(argv: list[str] | None = None) -> int:
                 parser.format_usage().rstrip(),
             )
         with _stdout_to_stderr() as emit:
-            payload, text = _COMMANDS[args.command](args)
+            try:
+                payload, text = _COMMANDS[args.command](args)
+                code = EXIT_OK
+            except _CheckNotOk as not_ok:
+                # A finished check that is not ok is an answer, not an error:
+                # the report goes to standard output, and the exit code says so.
+                payload, text, code = not_ok.payload, not_ok.text, EXIT_CHECK_FAILED
             emit(_dumps(payload) if as_json else text)
-        return EXIT_OK
+        return code
     except _ReaderGone:
         # The reader went away (`bngsim guide | head`). Point standard output
         # at nothing, so the interpreter's own flush at exit does not fail too.

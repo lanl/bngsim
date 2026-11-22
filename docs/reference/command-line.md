@@ -80,6 +80,4 @@ without reading any text.
 | 3 | refusal: the model holds a construct BNGsim cannot simulate faithfully. The model, not the command, has to change. |
 | 4 | failed run: a run started and the solver gave up |
 | 5 | timeout: a run took longer than its wall-clock limit |
-
-Codes 4 and 5 are for the commands that run a model, which are still to come
-(issue #1708).
+| 6 | check not ok: `bngsim check` finished, and the run's answer moved when a setting changed, a changed run raised or ran out of time, or the run is not converged at its own tolerance. The report is on standard output, as for success. |
