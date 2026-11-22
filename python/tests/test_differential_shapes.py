@@ -2812,3 +2812,26 @@ def test_a_small_species_at_rest_beside_a_large_pool_is_judged_on_its_own_scale(
     monkeypatch.undo()  # a second plant would wrap the first
     _plant(monkeypatch, state=lambda x: x * np.array([1.0, 1 + 1e-7]))
     assert D.check_steady(base, "integration").status == "pass"
+
+
+@pytest.mark.parametrize("planted", ["solver", "other"])
+def test_a_converged_from_which_a_run_fails_is_a_finding(monkeypatch, planted):
+    """BIOMD0000000609: steady_state() came back converged with four species
+    below zero, and a run from there failed (paracetamol to -5e133). A run that
+    cannot carry on from the solve's state does not rest there: DIFF. Any other
+    error is the check's own, EXCEPTION."""
+    base = D.Base(_pool_at_rest())
+    real = D._steady_run
+
+    def fails_from_the_solve(job, state=None, *a, **kw):
+        if state is not None:
+            raise _solver_failure() if planted == "solver" else RuntimeError("planted")
+        return real(job, state, *a, **kw)
+
+    monkeypatch.setattr(D, "_steady_run", fails_from_the_solve)
+    _plant(monkeypatch, state=lambda x: x * np.array([1.0, 100.0]))
+    v = D.check_steady(base, "integration")
+    if planted == "solver":
+        assert v.status == "diff" and "converged where a run fails (solver." in v.note, v
+    else:
+        assert v.status == "exception" and "planted" in v.note, v

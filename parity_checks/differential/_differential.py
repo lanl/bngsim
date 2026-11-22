@@ -118,6 +118,8 @@ GRID_FACTOR = _check.GRID_FACTOR
 #: How long the steady-state checks' run is taken: ``steady_state()``'s own
 #: default ``max_time``, so the run has the time the solve has.
 STEADY_HORIZON = 1e6
+#: steady_state()'s least rtol in its scaled tolerance (ss_scaled_tolerance).
+SOLVE_RTOL_LEAST = 1e-10
 #: A root is unstable where its Jacobian has an eigenvalue whose real part is
 #: past this share of the spectrum's largest magnitude: a conservation law's
 #: zero is rounding, nowhere near it.
@@ -870,12 +872,23 @@ class _Rest:
     off by there: ``bngsim._check``'s rule, on the end state (issue #1887)."""
 
     def __init__(self, y: np.ndarray, atols: np.ndarray, tight: np.ndarray, keep, rtol: float):
-        self.end, self.start, self.keep, self.atols, self.rtol = y[-1], y[0], keep, atols, rtol
+        self.end, self.start, self.atols, self.rtol = y[-1], y[0], atols, rtol
         # Each species' scale is its value at rest, or over the last quarter.
         self.peak = np.maximum(np.abs(y[-1]), np.abs(y[-2]))
         self.settle_abs = np.abs(y[-1] - y[-2])
         self.drift_abs = np.abs(tight - y[-1])
-        self.settle = self.margin(y[-2], drift=np.zeros_like(self.settle_abs))[0]
+        # A species that moves past its allowance over the last quarter has not
+        # settled: it is left out, as a path leaves out a species that is not
+        # converged, and the rest are judged.
+        self.keep = np.asarray(keep, dtype=bool)
+        still = np.zeros_like(self.settle_abs)
+        ratio, _ = _check.path_margins(
+            self.settle_abs, self.peak, atols, rtol, still, np.ones_like(self.keep)
+        )
+        settled = ratio <= 1.0
+        self.n_unsettled = int((self.keep & ~settled).sum())
+        self.settle = float(ratio[self.keep].max()) if self.keep.any() else 0.0
+        self.keep = self.keep & settled
         self.spread = np.maximum(self.settle_abs, self.drift_abs)
 
     def margin(self, x, ref=None, drift=None) -> tuple[float, int | None]:
@@ -912,8 +925,18 @@ def _settled_run(base: Base):
                     f"no reference: the run to t={STEADY_HORIZON:g}, or at a tenfold tighter "
                     f"tolerance, did not complete ({type(e).__name__}: {_first_line(e)})"
                 ) from e
-            rest = _Rest(y, atols, tight, keep, job.rtol)
-            if not rest.settle <= 1.0:
+            # steady_state() solves to rtol·|y| + min(atol_i, rtol·largest)
+            # (steady_state.cpp's ss_scaled_tolerance, rtol at least 1e-10),
+            # its atol_i at most the atol given, not to the per-species atols
+            # a run applies (#1420): a species under that ceiling is resolved
+            # by the run and maybe not by the solve, and each is held to the
+            # coarser of the two. BIOMD0000000609's
+            # Sulphate_PAPS at 1.3e-14, which the run holds to 1.3e-20, came
+            # back -1.5e-14 from a solve whose floor was 1e-9.
+            largest = float(np.abs(y[-1][np.isfinite(y[-1])]).max(initial=0.0))
+            floor = min(job.atol, max(job.rtol, SOLVE_RTOL_LEAST) * largest)
+            rest = _Rest(y, np.maximum(atols, floor), tight, keep, job.rtol)
+            if not rest.keep.any():
                 raise _Unsettled(
                     f"the run has not settled by t={STEADY_HORIZON:g}: over the last "
                     f"quarter a species moves {rest.settle:.1e} times its allowance"
@@ -997,10 +1020,26 @@ def check_steady(base: Base, method: str) -> Verdict:
             f"{g:.2g} of a species' allowance at most{who}, past how far it moves over "
             f"the run's last quarter and at a tenfold tighter tolerance"
         )
+        if rest.n_unsettled:
+            note += f"; {rest.n_unsettled} species still moving over the last quarter, not judged"
         if g <= 1.0:
             return Verdict("pass", g, note)
-        where = _largest(x, end, ss.species_names, keep)
-        stays = rest.margin(_steady_run(job, state=x)[-1], ref=x)[0]
+        where = _largest(x, end, ss.species_names, rest.keep)
+        try:
+            stays = rest.margin(_steady_run(job, state=x)[-1], ref=x)[0]
+        except Exception as e:
+            # A run from the solve's state that the solver cannot carry on
+            # (bngsim's solver.* codes) does not rest there either:
+            # BIOMD0000000609's solve came back with four species below zero,
+            # from which paracetamol ran to -5e133.
+            if _timed_out(e) or not _solver_failed(e):
+                raise
+            return Verdict(
+                "diff",
+                g,
+                f"steady_state() converged where a run fails ({e.code}; "
+                f"{_first_line(e)[:160]}); {where} at the run's end; {note}",
+            )
         if not stays <= 1.0:
             return Verdict(
                 "diff",
