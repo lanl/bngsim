@@ -3270,7 +3270,14 @@ class Result:
             "record": _record.record(self, start_state=False),
         }
 
-    def digest(self, *, species: bool = False, max_columns: int = 20) -> dict[str, Any]:
+    def digest(
+        self,
+        *,
+        species: bool = False,
+        max_columns: int = 20,
+        sensitivities: bool = False,
+        max_parameters: int = 5,
+    ) -> dict[str, Any]:
         """A small, deterministic description of this result's values, for a
         caller that cannot look at a plot (issue #1704).
 
@@ -3290,6 +3297,13 @@ class Result:
             it the digest lists the columns with the largest range, any column
             holding a non-finite value first, in column order, and gives how
             many it left out.
+        sensitivities : bool
+            Also say, for each listed column of one run, which parameters and
+            which initial amounts move it most at the last time (issue #1883;
+            see the ``sensitivity`` keys below). Off by default.
+        max_parameters : int
+            How many parameters, and how many initial amounts, each column
+            lists with ``sensitivities=True`` (default 5).
 
         Returns
         -------
@@ -3330,7 +3344,31 @@ class Result:
               over), with ``min`` and ``max`` over every run and time;
             - always, the flags ``non_finite`` (with ``t_non_finite``, the first
               time a value is NaN or infinite), ``negative`` and ``constant``
-              (the column never moves).
+              (the column never moves);
+            - with ``sensitivities=True``, ``sensitivity``: ``None`` where the
+              run has no sensitivity block for the column, else ``y`` (its
+              value at the last time), ``resolved`` (whether ``|y|`` exceeds
+              its tolerance floor, ``min(atol, rtol·largest)``; ``None`` where
+              the tolerances are not recorded), ``parameters`` and
+              ``initial_amounts``, each at most ``max_parameters`` entries,
+              largest ``|dy_dlnp|`` first, of ``name``, ``dy_dp`` (the
+              derivative as :attr:`sensitivities` holds it), ``dy_dlnp``
+              (``p·dy_dp``, with ``p`` the parameter's value as the run started
+              or the species' value at the first time), ``dlny_dlnp`` (the
+              scaled sensitivity ``(p/y)·dy_dp``, ``None`` unless ``resolved``)
+              and ``one_sided`` (the side a one-sided column is taken from,
+              :attr:`one_sided_sensitivities`, else ``None``); and
+              ``n_parameters_left_out``, ``n_parameters_non_finite`` and the
+              same two of ``initial_amounts``.
+
+            With ``sensitivities=True`` the run block has ``sensitivity`` too:
+            ``t`` (the last time), ``max_parameters``, ``reason`` (why there is
+            none, for a run without sensitivities or a stack, else ``None``),
+            ``n_parameters``, ``n_initial_amounts``, and the parameters, and
+            initial amounts, that are not ranked because their value is 0
+            (``at_zero``, ``initial_at_zero``) or not recorded (``unvalued``,
+            ``initial_unvalued``), each list at most 20 long with its count
+            (``n_at_zero`` …), and ``one_sided``, ``{parameter: side}``.
 
             ``min`` and ``max`` are over the finite values; a ``first`` or
             ``last`` that is not finite is ``None``, as are the readings of
@@ -3365,6 +3403,18 @@ class Result:
         Nothing is computed until this is called, and the readings of shape
         are made for the listed columns alone.
 
+        Of sensitivities: raw ``dY/dp`` would rank parameters by their units (a
+        rate constant in 1/s against one in 1/(M·s)), so the rank is by
+        ``|dY/dln p| = |p·dY/dp|``, which within one column is the order of the
+        scaled sensitivity ``(p/y)·dY/dp`` and needs no division by ``y``. A
+        parameter at 0 has no ``dY/dln p`` however much it matters, and one
+        whose value the record does not give (a stack's rows started at
+        different ones) cannot be scaled: they are listed apart, not ranked.
+        A derivative that is not finite (an assignment-rule species whose row
+        is refused, :attr:`ar_sensitivity_refused`, or an observable summing
+        one) is counted and not ranked. The parameter axis is the total
+        derivative, as :attr:`sensitivities` holds it.
+
         Examples
         --------
         >>> d = result.digest()
@@ -3378,7 +3428,13 @@ class Result:
         """
         from bngsim import _digest
 
-        return _digest.digest(self, species=species, max_columns=max_columns)
+        return _digest.digest(
+            self,
+            species=species,
+            max_columns=max_columns,
+            sensitivities=sensitivities,
+            max_parameters=max_parameters,
+        )
 
     def check(
         self,

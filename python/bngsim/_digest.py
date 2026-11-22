@@ -33,6 +33,19 @@ runs at the last time. Where the record gives no ``rtol`` or ``atol`` (an older
 file, a stack whose rows ran at different ones) nothing is judged against a
 tolerance: there are no readings of shape, and the flags take any value below 0
 as negative and any move as a move.
+
+With ``sensitivities=True`` (issue #1883) each listed column of one run also
+says which parameters, and which initial amounts, move it most at the last
+time. Raw ``dY/dp`` would rank parameters by their units, so the rank is by
+``|p·dY/dp|`` (``dY/dln p``): within one column that is the order of the scaled
+sensitivity ``(p/y)·dY/dp`` too, and it needs no division by ``y``. The scaled
+value is given where ``|y|`` exceeds the column's tolerance floor
+(``min(atol, rtol·largest)``), and is ``None`` where ``y`` is not told from 0. A
+parameter at 0, or one whose value the record does not give, has no ``dY/dln
+p``: it is listed apart, never ranked. A derivative that is not finite (an
+assignment-rule species whose row is refused, ``Result.ar_sensitivity_refused``)
+is counted, not ranked, and a one-sided column (``Result.one_sided_sensitivities``)
+is ranked with the side it is taken from.
 """
 
 from __future__ import annotations
@@ -78,6 +91,10 @@ MAX_NOTICE_CHARS = 500
 
 #: The quantiles a stack's statistics give at the last time, by key.
 QUANTILES = (("q05", 0.05), ("q25", 0.25), ("median", 0.5), ("q75", 0.75), ("q95", 0.95))
+
+#: How many parameters, and initial amounts, each column lists by default with
+#: ``sensitivities=True``.
+DEFAULT_MAX_PARAMETERS = 5
 
 #: The kinds of column a digest can list, with the Result's attributes for
 #: their values and names.
@@ -238,17 +255,29 @@ def _rank(nonfinite: NDArray[np.bool_], span: NDArray[np.float64], n: int) -> li
     return sorted(int(i) for i in order[:n])
 
 
+def _count(name: str, value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int | np.integer):
+        raise UsageError(f"digest({name}=...) takes a whole number, got {value!r}")
+    if value < 0:
+        raise UsageError(f"digest({name}=...) takes 0 or more, got {value}")
+    return int(value)
+
+
 def digest(
-    result: Result, *, species: bool = False, max_columns: int = DEFAULT_MAX_COLUMNS
+    result: Result,
+    *,
+    species: bool = False,
+    max_columns: int = DEFAULT_MAX_COLUMNS,
+    sensitivities: bool = False,
+    max_parameters: int = DEFAULT_MAX_PARAMETERS,
 ) -> Digest:
     """:meth:`Result.digest`."""
     if not isinstance(species, bool):
         raise UsageError(f"digest(species=...) takes True or False, got {species!r}")
-    if isinstance(max_columns, bool) or not isinstance(max_columns, int | np.integer):
-        raise UsageError(f"digest(max_columns=...) takes a whole number, got {max_columns!r}")
-    if max_columns < 0:
-        raise UsageError(f"digest(max_columns=...) takes 0 or more, got {max_columns}")
-    max_columns = int(max_columns)
+    if not isinstance(sensitivities, bool):
+        raise UsageError(f"digest(sensitivities=...) takes True or False, got {sensitivities!r}")
+    max_columns = _count("max_columns", max_columns)
+    max_parameters = _count("max_parameters", max_parameters)
 
     method, rtol, atol, atol_vec = _run_fields(result)
     stochastic = None if method is None else method in _record.STOCHASTIC
@@ -287,6 +316,10 @@ def digest(
     reads = tol_known and not stack
     out["rtol"] = r if tol_known else None
     out["atol"] = a if tol_known else None
+    sens = None
+    if sensitivities:
+        sens = _Sens(result, stack=stack, n_points=n_points, k=max_parameters)
+        out["sensitivity"] = sens.head(t_end)
     for kind in kinds:
         values_attr, names_attr = _KINDS[kind]
         data = np.asarray(getattr(result, values_attr), dtype=np.float64)
@@ -303,6 +336,7 @@ def digest(
             atol_vec=atol_vec if tol_known else None,
             species=kind == "species",
             max_columns=max_columns,
+            sens=None if sens is None else sens.of(kind),
         )
     return out
 
@@ -320,6 +354,7 @@ def _kind(
     atol_vec: Any,
     species: bool,
     max_columns: int,
+    sens: Any = None,
 ) -> dict[str, Any]:
     n_cols = len(names)
     n_points = int(time.shape[-1]) if time.size else 0
@@ -413,8 +448,171 @@ def _kind(
         else:
             row["negative"] = bool(any_finite and mn < 0.0)
             row["constant"] = bool(not nonfinite[j] and mx == mn)
+        if sens is not None:
+            row["sensitivity"] = sens(j, floor if tol_known else None)
         columns.append(row)
     return {"n_columns": n_cols, "n_left_out": n_cols - len(chosen), "columns": columns}
+
+
+class _Sens:
+    """The sensitivities a digest reads at the last time, and their values."""
+
+    def __init__(self, result: Result, *, stack: bool, n_points: int, k: int) -> None:
+        self.result = result
+        self.k = k
+        self.params = list(result._sensitivity_params)
+        self.ics = list(result._sensitivity_ic_species)
+        self.reason: str | None = None
+        if stack:
+            self.reason = "a stack of runs: each run has sensitivities of its own"
+        elif not self.params and not self.ics:
+            self.reason = "the run computed no sensitivities"
+        elif n_points == 0:
+            self.reason = "the result has no time points"
+        # The values each column is scaled by: a parameter's as the run started,
+        # an initial amount's the species' value at the first time.
+        values = _param_values(result) or {}
+        self.p = [_value(values.get(name)) for name in self.params]
+        names = list(result._species_names)
+        first = np.asarray(result._species, dtype=np.float64)
+        self.x0 = [
+            _value(first[0, names.index(n)])
+            if n in names and first.ndim == 2 and first.size
+            else None
+            for n in self.ics
+        ]
+        one_sided: dict[str, str] = {}
+        for _t, columns in getattr(result, "_one_sided_sensitivities", ()):
+            for name, side in dict(columns).items():
+                one_sided.setdefault(name, side)
+        self.one_sided = one_sided
+
+    def head(self, t_end: float | None) -> dict[str, Any]:
+        """The digest's run-level ``sensitivity`` entry."""
+        if self.reason is not None:
+            return {"t": None, "max_parameters": self.k, "reason": self.reason}
+        at_zero = [n for n, v in zip(self.params, self.p, strict=True) if v == 0.0]
+        unvalued = [n for n, v in zip(self.params, self.p, strict=True) if v is None]
+        ic_zero = [n for n, v in zip(self.ics, self.x0, strict=True) if v == 0.0]
+        ic_unvalued = [n for n, v in zip(self.ics, self.x0, strict=True) if v is None]
+        return {
+            "t": t_end,
+            "max_parameters": self.k,
+            "reason": None,
+            "n_parameters": len(self.params),
+            "n_initial_amounts": len(self.ics),
+            "n_at_zero": len(at_zero),
+            "at_zero": at_zero[:MAX_NOTICES],
+            "n_unvalued": len(unvalued),
+            "unvalued": unvalued[:MAX_NOTICES],
+            "n_initial_at_zero": len(ic_zero),
+            "initial_at_zero": ic_zero[:MAX_NOTICES],
+            "n_initial_unvalued": len(ic_unvalued),
+            "initial_unvalued": ic_unvalued[:MAX_NOTICES],
+            "one_sided": {n: self.one_sided[n] for n in self.params if n in self.one_sided},
+        }
+
+    def of(self, kind: str) -> Any:
+        """A function of a column of *kind* and its tolerance floor that gives
+        the column's ``sensitivity`` entry."""
+        if self.reason is not None:
+            return lambda j, floor: None
+        if kind == "species":
+            blocks = (self.result._sensitivities, self.result._sensitivities_ic)
+        else:
+            blocks = (
+                self.result._observable_sensitivities,
+                self.result._observable_sensitivities_ic,
+            )
+        n_rows = len(
+            self.result._species_names if kind == "species" else self.result._observable_names
+        )
+        par, ic = (
+            _last_rows(b, n_rows, len(names))
+            for b, names in zip(blocks, (self.params, self.ics), strict=True)
+        )
+        values = np.asarray(
+            self.result._species if kind == "species" else self.result._observables,
+            dtype=np.float64,
+        )
+
+        def entry(j: int, floor: float | None) -> dict[str, Any] | None:
+            if (self.params and par is None) or (self.ics and ic is None):
+                return None
+            y = float(values[-1, j])
+            resolved = None if floor is None or not math.isfinite(y) else bool(abs(y) > floor)
+            out: dict[str, Any] = {"y": _num(y), "resolved": resolved}
+            p_rows = par[j] if par is not None else np.empty(0)
+            i_rows = ic[j] if ic is not None else np.empty(0)
+            out.update(self._ranked(p_rows, self.params, self.p, y, resolved, "parameters"))
+            out.update(self._ranked(i_rows, self.ics, self.x0, y, resolved, "initial_amounts"))
+            return out
+
+        return entry
+
+    def _ranked(
+        self,
+        d: NDArray[np.float64],
+        names: list[str],
+        scale: list[float | None],
+        y: float,
+        resolved: bool | None,
+        key: str,
+    ) -> dict[str, Any]:
+        """The *k* entries of the largest ``|scale·d|``, largest first, ties by
+        index, with how many were left out and how many are not finite."""
+        finite = np.isfinite(d)
+        ok = [
+            i for i in range(len(names)) if finite[i] and scale[i] is not None and scale[i] != 0.0
+        ]
+        weighed = np.array([float(scale[i] or 0.0) * float(d[i]) for i in ok], dtype=np.float64)
+        order = sorted(range(len(ok)), key=lambda m: (-abs(weighed[m]), ok[m]))
+        listed = []
+        for m in order[: self.k]:
+            i = ok[m]
+            dlnp = float(weighed[m])
+            listed.append(
+                {
+                    "name": names[i],
+                    "dy_dp": _num(d[i]),
+                    "dy_dlnp": _num(dlnp),
+                    "dlny_dlnp": _num(dlnp / y) if resolved else None,
+                    "one_sided": self.one_sided.get(names[i]) if key == "parameters" else None,
+                }
+            )
+        return {
+            key: listed,
+            f"n_{key}_left_out": max(len(ok) - self.k, 0),
+            f"n_{key}_non_finite": int((~finite).sum()),
+        }
+
+
+def _last_rows(block: Any, n_rows: int, n_axis: int) -> NDArray[np.float64] | None:
+    """The block's rows at the last time, ``(n_rows, n_axis)``; ``None`` where
+    the block does not hold them (a result whose run built no such block)."""
+    if n_axis == 0:
+        return np.empty((n_rows, 0))
+    b = np.asarray(block, dtype=np.float64)
+    if b.ndim != 3 or b.shape[1] != n_rows or b.shape[2] != n_axis or b.shape[0] == 0:
+        return None
+    return b[-1]
+
+
+def _value(v: Any) -> float | None:
+    """A value a column is scaled by, ``None`` where it is not a finite number."""
+    if v is None:
+        return None
+    v = float(v)
+    return v if math.isfinite(v) else None
+
+
+def _param_values(result: Result) -> dict[str, Any] | None:
+    """The parameter values *result*'s run started with, by name, as its
+    record gives them."""
+    frozen = result._record_frozen
+    if frozen is not None:
+        return (frozen.get("run") or {}).get("parameters")
+    return _record.run_parameters(result)
 
 
 def _stack_stats(last: NDArray[np.float64]) -> dict[str, Any]:
@@ -482,7 +680,51 @@ def text(d: dict[str, Any]) -> str:
         lines.append(line)
         for row in block["columns"]:
             lines.append("  " + _row_text(row))
+            if "sensitivity" in row:
+                lines.append("    " + _sens_text(row["sensitivity"], d.get("sensitivity")))
+    head_sens = d.get("sensitivity")
+    if head_sens is not None:
+        if head_sens.get("reason"):
+            lines.append(f"sensitivities: none read ({head_sens['reason']})")
+        else:
+            for key, label in (
+                ("at_zero", "parameters at 0, not ranked"),
+                ("unvalued", "parameters of no recorded value, not ranked"),
+                ("initial_at_zero", "initial amounts at 0, not ranked"),
+                ("initial_unvalued", "initial amounts of no recorded value, not ranked"),
+            ):
+                if head_sens[f"n_{key}"]:
+                    more = head_sens[f"n_{key}"] - len(head_sens[key])
+                    tail = f" and {more} more" if more > 0 else ""
+                    lines.append(f"{label}: {', '.join(head_sens[key])}{tail}")
     return "\n".join(lines)
+
+
+def _sens_text(s: dict[str, Any] | None, head: dict[str, Any] | None) -> str:
+    if s is None:
+        return "sensitivity: none for this column"
+    t = _g(head.get("t")) if head else "?"
+    scaled = s["resolved"] is True
+    what = "dln y/dln p" if scaled else "dy/dln p"
+    parts = []
+    for key, label in (("parameters", "parameters"), ("initial_amounts", "initial amounts")):
+        entries = s[key]
+        left, bad = s[f"n_{key}_left_out"], s[f"n_{key}_non_finite"]
+        if not entries and not left and not bad:
+            continue
+        listed = ", ".join(
+            f"{e['name']} {_g(e['dlny_dlnp'] if scaled else e['dy_dlnp'])}"
+            + (f" ({e['one_sided']} side)" if e["one_sided"] else "")
+            for e in entries
+        )
+        extra = []
+        if left:
+            extra.append(f"{left} more")
+        if bad:
+            extra.append(f"{bad} not finite")
+        parts.append(f"{label} {listed or '-'}" + (f" ({', '.join(extra)})" if extra else ""))
+    note = "" if scaled else ("; y within its tolerance of 0" if s["resolved"] is False else "")
+    return f"at t={t} by {what}{note}: " + "; ".join(parts)
 
 
 def _row_text(row: dict[str, Any]) -> str:
