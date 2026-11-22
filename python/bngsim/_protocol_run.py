@@ -730,22 +730,29 @@ class _Runner:
         """Bring each parameter an action set to an expression up to what it
         reads now, as BNG2.pl evaluates it where it is used (issue #1682). An
         expression may read another, so this repeats until none moves; none
-        reads itself, which :meth:`_change` refuses."""
+        reads itself, which :meth:`_change` refuses. One that does not evaluate
+        is refused only once none moves: what it reads may still be on its way
+        to the value it settles at (issue #1876)."""
         from bngsim._bngl_loader import _value
 
         for _ in range(len(self.param_exprs) + 2):
             moved = False
+            unsettled: tuple[str, str] | None = None
             for name, text in self.param_exprs.items():
                 value = _value(self.model, text)
                 if value is None or math.isnan(value):
-                    raise ConversionError(
-                        f'setParameter("{name}","{text}"): the value does not evaluate '
-                        "in the model"
-                    )
+                    unsettled = unsettled or (name, text)
+                    continue
                 if float(self.model.get_param(name)) != value:
                     self._set_params({name: value})
                     moved = True
             if not moved:
+                if unsettled is not None:
+                    name, text = unsettled
+                    raise ConversionError(
+                        f'setParameter("{name}","{text}"): the value does not evaluate '
+                        "in the model"
+                    )
                 return
         # A chain settles in one pass per expression; one that does not reads
         # itself, which the check at the setParameter is meant to have refused.
@@ -909,15 +916,21 @@ class _Runner:
         # the value its expression gives re-attaches it (issue #188). Its
         # expression gives that value only once what it reads is back, so one
         # written before a parameter it reads stays a number, at the saved
-        # value. Hence twice: the first write puts every value back, and at the
-        # second each expression gives its own, whatever order they are in
-        # (the model's; a set's follows the hash seed, issue #1870).
+        # value. Hence twice, in the model's order (a set's follows the hash
+        # seed, issue #1870), with every value back before the second.
         expr_now = dict(zip(names, self.model.param_is_expression, strict=True))
         overridden = {
             n: values[n] for n in names if n in derived and n in values and not expr_now[n]
         }
         if overridden:
             self._set_params(overridden)
+        # A parameter an action set to an expression is written back with the
+        # constants, as its saved number, which re-attaches it to its declared
+        # expression where the two agree before what the declared one reads is
+        # back; it then follows that one. Its own expression puts it back,
+        # overridden values or not (issue #1876).
+        self._follow()
+        if overridden:
             self._set_params(overridden)
 
     # ── runs ──────────────────────────────────────────────────────────────
