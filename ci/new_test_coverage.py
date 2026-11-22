@@ -81,6 +81,9 @@ _TAKES_ARG = frozenset(
     {"-p", "-c", "-o", "-n", "-W", "--rootdir", "--confcutdir", "--basetemp", "--junitxml"}
     | {"--dist", "--tb", "--durations", "--maxfail", "--max-worker-restart", "--cov"}
     | {"--cov-report", "--override-ini", "--config-file", "--log-file", "--import-mode"}
+    # A path each, which is no test path: ``.`` or ``python`` after one is not
+    # the suite.
+    | {"--junit-xml", "--rsyncdir", "--cov-config"}
 )
 #: Shell words that end a command: what follows is another command.
 _COMMAND_ENDS = frozenset({"|", "||", "&&", ";", "&", "|&"})
@@ -378,8 +381,10 @@ def read_command(command: str, wf: Workflow, empty: Iterable[str] = ()) -> None:
             # (``'f.py::test[a-1]'``) selects its file; a quoted glob path
             # names none.
             file, sep, _ = literal(tok).partition("::")
+            # Made absolute by pytest, as an unquoted path is (below).
+            file = posixpath.normpath(file) if file else file
             if sep and file.startswith("python/tests") and not re.search(r"[*?[]", file):
-                wf.node_ids.append(file.rstrip("/"))
+                wf.node_ids.append(file)
             continue
         if "$" in tok or "@@expr" in tok:
             shown = tok.replace("@@expr:", "${{ ").replace("@@", " }}")

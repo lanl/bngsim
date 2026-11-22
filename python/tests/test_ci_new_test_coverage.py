@@ -602,6 +602,23 @@ def test_deselect_leaves_out_every_node_id_that_starts_with_it():
     assert _runs(f"python -m pytest python/tests --deselect {_H1}::test_a", _H1)
 
 
+def test_a_dot_an_option_takes_is_not_the_suite():
+    # `.` or `python` as the path an option takes names no test path: only the
+    # file named runs, and a new file elsewhere is not read as run.
+    for opt in ("--rsyncdir .", "--junit-xml python", "--cov-config .", "--cov ."):
+        w = _cmd(f"python -m pytest {opt} python/tests/test_a.py")
+        assert not w.whole and not w.above, opt
+        assert w.selectors == ["python/tests/test_a.py"], opt
+        assert not _runs(f"python -m pytest {opt} python/tests/test_a.py", _H1), opt
+
+
+def test_a_quoted_node_id_is_read_however_its_file_is_spelled():
+    # pytest makes the file absolute, quoted or not.
+    for f in ("./python/tests/test_a.py", "python//tests/test_a.py"):
+        w = _cmd(f"python -m pytest '{f}::test_b[q]'")
+        assert w.node_ids == ["python/tests/test_a.py"], f
+
+
 def test_keep_duplicates_keeps_a_named_path_under_a_named_directory():
     assert not _runs(f"python -m pytest python/tests --ignore={_X} {_X}", _X)
     assert _runs(f"python -m pytest python/tests --ignore={_X} --keep-duplicates {_X}", _X)
