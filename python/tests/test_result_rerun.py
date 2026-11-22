@@ -227,7 +227,9 @@ def test_the_jacobian_a_retried_run_used_is_the_one_used_again() -> None:
     again = r.rerun()
     _same(r, again)
     assert again.record["backend"]["jacobian"] == "difference_quotient"
-    assert "rerun.different_backend" not in [n["code"] for n in again.notices]
+    # On a difference quotient from the start, as the result it returned ran:
+    # no analytical attempt to fail and retry.
+    assert again.notices == []
     kept = sim.run(t_span=(0, 40), n_points=5, start="initial")
     _same(kept, kept.rerun())
 
@@ -240,20 +242,33 @@ _CC = shutil.which("cc") or shutil.which("clang") or shutil.which("gcc")
 def test_the_code_a_run_was_asked_for_is_asked_for_again(
     net_path: Path, method: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """With the threshold at 1 this model compiles under "auto": a run made
-    with codegen=False must be made interpreted again, and one made compiled
-    (codegen=True; SSA takes only "auto") compiled again."""
-    monkeypatch.setenv("BNGSIM_CODEGEN_THRESHOLD", "1")
+    """Below the size threshold this model runs interpreted under "auto", and
+    compiled above it. A run that compiled because it was asked to compiles
+    again under the default threshold; one that ran interpreted under "auto"
+    runs interpreted again where "auto" would now compile; and one asked
+    not to compile does not, where "auto" would."""
     part = "rhs" if method == "ode" else "propensities"
-    for asked in (False, True if method == "ode" else None):
-        r = Simulator(Model.from_net(net_path), method=method, codegen=asked).run(
-            t_span=(0, 5), n_points=4
-        )
-        assert (r.record["backend"][part] == "interpreted") is (asked is False)
+
+    def check(r: Result, expect: str) -> None:
+        assert r.record["backend"][part] == expect
         again = r.rerun()
-        assert again.record["backend"][part] == r.record["backend"][part]
+        assert again.record["backend"][part] == expect
         assert again.notices == []
         _same(r, again)
+
+    monkeypatch.delenv("BNGSIM_CODEGEN_THRESHOLD", raising=False)
+    if method == "ode":
+        compiled = Simulator(Model.from_net(net_path), codegen=True).run(t_span=(0, 5), n_points=4)
+        assert compiled.record["backend"]["rhs"] != "interpreted"
+        check(compiled, compiled.record["backend"]["rhs"])
+    auto = Simulator(Model.from_net(net_path), method=method).run(t_span=(0, 5), n_points=4)
+    monkeypatch.setenv("BNGSIM_CODEGEN_THRESHOLD", "1")
+    if method == "ode":  # SSA compiles its propensities under "auto" at any size
+        check(auto, "interpreted")
+    off = Simulator(Model.from_net(net_path), method=method, codegen=False).run(
+        t_span=(0, 5), n_points=4
+    )
+    check(off, "interpreted")
 
 
 @pytest.mark.parametrize("solver", ["dense", "fd"])
@@ -707,6 +722,12 @@ def test_a_derived_parameter_pinned_to_a_number_is_pinned_again(tmp_path: Path, 
     _same(r, again)
     np.testing.assert_array_equal(np.asarray(again.sensitivities), np.asarray(r.sensitivities))
     assert again.record["run"]["parameters_pinned"] == ["kd"]
+    # Pinned before a clone was made: the clone's run says so too.
+    clone = model.clone()
+    clone.reset()
+    r = Simulator(clone, sensitivity_params=["kf"]).run(t_span=(0, 5), n_points=4)
+    assert r.record["run"]["parameters_pinned"] == ["kd"]
+    np.testing.assert_array_equal(np.asarray(r.rerun().sensitivities), np.asarray(r.sensitivities))
     # Unpinned, it is listed as following its expression.
     plain = Simulator(Model.from_net(net)).run(t_span=(0, 1), n_points=2)
     assert plain.record["run"]["parameters_pinned"] == []
