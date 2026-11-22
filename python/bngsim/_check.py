@@ -1,0 +1,835 @@
+"""A one-call check of a run (issue #1707).
+
+:meth:`bngsim.Result.check` makes the run a result records again with one
+setting changed (:meth:`Result.rerun`, issue #1703) and says whether the answer
+moved. Each rerun starts from the state the run started from, on a fresh model,
+so a check costs the session nothing and compares like with like.
+
+Every comparison is made column by column (species), each on its own scale, so
+a species at 1e-3 beside one at 1e3 is judged as carefully as the large one,
+and each column's absolute floor is the atol the run applied to that species:
+
+- the *tolerance* check makes the run at a tenth of its ``rtol`` and atol. A
+  column's *move* is its largest difference from the run, past its atol, over
+  its peak; the check fails where a column moves by more than
+  :data:`TOLERANCE_MOVE` (0.1% of its peak), which says the run is not
+  converged at its own tolerance. That move is also the run's *drift*;
+- every other check (a *path*) is judged column by column against the
+  allowance ``max(min(PATH_RTOL_FACTOR·(atol_j + rtol·peak_j),
+  max(PATH_CEILING·peak_j, atol_j)), PATH_ATOL_FACTOR·atol_j,
+  DRIFT_FACTOR·d_j)``, where ``d_j`` is how far the column itself moves at the
+  tighter tolerance: two correct paths each err by about the tolerance, scaled
+  by the problem's conditioning, which the drift measures, and never by more
+  than 1% of the column's peak for the tolerance alone, unless the column is
+  within ``PATH_ATOL_FACTOR`` atol of zero, which resolves it no better;
+- a column whose peak is within :data:`TRACE_ATOLS` times its atol, where the
+  atol and not rtol holds it (``atol_j > rtol·peak_j``), is not resolved by
+  the run: no check judges it, and the report names it;
+- a column that is not converged at the run's own tolerance (its move past
+  :data:`TOLERANCE_MOVE`) is not judged; where no column is, the verdict is
+  ``no_base``, and a report on a run that is not converged is never ok.
+
+The constants are the developer-side differential harness's
+(``parity_checks/differential``, issue #1257). Its comparison is over the whole
+trajectory at once, against the largest value of any species, which a column
+far smaller than the largest cannot fail; this one is per column.
+
+Verdicts: ``pass``, ``diff``, ``skip`` (with the reason), ``unsupported`` (the
+check does not apply to this run), ``exception`` (the changed run raised),
+``no_base`` (no column is converged enough to judge a path against) and
+``timeout`` (the ``budget`` ran out).
+"""
+
+from __future__ import annotations
+
+import math
+import time
+from typing import TYPE_CHECKING, Any
+
+import numpy as np
+
+from bngsim import _record
+from bngsim._exceptions import UsageError
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
+
+    from bngsim._result import Result
+
+#: Incremented by a change that removes or renames a key, or changes what one
+#: holds. A key added is no change of version.
+CHECK_VERSION = 1
+
+#: How many times the run's tolerance two correct paths may differ by: their
+#: errors are each about the tolerance, scaled by the problem's conditioning,
+#: which a tolerance does not bound.
+PATH_RTOL_FACTOR = 1e3
+#: And how many times past a column's own move at a tenfold tighter tolerance.
+DRIFT_FACTOR = 10.0
+#: A column that moves by more than this share of its peak at a tenfold tighter
+#: tolerance is not converged at the run's own (the harness's
+#: ``UNJUDGEABLE_DRIFT``): the tolerance check fails, and no path is judged on
+#: that column.
+TOLERANCE_MOVE = 1e-3
+#: The most the tolerance alone may forgive a path, as a share of a column's
+#: peak. At an rtol of 1e-8 the first term is 1e-5 and this never bites; at a
+#: caller's rtol of 1e-3 the first term alone is the whole peak.
+PATH_CEILING = 1e-2
+#: But a path may always differ by this many times a column's atol: a column
+#: whose peak is within a few hundred atol of zero is resolved to no better.
+PATH_ATOL_FACTOR = 100.0
+#: A column whose peak is within this many times the atol the run applied to
+#: it, where that atol (not rtol) holds it, is not resolved by the run: its
+#: values are within the solver's absolute error of zero. No check judges it,
+#: and the report names it.
+TRACE_ATOLS = 100.0
+#: How many such columns a report names.
+MAX_NAMED = 20
+#: The grid check's output points, as a multiple of the run's intervals.
+GRID_FACTOR = 8
+#: How many reruns the replicates check makes of a stochastic run.
+DEFAULT_REPLICATES = 10
+
+#: The checks, in the order they run; ``tolerance`` first, as the others are
+#: judged against its drift.
+DETERMINISTIC = ("tolerance", "grid", "jacobian", "backend", "second_engine")
+STOCHASTIC = ("replicates",)
+#: What ``checks=None`` runs: the cheap checks that catch the common case.
+DEFAULT_DETERMINISTIC = ("tolerance", "grid")
+DEFAULT_STOCHASTIC = ("replicates",)
+
+_STATUSES = ("pass", "diff", "skip", "unsupported", "exception", "no_base", "timeout")
+_NOT_OK = ("diff", "exception", "timeout")
+
+
+def differences(
+    x: NDArray[np.float64], ref: NDArray[np.float64]
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Per column: the largest ``|x - ref|`` over time (``inf`` where the two
+    are not finite at the same cells), and the reference's peak ``|ref|``.
+    Arrays of another shape are ``inf`` everywhere."""
+    x, ref = np.asarray(x, dtype=float), np.asarray(ref, dtype=float)
+    n = ref.shape[-1] if ref.ndim == 2 else 0
+    fin = np.isfinite(ref)
+    peak = np.where(fin, np.abs(ref), 0.0).max(axis=0) if ref.size else np.zeros(n)
+    if x.shape != ref.shape:
+        return np.full(n, np.inf), peak
+    same = (np.isfinite(x) == fin).all(axis=0)
+    d = (
+        np.where(fin & np.isfinite(x), np.abs(x - ref), 0.0).max(axis=0)
+        if ref.size
+        else np.zeros(n)
+    )
+    return np.where(same, d, np.inf), peak
+
+
+def moves(
+    d: NDArray[np.float64], peak: NDArray[np.float64], atol: NDArray[np.float64]
+) -> NDArray[np.float64]:
+    """Each column's difference past its atol, over its peak; 0 for a column
+    whose peak is within its atol (nothing in it can count)."""
+    over = np.maximum(d - atol, 0.0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rel = np.where(peak > atol, over / np.where(peak > 0, peak, 1.0), 0.0)
+    return np.where(np.isinf(d), np.inf, rel)
+
+
+def allowance(
+    peak: NDArray[np.float64], atol: NDArray[np.float64], rtol: float, drift: NDArray[np.float64]
+) -> NDArray[np.float64]:
+    """How far two correct paths may be apart in each column: see the module
+    docstring."""
+    by_tol = np.minimum(
+        PATH_RTOL_FACTOR * (atol + rtol * peak), np.maximum(PATH_CEILING * peak, atol)
+    )
+    return np.maximum(np.maximum(by_tol, PATH_ATOL_FACTOR * atol), DRIFT_FACTOR * drift)
+
+
+def _num(x: Any) -> float | None:
+    if x is None:
+        return None
+    v = float(x)
+    return v if math.isfinite(v) else None
+
+
+class Report(dict):  # type: ignore[type-arg]
+    """:meth:`Result.check`'s dict, whose ``str()`` is its plain-text form.
+
+    It is a ``dict`` in every other way: ``json.dumps(report, allow_nan=False)``
+    writes it.
+    """
+
+    __slots__ = ()
+
+    def __str__(self) -> str:
+        return text(self)
+
+    def text(self) -> str:
+        """The plain-text form, as ``str()`` gives it."""
+        return text(self)
+
+
+class _Out(Exception):
+    """The budget ran out before a check could start or finish."""
+
+
+def check(
+    result: Result,
+    *,
+    checks: Any = None,
+    budget: float | None = None,
+    replicates: int = DEFAULT_REPLICATES,
+) -> Report:
+    """:meth:`Result.check`."""
+    if result._species.ndim == 3:
+        raise UsageError(
+            "Result.check() checks one run; this is a stack of runs. Check each row "
+            "(the list run_batch or run_replicates returns without squeeze=True).",
+            code="usage.invalid_argument",
+        )
+    if budget is not None and (
+        isinstance(budget, bool) or not isinstance(budget, int | float) or not budget > 0
+    ):
+        raise UsageError(f"check(budget=...) takes seconds > 0 or None, got {budget!r}")
+    if isinstance(replicates, bool) or not isinstance(replicates, int) or replicates < 2:
+        raise UsageError(
+            f"check(replicates=...) takes a whole number of 2 or more, got {replicates!r}"
+        )
+    rec = result.record
+    run = rec.get("run")
+    method = None if run is None else run.get("method")
+    stochastic = None if method is None else method in _record.STOCHASTIC
+    known = DETERMINISTIC + STOCHASTIC
+    if checks is None:
+        names = list(DEFAULT_STOCHASTIC if stochastic else DEFAULT_DETERMINISTIC)
+    elif checks == "all":
+        names = list(STOCHASTIC if stochastic else DETERMINISTIC)
+    else:
+        names = [checks] if isinstance(checks, str) else list(checks)
+        bad = [n for n in names if n not in known]
+        if bad:
+            raise UsageError(
+                f"check(checks=...) does not know {bad[0]!r}: it takes None (the default "
+                f"set), 'all', or names from {', '.join(known)}.",
+                code="usage.invalid_argument",
+                details={"checks": bad, "accepted": list(known)},
+            )
+        names = list(dict.fromkeys(names))
+    deadline = None if budget is None else time.monotonic() + float(budget)
+
+    out = Report()
+    out["check_version"] = CHECK_VERSION
+    out["ok"] = False
+    out["method"] = method
+    out["stochastic"] = stochastic
+    out["rtol"] = None
+    out["atol"] = None
+    out["drift"] = None
+    out["bound"] = None
+    out["converged"] = None
+    out["n_not_resolved"] = None
+    out["not_resolved"] = []
+    out["checks"] = []
+
+    if run is None:
+        for name in names:
+            out["checks"].append(
+                _verdict(name, "unsupported", note="the result records no run to make again")
+            )
+        return _finish(out)
+
+    ctx = _Context(result, rec, deadline)
+    out["rtol"] = ctx.rtol
+    out["atol"] = ctx.atol
+    order = [n for n in known if n in names]
+    for name in order:
+        v = ctx.run_check(name, replicates)
+        out["checks"].append(v)
+    if ctx.moved is not None and ctx.moved.size:
+        out["drift"] = _num(ctx.moved.max())
+        out["converged"] = bool(ctx.moved.max() <= TOLERANCE_MOVE)
+        trace = [n for n, keep in zip(ctx.names, ctx.relevant, strict=True) if not keep]
+        out["n_not_resolved"] = len(trace)
+        out["not_resolved"] = trace[:MAX_NAMED]
+    out["bound"] = TOLERANCE_MOVE
+    return _finish(out)
+
+
+def _finish(out: Report) -> Report:
+    statuses = [c["status"] for c in out["checks"]]
+    out["ok"] = (
+        bool(statuses)
+        and "pass" in statuses
+        and not any(s in _NOT_OK for s in statuses)
+        and out.get("converged") is not False
+    )
+    out["n_pass"] = statuses.count("pass")
+    out["n_diff"] = statuses.count("diff")
+    out["next"] = _next(out)
+    return out
+
+
+def _next(out: Report) -> str:
+    """What to do next, in one sentence."""
+    diffs = [c for c in out["checks"] if c["status"] == "diff"]
+    if diffs and diffs[0]["name"] == "tolerance":
+        return (
+            "The answer moves when the tolerance is tightened: rerun at a tighter rtol and "
+            "atol (result.rerun(rtol=..., atol=...)) until it does not, and report that run."
+        )
+    if diffs and diffs[0]["name"] == "second_engine":
+        return (
+            "bngsim and libRoadRunner disagree on this model: one of them reads it "
+            "differently. Report it at https://github.com/lanl/bngsim/issues with "
+            "json.dumps(report) and the model file."
+        )
+    if diffs:
+        return (
+            f"Two bngsim paths disagree ({diffs[0]['name']}): on a model bngsim accepts, that "
+            "is a bug worth reporting at https://github.com/lanl/bngsim/issues, with "
+            "json.dumps(report), result.record and the model file. Do not report the "
+            "number as resolved."
+        )
+    timed = [c["name"] for c in out["checks"] if c["status"] == "timeout"]
+    if timed:
+        return (
+            f"The budget ran out before {', '.join(timed)}: the result is not checked until "
+            "they run; pass a larger budget=."
+        )
+    if any(c["status"] == "exception" for c in out["checks"]):
+        return "A changed run raised: read its note before relying on the result."
+    if any(c["status"] == "no_base" for c in out["checks"]) or out.get("converged") is False:
+        return (
+            "The run is not converged at its own tolerance, so no path could be judged: "
+            "rerun at a tighter rtol and atol and check that."
+        )
+    if any(c["name"] == "replicates" and c["status"] == "pass" for c in out["checks"]):
+        return (
+            "A stochastic run is one draw: report the mean over replicates with its "
+            "standard error, not this trajectory."
+        )
+    if not out["ok"]:
+        return "No check could run on this result: see each check's note."
+    trace = out.get("not_resolved") or []
+    if trace:
+        more = out["n_not_resolved"] - len(trace)
+        names = ", ".join(trace) + (f" and {more} more" if more > 0 else "")
+        return (
+            "No check moved the answer past its bound, but "
+            f"{names} {'stays' if out['n_not_resolved'] == 1 else 'stay'} within "
+            f"{TRACE_ATOLS:g} times {'its' if out['n_not_resolved'] == 1 else 'their'} atol "
+            "of zero, which the run does not resolve, and "
+            f"{'was' if out['n_not_resolved'] == 1 else 'were'} not judged: to report "
+            f"{'it' if out['n_not_resolved'] == 1 else 'them'}, rerun with an atol well "
+            f"below {'it' if out['n_not_resolved'] == 1 else 'them'} "
+            "(result.rerun(atol=...)) and check that."
+        )
+    return "No check moved the answer past its bound."
+
+
+def _verdict(
+    name: str,
+    status: str,
+    value: float | None = None,
+    note: str = "",
+    *,
+    worst: str | None = None,
+    changed: dict[str, Any] | None = None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    assert status in _STATUSES, status
+    v: dict[str, Any] = {
+        "name": name,
+        "status": status,
+        "value": _num(value),
+        "worst_column": worst,
+        "changed": changed or {},
+        "note": note,
+    }
+    if extra:
+        v.update(extra)
+    return v
+
+
+class _Context:
+    """The run a result records, and what its checks share: the tolerances, the
+    columns' atols and the drift."""
+
+    def __init__(self, result: Result, rec: dict[str, Any], deadline: float | None) -> None:
+        self.result = result
+        self.rec = rec
+        self.run = rec["run"]
+        self.deadline = deadline
+        self.method = self.run.get("method")
+        self.stochastic = self.method in _record.STOCHASTIC
+        self.steady = bool(self.run.get("steady_state"))
+        self.names = list(result._species_names)
+        self.x = self._view(result)
+        atol = self.run.get("atol") or {}
+        self.rtol: float | None = self.run.get("rtol")
+        per = atol.get("per_species")
+        self.per_species = None if per is None else [float(a) for a in per]
+        self.atol: float | None = atol.get("scalar")
+        n = len(self.names)
+        if self.per_species is not None and len(self.per_species) == n:
+            self.atols = np.asarray(self.per_species, dtype=float)
+        else:
+            self.atols = np.full(n, float(self.atol) if self.atol is not None else 0.0)
+        self.drift_abs: NDArray[np.float64] | None = None
+        self.moved: NDArray[np.float64] | None = None
+        self.relevant: NDArray[np.bool_] = np.ones(n, dtype=bool)
+        self.tol_error = ""
+
+    def _view(self, result: Result) -> NDArray[np.float64]:
+        """What is compared of *result*: its species, or of a run that stopped
+        at a steady state, the state it stopped at."""
+        x = np.asarray(result._species, dtype=float)
+        return x[-1:] if self.steady else x
+
+    # --- running ---------------------------------------------------------
+
+    def _left(self) -> float | None:
+        if self.deadline is None:
+            return None
+        left = self.deadline - time.monotonic()
+        if left <= 0:
+            raise _Out
+        return left
+
+    def rerun(self, **changes: Any) -> Result:
+        left = self._left()
+        if left is not None:
+            own = self.run.get("timeout")
+            changes["timeout"] = left if own is None else min(left, float(own))
+        try:
+            return self.result.rerun(**changes)
+        except Exception as e:
+            if self.deadline is not None and _timed_out(e):
+                raise _Out from e
+            raise
+
+    def run_check(self, name: str, replicates: int) -> dict[str, Any]:
+        fn = getattr(self, f"check_{name}")
+        try:
+            self._left()
+            return fn() if name != "replicates" else fn(replicates)
+        except _Out:
+            return _verdict(name, "timeout", note="the budget ran out before this check finished")
+        except Exception as e:  # noqa: BLE001 - a check that raises is a finding
+            if getattr(e, "code", None) in ("rerun.unsupported", "rerun.not_recorded"):
+                # The run cannot be made again from its record (a network-free
+                # run, a stop condition, ...): the check does not apply.
+                return _verdict(name, "unsupported", note=f"no rerun: {_first_line(e)}")
+            return _verdict(name, "exception", note=f"{type(e).__name__}: {_first_line(e)}")
+
+    # --- the reference ---------------------------------------------------
+
+    def _deterministic(self, name: str) -> dict[str, Any] | None:
+        if self.stochastic:
+            return _verdict(
+                name, "unsupported", note=f"a {self.method} run is stochastic: see replicates"
+            )
+        if self.method != "ode":
+            return _verdict(name, "unsupported", note=f"the run's method is {self.method!r}")
+        if self.rtol is None or self.atol is None:
+            return _verdict(name, "unsupported", note="the record gives no rtol or atol")
+        return None
+
+    def _tighter(self, by: float) -> dict[str, Any]:
+        assert self.rtol is not None and self.atol is not None
+        if self.per_species is not None:
+            atol: Any = [a / by for a in self.per_species]
+        else:
+            atol = float(self.atol) / by
+        return {"rtol": float(self.rtol) / by, "atol": atol}
+
+    def _ensure_drift(self) -> str | None:
+        """Each column's move at a tenfold tighter tolerance, made once; the
+        reason there is none, or None."""
+        if self.drift_abs is None and not self.tol_error:
+            try:
+                tight = self.rerun(**self._tighter(10.0))
+            except _Out:
+                raise
+            except Exception as e:  # noqa: BLE001 - recorded on every check's note
+                self.tol_error = f"{type(e).__name__}: {_first_line(e)}"
+                return self.tol_error
+            d, peak = differences(self._view(tight), self.x)
+            self.drift_abs = d
+            # Not resolved: within TRACE_ATOLS atol of zero, where the atol,
+            # not rtol, holds the column (a loose rtol makes every atol a
+            # large share of its species, and those columns are resolved to
+            # that share, which the tolerance check judges).
+            rtol = float(self.rtol or 0.0)
+            unresolved = (peak <= TRACE_ATOLS * self.atols) & (self.atols > rtol * peak)
+            self.relevant = ~unresolved
+            self.moved = np.where(self.relevant, moves(d, peak, self.atols), 0.0)
+        return self.tol_error or None
+
+    def _worst(self, score: NDArray[np.float64]) -> str | None:
+        if not score.size or not (score > 0).any():
+            return None
+        j = int(np.argmax(np.where(np.isnan(score), np.inf, score)))
+        return self.names[j] if j < len(self.names) else None
+
+    def compare(self, name: str, again: Result, changed: dict[str, Any]) -> dict[str, Any]:
+        return self.compare_x(name, self._view(again), changed)
+
+    def compare_x(
+        self, name: str, x: NDArray[np.float64], changed: dict[str, Any]
+    ) -> dict[str, Any]:
+        err = self._ensure_drift()
+        if err:
+            return _verdict(
+                name,
+                "no_base",
+                note=f"the run at a tenfold tighter tolerance raised ({err})",
+                changed=changed,
+            )
+        assert self.drift_abs is not None and self.moved is not None and self.rtol is not None
+        judged = self.relevant & (self.moved <= TOLERANCE_MOVE)
+        if not judged.any():
+            return _verdict(
+                name,
+                "no_base",
+                note=f"no column is converged at the run's tolerance (each moves past "
+                f"{TOLERANCE_MOVE:g} of its peak at a tenfold tighter one): no path is judged",
+                changed=changed,
+            )
+        d, peak = differences(x, self.x)
+        allow = allowance(peak, self.atols, float(self.rtol), self.drift_abs)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio = np.where(
+                allow > 0, d / np.where(allow > 0, allow, 1.0), np.where(d > 0, np.inf, 0.0)
+            )
+            rel = np.where(peak > self.atols, d / np.where(peak > 0, peak, 1.0), 0.0)
+        ratio = np.where(judged, ratio, 0.0)
+        rel = np.where(judged, rel, 0.0)
+        worst = self._worst(ratio)
+        margin = float(ratio.max()) if ratio.size else 0.0
+        value = float(rel.max()) if rel.size else 0.0
+        status = "pass" if margin <= 1.0 else "diff"
+        n_out = int((self.relevant & ~judged).sum())
+        note = (
+            f"{value:.2e} of a column's peak at most; the largest difference is "
+            f"{margin:.2g} of its allowance"
+        )
+        if n_out:
+            note += f"; {n_out} column(s) not judged, not converged at the run's tolerance"
+        n_trace = int((~self.relevant).sum())
+        if n_trace:
+            note += f"; {n_trace} column(s) within {TRACE_ATOLS:g} atol of zero not judged"
+        return _verdict(
+            name,
+            status,
+            value,
+            note,
+            worst=worst,
+            changed=changed,
+            extra={
+                "margin": _num(margin),
+                "n_not_judged": n_out,
+                "n_trace": int((~self.relevant).sum()),
+            },
+        )
+
+    # --- the checks ------------------------------------------------------
+
+    def check_tolerance(self) -> dict[str, Any]:
+        skip = self._deterministic("tolerance")
+        if skip:
+            return skip
+        changed = self._tighter(10.0)
+        err = self._ensure_drift()
+        if err:
+            return _verdict(
+                "tolerance",
+                "exception",
+                note=f"the run at a tenfold tighter tolerance raised: {err}",
+                changed=changed,
+            )
+        assert self.moved is not None
+        moved = float(self.moved.max()) if self.moved.size else 0.0
+        extra: dict[str, Any] = {
+            "bound": TOLERANCE_MOVE,
+            "value_100": None,
+            "n_trace": int((~self.relevant).sum()),
+        }
+        # A hundredfold tighter too, where the budget allows: whether the
+        # answer keeps moving, or has stopped.
+        try:
+            tighter = self.rerun(**self._tighter(100.0))
+            d, peak = differences(self._view(tighter), self.x)
+            m100 = np.where(self.relevant, moves(d, peak, self.atols), 0.0)
+            extra["value_100"] = _num(m100.max()) if m100.size else 0.0
+        except _Out:
+            pass
+        except Exception:  # noqa: BLE001 - the tenfold run decides; this one adds
+            pass
+        status = "pass" if moved <= TOLERANCE_MOVE else "diff"
+        note = (
+            f"the answer moves by {moved:.2e} of a column's peak at rtol/10 and atol/10 "
+            f"(bound {TOLERANCE_MOVE:g})"
+        )
+        if extra["value_100"] is not None:
+            note += f", by {extra['value_100']:.2e} at rtol/100"
+        if extra["n_trace"]:
+            note += (
+                f"; {extra['n_trace']} column(s) within {TRACE_ATOLS:g} atol of zero not judged"
+            )
+        worst = self._worst(self.moved)
+        return _verdict(
+            "tolerance", status, moved, note, worst=worst, changed=changed, extra=extra
+        )
+
+    def check_grid(self) -> dict[str, Any]:
+        skip = self._deterministic("grid")
+        if skip:
+            return skip
+        if self.steady:
+            return _verdict("grid", "unsupported", note="the run stopped at a steady state")
+        t = np.asarray(self.result._time, dtype=float)
+        if t.size < 2:
+            return _verdict("grid", "unsupported", note="the run has fewer than two time points")
+        if self.run.get("sample_times") is not None:
+            pieces = [
+                np.linspace(a, b, GRID_FACTOR + 1)[:-1] for a, b in zip(t[:-1], t[1:], strict=True)
+            ]
+            fine = np.concatenate([*pieces, t[-1:]])
+            changed: dict[str, Any] = {"sample_times": f"{GRID_FACTOR}x the points"}
+            again = self.rerun(sample_times=[float(v) for v in fine])
+        else:
+            n = (int(self.run["n_points"]) - 1) * GRID_FACTOR + 1
+            changed = {"n_points": n}
+            again = self.rerun(n_points=n)
+        x = np.asarray(again._species, dtype=float)[::GRID_FACTOR]
+        return self.compare_x("grid", x, changed)
+
+    def check_jacobian(self) -> dict[str, Any]:
+        skip = self._deterministic("jacobian")
+        if skip:
+            return skip
+        backend = self.rec.get("backend") or {}
+        if backend.get("jacobian") in ("fd", "difference_quotient") or backend.get(
+            "jacobian_retried"
+        ):
+            return _verdict(
+                "jacobian", "skip", note="the run already used a difference-quotient Jacobian"
+            )
+        changed = {"jacobian": "fd"}
+        return self.compare("jacobian", self.rerun(jacobian="fd"), changed)
+
+    def check_backend(self) -> dict[str, Any]:
+        skip = self._deterministic("backend")
+        if skip:
+            return skip
+        rhs = (self.rec.get("backend") or {}).get("rhs")
+        if rhs == "interpreted":
+            from bngsim._exceptions import CodegenToolchainError
+
+            changed: dict[str, Any] = {"codegen": True}
+            try:
+                again = self.rerun(codegen=True)
+            except CodegenToolchainError as e:
+                return _verdict("backend", "skip", note=f"no compiled path here: {_first_line(e)}")
+            used = (again.record.get("backend") or {}).get("rhs")
+            if used == "interpreted":
+                return _verdict(
+                    "backend",
+                    "skip",
+                    note="codegen=True ran interpreted: no compiled path to compare",
+                )
+        else:
+            changed = {"codegen": False}
+            again = self.rerun(codegen=False)
+        return self.compare("backend", again, changed)
+
+    def check_second_engine(self) -> dict[str, Any]:
+        skip = self._deterministic("second_engine")
+        if skip:
+            return skip
+        return _second_engine(self)
+
+    def check_replicates(self, n: int) -> dict[str, Any]:
+        if not self.stochastic:
+            return _verdict("replicates", "unsupported", note="the run is deterministic")
+        seed = self.run.get("seed")
+        if seed is None:
+            return _verdict("replicates", "unsupported", note="the record gives no seed")
+        obs = np.asarray(self.result._observables, dtype=float)
+        names = list(self.result._observable_names)
+        if not names:
+            obs, names = self.x, self.names
+        last = np.empty((n, len(names)))
+        seeds = [(int(seed) + 1 + i) % (2**31 - 1) for i in range(n)]
+        for i, s in enumerate(seeds):
+            again = self.rerun(seed=s)
+            block = again._observables if self.result._observable_names else again._species
+            last[i] = np.asarray(block, dtype=float)[-1]
+        mean = last.mean(axis=0)
+        se = last.std(axis=0, ddof=1) / math.sqrt(n)
+        mine = obs[-1]
+        z = np.where(se > 0, (mine - mean) / np.where(se > 0, se, 1.0), np.nan)
+        cols = [
+            {
+                "name": names[j],
+                "run_last": _num(mine[j]),
+                "mean_last": _num(mean[j]),
+                "se_last": _num(se[j]),
+                "z": _num(z[j]),
+            }
+            for j in range(len(names))
+        ]
+        absz = np.where(np.isfinite(z), np.abs(z), -1.0)
+        worst = int(np.argmax(absz)) if len(names) and (absz >= 0).any() else None
+        note = (
+            f"{n} reruns at seeds {seeds[0]}, ..., {seeds[-1]}: at the last time each "
+            "observable's mean over them, its standard error, and how many standard errors "
+            "this run is from it (None where they all agree); it reports, and judges nothing"
+        )
+        return _verdict(
+            "replicates",
+            "pass",
+            None if worst is None else float(absz[worst]),
+            note,
+            worst=None if worst is None else names[worst],
+            changed={"seed": f"{n} others"},
+            extra={"n_replicates": n, "seeds": seeds, "columns": cols},
+        )
+
+
+def _second_engine(ctx: _Context) -> dict[str, Any]:
+    """The run made again in libRoadRunner, from the model file, where it can be
+    made the same: an SBML or Antimony model, unchanged since its load, run
+    from its initial state at the file's own parameters."""
+    name = "second_engine"
+    model = ctx.rec.get("model") or {}
+    fmt = model.get("format")
+    if fmt not in ("sbml", "antimony"):
+        return _verdict(
+            name,
+            "unsupported",
+            note=f"libRoadRunner reads SBML and Antimony; this model is {fmt!r}",
+        )
+    try:
+        import roadrunner
+    except ImportError:
+        return _verdict(
+            name,
+            "skip",
+            note="libRoadRunner is not installed (pip install libroadrunner): the model as "
+            "bngsim read it was not checked against an independent reader",
+        )
+    if ctx.run.get("started_from") != "initial":
+        return _verdict(name, "skip", note="the run did not start from the model's initial state")
+    if model.get("edits"):
+        return _verdict(name, "skip", note="the model was changed after its load")
+    if ctx.run.get("sample_times") is not None or ctx.run.get("steady_state"):
+        return _verdict(
+            name, "skip", note="only a plain t_span run is made again in libRoadRunner"
+        )
+    if ctx.run.get("parameters_pinned"):
+        return _verdict(name, "skip", note="a derived parameter was pinned by set_param")
+    path = model.get("path")
+    import bngsim
+
+    try:
+        fresh = bngsim.Model.load(path) if path else None
+    except Exception as e:  # noqa: BLE001
+        return _verdict(
+            name, "skip", note=f"the model file could not be read again: {_first_line(e)}"
+        )
+    if fresh is None:
+        return _verdict(
+            name, "skip", note="the record names no model file (a model loaded from text)"
+        )
+    held = ctx.run.get("parameters") or {}
+    for p in fresh.param_names:
+        if p in held and held[p] is not None:
+            a, b = float(held[p]), float(fresh.get_param(p))
+            if not (a == b or (math.isnan(a) and math.isnan(b))):
+                return _verdict(
+                    name, "skip", note=f"the run's parameter {p} = {a:g} is not the file's {b:g}"
+                )
+    start = ctx.run.get("start_state")
+    if start is None or not np.allclose(
+        np.asarray(start, dtype=float),
+        np.asarray(fresh.get_state(), dtype=float),
+        rtol=1e-12,
+        atol=0.0,
+        equal_nan=True,
+    ):
+        return _verdict(name, "skip", note="the run did not start from the file's initial state")
+    try:
+        if fmt == "antimony":
+            import antimony
+
+            if antimony.loadAntimonyFile(path) < 0:
+                raise RuntimeError(antimony.getLastError())
+            sbml = antimony.getSBMLString(antimony.getMainModuleName())
+            rr = roadrunner.RoadRunner(sbml)
+        else:
+            rr = roadrunner.RoadRunner(path)
+        ids = list(rr.model.getFloatingSpeciesIds()) + list(rr.model.getBoundarySpeciesIds())
+        missing = [s for s in ctx.names if s not in ids]
+        if missing:
+            return _verdict(name, "skip", note=f"libRoadRunner has no species {missing[0]!r}")
+        assert ctx.rtol is not None and ctx.atol is not None
+        rr.integrator.relative_tolerance = float(ctx.rtol)
+        rr.integrator.absolute_tolerance = (
+            float(ctx.atols.min()) if ctx.atols.size else float(ctx.atol)
+        )
+        sel = ["time"] + [f"[{s}]" for s in ctx.names]
+        out = rr.simulate(
+            float(ctx.run["t_start"]), float(ctx.run["t_end"]), int(ctx.run["n_points"]), sel
+        )
+        x = np.asarray(out, dtype=float)[:, 1:]
+    except Exception as e:  # noqa: BLE001 - the other engine's failure is not bngsim's
+        return _verdict(
+            name,
+            "skip",
+            note=f"libRoadRunner could not run it: {type(e).__name__}: {_first_line(e)}",
+        )
+    v = ctx.compare_x(name, x, {"engine": f"libRoadRunner {roadrunner.__version__}"})
+    return v
+
+
+def _timed_out(e: BaseException) -> bool:
+    from bngsim._exceptions import BngsimError
+
+    code = getattr(e, "code", "") if isinstance(e, BngsimError) else ""
+    return "timeout" in str(code) or "timed out" in str(e).lower()
+
+
+def _first_line(e: BaseException) -> str:
+    return str(e).splitlines()[0][:300] if str(e) else ""
+
+
+def _g(x: Any) -> str:
+    return "?" if x is None else f"{x:.3g}"
+
+
+def text(r: dict[str, Any]) -> str:
+    """The plain-text form of a report: a verdict line, one line per check,
+    and what to do next."""
+    lines = []
+    verdict = "OK" if r.get("ok") else "NOT OK"
+    head = f"{verdict}: {r.get('n_pass', 0)} passed, {r.get('n_diff', 0)} moved the answer"
+    if r.get("n_not_resolved"):
+        head += f", {r['n_not_resolved']} species not resolved"
+    if r.get("method"):
+        head += f" ({r['method']} run"
+        if r.get("rtol") is not None:
+            head += f", rtol {_g(r['rtol'])}"
+        head += ")"
+    lines.append(head)
+    for c in r.get("checks", []):
+        line = f"  {c['name']}: {c['status']}"
+        if c.get("note"):
+            line += f": {c['note']}"
+        if c.get("worst_column"):
+            line += f"; most in {c['worst_column']}"
+        lines.append(line)
+    if r.get("next"):
+        lines.append(f"next: {r['next']}")
+    return "\n".join(lines)

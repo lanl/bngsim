@@ -3380,6 +3380,111 @@ class Result:
 
         return _digest.digest(self, species=species, max_columns=max_columns)
 
+    def check(
+        self,
+        checks: str | list[str] | None = None,
+        *,
+        budget: float | None = None,
+        replicates: int = 10,
+    ) -> dict[str, Any]:
+        """Make this run again with one setting changed, and say whether the
+        answer moved (issue #1707).
+
+        Each check is a :meth:`rerun` from the state this run started from, on
+        a fresh model: the session's model is neither read nor changed. A
+        disagreement is reported, not raised.
+
+        Parameters
+        ----------
+        checks : None, "all", str or list of str
+            Which checks to run. ``None`` (default) runs the cheap ones that
+            catch the common case: ``"tolerance"`` and ``"grid"`` of an ODE
+            run, ``"replicates"`` of a stochastic one. ``"all"`` runs every
+            check that applies. The checks:
+
+            - ``"tolerance"``: the run at ``rtol/10`` and ``atol/10`` (and at
+              ``/100``, where the budget allows); passes when no species moves
+              by more than 1e-3 of its own peak, past the atol the run applied
+              to it. How far each moves is the run's own *drift*, which the
+              other checks are judged by.
+            - ``"grid"``: the run at 8x the output points, read at its own
+              times; an output point is a stop the integrator lands on. Not
+              for a run that stopped at a steady state, whose other checks
+              compare the state it stopped at.
+            - ``"jacobian"``: the run on a difference-quotient Jacobian.
+            - ``"backend"``: compiled against interpreted, where a C compiler
+              is present.
+            - ``"second_engine"``: the model run in libRoadRunner, where it is
+              installed, for an SBML or Antimony model run from its initial
+              state at the file's parameters. The other checks all read the
+              model as bngsim loaded it; only this one does not.
+            - ``"replicates"``: a stochastic run made again at ``replicates``
+              other seeds; for each observable at the last time, the mean
+              over them, its standard error, and how many standard errors this
+              run is from it. It reports, and judges nothing: it passes when
+              its reruns complete.
+        budget : float, optional
+            Seconds of wall time for all the bngsim reruns (a run's own
+            recorded ``timeout`` still applies where it is shorter). A check
+            that does not fit reports ``"timeout"``, none is dropped, and the
+            report is then not ``ok``. Loading the model and running
+            libRoadRunner are not bounded.
+        replicates : int
+            The reruns of the replicates check (default 10, at least 2).
+
+        Returns
+        -------
+        dict
+            JSON-ready; ``str()`` of it is a plain-text form. ``check_version``
+            (1), ``ok`` (a check passed, and none moved the answer past its
+            bound, raised or ran out of budget), ``method``, ``stochastic``,
+            ``rtol``, ``atol``, ``drift`` (the largest move of a species at
+            the tighter tolerance), ``bound`` (1e-3) and ``converged``
+            (whether every species is under it; a report on a run that is
+            not converged is never ``ok``, whichever checks ran),
+            ``n_not_resolved`` and ``not_resolved`` (the first 20 species
+            within 100 times their atol of zero, which no check judges),
+            ``checks``
+            (in the order run, each with ``name``, ``status``, ``value``,
+            ``worst_column``, ``changed`` (the setting changed) and
+            ``note``), ``n_pass``, ``n_diff`` and
+            ``next``, what to do. A status is ``"pass"``, ``"diff"`` (the
+            answer moved past the bound), ``"skip"`` (with the reason),
+            ``"unsupported"``, ``"exception"`` (the changed run raised),
+            ``"no_base"`` (no species is converged at the run's own
+            tolerance, so no path is judged) or ``"timeout"``. A path's
+            verdict also gives ``margin`` (its largest difference over the
+            allowance; at most 1 passes), ``n_not_judged`` and ``n_trace``.
+
+        Raises
+        ------
+        UsageError
+            On a stack of runs, or an argument it does not take.
+
+        Notes
+        -----
+        Every comparison is made species by species, each on its own scale,
+        so a species far smaller than the largest is judged as carefully. A
+        path passes when, in every species converged at the run's tolerance
+        (its move under 1e-3), its largest difference from this run is at
+        most ``max(min(1e3·(atol_j + rtol·peak_j), max(0.01·peak_j,
+        atol_j)), 100·atol_j, 10·d_j)``: a thousand times what the
+        tolerances allow, but never more than 1% of the species' peak
+        (unless it is within 100 atol of zero), or ten times how far it moves
+        itself at the tighter tolerance (``d_j``). A species whose peak is
+        within 100 times its atol, where that atol is larger than
+        ``rtol·peak_j`` (the absolute tolerance, not the relative one, holds
+        it), is not resolved by the run, is not judged, and is named in
+        ``not_resolved`` (and ``next``). The
+        factors are the developer-side differential harness's (issue #1257),
+        whose comparison is over the whole trajectory at once. A ``"diff"``
+        between two bngsim paths on a model bngsim accepts is a bug worth
+        reporting, with ``json.dumps(report)``.
+        """
+        from bngsim import _check
+
+        return _check.check(self, checks=checks, budget=budget, replicates=replicates)
+
     def _save_npz(self, path: Path) -> None:
         """:meth:`save` to a ``.npz`` file, with NumPy alone (issue #1704)."""
         logger.info("Saving result to %s", path)
