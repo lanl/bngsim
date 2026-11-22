@@ -17,7 +17,7 @@ import pytest
 from bngsim import Result, Simulator, UsageError, _check, _rerun, examples
 from bngsim._simulator import _HAS_KLU
 
-needs_klu = pytest.mark.skipif(not _HAS_KLU, reason="this build has no KLU")
+needs_klu = pytest.mark.skipif(not _HAS_KLU, reason="KLU not compiled")
 
 
 def _decay(**sim) -> Result:
