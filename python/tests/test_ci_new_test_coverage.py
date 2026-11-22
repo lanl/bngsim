@@ -13,6 +13,9 @@ What is pinned here:
 * a pytest command's selectors at their edges: node ids, globs, directories,
   the whole suite, ``--deselect``/``--ignore`` arguments, a pipe, and what a
   text read cannot know (a shell array, a matrix value, ``-k``);
+* each pytest command of a workflow read on its own, and a shell glob that
+  bash expands to a directory read as that directory (#1874), against what
+  pytest 9.2.0 collects;
 * whether a workflow runs on the pull request: its ``pull_request`` trigger and
   paths filter, read in order, an alias, ``paths-ignore``;
 * "ran nothing" across legs, on a real pytest run's JUnit report, and what a
@@ -627,6 +630,181 @@ def test_keep_duplicates_keeps_a_named_path_under_a_named_directory():
     for suite in ("python/tests", "python/tests/sub", "python/tests/sub/"):
         assert not _runs(f"python -m pytest {suite} --keep-duplicates --ignore {_X}", _X), suite
     assert _runs("python -m pytest python/tests --keep-duplicates", "python/tests/test_a.py")
+
+
+_W, _D = "python/tests/sub/test_w.py", "python/tests/sub/deep/test_d.py"
+_Y, _A = "python/tests/subx/test_y.py", "python/tests/test_a.py"
+_SLOW, _SMOKE = "python/tests/test_slow.py", "python/tests/smoke_test.py"
+_DEEP = "python/tests/sub/deep"
+
+
+def _workflow(*commands: str):
+    """A workflow that runs on the pull request, one step per pytest command."""
+    w = ntc.Workflow("w.yml")
+    for command in commands:
+        ntc.read_command(f"python -m pytest {command}", w)
+    assert not w.unreadable, commands
+    w.fires = True
+    return w
+
+
+def _misread(w, run, not_run) -> list[str]:
+    return [p for p in run if not w.runs(p)] + [p for p in not_run if w.runs(p)]
+
+
+# The expected values below are what pytest 9.2.0 collects (``--co``, each
+# command run on its own under bash) in a tree that holds each of these files.
+@pytest.mark.parametrize(
+    "commands,run,not_run",
+    [
+        # #1874's shape: a slow file run in a step of its own.
+        ((f"python/tests --ignore {_SLOW}", _SLOW), [_SLOW, _A], []),
+        ((f"python/tests --deselect {_SLOW}", _SLOW), [_SLOW, _A], []),
+        ((f". --ignore {_SLOW}", _SLOW), [_SLOW, _A], []),
+        # A directory run in a step of its own.
+        (("python/tests --ignore python/tests/sub", "python/tests/sub"), [_X, _D, _A], []),
+        ((f"{_A} --deselect python/tests/sub", "python/tests/sub"), [_X, _W, _A], []),
+        # Named alone, a file is collected whatever its own --ignore says, and
+        # the other step walks its directory with no --ignore.
+        ((f"{_X} --ignore {_X}", "python/tests/sub"), [_X, _W], []),
+        # One step's --keep-duplicates keeps nothing for another.
+        ((f"--keep-duplicates {_A}", f"python/tests {_X} --ignore {_X}"), [_A, _W], [_X]),
+        # A directory a glob expands to, and the one below it run on its own.
+        ((f"python/tests/su? --ignore {_DEEP}", _DEEP), [_D, _X], []),
+    ],
+)
+def test_each_command_of_a_workflow_is_read_on_its_own(commands, run, not_run):
+    assert _misread(_workflow(*commands), run, not_run) == []
+
+
+def test_a_workflow_is_what_its_commands_are_together():
+    # The workflow's own fields pool its commands': it runs the whole suite,
+    # names a file, or passes --keep-duplicates where one of its commands does.
+    w = _workflow(f"python {_X} --ignore {_X}", f"--keep-duplicates {_A}", _W)
+    assert len(w.commands) == 3
+    assert w.whole and w.above == ["python"] and w.keep_duplicates
+    assert w.selectors == [_X, _A, _W] and w.excluded == [f"ignore:{_X}"]
+    # pytest 9.2.0's --co: the first walks python and drops _X as a path under
+    # it, so its --ignore leaves _X out; neither other command names _X.
+    assert _misread(w, [_A, _W, _D], [_X]) == []
+    # A command that cannot be read leaves the workflow's list unread.
+    w = ntc.Workflow("w.yml")
+    for command in (_SLOW, 'python/tests "$X"'):
+        ntc.read_command(f"python -m pytest {command}", w)
+    w.fires = True
+    assert w.unreadable and not w.runs(_SLOW)
+
+
+def test_a_file_one_step_ignores_and_another_runs_is_not_warned_about(tmp_path):
+    # #1874: the warning said the workflow "leaves it out with --deselect or
+    # --ignore", though its second step runs every test in the file.
+    for opt in ("--ignore", "--deselect"):
+        (tmp_path / "w.yml").write_text(
+            "on:\n  pull_request:\njobs:\n  j:\n    steps:\n"
+            f"      - run: python -m pytest python/tests {opt} {_SLOW}\n"
+            f"      - run: python -m pytest {_SLOW}\n",
+            encoding="utf-8",
+        )
+        wfs = ntc.read_workflows([_SLOW], tmp_path)
+        assert len(wfs["w.yml"].commands) == 2, opt
+        assert ntc.warnings_for([_SLOW], {"a": {_SLOW: _c(2, 2)}}, wfs) == [], opt
+
+
+def test_a_whole_suite_step_that_leaves_a_file_out_does_not_spare_the_late_warning(tmp_path):
+    # w.yml's paths filter matches only w.yml; its whole-suite step ignores the
+    # new file and its other step runs it. The whole-suite step's nightly run
+    # never runs it, so the next change to the file alone runs it nowhere.
+    new = "python/tests/test_mir_new.py"
+    changed = [new, ".github/workflows/w.yml"]
+    legs = {"a": {new: _c(2, 2)}}
+    steps = (
+        "jobs:\n  j:\n    steps:\n"
+        f"      - run: python -m pytest python/tests --ignore {new}\n"
+        f"      - run: python -m pytest {new}\n"
+    )
+    (tmp_path / "w.yml").write_text(_on_paths(".github/workflows/w.yml") + steps, "utf-8")
+    wfs = ntc.read_workflows(changed, tmp_path)
+    assert wfs["w.yml"].whole and wfs["w.yml"].runs(new)
+    ((_, msg),) = ntc.warnings_for([new], legs, wfs)
+    assert "a later change to it alone will run it nowhere" in msg
+    # A whole-suite step that runs it spares it, as before, whatever another
+    # step leaves out.
+    for other in (new, f"python/tests/test_a.py --deselect {new}"):
+        steps = (
+            "jobs:\n  j:\n    steps:\n"
+            "      - run: python -m pytest python/tests\n"
+            f"      - run: python -m pytest {other}\n"
+        )
+        (tmp_path / "w.yml").write_text(_on_paths(".github/workflows/w.yml") + steps, "utf-8")
+        assert ntc.warnings_for([new], legs, ntc.read_workflows(changed, tmp_path)) == [], other
+
+
+# A shell glob bash expands to a directory names that directory: pytest 9.2.0
+# walks it, drops a path given under it, and applies --ignore below it (its
+# --co under bash, in a tree with sub/, sub/deep/, subx/ and smoke_test.py).
+@pytest.mark.parametrize(
+    "command,run,not_run",
+    [
+        # #1874's shape, in either order: su? is sub, and not subx.
+        (f"python/tests/su? {_X} --ignore {_X}", [_W, _D], [_X, _Y]),
+        (f"{_X} python/tests/su? --ignore {_X}", [_W, _D], [_X, _Y]),
+        (f"python/tests/su? {_X} --ignore={_X}", [_W, _D], [_X]),
+        (f"python/tests/su? {_X} --ignore-glob '*sub/test_x.py'", [_W, _D], [_X]),
+        # s* is smoke_test.py, sub and subx.
+        (f"python/tests/s* {_X} --ignore {_X}", [_W, _D, _Y, _SMOKE], [_X, _A]),
+        # Without globstar, ** is *: each file and directory in python/tests.
+        (f"python/tests/** {_X} --ignore {_X}", [_W, _D, _Y, _A], [_X]),
+        # Alone, it runs what is under its directory, and nothing beside it.
+        ("python/tests/su?", [_X, _W, _D], [_Y, _A]),
+        # The directory it names is not asked; one below it is.
+        ("python/tests/su? --ignore python/tests/sub", [_X, _W, _D], []),
+        (f"python/tests/su? --ignore {_DEEP}", [_X, _W], [_D]),
+        (f"python/tests/su?/de?? {_D} --ignore {_D}", [], [_D, _X]),
+        (f"python/tests/su? {_DEEP} {_D} --ignore {_DEEP}", [_X], [_D]),
+        # --keep-duplicates keeps the path given.
+        (f"--keep-duplicates python/tests/su? {_X} --ignore {_X}", [_X, _W], []),
+        # One that expands to python/tests, to python, or to a directory under it.
+        (f"python/te* {_X} --ignore {_X}", [_W, _A], [_X]),
+        (f"pytho?/tests {_X} --ignore {_X}", [_W, _A], [_X]),
+        (f"pyth* {_X} --ignore {_X}", [_W, _A], [_X]),
+        (f"*/tests/sub {_X} --ignore {_X}", [_W], [_X, _A]),
+        # A glob that names the file itself names a path given, not a directory.
+        (f"python/tests/*/test_x.py --ignore {_X}", [_X], [_W]),
+    ],
+)
+def test_a_glob_that_expands_to_a_directory_names_that_directory(command, run, not_run):
+    assert _misread(_workflow(command), run, not_run) == []
+
+
+def test_a_glob_that_gives_python_tests_or_python_runs_the_whole_suite():
+    # pytest 9.2.0's --co under bash collects every test of python/tests from
+    # each, so the workflow runs the whole suite, as for python/tests itself.
+    for glob in ("python/te*", "pytho?/tests", "*/tests"):
+        w = _cmd(f"python -m pytest {glob}")
+        assert w.whole and not w.above and not w.selectors, glob
+    w = _cmd("python -m pytest pyth*")
+    assert w.whole and w.above == ["python"] and not w.selectors
+    # A node id whose file is a glob: bash matches no file to it and passes it
+    # as written, and pytest stops on it (file or directory not found).
+    w = _cmd("python -m pytest python/te*/test_a.py::test_a")
+    assert not w.node_ids and not w.whole and not w.selectors
+
+
+def test_the_warning_reads_a_directory_a_glob_expands_to_as_named():
+    w = _cmd("python -m pytest python/tests/su?")
+    assert w.names(_W) and w.names(_D) and not w.names(_Y) and not w.names(_A)
+    legs = {"a": {_D: _c(2, 2)}}
+    off = {"w.yml": _wf(fires=False, selectors=w.selectors)}
+    ((_, msg),) = ntc.warnings_for([_D], legs, off)
+    assert "w.yml names it, but not on this pull request" in msg
+    # pytest 9.2.0's --co leaves _D out: --ignore applies below sub.
+    w = _cmd(f"python -m pytest python/tests/su? --ignore {_DEEP}")
+    on = {"w.yml": _wf(selectors=w.selectors, excluded=w.excluded)}
+    ((_, msg),) = ntc.warnings_for([_D], legs, on)
+    assert "w.yml runs on this pull request, but leaves it out with --deselect or --ignore." in msg
+    # One whose first two parts cannot expand to python/tests names no test
+    # path of the suite's, and makes no workflow one that lists tests.
+    assert not _cmd("python -m pytest python/b* p*/bngsim ci/test_*.py").selectors
 
 
 def test_forced_jit_runs_a_new_file_when_the_pull_request_edits_it():
