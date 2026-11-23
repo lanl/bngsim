@@ -239,6 +239,16 @@ def _named_dirs(path: str, selector: str) -> list[str]:
     return [path[:k] for k in range(len(path)) if path[k] == "/" and matches(path[:k], selector)]
 
 
+def _may_reach_suite(path: str) -> bool:
+    """``path``, a test path or an ``--ignore`` argument, is python, python/tests
+    or under it, or is a shell glob whose first two parts can expand to them
+    (``pyth*``, ``python/te*/sub``, ``*/tests``)."""
+    if path.startswith("python/tests"):
+        return True
+    parts = zip(("python", "tests"), path.split("/"), strict=False)
+    return all(matches(n, p) for n, p in parts)
+
+
 def _deselects(path: str, entry: str) -> bool:
     """``entry``, a ``--deselect`` entry of ``Workflow.excluded``, leaves ``path`` out."""
     if entry.startswith(_PREFIX):
@@ -403,7 +413,7 @@ def _read_command(command: str, wf: Workflow, empty: Iterable[str]) -> None:
             elif opt == "--ignore":
                 # Made absolute by pytest as well (``./python/tests/x.py``).
                 path = posixpath.normpath(arg)
-                if path == "python" or path.startswith("python/tests"):
+                if _may_reach_suite(path):
                     wf.excluded.append(_IGNORE + _selector(path))
             elif "::" in arg.rstrip(":"):
                 pass  # a node id deselects one test, not the file
@@ -455,10 +465,9 @@ def _read_command(command: str, wf: Workflow, empty: Iterable[str]) -> None:
             wf.above.append(path)
             continue
         # A shell glob may expand to python, python/tests or a directory under
-        # it (``pyth*``, ``python/te*``, ``*/tests/sub``) when its first two
-        # parts can: each such directory is one named, and is walked.
-        parts = zip(("python", "tests"), path.split("/"), strict=False)
-        if not path.startswith("python/tests") and not all(matches(n, p) for n, p in parts):
+        # it (``pyth*``, ``python/te*``, ``*/tests/sub``): each such directory
+        # is one named, and is walked.
+        if not _may_reach_suite(path):
             continue
         globbed = re.search(r"[*?[]", path) is not None
         if path == "python/tests":

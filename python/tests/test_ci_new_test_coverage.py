@@ -770,6 +770,10 @@ def test_a_whole_suite_step_that_leaves_a_file_out_does_not_spare_the_late_warni
         (f"*/tests/sub {_X} --ignore {_X}", [_W], [_X, _A]),
         # A glob that names the file itself names a path given, not a directory.
         (f"python/tests/*/test_x.py --ignore {_X}", [_X], [_W]),
+        # An --ignore argument the shell expands is read by the same rule.
+        ("python/te* --ignore python/te*/sub", [_A, _Y], [_W, _D]),
+        ("pyth* --ignore pytho?/tests/sub/test_x.py", [_W, _D, _Y, _A], [_X]),
+        ("python/tests --ignore */tests/su?/deep", [_X, _W, _Y, _A], [_D]),
     ],
 )
 def test_a_glob_that_expands_to_a_directory_names_that_directory(command, run, not_run):
