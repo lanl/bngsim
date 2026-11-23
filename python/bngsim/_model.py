@@ -1283,7 +1283,7 @@ class Model:
                         "stops.detection_failed",
                         "State-switch root detection failed (%s); a rate law switched by "
                         "a condition over model state will be integrated without a root "
-                        "at its crossings (issue #897).",
+                        "at its crossings.",
                         e,
                     )
                     roots = ()
@@ -1345,7 +1345,7 @@ class Model:
                 logger,
                 "stops.detection_failed",
                 "Folding the conditions parameters decide failed (%s); the run "
-                "roots on every state switch, as it would without it (issue #1636).",
+                "roots on every state switch, as it would without it.",
                 e,
             )
             got = None
@@ -1398,7 +1398,7 @@ class Model:
                 logger,
                 "stops.detection_failed",
                 "Folding the conditions parameters decide failed (%s); the run "
-                "roots on every state switch, as it would without it (issue #1636).",
+                "roots on every state switch, as it would without it.",
                 e,
             )
             kept = None
@@ -1452,7 +1452,7 @@ class Model:
                     "stops.detection_failed",
                     "State-switch root detection failed (%s); a rate law with a step or bend "
                     "call over model state will be integrated with sensitivities and "
-                    "without a root where the call jumps or bends (issue #1068).",
+                    "without a root where the call jumps or bends.",
                     e,
                 )
                 stops = ()
@@ -1926,7 +1926,7 @@ class Model:
             f"Parameter {name!r} cannot be changed after the model is loaded: it was read "
             f"once, when the model was built, for {what}, and the model holds the number "
             "that gave. A write would take the new value and move nothing it was folded "
-            "into, which used to happen without a word (issues #313, #695, #696, #711). "
+            "into, which used to happen without a word. "
             f"Change it in {_where_a_folded_parameter_is_changed(what)}. "
             "Model.frozen_params lists every such parameter."
         )
@@ -3018,7 +3018,7 @@ class Model:
             other = self._core.fill_dense_dual_jacobian(t, y, side)
             if other is not None and other[2]:
                 raise SimulationError(
-                    "Model.jacobian() has no value at this state (issue #1330): a rate law "
+                    "Model.jacobian() has no value at this state: a rate law "
                     "changes branch here (a comparison, if(), a step of floor() or rint()) "
                     "and its value jumps, so the right-hand side has no derivative across "
                     "it. A state beside the branch point has one."
@@ -3031,7 +3031,7 @@ class Model:
         i, j = np.unravel_index(int(np.argmax(apart)), apart.shape)
         names = self.species_names
         raise SimulationError(
-            "Model.jacobian() has no value at this state (issue #1330): it sits where a "
+            "Model.jacobian() has no value at this state: it sits where a "
             "rate law changes branch (a comparison, if(), abs(), min() or max() at a tie, "
             "a step of floor() or rint()), and the entry "
             f"d(rate of {names[i]})/d{names[j]} is {sides[0][i, j]:.6g} from one side and "
@@ -3083,7 +3083,7 @@ class Model:
         _, i, j, second, at = worst
         names = self.species_names
         raise SimulationError(
-            "Model.jacobian() does not return this difference quotient (issue #1002): "
+            "Model.jacobian() does not return this difference quotient: "
             f"the entry d(rate of {names[i]})/d{names[j]} is {dense[i, j]:.6g} with "
             f"{names[j]} stepped by 1.5e-8 of the state's largest concentration, and "
             f"{second:.6g} stepped by {at}, more than 1e-4 of itself (1e-10 of its "
@@ -3455,7 +3455,7 @@ class Model:
                 f"nothing in the model reads table function '{name}': a loaded model's "
                 "expressions can call only the tables its source declares, so this one "
                 "changes no run. To give the model new data, use the name of a table it "
-                f"reads: {read if read else 'it has none'} (issue #772).",
+                f"reads: {read if read else 'it has none'}.",
                 UserWarning,
                 stacklevel=2,
             )

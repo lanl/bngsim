@@ -1234,8 +1234,7 @@ def write_bngl_protocol(
                     f"{_state_change_action(step)} is evaluated once where it runs (a SED-ML "
                     f"change); BNG2.pl keeps the value as that expression, so the parameter "
                     f"follows {', '.join(moved)} through the later actions that change "
-                    f"{'it' if len(moved) == 1 else 'them'}, and runs another value there "
-                    "(issue #1682)",
+                    f"{'it' if len(moved) == 1 else 'them'}, and runs another value there",
                     ConversionWarning,
                     stacklevel=2,
                 )
@@ -1254,7 +1253,7 @@ def write_bngl_protocol(
                     f"at each point and at its end) brings it back, so the species follows "
                     f"{', '.join(moved)}, which {'is' if len(moved) == 1 else 'are'} changed "
                     "or scanned before a run that starts from the expression, and starts "
-                    "from another amount there (issue #1737)",
+                    "from another amount there",
                     ConversionWarning,
                     stacklevel=_stacklevel_outside_bngsim(),
                 )
@@ -1263,8 +1262,7 @@ def write_bngl_protocol(
                     f"{_state_change_action(step)} is evaluated once where it runs (a SED-ML "
                     f"change), and the addConcentration after it adds to that amount; "
                     f"BNG2.pl keeps the amount as an expression, and adds to the species' "
-                    "declared amount instead, so the species starts from another amount "
-                    "(issue #1737)",
+                    "declared amount instead, so the species starts from another amount",
                     ConversionWarning,
                     stacklevel=_stacklevel_outside_bngsim(),
                 )

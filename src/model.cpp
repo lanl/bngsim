@@ -404,10 +404,10 @@ void NetworkModel::set_param(const std::string &name, double value, bool force_o
                 "': a function of that name owns this slot — bngsim stores the function's "
                 "evaluated value here and recomputes it from the function's own expression "
                 "before every derivative evaluation, so a write here is discarded at the next "
-                "one and the trajectory does not move (issue #227). If '" +
+                "one and the trajectory does not move. If '" +
                 param.name +
                 "' also appears in the parameters block, that row is the seed this slot holds "
-                "until the function first evaluates, not a knob (issue #266). "
+                "until the function first evaluates, not a knob. "
                 "Set the parameters the function's expression reads instead; "
                 "Model.primary_param_names omits this name for that reason.");
         }
@@ -415,7 +415,7 @@ void NetworkModel::set_param(const std::string &name, double value, bool force_o
             "Cannot set '" + param.name +
             "': it is not a parameter of the model but bngsim's record of a compartment's "
             "size at load time, which the reaction rate constants in that compartment are "
-            "normalised against (issue #170). Writing it would rescale those rates without "
+            "normalised against. Writing it would rescale those rates without "
             "moving the volume. Set the compartment size itself instead; "
             "Model.primary_param_names omits this one for that reason.");
     }
@@ -1745,12 +1745,12 @@ std::string NetworkModel::rateof_ring_refusal() const {
     if (ring.size() == 1) {
         return "The rate of change of " + who + " is written in terms of itself (" + how +
                "). That is an algebraic loop: the rate is defined by its own value at the same "
-               "instant, and bngsim does not solve one (lanl/bngsim#991; libRoadRunner, Antimony "
+               "instant, and bngsim does not solve one (libRoadRunner, Antimony "
                "and libSBML refuse such a model too). Write the rate without its own rateOf.";
     }
     return "The rates of change of " + who + " are written in terms of each other (" + how +
            "). That is an algebraic loop: each rate is defined by the others at the same "
-           "instant, and bngsim does not solve one (lanl/bngsim#991; libRoadRunner, Antimony and "
+           "instant, and bngsim does not solve one (libRoadRunner, Antimony and "
            "libSBML refuse such a model too). Write the rates so that none reads, through any "
            "chain of rateOf, its own.";
 }
@@ -2792,14 +2792,14 @@ std::optional<std::string> NetworkModel::event_sensitivity_unsupported_reason(
                    "' has a delay that is 0 for this run but reads the requested " +
                    "sensitivity parameter '" + pname +
                    "', so its execution time moves with that parameter; forward sensitivity "
-                   "through event delays is not yet supported (issue #144 tracks what is). "
+                   "through event delays is not yet supported. "
                    "Drop '" +
                    pname + "' from the requested sensitivity parameters.";
         }
         if (delayed) {
             return "event '" + id +
                    "' has an execution delay; forward sensitivity through delayed events "
-                   "is not yet supported (issue #144 tracks what is).";
+                   "is not yet supported.";
         }
         // No persistence check follows: `persistent` governs whether a fire
         // queued at trigger time is cancelled when the trigger reverts before
@@ -2824,7 +2824,7 @@ std::optional<std::string> NetworkModel::event_sensitivity_unsupported_reason(
                        "sensitivity parameters through the trajectory and the event-time "
                        "sensitivity dt*/dp is non-zero — but bngsim cannot differentiate this "
                        "trigger's crossing because " +
-                       why + " (trigger: '" + ev.trigger_source + "'; issue #144).";
+                       why + " (trigger: '" + ev.trigger_source + "').";
             }
             continue;
         }
@@ -2851,8 +2851,8 @@ std::optional<std::string> NetworkModel::event_sensitivity_unsupported_reason(
                        pname +
                        "' (the event-time sensitivity dt*/dp is non-zero), and bngsim "
                        "could not resolve the trigger to a threshold on simulation time "
-                       "or on a unit-rate counter, so it has no dt*/dp to jump by "
-                       "(issue #49). Drop '" +
+                       "or on a unit-rate counter, so it has no dt*/dp to jump by. "
+                       "Drop '" +
                        pname +
                        "' from the requested sensitivity parameters, or treat the trigger "
                        "time as fixed.";

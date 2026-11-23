@@ -543,8 +543,7 @@ class NfsimSession:
                 + " outside its argument, which runs only because no rule can change "
                 "that count. NFsim re-evaluates such a function only on the complexes a "
                 "reaction produces, so after this edit the term would go stale on every "
-                "other molecule, without an error (RuleWorld/nfsim#104; this refusal is "
-                "lifted under issue #1062). Simulate the network BNG2.pl generates with "
+                "other molecule, without an error. Simulate the network BNG2.pl generates with "
                 "method='ode' or method='ssa' to change counts during a run."
             )
 

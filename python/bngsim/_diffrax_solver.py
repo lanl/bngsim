@@ -170,7 +170,7 @@ def run_diffrax(
             f"this model has {n_own}"
             if n_own
             else "this model keeps the amounts in compartment "
-            f"{', '.join(sorted(set(jumps)))} across a jump of its size with one (issue #1054)"
+            f"{', '.join(sorted(set(jumps)))} across a jump of its size with one"
         )
         raise _use_ode(
             f"run_diffrax does not implement events, and {has}; use Simulator(method='ode')."

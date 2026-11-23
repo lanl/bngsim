@@ -248,7 +248,7 @@ static void retry_while_advancing(void *cvode_mem, sunrealtype t_target, N_Vecto
             << " with step size h=" << h_now << " (after " << n_steps << " steps). Retrying "
             << "cannot help — the step size has collapsed, typically at a discontinuity such as "
             << "an if(t >= sigma) rate jump, where t + h == t. A crossing at a time bngsim can "
-            << "resolve is stopped on exactly (issue #305), so what is left here is one it "
+            << "resolve is stopped on exactly, so what is left here is one it "
             << "cannot: a threshold over live state, or one whose time is not constant over the "
             << "run. Loosen rtol/atol, or move the discontinuity onto an event — its trigger "
             << "leaves the right-hand side smooth in t and applies the jump at the root, which "
@@ -1595,7 +1595,7 @@ static bool drained_through_band(CvodeUserData *data, N_Vector y, double t, cons
     data->below_zero_refusal =
         std::string(src) + " has no finite value where the run has carried " + named + at +
         ". A slot that may be negative by design is read at 0 only within its atol of 0, "
-        "where its value is rounding of 0 (issue #1340); this one is going on below that, "
+        "where its value is rounding of 0; this one is going on below that, "
         "and stepping it at ever shorter steps would not end, so the run is refused. A rate "
         "law that reads it has no value there, so the model has to keep it at or above 0.";
     data->nonfinite_witness = NonFiniteWitness{};
@@ -1728,7 +1728,7 @@ static const char *const kOnsetPowerNote =
     " sensitivity RHS, on a run with no event, for a crossing moved at the shift the generator"
     " derived from the power itself, and unless BNGSIM_SENS_COMOVING=0. An"
     " exponent of 2 or more keeps the derivative finite, and leaving that parameter out of"
-    " sensitivity_params avoids it (issue #545).";
+    " sensitivity_params avoids it.";
 
 // The OTHER way a finite rate law hands back a non-finite derivative, and the one
 // the note above sends the reader away from (issue #549). A logistic in time is
@@ -1749,7 +1749,7 @@ static const char *const kOverflowNote =
     " for is merely too small to represent. bngsim divides the shapes it recognises through so"
     " they underflow to 0 instead. A column that goes non-finite at the very first call, with no"
     " threshold the run has reached yet, is the likelier half here, and is worth reporting"
-    " (issue #549).";
+    ".";
 
 // Issue #545: a sensitivity-RHS witness at a state where every rate law and every
 // species is finite. The domain advice below would send the reader to constrain a
@@ -1908,7 +1908,7 @@ static std::string describe_nonfinite_witness(NetworkModel &model, const NonFini
                   " variable, or a species declared negative), or a derivative is"
                   " infinite at 0 itself — the slope of sqrt(S), or of S^p with"
                   " p < 1 — which no constraint on S removes. jacobian=\"fd\""
-                  " differences the right-hand side instead (issue #867).";
+                  " differences the right-hand side instead.";
         } else {
             os << " bngsim evaluates a rate law literally, so a state outside its"
                   " domain — a logarithm, a sqrt or a fractional power of a negative"
@@ -3731,7 +3731,7 @@ static void land_clock_on_threshold(double *y_data, int ns, int clock_species_id
     if (clock_species_idx0 < 0 || clock_species_idx0 >= ns) {
         throw std::runtime_error("a crossing names clock species index " +
                                  std::to_string(clock_species_idx0) +
-                                 ", which this model does not have (issue #82)");
+                                 ", which this model does not have");
     }
     const size_t clk = static_cast<size_t>(clock_species_idx0);
     const double drift = y_data[clk] - threshold;
@@ -6490,8 +6490,7 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(
                     "phase on the same Simulator with the same sensitivity_params "
                     "(and no reset between phases) before the measurement phase; a "
                     "run between them without those sensitivities, an SSA or PSA run "
-                    "included, drops the seed (issue #1749). "
-                    "(pre-equilibration output sensitivities, GH #210)");
+                    "included, drops the seed.");
             }
             use_carry_seed = true;
             // Issue #1298: this run continues the run that left the seed, so a
@@ -6526,14 +6525,14 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(
                 "pre-equilibration boundary. Pass "
                 "carry_sensitivities=True to seed from the prior phase's "
                 "steady-state sensitivity (run that phase with the same "
-                "sensitivity_params; an SSA or PSA run leaves none, issue #1749), "
+                "sensitivity_params; an SSA or PSA run leaves none), "
                 "or reset() the model for a fresh start. A save_concentrations() "
                 "of such a state keeps it carried-over, and so does a reset() "
-                "back to it (issue #1528). To take the state as fixed data, with "
+                "back to it. To take the state as fixed data, with "
                 "dx(0)/dtheta = 0, set_state() it after a reset() to a baseline "
-                "no run advanced, or on a fresh Model (issue #1735); after an SSA "
+                "no run advanced, or on a fresh Model; after an SSA "
                 "or PSA run, set the run's last result row: where a compartment's "
-                "size moves, get_state() holds counts (issue #1463). (GH #210)");
+                "size moves, get_state() holds counts.");
         }
     }
     // IC (∂y/∂y_k(0)) sensitivities across a carry-over boundary are out of
@@ -6553,7 +6552,7 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(
             "carried-over / pre-equilibration boundary is not supported: a run() "
             "has advanced the state since it was last the model's initial "
             "condition. reset() for a fresh start, or save_concentrations() to "
-            "make this state the initial condition. (GH #210)");
+            "make this state the initial condition.");
     }
 
     // Allocate sensitivity vectors and seed s(0) = ∂y(0)/∂θ.
@@ -7821,7 +7820,7 @@ void CvodeSimulator::Impl::comoving_refuse_without_a_frame(const SensitivityStat
                    "the integration under it, so a model with one has no frames. The plain "
                    "column has a forcing that is unbounded at the edge: it comes back a few "
                    "parts in a thousand off before a closing edge, whatever the tolerance, or "
-                   "ends in a solver error after an opening one (issue #958). Drop '"
+                   "ends in a solver error after an opening one. Drop '"
                 << name << "' from sensitivity_params, or difference plain runs.";
             throw SensitivityRefusedForParameters(msg.str());
         }
@@ -7908,7 +7907,7 @@ void CvodeSimulator::Impl::comoving_refuse_without_a_case(const SensitivityState
                "denominator or the scale of the edge's time, a base that is not linear in the "
                "time, or one that reads a species, whose zero anything can move through the "
                "state). The plain column has a forcing that is unbounded at "
-               "the edge: it comes back up to 12% off, or ends in a solver error (issue #1003). "
+               "the edge: it comes back up to 12% off, or ends in a solver error. "
                "Drop it from the sensitivities asked for, or difference plain runs.";
         throw SensitivityRefusedForParameters(msg.str());
     }
@@ -7978,8 +7977,8 @@ void CvodeSimulator::Impl::comoving_refuse_a_moved_counter(const SensitivityStat
                    "holds a selection), or one whose exponent cannot be asked there. The columns "
                    "of the parameters such a power is written in are integrated in a frame that "
                    "moves with its edge. A column that moves the counter has none: it comes back "
-                   "0.2% to 0.4% off under a closing power, or stalls under an opening one (issue "
-                   "#948). Drop that column, or difference plain runs.";
+                   "0.2% to 0.4% off under a closing power, or stalls under an opening one. "
+                   "Drop that column, or difference plain runs.";
             throw SensitivityRefusedForParameters(msg.str());
         }
     }
@@ -8426,7 +8425,7 @@ void CvodeSimulator::Impl::comoving_check_age(const SensitivityState &sens, doub
             << (t - frames.t_entry)
             << " after a switch time a requested parameter moves, where a rate law may open or "
                "close as a power. A sensitivity column cannot be carried that close to such an "
-               "edge: its forcing is unbounded there (issue #760). Separate the two times by "
+               "edge: its forcing is unbounded there. Separate the two times by "
                "more than "
             << least << ", or drop the parameters that move the window from sensitivity_params.";
         throw SensitivityRefusedForParameters(msg.str());
@@ -8847,7 +8846,7 @@ void CvodeSimulator::Impl::judge_held_equality_exit(
                    "bngsim does not locate: an equality is not rooted as a crossing, since one "
                    "the state crosses holds for an instant, and the state leaves it with no "
                    "first-order motion, so there is no crossing time to differentiate and the "
-                   "columns would come back with no jump (issue #1228; issue #1279). Write "
+                   "columns would come back with no jump. Write "
                    "the switch as the crossing that ends the stretch, which is located and "
                    "jumped (`if(Aobs>q, kb, 0)` for `if(Bobs==0, kb, 0)` where B is made only "
                    "once A falls to q), or drop sensitivities for this run.";
@@ -8931,8 +8930,8 @@ void CvodeSimulator::Impl::keep_order_to_confirm(const OrderToConfirm &order) {
         msg << "Forward sensitivity: the state-dependent rate-law switch with residual '"
             << order.residual << "' crosses at t=" << order.t_crossing
             << " within the window of something else that happens at t=" << order.t_other
-            << ", after more such pairs than are confirmed against a tighter run (issues #"
-            << order.issue << ", #1025). Tighten the tolerances, or drop sensitivities for "
+            << ", after more such pairs than are confirmed against a tighter run. Tighten the "
+            << "tolerances, or drop sensitivities for "
             << "this run.";
         throw SensitivityRefusedForParameters(msg.str());
     }
@@ -9086,8 +9085,7 @@ void CvodeSimulator::Impl::confirm_orders(const TimeSpec &times, const SolverOpt
                "where the "
             << (order.at_fire ? "event changes what the switched rate law reads"
                               : "two are composed")
-            << " the result has a kink there and no derivative (issues "
-            << (order.issue == 946 ? "#946, #945" : "#945") << ", #1025). Tighten the "
+            << " the result has a kink there and no derivative. Tighten the "
             << "tolerances, separate the two in time, or drop sensitivities for this run.";
         throw SensitivityRefusedForParameters(msg.str());
     };
@@ -9356,7 +9354,7 @@ void CvodeSimulator::Impl::residual_dtstar(int gidx, const std::vector<int> &sup
             << kTransversalityRelFloor
             << ". The crossing time is not differentiable there (an arbitrarily small "
                "parameter change destroys the crossing or splits it in two), so dt*/dp is "
-               "unbounded and bngsim refuses rather than divide by it (issue #144). Move the "
+               "unbounded and bngsim refuses rather than divide by it. Move the "
                "threshold off the trajectory's turning point, or drop sensitivities for this "
                "run.";
         throw SensitivityUnsupported(msg.str());
@@ -9447,8 +9445,8 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                 "Forward sensitivity: events '" + events_outer[tau_event].id + "' and '" +
                 events_outer[ei].id + "' fire at the same instant t=" + std::to_string(t_evt) +
                 " but their crossing times move differently with the requested "
-                "parameters, so the event-time sensitivity jump is ambiguous "
-                "(issue #49). Separate the trigger times, or drop the parameters "
+                "parameters, so the event-time sensitivity jump is ambiguous. "
+                "Separate the trigger times, or drop the parameters "
                 "that move them from sensitivity_params.");
         }
         tau_event = ei;
@@ -9563,7 +9561,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             "' fires at t=" + std::to_string(t_evt) +
             " between two rate-law switch times that are one instant to the solver, so the "
             "branch its jump has to be read on cannot be selected. bngsim refuses rather "
-            "than pick one (issue #767). Separate the times, or drop sensitivities for this "
+            "than pick one. Separate the times, or drop sensitivities for this "
             "run.");
     }
     // The records on this instant, and those within reach of it. One that shares
@@ -9752,7 +9750,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             << "', which crossed at t=" << crossing.t
             << ". Which of the two comes first is not known to the tolerances of "
                "the run, and where the event changes what the switched rate law reads the "
-               "result has a kink there and no derivative (issue #945). Separate the two in "
+               "result has a kink there and no derivative. Separate the two in "
                "time, or drop sensitivities for this run.";
         throw SensitivityRefusedForParameters(msg.str());
     }
@@ -9768,7 +9766,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
         throw SensitivityUnsupported(
             "Forward sensitivity: an event fires at t=" + std::to_string(t_evt) +
             " after more state-dependent rate-law switches than are kept to ask it about, "
-            "within the reach of one of them (issues #945, #1025). Drop sensitivities for "
+            "within the reach of one of them. Drop sensitivities for "
             "this run.");
     }
     // Of each switch, the last crossing alone: the fire cannot change sides
@@ -9824,7 +9822,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             " within the window of the state-dependent rate-law switch with residual '" +
             to_confirm.front()->residual +
             "' where the order of the two is confirmed, and the fire cannot be named to "
-            "confirm it (issues #945, #1025). Drop sensitivities for this run.");
+            "confirm it. Drop sensitivities for this run.");
     }
     // Shifts are compared column by column, in the column's own units: a shift
     // times the parameter is how far the time moves per unit relative change of
@@ -9890,7 +9888,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                     << (fire_moves ? now : before) << " does";
             }
             msg << ". Their order flips across the parameter, so the result jumps there "
-                   "and has no derivative (issues #49, #1277). Separate the trigger times, or "
+                   "and has no derivative. Separate the trigger times, or "
                    "drop the parameters that move them from sensitivity_params.";
             throw SensitivityRefusedForParameters(msg.str());
         }
@@ -9960,7 +9958,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             events_outer[tau_event].id + "' fire at the same instant t=" + std::to_string(t_evt) +
             " but their crossing times move differently with the requested "
             "parameters: the first does not move and the second does. The "
-            "event-time sensitivity jump is ambiguous (issue #49). Separate the "
+            "event-time sensitivity jump is ambiguous. Separate the "
             "trigger times, or drop the parameters that move them from "
             "sensitivity_params.");
     }
@@ -10539,7 +10537,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                         "' is not supported: it resizes a compartment after an earlier event "
                         "of the same instant changed the compartment's size or what its new "
                         "size reads, and the derivative of that composition is not "
-                        "implemented (issue #936). The trajectory itself is unaffected; run "
+                        "implemented. The trajectory itself is unaffected; run "
                         "without sensitivities, or give the events different times.");
                 }
             }
@@ -10564,7 +10562,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                     "that point, is not finite there, or rounds by more than a part in 1e3 of "
                     "what it moves by there, "
                     "so the derivative the sensitivity needs is not defined, or is not what a "
-                    "difference across it gives (issue #915). Move the step away from the event, "
+                    "difference across it gives. Move the step away from the event, "
                     "or drop the parameters that reach it from sensitivity_params.");
             };
 
@@ -10826,7 +10824,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                 "its jump read after it (species '" +
                 model.species()[ui].name +
                 "'), so which of the two comes first changes the result, and that order "
-                "depends on the parameter: the sensitivity does not exist there (issue #767). "
+                "depends on the parameter: the sensitivity does not exist there. "
                 "Separate the two times, or drop the parameters that move one of them from "
                 "sensitivity_params.");
         }
@@ -10880,7 +10878,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                         << "). The crossing time moves with this parameter, and the crossing is "
                            "grazing enough that ∂t*/∂p overflows the jump rather than cancelling "
                            "against the flow difference — so the derivative does not exist in any "
-                           "usable sense there (issue #322). Move the threshold off the "
+                           "usable sense there. Move the threshold off the "
                            "trajectory's turning point, or drop sensitivities for this run.";
                     throw SensitivityRefusedForParameters(msg.str());
                 }
@@ -11167,8 +11165,7 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
             const int pi = sw.isolate_param_idx0[k];
             if (pi < 0 || static_cast<size_t>(pi) >= params_live.size()) {
                 throw std::runtime_error("switch-time isolation names parameter index " +
-                                         std::to_string(pi) +
-                                         ", which this model does not have (issue #375)");
+                                         std::to_string(pi) + ", which this model does not have");
             }
             saved.push_back(params_live[static_cast<size_t>(pi)].value);
             params_live[static_cast<size_t>(pi)].value += sw.isolate_delta[k];
@@ -11503,7 +11500,7 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
                     << model.species()[static_cast<size_t>(worst)].name
                     << "]/dt cannot be told from this switch's own jump: the right-hand side "
                        "across the instant is not a jump and a slope. Under a parameter that moves "
-                       "this switch the result has a kink a few ulp away (issue #951). Separate "
+                       "this switch the result has a kink a few ulp away. Separate "
                        "the "
                        "two times, or set them equal, or drop the parameters that move them from "
                        "sensitivity_params.";
@@ -11530,7 +11527,7 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
                        "first. Under a parameter that moves one and not the other the result has a "
                        "kink there and no derivative, and under one that moves both bngsim does "
                        "not "
-                       "take the two as one (issue #951). Separate the two times, or drop the "
+                       "take the two as one. Separate the two times, or drop the "
                        "parameters that move them from sensitivity_params.";
                 not_commuting = msg.str();
             }
@@ -11560,8 +11557,8 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
                    "and its own jump has to be read with that one made. It cannot be: what d["
                 << model.species()[static_cast<size_t>(scratch.not_a_jump_species)].name
                 << "]/dt does a hair past the instant is not a jump within rounding. A rate "
-                   "that goes to zero at a window's edge, as a power, reads this way (issues "
-                   "#949, #1822). Separate the two times, or drop the parameters that move "
+                   "that goes to zero at a window's edge, as a power, reads this way. "
+                   "Separate the two times, or drop the parameters that move "
                    "them from sensitivity_params.";
             not_commuting = msg.str();
         }
@@ -11697,8 +11694,8 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
             "Forward sensitivity: the switch time at t=" + std::to_string(t_evt) +
             " is the edge of a window that closes as a singular power, and it shares its "
             "instant with another rate-law condition. Its jump cannot be read apart from the "
-            "other's: read with its own threshold raised a hair, the power is not at its zero "
-            "(issue #949). Separate the two times, or drop the parameters that move the window "
+            "other's: read with its own threshold raised a hair, the power is not at its zero. "
+            "Separate the two times, or drop the parameters that move the window "
             "from sensitivity_params.");
     }
     if (!not_commuting.empty()) {
@@ -12836,7 +12833,7 @@ void CvodeSimulator::Impl::refuse_slide_along_state_switch(
                 << "'), with the flow on each side pointing into it: it slides along the "
                    "switching surface, on neither branch of the rate law. The sensitivity along "
                    "a slide is not the sensitivity of either branch, and bngsim refuses rather "
-                   "than integrate one of them (issue #926). Drop sensitivities for this run, or "
+                   "than integrate one of them. Drop sensitivities for this run, or "
                    "write the held value as an algebraic constraint.";
             throw SensitivityUnsupported(msg.str());
         }
@@ -13280,7 +13277,7 @@ void CvodeSimulator::Impl::refuse_rest_on_state_switch(
             << t_end << ", and across the surface the rate law jumps by " << jump.size << " in d"
             << model.species_names()[static_cast<std::size_t>(jump.species)]
             << "/dt. Which branch the run reads from here is set by rounding, not by the model, "
-               "so bngsim refuses rather than return either (issue #1548). A threshold that sits "
+               "so bngsim refuses rather than return either. A threshold that sits "
                "exactly on a steady state the state relaxes to does this; move it off that state, "
                "or write the branch the model means.";
         throw std::runtime_error(msg.str());
@@ -13590,7 +13587,7 @@ bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
                "that moves the threshold species by one ulp fails its error test on the rate "
                "law's jump. The crossing is not resolved, so there is no crossing time for the "
                "sensitivities to move with, and bngsim refuses rather than return with the "
-               "switch not taken (issue #952). A plain run is carried across; drop "
+               "switch not taken. A plain run is carried across; drop "
                "sensitivities for this run, or loosen the tolerances.";
         throw SensitivityRefusedForParameters(msg.str());
     }
@@ -13690,7 +13687,7 @@ bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
                    "law is continuous there, but putting the state across would also cross "
                 << beside
                 << ", with no crossing time for the sensitivities to move with, and bngsim "
-                   "refuses rather than take it across unresolved (issue #952). A plain "
+                   "refuses rather than take it across unresolved. A plain "
                    "run is carried across; drop sensitivities for this run, or loosen the "
                    "tolerances.";
             throw SensitivityRefusedForParameters(msg.str());
@@ -13860,7 +13857,7 @@ bool CvodeSimulator::Impl::changes_the_jump(const std::vector<int> &own,
 void CvodeSimulator::Impl::refuse_a_switch_on_its_surface_here(
     double t_evt, int ns, const std::vector<double> &before, const std::vector<double> &f_before,
     double t_before, const std::vector<double> &after, const std::vector<double> &f_after,
-    double t_after, const std::vector<int> &reads, const std::string &what, int issue,
+    double t_after, const std::vector<int> &reads, const std::string &what, int /*issue*/,
     const OrderToConfirm *window_order) {
     const auto n = static_cast<std::size_t>(ns);
     const double eps = std::numeric_limits<double>::epsilon();
@@ -14076,9 +14073,8 @@ void CvodeSimulator::Impl::refuse_a_switch_on_its_surface_here(
                    "jumps across that surface. The two cross on one instant, and whether the "
                    "state switch flips there, and when, is not known: no root is reported for "
                    "a residual that leaves 0 without coming through it, or that comes to it "
-                   "and turns back (issue #"
-                << issue
-                << "). Start the state off the threshold, or drop the parameters that move "
+                   "and turns back. Start the state off the threshold, or drop the parameters "
+                   "that move "
                    "that time from sensitivity_params.";
             throw SensitivityRefusedForParameters(msg.str());
         }
@@ -14849,7 +14845,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                        "residual '"
                     << landed->residual_source
                     << "', where its branch cannot be read. bngsim refuses rather than lose "
-                       "that crossing's jump (issue #763). Separate the thresholds, or drop "
+                       "that crossing's jump. Separate the thresholds, or drop "
                        "sensitivities for this run.";
                 throw SensitivityUnsupported(msg.str());
             }
@@ -15147,8 +15143,8 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                    "crossing written several ways";
         }
         msg << ", and each jump reads f on the two branches of its OWN condition at x(t*). bngsim "
-               "refuses rather than sum jumps that each carry the others' branch change (issue "
-               "#150, issue #153). Separate the crossings, or drop sensitivities for this run.";
+               "refuses rather than sum jumps that each carry the others' branch change. "
+               "Separate the crossings, or drop sensitivities for this run.";
         throw SensitivityRefusedForParameters(msg.str());
     }
 
@@ -15293,7 +15289,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                 << "so the two branches cannot be told apart at all";
         }
         msg << ", while dt*/dθ is unbounded at a tangency — bngsim refuses rather than invent "
-               "a saltation term (issue #150). A `piecewise` that is CONTINUOUS at its own "
+               "a saltation term. A `piecewise` that is CONTINUOUS at its own "
                "switch (the usual clamp idiom) needs no jump and never reaches this. Move the "
                "threshold off the trajectory's turning point, or drop sensitivities for this "
                "run.";
@@ -15392,7 +15388,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                         << " later, closer than the step of " << dt
                         << " that tells its two branches apart, so reading this crossing would "
                            "read that jump a second time. bngsim refuses rather than apply it "
-                           "twice (issue #763). Separate the thresholds, or drop sensitivities "
+                           "twice. Separate the thresholds, or drop sensitivities "
                            "for this run.";
                     throw SensitivityUnsupported(msg.str());
                 }
@@ -16566,7 +16562,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                        "another. The right-hand side is the same before and after them "
                        "together, which does not say it is the same between them: which comes "
                        "first is not known, and where one hides the other's jump the result "
-                       "has a kink there and no derivative (issue #946). Separate the "
+                       "has a kink there and no derivative. Separate the "
                        "thresholds, or drop the parameters that move them from "
                        "sensitivity_params.";
                 throw SensitivityRefusedForParameters(msg.str());
@@ -16757,8 +16753,8 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                 << near_clock
                 << ". The two are not told apart in time: this switch's jump is read across "
                    "both, and which comes first is not known. Each is right alone. bngsim "
-                   "refuses rather than give one the other's jump, or one side of a kink "
-                   "(issues #946, #945). Separate the two crossings, or drop the parameters "
+                   "refuses rather than give one the other's jump, or one side of a kink. "
+                   "Separate the two crossings, or drop the parameters "
                    "that move them from sensitivity_params.";
             throw SensitivityRefusedForParameters(msg.str());
         }
@@ -16769,7 +16765,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                 << " of an event that fired at t=" << near_fire
                 << ". Which of the two comes first is not known to the tolerances of the run, "
                    "and where the event changes what the switched rate law reads the result has "
-                   "a kink there and no derivative (issue #945). Separate the two in time, or "
+                   "a kink there and no derivative. Separate the two in time, or "
                    "drop sensitivities for this run.";
             throw SensitivityRefusedForParameters(msg.str());
         }
@@ -16790,7 +16786,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                 msg << "Forward sensitivity: the state-dependent rate-law switch with residual '"
                     << sw.residual_source << "' crosses at t=" << t_evt
                     << " after more event fires than are kept to ask it about, within the "
-                       "window where the order of the two is confirmed (issues #945, #1025). "
+                       "window where the order of the two is confirmed. "
                        "Drop sensitivities for this run.";
                 // Reached whatever columns are asked: the kept fires and their
                 // windows are the trajectory's, as the mirror cap's switches are.
@@ -16928,7 +16924,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                         << sw.residual_source << "' crosses at t=" << t_evt
                         << " within the window of an event that fired at t=" << mark->t
                         << " where the order of the two is confirmed, and its residual there "
-                           "was not read (issues #945, #1025). Drop sensitivities for this run.";
+                           "was not read. Drop sensitivities for this run.";
                     throw SensitivityRefusedForParameters(msg.str());
                 }
                 OrderToConfirm order;
@@ -17240,7 +17236,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             << ". So they are separate crossings that happen to coincide rather than one "
                "surface written twice, there is no single t*(θ) to shift the flow along, and "
                "each saltation jump would carry the other's branch change. bngsim refuses "
-               "rather than compose them (issue #150, issue #153). Separate the crossings, or "
+               "rather than compose them. Separate the crossings, or "
                "drop the parameters that move them apart from sensitivity_params.";
         throw SensitivityRefusedForParameters(msg.str());
     };
@@ -17565,7 +17561,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // back and forth froze a 64 GB Mac. Stop it here instead.
             if (origins.size() == 4096)
                 throw std::logic_error("CvodeSimulator::run: a far run was moved 4096 times "
-                                       "onto its own clock without settling (issue #1681); "
+                                       "onto its own clock without settling; "
                                        "this is a bug in ode_elapsed_clock_origin");
             origins.push_back(o);
             elapsed.t_start -= o;
@@ -17698,8 +17694,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 text, sizeof(text),
                 "Forward sensitivity is not supported for this run: the counter clock %s crosses "
                 "%g after the start, t = %.17g, but there the doubles are %g apart, and the "
-                "crossing rounds %s, so the jump it makes in the requested columns would be lost "
-                "(issue #1828). Start the run nearer 0.",
+                "crossing rounds %s, so the jump it makes in the requested columns would be lost. "
+                "Start the run nearer 0.",
                 model.species_names()[static_cast<std::size_t>(lost->clock_species_idx0)].c_str(),
                 lost_after, t0, apart,
                 lost->t_star <= times.t_start ? "onto the start" : "past the run's end");
@@ -19070,7 +19066,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 "Forward sensitivity: event '" + events_outer[ei].id +
                 "' fires at t=" + diag_number(t) +
                 " where its trigger, which starts exactly on its threshold, leaves it with no "
-                "first-order motion (issue #934). The time it fires has no derivative there: "
+                "first-order motion. The time it fires has no derivative there: "
                 "what moves the threshold, or the trajectory's first motion, moves it from the "
                 "start to later. Drop sensitivities for this run.");
         }
@@ -19180,7 +19176,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     ", and its size before the first of those jumps reads " +
                     diag_number(before_now) +
                     " there, which bngsim cannot rescale its concentrations by once for the "
-                    "whole instant (issue #1181). Give the jumps times apart.");
+                    "whole instant. Give the jumps times apart.");
             }
             if (std::isnan(before_pre)) {
                 throw std::runtime_error(
@@ -19188,7 +19184,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     " times at t=" + diag_number(t_now) +
                     ", and bngsim could not read it just before that instant, where each of "
                     "those jumps has yet to happen and no other has, to rescale its "
-                    "concentrations once by the whole instant (issue #1181). Give the jumps "
+                    "concentrations once by the whole instant. Give the jumps "
                     "times apart.");
             }
             double scale = before_pre / before_now;
@@ -19200,7 +19196,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     "Forward sensitivity: at t=" + diag_number(t_now) +
                     " the size of compartment '" + comp + "' jumps " + std::to_string(ks.size()) +
                     " times at one instant, and its concentrations are rescaled once by the "
-                    "whole instant (issue #1181). The derivative of that rescale is not "
+                    "whole instant. The derivative of that rescale is not "
                     "implemented. The trajectory itself is "
                     "unaffected; run without sensitivities, or give the jumps times apart.");
             }
@@ -19440,10 +19436,10 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 "', the non-strict one on the same residual, turn true together on its crossing "
                 "at t=" +
                 diag_number(t_now) + ". The run triggers '" + id_of(ei) +
-                "' only once events of that instant have executed (issue #947), and '" + id_of(ei) +
+                "' only once events of that instant have executed, and '" + id_of(ei) +
                 "' reads or writes a species they wrote: a second state jump at the same "
-                "instant, which bngsim has no sensitivity jump to compose with the first (issue "
-                "#144). Separate the thresholds, or drop sensitivities for this run.");
+                "instant, which bngsim has no sensitivity jump to compose with the first. "
+                "Separate the thresholds, or drop sensitivities for this run.");
         };
 
         std::vector<ExecInstance> queue;
@@ -19685,7 +19681,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                         "event '" + id + "' fired at t=" + diag_number(t_now) + " with delay " +
                         diag_number(delay_now) +
                         " during a forward-sensitivity run; forward sensitivity through "
-                        "delayed events is not yet supported (issue #144 tracks what is)");
+                        "delayed events is not yet supported");
                 }
                 // Delayed: queue for a future apply_time. No state change now,
                 // so no cascade re-check follows.
@@ -19778,7 +19774,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                         "rule reads a concentration here while this one's reads one there, has "
                         "already rescaled its concentrations as one that follows it. The "
                         "derivative of two rescales of one concentration at one instant is not "
-                        "implemented (issue #1054). The trajectory itself is unaffected; run "
+                        "implemented. The trajectory itself is unaffected; run "
                         "without sensitivities, or give the jumps different times.");
                 }
                 if (fire.from_trigger_time && queue[k].read_after >= 0) {
@@ -19826,7 +19822,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                                 model.species()[static_cast<std::size_t>(j)].name +
                                 "', which another event of the instant wrote before this one "
                                 "executed. The derivative of values frozen between two fires "
-                                "of one instant is not implemented (issue #1054). The "
+                                "of one instant is not implemented. The "
                                 "trajectory itself is unaffected; run without sensitivities, "
                                 "or give the events different times.");
                         }
@@ -19895,11 +19891,11 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     // trigger that an assignment made true, which needs a
                     // state-dependent trigger, and those were refused outright.
                     if (sens.n_total > 0) {
-                        const std::string by =
-                            ev.size_jump_compartment.empty()
-                                ? std::string("by another event's assignment")
-                                : "by the rescale of compartment '" + ev.size_jump_compartment +
-                                      "''s concentrations where its size jumps (issue #1054)";
+                        const std::string by = ev.size_jump_compartment.empty()
+                                                   ? std::string("by another event's assignment")
+                                                   : "by the rescale of compartment '" +
+                                                         ev.size_jump_compartment +
+                                                         "''s concentrations where its size jumps";
                         throw SensitivityUnsupported(
                             "Forward sensitivity: event '" + events_outer[ei].id +
                             "' was triggered at t=" + std::to_string(t_now) + " " + by +
@@ -19907,8 +19903,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                             "located (SBML \"events triggering events\"). That is a second "
                             "state jump at the same instant, and bngsim has no sensitivity "
                             "jump to compose with the first, so the columns for the species it "
-                            "assigns would be silently stale (GH #205). Separate the fires in "
-                            "time, or drop sensitivities for this run (issue #144).");
+                            "assigns would be silently stale. Separate the fires in "
+                            "time, or drop sensitivities for this run.");
                     }
                     if (!ev.size_jump_compartment.empty() &&
                         events_outer[ei].size_jump_compartment.empty()) {
@@ -20108,7 +20104,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     "the integrator returns the stop without locating the trigger's "
                     "crossing. bngsim has no sensitivity jump for a fire it did not locate, "
                     "so it refuses rather than return columns for a trajectory without the "
-                    "event (issue #950). Move the output point or the event time apart, or "
+                    "event. Move the output point or the event time apart, or "
                     "drop sensitivities for this run.");
             }
             if (sens.n_total > 0) {
@@ -20120,7 +20116,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     "' was found triggered at t=" + std::to_string(t_now) +
                     " after a root was handled, not as a crossing the integrator located. "
                     "bngsim has no sensitivity jump for a fire it did not locate, so the "
-                    "columns it moves would be silently stale (GH #205, issue #910). Please "
+                    "columns it moves would be silently stale. Please "
                     "report this model; dropping sensitivities for this run avoids it.");
             }
             // Counted as the root's fires are (issue #1025): a run at a
@@ -20213,9 +20209,9 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     "Forward sensitivity: the switch times crossing together at t=" +
                     std::to_string(sw->t_star) +
                     " include one that no requested parameter moves alone, which is given what "
-                    "is left of the instant's jump (issue #1822), and the model has a rate law "
+                    "is left of the instant's jump, and the model has a rate law "
                     "that is a power singular at its switch, whose columns are carried in a "
-                    "frame that moves with the switch (issue #949). The two are not combined. "
+                    "frame that moves with the switch. The two are not combined. "
                     "Separate the switch times, or drop the parameters that move them from "
                     "sensitivity_params.");
             }
@@ -21918,8 +21914,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                             << std::setprecision(17) << from << ", " << (to - from)
                             << " before a switch time a requested parameter moves, which a rate "
                                "law approaches as a power. A sensitivity column cannot be carried "
-                               "that close to such an edge: its forcing is unbounded there (issue "
-                               "#760). Separate the two times, or drop the parameters that move "
+                               "that close to such an edge: its forcing is unbounded there. "
+                               "Separate the two times, or drop the parameters that move "
                                "the window from sensitivity_params.";
                         throw SensitivityRefusedForParameters(msg.str());
                     }
@@ -22363,12 +22359,13 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     << " from a step [" << (tn - hu) << ", " << tn
                     << "] that does not span it, so the state there was never read. "
 #ifdef BNGSIM_SUNDIALS_CARRIES_1301
-                    << "This build carries the lanl/bngsim#1301 fix that should prevent it "
+                    << "This build carries bngsim's fix to the staggered sensitivity corrector, "
+                       "which should prevent it "
                        "(unless BNGSIM_SUNDIALS_STAGGERED_RESTORE=0 turned it off); please "
                        "report the model."
 #else
-                    << "This build uses a system SUNDIALS without the lanl/bngsim#1301 fix "
-                       "to its staggered sensitivity corrector; build with the fetched "
+                    << "This build uses a system SUNDIALS without bngsim's fix to its "
+                       "staggered sensitivity corrector; build with the fetched "
                        "SUNDIALS, or pass sensitivity_method=\"simultaneous\"."
 #endif
                     ;
@@ -23146,7 +23143,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                                 "): an assignment among them puts a trigger back where the flow "
                                 "makes it true again at once, so they fire infinitely often at "
                                 "one instant (Zeno behaviour) and the run has no continuation "
-                                "past it (issue #1158). Change the assignment or the trigger so "
+                                "past it. Change the assignment or the trigger so "
                                 "that the event leaves its trigger false for a time, for example "
                                 "by moving the state past the threshold rather than onto it.");
                         }
@@ -23523,7 +23520,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                             " an event fires. The event jump differentiates at the pre-event "
                             "state and the switch jump differentiates the branch of f at the "
                             "same instant, so composing them is ambiguous and bngsim refuses "
-                            "rather than pick an order (issue #150). Separate the two times, or "
+                            "rather than pick an order. Separate the two times, or "
                             "drop sensitivities for this run.");
                     }
                     // The clock crossings that share this instant (issue #767).
@@ -23582,7 +23579,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                                     "crossing, so the event's own crossing is not located. bngsim "
                                     "has no sensitivity jump for an event it did not locate, and "
                                     "could not compose one with the switch's at what is the same "
-                                    "instant to the solver (issue #150). It refuses rather than "
+                                    "instant to the solver. It refuses rather than "
                                     "skip the event. Separate the two thresholds, or drop "
                                     "sensitivities for this run.");
                             }

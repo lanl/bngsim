@@ -326,7 +326,7 @@ def _resolve(core, t_start: float, t_end: float) -> list[Any]:
                     f"where {sym} first reaches it, from its value at the start of "
                     f"the run and its rate; an event assigns {sym}, and a pass "
                     "through the bump after that is not stopped on and may be "
-                    "stepped over (issue #1286). Pass max_step no larger than the "
+                    "stepped over. Pass max_step no larger than the "
                     f"bump's width in time, {width / abs(rate):g}.",
                     code="smooth_pulse.event_reset",
                     stacklevel=2,

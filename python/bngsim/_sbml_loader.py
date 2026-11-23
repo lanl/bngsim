@@ -5332,7 +5332,7 @@ def _check_sbml_errors(doc, source, text=None):
             "RuleMonkey), not SBML: it has <ListOfMoleculeTypes> or <ListOfReactionRules>, "
             f"which SBML has not{', and ' + namespace if namespace else ''}. libSBML reads "
             "its <model> element and none of the elements inside it, so loaded as SBML it "
-            f"gave an empty model (issue #1712). {_network_free_routes()}",
+            f"gave an empty model. {_network_free_routes()}",
             code="model.unreadable_file",
         )
     if bad_namespace:
@@ -5341,7 +5341,7 @@ def _check_sbml_errors(doc, source, text=None):
         raise ModelError(
             f"{source} is not SBML: {namespace}, and libSBML reads nothing from its <model>: "
             "no species, compartments, parameters, reactions or rules. Loaded as SBML it "
-            "gave an empty model (issue #1712).",
+            "gave an empty model.",
             code="model.unreadable_file",
         )
 
@@ -10118,7 +10118,7 @@ def _build_model_from_sbml_doc_in_context(doc):
                     _refusals.append(
                         f"compartment {comp} ({_size_text(comp)}) reads {leaf}, an amount in "
                         f"compartment {species_comp[leaf]}, which an assignment rule sizes; "
-                        "bngsim's rate of such a species is not yet right there (#736)"
+                        "bngsim's rate of such a species is not yet right there"
                     )
 
         # A concentration the size reads in a compartment whose own size reads a
@@ -11844,7 +11844,7 @@ def _build_model_from_sbml_doc_in_context(doc):
         _live_idx0 = species_idx.get(_comp_id)
         if _live_idx0 is None:
             logger.warning(
-                f"GH #81: variable-volume compartment '{_comp_id}' was not "
+                f"variable-volume compartment '{_comp_id}' was not "
                 "promoted to a species; SSA live-volume correction skipped for "
                 f"reaction index {_rxn_idx}."
             )
@@ -11888,7 +11888,7 @@ def _build_model_from_sbml_doc_in_context(doc):
         _live_idx0 = species_idx.get(_comp_id)
         if _live_idx0 is None:
             logger.warning(
-                f"GH #144: variable-volume compartment '{_comp_id}' was not "
+                f"variable-volume compartment '{_comp_id}' was not "
                 "promoted to a species; cross-compartment ODE live-volume divide "
                 f"skipped for species index {_sp_idx}."
             )
@@ -11898,7 +11898,7 @@ def _build_model_from_sbml_doc_in_context(doc):
         _live_idx0 = species_idx.get(_comp_id)
         if _live_idx0 is None:
             logger.warning(
-                f"GH #144: variable-volume compartment '{_comp_id}' was not "
+                f"variable-volume compartment '{_comp_id}' was not "
                 "promoted to a species; cross-compartment SSA live-volume term "
                 f"skipped for reaction index {_rxn_idx}."
             )

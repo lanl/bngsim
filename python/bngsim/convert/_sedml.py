@@ -193,7 +193,7 @@ def write_sedml(
     if spec.atol is not None and not isinstance(spec.atol, (int, float, ExactAtol)):
         raise ConversionError(
             f"cannot emit SED-ML for atol={spec.atol!r}: this is a per-species "
-            f"absolute tolerance (issue #196), and {_KISAO_ATOL} (absolute "
+            f"absolute tolerance, and {_KISAO_ATOL} (absolute "
             "tolerance) is a single value for the whole solve. SED-ML has no "
             "per-species form, so writing one entry — or any summary of the "
             "vector — would describe a different run than the spec does. Export "
@@ -463,7 +463,7 @@ def read_sedml(
         warnings.warn(
             f"read_sedml reads the first task, {task_id!r}; the document's "
             f"{', '.join(repr(o) for o in others)} are not read. read_sedml_protocol reads "
-            "every task (issue #1675)",
+            "every task",
             ConversionWarning,
             stacklevel=2,
         )
@@ -510,7 +510,7 @@ def read_sedml(
             elif mapped == "pla":
                 raise ConversionError(
                     f"the time course's algorithm is {kid} (partitioned leaping "
-                    "method), and bngsim has no PLA method to run it with (issue #1500). "
+                    "method), and bngsim has no PLA method to run it with. "
                     "read_sedml_protocol keeps it as method 'pla' for a BNG2.pl actions block."
                 )
             elif mapped == "nf":
@@ -559,7 +559,7 @@ def read_sedml(
             f"the document's data generators {computed} compute a value from their "
             "variables, which no output selector names; they are not among the spec's "
             "outputs. Add the selectors of their variables to the outputs to compute "
-            "them from (issue #1663)",
+            "them from",
             ConversionWarning,
             stacklevel=2,
         )
@@ -585,7 +585,7 @@ def read_sedml(
             warnings.warn(
                 f"model {elem.get('id')!r}: its {kind} of {change.get('target')!r} is not a "
                 "parameter value, which is all an EvaluationSpec carries; read_sedml_protocol "
-                "reads the document's model changes in full (issue #1675)",
+                "reads the document's model changes in full",
                 ConversionWarning,
                 stacklevel=2,
             )

@@ -518,7 +518,7 @@ def format_report(prov: Provenance | None = None) -> str:
         )
         lines.append(
             "[bngsim]   The binary does NOT reflect current C++. Any correctness "
-            "verdict drawn from it is a statement about OLD code (see GH #125)."
+            "verdict drawn from it is a statement about OLD code."
         )
         lines.append(
             "[bngsim]   Rebuild:  uv run --no-sync python scripts/rebuild_editable.py   "
@@ -527,7 +527,7 @@ def format_report(prov: Provenance | None = None) -> str:
         if _pybind11_missing():
             lines.append(
                 "[bngsim]   NOTE: pybind11 is not installed in this environment, so that "
-                "rebuild needs a system copy; `uv sync --extra dev` declares it (GH #229)."
+                "rebuild needs a system copy; `uv sync --extra dev` declares it."
             )
     return "\n".join(lines)
 

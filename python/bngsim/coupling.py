@@ -963,7 +963,7 @@ def make_subset_model(
     # silently dropping them (codegen_data carries no events/triggers).
     for attr, label in (
         ("n_events", "events"),
-        ("n_discontinuity_triggers", "discontinuity triggers (GH #72)"),
+        ("n_discontinuity_triggers", "discontinuity triggers"),
         ("n_table_functions", "table functions (tfun)"),
     ):
         if getattr(core, attr, 0):
@@ -975,7 +975,7 @@ def make_subset_model(
         if s.get("amount_valued", False):
             raise NotSupportedError(
                 "make_subset_model cannot reconstruct amount_valued species "
-                f"({s['name']!r}, GH #75); build the subset with ModelBuilder"
+                f"({s['name']!r}); build the subset with ModelBuilder"
             )
     if getattr(core, "has_baseline_sensitivity_seed", False):
         # reset() on the model restores that dx/dθ with the state; the subset
@@ -983,7 +983,7 @@ def make_subset_model(
         raise NotSupportedError(
             "make_subset_model cannot carry the forward-sensitivity seed saved with "
             "this model's baseline (save_concentrations() after a sensitivity "
-            "pre-equilibration, issue #81); build the subset before saving, or with "
+            "pre-equilibration); build the subset before saving, or with "
             "ModelBuilder"
         )
 

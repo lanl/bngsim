@@ -6479,7 +6479,7 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
             "Cannot find steady state: the size of compartment '" + jumps +
             "', which an assignment rule sets, jumps where a piecewise the rule reads switches, "
             "and the amounts in it are kept there by a rescale of their concentrations that the "
-            "steady-state solvers never make (issue #1054, issue #710). Integrate it with "
+            "steady-state solvers never make. Integrate it with "
             "run().");
     }
     // A function that reads the time and that only reports, `minutes :=
@@ -6490,8 +6490,8 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
         throw std::runtime_error(
             "Cannot find steady state: the model has an event, or the time reaches its state "
             "through a rate, a species an assignment rule reports or a compartment size, and "
-            "the steady-state solvers read the right-hand side at t = 0 and fire no event "
-            "(issue #710). Integrate it with run().");
+            "the steady-state solvers read the right-hand side at t = 0 and fire no event. "
+            "Integrate it with run().");
     }
 
     // Same refusal run() makes (issue #128): the pair is a contradiction, not a

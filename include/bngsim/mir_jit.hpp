@@ -731,7 +731,7 @@ class MirJit {
                             "generated source (") +
                 failure.message +
                 "). Under a cap on the address space (ulimit -v), every live MIR-compiled "
-                "model counts against it; free some or raise the cap (issue #1215).");
+                "model counts against it; free some or raise the cap.");
         }
         throw std::runtime_error(
             std::string("MirJit: MIR failed compiling the generated source: ") + failure.message);

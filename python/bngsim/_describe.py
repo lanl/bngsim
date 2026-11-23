@@ -113,7 +113,7 @@ def steady_state_refusals(model: Model, where: str = "steady_state()") -> list[t
                 f"event{'s' if n_events != 1 else ''}. The steady-state solvers look for a "
                 "root of the right-hand side and fire no event, so an event's assignment is "
                 "never made, and the state they return is one the model's dynamics may never "
-                "reach (issue #710). Integrate the model with run() over a span long enough "
+                "reach. Integrate the model with run() over a span long enough "
                 "for the trajectory to settle, and read the state where it ends.",
             )
         )
@@ -130,10 +130,10 @@ def steady_state_refusals(model: Model, where: str = "steady_state()") -> list[t
             (
                 "size_jump",
                 f"{where} is not supported for this model: {what} kept across a jump by a "
-                "rescale of their concentrations there (issue #1054). The steady-state "
+                "rescale of their concentrations there. The steady-state "
                 "solvers look for a root of the right-hand side and make no such rescale, so "
                 "the state they return can hold the concentrations from the wrong side of a "
-                "jump (issue #710). Integrate the model with run() over a span long enough for "
+                "jump. Integrate the model with run() over a span long enough for "
                 "the trajectory to settle, and read the state where it ends.",
             )
         )
@@ -147,8 +147,8 @@ def steady_state_refusals(model: Model, where: str = "steady_state()") -> list[t
                 "steady-state solvers look for a root of f(y) with everything read at t = 0, "
                 "which is the model's steady state only where nothing changes with the time "
                 "after that: a rate that is 0 at t = 0 returned the initial state as "
-                "converged, and a species set by a rule on the time its value at t = 0 "
-                "(issue #710). Integrate the model with run() over a span long enough for the "
+                "converged, and a species set by a rule on the time its value at t = 0. "
+                "Integrate the model with run() over a span long enough for the "
                 "trajectory to settle, and read the state where it ends.",
             )
         )
@@ -251,7 +251,7 @@ def _network_free(model: Model, canonical: str) -> dict[str, Any]:
 #: What a steady-state verdict does not cover.
 _STEADY_STATE_NOTE = (
     "From the checks steady_state() makes of the model alone. The call also refuses a "
-    "conservation law the model's own right-hand side does not keep (issue #758), which "
+    "conservation law the model's own right-hand side does not keep, which "
     "it finds by computing the laws, not done here; and a solve can still fail to "
     "converge, or find a root the run does not reach."
 )
@@ -345,7 +345,7 @@ def _forward_sensitivities(model: Model, limit: int | None) -> dict[str, Any]:
                 "a compartment size set_param cannot write "
                 "(Model.unwritable_compartment_size_params)"
             )
-        return "set by a rule or function, which no write can move (issue #329)"
+        return "set by a rule or function, which no write can move"
 
     refused = {
         n: reason_for(n)

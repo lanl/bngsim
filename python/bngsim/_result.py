@@ -183,7 +183,7 @@ def _warn_one_sided(entries: list[tuple[float, dict[str, str]]], *, note: bool =
             "t_delta on a bound t_delta >= 0 that is the feasible side; bngsim cannot see "
             "the bound, so check the direction against it. In the other direction the "
             "derivative is another number, which bngsim does not compute. "
-            "Every other column is an ordinary derivative (issue #1822). "
+            "Every other column is an ordinary derivative. "
             "Result.one_sided_sensitivities lists these.",
             OneSidedSensitivityWarning,
             code="sens.one_sided",
@@ -1198,7 +1198,7 @@ class Result:
             )
             raise UsageError(
                 f"Result.{what} is only available on a Result returned by a solve; "
-                f"{how} carries only the reported species block (issue #508)."
+                f"{how} carries only the reported species block."
             )
         return self._core
 
@@ -1638,10 +1638,9 @@ class Result:
                 "compartment whose size changes, and its row of "
                 "Result.sensitivities is NaN: it needs the output sensitivity "
                 "of the rule and that of the size, and the run has not got "
-                "both: codegen declined one of them (GH #198), or built no "
+                "both: codegen declined one of them, or built no "
                 "output sensitivities for this model. "
-                "Result.ar_sensitivity_refused lists every such species "
-                "(GH #221)."
+                "Result.ar_sensitivity_refused lists every such species."
             )
         if kind == "species" and not live_sized:
             redirect = self._ar_sens_map.get(meta["name"])
@@ -1705,7 +1704,7 @@ class Result:
                 f"output_sensitivities: cannot address {kind} selector "
                 f"{meta['selector']!r} by index — the {kind} sensitivity block has "
                 f"{block.shape[-2]} rows but this result names "
-                f"{len(self._names_for_kind(kind))} {kind}s (GH #202). Re-run the "
+                f"{len(self._names_for_kind(kind))} {kind}s. Re-run the "
                 "simulation, or use the .sensitivities array directly."
             )
         return block[..., meta["index"], :]
@@ -2135,8 +2134,8 @@ class Result:
             # species_indices would pick rows from a block they do not address.
             if Y.shape[1] != sens.shape[1]:
                 raise UsageError(
-                    f"{Y.shape[1]} species but {sens.shape[1]} species sensitivity rows "
-                    "(GH #202); re-run the simulation"
+                    f"{Y.shape[1]} species but {sens.shape[1]} species sensitivity rows; "
+                    "re-run the simulation"
                 )
             refused = self._refused_row_mask()
             if species_indices is not None:
@@ -3178,7 +3177,7 @@ class Result:
                 "sizes, and an amount is the stored concentration times its compartment's "
                 f"size. Select '[{name}]' and multiply it by the size (where every size is "
                 "1, as in a .net model, the two are equal), or run the model again and save "
-                "the result with this version, which records the sizes (issue #787)."
+                "the result with this version, which records the sizes."
             )
         if any(
             sel.startswith("[") and sel.endswith("]") and sel[1:-1] in sp_idx for sel in selections
@@ -3189,8 +3188,7 @@ class Result:
                 "the stored species value. That is the concentration unless a compartment's "
                 "size changes during a stochastic run, or an event resizes the compartment "
                 "of an amount-valued species, where it is the amount over the starting size. "
-                "Run the model again and save the result with this version to record them "
-                "(issue #787).",
+                "Run the model again and save the result with this version to record them.",
                 stacklevel=3,
             )
 
@@ -3952,7 +3950,7 @@ class Result:
             raise UsageError(
                 f"Result.load({str(path)!r}) reads the HDF5 files Result.save writes; "
                 f"a .npz file is for numpy.load(path), which gives its arrays, "
-                f"names and record (issue #1704).",
+                f"names and record.",
                 remedies=[use_call("numpy.load", str(path))],
             )
         try:
@@ -5285,7 +5283,7 @@ def _refuse_disagreeing_rows(results: list[Result]) -> None:
             raise UsageError(
                 f"Cannot squeeze these results: row {i} {problem}. A stack has one time "
                 "axis and one set of column names, the first row's, and reads every row "
-                "by them, so the rows must agree on both (issue #1513). Read them from "
+                "by them, so the rows must agree on both. Read them from "
                 "the list, or rerun them on one time grid and one model."
             )
 

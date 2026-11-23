@@ -4748,7 +4748,7 @@ def _resolve_crossings(
             f"An event fires at the instant {_strip_redundant_parens(cond.strip())!r} holds, "
             f"which reads {name}, and only events set {name}: {unknown[name]}. So the "
             "instants cannot be placed before the run, and no root finds an instant: the "
-            "event would fire only where an output sample lands on one (issue #1519). "
+            "event would fire only where an output sample lands on one. "
             f"bngsim refuses rather than miss it. Events that set {name} at a fixed time "
             "(`time >= c`), on such an instant (`time == c`) or on a flag only events set, "
             "to values known before the run, have the instants placed stretch by stretch."
@@ -4801,7 +4801,7 @@ def _resolve_crossings(
                 f"reads {name}, and only events set {name}: {unknown[name]}. So its stops "
                 f"cannot be placed before the run, and {where} the condition "
                 f"changes {how_often}: a step can lie across a whole window of it with "
-                "nothing said (issue #1244). bngsim refuses rather than step over it. An "
+                "nothing said. bngsim refuses rather than step over it. An "
                 f"event that sets {name} at a fixed time (`time >= c`) to a constant, "
                 "with no requested sensitivity parameter in either, has the condition's "
                 "stops placed stretch by stretch."
@@ -4873,8 +4873,7 @@ def _resolve_crossings(
                         f"holds, which reads {', '.join(reads[cond])}, which only events set: "
                         f"at t={at!r}, within a rounding of another stop of the run, at "
                         f"t={other!r}. A stop cannot tell the two apart, and the event at one "
-                        "of them would not fire (issue #1519). bngsim refuses rather than miss "
-                        "it."
+                        "of them would not fire. bngsim refuses rather than miss it."
                     )
     fixed, stops, crossings = (sorted(f, key=lambda stop: stop.time) for f in found)
     return fixed, stops, crossings
@@ -5879,9 +5878,7 @@ def _engine_scan_stop_times(
             else None
         )
         if read is None:
-            logger.debug(
-                "%r: a sawtooth of a line coarser than the clock gets no stops (#1018)", cond
-            )
+            logger.debug("%r: a sawtooth of a line coarser than the clock gets no stops", cond)
         return read
 
     class Unreadable(Exception):
@@ -6096,7 +6093,7 @@ def _say_beyond_2_48(cond: str, call: str) -> None:
         "The rate law switches on %r, and the whole number of periods `%s` takes off its "
         "argument is beyond 2^48 in this run: the call resolves only a few steps of each "
         "period, each a large part of it. The run is made as the evaluator reads the rate "
-        "law, a staircase with a stop on each step (issue #1018). For a sawtooth, take the "
+        "law, a staircase with a stop on each step. For a sawtooth, take the "
         "offset out of what the call divides: `mod(time(), P)`, not `mod(1e12 + time(), P)`.",
         cond,
         call.partition("(")[0].strip(),
@@ -6192,7 +6189,7 @@ def _say_left_alone(
         cond,
         "left alone",
         "The rate law switches on %r, which %s. It is integrated without a stop on each "
-        "change, as before issue #1018, and is as near as the error test finding each "
+        "change, and is as near as the error test finding each "
         "change makes it. Run it in legs of %s or shorter (run_until) to have them.",
         cond,
         what,
@@ -11306,7 +11303,7 @@ def uncompensated_condition_reason(
                         + " and ".join(unreadable_parts)
                         + " does not reduce to a constant expression over the model's primary "
                         "parameters, so bngsim cannot say when the schedule's edges fall and "
-                        "neither the issue #48 switch-time jump nor the issue #150 crossing "
+                        "neither the switch-time jump nor the crossing "
                         "root can compensate them"
                     )
                 # Each piece reads back on its own, so what failed is the check
@@ -11317,8 +11314,8 @@ def uncompensated_condition_reason(
                     f"the condition {atom!r} looks like a repeating schedule of period "
                     f"{sched.period!r} and duty {sched.duty!r}, but the condition the model "
                     "actually evaluates does not follow that schedule, so bngsim will not "
-                    "place stop times from it and neither the issue #48 switch-time jump nor "
-                    "the issue #150 crossing root can compensate its crossings"
+                    "place stop times from it and neither the switch-time jump nor "
+                    "the crossing root can compensate its crossings"
                 )
             # A clock threshold that neither reduces to a constant over the
             # primaries (so the issue #48 detector would silently skip its
@@ -11333,8 +11330,8 @@ def uncompensated_condition_reason(
                 + " and ".join(repr(t) for t in unreadable)
                 + f" in the condition {atom!r} does not reduce "
                 "to a constant expression over the model's primary parameters and does not "
-                "read model state either, so neither the issue #48 detector nor the issue "
-                "#150 crossing root can compensate it and the Piecewise derivative's zero "
+                "read model state either, so neither the switch-time detector nor the "
+                "crossing root can compensate it and the Piecewise derivative's zero "
                 "would be the whole gradient"
             )
     return None
@@ -11364,8 +11361,8 @@ def _not_a_clock_threshold(
             + ", ".join(repr(n) for n in named)
             + f" appear{'' if many else 's'} in the condition {atom!r}, which is neither a "
             f"recognized clock threshold nor a single comparison over model state, so moving "
-            f"{'them' if many else 'it'} moves a branch crossing that neither the issue #48 "
-            "switch-time jump nor the issue #150 saltation jump can be run on"
+            f"{'them' if many else 'it'} moves a branch crossing that neither the "
+            "switch-time jump nor the saltation jump can be run on"
         )
     probe = _blank_clock_refs(atom_flat, scope)
     if not any(
@@ -11375,7 +11372,7 @@ def _not_a_clock_threshold(
         # It reads nothing but the clock and constants: a shape of time the
         # switch-time jump does not recognize (`sin(10*time) > 0.99`), not state.
         return UncompensatedCrossingReason(
-            f"the condition {atom!r} reads only the time, but in a shape the issue #48 "
+            f"the condition {atom!r} reads only the time, but in a shape the "
             "switch-time jump does not recognize (it places a crossing linear in time, or "
             "a repeating schedule), so nothing compensates the jump at its crossings"
         )
@@ -11384,7 +11381,7 @@ def _not_a_clock_threshold(
         "and it is not a single comparison whose residual bngsim can root on either, so its "
         "crossing time moves with the trajectory and therefore with every parameter and "
         "nothing compensates the jump — the rate-law twin of the state-dependent event "
-        "trigger refused for issue #52"
+        "trigger bngsim refuses"
     )
 
 
@@ -11656,8 +11653,8 @@ def _unseparable(group: Sequence[_Crossing], lacking: Sequence[_Crossing]) -> st
         f"crossing together at t={lacking[0].t_star:.6g} cannot be told apart. bngsim reads "
         "a crossing's jump by nudging the clock across the threshold, which flips "
         "every condition thresholding it at that instant at once, so a coinciding "
-        "crossing is separated by moving its threshold off the instant instead "
-        "(issue #375), with a parameter no other threshold on the instant reads. "
+        "crossing is separated by moving its threshold off the instant instead, "
+        "with a parameter no other threshold on the instant reads. "
         f"{len(lacking)} of the {len(group)} crossings here have no such parameter"
         + (
             " (their thresholds read " + ", ".join(f"'{n}'" for n in shared) + ")"
@@ -11665,7 +11662,7 @@ def _unseparable(group: Sequence[_Crossing], lacking: Sequence[_Crossing]) -> st
             else ""
         )
         + ". One crossing without one is taken as what is left of the instant's jump "
-        "once the others are separated (issue #1822); two or more cannot be divided "
+        "once the others are separated; two or more cannot be divided "
         "between themselves, and returning the merged jump would charge each "
         "parameter with the other's, so bngsim refuses. The switch times need not "
         "be equal by accident, a parameter on a bound makes them so; giving each "
@@ -11717,7 +11714,7 @@ def _unmerged(remainder: _Crossing, apart: Sequence[str]) -> str:
         "Forward sensitivity is not supported on this model: the switch times "
         f"crossing together at t={remainder.t_star:.6g} cannot be told apart. One of them "
         "has no parameter its threshold alone reads, and is given what is left of the "
-        "instant's jump once the others are separated (issue #1822). That jump is read by "
+        "instant's jump once the others are separated. That jump is read by "
         "nudging its clock 64 ulp across it, which flips no crossing on another clock "
         "and none at the nudge's end or further away, and here "
         + "; ".join(apart)
@@ -11843,7 +11840,7 @@ def _isolation_bump(
             "Forward sensitivity is not supported on this model: the switch times "
             f"crossing together at t={cross.t_star:.6g} sit closer to a neighbouring "
             "threshold than the step that would separate them, so isolating this "
-            "crossing's jump would flip a condition it does not own (issue #375). "
+            "crossing's jump would flip a condition it does not own. "
             "bngsim refuses rather than return a merged jump."
         )
     return param_idx[name], delta_threshold / private[name]
@@ -11932,7 +11929,7 @@ def _steps_on_instants(
                 f"{len(times)} switch times in the reported window. Whether one of them lands on "
                 "a step is asked by evaluating the call beside each, and that is not done for "
                 f"more than {_STEP_PROBE_PAIRS} of them: the rest would be read with the step "
-                "inside their bracket (issue #944). Shorten the reported time window, or drop "
+                "inside their bracket. Shorten the reported time window, or drop "
                 "the parameters that move the switch times from sensitivity_params."
             )
 
@@ -12430,7 +12427,7 @@ def _absorb_schedule_crossings(
                 f"than {_SCHEDULE_EDGE_BUDGET} of its edges (period "
                 f"{terms.period:.6g}, window {t_end - t_start:.6g}). bngsim compensates such "
                 "a schedule by stopping the solver at every edge and applying the branch "
-                "jump there (issue #436), and it will not compensate only the first few "
+                "jump there, and it will not compensate only the first few "
                 "thousand: that would give a gradient that is correct early in the run and "
                 "silently wrong after it. Shorten the reported time window, lengthen the "
                 "period, or drop "
@@ -12811,9 +12808,9 @@ def compute_switch_time_sens(
             + ", ".join(f"'{p}'" for p in sorted(unsafe))
             + " is not supported on this model: each moves a detected switch time AND "
             "also reads a condition whose crossing nothing compensates. Pinning it against "
-            "CVODES' difference-quotient probe (issue #48) would hold that crossing's "
+            "CVODES' difference-quotient probe would hold that crossing's "
             "dependence on it at a wrong 0, and un-pinning would drag the switch into "
-            "the approach and stall (issue #358). bngsim refuses rather than return a "
+            "the approach and stall. bngsim refuses rather than return a "
             "partially-correct derivative. Drop it from sensitivity_params."
         )
 
@@ -12850,11 +12847,11 @@ def compute_switch_time_sens(
             "appears inside a branch (or as a rate constant), so its gradient is "
             "the in-branch ∂f/∂p plus the crossing jump — and this run has no "
             "analytic sensitivity RHS, so ∂f/∂p is CVODES' internal difference "
-            "quotient, which pinning holds at a wrong 0 for such a parameter "
-            "(issue #358). An analytic sensitivity RHS combines the two; a model "
+            "quotient, which pinning holds at a wrong 0 for such a parameter. "
+            "An analytic sensitivity RHS combines the two; a model "
             "reaches the difference quotient only when a rate law it must "
             "differentiate carries a non-smooth builtin or a state-dependent "
-            "condition (issue #68). Split the parameter into a separate switch "
+            "condition. Split the parameter into a separate switch "
             "time and rate constant, or drop it from sensitivity_params."
         )
 

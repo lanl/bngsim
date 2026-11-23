@@ -861,7 +861,7 @@ def capabilities() -> dict[str, Any]:
     _stale_note = (
         " The Python layer here is current, so this install's compiled "
         "extension is behind it — in a source checkout the extension is built "
-        "separately and does not rebuild on import (GH #23). Rebuild it with "
+        "separately and does not rebuild on import. Rebuild it with "
         "`uv run --no-sync python scripts/rebuild_editable.py`, or install a wheel, which "
         "always carries both halves from one build."
     )
@@ -870,7 +870,7 @@ def capabilities() -> dict[str, Any]:
             "forward sensitivities do not survive a discrete event in this "
             "install: an event assignment that reads the state loses the "
             "carried ∂h/∂x·s⁻ term, and a root that fires nothing rewinds the "
-            "state without rewinding the sensitivity history (GH #144, #146). "
+            "state without rewinding the sensitivity history. "
             "Neither refuses — both return a finite tensor with the event's "
             "contribution missing — so a gradient computed over a model with "
             "events here is wrong without saying so." + _stale_note
@@ -880,7 +880,7 @@ def capabilities() -> dict[str, Any]:
             "BNGSIM_NO_FUNCTIONAL_SENS_RHS=1 is set in this environment, which "
             "is the A/B hatch that puts every Functional rate law — including "
             "every cross-compartment reaction — back on CVODES' internal "
-            "difference quotients (GH #160). Answers stay correct; a "
+            "difference quotients. Answers stay correct; a "
             "sensitivity run over such a model gets much slower, and on a "
             "stiff one it may not finish. Unset the variable to get the "
             "analytic ∂f/∂p back."
@@ -888,7 +888,7 @@ def capabilities() -> dict[str, Any]:
     if not features["per_species_atol"]:
         missing["per_species_atol"] = (
             "this install's compiled extension has no per-species absolute "
-            "tolerance (GH #196): SolverOptions.atol_vec is absent, so "
+            "tolerance: SolverOptions.atol_vec is absent, so "
             "Simulator.run(atol=[...]) cannot reach CVodeSVtolerances and a "
             "model spanning many decades has to pick one atol for both "
             "ends." + _stale_note
@@ -896,7 +896,7 @@ def capabilities() -> dict[str, Any]:
     if not features["tracking_atol"]:
         missing["tracking_atol"] = (
             "this install's compiled extension cannot follow the trajectory "
-            "with the absolute tolerance (GH #213): "
+            "with the absolute tolerance: "
             "SolverOptions.atol_track_decades is absent, so "
             "Simulator.run(atol=TrackingAtol(...)) has nothing to install and "
             "a species that starts at order one and decays to nothing cannot "

@@ -2012,7 +2012,7 @@ NetworkModel ModelBuilder::build() {
                         "substrate, and bngsim left the others out of its rate. BNG2.pl "
                         "refuses such a rule (\"require exactly 2 reactants\"), and "
                         "run_network reads the first as the substrate and the total of the "
-                        "others as the enzyme (issue #1502). Write the reaction with a "
+                        "others as the enzyme. Write the reaction with a "
                         "functional rate law over the enzymes' total");
                 }
                 // Issue #931 — kcat and Km are read as parameters, by every
@@ -2043,8 +2043,8 @@ NetworkModel ModelBuilder::build() {
                             "only the interpreted ODE right-hand side follows the function: "
                             "the compiled one reads the parameter as it stands, the "
                             "stochastic engines hold a function of the state or the time at "
-                            "a stale value, and the Jacobian takes it for a constant (issue "
-                            "#931). Give the constant as a parameter, which may be an "
+                            "a stale value, and the Jacobian takes it for a constant. "
+                            "Give the constant as a parameter, which may be an "
                             "expression of others, or write the reaction with a functional "
                             "rate law.");
                     }

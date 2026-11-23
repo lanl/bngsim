@@ -617,7 +617,7 @@ std::string expr_compat::bracket_after_call_error(const std::string &expr,
     return "Expression '" + expr + "': the bracket after the call '" + call +
            "' is not multiplied by it. ExprTk reads it as a second statement, and the "
            "expression's value would be that statement's alone, which drops the call and "
-           "everything before it (issue #1415). BioNetGen rejects it as a syntax error. Write "
+           "everything before it. BioNetGen rejects it as a syntax error. Write "
            "the product with '*': '" +
            call + "*(...)'.";
 }
@@ -791,8 +791,7 @@ double expr_compat::mratio(double a, double b, double z) {
             "when a <= 0 and z <= 0 (past z = -20 only with b - a >= 1), when |z| <= 20, or "
             "when b*b >= 64*|z*a| and z is either negative or no more than half of b. BNG "
             "builds a = -min(AT,BT), b = |AT-BT|+1 and z = -1/Keq, which is inside that "
-            "region, so a model reaching this is using mratio in its own way. See "
-            "lanl/bngsim issues #453, #456, #768 and #1080.");
+            "region, so a model reaching this is using mratio in its own way.");
     }
     constexpr double eps = 1.0e-16;
     constexpr double tiny = 1.0e-32;

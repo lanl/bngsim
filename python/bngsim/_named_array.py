@@ -223,7 +223,7 @@ class NamedArray(np.ndarray):
                 "either built without any, or derived by an operation whose effect on the "
                 "columns is not tracked (arithmetic, a transpose, a reduction, unpickling), "
                 "which drops the names rather than leaving them pointing at columns that may "
-                "have moved (issue #561). Look the column up on the array "
+                "have moved. Look the column up on the array "
                 "Result.as_roadrunner() returned, or index that array by name "
                 "(arr[:, ['time', '[X]']]) to carry the names over."
             )

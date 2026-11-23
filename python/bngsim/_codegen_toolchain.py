@@ -316,7 +316,7 @@ def strict_refusal(what: str, cause: BaseException | str) -> RuntimeError:
     detail = f"{type(cause).__name__}: {cause}" if isinstance(cause, BaseException) else cause
     message = (
         f"BNGSIM_CODEGEN_STRICT is set, and {what} failed to build ({detail}). Without "
-        "it the run falls back to the interpreter; unset it to allow that (issue #1544)."
+        "it the run falls back to the interpreter; unset it to allow that."
     )
     if isinstance(cause, CodegenToolchainError):
         return CodegenToolchainError.restated(cause, message)
@@ -487,7 +487,7 @@ def _broken_message(compiler: list[str], stderr: str) -> str:
     lines = [
         "The C toolchain cannot build a codegen library: a trivial C file fails to "
         "build with the command every codegen library is built with, so the failure "
-        "is the environment's, not the model's (issue #1544).",
+        "is the environment's, not the model's.",
         f"  compiler: {exe}{' (CC)' if os.environ.get('CC') else ''}",
     ]
     linker = _linker(compiler)

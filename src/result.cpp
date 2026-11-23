@@ -601,7 +601,7 @@ void refuse_nonfinite_sensitivity_block(const std::vector<double> &data,
               "model is usually sitting on a branch point of its own — a square root or a "
               "fractional power at zero, often at a parameter's shipped value — and there is no "
               "finite number to return. Move that parameter off the singular value, or take "
-              "output points that avoid it (GH #394).";
+              "output points that avoid it.";
     }
     if (bad.n_nan > 0) {
         // Do NOT read a nan as "therefore a bngsim defect". Both models issue
@@ -616,10 +616,10 @@ void refuse_nonfinite_sensitivity_block(const std::vector<double> &data,
         // them which of the two causes it was.
         os << " A nan is an arithmetic accident — 0*inf, inf/inf, 0/0 or a domain error. Usually "
               "the derivative exists and the emitted form lost it, which has been a bngsim defect "
-              "every time so far (GH #310, #317, #333, #351, #391). But a derivative that "
+              "every time so far. But a derivative that "
               "genuinely diverges also arrives as nan once its inf is annihilated, so before "
               "reading this as a defect check whether the named column's parameter sits at a "
-              "singular value of its own — a square root or a fractional power at zero (GH #394).";
+              "singular value of its own — a square root or a fractional power at zero.";
     }
     os << " The state trajectory and the solver's own counters can both be clean when this "
           "happens — CVODES' error test cannot reject a value that is already NaN, because "
@@ -632,9 +632,9 @@ void refuse_nonfinite_sensitivity_block(const std::vector<double> &data,
         // the remedy would send those callers down a dead end. Offered only for
         // a nan — neither knob moves a derivative that is unbounded (GH #394).
         os << " A tighter atol often resolves it, and BNGSIM_SENS_ERROR_FLOOR=0 disables the "
-              "issue #177 tolerance floor, whose relaxation admits the blow-up on some models — "
+              "sensitivity tolerance floor, whose relaxation admits the blow-up on some models — "
               "though not on the ones that fail at the first output point, whose derivative was "
-              "never defined (GH #384, GH #388).";
+              "never defined.";
     }
     throw std::runtime_error(os.str());
 }
