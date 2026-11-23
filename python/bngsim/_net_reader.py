@@ -116,8 +116,8 @@ def parse_net_file(path: str | Path) -> dict[str, Any]:
 
         raise DependencyError(
             "parse_net_file reads a .net file with bngsim's compiled .net loader, and "
-            f"bngsim._bngsim_core is not available ({exc}). Since issue #803 there is no "
-            "pure-Python reading of the format to fall back on.",
+            f"bngsim._bngsim_core is not available ({exc}). There is no pure-Python "
+            "reading of the format to fall back on.",
             code="env.broken_dependency",
             details={"package": "bngsim._bngsim_core"},
         ) from exc

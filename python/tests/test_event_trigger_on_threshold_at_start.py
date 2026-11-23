@@ -353,7 +353,8 @@ def test_biomd285_forward_sensitivity_refuses_the_deaths_by_name():
     model = bngsim.Model.from_sbml(str(xml))
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["kPIdeath", "kp38death"])
     with pytest.raises(
-        bngsim.SensitivityUnsupportedError, match=r"no first-order motion \(issue #934\)"
+        bngsim.SensitivityUnsupportedError,
+        match=r"no first-order motion\. The time it fires has no derivative",
     ):
         sim.run(t_span=(0.0, 100.0), n_points=11, rtol=1e-9, atol=1e-12)
 
@@ -390,7 +391,8 @@ def test_a_start_fire_without_first_order_motion_refuses_sensitivities(param):
     model = bngsim.Model.from_antimony_string(text)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=[param])
     with pytest.raises(
-        bngsim.SensitivityUnsupportedError, match=r"no first-order motion \(issue #934\)"
+        bngsim.SensitivityUnsupportedError,
+        match=r"no first-order motion\. The time it fires has no derivative",
     ):
         sim.run(sample_times=[0.0, 1.0, 2.0], rtol=1e-10, atol=1e-12)
 
@@ -616,7 +618,8 @@ def test_a_residual_that_leaves_at_second_order_through_the_state_refuses(trigge
         bngsim.Model.from_antimony_string(text), method="ode", sensitivity_params=["c"]
     )
     with pytest.raises(
-        bngsim.SensitivityUnsupportedError, match=r"no first-order motion \(issue #934\)"
+        bngsim.SensitivityUnsupportedError,
+        match=r"no first-order motion\. The time it fires has no derivative",
     ):
         sim.run(sample_times=[0.0, 1.0, 2.0], rtol=1e-10, atol=1e-12)
 
@@ -655,7 +658,8 @@ def test_a_time_gated_second_order_start_refuses_from_any_start(t0):
         bngsim.Model.from_antimony_string(text), method="ode", sensitivity_params=["c"]
     )
     with pytest.raises(
-        bngsim.SensitivityUnsupportedError, match=r"no first-order motion \(issue #934\)"
+        bngsim.SensitivityUnsupportedError,
+        match=r"no first-order motion\. The time it fires has no derivative",
     ):
         sim.run(sample_times=[t0, t0 + 1.0, t0 + 2.0], rtol=1e-10, atol=1e-12)
 

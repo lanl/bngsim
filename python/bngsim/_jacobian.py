@@ -124,7 +124,7 @@ def _declined(reason: str, *, kind: str, verdict: dict | None = None, log: bool 
     _decline_state.decline = {"kind": kind, "reason": reason, **(verdict or {})}
     if log:
         logger.info(
-            "GH#76 analytical Jacobian: %s; the model runs on the finite-difference Jacobian.",
+            "analytical Jacobian: %s; the model runs on the finite-difference Jacobian.",
             reason,
         )
 
@@ -4473,7 +4473,7 @@ def attach_decline_reason(core, terms=()) -> str:
     if kind == "baked_volume":
         return (
             f"the per-observable derivative of {rxn} would bake the writable compartment "
-            f"size of {name(verdict['row'])} into the Jacobian (issue #170)"
+            f"size of {name(verdict['row'])} into the Jacobian"
         )
     if kind == "no_sparsity":
         return "the model has no Jacobian sparsity pattern to attach the terms into"
@@ -4579,7 +4579,7 @@ def attach_functional_jacobian(core) -> bool:
         try:
             rate_laws = rateof_rate_laws(core.codegen_data())
         except Exception as exc:  # the attach never raises; the laws then decline
-            logger.debug("GH#76 analytical Jacobian: no rate laws for rateOf (%s)", exc)
+            logger.debug("analytical Jacobian: no rate laws for rateOf (%s)", exc)
     func_map = {**rate_laws, **dict(ctx["function_map"])}
     obs_groups = {name: [(int(si), float(f)) for si, f in grp] for name, grp in ctx["observables"]}
     obs_idx = {name: i for i, (name, _grp) in enumerate(ctx["observables"])}
@@ -4622,7 +4622,7 @@ def attach_functional_jacobian(core) -> bool:
             reason = (
                 f"rate law {_short(rate_expr)} is {written_out:,} characters written out "
                 f"with its functions (past {_INLINE_TEXT_LIMIT:,}), which do not collect "
-                "shorter: its derivative would be as long (issue #1255; set "
+                "shorter: its derivative would be as long (set "
                 "BNGSIM_JAC_DERIV_BUDGET_S=inf to derive it anyway)"
             )
             if n_species >= _FD_COSTLY_SPECIES:
@@ -4630,7 +4630,7 @@ def attach_functional_jacobian(core) -> bool:
                 _notices.log(
                     logger,
                     "jacobian.difference_quotient",
-                    "GH#76 analytical Jacobian: %s; the model runs on the finite-difference "
+                    "analytical Jacobian: %s; the model runs on the finite-difference "
                     "Jacobian, which needs ~%d RHS evaluations per Newton step.",
                     reason,
                     n_species,
@@ -4694,7 +4694,7 @@ def attach_functional_jacobian(core) -> bool:
                         species_volume_sym,
                     )
                 if terms is None:
-                    logger.debug("GH#76 analytical Jacobian: reaction %d declined", rxn["rxn_idx"])
+                    logger.debug("analytical Jacobian: reaction %d declined", rxn["rxn_idx"])
                     return False
                 derived[key] = terms
             if has_species_factor:
@@ -4704,7 +4704,7 @@ def attach_functional_jacobian(core) -> bool:
                 all_terms.append((rxn["rxn_idx"], False, [(int(j), expr) for j, expr in terms]))
             processed += 1
         logger.debug(
-            "GH#76 analytical Jacobian: %d functional reactions, %d distinct rate laws derived",
+            "analytical Jacobian: %d functional reactions, %d distinct rate laws derived",
             len(rxns),
             len(derived),
         )
@@ -4720,7 +4720,7 @@ def attach_functional_jacobian(core) -> bool:
             _notices.log(
                 logger,
                 "jacobian.difference_quotient",
-                "GH#76 analytical Jacobian: build-time derivation exceeded the %.1fs "
+                "analytical Jacobian: build-time derivation exceeded the %.1fs "
                 "budget after %d/%d functional reactions (%.1fs elapsed) on a large "
                 "model (%d species); falling back to the finite-difference Jacobian, "
                 "which needs ~%d RHS evaluations per Newton step and may be extremely "
@@ -4735,7 +4735,7 @@ def attach_functional_jacobian(core) -> bool:
             )
         else:
             logger.info(
-                "GH#76 analytical Jacobian: build-time derivation exceeded the %.1fs "
+                "analytical Jacobian: build-time derivation exceeded the %.1fs "
                 "budget after %d/%d functional reactions (%.1fs elapsed); using the "
                 "finite-difference Jacobian instead. Set BNGSIM_JAC_DERIV_BUDGET_S to "
                 "raise or disable the budget.",

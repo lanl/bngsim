@@ -110,7 +110,9 @@ def test_replicates_keep_a_shared_models_carried_sensitivity_state(procs):
     assert core.ic_state_dirty
     np.testing.assert_array_equal(np.array(core.pending_sensitivity_seed()), seed)
     m.set_param("extra_deg", 2.0)
-    with pytest.raises(bngsim.SimulationError, match="GH #210"):
+    with pytest.raises(
+        bngsim.SimulationError, match="Seeding the measurement phase as a fresh start"
+    ):
         ode.run(t_span=(0, 3), n_points=4, **_TOL)
     got = ode.run(t_span=(0, 3), n_points=4, carry_sensitivities=True, **_TOL)
 

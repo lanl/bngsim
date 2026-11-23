@@ -514,10 +514,15 @@ def test_a_law_the_right_hand_side_does_not_keep_is_refused():
     sim = bngsim.Simulator(model, method="ode")
     for method in ("newton", "integration"):
         with pytest.raises(
-            bngsim.SimulationError, match=r"over A, B.*not kept\s+by its own.*#758"
+            bngsim.SimulationError,
+            match=r"over A, B.*not kept\s+by its own.*"
+            r"eigenvalues and the sensitivities would be those",
         ):
             sim.steady_state(method=method)
-    with pytest.raises(bngsim.SimulationError, match=r"steady_state_batch\(\) entry 0 .*#758"):
+    with pytest.raises(
+        bngsim.SimulationError,
+        match=r"steady_state_batch\(\) entry 0 .*eigenvalues and the sensitivities would be those",
+    ):
         sim.steady_state_batch(params=[{"k1": 2.0}])
 
 
@@ -705,7 +710,7 @@ def test_a_continuum_across_sizes_is_refused():
     for name in ("kp", "k1"):
         with pytest.raises(
             bngsim.SimulationError,
-            match=r"#995.*not an isolated root",
+            match=r"at this steady state: the steady state is not an isolated root",
         ):
             sim.steady_state(sensitivity_params=[name], tol=1e-10)
         model.reset()
@@ -745,7 +750,10 @@ def test_the_continuum_in_amounts_under_a_rate_rule_is_refused():
         "R5: P -> P2; a*P\nR6: P2 -> P; b*P2\nR7: Q -> Q2; d*Q\nR8: Q2 -> Q; e*Q2\n"
     )
     assert model.compartment_size_params == ["c1"]
-    with pytest.raises(bngsim.SimulationError, match=r"#995.*not an isolated root"):
+    with pytest.raises(
+        bngsim.SimulationError,
+        match=r"at this steady state: the steady state is not an isolated root",
+    ):
         bngsim.Simulator(model, method="ode").steady_state(sensitivity_params=["kp"], tol=1e-10)
 
 
@@ -829,7 +837,8 @@ def test_a_masked_out_species_is_one_its_law_holds_at_any_size(v2):
     assert [sorted(members) for members in model._core.conservation_law_members()] == [[0, 1, 2]]
     sim = bngsim.Simulator(model, method="ode")
     with pytest.raises(
-        bngsim.SimulationError, match=r"#995.*mask= leaves out D, which the rate of A reads"
+        bngsim.SimulationError,
+        match=r"at this steady state: mask= leaves out D, which the rate of A reads",
     ):
         sim.steady_state(sensitivity_params=["A0"], mask=["A", "B"], tol=1e-10)
 

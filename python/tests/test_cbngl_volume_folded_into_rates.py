@@ -186,7 +186,7 @@ def test_what_a_function_sized_compartment_reads_is_listed(tmp_path):
     assert _lf(_by_functions(tmp_path, 3.0), "Xc") == pytest.approx(25.961538, abs=1e-5)
     with pytest.raises(bngsim.ParameterError, match=r"'Vcell', which is read for the volume"):
         model.set_param("rcell", 3.0)
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#711"):
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="which a write does not move"):
         bngsim.Simulator(model, method="ode", sensitivity_params=["rcell", "kd"])
 
 
@@ -200,9 +200,9 @@ def test_the_dictionary_reading_of_the_file_keeps_the_record(tmp_path):
     assert parsed["unit_conversions"] == [("1", "1/Ve"), ("2", "1/Vc")]
     model = bngsim.build_model_from_parsed(parsed)
     assert model.frozen_params == ["Vc", "Ve"]
-    with pytest.raises(bngsim.ParameterError, match="#711"):
+    with pytest.raises(bngsim.ParameterError, match="cannot be changed after the model is loaded"):
         model.set_param("Ve", 20.0)
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#711"):
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="which a write does not move"):
         bngsim.Simulator(model, method="ode", sensitivity_params=["Ve", "kb"])
     # A dictionary with no such entry, as one written by hand has none.
     parsed.pop("unit_conversions")
@@ -328,7 +328,9 @@ def test_a_write_of_a_volume_is_refused(tmp_path):
     """``set_param("Ve", 20)`` took the value and Lf(5) stayed 14.903, where
     the network generated at 20 gives 16.756."""
     model = _at(tmp_path, 10)
-    with pytest.raises(bngsim.ParameterError, match="#711") as refusal:
+    with pytest.raises(
+        bngsim.ParameterError, match="cannot be changed after the model is loaded"
+    ) as refusal:
         model.set_param("Ve", 20.0)
     message = str(refusal.value)
     assert "unit_conversion=1/Ve" in message
@@ -359,7 +361,7 @@ def test_a_write_of_the_value_it_holds_is_no_change(tmp_path):
 
 def test_set_params_writes_nothing_when_it_refuses_one(tmp_path):
     model = _at(tmp_path, 10)
-    with pytest.raises(bngsim.ParameterError, match="#711"):
+    with pytest.raises(bngsim.ParameterError, match="cannot be changed after the model is loaded"):
         model.set_params({"kb": 0.2, "Ve": 20.0})
     assert model.get_param("kb") == 0.1
 
@@ -367,7 +369,7 @@ def test_set_params_writes_nothing_when_it_refuses_one(tmp_path):
 def test_a_clone_refuses_it_too(tmp_path):
     clone = _at(tmp_path, 10).clone()
     assert clone.frozen_params == ["Vc", "Ve"]
-    with pytest.raises(bngsim.ParameterError, match="#711"):
+    with pytest.raises(bngsim.ParameterError, match="cannot be changed after the model is loaded"):
         clone.set_param("Ve", 20.0)
 
 
@@ -375,13 +377,13 @@ def test_a_scan_over_a_volume_is_refused(tmp_path):
     """``parameter_scan("Ve", [10, 20, 40])`` returned Lf(5) = 14.903 three
     times."""
     sim = bngsim.Simulator(_at(tmp_path, 10), method="ode")
-    with pytest.raises(bngsim.ParameterError, match="#711"):
+    with pytest.raises(bngsim.ParameterError, match="cannot be changed after the model is loaded"):
         sim.parameter_scan("Ve", [10.0, 20.0, 40.0], t_span=(0.0, 5.0), n_points=6)
 
 
 def test_a_batch_row_that_writes_a_volume_is_refused(tmp_path):
     sim = bngsim.Simulator(_at(tmp_path, 10), method="ode")
-    with pytest.raises(bngsim.ParameterError, match="#711"):
+    with pytest.raises(bngsim.ParameterError, match="cannot be changed after the model is loaded"):
         sim.run_batch(params=[{"Ve": 20.0}], t_span=(0.0, 5.0), n_points=6)
 
 
@@ -402,11 +404,13 @@ def test_a_sensitivity_column_for_a_volume_is_refused(tmp_path):
     ``kb/Ve``, so it is -(kb/Ve)*dLf/dkb = 0.2887, as differences of networks
     written at ``Ve`` +/- h give."""
     model = _at(tmp_path, 10)
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#711") as refusal:
+    with pytest.raises(
+        bngsim.SensitivityUnsupportedError, match="which a write does not move"
+    ) as refusal:
         bngsim.Simulator(model, method="ode", sensitivity_params=["Ve", "kb"])
     assert "unit_conversion=1/Ve" in str(refusal.value)
     sim = bngsim.Simulator(model, method="ode")
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#711"):
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="which a write does not move"):
         sim.compute_all_sensitivities(params=["Vc"], **RUN)
 
 
@@ -423,7 +427,11 @@ def test_every_column_at_once_leaves_the_volumes_out_and_says_so(tmp_path):
         warnings.simplefilter("always")
         result = sim.compute_all_sensitivities(**RUN)
     assert list(result.sensitivity_params) == ["Sm", "kb", "ku", "kt"]
-    said = [str(w.message) for w in caught if "#711" in str(w.message)]
+    said = [
+        str(w.message)
+        for w in caught
+        if "that the model was built with as numbers" in str(w.message)
+    ]
     assert len(said) == 1
     assert "['Vc', 'Ve']" in said[0]
 
@@ -441,7 +449,7 @@ def test_a_model_loaded_from_bngl_refuses_it(tmp_path):
     assert _lf(model) == pytest.approx(14.903192, abs=1e-5)
     with pytest.raises(bngsim.ParameterError, match="unit_conversion=1/Ve"):
         model.set_param("Ve", 20.0)
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#711"):
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="which a write does not move"):
         bngsim.Simulator(model, method="ode", sensitivity_params=["Ve"])
 
 

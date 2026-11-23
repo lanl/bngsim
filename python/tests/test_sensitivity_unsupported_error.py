@@ -22,6 +22,8 @@ What is asserted here, in the order the tests read:
     sweep to stop counting a broken toolchain.
 """
 
+import re
+
 import bngsim
 import pytest
 from bngsim._bngsim_core import ModelBuilder
@@ -91,17 +93,20 @@ class TestEventRefusalIsTyped:
         with pytest.raises(SensitivityUnsupportedError, match="combines conditions"):
             sim.run(t_span=(0, 10), n_points=11)
 
-    def test_the_refusal_still_names_the_regime_and_the_issue(self):
+    def test_the_refusal_still_names_the_regime_and_the_reason(self):
         """Typing the exception is what parity suites match on; the prose is what
         a human reads. Keep both — a typed exception with a gutted message would
-        pass every by-type assertion and tell the user nothing."""
+        pass every by-type assertion and tell the user nothing. The prose says
+        what is refused and why, and cites no issue number."""
         m = _decay(with_event=("time() >= 5", "2.0", {"delay": 1.0}))
         sim = bngsim.Simulator(m, method="ode", sensitivity_params=["k"])
         with pytest.raises(SensitivityUnsupportedError) as ei:
             sim.run(t_span=(0, 10), n_points=11)
         msg = str(ei.value)
         assert "Output sensitivities are not supported" in msg
-        assert "#205" in msg
+        assert "delay" in msg
+        assert "bngsim refuses rather than return silently-stale derivatives" in msg
+        assert not re.search(r"#\d", msg), msg
 
     def test_a_supported_event_model_is_untouched(self):
         """The guard against over-typing: a fixed-time event is differentiable
@@ -290,7 +295,7 @@ class TestRunDoesNotWrapTheRefusal:
             sim.run(t_span=(0.0, 5.0), n_points=11, rtol=1e-10, atol=1e-12)
         assert not isinstance(ei.value, bngsim.SimulationError)
         assert "Simulation failed" not in str(ei.value)
-        assert "issue #358" in str(ei.value)
+        assert "pinning holds at a wrong 0 for such a parameter" in str(ei.value)
 
     def test_the_pass_through_is_not_a_blanket_escape(self):
         """The other half: genuine solver failures must still become

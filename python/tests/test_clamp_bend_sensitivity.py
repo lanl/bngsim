@@ -98,7 +98,9 @@ def test_a_clamp_with_crossed_bounds_is_refused_as_the_step_it_is(tmp_path, boun
         _model(tmp_path, law), method="ode", sensitivity_params=["kx", "k_clock"]
     )
     assert "clamp" in (sim.sens_rhs_decline_reason or "")
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938") as caught:
+    with pytest.raises(
+        bngsim.SensitivityUnsupportedError, match="whether or not this run reaches the crossing"
+    ) as caught:
         sim.run(t_span=(0, 30), n_points=3)
     assert "clamp(" in str(caught.value)
 

@@ -3434,7 +3434,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
                             std::string(use_psa ? "PSA" : "SSA") +
                             ": the run fires faster than its clock can place the firings" + buf +
                             ". Each waiting time rounds onto them, and the run would fire too "
-                            "fast with no error (issue #1059). Run it in legs (run_until): a "
+                            "fast with no error. Run it in legs (run_until): a "
                             "leg counts its clock from its end nearer 0, so one that starts "
                             "just before this stretch (at negative times, ends just after it) "
                             "places these firings exactly.");

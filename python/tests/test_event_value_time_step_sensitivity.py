@@ -44,7 +44,7 @@ def _sens(text, params, t_end, species="B"):
 def _refused(text, params, t_end, where):
     model = bngsim.Model.from_antimony_string(text)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=list(params))
-    with pytest.raises(Exception, match="issue #915") as caught:
+    with pytest.raises(Exception, match="is not what a difference across it gives") as caught:
         sim.run(sample_times=[0.0, 0.5 * t_end, t_end], rtol=1e-10, atol=1e-12)
     assert f"is not smooth in {where}" in str(caught.value)
 

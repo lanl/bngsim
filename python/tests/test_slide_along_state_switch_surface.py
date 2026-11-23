@@ -66,7 +66,9 @@ def test_a_slide_is_refused(tmp_path, law, s0, rtol, atol):
     tolerances, from above −1.0 and 0.5, and the run timed out at the tight
     one."""
     sim = bngsim.Simulator(_model(tmp_path, law, s0), method="ode", sensitivity_params=["amp"])
-    with pytest.raises(Exception, match="slides along the switching surface.*issue #926"):
+    with pytest.raises(
+        Exception, match="slides along the switching surface, on neither branch of the rate law"
+    ):
         sim.run(sample_times=[0.0, 0.5, 1.5], rtol=rtol, atol=atol, timeout=10.0)
 
 
@@ -81,7 +83,7 @@ def test_a_slide_between_the_points_of_a_dense_grid_is_refused(tmp_path, rtol, n
     asked, and dS/damp came back 1.5 for 0 at each of these. A later cut let
     the two loose ones through: −1.0 and 1.0 for 0."""
     sim = bngsim.Simulator(_model(tmp_path, FROM_BELOW), method="ode", sensitivity_params=["amp"])
-    with pytest.raises(Exception, match="issue #926"):
+    with pytest.raises(Exception, match="on neither branch of the rate law"):
         sim.run(t_span=(0.0, 1.5), n_points=n_points, rtol=rtol, atol=1e-2 * rtol, timeout=30.0)
 
 
@@ -89,7 +91,7 @@ def test_a_slide_under_a_batch_of_a_million_steps_is_refused(tmp_path):
     """``max_steps`` is the batch the caller asks for, and the run is asked
     about its switches after 8 steps whatever it is."""
     sim = bngsim.Simulator(_model(tmp_path, FROM_BELOW), method="ode", sensitivity_params=["amp"])
-    with pytest.raises(Exception, match="issue #926"):
+    with pytest.raises(Exception, match="on neither branch of the rate law"):
         sim.run(sample_times=[0.0, 0.5, 1.5], rtol=1e-6, atol=1e-8, max_steps=1000000, timeout=30)
 
 
@@ -100,7 +102,7 @@ def test_a_slide_along_a_surface_that_is_not_a_level_is_refused(tmp_path):
     dS/damp came back 1.5 for 0."""
     model = _model(tmp_path, "if(exp(Sobs)<lvl,amp,-amp)", s0=-1.0)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["amp"])
-    with pytest.raises(Exception, match="issue #926"):
+    with pytest.raises(Exception, match="on neither branch of the rate law"):
         sim.run(sample_times=[0.0, 0.5, 1.5], rtol=1e-4, atol=1e-6, timeout=30.0)
 
 
@@ -109,7 +111,7 @@ def test_a_slide_reached_within_the_first_steps_is_refused(tmp_path):
     been asked once, so there is no earlier reading to compare the residual
     with: dS/damp came back 1.5 for 0."""
     sim = bngsim.Simulator(_model(tmp_path, FROM_BELOW), method="ode", sensitivity_params=["amp"])
-    with pytest.raises(Exception, match="issue #926"):
+    with pytest.raises(Exception, match="on neither branch of the rate law"):
         sim.run(sample_times=[0.0, 0.5, 1.5], rtol=1e-3, atol=1e-3, timeout=30.0)
 
 
@@ -118,7 +120,7 @@ def test_a_run_that_ends_just_after_the_slide_begins_is_refused(tmp_path):
     t = 0.01, nine thousandths into the slide: dS/damp came back 0.01 for 0."""
     model = _model(tmp_path, FROM_BELOW, s0=1 - 1e-3)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["amp"])
-    with pytest.raises(Exception, match="issue #926"):
+    with pytest.raises(Exception, match="on neither branch of the rate law"):
         sim.run(sample_times=[0.0, 0.005, 0.01], rtol=1e-6, atol=1e-8, timeout=30.0)
 
 
@@ -127,7 +129,7 @@ def test_a_column_that_does_not_move_the_slide_is_refused_too(tmp_path):
     be told from the one for `amp` at the surface, and the run is refused
     whichever is requested."""
     sim = bngsim.Simulator(_model(tmp_path, FROM_BELOW), method="ode", sensitivity_params=["lvl"])
-    with pytest.raises(Exception, match="issue #926"):
+    with pytest.raises(Exception, match="on neither branch of the rate law"):
         sim.run(sample_times=[0.0, 0.5, 1.5], rtol=1e-6, atol=1e-8, timeout=10.0)
 
 
@@ -322,11 +324,13 @@ def test_a_state_at_rest_on_a_threshold_that_gates_another_rate_is_not_a_slide(
     sim = bngsim.Simulator(
         bngsim.Model.from_net(path), method="ode", sensitivity_params=["k", "thr", "kb"]
     )
-    with pytest.raises(bngsim.SimulationError, match="come to rest.*issue #1548") as info:
+    with pytest.raises(
+        bngsim.SimulationError, match="come to rest.*set by rounding, not by the model"
+    ) as info:
         sim.run(
             sample_times=[0.0, 10.0, 30.0, 100.0], rtol=1e-8, atol=1e-10, timeout=60.0, **extra
         )
-    assert "#926" not in str(info.value)
+    assert "on neither branch of the rate law" not in str(info.value)
 
 
 BLOWS_UP = """begin parameters
@@ -408,7 +412,7 @@ def test_a_short_slide_at_a_loose_tolerance_is_refused(tmp_path, tol, s0, times)
     sim = bngsim.Simulator(
         _model(tmp_path, FROM_BELOW, s0), method="ode", sensitivity_params=["amp"]
     )
-    with pytest.raises(Exception, match="issue #926"):
+    with pytest.raises(Exception, match="on neither branch of the rate law"):
         sim.run(sample_times=times, rtol=tol, atol=tol, timeout=30.0)
 
 
@@ -557,5 +561,5 @@ def test_a_slide_whose_flow_is_not_what_it_is_at_the_surface_is_refused(tmp_path
     arrive than its value there says, and was never taken to have arrived."""
     law, par, s0, lvl, times, rtol, atol = HELD[case]
     sim = bngsim.Simulator(_moving(tmp_path, law, s0, lvl), method="ode", sensitivity_params=[par])
-    with pytest.raises(Exception, match="issue #926"):
+    with pytest.raises(Exception, match="on neither branch of the rate law"):
         sim.run(sample_times=times, rtol=rtol, atol=atol, timeout=30.0)

@@ -157,7 +157,8 @@ def _worst(got, want):
 def _refused(model, param, params=None, times=T, **kw):
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=params or [param], **kw)
     with pytest.raises(
-        bngsim.SimulationError, match=rf"parameter '{param}' moves.*singular.*\(issue #1003\)"
+        bngsim.SimulationError,
+        match=rf"parameter '{param}' moves.*singular.*comes back up to 12% off",
     ):
         sim.run(sample_times=list(times), rtol=1e-8, atol=1e-10, timeout=120)
 
@@ -370,9 +371,15 @@ def _antimony_differences(a, times, shape="closing", h=1e-4):
     return (4 * fine - coarse) / 3
 
 
-def _refused_in_sbml(model, param, issue=1003):
+# The refusal for a column with no case for its edge, and the one for a column
+# whose case an event takes away (a model with an event has no frames).
+_NO_CASE = r"comes back up to 12% off"
+_NO_FRAME = r"ends in a solver error after an opening one"
+
+
+def _refused_in_sbml(model, param, reason=_NO_CASE):
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=[param])
-    with pytest.raises(bngsim.SimulationError, match=rf"singular.*\(issue #{issue}\)"):
+    with pytest.raises(bngsim.SimulationError, match=rf"singular.*{reason}"):
         sim.run(sample_times=T, rtol=1e-8, atol=1e-10, timeout=120)
 
 
@@ -390,7 +397,7 @@ def test_refused_before_the_run_is_taken(rtol):
     at the crossing, the plain column is first carried up to the closing
     edge, where at a tight tolerance the run ends in a solver error."""
     sim = bngsim.Simulator(_antimony(1.1), method="ode", sensitivity_params=["wb"])
-    with pytest.raises(bngsim.SimulationError, match=r"singular.*\(issue #1003\)"):
+    with pytest.raises(bngsim.SimulationError, match=r"singular.*comes back up to 12% off"):
         sim.run(sample_times=T, rtol=rtol, atol=rtol * 1e-2, timeout=120)
 
 
@@ -426,7 +433,7 @@ def test_an_edge_that_is_only_found_as_a_root_is_refused_at_the_root(a):
     far: the run ends short of the root in CVODE's no-progress error, as it
     did.)"""
     sim = bngsim.Simulator(_only_a_root(a), method="ode", sensitivity_params=["wb"])
-    with pytest.raises(bngsim.SimulationError, match=r"singular.*\(issue #1003\)"):
+    with pytest.raises(bngsim.SimulationError, match=r"singular.*comes back up to 12% off"):
         sim.run(sample_times=[0.0, 5.0, 12.0, 18.0], rtol=1e-8, atol=1e-10, timeout=120)
 
 
@@ -550,7 +557,7 @@ def test_refused_beside_an_event(param):
 
 def test_beside_an_event_a_column_with_a_case_is_refused_for_the_event():
     """Control. ``on`` has its case, and the event takes its frame."""
-    _refused_in_sbml(_antimony(1.1, event=True), "on", issue=958)
+    _refused_in_sbml(_antimony(1.1, event=True), "on", reason=_NO_FRAME)
 
 
 def test_an_exponent_that_an_event_assigns_is_taken_to_be_singular():
@@ -952,7 +959,7 @@ def test_a_model_with_no_case_refuses_the_column_that_needed_one(kind):
         bngsim.Model.from_antimony_string(text), method="ode", sensitivity_params=["on"]
     )
     with pytest.raises(
-        bngsim.SimulationError, match=r"parameter 'on' moves.*singular.*\(issue #1003\)"
+        bngsim.SimulationError, match=r"parameter 'on' moves.*singular.*comes back up to 12% off"
     ):
         sim.run(sample_times=times, rtol=1e-8, atol=1e-10, timeout=120)
 
@@ -1070,7 +1077,7 @@ def test_an_edge_found_as_a_root_in_a_model_with_no_case_is_refused(shape, a):
     assert "bngsim_codegen_comoving_case" not in _source(model)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["wb"])
     with pytest.raises(
-        bngsim.SimulationError, match=r"parameter 'wb' moves.*singular.*\(issue #1003\)"
+        bngsim.SimulationError, match=r"parameter 'wb' moves.*singular.*comes back up to 12% off"
     ):
         sim.run(sample_times=ROOT_TIMES[shape], rtol=1e-8, atol=1e-10, timeout=120)
 
@@ -1142,7 +1149,8 @@ def test_a_base_that_holds_a_condition_is_asked_to_rounding(param):
     assert "fmax(" in _without_a_case(model)[param]
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=[param])
     with pytest.raises(
-        bngsim.SimulationError, match=rf"parameter '{param}' moves.*singular.*\(issue #1003\)"
+        bngsim.SimulationError,
+        match=rf"parameter '{param}' moves.*singular.*comes back up to 12% off",
     ):
         sim.run(sample_times=CHOSEN_TIMES, rtol=1e-8, atol=1e-10, timeout=120)
 
@@ -1179,7 +1187,7 @@ def test_a_base_of_one_term_is_not_asked():
     assert _without_a_case(model) == {"D": _singular_in(model)}
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["D"])
     with pytest.raises(
-        bngsim.SimulationError, match=r"parameter 'D' moves.*singular.*\(issue #1003\)"
+        bngsim.SimulationError, match=r"parameter 'D' moves.*singular.*comes back up to 12% off"
     ):
         sim.run(sample_times=T, rtol=1e-8, atol=1e-10, timeout=120)
 
@@ -1200,7 +1208,7 @@ def test_a_base_that_is_a_function_of_a_product_is_not_asked():
     assert _without_a_case(model) == {"w": _singular_in(model)}
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["w"])
     with pytest.raises(
-        bngsim.SimulationError, match=r"parameter 'w' moves.*singular.*\(issue #1003\)"
+        bngsim.SimulationError, match=r"parameter 'w' moves.*singular.*comes back up to 12% off"
     ):
         sim.run(sample_times=T, rtol=1e-8, atol=1e-10, timeout=120)
 
@@ -1276,7 +1284,8 @@ def _closing_on_a_state(a, second_window=False, **moved):
 def _refused_on_a_state(model, param):
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=[param])
     with pytest.raises(
-        bngsim.SimulationError, match=rf"parameter '{param}' moves.*singular.*\(issue #1003\)"
+        bngsim.SimulationError,
+        match=rf"parameter '{param}' moves.*singular.*comes back up to 12% off",
     ):
         sim.run(sample_times=STATE_TIMES, rtol=1e-8, atol=1e-10, timeout=120)
 
@@ -1316,7 +1325,7 @@ def test_an_initial_value_that_moves_the_zero_of_a_base_is_refused(a, beside):
     asked only where there was a parameter's column."""
     with pytest.raises(
         bngsim.SimulationError,
-        match=r"initial value of species 'Y' moves.*singular.*\(issue #1003\)",
+        match=r"initial value of species 'Y' moves.*singular.*comes back up to 12% off",
     ):
         _column_of_an_initial_value(_closing_on_a_state(a), beside)
 
@@ -1393,7 +1402,8 @@ def test_sir_v5_with_a_singular_exponent_is_refused(param, unbudgeted):
     assert "bngsim_codegen_comoving_case" not in _source(model)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=[param])
     with pytest.raises(
-        bngsim.SimulationError, match=rf"parameter '{param}' moves.*singular.*\(issue #1003\)"
+        bngsim.SimulationError,
+        match=rf"parameter '{param}' moves.*singular.*comes back up to 12% off",
     ):
         sim.run(sample_times=SIR_TIMES, rtol=1e-8, atol=1e-10, timeout=300)
 

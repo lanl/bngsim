@@ -273,7 +273,7 @@ def bngl_capability_report(
         if event_override is _EVENT_GENERIC:
             lossy.append(
                 f"{n_events} event(s) — fixed-time events translate to a BNGL actions "
-                "block (#224 phase 2); state-triggered events have no actions form. "
+                "block; state-triggered events have no actions form. "
                 "Convert via sbml_to_bngl (which reads the source SBML to classify "
                 "them) or emit a SED-ML sidecar"
             )

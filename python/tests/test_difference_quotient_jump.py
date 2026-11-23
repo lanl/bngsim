@@ -498,7 +498,10 @@ def test_a_parked_sum_keeps_the_slope_that_holds_it(
     window = dict(t_span=(0.0, 150.0), n_points=n_points, rtol=rtol, atol=atol)
     assert "across a jump" not in _split_mends(net, monkeypatch, capfd, sparse=False, **window)
     if rtol == 1e-8:
-        with pytest.raises(bngsim.SimulationError, match="come to rest.*issue #1548"):
+        with pytest.raises(
+            bngsim.SimulationError,
+            match="come to rest on the surface.*set by rounding, not by the model",
+        ):
             _split_deviation(net, exact, jacobian="fd", sparse=False, **window)
 
 

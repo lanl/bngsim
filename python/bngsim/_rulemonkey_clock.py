@@ -86,7 +86,7 @@ def offset_clock_text(xml: str, xml_dir: str | Path) -> str:
     if OFFSET_PARAM in symbols:
         raise ModelError(
             f"the BNG XML already has a symbol named {OFFSET_PARAM!r}, which bngsim "
-            "uses to run a model that reads the clock on RuleMonkey (issue #1063). "
+            "uses to run a model that reads the clock on RuleMonkey. "
             "Rename it."
         )
     functions = {f.get("id", ""): f for f in _function_elements(root)}

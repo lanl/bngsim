@@ -83,7 +83,8 @@ def test_the_model_is_refused_where_it_is_built(tmp_path, shape):
     reaction of the model, with the one before it left alone."""
     name = "Km" if shape == "km" else "kcat"
     with pytest.raises(
-        bngsim.ModelError, match=rf"MichaelisMenten.*'{name}'.*issue #931"
+        bngsim.ModelError,
+        match=rf"MichaelisMenten.*'{name}'.*the Jacobian takes it for a constant",
     ) as caught:
         bngsim.Model.from_net(_write(tmp_path, **SHAPES[shape]))
     assert "reaction 1 " in str(caught.value)

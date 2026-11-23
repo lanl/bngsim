@@ -1154,7 +1154,7 @@ def net_to_sbml(
                 + (f"; and {len(not_generated) - 3} more" if len(not_generated) > 3 else "")
                 + ". BNG2.pl rewrites the .net at a simulate with no suffix once a run "
                 "or an action has moved the state, and the protocol replayed on that "
-                "state starts from the wrong one (issue #1683). Write the network as "
+                "state starts from the wrong one. Write the network as "
                 "generate_network does with bngsim.Model.from_bngl(bngl, net_out=...), "
                 "or give every simulate a suffix"
             )

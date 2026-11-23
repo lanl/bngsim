@@ -458,5 +458,5 @@ def test_set_param_refuses_the_shadowed_row(shadowed):
     with pytest.raises(Exception, match=r"a function of that name owns this slot"):
         shadowed.set_param("supply", 10.0)
 
-    with pytest.raises(Exception, match=r"issue #266"):
+    with pytest.raises(Exception, match=r"that row is the seed this slot holds"):
         shadowed.set_param("recycle", 10.0)

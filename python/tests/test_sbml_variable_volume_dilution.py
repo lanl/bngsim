@@ -966,7 +966,10 @@ def _sized_by_an_amount_in_a_sized_compartment(wa_decays):
 def test_ar_compartment_reading_an_amount_in_another_sized_compartment_is_refused():
     """An amount in a compartment an assignment rule sizes has no right rate
     accessor yet (#736), so a size that reads one is refused, not read."""
-    with pytest.raises(bngsim.ModelError, match=r"reads Wa, an amount in compartment cw.*#736"):
+    with pytest.raises(
+        bngsim.ModelError,
+        match=r"reads Wa, an amount in compartment cw.*rate of such a species is not yet right there",
+    ):
         bngsim.Model.from_sbml_string(_sized_by_an_amount_in_a_sized_compartment(True))
 
 

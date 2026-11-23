@@ -148,7 +148,7 @@ def test_a_pair_that_tau_pulls_apart_is_refused(event, switch):
     not a derivative, and the run is refused."""
     model = bngsim.Model.from_antimony_string(APART.format(event=event, switch=switch))
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
-    with pytest.raises(Exception, match="issue #767"):
+    with pytest.raises(Exception, match="comes first changes the result"):
         sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)
 
 
@@ -457,7 +457,7 @@ def test_a_fixed_switch_the_event_does_not_commute_with_is_refused(kink):
     text, param = KINKS[kink]
     model = bngsim.Model.from_antimony_string(text)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=[param])
-    with pytest.raises(Exception, match="at a fixed time.*issue #767"):
+    with pytest.raises(Exception, match="at a fixed time.*comes first changes the result"):
         sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)
 
 
@@ -500,7 +500,7 @@ def test_a_fitted_switch_near_the_event_does_not_hide_a_fixed_one(ulps):
     model = bngsim.Model.from_antimony_string(text)
     model.set_param("off", ulps * float(np.spacing(3.0)))
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
-    with pytest.raises(Exception, match="at a fixed time.*issue #767"):
+    with pytest.raises(Exception, match="at a fixed time.*comes first changes the result"):
         sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)
 
 
@@ -522,7 +522,7 @@ def test_one_column_with_a_large_shift_does_not_hide_another(switch, event):
     )
     model = bngsim.Model.from_antimony_string(text)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau", "z"])
-    with pytest.raises(Exception, match="issue #767"):
+    with pytest.raises(Exception, match="comes first changes the result"):
         sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)
 
 
@@ -539,7 +539,7 @@ def test_a_fixed_switch_under_an_event_early_in_time_is_refused(tau):
     )
     model = bngsim.Model.from_antimony_string(text)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
-    with pytest.raises(Exception, match="at a fixed time.*issue #767"):
+    with pytest.raises(Exception, match="at a fixed time.*comes first changes the result"):
         sim.run(sample_times=[0.0, 0.5 * tau, 2.0 * tau, 3.0 * tau], rtol=1e-10, atol=1e-30)
 
 
@@ -559,7 +559,7 @@ def test_a_jump_beside_a_species_at_1e13_whatever_the_tolerance(atol):
     )
     model = bngsim.Model.from_antimony_string(text)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
-    with pytest.raises(Exception, match="at a fixed time.*issue #767"):
+    with pytest.raises(Exception, match="at a fixed time.*comes first changes the result"):
         sim.run(sample_times=TIMES, rtol=1e-10, atol=atol)
 
 
@@ -580,7 +580,7 @@ def test_a_fitted_switch_near_an_early_event_does_not_hide_a_fixed_one(t0, off):
     model = bngsim.Model.from_antimony_string(text)
     model.set_param("off", off)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
-    with pytest.raises(Exception, match="issue #767"):
+    with pytest.raises(Exception, match="comes first changes the result"):
         sim.run(sample_times=[0.0, 0.5 * t0, 2 * t0, 3 * t0], rtol=1e-10, atol=1e-12)
 
 
@@ -789,7 +789,7 @@ def test_a_fixed_switch_a_few_ulp_before_a_fitted_one_under_the_event(units):
     model = bngsim.Model.from_antimony_string(BESIDE_A_FIXED_GATE.format(gate="time >= 3"))
     model.set_param("tau", 3.0 + units * 3.0 * float(np.finfo(float).eps))
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
-    with pytest.raises(Exception, match="issue #767"):
+    with pytest.raises(Exception, match="comes first changes the result"):
         sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)
 
 

@@ -95,7 +95,7 @@ def test_an_arithmetic_error_is_read_as_its_value_and_told_from_outside(
     told = _told(caught, condition)
     assert told == [
         f"{kind} encountered in stop condition {condition!r}; each sample is read at "
-        "the value numpy gives it, where NaN is not met (issue #1556)"
+        "the value numpy gives it, where NaN is not met"
     ]
     assert [w.filename for w in caught if str(w.message) in told] == [__file__]
 
@@ -121,8 +121,7 @@ def test_a_warning_python_cannot_deliver_from_a_condition_is_named_in_the_refusa
     with pytest.raises(
         ValueError,
         match=r"could not be evaluated at t=0: KeyError: '__import__', which a stop condition "
-        r"does not have; on Python 3\.13 and later a warning issued inside one needs it "
-        r"\(issues #1509, #1556\)$",
+        r"does not have; on Python 3\.13 and later a warning issued inside one needs it$",
     ):
         _run(net, condition)
 

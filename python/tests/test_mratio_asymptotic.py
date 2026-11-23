@@ -164,8 +164,12 @@ def test_what_neither_method_can_do_is_still_refused(tmp_path):
             _value(tmp_path, a, b, z)
         message = str(excinfo.value)
         assert "not reliable" in message
-        # The message has to leave the reader somewhere to go.
-        assert "#453" in message and "#456" in message
+        # The message has to leave the reader somewhere to go: where the fraction
+        # is reliable, and what BNG builds, which is inside that region. It cites
+        # no issue number.
+        assert "The fraction is reliable for b > 0" in message
+        assert "BNG builds a = -min(AT,BT)" in message
+        assert "#" not in message, message
 
 
 # ── The corner that was leaking before any of this ───────────────────────────

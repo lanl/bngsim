@@ -87,13 +87,13 @@ def test_the_onset_derivative_names_its_column_not_a_species(tmp_path, monkeypat
     assert "Every rate law and every species is finite there" in msg, msg
     assert "the sensitivity column for parameter 'on' (row X())" in msg, msg
     assert "The non-finite half is ∂f/∂on itself" in msg, msg
-    assert "(issue #545)" in msg, msg
+    assert "leaving that parameter out of sensitivity_params avoids it" in msg, msg
     assert "Constrain the species" not in msg, msg
     assert "'k0'" not in msg, msg  # only the column that went non-finite
     # ...and the other way a derivative goes non-finite, so the note above reads as
     # one of two explanations rather than as the diagnosis (issue #549).
     assert "The other way is a value that is perfectly ordinary" in msg, msg
-    assert "(issue #549)" in msg, msg
+    assert "is the likelier half here, and is worth reporting" in msg, msg
 
 
 @pytest.mark.parametrize(
@@ -111,11 +111,11 @@ def test_a_step_that_gives_out_past_a_strict_onset_says_it_had_just_restarted(
     msg = _failure(tmp_path, onset=">", a=a, rtol=rtol, atol=atol, monkeypatch=monkeypatch)
     assert "made no progress" in msg or "CV_ERR_FAILURE" in msg, msg
     assert RESTART_HINT in msg, msg
-    assert "(issue #545)" in msg, msg
+    assert "leaving that parameter out of sensitivity_params avoids it" in msg, msg
     # Every value stayed finite here, so an overflow — which would have left a NaN
     # and a witness — is not on the table, and saying so would be the same
     # misdirection #549 removed, one note over.
-    assert "(issue #549)" not in msg, msg
+    assert "is the likelier half here, and is worth reporting" not in msg, msg
 
 
 def test_a_rate_law_that_is_itself_infinite_keeps_the_domain_advice(tmp_path):
@@ -124,4 +124,4 @@ def test_a_rate_law_that_is_itself_infinite_keeps_the_domain_advice(tmp_path):
     msg = _failure(tmp_path, onset=">=", a=0.5, rtol=1e-8, atol=1e-8)
     assert "Constrain the species, or write the law so it is defined there" in msg, msg
     assert "Every rate law and every species is finite there" not in msg, msg
-    assert "issue #545" not in msg, msg
+    assert "leaving that parameter out of sensitivity_params avoids it" not in msg, msg

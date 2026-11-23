@@ -169,7 +169,9 @@ def test_a_write_that_changes_one_is_refused(shape):
     for name in frozen:
         model = load()
         before = model.get_param(name)
-        with pytest.raises(bngsim.ParameterError, match=r"#695, #696") as caught:
+        with pytest.raises(
+            bngsim.ParameterError, match=r"cannot be changed after the model is loaded"
+        ) as caught:
             model.set_param(name, before + 1.0)
         assert repr(name) in str(caught.value)
         assert model.get_param(name) == before
@@ -185,11 +187,15 @@ def test_a_write_that_changes_one_is_refused(shape):
 def test_a_sensitivity_column_for_one_is_refused(shape):
     """It was an exact 0 at every species and time."""
     load, frozen, what = SHAPES[shape]
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"#695, #696") as caught:
+    with pytest.raises(
+        bngsim.SensitivityUnsupportedError, match=r"read once at load for.*Model\.frozen_params"
+    ) as caught:
         bngsim.Simulator(load(), method="ode", sensitivity_params=[frozen[-1]])
     assert what in str(caught.value)
     sim = bngsim.Simulator(load(), method="ode")
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"#695, #696"):
+    with pytest.raises(
+        bngsim.SensitivityUnsupportedError, match=r"read once at load for.*Model\.frozen_params"
+    ):
         sim.compute_all_sensitivities(t_span=(0.0, 1.0), n_points=3, params=[frozen[-1]])
 
 
@@ -221,7 +227,7 @@ def test_every_column_at_once_leaves_one_out_and_says_so():
     """``compute_all_sensitivities()`` with no list is every column that can
     be computed: p was one of them, with a column of 0."""
     sim = bngsim.Simulator(bngsim.Model.from_antimony_string(SIZED), method="ode")
-    with pytest.warns(UserWarning, match=r"skipping 1 parameter.*'p'.*#695, #696"):
+    with pytest.warns(UserWarning, match=r"skipping 1 parameter.*'p'.*Model\.frozen_params"):
         result = sim.compute_all_sensitivities(
             t_span=(0.0, 1.0), n_points=3, rtol=1e-10, atol=1e-12
         )
@@ -262,7 +268,10 @@ def test_a_steady_state_column_for_one_is_refused():
     text = "compartment c; p = 1; c = 2*p; species S in c; S = 1; k = 1; kp = 3;\n"
     text += "J0: -> S; c*kp\nJ: S -> ; c*k*S\n"
     sim = bngsim.Simulator(bngsim.Model.from_antimony_string(text), method="ode")
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"'p'.*#695, #696"):
+    with pytest.raises(
+        bngsim.SensitivityUnsupportedError,
+        match=r"'p'.*read once at load for.*Model\.frozen_params",
+    ):
         sim.steady_state(sensitivity_params=["p"])
     out = sim.steady_state(sensitivity_params=["k"], tol=1e-12)
     s = list(out.species_names).index("S")
@@ -290,7 +299,7 @@ def test_a_model_with_nothing_folded_freezes_nothing(text):
         bngsim.Simulator(model, method="ode").compute_all_sensitivities(
             t_span=(0.0, 1.0), n_points=3
         )
-    assert not [w for w in caught if "#695" in str(w.message)]
+    assert not [w for w in caught if "Model.frozen_params" in str(w.message)]
 
 
 def test_a_stoichiometry_that_a_rule_sets_is_not_frozen():
@@ -578,11 +587,16 @@ def test_what_a_fold_reads_is_followed_down(chain):
     for name in sorted(frozen):
         model = load()
         before = model.get_param(name)
-        with pytest.raises(bngsim.ParameterError, match=r"#695, #696") as caught:
+        with pytest.raises(
+            bngsim.ParameterError, match=r"cannot be changed after the model is loaded"
+        ) as caught:
             model.set_param(name, before * 1.5 + 0.25)
         assert repr(name) in str(caught.value)
         assert model.get_param(name) == before
-        with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"#695, #696"):
+        with pytest.raises(
+            bngsim.SensitivityUnsupportedError,
+            match=r"read once at load for.*Model\.frozen_params",
+        ):
             bngsim.Simulator(load(), method="ode", sensitivity_params=[name])
     assert any(what in w for w in load()._frozen_params.values())
 
@@ -708,14 +722,22 @@ def test_a_stoichiometry_that_moves_in_time_still_reads_its_parameter():
 
 def test_a_forced_write_a_scan_and_a_steady_state_batch_are_refused():
     model = bngsim.Model.from_antimony_string(SIZED)
-    with pytest.raises(bngsim.ParameterError, match=r"#695, #696"):
+    with pytest.raises(
+        bngsim.ParameterError, match=r"cannot be changed after the model is loaded"
+    ):
         model.set_param("p", 2.0, force_override=True)
     sim = bngsim.Simulator(model, method="ode")
-    with pytest.raises(bngsim.ParameterError, match=r"#695, #696"):
+    with pytest.raises(
+        bngsim.ParameterError, match=r"cannot be changed after the model is loaded"
+    ):
         sim.parameter_scan("p", [1.0, 2.0], t_span=(0.0, 1.0), n_points=3)
-    with pytest.raises(bngsim.ParameterError, match=r"#695, #696"):
+    with pytest.raises(
+        bngsim.ParameterError, match=r"cannot be changed after the model is loaded"
+    ):
         sim.bifurcate("p", [1.0, 2.0], t_span=(0.0, 1.0), n_points=3)
-    with pytest.raises(bngsim.ParameterError, match=r"#695, #696"):
+    with pytest.raises(
+        bngsim.ParameterError, match=r"cannot be changed after the model is loaded"
+    ):
         sim.steady_state_batch([{"p": 2.0}])
 
 
@@ -727,9 +749,13 @@ def test_a_subset_model_keeps_the_record():
 
     sub = coupling.make_subset_model(bngsim.Model.from_antimony_string(SIZED))
     assert sub.frozen_params == ["p"]
-    with pytest.raises(bngsim.ParameterError, match=r"#695, #696"):
+    with pytest.raises(
+        bngsim.ParameterError, match=r"cannot be changed after the model is loaded"
+    ):
         sub.set_param("p", 2.0)
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"#695, #696"):
+    with pytest.raises(
+        bngsim.SensitivityUnsupportedError, match=r"read once at load for.*Model\.frozen_params"
+    ):
         bngsim.Simulator(sub, method="ode", sensitivity_params=["p"])
 
 
@@ -755,5 +781,7 @@ def test_a_solve_through_jax_does_not_write_past_the_refusal(flat):
         float(np.asarray(run.species)[-1, s]), rel=1e-6
     )
     moved = held.at[list(names).index("p")].set(2.0)
-    with pytest.raises(bngsim.ParameterError, match=r"#695, #696"):
+    with pytest.raises(
+        bngsim.ParameterError, match=r"cannot be changed after the model is loaded"
+    ):
         differentiable_solve(model, moved, (0.0, 1.0), 3, flat=flat)

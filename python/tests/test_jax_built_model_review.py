@@ -501,7 +501,10 @@ def test_mm_rate_constant_that_a_function_overwrites(tmp_path):
     engine that runs a built model (issue #931).
     """
     net = _write(tmp_path, "mmfs.net", MM_ON_A_FUNCTION_SLOT)
-    with pytest.raises(bngsim.ModelError, match=r"MichaelisMenten.*issue #931"):
+    with pytest.raises(
+        bngsim.ModelError,
+        match=r"MichaelisMenten.*a parameter that a function of the same name writes",
+    ):
         _load(net)
 
 

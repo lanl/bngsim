@@ -395,7 +395,7 @@ def refuse_rulemonkey_match_once(xml_path: str | Path) -> None:
         "reactant whose complex may hold two matches of it: rules "
         + ", ".join(f"'{n}'" for n in found)
         + ". RuleMonkey reads no MatchOnce on a rule and counts such a reactant once per "
-        "match, where BioNetGen counts it once per complex (issue #1525). Simulate it "
+        "match, where BioNetGen counts it once per complex. Simulate it "
         "with method='nf', or with method='ode' or method='ssa' on the generated network."
     )
 
@@ -421,8 +421,7 @@ def refuse_nfsim_rate_laws(xml_path: str | Path) -> None:
             + ". NFsim's expansion of energy rules divides every energy by an RT that "
             "BioNetGen does not apply (2.478 unless the model defines a parameter RT), "
             "gives a one-way binding rule a reverse reaction, and drops one-way unbinding "
-            "and state-change rules, all without an error (RuleWorld/nfsim#102; this "
-            "refusal is lifted under issue #1057)"
+            "and state-change rules, all without an error"
         )
     if other:
         parts.append(
@@ -439,7 +438,7 @@ def refuse_nfsim_rate_laws(xml_path: str | Path) -> None:
             + ", ".join(f"'{n}'" for n in mm_per_complex)
             + ". NFsim counts each match, so such a complex enters the law's total "
             "once per match, where BioNetGen counts it once; the law is not linear in "
-            "that total, so it cannot be corrected as the rule fires (issue #1525). A "
+            "that total, so it cannot be corrected as the rule fires. A "
             "reactant of one molecule whose bond sites the pattern lists free runs"
         )
     if one_match:
@@ -449,8 +448,8 @@ def refuse_nfsim_rate_laws(xml_path: str | Path) -> None:
             "matches: rules "
             + ", ".join(f"'{n}'" for n in one_match)
             + ". The value can differ between the matches in a complex, and BioNetGen "
-            "takes it at its first embedding where NFsim would take their mean (issue "
-            "#1525). A function read on the whole species (%x: before the pattern) runs"
+            "takes it at its first embedding where NFsim would take their mean. A function "
+            "read on the whole species (%x: before the pattern) runs"
         )
     raise ModelError(
         f"{label} cannot run a model with {'; and with '.join(parts)}. Simulate it with "
@@ -498,7 +497,7 @@ def refuse_rulemonkey_compartments(xml_path: str | Path) -> None:
         + ", ".join(f"'{n}'" for n in found)
         + ". It does not scale rates by compartment volume or keep molecules in their "
         "compartments, so the rates would be wrong. Simulate it with method='ode' or "
-        "method='ssa' on the generated network (issue #1022)."
+        "method='ssa' on the generated network."
     )
 
 
@@ -786,9 +785,8 @@ def refuse_nfsim_stale_local_functions(xml_path: str | Path) -> None:
         "outside it, directly or through a function they call: "
         + ", ".join(f"{who(f)} reads '{o}'" for f, o in reads)
         + ". NFsim re-evaluates such a function only on the complexes a reaction "
-        "produces, so that term goes stale on every other molecule, without an error "
-        "(RuleWorld/nfsim#104; this refusal is lifted under issue #1062). Simulate the "
-        "network BNG2.pl generates with method='ode' or method='ssa'."
+        "produces, so that term goes stale on every other molecule, without an error. "
+        "Simulate the network BNG2.pl generates with method='ode' or method='ssa'."
     )
 
 
@@ -808,8 +806,7 @@ def refuse_nfsim_compartments(xml_path: str | Path) -> None:
         "a rule creates with none written, puts every molecule of a seed complex in the "
         "species' compartment, binds across compartments that do not touch, and moves a "
         "whole complex on MoveConnected; and BNG2.pl's writeXML drops "
-        "NumberPerQuantityUnit (RuleWorld/nfsim#106, #108, #109, #110, "
-        "RuleWorld/bionetgen#348; this refusal is lifted under issue #1067). Simulate the "
+        "NumberPerQuantityUnit. Simulate the "
         "network BNG2.pl generates with method='ode' or method='ssa'."
     )
 
@@ -828,7 +825,7 @@ def refuse_time_dependent_rate_laws(xml_path: str | Path, backend: str) -> None:
         + ", ".join(f"'{n}'" for n in reads)
         + f". {why}. Simulate it with method='rm', or with method='ode' or "
         "method='ssa' on the generated network, which read time() as the model "
-        "time (issue #862)."
+        "time."
     )
 
 

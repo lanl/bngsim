@@ -286,7 +286,7 @@ def test_a_logged_fallback_is_on_the_result_whatever_the_logging_level() -> None
     (notice,) = r.notices
     assert notice["category"] == "log"
     assert notice["code"] == "jacobian.difference_quotient_retry"
-    assert notice["message"].startswith("GH#176 analytical Jacobian: CVODE integration failed")
+    assert notice["message"].startswith("analytical Jacobian: CVODE integration failed")
 
 
 def test_a_continued_run_says_so(tmp_path: Path) -> None:
@@ -410,7 +410,11 @@ def test_a_logged_notice_names_the_line_that_logged_it(caplog) -> None:
     sim = Simulator(Model.from_sbml_string(SINK))
     with caplog.at_level(logging.WARNING, logger="bngsim"):
         sim.run(t_span=(0, 40), n_points=5)
-    (record,) = [r for r in caplog.records if r.getMessage().startswith("GH#176")]
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.getMessage().startswith("analytical Jacobian: CVODE integration failed")
+    ]
     assert (record.filename, record.funcName) == ("_simulator.py", "_ode_attempts")
 
 

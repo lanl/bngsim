@@ -142,7 +142,8 @@ def test_a_product_of_the_two_gates_gives_the_side_that_delays_the_switch(tmp_pa
     assert result.one_sided_sensitivities == [(3.0, {"t_delta": "increasing"})]
     assert len(raised) == 1
     message = str(raised[0].message)
-    assert "t=3" in message and "'t_delta' increasing" in message and "#1822" in message
+    assert "t=3" in message and "'t_delta' increasing" in message
+    assert "Every other column is an ordinary derivative" in message
     assert "'t0'" not in message and "'k'" not in message
 
 
@@ -236,7 +237,8 @@ def test_two_crossings_with_no_parameter_of_their_own_are_refused(tmp_path, cloc
         _run(model, ["t0", "t_delta", "t_delta2"])
     message = str(refusal.value)
     assert "2 of the 3 crossings here have no such parameter" in message
-    assert "a parameter on a bound makes them so" in message and "#1822" in message
+    assert "a parameter on a bound makes them so" in message
+    assert "two or more cannot be divided between themselves" in message
     assert "coincidence" not in message
 
 

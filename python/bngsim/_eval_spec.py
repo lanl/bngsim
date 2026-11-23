@@ -401,7 +401,7 @@ class EvaluationSpec:
                 f"sensitivity_ic={list(self.sensitivity_ic)!r} with output_start="
                 f"{self.output_start!r}: the run integrates from t_span[0] to output_start "
                 "before it outputs anything, and IC sensitivities are not carried across "
-                "that boundary (GH #210). Use sensitivity_params, or no output_start.",
+                "that boundary. Use sensitivity_params, or no output_start.",
                 code="usage.conflicting_arguments",
             )
         sim = self.build_simulator()

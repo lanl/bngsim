@@ -155,7 +155,7 @@ def test_beside_anything_else_its_own_spacing_bounds_nothing():
     """Not alone, with no `max_step` from the caller: refused, though its own
     shortest stretch is known."""
     bound = bngsim.Simulator._bound_step_past_stop_budget
-    with pytest.raises(bngsim.SimulationError, match="#890"):
+    with pytest.raises(bngsim.SimulationError, match="integrator would step over its windows"):
         bound(_Options(), [sw.StopsOverBudget("c", 4000, 0.1)], 0.0, 2000.0, alone=False)
 
 
@@ -171,7 +171,7 @@ def test_beside_anything_else_its_own_spacing_bounds_nothing():
 def test_a_schedule_past_the_budget_beside_another_switch_is_refused(tmp_path, budget, beside):
     budget(1000)
     model = _model(tmp_path, dose=f"{_SCHEDULE} + {beside}")
-    with pytest.raises(bngsim.SimulationError, match="#890"):
+    with pytest.raises(bngsim.SimulationError, match="integrator would step over its windows"):
         _x_end(model, 2000.0)
 
 
@@ -182,7 +182,7 @@ def test_a_schedule_past_the_budget_beside_an_event_is_refused(budget):
         "J: -> X; piecewise(1, time - P*floor(time/P) < w, 0);\n"
         "E: at (X > 50): X = 0;\n"
     )
-    with pytest.raises(bngsim.SimulationError, match="#890"):
+    with pytest.raises(bngsim.SimulationError, match="integrator would step over its windows"):
         bngsim.Simulator(model, method="ode").run(t_span=(0.0, 2000.0), n_points=3)
 
 
@@ -200,7 +200,11 @@ def test_it_names_the_condition_and_what_to_pass(tmp_path, budget):
         _x_end(model, 2000.0)
     message = str(err.value)
     assert "floor(time()/P)" in message
-    assert "max_step" in message and "run_until" in message and "#890" in message
+    assert (
+        "max_step" in message
+        and "run_until" in message
+        and "integrator would step over its windows" in message
+    )
 
 
 def test_the_callers_step_bound_stands_for_it(tmp_path, budget):
@@ -224,7 +228,7 @@ def test_one_budget_is_shared_by_every_condition(tmp_path, budget):
     assert len(found) in (599, 600) and stops == []
     (item,) = over
     assert item.condition == conds[1] and item.changes in (479, 480)
-    with pytest.raises(bngsim.SimulationError, match="#890"):
+    with pytest.raises(bngsim.SimulationError, match="integrator would step over its windows"):
         _x_end(model, 300.0)
 
 
@@ -262,7 +266,7 @@ def test_a_stochastic_run_past_the_budget_is_refused(tmp_path, budget):
 def test_a_condition_no_resolver_reads_is_counted_too(tmp_path, budget):
     budget(1000)
     model = _model(tmp_path, dose="if(frac(time()/P) < w, 1, 0)")
-    with pytest.raises(bngsim.SimulationError, match="#890"):
+    with pytest.raises(bngsim.SimulationError, match="integrator would step over its windows"):
         _x_end(model, 2000.0)
     assert _x_end(model, 2000.0, max_step=0.04) == pytest.approx(200.0, rel=1e-4)
 
@@ -331,7 +335,7 @@ def test_a_sinusoid_past_the_budget_is_not_stepped_over(tmp_path, budget):
     alone = _model(tmp_path, dose="if(sin(50*time()) > 0.5, 1, 0)")
     assert _x_end(alone, 240.0) == pytest.approx(80.0, rel=2e-3)
     beside = _model(tmp_path, dose="if(sin(50*time()) > 0.5, 1, 0) + if(time() > 100, 1, 0)")
-    with pytest.raises(bngsim.SimulationError, match="#890"):
+    with pytest.raises(bngsim.SimulationError, match="integrator would step over its windows"):
         _x_end(beside, 240.0)
 
 

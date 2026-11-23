@@ -528,7 +528,7 @@ void refuse_parameters_that_read_state(const std::vector<ParsedParam> &params,
                     "', but a parameter is a constant: it is evaluated once, before any "
                     "observable or function has a value, and would silently be 0. BioNetGen "
                     "refuses the same model. Write the state-dependent quantity as a function "
-                    "and use that function as the rate law (issue #844).");
+                    "and use that function as the rate law.");
             }
             i = j;
         }

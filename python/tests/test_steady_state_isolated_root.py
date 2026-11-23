@@ -156,7 +156,7 @@ def test_an_epidemic_that_burns_out_is_refused(tmp_path):
     with pytest.raises(bngsim.SimulationError) as caught:
         sim.steady_state(sensitivity_params=["g", "I0"])
     message = str(caught.value)
-    assert "#995" in message and "not an isolated root" in message
+    assert "at this steady state: " in message and "not an isolated root" in message
     assert "a determinant that is 0 of the one" in message and "pivot for R()" in message
     assert "time course with forward sensitivities" in message
     assert "pure_sink_species" in message
@@ -179,7 +179,7 @@ def test_the_same_with_the_sink_masked_out_is_refused(tmp_path, method):
             method=method,
         )
     message = str(caught.value)
-    assert "#995" in message and "pivot for S()" in message
+    assert "at this steady state: " in message and "pivot for S()" in message
     assert "With mask=" in message
 
 
@@ -214,7 +214,8 @@ def test_with_a_differenced_jacobian_it_is_refused_too(tmp_path):
     sim = bngsim.Simulator(_net(tmp_path, SIR), method="ode", jacobian="fd")
     with pytest.raises(
         bngsim.SimulationError,
-        match=r"#995.*not an isolated root.*a determinant that is 0 of the one.*pivot for R\(\)",
+        match=r"at this steady state: .*"
+        r"not an isolated root.*a determinant that is 0 of the one.*pivot for R\(\)",
     ):
         sim.steady_state(sensitivity_params=["g"])
 
@@ -235,7 +236,9 @@ def test_a_total_that_no_law_of_the_model_holds_is_refused():
     the residual."""
     model = bngsim.Model.from_antimony_string(NOT_A_LINEAR_LAW)
     assert model.conservation_laws["n_laws"] == 0
-    with pytest.raises(bngsim.SimulationError, match=r"#995.*not an isolated root"):
+    with pytest.raises(
+        bngsim.SimulationError, match=r"at this steady state: .*not an isolated root"
+    ):
         bngsim.Simulator(model, method="ode").steady_state(sensitivity_params=["k1"])
 
 
@@ -445,7 +448,9 @@ def test_a_root_of_higher_order_is_refused(tmp_path):
     it, A* is its square root and the derivative with respect to it has no
     value, where the solve returned 1/(4·k·A)."""
     sim = bngsim.Simulator(_net(tmp_path, SECOND_ORDER), method="ode")
-    with pytest.raises(bngsim.SimulationError, match=r"#995.*that is 0\.5 of.*higher order"):
+    with pytest.raises(
+        bngsim.SimulationError, match=r"at this steady state: .*that is 0\.5 of.*higher order"
+    ):
         sim.steady_state(sensitivity_params=["k"])
 
 
@@ -482,7 +487,7 @@ def test_a_root_of_an_order_under_two_has_no_column_for_what_moves_it(tmp_path):
     for asked in (["p"], ["k", "p"]):
         with pytest.raises(
             bngsim.SimulationError,
-            match=r"#995.*no state near.*the column of p still moves by 30\.1%",
+            match=r"at this steady state: .*no state near.*the column of p still moves by 30\.1%",
         ):
             low.steady_state(sensitivity_params=asked)
     out = low.steady_state(sensitivity_params=["k"])
@@ -491,7 +496,7 @@ def test_a_root_of_an_order_under_two_has_no_column_for_what_moves_it(tmp_path):
     assert abs(np.asarray(out.concentrations)[0]) < 1e-9
     assert abs(np.asarray(out.sensitivity)[0, 0]) < 1e-9
     half = bngsim.Simulator(_net(tmp_path, ORDER_M.format(m="1.5"), "half.net"), method="ode")
-    with pytest.raises(bngsim.SimulationError, match=r"#995.*that is 0\.58 of"):
+    with pytest.raises(bngsim.SimulationError, match=r"at this steady state: .*that is 0\.58 of"):
         half.steady_state(sensitivity_params=["k", "p"])
 
 
@@ -516,7 +521,10 @@ def test_a_determinant_that_grows_is_refused(tmp_path):
     where the Jacobian, -4·d·A, is 3.3 times what it was: the state is not
     near the root, and dA*/dk came back 8.3e5 for 3.5e5 with nothing logged."""
     sim = bngsim.Simulator(_net(tmp_path, FAR), method="ode")
-    with pytest.raises(bngsim.SimulationError, match=r"#995.*that is 3\.3 of.*grows.*smaller tol"):
+    with pytest.raises(
+        bngsim.SimulationError,
+        match=r"at this steady state: .*that is 3\.3 of.*grows.*smaller tol",
+    ):
         sim.steady_state(sensitivity_params=["k"])
 
 
@@ -567,7 +575,9 @@ def test_a_determinant_that_changes_sign_is_refused(tmp_path, param):
     a singular Jacobian between it and its correction, which only the sign of
     the ratio shows."""
     sim = bngsim.Simulator(_net(tmp_path, TWO_SIDES), method="ode")
-    with pytest.raises(bngsim.SimulationError, match=r"#995.*that is -0\.99 of.*changes sign"):
+    with pytest.raises(
+        bngsim.SimulationError, match=r"at this steady state: .*that is -0\.99 of.*changes sign"
+    ):
         sim.steady_state(sensitivity_params=[param])
 
 
@@ -724,7 +734,7 @@ def test_a_column_that_would_take_longer_than_max_time_is_refused(tmp_path):
     with pytest.raises(bngsim.SimulationError) as caught:
         sim.steady_state(sensitivity_params=["s"])
     message = str(caught.value)
-    assert "#995" in message and "column of s" in message
+    assert "at this steady state: " in message and "column of s" in message
     assert "max_time (1e+06) would leave 100% of the column" in message
     assert "Raise max_time" in message
     # The time it names is the one the solve was given.
@@ -841,7 +851,8 @@ def test_a_pivot_that_the_law_reduction_cancelled_is_refused(v1, v2, k):
     sim = bngsim.Simulator(model, method="ode")
     with pytest.raises(
         bngsim.SimulationError,
-        match=rf"#995.*pivot for B is \d\.\de-1[5-9] of the terms|{_EXACTLY_SINGULAR}",
+        match=rf"at this steady state: .*"
+        rf"pivot for B is \d\.\de-1[5-9] of the terms|{_EXACTLY_SINGULAR}",
     ):
         sim.steady_state(sensitivity_params=["k"])
     out = sim.steady_state()  # the state itself is where the model started
@@ -944,7 +955,8 @@ def test_a_mask_that_leaves_out_a_species_an_equation_reads_is_refused(tmp_path)
     sim = bngsim.Simulator(_net(tmp_path, READ_BY_ITS_NEIGHBOUR), method="ode")
     with pytest.raises(
         bngsim.SimulationError,
-        match=r"#995.*mask= leaves out M\(\), which the rate of A\(\) reads.*pure_sink_species",
+        match=r"at this steady state: .*"
+        r"mask= leaves out M\(\), which the rate of A\(\) reads.*pure_sink_species",
     ):
         sim.steady_state(sensitivity_params=["s", "k1"], mask=["A()"])
 
@@ -983,7 +995,9 @@ def test_a_masked_species_a_law_holds_with_one_that_reads_it_is_refused(tmp_path
     model = _net(tmp_path, EXCHANGE)
     assert [model.species_names[i] for i in model.conservation_laws["dependent"]] == ["A()"]
     sim = bngsim.Simulator(model, method="ode")
-    with pytest.raises(bngsim.SimulationError, match=r"#995.*mask= leaves out M\(\)"):
+    with pytest.raises(
+        bngsim.SimulationError, match=r"at this steady state: .*mask= leaves out M\(\)"
+    ):
         sim.steady_state(sensitivity_params=["kf", "kr", "A0"], mask=["A()"])
 
 
@@ -1089,7 +1103,8 @@ def test_a_branch_to_two_products_is_refused(tmp_path, method):
     sim = bngsim.Simulator(_net(tmp_path, BRANCH), method="ode")
     with pytest.raises(
         bngsim.SimulationError,
-        match=r"#995.*pivot for P[12]\(\) is \d\.\de-1[5-9] of the terms.*singular whatever"
+        match=r"at this steady state: .*"
+        r"pivot for P[12]\(\) is \d\.\de-1[5-9] of the terms.*singular whatever"
         rf"|{_EXACTLY_SINGULAR}",
     ):
         sim.steady_state(sensitivity_params=["k4", "k5"], method=method)
@@ -1131,7 +1146,7 @@ def test_a_state_that_a_run_leaves_is_refused(tmp_path):
     with pytest.raises(bngsim.SimulationError) as caught:
         sim.steady_state(sensitivity_params=["K"])
     message = str(caught.value)
-    assert "#995" in message and "not one a run stays at" in message
+    assert "at this steady state: " in message and "not one a run stays at" in message
     assert "max_time (1e+06)" in message and "column of K" in message
     assert "Solve again with a smaller tol" in message
 
@@ -1221,7 +1236,8 @@ def test_a_root_the_system_does_not_rest_at_is_refused(tmp_path):
     ends."""
     sim = bngsim.Simulator(_net(tmp_path, THREE_ROOTS.format(x0="a")), method="ode")
     with pytest.raises(
-        bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 0\.188"
+        bngsim.SimulationError,
+        match=r"at this steady state: .*does not rest at.*real part of 0\.188",
     ):
         sim.steady_state(sensitivity_params=["a"])
 
@@ -1261,7 +1277,8 @@ def test_a_focus_the_system_spirals_out_of_is_refused(tmp_path, method):
     start."""
     sim = bngsim.Simulator(_net(tmp_path, BRUSSELATOR.format(B="3.0")), method="ode")
     with pytest.raises(
-        bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 0\.5 "
+        bngsim.SimulationError,
+        match=r"at this steady state: .*does not rest at.*real part of 0\.5 ",
     ):
         sim.steady_state(sensitivity_params=["A", "B"], method=method)
 
@@ -1312,7 +1329,8 @@ def test_a_focus_beside_a_fast_species_is_refused_all_the_same(tmp_path, method)
     text = BESIDE_A_FAST_SPECIES.format(B="3.0", kfast="1e7")
     sim = bngsim.Simulator(_net(tmp_path, text), method="ode")
     with pytest.raises(
-        bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 0\.5 "
+        bngsim.SimulationError,
+        match=r"at this steady state: .*does not rest at.*real part of 0\.5 ",
     ):
         sim.steady_state(sensitivity_params=["A", "B"], method=method)
 
@@ -1327,7 +1345,8 @@ def test_a_focus_among_too_many_species_for_the_spectrum_is_refused_by_the_run(t
     sim = bngsim.Simulator(_net(tmp_path, text), method="ode")
     with pytest.raises(
         bngsim.SimulationError,
-        match=r"#995.*not one a run stays at.*used its steps.*the run moves [XY]\(\) by \d+%",
+        match=r"at this steady state: .*"
+        r"not one a run stays at.*used its steps.*the run moves [XY]\(\) by \d+%",
     ):
         sim.steady_state(sensitivity_params=["A", "B"], method=method)
 
@@ -1341,7 +1360,8 @@ def test_a_focus_that_grows_slowly_is_refused_by_its_eigenvalue(tmp_path):
     fixed point as it started, and its end is not the root's derivative."""
     sim = bngsim.Simulator(_net(tmp_path, BRUSSELATOR.format(B="2.01")), method="ode")
     with pytest.raises(
-        bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 0\.005 "
+        bngsim.SimulationError,
+        match=r"at this steady state: .*does not rest at.*real part of 0\.005 ",
     ):
         sim.steady_state(sensitivity_params=["A", "B"], max_time=300.0)
 
@@ -1355,7 +1375,8 @@ def test_a_run_that_does_not_get_to_max_time_is_not_known_to_stay(tmp_path):
     sim = bngsim.Simulator(_net(tmp_path, text), method="ode")
     with pytest.raises(
         bngsim.SimulationError,
-        match=r"#995.*did not get to max_time \(1e\+06\).*10000 steps.*not known to stay",
+        match=r"at this steady state: .*"
+        r"did not get to max_time \(1e\+06\).*10000 steps.*not known to stay",
     ) as caught:
         sim.steady_state(sensitivity_params=["A", "B"])
     assert "more steps (max_steps)" in str(caught.value)
@@ -1373,7 +1394,7 @@ def test_a_shorter_max_time_does_not_get_a_growing_focus_returned(tmp_path):
     sim = bngsim.Simulator(_net(tmp_path, text), method="ode")
     with pytest.raises(
         bngsim.SimulationError,
-        match=r"#995.*does not rest at.*real part of 0\.0005 .*172% further",
+        match=r"at this steady state: .*does not rest at.*real part of 0\.0005 .*172% further",
     ):
         sim.steady_state(sensitivity_params=["A", "B"], max_time=2000.0)
 
@@ -1432,7 +1453,8 @@ def test_a_root_the_solve_steps_to_and_the_system_leaves_is_refused(tmp_path):
     7.5e-8. In the 1e9 it is given that is a growth of exp(75)."""
     sim = bngsim.Simulator(_net(tmp_path, BETWEEN_TWO_ROOTS), method="ode")
     with pytest.raises(
-        bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 7\.5e-08 "
+        bngsim.SimulationError,
+        match=r"at this steady state: .*does not rest at.*real part of 7\.5e-08 ",
     ):
         sim.steady_state(sensitivity_params=["s"], max_time=1e9)
 
@@ -1457,7 +1479,8 @@ def test_a_root_that_was_stepped_to_is_where_a_run_ends(tmp_path):
     sim = bngsim.Simulator(_net(tmp_path, _among_many(BETWEEN_TWO_ROOTS)), method="ode")
     with pytest.raises(
         bngsim.SimulationError,
-        match=r"#995.*stepped to is not where a run ends.*ends \d\d% from that root in X\(\)",
+        match=r"at this steady state: .*"
+        r"stepped to is not where a run ends.*ends \d\d% from that root in X\(\)",
     ):
         sim.steady_state(sensitivity_params=["s"], max_time=1e9)
 
@@ -1513,7 +1536,7 @@ def test_the_refusal_of_a_model_with_a_rule_species_does_not_speak_of_a_mask():
     with pytest.raises(bngsim.SimulationError) as caught:
         sim.steady_state(sensitivity_params=["g"])
     message = str(caught.value)
-    assert "#995" in message and "the limits are 0.6 and 1.67" in message
+    assert "at this steady state: " in message and "the limits are 0.6 and 1.67" in message
     assert "pure_sink_species" in message and "With mask=" not in message
 
 
@@ -1643,7 +1666,8 @@ def test_a_species_that_runs_out_through_a_rate_with_no_value_at_nothing_is_refu
     sim = bngsim.Simulator(_net(tmp_path, NO_VALUE_AT_NOTHING), method="ode")
     with pytest.raises(
         bngsim.SimulationError,
-        match=r"#995.*no state near.*a Newton step leaves where it is.*no value at nothing",
+        match=r"at this steady state: .*"
+        r"no state near.*a Newton step leaves where it is.*no value at nothing",
     ) as caught:
         sim.steady_state(sensitivity_params=["k"])
     assert "the columns cannot be solved there: a rate has no value" in str(caught.value)
@@ -1688,7 +1712,9 @@ def test_a_state_that_ten_steps_do_not_settle_is_refused(tmp_path, asked, moving
     the column is rounding and moves by none of that, and what has not
     settled is the state."""
     sim = bngsim.Simulator(_net(tmp_path, STILL_FALLING), method="ode")
-    with pytest.raises(bngsim.SimulationError, match=rf"#995.*no state near.*{moving}"):
+    with pytest.raises(
+        bngsim.SimulationError, match=rf"at this steady state: .*no state near.*{moving}"
+    ):
         sim.steady_state(sensitivity_params=[asked])
 
 
@@ -2118,7 +2144,8 @@ def test_a_run_that_cannot_be_taken_on_is_refused(tmp_path):
     at: a failed run is not a run that stayed."""
     sim = bngsim.Simulator(_net(tmp_path, NO_VALUE_A_MILLIONTH_ON), method="ode")
     with pytest.raises(
-        bngsim.SimulationError, match=r"#995.*not one a run stays at.*failed, so that"
+        bngsim.SimulationError,
+        match=r"at this steady state: .*not one a run stays at.*failed, so that",
     ):
         sim.steady_state(sensitivity_params=["s"])
 
@@ -2156,7 +2183,8 @@ def test_a_species_on_its_way_up_from_a_seed_is_not_stepped_down_to_nothing(tmp_
     says the system does not rest where the solve stopped."""
     sim = bngsim.Simulator(_net(tmp_path, SEEDED), method="ode")
     with pytest.raises(
-        bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 0\.001 "
+        bngsim.SimulationError,
+        match=r"at this steady state: .*does not rest at.*real part of 0\.001 ",
     ):
         sim.steady_state(sensitivity_params=["K", "r"])
 
@@ -2182,7 +2210,8 @@ def test_the_same_among_too_many_species_for_the_spectrum_is_refused_too(tmp_pat
     of their own block, which is N's own r·S."""
     sim = bngsim.Simulator(_net(tmp_path, _among_many(SEEDED)), method="ode")
     with pytest.raises(
-        bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 0\.001 "
+        bngsim.SimulationError,
+        match=r"at this steady state: .*does not rest at.*real part of 0\.001 ",
     ):
         sim.steady_state(sensitivity_params=["K", "r"])
 
@@ -2279,7 +2308,8 @@ def test_the_same_beside_a_species_with_the_larger_entry_is_refused_by_the_run(t
     sim = bngsim.Simulator(_net(tmp_path, text), method="ode")
     with pytest.raises(
         bngsim.SimulationError,
-        match=r"#995.*not one a run stays at.*moves X\(\) by 1\d\d% of what it is taken over",
+        match=r"at this steady state: .*"
+        r"not one a run stays at.*moves X\(\) by 1\d\d% of what it is taken over",
     ):
         sim.steady_state(sensitivity_params=["d"])
 
@@ -2305,7 +2335,8 @@ def test_a_parameter_that_hardly_matters_does_not_hide_a_state_a_run_leaves(tmp_
     sim = bngsim.Simulator(_net(tmp_path, weak.format(eps="1e-12"), "weaker.net"), method="ode")
     with pytest.raises(
         bngsim.SimulationError,
-        match=r"#995.*not one a run stays at.*moves X\(\) by 99% .*the column of q",
+        match=r"at this steady state: .*"
+        r"not one a run stays at.*moves X\(\) by 99% .*the column of q",
     ):
         sim.steady_state(sensitivity_params=["q"])
 
@@ -2455,7 +2486,9 @@ def test_the_refusal_of_one_part_says_how_to_ask_for_another(tmp_path):
     with pytest.raises(bngsim.SimulationError) as caught:
         sim.steady_state(sensitivity_params=["kf", "kr"])
     message = str(caught.value)
-    assert "#995" in message and "a determinant that is 0.5 of the one" in message
+    assert (
+        "at this steady state: " in message and "a determinant that is 0.5 of the one" in message
+    )
     assert "mask= with the species of that other part" in message
     assert "difference steady states" not in message
     out = sim.steady_state(sensitivity_params=["kf", "kr"], mask=["X()", "Y()"])
@@ -2510,7 +2543,8 @@ def test_the_same_in_the_time_it_does_not_get_there_in_is_refused(tmp_path):
     still on its way."""
     sim = bngsim.Simulator(_net(tmp_path, ABOVE_ITS_CAPACITY), method="ode")
     with pytest.raises(
-        bngsim.SimulationError, match=r"#995.*not one a run stays at.*the run moves N\(\) by"
+        bngsim.SimulationError,
+        match=r"at this steady state: .*not one a run stays at.*the run moves N\(\) by",
     ):
         sim.steady_state(sensitivity_params=["K"])
 
@@ -2552,7 +2586,8 @@ def test_a_run_that_cannot_be_taken_on_is_not_known_to_stay(tmp_path, method):
     sim = bngsim.Simulator(_net(tmp_path, NO_VALUE_BESIDE), method="ode")
     with pytest.raises(
         bngsim.SimulationError,
-        match=r"#995.*not one a run stays at.*max_time \(1e\+06\) failed.*not known to stay",
+        match=r"at this steady state: .*"
+        r"not one a run stays at.*max_time \(1e\+06\) failed.*not known to stay",
     ):
         sim.steady_state(sensitivity_params=["c", "ky"], method=method)
 
@@ -2617,7 +2652,8 @@ def test_biomd599_is_refused_as_not_an_isolated_root():
     sim = bngsim.Simulator(bngsim.Model.from_sbml(_biomodel("BIOMD0000000599")), method="ode")
     with pytest.raises(
         bngsim.SimulationError,
-        match=r"#995.*(a determinant that is -?\d|magnified \d\.\de\+1[5-9] times)",
+        match=r"at this steady state: .*"
+        r"(a determinant that is -?\d|magnified \d\.\de\+1[5-9] times)",
     ):
         sim.steady_state(sensitivity_params=["parameter_1", "parameter_2", "parameter_3"])
 
@@ -2701,7 +2737,8 @@ def test_biomd5_by_newton_is_a_root_inside_its_limit_cycle():
     point was taken for one the system rests at."""
     sim = bngsim.Simulator(bngsim.Model.from_sbml(_biomodel("BIOMD0000000005")), method="ode")
     with pytest.raises(
-        bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 0\.163 "
+        bngsim.SimulationError,
+        match=r"at this steady state: .*does not rest at.*real part of 0\.163 ",
     ):
         sim.steady_state(
             sensitivity_params=["_lp_Reaction1_k6", "_lp_Reaction4_k3", "_lp_Reaction9_k4"],
@@ -2771,7 +2808,9 @@ def test_rates_too_far_apart_for_one_percent_are_refused_as_that(tmp_path, fast,
     1%, and the refusal says that it is this or a Jacobian that is singular
     whatever the state, and not that it is the second."""
     sim = bngsim.Simulator(_net(tmp_path, BESIDE_A_FAST_EXCHANGE.format(F=fast)), method="ode")
-    with pytest.raises(bngsim.SimulationError, match=rf"#995.*cannot be computed.*{said}"):
+    with pytest.raises(
+        bngsim.SimulationError, match=rf"at this steady state: .*cannot be computed.*{said}"
+    ):
         sim.steady_state(sensitivity_params=["s", "k"])
 
 
@@ -2788,7 +2827,8 @@ def test_a_newton_step_that_is_no_number_is_said_as_a_rate_with_no_value(tmp_pat
     out.sens_root_column_shift, out.sens_root_relaxation = math.inf, math.inf
     with pytest.raises(
         bngsim.SimulationError,
-        match=r"#995.*no state near.*the columns cannot be solved there: a rate has no value",
+        match=r"at this steady state: .*"
+        r"no state near.*the columns cannot be solved there: a rate has no value",
     ) as caught:
         sim._raise_if_not_an_isolated_root(out, 1e6, False)
     assert "determinant" not in str(caught.value)
@@ -2804,7 +2844,9 @@ def test_a_condition_number_above_the_limit_is_refused_and_one_under_it_is_not(t
     out.sens_root_condition = 0.9e13
     sim._raise_if_not_an_isolated_root(out, 1e6, False)
     out.sens_root_condition = 1.1e13
-    with pytest.raises(bngsim.SimulationError, match=r"#995.*magnified 1\.1e\+13 times"):
+    with pytest.raises(
+        bngsim.SimulationError, match=r"at this steady state: .*magnified 1\.1e\+13 times"
+    ):
         sim._raise_if_not_an_isolated_root(out, 1e6, False)
 
 
@@ -2841,7 +2883,9 @@ def test_a_state_that_a_species_the_model_does_not_have_would_invade_is_refused(
     has it. The state itself is returned."""
     sim = bngsim.Simulator(_net(tmp_path, BESIDE_AN_INVADER.format(n0="0")), method="ode")
     np.testing.assert_allclose(sim.steady_state().concentrations, [1.0, 0.0], atol=1e-9)
-    with pytest.raises(bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 1 "):
+    with pytest.raises(
+        bngsim.SimulationError, match=r"at this steady state: .*does not rest at.*real part of 1 "
+    ):
         sim.steady_state(sensitivity_params=["b", "c", "g"])
 
 
@@ -2870,7 +2914,9 @@ def test_a_species_that_is_not_there_yet_and_is_being_made_is_asked(tmp_path, me
     )
     assert made.count("eps") == 2 and "R() 1.0" in made
     sim = bngsim.Simulator(_net(tmp_path, made), method="ode")
-    with pytest.raises(bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 1 "):
+    with pytest.raises(
+        bngsim.SimulationError, match=r"at this steady state: .*does not rest at.*real part of 1 "
+    ):
         sim.steady_state(sensitivity_params=["b", "c", "g"], method=method)
 
 
@@ -2893,7 +2939,8 @@ def test_biomd908_is_refused_for_what_its_absent_species_would_do(asked):
     compiled either way."""
     sim = bngsim.Simulator(bngsim.Model.from_sbml(_biomodel("BIOMD0000000908")), method="ode")
     with pytest.raises(
-        bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 0\.277 "
+        bngsim.SimulationError,
+        match=r"at this steady state: .*does not rest at.*real part of 0\.277 ",
     ):
         sim.steady_state(sensitivity_params=asked, tol=1e-6)
 
@@ -2906,7 +2953,8 @@ def test_model1607210000_says_that_the_run_stayed_and_the_columns_did_not():
     sim = bngsim.Simulator(bngsim.Model.from_sbml(_biomodel("MODEL1607210000")), method="ode")
     with pytest.raises(
         bngsim.SimulationError,
-        match=r"#995.*though the run ends beside it.*column of v15_h.*moves by 40\.\d times its",
+        match=r"at this steady state: .*"
+        r"though the run ends beside it.*column of v15_h.*moves by 40\.\d times its",
     ):
         sim.steady_state(sensitivity_params=["v15_h"])
 
@@ -2966,7 +3014,8 @@ def test_a_differenced_jacobian_is_held_to_what_a_difference_knows(tmp_path, mon
     sim, _, _ = _into_a_fast_exchange(tmp_path, fast, jacobian="fd")
     with pytest.raises(
         bngsim.SimulationError,
-        match=r"#995.*cannot be computed.*the difference quotient this Jacobian is",
+        match=r"at this steady state: .*"
+        r"cannot be computed.*the difference quotient this Jacobian is",
     ):
         sim.steady_state(sensitivity_params=["kx"], tol=1e-6)
 
@@ -3049,7 +3098,7 @@ def test_a_species_at_nothing_that_is_being_made_is_asked(tmp_path, text):
     not have: N came back at -1e-12 with dN*/dg = 1e-12, where a run ends at
     1 and at 1/2."""
     sim = bngsim.Simulator(_net(tmp_path, text), method="ode")
-    with pytest.raises(bngsim.SimulationError, match=r"#995.*does not rest at"):
+    with pytest.raises(bngsim.SimulationError, match=r"at this steady state: .*does not rest at"):
         sim.steady_state(sensitivity_params=["g"], method="newton")
 
 
@@ -3062,7 +3111,8 @@ def test_a_run_that_stayed_beside_columns_that_did_not_is_said_as_that(tmp_path)
     out.sens_root_hold_shift, out.sens_root_hold_drift, out.sens_root_hold_param = 40.8, 3e-6, "k"
     with pytest.raises(
         bngsim.SimulationError,
-        match=r"#995.*though the run ends beside it.*no species by more than 3e-06.*"
+        match=r"at this steady state: .*"
+        r"though the run ends beside it.*no species by more than 3e-06.*"
         r"column of k.*moves by 40\.8 times its largest entry",
     ):
         sim._raise_if_not_an_isolated_root(out, 1e6, False)
@@ -3104,7 +3154,9 @@ def test_a_species_at_nothing_that_the_parameter_asked_for_would_make(tmp_path, 
     leaves, which is what main returns. (So did a rule that left a species
     out of the eigenvalues where it was at nothing with no rate.)"""
     sim = bngsim.Simulator(_net(tmp_path, AN_INVADER_A_PARAMETER_WOULD_MAKE), method="ode")
-    with pytest.raises(bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 1 "):
+    with pytest.raises(
+        bngsim.SimulationError, match=r"at this steady state: .*does not rest at.*real part of 1 "
+    ):
         sim.steady_state(sensitivity_params=asked, method=method)
 
 
@@ -3164,7 +3216,9 @@ def test_a_species_at_nothing_that_what_is_no_unknown_would_make(tmp_path, which
     leaves (on main, and from the rule that left N out where the first
     derivatives it looked at were nothing)."""
     sim = bngsim.Simulator(_made_by_what_is_no_unknown(tmp_path, which, 2.0), method="ode")
-    with pytest.raises(bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 1 "):
+    with pytest.raises(
+        bngsim.SimulationError, match=r"at this steady state: .*does not rest at.*real part of 1 "
+    ):
         sim.steady_state(sensitivity_params=asked, method=method)
 
 
@@ -3245,7 +3299,9 @@ def test_a_species_at_nothing_that_the_parameter_makes_at_second_order(tmp_path,
         f"    5 2,2 2 d\n{reactions}end reactions\n"
     )
     sim = bngsim.Simulator(_net(tmp_path, text), method="ode")
-    with pytest.raises(bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 1 "):
+    with pytest.raises(
+        bngsim.SimulationError, match=r"at this steady state: .*does not rest at.*real part of 1 "
+    ):
         sim.steady_state(sensitivity_params=[asked], method=method)
 
 
@@ -3257,7 +3313,9 @@ def test_an_invader_a_catalyst_would_make_among_520_species(tmp_path, method):
     out there."""
     text = _among_many(AN_INVADER_MADE_BY_A_CATALYST.format(g=2.0))
     sim = bngsim.Simulator(_net(tmp_path, text), method="ode")
-    with pytest.raises(bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 1 "):
+    with pytest.raises(
+        bngsim.SimulationError, match=r"at this steady state: .*does not rest at.*real part of 1 "
+    ):
         sim.steady_state(sensitivity_params=["E0"], method=method)
 
 
@@ -3297,7 +3355,9 @@ def test_a_species_made_by_a_rate_that_is_nothing_only_here_is_asked(tmp_path):
     entry in R's column, and beside this state something makes it. It is in
     the eigenvalues, as every unknown is."""
     sim = bngsim.Simulator(_net(tmp_path, AN_INVADER_MADE_ANYWHERE_BUT_HERE), method="ode")
-    with pytest.raises(bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 1 "):
+    with pytest.raises(
+        bngsim.SimulationError, match=r"at this steady state: .*does not rest at.*real part of 1 "
+    ):
         sim.steady_state(sensitivity_params=["b"], method="newton")
 
 
@@ -3320,7 +3380,9 @@ def test_each_limit_of_a_differenced_jacobian_refuses_alone(tmp_path, monkeypatc
     monkeypatch.setattr(bngsim.Simulator, other[0], other[1])
     sim, _, _ = _into_a_fast_exchange(tmp_path, 1e8, jacobian="fd")
     said = "The pivot for" if measure == "pivot" else "magnified"
-    with pytest.raises(bngsim.SimulationError, match=rf"#995.*{said}.*difference quotient"):
+    with pytest.raises(
+        bngsim.SimulationError, match=rf"at this steady state: .*{said}.*difference quotient"
+    ):
         sim.steady_state(sensitivity_params=["kx"], tol=1e-6)
 
 

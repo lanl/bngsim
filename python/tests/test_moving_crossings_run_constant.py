@@ -108,6 +108,8 @@ def test_a_state_step_on_the_fallback_is_refused_by_name(tmp_path):
     sim = bngsim.Simulator(
         _model(tmp_path, "a<b", rate=rate), method="ode", sensitivity_params=["k1"]
     )
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938") as caught:
+    with pytest.raises(
+        bngsim.SensitivityUnsupportedError, match="moves the run across, or may"
+    ) as caught:
         sim.run(t_span=(0.0, 1.0), n_points=2)
     assert "'floor(Atot)'" in str(caught.value)

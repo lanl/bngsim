@@ -133,7 +133,7 @@ def _refused_by_name(out, name, construct):
     with pytest.raises(ValueError, match=rf"'expression:{name}' has no steady-state") as err:
         out.output_sensitivities([name])
     assert f"uses unsupported construct: {construct}" in str(err.value)
-    assert "issue #1002" in str(err.value)
+    assert "a steady state does not difference one" in str(err.value)
 
 
 # ─── The steady state's columns ──────────────────────────────────────────────
@@ -145,7 +145,10 @@ def test_columns_the_step_decides_are_refused(tmp_path, big):
     came back 0.8% off at G = 1e6, 7% at 1e7, 44% at 1e8 and 99% at 1e10,
     with no error. Now the error names the entry and both of its values."""
     model = _model(tmp_path, big, functions=())
-    with pytest.raises(bngsim.SimulationError, match=r"issue #1002") as err:
+    with pytest.raises(
+        bngsim.SimulationError,
+        match=r"the Jacobian is a difference quotient, and the answer depends on its step",
+    ) as err:
         _steady(model, jacobian="fd")
     msg = str(err.value)
     assert "dY_ss/dp" in msg
@@ -222,7 +225,10 @@ def test_a_term_in_the_grain_of_a_larger_sum_is_refused(tmp_path):
     those steps see only A, 3. dE*/ds = (A + C)/(k1·kd) is 9.52 at the first
     and 28.6 at the second. The floored answer is the right one, but nothing
     in a row tells this from a term of second order: refused."""
-    with pytest.raises(bngsim.SimulationError, match=r"issue #1002") as err:
+    with pytest.raises(
+        bngsim.SimulationError,
+        match=r"the Jacobian is a difference quotient, and the answer depends on its step",
+    ) as err:
         _steady(_grain(tmp_path, 1e8), jacobian="fd")
     assert "dE()/ds is 9.52381" in str(err.value)
     assert "28.5714" in str(err.value)
@@ -288,7 +294,10 @@ def test_a_row_the_own_step_sees_nothing_of_does_not_hide_a_column_it_decides(tm
     path = tmp_path / "grain_row.net"
     path.write_text(ALL_GRAIN.format(s=S, k1=K1, k2=K2, kd=KD, big=float(big), k=float(k)))
     model = bngsim.Model.from_net(path)
-    with pytest.raises(bngsim.SimulationError, match=r"dY_ss/dp .*issue #1002") as err:
+    with pytest.raises(
+        bngsim.SimulationError,
+        match=r"dY_ss/dp .*the Jacobian is a difference quotient, and the answer depends",
+    ) as err:
         _steady(model, jacobian="fd")
     # The entry furthest apart relative to itself is X's own: the secant at
     # the floored step, against the closed form at X's own step.
@@ -470,7 +479,10 @@ def test_curvature_in_a_row_a_larger_species_is_in_is_refused(tmp_path, big):
     the own step reads nothing of G's, and nothing was compared. At half the
     floored step the secant is k·(2X + h/2), and the two answers are refused,
     with both named."""
-    with pytest.raises(bngsim.SimulationError, match=r"issue #1002") as err:
+    with pytest.raises(
+        bngsim.SimulationError,
+        match=r"the Jacobian is a difference quotient, and the answer depends on its step",
+    ) as err:
         _steady(_second_order(tmp_path, big), jacobian="fd")
     msg = str(err.value)
     assert "dG()/ds is " + format(_secant_dg_ds(big), ".6g") in msg
@@ -511,7 +523,10 @@ def test_a_species_at_0_the_parameter_moves_is_refused(tmp_path, big):
     ``-2·k2·X²`` was read as ``-2·k2·h`` for 0: dX*/ds came back 4.7570 at
     G = 1e4 and 0.4192 (91% off) at 1e8, with no error. At half the step it
     is 4.7594 and 0.7705."""
-    with pytest.raises(bngsim.SimulationError, match=r"issue #1002") as err:
+    with pytest.raises(
+        bngsim.SimulationError,
+        match=r"the Jacobian is a difference quotient, and the answer depends on its step",
+    ) as err:
         _steady(_model(tmp_path, big, functions=(), s=0.0), jacobian="fd")
     msg = str(err.value)
     assert "stepped by half the first step" in msg
@@ -688,7 +703,10 @@ def test_a_parameter_at_a_small_value_is_held_to_the_same_check(tmp_path, s):
     parameter's size let it through.)"""
     x = s / K1
     h = (x + SQRT_EPS * (1e8 + x * x)) - x
-    with pytest.raises(bngsim.SimulationError, match=r"issue #1002") as err:
+    with pytest.raises(
+        bngsim.SimulationError,
+        match=r"the Jacobian is a difference quotient, and the answer depends on its step",
+    ) as err:
         _steady(_second_order(tmp_path, 1e8, s=s), jacobian="fd")
     assert "dG()/ds is " + format((2 * x + h) / K1, ".6g") in str(err.value)
     assert "stepped by half the first step" in str(err.value)
@@ -762,7 +780,10 @@ def test_a_species_the_mask_leaves_out_is_stepped_again_where_its_column_is_read
     path = tmp_path / "masked.net"
     path.write_text(text)
     sim = bngsim.Simulator(bngsim.Model.from_net(path), method="ode", jacobian="fd")
-    with pytest.raises(bngsim.SimulationError, match=r"issue #1002") as err:
+    with pytest.raises(
+        bngsim.SimulationError,
+        match=r"the Jacobian is a difference quotient, and the answer depends on its step",
+    ) as err:
         sim.steady_state(sensitivity_params=[param], mask=mask)
     assert floored in str(err.value)
     assert "stepped by half the first step" in str(err.value)

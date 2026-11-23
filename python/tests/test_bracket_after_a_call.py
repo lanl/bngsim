@@ -79,7 +79,10 @@ def _rate(tmp_path, law):
     ],
 )
 def test_a_bracket_after_a_call_is_refused_by_name(tmp_path, law, call):
-    with pytest.raises(bngsim.ModelError, match=rf"the call '{re.escape(call)}'.*#1415"):
+    with pytest.raises(
+        bngsim.ModelError,
+        match=rf"the call '{re.escape(call)}'.*drops the call and everything before it",
+    ):
         _model(tmp_path, law)
 
 
@@ -118,7 +121,9 @@ def test_a_body_given_after_load_is_refused_too(tmp_path):
     """The engine's hook for replacing how a function is evaluated compiles
     through the same path."""
     model = _model(tmp_path, "k")
-    with pytest.raises(RuntimeError, match=r"the call 'exp\(-A\)'.*#1415"):
+    with pytest.raises(
+        RuntimeError, match=r"the call 'exp\(-A\)'.*drops the call and everything before it"
+    ):
         model._core.set_function_eval_expression("f", "k*exp(-A)(B)")
 
 
@@ -127,7 +132,7 @@ def test_an_unknown_name_is_left_to_exprtk(tmp_path):
     than advise writing ``nope(A)*(...)``, which would fail just the same."""
     with pytest.raises(bngsim.ModelError, match="nope") as caught:
         _model(tmp_path, "nope(A)(B)")
-    assert "#1415" not in str(caught.value)
+    assert "drops the call" not in str(caught.value)
 
 
 @pytest.mark.skipif(not bngsim.HAS_NFSIM, reason="NFsim not compiled in")
@@ -152,5 +157,7 @@ def test_an_nfsim_function_is_refused_too(data_dir, tmp_path):
         return float(row[list(result.expression_names).index("probe")])
 
     assert column("3*exp(0)*(2)") == 6.0
-    with pytest.raises(RuntimeError, match=r"the call 'exp\(0\)'.*#1415"):
+    with pytest.raises(
+        RuntimeError, match=r"the call 'exp\(0\)'.*drops the call and everything before it"
+    ):
         column("3*exp(0)(2)")

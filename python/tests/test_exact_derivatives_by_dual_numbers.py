@@ -315,7 +315,8 @@ class TestATie:
         path.write_text(_PARAMETER_ON_A_KINK)
         sim = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode")
         with pytest.raises(
-            bngsim.SimulationError, match=r"#1330.*dX\(\)/dq is (-?6|-6|6).*from one side"
+            bngsim.SimulationError,
+            match=r"at this steady state: .*dX\(\)/dq is (-?6|-6|6).*from one side",
         ) as err:
             sim.steady_state(sensitivity_params=["s", "q"])
         assert "6" in str(err.value) and "-6" in str(err.value)
@@ -336,7 +337,10 @@ class TestATie:
         path = tmp_path / "k.net"
         path.write_text(_KINK_NOT_READ)
         model = bngsim.Model.from_net(str(path))
-        with pytest.raises(bngsim.SimulationError, match=r"#1330.*d\(rate of G\(\)\)/dX\(\)"):
+        with pytest.raises(
+            bngsim.SimulationError,
+            match=r"Model\.jacobian\(\) has no value at this state: .*d\(rate of G\(\)\)/dX\(\)",
+        ):
             model.jacobian([0.0, 4.0, 1.0])
         J = model.jacobian([0.5, 4.0, 1.0])
         assert J.source == "automatic-differentiation"
@@ -449,7 +453,10 @@ def test_a_table_over_a_parameter(tmp_path, dose, slope):
     path.write_text(_TABLE.format(dose=dose))
     sim = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode")
     if slope is None:
-        with pytest.raises(bngsim.SimulationError, match=r"#1330.*changes branch"):
+        with pytest.raises(
+            bngsim.SimulationError,
+            match=r"at this steady state: the state sits where a rate law changes branch",
+        ):
             sim.steady_state(sensitivity_params=["drug_conc"])
     else:
         out = sim.steady_state(sensitivity_params=["drug_conc"])
@@ -485,7 +492,10 @@ def test_a_state_moved_across_a_jump_is_refused(tmp_path):
         )
     )
     sim = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode")
-    with pytest.raises(bngsim.SimulationError, match=r"#1330.*value jumps where X\(\) sits"):
+    with pytest.raises(
+        bngsim.SimulationError,
+        match=r"at this steady state: a rate law's value jumps where X\(\) sits",
+    ):
         sim.steady_state(sensitivity_params=["s"])
 
 
@@ -501,7 +511,10 @@ def test_a_state_moved_across_a_jump_beside_a_large_column_is_refused(tmp_path):
         .replace("    3 Z() 1\n", "    3 Z() 1\n    4 W() 0\n")
     )
     sim = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode")
-    with pytest.raises(bngsim.SimulationError, match=r"#1330.*value jumps where X\(\) sits"):
+    with pytest.raises(
+        bngsim.SimulationError,
+        match=r"at this steady state: a rate law's value jumps where X\(\) sits",
+    ):
         sim.steady_state(sensitivity_params=["s"])
 
 
@@ -548,7 +561,10 @@ def test_a_state_held_on_a_jump_is_refused(tmp_path, steps):
     path = tmp_path / "stair.net"
     path.write_text(_STAIRCASE.format(q=1e-3).replace("1e12", steps))
     sim = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode")
-    with pytest.raises(bngsim.SimulationError, match=r"#1330.*held on a jump.*of X\(\)"):
+    with pytest.raises(
+        bngsim.SimulationError,
+        match=r"at this steady state: the state is held on a jump.*of X\(\)",
+    ):
         sim.steady_state(sensitivity_params=["p"])
 
 
@@ -560,7 +576,10 @@ def test_a_state_held_on_a_jump_is_refused_with_the_closed_form(tmp_path):
     #1330's review)."""
     model = _if_jump(tmp_path)
     assert model.prepare_analytical_jacobian()
-    with pytest.raises(bngsim.SimulationError, match=r"#1330.*held on a jump.*of X\(\)"):
+    with pytest.raises(
+        bngsim.SimulationError,
+        match=r"at this steady state: the state is held on a jump.*of X\(\)",
+    ):
         bngsim.Simulator(model, method="ode").steady_state(sensitivity_params=["s"])
 
 
@@ -569,7 +588,10 @@ def test_a_held_species_a_small_parameter_moves_is_refused(tmp_path):
     6.19 per unit of z, and was returned, where z = 0 was refused (issue
     #1330's review)."""
     sim = bngsim.Simulator(_if_jump(tmp_path, z=1e-10), method="ode")
-    with pytest.raises(bngsim.SimulationError, match=r"#1330.*held on a jump.*of X\(\)"):
+    with pytest.raises(
+        bngsim.SimulationError,
+        match=r"at this steady state: the state is held on a jump.*of X\(\)",
+    ):
         sim.steady_state(sensitivity_params=["z"])
 
 
@@ -656,8 +678,8 @@ class TestWhereThereIsNoDualEvaluation:
 # X = 2 beside Y = 3: each against its closed form.
 _BUILTINS = {
     "mratio(-3, 2, -Xo/Yo)": None,  # against a central difference
-    "Xo^2.5 + exp(-Xo)*log(Yo)": lambda x, y: (2.5 * x**1.5 - math.exp(-x) * math.log(y)),
-    "sqrt(Xo*Yo) + atan2(Xo, Yo)": lambda x, y: (0.5 * math.sqrt(y / x) + y / (x * x + y * y)),
+    "Xo^2.5 + exp(-Xo)*log(Yo)": lambda x, y: 2.5 * x**1.5 - math.exp(-x) * math.log(y),
+    "sqrt(Xo*Yo) + atan2(Xo, Yo)": lambda x, y: 0.5 * math.sqrt(y / x) + y / (x * x + y * y),
     "tanh(Xo - Yo) + erf(Xo/3)": lambda x, y: (
         1 - math.tanh(x - y) ** 2 + 2 / math.sqrt(math.pi) * math.exp(-((x / 3) ** 2)) / 3
     ),

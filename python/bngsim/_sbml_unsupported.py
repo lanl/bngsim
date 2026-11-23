@@ -121,14 +121,14 @@ HANDLED_PACKAGES: tuple[HandledPackage, ...] = (
         name="comp",
         how=(
             "hierarchical composition is flattened by libSBML's "
-            "CompFlatteningConverter before the model is built (GH #230)"
+            "CompFlatteningConverter before the model is built"
         ),
     ),
     HandledPackage(
         name="distrib",
         how=(
             "its random-draw csymbols reach the MathML translator, which refuses "
-            "each one by name (GH #97); the rest of distrib is uncertainty "
+            "each one by name; the rest of distrib is uncertainty "
             "annotation, which does not enter the integrated system"
         ),
     ),

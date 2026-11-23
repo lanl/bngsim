@@ -62,7 +62,9 @@ def test_a_state_an_event_puts_on_the_equality_is_refused_where_it_leaves(event)
     difference. An event that fires at t = 0 does so after the start was read,
     and is the same case: [0, 0, 3.218873] for [-6.4378, -1, 3.2189]."""
     with pytest.raises(
-        SensitivityUnsupportedError, match=r"'B==0.*leaves it at t=3\.2188.*issue #1279"
+        SensitivityUnsupportedError,
+        match=r"'B==0.*leaves it at t=3\.2188.*"
+        r"Leaving the surface is a switch bngsim does not locate",
     ):
         _columns(_model(event))
 
@@ -255,7 +257,10 @@ def test_every_entry_point_refuses_it_typed(entry):
     """A chunk of compute_all_sensitivities wrapped the solver's refusal in a
     SimulationError, which also sent it to the column-by-column retry."""
     sim = bngsim.Simulator(_model("1): B = 0"), method="ode", sensitivity_params=PARAMS)
-    with pytest.raises(SensitivityUnsupportedError, match=r"'B==0.*issue #1279"):
+    with pytest.raises(
+        SensitivityUnsupportedError,
+        match=r"'B==0.*Leaving the surface is a switch bngsim does not locate",
+    ):
         if entry.startswith("run_batch"):
             sim.run_batch(
                 t_span=(0, 8),

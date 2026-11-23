@@ -211,7 +211,9 @@ def test_a_michaelis_menten_rule_counted_per_complex_is_refused():
     ) as exc:
         bngsim.Simulator(bngsim.Model.from_net(str(net)), method="nf", xml_path=str(xml))
     assert "Q_mm" not in str(exc.value)
-    with pytest.raises(ModelError, match="issue #1525"):
+    with pytest.raises(
+        ModelError, match="NFsim counts each match.*cannot be corrected as the rule fires"
+    ):
         NfsimSession(str(xml))
 
 
@@ -290,5 +292,5 @@ def test_rulemonkey_refuses_matchonce_on_a_complex_with_two_matches():
     net, xml = DATA / "match_once_state_change.net", DATA / "match_once_state_change.xml"
     with pytest.raises(ModelError, match=r"rules 'Jmo', 'JLmo'\. RuleMonkey reads no"):
         bngsim.Simulator(bngsim.Model.from_net(str(net)), method="rm", xml_path=str(xml))
-    with pytest.raises(ModelError, match="issue #1525"):
+    with pytest.raises(ModelError, match="RuleMonkey reads no MatchOnce on a rule and counts"):
         bngsim.RuleMonkeySession(str(xml))

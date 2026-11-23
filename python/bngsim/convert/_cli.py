@@ -209,7 +209,7 @@ def _build_net2sbml_parser(prog: str = "bngsim-net2sbml") -> argparse.ArgumentPa
         "--sidecar",
         action="store_true",
         help=(
-            "also emit a SED-ML simulation-protocol sidecar (GH #218) next to the "
+            "also emit a SED-ML simulation-protocol sidecar next to the "
             "SBML (default <stem>.sedml): a uniform time course reporting every "
             "observable, since SBML carries no protocol of its own"
         ),
@@ -319,13 +319,12 @@ def _build_sbml2bngl_parser(prog: str = "bngsim-sbml2bngl") -> argparse.Argument
         prog=prog,
         description=(
             "Convert an SBML model to a compartmental BioNetGen .bngl model block "
-            "(cBNGL — recovers static compartment volumes, GH #224). Unlike "
+            "(cBNGL — recovers static compartment volumes). Unlike "
             "sbml2net's flat unit-volume .net, the emitted model carries a "
             "begin compartments block so non-unit-volume models round-trip "
             "faithfully through BNG2.pl generate_network. The output is the "
-            "begin model … end model block (no actions yet — the events→actions "
-            "protocol channel is #224 phase 2); append a generate_network action "
-            "to run it through BNG2.pl."
+            "begin model … end model block (no actions yet); append a generate_network "
+            "action to run it through BNG2.pl."
         ),
     )
     p.add_argument("sbml", type=Path, help="source SBML .xml file")
@@ -406,7 +405,7 @@ def _build_validate_parser(prog: str = "bngsim-validate-conversion") -> argparse
     p = argparse.ArgumentParser(
         prog=prog,
         description=(
-            "Validate a format conversion (SBML⇄.net) at levels L0–L4 (GH #217): "
+            "Validate a format conversion (SBML⇄.net) at levels L0–L4: "
             "L0 syntactic validity, L1 structural equivalence, L2 round-trip "
             "identity, L3 numerical equivalence (hard gates) and L4 symbolic "
             "equivalence (best-effort, non-gating). The direction is inferred "
@@ -504,7 +503,7 @@ def _build_omex_parser(prog: str = "bngsim-omex") -> argparse.ArgumentParser:
         prog=prog,
         description=(
             "Pack/unpack a COMBINE archive (.omex) — the standard zip container "
-            "bundling SBML + SED-ML + a manifest.xml (GH #219). Container plumbing "
+            "bundling SBML + SED-ML + a manifest.xml. Container plumbing "
             "only; the model/protocol semantics come from the sbml/net/sedml channels."
         ),
     )
@@ -660,7 +659,7 @@ def _build_omex_parser(prog: str = "bngsim-omex") -> argparse.ArgumentParser:
         default=None,
         help=(
             "where to write the .bngl actions block composed from EVERY SED-ML "
-            "experiment in the archive (GH #222; default: alongside the .net with "
+            "experiment in the archive (default: alongside the .net with "
             "a .bngl suffix)"
         ),
     )

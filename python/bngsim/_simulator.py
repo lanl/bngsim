@@ -247,8 +247,8 @@ def _tracking_hint(decades: float) -> str:
     if not decades:
         return ""
     return (
-        f" This run used a tracking absolute tolerance {decades:g} decades deep "
-        f"(issue #213), which asks for relative accuracy on every species all the "
+        f" This run used a tracking absolute tolerance {decades:g} decades deep, "
+        f"which asks for relative accuracy on every species all the "
         f"way down and is the first thing to suspect: a species whose value is a "
         f"difference of large fluxes cannot be resolved below its own roundoff, and "
         f"the step size collapses instead. Try a smaller TrackingAtol(decades=...), "
@@ -594,8 +594,8 @@ def _warn_if_rows_start_off_the_current_state(model, what, remedy):
         f"a run). {remedy} Such a start does not follow an initial-condition "
         "parameter the call writes, which only the reset applies: a dose over it is "
         "dropped, and its derivative is 0 where the caller set the state; a state a "
-        "run advanced carries no derivative, so a sensitivity call from it refuses "
-        "(issue #1528). Call Model.reset() first where the initial conditions are the "
+        "run advanced carries no derivative, so a sensitivity call from it refuses. "
+        "Call Model.reset() first where the initial conditions are the "
         "start you want, as they are for such a dose.",
         UserWarning,
         code="start.rows_from_initial",
@@ -1486,7 +1486,7 @@ class Simulator:
         if net_path_str:
             warnings.warn(
                 "Simulator(net_path=...) is deprecated and ignored: every backend, "
-                "jacobian='jax' included, reads the model it is given (issue #803).",
+                "jacobian='jax' included, reads the model it is given.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -1931,13 +1931,13 @@ class Simulator:
             f"Forward sensitivity is not supported for {_abbreviate(bad)}: a "
             f"function of each name owns that parameter slot — bngsim stores the "
             f"function's evaluated value there and recomputes it from the "
-            f"function's own expression before every derivative evaluation "
-            f"(issue #227), and an SBML <assignmentRule> over a declared "
-            f"<parameter> binds the function to that declared row just the same "
-            f"(issue #266). No write moves such a slot — set_param refuses one, "
+            f"function's own expression before every derivative evaluation, "
+            f"and an SBML <assignmentRule> over a declared "
+            f"<parameter> binds the function to that declared row just the same. "
+            f"No write moves such a slot — set_param refuses one, "
             f"and force_override does not lift that refusal — so the column has "
             f"no write to be the derivative of, and CVODES can only report it as "
-            f"identically zero (issue #329). {defined}Differentiate the "
+            f"identically zero. {defined}Differentiate the "
             f"parameters those expressions read instead; "
             f"Model.primary_param_names omits these names for that reason, and "
             f"their effect is already carried through the chain rule by the "
@@ -1991,8 +1991,8 @@ class Simulator:
                 f"parameter holds). A sensitivity column is the derivative of the "
                 f"same write, so where the write cannot be honored the column would "
                 f"be a confidently wrong derivative rather than a conservative one. "
-                f"Every other compartment size in this model is differentiable "
-                f"(issue #170 stage 3). For these, rebuild at V +/- h: "
+                f"Every other compartment size in this model is differentiable. "
+                f"For these, rebuild at V +/- h: "
                 f"Model.from_sbml(path, compartment_sizes={{...}})."
             )
 
@@ -2020,7 +2020,7 @@ class Simulator:
                 + ". The model holds the number each gave, which a write does not move, "
                 "so set_param refuses to change the parameter and its column would lack "
                 "everything that reaches the model through that number: an exact 0 where "
-                "nothing else reads it (issues #313, #695, #696, #711; Model.frozen_params "
+                "nothing else reads it (Model.frozen_params "
                 "lists every such parameter). Difference models loaded from the source at "
                 "p +/- h."
             )
@@ -2069,7 +2069,7 @@ class Simulator:
                     if compared
                     else ". Where the sides differ, in slope or in value, the column "
                 )
-                + "would be one side's, or neither (issue #1332). Move the parameter off the "
+                + "would be one side's, or neither. Move the parameter off the "
                 "switch, or difference the run at p +/- h on each side."
             )
 
@@ -2119,7 +2119,7 @@ class Simulator:
                 "law. A conserved total is an amount, which a compartment's size does not "
                 "move, and the steady-state solve holds totals of concentrations: the size's "
                 "column came back 0 where the steady state moves with it, and is not right "
-                "with the totals differentiated either (issue #704). Difference "
+                "with the totals differentiated either. Difference "
                 "steady states solved again at a moved size, or take the column from a time "
                 "course run to the steady state."
             )
@@ -2147,9 +2147,9 @@ class Simulator:
                         f"size ({', '.join(names[i] for i in members[:4])}"
                         f"{', ...' if len(members) > 4 else ''}) and an assignment rule "
                         f"sets the size of {', '.join(ruled)}. The right-hand side divides "
-                        "by the size the model loaded at where the rule gives another "
-                        "(issue #745), so the steady state and its columns would be those "
-                        "of another system (issue #758). Take the columns from a time "
+                        "by the size the model loaded at where the rule gives another, "
+                        "so the steady state and its columns would be those "
+                        "of another system. Take the columns from a time "
                         "course of a model whose sizes are constants."
                     )
         if not core.ic_state_dirty:
@@ -2173,12 +2173,12 @@ class Simulator:
                 "steady_state(sensitivity_params=...) is not supported for "
                 f"{moved} on a carried-over species state (a previous run() advanced "
                 "it; a save_concentrations() of it, and a reset() back to that, keep "
-                "it so, issue #1528). "
+                "it so). "
                 f"{'Each sets' if len(moved) != 1 else 'It sets'} the initial amount of a "
                 "species in a conservation law, so the steady state moves with it through "
                 "the conserved total, and the state no longer says by how much: the column "
-                "came back 0 where the total moves (issue #704; a time course refuses "
-                "sensitivities on such a state too, GH #210). reset() the model to solve "
+                "came back 0 where the total moves (a time course refuses "
+                "sensitivities on such a state too). reset() the model to solve "
                 "from its initial condition."
             )
 
@@ -2259,12 +2259,11 @@ class Simulator:
                 "Output sensitivities are not supported for this model's events: "
                 + reason
                 + detail
-                + " bngsim refuses rather than return silently-stale derivatives "
-                "(GH #205). Forward sensitivity is supported through fixed-time events, "
-                "through events whose trigger thresholds a fitted constant (issue #49), "
+                + " bngsim refuses rather than return silently-stale derivatives. "
+                "Forward sensitivity is supported through fixed-time events, "
+                "through events whose trigger thresholds a fitted constant, "
                 "and through state-dependent triggers that reduce to a single relational "
-                "comparison (issue #144); the remaining subclasses are tracked in issue "
-                "#144."
+                "comparison; the remaining subclasses are not yet supported."
             )
 
     def _event_time_compensation(self, names: list[str]) -> tuple[list[int], str, dict]:
@@ -2394,7 +2393,7 @@ class Simulator:
                 "Forward sensitivity is not supported for this model: it has no analytic "
                 "sensitivity right-hand side, and its rate laws could not be read for a "
                 f"branch crossing ({type(e).__name__}: {e}). On CVODES' internal difference "
-                "quotient a column is wrong across one (issues #414, #938), and bngsim "
+                "quotient a column is wrong across one, and bngsim "
                 "refuses rather than run without knowing."
             ) from e
         if reason is None:
@@ -2408,10 +2407,10 @@ class Simulator:
             "declined for it, so CVODES' internal difference quotient would be used "
             "instead, and it integrates the variational equation smoothly through the "
             "crossing, dropping the saltation jump (f⁻−f⁺)·dt*/dθ, so every sensitivity "
-            "column would be wrong at and after the crossing (issue #146). bngsim refuses "
-            "rather than return a gradient it has flagged as wrong (issue #414). Neither "
-            "the issue #48 switch-time jump (which needs a crossing time known a priori) "
-            "nor the issue #150 saltation jump (which needs a single comparison over state "
+            "column would be wrong at and after the crossing. bngsim refuses "
+            "rather than return a gradient it has flagged as wrong. Neither "
+            "the switch-time jump (which needs a crossing time known a priori) "
+            "nor the state-switch saltation jump (which needs a single comparison over state "
             "to root on) applies here; validate against a trajectory finite difference if "
             "you need an approximate gradient."
         )
@@ -2478,7 +2477,7 @@ class Simulator:
                     "Forward sensitivity is not supported for this model: it has no analytic "
                     "sensitivity right-hand side, and its rate laws could not be read for a "
                     f"crossing on the state ({type(e).__name__}: {e}). On CVODES' internal "
-                    "difference quotient a column is wrong across one (issues #938, #932), "
+                    "difference quotient a column is wrong across one, "
                     "and bngsim refuses rather than run without knowing."
                 ) from e
             if own:
@@ -2497,7 +2496,7 @@ class Simulator:
             "the rate law at the state and the parameter moved along each column, which "
             "beside a jump is on its other side: a column takes part of the jump before the "
             "crossing, by more the looser the tolerance, or the step size collapses and the "
-            "run does not finish (issues #938, #932). bngsim refuses rather than return it, "
+            "run does not finish. bngsim refuses rather than return it, "
             "whether or not this run reaches the crossing: that is not known before it. A "
             "law that only bends at a condition runs where that is proved from its text: one "
             "branch 0 and the other a multiple of what the condition compares, "
@@ -2539,13 +2538,13 @@ class Simulator:
                 logger,
                 "sens.detection_failed",
                 "Event-time sensitivity detection failed (%s); any event-time "
-                "parameter's gradient will be zero (issue #49).",
+                "parameter's gradient will be zero.",
                 e,
             )
             return
         if res.records:
             logger.info(
-                "Event-time forward sensitivity: %d event(s) with a moving crossing (issue #49)",
+                "Event-time forward sensitivity: %d event(s) with a moving crossing",
                 len(res.records),
             )
             opts.set_event_time_sens(res.records)
@@ -2664,7 +2663,7 @@ class Simulator:
             _notices.log(
                 logger,
                 "stops.detection_failed",
-                "Smooth-pulse stop resolution failed (%s) (issue #1286).",
+                "Smooth-pulse stop resolution failed (%s).",
                 e,
             )
             pulses = []
@@ -2754,13 +2753,13 @@ class Simulator:
                 logger,
                 "stops.detection_failed",
                 "Discontinuity crossing-stop resolution failed (%s); the "
-                "integrator will approach each crossing unclamped (issue #305).",
+                "integrator will approach each crossing unclamped.",
                 e,
             )
             return conditions
         if stops:
             logger.debug(
-                "Discontinuity crossing stops at t=%s (issue #305)",
+                "Discontinuity crossing stops at t=%s",
                 ", ".join(f"{stop.time:.6g}" for stop in stops),
             )
             opts.set_crossing_stops(
@@ -2830,7 +2829,7 @@ class Simulator:
                 "this run, where the doubles of that argument are a sixteenth of one wrap "
                 "apart or more. What the call returns is then the rounding of its "
                 "argument, a few steps up to each wrap, and a stop on each wrap would not "
-                f"be a stop on each step (issue #904). Left without {stop} the run would "
+                f"be a stop on each step. Left without {stop} the run would "
                 "step over them. A sawtooth needs an argument that is small against 2^48 "
                 "of its wraps: an offset inside it (`mod(1e12 + time(), P)`), or a clock "
                 "that far along, leaves it nothing to resolve."
@@ -2863,8 +2862,8 @@ class Simulator:
             f"switches on {item.condition!r}, and where it does cannot be placed: the "
             f"argument of {call!r} is within its own rounding of a level it crosses "
             f"between t={begins!r} and t={ends!r}{more}, {how}. Left without {stop} the "
-            "run would step over a window that opens or closes in that stretch (issue "
-            f"#904). Write the argument so that {advice}."
+            "run would step over a window that opens or closes in that stretch. "
+            f"Write the argument so that {advice}."
         )
 
     @staticmethod
@@ -2916,14 +2915,14 @@ class Simulator:
                     f"count its changes between t={t_start!r} and t={t_end!r}: evaluated "
                     "on grids of up to two million cells, each finer grid found more of "
                     "them. Left without a stop on each, the integrator would step over "
-                    f"its windows (issue #904). {why}"
+                    f"its windows. {why}"
                 )
             return SimulationError(
                 f"The rate law switches on {item.condition!r}, which changes about "
                 f"{item.changes} times between t={t_start!r} and t={t_end!r}. With the "
                 "run's other switches that is more than the 1,000,000 stops bngsim "
                 "places in one run, and left without them the integrator would step "
-                f"over its windows (issue #890). {why}"
+                f"over its windows. {why}"
             )
 
         for item in over_budget:
@@ -2937,7 +2936,7 @@ class Simulator:
 
                 raise SimulationError(
                     f"The rate law switches on {item.condition!r}, which, read once on each "
-                    "stretch of time its argument holds one double (issue #1018), changes "
+                    "stretch of time its argument holds one double, changes "
                     f"{item.changes} times between t={t_start!r} and t={t_end!r}. A run places "
                     "at most 1,000,000 stops with its other switches, and without a stop on "
                     "each change a step bound in their place need not keep the answer within "
@@ -2970,8 +2969,7 @@ class Simulator:
                     opts.max_step_size = need
                 logger.info(
                     "%r changes about %d times between t=%r and t=%r, more than the "
-                    "stops placed in one run; the step is bounded at %g instead "
-                    "(issue #890).",
+                    "stops placed in one run; the step is bounded at %g instead.",
                     item.condition,
                     item.changes,
                     t_start,
@@ -2992,7 +2990,7 @@ class Simulator:
                 logger.info(
                     "%r changes about %d times between t=%r and t=%r, more than the "
                     "stops placed in one run; the step bound in force (%g) is what "
-                    "keeps the integrator off its windows (issue #890).",
+                    "keeps the integrator off its windows.",
                     item.condition,
                     item.changes,
                     t_start,
@@ -3068,7 +3066,7 @@ class Simulator:
                         logger,
                         "stops.detection_failed",
                         "Discontinuity crossing resolution failed (%s); the SSA "
-                        "continuous loop will step without breakpoints (issue #719).",
+                        "continuous loop will step without breakpoints.",
                         e,
                     )
                 over_budget = Simulator._switches_the_run(model, over_budget)
@@ -3089,15 +3087,15 @@ class Simulator:
                             f"could not count its changes between t={t_start!r} and "
                             f"t={t_end!r}: evaluated on grids of up to two million cells, "
                             "each finer grid found more of them. Left without a breakpoint "
-                            "on each, the run would step over its windows (issue #904). "
+                            "on each, the run would step over its windows. "
                             "Run it in shorter legs (run_until)."
                         )
                     raise SimulationError(
                         f"A rate or a trigger switches on {item.condition!r}, which changes "
                         f"about {item.changes} times between t={t_start!r} and t={t_end!r}: "
                         "more than the 1,000,000 breakpoints bngsim hands a stochastic "
-                        "run. Left alone the run would step over its windows (issue "
-                        "#890). Run it in shorter legs (run_until)."
+                        "run. Left alone the run would step over its windows. "
+                        "Run it in shorter legs (run_until)."
                     )
                 if times:
                     pc_names = Simulator._ssa_piecewise_constant(model, t_start, t_end, conditions)
@@ -3205,7 +3203,7 @@ class Simulator:
                 logger,
                 "sens.detection_failed",
                 "Switch-time sensitivity detection failed (%s); any switch-time "
-                "parameter's gradient will be zero (issue #48).",
+                "parameter's gradient will be zero.",
                 e,
             )
             return
@@ -3232,7 +3230,7 @@ class Simulator:
                 return
         if records:
             logger.info(
-                "Switch-time forward sensitivity: %d crossing(s) at t=%s (issue #48)",
+                "Switch-time forward sensitivity: %d crossing(s) at t=%s",
                 len(records),
                 ", ".join(f"{r[0]:.6g}" for r in records),
             )
@@ -3362,8 +3360,7 @@ class Simulator:
                 logger,
                 "sens.detection_failed",
                 "State-switch sensitivity detection failed (%s); a rate-law condition "
-                "that reads model state will not have its crossing jump applied "
-                "(issue #150).",
+                "that reads model state will not have its crossing jump applied.",
                 e,
             )
             # The equalities are found on their own, and are watched with no
@@ -3388,14 +3385,13 @@ class Simulator:
                     stops.append(atom)
         if conditions:
             logger.info(
-                "State-switch forward sensitivity: %d condition(s) rooted and jumped "
-                "(issue #150): %s",
+                "State-switch forward sensitivity: %d condition(s) rooted and jumped: %s",
                 len(conditions),
                 ", ".join(repr(c) for c in conditions),
             )
         if stops:
             logger.debug(
-                "State-switch stops for a sensitivity run (issue #1068): %s",
+                "State-switch stops for a sensitivity run: %s",
                 ", ".join(repr(c) for c in stops),
             )
         if conditions or stops:
@@ -3409,7 +3405,7 @@ class Simulator:
                     logger,
                     "sens.detection_failed",
                     "State-switch reaction map failed (%s); continuity at each "
-                    "crossing is judged over every species (issue #763).",
+                    "crossing is judged over every species.",
                     e,
                 )
             else:
@@ -3454,8 +3450,7 @@ class Simulator:
             _notices.log(
                 logger,
                 "equality.detection_failed",
-                "Rate-law equality detection failed (%s); a state that leaves one is not "
-                "watched (issue #1279).",
+                "Rate-law equality detection failed (%s); a state that leaves one is not watched.",
                 e,
             )
             return
@@ -3480,7 +3475,7 @@ class Simulator:
                 logger,
                 "equality.detection_failed",
                 "The state switches inside a rate-law equality were not found (%s); a "
-                "leaving at one's crossing is refused (issue #1279).",
+                "leaving at one's crossing is refused.",
                 e,
             )
         else:
@@ -3492,7 +3487,7 @@ class Simulator:
                 logger,
                 "equality.detection_failed",
                 "Rate-law equality reaction map failed (%s); a leaving is judged over "
-                "every reaction's flux (issue #1279).",
+                "every reaction's flux.",
                 e,
             )
         else:
@@ -3531,7 +3526,7 @@ class Simulator:
                 conditions, guards = at_values
         if conditions:
             logger.debug(
-                "State-switch roots for a plain run (issue #897): %s",
+                "State-switch roots for a plain run: %s",
                 ", ".join(repr(c) for c in conditions),
             )
             opts.set_state_switch_conditions(list(conditions))
@@ -3611,7 +3606,7 @@ class Simulator:
                 "built automatically — remove codegen=False, or drop the "
                 "sensitivity request. (The interpreted finite-difference "
                 "sensitivity path was retired because it silently fails at tight "
-                "tolerances; GH #214.)",
+                "tolerances.)",
                 code="usage.conflicting_arguments",
             )
         if os.environ.get("BNGSIM_NO_CODEGEN"):
@@ -3619,7 +3614,7 @@ class Simulator:
                 "Forward sensitivity analysis requires code generation, but "
                 "BNGSIM_NO_CODEGEN is set. Unset it for sensitivity runs (the "
                 "interpreted finite-difference sensitivity path was retired "
-                "because it silently fails at tight tolerances; GH #214)."
+                "because it silently fails at tight tolerances)."
             )
         # Every model, .net and BNGL ones included, builds its sensitivity RHS
         # from the model bngsim built (#803). The .net path this replaced was kept
@@ -3674,7 +3669,7 @@ class Simulator:
             "non-smooth construct such as min/max/abs/floor, rateOf() inside a "
             "rate law, or an unparseable expression). Forward sensitivity needs a "
             "differentiable RHS; bngsim refuses rather than return unreliable "
-            "finite-difference derivatives (GH #214). If the rate law is smooth "
+            "finite-difference derivatives. If the rate law is smooth "
             "but unsupported here, please file a codegen issue."
         )
 
@@ -3702,7 +3697,7 @@ class Simulator:
                 return SensitivityUnsupportedError(
                     "Forward sensitivity needs a compiled sensitivity RHS, and codegen "
                     f"declined this model: {decline.rstrip('.')}. bngsim refuses rather "
-                    "than return unreliable finite-difference derivatives (GH #214)."
+                    "than return unreliable finite-difference derivatives."
                 )
             return SensitivityUnsupportedError(diff_err)
 
@@ -3905,7 +3900,7 @@ class Simulator:
             f"{upstream} reach the model through. The sensitivity code differentiates "
             "through a derived parameter while it follows its expression and not while "
             "it is pinned, and the code this row was given was built for the other "
-            f"case; those columns would be that case's (issues #708, #961). {self._ROW_REMEDY}"
+            f"case; those columns would be that case's. {self._ROW_REMEDY}"
         )
 
     def _row_reads_another_build(self, clone: Model):
@@ -4009,7 +4004,7 @@ class Simulator:
             logger.info(
                 "run_batch: %d row(s) pin or re-attach a derived parameter a requested "
                 "column reaches the model through; built sensitivity code for %d other "
-                "attachment(s) (issue #961).",
+                "attachment(s).",
                 len(runner_of),
                 len(runners),
             )
@@ -4046,7 +4041,7 @@ class Simulator:
         logger.info(
             "The model is no longer what the sensitivity code was built for (a derived "
             "parameter pinned or attached again, or a rate-law condition read otherwise "
-            "at the new values); building it again (issue #708)."
+            "at the new values); building it again."
         )
         self._build_codegen_again()
 
@@ -4069,7 +4064,7 @@ class Simulator:
         """
         logger.info(
             "A rate-law condition is read otherwise than when the sensitivity code was "
-            "built; building it again for the model as it is (issue #708)."
+            "built; building it again for the model as it is."
         )
         self._codegen_watch_gate = True
         self._build_codegen_again()
@@ -4762,13 +4757,13 @@ class Simulator:
                 f"Assignment-rule species {sorted(refused)} have NaN or infinite entries "
                 "in their Result.sensitivities row: the chain rule through the assignment "
                 "is not available for them, because codegen declined the rule's own "
-                "output sensitivity (GH #198 refuses an `if()` conditional or a table "
+                "output sensitivity (codegen refuses an `if()` conditional or a table "
                 "function rather than guess), because the run computed no output "
                 "sensitivity for the rule (codegen built none for this model), or "
                 "because the rule's own value is not finite there. "
                 "NaN rather than 0.0 because a structural zero is indistinguishable "
                 "from a measured one, and Result.gradient would read it as a flat "
-                "objective (GH #221). Only these rows are NaN; every other row is a "
+                "objective. Only these rows are NaN; every other row is a "
                 "normal derivative, and a loss that puts no weight on them still gets "
                 "a gradient. Result.ar_sensitivity_refused lists them, and "
                 "Result.output_sensitivities('species:<name>') raises with the "
@@ -4989,9 +4984,9 @@ class Simulator:
                 "a compartment whose size changes, so its row needs the derivative of that "
                 "size, and that is not available or not finite: for a size an assignment "
                 "rule sets, the run computed no output sensitivity for the rule's "
-                "expression, or codegen declined it (GH #198). NaN rather than the "
-                "derivative of the stored amount, which is what the row held before (issue "
-                "#742). Result.ar_sensitivity_refused lists them.",
+                "expression, or codegen declined it. NaN rather than the "
+                "derivative of the stored amount, which is what the row held before. "
+                "Result.ar_sensitivity_refused lists them.",
                 code="sens.nan_rows",
                 stacklevel=2,
             )
@@ -5351,7 +5346,7 @@ class Simulator:
                     f'scalar tolerance, a sequence of n_species values, "{_ATOL_AUTO}" '
                     f"to derive one from the model (see Simulator.auto_atol), or "
                     f'"{_ATOL_TRACKING}" / bngsim.TrackingAtol(...) for one that '
-                    f"follows the trajectory (issue #213)."
+                    f"follows the trajectory."
                 )
             starts = self._auto_starts() if self._auto_starts is not None else None
             if starts:
@@ -5824,7 +5819,7 @@ class Simulator:
                 "notice",
                 "jacobian.difference_quotient_kept",
                 "An earlier run on this Simulator failed with the analytical Jacobian "
-                "and was retried with the finite-difference one (GH#176); this run used "
+                "and was retried with the finite-difference one; this run used "
                 "the finite-difference Jacobian from the start.",
             )
             return sim.run(times, opts)
@@ -5849,11 +5844,11 @@ class Simulator:
             _notices.log(
                 logger,
                 "jacobian.difference_quotient_retry",
-                "GH#176 analytical Jacobian: CVODE integration failed (%s); "
+                "analytical Jacobian: CVODE integration failed (%s); "
                 "retrying with the finite-difference Jacobian. The rate law is "
                 "likely discontinuous in a state variable (e.g. an if() whose "
                 "condition crosses a threshold), or its derivative is infinite "
-                "where the state sits (e.g. sqrt(S) at S = 0, issue #867), which "
+                "where the state sits (e.g. sqrt(S) at S = 0), which "
                 "the exact Jacobian cannot represent. Pass jacobian='fd' to skip "
                 "this attempt, or jacobian='analytical' to surface the failure.",
                 e,
@@ -6176,7 +6171,7 @@ class Simulator:
             raise UsageError(
                 "start='initial' with carry_sensitivities=True: a reset discards the "
                 "pre-equilibrated state and its dx/dθ that carry_sensitivities "
-                "continues (GH #210). Drop one of them.",
+                "continues. Drop one of them.",
                 code="usage.conflicting_arguments",
             )
 
@@ -6204,7 +6199,7 @@ class Simulator:
                 raise UsageError(
                     "carry_sensitivities=True is only supported for method='ode' "
                     f"(got method='{self._method}'). Pre-equilibration output "
-                    "sensitivities ride the CVODES forward-sensitivity path (GH #210).",
+                    "sensitivities ride the CVODES forward-sensitivity path.",
                     code="usage.method_unsupported",
                     remedies=[use_method("ode")],
                 )
@@ -6212,7 +6207,7 @@ class Simulator:
                 raise UsageError(
                     "carry_sensitivities=True requires sensitivity_params on the "
                     "Simulator: there are no sensitivity columns to seed across the "
-                    "pre-equilibration boundary (GH #210).",
+                    "pre-equilibration boundary.",
                     code="usage.missing_argument",
                     remedies=[pass_argument("sensitivity_params")],
                 )
@@ -6696,8 +6691,7 @@ class Simulator:
             "size, or negative, with no solver error. The default atol takes each "
             "species' scale from the state the run starts from, and these start at 0 or "
             "below every scale that state gives; pass atol='tracking' (a tolerance that "
-            "follows each species' magnitude), or an atol well below these species "
-            "(issues #1361, #1420)."
+            "follows each species' magnitude), or an atol well below these species."
         )
 
     # ─── Batch ──────────────────────────────────────────────────────
@@ -7450,7 +7444,7 @@ class Simulator:
                 f"into a scan when {source} carries a matching forward-sensitivity "
                 "matrix dx/dθ: each point starts from that state, so its ∂x(0)/∂θ is "
                 "the carried derivative and re-seeding it fresh would be wrong, not "
-                f"approximate (issue #81). Requested sensitivity_params: {names}; "
+                f"approximate. Requested sensitivity_params: {names}; "
                 f"carried columns: {have}. To fix, {fix} — note that a plain "
                 "(non-sensitivity) run, set_concentration(), or set_state() in "
                 "between drops the carried dx/dθ. For a sweep whose points start "
@@ -7604,7 +7598,7 @@ class Simulator:
                 f"{list(core.pending_sensitivity_seed_param_names)} vs requested "
                 f"{list(names)}). A continuation scan (reset_conc=False / bifurcate) "
                 "carries each point's ∂x(0)/∂θ from the previous point, so the chain "
-                "cannot be broken mid-scan (issue #81)."
+                "cannot be broken mid-scan."
             )
         return np.array(core.pending_sensitivity_seed(), dtype=np.float64)
 
@@ -7672,7 +7666,7 @@ class Simulator:
                     f"on_point changed the sensitivity parameter {name!r} "
                     f"({before!r} → {model.get_param(name)!r}). The carried "
                     f"∂x/∂{name} was accumulated at the pre-hook value, so a point that "
-                    "overwrites it would mix two values of one symbol (issue #81). "
+                    "overwrites it would mix two values of one symbol. "
                     "Use on_point for the point's conditions (doses, non-fitted "
                     "parameters) only."
                 )
@@ -7787,7 +7781,7 @@ class Simulator:
                 "on_point is not a deterministic function of (model, value): re-running "
                 "it on the same inputs produced a different initial condition. bngsim "
                 "calls the hook at perturbed inputs to measure ∂x(0)/∂θ for the initial "
-                "conditions it assigns (issue #111), which requires determinism. Make "
+                "conditions it assigns, which requires determinism. Make "
                 "the hook depend only on its arguments, or declare its rows with "
                 "model.declare_ic_sensitivity() inside it to skip the measurement."
             )
@@ -7871,7 +7865,7 @@ class Simulator:
                     f"{h * _IC_SENS_PROBE_COARSE:.3g}, so the hook has a jump or a kink "
                     "there (a dose rounded to whole molecules does this). bngsim will "
                     "not report a difference quotient of a jump as a derivative "
-                    "(issue #111) — declare the row explicitly with "
+                    "— declare the row explicitly with "
                     "model.declare_ic_sensitivity({species: {param: value}}) inside the "
                     "hook (an intentionally θ-independent assignment declares 0)."
                 )
@@ -7904,7 +7898,7 @@ class Simulator:
                     f"on_point raised while bngsim measured d(initial condition)/d{name} "
                     f"through it ({type(e).__name__}: {e}). The hook is called with "
                     "perturbed inputs to obtain ∂x(0)/∂θ for the initial conditions it "
-                    "assigns (issue #111), so it must tolerate a nearby parameter value "
+                    "assigns, so it must tolerate a nearby parameter value "
                     "and state — or declare its rows with model.declare_ic_sensitivity() "
                     "inside the hook, which skips the measurement."
                 ) from e
@@ -8721,7 +8715,7 @@ class Simulator:
             raise SensitivityUnsupportedError(
                 f"run_batch row {index}: the switch-time pass could not compensate a "
                 f"rate-law condition ({e}) at the row's values, and the batch's code was "
-                "built where it could (issues #414, #708)."
+                "built where it could."
             ) from None
         except SensitivityRefusedDuringRunError as e:
             # The solver's refusal partway, by type, and by row (issue #1435): it
@@ -9028,7 +9022,7 @@ class Simulator:
                     "stoichiometry, a conversion factor, an initial value, or a volume "
                     "BNG2.pl wrote into a rate constant), the model holds the number that "
                     "gave, and its column would lack everything that reaches the model "
-                    "through it (issues #313, #695, #696, #711; "
+                    "through it ("
                     "Model.frozen_params). The returned tensor has "
                     f"{len(target_params)} parameter columns; result.sensitivity_params "
                     "lists them.",
@@ -9041,7 +9035,7 @@ class Simulator:
                     f"compute_all_sensitivities: skipping compartment size(s) {skipped} "
                     f"— this model cannot resolve them to live volumes, so set_param "
                     f"refuses to write them and their sensitivity column would be the "
-                    f"derivative of a write that cannot happen (issue #170; "
+                    f"derivative of a write that cannot happen ("
                     f"Model.unwritable_compartment_size_params names the reason per "
                     f"size). The returned tensor has {len(target_params)} parameter "
                     f"columns; result.sensitivity_params lists them. Pass params=[...] "
@@ -9058,8 +9052,8 @@ class Simulator:
                     f"expression over other parameters, so its column is not "
                     f"independent of theirs: the primaries underneath already carry "
                     f"its effect through the chain rule, and Result.gradient sums the "
-                    f"whole parameter axis, which would count that effect twice "
-                    f"(issue #203). The returned tensor has {len(target_params)} "
+                    f"whole parameter axis, which would count that effect twice. "
+                    f"The returned tensor has {len(target_params)} "
                     f"parameter columns (Model.primary_param_names); "
                     f"result.sensitivity_params lists them, and "
                     f"set(model.param_names) - set(result.sensitivity_params) is "
@@ -9083,7 +9077,7 @@ class Simulator:
                         f"evaluated value, which the engine rewrites from that "
                         f"function's own expression before every derivative "
                         f"evaluation, so the column would be identically zero "
-                        f"(issue #227) — differentiate the parameters that "
+                        f"— differentiate the parameters that "
                         f"function's expression reads instead."
                     )
                 if sizes:
@@ -9092,9 +9086,9 @@ class Simulator:
                         f"record of a compartment's size at load time, which the "
                         f"rate constants in that compartment are normalised "
                         f"against: moving one rescales those rates while the "
-                        f"volume stays put (issue #170) — differentiate the "
+                        f"volume stays put — differentiate the "
                         f"compartment size itself instead, an ordinary writable "
-                        f"parameter since #170."
+                        f"parameter."
                     )
                 _notices.warn(
                     f"compute_all_sensitivities: skipping {len(internal)} internal "
@@ -9102,7 +9096,7 @@ class Simulator:
                     f"bngsim synthesized rather than a knob the model declared, so "
                     f"set_param refuses a value-changing write to it and an "
                     f"optimizer handed its gradient would fit a quantity with no "
-                    f"meaning (issue #203).{why} The returned tensor has "
+                    f"meaning.{why} The returned tensor has "
                     f"{len(target_params)} parameter columns; "
                     f"result.sensitivity_params lists them.",
                     code="sens.parameters_skipped",
@@ -9247,9 +9241,9 @@ class Simulator:
                 raise SensitivityUnsupportedError(
                     f"Forward sensitivity is not supported on this run: a rate-law condition "
                     f"({exc}) is read otherwise at the model's values now than when the "
-                    "sensitivity code was built, and its switch time does not resolve here "
-                    "(issue #708). A Simulator built at these values is refused too: it has "
-                    "no analytic right-hand side for the condition (issues #414, #961)."
+                    "sensitivity code was built, and its switch time does not resolve here. "
+                    "A Simulator built at these values is refused too: it has "
+                    "no analytic right-hand side for the condition."
                 ) from None
             if isinstance(exc, SensitivityUnsupportedError) and not isinstance(
                 exc, SensitivityRefusedForParametersError
@@ -9376,7 +9370,7 @@ class Simulator:
         else:
             logger.info(
                 "compute_all_sensitivities: chunk %d (params=%s) failed; retrying "
-                "its %d columns one at a time (GH #243)",
+                "its %d columns one at a time",
                 chunk_idx,
                 chunk_params,
                 len(chunk_params),
@@ -9408,8 +9402,8 @@ class Simulator:
                     f"those columns came from single-column solves. The grouping, not "
                     f"the model, was the problem: a chunk's columns share one CVODES "
                     f"error test, so chunk_size decides which columns are error-"
-                    f"controlled together and can decide whether the step is accepted "
-                    f"(issue #243). Underlying failure: {exc}",
+                    f"controlled together and can decide whether the step is accepted. "
+                    f"Underlying failure: {exc}",
                     # user → compute_all_sensitivities → _recover_chunk → here
                     code="sens.chunk_split",
                     stacklevel=4,
@@ -9466,7 +9460,7 @@ class Simulator:
                 " A chunk's columns share one CVODES error test, so chunk_size — "
                 "documented as a throughput knob — also decides which columns are "
                 "error-controlled together, and a different value can change whether "
-                "this call succeeds (issue #243)."
+                "this call succeeds."
             )
         )
         raise (SensitivityRefusedForParametersError if refused else SimulationError)(
@@ -9603,7 +9597,7 @@ class Simulator:
         raise SimulationError(
             f"Sensitivity chunk failed (params={sens_params}): the solver reported "
             f"success but column(s) {bad} came back non-finite, so the tensor would "
-            f"carry a silently dead column (issue #243)."
+            f"carry a silently dead column."
         )
 
     @staticmethod
@@ -10382,7 +10376,7 @@ class Simulator:
 
         opening = (
             "steady_state(sensitivity_params=...) does not return {what} for this model at "
-            "this steady state (issue #1002): the Jacobian is a difference quotient, and "
+            "this steady state: the Jacobian is a difference quotient, and "
             "the answer depends on its step. "
         )
         if result.sens_fd_disagree_species is not None:
@@ -10429,7 +10423,7 @@ class Simulator:
         if result.sens_held_species is not None:
             raise SimulationError(
                 "steady_state(sensitivity_params=...) does not return dY_ss/dp for this "
-                "model at this steady state (issue #1330): the state is held on a jump in "
+                "model at this steady state: the state is held on a jump in "
                 "a rate law's value (a comparison, if(), a step of floor() or rint()) that "
                 "is within the solver's tolerance of it. A Newton step from it, to the root "
                 "of the branches its derivatives are taken on, takes the residual of "
@@ -10443,7 +10437,7 @@ class Simulator:
         if result.sens_tie_jump:
             raise SimulationError(
                 "steady_state(sensitivity_params=...) does not return dY_ss/dp for this "
-                "model at this steady state (issue #1330): a rate law's value jumps where "
+                "model at this steady state: a rate law's value jumps where "
                 f"{result.sens_tie_species} sits (a comparison, if(), a step of floor() or "
                 f"rint()), and {result.sens_tie_param} moves {result.sens_tie_species} "
                 f"(d{result.sens_tie_species}/d{result.sens_tie_param} = "
@@ -10453,7 +10447,7 @@ class Simulator:
             )
         raise SimulationError(
             "steady_state(sensitivity_params=...) does not return dY_ss/dp for this model "
-            "at this steady state (issue #1330): the state sits where a rate law changes "
+            "at this steady state: the state sits where a rate law changes "
             "branch (a comparison, if(), abs(), min() or max() at a tie, a step of floor() "
             "or rint()), and the derivative there depends on the side it is approached "
             f"from. d{result.sens_tie_species}/d{result.sens_tie_param} is "
@@ -10563,7 +10557,7 @@ class Simulator:
         remedy = f" Take the columns from {time_course}."
         opening = (
             "steady_state(sensitivity_params=...) does not return dY_ss/dp for this model "
-            "at this steady state (issue #995): "
+            "at this steady state: "
         )
         not_isolated = (
             f"{opening}the steady state is not an isolated root of the equations the "
@@ -10847,8 +10841,8 @@ class Simulator:
             f"by its own right-hand side. At a test state the law's total changes at "
             f"{drift:.3g}, against fluxes through those species of {size:.3g}. "
             "The steady-state solvers hold each such total, so the root, its "
-            "eigenvalues and the sensitivities would be those of another system "
-            "(issue #758). Integrate the model with run() over a span long enough for "
+            "eigenvalues and the sensitivities would be those of another system. "
+            "Integrate the model with run() over a span long enough for "
             "the trajectory to settle, and read the state where it ends."
         )
 
@@ -11143,7 +11137,7 @@ class Simulator:
                         unsupported_sizes[c] = unsupported
                         short[s] = (
                             f"its size {c} has no steady-state derivative (the compiled "
-                            f"code has none for its rule: {unsupported}; issue #1002)"
+                            f"code has none for its rule: {unsupported})"
                         )
                     elif read is not None:
                         short[s] = f"its size {c} reads {_no_row(read)}"
@@ -11175,7 +11169,7 @@ class Simulator:
                     f"Steady-state dY_ss/dp of {sorted(short)}: each is an amount reported "
                     "as a concentration in a compartment whose size changes, so its row "
                     f"needs the size's own row, and the solve has none: {causes}. "
-                    f"{remedy} (issue #787)."
+                    f"{remedy}."
                 )
 
         def _block(arr: np.ndarray) -> np.ndarray | None:
@@ -11217,7 +11211,7 @@ class Simulator:
             return
         if not self._ss_jacobian_fell_back:
             logger.warning(
-                "GH#176 analytical Jacobian: the steady-state march failed with the "
+                "analytical Jacobian: the steady-state march failed with the "
                 "closed-form Jacobian installed; retried with the finite-difference "
                 "one. The rate law is likely discontinuous in a state variable (e.g. "
                 "an if() whose condition crosses a threshold), which the exact "
@@ -11275,9 +11269,9 @@ class Simulator:
                 "Steady-state dY_ss/dp: no analytical ∂f/∂p is available for this "
                 "model (the codegen sensitivity RHS declined its rate laws — "
                 "Michaelis-Menten, or a Functional law with a condition or a "
-                "non-smooth builtin; see issues #55/#68), so ∂f/∂p was "
+                "non-smooth builtin), so ∂f/∂p was "
                 "computed by finite differences at a ~sqrt(eps) step, relative "
-                "to each parameter (issue #76). The "
+                "to each parameter. The "
                 "Jacobian factor used the %s path.",
                 result.sens_jacobian_source,
             )
@@ -11338,7 +11332,7 @@ class Simulator:
                 "that makes the equilibrium set a line. Check "
                 "Model.pure_sink_species() — if it names them, they have no steady "
                 "value at all, and steady_state(mask=~model.is_pure_sink()) solves "
-                "for the gradient of the species that do (issue #74). "
+                "for the gradient of the species that do. "
                 f"ss.sens_jacobian_rcond is {result.sens_jacobian_rcond:.2e}."
             )
 
@@ -12052,7 +12046,7 @@ class Simulator:
             f"conda install -c conda-forge suitesparse) and reinstall from "
             f"source; if it lives on a non-standard prefix pass "
             f"-DCMAKE_PREFIX_PATH or -DKLU_ROOT. Verify with "
-            f"bngsim.capabilities()['features']['klu']. See GH #209. (Silence: "
+            f"bngsim.capabilities()['features']['klu']. (Silence: "
             f"warnings.simplefilter('ignore', bngsim.DenseSolverFallbackWarning).)",
             DenseSolverFallbackWarning,
             code="linear_solver.dense_without_klu",
@@ -12159,7 +12153,7 @@ class Simulator:
             raise UsageError(
                 f"{where}(squeeze=True) is refused while stop conditions are "
                 "registered: a row a condition cuts is shorter than the rest, and a "
-                "stack does not say which stopped (issue #1369). Use squeeze=False, "
+                "stack does not say which stopped. Use squeeze=False, "
                 "where Result.stop_condition names the condition each row met, and "
                 "Result.squeeze(rows) to stack them when none did; or call "
                 "clear_stop_conditions() first.",
@@ -12632,7 +12626,7 @@ class Simulator:
                 f"{_EVENT_CARRY_HISTORY} legs this simulation kept: the next run "
                 "starts its events afresh (each trigger from its initialValue), not "
                 "where they stood at that time. Take a snapshot() there to roll "
-                "back further (issue #693).",
+                "back further.",
                 stacklevel=3,
             )
 
@@ -13144,7 +13138,7 @@ def _unreadable_stop_names_message(
             why.append(f"{name} is not a name the model defines")
     return (
         f"stop condition {expression!r} reads names it cannot: {'; '.join(why)}. A condition "
-        f"reads {_stop_readable_summary(names)} (issue #1509)"
+        f"reads {_stop_readable_summary(names)}"
     )
 
 
@@ -13167,13 +13161,13 @@ def _refuse_stop_expression_shape(expression: str, tree: ast.Expression) -> None
         raise UsageError(
             f"stop condition {expression!r} uses ^, which Python reads as bitwise XOR, "
             "not as a power: write ** (A_tot**2 < 100), or != between two conditions "
-            "for their exclusive or (issue #1509)"
+            "for their exclusive or"
         )
     kind = _STOP_CONTAINER_KINDS.get(type(tree.body))
     if kind is not None:
         raise UsageError(
             f"stop condition {expression!r} is {kind}, not one truth value or number: "
-            "join conditions with 'and' or 'or' (issue #1509)"
+            "join conditions with 'and' or 'or'"
         )
 
 
@@ -13188,7 +13182,7 @@ def _stop_value_met(value: Any, expression: str, time: np.ndarray, t_idx: int) -
         return bool(value > 0)
     raise UsageError(
         f"stop condition {expression!r} gives {type(value).__name__} at "
-        f"t={float(time[t_idx]):g}, not a truth value or a real number (issue #1509)"
+        f"t={float(time[t_idx]):g}, not a truth value or a real number"
     )
 
 
@@ -13259,8 +13253,7 @@ class _StopArithmeticErrors:
         if self.kinds:
             _notices.warn(
                 f"{' and '.join(self.kinds)} encountered in stop condition {expression!r}; "
-                "each sample is read at the value numpy gives it, where NaN is not met "
-                "(issue #1556)",
+                "each sample is read at the value numpy gives it, where NaN is not met",
                 RuntimeWarning,
                 code="stop_condition.non_finite",
                 stacklevel=_notices.OUTSIDE,
@@ -13348,7 +13341,7 @@ class _ExpressionStopCondition(_StopCondition):
                 try:
                     val = eval(self._code, ns)  # noqa: S307
                 except Exception as exc:
-                    why, issue = f"{type(exc).__name__}: {exc}", "issue #1509"
+                    why = f"{type(exc).__name__}: {exc}"
                     if isinstance(exc, KeyError) and exc.args == ("__import__",):
                         # Most often a warning other than numpy's arithmetic,
                         # which 3.13+ cannot deliver from a frame with no builtins.
@@ -13356,10 +13349,9 @@ class _ExpressionStopCondition(_StopCondition):
                             ", which a stop condition does not have; on Python 3.13 "
                             "and later a warning issued inside one needs it"
                         )
-                        issue = "issues #1509, #1556"
                     raise UsageError(
                         f"stop condition {self._expression!r} could not be evaluated at "
-                        f"t={float(time[t_idx]):g}: {why} ({issue})"
+                        f"t={float(time[t_idx]):g}: {why}"
                     ) from exc
                 if _stop_value_met(val, self._expression, time, t_idx):
                     met = t_idx
@@ -14572,7 +14564,7 @@ class SteadyStateResult:
                 "nothing of its initial conditions but the conserved totals, and the "
                 "IC-axis output sensitivities are not computed. A parameter that sets "
                 "an initial amount carries its share of the totals in its own "
-                "parameter column (issue #704)."
+                "parameter column."
             )
         if axis != "parameter":
             raise UsageError(f"output_sensitivities: axis must be 'parameter', got {axis!r}.")
@@ -14627,7 +14619,7 @@ class SteadyStateResult:
             return (
                 f"output_sensitivities: {meta['selector']!r} has no steady-state "
                 "derivative: it reads the time, so it has no steady value, and it is "
-                "reported as NaN (issue #961)."
+                "reported as NaN."
             )
         if kind != "species" and meta["index"] < values.size:
             value = float(values[meta["index"]])
@@ -14659,8 +14651,7 @@ class SteadyStateResult:
                 f"output_sensitivities: {meta['selector']!r} has no steady-state "
                 f"derivative: the steady state sits where {whose} changes branch (a "
                 "comparison, if(), abs(), min() or max() at a tie, a step of floor() "
-                "or rint()), and its derivative is not the same from the two sides "
-                "(issue #1330)."
+                "or rint()), and its derivative is not the same from the two sides."
             )
         unsupported = self._expression_sens_unsupported.get(rule) if rule else None
         if unsupported is None and rule and not self._sens_output_evaluated:
@@ -14674,7 +14665,7 @@ class SteadyStateResult:
                 f"derivative: the compiled output-sensitivity code has none for {whose} "
                 f"({unsupported}), and a steady state does not difference one: a "
                 "difference quotient of a function over the state can be wrong with "
-                "nothing to show it (issue #1002)."
+                "nothing to show it."
             )
         masked = self._caller_masked_species()
         # A rule target's row is its rule's (GH #247), so what that rule reads is
@@ -14729,7 +14720,7 @@ class SteadyStateResult:
         return (
             f"output_sensitivities: {meta['selector']!r} has no steady-state "
             f"derivative: {reads} mask= left out of the solve, so it has no "
-            "steady value (issue #74). Select outputs that do not read it, or keep "
+            "steady value. Select outputs that do not read it, or keep "
             "it in the mask."
         )
 

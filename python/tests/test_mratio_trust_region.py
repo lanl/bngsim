@@ -127,8 +127,12 @@ def test_the_wrong_answers_are_never_returned_again(tmp_path, a, b, z, old, true
     except Exception as excinfo:
         message = str(excinfo)
         assert "not reliable" in message
-        # The message has to leave the reader somewhere to go.
-        assert "#453" in message
+        # The message has to leave the reader somewhere to go: the region the
+        # fraction is reliable in and the arguments BNG builds, with no issue
+        # number to look up.
+        assert "The fraction is reliable for b > 0" in message
+        assert "BNG builds a = -min(AT,BT)" in message
+        assert "#" not in message
         assert "negative integer" in message
         return
     assert got == pytest.approx(true_value, rel=1e-9)
@@ -225,7 +229,7 @@ def test_a_zero_or_a_negative_b_is_not_answered_wrongly(tmp_path, a, b, z, old, 
     if a == 0.0:
         assert _value(tmp_path, a, b, z) == pytest.approx(true_value, rel=1e-13)
         return
-    with pytest.raises(Exception, match=r"not reliable.*#768"):
+    with pytest.raises(Exception, match=r"not reliable.*The fraction is reliable for b > 0"):
         _value(tmp_path, a, b, z)
 
 
@@ -263,7 +267,7 @@ def test_a_zero_the_series_cannot_finish_is_refused(tmp_path):
     The refusal holds because nothing vouches for the fraction at a = 0 with
     2*z > b: where it was checked (b up to 100, z from 20 to 400) it was wrong at
     168 of 200 points, mratio(0, 1, 100) among them."""
-    with pytest.raises(Exception, match=r"not reliable.*#768"):
+    with pytest.raises(Exception, match=r"not reliable.*The fraction is reliable for b > 0"):
         _value(tmp_path, 0.0, 1e12, 1e12)
 
 
@@ -311,7 +315,9 @@ def test_a_negative_b_in_a_rate_law_fails_rather_than_returning_a_wrong_trajecto
     with contextlib.redirect_stderr(io.StringIO()):
         model = bngsim.Model.from_net(str(p))
         sim = bngsim.Simulator(model, method="ode", codegen=codegen)
-        with pytest.raises(bngsim.SimulationError, match=r"not reliable.*#768"):
+        with pytest.raises(
+            bngsim.SimulationError, match=r"not reliable.*The fraction is reliable for b > 0"
+        ):
             sim.run(t_span=(0.0, 1.0), n_points=3)
     assert sim.codegen_backend in (("cc", "mir") if codegen else ("exprtk",))
 
@@ -475,7 +481,7 @@ def test_past_z_minus_700_with_b_minus_a_near_the_smallest_double_is_refused(tmp
     b/(-z) = 1.4e-303 and the one it drops about e^z = 4.5e-309, which leaves
     3e-6 of the answer unaccounted for. That is where the refusal is left, and
     only for b - a below about 1e-290."""
-    with pytest.raises(Exception, match=r"not reliable.*#1080"):
+    with pytest.raises(Exception, match=r"not reliable.*The fraction is reliable for b > 0"):
         _value(tmp_path, 0.0, 1e-300, -710.0)
 
 

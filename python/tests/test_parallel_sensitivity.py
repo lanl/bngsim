@@ -892,7 +892,7 @@ class TestChunkFailureIsRetriedPerColumn:
         msg = str(exc.value)
         assert "['kr'] also fail on their own" in msg
         assert "['kf'] integrated fine alone" in msg
-        assert "issue #243" in msg
+        assert "a different value can change whether this call succeeds" in msg
         # A copy-pasteable next step that keeps the columns that do work.
         assert "params=['kf']" in msg
         # The CVODE message is still there, and still the cause.

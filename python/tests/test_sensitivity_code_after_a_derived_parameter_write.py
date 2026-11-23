@@ -624,7 +624,7 @@ def test_what_is_kept_about_a_run_on_the_quotient_goes_with_the_attachment():
     model.set_params(theta)
     model.reset()
     assert model._core.param_is_expression[index]
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="moves the run across, or may"):
         sim.run(**loose)
 
 
@@ -936,8 +936,8 @@ def test_rate_laws_that_cannot_be_read_do_not_let_the_old_code_through(monkeypat
 def test_a_chunk_that_finds_the_condition_itself_is_a_refusal_by_name(monkeypatch):
     """``compute_all_sensitivities`` asks the conditions of its own model before
     it cuts a chunk. Were that pass to miss one, the chunk's finding is a
-    ``SensitivityUnsupportedError`` that names the condition and the issue, and
-    not a failed chunk to be retried column by column."""
+    ``SensitivityUnsupportedError`` that names the condition and says its switch
+    time does not resolve, and not a failed chunk to be retried column by column."""
     model = _model(GATED)
     sim = _sim(model, ["k", "E"])
     model.set_param("E", 0.0)
@@ -945,7 +945,9 @@ def test_a_chunk_that_finds_the_condition_itself_is_a_refusal_by_name(monkeypatc
     monkeypatch.setattr(
         bngsim.Simulator, "_sync_codegen_with_the_conditions", lambda *a, **k: None
     )
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"time\(\)>=.*\(issue #708\)"):
+    with pytest.raises(
+        bngsim.SensitivityUnsupportedError, match=r"time\(\)>=.*switch time does not resolve here"
+    ):
         sim.compute_all_sensitivities(params=["k", "E"], **TIGHT)
 
 

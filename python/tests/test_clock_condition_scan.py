@@ -769,7 +769,10 @@ def test_many_jumps_inside_a_comparison_are_not_many_changes(tmp_path, dose, exa
 
 def test_a_sawtooth_against_a_level_inside_its_range_is_still_over_budget(tmp_path):
     m = _model(tmp_path, "if(frac(time()/0.0001) < 0.5, 1, 0)")
-    with pytest.raises(bngsim.SimulationError, match="#890"):
+    with pytest.raises(
+        bngsim.SimulationError,
+        match="left without them the integrator would step over its windows",
+    ):
         bngsim.Simulator(m, method="ode").run(t_span=(0.0, _T_END), n_points=3)
 
 

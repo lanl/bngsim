@@ -198,7 +198,7 @@ def test_run_batch_says_so_through_the_shared_helper(model):
         "to. Such a start does not follow an initial-condition parameter the call writes, "
         "which only the reset applies: a dose over it is dropped, and its derivative is 0 "
         "where the caller set the state; a state a run advanced carries no derivative, so "
-        "a sensitivity call from it refuses (issue #1528). Call Model.reset() first where "
+        "a sensitivity call from it refuses. Call Model.reset() first where "
         "the initial conditions are the start you want, as they are for such a dose."
     ) in texts
     assert [w.filename for w in caught if "run_batch starts" in str(w.message)] == [__file__]

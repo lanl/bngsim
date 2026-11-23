@@ -38,6 +38,8 @@ import pytest
 K, G, X0 = 0.1, 0.5, 2.0
 RUN = {"t_span": (0.0, 4.0), "n_points": 5, "rtol": 1e-11, "atol": 1e-13}
 T = np.linspace(0.0, 4.0, 5)
+# The warning that a species row is NaN for want of its size's derivative.
+HELD_BEFORE = "derivative of the stored amount, which is what the row held before"
 REST = "substanceOnly species X in V; X = 2; k = 0.1; R1: X -> ; k*X\n"
 MODELS = {
     "a-rate-rule": ("compartment V = {v0}; V' = g; g = 0.5; " + REST, "g"),
@@ -209,7 +211,7 @@ def test_a_size_whose_own_derivative_is_not_to_be_had_leaves_the_row_nan():
         result = sim.run(**RUN)
     assert np.isnan(_row(result)).all()
     assert "X" in result.ar_sensitivity_refused
-    assert any("#742" in str(w.message) and "'X'" in str(w.message) for w in caught)
+    assert any(HELD_BEFORE in str(w.message) and "'X'" in str(w.message) for w in caught)
     np.testing.assert_allclose(_column(result), _x(), rtol=1e-8)
 
 
@@ -224,7 +226,7 @@ def test_a_run_with_no_row_for_the_rule_leaves_the_species_row_nan(monkeypatch):
 
     monkeypatch.setattr(bngsim.Simulator, "_stamp", stamped)
     sim = bngsim.Simulator(_model("an-assignment-rule"), method="ode", sensitivity_params=["k"])
-    with pytest.warns(UserWarning, match="#742"):
+    with pytest.warns(UserWarning, match=HELD_BEFORE):
         result = sim.run(**RUN)
     assert np.isnan(_row(result)).all()
     assert result.ar_sensitivity_refused == frozenset({"X"})
@@ -469,7 +471,7 @@ def test_a_size_that_stands_still_under_a_rule_with_no_derivative_is_nan_too():
     sim = bngsim.Simulator(
         bngsim.Model.from_antimony_string(text), method="ode", sensitivity_params=["k"]
     )
-    with pytest.warns(UserWarning, match="#742"):
+    with pytest.warns(UserWarning, match=HELD_BEFORE):
         result = sim.run(**RUN)
     assert np.isnan(_row(result)).all()
     assert "X" in result.ar_sensitivity_refused

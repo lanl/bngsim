@@ -3161,7 +3161,7 @@ _STEP_DERIVATIVE_REASON = (
     "sympy left the derivative unevaluated, which is its answer whenever it has "
     "no derivative to give: a value that steps rather than moves, such as "
     "floor(), ceil() or sign(), or mratio() differentiated in its first or "
-    "second argument, which has no closed form (issue #457)"
+    "second argument, which has no closed form"
 )
 
 
@@ -5203,7 +5203,7 @@ def _refuse_oversized_frames(stderr: str, opt_flag: str, what: str) -> None:
         f"Codegen refused the library it built from {what} at {opt_flag}: the stack "
         f"frame of {shown} is larger than {_CODEGEN_MAX_FRAME_BYTES:,} bytes, and a "
         "call to it can overflow the stack of the thread that runs the model and "
-        f"crash the process (issue #1566).{why} A run that does not need codegen "
+        f"crash the process.{why} A run that does not need codegen "
         "can skip it with codegen=False."
     )
 
@@ -6067,7 +6067,7 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
             f"({len(c_source) / 1e6:.1f} MB C source at {opt_flag}). The RHS, the "
             "analytical Jacobian, and the output evaluator (including their "
             "observable/function computation) are all sharded into parallel "
-            "translation units (GH #160/#165), so the wall is roughly the slowest "
+            "translation units, so the wall is roughly the slowest "
             "unit plus the link — a timeout at this size usually means too few "
             "compile jobs (a low core count or a small allocation), not a single "
             "serial bottleneck. Give it more cores or raise BNGSIM_CODEGEN_JOBS, "
@@ -6281,7 +6281,7 @@ def _insert_implicit_products(expr: str, lookup: dict[str, tuple[str, bool]] | N
                     f"codegen has no C for the bracket after the call to {prev_call!r} in the "
                     f"expression {shown!r}: the engine reads it as a second statement and gives "
                     "that statement's value for the whole expression, so the interpreted engine "
-                    "runs this model instead (issue #1212)"
+                    "runs this model instead"
                 )
             j = i + 1
             while j < len(tokens) and tokens[j][0] == "ws":
@@ -6593,7 +6593,7 @@ def _translate_expr_to_c(expr: str, lookup: dict[str, tuple[str, bool]]) -> str:
                 f"codegen has no C for {name!r} in the expression {shown!r}: it is not a "
                 "name of the model, a function the generated C defines, or a <math.h> "
                 "function that means what the engine's does, so the interpreted engine "
-                "runs this model instead (issue #1212)"
+                "runs this model instead"
             )
         rep, eats_call = entry
         if empty_call is not None:
@@ -8200,7 +8200,7 @@ def _topological_function_order(
             f"({len(unplaced)} involved: {names}"
             f"{', ...' if len(unplaced) > 4 else ''}): a cyclic function graph has "
             "no assignment order, so the emitted C would read func[] before it is "
-            "written. The interpreted engine solves the group instead (issue #621)."
+            "written. The interpreted engine solves the group instead."
         )
     return order
 
@@ -9516,16 +9516,16 @@ def _warn_functional_sens_rhs_refused(reason: str) -> None:
     if isinstance(reason, UncompensatedCrossingReason):
         remedy = (
             "The analytic sensitivity RHS does apply that jump, so removing the decline "
-            "named above restores a correct gradient (issue #232). A time course in a "
-            "model with a crossing on the state is refused before it starts (issue #938)."
+            "named above restores a correct gradient. A time course in a "
+            "model with a crossing on the state is refused before it starts."
             if isinstance(reason, DeclinedAtMovingCrossingReason)
             # No machinery compensates this one, and naming an issue here would
             # be a dangling pointer: issue #150 (state comparisons) and issue
             # #355 (clock thresholds by their crossing rather than their
             # spelling) both shipped, and what is left is what neither reaches.
             else (
-                "Neither the issue #48 switch-time jump, which needs a crossing time "
-                "known a priori, nor the issue #150 saltation jump, which needs a "
+                "Neither the switch-time jump, which needs a crossing time "
+                "known a priori, nor the saltation jump, which needs a "
                 "single comparison over state to root on, applies to this condition."
             )
         )
@@ -9551,13 +9551,13 @@ def _warn_functional_sens_rhs_refused(reason: str) -> None:
         "(correct, but slower, where every rate law is continuous in the state along "
         "the run, though a column can still be wrong where a min(), max(), abs() or "
         "clamp() over the state bends a narrow pulse: by a fifth to six-fold, with the "
-        "tolerance, at a triangle of width 0.01, issue #1126. Of these, min, max and "
+        "tolerance, at a triangle of width 0.01. Of these, min, max and "
         "abs are left here only in a model whose rate laws hold a condition, or where "
         "one sits in anything but a sum, a product, a whole power, an exp() or another "
         "bend, or in a product with a division or a fractional power of the state or "
         "the clock; clamp likewise, and also where its bounds are not numbers with lo "
-        "<= hi, issue #1227. A time course is refused for the jumps that are found in the rate "
-        "laws' text, issue #938; one written some other way is read across and is not "
+        "<= hi. A time course is refused for the jumps that are found in the rate "
+        "laws' text; one written some other way is read across and is not "
         "seen).",
         reason,
     )
@@ -10265,7 +10265,7 @@ def _functional_rate_law_partials(
             return None, (
                 f"the derivative w.r.t. the observable {a} — needed for the "
                 "compartment-size column, because that observable reads an "
-                "amount-valued species whose size is writable (issue #170) — is "
+                "amount-valued species whose size is writable — is "
                 "not representable in C"
             )
         for k, w_c in sorted(scope.obs_volume_weights[a].items()):
@@ -11337,7 +11337,7 @@ def _functional_comoving_plan(
                 except RecursionError:
                     # sympy did not come back from a conditional under this
                     # spelling (see ``_shift_spellings``). It is no candidate.
-                    logger.debug("issue #550: a shift's spelling sympy cannot carry: %s", spelling)
+                    logger.debug("a shift's spelling sympy cannot carry: %s", spelling)
                     continue
                 if not eligible:
                     continue
@@ -11422,7 +11422,7 @@ def _functional_comoving_plan(
         for p_alias in by_index(derived):
             derive(p_alias, derived[p_alias])
     except _DerivationBudgetExceeded:
-        logger.debug("issue #750: the derived comoving axes ran out of derivation budget")
+        logger.debug("the derived comoving axes ran out of derivation budget")
 
     # Issue #1003: every parameter that a singular power's numerator reads, by
     # name, through the derived parameters too. One is left without a case for
@@ -11483,7 +11483,7 @@ def _functional_comoving_plan(
                             continue
                         edges.setdefault(scope.param_idx_by_name[name], []).append(test)
     except Exception as exc:  # noqa: BLE001 - the cases stand; the caller lists by name
-        logger.debug("issue #1003: the parameters without a case were not worked out: %s", exc)
+        logger.debug("the parameters without a case were not worked out: %s", exc)
         listed = False
     if edges_out is not None and listed:
         edges_out.append(tuple((idx, tuple(dict.fromkeys(edges[idx]))) for idx in sorted(edges)))
@@ -11740,9 +11740,7 @@ def _functional_dfdp_terms(
         try:
             switch_scope = switch_condition_scope(core, ctx)
         except Exception as exc:  # pragma: no cover - defensive
-            logger.debug(
-                "GH #68: switch-condition scope unavailable (%s); conditions decline", exc
-            )
+            logger.debug("switch-condition scope unavailable (%s); conditions decline", exc)
 
     scope = _FunctionalDfdpScope(
         func_map=func_map,
@@ -11781,7 +11779,7 @@ def _functional_dfdp_terms(
             try:
                 moving.append(model_moving_crossings(core, ctx))
             except Exception as exc:  # pragma: no cover - defensive
-                logger.debug("GH #232: moving-crossing scan unavailable (%s)", exc)
+                logger.debug("moving-crossing scan unavailable (%s)", exc)
                 moving.append(())
         return moving[0]
 
@@ -12026,7 +12024,7 @@ def generate_sens_from_model(
             try:
                 _moving.append(model_moving_crossings(core))
             except Exception as exc:  # pragma: no cover - defensive
-                logger.debug("GH #232: moving-crossing scan unavailable (%s)", exc)
+                logger.debug("moving-crossing scan unavailable (%s)", exc)
                 _moving.append(())
         _warn_functional_sens_rhs_refused(_tag_decline_at_moving_crossing(reason, _moving[0]))
 
@@ -12210,7 +12208,7 @@ def generate_sens_from_model(
         except _DerivationBudgetExceeded:
             comoving_plan = None
         except Exception as exc:  # pragma: no cover - defensive
-            logger.debug("issue #545: comoving columns unavailable (%s)", exc)
+            logger.debug("comoving columns unavailable (%s)", exc)
             comoving_plan = None
     clock_cols: set[int] = set()
     comoving_live_volume_clock = False
@@ -13936,7 +13934,7 @@ def prepare_model_codegen(model) -> Path | None:
                 logger,
                 "codegen.cache_key_unavailable",
                 "Structural codegen cache key unavailable (%s); falling back to hashing "
-                "the generated source. Every construction will re-derive it (issue #174).",
+                "the generated source. Every construction will re-derive it.",
                 e,
             )
             model_hash = None
@@ -14204,7 +14202,7 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
 
     warnings.warn(
         "bngsim.prepare_codegen(net_path) is deprecated: codegen compiles the built "
-        "model (issue #803). Pass codegen=True to Simulator instead.",
+        "model. Pass codegen=True to Simulator instead.",
         DeprecationWarning,
         stacklevel=2,
     )

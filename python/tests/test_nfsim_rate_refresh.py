@@ -251,7 +251,8 @@ def arrhenius_xml(data_dir: Path) -> Path:
 
 _REFUSAL = (
     r"Arrhenius \(energy-based\) rate laws: "
-    r"rules '_R1', '_reverse__R1', '_R2', '_reverse__R2'.*RuleWorld/nfsim#102"
+    r"rules '_R1', '_reverse__R1', '_R2', '_reverse__R2'.*"
+    r"divides every energy by an RT that BioNetGen does not apply"
 )
 
 

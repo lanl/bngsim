@@ -434,7 +434,10 @@ class TestDualRoleParameter:
         sim = bngsim.Simulator(
             self._dual_role(), method="ode", sensitivity_params=["sigma"], codegen=True
         )
-        with pytest.raises(SensitivityUnsupportedError, match="issue #358"):
+        with pytest.raises(
+            SensitivityUnsupportedError,
+            match="which pinning holds at a wrong 0 for such a parameter",
+        ):
             sim.run(t_span=(0.0, 5.0), n_points=11, rtol=1e-10, atol=1e-12)
 
     # ── The refusal is TYPED (issue #320) ───────────────────────────────────

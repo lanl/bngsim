@@ -76,11 +76,11 @@ _NETWORK_METHODS = frozenset({"ode", "ssa", "psa"})
 _REFUSED_METHODS = {
     "nf": (
         "a network-free (NFsim) run needs a live NFsim session to carry its state, "
-        "which a protocol replay does not run yet (issue #1482)"
+        "which a protocol replay does not run yet"
     ),
     "rm": (
         "a network-free (RuleMonkey) run needs a live session to carry its state, "
-        "which a protocol replay does not run yet (issue #1482)"
+        "which a protocol replay does not run yet"
     ),
     "pla": "bngsim has no PLA (partitioned-leaping) method",
 }

@@ -640,7 +640,7 @@ def test_a_crossing_too_soon_after_the_onset_is_refused(shape, after):
     for a window that only closes as a power too, where it need not be."""
     model, times, _t0 = _late(shape, after)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["on"])
-    with pytest.raises(Exception, match="after a switch time.*issue #760"):
+    with pytest.raises(Exception, match="after a switch time.*forcing is unbounded there"):
         sim.run(sample_times=times, rtol=1e-8, atol=1e-10)
 
 
@@ -649,7 +649,7 @@ def test_a_run_that_starts_too_close_before_the_close_is_refused():
     have to enter its frame inside that, with the forcing unbounded on both
     sides of wherever it did: 1.2e-3 off, where main fails the run."""
     sim = bngsim.Simulator(_sbml("closing", 1.1), method="ode", sensitivity_params=["D"])
-    with pytest.raises(Exception, match="before a switch time.*issue #760"):
+    with pytest.raises(Exception, match="before a switch time.*forcing is unbounded there"):
         sim.run(sample_times=[7.0 - 1e-10, 7.5, 8.0, 10.0], rtol=1e-8, atol=1e-10)
 
 
@@ -705,7 +705,11 @@ def test_a_step_on_the_closing_edge_is_refused(tmp_path, shape, shift):
     path = tmp_path / "m.net"
     path.write_text(text)
     sim = bngsim.Simulator(bngsim.Model.from_net(path), method="ode", sensitivity_params=["D"])
-    reason = "before a switch time.*issue #760" if shift < 0 else "shares its instant.*issue #949"
+    reason = (
+        "before a switch time.*forcing is unbounded there"
+        if shift < 0
+        else "shares its instant.*the power is not at its zero"
+    )
     with pytest.raises(Exception, match=reason):
         sim.run(sample_times=T, rtol=1e-8, atol=1e-10)
 
@@ -758,7 +762,11 @@ def test_a_crossing_within_an_instant_of_the_onset_is_refused(shape):
     the onset."""
     model, times, _t0 = _late(shape, 2e-7)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["on"])
-    reason = "after a switch time.*issue #760" if shape == "opening" else "issue #949"
+    reason = (
+        "after a switch time.*forcing is unbounded there"
+        if shape == "opening"
+        else "shares its instant.*the power is not at its zero"
+    )
     with pytest.raises(Exception, match=reason):
         sim.run(sample_times=times, rtol=1e-8, atol=1e-10)
 

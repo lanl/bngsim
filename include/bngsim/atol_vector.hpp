@@ -155,7 +155,7 @@ inline void validate_atol_tracking(double decades, const std::vector<double> &at
         std::ostringstream msg;
         msg << where << ": a tracking absolute tolerance needs a per-species ceiling to track "
             << "below, and none was supplied. The ceiling is the same n_species vector the "
-            << "scalar-free path takes (issue #196) — tracking scales it down by " << decades
+            << "scalar-free path takes — tracking scales it down by " << decades
             << " decades as each species falls, it does not invent one.";
         throw std::invalid_argument(msg.str());
     }

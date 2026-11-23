@@ -699,7 +699,7 @@ class RuleMonkeySession:
             f"clock is at {now:g}, and the model reads the clock in "
             + ", ".join(f"'{n}'" for n in self._clock_readers)
             + ", so the rows would not be labelled with the times it read. Start the "
-            "segment at current_time, or pass t_start to initialize() (issue #1022)."
+            "segment at current_time, or pass t_start to initialize()."
         )
 
     def _restore_unset_start(self) -> None:

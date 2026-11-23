@@ -67,6 +67,7 @@ the failure is about, whichever entry point meets it.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -89,7 +90,11 @@ def _net(data_dir: Path) -> str:
     return str(data_dir / FIXTURE)
 
 
-REFUSED = "come to rest.*issue #1548"
+REFUSED = "come to rest.*set by rounding, not by the model"
+
+# The warning the retry on the finite-difference Jacobian logs, a run's or a
+# steady-state march's.
+FALLBACK = re.compile(r"analytical Jacobian: (CVODE integration|the steady-state march) failed")
 
 # #867's model, which the retry is held on here: S empties at t = 2, where
 # d/dS sqrt(S) is infinite, so the analytical attempt fails with nothing parked.
@@ -120,7 +125,7 @@ def test_the_refusal_is_not_retried(data_dir: Path, caplog: pytest.LogCaptureFix
     ):
         sim.run(t_span=T_SPAN, n_points=N_POINTS, rtol=TOL, atol=TOL)
     assert sim._ode_jacobian_fell_back is False
-    assert not [r for r in caplog.records if "GH#176 analytical Jacobian" in r.getMessage()]
+    assert not [r for r in caplog.records if FALLBACK.search(r.getMessage())]
 
 
 def test_auto_falls_back_to_fd_and_integrates() -> None:
@@ -161,7 +166,7 @@ def test_repeated_runs_skip_the_doomed_attempt(caplog: pytest.LogCaptureFixture)
         second = sim.run(**SINK_WINDOW)
     assert second.n_times == first.n_times == SINK_WINDOW["n_points"]
     # The fallback warning is logged exactly once — the second run did not retry.
-    fallbacks = [r for r in caplog.records if "GH#176 analytical Jacobian" in r.getMessage()]
+    fallbacks = [r for r in caplog.records if FALLBACK.search(r.getMessage())]
     assert len(fallbacks) == 1
 
 
@@ -314,7 +319,7 @@ def test_a_batch_row_timeout_is_not_retried(
     assert m._core.analytical_jacobian_complete
     with caplog.at_level("WARNING", logger="bngsim"), pytest.raises(bngsim.SimulationTimeout):
         sim.run_batch(t_span=(0.0, 150.0), n_points=3, params=[{}], timeout=1e-9)
-    assert not [r for r in caplog.records if "GH#176 analytical Jacobian" in r.getMessage()]
+    assert not [r for r in caplog.records if FALLBACK.search(r.getMessage())]
     assert sim._ode_jacobian_fell_back is False
 
 
@@ -503,5 +508,5 @@ def test_steady_state_repeated_solves_skip_the_doomed_attempt(
     assert first.solver_jacobian_retried
     assert not second.solver_jacobian_retried, "the second solve went straight to fd"
     assert np.array_equal(np.asarray(first.concentrations), np.asarray(second.concentrations))
-    fallbacks = [r for r in caplog.records if "GH#176 analytical Jacobian" in r.getMessage()]
+    fallbacks = [r for r in caplog.records if FALLBACK.search(r.getMessage())]
     assert len(fallbacks) == 1

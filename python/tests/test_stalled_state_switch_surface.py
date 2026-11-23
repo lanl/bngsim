@@ -399,7 +399,9 @@ def test_a_state_that_comes_to_rest_short_of_a_surface_is_not_put_across(tmp_pat
     path = tmp_path / "rest.net"
     path.write_text(REST.format(thr=thr))
     sim = bngsim.Simulator(bngsim.Model.from_net(path), method="ode")
-    with pytest.raises(bngsim.SimulationError, match="come to rest.*issue #1548") as info:
+    with pytest.raises(
+        bngsim.SimulationError, match="come to rest.*set by rounding, not by the model"
+    ) as info:
         sim.run(t_span=(0.0, 1e5), n_points=2, rtol=rtol, atol=rtol * 1e-2, timeout=60.0)
     residual = re.search(r"residual '\(Aobs\)-\(thr\)' = (\S+),", str(info.value))
     assert residual is not None, str(info.value)

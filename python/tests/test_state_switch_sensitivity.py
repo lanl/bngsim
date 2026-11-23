@@ -1532,7 +1532,10 @@ begin groups
     1 Aobs 1
 end groups
 """
-        with pytest.raises(bngsim.ModelError, match=r"MichaelisMenten.*'kcat'.*issue #931"):
+        with pytest.raises(
+            bngsim.ModelError,
+            match=r"MichaelisMenten.*'kcat'.*the Jacobian takes it for a constant",
+        ):
             _model(tmp_path, text, name="mm_kcat.net")
 
     def test_a_reader_the_map_does_not_list_is_judged_as_before(self, tmp_path):
@@ -1575,7 +1578,9 @@ end groups
         conditions = sw.state_switch_conditions(model._core)
         assert conditions == ["Aobs<thr"]
         assert sw.state_switch_reactions(model._core, conditions) == [[]]
-        with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"Aobs<thr.*#938"):
+        with pytest.raises(
+            bngsim.SensitivityUnsupportedError, match=r"Aobs<thr.*run does not finish"
+        ):
             bngsim.Simulator(model, method="ode", sensitivity_params=["thr", "a"]).run(
                 t_span=(0.0, 6.0), n_points=3, rtol=1e-10, atol=1e-12
             )
@@ -2194,7 +2199,10 @@ end groups
 """
         model = _model(tmp_path, text, name="crawl_clamp.net")
         sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k", "kc"])
-        with pytest.raises(bngsim.SimulationError, match="come to rest.*issue #1548") as info:
+        with pytest.raises(
+            bngsim.SimulationError,
+            match="come to rest on the surface.*set by rounding, not by the model",
+        ) as info:
             sim.run(t_span=(0.0, 30.0), n_points=5, rtol=1e-8, atol=1e-12)
         assert "'(Aobs)-(thr1)'" in str(info.value)
         assert "thr2" not in str(info.value)
@@ -2442,7 +2450,7 @@ class TestWhatIsMergedIsOneCrossingTime:
         msg = str(exc.value)
         assert "(U)-(c)" in msg and "(V)-(c)" in msg
         assert "move differently" in msg
-        assert "#153" in msg
+        assert "separate crossings that happen to coincide" in msg
 
 
 # ``ml_hopfield`` verbatim from ``benchmarks/suites/ode_fullnet/nets`` (which is

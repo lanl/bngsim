@@ -107,7 +107,7 @@ def parameter_overrides(model: Any, xml_names: frozenset[str] | None) -> dict[st
                 "The network-free backend runs on the XML's parameters unless it is "
                 f"handed the model's, and this model has changed {sorted(changed)}, but "
                 "the XML could not be read to find which of them it declares. A run "
-                "would drop every one (issue #1360). Pass an xml_path that is "
+                "would drop every one. Pass an xml_path that is "
                 "well-formed XML."
             )
         return {}
@@ -196,7 +196,7 @@ def species_amounts(
                     f"method={method!r} starts from the XML's species amounts unless it "
                     f"is handed the model's, and this model holds {name!r} at "
                     f"{amount:g}, but the XML could not be read to find its seed "
-                    "species (issue #1373). Pass an xml_path that is well-formed XML."
+                    "species. Pass an xml_path that is well-formed XML."
                 )
             continue
         sid = seeds.get(name)

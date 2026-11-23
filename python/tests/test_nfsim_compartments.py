@@ -55,7 +55,7 @@ COMPARTMENT_MODELS = [
 @pytest.mark.parametrize("fixture, names", COMPARTMENT_MODELS)
 def test_the_session_refuses_a_compartment_model(fixture, names):
     named = rf"compartments {names}\)" if names else "compartments "
-    match = rf"cannot run a compartment model \({named}.*RuleWorld/nfsim#106.*#1067"
+    match = rf"cannot run a compartment model \({named}.*writeXML drops NumberPerQuantityUnit"
     with pytest.raises(ModelError, match=match):
         bngsim.NfsimSession(str(DATA / fixture))
 

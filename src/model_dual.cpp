@@ -176,7 +176,7 @@ NetworkModel::DualShadow *NetworkModel::dual_shadow_() {
     for (std::size_t g = 0; g + 1 < starts.size(); ++g) {
         if (starts[g + 1] - starts[g] != 1) {
             return refuse("a group of its functions read each other, which no order of "
-                          "evaluation resolves (issue #621)");
+                          "evaluation resolves");
         }
     }
 

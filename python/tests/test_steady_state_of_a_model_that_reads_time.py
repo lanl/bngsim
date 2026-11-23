@@ -61,7 +61,9 @@ def _ramped(tmp_path, law="k*(1-exp(-time()))", rate="kt"):
 
 
 def _refused(call, what):
-    with pytest.raises(bngsim.SimulationError, match=rf"{what}.*\(issue #710\)"):
+    with pytest.raises(
+        bngsim.SimulationError, match=rf"{what}.*steady-state solvers look for a root of"
+    ):
         call()
 
 
@@ -131,11 +133,15 @@ def test_a_compartment_size_that_jumps_is_refused_by_name():
     model = bngsim.Model.from_antimony_string(SIZE_JUMP)
     assert model.n_events == 2
     sim = bngsim.Simulator(model, method="ode")
-    with pytest.raises(bngsim.SimulationError, match=r"\(issue #710\)") as err:
+    with pytest.raises(
+        bngsim.SimulationError, match=r"steady-state solvers look for a root of"
+    ) as err:
         sim.steady_state()
     assert "the size of compartment cv, which an assignment rule sets, jumps" in str(err.value)
     assert "event" not in str(err.value)
-    with pytest.raises(RuntimeError, match=r"the size of compartment 'cv'.*issue #710"):
+    with pytest.raises(
+        RuntimeError, match=r"the size of compartment 'cv'.*steady-state solvers never make"
+    ):
         find_steady_state(model._core, SteadyStateOptions())
 
 
@@ -192,7 +198,7 @@ def test_its_sensitivity_row_is_nan_and_the_state_s_is_not(tmp_path):
     rows = np.asarray(out.sensitivities_expressions)
     assert np.isnan(rows[names.index("seen")]).all()
     assert np.isfinite(rows[names.index("kt")]).all()
-    with pytest.raises(ValueError, match=r"'expression:seen'.*reads the time.*issue #961"):
+    with pytest.raises(ValueError, match=r"'expression:seen'.*reads the time.*reported as NaN"):
         out.output_sensitivities("expression:seen")
 
 
@@ -331,7 +337,7 @@ def test_the_core_solver_refuses_too(tmp_path):
     models = [_ramped(tmp_path), bngsim.Model.from_antimony_string(EVENT)]
     models += [bngsim.Model.from_antimony_string(t) for t in (RULE_ON_TIME, SIZE_ON_TIME)]
     for model in models:
-        with pytest.raises(RuntimeError, match=r"issue #710"):
+        with pytest.raises(RuntimeError, match=r"Integrate it with run\(\)\."):
             find_steady_state(model._core, SteadyStateOptions())
 
 
