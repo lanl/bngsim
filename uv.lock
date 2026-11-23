@@ -17,6 +17,9 @@ resolution-markers = [
     "python_full_version < '3.11'",
 ]
 
+[manifest]
+build-constraints = [{ name = "swig", specifier = "==4.4.1" }]
+
 [[package]]
 name = "amici"
 version = "1.2.0"

@@ -979,8 +979,12 @@ jobs:
           prune-cache: true
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-          cache-suffix: amici # keeps the from-source AMICI wheel out of the other jobs' cache
-      # A replay neither builds AMICI nor compiles a model with it.
+          # Keeps the from-source AMICI wheel out of the other jobs' cache. The
+          # "swig-locked" part retired the cache that held a wheel built with
+          # swig 4.5.1 (issue #1824, 2026-11-22): pyproject.toml's [tool.uv].
+          cache-suffix: amici-swig-locked
+      # A replay neither builds AMICI nor compiles a model with it. A build
+      # takes uv.lock's swig: [tool.uv] build-constraint-dependencies.
       - name: Provision from uv.lock (with the pinned AMICI unless replaying)
         run: uv sync --extra dev ${{ env.MODE != 'replay' && '--group amici' || '' }} --python 3.12
 
