@@ -943,6 +943,14 @@ struct NfsimSimulator::Impl {
         const int utl = (traversal_limit < 0) ? suggestedTraversalLimit : traversal_limit;
         system->setUniversalTraversalLimit(utl);
         system->setNFsimV1143Compatibility(nfsim_v1143_compat);
+        // NFsim's System constructors leave its three debugging flags
+        // uninitialized; only NFsim's own command line sets them. Whatever the
+        // heap held made a run with connectivity on log every firing to files
+        // never opened, and UBSan stops on the bool read (the sanitizer job's
+        // NFsim crashes since #1818, issue #1816).
+        system->setTrackConnected(false);
+        system->setPrintConnected(false);
+        system->setRxnNumberTrack(false);
         return system;
     }
 
