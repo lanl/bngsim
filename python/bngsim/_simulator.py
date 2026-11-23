@@ -713,7 +713,7 @@ def _warn_if_start_restarts_the_clock(
         f"t = {t_end:.12g}, not from the model's initial conditions: the state lives "
         "in the Model, and each run writes its end state back to it, so this "
         f"continues that run with its clock set back. {remedy} Result.started_from "
-        "records which start a run had (issue #1701).",
+        "records which start a run had.",
         LiveStartWarning,
         code="start.continues_last_run",
         stacklevel=_notices.OUTSIDE,

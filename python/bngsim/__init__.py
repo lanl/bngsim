@@ -787,11 +787,12 @@ def capabilities() -> dict[str, Any]:
         missing["klu"] = (
             "SuiteSparse/KLU sparse linear solver not compiled into this "
             "install — the ODE backend has only the dense solver, so large/"
-            "sparse models run at O(N³). Install SuiteSparse (brew install "
-            "suite-sparse / apt-get install libsuitesparse-dev / conda install "
-            "-c conda-forge suitesparse) and rebuild from source; if it lives "
-            "on a non-standard prefix pass -DCMAKE_PREFIX_PATH or -DKLU_ROOT "
-            "(GH #209). A macOS wheel is intentionally dense-only."
+            "sparse models run at O(N³). Every published wheel has it, so "
+            "`pip install bngsim` fixes it. For a source build, install "
+            "SuiteSparse (brew install suite-sparse / apt-get install "
+            "libsuitesparse-dev / conda install -c conda-forge suitesparse) and "
+            "rebuild; if it lives on a non-standard prefix pass "
+            "-DCMAKE_PREFIX_PATH or -DKLU_ROOT."
         )
     if not HAS_LAPACK_DENSE:
         missing["lapack_dense"] = (
@@ -802,7 +803,7 @@ def capabilities() -> dict[str, Any]:
             "Accelerate with no extra dependency; elsewhere install a LAPACK "
             "(apt-get install liblapack-dev / dnf install lapack-devel / conda "
             "install -c conda-forge openblas) and rebuild from source, passing "
-            "-DCMAKE_PREFIX_PATH if it lives on a non-standard prefix (GH #84). "
+            "-DCMAKE_PREFIX_PATH if it lives on a non-standard prefix. "
             "The manylinux and Windows wheels are intentionally built without "
             "one."
         )
@@ -818,7 +819,7 @@ def capabilities() -> dict[str, Any]:
             "-DBNGSIM_ENABLE_MIR=ON and build from source to get it). Nothing "
             "needs it: codegen compiles its generated C with a system compiler, "
             "and BNGSIM_CODEGEN_JIT=mir is the opt-in that would use this "
-            "in-process JIT instead, for a host with no compiler (GH #78)."
+            "in-process JIT instead, for a host with no compiler."
         )
     if libsbml_problem is not None:
         # What the import itself said: on a slim container image the package is
@@ -832,7 +833,10 @@ def capabilities() -> dict[str, Any]:
     if not HAS_ANTIMONY:
         missing["antimony"] = "optional dependency 'antimony' not installed"
     if not HAS_VIVARIUM:
-        missing["vivarium"] = "optional dependency 'vivarium-core' not installed"
+        missing["vivarium"] = (
+            "optional dependency 'vivarium-core' not installed. Only the "
+            "bngsim.vivarium process shell needs it: pip install 'bngsim[vivarium]'"
+        )
     if not features["bngl"]:
         # The resolver's own trail, not a generic "install the extra": on a box
         # with three BioNetGens the useful sentence is which places were looked

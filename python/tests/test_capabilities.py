@@ -17,6 +17,8 @@ Covers:
 
 from __future__ import annotations
 
+import re
+
 import bngsim
 import pytest
 
@@ -258,6 +260,30 @@ class TestCapabilitiesMissingExplanations:
         assert "vivarium-core" in caps["missing"]["vivarium"]
         assert "optional dependency" in caps["missing"]["vivarium"]
         assert caps["features"]["vivarium"] is False
+
+    def test_missing_vivarium_names_its_extra(self, monkeypatch):
+        monkeypatch.setattr(bngsim, "HAS_VIVARIUM", False)
+        msg = bngsim.capabilities()["missing"]["vivarium"]
+        assert "bngsim.vivarium" in msg and "pip install 'bngsim[vivarium]'" in msg
+
+    @pytest.mark.parametrize(
+        "flag", ["HAS_NFSIM", "HAS_RULEMONKEY", "HAS_KLU", "HAS_LAPACK_DENSE", "HAS_MIR",
+                 "HAS_ANTIMONY", "HAS_VIVARIUM"],
+    )  # fmt: skip
+    def test_an_install_reason_cites_no_issue_number(self, monkeypatch, flag):
+        """What ``bngsim doctor`` prints for a feature a published wheel can lack
+        says what to do, in plain words: an issue number means nothing to the
+        user or agent reading it. (The behaviour keys below, which only a stale
+        source build lacks, are for developers and keep theirs.)"""
+        monkeypatch.setattr(bngsim, flag, False)
+        for name, why in bngsim.capabilities()["missing"].items():
+            assert not re.search(r"#\d", why), (name, why)
+
+    def test_missing_klu_does_not_say_a_wheel_lacks_it(self, monkeypatch):
+        monkeypatch.setattr(bngsim, "HAS_KLU", False)
+        msg = bngsim.capabilities()["missing"]["klu"]
+        assert "dense-only" not in msg
+        assert "Every published wheel has it" in msg
 
     def test_antimony_import_needs_both(self, monkeypatch):
         monkeypatch.setattr(bngsim, "HAS_ANTIMONY", False)

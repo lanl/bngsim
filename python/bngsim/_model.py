@@ -144,6 +144,7 @@ class Model:
         "_output_sens_analysis",
         "_output_sens_family",
         "_table_function_bindings",
+        "_sole_species_map",
         "_named_conc_states",
         "_named_sens_seeds",
         "_named_ssa_counts",
@@ -241,6 +242,10 @@ class Model:
         # over, as ``codegen_data()`` last gave it for that list of names
         # (``_codegen._table_function_bindings``).
         self._table_function_bindings: tuple | None = None
+        # ``{observable: species}`` for each observable that is one species,
+        # counted once, for the not-found errors (``_sole_species``); built on
+        # the first such error, since the observables do not change after load.
+        self._sole_species_map: dict[str, str] | None = None
         # In-process MIR micro-JIT codegen source (GH #78); set when the JIT
         # backend (BNGSIM_CODEGEN_JIT=mir) prepares codegen for this model.
         self._codegen_c_source: str = ""
@@ -3521,6 +3526,12 @@ class Model:
             remedies.append(use_call("set_concentration", actual))
         elif is_a == "parameter":
             remedies.append(use_call("set_param", actual))
+        elif is_a == "observable" and (sole := _sole_species(self, actual)) is not None:
+            # An observable that is one species, once: setting that species is
+            # what the caller meant, as the message says.
+            remedies.append(
+                use_name(sole) if kind == "species" else use_call("set_concentration", sole)
+            )
         return {
             "code": "param.not_found" if kind == "parameter" else "species.not_found",
             "details": {"name": name, "close_matches": list(close), "is_a": is_a},
@@ -3922,11 +3933,41 @@ def _what_it_is(
                 f"{via}.set_concentration({actual!r}, {v})."
             )
     if name in model.observable_names:
-        return (
+        what = (
             f"{name!r} is an observable, which a run computes from the species, so it has no "
             f"value of its own to set: read it from a run's result.observables[{name!r}]."
         )
+        sole = _sole_species(model, name)
+        if sole is not None:
+            what += (
+                f" It counts one species, {sole!r}: read that with "
+                f"{via}.get_concentration({sole!r}) and set it with "
+                f"{via}.set_concentration({sole!r}, {v})."
+            )
+        return what
     return None
+
+
+def _sole_species(model: Model, observable: str) -> str | None:
+    """The species *observable* is, when it counts one species once (a .net
+    group ``A 1``, BNGL's ``Molecules A A(b)`` over a network with one such
+    species), else ``None``. Not a species an assignment rule computes (SBML's
+    ``_obs_z`` for ``z := ...``), whose value a write cannot move. Read on the
+    way to an error only, and built once per model: ``codegen_data`` walks the
+    whole network."""
+    found = model._sole_species_map
+    if found is None:
+        species = model.species_names
+        functions = set(model.function_names)
+        found = {}
+        for o in model._core.codegen_data()["observables"]:
+            entries = o["entries"]
+            if len(entries) == 1 and float(entries[0][1]) == 1.0:
+                sole = species[int(entries[0][0])]
+                if sole not in functions:
+                    found[o["name"]] = sole
+        model._sole_species_map = found
+    return found.get(observable)
 
 
 def _unclamped(name: str) -> str:
