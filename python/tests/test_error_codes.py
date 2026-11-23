@@ -221,7 +221,11 @@ def test_an_unknown_parameter_gives_its_close_matches(binding):
          {"kind": "use_call", "call": "set_concentration", "name": "A(b)"}),
         (lambda m: m.set_concentration("kf", 1.0), "species.not_found", "parameter",
          {"kind": "use_call", "call": "set_param", "name": "kf"}),
-        (lambda m: m.set_param("C", 1.0), "param.not_found", "observable", None),
+        # An observable that counts one species once names that species.
+        (lambda m: m.set_param("C", 1.0), "param.not_found", "observable",
+         {"kind": "use_call", "call": "set_concentration", "name": "A(b!1).B(a!1)"}),
+        (lambda m: m.set_concentration("A", 1.0), "species.not_found", "observable",
+         {"kind": "use_name", "name": "A(b)"}),
     ],
 )  # fmt: skip
 def test_a_name_of_another_kind_says_what_it_is(binding, call, code, is_a, remedy):
@@ -231,6 +235,25 @@ def test_a_name_of_another_kind_says_what_it_is(binding, call, code, is_a, remed
     assert (e.code, e.details["is_a"]) == (code, is_a)
     assert (remedy in e.remedies) if remedy else e.remedies == []
     _check_shape(e)
+
+
+def test_an_observable_of_several_species_names_none():
+    """An observable that sums species, or counts one more than once, is no one
+    species to set, so the error offers none."""
+    b = bngsim.ModelBuilder()
+    b.add_parameter("k", 1.0)
+    b.add_species("A", 10)
+    b.add_species("B", 0)
+    b.add_reaction(["A"], ["B"], rate="k")
+    b.add_observable("Total", {"A": 1, "B": 1})
+    b.add_observable("TwoA", {"A": 2})
+    m = b.build()
+    for name in ("Total", "TwoA"):
+        with pytest.raises(bngsim.BngsimError) as info:
+            m.set_concentration(name, 1.0)
+        e = info.value
+        assert (e.code, e.details["is_a"], e.remedies) == ("species.not_found", "observable", [])
+        assert "It counts one species" not in str(e)
 
 
 def test_a_failure_after_the_lookup_is_not_a_missing_name(binding):

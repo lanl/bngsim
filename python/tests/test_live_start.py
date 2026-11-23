@@ -83,6 +83,9 @@ def test_a_second_run_over_the_same_span_is_recorded_and_warned_of(tmp_path):
     text = str(w2[0].message)
     assert "t = 0 from the state the last run left at t = 5" in text
     assert "start='initial'" in text and "start='live'" in text
+    # A first-time caller sees this warning more than any other; it says what to
+    # do in plain words, with no issue number to look up.
+    assert "#" not in text
     # It names the caller's line, not one of bngsim's.
     assert w2[0].filename == __file__
 

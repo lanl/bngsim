@@ -3521,6 +3521,12 @@ class Model:
             remedies.append(use_call("set_concentration", actual))
         elif is_a == "parameter":
             remedies.append(use_call("set_param", actual))
+        elif is_a == "observable" and (sole := _sole_species(self, actual)) is not None:
+            # An observable that is one species, once: setting that species is
+            # what the caller meant, as the message says.
+            remedies.append(
+                use_name(sole) if kind == "species" else use_call("set_concentration", sole)
+            )
         return {
             "code": "param.not_found" if kind == "parameter" else "species.not_found",
             "details": {"name": name, "close_matches": list(close), "is_a": is_a},
@@ -3922,10 +3928,31 @@ def _what_it_is(
                 f"{via}.set_concentration({actual!r}, {v})."
             )
     if name in model.observable_names:
-        return (
+        what = (
             f"{name!r} is an observable, which a run computes from the species, so it has no "
             f"value of its own to set: read it from a run's result.observables[{name!r}]."
         )
+        sole = _sole_species(model, name)
+        if sole is not None:
+            what += (
+                f" It counts one species, {sole!r}: read that with "
+                f"{via}.get_concentration({sole!r}) and set it with "
+                f"{via}.set_concentration({sole!r}, {v})."
+            )
+        return what
+    return None
+
+
+def _sole_species(model: Model, observable: str) -> str | None:
+    """The species *observable* is, when it counts one species once (a .net
+    group ``A 1``, BNGL's ``Molecules A A(b)`` over a network with one such
+    species), else ``None``. Read on the way to an error only."""
+    for o in model._core.codegen_data()["observables"]:
+        if o["name"] == observable:
+            entries = [(int(i), float(c)) for i, c in o["entries"]]
+            if len(entries) == 1 and entries[0][1] == 1.0:
+                return model.species_names[entries[0][0]]
+            return None
     return None
 
 
