@@ -230,6 +230,10 @@ class TestBuildLosesNothing:
 #: notes end in the pointer back at CHANGELOG.md by choice.
 TRUNCATED_ON_PURPOSE = frozenset({"0.17.0"})
 
+#: Releases that shipped truncated notes before ``changelog.py build`` had a
+#: size gate (``would_truncate``) to stop them.
+TRUNCATED_BEFORE_THE_GATE = frozenset({"0.13.0", "0.12.0"})
+
 
 class TestTheLengthLimit:
     def test_it_is_enforced(self, tmp_path):
@@ -262,47 +266,51 @@ class TestTheLengthLimit:
         small, small_size, _ = changelog.would_truncate(SYNTHETIC, "0.1.0")
         assert not small and 0 < small_size < limit
 
-    def test_it_keeps_the_largest_plausible_release_inside_githubs_ceiling(self):
-        """The arithmetic the limit comes from, asserted rather than asserted-to.
+    def test_every_release_since_the_gate_publishes_its_notes_whole(self):
+        """The size each release's GitHub body actually comes to, measured.
 
         GitHub rejects a release body over 125,000 characters and
-        ``release.yml`` publishes the version's section as that body. 0.13.0 and
-        0.12.0 both exceeded it and shipped notes truncated at a paragraph
-        boundary. The entry count is read from the file rather than pinned, so
-        a future release that carries more entries than any so far re-runs the
-        sum instead of inheriting a stale one.
+        ``release.yml`` publishes ``release_notes.build`` of the version's
+        section as that body, cutting it at a paragraph boundary when it would
+        not fit. So the question is answered by building each released section
+        the way the workflow does and asking whether it was cut. Every section
+        in ``CHANGELOG.md`` is built, so a new release is measured the moment
+        its section lands.
 
-        A release assembled with ``build --allow-truncation`` is left out of the
-        count, by name in ``TRUNCATED_ON_PURPOSE``: no workable per-entry cap
-        bounds one. 0.17.0 carried 468 entries from six weeks of work, which
-        would need entries under 180 characters. 0.13.0 and 0.12.0 stay in:
-        they were meant to fit, and 64 entries at the cap would have.
+        Two sets of releases are expected to come out cut, and each is checked
+        in both directions, so a stale entry fails as loudly as a missing one:
+
+        * ``TRUNCATED_ON_PURPOSE``: assembled with ``build --allow-truncation``.
+          0.17.0 carried 468 entries from six weeks of work.
+        * ``TRUNCATED_BEFORE_THE_GATE``: 0.13.0 and 0.12.0, which shipped cut
+          before ``would_truncate`` existed to stop them.
+
+        This replaced a forward-looking bound, busiest release x
+        ``MAX_FRAGMENT_CHARS`` < limit / 1.5, which 0.17.3 broke with 98
+        entries whose notes came to 84,025 characters, two thirds of the
+        limit. Holding that bound would have needed a cap near 850 characters,
+        under 57 of those 98 entries. A future release that would not fit is
+        stopped where it can still be acted on, by ``would_truncate`` at
+        assembly (``test_it_is_enforced``), and is caught here if it ships.
         """
         sys.path.insert(0, str(SCRIPT.parent))
         release_notes = importlib.import_module("release_notes")
         text = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-        lines = text.split("\n")
-        starts = [i for i, line in enumerate(lines) if line.startswith("## [")] + [len(lines)]
-        sections = {
-            lines[a][len("## [") :].split("]")[0]: sum(
-                1 for line in lines[a + 1 : b] if line.startswith("- ")
-            )
-            for a, b in zip(starts, starts[1:], strict=False)
-        }
-        for version in TRUNCATED_ON_PURPOSE:
-            assert "are truncated here" in release_notes.build(text, version), (
-                f"{version} is listed as truncated on purpose but its notes fit"
-            )
-        busiest_version, busiest = max(
-            ((v, n) for v, n in sections.items() if v not in TRUNCATED_ON_PURPOSE),
-            key=lambda vn: vn[1],
+        released = [
+            line[len("## [") :].split("]")[0]
+            for line in text.split("\n")
+            if line.startswith("## [") and not line.startswith("## [Unreleased]")
+        ]
+        assert len(released) >= 50, "the corpus of releases shrank; re-derive this test"
+        cut = {v for v in released if "are truncated here" in release_notes.build(text, v)}
+        expected = TRUNCATED_ON_PURPOSE | TRUNCATED_BEFORE_THE_GATE
+        assert cut - expected == set(), (
+            f"{sorted(cut - expected)} publish truncated GitHub notes. Shorten "
+            f"entries, or, if assembled with --allow-truncation, add the version "
+            f"to TRUNCATED_ON_PURPOSE."
         )
-        assert busiest >= 50, "the corpus of releases shrank; re-derive the limit"
-        assert busiest * changelog.MAX_FRAGMENT_CHARS < release_notes.LIMIT / 1.5, (
-            f"{busiest_version} carries {busiest} entries, more than the "
-            f"{changelog.MAX_FRAGMENT_CHARS:,}-character cap keeps inside GitHub's "
-            f"release body. If it was assembled with --allow-truncation, add it to "
-            f"TRUNCATED_ON_PURPOSE; otherwise lower the cap."
+        assert expected - cut == set(), (
+            f"{sorted(expected - cut)} are listed as truncated but their notes fit"
         )
 
 
