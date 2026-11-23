@@ -171,6 +171,14 @@ def _scale_run_timeouts() -> None:
     run_with_scaled_timeout.__code__ = run_with_scaled_timeout.__code__.replace(
         co_filename=os.path.join(os.path.dirname(bngsim.__file__), "_test_timeout_scale.py")
     )
+    # A warning raised with a fixed stacklevel does not walk: it counts frames,
+    # and this one is counted unless it is a wrapper _notices skips. Unregistered,
+    # the SsaRoundingWarning of a plain run named this file
+    # (test_a_warning_from_run_names_the_callers_line,
+    # test_warnings_name_the_lines_they_named_before; #1816).
+    from bngsim import _notices
+
+    _notices.WRAPPER_CODES.add(run_with_scaled_timeout.__code__)
     bngsim.Simulator.run = run_with_scaled_timeout
 
 

@@ -299,7 +299,11 @@ def test_every_setting_off_its_default_is_given_back(net_path: Path) -> None:
         t_span=(0, 50),
         n_points=6,
         max_steps=777,
-        timeout=600.0,
+        # Under the 10 s floor below which the sanitizer job's
+        # BNGSIM_TEST_TIMEOUT_SCALE leaves a timeout alone (conftest): a hang
+        # guard it stretches is stretched again by the rerun, which passes the
+        # stretched value back (#1816). The run takes milliseconds.
+        timeout=9.0,
         steady_state=True,
         steady_state_tol=1e-5,
     )

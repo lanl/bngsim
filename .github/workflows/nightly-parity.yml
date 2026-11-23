@@ -979,10 +979,28 @@ jobs:
           prune-cache: true
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-          cache-suffix: amici # keeps the from-source AMICI wheel out of the other jobs' cache
+          # Keeps the from-source AMICI wheel out of the other jobs' cache. The
+          # "swig-locked" part retired the cache that held a wheel built with
+          # swig 4.5.1 (issue #1824, 2026-11-22); see the next step.
+          cache-suffix: amici-swig-locked
       # A replay neither builds AMICI nor compiles a model with it.
+      #
+      # AMICI builds from source in an isolated env, which takes the newest swig
+      # on PyPI, and then refuses to compile any model unless the swig in this
+      # venv (uv.lock's) is the same one. After a cache miss on 2026-11-22 it was
+      # built with 4.5.1 against the locked 4.4.1 and every amici-sens reference
+      # failed (issue #1824). The build is held to uv.lock's swig here, through
+      # the environment, which leaves the lock as it is ([tool.uv]'s
+      # build-constraint-dependencies would be recorded in it).
       - name: Provision from uv.lock (with the pinned AMICI unless replaying)
-        run: uv sync --extra dev ${{ env.MODE != 'replay' && '--group amici' || '' }} --python 3.12
+        run: |
+          set -euo pipefail
+          swig=$(awk '/^name = "swig"$/ { getline; gsub(/[^0-9.]/, ""); print; exit }' uv.lock)
+          [ -n "$swig" ] || { echo "::error::no swig version in uv.lock"; exit 1; }
+          echo "swig==$swig" > "$RUNNER_TEMP/build-constraints.txt"
+          echo "AMICI builds against swig $swig, uv.lock's"
+          UV_BUILD_CONSTRAINT="$RUNNER_TEMP/build-constraints.txt" \
+            uv sync --extra dev ${{ env.MODE != 'replay' && '--group amici' || '' }} --python 3.12
 
       # libroadrunner's wheel links libpython by name; ubuntu-26.04 has no system
       # 3.12 to satisfy it. See ci/libpython_on_loader_path.sh.
