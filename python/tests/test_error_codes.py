@@ -256,6 +256,31 @@ def test_an_observable_of_several_species_names_none():
         assert "It counts one species" not in str(e)
 
 
+def test_an_assignment_rule_species_is_not_offered():
+    """SBML's observable for ``z := ...`` counts z once, but a rule computes z,
+    so a write to it moves nothing: the error offers no species to set."""
+    m = bngsim.Model.from_antimony_string(
+        "model m\n  compartment c = 1\n  species X in c, z in c\n  X = 5\n  k = 0.1\n"
+        "  X -> ; k*X\n  z := X^2\nend"
+    )
+    assert "_obs_z" in m.observable_names
+    with pytest.raises(bngsim.ParameterError) as info:
+        m.set_param("_obs_z", 2.0)
+    assert info.value.remedies == []
+    assert "It counts one species" not in str(info.value)
+
+
+def test_the_observable_map_is_built_once(binding):
+    for _ in range(2):
+        with pytest.raises(bngsim.BngsimError):
+            binding.set_concentration("A", 1.0)
+    first = binding._sole_species_map
+    with pytest.raises(bngsim.BngsimError):
+        binding.set_param("C", 1.0)
+    assert binding._sole_species_map is first
+    assert first == {"A": "A(b)", "B": "B(a)", "C": "A(b!1).B(a!1)"}
+
+
 def test_a_failure_after_the_lookup_is_not_a_missing_name(binding):
     """A parameter the model has is not ``param.not_found``, whatever failed."""
     assert binding._not_found("kf", "parameter") == {}

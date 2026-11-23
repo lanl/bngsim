@@ -144,6 +144,7 @@ class Model:
         "_output_sens_analysis",
         "_output_sens_family",
         "_table_function_bindings",
+        "_sole_species_map",
         "_named_conc_states",
         "_named_sens_seeds",
         "_named_ssa_counts",
@@ -241,6 +242,10 @@ class Model:
         # over, as ``codegen_data()`` last gave it for that list of names
         # (``_codegen._table_function_bindings``).
         self._table_function_bindings: tuple | None = None
+        # ``{observable: species}`` for each observable that is one species,
+        # counted once, for the not-found errors (``_sole_species``); built on
+        # the first such error, since the observables do not change after load.
+        self._sole_species_map: dict[str, str] | None = None
         # In-process MIR micro-JIT codegen source (GH #78); set when the JIT
         # backend (BNGSIM_CODEGEN_JIT=mir) prepares codegen for this model.
         self._codegen_c_source: str = ""
@@ -3946,14 +3951,23 @@ def _what_it_is(
 def _sole_species(model: Model, observable: str) -> str | None:
     """The species *observable* is, when it counts one species once (a .net
     group ``A 1``, BNGL's ``Molecules A A(b)`` over a network with one such
-    species), else ``None``. Read on the way to an error only."""
-    for o in model._core.codegen_data()["observables"]:
-        if o["name"] == observable:
-            entries = [(int(i), float(c)) for i, c in o["entries"]]
-            if len(entries) == 1 and entries[0][1] == 1.0:
-                return model.species_names[entries[0][0]]
-            return None
-    return None
+    species), else ``None``. Not a species an assignment rule computes (SBML's
+    ``_obs_z`` for ``z := ...``), whose value a write cannot move. Read on the
+    way to an error only, and built once per model: ``codegen_data`` walks the
+    whole network."""
+    found = model._sole_species_map
+    if found is None:
+        species = model.species_names
+        functions = set(model.function_names)
+        found = {}
+        for o in model._core.codegen_data()["observables"]:
+            entries = o["entries"]
+            if len(entries) == 1 and float(entries[0][1]) == 1.0:
+                sole = species[int(entries[0][0])]
+                if sole not in functions:
+                    found[o["name"]] = sole
+        model._sole_species_map = found
+    return found.get(observable)
 
 
 def _unclamped(name: str) -> str:
