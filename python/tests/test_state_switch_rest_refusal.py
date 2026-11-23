@@ -119,7 +119,7 @@ def test_a_sensitivity_run_is_refused_the_same_way(tmp_path):
     sim = _sim(tmp_path, JUMP, 10.0, sensitivity_params=["kb", "thr"])
     with pytest.raises(bngsim.SimulationError, match=REFUSED) as info:
         sim.run(t_span=(0.0, 60.0), n_points=61, rtol=1e-8, atol=1e-10)
-    assert "#926" not in str(info.value)
+    assert "slides along the switching surface" not in str(info.value)  # not the slide refusal
 
 
 @pytest.mark.parametrize("n_points", [121, 2])
@@ -207,7 +207,7 @@ def test_a_sensitivity_run_is_refused_between_outputs_too(tmp_path):
     with pytest.raises(bngsim.SimulationError, match=REFUSED) as info:
         sim.run(t_span=(0.0, 60.0), n_points=2, rtol=1e-8, atol=1e-10)
     assert 16.0 < _refused_at(info) < 30.0
-    assert "#926" not in str(info.value)
+    assert "slides along the switching surface" not in str(info.value)  # not the slide refusal
 
 
 # RELAX, with A then sent off to 10 by a switch in time at t = 30.
