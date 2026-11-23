@@ -11169,7 +11169,7 @@ class Simulator:
                     f"Steady-state dY_ss/dp of {sorted(short)}: each is an amount reported "
                     "as a concentration in a compartment whose size changes, so its row "
                     f"needs the size's own row, and the solve has none: {causes}. "
-                    f"{remedy}"
+                    f"{remedy}."
                 )
 
         def _block(arr: np.ndarray) -> np.ndarray | None:

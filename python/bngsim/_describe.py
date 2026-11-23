@@ -147,7 +147,7 @@ def steady_state_refusals(model: Model, where: str = "steady_state()") -> list[t
                 "steady-state solvers look for a root of f(y) with everything read at t = 0, "
                 "which is the model's steady state only where nothing changes with the time "
                 "after that: a rate that is 0 at t = 0 returned the initial state as "
-                "converged, and a species set by a rule on the time its value at t = 0. "
+                "converged, and a species set by a rule on the time returned its value at t = 0. "
                 "Integrate the model with run() over a span long enough for the "
                 "trajectory to settle, and read the state where it ends.",
             )
