@@ -21,10 +21,11 @@ file the change adds, asks two things:
   on it when its ``on: pull_request`` trigger fires for the files the change
   touches (its ``paths:`` or ``paths-ignore:`` filter, read in order, ``!``
   entries included). It runs the file when one of its pytest commands names
-  it, by a glob, a directory or as written, or runs the whole of python/tests,
-  and no ``--deselect``/``--ignore`` argument leaves it out. forced-jit.yml and
-  sanitizers.yml run the whole suite nightly, and on a pull request only when
-  their own files change.
+  it, by a glob, a directory (one a shell glob expands to included) or as
+  written, or runs the whole of python/tests, and no ``--deselect``/``--ignore``
+  argument of that same command leaves it out: each command is a pytest run of
+  its own. forced-jit.yml and sanitizers.yml run the whole suite nightly, and
+  on a pull request only when their own files change.
 
 What a text read cannot settle never counts as running the file: a pytest
 argument that is a shell variable or array or a matrix value, a ``-k``/``-m``
@@ -184,21 +185,34 @@ class Workflow:
     why_not: str = ""  # why it does not (or may not) run on this pull request
     #: The workflow file's text, when it was read from one.
     text: str | None = field(default=None, repr=False)
+    #: Each pytest command, read into a Workflow of its own. The fields above
+    #: pool every command's; whether a file runs is asked of each command apart, as
+    #: each is a pytest run of its own (one built by hand, with none, is one).
+    commands: list[Workflow] = field(default_factory=list, repr=False)
 
     def names(self, path: str) -> bool:
-        return path in self.node_ids or any(matches(path, g) for g in self.selectors)
+        """A command names ``path``, or a directory that holds it."""
+        return path in self.node_ids or any(
+            matches(path, g) or _named_dirs(path, g) for g in self.selectors
+        )
 
     def runs(self, path: str) -> bool:
-        """It runs on the pull request, its commands read in full, and they run ``path``."""
+        """It runs on the pull request, its commands read in full, and one runs ``path``."""
         if self.fires is not True or self.unreadable:
             return False
+        # One command's --deselect, --ignore, named directories and
+        # --keep-duplicates say nothing of what another runs.
+        return any(c._runs(path) for c in self.commands or [self])
+
+    def _runs(self, path: str) -> bool:
+        """This one command runs ``path``."""
         if any(_deselects(path, g) for g in self.excluded):
             return False
         named = path in self.node_ids or any(
             not g.endswith("/**") and matches(path, g) for g in self.selectors
         )
         roots = list(self.above) + (["python/tests"] if self.whole else [])
-        roots += [g[:-3] for g in self.selectors if g.endswith("/**") and matches(path, g)]
+        roots += [d for g in self.selectors for d in _named_dirs(path, g)]
         if not roots or (named and self.keep_duplicates):
             # pytest collects a path it is given even where --ignore or
             # --ignore-glob matches it.
@@ -215,6 +229,24 @@ class Workflow:
         workflow text was read, so there is no trigger to ask). Asked only of a
         workflow that runs on this pull request, whose trigger was read."""
         return self.text is None or fires_on(self.text, [path])[0] is True
+
+
+def _named_dirs(path: str, selector: str) -> list[str]:
+    """The directories holding ``path`` that ``selector`` names: one written as
+    a directory (``d/**``), or each one a shell glob expands to (``su?``,
+    ``s*``), which pytest walks as it walks one written out."""
+    selector = selector.removesuffix("/**")
+    return [path[:k] for k in range(len(path)) if path[k] == "/" and matches(path[:k], selector)]
+
+
+def _may_reach_suite(path: str) -> bool:
+    """``path``, a test path or an ``--ignore`` argument, is python, python/tests
+    or under it, or is a shell glob whose first two parts can expand to them
+    (``pyth*``, ``python/te*/sub``, ``*/tests``)."""
+    if path.startswith("python/tests"):
+        return True
+    parts = zip(("python", "tests"), path.split("/"), strict=False)
+    return all(matches(n, p) for n, p in parts)
 
 
 def _deselects(path: str, entry: str) -> bool:
@@ -287,11 +319,22 @@ def _selector(path: str) -> str:
 
 
 def read_command(command: str, wf: Workflow, empty: Iterable[str] = ()) -> None:
-    """Add one pytest command's selectors, exclusions and unknowns to ``wf``.
+    """Add one pytest command's selectors, exclusions and unknowns to ``wf``,
+    and the command, read on its own, to ``wf.commands``.
 
     ``empty`` names the shell variables that are empty on a pull request.
     ``python/tests`` is the whole suite; a node id selects its file.
     """
+    one = Workflow(wf.name)
+    _read_command(command, one, empty)
+    wf.commands.append(one)
+    for pooled in ("selectors", "node_ids", "above", "excluded", "unreadable"):
+        getattr(wf, pooled).extend(getattr(one, pooled))
+    wf.whole = wf.whole or one.whole
+    wf.keep_duplicates = wf.keep_duplicates or one.keep_duplicates
+
+
+def _read_command(command: str, wf: Workflow, empty: Iterable[str]) -> None:
     empty = set(empty)
 
     def word(m: re.Match[str]) -> str:
@@ -370,7 +413,7 @@ def read_command(command: str, wf: Workflow, empty: Iterable[str] = ()) -> None:
             elif opt == "--ignore":
                 # Made absolute by pytest as well (``./python/tests/x.py``).
                 path = posixpath.normpath(arg)
-                if path == "python" or path.startswith("python/tests"):
+                if _may_reach_suite(path):
                     wf.excluded.append(_IGNORE + _selector(path))
             elif "::" in arg.rstrip(":"):
                 pass  # a node id deselects one test, not the file
@@ -421,12 +464,24 @@ def read_command(command: str, wf: Workflow, empty: Iterable[str] = ()) -> None:
             wf.whole = True
             wf.above.append(path)
             continue
-        if not path.startswith("python/tests"):
+        # A shell glob may expand to python, python/tests or a directory under
+        # it (``pyth*``, ``python/te*``, ``*/tests/sub``): each such directory
+        # is one named, and is walked.
+        if not _may_reach_suite(path):
             continue
+        globbed = re.search(r"[*?[]", path) is not None
         if path == "python/tests":
             wf.whole = True
         elif "::" in tok:
-            wf.node_ids.append(path)
+            # A node id's file; as a glob it matches no file, so names none.
+            if not globbed:
+                wf.node_ids.append(path)
+        elif globbed and matches("python/tests", path):
+            wf.whole = True  # ``python/te*`` gives python/tests: the whole suite
+        elif globbed and matches("python", path):
+            # ``pyth*`` gives python, walked from there as ``python`` is.
+            wf.whole = True
+            wf.above.append("python")
         else:
             # The shell's glob, not GitHub's: without globstar, bash reads ``**``
             # as ``*``, which stays within one directory.
@@ -751,8 +806,14 @@ def warnings_for(
         if running:
             # Run here only because this pull request changes other files its
             # list workflow's paths filter matches: the next change to this file
-            # alone runs it nowhere. A whole-suite workflow also runs nightly.
-            late = [w for w in running if not w.whole and not w.fires_for(path)]
+            # alone runs it nowhere. A whole-suite run of it also runs nightly;
+            # a whole-suite step that leaves it out does not (issue #1874).
+            late = [
+                w
+                for w in running
+                if not any(c.whole and c._runs(path) for c in w.commands or [w])
+                and not w.fires_for(path)
+            ]
             if len(late) == len(running):
                 out.append((path, _late_message(path, legs, late, missing)))
             continue
