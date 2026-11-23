@@ -788,9 +788,11 @@ def capabilities() -> dict[str, Any]:
             "SuiteSparse/KLU sparse linear solver not compiled into this "
             "install — the ODE backend has only the dense solver, so large/"
             "sparse models run at O(N³). Every published wheel has it, so "
-            "`pip install bngsim` fixes it. A source build has it unless it "
-            "was configured with -DBNGSIM_ENABLE_KLU=OFF: a pip build that "
-            "finds no SuiteSparse compiles a pinned KLU itself."
+            "`pip install bngsim` fixes it. For a source build, install "
+            "SuiteSparse (brew install suite-sparse / apt-get install "
+            "libsuitesparse-dev / conda install -c conda-forge suitesparse) and "
+            "rebuild; if it lives on a non-standard prefix pass "
+            "-DCMAKE_PREFIX_PATH or -DKLU_ROOT."
         )
     if not HAS_LAPACK_DENSE:
         missing["lapack_dense"] = (
