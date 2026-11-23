@@ -613,7 +613,9 @@ class TestTheWarningStopsPromisingACorrectFallback:
             cg._functional_dfdp_terms(core, core.codegen_data())
         msgs = _messages(caplog)
         assert any("does NOT recover the missing term" in m for m in msgs)
-        assert any("issue #232" in m for m in msgs)
+        assert any(
+            "removing the decline named above restores a correct gradient" in m for m in msgs
+        )
         assert not any("correct, but slower" in m for m in msgs)
 
     def test_a_smooth_model_keeps_the_correct_fallback_wording(self, tmp_path, caplog):
@@ -646,8 +648,8 @@ class TestTheWarningStopsPromisingACorrectFallback:
     def test_an_uncompensated_crossing_keeps_its_own_class_and_pointer(self, tmp_path, caplog):
         """The issue #146 class must not be downgraded — nor re-tagged. It got
         its verdict by naming the crossing itself, which is the better message,
-        and it still points at issue #150 rather than at a decline there is
-        nothing to remove."""
+        and it still names the saltation jump it lacks rather than a decline
+        there is nothing to remove."""
         import logging
 
         # Cubic in the clock, so it is past what issue #421's quadratic formula
@@ -660,7 +662,7 @@ class TestTheWarningStopsPromisingACorrectFallback:
             _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
         assert isinstance(reason, sw.UncompensatedCrossingReason)
         assert not isinstance(reason, sw.DeclinedAtMovingCrossingReason)
-        assert any("issue #150" in m for m in _messages(caplog))
+        assert any("nor the saltation jump, which needs a" in m for m in _messages(caplog))
 
     def test_the_reaction_wrapper_does_not_downgrade_the_subclass(self):
         """``_carry_reason_class`` rebuilds the reason as ``type(inner)``. Doing

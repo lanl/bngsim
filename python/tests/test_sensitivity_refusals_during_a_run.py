@@ -55,7 +55,10 @@ def test_a_refusal_the_run_reaches_is_raised_by_type_with_its_message():
     with pytest.raises(bngsim.SensitivityUnsupportedError) as refused:
         _flat_start_sim().run(sample_times=[0.0, 1.0, 2.0], rtol=1e-10, atol=1e-12)
     assert isinstance(refused.value, bngsim.SimulationError)
-    assert re.search(r"no first-order motion \(issue #934\)", str(refused.value))
+    assert re.search(
+        r"starts exactly on its threshold, leaves it with no first-order motion",
+        str(refused.value),
+    )
 
 
 def test_a_batch_row_whose_delay_turns_positive_is_refused_by_type():
@@ -82,7 +85,10 @@ def test_compute_all_sensitivities_raises_the_refusal_without_retrying_columns(m
         "_recover_failed_chunk",
         lambda self, *a, **k: retried.append(a) or original(self, *a, **k),
     )
-    with pytest.raises(bngsim.SensitivityRefusedDuringRunError, match=r"issue #934"):
+    with pytest.raises(
+        bngsim.SensitivityRefusedDuringRunError,
+        match=r"starts exactly on its threshold, leaves it with no first-order motion",
+    ):
         sim.compute_all_sensitivities(params=["c", "k"], t_span=(0, 2), n_points=3, chunk_size=2)
     assert retried == []
 
@@ -207,7 +213,8 @@ def test_a_refusal_that_turns_on_the_parameters_asked_is_raised_by_type():
     """It was a plain SimulationError, told from a solver failure only by its
     text. The column the condition does not turn on runs."""
     with pytest.raises(
-        bngsim.SensitivityRefusedForParametersError, match=r"issues #49, #1277"
+        bngsim.SensitivityRefusedForParametersError,
+        match=r"Their order flips across the parameter",
     ) as refused:
         _one_instant(sensitivity_params=["k"]).run(**GRID)
     assert isinstance(refused.value, bngsim.SimulationError)

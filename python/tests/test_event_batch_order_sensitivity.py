@@ -305,7 +305,9 @@ def _two_batches(trigger, params, text=TWO_BATCHES):
 def test_a_fixed_fire_and_a_moving_one_in_two_batches_are_refused(offset):
     """Either way round: the fire that moves comes first just below 2.5, and
     last just above it."""
-    with pytest.raises(Exception, match=r"move differently.*issues #49, #1277") as err:
+    with pytest.raises(
+        Exception, match=r"move differently.*Their order flips across the parameter"
+    ) as err:
         _two_batches(2.5 + offset, ["k"])
     assert "'E0' does not move and 'E1' does" in str(err.value)
 
@@ -333,7 +335,9 @@ MOVING_CLOCK = TWO_BATCHES.replace("a = 1", "a = 1; T = 2.5").replace("time >= 2
 
 @pytest.mark.parametrize("offset", [-1e-13, 0.0, 1e-13], ids=["E1 first", "on", "E0 first"])
 def test_two_fires_that_move_apart_in_two_batches_are_refused(offset):
-    with pytest.raises(Exception, match=r"move differently.*issues #49, #1277") as err:
+    with pytest.raises(
+        Exception, match=r"move differently.*Their order flips across the parameter"
+    ) as err:
         _two_batches(2.5 + offset, ["T", "k"], text=MOVING_CLOCK)
     assert "'E0'" in str(err.value) and "'E1'" in str(err.value)
     assert "both move, and not together" in str(err.value)
@@ -341,7 +345,9 @@ def test_two_fires_that_move_apart_in_two_batches_are_refused(offset):
 
 def test_the_fire_that_moves_is_named_when_it_came_first():
     """With T alone, E0 at the clock moves and E1 after it does not."""
-    with pytest.raises(Exception, match=r"move differently.*issues #49, #1277") as err:
+    with pytest.raises(
+        Exception, match=r"move differently.*Their order flips across the parameter"
+    ) as err:
         _two_batches(2.5, ["T"], text=MOVING_CLOCK)
     assert "'E1' does not move and 'E0' does" in str(err.value)
 

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import re
 
 import bngsim
 import numpy as np
@@ -224,8 +225,8 @@ def test_both_copies_refuse_and_both_say_why(tmp_path, body):
         messages[codegen] = str(excinfo.value)
     for codegen, message in messages.items():
         assert "not reliable" in message, f"codegen={codegen} said nothing about the refusal"
-        assert "#453" in message and "#456" in message and "#768" in message
-        assert "#1080" in message
+        assert "a model reaching this is using mratio in its own way" in message
+        assert not re.search(r"#\d", message), message
         assert "mratio" in message
     # The compiled one reaches it the long way round, through the witness.
     assert "non-finite" in messages[True]

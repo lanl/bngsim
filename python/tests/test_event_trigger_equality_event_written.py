@@ -522,7 +522,9 @@ def test_a_switch_a_double_from_an_instant_is_refused_in_the_ode(body, names, ss
     instant first, at 0.30000000000000004: 3 doses for 2, and 7 for 51), or
     finds the later one by its root. The ODE run is refused; the SSA keeps
     both stops, each on its own double."""
-    with pytest.raises(bngsim.SimulationError, match="issue #1519"):
+    with pytest.raises(
+        bngsim.SimulationError, match="the event would fire only where an output sample lands"
+    ):
         _count(body, t_span=_SPAN, n_points=2)
     r = bngsim.Simulator(_model(body), method="ssa").run(t_span=_SPAN, n_points=2, seed=1)
     x = np.asarray(r.species)[-1]
@@ -792,7 +794,9 @@ def test_biomd0000000628_ends_every_pulse():
 )
 def test_a_schedule_not_known_before_the_run_is_refused(body, why, method):
     """Main fired none of these off the instants, with nothing said."""
-    with pytest.raises(bngsim.SimulationError, match="issue #1519") as e:
+    with pytest.raises(
+        bngsim.SimulationError, match="the event would fire only where an output sample lands"
+    ) as e:
         _count(body, method, t_span=_SPAN, n_points=2)
     assert why in str(e.value)
     assert re.search(r"and only events set \w+:", str(e.value))

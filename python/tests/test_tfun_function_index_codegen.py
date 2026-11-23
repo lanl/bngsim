@@ -149,7 +149,10 @@ def test_a_table_its_index_reads_declines_codegen(tmp_path, monkeypatch, functio
     # No order computes g's index before g: kept as a self-edge, the compiled C
     # read func[g] uninitialised and returned whatever the stack held.
     data = _model(tmp_path, functions)._core.codegen_data()
-    with pytest.raises(cg.CodegenDeclined, match=r"reference each other.*#621"):
+    with pytest.raises(
+        cg.CodegenDeclined,
+        match=r"reference each other.*a cyclic function graph has no assignment order",
+    ):
         cg._topological_function_order(data["functions"], cg._tfun_call_map(data))
     with pytest.raises(RuntimeError, match="codegen declined"):
         bngsim.Simulator(_model(tmp_path, functions), method="ode", codegen=True)

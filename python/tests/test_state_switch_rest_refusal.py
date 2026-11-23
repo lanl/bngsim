@@ -34,7 +34,7 @@ import bngsim
 import numpy as np
 import pytest
 
-REFUSED = "come to rest on the surface.*issue #1548"
+REFUSED = "come to rest on the surface.*set by rounding, not by the model"
 
 # A relaxes to `rest`; W's rate law switches on A against `thr`.
 RELAX = """begin parameters

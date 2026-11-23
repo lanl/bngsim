@@ -325,7 +325,9 @@ def test_too_many_crossings_are_declined_loudly_and_cheaply():
 
     m = _ant("species X = 0; J0: => X; piecewise(1, sin(1e6*time) > 0.5, 0);")
     t0 = time.perf_counter()
-    with pytest.raises(bngsim.SimulationError, match="#890"):
+    with pytest.raises(
+        bngsim.SimulationError, match="more than the 1,000,000 stops bngsim places in one run"
+    ):
         bngsim.Simulator(m).run(t_span=(0, 1e4), n_points=2)
     assert time.perf_counter() - t0 < 2
 

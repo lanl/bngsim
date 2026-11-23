@@ -77,7 +77,9 @@ ALLOWED = [
 
 @pytest.mark.parametrize("fixture, says", REFUSED)
 def test_the_session_refuses_a_stale_outside_read(fixture, says):
-    with pytest.raises(ModelError, match=rf"{says}.*RuleWorld/nfsim#104.*#1062"):
+    with pytest.raises(
+        ModelError, match=rf"{says}.*so that term goes stale on every other molecule"
+    ):
         bngsim.NfsimSession(str(DATA / fixture))
 
 
@@ -144,7 +146,9 @@ def test_a_table_read_as_the_clock_however_it_is_spelled_is_refused(tmp_path, ct
     xml = tmp_path / "clock_spelling.xml"
     xml.write_text(src.replace(old, f'ctrName="{ctr}" xData="0,10" yData="0.1,5" method="step"'))
     assert stale_local_function_reads(xml) == [("_rateLaw1", ctr.strip())]
-    with pytest.raises(ModelError, match=r"'_rateLaw1' .*reads.*#1062"):
+    with pytest.raises(
+        ModelError, match=r"'_rateLaw1' .*reads.*so that term goes stale on every other molecule"
+    ):
         bngsim.NfsimSession(str(xml))
 
 
@@ -162,7 +166,10 @@ def test_a_session_edit_that_would_change_an_exempt_count_is_refused(edit):
     with bngsim.NfsimSession(str(DATA / "local_function_conserved_total.xml")) as nf:
         nf.initialize(seed=1)
         nf.simulate(0, 1, n_points=2)
-        with pytest.raises(ModelError, match=r"count of 'A': 'fA' reads 'Atot'.*#1062"):
+        with pytest.raises(
+            ModelError,
+            match=r"count of 'A': 'fA' reads 'Atot'.*after this edit the term would go stale",
+        ):
             edit(nf)
 
 

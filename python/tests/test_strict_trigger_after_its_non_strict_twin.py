@@ -303,7 +303,7 @@ def test_a_sensitivity_run_through_a_moved_comparison():
                 run = sim.run(sample_times=times, rtol=1e-10, atol=1e-12)
             except bngsim.SimulationError as e:
                 assert "'Es'" in str(e), str(e)
-                if text is reads and "issue #947" in str(e):
+                if text is reads and "only once events of that instant have executed" in str(e):
                     by_name += 1
                 continue
             assert text is keeps, (tau, np.asarray(run.species)[-1])
@@ -342,7 +342,9 @@ def test_a_sensitivity_run_refuses_a_held_pair_that_reads_the_first_write():
         try:
             x = _final(text, tau, tau, sensitivity_params=["k"])[0]
         except bngsim.SimulationError as e:
-            assert re.search(r"'E1'.*'E2'.*issue #947", str(e)), str(e)
+            assert re.search(
+                r"'E1'.*'E2'.*only once events of that instant have executed", str(e)
+            ), str(e)
             refused += 1
         else:
             assert x == pytest.approx(SEQUENCE, rel=EXACT), tau

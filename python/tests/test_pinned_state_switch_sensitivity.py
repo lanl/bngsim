@@ -62,7 +62,9 @@ def _run(model, **kwargs):
 def test_a_surface_approached_too_slowly_to_cross_is_refused(tmp_path, eps):
     """At 1e-8 the run ended in the timeout. At 1e-10 it returned Y(10) = 0 for
     15 and a column of zeros."""
-    with pytest.raises(bngsim.SimulationError, match="issue #952"):
+    with pytest.raises(
+        bngsim.SimulationError, match="approaches too slowly for any step to carry it across"
+    ):
         _run(_model(tmp_path, eps), sensitivity_params=["thr"])
 
 
@@ -72,7 +74,9 @@ def test_a_slow_approach_reported_on_a_grid_is_refused(tmp_path, eps):
     10000 steps up, which was the only place a first cut of this asked: the run
     returned Y(10) = 0 for 15 and dY/dthr = 0."""
     sim = bngsim.Simulator(_model(tmp_path, eps), method="ode", sensitivity_params=["thr"])
-    with pytest.raises(bngsim.SimulationError, match="issue #952"):
+    with pytest.raises(
+        bngsim.SimulationError, match="approaches too slowly for any step to carry it across"
+    ):
         sim.run(t_span=(0.0, 10.0), n_points=101, timeout=30)
 
 
@@ -82,7 +86,9 @@ def test_a_slow_approach_reported_on_a_dense_grid_is_refused(tmp_path, n_points)
     steps the run is asked after are counted over the whole run, not from the
     last output. It returned Y(10) = 0 for 15 and dY/dthr = 0."""
     sim = bngsim.Simulator(_model(tmp_path, 1e-13), method="ode", sensitivity_params=["thr"])
-    with pytest.raises(bngsim.SimulationError, match="issue #952"):
+    with pytest.raises(
+        bngsim.SimulationError, match="approaches too slowly for any step to carry it across"
+    ):
         sim.run(t_span=(0.0, 10.0), n_points=n_points, timeout=30)
 
 
@@ -150,6 +156,10 @@ def test_a_state_that_comes_to_rest_short_of_the_surface_is_not_refused_as_pinne
     model = _model(tmp_path, 1.0, thr=thr, fA="eps*(Ainf-Aobs)", Ainf=Ainf)
     extra = {} if max_steps is None else {"max_steps": max_steps}
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["eps", "thr"])
-    with pytest.raises(bngsim.SimulationError, match="come to rest.*issue #1548") as info:
+    with pytest.raises(
+        bngsim.SimulationError,
+        match="come to rest on the surface.*set by rounding, not by the model",
+    ) as info:
         sim.run(t_span=(0.0, 100.0), n_points=2, rtol=1e-10, atol=1e-12, timeout=20, **extra)
-    assert "pinned" not in str(info.value) and "#952" not in str(info.value)
+    assert "pinned" not in str(info.value)
+    assert "too slowly for any step to carry it across" not in str(info.value)

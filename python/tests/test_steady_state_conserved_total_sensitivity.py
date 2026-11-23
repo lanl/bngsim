@@ -325,7 +325,10 @@ def test_a_compartment_size_in_a_model_with_a_total_is_refused():
     moves with it, and with the total differentiated it is right in some
     models and far off in others. It is refused."""
     sim = bngsim.Simulator(bngsim.Model.from_antimony_string(COMPARTMENT), method="ode")
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"compartment size.*#704"):
+    with pytest.raises(
+        bngsim.SensitivityUnsupportedError,
+        match=r"compartment size.*with the totals differentiated either",
+    ):
         sim.steady_state(sensitivity_params=["C", "kf"])
 
 
@@ -476,7 +479,10 @@ def test_a_state_a_run_advanced_is_refused_for_the_parameter_that_set_it(tmp_pat
     model = bngsim.Model.from_net(_isomerization(tmp_path))
     sim = bngsim.Simulator(model, method="ode")
     sim.run(t_span=(0.0, 0.7), n_points=3)
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"carried-over.*#704"):
+    with pytest.raises(
+        bngsim.SensitivityUnsupportedError,
+        match=r"carried-over.*came back 0 where the total moves",
+    ):
         sim.steady_state(sensitivity_params=["A0", "kf"], tol=1e-12)
     out = sim.steady_state(sensitivity_params=["kf"], tol=1e-12)
     np.testing.assert_allclose(np.asarray(out.sensitivity)[:, 0], [-2 / 3, 2 / 3], rtol=1e-7)
@@ -492,7 +498,10 @@ def test_an_advanced_state_is_refused_for_a_declared_seed_too(tmp_path):
     model.declare_ic_sensitivity({"A()": {"kr": 2.0}})
     sim = bngsim.Simulator(model, method="ode")
     sim.run(t_span=(0.0, 0.7), n_points=3)
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"carried-over.*#704"):
+    with pytest.raises(
+        bngsim.SensitivityUnsupportedError,
+        match=r"carried-over.*came back 0 where the total moves",
+    ):
         sim.steady_state(sensitivity_params=["kr"], tol=1e-12)
 
 
@@ -619,7 +628,10 @@ def test_on_an_advanced_state_a_parameter_that_sets_no_conserved_amount_runs(tmp
     sim.run(t_span=(0.0, 0.7), n_points=3)
     out = sim.steady_state(sensitivity_params=["X0", "kp"], tol=1e-12)
     np.testing.assert_allclose(np.asarray(out.sensitivity)[2], [0.0, 2.0], rtol=1e-7, atol=1e-12)
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"carried-over.*#704"):
+    with pytest.raises(
+        bngsim.SensitivityUnsupportedError,
+        match=r"carried-over.*came back 0 where the total moves",
+    ):
         sim.steady_state(sensitivity_params=["A0"], tol=1e-12)
 
 
@@ -692,5 +704,8 @@ def test_a_coefficient_that_is_rounding_is_not_a_member_of_a_law(tmp_path, monke
     sim.run(t_span=(0.0, 0.7), n_points=3)
     out = sim.steady_state(sensitivity_params=["Z0"], tol=1e-12)
     np.testing.assert_allclose(np.asarray(out.sensitivity)[:, 0], 0.0, atol=1e-12)
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"carried-over.*#704"):
+    with pytest.raises(
+        bngsim.SensitivityUnsupportedError,
+        match=r"carried-over.*came back 0 where the total moves",
+    ):
         sim.steady_state(sensitivity_params=["A0"], tol=1e-12)

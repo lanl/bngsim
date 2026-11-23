@@ -63,7 +63,9 @@ def _columns(model, t_span=(0, 8)):
 
 @pytest.mark.parametrize("cond", ["Bobs==0", "Bobs!=0"])
 def test_an_equality_the_state_sits_on_is_refused_by_name(tmp_path, cond):
-    with pytest.raises(SensitivityUnsupportedError, match=rf"'{cond}'.*issue #1228"):
+    with pytest.raises(
+        SensitivityUnsupportedError, match=rf"'{cond}'.*an equality is not rooted as a crossing"
+    ):
         _columns(_model(tmp_path, f"if({cond},kb,0)"))
 
 
@@ -171,7 +173,9 @@ def test_a_held_equality_is_read_at_the_run_start_time(tmp_path):
         [0.0, 0.0, 0.0],
         atol=1e-9,
     )
-    with pytest.raises(SensitivityUnsupportedError, match=r"'Bobs==0'.*issue #1228"):
+    with pytest.raises(
+        SensitivityUnsupportedError, match=r"'Bobs==0'.*an equality is not rooted as a crossing"
+    ):
         _columns(_model(tmp_path, "if(Bobs==0,kb,0)", f_b=f_b), t_span=(5, 20))
 
 
@@ -182,7 +186,9 @@ def test_every_entry_point_refuses_it_typed(tmp_path, entry):
     sim = bngsim.Simulator(
         _model(tmp_path, "if(Bobs==0,kb,0)"), method="ode", sensitivity_params=["a", "q", "kb"]
     )
-    with pytest.raises(SensitivityUnsupportedError, match=r"'Bobs==0'.*issue #1228"):
+    with pytest.raises(
+        SensitivityUnsupportedError, match=r"'Bobs==0'.*an equality is not rooted as a crossing"
+    ):
         if entry == "run_batch":
             sim.run_batch(t_span=(0, 8), n_points=9, params=[{"a": A}, {"a": 0.6}])
         else:

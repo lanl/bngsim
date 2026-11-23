@@ -215,7 +215,7 @@ class TestCompileRhs:
             cg.compile_rhs(source, "f1566a00")
 
         message = str(err.value)
-        assert "issue #1566" in message
+        assert "can overflow the stack of the thread that runs the model" in message
         assert "flat (" in message, message
         assert "at -O0" in message and "BNGSIM_CODEGEN_OPT=1" in message
         assert not isinstance(err.value, cg._FrameTooLarge), (
@@ -317,11 +317,15 @@ class TestARunIsRefusedNotCrashed:
         return lambda: Model.from_net(os.path.join(DATA, "simple_decay.net"))
 
     def test_codegen_true_names_the_reason(self, model_at_O0):
-        with pytest.raises(RuntimeError, match=r"issue #1566"):
+        with pytest.raises(
+            RuntimeError, match=r"can overflow the stack of the thread that runs the model"
+        ):
             Simulator(model_at_O0(), method="ode", codegen=True)
 
     def test_a_sensitivity_run_names_the_reason(self, model_at_O0):
-        with pytest.raises(RuntimeError, match=r"issue #1566") as err:
+        with pytest.raises(
+            RuntimeError, match=r"can overflow the stack of the thread that runs the model"
+        ) as err:
             Simulator(model_at_O0(), method="ode", sensitivity_params=["k1"])
         assert "differentiated" not in str(err.value), (
             "a refused library is a failed build, not a model that cannot be differentiated"

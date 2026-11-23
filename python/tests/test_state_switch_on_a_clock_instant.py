@@ -37,10 +37,24 @@ def _columns(text, params, times=TIMES):
     return np.asarray(run.sensitivities)[-1]
 
 
+# The refusals of each kind, by the words of their messages: 946 a state
+# switch read across a condition on a clock or another switch, 945 one read
+# across an event's fire. A clock's condition in an event's trigger is both.
+_ON_A_CLOCK = "a condition on a clock|pairs than are confirmed against a tighter run"
+REFUSED = {
+    946: _ON_A_CLOCK + "|one hides the other's jump|at the switch time at t=",
+    945: _ON_A_CLOCK
+    + "|event changes what the switched rate law reads|within the reach of one of them"
+    + r"|the fire cannot be named|more event fires than are kept|was not read\. Drop"
+    + "|at the event at t=",
+    1548: "come to rest on the surface.*set by rounding, not by the model",
+}
+
+
 def _refused(text, params, issue, times=TIMES, rtol=1e-10, atol=1e-12, ic=None):
     model = bngsim.Model.from_antimony_string(text)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=params, sensitivity_ic=ic)
-    with pytest.raises(bngsim.SimulationError, match=f"#{issue}"):
+    with pytest.raises(bngsim.SimulationError, match=REFUSED[issue]):
         sim.run(sample_times=times, rtol=rtol, atol=atol, timeout=60)
 
 
@@ -49,10 +63,10 @@ def _unconfirmed(text, params, issue, times, rtol, atol=1e-9):
     order in the window (issue #1025), and not on one step's reach."""
     model = bngsim.Model.from_antimony_string(text)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=params)
-    with pytest.raises(bngsim.SimulationError, match=f"#{issue}") as refused:
+    with pytest.raises(bngsim.SimulationError, match=REFUSED[issue]) as refused:
         sim.run(sample_times=times, rtol=rtol, atol=atol, timeout=60)
     assert "a hundredth of the tolerances" in str(refused.value)
-    assert "#1025" in str(refused.value)
+    assert "Tighten the tolerances, separate the two in time" in str(refused.value)
 
 
 ON_ONE_INSTANT = {
@@ -221,7 +235,7 @@ def test_the_reach_is_the_tolerance_of_the_run():
     text = HEAD + "Jy: -> Y; piecewise(k, S >= 0.5*thr - 5e-8, 0)*piecewise(1, time >= 3, 0.5)\n"
     model = bngsim.Model.from_antimony_string(text)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["thr"])
-    with pytest.raises(bngsim.SimulationError, match="#946"):
+    with pytest.raises(bngsim.SimulationError, match=REFUSED[946]):
         sim.run(sample_times=TIMES, rtol=1e-6, atol=1e-8, timeout=60)
     assert _columns(text, ["thr"])[2, 0] == pytest.approx(-0.25, rel=1e-6)
 
@@ -269,7 +283,7 @@ def test_a_state_switch_on_the_instant_of_a_counter_s_switch_is_refused(tmp_path
     """The clock is a counter species, ``Tc`` with rate 1, and X's law
     switches where it reaches the fitted thr, on the instant S reaches
     0.5·thr. dX/dthr came back −1 for −0.5."""
-    with pytest.raises(bngsim.SimulationError, match="#946"):
+    with pytest.raises(bngsim.SimulationError, match=REFUSED[946]):
         _net_columns(tmp_path, "0.5*thr")
 
 
@@ -334,7 +348,7 @@ def test_the_reach_at_a_state_of_zero_is_the_absolute_tolerance(off):
     nothing: its crossing time is known to atol over its rate, 1e-8. A gate in
     the same law 1e-9 away is not told from one on the instant, and dY/dua is
     2 with the gate first and 0.5 with the switch first."""
-    with pytest.raises(bngsim.SimulationError, match="#946"):
+    with pytest.raises(bngsim.SimulationError, match=REFUSED[946]):
         _falling(off)
 
 
@@ -355,7 +369,7 @@ def test_a_time_switch_between_the_probes_is_refused_at_any_tolerance():
     )
     model = bngsim.Model.from_antimony_string(text)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["thr"])
-    with pytest.raises(bngsim.SimulationError, match="#946"):
+    with pytest.raises(bngsim.SimulationError, match=REFUSED[946]):
         sim.run(sample_times=TIMES, rtol=1e-14, atol=1e-16, timeout=60)
 
 
@@ -419,7 +433,7 @@ def test_a_gate_on_a_polynomial_in_a_counter_is_refused_on_the_instant(tmp_path)
     sim = bngsim.Simulator(
         bngsim.Model.from_net(str(path)), method="ode", sensitivity_params=["thr"]
     )
-    with pytest.raises(bngsim.SimulationError, match="#946"):
+    with pytest.raises(bngsim.SimulationError, match=REFUSED[946]):
         sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12, timeout=60)
 
 
@@ -1167,7 +1181,7 @@ def test_a_threshold_that_is_itself_a_condition_on_the_clock_is_refused(tmp_path
     a to b and the residual jumps across 0 with it: the clock's own record
     makes the law's jump there, and the state switch made it again.
     dX/dt1 came back 1 for 0.5."""
-    with pytest.raises(bngsim.SimulationError, match="#946"):
+    with pytest.raises(bngsim.SimulationError, match=REFUSED[946]):
         _nested(tmp_path, ["t1"])
 
 
@@ -1449,7 +1463,7 @@ def test_a_gate_on_a_species_decayed_under_its_tolerance_is_refused():
     sim = bngsim.Simulator(
         bngsim.Model.from_antimony_string(text), method="ode", sensitivity_params=["tau"]
     )
-    with pytest.raises(bngsim.SimulationError, match="come to rest.*issue #1548"):
+    with pytest.raises(bngsim.SimulationError, match=REFUSED[1548]):
         sim.run(sample_times=[0.0, 2.0, 4.0, 8.0, 12.0], rtol=1e-8, atol=1e-8, timeout=60)
 
 
@@ -1468,7 +1482,7 @@ def test_a_fixed_gate_on_the_counter_at_the_crossing_is_refused(tmp_path, at):
     """A fixed gate in the same law on the value the counter has at the
     crossing, or 2e-11 past it: one stop for the two. dX/da came back −0.5
     on the kink −0.25 | −0.5 with the gate on it."""
-    with pytest.raises(bngsim.SimulationError, match="#946"):
+    with pytest.raises(bngsim.SimulationError, match=REFUSED[946]):
         _nested_law(tmp_path, f"if(t>=sched(),k,0)*if(t>={at},1,0.5)", ["a"])
 
 
@@ -1477,7 +1491,7 @@ def test_a_fitted_gate_on_the_crossing_s_own_threshold_is_refused(tmp_path):
     fitted to a, on the crossing's own surface. Its record makes the whole
     jump there, both conditions flipping with the counter, and the state
     switch made it again: dX/da came back −1 for −0.5."""
-    with pytest.raises(bngsim.SimulationError, match="#946"):
+    with pytest.raises(bngsim.SimulationError, match=REFUSED[946]):
         _nested_law(tmp_path, "if(t>=sched(),k,0)*if(t>=a,1,0.5)", ["a"])
 
 
@@ -1505,7 +1519,7 @@ def test_two_switches_on_one_instant_that_hide_each_other_s_jump_are_refused(tmp
     before the two and 0 after them, and k between them where S comes first.
     Read across both it is continuous, and dY/dthr came back 0 on the kink
     −0.5 | 0."""
-    with pytest.raises(bngsim.SimulationError, match="#946"):
+    with pytest.raises(bngsim.SimulationError, match=REFUSED[946]):
         _two_roots(tmp_path, "0", f"if(Sobs>={{level}},k,0)*if({EXP_GATE},0,1)", "0.5*thr")
 
 
@@ -1611,7 +1625,7 @@ def test_a_threshold_that_is_a_condition_is_refused_for_a_column_that_moves_a_cr
     another gate on the same value of the counter cannot be told by moving
     the counter, which flips both. With b requested the residual moves with
     the column where it jumps across 0, at t1."""
-    with pytest.raises(bngsim.SimulationError, match="#946"):
+    with pytest.raises(bngsim.SimulationError, match=REFUSED[946]):
         _nested(tmp_path, [param])
 
 

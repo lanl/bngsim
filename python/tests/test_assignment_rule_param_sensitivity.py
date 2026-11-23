@@ -237,13 +237,13 @@ def test_the_refusal_covers_every_explicit_ask():
     """
     m = bngsim.Model.from_sbml_string(_SBML_AR_CHAIN)
 
-    with pytest.raises(ValueError, match=r"issue #329"):
+    with pytest.raises(ValueError, match=r"a function of each name owns that parameter slot"):
         bngsim.Simulator(m, method="ode", sensitivity_params=["q"])
-    with pytest.raises(ValueError, match=r"issue #329"):
+    with pytest.raises(ValueError, match=r"a function of each name owns that parameter slot"):
         bngsim.Simulator(m, method="ode").compute_all_sensitivities(
             _T_SPAN, _N_POINTS, params=["q"], n_workers=1
         )
-    with pytest.raises(ValueError, match=r"issue #329"):
+    with pytest.raises(ValueError, match=r"a function of each name owns that parameter slot"):
         bngsim.Simulator(m, method="ode").steady_state(sensitivity_params=["q"])
 
 
@@ -269,12 +269,12 @@ def test_the_refusal_matches_what_set_param_refuses():
     """
     m = bngsim.Model.from_sbml_string(_SBML_AR_CHAIN)
 
-    with pytest.raises(ValueError, match=r"issue #227"):
+    with pytest.raises(ValueError, match=r"a function of that name owns this slot"):
         m.set_param("q", 99.0)
     # Not even the escape hatch that pins a derived parameter (#188).
-    with pytest.raises(ValueError, match=r"issue #227"):
+    with pytest.raises(ValueError, match=r"a function of that name owns this slot"):
         m._core.set_param("q", 99.0, force_override=True)
-    with pytest.raises(ValueError, match=r"issue #329"):
+    with pytest.raises(ValueError, match=r"a function of each name owns that parameter slot"):
         bngsim.Simulator(m, method="ode", sensitivity_params=["q"])
 
 
@@ -361,7 +361,7 @@ def test_the_census_models_zeros_are_the_true_derivatives(model_id, fname):
     # the models that motivated it.
     targets = sorted(m._internal_param_names() & set(m.function_names))
     assert targets, f"{model_id} is meant to be assignment-rule driven"
-    with pytest.raises(ValueError, match=r"issue #329"):
+    with pytest.raises(ValueError, match=r"a function of each name owns that parameter slot"):
         bngsim.Simulator(m, method="ode", sensitivity_params=[targets[0]])
 
     # And every real knob's analytic column matches a finite difference through

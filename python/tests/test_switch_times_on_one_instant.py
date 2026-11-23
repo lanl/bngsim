@@ -32,6 +32,11 @@ import pytest
 TIMES = [0.0, 1.5, 3.0, 4.5, 6.0]
 
 
+# The refusal of conditions on one instant that cannot be read as one
+# crossing: a kink a few ulp away, or two that do not commute on it.
+NOT_ONE_CROSSING = "a kink a few ulp away|do not commute.*take the two as one"
+
+
 def _columns(text, params, times=TIMES):
     model = bngsim.Model.from_antimony_string(text)
     run = bngsim.Simulator(model, method="ode", sensitivity_params=list(params)).run(
@@ -76,7 +81,7 @@ def test_conditions_on_one_instant_that_do_not_commute_are_refused(case):
     text, params = COMPOSED[case]
     model = bngsim.Model.from_antimony_string(text)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=params)
-    with pytest.raises(bngsim.SimulationError, match="do not commute.*issue #951"):
+    with pytest.raises(bngsim.SimulationError, match="do not commute.*take the two as one"):
         sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)
 
 
@@ -285,7 +290,7 @@ def test_two_composed_switches_that_one_parameter_moves_together_are_refused(cas
     )
     model = bngsim.Model.from_antimony_string(text)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["p"])
-    with pytest.raises(bngsim.SimulationError, match="do not commute.*issue #951"):
+    with pytest.raises(bngsim.SimulationError, match="do not commute.*take the two as one"):
         sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)
 
 
@@ -319,7 +324,7 @@ def test_a_gate_a_hundred_ulp_past_the_instant_is_not_taken_for_a_slope():
     )
     model = bngsim.Model.from_antimony_string(text)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
-    with pytest.raises(bngsim.SimulationError, match="do not commute.*issue #951"):
+    with pytest.raises(bngsim.SimulationError, match="do not commute.*take the two as one"):
         sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)
 
 
@@ -507,7 +512,7 @@ def test_gates_a_few_ulp_from_the_instant_are_refused(case):
     )
     model = bngsim.Model.from_antimony_string(text)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
-    with pytest.raises(bngsim.SimulationError, match="issue #951"):
+    with pytest.raises(bngsim.SimulationError, match=NOT_ONE_CROSSING):
         sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)
 
 
@@ -526,7 +531,7 @@ def test_a_gate_composed_with_the_switch_a_hundred_ulp_away_is_refused(ulps):
     )
     model = bngsim.Model.from_antimony_string(text)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
-    with pytest.raises(bngsim.SimulationError, match="issue #951"):
+    with pytest.raises(bngsim.SimulationError, match=NOT_ONE_CROSSING):
         sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)
 
 
@@ -650,7 +655,7 @@ def test_a_refusal_does_not_depend_on_the_order_the_laws_are_written_in(first):
     text = "species Y, Z; Y = 0; Z = 0; r = 1; tau = 3\n" + (y + z if first == "Y" else z + y)
     model = bngsim.Model.from_antimony_string(text)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
-    with pytest.raises(bngsim.SimulationError, match="issue #951"):
+    with pytest.raises(bngsim.SimulationError, match=NOT_ONE_CROSSING):
         sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)
 
 
@@ -689,7 +694,7 @@ def test_a_composed_kink_is_refused_whatever_the_units():
     )
     model = bngsim.Model.from_antimony_string(text)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
-    with pytest.raises(bngsim.SimulationError, match="do not commute.*issue #951"):
+    with pytest.raises(bngsim.SimulationError, match="do not commute.*take the two as one"):
         sim.run(sample_times=TIMES, rtol=1e-8, atol=1e-8)
 
 
@@ -755,7 +760,7 @@ def test_a_gate_composed_through_the_rate_of_a_species_is_refused(case):
     text = "species X, Y; X = 0; Y = 0; r = 1; tau = 3\n" + RATE_OF[case]
     model = bngsim.Model.from_antimony_string(text)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
-    with pytest.raises(bngsim.SimulationError, match="do not commute.*issue #951"):
+    with pytest.raises(bngsim.SimulationError, match="do not commute.*take the two as one"):
         sim.run(sample_times=[0.0, 1.5, 4.5, 6.0], rtol=1e-10, atol=1e-12)
 
 
@@ -859,7 +864,7 @@ def test_three_steps_whose_weights_are_nearly_a_slope_are_refused(weight):
     )
     model = bngsim.Model.from_antimony_string(text)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
-    with pytest.raises(bngsim.SimulationError, match="issue #951"):
+    with pytest.raises(bngsim.SimulationError, match=NOT_ONE_CROSSING):
         sim.run(sample_times=[0.0, 1.5, 3.0, 4.5, 5.5], rtol=1e-10, atol=1e-12)
 
 

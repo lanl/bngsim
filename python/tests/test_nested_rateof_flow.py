@@ -432,10 +432,10 @@ def test_a_ring_of_rates_on_each_other_is_refused_by_name(chain_first):
 
     model = _chain_on_a_ring(8, chain_first)
     why = model._core.rateof_ring_refusal()
-    assert "X and Y" in why and "lanl/bngsim#991" in why
+    assert "X and Y" in why and "bngsim does not solve one" in why
     assert "d(X)/dt reads rateOf(Y)" in why and "d(Y)/dt reads rateOf(X)" in why
     for codegen in (False, True):
-        with pytest.raises(bngsim.ModelError, match="lanl/bngsim#991"):
+        with pytest.raises(bngsim.ModelError, match="bngsim does not solve one"):
             bngsim.Simulator(_chain_on_a_ring(8, chain_first), method="ode", codegen=codegen)
     with pytest.raises(bngsim.ModelError, match="X and Y"):
         model.rhs(np.zeros(model.n_species))
@@ -443,7 +443,7 @@ def test_a_ring_of_rates_on_each_other_is_refused_by_name(chain_first):
         model.jacobian(np.zeros(model.n_species))
     # No right-hand side is emitted for it.
     assert prepare_model_codegen_source(model) is None
-    with pytest.raises(RuntimeError, match="lanl/bngsim#991"):
+    with pytest.raises(RuntimeError, match="bngsim does not solve one"):
         model._core.compute_derivs(0.0, np.zeros(model.n_species))
 
 
@@ -470,7 +470,7 @@ def test_any_ring_of_rate_rules_is_refused_and_its_species_named(reads, ring):
         b.add_reaction([], [species[i]], "functional", f"g{i}")
     model = bngsim.Model(_core=b.build())
     why = model._core.rateof_ring_refusal()
-    assert "lanl/bngsim#991" in why
+    assert "bngsim does not solve one" in why
     for i in ring[:6]:
         assert f"R{i}" in why
     for i in set(range(n)) - set(ring):

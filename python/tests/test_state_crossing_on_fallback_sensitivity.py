@@ -90,7 +90,9 @@ def _y_columns(sim):
 def _refused(sim, names, rtol=1e-10):
     """Refused before the run starts, by an error that names the crossing."""
     assert not sim.has_analytic_sens_rhs
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938") as caught:
+    with pytest.raises(
+        bngsim.SensitivityUnsupportedError, match="a rate law of it holds"
+    ) as caught:
         sim.run(t_span=(0.0, T_END), n_points=3, rtol=rtol, atol=1e-2 * rtol, timeout=10)
     assert names in str(caught.value)
 
@@ -155,7 +157,7 @@ def test_a_run_that_ends_short_of_the_crossing_is_refused_too(tmp_path):
     never refused."""
     sim = _simulator(tmp_path, "if(Aobs>thr,kb,0)", DECLINED, ["k", "thr"])
     assert not sim.has_analytic_sens_rhs
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="a rate law of it holds"):
         sim.run(t_span=(0.0, 3.4 - 1e-5), n_points=3, rtol=1e-4, atol=1e-6, timeout=10)
 
 
@@ -266,7 +268,10 @@ def test_a_run_that_stalled_short_of_a_jump_is_refused_by_name(model):
         bngsim.Model.from_antimony_string(text), method="ode", sensitivity_params=params
     )
     assert not sim.has_analytic_sens_rhs
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#932") as caught:
+    with pytest.raises(
+        bngsim.SensitivityUnsupportedError,
+        match="the step size collapses and the run does not finish",
+    ) as caught:
         sim.run(sample_times=np.linspace(0.0, 6.0, 7), rtol=1e-10, atol=1e-12, timeout=10)
     assert f"holds {crossing!r}" in str(caught.value)
 
@@ -389,7 +394,7 @@ def _wider(tmp_path, fy, fz=DECLINED, decays=True, extra=(), k=1.0, n=0.0):
 def _refused_run(model, params, **kwargs):
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=params)
     assert not sim.has_analytic_sens_rhs
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="a rate law of it holds"):
         sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-4, atol=1e-6, timeout=20, **kwargs)
 
 
@@ -1013,7 +1018,7 @@ def test_every_column_at_once_is_refused_by_its_own_columns(tmp_path, fy, fz, pa
     its own: no counter was moved and no parameter requested. The model of
     issue #938 returned 14.52 for 10.2 through it."""
     sim = bngsim.Simulator(_wider(tmp_path, fy, fz, decays=False), method="ode")
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="a rate law of it holds"):
         sim.compute_all_sensitivities(
             t_span=(0.0, T_END), n_points=3, params=params, rtol=1e-4, atol=1e-6
         )
@@ -1028,7 +1033,7 @@ def test_one_simulator_is_asked_again_for_other_columns(tmp_path):
     sim.compute_all_sensitivities(
         t_span=(0.0, T_END), n_points=3, params=["kb"], rtol=1e-4, atol=1e-6
     )
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="a rate law of it holds"):
         sim.compute_all_sensitivities(
             t_span=(0.0, T_END), n_points=3, params=["k"], rtol=1e-4, atol=1e-6
         )
@@ -1100,7 +1105,7 @@ def test_the_refusal_is_asked_again_when_a_parameter_changes(tmp_path):
     sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-4, atol=1e-6, timeout=20)
     model.set_param("k", 2.0)
     model.reset()
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="a rate law of it holds"):
         sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-4, atol=1e-6, timeout=20)
 
 
@@ -1176,7 +1181,7 @@ def test_a_condition_on_what_goes_below_zero_is_refused(case):
         bngsim.Model.from_antimony_string(text), method="ode", sensitivity_params=params
     )
     assert not sim.has_analytic_sens_rhs
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="a rate law of it holds"):
         sim.run(sample_times=[0.0, 3.0, 6.0], rtol=1e-8, atol=1e-10, timeout=20)
 
 
@@ -1193,7 +1198,7 @@ def test_a_batch_row_is_asked_about_with_its_own_parameters(tmp_path):
     )
     got = np.asarray(rows[0].sensitivities)[-1, list(rows[0].species_names).index("Y()"), 0]
     assert got == pytest.approx(-3.0, rel=1e-6)
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="a rate law of it holds"):
         sim.run_batch(params=[{"k": 2.0}], t_span=(0.0, T_END), n_points=3, rtol=1e-4, atol=1e-6)
 
 
@@ -1206,7 +1211,7 @@ def test_a_divisor_is_asked_about_again_when_a_parameter_changes_sign(tmp_path):
     sim.run(t_span=(0.0, 1.0), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
     model.set_param("g", 0.0)
     model.reset()
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="a rate law of it holds"):
         sim.run(t_span=(0.0, 1.0), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
 
 
@@ -1300,7 +1305,9 @@ def test_a_condition_in_a_rate_law_that_does_not_parse_is_refused(tmp_path, monk
 
     monkeypatch.setattr(_switch_sensitivity, "_syntax_tree", lambda expr: None)
     unread = _simulator(tmp_path, law, declined, ["k"], decays=True)
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938") as caught:
+    with pytest.raises(
+        bngsim.SensitivityUnsupportedError, match="a rate law of it holds"
+    ) as caught:
         unread.run(t_span=(0.0, T_END), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
     assert "holds 'Aobs<thr'" in str(caught.value)
 
@@ -1315,7 +1322,7 @@ def test_a_bend_is_proved_again_when_a_parameter_changes_sign(tmp_path):
     sim.run(t_span=(0.0, 1.0), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
     model.set_param("g", 0.0)
     model.reset()
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="a rate law of it holds"):
         sim.run(t_span=(0.0, 1.0), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
 
 
@@ -1335,7 +1342,9 @@ def test_a_bend_with_no_choice_in_it_is_proved_again(tmp_path):
             if g > 0.0:
                 sim.run(t_span=(0.0, 1.0), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
             else:
-                with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+                with pytest.raises(
+                    bngsim.SensitivityUnsupportedError, match="a rate law of it holds"
+                ):
                     sim.run(t_span=(0.0, 1.0), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
 
 
@@ -1352,7 +1361,9 @@ def test_a_condition_on_a_requested_parameter_is_asked_again(tmp_path):
             if n == 2.0:
                 sim.run(t_span=(0.0, 1.0), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
             else:
-                with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+                with pytest.raises(
+                    bngsim.SensitivityUnsupportedError, match="a rate law of it holds"
+                ):
                     sim.run(t_span=(0.0, 1.0), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
 
 
@@ -1394,7 +1405,7 @@ def test_an_equality_that_holds_a_step_holds_over_an_interval(tmp_path):
     the columns came back [0, 0] for [2.463, 0.682], with nothing logged. It
     is not admitted, and the run is refused (issue #414)."""
     sim = _simulator(tmp_path, "if(floor(Aobs/thr)==0,kb,0)", "kc*Aobs", ["k", "thr"], True)
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match="issue #414"):
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="no machinery can locate"):
         sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-8, atol=1e-10, timeout=20)
 
 
@@ -1419,7 +1430,7 @@ def test_an_equality_the_state_sits_on_is_refused():
         bngsim.Model.from_antimony_string(text), method="ode", sensitivity_params=["a", "q"]
     )
     assert not sim.has_analytic_sens_rhs
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="a rate law of it holds"):
         sim.run(sample_times=[0.0, 3.0, 6.0], rtol=1e-8, atol=1e-10, timeout=20)
 
 
@@ -1486,7 +1497,7 @@ def test_a_batch_row_s_refusal_is_a_refusal(tmp_path):
     model = _wider(tmp_path, "if(Aobs>thr,kb,0)", decays=False)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["thr"])
     for workers in (None, 2):
-        with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+        with pytest.raises(bngsim.SensitivityUnsupportedError, match="a rate law of it holds"):
             sim.run_batch(
                 params=[{"k": 2.0}, {"k": 3.0}],
                 t_span=(0.0, T_END),
@@ -1561,7 +1572,7 @@ def test_a_derived_parameter_that_is_overridden_is_read_again(tmp_path):
     np.testing.assert_allclose(_y_columns(sim), _ramp_columns(), rtol=1e-6)
     model.set_param("pw", 0.0)
     model.reset()
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="a rate law of it holds"):
         sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-4, atol=1e-6, timeout=20)
     # And back: a number again, at which the law is the ramp.
     model.set_param("pw", 1.0)
@@ -1577,7 +1588,7 @@ def test_a_batch_row_that_overrides_a_derived_parameter_is_read_again(tmp_path, 
     model = _with_derived(tmp_path, RAMP_TO_A_POWER, ["half 0.5", "pw 2*half"])
     model.set_param("pw", 1.0, force_override=True)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k", "thr"])
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="a rate law of it holds"):
         sim.run_batch(
             params=[{"pw": 0.0}, {"pw": 0.0}],
             t_span=(0.0, T_END),
@@ -1595,7 +1606,7 @@ def test_every_column_at_once_reads_an_overridden_derived_parameter_again(tmp_pa
     sim.compute_all_sensitivities(**kwargs)
     model.set_param("pw", 0.0)
     model.reset()
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="a rate law of it holds"):
         sim.compute_all_sensitivities(**kwargs)
 
 
@@ -1988,7 +1999,7 @@ def test_a_batch_row_that_puts_two_crossings_on_one_instant_is_refused(tmp_path)
     assert not sim.has_analytic_sens_rhs
     kwargs = dict(t_span=(0.0, T_END), n_points=3, rtol=1e-8, atol=1e-10)
     for workers in (None, 2):
-        with pytest.raises(bngsim.SensitivityUnsupportedError, match="#414"):
+        with pytest.raises(bngsim.SensitivityUnsupportedError, match="no machinery can locate"):
             sim.run_batch(params=[{"P": 1.0}, {"P": 3.4}], num_processors=workers, **kwargs)
     # Control: the rows either side of it. Y(T) = kb·(T − |P − tau|).
     rows = sim.run_batch(params=[{"P": 1.0}, {"P": 5.0}], **kwargs)
@@ -2258,7 +2269,7 @@ def test_a_counter_a_declared_seed_moves_is_moved_on_the_fallback(tmp_path):
     model.reset()
     model.set_concentration("C()", 0.5)
     model.declare_ic_sensitivity({"C()": {"n": 1.0}})
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="a rate law of it holds"):
         sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-4, atol=1e-6, timeout=20)
 
 

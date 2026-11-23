@@ -337,7 +337,9 @@ def test_a_schedule_past_the_budget_beside_a_hill_law_at_h_2_is_alone(tmp_path, 
     result = bngsim.Simulator(_steady(tmp_path, 2.0, schedule=True), "ode").run(**run)
     assert float(np.asarray(result.species)[-1, 2]) == pytest.approx(200.0, rel=1e-4)
     # At h = 0.5 the guard does switch, and the run is refused, as on main.
-    with pytest.raises(bngsim.SimulationError, match="#890"):
+    with pytest.raises(
+        bngsim.SimulationError, match="more than the 1,000,000 stops bngsim places in one run"
+    ):
         bngsim.Simulator(_steady(tmp_path, 0.5, schedule=True), "ode").run(**run)
 
 

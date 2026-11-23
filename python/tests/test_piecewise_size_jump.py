@@ -1213,7 +1213,7 @@ def test_the_sensitivity_of_jumps_a_few_ulp_apart_is_refused():
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k"])
     with pytest.raises(
         bngsim.SensitivityUnsupportedError,
-        match=r"compartment 'cv' jumps 2 times at one instant.*#1181",
+        match=r"compartment 'cv' jumps 2 times at one instant.*derivative of that rescale is not",
     ):
         sim.run(sample_times=[0.0, 1.9, 2.5], rtol=1e-10, atol=1e-12)
 

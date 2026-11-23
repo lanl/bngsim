@@ -126,7 +126,9 @@ def test_a_schedule_not_known_before_the_run_is_refused(events, sens, why):
     """Main stepped over these as over the issue's: X(240) was 1, and dX/dw2
     2e-5 for 7."""
     sim = {"sensitivity_params": sens} if sens else {}
-    with pytest.raises(bngsim.SimulationError, match="issue #1244") as e:
+    with pytest.raises(
+        bngsim.SimulationError, match="a step can lie across a whole window of it"
+    ) as e:
         _x(_model(events), [0, 240], rtol=1e-6, atol=1e-8, sim=sim)
     assert why in str(e.value)
     assert "reads w, and only events set w" in str(e.value)
@@ -223,7 +225,9 @@ model m
   E1: at (X > 2): w = 1
 end"""
     )
-    with pytest.raises(bngsim.SimulationError, match="issue #1244") as e:
+    with pytest.raises(
+        bngsim.SimulationError, match="a step can lie across a whole window of it"
+    ) as e:
         bngsim.Simulator(model, method="ode").run(sample_times=[0, 240], rtol=1e-6, atol=1e-8)
     assert "with w at 1.0, which an event sets it to" in str(e.value)
 

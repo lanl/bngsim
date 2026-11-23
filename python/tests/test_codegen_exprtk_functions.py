@@ -470,7 +470,9 @@ def test_a_bracket_after_a_call_declines(text):
     """ExprTk reads the bracket as a second statement, whose value is the whole
     expression's: each of these was B. The engine refuses it at load now (issue
     #1415), and the translator still has no C for it."""
-    with pytest.raises(RuntimeError, match=r"second statement.*#1415"):
+    with pytest.raises(
+        RuntimeError, match=r"second statement.*BioNetGen rejects it as a syntax error"
+    ):
         _interpreter(text, (2.5, 0.75))
     with pytest.raises(cg.CodegenDeclined, match="second statement"):
         cg._insert_implicit_products(text, _LOOKUP)
@@ -480,7 +482,9 @@ def test_a_bracket_after_a_table_is_refused():
     """A table is a call to the engine, as ``time`` is: ``2*tfun_kf()(Atot)`` was
     Atot, the second statement, though the lookup holds the table's name. The
     engine refuses it at load now (issue #1415)."""
-    with pytest.raises(RuntimeError, match=r"the call 'tfun_kf\(\)'.*#1415"):
+    with pytest.raises(
+        RuntimeError, match=r"the call 'tfun_kf\(\)'.*BioNetGen rejects it as a syntax error"
+    ):
         _table_model("tfun_kf()(Atot)")
 
 

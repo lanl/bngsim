@@ -327,7 +327,9 @@ class TestCompilation:
         and compiles the same artifact ``Simulator(codegen=True)`` does -- the built
         model's, not a second reading of the file."""
         path = os.path.join(DATA, "simple_decay.net")
-        with pytest.warns(DeprecationWarning, match="#803"):
+        with pytest.warns(
+            DeprecationWarning, match="is deprecated: codegen compiles the built model"
+        ):
             wrapped = prepare_codegen(path)
         assert wrapped == Path(_so(path))
 

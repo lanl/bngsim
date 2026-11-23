@@ -282,9 +282,9 @@ def test_the_refusal_prints_the_recorded_decline_reason(tmp_path, monkeypatch):
         assert cg.last_codegen_decline() == "a decline nothing else has ever raised"
 
     # The real cycle records its own, and a later successful build clears it.
-    with pytest.raises(RuntimeError, match="#621"):
+    with pytest.raises(RuntimeError, match="a cyclic function graph has no assignment order"):
         bngsim.Simulator(_cycle_model("0.5*g + 1", "0.5*f + 1"), method="ode", codegen=True)
-    assert "#621" in cg.last_codegen_decline()
+    assert "a cyclic function graph has no assignment order" in cg.last_codegen_decline()
     bngsim.Simulator(_cycle_model("k", "1"), method="ode", codegen=True)
     assert cg.last_codegen_decline() is None
 
@@ -301,7 +301,7 @@ def test_a_sensitivity_run_on_a_declined_model_names_the_decline(tmp_path, monke
         bngsim.Simulator(
             _cycle_model("0.5*g + 1", "0.5*f + 1"), method="ode", sensitivity_params=["k"]
         )
-    assert "#621" in str(refused.value)
+    assert "a cyclic function graph has no assignment order" in str(refused.value)
     assert "could not be differentiated" not in str(refused.value)
 
 

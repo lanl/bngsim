@@ -922,7 +922,7 @@ class TestEndToEnd:
             _run_sens(model, ["beta"], t_end=12.0)
         message = str(ei.value)
         assert isinstance(ei.value, ValueError)
-        assert "issue #414" in message
+        assert "refuses rather than return a gradient it has flagged as wrong" in message
         assert "crossing time moves" in message
 
     def test_the_scanner_names_the_uncompensated_condition(self, tmp_path):
@@ -2761,7 +2761,7 @@ class TestTheDeclineDoesNotPromiseACorrectFallback:
             _decline(tmp_path, _with_law(UNCOMPENSATED))
         msgs = [r.getMessage() for r in caplog.records]
         assert any("does NOT recover the missing term" in m for m in msgs)
-        assert any("issue #150" in m for m in msgs)
+        assert any("nor the saltation jump, which needs a single comparison" in m for m in msgs)
         assert not any("correct, but slower" in m for m in msgs)
 
     def test_an_underivable_law_keeps_the_correct_fallback_wording(self, tmp_path, caplog):

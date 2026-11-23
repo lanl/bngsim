@@ -451,7 +451,10 @@ def test_a_parked_root_does_not_restart_the_run(data_dir, tmp_path, kind, jacobi
     model = _write(tmp_path, text, f"{kind}.net")
     assert any("Voltage_Level" in c for c in model.state_switch_root_conditions())
     window = dict(t_span=(0.0, 150.0), n_points=301, rtol=1e-8, atol=1e-8)
-    with pytest.raises(bngsim.SimulationError, match="come to rest.*Voltage_Level.*issue #1548"):
+    with pytest.raises(
+        bngsim.SimulationError,
+        match="come to rest.*Voltage_Level.*set by rounding, not by the model",
+    ):
         bngsim.Simulator(model, jacobian=jacobian).run(**window)
 
 
@@ -476,7 +479,11 @@ def _parked_twin_error(data_dir, tmp_path, kind, jacobian, rtol, n_points, n_idl
     try:
         got = bngsim.Simulator(model, jacobian=jacobian).run(**window, rtol=rtol, atol=rtol)
     except bngsim.SimulationError as e:
-        return None if re.search("come to rest.*Voltage_Level.*issue #1548", str(e)) else str(e)
+        return (
+            None
+            if re.search("come to rest.*Voltage_Level.*set by rounding, not by the model", str(e))
+            else str(e)
+        )
     g = np.asarray(got.observables)[:, : exact.shape[1]]
     return float((np.abs(g - exact) / np.maximum(np.abs(exact).max(axis=0), 1e-12)).max())
 
@@ -551,7 +558,9 @@ def test_a_grazed_root_does_not_restart_the_run(data_dir, tmp_path):
         try:
             result = bngsim.Simulator(_write(tmp_path, text, "moving.net")).run(**window)
         except bngsim.SimulationError as e:
-            assert "come to rest" in str(e) and "issue #1548" in str(e), window
+            assert "come to rest" in str(e) and "set by rounding, not by the model" in str(e), (
+                window
+            )
             continue
         ran += 1
         assert result.solver_stats["n_steps"] < 10_000, window
@@ -581,7 +590,9 @@ def test_a_state_resting_on_its_surface_is_refused(data_dir, tmp_path, rtol, n_p
     assert text.count(old) == 1
     text = text.replace(old, "   16 k_v_stim        50.0  # Constant\n")
     window = dict(t_span=(0.0, 150.0), n_points=n_points, rtol=rtol, atol=rtol)
-    with pytest.raises(bngsim.SimulationError, match="come to rest.*issue #1548"):
+    with pytest.raises(
+        bngsim.SimulationError, match="come to rest.*set by rounding, not by the model"
+    ):
         bngsim.Simulator(_write(tmp_path, text, "upstream.net")).run(**window)
 
 

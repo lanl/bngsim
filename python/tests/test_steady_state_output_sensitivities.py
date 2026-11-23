@@ -528,7 +528,7 @@ class TestCompiledOutputSensPath:
         message = str(refusal.value)
         assert "'expression:satA'" in message and "'expression:lin'" in message
         assert "the compiled code it was solved with carries no chain rule" in message
-        assert "issue #1002" in message
+        assert "a steady state does not difference one" in message
 
     def test_regeneration_failure_keeps_the_working_artifact(self, monkeypatch):
         """The re-prep DROPS an attached artifact to rebuild it with output sens.
@@ -882,7 +882,10 @@ class TestFunctionBlockBesideARowlessSpecies:
         text = _MADE_AND_LOST + "W := piecewise(P, P < 100, 2*P);\nspecies T in D; T := 2*P;\n"
         ss = _ant_steady_state(text)
         assert ss.sens_output_source == "none"
-        with pytest.raises(ValueError, match=r"'expression:W'.*if\(\) conditional.*#1002"):
+        with pytest.raises(
+            ValueError,
+            match=r"'expression:W'.*if\(\) conditional.*a steady state does not difference one",
+        ):
             ss.output_sensitivities(["expression:W"])
         np.testing.assert_allclose(ss.output_sensitivities(["species:T"])[0], 2 * _DP, rtol=1e-7)
 
@@ -982,8 +985,8 @@ class TestFunctionBlockBesideARowlessSpecies:
         with pytest.raises(
             bngsim.SimulationError,
             match=r"\['T'\].*for T, its size C has no steady-state derivative \(the compiled "
-            r"code has none for its rule: uses unsupported construct: if\(\) conditional; "
-            r"issue #1002\).*written without that construct",
+            r"code has none for its rule: uses unsupported construct: if\(\) conditional\)"
+            r".*written without that construct",
         ):
             _ant_steady_state(text)
 

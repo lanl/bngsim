@@ -170,7 +170,10 @@ class TestCarryOverCorrectness:
 class TestRaisePolicy:
     def test_carryover_state_without_flag_raises(self):
         """Sensitivities on a carried-over state without the opt-in must raise."""
-        with pytest.raises(bngsim.SimulationError, match=r"carried-over.*GH #210"):
+        with pytest.raises(
+            bngsim.SimulationError,
+            match=r"carried-over.*Seeding the measurement phase as a fresh start",
+        ):
             _two_phase(K_PROD, K_DEG, carry=False)
 
     def test_carry_without_prior_seed_raises(self):

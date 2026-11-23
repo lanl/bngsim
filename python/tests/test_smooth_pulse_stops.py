@@ -292,7 +292,10 @@ def test_a_bump_elsewhere_keeps_the_refusal_of_an_event_on_two_switches():
     sim = bngsim.Simulator(m, method="ode", sensitivity_params=["tau"])
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        with pytest.raises(bngsim.SimulationError, match="767"):
+        with pytest.raises(
+            bngsim.SimulationError,
+            match="that order depends on the parameter: the sensitivity does not exist there",
+        ):
             sim.run(t_span=(0, 30), n_points=4, rtol=1e-10, atol=1e-12)
 
 

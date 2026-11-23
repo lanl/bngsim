@@ -60,7 +60,7 @@ def test_an_event_that_rearms_itself_as_it_fires_is_refused_by_name(shape):
         _run(_ZENO[shape], (0.0, 2.0))
     assert "'E'" in str(err.value)
     assert "Zeno behaviour" in str(err.value)
-    assert "issue #1158" in str(err.value)
+    assert "the run has no continuation past it" in str(err.value)
 
 
 def _ring(n, on_at=None):

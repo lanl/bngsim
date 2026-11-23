@@ -78,7 +78,7 @@ def _refused(out, name, construct):
     with pytest.raises(ValueError, match=rf"'expression:{name}' has no steady-state") as err:
         out.output_sensitivities([name])
     assert f"uses unsupported construct: {construct}" in str(err.value)
-    assert "issue #1002" in str(err.value)
+    assert "a steady state does not difference one" in str(err.value)
 
 
 def test_a_secant_the_same_at_both_steps_is_exact(tmp_path):
@@ -138,7 +138,7 @@ def test_a_condition_on_a_parameter_at_0_is_refused(tmp_path):
     with pytest.raises(
         ValueError,
         match=r"'expression:fq' has no steady-state derivative: the steady state "
-        r"sits where it changes branch.*#1330",
+        r"sits where it changes branch.*is not the same from the two sides",
     ):
         out.output_sensitivities(["fq"])
 

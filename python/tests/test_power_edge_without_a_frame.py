@@ -113,9 +113,18 @@ def _run(model, params, rtol=1e-8, **kw):
     return np.asarray(out.sensitivities)[:, names.index("X") if "X" in names else 0, :]
 
 
+# Each refusal by the words of its message: 958 an event leaves a model no
+# frames, 948 a column moves the counter itself.
+NO_FRAME = {
+    958: r"singular.*an event restarts the integration under it, so a model with one has no "
+    r"frames",
+    948: r"singular.*A column that moves the counter has none",
+}
+
+
 def _refused(model, params, issue, rtol=1e-8, **kw):
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=params, **kw)
-    with pytest.raises(bngsim.SimulationError, match=rf"singular.*\(issue #{issue}\)"):
+    with pytest.raises(bngsim.SimulationError, match=NO_FRAME[issue]):
         sim.run(sample_times=T, rtol=rtol, atol=rtol * 1e-2, timeout=120)
 
 
@@ -192,7 +201,9 @@ def test_a_step_on_the_closing_edge_is_refused_with_no_event():
     """Control. The same crossing with the frames on is issue #949's refusal."""
     model = _with_event("closing", 1.1, event=False, extra=" + piecewise(kj, time >= 7, 0)")
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["D"])
-    with pytest.raises(bngsim.SimulationError, match=r"\(issue #949\)"):
+    with pytest.raises(
+        bngsim.SimulationError, match="closes as a singular power, and it shares its instant"
+    ):
         sim.run(sample_times=T, rtol=1e-8, atol=1e-10, timeout=120)
 
 
@@ -214,7 +225,7 @@ def test_the_exponent_is_asked_again_after_set_param(shape, param):
                     atol=2e-7,
                 )
             else:
-                with pytest.raises(bngsim.SimulationError, match=r"\(issue #958\)"):
+                with pytest.raises(bngsim.SimulationError, match=NO_FRAME[958]):
                     sim.run(sample_times=T, rtol=1e-8, atol=1e-10, timeout=120)
 
 
@@ -251,7 +262,7 @@ def test_a_singular_edge_on_a_state_crossing_beside_an_event_is_refused(jump, a)
     sim = bngsim.Simulator(
         _on_a_state_crossing(10.0, jump, True, a), method="ode", sensitivity_params=["on"]
     )
-    with pytest.raises(bngsim.SimulationError, match=r"singular.*\(issue #958\)"):
+    with pytest.raises(bngsim.SimulationError, match=NO_FRAME[958]):
         sim.run(sample_times=STATE_T, rtol=1e-8, atol=1e-10, timeout=120)
 
 
@@ -293,7 +304,7 @@ def test_a_singular_edge_that_is_only_a_root_beside_an_event_is_refused(a):
     before the run: the column is refused at the root, where it would have
     entered its frame, whichever way the run reads the law there."""
     sim = bngsim.Simulator(_only_a_root(10.0, True, a), method="ode", sensitivity_params=["on"])
-    with pytest.raises(bngsim.SimulationError, match=r"singular.*\(issue #958\)"):
+    with pytest.raises(bngsim.SimulationError, match=NO_FRAME[958]):
         sim.run(sample_times=[0.0, 5.0, 12.0, 18.0], rtol=1e-8, atol=1e-10, timeout=120)
 
 
@@ -370,7 +381,7 @@ def test_the_counters_own_initial_condition_axis_is_refused(tmp_path, shape):
     """The same column, asked for as an initial-condition axis."""
     model = _on_a_counter(tmp_path, shape, 1.1)
     sim = bngsim.Simulator(model, method="ode", sensitivity_ic=["Tc()"])
-    with pytest.raises(bngsim.SimulationError, match=r"singular.*\(issue #948\)"):
+    with pytest.raises(bngsim.SimulationError, match=NO_FRAME[948]):
         sim.run(sample_times=T, rtol=1e-8, atol=1e-10, timeout=120)
 
 
@@ -449,7 +460,7 @@ def test_the_counters_column_is_asked_again_after_set_param(tmp_path, shape):
                     atol=2e-7,
                 )
             else:
-                with pytest.raises(bngsim.SimulationError, match=r"\(issue #948\)"):
+                with pytest.raises(bngsim.SimulationError, match=NO_FRAME[948]):
                     sim.run(sample_times=T, rtol=1e-8, atol=1e-10, timeout=120)
 
 
@@ -472,7 +483,7 @@ def test_a_window_written_in_numbers_is_as_singular(tmp_path, params):
 def test_a_window_written_in_numbers_and_the_counters_own_axis(tmp_path):
     model = _on_a_counter(tmp_path, "closing", 1.1, text=NUMBERS)
     sim = bngsim.Simulator(model, method="ode", sensitivity_ic=["Tc()"])
-    with pytest.raises(bngsim.SimulationError, match=r"singular.*\(issue #948\)"):
+    with pytest.raises(bngsim.SimulationError, match=NO_FRAME[948]):
         sim.run(sample_times=T, rtol=1e-8, atol=1e-10, timeout=120)
 
 
@@ -520,7 +531,7 @@ def test_a_counter_edge_found_as_a_root_is_refused(tmp_path, shape, a, params):
     )
     model = _on_a_counter(tmp_path, shape, a, text=text)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=params)
-    with pytest.raises(bngsim.SimulationError, match=r"singular.*\(issue #948\)") as refusal:
+    with pytest.raises(bngsim.SimulationError, match=NO_FRAME[948]) as refusal:
         sim.run(sample_times=T, rtol=1e-8, atol=1e-10, timeout=120)
     assert "(at t=0)" in str(refusal.value)
 
@@ -645,7 +656,7 @@ def test_a_counter_under_a_power_with_no_analytic_right_hand_side(tmp_path, para
     own columns came back 11% off. Such a run is refused since issue #938: a
     condition on a counter that a requested column moves."""
     model = _on_a_counter(tmp_path, "closing", 1.1, text=NO_ANALYTIC)
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="run does not finish"):
         sim = bngsim.Simulator(model, method="ode", sensitivity_params=params)
         assert not sim.has_analytic_sens_rhs
         sim.run(sample_times=T, rtol=1e-8, atol=1e-10, timeout=120)

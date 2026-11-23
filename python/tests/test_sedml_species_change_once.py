@@ -194,7 +194,9 @@ def test_a_per_point_set_value_of_the_range_still_follows_the_sweep(files):
 def test_a_bngl_block_says_where_bng2pl_would_follow_the_scan(files):
     _, sbml = files
     spec = _read(_doc(A0_TIMES_2, _scan()), sbml)
-    with pytest.warns(ConversionWarning, match=r"species follows A0.*issue #1737"):
+    with pytest.warns(
+        ConversionWarning, match=r"species follows A0.*starts from another amount there"
+    ):
         write_bngl_protocol(spec)
 
 
@@ -236,11 +238,13 @@ def test_the_model_block_writer_warns_too(files):
     _, sbml = files
     spec = _read(_doc(A0_TIMES_2, _scan()), sbml)
     model = bngsim.Model.from_sbml(str(sbml))
-    with pytest.warns(ConversionWarning, match=r"species follows A0.*issue #1737") as caught:
+    with pytest.warns(
+        ConversionWarning, match=r"species follows A0.*starts from another amount there"
+    ) as caught:
         text = write_bngl(model, protocol=spec, strict=False)
     assert 'setConcentration("@comp1:A()","A0 * 2")' in text
     # Reported at the caller, not at a frame inside bngsim.
-    (warning,) = [w for w in caught if "#1737" in str(w.message)]
+    (warning,) = [w for w in caught if "starts from another amount" in str(w.message)]
     assert Path(warning.filename).name == Path(__file__).name
 
 
@@ -440,7 +444,7 @@ def _warned(spec: ProtocolSpec, derived=None) -> tuple[bool, bool, str]:
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         text = write_bngl_protocol(spec, derived=derived)
-    said = [str(w.message) for w in caught if "#1737" in str(w.message)]
+    said = [str(w.message) for w in caught if "starts from another amount" in str(w.message)]
     return (
         any("species follows" in m for m in said),
         any("declared amount" in m for m in said),
@@ -558,7 +562,7 @@ def test_a_function_call_is_no_parameter_of_the_parameter_warning():
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             write_bngl_protocol(spec)
-        return [str(w.message) for w in caught if "#1682" in str(w.message)]
+        return [str(w.message) for w in caught if "runs another value there" in str(w.message)]
 
     assert said("exp(1)*0.5") == []
     (message,) = said("k1*0.5")
@@ -581,7 +585,9 @@ def test_write_bngl_follows_the_model_s_derived_parameters(tmp_path):
     net = tmp_path / "d.net"
     net.write_text(NET_DERIVED)
     model = bngsim.Model.from_net(str(net))
-    with pytest.warns(ConversionWarning, match=r"species follows A0.*issue #1737"):
+    with pytest.warns(
+        ConversionWarning, match=r"species follows A0.*starts from another amount there"
+    ):
         write_bngl(model, protocol=_steps("once:kd*2 setp run"), strict=False)
 
 
@@ -648,7 +654,9 @@ def _unpacked(omex: Path, **kwargs):
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         report = omex_to_net(omex, strict=False, **kwargs)
-    return report, [str(w.message) for w in caught if "#1737" in str(w.message)]
+    return report, [
+        str(w.message) for w in caught if "starts from another amount" in str(w.message)
+    ]
 
 
 def test_omex_to_net_follows_the_written_net_s_derived_parameters(tmp_path):

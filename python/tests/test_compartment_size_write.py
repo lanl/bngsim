@@ -321,7 +321,9 @@ def test_sensitivity_params_refuses_an_unwritable_compartment():
         bngsim.Simulator(_xcomp_equal(), method="ode", sensitivity_params=["C2", "k"])
     msg = str(exc.value)
     assert "C2" in msg and "'k'" not in msg  # only the offending column is named
-    assert "#170" in msg
+    assert "set_param refuses to write them" in msg  # as wide as the write refusal
+    assert "Every other compartment size in this model is differentiable" in msg
+    assert "#" not in msg, msg  # it cites no issue
     # The message must send the reader to the per-size reason and to the path that
     # does work, not restate #164's "the value is folded at load".
     assert "unwritable_compartment_size_params" in msg and "compartment_sizes" in msg

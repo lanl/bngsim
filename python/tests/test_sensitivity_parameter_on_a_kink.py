@@ -133,7 +133,7 @@ def test_a_condition_over_a_bend_is_judged_and_refused(model):
     assert parameters_on_a_kink(m._core, ["q"]) == [
         "'q' in reaction 1 (r): if(abs(q) > 1, ...), on its switch at q = 1"
     ]
-    with pytest.raises(bngsim.SimulationError, match=r"issue #1330"):
+    with pytest.raises(bngsim.SimulationError, match=r"depends on the side it is approached from"):
         _steady(m, ["q"])
 
 

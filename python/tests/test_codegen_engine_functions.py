@@ -199,7 +199,9 @@ def test_a_sensitivity_run_beside_a_step_on_the_state_is_refused(tmp_path, body)
     and that is not known before the run."""
     m = _model(tmp_path, body)
     sim = bngsim.Simulator(m, method="ode", sensitivity_params=["k"])
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938") as caught:
+    with pytest.raises(
+        bngsim.SensitivityUnsupportedError, match="moves the run across, or may"
+    ) as caught:
         sim.run(t_span=(0.0, 4.0), n_points=9)
     assert "(A+1)" in str(caught.value)
     assert m._codegen_sens_decline is not None

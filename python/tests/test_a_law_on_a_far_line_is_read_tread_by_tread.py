@@ -71,7 +71,9 @@ def _fresh() -> None:
 
 
 def _said(caplog) -> list[str]:
-    return [r.getMessage() for r in caplog.records if "#1018" in r.getMessage()]
+    # The two warnings of a law read tread by tread: beyond 2^48, and left alone.
+    said = ("a staircase with a stop on each step", "integrated without a stop on each change")
+    return [r.getMessage() for r in caplog.records if any(s in r.getMessage() for s in said)]
 
 
 class _Options:
@@ -137,7 +139,7 @@ def test_a_sawtooth_beyond_2_48_says_what_it_resolves(tmp_path, caplog):
         _gain(tmp_path, dose, 0.0, 1200 * _U12)
     said = [r.getMessage() for r in caplog.records if "2^48" in r.getMessage()]
     assert len(said) == 1
-    assert "`mod(time(), P)`" in said[0] and "#1018" in said[0]
+    assert "`mod(time(), P)`" in said[0] and "a staircase with a stop on each step" in said[0]
 
 
 _COARSE = "100*mod(1100000000000.0 + time(), 0.0048828125)"  # 20 doubles of the sum
@@ -544,7 +546,10 @@ def test_a_law_the_scan_refused_past_the_stop_budget_is_refused_by_name(tmp_path
     opts.max_step_size = max_step
     _fresh()
     sim = bngsim.Simulator(_model(tmp_path, dose), method="ode")
-    with pytest.raises(bngsim.SimulationError, match=r"#1018.*legs of 122 or shorter") as refused:
+    with pytest.raises(
+        bngsim.SimulationError,
+        match=r"stretch of time its argument holds one double.*legs of 122 or shorter",
+    ) as refused:
         sim._apply_crossing_stops(opts, 0.0, 160.0)
     assert "changes 1310720 times" in str(refused.value)
 

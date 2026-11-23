@@ -59,6 +59,15 @@ BEHAVIOUR_FEATURE_PROBES = {
     "tracking_atol": "_tracking_atol_available",
 }
 
+# What each behaviour key's reason tells the reader to do: unset the A/B hatch
+# that turned it off, or rebuild the stale compiled extension.
+BEHAVIOUR_REMEDIES = {
+    "event_sensitivities": "rebuild_editable",
+    "cross_compartment_sensitivities": "Unset the variable",
+    "per_species_atol": "rebuild_editable",
+    "tracking_atol": "rebuild_editable",
+}
+
 
 class TestModuleFlags:
     def test_has_libsbml_is_bool(self):
@@ -271,12 +280,17 @@ class TestCapabilitiesMissingExplanations:
                  "HAS_ANTIMONY", "HAS_VIVARIUM"],
     )  # fmt: skip
     def test_an_install_reason_cites_no_issue_number(self, monkeypatch, flag):
-        """What ``bngsim doctor`` prints for a feature a published wheel can lack
-        says what to do, in plain words: an issue number means nothing to the
-        user or agent reading it. (The behaviour keys below, which only a stale
-        source build lacks, are for developers and keep theirs.)"""
+        """What ``bngsim doctor`` prints for a missing feature says what to do,
+        in plain words: an issue number means nothing to the user or agent
+        reading it. That holds for the behaviour keys below too, which only a
+        stale source build lacks, so every one of them is reported missing here
+        beside the flag."""
         monkeypatch.setattr(bngsim, flag, False)
-        for name, why in bngsim.capabilities()["missing"].items():
+        for probe in BEHAVIOUR_FEATURE_PROBES.values():
+            monkeypatch.setattr(bngsim, probe, lambda: False)
+        missing = bngsim.capabilities()["missing"]
+        assert set(BEHAVIOUR_FEATURE_PROBES) <= set(missing)
+        for name, why in missing.items():
             assert not re.search(r"#\d", why), (name, why)
 
     def test_missing_klu_does_not_say_a_wheel_lacks_it(self, monkeypatch):
@@ -385,16 +399,17 @@ class TestBehaviourFeatureKeys:
         assert caps["features"][name] is False
         msg = caps["missing"][name]
         assert isinstance(msg, str) and len(msg) > 40
-        # Every one of these names the issue it came from, so a reader can find
-        # out what changed rather than only that something did.
-        assert "GH #" in msg
+        # Every one of these says what to do about it, in plain words, and
+        # carries no issue number: one means nothing to the reader.
+        assert BEHAVIOUR_REMEDIES[name] in msg
+        assert not re.search(r"#\d", msg), msg
 
     def test_event_sensitivities_reason_names_the_silent_failure(self, monkeypatch):
         monkeypatch.setattr(bngsim, "_event_sensitivities_available", lambda: False)
         msg = bngsim.capabilities()["missing"]["event_sensitivities"]
         # The point of the key is that the pre-fix behaviour is a wrong number
         # and not a refusal, so the message has to say that outright.
-        assert "GH #144" in msg and "#146" in msg
+        assert "discrete event" in msg and not re.search(r"#\d", msg)
         assert "wrong" in msg
         assert "rebuild_editable" in msg
 

@@ -96,7 +96,10 @@ def test_a_jump_on_the_same_surface_is_refused_not_carried(tmp_path):
     the same surface, read by another reaction, so the pulse's own probe did
     not see its jump. Carried over with the bend, it was crossed with no root
     and no saltation, and dW/dk_clock came back 0 for 7.58 with no error."""
-    with pytest.raises(bngsim.SimulationError, match="issue #952"):
+    with pytest.raises(
+        bngsim.SimulationError,
+        match="no crossing time for the sensitivities to move with.*A plain run is carried across",
+    ):
         _run(tmp_path, LAWS["if()"], 0.01, 1e-11, beside="kz*if(Tobs-c>=w/2,1,0)")
 
 

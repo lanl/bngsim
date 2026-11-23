@@ -349,7 +349,7 @@ def test_a_crossing_rounded_onto_a_nearer_start_is_refused_too(tmp_path):
     # may run alone (compute_all_sensitivities retries column by column).
     with pytest.raises(
         bngsim.SensitivityRefusedForParametersError,
-        match=r"crosses 4e-11 after the start.*rounds onto the start.*issue #1828",
+        match=r"crosses 4e-11 after the start.*rounds onto the start.*would be lost",
     ):
         _clock_run(tmp_path, 1e6, sens=["sigma"], c0=repr(3 - 4e-11))
 
@@ -561,7 +561,8 @@ def test_a_schedule_edge_that_rounds_onto_the_start_is_refused(tmp_path):
     # The jumps are exact multiples of k; 1e-6 is the file's bound on the column.
     assert _column(near)[1:] == pytest.approx([-8.0, -14.0], abs=1e-6)
     with pytest.raises(
-        bngsim.SensitivityUnsupportedError, match=r"crosses 4e-11 after the start.*issue #1828"
+        bngsim.SensitivityUnsupportedError,
+        match=r"crosses 4e-11 after the start.*requested columns would be lost",
     ):
         run(1e6)
 
@@ -755,7 +756,7 @@ def test_a_far_sensitivity_refusal_names_its_own_clock_and_keeps_its_type(tmp_pa
     with pytest.raises(bngsim.SensitivityRefusedDuringRunError) as info:
         sim.run(sample_times=[1e15, 1e15 + 0.5, 1e15 + 1.5], rtol=1e-6, atol=1e-8, timeout=10.0)
     msg = str(info.value)
-    assert "at t=1 " in msg and "issue #926" in msg, msg
+    assert "at t=1 " in msg and "slides along the switching surface" in msg, msg
     assert NOTE in msg and "elapsed since t = 1000000000000000:" in msg, msg
 
 

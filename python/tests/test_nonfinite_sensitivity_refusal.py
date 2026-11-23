@@ -433,7 +433,9 @@ class TestTheRealModels:
         name, with this module's interception on or off (issue #915)."""
         name, t_span, n_points, column = self.AT_AN_EVENT
         for recover in (None, "0"):
-            with pytest.raises(bngsim.SimulationError, match="issue #915") as caught:
+            with pytest.raises(
+                bngsim.SimulationError, match="the derivative the sensitivity needs is not defined"
+            ) as caught:
                 _outcome(name, t_span, n_points, recover=recover)
             assert "'DNADamage'" in str(caught.value)
             assert f"'{column}'" in str(caught.value)

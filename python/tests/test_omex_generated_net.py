@@ -132,7 +132,7 @@ def test_allow_lossy_packs_it_with_a_warning_and_a_note(tmp_path):
     paths = write(tmp_path, MODEL + ADD_THEN_RUN, net(amount="150"))
     with pytest.warns(ConversionWarning, match="is not the network model.bngl generates"):
         _, report = pack(*paths, strict=False)
-    assert any("issue #1683" in note for note in report.lossy)
+    assert any("state starts from the wrong one" in note for note in report.lossy)
 
 
 # ── What generation itself changes is the network's ──────────────────────────
