@@ -256,6 +256,23 @@ def test_two_expressions_actions_gave_both_come_back_with_the_reader_listed_firs
     assert _end(out[1]) == pytest.approx(a_at(0.25, 18.0, 24.0), rel=REL)
 
 
+def test_an_expression_already_at_its_value_is_not_written_again(tmp_path):
+    # kg is "k2*27" (54) and kj "k1+k1" (6) at the save, where the network
+    # declares kj k1*3, kx kj*3 and kg kx*2. After it, k1 = 2 and kj = "k1+4"
+    # (6), which k1*3 gives too, so kj is attached to k1*3. Writing k1 back
+    # moves kj to 9 and kx to 27, where kx*2 gives kg's 54: writing kg's saved
+    # number then would re-attach kg to kx*2, and kj's going back to 6 would
+    # take kg to 36. Nothing is overridden, and the network lists each
+    # parameter after what it reads, as BNG2.pl does. BNG2.pl 2.9.3 on the
+    # same actions: kj 6, kx 18 and kg 54.
+    declared = [("k1", "3"), ("k2", "2"), ("kj", "k1*3"), ("kx", "kj*3"), ("kg", "kx*2")]
+    model = _model(tmp_path, declared, "kj", "kg")
+    exprs = [_expr("kg", "k2*27"), _expr("kj", "k1+k1")]
+    out = _replay(model, *exprs, SAVE, _set("k1", 2), _expr("kj", "k1+4"), RESET, RUN)
+    assert [out.model.get_param(n) for n in ("kj", "kx", "kg")] == [6.0, 18.0, 54.0]
+    assert _end(out[0]) == pytest.approx(a_at(0.25, 6.0, 54.0), rel=REL)
+
+
 # p2 reads p1 through d: sqrt(d) is NaN while p1 is below 7.
 ROOT = [("k1", "1"), ("k2", "k1*2"), ("p1", "k2*3"), ("d", "p1-7"), ("p2", "1")]
 
@@ -314,6 +331,46 @@ def test_a_species_amount_set_as_a_number_stays_after_the_reset(tmp_path):
     amount = StateChange(kind="set_concentration", target="A()", value=5.0)
     out = _replay(model, SAVE, _set("k3", 5), amount, RESET, RUN)
     assert out.model.get_param("k3") == 6.0
+    assert out[0].result.species[-1].tolist() == pytest.approx([5.0, 1.25], rel=REL)
+
+
+def test_a_parameter_held_at_its_number_stays_there_when_the_reset_writes_a_constant(tmp_path):
+    # k3 = 6 is a number at the save (k1*3 gives 3). After it, k1 = 2 and
+    # k3 = 6, which k1*3 gives too, so k3 is attached again and held at 6.
+    # The reset writes only the constant k1 back, which moves k1*3 off 6 to
+    # 3, and the hold keeps k3 at 6. BNG2.pl 2.9.3 on the same actions: k1 1
+    # and k3 6.
+    model = _model(tmp_path, [("k1", "1"), ("k3", "k1*3")], "k1", "k3")
+    out = _replay(model, _set("k3", 6), SAVE, _set("k1", 2), _set("k3", 6), RESET, RUN)
+    assert [out.model.get_param(n) for n in ("k1", "k3")] == [1.0, 6.0]
+    assert _end(out[0]) == pytest.approx(a_at(0.25, 1.0, 6.0), rel=REL)
+
+
+# The same catalyst, whose declared amount is the constant k1.
+NET_AMOUNT_CONSTANT = """begin parameters
+    1 k1 1
+    2 kc 1
+end parameters
+begin species
+    1 A() k1
+    2 P() 0
+end species
+begin reactions
+    1 1 1,2 kc
+end reactions
+"""
+
+
+def test_a_species_amount_set_as_a_number_stays_when_the_reset_writes_a_constant(tmp_path):
+    # A() k1, set to 5 while k1 is 5: the reset writes k1 back (1), and A, a
+    # number since, stays at 5. BNG2.pl 2.9.3 on the same actions: A 5 and
+    # P 1.25 at t = 0.25.
+    net = tmp_path / "m.net"
+    net.write_text(NET_AMOUNT_CONSTANT, encoding="utf-8")
+    model = bngsim.Model.from_net(str(net))
+    amount = StateChange(kind="set_concentration", target="A()", value=5.0)
+    out = _replay(model, SAVE, _set("k1", 5), amount, RESET, RUN)
+    assert out.model.get_param("k1") == 1.0
     assert out[0].result.species[-1].tolist() == pytest.approx([5.0, 1.25], rel=REL)
 
 
