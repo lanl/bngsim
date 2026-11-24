@@ -14,7 +14,8 @@ runs, so it gives what a solve sees.
 import numpy as np
 import bngsim
 
-m = bngsim.Model.from_net("model.net")
+# Schlogl's bistable switch, one of the models that ship with BNGsim
+m = bngsim.Model.from_sbml(bngsim.examples.path("schlogl", "sbml"))  # or your own model
 y = m.get_state()                    # or any (n_species,) array of your own
 
 S = m.stoichiometry_matrix()         # (n_species, n_reactions), net coefficients
@@ -140,6 +141,7 @@ loaded from disk or stacked from a batch raises `ValueError` for it.
 ```python
 from scipy.optimize import fsolve
 
+y_guess = [380.0]                    # near the upper of its stable states, X = 400
 root = fsolve(lambda y: m.rhs(y), y_guess)
 ev = np.linalg.eigvals(m.jacobian(root))
 stable = np.all(ev.real < 0)

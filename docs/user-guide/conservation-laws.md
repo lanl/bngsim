@@ -17,15 +17,18 @@ They come from conserved molecules (total receptor, total ligand). BNGsim finds
 them for every input format: `.net`, SBML, Antimony and `ModelBuilder`.
 
 ```python
-model = bngsim.Model.from_net("model.net")
+import bngsim
+
+# The bundled A + B <-> C model (species A(b), B(a), A(b!1).B(a!1)); or your own .net
+model = bngsim.Model.from_net(bngsim.examples.path("binding"))
 
 laws = model.conservation_laws
-print(laws["n_laws"])           # number of conservation laws
-print(laws["dependent"])        # dependent species indices (0-based)
-print(laws["independent"])      # independent species indices
-print(laws["constants"])        # the conserved totals, from the initial conditions
-print(laws["coefficients"])     # n_laws × n_species coefficient matrix
-print(laws["n_species"])        # species count the coefficient rows span
+print(laws["n_laws"])           # 2: the number of conservation laws, total A and total B
+print(laws["dependent"])        # [0, 1]: dependent species indices (0-based)
+print(laws["independent"])      # [2]: independent species indices
+print(laws["constants"])        # [100.0, 80.0]: the conserved totals, from the initial conditions
+print(laws["coefficients"])     # [[1.0, 0.0, 1.0], [0.0, 1.0, 1.0]]: n_laws × n_species
+print(laws["n_species"])        # 3: the species count the coefficient rows span
 ```
 
 `dependent` lists one species per law, the one the steady-state solver

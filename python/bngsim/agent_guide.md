@@ -92,7 +92,7 @@ print(d["methods"]["ssa"]["status"])  # ok
 | a BNGL file's own actions | `bngsim.run_bngl(path)` |
 | save a result | `result.save("run.npz")`, for `numpy.load`; `result.save("run.h5")` and `bngsim.Result.load("run.h5")` keep everything (need h5py) |
 
-The next block changes a parameter and runs again, then scans a parameter,
+The next block changes a parameter and runs again, scans one,
 finds the steady state, computes sensitivities and runs stochastic replicates:
 
 ```python
@@ -170,7 +170,7 @@ print(reps.observables.shape)  # (50, 11, 2)
    keeps every warning of the run, whatever the warning filters showed, each
    with a `code` such as `atol.below_scale` to branch on, as an error has.
    The error of a run that fails keeps them too, as `e.notices`. The error-code
-   page lists the notice codes with what to do about each.
+   page lists the notice codes.
 
 ```python
 model.reset()
@@ -246,9 +246,11 @@ for feature, why in caps["missing"].items():
 From a shell, `python -m bngsim doctor` prints the same, with the Python,
 platform and C compiler. `python -m bngsim inspect MODEL` prints
 `Model.load(MODEL).describe()`; `run MODEL --t-end T` a run's record and
-digest, the arrays to `--out`; `check` also `result.check()`. Add `--json`
-for one JSON object on standard output; an error is JSON on standard error,
-and the exit code says which kind (`--help` lists them).
+digest, the arrays to `--out`; `check` also `result.check()`; `run-until`,
+`run-batch`, `parameter-scan`, `steady-state`, `steady-state-batch`,
+`steady-states` and `run-bngl` the call so named. `--json` gives one JSON
+object on standard output, an error JSON on standard error, and the exit
+code says which kind (`--help` lists them).
 
 | to | needs | capability |
 |---|---|---|
@@ -401,8 +403,8 @@ that tool spells it.
 ## Example models, and models built in Python
 
 `bngsim.examples` holds small models that ship with BNGsim, each with its
-exact solution. Use one to try BNGsim without a model file of your own, or to
-check that BNGsim works on this machine. `bngsim.examples.formats(name)` lists
+exact solution, to try BNGsim or check that it works here.
+`bngsim.examples.formats(name)` lists
 the formats each comes in. `bngsim.ModelBuilder` builds a model in Python.
 
 ```python
@@ -434,7 +436,7 @@ print(bngsim.Simulator(built).run(t_span=(0, 2), n_points=3).observables["A"][-1
   replicates and the seed.
 - **The run started where it was meant to:** `result.started_from`.
 - **What the numbers are and how they were made:** `result.record` says it
-  from the result, not from memory of the script; `result.notices` lists what
+  from the result, not from memory; `result.notices` lists what
   the run warned of.
 - **What the values did:** `result.digest()`, not printed arrays.
 
@@ -461,8 +463,8 @@ print(r.digest()["observables"]["columns"][0]["monotone"])  # True
 
 ## Report a suspected bug
 
-Report it at <https://github.com/lanl/bngsim/issues>, with what a maintainer
-needs to run it again:
+Report it at <https://github.com/lanl/bngsim/issues>, with what it takes to
+run it again:
 
 - the output of `python -m bngsim doctor`, which gives the version, the build,
   the Python and the operating system;

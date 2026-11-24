@@ -6,6 +6,40 @@ summary: "The Result object: arrays by name, pandas and xarray views, saving to 
 
 A run returns a `Result`. Its arrays are NumPy arrays that also take a name.
 
+The examples on this page read one run of a small model, with sensitivities
+to its two rate constants: A is made at rate `k1` and decays at rate `k2`.
+
+```python
+from pathlib import Path
+
+import bngsim
+
+# 0 -> A -> 0, in BioNetGen's network (.net) format.
+Path("model.net").write_text(
+    """\
+begin parameters
+    1 k1 10
+    2 k2 0.5
+end parameters
+begin species
+    1 A() 0
+end species
+begin reactions
+    1 0 1 k1
+    2 1 0 k2
+end reactions
+begin groups
+    1 A_total 1
+end groups
+""",
+    encoding="utf-8",
+)
+
+model = bngsim.Model.load("model.net")
+sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k1", "k2"])
+result = sim.run(t_span=(0, 20), n_points=21)
+```
+
 ## Read a result by name
 
 ```python
@@ -25,7 +59,7 @@ result.xr.species          # DataArray, dims (time, state)
 result.xr.observables      # DataArray, dims (time, observable)
 result.xr.sensitivities    # DataArray, dims (time, state, parameter)
 result.xr.observables.sel(observable="A_total")
-result.xr.sensitivities.sel(parameter="k1", state="A")
+result.xr.sensitivities.sel(parameter="k1", state="A()")
 
 # One xarray.Dataset with every field on a shared time axis
 ds = result.to_xarray()
@@ -115,12 +149,13 @@ firing count and integrated propensity. These are what a likelihood-ratio
 on does not change the trajectory.
 
 ```python
+model.reset()  # back to the initial counts: the ODE run above moved the model
 sim = bngsim.Simulator(model, method="ssa", reaction_stats=True)
 batch = sim.run_replicates(200, t_span=(0, 20), n_points=21, seed=1, squeeze=True)
 
 batch.reaction_firing_counts.shape         # (200, 21, n_reactions): N_r(t) per replicate
 batch.reaction_propensity_integrals.shape  # (200, 21, n_reactions): ∫₀ᵗ a_r ds
-batch.reaction_labels                      # ["R1 (0 -> A())", "R2 (A() -> 0)", ...]
+batch.reaction_labels                      # ['R1 (0 -> A())', 'R2 (A() -> 0)']
 
 # Scores for named rate constants, and the ensemble gradient
 # d E[observable] / d log10(k) with its standard error.
