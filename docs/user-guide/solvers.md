@@ -8,6 +8,47 @@ This page covers the settings of the ODE solver (CVODE): tolerances, step
 limits, the Jacobian, the linear solver, and what to expect from rate laws that
 switch on time, runs that start far from 0, and solves that fail.
 
+The examples share one small model whose species span ten decades, as they do
+in a signaling model in molar units (see
+[Per-species absolute tolerance](#per-species-absolute-tolerance)):
+
+```python
+from pathlib import Path
+
+import bngsim
+
+Path("model.net").write_text(
+    """\
+begin parameters
+    1 k1    1e-8      # IRSiP -> IRp, /s
+    2 k2    1.0       # IRp -> IRSiP, /s
+    3 kx    0.1       # X -> 0, /s
+    4 IRp0  1.763e-9  # initial amounts
+    5 IRS0  0.133
+    6 X0    10
+end parameters
+begin species
+    1 IRp    IRp0
+    2 IRSiP  IRS0
+    3 X      X0
+end species
+begin reactions
+    1 2 1 k1
+    2 1 2 k2
+    3 3 0 kx
+end reactions
+begin groups
+    1 IRp    1
+    2 IRSiP  2
+    3 X      3
+end groups
+""",
+    encoding="utf-8",
+)
+model = bngsim.Model.load("model.net")
+sim = bngsim.Simulator(model, method="ode")
+```
+
 ## Set tolerances and step limits
 
 ```python
@@ -21,7 +62,7 @@ result = sim.run(
 )
 
 print(result.solver_stats)
-# {'n_steps': 1247, 'n_rhs_evals': 2891, 'n_jac_evals': 43, ...}
+# e.g. {'n_steps': 690, 'n_rhs_evals': 722, 'n_jac_evals': 55, ...}
 ```
 
 Things to know:
@@ -107,6 +148,9 @@ To hold every species to exactly the number you give, say so:
 ```python
 result = sim.run(t_span=(0, 100), rtol=1e-6, atol=bngsim.ExactAtol(1e-9))
 sim.set_tolerances(rtol=1e-8, atol=bngsim.ExactAtol(1e-8))
+
+# A SED-ML file, here one BNGsim writes, read back with its atol held exactly
+bngsim.convert.write_sedml(bngsim.EvaluationSpec("model.net", atol=1e-9), "simulation.sedml")
 spec = bngsim.convert.read_sedml("simulation.sedml", exact_atol=True)
 ```
 
@@ -193,7 +237,7 @@ atol_i(y) = clamp(rtol * |y_i|, ceiling_i * 10**-decades, ceiling_i)
 # Alternatives, each from the initial conditions.
 result = sim.run(t_span=(0, 30), atol="tracking", start="initial")  # decades=12
 result = sim.run(t_span=(0, 30), atol=bngsim.TrackingAtol(decades=6), start="initial")
-result = sim.run(t_span=(0, 30), atol=bngsim.TrackingAtol(ceiling=my_vector), start="initial")
+result = sim.run(t_span=(0, 30), atol=bngsim.TrackingAtol(ceiling=atol), start="initial")  # the vector above
 ```
 
 `ceiling` defaults to `"auto"`. Tracking is never looser than its ceiling, and
@@ -227,16 +271,18 @@ every time:
 ```python
 import bngsim
 
-model = bngsim.Model.load("model.xml")
+model = bngsim.Model.load("model.net")
 sim = bngsim.Simulator(model, method="ode")
 
 RTOL = 1e-8
 nominal = model.get_state()                          # before anything is fitted
 atol = bngsim.derive_atol(nominal, RTOL)             # fixed for the whole fit
 
+search = [{"X0": x0, "k2": k2} for x0 in (5.0, 20.0) for k2 in (0.5, 2.0)]
 for theta in search:
     model.set_params(theta)                          # may move initial conditions
-    result = sim.run(t_span=(0, 100), rtol=RTOL, atol=atol)
+    result = sim.run(t_span=(0, 100), rtol=RTOL, atol=atol,
+                     start="initial")                # each point from its own start
 ```
 
 The rule and the `floor` default are the same as `auto_atol`'s. If you build

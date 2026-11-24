@@ -17,13 +17,16 @@ Pass a network-free method and `xml_path`, the model's BioNetGen XML. BNG2.pl's
 ```python
 import bngsim
 
-model = bngsim.Model.from_net("model.net")
+# The bundled binding model, A(b) + B(a) <-> A(b!1).B(a!1): the .net and the
+# BioNetGen XML that BNG2.pl wrote from its .bngl.
+xml_path = str(bngsim.examples.path("binding", "bng-xml"))
+model = bngsim.Model.from_net(bngsim.examples.path("binding", "net"))
 
 # NFsim: rejection (null-event) sampling.
-nf = bngsim.Simulator(model, method="nf", xml_path="model.xml")
+nf = bngsim.Simulator(model, method="nf", xml_path=xml_path)
 
 # RuleMonkey: exact network-free simulation.
-rm = bngsim.Simulator(model, method="rm", xml_path="model.xml")
+rm = bngsim.Simulator(model, method="rm", xml_path=xml_path)
 
 result = rm.run(t_span=(0, 100), n_points=101, seed=42)
 ```
@@ -79,7 +82,7 @@ graph. It gives correct results on our test models but is not reliably faster,
 so use it only after checking it on your own model.
 
 ```python
-sim = bngsim.Simulator(model, method="nf", xml_path="model.xml", connectivity=True)
+sim = bngsim.Simulator(model, method="nf", xml_path=xml_path, connectivity=True)
 ```
 
 ## What each engine refuses
@@ -252,13 +255,13 @@ session:
 ```python
 from bngsim import NfsimSession, RuleMonkeySession
 
-with NfsimSession("model.xml") as nf:
-    nf.set_param("kp1", 0.5)
+with NfsimSession(xml_path) as nf:
+    nf.set_param("kf", 0.02)
     nf.initialize(seed=42)
     result = nf.simulate(0, 100, n_points=101)
 
-with RuleMonkeySession("model.xml") as rm:
-    rm.set_param("kp1", 0.5)
+with RuleMonkeySession(xml_path) as rm:
+    rm.set_param("kf", 0.02)
     rm.initialize(seed=42)
     result = rm.simulate(0, 100, n_points=101)
 ```

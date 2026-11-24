@@ -277,9 +277,21 @@ at the returned state. Its sensitivity row is the chain rule through the
 rule:
 
 ```python
-ss = sim.steady_state(sensitivity_params=["ks"])
-ss["S"]                                   # the rule's value at the steady state
-ss.output_sensitivities(["observable:S"]) # the same derivative as its sensitivity row
+# X is made at ks and lost at kd*X; the rule sets S := 2*X. (Antimony writes
+# the SBML: pip install bngsim[antimony].)
+rule_model = bngsim.Model.from_antimony_string("""
+    species X, S
+    J1: -> X; ks
+    J2: X -> ; kd*X
+    S := 2*X
+    ks = 1; kd = 0.1; X = 0
+""")
+rule_sim = bngsim.Simulator(rule_model, method="ode")
+
+ss = rule_sim.steady_state(sensitivity_params=["ks"])
+ss.excluded_species                       # [1]: S, left out of the solve
+ss["S"]                                   # 20.0, the rule's value at the steady state
+ss.output_sensitivities(["observable:S"]) # [[20.]], dS/dks, the same derivative as its sensitivity row
 ```
 
 ## Unstable roots (saddles)
@@ -611,7 +623,38 @@ is then `dx_ss/dθ`, not 0. Pass `carry_sensitivities=True` on the
 measurement run to use it:
 
 ```python
-# A model with the parameters k_prod, k_deg and Ligand_isPresent, and an observable R_active.
+from pathlib import Path
+
+# A receptor made at k_prod and lost at k_deg. Ligand activates it (k_act) while
+# Ligand_isPresent is 1; the active receptor is the observable R_active.
+Path("receptor.net").write_text(
+    """\
+begin parameters
+    1 k_prod            1.0
+    2 k_deg             0.1
+    3 k_act             0.5
+    4 k_inact           0.2
+    5 Ligand_isPresent  0
+    6 k_on              k_act*Ligand_isPresent
+end parameters
+begin species
+    1 R()   0
+    2 Ra()  0
+end species
+begin reactions
+    1 0 1 k_prod
+    2 1 0 k_deg
+    3 2 0 k_deg
+    4 1 2 k_on
+    5 2 1 k_inact
+end reactions
+begin groups
+    1 R_active 2
+end groups
+""",
+    encoding="utf-8",
+)
+model = bngsim.Model.from_net("receptor.net")
 sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k_prod", "k_deg"])
 
 # Phase 1: equilibrate, with the same sensitivity_params, so dx_ss/dθ is kept.
@@ -678,7 +721,37 @@ snapshot calls carry the derivative with the state:
   model as they found it.
 
 ```python
-# A model with the parameters kf, kr, kdeg and L_0, and an observable pReceptor.
+# A ligand L binds a receptor R (kf, kr). R is made at ksyn and lost at kdeg,
+# bound or free; the bound receptor is the observable pReceptor. L_0 sets the
+# ligand's starting amount, 0 here.
+Path("ligand.net").write_text(
+    """\
+begin parameters
+    1 kf    1.0
+    2 kr    0.1
+    3 ksyn  1.0
+    4 kdeg  0.1
+    5 L_0   0
+end parameters
+begin species
+    1 L(r)           L_0
+    2 R(l)           0
+    3 L(r!1).R(l!1)  0
+end species
+begin reactions
+    1 1,2 3 kf
+    2 3 1,2 kr
+    3 0 2 ksyn
+    4 2 0 kdeg
+    5 3 1 kdeg
+end reactions
+begin groups
+    1 pReceptor 3
+end groups
+""",
+    encoding="utf-8",
+)
+model = bngsim.Model.from_net("ligand.net")
 sim = bngsim.Simulator(model, method="ode", sensitivity_params=["kf", "kr", "kdeg"])
 sim.run(t_span=(0, 1e6), n_points=2, steady_state=True)   # equilibrate once
 

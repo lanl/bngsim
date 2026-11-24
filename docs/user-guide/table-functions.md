@@ -17,7 +17,7 @@ in a `.net` file directly:
 begin functions
     1 cumNcases()  tfun('case_data.tfun')           # indexed by time (the default)
     2 response()   tfun('dose.tfun', drug_conc)     # indexed by a parameter
-    3 drive()      tfun('dose.tfun', time, method=>"step")
+    3 drive()      tfun('schedule.tfun', time, method=>"step")
     4 inline()     tfun([0,1,2], [0,10,20], time, method=>"linear")
     5 scaled()     2*tfun('signal.tfun', time)      # a table inside a function
 end functions
@@ -26,6 +26,48 @@ end functions
 A table that is a function's whole body takes the function's name
 (`cumNcases`, `drive`). A table inside a function's arithmetic is named
 `<function>__tfun<k>` (`scaled__tfun0`), counting from 0 along the line.
+
+To try the examples on this page, write the tables that block reads, and a
+`.net` file that holds it, with a reaction for each table to drive:
+
+```python
+from pathlib import Path
+
+import bngsim
+
+Path("case_data.tfun").write_text("# time  cumNcases\n0 0\n1 0\n2 1\n3 1\n4 2\n5 5\n")
+Path("dose.tfun").write_text("# drug_conc  response\n0 0\n1 0.5\n10 0.9\n")
+Path("schedule.tfun").write_text("# time  drive\n0 0\n24 5\n48 0\n")
+Path("signal.tfun").write_text("# time  scaled\n0 1\n10 2\n")
+Path("model.net").write_text("""\
+begin parameters
+    1 drug_conc  1.0
+    2 kdeg       0.1
+end parameters
+begin species
+    1 A() 0
+end species
+begin functions
+    1 cumNcases()  tfun('case_data.tfun')
+    2 response()   tfun('dose.tfun', drug_conc)
+    3 drive()      tfun('schedule.tfun', time, method=>"step")
+    4 inline()     tfun([0,1,2], [0,10,20], time, method=>"linear")
+    5 scaled()     2*tfun('signal.tfun', time)
+end functions
+begin reactions
+    1 0 1 cumNcases
+    2 0 1 response
+    3 0 1 drive
+    4 0 1 inline
+    5 0 1 scaled
+    6 1 0 kdeg
+end reactions
+begin groups
+    1 A 1
+end groups
+""")
+model = bngsim.Model.from_net("model.net")
+```
 
 ```python
 print(model.n_table_functions)      # 5
@@ -42,6 +84,7 @@ table's data in place:
 
 ```python
 # From a .tfun file of the same form as the model's own
+Path("case_data_2021.tfun").write_text("# time  cumNcases\n0 0\n1 2\n2 3\n3 7\n")
 model.add_table_function("cumNcases", file="case_data_2021.tfun")
 
 # From arrays, read as a step from now on
@@ -50,6 +93,7 @@ model.add_table_function(
 )
 
 # A parameter-indexed table names its index again
+Path("dose_response_v2.tfun").write_text("# drug_conc  response\n0 0\n1 0.6\n10 0.95\n")
 model.add_table_function("response", file="dose_response_v2.tfun", index="drug_conc")
 
 # A table inside a function, by its own name
@@ -92,8 +136,8 @@ Two whitespace-separated columns under a `#` header, as in a `.gdat` file:
 5  5
 ```
 
-- The first line must be a `#` header. It names the columns and is otherwise
-  ignored.
+- The first line must be a `#` header. It names the two columns: the index,
+  then the table (see [Header and index spellings](#header-and-index-spellings)).
 - Column 1 is the index. It must be strictly increasing; a repeated value
   raises.
 - Column 2 is the value, any real number.

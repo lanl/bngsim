@@ -12,11 +12,22 @@ each format needs.
 `Model.load` picks the loader from the file's suffix:
 
 ```python
+import shutil
+
 import bngsim
+
+# The bundled binding model, A + B <-> C, in three formats, copied here.
+shutil.copy(bngsim.examples.path("binding", "net"), "model.net")
+shutil.copy(bngsim.examples.path("binding", "sbml"), "model.xml")
+shutil.copy(bngsim.examples.path("binding", "antimony"), "model.ant")
 
 model = bngsim.Model.load("model.net")    # Model.from_net
 model = bngsim.Model.load("model.xml")    # Model.from_sbml (.sbml too)
 model = bngsim.Model.load("model.ant")    # Model.from_antimony
+```
+
+```python
+shutil.copy(bngsim.examples.path("binding", "bngl"), "model.bngl")
 model = bngsim.Model.load("model.bngl")   # Model.from_bngl (needs BNG2.pl)
 ```
 
@@ -32,7 +43,7 @@ with `NfsimSession` or `RuleMonkeySession`, or pass it as `xml_path=` to a
 `Simulator` built from the `.net` written beside it
 ([Network-free simulation](network-free.md)).
 
-SBML and Antimony also load from a string, and BioModels entries load by id:
+SBML and Antimony also load from a string:
 
 ```python
 model = bngsim.Model.from_antimony_string("""
@@ -41,9 +52,13 @@ model = bngsim.Model.from_antimony_string("""
     J1: S1 -> S2; k1 * S1;
     J2: S2 -> S1; k2 * S2;
 """)
+
+sbml_xml_text = open("model.xml", encoding="utf-8").read()
 model = bngsim.Model.from_sbml_string(sbml_xml_text)
-model = bngsim.Model.from_biomodels("BIOMD0000000010")
 ```
+
+BioModels entries load by id, with `Model.from_biomodels("BIOMD0000000010")`
+(see [Models from BioModels](#models-from-biomodels)).
 
 Every model runs the same way after it loads:
 
@@ -157,10 +172,20 @@ expression is cut at 200 characters. `describe(limit=None)` lists everything.
 ## BNGL models
 
 BNGsim simulates reaction networks. BNGL describes rules. BNG2.pl turns rules
-into a network, so `Model.from_bngl` runs BNG2.pl:
+into a network, so `Model.from_bngl` runs BNG2.pl. Here the bundled binding
+model's BNGL gets an experiment of two runs:
 
 ```python
-model = bngsim.Model.from_bngl("egfr.bngl")
+from pathlib import Path
+
+bngl = bngsim.examples.path("binding", "bngl").read_text(encoding="utf-8")
+Path("binding.bngl").write_text(bngl + """\
+simulate({method=>"ode", t_end=>50, n_steps=>50, suffix=>"bind"})
+setConcentration("B(a)", 160)
+simulate({method=>"ode", t_end=>100, n_steps=>50, continue=>1, suffix=>"dose"})
+""", encoding="utf-8")
+
+model = bngsim.Model.from_bngl("binding.bngl")
 ```
 
 You need BNG2.pl and Perl. The extra installs PyBioNetGen, which bundles
@@ -208,8 +233,8 @@ state; a value set and then set back is not one. Pass `protocol=True` to get
 the actions as a `ProtocolSpec`:
 
 ```python
-model, spec = bngsim.Model.from_bngl("egfr.bngl", protocol=True)
-[e.t_span for e in spec.experiments]   # the simulate(...) calls
+model, spec = bngsim.Model.from_bngl("binding.bngl", protocol=True)
+[e.t_span for e in spec.experiments]   # [(0.0, 50.0), (50.0, 100.0)]: the simulate calls
 ```
 
 See [Interchange](interchange.md) for what a `ProtocolSpec` holds.
@@ -221,8 +246,9 @@ See [Interchange](interchange.md) for what a `ProtocolSpec` holds.
 the model:
 
 ```python
-out = bngsim.run_bngl("egfr_path.bngl")   # equilibrate without EGF, then add it
-out[1].result.observables["Sos_act"]      # the second run
+out = bngsim.run_bngl("binding.bngl")     # bind, then add B and run on
+out[1].result.observables["C"]            # the second run
+out["dose"].result.observables["C"]       # the same run, by its suffix
 out.model                                 # the model in the state the file leaves it
 ```
 
@@ -277,7 +303,7 @@ from the model's directory.
 To keep the `.net` yourself, pass `net_out=`:
 
 ```python
-model = bngsim.Model.from_bngl("egfr.bngl", net_out="egfr.net")
+model = bngsim.Model.from_bngl("binding.bngl", net_out="binding.net")
 ```
 
 `cache=False` generates into a temporary directory for this process.

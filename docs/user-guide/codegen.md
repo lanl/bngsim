@@ -11,7 +11,10 @@ whatever it was loaded from: `.net`, BNGL, SBML, Antimony or `ModelBuilder`.
 ## Turning it on
 
 ```python
-model = bngsim.Model.from_net("model.net")  # or from_bngl, from_sbml, ...
+import bngsim
+
+# The bundled A + B <-> C model; or from_bngl, from_sbml, ... on your own
+model = bngsim.Model.from_net(bngsim.examples.path("binding"))
 
 sim = bngsim.Simulator(model, method="ode", codegen=True)
 result = sim.run(t_span=(0, 100), n_points=101)

@@ -59,6 +59,14 @@ A `Simulator` built with `sensitivity_params` gives each row's
 output-sensitivity tensor from `run_batch`:
 
 ```python
+import json
+
+import bngsim
+import numpy as np
+
+model = bngsim.examples.load("binding")   # A + B <-> C, rate constants kf and kr
+theta_matrix = np.array([[0.01, 0.1], [0.02, 0.1], [0.01, 0.2]])   # one (kf, kr) per row
+
 sim = bngsim.Simulator(model, method="ode", sensitivity_params=["kf", "kr"])
 rows = sim.run_batch(
     t_span=(0, 100), n_points=101,
@@ -66,7 +74,7 @@ rows = sim.run_batch(
     num_processors=8,           # independent clones, one shared .so
 )
 for r in rows:                  # in input order
-    g = r.output_sensitivities(["observable:Atot"])   # (n_times, 1, n_param)
+    g = r.output_sensitivities(["observable:C"])   # (n_times, 1, n_param)
 ```
 
 ### Do not add the `parameter` axis to the `ic` axis
@@ -90,7 +98,8 @@ once:
 
 ```python
 # once, at fit setup; no simulation needed
-seed = model.effective_ic_sensitivity(free_params)   # {'R(r)': {'R0': 1.0}}
+free_params = ["kf", "kr", "A0", "B0"]
+seed = model.effective_ic_sensitivity(free_params)   # {'A(b)': {'A0': 1.0}, 'B(a)': {'B0': 1.0}}
 
 def route(theta, d_param, d_ic):                     # per evaluation
     g = d_param[theta]                               # already a total derivative
@@ -156,10 +165,10 @@ back the full HDF5 file:
 
 ```python
 spec = bngsim.EvaluationSpec(
-    model_source="model.net", model_format="net",
+    model_source=str(bngsim.examples.path("binding", "net")), model_format="net",
     t_span=(0, 100), n_points=101,
-    params={"kf": 0.5}, sensitivity_params=("kf",),
-    outputs=("observable:Atot",),
+    params={"kf": 0.02}, sensitivity_params=("kf",),
+    outputs=("observable:C",),
 )
 blob = spec.to_json()                              # checkpoint, or send to a worker
 result = bngsim.EvaluationSpec.from_json(blob).evaluate()
