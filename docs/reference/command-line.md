@@ -20,7 +20,7 @@ of its own, so what it prints is what the call returns.
 | `bngsim inspect MODEL [--limit N\|all]` | what the model is, and which methods it admits and why not. Runs nothing. | `bngsim.Model.load(MODEL).describe()` |
 | `bngsim run MODEL --t-end T [...]` | one run from the model's initial state: its record and a digest of its values, the arrays to `--out` | `bngsim.Simulator(bngsim.Model.load(MODEL), ...).run(...)`, `Result.record`, `Result.digest()` |
 | `bngsim check MODEL --t-end T [...]` | the run, then the run made again with one setting changed; exits 6 when the check is not ok | the same, then `Result.check()` |
-| `bngsim run-until MODEL --t-end T --stop-when EXPR` | a run to `T`, or until a condition holds: a condition met exits 0 with the run it cut | `Simulator.add_stop_condition(EXPR)`, `Simulator.run_until(T)` |
+| `bngsim run-until MODEL --t-end T --stop-when EXPR` | a run to `T`, cut at the first output point where a condition holds: a condition met exits 0 with the run it cut | `Simulator.add_stop_condition(EXPR)`, `Simulator.run_until(T)` |
 | `bngsim run-batch MODEL --params ROWS --t-end T` | a run per parameter set, digested as a stack | `Simulator.run_batch(params=ROWS)` |
 | `bngsim parameter-scan MODEL --parameter NAME ...` | a run per value of one parameter, digested as a stack | `Simulator.parameter_scan(NAME, ...)` |
 | `bngsim steady-state MODEL` | the steady state the model reaches: the solver's verdict and the values there | `Simulator.steady_state()` |

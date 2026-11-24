@@ -475,7 +475,7 @@ def _add_run_calls(sub: Any, common: argparse.ArgumentParser) -> None:
     until = sub.add_parser(
         "run-until",
         parents=[common],
-        help="run a model to a time or until a condition holds (Simulator.run_until)",
+        help="run a model to a time, cut where a condition holds (Simulator.run_until)",
         description="Run a model from its initial state to --t-end "
         "(Simulator.add_stop_condition, then Simulator.run_until(T)), and print the "
         "run's record and a digest of its values. The run goes to --t-end, and is then "
@@ -1272,13 +1272,13 @@ def _load_for_run(
             ) from error
         done[name] = number
     if species and probe is not None:
-        if rows is None and scanned is not None:
-            # A scan's values each write the parameter, and a species --set
-            # holds where it was set: a value that seeds it would not move it.
-            values = args.par_scan_vals or [
-                v for v in (args.par_min, args.par_max) if v is not None
-            ]
-            rows = [{scanned: v} for v in values]
+        # A scan's values each write the parameter, and a species --set holds
+        # where it was set: a value that seeds it would not move it. Probed at
+        # a value its own is not, so a scan of values equal to it is asked too:
+        # --set holds the species away from them all the same.
+        if rows is None and scanned is not None and scanned in probe.param_names:
+            own = float(probe.get_param(scanned))
+            rows = [{scanned: 2.0 * own + 1.0 if math.isfinite(own) else 1.0}]
         if rows:
             _refuse_lost_doses(probe, rows, args, done, held_only=scanned is not None)
     if species and save:
@@ -1760,21 +1760,6 @@ def _run_bngl(args: argparse.Namespace) -> tuple[Any, str]:
     from bngsim._protocol_run import _check_runnable, _method_of
     from bngsim.convert._protocol import Experiment
 
-    steps = protocol.steps[protocol.generation_step or 0 :]
-    methods = {_method_of(step) for step in steps if isinstance(step, Experiment)}
-    if args.seed is not None and not methods & {"ssa", "psa"}:
-        _refuse(
-            "--seed seeds the file's stochastic runs, and it has none: "
-            f"its runs are {', '.join(sorted(methods)) or 'none'}",
-            "--seed",
-        )
-    for flag, value in (("--rtol", args.rtol), ("--atol", args.atol)):
-        if value is not None and "ode" not in methods:
-            _refuse(
-                f"{flag} is the file's ODE runs', and it has none: "
-                f"its runs are {', '.join(sorted(methods)) or 'none'}",
-                flag,
-            )
     try:
         # What run_protocol refuses before anything runs: an action BNGsim
         # cannot run as BNG2.pl would. A refusal of the file (exit 3), where an
@@ -1784,6 +1769,24 @@ def _run_bngl(args: argparse.Namespace) -> tuple[Any, str]:
     except ConversionError as error:
         error._cli_refusal = True  # type: ignore[attr-defined]
         raise
+    steps = protocol.steps[protocol.generation_step or 0 :]
+    experiments = [step for step in steps if isinstance(step, Experiment)]
+    methods = {_method_of(step) for step in experiments}
+    # A stochastic run that names its own seed takes it, not --seed.
+    seeded = [s for s in experiments if _method_of(s) in ("ssa", "psa") and "seed" not in s.extra]
+    if args.seed is not None and not seeded:
+        _refuse(
+            "--seed seeds the file's stochastic runs that name no seed of their own, and "
+            f"it has none: its runs are {', '.join(sorted(methods)) or 'none'}",
+            "--seed",
+        )
+    for flag, value in (("--rtol", args.rtol), ("--atol", args.atol)):
+        if value is not None and "ode" not in methods:
+            _refuse(
+                f"{flag} is the file's ODE runs', and it has none: "
+                f"its runs are {', '.join(sorted(methods)) or 'none'}",
+                flag,
+            )
     kw = _given(args, "seed", "rtol", "atol")
     with _deadline(args.timeout, "run_protocol"):
         ran = run_protocol(model, protocol, allow_lossy=args.allow_lossy, **kw)

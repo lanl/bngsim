@@ -289,6 +289,10 @@ def test_a_scan_of_a_parameter_that_seeds_a_species_set_is_refused(tmp_path):
                            "1,10", "--set", "A=5", "--t-end", "1", "--json"), _cli.EXIT_USAGE,
                    "usage.invalid_argument")  # fmt: skip
     assert error["details"] == {"argument": "--set", "species": ["A"]}
+    # A value equal to A0's own is refused too: --set holds A at 5, not at A0.
+    run = _bngsim("parameter-scan", str(model), "--parameter", "A0", "--par-scan-vals", "1",
+                  "--set", "A=5", "--t-end", "1", "--json")  # fmt: skip
+    _error(run, _cli.EXIT_USAGE, "usage.invalid_argument")
     for vals in (["--par-scan-vals", "1,10"], ["--par-min", "1", "--par-max", "10",
                                                "--n-scan-pts", "2"]):  # fmt: skip
         run = _bngsim("parameter-scan", str(model), "--parameter", "k", *vals, "--set", "A=5",
@@ -610,6 +614,23 @@ def test_run_bngl_refuses_a_tolerance_or_seed_no_run_of_the_file_uses(tmp_path, 
     run = _bngsim("run-bngl", str(bngl), *option, "--json", script=_NO_BNG2.format(net=net))
     error = _error(run, _cli.EXIT_USAGE, "usage.invalid_argument")
     assert error["details"]["argument"] == option[0]
+
+
+@pytest.mark.parametrize(
+    "action, option, exit_code",
+    [('simulate({method=>"nf",t_end=>1,n_steps=>1})', "--seed", _cli.EXIT_REFUSED),
+     ('simulate({method=>"ssa",t_end=>1,n_steps=>1,seed=>3})', "--seed", _cli.EXIT_USAGE)],
+)  # fmt: skip
+def test_run_bngl_refuses_the_file_first_and_a_seed_every_run_names(
+    tmp_path, action, option, exit_code
+):
+    # A file BNGsim refuses is refused as such, whatever the options; a seed
+    # every stochastic run names for itself leaves --seed nothing to seed.
+    bngl = tmp_path / "chain.bngl"
+    bngl.write_text(Path(examples.path("chain", "bngl")).read_text() + action + "\n")
+    net = str(examples.path("chain", "net"))
+    run = _bngsim("run-bngl", str(bngl), option, "3", "--json", script=_NO_BNG2.format(net=net))
+    assert run.returncode == exit_code, run.stderr
 
 
 def test_run_bngl_with_no_runs_says_so(tmp_path):
