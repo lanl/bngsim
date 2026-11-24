@@ -44,7 +44,8 @@ The renderers
   * a REFERENCE_FAILED reached by disposition reads ``REF INVALID``, not the same
     gray badge as an AMICI crash — the two are materially different facts
   * a BAD_TEST reached by NO_GROUND_TRUTH reads ``NO TRUTH`` on the ODE matrix,
-    not as two engines that refused the model
+    not as two engines that refused the model; a BAD_TEST the entry did not
+    apply to, where both engines raised, keeps that reading
 """
 
 from __future__ import annotations
@@ -664,6 +665,77 @@ def test_a_no_ground_truth_bad_test_is_recognised_and_nothing_else_is():
     assert not gam.is_no_ground_truth({"outcome": "BAD_TEST"})
     # The label alone does not make a row one: only the BAD_TEST the disposition made.
     assert not gam.is_no_ground_truth({"outcome": "PASS", "comment": f"{label}: x"})
+
+
+@pytest.mark.parametrize(
+    "disp", [_NO_TRUTH, {**_NO_TRUTH, "issue": None}], ids=["tagged", "untagged"]
+)
+@pytest.mark.parametrize(
+    "natural,value,applied",
+    [
+        (Outcome.DIFF, 1.0, True),
+        (Outcome.PASS, 0.0, True),
+        (Outcome.DIFF, float("inf"), False),
+        (Outcome.DIFF, float("nan"), False),
+        (Outcome.BAD_TEST, None, False),
+        (Outcome.EXCEPTION, None, False),
+        (Outcome.REFERENCE_FAILED, None, False),
+        (Outcome.TIMEOUT, None, False),
+        (Outcome.UNSUPPORTED, None, False),
+    ],
+)
+def test_a_row_reads_no_truth_only_where_its_disposition_applied(disp, natural, value, applied):
+    """The note that a disposition did not apply opens with the same label ("no
+    ground truth entry ... did not apply"). Where both engines raised, the row has
+    no comment of its own, so that note is all of it, and the row is still two
+    engines that refused the model (issue #1719)."""
+    outcome, comment, _r, state = ad.apply_disposition(disp, natural, value, "")
+    assert (state == "applied") is applied
+    assert gam.is_no_ground_truth({"outcome": str(outcome), "comment": comment}) is applied
+
+
+def test_every_authored_no_ground_truth_entry_reads_as_one_where_it_applies():
+    """The reader matches an issue tag up to its closing parenthesis, so an entry's
+    own issue text must not end the tag early."""
+    assert ad.NO_GROUND_TRUTH
+    for key in ad.NO_GROUND_TRUTH:
+        model_id, _, regime = key.rpartition(":")
+        disp = ad.disposition_for(model_id, regime)
+        outcome, comment, _r, state = ad.apply_disposition(disp, Outcome.DIFF, 0.5, "")
+        assert state == "applied"
+        assert gam.is_no_ground_truth({"outcome": str(outcome), "comment": comment}), key
+
+
+def test_the_ode_page_draws_a_both_raised_row_beside_a_disposition_as_that(tmp_path):
+    """Where both engines raised on a model with a NO_GROUND_TRUTH entry, the entry
+    did not apply: the cells say both engines refused the model, and wear no NO
+    TRUTH badge (issue #1719)."""
+    _o, comment, _r, state = ad.apply_disposition(_NO_TRUTH, Outcome.BAD_TEST, None, "")
+    assert state == "inapplicable"
+    rows = [
+        {
+            "model_id": "MODEL1112050001",
+            "method": "ode",
+            "reference_engine": "amici",
+            "outcome": "BAD_TEST",
+            "comment": comment,
+        },
+    ]
+    report = tmp_path / "report_ode.json"
+    meta = {
+        "tally": {"BAD_TEST": 1},
+        "n_jobs": 1,
+        "elapsed_sec": 1.0,
+        "versions": {"bngsim": "0", "amici": "0", "python": "3", "platform": "x"},
+    }
+    report.write_text(json.dumps({"_meta": meta, "results": rows}))
+    out = tmp_path / "m.html"
+    gam.generate_html(report, out)
+    html = out.read_text()
+    assert ">NO TRUTH<" not in html
+    assert "no solution over this horizon" not in html
+    assert "no solution to check it against" not in html
+    assert html.count("Both engines rejected this model") == 2
 
 
 def test_the_ode_page_draws_a_no_ground_truth_row_as_that(tmp_path):

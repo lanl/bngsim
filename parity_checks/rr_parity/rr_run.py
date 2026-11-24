@@ -174,7 +174,11 @@ def _job_no_ground_truth(job) -> tuple[str, str | None] | None:
 
 # How a NO_GROUND_TRUTH row's comment begins; generate_matrix.py reads it to draw
 # such a BAD_TEST as what it is rather than as two engines that refused the model.
+# The note on an entry that did not apply begins with the label too ("no ground
+# truth entry ... did not apply"), so a reader matches the applied note's whole
+# opening: the label, the entry's issue in parentheses if it has one, and a colon.
 NO_GROUND_TRUTH_LABEL = "no ground truth"
+NO_GROUND_TRUTH_APPLIED = re.compile(re.escape(NO_GROUND_TRUTH_LABEL) + r"( \([^)]*\))?: ")
 
 
 def _apply_no_ground_truth(
