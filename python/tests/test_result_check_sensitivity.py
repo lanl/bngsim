@@ -179,6 +179,52 @@ def test_a_series_at_zero_is_named_not_resolved_and_still_judged_on_its_column()
     assert _by_name(nan.check(["sensitivity"]))["sensitivity"]["status"] == "diff"
 
 
+TWO = """
+model two
+  J1: A -> ; k*A
+  J2: B -> ; k*B
+  k = 0.5
+  A = 1000; B = 1
+end
+"""
+
+
+@pytest.mark.parametrize(
+    ("row", "offsets", "status", "held"),
+    [
+        # dB/dk errs by as much at every tolerance: a floor holds it, and on
+        # its column's scale (dA/dk's, a thousand times larger) it is noise.
+        (1, {-8: 2e-3, -9: -2e-3, -10: 2e-3}, "pass", ["dB/dk"]),
+        # The same floor under the column's largest series: on its own scale.
+        (0, {-8: 2e-3, -9: -2e-3, -10: 2e-3}, "diff", ["dA/dk"]),
+        # An error that shrinks tenfold with the tolerance is the tolerance's.
+        (1, {-8: 2e-3, -9: 2e-4, -10: 2e-5}, "diff", []),
+    ],
+)
+def test_a_series_a_floor_holds_is_named_and_judged_on_its_column(
+    monkeypatch, row, offsets, status, held
+):
+    real = Simulator.run
+
+    def run(self, *a, **kw):
+        out = real(self, *a, **kw)
+        if len(out._sensitivity_params):
+            out = copy.copy(out)
+            s = np.asarray(out._sensitivities, dtype=float).copy()
+            off = offsets[round(math.log10(kw.get("rtol", 1e-8)))]
+            s[:, row, 0] += off * np.abs(s[:, row, 0]).max() * np.asarray(out.time) / 10.0
+            out._sensitivities = s
+        return out
+
+    monkeypatch.setattr(Simulator, "run", run)
+    sim = Simulator(Model.from_antimony_string(TWO), method="ode", sensitivity_params=["k"])
+    r = sim.run(t_span=(0, 10), n_points=11, rtol=1e-8)
+    v = _by_name(r.check(["sensitivity"]))["sensitivity"]
+    assert v["status"] == status, v
+    assert v["n_floor_held"] == len(held)
+    assert all(h in v["not_resolved"] for h in held)
+
+
 def test_the_floor_is_the_atol_the_solver_held_each_series_to():
     # atolS_ij = atol_i·max(|x_i(0)|, 1)/|p_j|: the k column's floor is
     # 1e-8·100/0.5, the A0 column's 1e-8·100/100, the initial amount's 1e-8·100.

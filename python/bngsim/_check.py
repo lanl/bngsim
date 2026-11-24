@@ -526,6 +526,7 @@ class _Context:
         # The tighter and looser runs, kept for the sensitivity checks, which
         # judge their sensitivities (issue #1893).
         self.tight: Result | None = None
+        self.tight100: Result | None = None
         self.loose: Result | None = None
         # The sensitivity checks' columns and their drift, made once.
         self.sens_columns: Any = None
@@ -746,6 +747,7 @@ class _Context:
         # answer keeps moving, or has stopped.
         try:
             tighter = self.rerun(**self._tighter(100.0))
+            self.tight100 = tighter
             d, peak = differences(self._view(tighter), self.x)
             m100 = np.where(self.relevant, moves(d, peak, self.atols), 0.0)
             extra["value_100"] = _num(m100.max()) if m100.size else 0.0

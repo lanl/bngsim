@@ -26,7 +26,10 @@ the two.
   the floor and not ``rtol`` holds it, is not resolved by the run, and is
   named: its move past that many floors is read on the largest peak of its
   column, so its noise near zero is no finding and a departure as large as the
-  column's own values is one.
+  column's own values is one. So is a series past the bound that moves as far
+  again at a hundredth of the tolerance (:data:`FLOOR_SHARE`): a floor the
+  solver's arithmetic sets (issue #177), not the tolerance, holds it, and its
+  move is read on its column's largest peak.
 - ``"sensitivity_fd"``: a difference quotient. Each ``θ`` is moved by
   :data:`FD_STEP` of its value both ways (an initial amount through the start
   state, a parameter through :meth:`Model.set_param`, so a derived parameter
@@ -92,6 +95,10 @@ FD_TIGHTER = 100.0
 #: How many times the quotient's error estimate (how far its two halves
 #: differ, cell by cell) a series may differ from it by, on top of the rest.
 FD_SPREAD = 2.0
+#: A series past the bound whose move between the hundredfold and the tenfold
+#: tighter runs is at least this share of its move at the tenfold one is held
+#: by a floor, not the tolerance (:func:`_floor_held`).
+FLOOR_SHARE = 0.5
 #: How many times its error over its step a quotient may be off by: each of
 #: its runs errs by about the run's own drift (or spread) scaled to the
 #: quotient's tolerance, and by no less than that tolerance's rtol·peak plus
@@ -315,9 +322,23 @@ def check_sensitivity(ctx: _Context) -> dict[str, Any]:
             changed=changed,
         )
     cols = _context(ctx)
-    move, keep, _ = _drift(ctx, cols)
+    move, keep, d10 = _drift(ctx, cols)
     live = ~cols.refused.reshape(-1)
     trace = live & ~keep
+    held = _floor_held(ctx, cols, move, d10, live & keep)
+    if held.any():
+        # Read on its column's largest peak, as a series the run does not
+        # resolve is: the arithmetic, not the tolerance, holds it.
+        n_sp, n_cols = cols.atol.shape
+        peak = np.where(np.isfinite(cols.S), np.abs(cols.S), 0.0).max(axis=0)
+        col_peak = np.where(cols.refused, 0.0, peak).max(axis=0)
+        scale = np.maximum(np.repeat(col_peak[None, :], n_sp, axis=0), peak).reshape(-1)
+        over = np.maximum(d10 - cols.atol.reshape(-1), 0.0)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            on_column = np.where(
+                scale > 0, over / np.where(scale > 0, scale, 1.0), np.where(over > 0, np.inf, 0.0)
+            )
+        move = np.where(held, on_column, move)
     value = float(move.max()) if move.size else 0.0
     status = "pass" if value <= TOLERANCE_MOVE else "diff"
     n_series = int(live.sum())
@@ -331,21 +352,61 @@ def check_sensitivity(ctx: _Context) -> dict[str, Any]:
             f"; {n_trace} series within {TRACE_ATOLS:g} times their sensitivity atol of zero, "
             "judged on their column's largest peak"
         )
+    n_held = int(held.sum())
+    if n_held:
+        note += (
+            f"; {n_held} series moving as far at rtol/100 as at rtol/10, held by the "
+            "arithmetic's floor and not the tolerance, judged on their column's largest peak"
+        )
     n_refused = int((~live).sum())
     if n_refused:
         note += f"; {n_refused} series not finite in the run by design, not judged"
-    named = _named(cols, trace)
+    named = _named(cols, trace | held)
     extra: dict[str, Any] = {
         "bound": TOLERANCE_MOVE,
         **_columns_entry(cols, move),
         "n_series": n_series,
-        "n_not_resolved": n_trace,
+        "n_not_resolved": n_trace + n_held,
         "not_resolved": named[:MAX_NAMED],
+        "n_floor_held": n_held,
         "n_refused": n_refused,
     }
     return _verdict(
         name, status, value, note, worst=_worst(cols, move), changed=changed, extra=extra
     )
+
+
+def _floor_held(
+    ctx: _Context,
+    cols: _Columns,
+    move: NDArray[np.float64],
+    d10: NDArray[np.float64],
+    candidates: NDArray[np.bool_],
+) -> NDArray[np.bool_]:
+    """The series past the bound that a floor holds, not the tolerance: those
+    that move between the hundredfold and the tenfold tighter runs by at least
+    :data:`FLOOR_SHARE` of their move at the tenfold one. A move the tolerance
+    sets shrinks about tenfold from one to the next; the floor the solver's
+    arithmetic sets under a sensitivity's error (issue #177) does not shrink
+    with the tolerance. Made only where a series is past the bound, from the
+    tolerance check's hundredfold run where it made one."""
+    out = np.zeros(move.shape, dtype=bool)
+    over = candidates & np.isfinite(move) & (move > TOLERANCE_MOVE)
+    if not over.any():
+        return out
+    if ctx.tight100 is None:
+        try:
+            ctx.tight100 = ctx.rerun(**ctx._tighter(100.0))
+        except _Out:
+            raise
+        except Exception:  # noqa: BLE001 - no floor is told apart: the move stands
+            return out
+    assert ctx.tight is not None
+    try:
+        d, _ = differences(cols.flat(_block(ctx.tight100)), cols.flat(_block(ctx.tight)))
+    except ValueError:
+        return out
+    return over & np.isfinite(d) & (d >= FLOOR_SHARE * d10)
 
 
 def _step(cols: _Columns, j: int) -> tuple[float, float, bool]:
