@@ -207,14 +207,19 @@ def _keep_broken(key: tuple, message: str) -> bool:
 def check() -> tuple[list[str] | None, str | None]:
     """The compiler a build would use now, and the broken-toolchain verdict on it
     (``None`` when there is none). Where no compiler can be named at all (Windows
-    with neither ``cl`` nor ``gcc``), the compiler is ``None`` and that is the
-    verdict, logged once."""
+    with neither ``cl`` nor ``gcc``, or a ``CC`` that cannot be split), the
+    compiler is ``None`` and that is the verdict, logged once."""
     from bngsim import _codegen as cg
 
     try:
         compiler = cg._find_c_compiler()
     except RuntimeError as err:
-        message = no_compiler(f"{err} {_FALLBACK}")
+        # A CC that cannot be read is set wrong, not missing a compiler: a broken
+        # toolchain, which installing one would not fix.
+        if isinstance(err, cg._UnreadableCC):
+            message: str = Verdict(f"{err} {_FALLBACK}")
+        else:
+            message = no_compiler(f"{err} {_FALLBACK}")
         with _lock:
             first = _keep_broken(toolchain_key(None), message)
         _notices.log(logger, "codegen.toolchain", "%s", message, emit=first)

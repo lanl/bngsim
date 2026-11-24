@@ -68,7 +68,8 @@ import, so `export` it before starting Python.
 One cache can serve two architectures: a native and a Rosetta Python on an
 Apple Silicon Mac, or x86-64 and aarch64 nodes sharing a home directory. Each
 builds and loads only its own libraries. On macOS every compile asks for the
-Python's own architecture (`-arch arm64` or `-arch x86_64`), because Apple's
+Python's own architecture (`-arch arm64` or `-arch x86_64`; the
+`BNGSIM_SSA_PROP_CC=1` ablation does not), because Apple's
 `cc` otherwise builds for the hardware it runs on: an x86_64 Python under
 Rosetta got arm64 libraries it could not load.
 

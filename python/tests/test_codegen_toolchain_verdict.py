@@ -757,6 +757,11 @@ def test_a_cc_that_cannot_be_split_says_so(clean, monkeypatch):
     assert compiler is None
     assert "No closing quotation" in verdict and "CC='cc -DNAME=\"unclosed'" in verdict
     assert tc.peek() == (None, str(verdict).split(" Models at or above")[0])
+    # Set wrong, not missing: no compiler to install would fix it.
+    with pytest.raises(bngsim.CodegenToolchainError, match="cannot be read") as err:
+        bngsim.Simulator(_chain(5), method="ode", codegen=True)
+    assert err.value.code == "env.broken_toolchain"
+    assert all(r.get("kind") != "install_compiler" for r in err.value.remedies or [])
 
 
 @posix_only
@@ -803,6 +808,21 @@ def test_a_cc_that_names_a_path_with_a_space_is_that_path(clean, monkeypatch):
     assert cg._find_c_compiler() == [str(cc), "-O1"]
     monkeypatch.setenv("CC", f"{cc} -O1")  # not one file: a command line, split on blanks
     assert cg._find_c_compiler() == [*str(cc).split(), "-O1"]
+
+
+@posix_only
+@requires_posix_cc
+@pytest.mark.parametrize("directory", ["o'brien", "back\\slash", 'say "cc"'])
+def test_a_cc_path_the_shell_would_rewrite_is_that_path(directory, clean, monkeypatch):
+    """A quote or a backslash in a path that CC names whole: split, it would be
+    an unclosed quote or lose the backslash; it is the path, as it was."""
+    (clean / directory).mkdir()
+    cc = clean / directory / "cc"
+    cc.write_text(f'#!/bin/sh\nexec "{REAL_CC}" "$@"\n')
+    cc.chmod(cc.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("CC", str(cc))
+    assert cg._find_c_compiler() == [str(cc)]
+    assert tc.peek() == ([str(cc)], None)
 
 
 @posix_only

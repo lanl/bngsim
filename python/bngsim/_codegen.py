@@ -5023,8 +5023,15 @@ def _shared_lib_suffix() -> str:
         return ".so"
 
 
-def _has_blank(text: str) -> bool:
-    return any(ch.isspace() for ch in text)
+class _UnreadableCC(RuntimeError):
+    """``CC`` cannot be split into a command line (an unclosed quote): the
+    environment's mistake, which no installed compiler would fix."""
+
+
+def _shell_would_change(text: str) -> bool:
+    """Whether splitting ``text`` as the shell does could make of it anything but
+    itself: it has a blank, a quote or a backslash in it."""
+    return any(ch.isspace() or ch in "'\"\\" for ch in text)
 
 
 def _find_c_compiler() -> list[str]:
@@ -5041,14 +5048,16 @@ def _find_c_compiler() -> list[str]:
     On Linux and macOS ``CC`` is a command line, split as the shell splits it,
     as make and CMake read it: ``CC="ccache cc"`` or ``CC="cc -arch x86_64"``
     is a compiler and its arguments (issue #1759). A path with a space in it is
-    quoted, except that a ``CC`` which as a whole names an executable is that
-    executable, as it was before ``CC`` was split. On Windows it is one path,
+    quoted, except that a ``CC`` which as a whole names an executable (a path
+    with a space, a quote or a backslash in it) is that executable, as it was
+    before ``CC`` was split. On Windows it is one path,
     as it always was, since a path there often has a space in it and a
     backslash, which the shell's rules would take as an escape. A ``CC`` that
     is empty or only blanks is not set.
 
-    Raises ``RuntimeError`` when ``CC`` cannot be split (an unclosed quote), and
-    on Windows when neither ``cl`` nor ``gcc`` is found.
+    Raises :class:`_UnreadableCC`, a ``RuntimeError``, when ``CC`` cannot be
+    split (an unclosed quote), and ``RuntimeError`` on Windows when neither
+    ``cl`` nor ``gcc`` is found.
     """
     import shutil
 
@@ -5056,12 +5065,12 @@ def _find_c_compiler() -> list[str]:
     cc_env = os.environ.get("CC", "")
     system = platform.system()
     if cc_env.strip():
-        if system == "Windows" or (_has_blank(cc_env) and shutil.which(cc_env)):
+        if system == "Windows" or (_shell_would_change(cc_env) and shutil.which(cc_env)):
             return [cc_env]
         try:
             tokens = shlex.split(cc_env)
         except ValueError as err:
-            raise RuntimeError(
+            raise _UnreadableCC(
                 f"CC={cc_env!r} cannot be read as a command line ({err}). Set CC to a "
                 "compiler, with any arguments after it, as a shell would run it."
             ) from None
