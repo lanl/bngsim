@@ -244,6 +244,13 @@ def test_the_flag_and_the_key_name_one_machine():
         assert cg._arch_flags() == []
 
 
+def test_the_version_leaves_the_arm64_libraries_rosetta_cached_behind():
+    """An install whose source digest is empty (bytecode only) keys on the
+    version and the machine alone, so only the version can leave behind the arm64
+    libraries a v43 x86_64 Python cached under its x86-64 key."""
+    assert int(cg._CODEGEN_VERSION) >= 44
+
+
 def _thin(cpu: int, *, bits: int = 64, order: str = "little") -> bytes:
     magic = 0xFEEDFACF if bits == 64 else 0xFEEDFACE
     return magic.to_bytes(4, order) + cpu.to_bytes(4, order) + bytes(24)  # type: ignore[arg-type]
