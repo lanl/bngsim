@@ -961,9 +961,10 @@ double System::getNextRxn()
 		x = selector->getNextReactionClass(nextReaction);
 	}
 	// The selector sums the propensities afresh at a pick from a total that
-	// has fallen far, or at a draw past the last reaction, and picks from that
-	// sum, which a_tot then follows, so the next waiting time is drawn from it
-	// (bngsim GH #1666). With nothing to fire there it picks no reaction.
+	// has fallen far or taken many updates since it was last summed, or at a
+	// draw past the last reaction, and picks from that sum, which a_tot then
+	// follows, so the next waiting time is drawn from it (bngsim GH #1666).
+	// With nothing to fire there it picks no reaction.
 	a_tot = selector->getAtot();
 	return x;
 
@@ -1026,7 +1027,8 @@ double System::sim(double duration, long int sampleTimes, bool verbose)
 		//   dt = -ln(rand) / a_tot;
 		//Choose a random number on the OPEN interval (0,1) so that we never
 		//have a dt=0 or a dt=infinity
-		// Summed afresh first if it has fallen far (bngsim GH #1666).
+		// Summed afresh first if it has fallen far or taken many updates
+		// (bngsim GH #1666).
 		a_tot = selector->getAtotForDraw();
 		if(a_tot>0) delta_t = -log(rng_.random_open()) / a_tot;
 		else { delta_t=0; current_time=end_time; }

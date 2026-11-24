@@ -7,11 +7,11 @@
     "local_origin_remote": "https://github.com/RuleWorld/nfsim.git",
     "fork_remote": null,
     "branch_or_ref": "bngsim/vendor",
-    "commit": "a641b51da17afdf61649c234ef5a3a702ca1ceb0",
+    "commit": "d43372eb0e2e82c2f794c792e1df5bfc4293d0fc",
     "base_ref": "origin/master",
     "base_commit": "1a54f38701ab2213de831f9ba272cbb14f7c371f"
   },
-  "imported_at_utc": "2026-11-24T20:58:50+00:00",
+  "imported_at_utc": "2026-11-24T23:36:36+00:00",
   "pruning": {
     "included_paths": [
       "CMakeLists.txt",
@@ -298,10 +298,10 @@
     {
       "topic": "bngsim/carry-exact-total-propensity",
       "kind": "local",
-      "status": "Keep the selector's running total propensity, Atot - oldA + newA, from drifting off the propensities' sum, and fire at any total above 0. A propensity added to a large total was rounded to its spacing and not given back when the large term was taken off: a slow channel at 1e-6 beside a fast one at 1e11 was lost once the fast one was 0, and beside one at 1e10 fired at 1.9 times its rate (GH #1666). DirectSelector now sums Atot from each reaction's get_a() once it has fallen below 2^-10 of the largest value it has held since it was last summed, or below 0. update() only keeps that peak; the fall is tested where the total is read, before a waiting time is drawn (ReactionSelector::getAtotForDraw(), getAtot() by default) and before a pick, so a total that dips and comes back within a firing costs no pass over the reactions. A NaN is kept, for the host to report. System::getNextRxn takes a_tot from the selector after each pick, so a pick that ran past the last reaction and summed afresh no longer leaves a stale a_tot. stepTo, sim and singleStep fired nothing at a total of 1e-9 or less (ATOT_TOLERANCE), a rate in the model's own time unit (GH #1672); they test a_tot > 0 now, and the selector picks nothing from a total that is not above 0, where random(0) picked the first reaction whatever its propensity. Upstream master still keeps a running total and ATOT_TOLERANCE, so this is ported again when the base moves (GH #519). Fixtures under tests/data/nfsim/ (slow_channel_beside_fast, tiny_total_propensity, nan_once_the_fast_channel_empties).",
+      "status": "Keep the selector's running total propensity, Atot - oldA + newA, from drifting off the propensities' sum, and fire at any total above 0. A propensity added to a large total was rounded to its spacing and not given back when the large term was taken off: a slow channel at 1e-6 beside a fast one at 1e11 was lost once the fast one was 0, and beside one at 1e10 fired at 1.9 times its rate (GH #1666). The sum also drifts without a fall where the roundings fall the same way every time, and the reaction listed last loses what it has lost. DirectSelector now sums Atot from each reaction's get_a() once it has fallen below 2^-10 of the largest value it has held since it was last summed, or below 0, or has taken 2^12 updates since then (RuleMonkey's interval), which holds it within about 2^-40 of its peak: well below the 2^-32 a pick is drawn to near the peak, 2^-30 of a total at 2^-10 of it. update() only counts and keeps that peak; the tests are made where the total is read, before a waiting time is drawn (ReactionSelector::getAtotForDraw(), getAtot() by default) and before a pick, so a total that dips and comes back within a firing costs no pass over the reactions. A total that is not finite is kept, for the host to report. System::getNextRxn takes a_tot from the selector after each pick, so a pick that ran past the last reaction and summed afresh no longer leaves a stale a_tot. stepTo, sim and singleStep fired nothing at a total of 1e-9 or less (ATOT_TOLERANCE), a rate in the model's own time unit (GH #1672); they test a_tot > 0 now, and the selector picks nothing from a total that is not above 0, where random(0) picked the first reaction whatever its propensity. Filed upstream as RuleWorld/nfsim#123. Upstream master still keeps a running total and ATOT_TOLERANCE, so this is ported again when the base moves (GH #519). Fixtures under tests/data/nfsim/ (slow_channel_beside_fast, tiny_total_propensity, nan_once_the_fast_channel_empties, drifting_flip).",
       "commits": [
         {
-          "commit": "a641b51da17afdf61649c234ef5a3a702ca1ceb0",
+          "commit": "d43372eb0e2e82c2f794c792e1df5bfc4293d0fc",
           "summary": "bngsim: sum the total propensity afresh once it falls far, and fire above 0"
         }
       ]

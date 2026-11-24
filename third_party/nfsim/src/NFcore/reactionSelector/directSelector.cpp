@@ -9,6 +9,8 @@
 
 #include "reactionSelector.hh"
 
+#include <cmath>
+
 using namespace std;
 using namespace NFcore;
 
@@ -20,30 +22,40 @@ using namespace NFcore;
  * total's spacing, and is not given back when the large term is taken off
  * again. A slow channel at 1e-6 beside a fast one at 1e11 was lost outright
  * once the fast one was 0, and beside one at 1e10 it came back as 1.907e-6
- * (bngsim GH #1666).
+ * (bngsim GH #1666, RuleWorld/nfsim#123). The sum goes astray without a fall
+ * too, where the roundings fall the same way every time: one molecule flipping
+ * between two reactions beside a fixed background lost 2.2e-16 a cycle, and the
+ * reaction listed last loses from every pick what the sum has lost.
  *
  * So Atot is summed afresh once it has fallen below 2^-10 of that peak, or
- * below 0. Above that, n updates cost it at most n * 2^-42 of its own value,
- * and more nearly sqrt(n) * 2^-42, since roundings fall either way. That stays
- * below the 2^-32 of the total to which a pick is drawn (NfsimRNG::random) for
- * 1024 updates at the worst and about a million as a rule.
+ * below 0, or once it has taken 2^12 updates since it was last summed, as
+ * RuleMonkey sums its own every 4096 events. Where it is read, it has then
+ * taken at most 2^12 updates more than one firing makes. With every rounding
+ * the same way, the case that drifts, that leaves it off by at most about
+ * 2^-40 of its peak. That is 2^-40 of a total near its peak, well below the
+ * 2^-32 of the total to which a pick is drawn (NfsimRNG::random), and 2^-30 of
+ * one that sits at 2^-10 of its peak. Where the roundings fall either way, it
+ * is about 2^-46 and 2^-36.
  *
- * update() only keeps the peak. The fall is tested where the total is read:
- * before a waiting time is drawn from it (getAtotForDraw()) and before a pick.
- * Within a firing the total can dip and come back, as when a molecule that
- * carries nearly all of it leaves one reaction before it joins the next. A sum
- * is a pass over every reaction, where a pick stops at the one it draws, so a
- * test in update() would cost such a model a pass per firing. Tested where the
- * total is read, a sum comes at most once per fall by a factor of 1024, and
- * never in a run whose total does not fall that far.
+ * update() only counts and keeps the peak. The tests are made where the total
+ * is read: before a waiting time is drawn from it (getAtotForDraw()) and before
+ * a pick. Within a firing the total can dip and come back, as when a molecule
+ * that carries nearly all of it leaves one reaction before it joins the next. A
+ * sum is a pass over every reaction, where a pick stops at the one it draws, so
+ * a test in update() would cost such a model a pass per firing. Where the total
+ * is read, a sum comes once per 2^12 updates and once per fall by a factor of
+ * 1024. A model whose total falls that far at every firing pays a pass at every
+ * firing: one A flipping at 1e6 and back at 1e-3 beside 1000 births at 1e-6
+ * runs about a third slower for it.
  *
  * The sum reads each reaction's get_a(), the propensities the running sum is
  * made of, rather than computing every rate again as refactorPropensities()
  * does.
  *
- * A total that is not a number fails the test and is kept: it is the model's
+ * A total that is not finite is never summed afresh here: it is the model's
  * own, and the host reports it. */
 static const double ATOT_RESUM_FRACTION = 1.0 / 1024.0;   // 2^-10
+static const unsigned int ATOT_RESUM_UPDATES = 4096;      // 2^12
 
 
 DirectSelector::DirectSelector(vector <ReactionClass *> &rxns, System *sys) :
@@ -93,18 +105,20 @@ void DirectSelector::markSummed()
 {
 	AtotPeak = Atot > 0 ? Atot : 0;
 	AtotResumBelow = AtotPeak * ATOT_RESUM_FRACTION;
+	updatesSinceSum = 0;
 }
 
 
-void DirectSelector::resumIfFallen()
+void DirectSelector::resumIfStale()
 {
-	if(Atot < AtotResumBelow) resumPropensities();
+	if(!std::isfinite(Atot)) return;
+	if(Atot < AtotResumBelow || updatesSinceSum >= ATOT_RESUM_UPDATES) resumPropensities();
 }
 
 
 double DirectSelector::getAtotForDraw()
 {
-	resumIfFallen();
+	resumIfStale();
 	return Atot;
 }
 
@@ -113,6 +127,7 @@ double DirectSelector::update(ReactionClass *r,double oldA, double newA)
 {
 	Atot-=oldA;
 	Atot+=newA;
+	++updatesSinceSum;
 	if(Atot > AtotPeak) {
 		AtotPeak = Atot;
 		AtotResumBelow = AtotPeak * ATOT_RESUM_FRACTION;
@@ -124,7 +139,7 @@ double DirectSelector::update(ReactionClass *r,double oldA, double newA)
 
 double DirectSelector::getNextReactionClass(ReactionClass *&rc)
 {
-	resumIfFallen();
+	resumIfStale();
 	// Nothing fires at a total of 0, or one that is not a number. random(0) is
 	// 0, which the first reaction would pass below with a propensity of 0; a
 	// pick that passed every reaction sums them afresh and comes back here.

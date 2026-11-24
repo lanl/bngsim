@@ -69,14 +69,17 @@ namespace NFcore
 			void resumPropensities();
 			/* Starts the watch on Atot that has it summed again. */
 			void markSummed();
-			/* Sums Atot afresh if it has fallen far since it was last summed. */
-			void resumIfFallen();
+			/* Sums Atot afresh if it has fallen far, or taken many updates,
+			 * since it was last summed. */
+			void resumIfStale();
 
 			double Atot;
 			/* The largest value Atot has held since it was last summed, and
 			 * the value below which it is summed again. */
 			double AtotPeak;
 			double AtotResumBelow;
+			/* The updates Atot has taken since it was last summed. */
+			unsigned int updatesSinceSum;
 			int n_reactions;
 			ReactionClass ** reactionClassList;
 
