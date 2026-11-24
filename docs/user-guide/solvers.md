@@ -496,7 +496,7 @@ Exceptions:
 **A model that reads the clock** keeps it, far or not: a function of `time()`,
 a table function over time, a discontinuity trigger, or any event. Its steps are only as fine as the
 doubles there, with no error. A decay whose rate reads `time()` is 1.8e-3 off
-at `t = 1e12` and off by a factor of 11 at `1e15`; the second run warns
+at `t = 1e12` and off by a factor of 11 at `1e15`. Both runs warn
 `RoundoffStepWarning` (below). Run such a model from near 0, with the offset
 written into the model. SSA and PSA count their own clock from
 a far start for every model.
@@ -523,8 +523,9 @@ first row after one, and the spacing of the doubles there:
 
 ```
 CVODE took 83 steps too small to move its clock (t + h == t in double
-precision), after t = 1000000000000000.0, by t = 1000000000000005.0: the
-doubles there are 0.125 apart, and each such step was at most 0.0625. ...
+precision), the first after t = 1000000000000000.0 and by t =
+1000000000000005.0, where the doubles are 0.125 apart, so that such a step is
+at most 0.0625. ...
 ```
 
 `result.solver_stats["n_roundoff_steps"]` holds the count, and

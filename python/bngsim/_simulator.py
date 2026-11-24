@@ -414,7 +414,8 @@ def _say_roundoff_steps(core: Any) -> None:
 
 def _note_roundoff_steps_raised(sim: Any, times: Any) -> None:
     """Record the steps where t + h == t of the run *sim* last made, which
-    raised, with the call, so that they go on its error (issue #1857). Not
+    raised, with the call, so that they go on its error, as issue #1857 made a
+    failed run's notices do. Not
     warned: under -W error a warning raised here would replace the run's own
     error."""
     steps, first_row, spacing = sim.last_run_roundoff_steps()
@@ -426,10 +427,10 @@ def _note_roundoff_steps_raised(sim: Any, times: Any) -> None:
         )
 
 
-def _warn_held_roundoff_steps(results: Iterable[Result]) -> None:
+def _warn_held_roundoff_steps(results: Iterable[Result], *, record: bool = False) -> None:
     """Warn, on the caller's thread, of the steps where t + h == t that runs
     made in worker threads recorded there (issue #1837), as the threads would
-    have warned of them."""
+    have warned of them; with *record*, record them with the call too."""
     for r in results:
         core = getattr(r, "_core", None)
         message = None if core is None else _roundoff_steps_of(core)
@@ -439,7 +440,7 @@ def _warn_held_roundoff_steps(results: Iterable[Result]) -> None:
                 RoundoffStepWarning,
                 code="solver.roundoff_steps",
                 stacklevel=_notices.OUTSIDE,
-                record=False,
+                record=record,
             )
 
 
@@ -9430,21 +9431,26 @@ class Simulator:
 
         # Stitch sensitivity tensors along param axis
         stitched = self._stitch_sensitivity_results(chunk_results, target_params)
-        # The chunks' notices, but for their one-sided switches, each said of a
-        # chunk's columns: the stitched result says them once, of all of them.
+        # The chunks' notices, but for their one-sided switches and their
+        # steps where t + h == t, each said of a chunk's run: the stitched
+        # result says them once, of all of them.
         stitched._notices = _notices.unique(
-            n for r in chunk_results for n in r._notices if n.code != "sens.one_sided"
+            n
+            for r in chunk_results
+            for n in r._notices
+            if n.code not in ("sens.one_sided", "solver.roundoff_steps")
         )
         stitched._one_sided_sensitivities = _merge_one_sided(chunk_results)
         _warn_one_sided(stitched._one_sided_sensitivities)
-        # Each chunk recorded its steps where t + h == t; all of them integrate
-        # the one trajectory, so the call warns once, of the chunk that took the
-        # most (issue #1837).
+        # All the chunks integrate the one trajectory, so the call warns of the
+        # chunk that took the most steps where t + h == t, records that one, and
+        # reports its count (issue #1837).
         taken = [r for r in chunk_results if r._solver_stats.get("n_roundoff_steps", 0) > 0]
         if taken:
-            _warn_held_roundoff_steps(
-                [max(taken, key=lambda r: r._solver_stats["n_roundoff_steps"])]
-            )
+            most = max(taken, key=lambda r: r._solver_stats["n_roundoff_steps"])
+            stitched._solver_stats = dict(stitched._solver_stats)
+            stitched._solver_stats["n_roundoff_steps"] = most._solver_stats["n_roundoff_steps"]
+            _warn_held_roundoff_steps([most], record=True)
         # Carry the #198 support map so an unsupported expression selector raises
         # the specific reason on the stitched result too.
         stitched._expression_sens_support = self._expression_sens_support()

@@ -229,13 +229,32 @@ def test_compute_all_sensitivities_warns_once_of_its_steps(tmp_path):
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         r = sim.compute_all_sensitivities(
-            params=["sigma", "k"], t_span=(0.0, span), n_points=2, rtol=1e-10, atol=1e-12
+            params=["sigma", "k", "rc"],
+            t_span=(0.0, span),
+            n_points=2,
+            rtol=1e-10,
+            atol=1e-12,
+            chunk_size=1,
         )
     found = _roundoff(caught)
     assert len(found) == 1
     assert found[0].filename == __file__
-    assert r.solver_stats["n_roundoff_steps"] > 0
-    assert any(n["code"] == "solver.roundoff_steps" for n in r.notices)
+    # One notice, the warning's, whose count is the result's.
+    (note,) = [n for n in r.notices if n["code"] == "solver.roundoff_steps"]
+    assert note["message"] == str(found[0].message)
+    steps = r.solver_stats["n_roundoff_steps"]
+    assert steps > 0 and note["message"].startswith(f"CVODE took {steps} steps")
+
+
+def test_the_first_row_past_such_steps_is_the_one_named(tmp_path):
+    """The late switch takes its steps in its last 2.5: the rows at 0 and at
+    2^45 are before them, and the warning names the row at span - 8 and the
+    one at the end."""
+    span = 2.0**46
+    sim = bngsim.Simulator(_late_switch(tmp_path, span), "ode")
+    r, caught = _run(sim, sample_times=[0.0, span / 2, span - 8.0, span], rtol=1e-10, atol=1e-12)
+    (found,) = _roundoff(caught)
+    assert f"the first after t = {span - 8.0!r} and by t = {span!r}," in str(found.message)
 
 
 def test_the_steps_before_an_event_are_counted_after_it():
@@ -256,8 +275,9 @@ def test_the_steps_before_an_event_are_counted_after_it():
 
 @pytest.mark.parametrize("cold", [False, True], ids=["default", "cold-path"])
 def test_a_run_that_fails_keeps_the_notice_on_its_error(tmp_path, monkeypatch, cold):
-    """A run that raises has no Result; the steps it took go on its error
-    (issue #1857), and no warning is raised beside the error."""
+    """A run that raises has no Result; the steps it took go on its error, as
+    issue #1857 made a failed run's notices do, and no warning is raised beside
+    the error."""
     if cold:
         monkeypatch.setenv("BNGSIM_NO_WARM_CVODE", "1")
     sim = bngsim.Simulator(_decay(tmp_path), "ode")
