@@ -399,7 +399,7 @@ under `steady_state_tol`. The `Result` holds only the rows it integrated.
 
 ```python
 r = sim.run(t_span=(0, 1000), n_points=101, steady_state=True, start="initial")
-print(len(r.time))                             # 5: fewer than 101, it stopped early
+print(len(r.time) < 101)                       # True: fewer than 101, it stopped early
 print(r.solver_stats["steady_state_reached"])  # 1
 
 # steady_state_tol defaults to atol, as in BNG2.pl.

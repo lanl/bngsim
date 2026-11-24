@@ -120,7 +120,7 @@ results = sim.parameter_scan(
 # bifurcate() is the continuation scan (reset_conc=>0): each point starts
 # from the previous point's end state. Sweep up, then down, to trace
 # hysteresis: on the bundled Schlogl model, bistable for k3 in about 870-1130,
-# the two sweeps end on different branches there.
+# the two sweeps sit on different branches there.
 switch = bngsim.Simulator(bngsim.examples.load("schlogl"))
 up = switch.bifurcate("k3", par_min=700, par_max=1300, n_scan_pts=50,
                       t_span=(0, 500), n_points=2)
@@ -244,6 +244,7 @@ try:
     result = sim.run(t_span=(0, 1000), n_points=1001)
 except bngsim.StopConditionMet as e:
     print(f"Stopped at t={e.result.time[-1]}: {e.condition}")
+    e.condition         # 'low_hot', the label of the condition met first
     partial = e.result  # the result cut at the stop
 ```
 
@@ -261,6 +262,7 @@ snap = sim.snapshot()
 try:
     sim.run_until(t=2000)
 except bngsim.StopConditionMet as e:
+    e.condition         # 'low_hot'
     sim.restore(snap)   # back to where the step started
 ```
 

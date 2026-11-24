@@ -155,7 +155,7 @@ batch = sim.run_replicates(200, t_span=(0, 20), n_points=21, seed=1, squeeze=Tru
 
 batch.reaction_firing_counts.shape         # (200, 21, n_reactions): N_r(t) per replicate
 batch.reaction_propensity_integrals.shape  # (200, 21, n_reactions): ∫₀ᵗ a_r ds
-batch.reaction_labels                      # ["R1 (0 -> A())", "R2 (A() -> 0)", ...]
+batch.reaction_labels                      # ['R1 (0 -> A())', 'R2 (A() -> 0)']
 
 # Scores for named rate constants, and the ensemble gradient
 # d E[observable] / d log10(k) with its standard error.

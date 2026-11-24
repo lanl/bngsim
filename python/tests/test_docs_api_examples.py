@@ -45,6 +45,7 @@ from __future__ import annotations
 import ast
 import contextlib
 import functools
+import gc
 import importlib
 import importlib.util
 import inspect
@@ -453,12 +454,13 @@ _NOT_RUN: dict[tuple[str, str], _Need] = {
     ("docs/user-guide/sensitivities.md", "Differentiable solving with JAX"): _JAX,
 }
 
-#: Blocks whose prose says they warn, and so may: the page run fails on any
-#: other warning a block raises, other than a deprecation from a library a
-#: block does not call itself.
-_WARNS_ON_PURPOSE: dict[tuple[str, str], str] = {
-    ("docs/user-guide/sensitivities.md", "Species set by an `<assignmentRule>`"): (
-        "the run warns naming the assignment-rule species it has no row for"
+#: Blocks whose prose says they warn, with the warning they give: the page run
+#: fails on any other warning a block raises, other than a deprecation from a
+#: library a block does not call itself.
+_WARNS_ON_PURPOSE: dict[tuple[str, str], re.Pattern[str]] = {
+    # The run warns naming the assignment-rule species it has no row for.
+    ("docs/user-guide/sensitivities.md", "Species set by an `<assignmentRule>`"): re.compile(
+        r"Assignment-rule species \['stimulus'\] have NaN"
     ),
 }
 
@@ -557,19 +559,21 @@ def _is_excerpt(comment: str) -> bool:
     return comment.startswith("... ") or comment.endswith(" ...")
 
 
-def _with_stated_checks(code: str) -> str:
+def _with_stated_checks(code: str) -> tuple[str, set[int]]:
     """*code* with each statement line whose comment states a value turned into a
-    check of that value, on the same line, at the same indent."""
+    check of that value, on the same line, at the same indent, and the numbers
+    of the lines it turned."""
     try:
         tree = ast.parse(code)
     except SyntaxError:
-        return code  # test_documented_python_blocks_parse reports it
+        return code, set()  # test_documented_python_blocks_parse reports it
     comments = {
         tok.start[0]: tok.string[1:].strip()
         for tok in tokenize.generate_tokens(io.StringIO(code).readline)
         if tok.type == tokenize.COMMENT
     }
     lines = code.splitlines()
+    turned: set[int] = set()
     for node in ast.walk(tree):
         assigned = (
             isinstance(node, ast.Assign)
@@ -591,6 +595,7 @@ def _with_stated_checks(code: str) -> str:
                 name = node.targets[0].id  # type: ignore[attr-defined]
                 statement = ast.get_source_segment(code, node)
                 lines[n - 1] = f"{indent}{statement}; __stated__('value', {stated!r}, {n}, {name})"
+                turned.add(n)
             continue
         printed = (
             isinstance(value, ast.Call)
@@ -608,7 +613,8 @@ def _with_stated_checks(code: str) -> str:
         args = value.args if printed else [value]  # type: ignore[union-attr]
         sources = ", ".join(ast.get_source_segment(code, arg) or "" for arg in args)
         lines[n - 1] = f"{indent}__stated__({kind!r}, {claim!r}, {n}, {sources})"
-    return "\n".join(lines) + "\n"
+        turned.add(n)
+    return "\n".join(lines) + "\n", turned
 
 
 def _says(kind: str, claim: str, args: tuple[object, ...]) -> bool:
@@ -637,8 +643,16 @@ _CACHE_SWEEP = re.compile(r"\b(?:prune|clear|clean)_codegen_cache\(")
 
 # Deprecations from the libraries the examples use (numpy, pandas, xarray, jax)
 # come and go with their versions. One raised at a page's own line is the
-# example's; one raised inside a library is that library's.
-_ECOSYSTEM_WARNINGS = (DeprecationWarning, PendingDeprecationWarning, FutureWarning, ImportWarning)
+# example's; one raised inside a library is that library's. A ResourceWarning
+# fires when the collector frees an object, which may be another test's: only
+# one raised at the page's own line is the page's.
+_ECOSYSTEM_WARNINGS = (
+    DeprecationWarning,
+    PendingDeprecationWarning,
+    FutureWarning,
+    ImportWarning,
+    ResourceWarning,
+)
 
 
 def _documented_pages() -> list[str]:
@@ -701,7 +715,10 @@ def test_each_page_runs_top_to_bottom(
         monkeypatch.setattr(codegen, "CACHE_DIR", tmp_path / "cache")
     wrong: list[str] = []
 
+    fired: set[int] = set()
+
     def stated(kind: str, claim: str, n: int, *args: object) -> None:
+        fired.add(n)
         if not _says(kind, claim, args):
             at = block.offset + n  # the code's first line is its fence's
             shown = " ".join(map(str, args)) if kind != "value" else repr(args[0])
@@ -714,11 +731,14 @@ def test_each_page_runs_top_to_bottom(
         if need is not None and not need.met():
             continue  # reported by test_a_block_the_page_runs_pass_over_is_reported
         failure = None
+        checked, stated_here = _with_stated_checks(block.code)
+        fired.clear()
+        gc.collect()  # so the garbage of the tests before this one is freed outside it
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             try:
                 with contextlib.redirect_stdout(io.StringIO()):
-                    source = "\n" * block.offset + _with_stated_checks(block.code)
+                    source = "\n" * block.offset + checked
                     exec(compile(source, str(path), "exec"), namespace)  # noqa: S102
             except Exception as exc:  # noqa: BLE001 - any exception is the finding
                 frames = traceback.extract_tb(exc.__traceback__)
@@ -731,14 +751,22 @@ def test_each_page_runs_top_to_bottom(
                 )
         if failure is not None:
             pytest.fail(failure, pytrace=False)
+        # A stated line in an `except` that nothing raised into, or in a branch
+        # not taken, checked nothing: the example no longer shows what it says.
+        for n in sorted(stated_here - fired):
+            at = block.offset + n
+            wrong.append(f"line {at}: {lines[at - 1].strip()}\n    never ran")
         warned = [
             w
             for w in caught
             if w.filename == str(path) or not issubclass(w.category, _ECOSYSTEM_WARNINGS)
         ]
-        if (page, block.name) in _WARNS_ON_PURPOSE:
-            assert warned, f"{page}: the block under {block.name!r} no longer warns, as it says"
-        elif warned:
+        expected = _WARNS_ON_PURPOSE.get((page, block.name))
+        if expected is not None:
+            said = [w for w in warned if expected.search(str(w.message))]
+            assert said, f"{page}: the block under {block.name!r} no longer warns, as it says"
+            warned = [w for w in warned if w not in said]
+        if warned:
             w = warned[0]
             pytest.fail(
                 f"{page}: the block at line {block.line}, under {block.name!r}, warned "

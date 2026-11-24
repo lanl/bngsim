@@ -466,7 +466,7 @@ m = bngsim.Model.from_sbml("pbpk.xml", compartment_sizes={"Liver": v})
 or take a central difference over reloads, which is exact:
 
 ```python
-def dloss_dV(v, h):
+def dloss_dV(v, h):  # loss is your objective, a function of a Model
     up = bngsim.Model.from_sbml("pbpk.xml", compartment_sizes={"Liver": v + h})
     dn = bngsim.Model.from_sbml("pbpk.xml", compartment_sizes={"Liver": v - h})
     return (loss(up) - loss(dn)) / (2 * h)

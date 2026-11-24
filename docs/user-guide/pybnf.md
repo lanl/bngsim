@@ -99,6 +99,7 @@ once:
 free_params = ["kf", "kr", "A0", "B0"]
 seed = model.effective_ic_sensitivity(free_params)   # {'A(b)': {'A0': 1.0}, 'B(a)': {'B0': 1.0}}
 
+# A sketch for your fitter: my_own_ic_map is its own map of ic terms.
 def route(theta, d_param, d_ic):                     # per evaluation
     g = d_param[theta]                               # already a total derivative
     for species, coeff in my_own_ic_map.get(theta, {}).items():
