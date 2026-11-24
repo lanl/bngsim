@@ -8075,11 +8075,11 @@ class Simulator:
 
     def _capture_carryover_state(
         self, core: Any = None
-    ) -> tuple[np.ndarray | None, list[str], bool, Any, bool]:
-        """Snapshot the model's carry-over state: the sensitivity seed (issue #81)
-        and the event state a continuing run starts from (issue #693). ``core``
-        defaults to this Simulator's model; a :meth:`run_batch` row passes its
-        clone's."""
+    ) -> tuple[np.ndarray | None, list[str], bool, Any, bool, float]:
+        """Snapshot the model's carry-over state: the sensitivity seed (issue #81),
+        the event state a continuing run starts from (issue #693), and the
+        model's clock. ``core`` defaults to this Simulator's model; a
+        :meth:`run_batch` row passes its clone's."""
         core = self._model._core if core is None else core
         seed = (
             np.array(core.pending_sensitivity_seed(), dtype=np.float64)
@@ -8094,14 +8094,22 @@ class Simulator:
             # ...and the initial-condition axis's own flag (issue #1528): whether
             # a run had moved the state off the IC baseline.
             bool(core.advanced_since_baseline),
+            # ...and the time the state is at, the model's clock, at which
+            # get_concentration reads a compartment an assignment rule sizes
+            # (issue #1754). Left where a run in between ended, after
+            # run_replicates over (4, 8) it read [S] at c(8) = 11 for c(4) = 7.
+            float(core.current_time),
         )
 
     def _restore_carryover_state(
-        self, snapshot: tuple[np.ndarray | None, list[str], bool, Any, bool], core: Any = None
+        self,
+        snapshot: tuple[np.ndarray | None, list[str], bool, Any, bool, float],
+        core: Any = None,
     ) -> None:
         """Put back what :meth:`_capture_carryover_state` captured."""
-        seed, names, dirty, events, advanced = snapshot
+        seed, names, dirty, events, advanced, clock = snapshot
         core = self._model._core if core is None else core
+        core.current_time = clock
         if seed is None:
             core.set_pending_sensitivity_seed(np.zeros((0, 0), dtype=np.float64), [])
         else:
@@ -8409,8 +8417,11 @@ class Simulator:
             self._model._core.ic_state_dirty = False
             self._model._core.advanced_since_baseline = False
             # Every point starts from the events' state at invocation too, not
-            # from where the previous point's run left them (issue #693).
+            # from where the previous point's run left them (issue #693), and
+            # from the model's clock then, at which an on_point hook's
+            # set_concentration reads a rule-sized compartment (issue #1754).
             self._model._core.set_event_carry_state(invocation_sens[3])
+            self._model._core.current_time = invocation_sens[5]
             if use_named:
                 # The carry above brings the invocation's storage flag; the
                 # snapshot's is the one that goes with its state (issue #1463).
@@ -12631,6 +12642,8 @@ class Simulator:
             # The triggers' truth and the pending delayed executions, so that
             # rewinding rewinds the events too (issue #693).
             "events": self._model._core.event_carry_state(),
+            # The model's clock, the time the state is at (issue #1754).
+            "clock": float(self._model._core.current_time),
             # Whether a run advanced the state, so a restore after reset() does
             # not take it for a fresh start (issue #1528).
             "ic_state_dirty": bool(self._model._core.ic_state_dirty),
@@ -12692,6 +12705,9 @@ class Simulator:
         # ...and the event state the snapshot's run left (issue #693). A
         # snapshot from before that existed has none: a fresh start.
         self._model._core.set_event_carry_state(snapshot.get("events"))
+        # ...and the model's clock, at which get_concentration reads a
+        # compartment an assignment rule sizes (issue #1754).
+        self._model._core.current_time = snapshot.get("clock", snapshot["current_time"])
         # ...and the carried-over mark of a state a run advanced (issue #1528):
         # set_concentration above leaves the flag as it is, so after a reset()
         # the restored x(θ) was seeded as a fresh start with dx(0)/dθ = 0. Set
@@ -12775,7 +12791,10 @@ class Simulator:
         # Rolled back to where an earlier run ended, the events go back with the
         # clock: the next run continues the triggers and pending executions as
         # they were then (issue #693). At any other time it is a fresh start.
+        # The model's clock goes with it: get_concentration reads a compartment
+        # an assignment rule sizes at the time the state is at (issue #1754).
         self._current_time = t
+        self._model._core.current_time = t
         # Issue #1701: the caller says the state this Simulator's last run left
         # is at t, so a run from t continues it, and is not one with its clock
         # set back. Only this Simulator's: another one's clock, set to 0, does

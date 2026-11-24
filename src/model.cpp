@@ -797,26 +797,35 @@ static std::vector<double> ssa_rule_values(NetworkModel &model, NetworkModel::Im
     return values;
 }
 
-// What an SSA run's write-back stores species sp as, over its concentration
-// (issue #1754): V_live/volume_factor for a concentration species in a
-// compartment whose size moves, which it stores as its count over the
-// load-time size (issue #741), and 1 for every other species. V_live is the
-// compartment's state slot, or for a compartment an assignment rule sets, the
-// parameter the rule writes, from `rules` (ssa_rule_values). A size that is
-// not finite and above 0 has no concentration to read at it, and the value is
-// taken as stored.
-static double ssa_storage_scale(const NetworkModel::Impl &impl, const Species &sp,
-                                const std::vector<double> &rules) {
-    double v;
+// The size an SSA run reads species sp's compartment at, V_live, for a
+// concentration species in a compartment whose size moves (issue #741): the
+// compartment's state slot, or for one an assignment rule sets, the parameter
+// the rule writes, from `rules` (ssa_rule_values). NaN for every other species.
+static double ssa_live_size(const NetworkModel::Impl &impl, const Species &sp,
+                            const std::vector<double> &rules) {
     if (sp.ssa_live_volume_idx0 >= 0 &&
         sp.ssa_live_volume_idx0 < static_cast<int>(impl.species.size()))
-        v = impl.species[static_cast<std::size_t>(sp.ssa_live_volume_idx0)].concentration;
-    else if (sp.ssa_live_volume_param_idx0 >= 0 &&
-             sp.ssa_live_volume_param_idx0 < static_cast<int>(rules.size()))
-        v = rules[static_cast<std::size_t>(sp.ssa_live_volume_param_idx0)];
-    else
-        return 1.0;
+        return impl.species[static_cast<std::size_t>(sp.ssa_live_volume_idx0)].concentration;
+    if (sp.ssa_live_volume_param_idx0 >= 0 &&
+        sp.ssa_live_volume_param_idx0 < static_cast<int>(rules.size()))
+        return rules[static_cast<std::size_t>(sp.ssa_live_volume_param_idx0)];
+    return std::numeric_limits<double>::quiet_NaN();
+}
+
+// What an SSA run's write-back stores species sp as, over its concentration
+// (issue #1754): V_live/volume_factor for such a species, which it stores as
+// its count over the load-time size, and 1 for every other species. A size
+// that is not finite and above 0 has no concentration to read at it, and the
+// value is taken as stored.
+static double ssa_storage_scale(const NetworkModel::Impl &impl, const Species &sp,
+                                const std::vector<double> &rules) {
+    const double v = ssa_live_size(impl, sp, rules);
     return std::isfinite(v) && v > 0.0 && sp.volume_factor > 0.0 ? v / sp.volume_factor : 1.0;
+}
+
+static bool has_ssa_rule_sizes(const NetworkModel::Impl &impl) {
+    return std::any_of(impl.species.begin(), impl.species.end(),
+                       [](const Species &sp) { return sp.ssa_live_volume_param_idx0 >= 0; });
 }
 
 void NetworkModel::set_concentration(const std::string &name, double value) {
@@ -906,17 +915,35 @@ void NetworkModel::set_ssa_counts_stored(bool stored) { impl_->ssa_counts_stored
 void NetworkModel::ssa_counts_to_concentrations(double t) {
     if (!impl_->ssa_counts_stored)
         return;
-    const auto &species = impl_->species;
     const std::vector<double> rules =
-        std::any_of(species.begin(), species.end(),
-                    [](const Species &sp) { return sp.ssa_live_volume_param_idx0 >= 0; })
-            ? ssa_rule_values(*this, *impl_, t)
-            : std::vector<double>{};
+        has_ssa_rule_sizes(*impl_) ? ssa_rule_values(*this, *impl_, t) : std::vector<double>{};
     // A compartment's state slot holds its size and is no such species itself,
     // so every size is read as stored, whatever the order.
     for (auto &sp : impl_->species)
         sp.concentration /= ssa_storage_scale(*impl_, sp, rules);
     impl_->ssa_counts_stored = false;
+}
+
+std::vector<double> NetworkModel::ssa_start_amounts(double t) const {
+    const auto &species = impl_->species;
+    std::vector<double> amounts(species.size());
+    // A concentration is counted at the size its compartment has at t, as the
+    // SSA run's start counts it (ssa_simulator.cpp), a size of 0 counting 0;
+    // an SSA run's state is its counts already.
+    const bool at_size = !impl_->ssa_counts_stored;
+    const std::vector<double> rules =
+        at_size && has_ssa_rule_sizes(*impl_)
+            ? ssa_rule_values(const_cast<NetworkModel &>(*this), *impl_, t)
+            : std::vector<double>{};
+    for (std::size_t i = 0; i < species.size(); ++i) {
+        const Species &sp = species[i];
+        const double v =
+            at_size ? ssa_live_size(*impl_, sp, rules) : std::numeric_limits<double>::quiet_NaN();
+        amounts[i] = std::isfinite(v) && v >= 0.0 && sp.volume_factor > 0.0
+                         ? sp.concentration * v
+                         : sp.concentration * sp.volume_factor;
+    }
+    return amounts;
 }
 
 void NetworkModel::set_ic_state_dirty(bool dirty) { impl_->ic_state_dirty = dirty; }

@@ -459,6 +459,92 @@ def test_a_rule_sized_state_is_read_at_the_size_the_next_run_reads(method, betwe
         np.testing.assert_allclose(_sel(r, "S")[:, 0], 10.0 * size, rtol=1e-6)
 
 
+def _replicates(sim, m):
+    sim.run_replicates(3, t_span=(4, 8), n_points=3, seed=1)
+
+
+def _scan(sim, m):
+    sim.parameter_scan("k", [1.0, 2.0], t_span=(4, 10), n_points=2, reset_conc=False, seed=1)
+
+
+def _restore(sim, m):
+    snap = sim.snapshot()
+    sim.run_until(6.0, seed=1)
+    sim.restore(snap)
+
+
+def _set_state_at_4(sim, m):
+    saved = m.get_state()
+    sim.run_until(6.0, seed=1)
+    sim.set_state(saved, time=4.0)
+
+
+@pytest.mark.parametrize("method", STOCHASTIC)
+@pytest.mark.parametrize(
+    "put_back",
+    [
+        pytest.param(_replicates, id="run_replicates"),
+        pytest.param(_scan, id="parameter_scan"),
+        pytest.param(_restore, id="restore"),
+        pytest.param(_set_state_at_4, id="set_state at time 4"),
+    ],
+)
+def test_a_state_put_back_is_read_at_the_time_it_is_at(method, put_back):
+    """``c := V0 + time`` after a run to t = 4: 30 molecules at c = 7. Each of
+    these puts the state at t = 4 back after runs past it, and left the
+    model's clock where the last run ended, so get_concentration read the
+    compartment at that time: [S] = 30/11 after replicates to 8, and 30/9 after
+    a step to 6. set_concentration("S", 10) stored 110 molecules for 70."""
+    m = bngsim.Model.from_antimony_string(RULE_SIZED + " k = 1;")
+    m.set_param("V0", 3.0)
+    sim_kw = {"poplevel": 100} if method == "psa" else {}
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        sim = bngsim.Simulator(m, method=method, **sim_kw)
+        sim.run(t_span=(0, 4), n_points=5, seed=1)
+        put_back(sim, m)
+    assert sim.current_time == 4.0
+    assert m.get_concentration("S") == pytest.approx(30.0 / 7.0, rel=1e-12)
+    m.set_concentration("S", 10.0)
+    for then in (method, "ode"):
+        r = _run(m.clone(), then, t_span=(4, 5), n_points=2)
+        np.testing.assert_allclose(_sel(r, "S")[:, 0], 70.0, rtol=1e-6)
+        assert _sel(r, "[S]")[0, 0] == pytest.approx(10.0, rel=1e-9)
+
+
+@pytest.mark.parametrize("method", STOCHASTIC)
+def test_an_ode_run_that_raises_leaves_an_ssa_state_as_it_was(method):
+    """An ODE run turns an SSA run's counts into concentrations at its start;
+    one that raises puts the stored values and the mark back, so the next run
+    starts from the count the SSA run left."""
+    text = RESIZED + "k2 = 0.5;\nR2: X -> ; k2*X;\n"
+    m = bngsim.Model.from_antimony_string(text)
+    m.set_concentration("c", 3.0)
+    _run(m, method, t_span=(0, 3), n_points=4)
+    state, conc = m.get_state(), m.get_concentration("X")
+    with pytest.raises(bngsim.SimulationTimeout):
+        _run(m, "ode", t_span=(3, 1000), n_points=3, timeout=1e-12)
+    np.testing.assert_array_equal(m.get_state(), state)
+    assert m._core.ssa_counts_stored
+    assert m.get_concentration("X") == conc
+    count = state[m.species_names.index("X")] * 2.0  # over the load-time size
+    r = _run(m, method, t_span=(3, 4), n_points=2)
+    assert _sel(r, "X")[0, 0] == pytest.approx(count, rel=1e-12)
+
+
+@pytest.mark.parametrize(
+    "size, rounded", [(3.0, False), (3.01, True)], ids=["whole", "fractional"]
+)
+def test_the_ssa_check_counts_a_concentration_at_the_written_size(size, rounded):
+    """c written to 3.01 from 2: X = 50 is 150.5 molecules, which the SSA run
+    rounds and warns of. The check read the stored 50 over the load-time size,
+    100 molecules, and said nothing."""
+    m = bngsim.Model.from_antimony_string(RESIZED)
+    m.set_concentration("c", size)
+    codes = [issue.code for issue in bngsim.validate_for_ssa(m)]
+    assert ("non_integer_initial_population" in codes) is rounded
+
+
 @pytest.mark.parametrize("method", STOCHASTIC)
 @pytest.mark.parametrize(
     "evaluate",

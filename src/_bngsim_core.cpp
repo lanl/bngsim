@@ -2274,6 +2274,19 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "Bulk-assign all species concentrations from a 1-D float64 ndarray, "
             "ordered like species_names(). O(n_species), one Python call (GH #102).")
 
+        .def_property("current_time", &bngsim::NetworkModel::current_time,
+                      &bngsim::NetworkModel::set_current_time,
+                      "The model's clock: the time its stored state is at, which a run's "
+                      "write-back sets and reset() puts at 0. get_concentration and "
+                      "set_concentration read the size of a compartment an assignment rule "
+                      "sets at it, over an SSA run's state (issue #1754). Writable so a "
+                      "primitive that puts a state back can put its time back with it.")
+        .def("ssa_start_amounts", &bngsim::NetworkModel::ssa_start_amounts, py::arg("t"),
+             "The amount of each species an SSA run starting at t counts, before it "
+             "rounds them, ordered like species_names(): the stored value times "
+             "volume_factor, but for a concentration species in a compartment whose size "
+             "moves, the stored value times the size at t unless the state is an SSA "
+             "run's counts already (issue #1754). Leaves the model as it was.")
         .def_property("ssa_counts_stored", &bngsim::NetworkModel::ssa_counts_stored,
                       &bngsim::NetworkModel::set_ssa_counts_stored,
                       "True iff the species state is one an SSA/PSA run wrote back, which "

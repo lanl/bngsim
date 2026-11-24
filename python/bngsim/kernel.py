@@ -152,7 +152,11 @@ class ReactionKernel:
         Returns a fresh ``float64`` array of length :attr:`n_species`, ordered
         like :attr:`state_names`. After an :meth:`advance` this is the
         post-step state. One ``O(n_species)`` Python call — the ``get`` half
-        of the per-step kernel exchange.
+        of the per-step kernel exchange. The values are as stored: after an
+        SSA or PSA run, a concentration species in a compartment whose size
+        moves holds its count over the compartment's load-time size, which
+        ``Model.get_concentration`` reads at the size the compartment has
+        (issue #1754).
         """
         return self._sim.get_state()
 
@@ -165,7 +169,8 @@ class ReactionKernel:
             1-D array of length :attr:`n_species`, ordered like
             :attr:`state_names`. Copied into the model's live concentrations;
             the next :meth:`advance` reads them as its initial condition. The
-            ``set`` half of the per-step kernel exchange.
+            ``set`` half of the per-step kernel exchange. The values are taken
+            as stored, as :meth:`get_state` returns them.
         time : float, optional
             Also set :attr:`time` to this value (``Simulator.set_time``). With
             a state saved by :meth:`get_state` and its :attr:`time`, this redoes

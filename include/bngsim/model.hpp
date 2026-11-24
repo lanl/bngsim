@@ -933,6 +933,12 @@ class NetworkModel {
     // current_time().
     void ssa_counts_to_concentrations(double t);
 
+    // The amount of each species an SSA run starting at t counts, before it
+    // rounds them (issue #1754): stored·volume_factor, but for a concentration
+    // species in a compartment whose size moves, stored·V_live at t unless the
+    // state is an SSA run's counts already. The model is left as it was.
+    std::vector<double> ssa_start_amounts(double t) const;
+
     // True iff a run() has advanced the species state since it was last at the
     // IC baseline: set at each run's state write-back, cleared by reset() and
     // save_concentrations(), untouched by set_concentration()/set_state_from(),
