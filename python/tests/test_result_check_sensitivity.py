@@ -604,6 +604,25 @@ def test_a_column_s_roundoff_is_a_floor_under_its_small_entries():
     assert cols.atol[0, 0] == pytest.approx(1e-8 * 1e12 / 0.5)
 
 
+def test_a_budget_that_runs_out_telling_a_floor_from_the_tolerance_is_a_timeout(monkeypatch):
+    # The run's dA/dk is past the bound at rtol/10; the rtol/100 run that would
+    # tell a floor from the tolerance runs out of budget, so the move is not
+    # reported as a diff it may not be.
+    real = Result.rerun
+
+    def rerun(self, **changes):
+        if changes.get("rtol", 1.0) < 5e-10:
+            from bngsim._exceptions import SimulationError
+
+            raise SimulationError("timed out", code="sim.timeout")
+        return real(self, **changes)
+
+    monkeypatch.setattr(Result, "rerun", rerun)
+    rep = _scaled(_decay(), 0, 1.01).check(["sensitivity"], budget=600)
+    v = rep["checks"][0]
+    assert v["status"] == "timeout" and "floor" in v["note"] and rep["ok"] is False
+
+
 # ─── The rerun the quotient makes ────────────────────────────────────────────
 
 
