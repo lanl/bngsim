@@ -511,6 +511,35 @@ _BACKEND = ("rhs", "jacobian", "linear_solver", "sensitivity_rhs", "propensities
 @_notices.collected
 def rerun(result: Result, **changes: Any) -> Result:
     """:meth:`Result.rerun`."""
+    return _rerun(result, changes)
+
+
+@_notices.collected
+def perturbed(
+    result: Result,
+    *,
+    parameters: dict[str, float] | None = None,
+    state: dict[int, float] | None = None,
+    **changes: Any,
+) -> Result:
+    """The run *result* records, made again with *changes* as :func:`rerun`
+    takes them, from a start moved by *parameters* (primary parameters, by
+    name, each set as :meth:`Model.set_param` sets it, so a derived parameter
+    and an initial amount that read it follow) and *state* (entries of the
+    start state, by index), and with no sensitivities: the difference quotient
+    :meth:`Result.check` makes of them (issue #1893). Not public: a result it
+    makes is not the recorded run with one setting changed."""
+    return _rerun(result, changes, parameters=parameters or {}, state=state or {}, plain=True)
+
+
+def _rerun(
+    result: Result,
+    changes: dict[str, Any],
+    *,
+    parameters: dict[str, float] | None = None,
+    state: dict[int, float] | None = None,
+    plain: bool = False,
+) -> Result:
     from bngsim._simulator import Simulator, normalize_method
 
     rec = result.record
@@ -523,14 +552,38 @@ def rerun(result: Result, **changes: Any) -> Result:
     method = changes.get("method", run["method"])
     model = build_model(result, rec["model"])
     _put_start(model, rec)
+    if state:
+        start = np.asarray(model._core.get_state(), dtype=np.float64)
+        for i, value in state.items():
+            start[int(i)] = float(value)
+        model.set_state(start)
+    for name, value in (parameters or {}).items():
+        if name not in model.primary_param_names:
+            raise _unsupported(
+                "derived_parameter",
+                f"{name!r} is not a primary parameter of this model, so a start moved in it "
+                "is not one set_param makes.",
+                parameter=name,
+            )
+        model.set_param(name, float(value))
     options = _simulator_options(run, rec["backend"], method, changes)
+    if plain:
+        for key in ("sensitivity_params", "sensitivity_ic", "sensitivity_method"):
+            options.pop(key, None)
     sim = Simulator(model, method=method, **options)
     again = sim.run(start="live", **_run_options(run, method, changes))
-    if method == "ode" and run["method"] == "ode" and run.get("sensitivity_params"):
+    if not plain and method == "ode" and run["method"] == "ode" and run.get("sensitivity_params"):
         _check_ic_seed(result, again)
 
+    changed = _changed(changes)
+    if parameters:
+        changed["parameters"] = {k: float(v) for k, v in parameters.items()}
+    if state:
+        changed["start_state"] = {str(k): float(v) for k, v in state.items()}
+    if plain:
+        changed["sensitivities"] = None
     again._run_info = again._run_info._replace(
-        rerun_of={"record_sha256": _record_sha256(rec), "changed": _changed(changes)}
+        rerun_of={"record_sha256": _record_sha256(rec), "changed": changed}
     )
     stochastic = method in _record.STOCHASTIC
     differ = (
@@ -554,7 +607,10 @@ def rerun(result: Result, **changes: Any) -> Result:
     ran = again.record["backend"] or {}
     asked = changes.get("linear_solver")
     moved: list[tuple[str, str]] = []
-    if method == run["method"] and not ({"jacobian", "codegen"} & set(changes)):
+    # A run made with no sensitivities may run other code (no sensitivity
+    # code, the interpreted right-hand side a sensitivity run cannot take):
+    # it is not the recorded run made again, and says so in its record.
+    if method == run["method"] and not plain and not ({"jacobian", "codegen"} & set(changes)):
         moved = [
             (k, repr(then.get(k)))
             for k in _BACKEND
