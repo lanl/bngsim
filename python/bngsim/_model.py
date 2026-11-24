@@ -2359,6 +2359,13 @@ class Model:
         :meth:`save_concentrations` after it to make it the state :meth:`reset`
         returns to.
 
+        After an SSA or PSA run, a concentration species in a compartment whose
+        size moves (an event resizes it, or a rate rule or an assignment rule
+        sets it) is stored as its count over the compartment's load-time size.
+        The value is a concentration there too, at the size the compartment has
+        now, and is stored as that count, which :meth:`get_concentration` reads
+        back (issue #1754). :meth:`set_state` writes the stored values.
+
         For forward sensitivity, this is a **literal** initial condition:
         ``∂x_k(0)/∂θ = 0``. It therefore supersedes whatever the species' declared
         initial condition depended on — if the ``.net`` set it from a parameter
@@ -2394,7 +2401,11 @@ class Model:
             convention (amount over the compartment's static size), before a
             variable-volume ``Result`` rescales it to the live size (issue
             #1510). :meth:`Simulator.steady_state` writes no species, so it
-            leaves a rule species as the last run did.
+            leaves a rule species as the last run did. After an SSA or PSA
+            run, a concentration species in a compartment whose size moves
+            is stored as its count over the compartment's load-time size, and
+            this is that count over the size the compartment has now (issue
+            #1754); :meth:`get_state` returns the stored values.
 
         Raises
         ------

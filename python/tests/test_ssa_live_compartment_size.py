@@ -3,7 +3,7 @@
 Under SSA a concentration species in a compartment whose size moves (an event
 resizes it, or a rate rule or an assignment rule sets it) is stored as its
 count over the load-time size, so that a resize leaves the count alone (#741).
-Three places read that stored value where the size had moved, with no error:
+Each of these read that stored value where the size had moved, with no error:
 
 * #1463: a run starts from the model's concentrations, and turned them into
   counts at the load-time size. A written start size was lost: c written to 3
@@ -15,6 +15,12 @@ Three places read that stored value where the size had moved, with no error:
 * #1659: an event's concentration assignment in a compartment an assignment rule
   sizes was stored over the load-time size: S = 50 at t = 2 in ``c := 1 + time``
   read [S](3) 12.5 for 37.5.
+* #1754: what reads the state an SSA run left read the stored value as a
+  concentration. An ODE run from 150 molecules at c = 4 (stored as 75, over the
+  load-time 2) started from an amount of 300; so did a steady-state solve, and
+  get_concentration reported 75 for [X] = 37.5. set_concentration stored its
+  value as the count over the load-time size: [X] = 10 at c = 4 started the next
+  SSA run at 20 molecules for 40.
 
 Every model here has no reaction, or one only to show the run moves on, so an
 SSA run is deterministic where it is compared to a closed form; the expected
@@ -204,9 +210,8 @@ def test_a_scan_reset_to_a_snapshot_reads_it_as_saved(method, saved_after_a_run)
 def test_an_ode_run_between_two_ssa_runs_leaves_concentrations(method):
     """SSA to t = 0.5, ODE to 3 (which leaves [X] = 25 at c = 4), then SSA: the
     last run counts 25*4 = 100. Read as the counts the first run left, it was
-    50. (The size is not written here: an ODE run that starts from an SSA
-    run's counts in a compartment off its load-time size reads them as
-    concentrations, as it did before this change.)"""
+    50. (The size is still the load-time one when the ODE run starts here; one
+    off it is in test_an_ode_run_from_an_ssa_state_keeps_its_amount.)"""
     m = bngsim.Model.from_antimony_string(RESIZED)
     _run(m, method, t_span=(0, 0.5), n_points=2)
     _run(m, "ode", t_span=(0.5, 3), n_points=2)
@@ -338,3 +343,146 @@ def test_an_event_assigns_a_concentration_at_the_live_size(method, size):
     out = _sel(_run(m, method, t_span=(0, 4), n_points=5), "[S]", "S")
     np.testing.assert_allclose(out[:, 0], [10.0, 5.0, 50.0, 37.5, 30.0], rtol=_rtol(method))
     np.testing.assert_allclose(out[:, 1], [10.0, 10.0, 150.0, 150.0, 150.0], rtol=_rtol(method))
+
+
+# ── #1754: what reads an SSA run's state ─────────────────────────────────────
+
+RULE_SIZED = "V0 = 1; compartment c; c := V0 + time; species S in c = 10;"
+
+
+def _rate_sized_after_a_run(method):
+    """c' = 0.5 from c written to 3, after a run to t = 3: c = 4.5, amount 150."""
+    m = bngsim.Model.from_antimony_string(RATE_SIZED)
+    m.set_concentration("c", 3.0)
+    _run(m, method, t_span=(0, 3), n_points=4)
+    return m
+
+
+def _rule_sized_after_a_run(method):
+    """``c := V0 + time`` with V0 written to 3, after a run to t = 4: c = 7, the
+    parameter the rule writes, and the amount 30."""
+    m = bngsim.Model.from_antimony_string(RULE_SIZED)
+    m.set_param("V0", 3.0)
+    _run(m, method, t_span=(0, 4), n_points=5)
+    return m
+
+
+# (the model after an SSA run, its species, the run's end, the amount, what
+# the run stored: the amount over the load-time size, and the concentration)
+AFTER_AN_SSA_RUN = [
+    pytest.param(_resized_after_a_run, "X", 3.0, 150.0, 75.0, 37.5, id="event-resized"),
+    pytest.param(_rate_sized_after_a_run, "X", 3.0, 150.0, 75.0, 150.0 / 4.5, id="rate rule"),
+    pytest.param(_rule_sized_after_a_run, "S", 4.0, 30.0, 30.0, 30.0 / 7.0, id="rule-sized"),
+]
+
+
+@pytest.mark.parametrize("method", STOCHASTIC)
+@pytest.mark.parametrize("after, name, t_end, amount, stored, conc", AFTER_AN_SSA_RUN)
+def test_get_concentration_reads_an_ssa_state_at_the_live_size(
+    method, after, name, t_end, amount, stored, conc
+):
+    """150 molecules at c = 4 are [X] = 37.5: get_concentration reported the
+    value the run stored, the count over the load-time size (75). get_state
+    still returns that."""
+    m = after(method)
+    assert m.get_concentration(name) == pytest.approx(conc, rel=1e-12)
+    assert m.get_state()[m.species_names.index(name)] == pytest.approx(stored, rel=1e-12)
+
+
+@pytest.mark.parametrize("from_zero", [False, True], ids=["where it ended", "from 0"])
+@pytest.mark.parametrize("method", STOCHASTIC)
+@pytest.mark.parametrize("after, name, t_end, amount, stored, conc", AFTER_AN_SSA_RUN)
+def test_an_ode_run_from_an_ssa_state_keeps_its_amount(
+    method, from_zero, after, name, t_end, amount, stored, conc
+):
+    """An ODE run from 150 molecules at c = 4 read the stored 75 as [X], and
+    integrated an amount of 300, which the next SSA run went on from. It starts
+    from the amount the SSA run left, and leaves it to the next run. So does a
+    run that sets the clock back, as an SSA run does: in ``c := V0 + time`` the
+    30 molecules are [S] = 10 at t = 0, where c = 3."""
+    m = after(method)
+    t0 = 0.0 if from_zero else t_end
+    ode = _run(m, "ode", t_span=(t0, t0 + 2), n_points=3)
+    np.testing.assert_allclose(_sel(ode, name)[:, 0], amount, rtol=1e-6)
+    if not from_zero:
+        assert _sel(ode, f"[{name}]")[0, 0] == pytest.approx(conc, rel=1e-6)
+    again = _run(m, method, t_span=(t0 + 2, t0 + 3), n_points=2)
+    np.testing.assert_allclose(_sel(again, name)[:, 0], amount, rtol=1e-9)
+
+
+@pytest.mark.parametrize("then", ["same", "ode"])
+@pytest.mark.parametrize("method", STOCHASTIC)
+@pytest.mark.parametrize("after, name, t_end, amount, stored, conc", AFTER_AN_SSA_RUN)
+def test_set_concentration_over_an_ssa_state_is_a_concentration(
+    method, then, after, name, t_end, amount, stored, conc
+):
+    """[X] = 10 at c = 4 is 40 molecules. Written over an SSA run's state, the
+    10 was stored as the count over the load-time size, and the next SSA run
+    started from 20."""
+    m = after(method)
+    m.set_concentration(name, 10.0)
+    assert m.get_concentration(name) == pytest.approx(10.0, rel=1e-12)
+    r = _run(m, method if then == "same" else "ode", t_span=(t_end, t_end + 2), n_points=3)
+    np.testing.assert_allclose(_sel(r, name)[:, 0], 10.0 * amount / conc, rtol=1e-6)
+
+
+@pytest.mark.parametrize("method", STOCHASTIC)
+@pytest.mark.parametrize("ss_method", ["integration", "newton"])
+def test_a_steady_state_from_an_ssa_state_keeps_its_amount(method, ss_method):
+    """c' = 4 - c from 2 keeps X's 100 molecules, so [X] settles at 100/4 = 25.
+    From an SSA run's state at t = 3 (c = 3.90) the solve read the stored 50 as
+    [X] there, an amount of 195, and settled at 48.76. The model is left as
+    the run stored it, as every solve leaves it."""
+    m = bngsim.Model.from_antimony_string(
+        "compartment c = 2;\nc' = 4 - c;\nspecies X in c; X = 50;\n"
+    )
+    _run(m, method, t_span=(0, 3), n_points=4)
+    before = m.get_state()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        ss = bngsim.Simulator(m, method="ode").steady_state(method=ss_method)
+    assert ss.converged
+    assert ss["X"] == pytest.approx(25.0, rel=1e-5)
+    np.testing.assert_array_equal(m.get_state(), before)
+    assert m._core.ssa_counts_stored
+
+
+@pytest.mark.parametrize("method", STOCHASTIC)
+@pytest.mark.parametrize("saved_after_a_run", [True, False], ids=["counts", "concentrations"])
+def test_a_snapshot_restores_the_state_as_it_was_stored(method, saved_after_a_run):
+    """Simulator.snapshot() keeps the state as stored, with the mark saying
+    whether it is an SSA run's counts, and restore() puts both back. Kept as
+    the concentrations get_concentration reads, an SSA run's state restored
+    after an ODE run was read as counts again, 75 molecules for 150; and
+    concentrations restored over an SSA run's state were stored as counts at
+    the size the compartment had then, 300."""
+    m = bngsim.Model.from_antimony_string(RESIZED)
+    m.set_concentration("c", 3.0)
+    sim_kw = {"poplevel": 100} if method == "psa" else {}
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        sim = bngsim.Simulator(m, method=method, **sim_kw)
+        if saved_after_a_run:
+            sim.run(t_span=(0, 3), n_points=4, seed=1)
+            snap = sim.snapshot()
+            _run(m, "ode", t_span=(3, 5), n_points=3)
+        else:
+            snap = sim.snapshot()
+            sim.run(t_span=(0, 3), n_points=4, seed=1)
+        sim.restore(snap)
+        r = sim.run(t_span=(3, 5) if saved_after_a_run else (0, 3), n_points=3, seed=1)
+    np.testing.assert_allclose(_sel(r, "X")[:, 0], 150.0, rtol=1e-9)
+
+
+@pytest.mark.parametrize("method", STOCHASTIC)
+def test_the_ssa_check_reads_an_ssa_state_as_its_counts(method):
+    """101 molecules at c = 4 are [X] = 25.25, which over the load-time size 2
+    is 50.5 molecules: the check before an SSA run reads the count the run
+    stored, and finds no fractional population in it."""
+    m = bngsim.Model.from_antimony_string(
+        "compartment c = 2;\nspecies X in c; X = 50.5;\nE1: at time > 1: c = 4;\n"
+    )
+    _run(m, method, t_span=(0, 3), n_points=4)
+    assert m.get_concentration("X") == pytest.approx(25.25, rel=1e-12)
+    codes = [issue.code for issue in bngsim.validate_for_ssa(m)]
+    assert "non_integer_initial_population" not in codes

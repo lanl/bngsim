@@ -764,12 +764,36 @@ void NetworkModel::save_concentrations() {
     impl_->ic_baseline_saved = true;
 }
 
+// What an SSA run's write-back stores species sp as, over its concentration:
+// V_live/volume_factor for a concentration species in a compartment whose size
+// moves, which it stores as its count over the load-time size (issue #741), and
+// 1 for every other species. V_live is read where the SSA run reads it: the
+// compartment's state slot, or the parameter an assignment rule writes the size
+// into, as it stands. A size that is not finite and above 0 has no
+// concentration to read at it, and the value is taken as stored.
+static double ssa_storage_scale(const NetworkModel::Impl &impl, const Species &sp) {
+    double v;
+    if (sp.ssa_live_volume_idx0 >= 0 &&
+        sp.ssa_live_volume_idx0 < static_cast<int>(impl.species.size()))
+        v = impl.species[static_cast<std::size_t>(sp.ssa_live_volume_idx0)].concentration;
+    else if (sp.ssa_live_volume_param_idx0 >= 0 &&
+             sp.ssa_live_volume_param_idx0 < static_cast<int>(impl.parameters.size()))
+        v = impl.parameters[static_cast<std::size_t>(sp.ssa_live_volume_param_idx0)].value;
+    else
+        return 1.0;
+    return std::isfinite(v) && v > 0.0 && sp.volume_factor > 0.0 ? v / sp.volume_factor : 1.0;
+}
+
 void NetworkModel::set_concentration(const std::string &name, double value) {
     auto it = impl_->shared->species_name_to_idx.find(name);
     if (it == impl_->shared->species_name_to_idx.end()) {
         throw std::runtime_error("Species not found: " + name);
     }
-    impl_->species[it->second].concentration = value;
+    auto &sp = impl_->species[it->second];
+    // Over an SSA run's state the value is stored as that run stores it, so
+    // the next run reads it as the concentration it is (issue #1754): [X] = 10
+    // at c = 4 from a load-time 2 was read as 20 molecules for 40.
+    sp.concentration = impl_->ssa_counts_stored ? value * ssa_storage_scale(*impl_, sp) : value;
     // GH #210 — setting a species to a literal value is a fresh initial-condition
     // assignment (its θ-derivative is 0), NOT a carried-over dynamics state, so
     // it does NOT mark the state dirty: a reset()+set_concentration() IC setup
@@ -790,7 +814,11 @@ double NetworkModel::get_concentration(const std::string &name) const {
     if (it == impl_->shared->species_name_to_idx.end()) {
         throw std::runtime_error("Species not found: " + name);
     }
-    return impl_->species[it->second].concentration;
+    // An SSA run's state is read at the size the compartment has now (issue
+    // #1754): 150 molecules at c = 4 were reported as the 75 stored for them.
+    const auto &sp = impl_->species[it->second];
+    return impl_->ssa_counts_stored ? sp.concentration / ssa_storage_scale(*impl_, sp)
+                                    : sp.concentration;
 }
 
 void NetworkModel::get_state_into(double *out) const {
@@ -825,6 +853,29 @@ bool NetworkModel::ic_state_dirty() const { return impl_->ic_state_dirty; }
 bool NetworkModel::ssa_counts_stored() const { return impl_->ssa_counts_stored; }
 
 void NetworkModel::set_ssa_counts_stored(bool stored) { impl_->ssa_counts_stored = stored; }
+
+void NetworkModel::ssa_counts_to_concentrations(double t) {
+    if (!impl_->ssa_counts_stored)
+        return;
+    // The size of a compartment an assignment rule sets is the rule's value at
+    // t, evaluated on the state as stored, as the SSA run evaluates it for its
+    // rows and its start. The parameter the rule writes holds whatever last
+    // evaluated it: building an ODE Simulator evaluates the rules at t = 0, so
+    // c := V0 + time read 3 for 7 after a run to t = 4.
+    const auto &species = impl_->species;
+    if (std::any_of(species.begin(), species.end(),
+                    [](const Species &sp) { return sp.ssa_live_volume_param_idx0 >= 0; })) {
+        std::vector<double> stored(species.size());
+        get_state_into(stored.data());
+        update_observables(stored.data());
+        evaluate_functions(t);
+    }
+    // A compartment's state slot holds its size and is no such species itself,
+    // so every size is read as stored, whatever the order.
+    for (auto &sp : impl_->species)
+        sp.concentration /= ssa_storage_scale(*impl_, sp);
+    impl_->ssa_counts_stored = false;
+}
 
 void NetworkModel::set_ic_state_dirty(bool dirty) { impl_->ic_state_dirty = dirty; }
 

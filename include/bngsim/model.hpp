@@ -136,7 +136,8 @@ class NetworkModel {
     void save_concentrations();
 
     // Set a single species concentration by name.
-    // Mirrors the BNG setConcentration() action.
+    // Mirrors the BNG setConcentration() action. Over an SSA run's state it
+    // is stored as that run stores it (see ssa_counts_stored).
     void set_concentration(const std::string &name, double value);
 
     // Issue #1510: mark a loaded species slot a continuous quantity, not a
@@ -147,7 +148,8 @@ class NetworkModel {
     // No-op if species_idx0 is out of range.
     void set_species_continuous(int species_idx0);
 
-    // Get a single species concentration by name.
+    // Get a single species concentration by name; over an SSA run's state, at
+    // the size its compartment has now (see ssa_counts_stored).
     double get_concentration(const std::string &name) const;
 
     // ─── Bulk state-vector access (GH #102) ──────────────────────────────────
@@ -158,6 +160,8 @@ class NetworkModel {
     // each point to at least n_species() doubles. set_state_from only writes the
     // species concentrations — observables and other derived state are left as
     // they were and get recomputed by the next RHS / observable evaluation.
+    // Both take the values as stored, an SSA run's counts included (see
+    // ssa_counts_stored).
     void get_state_into(double *out) const;
     void set_state_from(const double *in);
 
@@ -901,14 +905,32 @@ class NetworkModel {
     // count over the load-time size, volume_factor; everywhere else, at the
     // initial conditions or after an ODE run, the value is a concentration. A
     // run that starts from a concentration turns it into a count at the size
-    // the compartment has then. Set at an SSA run's write-back and cleared at
-    // an ODE run's; reset() puts back the IC baseline's, which
-    // save_concentrations() takes from the state it saves; clone() copies
-    // both. set_concentration()/set_state_from() leave it, so a get_state/
-    // set_state round trip is exact (and a concentration written over an SSA
-    // run's state is read as a count, as it was before).
+    // the compartment has then. Set at an SSA run's write-back; reset() puts
+    // back the IC baseline's, which save_concentrations() takes from the state
+    // it saves; clone() copies both.
+    //
+    // What reads such a state as concentrations reads it at the size each
+    // compartment has, V_live (issue #1754; before, each read the count over
+    // the load-time size as the concentration, X = 300 for 150):
+    // get_concentration() reports stored·volume_factor/V_live and
+    // set_concentration() stores value·V_live/volume_factor, V_live the size
+    // as it stands (for a compartment an assignment rule sets, the parameter
+    // the rule writes, as the SSA run or whatever evaluated the rules since
+    // left it); an ODE run turns the state into concentrations at its
+    // start (ssa_counts_to_concentrations, which clears the flag), and
+    // find_steady_state() solves from them and puts the state back as it was
+    // stored. get_state_into()/set_state_from() take the values as stored and
+    // leave the flag, so a get_state/set_state round trip is exact. A size
+    // written over such a state keeps the counts, as a resize by an event does.
     bool ssa_counts_stored() const;
     void set_ssa_counts_stored(bool stored);
+
+    // Turn an SSA run's state into concentrations and clear ssa_counts_stored
+    // (issue #1754); nothing changes when the flag is clear. Each is read at its
+    // compartment's size, that of one an assignment rule sets being the rule's
+    // value at time t, evaluated on the state as stored, as the SSA run
+    // evaluates it (which leaves the observables and functions there).
+    void ssa_counts_to_concentrations(double t);
 
     // True iff a run() has advanced the species state since it was last at the
     // IC baseline: set at each run's state write-back, cleared by reset() and
