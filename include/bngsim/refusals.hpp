@@ -15,8 +15,9 @@ class SparseJacobianUnavailable : public std::runtime_error {
     explicit SparseJacobianUnavailable(const std::string &what) : std::runtime_error(what) {}
 };
 
-// An ODE run over a span CVODE cannot step through, refused before it starts
-// (issue #1838): a time 2^512 or more from t = 0, or a run that long. Only the
+// An ODE run over a span CVODE cannot step through (issue #1838): one whose
+// length is past the largest double, refused before it starts, or one where
+// CVODE's step takes its clock past the largest double, ended there. Only the
 // ODE engine refuses it, so the engine does, not the checks of a span that
 // Python makes for every method. A std::invalid_argument, which the pybind11
 // layer maps to `bngsim.UsageError`: a ValueError, as before it had a type, and

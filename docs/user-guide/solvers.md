@@ -563,11 +563,17 @@ sensitivity run is refused with `SensitivityRefusedForParametersError` (a
 moves a requested column, rounds onto the start or past the run's end. A
 column the crossing does not move can still be run alone.
 
-**No ODE run reaches 2^512 (about 1.34e154) from 0, or is that long.** Such a
-run is refused before it starts, with `bngsim.UsageError` (a `ValueError`).
-CVODE grows its step up to tenfold a step, and near the largest double the
-step can overflow before the run ends: the run would hang, or return NaN rows.
-Measure time in a larger unit instead.
+**A run CVODE cannot step through ends with an error.** CVODE is given no
+largest step unless `max_step=` asks for one, and grows its step up to tenfold
+a step, ten thousandfold after its first. In a run long enough, or far enough
+from 0, the step or the clock can pass the largest double (about 1.8e308)
+before the run ends. Such a run raises `bngsim.UsageError` (a `ValueError`)
+where that happens, instead of hanging past `timeout=` or returning NaN rows.
+Where it happens turns on the model as much as on the span: `A -> B` at `k = 1`
+returns over `(-7e307, 0)`, and at `k = 0`, whose steps CVODE grows the
+fastest, it fails over spans from about `1e306`. A run whose length is itself
+past the largest double, such as `(-1e308, 1e308)`, is refused before it
+starts. Measure time in a larger unit instead.
 
 ### Steps too small to move the clock
 
@@ -689,4 +695,5 @@ on time in an SBML model, since they restart at each switch, and for KINSOL
 solves, unless `SUNLOGGER_WARNING_FILENAME` is set. A BNGL rate law that
 switches on time keeps its warnings. The `[ERROR]` lines of a solve BNGsim
 expects to fail and recovers from are always dropped, and so is the one of a
-solver call that `timeout=` ends, which raises `SimulationTimeout`.
+solver call that `timeout=` ends, or that BNGsim ends because CVODE's step
+overflowed: the run raises its own error.

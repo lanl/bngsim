@@ -97,17 +97,17 @@ namespace bngsim {
 // step's order, which is how it finds that order: the CV_BAD_K that answers is
 // expected, and its message is dropped by both handlers below.
 thread_local bool g_probing_step_order = false;
-// Set where the run's wall-clock budget ran out inside a CVode call (issue
-// #1838; see read_budget_in_call). The right-hand side threw to end the call,
-// and what CVODE says of it, "the right-hand side routine failed in an
-// unrecoverable manner", is the timeout, which the run raises itself as
-// SimulationTimeout: both handlers drop what CVODE says from then until the
-// next run selects its handler.
-thread_local bool g_budget_spent = false;
+// Set where the right-hand side threw to end a CVode call the run cannot go on
+// with (issue #1838; see check_inside_call): its wall-clock budget ran out, or
+// CVODE's clock went past the largest double. What CVODE says of the call it
+// ended, "the right-hand side routine failed in an unrecoverable manner", is
+// that, which the run raises itself, so both handlers drop what CVODE says from
+// then until the next run starts (CvodeSimulator::run clears it).
+thread_local bool g_rhs_ended_call = false;
 
 static void log_all_but_a_batch_spent(int line, const char *func, const char *file, const char *msg,
                                       SUNErrCode err_code, void *err_user_data, SUNContext sunctx) {
-    if (g_budget_spent) {
+    if (g_rhs_ended_call) {
         return;
     }
     if (err_code == CV_TOO_MUCH_WORK && func != nullptr && std::strcmp(func, "CVode") == 0) {
@@ -122,14 +122,13 @@ static void log_all_but_a_batch_spent(int line, const char *func, const char *fi
 static void log_all_but_an_order_probe(int line, const char *func, const char *file,
                                        const char *msg, SUNErrCode err_code, void *err_user_data,
                                        SUNContext sunctx) {
-    if (g_budget_spent || (g_probing_step_order && err_code == CV_BAD_K)) {
+    if (g_rhs_ended_call || (g_probing_step_order && err_code == CV_BAD_K)) {
         return;
     }
     SUNLogErrHandlerFn(line, func, file, msg, err_code, err_user_data, sunctx);
 }
 
 static void select_spent_batch_handler(SUNContext ctx) {
-    g_budget_spent = false;
     const char *keep = std::getenv("BNGSIM_LOG_SPENT_BATCHES");
     const bool log_them = keep != nullptr && *keep != '\0' && std::strcmp(keep, "0") != 0;
     if (ctx != nullptr && SUNContext_ClearErrHandlers(ctx) == SUN_SUCCESS) {
@@ -596,7 +595,7 @@ constexpr char kCarriedToOverflow = 3;
 struct CvodeUserData {
     NetworkModel *model;
     // The run's wall-clock budget, read from the right-hand side once every
-    // kRhsCallsPerBudgetRead calls (issue #1838; see read_budget_in_call), and
+    // kRhsCallsPerBudgetRead calls (issue #1838; see check_inside_call), and
     // the calls since the run began. Inactive, and never read, unless the run
     // has a timeout.
     WallClockBudget budget{0.0};
@@ -2358,22 +2357,55 @@ static void note_rhs_state(void *user_data, N_Vector y) {
 static int held_slide_rhs(sunrealtype t, N_Vector y, N_Vector ydot, void *user_data,
                           int (*body)(sunrealtype, N_Vector, N_Vector, void *));
 
-// The run's wall-clock budget, read from inside a CVode call (issue #1838).
-// The run reads it itself between calls, but one call can take any time at
-// all: over (0, 7e307) one spun inside a single step, out of reach of
-// max_steps, and a run held to steps of 1e-4 took ten million in one call. The
-// right-hand side is called at least once a step and once a Newton iteration,
-// so it sees every such call. It is the hot path, so the clock is read once in
-// 256 calls: a read is ~40 ns, under 0.2 ns a call, and a run past its budget
-// stops within 256 more. The TimeoutError it throws is parked by
-// guard_cvode_callback and raised as SimulationTimeout when CVode returns, and
-// the error line SUNDIALS writes of the failed call is dropped (g_budget_spent).
+// What ends a CVode call from inside it (issue #1838), read by the right-hand
+// side, which CVODE calls at least once a step and once a Newton iteration, so
+// it sees every call. Both throw, which guard_cvode_callback parks and the run
+// raises when CVode returns, and both drop the error line SUNDIALS writes of the
+// call (g_rhs_ended_call).
+//
+// CVODE's clock past the largest double. CVODE is given no largest step, and
+// grows its step up to tenfold a step (ten thousandfold after its first), so a
+// run long enough, or far enough from t = 0, can take a step or reach a time
+// past it. Over (0, 7e307) A -> B reached h = 6.2e307 at t = 6.9e307, short of
+// the end, and its next step and its clock were inf; CVODE's test for a stale
+// Jacobian then read inf / inf, a NaN, never formed a fresh one, and retried
+// the step for ever: 16.7 million right-hand-side calls in 8 s, the step count
+// fixed at 171, where max_steps cannot see it. Over (1e308, 1.7e308) a model
+// that reads the clock took t + h to inf instead, and CVODE interpolated its
+// rows there as NaN. Where it happens turns on the model as much as on the
+// span: A -> B returns over (-7e307, 0), and the same reaction at k = 0, whose
+// steps CVODE grows the fastest, never returned over (-7e307, 0) or (0, 1e306).
+// So no ceiling on the span tells them apart, and the run is ended where it
+// happens: at the first right-hand side asked for after CVODE's own clock is no
+// longer finite. A time CVODE only tries is let be: its first-step routine can
+// try t_0 + inf where it multiplies two times (hlb * hub), and goes on from
+// the step it settles on, as a model at rest does over (0, 1e300).
+//
+// The run's wall-clock budget. The run reads it itself between calls, but one
+// call can take any time at all: the spin above, or ten million steps of 1e-4
+// in one call. It is the hot path, so the clock is read once in 256 calls: a
+// read is ~40 ns, under 0.2 ns a call, and a run past its budget stops within
+// 256 more.
 constexpr unsigned int kRhsCallsPerBudgetRead = 256;
-static inline void read_budget_in_call(void *user_data) {
+static void refuse_a_clock_past_the_doubles(CvodeUserData *data) {
+    sunrealtype tn = 0.0;
+    if (data->clamp_cvode_mem == nullptr ||
+        CVodeGetCurrentTime(data->clamp_cvode_mem, &tn) != CV_SUCCESS || std::isfinite(tn))
+        return;
+    g_rhs_ended_call = true;
+    throw TimeSpanOutOfReach(
+        "CVODE cannot step through this ODE run: its step grew past the largest double "
+        "(about 1.8e308) before the run reached its end, and its clock with it, so the run "
+        "would never return, or return NaN rows. The run is too long, or too far from t = 0. "
+        "Measure time in a larger unit, so that the run's times are smaller.");
+}
+static inline void check_inside_call(void *user_data, sunrealtype t) {
     auto *data = static_cast<CvodeUserData *>(user_data);
+    if (!(std::fabs(t) <= std::numeric_limits<sunrealtype>::max()))
+        refuse_a_clock_past_the_doubles(data);
     if (data->budget.active() && ++data->rhs_calls % kRhsCallsPerBudgetRead == 0 &&
         data->budget.elapsed() > data->budget.limit_seconds()) {
-        g_budget_spent = true; // what CVODE says of the call this ends is dropped
+        g_rhs_ended_call = true;
         data->budget.check();
     }
 }
@@ -2381,7 +2413,7 @@ static inline void read_budget_in_call(void *user_data) {
 static int cvode_rhs(sunrealtype t, N_Vector y, N_Vector ydot, void *user_data) {
     note_rhs_state(user_data, y);
     const int rc = guard_cvode_callback(user_data, [&] {
-        read_budget_in_call(user_data);
+        check_inside_call(user_data, t);
         return held_slide_rhs(t, y, ydot, user_data, cvode_rhs_body);
     });
     restore_params_after_probe(static_cast<CvodeUserData *>(user_data));
@@ -2483,7 +2515,7 @@ static int cvode_codegen_rhs_body(sunrealtype t, N_Vector y, N_Vector ydot, void
 static int cvode_codegen_rhs(sunrealtype t, N_Vector y, N_Vector ydot, void *user_data) {
     note_rhs_state(user_data, y);
     const int rc = guard_cvode_callback(user_data, [&] {
-        read_budget_in_call(user_data);
+        check_inside_call(user_data, t);
         return held_slide_rhs(t, y, ydot, user_data, cvode_codegen_rhs_body);
     });
     restore_params_after_probe(static_cast<CvodeUserData *>(user_data));
@@ -3018,7 +3050,9 @@ static bool dq_side_point(CvodeUserData *data, sunrealtype t, N_Vector y, N_Vect
     if (!had_witness) {
         data->nonfinite_witness = NonFiniteWitness{};
     }
-    if (!had_error) {
+    // Not a call the right-hand side ended (issue #1838): its error stays
+    // parked, and the Jacobian fails on it (cvode_dense_dq_jac_body).
+    if (!had_error && !g_rhs_ended_call) {
         data->callback_error = nullptr;
     }
     if (rc != 0) {
@@ -3051,6 +3085,10 @@ static int cvode_dense_dq_jac_body(sunrealtype t, N_Vector y, N_Vector fy, SUNMa
         std::fprintf(stderr, "[jac] dense DQ t=%.17g: %d entries step across a jump\n",
                      static_cast<double>(t), mended);
     }
+    // A side point whose right-hand side ended the call (issue #1838) ends it
+    // here too: CVode returns, and the run raises what was parked.
+    if (g_rhs_ended_call)
+        return -1;
     return rc;
 }
 
@@ -8120,6 +8158,9 @@ bool CvodeSimulator::Impl::stop_would_lose(void *cvode_mem, double t, N_Vector y
         run_rhs_fn(static_cast<sunrealtype>(t), y, static_cast<N_Vector>(after), user_data) == 0;
     if (!had_refusal)
         data->below_zero_refusal.clear();
+    // A read that spent the run's budget ends the run here (issue #1838).
+    if (g_rhs_ended_call)
+        rethrow_pending_callback_error(*data);
     if (!read) {
         return false;
     }
@@ -17538,33 +17579,14 @@ std::tuple<long, int, double> CvodeSimulator::last_run_roundoff_steps() const {
             impl_->last_run_roundoff_spacing};
 }
 
-// How far from t = 0 an ODE run may reach, and how long it may be, both
-// exclusive (issue #1838): 2^512, about 1.34e154, the square root of the
-// largest double.
-//
-// CVODE is given no largest step unless max_step asks for one, and grows its
-// step up to tenfold a step, so a run near the largest double overflows. Over
-// (0, 7e307) the step reached 6.2e307 at t = 6.9e307, short of the end, and the
-// next was inf. CVODE's test for a stale Jacobian then reads gamma / gamma_prev
-// as inf / inf, a NaN, so its Newton iteration never forms a fresh one and
-// retries the one step for ever: 16.7 million right-hand-side calls in 8 s, the
-// step count fixed at 171, out of reach of max_steps, which counts steps. Over
-// (1e308, 1.7e308) the step stayed finite and t + h was inf: CVODE took its
-// clock past the end at inf, and interpolated the rows there as NaN. Both need
-// a span within about a factor of ten of the largest double. Runs of four
-// models from 0 to 2^k, from 2^k to 2^(k+1) and from -2^k to 2^k, for k from 20
-// to 1022, each returned or failed with a CVODE error; at 2^1023 some hung and
-// some returned NaN rows.
-//
-// 2^512 stops far short of that, and below it even the products of two times
-// that CVODE's step selection forms stay finite (hlb * hub, bounding the first
-// step; (t_n - t_out) * h, testing for the end). No model has a time scale
-// near it: 1.34e154 s is 3e136 times the age of the universe.
-static constexpr double kOdeTimeCeiling = 0x1p512;
-
-// Refuse an ODE run that reaches kOdeTimeCeiling from t = 0, or is as long, as
-// one CVODE cannot step through. Throws TimeSpanOutOfReach (UsageError in
-// Python).
+// Refuse an ODE run whose length is past the largest double (issue #1838):
+// t_end - t_start, or the spread of its sample times, is inf. Its output grid
+// is not finite (the first row's time is t_start + 0 * inf, a NaN), and CVODE's
+// first step is inf: over (-1e308, 1e308) every model tried failed "at t=inf".
+// Nothing shorter is refused here. A run that is long, or far from t = 0, can
+// still overflow CVODE's step, but whether it does turns on the model, and
+// check_inside_call ends the run where it does. Throws TimeSpanOutOfReach
+// (UsageError in Python).
 static void require_steppable_ode_span(const TimeSpec &times) {
     double lo = std::min(times.t_start, times.t_end);
     double hi = std::max(times.t_start, times.t_end);
@@ -17572,25 +17594,14 @@ static void require_steppable_ode_span(const TimeSpec &times) {
         lo = std::min(lo, t);
         hi = std::max(hi, t);
     }
-    const double far = std::max(-lo, hi);
-    if (far < kOdeTimeCeiling && hi - lo < kOdeTimeCeiling)
+    if (std::isfinite(hi - lo))
         return;
-    char text[640];
-    if (far >= kOdeTimeCeiling) {
-        std::snprintf(text, sizeof(text),
-                      "An ODE run cannot reach t = %.17g. Every time in an ODE run must be less "
-                      "than 2^512 (about 1.34e154) from t = 0: farther out, CVODE's step can "
-                      "overflow before the run ends, and the run hangs or returns NaN rows. "
-                      "Measure time in a larger unit, so that the run's times are smaller.",
-                      hi >= kOdeTimeCeiling ? hi : lo);
-    } else {
-        std::snprintf(text, sizeof(text),
-                      "An ODE run from t = %.17g to %.17g is too long. An ODE run must be shorter "
-                      "than 2^512 (about 1.34e154): over a longer one, CVODE's step can overflow "
-                      "before the run ends, and the run hangs or returns NaN rows. Measure time "
-                      "in a larger unit, so that the run is shorter.",
-                      lo, hi);
-    }
+    char text[512];
+    std::snprintf(text, sizeof(text),
+                  "An ODE run from t = %.17g to %.17g is too long: its length is past the largest "
+                  "double (about 1.8e308), so its output times are not finite and CVODE cannot "
+                  "step through it. Measure time in a larger unit, so that the run is shorter.",
+                  lo, hi);
     throw TimeSpanOutOfReach(text);
 }
 
@@ -17676,9 +17687,12 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         return impl_->run_algebraic_only(times);
     }
 
-    // A span CVODE cannot step through (issue #1838), refused before the far
-    // run below is moved: moved, (1e308, 1.7e308) is (0, 7e307), which hung.
+    // A run whose length is past the largest double (issue #1838), refused
+    // before the far run below moves it. And a run starts with SUNDIALS' error
+    // lines on, whatever ended the last one on this thread: nothing above calls
+    // SUNDIALS.
     require_steppable_ode_span(times);
+    g_rhs_ended_call = false;
 
     // A run far from t = 0 of a model that reads no clock is integrated on its
     // own clock, the time elapsed since ode_elapsed_clock_origin (issue #1681).

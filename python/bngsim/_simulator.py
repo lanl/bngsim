@@ -5926,6 +5926,12 @@ class Simulator:
         sim = self._sim if sim is None else sim
         try:
             out = self._ode_attempts(times, opts, restore, sim, core)
+        except _ONCE_PLAIN:
+            # A refusal of the run's arguments, its span among them (issue
+            # #1838): there are no rows for such steps to be wrong in, and over
+            # (1e308, 1.7e308) the steps where t + h == t were the far span's
+            # own doing, which the refusal says.
+            raise
         except BaseException:
             _note_roundoff_steps_raised(sim, times)
             raise
@@ -6228,8 +6234,9 @@ class Simulator:
         ValueError
             If t_span, n_points or sample_times are invalid (a time that is
             not finite, ``t_end <= t_start``, ``n_points < 2``, fewer than two
-            sample times; for an ODE run, a time 2^512 or more from 0, or a
-            run that long, which CVODE cannot step through), if ``start`` is
+            sample times; for an ODE run, one whose length is past the
+            largest double, or whose step CVODE takes past it before the run
+            ends, a run it cannot step through), if ``start`` is
             not ``None``, ``"live"`` or ``"initial"``, or ``"initial"`` with
             ``carry_sensitivities=True``, or if output sensitivities
             were requested (``sensitivity_params`` / ``sensitivity_ic``,
@@ -9374,6 +9381,10 @@ class Simulator:
             # (issue #1857): it rode on the error, and goes on the recovered
             # columns or on the error raised here.
             _notices.carry(exc)
+            if isinstance(exc, _ONCE_PLAIN):
+                # A refusal of the call's arguments, its span among them (issue
+                # #1838): a column alone is refused too.
+                raise exc
             if isinstance(exc, _ConditionReadOtherwise):
                 # No column runs alone either: the code is not the code for the
                 # model as it is, and the pass ahead of the chunks did not say.
@@ -9535,6 +9546,9 @@ class Simulator:
                         )
                     )
                 except Exception as solo:  # noqa: BLE001 — classified, then reported below
+                    if isinstance(solo, _ONCE_PLAIN):
+                        # A refusal of the call's arguments (issue #1838).
+                        raise solo from None
                     if isinstance(solo, SensitivityUnsupportedError) and not isinstance(
                         solo, SensitivityRefusedForParametersError
                     ):
@@ -9685,6 +9699,11 @@ class Simulator:
 
         try:
             core_result = sim.run(ts, opts)
+        except _ONCE_PLAIN:
+            # A refusal of the chunk's arguments, its span among them (issue
+            # #1838), as run() passes it: wrapped below, it was a "Sensitivity
+            # chunk failed" whose columns were retried and blamed on tolerance.
+            raise
         except SensitivityUnsupportedError:
             # The solver's refusal of the model mid-run (issue #1279), typed as
             # one raised while the chunk sets up: no column runs alone either.
