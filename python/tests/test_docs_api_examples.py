@@ -547,8 +547,10 @@ def test_each_page_runs_top_to_bottom(
     def stated(*args: object, __value__: str, __line__: int) -> None:
         shown = " ".join(str(arg) for arg in args)
         if shown != __value__:
-            at = block.offset + __line__
-            wrong.append(f"line {at}: {lines[at - 1].strip()}\n    prints {shown!r}")
+            at = block.offset + 1 + __line__  # the code starts on its fence's line
+            wrong.append(
+                f"line {at}: {lines[at - 1].strip()}\n    prints {shown!r}, not {__value__!r}"
+            )
 
     namespace: dict[str, object] = {"__name__": "__docs_page__", "__stated__": stated}
     ran = 0
