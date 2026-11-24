@@ -302,9 +302,10 @@ end model
 )
 def test_a_network_free_run_before_generate_network_keeps_its_options(nf_run):
     """A network-free run generates no network (``simulate`` hands ``nf`` to
-    ``simulate_nf``), so the ``generate_network`` after it builds the one the ODE run
-    simulates, and its ``max_stoich`` is what makes this rule set finite. Without
-    it, the load ran to its timeout."""
+    ``simulate_nf``), so the ``generate_network`` after it is where BNG2.pl generates
+    one, and its ``max_stoich`` is what makes this rule set finite. Without it, the
+    load ran to its timeout. (BNG2.pl seeds that call with the species the NF run
+    ends with too; the load starts from the declared ones, as the first run does.)"""
     text = (
         _RL_CHAINS
         + nf_run

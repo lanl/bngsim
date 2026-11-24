@@ -227,7 +227,10 @@ defaults, and so does `from_bngl`. `writeMDL()` and
 `visualize({type=>"reaction_network"})` generate it the same way. A
 network-free run (`simulate_nf`, or `method=>"nf"` without a `poplevel`)
 generates no network, so the `generate_network` after it still sets the
-limits. Only one `generate_network` runs. BNG2.pl continues the
+limits. BNG2.pl also adds the species that run ends with to the model before
+that call, unless the run sets `get_final_state=>0`. The network you get is
+generated from the declared seed species, as the first run starts from them.
+Only one `generate_network` runs. BNG2.pl continues the
 network at a later one that has `overwrite=>1`, and the network you get
 doesn't include what that adds.
 

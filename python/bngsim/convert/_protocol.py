@@ -1039,7 +1039,9 @@ def _network_generation_call(text: str) -> tuple[str, str] | None:
     which adds nothing to a network that is complete, so its ``max_iter`` does not
     bound it. A network-free run (``simulate_nf``, ``method=>"nf"``) generates
     nothing, and neither does ``generate_hybrid_model``, which writes a separate
-    model, so the search reads past both. It reads past ``quit`` too, as
+    model, so the search reads past both. (After a network-free run BNG2.pl also
+    seeds the call with the species the run ends with, by default; those come from
+    running NFsim, which the call's options cannot carry.) It reads past ``quit`` too, as
     :func:`bngsim._bngl_loader.generation_source` does, which keeps the actions
     after one. Only one call is returned: BNG2.pl continues the network at a later
     ``generate_network`` with ``overwrite=>1``, under that call's limits, and what

@@ -275,8 +275,8 @@ def test_an_action_that_generates_the_network_leaves_network_gen_none(action) ->
     ids=["method-nf", "simulate_nf"],
 )
 def test_a_network_free_run_before_generate_network_keeps_its_cap(nf_run) -> None:
-    """A network-free run generates no network, so the call after it builds the one
-    the ODE run starts from."""
+    """A network-free run generates no network, so the call after it is where
+    BNG2.pl generates one."""
     text = (
         "begin model\nend model\n"
         f"{nf_run}\n"
