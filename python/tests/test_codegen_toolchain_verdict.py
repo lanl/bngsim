@@ -987,13 +987,23 @@ def test_a_compiler_that_refuses_arch_is_told_so(stderr, monkeypatch):
     assert "Set CC to one that does" in message
 
 
-def test_a_failure_that_does_not_name_arch_says_nothing_of_it(monkeypatch):
+@pytest.mark.parametrize(
+    "compiler, stderr",
+    [
+        (["cc"], "ld: symbol(s) not found for architecture arm64"),
+        (["cc", "-arch", "ppc"], "clang: error: invalid arch name '-arch ppc'"),
+    ],
+    ids=["link-error", "cc-names-its-own-arch"],
+)
+def test_a_failure_not_about_bngsims_arch_says_nothing_of_it(compiler, stderr, monkeypatch):
+    """An ordinary link error, or an error about an -arch CC carries itself: the
+    line about bngsim's -arch would send the user to the compiler they have."""
     monkeypatch.setattr(cg.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(cg, "_CODEGEN_MACHINE", "arm64")
     monkeypatch.setattr(tc, "_is_macos", lambda: False)
     monkeypatch.setattr(tc, "_linker", lambda compiler: "")
-    message = tc._broken_message(["cc"], "ld: symbol(s) not found for architecture arm64")
-    assert "passes -arch" not in message
+    message = tc._broken_message(compiler, stderr)
+    assert stderr in message and "passes -arch" not in message
 
 
 def test_a_foreign_probe_tries_no_other_sdk(monkeypatch):

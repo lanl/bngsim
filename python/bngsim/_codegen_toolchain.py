@@ -640,9 +640,10 @@ def _broken_message(compiler: list[str], stderr: str) -> str:
     exe = shutil.which(compiler[0]) or compiler[0]
     held = getattr(stderr, "held", None)
     # A compiler that will not take the -arch every macOS build passes (issue
-    # #1759): no other SDK would change that.
+    # #1759): no other SDK would change that. Not when CC names an -arch of its
+    # own, which the error may be about instead.
     arch = cg._arch_flags()
-    refuses_arch = held is None and bool(arch) and "-arch" in stderr
+    refuses_arch = held is None and bool(arch) and "-arch" in stderr and "-arch" not in compiler
     if held is None:
         head = (
             "The C toolchain cannot build a codegen library: a trivial C file fails to "
