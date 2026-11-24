@@ -22,22 +22,26 @@ using namespace NFcore;
  * once the fast one was 0, and beside one at 1e10 it came back as 1.907e-6
  * (bngsim GH #1666).
  *
- * So Atot is summed afresh once it falls below 2^-10 of that peak, or below 0.
- * Above that, n updates cost it at most n * 2^-42 of its own value, and more
- * nearly sqrt(n) * 2^-42, since roundings fall either way. That stays below the
- * 2^-32 of the total to which a pick is drawn (NfsimRNG::random) for 1024
- * updates at the worst and about a million as a rule. A sum costs the one pass
- * over the reactions that every pick makes, and resets the peak, so it comes at
- * most once per fall by a factor of 1024, and never in a run whose total does
- * not fall that far.
+ * So Atot is summed afresh once it has fallen below 2^-10 of that peak, or
+ * below 0. Above that, n updates cost it at most n * 2^-42 of its own value,
+ * and more nearly sqrt(n) * 2^-42, since roundings fall either way. That stays
+ * below the 2^-32 of the total to which a pick is drawn (NfsimRNG::random) for
+ * 1024 updates at the worst and about a million as a rule.
  *
- * The sum reads each reaction's get_a(), not update_a(): an update can come in
- * the middle of a firing, where a rate that reads an observable is held and
- * must not be computed (RuleWorld/nfsim#115). A held reaction's get_a() is the
- * propensity the sum has for it, and the update that ends the hold takes it
- * off again.
+ * update() only keeps the peak. The fall is tested where the total is read:
+ * before a waiting time is drawn from it (getAtotForDraw()) and before a pick.
+ * Within a firing the total can dip and come back, as when a molecule that
+ * carries nearly all of it leaves one reaction before it joins the next. A sum
+ * is a pass over every reaction, where a pick stops at the one it draws, so a
+ * test in update() would cost such a model a pass per firing. Tested where the
+ * total is read, a sum comes at most once per fall by a factor of 1024, and
+ * never in a run whose total does not fall that far.
  *
- * A total that is not a number fails both tests and is kept: it is the model's
+ * The sum reads each reaction's get_a(), the propensities the running sum is
+ * made of, rather than computing every rate again as refactorPropensities()
+ * does.
+ *
+ * A total that is not a number fails the test and is kept: it is the model's
  * own, and the host reports it. */
 static const double ATOT_RESUM_FRACTION = 1.0 / 1024.0;   // 2^-10
 
@@ -92,6 +96,19 @@ void DirectSelector::markSummed()
 }
 
 
+void DirectSelector::resumIfFallen()
+{
+	if(Atot < AtotResumBelow) resumPropensities();
+}
+
+
+double DirectSelector::getAtotForDraw()
+{
+	resumIfFallen();
+	return Atot;
+}
+
+
 double DirectSelector::update(ReactionClass *r,double oldA, double newA)
 {
 	Atot-=oldA;
@@ -99,8 +116,6 @@ double DirectSelector::update(ReactionClass *r,double oldA, double newA)
 	if(Atot > AtotPeak) {
 		AtotPeak = Atot;
 		AtotResumBelow = AtotPeak * ATOT_RESUM_FRACTION;
-	} else if(Atot < AtotResumBelow) {
-		resumPropensities();
 	}
 	return Atot;
 }
@@ -109,6 +124,7 @@ double DirectSelector::update(ReactionClass *r,double oldA, double newA)
 
 double DirectSelector::getNextReactionClass(ReactionClass *&rc)
 {
+	resumIfFallen();
 	// Nothing fires at a total of 0, or one that is not a number. random(0) is
 	// 0, which the first reaction would pass below with a propensity of 0; a
 	// pick that passed every reaction sums them afresh and comes back here.

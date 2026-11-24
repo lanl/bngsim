@@ -960,10 +960,10 @@ double System::getNextRxn()
 		// explicit compatibility mode for same-seed parity with that CLI.
 		x = selector->getNextReactionClass(nextReaction);
 	}
-	// A draw past the last reaction has the selector sum the propensities
-	// afresh and pick from that sum, which a_tot then follows, so the next
-	// waiting time is drawn from it (bngsim GH #1666). With nothing to fire
-	// there the selector picks no reaction.
+	// The selector sums the propensities afresh at a pick from a total that
+	// has fallen far, or at a draw past the last reaction, and picks from that
+	// sum, which a_tot then follows, so the next waiting time is drawn from it
+	// (bngsim GH #1666). With nothing to fire there it picks no reaction.
 	a_tot = selector->getAtot();
 	return x;
 
@@ -1026,6 +1026,8 @@ double System::sim(double duration, long int sampleTimes, bool verbose)
 		//   dt = -ln(rand) / a_tot;
 		//Choose a random number on the OPEN interval (0,1) so that we never
 		//have a dt=0 or a dt=infinity
+		// Summed afresh first if it has fallen far (bngsim GH #1666).
+		a_tot = selector->getAtotForDraw();
 		if(a_tot>0) delta_t = -log(rng_.random_open()) / a_tot;
 		else { delta_t=0; current_time=end_time; }
 		if(DEBUG) cout<<"   Determine dt : " << delta_t << endl;
@@ -1511,12 +1513,13 @@ double System::stepTo(double stoppingTime)
 		if(!pendingStepEventValid) {
 			// Preserve the pending waiting-time draw across output boundaries so
 			// repeated stepTo() calls consume the same RNG stream as sim().
-			// Any total above 0 has a reaction to fire: the selector sums the
-			// propensities afresh before rounding can leave a_tot far from
-			// their sum (bngsim GH #1666), and picks nothing where that sum
-			// is 0. A threshold of 1e-9 here, a rate in the model's own time
-			// unit, fired nothing in a model whose total was that small
-			// (bngsim GH #1672).
+			// Any total above 0 has a reaction to fire: read for the draw, the
+			// selector sums the propensities afresh where rounding could have
+			// left a_tot far from their sum (bngsim GH #1666), and it picks
+			// nothing where that sum is 0. A threshold of 1e-9 here, a rate in
+			// the model's own time unit, fired nothing in a model whose total
+			// was that small (bngsim GH #1672).
+			a_tot = selector->getAtotForDraw();
 			if(a_tot > 0.0) {
 				pendingStepEventTime =
 					current_time + (-log(rng_.random_open()) / a_tot);

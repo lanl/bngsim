@@ -182,12 +182,13 @@ Current carry topics:
   rounded to its spacing and not given back when the large term is taken off:
   a slow channel at 1e-6 beside a fast one at 1e11 was lost once the fast one
   was 0, and beside one at 1e10 fired at 1.9 times its rate (GH #1666).
-  `DirectSelector` sums it afresh from each reaction's `get_a()` once it falls
-  below 2^-10 of the largest value it has held since it was last summed, or
-  below 0, and `System::a_tot` follows the selector after each pick. It reads
-  `get_a()`, not `update_a()`, because an update can come mid-firing, where the
-  carry above holds a rate that reads an observable. A NaN is kept, for the
-  host's check to refuse. `stepTo`, `sim` and `singleStep` fired nothing at a
+  `DirectSelector` sums it afresh from each reaction's `get_a()` once it has
+  fallen below 2^-10 of the largest value it has held since it was last summed,
+  or below 0, and `System::a_tot` follows the selector after each pick. The
+  fall is tested where the total is read, before a waiting time is drawn
+  (`ReactionSelector::getAtotForDraw()`) and before a pick, not in `update()`,
+  so a total that dips and comes back within a firing costs no pass over the
+  reactions. A NaN is kept, for the host's check to refuse. `stepTo`, `sim` and `singleStep` fired nothing at a
   total of 1e-9 or less (`ATOT_TOLERANCE`), a rate in the model's own time
   unit (GH #1672); they test `a_tot > 0` now, and the selector picks nothing
   from a total that is not above 0. Upstream master still keeps a running

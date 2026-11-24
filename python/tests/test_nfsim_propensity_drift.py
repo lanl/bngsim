@@ -136,8 +136,9 @@ def test_a_run_is_the_same_in_a_longer_time_unit() -> None:
 @pytest.mark.parametrize("seed", [1, 2, 3])
 def test_a_nan_from_the_firing_that_empties_a_fast_channel_is_refused(seed: int) -> None:
     # D is born at ks*B/B, NaN from the firing that takes the last B. That
-    # firing also takes the fast channel to 0, which has the total summed
-    # afresh: the NaN stays in it, and reaches the check that refuses it.
+    # firing also takes the fast channel to 0, a fall that has the total summed
+    # afresh where it is next read for a draw. The NaN is kept there, and
+    # reaches the check that refuses it.
     with NfsimSession(str(NAN_AT_EMPTYING)) as nf:
         nf.initialize(seed=seed)
         with pytest.raises(bngsim.SimulationError, match="total propensity is nan") as err:
