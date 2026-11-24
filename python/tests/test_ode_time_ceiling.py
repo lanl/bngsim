@@ -17,7 +17,9 @@ CVode calls. Where the clock passed the end at inf instead, CVODE interpolated
 the rows there, and they were NaN.
 
 An ODE run is refused, before it starts, where a time in it is 2^512 or more
-from 0, or the run is 2^512 or longer.
+from 0, or the run is 2^512 or longer. And the budget is read from the
+right-hand side, so a run that spends it inside one CVode call stops there as
+``SimulationTimeout``.
 """
 
 from __future__ import annotations
@@ -140,3 +142,35 @@ def test_a_span_just_inside_the_ceiling_still_runs(tmp_path, span):
     t = np.asarray(r.time)
     assert t[0] == span[0] and t[-1] == span[1]
     np.testing.assert_allclose(np.asarray(r.species)[:, 0], t - span[0], rtol=1e-6, atol=0.0)
+
+
+# One CVode call: two rows, a step of at most 1e-4, and max_steps out of the
+# way, so the run is ten million steps that no budget read between calls sees.
+ONE_CALL = {"n_points": 2, "max_step": 1e-4, "max_steps": 2**31 - 1}
+DECAY = "species A, B; A = 1; B = 0; k = 1\nJ1: A -> B; k*A\n"
+
+
+@pytest.mark.parametrize(
+    "kw",
+    [
+        pytest.param({"codegen": False}, id="interpreted"),
+        pytest.param({"codegen": True}, id="compiled"),
+        # Forward sensitivities take the run down the cold path.
+        pytest.param({"sensitivity_params": ["k"]}, id="with sensitivities"),
+    ],
+)
+def test_a_timeout_stops_a_run_inside_one_cvode_call(kw):
+    # On main each of these ran to its end, 10 to 12 s, past a budget of
+    # 0.5 s, and returned with no error.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        sim = bngsim.Simulator(bngsim.Model.from_antimony_string(DECAY), "ode", **kw)
+    with pytest.raises(bngsim.SimulationTimeout) as info:
+        sim.run((0.0, 1e3), timeout=0.5, **ONE_CALL)
+    assert info.value.timeout == 0.5
+    assert info.value.elapsed > 0.5
+    # The next run on the same Simulator is the run it would have been.
+    r = sim.run((0.0, 5.0), 6, start="initial")
+    np.testing.assert_allclose(
+        np.asarray(r.species)[:, 0], np.exp(-np.arange(6.0)), rtol=1e-5, atol=1e-7
+    )

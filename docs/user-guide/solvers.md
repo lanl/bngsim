@@ -74,6 +74,10 @@ Things to know:
   `bngsim.ExactAtol(value)` to hold every species to exactly that number.
 - `max_step=` bounds the size of a single step. Use it for a narrow pulse the
   solver could step over.
+- `timeout=` bounds a run's wall-clock time, in seconds, and raises
+  `bngsim.SimulationTimeout` past it. An ODE run reads it at each output point
+  and, inside the solver, every 256 right-hand-side evaluations, so a run that
+  spends it between two output points stops too.
 
 ### Solver statistics
 

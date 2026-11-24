@@ -584,6 +584,12 @@ constexpr char kCarriedToOverflow = 3;
 
 struct CvodeUserData {
     NetworkModel *model;
+    // The run's wall-clock budget, read from the right-hand side once every
+    // kRhsCallsPerBudgetRead calls (issue #1838; see read_budget_in_call), and
+    // the calls since the run began. Inactive, and never read, unless the run
+    // has a timeout.
+    WallClockBudget budget{0.0};
+    unsigned int rhs_calls = 0;
     // The largest |x| of each species at any state the right-hand side is
     // asked at, where a run keeps it (issue #1025): an error made where a
     // species was large is carried to where it is small, between outputs as
@@ -2341,10 +2347,28 @@ static void note_rhs_state(void *user_data, N_Vector y) {
 static int held_slide_rhs(sunrealtype t, N_Vector y, N_Vector ydot, void *user_data,
                           int (*body)(sunrealtype, N_Vector, N_Vector, void *));
 
+// The run's wall-clock budget, read from inside a CVode call (issue #1838).
+// The run reads it itself between calls, but one call can take any time at
+// all: over (0, 7e307) one spun inside a single step, out of reach of
+// max_steps, and a run held to steps of 1e-4 took ten million in one call. The
+// right-hand side is called at least once a step and once a Newton iteration,
+// so it sees every such call. It is the hot path, so the clock is read once in
+// 256 calls: a read is ~40 ns, under 0.2 ns a call, and a run past its budget
+// stops within 256 more. The TimeoutError it throws is parked by
+// guard_cvode_callback and raised as SimulationTimeout when CVode returns.
+constexpr unsigned int kRhsCallsPerBudgetRead = 256;
+static inline void read_budget_in_call(void *user_data) {
+    auto *data = static_cast<CvodeUserData *>(user_data);
+    if (data->budget.active() && ++data->rhs_calls % kRhsCallsPerBudgetRead == 0)
+        data->budget.check();
+}
+
 static int cvode_rhs(sunrealtype t, N_Vector y, N_Vector ydot, void *user_data) {
     note_rhs_state(user_data, y);
-    const int rc = guard_cvode_callback(
-        user_data, [&] { return held_slide_rhs(t, y, ydot, user_data, cvode_rhs_body); });
+    const int rc = guard_cvode_callback(user_data, [&] {
+        read_budget_in_call(user_data);
+        return held_slide_rhs(t, y, ydot, user_data, cvode_rhs_body);
+    });
     restore_params_after_probe(static_cast<CvodeUserData *>(user_data));
     return rc;
 }
@@ -2443,8 +2467,10 @@ static int cvode_codegen_rhs_body(sunrealtype t, N_Vector y, N_Vector ydot, void
 
 static int cvode_codegen_rhs(sunrealtype t, N_Vector y, N_Vector ydot, void *user_data) {
     note_rhs_state(user_data, y);
-    const int rc = guard_cvode_callback(
-        user_data, [&] { return held_slide_rhs(t, y, ydot, user_data, cvode_codegen_rhs_body); });
+    const int rc = guard_cvode_callback(user_data, [&] {
+        read_budget_in_call(user_data);
+        return held_slide_rhs(t, y, ydot, user_data, cvode_codegen_rhs_body);
+    });
     restore_params_after_probe(static_cast<CvodeUserData *>(user_data));
     return rc;
 }
@@ -5940,6 +5966,10 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
     void *cvode_mem = w.cvode_mem;
     double *y_data = w.y.data();
     WallClockBudget budget(opts.timeout_seconds);
+    // Read inside each CVode call too (issue #1838). Every run sets its own,
+    // so a reused cache reads no earlier run's.
+    w.user_data.budget = budget;
+    w.user_data.rhs_calls = 0;
 
     std::vector<double> t_out = times.output_times();
     const int n_out = static_cast<int>(t_out.size());
@@ -17897,6 +17927,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     std::vector<double> codegen_param_buf; // RAII: replaces new[]/delete[]
     impl_->create_cvode_core(times, opts, ns, rtol, atol, atol_v, max_steps, ctx, y, cvode_mem,
                              user_data, codegen_param_buf);
+    user_data.budget = budget; // read inside each CVode call too (issue #1838)
     double *y_data = y.data();
     // The state the run starts from, which a tighter run confirming an order
     // starts from too (issue #1025).
