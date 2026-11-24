@@ -20,12 +20,21 @@ each cost a corpus: on an L2 document it reports its annotation-based ``layout``
 from __future__ import annotations
 
 import logging
+import os
+import sys
+import threading
 
 import bngsim
+import libsbml
 import numpy as np
 import pytest
 from bngsim._exceptions import ModelError
-from bngsim._sbml_loader import _ALLOW_UNSUPPORTED_ENV
+from bngsim._sbml_loader import (
+    _ALLOW_UNSUPPORTED_ENV,
+    _check_submodel_required_packages,
+    _comp_submodel_documents,
+    _flatten_comp,
+)
 
 _CORE_L3V1 = "http://www.sbml.org/sbml/level3/version1/core"
 _CORE_L3V2 = "http://www.sbml.org/sbml/level3/version2/core"
@@ -355,6 +364,20 @@ def _submodel_of(source: str) -> str:
     return _comp(external=[("ext", source, "m")], submodels=[("sub", "ext")])
 
 
+def _found_by_the_last_resort(root, k: float, prefix=None, uri=None):
+    """``top.xml``, whose ``models/mid.xml`` names an ``ext.xml`` that exists
+    only beside ``top.xml``: the flattener finds it in the loaded file's
+    directory, its last resort. The model's rate is *k*, parameter
+    ``sub__sub__k``."""
+    (root / "models").mkdir(parents=True)
+    (root / "ext.xml").write_text(_leaf(k, prefix, uri))
+    (root / "models" / "mid.xml").write_text(_submodel_of("ext.xml"))
+    (root / "top.xml").write_text(
+        _comp(external=[("mid", "models/mid.xml", "top")], submodels=[("sub", "mid")])
+    )
+    return root / "top.xml"
+
+
 def test_a_required_package_in_a_submodel_s_file_is_refused(tmp_path) -> None:
     """The issue's case. ``ext.xml`` declaring ``multi`` is refused on its own,
     and ``top.xml``, whose one submodel is ``ext.xml``'s model, loaded that
@@ -411,20 +434,15 @@ def test_a_source_found_only_beside_the_loaded_file_is_checked(tmp_path, monkeyp
     """The flattener's last resort for a source is the loaded file's own
     directory: ``models/mid.xml`` names an ``ext.xml`` that exists only beside
     ``top.xml``, and that is the one it reads."""
-    (tmp_path / "models").mkdir()
     (tmp_path / "elsewhere").mkdir()
     monkeypatch.chdir(tmp_path / "elsewhere")  # nothing to find in the working directory
-    (tmp_path / "ext.xml").write_text(_leaf(0.3, "multi", _MULTI_URI))
-    (tmp_path / "models" / "mid.xml").write_text(_submodel_of("ext.xml"))
-    (tmp_path / "top.xml").write_text(
-        _comp(external=[("mid", "models/mid.xml", "top")], submodels=[("sub", "mid")])
-    )
+    top = _found_by_the_last_resort(tmp_path, 0.3, "multi", _MULTI_URI)
     with pytest.raises(ModelError) as excinfo:
-        bngsim.Model.from_sbml(tmp_path / "top.xml")
+        bngsim.Model.from_sbml(top)
     assert str(tmp_path / "ext.xml") in str(excinfo.value)
 
     monkeypatch.setenv(_ALLOW_UNSUPPORTED_ENV, "1")
-    _assert_decays_at(bngsim.Model.from_sbml(tmp_path / "top.xml"), 0.3)
+    _assert_decays_at(bngsim.Model.from_sbml(top), 0.3)
 
 
 def test_a_chain_of_external_model_definitions_is_followed(tmp_path) -> None:
@@ -536,3 +554,155 @@ def test_the_opt_out_covers_a_submodel_s_file(tmp_path, monkeypatch, caplog) -> 
         "multi" in w and _ALLOW_UNSUPPORTED_ENV in w and str(tmp_path / "ext.xml") in w
         for w in warnings
     ), warnings
+
+
+def _holding(def_id: str, submodel_ref: str) -> str:
+    """A ModelDefinition whose one submodel is *submodel_ref*."""
+    return (
+        f'<comp:modelDefinition id="{def_id}"><comp:listOfSubmodels>'
+        f'<comp:submodel comp:id="inner" comp:modelRef="{submodel_ref}"/>'
+        "</comp:listOfSubmodels></comp:modelDefinition>"
+    )
+
+
+@pytest.mark.parametrize("layout", ["in the loaded file", "in the submodel's file"])
+def test_a_model_definition_whose_submodel_reads_a_file_is_followed(tmp_path, layout) -> None:
+    """The commonest comp layout puts the submodel that reads another file in a
+    ModelDefinition rather than in the main model. In the loaded file, the main
+    model's submodel is ``d``, which holds a submodel of ``ext.xml``. In a
+    submodel's file, ``sub/ext.xml``'s ModelDefinition holds one of
+    ``inner.xml``, which is ``sub/inner.xml`` and not the clean one beside
+    ``top.xml``."""
+    if layout == "in the loaded file":
+        offender = tmp_path / "ext.xml"
+        top = _comp(
+            external=[("ext", "ext.xml", "m")],
+            submodels=[("sub", "d")],
+            definitions=_holding("d", "ext"),
+        )
+    else:
+        (tmp_path / "sub").mkdir()
+        offender = tmp_path / "sub" / "inner.xml"
+        (tmp_path / "inner.xml").write_text(_leaf(0.9))
+        (tmp_path / "sub" / "ext.xml").write_text(
+            _comp(external=[("x", "inner.xml", "m")], definitions=_holding("md", "x"))
+        )
+        top = _comp(external=[("e", "sub/ext.xml", "md")], submodels=[("sub", "e")])
+    offender.write_text(_leaf(0.1, "multi", _MULTI_URI))
+    (tmp_path / "top.xml").write_text(top)
+    with pytest.raises(ModelError) as excinfo:
+        bngsim.Model.from_sbml(tmp_path / "top.xml")
+    assert str(offender) in str(excinfo.value)
+
+
+symlinks_posix = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-specific: creating a symlink needs privileges"
+)
+
+
+@symlinks_posix
+def test_a_file_reached_two_ways_is_walked_from_each(tmp_path) -> None:
+    """A source resolves against the location its file was reached by, not
+    where the file is. ``d1/ext.xml`` is a link to ``d2/ext.xml``, whose
+    submodel reads ``inner.xml``: through ``d1`` that is the clean
+    ``d1/inner.xml``, through ``d2`` the ``multi`` one in ``d2``. ``top.xml``
+    has a submodel through each, so the flattener reads both."""
+    for d in ("d1", "d2"):
+        (tmp_path / d).mkdir()
+    (tmp_path / "d2" / "ext.xml").write_text(
+        _comp(external=[("x", "inner.xml", "m")], submodels=[("sx", "x")])
+    )
+    os.symlink(os.path.join("..", "d2", "ext.xml"), tmp_path / "d1" / "ext.xml")
+    (tmp_path / "d1" / "inner.xml").write_text(_leaf(0.1))
+    (tmp_path / "d2" / "inner.xml").write_text(_leaf(0.2, "multi", _MULTI_URI))
+    (tmp_path / "top.xml").write_text(
+        _comp(
+            external=[("a", "d1/ext.xml", "top"), ("b", "d2/ext.xml", "top")],
+            submodels=[("s1", "a"), ("s2", "b")],
+        )
+    )
+    with pytest.raises(ModelError) as excinfo:
+        bngsim.Model.from_sbml(tmp_path / "top.xml")
+    assert str(tmp_path / "d2" / "inner.xml") in str(excinfo.value)
+
+
+@pytest.mark.parametrize("found", ["beside the file that names it", "by the last resort"])
+def test_the_flattener_builds_from_the_documents_checked(tmp_path, monkeypatch, found) -> None:
+    """The comp plugin keeps each document it reads, and the flattener's own
+    lookups get those same documents back. So the model is made of what was
+    checked: a file rewritten between the check and the flattening, here to
+    declare ``multi``, is not read again."""
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path / "elsewhere")
+    if found == "beside the file that names it":
+        (tmp_path / "ext.xml").write_text(_leaf(0.1))
+        top, k = tmp_path / "top.xml", "sub__k"
+        top.write_text(_submodel_of("ext.xml"))
+    else:
+        top, k = _found_by_the_last_resort(tmp_path, 0.1), "sub__sub__k"
+    doc = libsbml.readSBMLFromFile(str(top))
+    _check_submodel_required_packages(doc, top, str(top.parent))
+    (tmp_path / "ext.xml").write_text(_leaf(0.9, "multi", _MULTI_URI))
+    _flatten_comp(doc, base_path=str(top.parent))
+    assert doc.getModel().getParameter(k).getValue() == 0.1
+
+
+def test_the_check_puts_nothing_in_libsbml_s_resolver_registry(tmp_path, monkeypatch) -> None:
+    """The registry is process-wide. The flattener adds its last resort to it
+    and takes it out inside one call, which holds the GIL; a resolver the check
+    added between two calls would be there for another thread's load to find
+    files through, the other thread's or its own. The registry is sampled at
+    every call the check makes, on a file only the last resort finds."""
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path / "elsewhere")
+    top = _found_by_the_last_resort(tmp_path, 0.1)
+    registry = libsbml.SBMLResolverRegistry.getInstance()
+    before = registry.getNumResolvers()
+    counts = set()
+    doc = libsbml.readSBMLFromFile(str(top))
+    sys.setprofile(lambda *_: counts.add(registry.getNumResolvers()))
+    try:
+        names = [name for _, name, _, _ in _comp_submodel_documents(doc, str(top), str(tmp_path))]
+    finally:
+        sys.setprofile(None)
+    assert names == [str(tmp_path / "models" / "mid.xml"), str(tmp_path / "ext.xml")]
+    assert counts == {before}
+
+
+def test_concurrent_loads_each_read_their_own_files(tmp_path, monkeypatch) -> None:
+    """Two threads, switching as often as the interpreter allows, load two
+    models whose files only the last resort finds: one at k = 0.3 and one whose
+    file declares ``multi``. Each load must read its own directory, so every
+    load of the first is k = 0.3 and every load of the second is refused."""
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path / "elsewhere")
+    paths = {
+        "clean": _found_by_the_last_resort(tmp_path / "clean", 0.3),
+        "multi": _found_by_the_last_resort(tmp_path / "multi", 0.7, "multi", _MULTI_URI),
+    }
+    loads = 150
+    outcomes: dict[str, list] = {name: [] for name in paths}
+    start = threading.Barrier(len(paths))
+
+    def load(name: str) -> None:
+        start.wait()
+        for _ in range(loads):
+            try:
+                outcomes[name].append(bngsim.Model.from_sbml(paths[name]).get_param("sub__sub__k"))
+            except ModelError as e:
+                outcomes[name].append("refused" if "multi" in str(e) else str(e))
+            except Exception as e:  # anything else fails the comparison below
+                outcomes[name].append(repr(e))
+
+    interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        threads = [threading.Thread(target=load, args=(name,)) for name in paths]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    finally:
+        sys.setswitchinterval(interval)
+    assert outcomes["clean"] == [0.3] * loads
+    assert outcomes["multi"] == ["refused"] * loads
