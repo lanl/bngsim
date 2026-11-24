@@ -233,7 +233,8 @@ doesn't include what that adds.
 
 - Actions before that point are applied, as BNG2.pl applies them. A
   `setParameter` or `setConcentration` there changes the network you get. File
-  writes, `setOutputDir` and `quit` are skipped.
+  writes, `setOutputDir`, `quit` and `LinearParameterSensitivity`, which runs
+  simulations, are skipped.
 - Actions from that point on are dropped.
 
 If the dropped actions change a parameter or a concentration before the first

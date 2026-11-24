@@ -164,6 +164,22 @@ def test_a_file_without_generate_network_is_cut_at_its_first_run():
     assert 'setParameter("k",3)' not in out and "simulate" not in out
 
 
+def test_linear_parameter_sensitivity_is_dropped_without_cutting_the_actions():
+    """``LinearParameterSensitivity`` reads a ``.net`` into copies of the model and
+    runs ODE simulations of them (``BNGAction.pm``), writing their output beside it:
+    an experiment, which BNG2.pl ran during the load. It changes nothing in the
+    model it is called on, so the actions after it still reach BNG2.pl."""
+    out = generation_source(
+        "begin model\nbegin parameters\n  k 1\nend parameters\nend model\n"
+        'setParameter("k",2)\n'
+        'LinearParameterSensitivity({net_file=>"m",t_end=>10})\n'
+        'setParameter("k",3)\n'
+        "generate_network({overwrite=>1})\n"
+    )
+    assert "LinearParameterSensitivity" not in out
+    assert 'setParameter("k",2)' in out and 'setParameter("k",3)' in out
+
+
 def test_a_continued_action_is_dropped_whole():
     """A backslash-continued or multi-line action must not leave a fragment behind.
 

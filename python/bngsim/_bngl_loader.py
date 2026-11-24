@@ -142,6 +142,10 @@ _ARTIFACT_VERBS = frozenset(
         "visualize",
         "setoutputdir",
         "quit",
+        # It runs ODE simulations of copies read from a .net and writes their
+        # output beside it (BNGAction.pm): an experiment, but on other models, so
+        # it is dropped without the cut a run makes.
+        "linearparametersensitivity",
     }
 )
 _DROPPED_VERBS = _EXPERIMENT_VERBS | _GENERATE_VERBS | _ARTIFACT_VERBS
