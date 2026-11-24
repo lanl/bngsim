@@ -342,13 +342,7 @@ _compile_counter = itertools.count()
 # failed at dlopen. The source digest already moves; the bump is for an install
 # whose digest is empty, which would go on loading those libraries. Invalidate
 # v43.
-# v45: lanl/bngsim #1814 — an if() that is all of another's false branch, and a
-# Piecewise that is all of another's default, are written as the next link of
-# one ?: chain rather than nested two brackets deeper, so a chain of 128 no
-# longer passes clang's limit of 256. The C is the same but for its brackets,
-# and a v44 library computes what a v45 one does. The source digest already
-# moves; the bump is for an install whose digest is empty.
-_CODEGEN_VERSION = "45"
+_CODEGEN_VERSION = "44"
 
 
 # Modules whose *source* determines the emitted C. ``_codegen`` holds the

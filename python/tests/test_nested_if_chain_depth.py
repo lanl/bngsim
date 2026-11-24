@@ -344,34 +344,49 @@ def test_a_compiled_chain_takes_the_branch_of_every_link(tmp_path, monkeypatch):
 def _sensitivity(model):
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k"])
     result = sim.run(t_span=(0, 5), n_points=6, rtol=1e-8, atol=1e-10)
-    return float(result.species[-1][0]), float(result.sensitivities[-1, 0, 0])
+    return float(result.species[-1][0]), float(result.sensitivities[-1, 0, 0]), sim
 
 
 @needs_cc
 def test_forward_sensitivity_of_a_128_link_chain_is_right(tmp_path, monkeypatch):
     monkeypatch.setattr(cg, "CACHE_DIR", tmp_path / "cg")
-    a5, s5 = _sensitivity(_model(tmp_path, 128))
+    a5, s5, _sim = _sensitivity(_model(tmp_path, 128))
     assert a5 == pytest.approx(A5, rel=1e-7)
     assert s5 == pytest.approx(S5, rel=1e-6)
+
+
+@pytest.fixture
+def clang(monkeypatch, tmp_path):
+    """clang compiling into a cold cache, so the library is clang's and not one
+    gcc left there, and the serial cc build whatever the run sets: the nightly
+    forced-JIT run's BNGSIM_CODEGEN_JIT=mir would take every model to MIR and
+    never call clang."""
+    monkeypatch.setattr(cg, "CACHE_DIR", tmp_path / "cg")
+    for var in (
+        "BNGSIM_CODEGEN_JIT",
+        "BNGSIM_NO_CODEGEN",
+        "BNGSIM_CODEGEN_THRESHOLD",
+        "BNGSIM_CODEGEN_STRICT",
+        "BNGSIM_CODEGEN_JOBS",
+        "BNGSIM_CODEGEN_CHUNK",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("CC", _CLANG)
 
 
 @needs_clang
 @pytest.mark.parametrize("n", [98, 128])
-def test_forward_sensitivity_of_a_long_chain_builds_under_clang(tmp_path, monkeypatch, n):
-    # A cold cache, so the library is clang's and not one gcc left there. At 98
-    # links the analytic sensitivity RHS is compiled with the rate law.
-    monkeypatch.setattr(cg, "CACHE_DIR", tmp_path / "cg")
-    monkeypatch.setenv("CC", _CLANG)
-    a5, s5 = _sensitivity(_model(tmp_path, n))
+def test_forward_sensitivity_of_a_long_chain_builds_under_clang(tmp_path, clang, n):
+    # At 98 links the analytic sensitivity RHS is compiled with the rate law.
+    a5, s5, sim = _sensitivity(_model(tmp_path, n))
+    assert sim.codegen_backend == "cc"
     assert a5 == pytest.approx(A5, rel=1e-7)
     assert s5 == pytest.approx(S5, rel=1e-6)
 
 
 @needs_clang
-def test_a_plain_run_of_a_128_link_chain_compiles_under_clang(tmp_path, monkeypatch):
+def test_a_plain_run_of_a_128_link_chain_compiles_under_clang(tmp_path, clang, monkeypatch):
     # It fell back to the interpreter before; strict, it raised.
-    monkeypatch.setattr(cg, "CACHE_DIR", tmp_path / "cg")
-    monkeypatch.setenv("CC", _CLANG)
     monkeypatch.setenv("BNGSIM_CODEGEN_STRICT", "1")
     sim = bngsim.Simulator(_model(tmp_path, 128), method="ode", codegen=True)
     assert sim.codegen_backend == "cc"
