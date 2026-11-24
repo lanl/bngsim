@@ -874,8 +874,9 @@ PYBIND11_MODULE(_bngsim_core, m) {
     // and re-raises as bngsim.ModelError / ParameterError / SimulationError.
     //
     // Exceptions, translated here: bngsim::TimeoutError,
-    // bngsim::SparseJacobianUnavailable, bngsim::SensitivityUnsupported and
-    // its bngsim::SensitivityRefusedForParameters.
+    // bngsim::SparseJacobianUnavailable, bngsim::TimeSpanOutOfReach,
+    // bngsim::SensitivityUnsupported and its
+    // bngsim::SensitivityRefusedForParameters.
     // The Python-side `SimulationTimeout` class carries `timeout` and
     // `elapsed` attributes which the wrapper layer can't reconstruct from a
     // generic RuntimeError message — those would round-trip lossily. We
@@ -902,6 +903,11 @@ PYBIND11_MODULE(_bngsim_core, m) {
                 py::module_::import("bngsim._exceptions").attr("SparseJacobianUnavailableError");
             py::object exc = cls(py::str(e.what()));
             PyErr_SetObject(cls.ptr(), exc.ptr());
+        } catch (const bngsim::TimeSpanOutOfReach &e) {
+            // Issue #1838: a span an ODE run cannot step through, an argument
+            // the run cannot take, typed as Python's own refusals of a span are.
+            py::object cls = py::module_::import("bngsim._exceptions").attr("UsageError");
+            PyErr_SetObject(cls.ptr(), cls(py::str(e.what())).ptr());
         } catch (const bngsim::SensitivityRefusedForParameters &e) {
             // Issue #1435: a refusal mid-run whose condition turns on the
             // requested columns. Caught before its base, which would take it.

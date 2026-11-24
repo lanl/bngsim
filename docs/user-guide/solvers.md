@@ -559,6 +559,12 @@ sensitivity run is refused with `SensitivityRefusedForParametersError` (a
 moves a requested column, rounds onto the start or past the run's end. A
 column the crossing does not move can still be run alone.
 
+**No ODE run reaches 2^512 (about 1.34e154) from 0, or is that long.** Such a
+run is refused before it starts, with `bngsim.UsageError` (a `ValueError`).
+CVODE grows its step up to tenfold a step, and near the largest double the
+step can overflow before the run ends: the run would hang, or return NaN rows.
+Measure time in a larger unit instead.
+
 ### Steps too small to move the clock
 
 Before each step CVODE checks whether `t + h == t` in double precision. Where

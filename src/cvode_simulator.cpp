@@ -17493,6 +17493,62 @@ std::tuple<long, int, double> CvodeSimulator::last_run_roundoff_steps() const {
             impl_->last_run_roundoff_spacing};
 }
 
+// How far from t = 0 an ODE run may reach, and how long it may be, both
+// exclusive (issue #1838): 2^512, about 1.34e154, the square root of the
+// largest double.
+//
+// CVODE is given no largest step unless max_step asks for one, and grows its
+// step up to tenfold a step, so a run near the largest double overflows. Over
+// (0, 7e307) the step reached 6.2e307 at t = 6.9e307, short of the end, and the
+// next was inf. CVODE's test for a stale Jacobian then reads gamma / gamma_prev
+// as inf / inf, a NaN, so its Newton iteration never forms a fresh one and
+// retries the one step for ever: 16.7 million right-hand-side calls in 8 s, the
+// step count fixed at 171, out of reach of max_steps, which counts steps. Over
+// (1e308, 1.7e308) the step stayed finite and t + h was inf: CVODE took its
+// clock past the end at inf, and interpolated the rows there as NaN. Both need
+// a span within about a factor of ten of the largest double. Runs of four
+// models from 0 to 2^k, from 2^k to 2^(k+1) and from -2^k to 2^k, for k from 20
+// to 1022, each returned or failed with a CVODE error; at 2^1023 some hung and
+// some returned NaN rows.
+//
+// 2^512 stops far short of that, and below it even the products of two times
+// that CVODE's step selection forms stay finite (hlb * hub, bounding the first
+// step; (t_n - t_out) * h, testing for the end). No model has a time scale
+// near it: 1.34e154 s is 3e136 times the age of the universe.
+static constexpr double kOdeTimeCeiling = 0x1p512;
+
+// Refuse an ODE run that reaches kOdeTimeCeiling from t = 0, or is as long, as
+// one CVODE cannot step through. Throws TimeSpanOutOfReach (UsageError in
+// Python).
+static void require_steppable_ode_span(const TimeSpec &times) {
+    double lo = std::min(times.t_start, times.t_end);
+    double hi = std::max(times.t_start, times.t_end);
+    for (double t : times.sample_times) {
+        lo = std::min(lo, t);
+        hi = std::max(hi, t);
+    }
+    const double far = std::max(-lo, hi);
+    if (far < kOdeTimeCeiling && hi - lo < kOdeTimeCeiling)
+        return;
+    char text[640];
+    if (far >= kOdeTimeCeiling) {
+        std::snprintf(text, sizeof(text),
+                      "An ODE run cannot reach t = %.17g. Every time in an ODE run must be less "
+                      "than 2^512 (about 1.34e154) from t = 0: farther out, CVODE's step can "
+                      "overflow before the run ends, and the run hangs or returns NaN rows. "
+                      "Measure time in a larger unit, so that the run's times are smaller.",
+                      hi >= kOdeTimeCeiling ? hi : lo);
+    } else {
+        std::snprintf(text, sizeof(text),
+                      "An ODE run from t = %.17g to %.17g is too long. An ODE run must be shorter "
+                      "than 2^512 (about 1.34e154): over a longer one, CVODE's step can overflow "
+                      "before the run ends, and the run hangs or returns NaN rows. Measure time "
+                      "in a larger unit, so that the run is shorter.",
+                      lo, hi);
+    }
+    throw TimeSpanOutOfReach(text);
+}
+
 // The message of a failed run moved onto its own clock (issue #1681), with a
 // note saying which time to add, where it names a time: a "t=" or "t = " before
 // a number. A message that names none (an unknown jacobian option) is the one
@@ -17574,6 +17630,10 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     if (ns == 0) {
         return impl_->run_algebraic_only(times);
     }
+
+    // A span CVODE cannot step through (issue #1838), refused before the far
+    // run below is moved: moved, (1e308, 1.7e308) is (0, 7e307), which hung.
+    require_steppable_ode_span(times);
 
     // A run far from t = 0 of a model that reads no clock is integrated on its
     // own clock, the time elapsed since ode_elapsed_clock_origin (issue #1681).

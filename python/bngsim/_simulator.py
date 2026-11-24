@@ -6228,9 +6228,10 @@ class Simulator:
         ValueError
             If t_span, n_points or sample_times are invalid (a time that is
             not finite, ``t_end <= t_start``, ``n_points < 2``, fewer than two
-            sample times), if ``start`` is not ``None``, ``"live"`` or
-            ``"initial"``, or ``"initial"`` with ``carry_sensitivities=True``,
-            or if output sensitivities
+            sample times; for an ODE run, a time 2^512 or more from 0, or a
+            run that long, which CVODE cannot step through), if ``start`` is
+            not ``None``, ``"live"`` or ``"initial"``, or ``"initial"`` with
+            ``carry_sensitivities=True``, or if output sensitivities
             were requested (``sensitivity_params`` / ``sensitivity_ic``,
             including the ``carry_sensitivities`` path) on a model that
             contains events. Events reinitialise the CVODE state
