@@ -3509,7 +3509,7 @@ class Result:
               ``rtol/10`` is taken to be held by a floor and not the
               tolerance: it is named (``n_floor_held``), not failed, its move
               is read on its column's largest peak, and the quotient check
-              allows it that move. An error in such a series that does not
+              allows it ten times that move. An error in such a series that does not
               shrink with the tolerance, and is small beside its column's
               peak, passes both checks; the name is the only sign of it.
             - ``"sensitivity_fd"``: the forward sensitivities against central

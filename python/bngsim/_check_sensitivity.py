@@ -31,7 +31,7 @@ the two.
   to rtol/100 is at least :data:`FLOOR_SHARE` of its move at rtol/10 is taken
   to be held by a floor (issue #177) and not the tolerance. It is named
   (``n_floor_held``), not failed: its move is read on its column's largest
-  peak, and the quotient check allows it that move. An error in such a series
+  peak, and the quotient check allows it ten times that move. An error in such a series
   that does not shrink with the tolerance, and is small beside its column's
   peak, therefore passes both checks; the name is the only sign of it.
 - ``"sensitivity_fd"``: a central difference quotient. Each ``θ`` is moved by
