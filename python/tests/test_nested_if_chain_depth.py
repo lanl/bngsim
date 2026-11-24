@@ -1,29 +1,33 @@
-"""A chain of ``if()``s is written as one chain, however long it is (issue #1814).
+"""A chain of ``if()``s is one ``?:`` chain in the generated C (issue #1814).
 
 A table of values over time is a chain of nested ``if()``s, one link a day:
 ``if(time()<=1, v1, if(time()<=2, v2, ... 0))``. The Mallela 2024 ``phoenix``
-model's ``v_rate()`` is 340 of them. Every emitter wrote each ``if()`` of the
-chain inside the one before it, two brackets deeper, so the nesting grew with
-the table:
+model's ``v_rate()`` is 340 of them. The C of the rate law (``_replace_if_calls``)
+and of its derivative (the C printer's ``Piecewise``) wrote each link inside the
+one before it, two brackets deeper, and passed clang's limit of 256 brackets at
+128 links. A forward-sensitivity run, which needs the compiled right-hand side,
+failed to build with "bracket nesting level exceeded maximum of 256"; a plain
+run fell back to the interpreter. GCC has no such limit, so the C is measured
+here as well as compiled.
 
-- the C of the rate law (``_replace_if_calls``), and of its derivative (the C
-  printer's ``Piecewise``), passed clang's limit of 256 brackets at 128 links.
-  A forward-sensitivity run, which needs the compiled right-hand side, failed to
-  build with "bracket nesting level exceeded maximum of 256"; a plain run fell
-  back to the interpreter. GCC has no such limit, so the C is measured here as
-  well as compiled;
-- the ``Piecewise`` text the rate law is parsed from passed Python's limit of
-  200 parentheses at 99 links, so the analytic sensitivity RHS was declined for
-  CVODES' difference quotient.
+An ``if()`` that is all of another's false branch is now the next link of one C
+chain. The sympy side is left as it was: the parse text nests and the
+``Piecewise`` it builds is the right-nested one. A flat ``Piecewise`` is not the
+same thing to sympy (``_codegen._if_call_args`` says why), and the last section
+holds a model of each way it differs to the answers the nested one gives.
 
-An ``if()`` that is all of another's false branch is now the next link of one
-chain in all three. These tests cover:
+These tests cover:
 
-- the bracket depth of the C and of the parse text does not grow with the chain;
-- the chain reads as the nested form did: the same C but for the brackets, the
-  same branch taken at every link, compiled and parsed;
-- a forward-sensitivity run of a 128-link model builds its analytic RHS and
-  returns dA(5)/dk = -1.488792, under clang where there is one.
+- the bracket depth of the C does not grow with the chain, and the C reads as
+  the nested form did: the same text but for the brackets, and the same value at
+  every link, compiled;
+- the parse keeps the nested ``Piecewise``;
+- a chain of 1000 links is walked without a Python frame per link, in C, in the
+  parse text and in the scan for conditions. The models here stop at 340 links:
+  each of those walks reads the rest of the chain again at every link;
+- a forward-sensitivity run of a 128-link model builds and returns
+  dA(5)/dk = -1.488792, under clang where there is one;
+- window chains, a NaN condition and gated ramps run as the nested form does.
 """
 
 from __future__ import annotations
@@ -31,6 +35,7 @@ from __future__ import annotations
 import math
 import re
 import shutil
+import time
 
 import bngsim
 import numpy as np
@@ -40,6 +45,7 @@ from bngsim import _codegen as cg
 pytest.importorskip("sympy")
 import sympy as sp  # noqa: E402
 from bngsim import _jacobian as J  # noqa: E402
+from bngsim._switch_sensitivity import _iter_if_conditions  # noqa: E402
 
 _CLANG = shutil.which("clang")
 needs_clang = pytest.mark.skipif(_CLANG is None, reason="no clang on PATH")
@@ -89,10 +95,14 @@ end groups
 """
 
 
-def _model(tmp_path, n: int) -> bngsim.Model:
-    path = tmp_path / f"chain_{n}.net"
-    path.write_text(_net(n))
+def _load(tmp_path, text: str, name: str = "m") -> bngsim.Model:
+    path = tmp_path / f"{name}.net"
+    path.write_text(text)
     return bngsim.Model.from_net(str(path))
+
+
+def _model(tmp_path, n: int) -> bngsim.Model:
+    return _load(tmp_path, _net(n), f"chain_{n}")
 
 
 def _bracket_depth(src: str) -> int:
@@ -171,6 +181,15 @@ def test_the_c_of_a_chain_is_no_deeper_than_of_two_ifs(n):
 t, a, b, d = sp.symbols("t a b d")
 
 
+def _nested_piecewise(n: int):
+    """A table of *n* days as the parse builds it: each Piecewise the default
+    of the one before."""
+    out = sp.Integer(0)
+    for i in reversed(range(n)):
+        out = sp.Piecewise((sp.Float(_day_value(i)), t <= i + 1), (out, True))
+    return out
+
+
 @pytest.mark.parametrize(
     "pw, expect",
     [
@@ -195,11 +214,10 @@ def test_a_piecewise_prints_to_c_as_one_chain(pw, expect):
     assert J.sympy_to_c(pw, str) == expect
 
 
-@pytest.mark.parametrize("n", [128, 340])
-def test_the_c_of_a_piecewise_is_no_deeper_than_of_two_pieces(n):
+@pytest.mark.parametrize("n", [98, 128])
+def test_the_c_of_a_nested_piecewise_is_no_deeper_than_of_two(n):
     def depth(pieces):
-        pw = sp.Piecewise(*((_day_value(i), t <= i + 1) for i in range(pieces)), (0, True))
-        return _bracket_depth(J.sympy_to_c(pw, str))
+        return _bracket_depth(J.sympy_to_c(_nested_piecewise(pieces), str))
 
     assert depth(n) == depth(2) < CLANG_BRACKET_LIMIT
 
@@ -207,54 +225,77 @@ def test_the_c_of_a_piecewise_is_no_deeper_than_of_two_pieces(n):
 # ── The parse ────────────────────────────────────────────────────────────────
 
 
-def test_the_parse_text_of_a_chain_is_no_deeper_than_of_two_ifs():
-    def depth(links):
-        return _bracket_depth(J._preprocess_exprtk(f"k*({_chain(links)})"))
-
-    # Python's tokenizer refuses 200 nested parentheses.
-    assert depth(340) == depth(2) < 200
+def test_the_parse_text_of_a_chain_nests_as_it_always_has():
+    assert cg._translate_bngl_if_to_piecewise("if(a,b,if(c, d, if (x,y,z)))") == (
+        "Piecewise((b, a), (Piecewise((d, c), (Piecewise((y, x), (z, True)), True)), True))"
+    )
 
 
-@pytest.mark.parametrize("n", [20, 340])
-def test_a_chain_parses_to_the_branch_the_engine_takes_at_every_link(n):
-    # Twenty links parsed before, nested; 340 did not parse at all.
-    parsed = J._exprtk_to_sympy(f"k*({_chain(n)})")
+def _window(n: int, value) -> str:
+    return (
+        "".join(f"if((time()>={i})&&(time()<{i + 1}),{value(i)}," for i in range(n))
+        + "0"
+        + ")" * n
+    )
+
+
+_PARSED_CHAINS = [
+    _chain(20),
+    _window(14, lambda i: f"k{i}"),
+    _window(16, lambda i: "k"),
+    "if(Aobs/Bobs<1,k1,if(Aobs/Bobs>=1,k2,k3))",
+    "if(time()<1,0,if(Aobs>thr,kb*(Aobs-thr),0))",
+    "if(mode>0.5,0,if(Aobs>thr,kb*(Aobs-thr),0))",
+    "if(x<1,a,if(x<2,a,if(x<3,b,c)))",
+]
+
+
+@pytest.mark.parametrize("text", _PARSED_CHAINS)
+def test_the_parse_of_a_chain_is_the_right_nested_piecewise(text):
+    """What sympy is given is the nested Piecewise, link by link: a flat one
+    merges links of one value and drops links it takes to be unreachable."""
+
+    def nested(expr: str):
+        # Read without the code under test: the link is if(cond, value, rest).
+        if not expr.startswith("if(") or cg._find_close_paren_strict(expr, 2) != len(expr) - 1:
+            return J._exprtk_to_sympy(expr)
+        cond, value, rest = (arg.strip() for arg in cg._split_top_level_commas(expr[3:-1]))
+        return J._piecewise_of_if(sp)(
+            (J._exprtk_to_sympy(value), J._exprtk_to_sympy(cond)), (nested(rest), True)
+        )
+
+    parsed = J._exprtk_to_sympy(text)
     assert parsed is not None
-    clock, k = sp.Symbol(J._TIME_SYM), sp.Symbol("k")
-    rate = sp.lambdify((clock, k), parsed)
-    for i in range(n):
-        assert rate(i + 0.5, 2.0) == 2.0 * _day_value(i), i
-        assert rate(i + 1.0, 2.0) == 2.0 * _day_value(i), i  # `<=`: day i's last instant
-    assert rate(n + 0.5, 2.0) == 0.0
+    assert sp.srepr(parsed) == sp.srepr(nested(text))
 
 
-def test_a_chain_parses_to_what_the_nested_piecewise_is():
-    n = 20
-    clock = sp.Symbol(J._TIME_SYM)
-    nested = sp.Integer(0)
-    for i in reversed(range(n)):
-        nested = sp.Piecewise((sp.Float(_day_value(i)), clock <= i + 1), (nested, True))
-    assert sp.piecewise_fold(nested) == J._exprtk_to_sympy(_chain(n))
+def test_a_chain_of_1000_links_is_walked_without_a_frame_for_each():
+    def chain(n):
+        return "".join(f"if(time()<{i + 1},{i % 7}," for i in range(n)) + "0" + ")" * n
+
+    text = chain(1000)
+    assert list(_iter_if_conditions(text)) == [f"time()<{i + 1}" for i in range(1000)]
+    assert cg._translate_bngl_if_to_piecewise(text).count("Piecewise(") == 1000
+
+    def depth(c):
+        return _bracket_depth(cg._expr_to_c(c, [], [], [], []))
+
+    assert depth(text) == depth(chain(2))
 
 
 # ── Models ───────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("n", [128, 340])
-def test_a_chain_model_gets_its_analytic_sensitivity_rhs_in_c_clang_can_read(tmp_path, n):
-    """The compiler-independent half: the whole generated source, RHS and
-    sensitivity RHS, nests as deep as it does for a chain of two."""
+@pytest.mark.parametrize("n", [98, 340])
+def test_the_generated_source_of_a_chain_model_is_no_deeper_than_of_two_links(tmp_path, n):
+    """The compiler-independent half. At 98 links the analytic sensitivity RHS
+    is built, so its derivative is in the source too; at 99 or more the parse
+    of the rate law passes Python's limit of 200 nested parentheses and the run
+    takes CVODES' difference quotient, as before."""
     src, has_sens = cg.generate_combined_from_model(_model(tmp_path, n), emit_sens_rhs=True)
-    assert has_sens, "the analytic sensitivity RHS was declined"
+    assert has_sens == (n < 99)
     two, _ = cg.generate_combined_from_model(_model(tmp_path, 2), emit_sens_rhs=True)
     assert _bracket_depth(src) == _bracket_depth(two) < CLANG_BRACKET_LIMIT
-
-
-def test_the_version_leaves_the_libraries_without_a_sensitivity_rhs_behind():
-    """An install whose source digest is empty (bytecode only) keys on the
-    version alone, so only the version can leave behind a v44 library of a
-    chain of 99 or more, which has no analytic sensitivity RHS."""
-    assert int(cg._CODEGEN_VERSION) >= 45
 
 
 @needs_cc
@@ -288,11 +329,13 @@ def test_forward_sensitivity_of_a_128_link_chain_is_right(tmp_path, monkeypatch)
 
 
 @needs_clang
-def test_forward_sensitivity_of_a_128_link_chain_builds_under_clang(tmp_path, monkeypatch):
-    # A cold cache, so the library is clang's and not one gcc left there.
+@pytest.mark.parametrize("n", [98, 128])
+def test_forward_sensitivity_of_a_long_chain_builds_under_clang(tmp_path, monkeypatch, n):
+    # A cold cache, so the library is clang's and not one gcc left there. At 98
+    # links the analytic sensitivity RHS is compiled with the rate law.
     monkeypatch.setattr(cg, "CACHE_DIR", tmp_path / "cg")
     monkeypatch.setenv("CC", _CLANG)
-    a5, s5 = _sensitivity(_model(tmp_path, 128))
+    a5, s5 = _sensitivity(_model(tmp_path, n))
     assert a5 == pytest.approx(A5, rel=1e-7)
     assert s5 == pytest.approx(S5, rel=1e-6)
 
@@ -307,3 +350,155 @@ def test_a_plain_run_of_a_128_link_chain_compiles_under_clang(tmp_path, monkeypa
     assert sim.codegen_backend == "cc"
     result = sim.run(t_span=(0, 5), n_points=6, rtol=1e-8, atol=1e-10)
     assert float(result.species[-1][0]) == pytest.approx(A5, rel=1e-7)
+
+
+# ── Chains a flat Piecewise reads differently ────────────────────────────────
+
+
+def _window_net(chain: str, params: dict[str, float]) -> str:
+    lines = "\n".join(
+        f"    {i + 1} {name} {value}" for i, (name, value) in enumerate(params.items())
+    )
+    return f"""begin parameters
+{lines}
+end parameters
+begin functions
+    1 r() {chain}
+end functions
+begin species
+    1 X() 0
+end species
+begin reactions
+    1 0 1 r
+end reactions
+begin groups
+    1 Xobs 1
+end groups
+"""
+
+
+def _window_sensitivity(tmp_path, chain, params, asked, t_end):
+    text = _window_net(chain, params)
+    started = time.perf_counter()
+    _src, has_sens = cg.generate_combined_from_model(_load(tmp_path, text, "windows"))
+    built = time.perf_counter() - started
+    sim = bngsim.Simulator(
+        _load(tmp_path, text, "windows"), method="ode", sensitivity_params=asked
+    )
+    result = sim.run(t_span=(0, t_end), n_points=3, rtol=1e-8, atol=1e-10)
+    return has_sens, built, np.asarray(result.sensitivities)[-1, 0]
+
+
+@needs_cc
+def test_a_chain_of_windows_builds_its_analytic_sensitivity_rhs_in_good_time(tmp_path):
+    # Fourteen windows [i, i+1), each its own rate: X gains k_i over window i,
+    # so dX/dk_i is 1 once it has passed. The derivative of each column is 0 on
+    # thirteen windows, which a flat Piecewise merges into one Or of windows in
+    # normal form, doubling with each: the build ran past its budget and the
+    # analytic RHS was declined. Nested, it takes well under a second.
+    params = {f"k{i}": 1.0 + 0.1 * i for i in range(14)}
+    has_sens, built, s = _window_sensitivity(
+        tmp_path, _window(14, lambda i: f"k{i}"), params, ["k0", "k1", "k2"], 15
+    )
+    assert has_sens
+    assert built < 10.0
+    assert s == pytest.approx([1.0, 1.0, 1.0], rel=1e-6)
+
+
+@needs_cc
+def test_a_chain_of_windows_of_one_value_parses_small_and_runs(tmp_path):
+    chain = _window(16, lambda i: "k")
+    parsed = J._exprtk_to_sympy(chain)
+    assert sp.count_ops(parsed) <= 2 * 16  # merged into one Or, 786k
+    has_sens, built, s = _window_sensitivity(tmp_path, chain, {"k": 0.5}, ["k"], 20)
+    assert has_sens
+    assert built < 10.0
+    assert s == pytest.approx([16.0], rel=1e-6)
+
+
+NAN_NET = """begin parameters
+    1 k1 1
+    2 k2 2
+    3 k3 3
+end parameters
+begin functions
+    1 r() if(Aobs/Bobs<1,k1,if(Aobs/Bobs>=1,k2,k3))
+end functions
+begin species
+    1 A() 0
+    2 B() 0
+    3 C() 0
+end species
+begin reactions
+    1 0 3 r
+end reactions
+begin groups
+    1 Aobs 1
+    2 Bobs 2
+    3 Cobs 3
+end groups
+"""
+
+
+@needs_cc
+def test_a_nan_condition_takes_the_last_link_in_the_sensitivity_too(tmp_path):
+    # Aobs/Bobs is 0/0, NaN, so neither comparison holds and C is made at k3.
+    # A flat Piecewise took the second condition for the complement of the
+    # first and dropped k3: dC/dk was [0, 2, 0] beside C = 6.
+    sim = bngsim.Simulator(
+        _load(tmp_path, NAN_NET), method="ode", sensitivity_params=["k1", "k2", "k3"]
+    )
+    result = sim.run(t_span=(0, 2), n_points=3, rtol=1e-8, atol=1e-10)
+    assert float(result.species[-1][2]) == pytest.approx(6.0, rel=1e-9)
+    assert np.asarray(result.sensitivities)[-1, 2] == pytest.approx([0.0, 0.0, 2.0], abs=1e-9)
+
+
+def _ramp_net(gate: str) -> str:
+    # A made at rate k crosses thr = 1 at t = 1/k; after the gate opens B is made
+    # at kb·(A - thr). The erf() law has no analytic derivative here, so the
+    # whole model takes CVODES' difference quotient.
+    return f"""begin parameters
+    1 k 1
+    2 kb 0.5
+    3 thr 1
+    4 mode 0
+end parameters
+begin functions
+    1 r() if({gate},0,if(Aobs>thr,kb*(Aobs-thr),0))
+    2 s() 0.1*erf(Cobs)
+end functions
+begin species
+    1 A() 0
+    2 B() 0
+    3 C() 1
+end species
+begin reactions
+    1 0 1 k
+    2 0 2 r
+    3 0 3 s
+end reactions
+begin groups
+    1 Aobs 1
+    2 Bobs 2
+    3 Cobs 3
+end groups
+"""
+
+
+@needs_cc
+@pytest.mark.parametrize("gate", ["time()<1", "mode>0.5"])
+@pytest.mark.parametrize("functional_sens_rhs", [True, False])
+def test_a_gated_ramp_is_proved_a_bend_for_the_difference_quotient(
+    tmp_path, monkeypatch, gate, functional_sens_rhs
+):
+    # The ramp bends at A = thr and does not jump, which the quotient is right
+    # across; it is proved for a two-way if() only, so a flat Piecewise of three
+    # links was refused. B(5) = ∫_1^5 kb·(k·t - 1) dt = 6k - 2.
+    if not functional_sens_rhs:
+        monkeypatch.setenv("BNGSIM_NO_FUNCTIONAL_SENS_RHS", "1")
+    sim = bngsim.Simulator(
+        _load(tmp_path, _ramp_net(gate)), method="ode", sensitivity_params=["k"]
+    )
+    result = sim.run(t_span=(0, 5), n_points=3, rtol=1e-8, atol=1e-10)
+    assert float(result.species[-1][1]) == pytest.approx(4.0, rel=1e-7)
+    assert float(result.sensitivities[-1, 1, 0]) == pytest.approx(6.0, rel=1e-5)

@@ -212,22 +212,28 @@ def _iter_if_conditions(expr: str):
     nested form the Lin2021 model uses —
     ``if((t>=sigma)&&(t<tau1), lambda0, if((t>=tau1)&&(t<200), lambda1, 0))`` —
     surfaces all four of its conditions.
+
+    Depth first, in the order they are written, through a stack of its own
+    rather than a generator per ``if()``: a table of daily values is a chain of
+    hundreds of nested ``if()``s, and one Python frame per link ran out at about
+    a thousand (issue #1814).
     """
-    cursor = 0
-    while True:
-        m = _IF_CALL.search(expr, cursor)
+    # (text, where to look next in it); a text's arguments go on top of it.
+    stack = [(expr, 0)]
+    while stack:
+        text, cursor = stack.pop()
+        m = _IF_CALL.search(text, cursor)
         if m is None:
-            return
+            continue
         open_paren = m.end() - 1
-        close_paren = _find_close_paren_strict(expr, open_paren)
+        close_paren = _find_close_paren_strict(text, open_paren)
         if close_paren < 0:
-            return  # malformed; the codegen path reports it properly
-        args = _split_top_level_commas(expr[open_paren + 1 : close_paren])
+            continue  # malformed; the codegen path reports it properly
+        args = _split_top_level_commas(text[open_paren + 1 : close_paren])
+        stack.append((text, close_paren + 1))
         if len(args) == 3:
             yield args[0].strip()
-            for arg in args:
-                yield from _iter_if_conditions(arg)
-        cursor = close_paren + 1
+            stack.extend((arg, 0) for arg in reversed(args))
 
 
 def _split_logical_atoms(cond: str) -> list[str]:

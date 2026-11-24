@@ -3291,9 +3291,10 @@ def _make_c_printer():
         def _print_Piecewise(self, expr):
             # ((v1, c1), …, (vn, True)) → ((c1) ? (v1) : (c2) ? (v2) : … : (else)),
             # one chain, which C groups from the right as it would the nested
-            # form. Nested, each piece cost two levels of brackets, and a table
-            # of 128 passed clang's limit of 256 (issue #1814). A Piecewise that
-            # is all of the else joins the chain the same way.
+            # form. A Piecewise that is all of the else joins the chain, which is
+            # how the parse builds an if() chain. Nested, each piece cost two
+            # levels of brackets: a table of 98 links, the most the parse reads,
+            # came to 200 of clang's limit of 256 (issue #1814).
             from sympy import Piecewise
 
             args = list(expr.args)

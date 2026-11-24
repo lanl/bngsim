@@ -342,13 +342,12 @@ _compile_counter = itertools.count()
 # failed at dlopen. The source digest already moves; the bump is for an install
 # whose digest is empty, which would go on loading those libraries. Invalidate
 # v43.
-# v45: lanl/bngsim #1814 — an if() that is all of another's false branch, and
-# each piece of a Piecewise, are written as the next link of one ?: chain rather
-# than nested two brackets deeper, so a chain of 128 no longer passes clang's
-# limit of 256; and the sympy parse reads such a chain as one Piecewise, so one
-# of 99 or more gets the analytic sensitivity RHS a v44 build declined. The
-# source digest already moves; the bump is for an install whose digest is
-# empty. Invalidate v44.
+# v45: lanl/bngsim #1814 — an if() that is all of another's false branch, and a
+# Piecewise that is all of another's default, are written as the next link of
+# one ?: chain rather than nested two brackets deeper, so a chain of 128 no
+# longer passes clang's limit of 256. The C is the same but for its brackets,
+# and a v44 library computes what a v45 one does. The source digest already
+# moves; the bump is for an install whose digest is empty.
 _CODEGEN_VERSION = "45"
 
 
@@ -1607,12 +1606,7 @@ def _translate_bngl_if_to_piecewise(expr: str) -> str:
     """Rewrite every BNGL ``if(c, t, f)`` substring to sympy
     ``Piecewise((t, c), (f, True))``, recursively, with balanced-paren and
     top-level-comma parsing. Whole-word match on ``if`` so identifiers like
-    ``stiff`` are left alone.
-
-    An ``if()`` that is all of another's false branch adds a pair to its
-    ``Piecewise`` (:func:`_if_call_args`): ``if(c1, t1, if(c2, t2, f))`` is
-    ``Piecewise((t1, c1), (t2, c2), (f, True))``, which takes the branch the
-    nested form takes."""
+    ``stiff`` are left alone."""
     pattern = re.compile(r"(?<![A-Za-z0-9_])if\s*\(")
     out_parts: list[str] = []
     cursor = 0
@@ -1635,20 +1629,24 @@ def _translate_bngl_if_to_piecewise(expr: str) -> str:
             out_parts.append(expr[m.start() : close_paren + 1])
             cursor = close_paren + 1
             continue
-        # Recurse so nested ifs are translated too, following the chain of
-        # false branches that are if()s of their own.
-        pairs = []
+        # Recurse so nested ifs are translated too, except along a chain of
+        # false branches that are each all one if(): those are followed here
+        # and written in as each other's default, the same nested text without
+        # a Python frame per link (:func:`_if_call_args`).
+        links = []
         while True:
             c_raw, t_raw, f_raw = (a.strip() for a in args)
             c = _translate_bngl_if_to_piecewise(c_raw)
             t = _translate_bngl_if_to_piecewise(t_raw)
-            pairs.append(f"({t}, {c}), ")
+            links.append((c, t))
             link = _if_call_args(f_raw)
             if link is None:
                 break
             args = link
-        f = _translate_bngl_if_to_piecewise(f_raw)
-        out_parts.append(f"Piecewise({''.join(pairs)}({f}, True))")
+        piecewise = _translate_bngl_if_to_piecewise(f_raw)
+        for c, t in reversed(links):
+            piecewise = f"Piecewise(({t}, {c}), ({piecewise}, True))"
+        out_parts.append(piecewise)
         cursor = close_paren + 1
     return "".join(out_parts)
 
@@ -6899,12 +6897,22 @@ def _if_call_args(expr: str) -> list[str] | None:
     """``[cond, t, f]`` where ``expr`` is one ``if(cond, t, f)`` call and nothing
     else, else ``None``.
 
-    Both ``if()`` emitters ask it of a false branch, and write an ``if()`` that
-    is all of one as the next link of the same chain rather than nested inside
-    it (issue #1814). A table of values over time is such a chain, one link a
-    day. Nested, each link cost two levels of brackets: the C passed clang's
-    limit of 256 at 128 links, and the ``Piecewise`` text sympy parses passed
-    Python's limit of 200 at 99.
+    A table of values over time is a chain of such calls, each the false branch
+    of the one before, one link a day; the Mallela 2024 ``phoenix`` model's
+    ``v_rate()`` has 340 (issue #1814). :func:`_replace_if_calls` writes such a false branch as
+    the next link of one C ``?:`` chain. Nested, each link cost two levels of
+    brackets, and the C passed clang's limit of 256 at 128 links.
+
+    :func:`_translate_bngl_if_to_piecewise` follows the chain with it too, to
+    need no Python frame per link, but writes the nested ``Piecewise`` it always
+    has. One flat ``Piecewise`` is not the same thing to sympy: it merges
+    neighbouring links of one value into an ``Or`` in normal form, which grows
+    exponentially over window conditions, and it drops a link whose condition
+    the ones before it leave nothing for, by reasoning that holds only for
+    numbers: ``if(x<1, a, if(x>=1, b, c))`` loses ``c``, which the C takes where
+    ``x`` is NaN. So the parse text still nests two parentheses a link, and a
+    chain of 99 or more still passes Python's limit of 200 and is not
+    differentiated.
     """
     m = _IF_HEAD_RE.match(expr)
     if m is None:
