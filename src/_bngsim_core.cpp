@@ -937,6 +937,8 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_readwrite("n_nonlin_conv_fails", &bngsim::SolverStats::n_nonlin_conv_fails)
         .def_readwrite("n_sens_err_test_fails", &bngsim::SolverStats::n_sens_err_test_fails)
         .def_readwrite("n_sens_nonlin_conv_fails", &bngsim::SolverStats::n_sens_nonlin_conv_fails)
+        .def_readwrite("n_roundoff_steps", &bngsim::SolverStats::n_roundoff_steps)
+        .def_readwrite("roundoff_first_row", &bngsim::SolverStats::roundoff_first_row)
         .def_readwrite("linear_solver", &bngsim::SolverStats::linear_solver)
         .def_readwrite("n_dense_blas_factorizations",
                        &bngsim::SolverStats::n_dense_blas_factorizations)
@@ -964,6 +966,8 @@ PYBIND11_MODULE(_bngsim_core, m) {
             d["n_nonlin_conv_fails"] = s.n_nonlin_conv_fails;
             d["n_sens_err_test_fails"] = s.n_sens_err_test_fails;
             d["n_sens_nonlin_conv_fails"] = s.n_sens_nonlin_conv_fails;
+            d["n_roundoff_steps"] = s.n_roundoff_steps;
+            d["roundoff_first_row"] = s.roundoff_first_row;
             d["linear_solver"] = s.linear_solver;
             d["steady_state_reached"] = s.steady_state_reached;
             d["steady_state_residual"] = s.steady_state_residual;
@@ -3308,7 +3312,11 @@ PYBIND11_MODULE(_bngsim_core, m) {
              py::overload_cast<double, const std::vector<double> &>(
                  &bngsim::CvodeSimulator::set_tolerances),
              py::arg("rtol"), py::arg("atol"))
-        .def("set_max_steps", &bngsim::CvodeSimulator::set_max_steps, py::arg("max_steps"));
+        .def("set_max_steps", &bngsim::CvodeSimulator::set_max_steps, py::arg("max_steps"))
+        // Issue #1837: for a run that raised, whose Result is never returned.
+        .def("last_run_roundoff_steps", &bngsim::CvodeSimulator::last_run_roundoff_steps,
+             "The steps the last run() took where t + h == t, and the first row it "
+             "recorded after one (-1 for none).");
 
     // ─── SsaSimulator ────────────────────────────────────────────────────────
     py::class_<bngsim::SsaSimulator>(m, "SsaSimulator")

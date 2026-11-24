@@ -51,6 +51,15 @@ struct SolverStats {
     int n_sens_err_test_fails = 0;    // CVodeGetSensNumErrTestFails
     int n_sens_nonlin_conv_fails = 0; // CVodeGetSensNumNonlinSolvConvFails
 
+    // The steps CVODE took where t + h == t in double precision (issue #1837),
+    // CVODES' own count: each moved the state by h and the clock not at all, so
+    // a row after one can be wrong with no solver error. roundoff_first_row is
+    // the first row recorded after one, -1 where none was taken. 0 and -1 on
+    // every other backend, and in a build against a system SUNDIALS, which
+    // counts none.
+    int n_roundoff_steps = 0;
+    int roundoff_first_row = -1;
+
     int linear_solver = LINEAR_SOLVER_DENSE; // LinearSolverKind actually used
 
     // GH #132 adaptive gate: of this run's dense factorizations, how many took the

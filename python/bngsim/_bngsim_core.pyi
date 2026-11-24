@@ -12,6 +12,10 @@ class CvodeSimulator:
         """
         Create an ODE (CVODE) simulator for the given model
         """
+    def last_run_roundoff_steps(self) -> tuple[int, int]:
+        """
+        The steps the last run() took where t + h == t, and the first row it recorded after one (-1 for none).
+        """
     def run(self, times: TimeSpec, opts: SolverOptions = ...) -> ResultCore:
         """
         Run ODE simulation (releases GIL)
@@ -1161,6 +1165,12 @@ class SolverStats:
     def n_rhs_evals(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
         ...
     @property
+    def n_roundoff_steps(self) -> int:
+        ...
+    @n_roundoff_steps.setter
+    def n_roundoff_steps(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
+        ...
+    @property
     def n_sens_err_test_fails(self) -> int:
         ...
     @n_sens_err_test_fails.setter
@@ -1177,6 +1187,12 @@ class SolverStats:
         ...
     @n_steps.setter
     def n_steps(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def roundoff_first_row(self) -> int:
+        ...
+    @roundoff_first_row.setter
+    def roundoff_first_row(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
         ...
     @property
     def steady_state_residual(self) -> float:

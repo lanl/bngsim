@@ -515,6 +515,10 @@ class Result:
                 # still report `n_err_test_fails == 0`. 0 with sensitivities off.
                 "n_sens_err_test_fails": stats.n_sens_err_test_fails,
                 "n_sens_nonlin_conv_fails": stats.n_sens_nonlin_conv_fails,
+                # Steps CVODE took where t + h == t, which moved the state and
+                # not the clock (issue #1837); a run that took one warns
+                # RoundoffStepWarning. 0 on every other backend.
+                "n_roundoff_steps": stats.n_roundoff_steps,
                 # Which direct linear solver the ODE engine actually used, as the
                 # ``LinearSolverKind`` enum (include/bngsim/result.hpp). Pinned
                 # mapping — DO NOT reinterpret as a SUNDIALS solver-id:
@@ -588,6 +592,7 @@ class Result:
                 "n_nonlin_conv_fails": 0,
                 "n_sens_err_test_fails": 0,
                 "n_sens_nonlin_conv_fails": 0,
+                "n_roundoff_steps": 0,
                 "linear_solver": 0,
                 "n_dense_blas_factorizations": 0,
                 "steady_state_reached": 0,

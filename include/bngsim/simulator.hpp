@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <utility>
 #include <vector>
 
 namespace bngsim {
@@ -49,6 +50,12 @@ class CvodeSimulator {
     // scalar. Call this with an empty vector to actually clear it.
     void set_tolerances(double rtol, const std::vector<double> &atol);
     void set_max_steps(int max_steps);
+
+    // The steps the last run() took where t + h == t, and the first row it
+    // recorded after one (-1 for none), as SolverStats::n_roundoff_steps and
+    // roundoff_first_row hold them (issue #1837): kept for a run that raised,
+    // whose Result is never returned.
+    std::pair<long, int> last_run_roundoff_steps() const;
 
   private:
     struct Impl;
