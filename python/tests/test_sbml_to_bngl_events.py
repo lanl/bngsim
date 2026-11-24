@@ -456,6 +456,18 @@ def test_a_name_folds_to_the_value_the_run_gives_it(tmp_path, events, body, want
             id="a value whose initialAssignment has no real value",
         ),
         pytest.param(
+            [
+                _event(
+                    "E1",
+                    _at(_cn(1)),
+                    {"A": f"<apply><power/>{_cn(0)}{_cn(-1)}</apply>"},
+                )
+            ],
+            {},
+            "'E1' assigns 'A' a non-constant value",
+            id="a value that is 0 to a negative power",
+        ),
+        pytest.param(
             [_event("E1", _at(_cn(1)), {"A": _ci("D")})],
             {
                 "compartment": _C_AND_D.format(constant="false"),
@@ -680,6 +692,39 @@ def test_a_trigger_true_at_the_start_fires_only_where_initial_value_is_false(
         ),
         pytest.param(
             [
+                _a("E0", _gt(_cn(0.5)), 7, delay=_cn(0.5), priority=_cn(1)),
+                _a("E2", _at(_cn(0.5)), 10, delay=_cn(0.5), priority=_cn(1)),
+            ],
+            [10.0, 7.0],
+            id="a strict trigger's delayed execution after delayed ones triggered no later",
+        ),
+        pytest.param(
+            [
+                _a("E0", _gt(_cn(0)), 7, delay=_cn(1), priority=_cn(1)),
+                _a("E2", _at(_cn(0)), 10, delay=_cn(1), priority=_cn(1), initial_value=False),
+            ],
+            [10.0, 7.0],
+            id="a strict trigger's delayed execution that lands in the instant, after them",
+        ),
+        pytest.param(
+            [
+                _a("E2", _at(_cn(0.5)), 10, delay=_cn(0.5), priority=_cn(1)),
+                _a("E3", _at(_cn(0.5)), 5, delay=_cn(0.5), priority=_cn(1)),
+                _a("E0", _gt(_cn(0.5)), 7, delay=_cn(0.5), priority=_cn(1)),
+            ],
+            [10.0, 5.0, 7.0],
+            id="a tie of delayed ones that a strict trigger's delayed execution overwrites",
+        ),
+        pytest.param(
+            [
+                _a("E1", _gt(_cn(0.3)), 10, priority=_cn(-1)),
+                _a("E2", _at(_cn(0.1)), 5, delay=_cn(0.2000001)),
+            ],
+            [10.0, 5.0],
+            id="an execution due well past a strict trigger's time",
+        ),
+        pytest.param(
+            [
                 _a("E1", _at(_cn(1)), 5, priority=_ci("B")),
                 _a("E2", _at(_cn(2)), 10, priority=_cn(1)),
             ],
@@ -782,6 +827,39 @@ def test_equal_priorities_that_set_different_species_are_carried(tmp_path):
             ],
             "events 'E1' and 'E2' set 'A' to different values at t = 1 with equal priority",
             id="the note names the tie, not an event before it",
+        ),
+        pytest.param(
+            [
+                _a("E2", _at(_cn(0.25)), 10, delay=_cn(0.75), priority=_cn(1)),
+                _a("E0", _gt(_cn(0)), 7, delay=_cn(1), priority=_cn(1)),
+            ],
+            "'E0', delayed from a strict trigger, executes before or after the other",
+            id="a strict trigger's delayed execution beside a delayed one triggered after it",
+        ),
+        pytest.param(
+            [
+                _event("E1", _gt(_cn(0.7)), {"B": _cn(10)}, delay=_cn(0.2)),
+                _event("E2", _at(_cn(0.1)), {"B": _cn(5)}, delay=_cn(0.8)),
+            ],
+            "events 'E1' and 'E2' set 'B' to different values at t = 0.8999999999999999 and "
+            "t = 0.9, and 'E1', a strict trigger, executes a little past its time",
+            id="a strict trigger's delayed execution a double before another",
+        ),
+        pytest.param(
+            [
+                _a("E1", _gt(_cn(0.3)), 10, priority=_cn(-1)),
+                _a("E2", _at(_cn(0.1)), 5, delay=_cn(0.2), priority=_cn(0)),
+            ],
+            "'E1', a strict trigger, executes a little past its time",
+            id="an execution due a double past a strict trigger's time, of higher priority",
+        ),
+        pytest.param(
+            [
+                _a("E1", _gt(_cn(0.3)), 10, priority=_cn(1)),
+                _a("E2", _at(_cn(0.1)), 5, delay=_cn(0.2), priority=_cn(1)),
+            ],
+            "'E1', a strict trigger, executes a little past its time",
+            id="an execution due a double past a strict trigger's time, of its priority",
         ),
     ],
 )

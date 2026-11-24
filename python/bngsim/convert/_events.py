@@ -29,7 +29,9 @@ verbatim.
 
 from __future__ import annotations
 
+import bisect
 import math
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -192,7 +194,8 @@ def _eval_const(node, env: dict[str, float]) -> float | None:
             return None
         try:
             return float(a**b)
-        except (ValueError, OverflowError, TypeError):  # TypeError: a complex root
+        # A complex root (TypeError), 0 to a negative power (ZeroDivisionError).
+        except (ValueError, ArithmeticError, TypeError):
             return None
     return None
 
@@ -314,7 +317,9 @@ class _Fire(NamedTuple):
     time: float
     # A strict trigger is true only past its threshold, so the run executes the
     # event after every other event of that instant, whatever the priorities:
-    # `time > 1` after `time >= 1`.
+    # `time > 1` after `time >= 1`. It executes where it reads the trigger true,
+    # a little past the threshold (_strict_reach), so its order against an
+    # execution due in that reach after it is not known.
     past: bool
     # Delayed from a strict trigger, it executes the delay after the point
     # past the threshold where the run read the trigger true, which can round
@@ -348,9 +353,27 @@ class _Fire(NamedTuple):
         )
 
 
-def _unordered_writes(fires: list[_Fire]) -> list[str]:
+def _strict_reach(t: float, span: float) -> float:
+    """How far past ``t`` the run can execute a strict trigger's event due at
+    ``t``.
+
+    The run reads ``time > T`` true at the root CVODE places past ``T``, which
+    is within 100·ε·(|t| + |h|) of it (h the step, here at most the whole run,
+    ``span``), or at a stop that close after it, as it takes a root within
+    256·ε·max(|t|, 1) after a stop for one on it. Measured, ``time > T``
+    executed 1 to 24 doubles past T, for T from 0.001 to 37, beside a delayed
+    execution due a few doubles past it, which ran before, with or after it as
+    it fell. A delayed execution from a strict trigger keeps that offset.
+    """
+    eps = sys.float_info.epsilon
+    return max(256.0 * eps * max(abs(t), 1.0), 100.0 * eps * (abs(t) + span))
+
+
+def _unordered_writes(fires: list[_Fire], span: float) -> list[str]:
     """A note for each species that events at one instant leave at a value the
-    run's order among them decides, when that order is not known ahead."""
+    run's order among them decides, when that order is not known ahead, and
+    for each a strict trigger's execution and one due a little after it set
+    differently (see :func:`_strict_reach`)."""
     by_time: dict[float, list[_Fire]] = {}
     for f in fires:
         by_time.setdefault(f.time, []).append(f)
@@ -368,6 +391,26 @@ def _unordered_writes(fires: list[_Fire]) -> list[str]:
             note = _order_note(t, var[idx], ws, group)
             if note:
                 notes.append(note)
+
+    times = sorted(by_time)
+    for i, t in enumerate(times):
+        strict = [f for f in by_time[t] if f.past]
+        if not strict:
+            continue
+        end = bisect.bisect_right(times, t + _strict_reach(t, span))
+        after = [g for u in times[i + 1 : end] for g in by_time[u]]
+        for f in strict:
+            sets = {idx: val for idx, val, _ in f.assigns}
+            for g in after:
+                hit = next((sid for idx, v, sid in g.assigns if sets.get(idx, v) != v), None)
+                if hit is not None:
+                    notes.append(
+                        f"events {f.eid!r} and {g.eid!r} set {hit!r} to different values at "
+                        f"t = {f.time!r} and t = {g.time!r}, and {f.eid!r}, a strict trigger, "
+                        "executes a little past its time, before or after the other as the "
+                        "run's rounding falls — the value they leave has no actions form"
+                    )
+                    break
     return notes
 
 
@@ -431,18 +474,22 @@ def _order_note(
                 # Whether loose f executes after the writers here wherever it
                 # lands. Past the instant it does. In the instant it is in the
                 # first part, so before the strict triggers' part, and after
-                # the writers of the first part where its priority is lower, or
-                # equal with no event of the tie having one and no delayed
-                # writer triggered after it (past its threshold, f triggered
-                # after any non-strict trigger at the same time).
+                # the writers of the first part where its priority is lower. Of
+                # equal priority, where no writer was triggered after it (past
+                # its threshold, f triggered after any non-strict trigger at
+                # the same time): delayed executions run in the order they were
+                # triggered, so after them where they are all delayed, and
+                # after those not delayed too where no event of the tie has a
+                # priority.
                 if past or f.priority is None or f.priority > low:
                     return False
-                return f.priority < low or (
-                    all(g.unprioritised for g in tie)
-                    and all(
-                        g.triggered is None or (f.triggered or 0.0) >= g.triggered
-                        for g, _ in lowest
-                    )
+                no_later = all(
+                    g.triggered is None or (f.triggered or 0.0) >= g.triggered for g, _ in lowest
+                )
+                return (
+                    f.priority < low
+                    or (all(g.unprioritised for g in tie) and no_later)
+                    or (all(g.triggered is not None for g, _ in lowest) and no_later)
                 )
 
             if any(overwrites(f) for f, _ in loose):
@@ -620,7 +667,8 @@ def sbml_events_to_protocol(
                 _Fire(fire_t, past, loose, priority, unprioritised, triggered, i, eid, assigns)
             )
 
-    lossy.extend(_unordered_writes(fires))
+    span = max([float(t_span[1]), *(f.time for f in fires)]) - t_start
+    lossy.extend(_unordered_writes(fires, span))
     if lossy:
         return None, lossy
     if not fires:

@@ -106,9 +106,13 @@ priority counting as 0. Of equal priority, delayed events execute in the order
 they were triggered, and where none of the events has a priority (a plain 0
 counts as none), after the ones that aren't delayed. BNGsim draws among the
 rest at random, and where that draw decides what a species is left at, the
-conversion is refused. So is a delayed event with a strict trigger that sets a
-species another event at its time sets differently, since rounding places it
-before or after the others.
+conversion is refused. BNGsim executes a strict trigger where it reads it
+true, a few doubles past its threshold, and a delayed one its delay after
+that. So rounding decides its order against an event due a little after it,
+within 100·ε·(|t| + the run's length) or 256·ε·max(|t|, 1), whichever is more
+(ε the double precision), and a delayed one's against an event due at its own
+time. Where those set a species to different values, the conversion is
+refused too.
 
 A species set by an assignment rule is handled as in `.net`. Its molecule is
 named after the rule, `@comp1:$__ar_B()`, next to the function `B()`. BNGsim
