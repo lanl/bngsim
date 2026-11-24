@@ -460,6 +460,32 @@ def test_a_rule_sized_state_is_read_at_the_size_the_next_run_reads(method, betwe
 
 
 @pytest.mark.parametrize("method", STOCHASTIC)
+@pytest.mark.parametrize(
+    "evaluate",
+    [
+        pytest.param(lambda m: m.rhs(m.get_state(), 0.0), id="rhs"),
+        pytest.param(lambda m: m.jacobian(m.get_state(), 0.0), id="jacobian"),
+        pytest.param(lambda m: m.jacobian(m.get_state(), 0.0, sparse=True), id="sparse jacobian"),
+        pytest.param(lambda m: m.propensities(m.get_state(), 0.0), id="propensities"),
+    ],
+)
+def test_an_evaluator_leaves_the_model_clock_where_the_run_left_it(method, evaluate):
+    """``c := V0 + time`` after a run to t = 4: 30 molecules at c = 7. An
+    evaluator at t = 0 left the model's clock there, so get_concentration read
+    the compartment at 3, [S] = 10 for 30/7. It reads the model at the time it
+    is given and puts the clock back, and the next run is the one it was."""
+    m = _rule_sized_after_a_run(method)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        evaluate(m)
+    assert m.get_concentration("S") == pytest.approx(30.0 / 7.0, rel=1e-12)
+    for then in (method, "ode"):
+        r = _run(m.clone(), then, t_span=(4, 5), n_points=2)
+        np.testing.assert_allclose(_sel(r, "S")[:, 0], 30.0, rtol=1e-6)
+        assert _sel(r, "[S]")[0, 0] == pytest.approx(30.0 / 7.0, rel=1e-9)
+
+
+@pytest.mark.parametrize("method", STOCHASTIC)
 @pytest.mark.parametrize("ss_method", ["integration", "newton"])
 def test_a_steady_state_from_an_ssa_state_keeps_its_amount(method, ss_method):
     """c' = 4 - c from 2 keeps X's 100 molecules, so [X] settles at 100/4 = 25.

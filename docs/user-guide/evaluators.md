@@ -29,7 +29,8 @@ Watch out:
 - The state is in `species_names` order. A state of the wrong length raises
   `ValueError`.
 - None of them changes the model's stored state: `get_state()` is the same
-  afterwards.
+  afterwards. The model's clock goes back to where it was too, so a `t` given
+  here does not become the time the model reads its state at.
 - They read the model's current parameters, so call `set_param` between calls
   to scan a parameter.
 - A row of `Result.species` is not always a valid state for them. Use
