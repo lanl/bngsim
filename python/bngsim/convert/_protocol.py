@@ -779,6 +779,11 @@ def combine_protocols(
     ``source`` labels are joined with ``" + "`` and the ``dropped`` / ``lossy``
     directives are concatenated, so provenance survives the merge.
 
+    ``network_gen`` is the first one any spec names, so a cap survives the merge.
+    The exception is a first spec parsed from a ``.bngl`` with ``None`` there and
+    a run with a network method: BNG2.pl generated the network those runs start
+    from with its defaults, and the merge keeps ``None``.
+
     Parameters
     ----------
     specs : sequence of ProtocolSpec
@@ -808,14 +813,14 @@ def combine_protocols(
     # Only the first spec's steps can come before a network is generated: the
     # rest run on the network it leaves, after the reset that separates them.
     generation_step = non_empty[0].generation_step
-    if generation_step is not None:
-        # So its call is the one that builds the network, and a None there is
-        # BNG2.pl's defaults (a run with a network method came first), not "no call".
-        network_gen = non_empty[0].network_gen
+    first = non_empty[0]
+    if first.network_gen is None and generation_step is not None and _runs_a_network(first):
+        # A .bngl's runs on a network it generated with no call of its own: BNG2.pl's
+        # defaults, which a later spec's cap must not replace.
+        network_gen = None
     else:
-        # A spec with no source that generated a network (SED-ML, SBML events):
-        # the first contributing spec that names a generate_network carries its
-        # cap through the merge (independent SED-ML files rarely carry one at all).
+        # The first contributing spec that names a generate_network carries its cap
+        # through the merge (independent SED-ML files rarely carry one at all).
         network_gen = next(
             (spec.network_gen for spec in non_empty if spec.network_gen is not None), None
         )
@@ -865,6 +870,12 @@ def combine_protocols(
         lossy_before_generation=non_empty[0].lossy_before_generation,
         dropped_before_generation=non_empty[0].dropped_before_generation,
     )
+
+
+def _runs_a_network(spec: ProtocolSpec) -> bool:
+    """Whether a run of *spec* runs on a network: one with a method that is not
+    network-free (NFsim's ``nf``, RuleMonkey's ``rm``)."""
+    return any(isinstance(s, Experiment) and s.method not in ("nf", "rm") for s in spec.steps)
 
 
 # ─── Parser ─────────────────────────────────────────────────────────────────
@@ -1028,8 +1039,9 @@ def _network_generation_call(text: str) -> tuple[str, str] | None:
     which adds nothing to a network that is complete, so its ``max_iter`` does not
     bound it. A network-free run (``simulate_nf``, ``method=>"nf"``) generates
     nothing, and neither does ``generate_hybrid_model``, which writes a separate
-    model, so the search reads past both. It stops at ``quit``, where BNG2.pl
-    does. Only one call is returned: BNG2.pl continues the network at a later
+    model, so the search reads past both. It reads past ``quit`` too, as
+    :func:`bngsim._bngl_loader.generation_source` does, which keeps the actions
+    after one. Only one call is returned: BNG2.pl continues the network at a later
     ``generate_network`` with ``overwrite=>1``, under that call's limits, and what
     that adds is not taken.
     """
@@ -1037,7 +1049,7 @@ def _network_generation_call(text: str) -> tuple[str, str] | None:
         low = verb.lower()
         if low == "generate_network":
             return verb, argstr
-        if low == "quit" or _generates_a_network(low, argstr):
+        if _generates_a_network(low, argstr):
             return None
     return None
 

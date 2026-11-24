@@ -375,10 +375,13 @@ def test_a_generate_network_after_generate_hybrid_model_still_sets_the_bound():
     assert generate_network_call(text) == "generate_network({max_iter=>3,overwrite=>1})"
 
 
-def test_a_generate_network_after_quit_is_not_read():
-    """BNG2.pl stops reading actions at ``quit()``, so a call after it never runs."""
-    text = "begin model\nend model\nquit()\ngenerate_network({max_iter=>3})\n"
-    assert generate_network_call(text) == "generate_network({overwrite=>1})"
+def test_a_generate_network_after_quit_is_still_forwarded():
+    """:func:`generation_source` skips ``quit()`` and keeps the actions after it,
+    so the call after one is still where the load generates the network, and its
+    ``max_stoich`` still makes this rule set finite. BNG2.pl stops at ``quit`` and
+    builds no network at all, so its defaults would not match it either."""
+    text = _RL_CHAINS + "quit()\ngenerate_network({max_stoich=>{R=>5}})\n"
+    assert generate_network_call(text) == "generate_network({max_stoich=>{R=>5},overwrite=>1})"
 
 
 def test_commented_out_generate_network_is_not_read(tmp_path: Path):

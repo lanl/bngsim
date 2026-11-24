@@ -245,6 +245,13 @@ def test_a_network_run_before_generate_network_leaves_network_gen_none() -> None
     assert parse_bngl_protocol(block).generation_step == p.generation_step
 
 
+def test_network_gen_reads_past_quit_as_the_loader_does() -> None:
+    """``from_bngl`` keeps the actions after ``quit()`` and forwards the call after
+    it, so ``network_gen`` names that call too."""
+    text = "begin model\nend model\nquit()\ngenerate_network({max_stoich=>{R=>5}})\n"
+    assert parse_bngl_protocol(text).network_gen == "generate_network({max_stoich=>{R=>5}})"
+
+
 @pytest.mark.parametrize(
     "action",
     ["writeMDL()", 'visualize({type=>"reaction_network"})'],
@@ -578,6 +585,11 @@ def test_combine_protocols_keeps_the_first_specs_network_gen_even_when_none() ->
     sedml = ProtocolSpec(steps=(Experiment("simulate", "ode", (0.0, 1.0), 2),))
     assert sedml.generation_step is None
     assert combine_protocols([sedml, capped]).network_gen == "generate_network({max_agg=>5})"
+    # A .bngl of network-free runs generated no network, so its None is no call,
+    # and the later spec's cap is the one that makes the merged network finite.
+    nf_only = parse_bngl_protocol(head + "simulate_nf({t_end=>1,n_steps=>1})\n")
+    assert nf_only.network_gen is None and nf_only.generation_step is not None
+    assert combine_protocols([nf_only, capped]).network_gen == "generate_network({max_agg=>5})"
 
 
 def test_combine_protocols_concatenates_dropped_and_lossy() -> None:
