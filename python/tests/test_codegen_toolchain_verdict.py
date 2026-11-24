@@ -757,11 +757,17 @@ def test_a_cc_that_cannot_be_split_says_so(clean, monkeypatch):
     assert compiler is None
     assert "No closing quotation" in verdict and "CC='cc -DNAME=\"unclosed'" in verdict
     assert tc.peek() == (None, str(verdict).split(" Models at or above")[0])
-    # Set wrong, not missing: no compiler to install would fix it.
+
+
+@posix_only
+def test_an_unreadable_cc_is_set_wrong_not_a_missing_compiler(clean, monkeypatch):
+    """Through a run, on this platform as it is: no compiler to install would fix
+    it, so the code is the broken toolchain's and no install remedy is offered."""
+    monkeypatch.setenv("CC", 'cc -DNAME="unclosed')
     with pytest.raises(bngsim.CodegenToolchainError, match="cannot be read") as err:
         bngsim.Simulator(_chain(5), method="ode", codegen=True)
     assert err.value.code == "env.broken_toolchain"
-    assert all(r.get("kind") != "install_compiler" for r in err.value.remedies or [])
+    assert all(r.get("kind") != "install_compiler" for r in err.value.remedies)
 
 
 @posix_only
@@ -953,6 +959,41 @@ def test_a_model_failure_under_a_foreign_probe_is_the_toolchains(archless_cc, mo
     the other machine: the toolchain is what cannot build this process a library."""
     with pytest.raises(bngsim.CodegenToolchainError, match="this Python can load"):
         cg.compile_rhs("#error this model fails\n", "1759modelfails00")
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        "gcc: error: unrecognized command-line option '-arch'",
+        "clang: error: unsupported option '-arch' for target 'x86_64-unknown-linux-gnu'",
+    ],
+)
+def test_a_compiler_that_refuses_arch_is_told_so(stderr, monkeypatch):
+    """A macOS compiler that errors on -arch, where GCC only warns: the verdict
+    says why the flag is there and what to set CC to, and tries no other SDK."""
+    monkeypatch.setattr(cg.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(cg, "_CODEGEN_MACHINE", "arm64")
+    monkeypatch.setattr(tc, "_is_macos", lambda: True)
+    monkeypatch.setattr(tc, "_current_sdk", lambda: ("/x/MacOSX26.sdk", "SDKROOT"))
+    monkeypatch.setattr(tc, "_linker", lambda compiler: "")
+
+    def no_scan(compiler, sdk):
+        raise AssertionError("an SDK scan for a compiler that refuses -arch")
+
+    monkeypatch.setattr(tc, "_sdk_suggestion", no_scan)
+    message = tc._broken_message(["othercc"], stderr)
+    assert "fails to build" in message and stderr in message
+    assert "every codegen build passes -arch arm64" in message
+    assert "Set CC to one that does" in message
+
+
+def test_a_failure_that_does_not_name_arch_says_nothing_of_it(monkeypatch):
+    monkeypatch.setattr(cg.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(cg, "_CODEGEN_MACHINE", "arm64")
+    monkeypatch.setattr(tc, "_is_macos", lambda: False)
+    monkeypatch.setattr(tc, "_linker", lambda compiler: "")
+    message = tc._broken_message(["cc"], "ld: symbol(s) not found for architecture arm64")
+    assert "passes -arch" not in message
 
 
 def test_a_foreign_probe_tries_no_other_sdk(monkeypatch):

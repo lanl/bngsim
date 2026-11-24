@@ -635,8 +635,14 @@ def _broken_message(compiler: list[str], stderr: str) -> str:
     ``stderr`` is what the probe's compiler printed; a :class:`_ForeignLibrary`
     says the probe built a library for another architecture (issue #1759), which
     another SDK would not change, so none is tried."""
+    from bngsim import _codegen as cg
+
     exe = shutil.which(compiler[0]) or compiler[0]
     held = getattr(stderr, "held", None)
+    # A compiler that will not take the -arch every macOS build passes (issue
+    # #1759): no other SDK would change that.
+    arch = cg._arch_flags()
+    refuses_arch = held is None and bool(arch) and "-arch" in stderr
     if held is None:
         head = (
             "The C toolchain cannot build a codegen library: a trivial C file fails to "
@@ -660,7 +666,7 @@ def _broken_message(compiler: list[str], stderr: str) -> str:
             target = os.path.basename(os.path.realpath(sdk))
             shown = sdk if target == os.path.basename(sdk) else f"{sdk} -> {target}"
             lines.append(f"  SDK:      {shown} ({source})")
-            if held is None:
+            if held is None and not refuses_arch:
                 suggestion = _sdk_suggestion(compiler, sdk)
     if held is None:
         lines.append("  error:")
@@ -669,6 +675,12 @@ def _broken_message(compiler: list[str], stderr: str) -> str:
         lines.append("  compiler output:")
         lines.append(_excerpt(stderr) or "    (the compiler printed nothing)")
         suggestion = foreign_library_reason(held)
+    if refuses_arch:
+        lines.append(
+            f"On macOS every codegen build passes {' '.join(arch)}, so that the library "
+            "is built for the machine this Python runs as, and this compiler does not "
+            "take it. Set CC to one that does (Apple's clang, /usr/bin/cc)."
+        )
     if suggestion:
         lines.append(suggestion)
     lines.append(

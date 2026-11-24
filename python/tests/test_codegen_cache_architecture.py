@@ -427,6 +427,21 @@ def test_a_sharded_build_compiles_and_links_for_the_interpreters_machine(tmp_pat
     assert {"_bngsim_driver", "_bngsim_unit_0"} <= _exports(out, machine)
 
 
+@on_macos
+@requires_cc
+def test_a_cc_that_names_the_other_arch_builds_one_library_holding_both(tmp_path, monkeypatch):
+    """``CC="cc -arch <other>"`` left set from a Rosetta workaround, in a native
+    Python: clang builds one universal library, which holds this machine and is
+    installed."""
+    monkeypatch.setattr(tc, "_verdicts", {})
+    monkeypatch.setattr(tc, "_warned", set())
+    monkeypatch.setattr(cg, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setenv("CC", f"cc -arch {_other_machine()}")
+    so = cg.compile_rhs(tc._PROBE_SOURCE, "1759universal000")
+    assert _lipo(so) == {"arm64", "x86_64"}
+    assert tc.macho_architectures(so) == frozenset({"arm64", "x86_64"})
+
+
 @functools.lru_cache(maxsize=1)
 def _x86_64_python() -> list[str] | None:
     """A command that runs Python as x86_64 on this Mac: Apple's universal
@@ -443,6 +458,19 @@ def _x86_64_python() -> list[str] | None:
     except (OSError, subprocess.SubprocessError):
         return None
     return cmd if out.returncode == 0 and out.stdout.strip() == "x86_64" else None
+
+
+@pytest.fixture
+def x86_64_python() -> list[str]:
+    """The command :func:`_x86_64_python` finds, or a skip where there is none.
+    Asked when a test runs, not while the file is collected."""
+    python = _x86_64_python()
+    if python is None:
+        pytest.skip(
+            "needs Rosetta 2 and Apple's universal /usr/bin/python3 for an x86_64 "
+            "Python to run in (issue #1759)"
+        )
+    return python
 
 
 _CALL_RHS = r"""
@@ -476,21 +504,15 @@ def _call_in(python: list[str], so) -> dict:
 
 @on_macos
 @requires_cc
-@pytest.mark.skipif(
-    _x86_64_python() is None,
-    reason="needs Rosetta 2 and Apple's universal /usr/bin/python3 for an x86_64 Python "
-    "to load the library in (issue #1759)",
-)
-def test_an_x86_64_python_under_rosetta_loads_and_calls_the_library(built_for_the_other_machine):
+def test_an_x86_64_python_under_rosetta_loads_and_calls_the_library(
+    x86_64_python, built_for_the_other_machine
+):
     """End to end, the issue's case: a library ``compile_rhs`` built for x86_64
     on an Apple Silicon Mac loads into an x86_64 Python under Rosetta, and its
     right-hand side is ``dA/dt = -k A`` at ``k = 0.5, A = 2``."""
     machine, so, _ = built_for_the_other_machine
     assert machine == "x86_64"
-    python = _x86_64_python()
-    assert python is not None
-
-    called = _call_in(python, so)
+    called = _call_in(x86_64_python, so)
     assert called == {"machine": "x86_64", "rc": 0, "ydot": [-1.0, 1.0]}
 
 
@@ -502,21 +524,15 @@ subprocess.run(sys.argv[1:], check=True)
 
 @on_macos
 @requires_cc
-@pytest.mark.skipif(
-    _x86_64_python() is None,
-    reason="needs Rosetta 2 and Apple's universal /usr/bin/python3 for an x86_64 Python "
-    "to compile and load in (issue #1759)",
-)
 def test_from_inside_rosetta_the_old_command_builds_arm64_and_the_new_one_x86_64(
-    built_for_the_other_machine, tmp_path, monkeypatch
+    x86_64_python, built_for_the_other_machine, tmp_path
 ):
     """The issue's premise, from a translated process: the compile command
     without ``-arch`` (main's), run by an x86_64 Python under Rosetta, builds
     the Mac's arm64, which that Python cannot load; the command with it builds
     x86_64, which it loads and calls."""
     _, _, source = built_for_the_other_machine
-    python = _x86_64_python()
-    assert python is not None
+    python = x86_64_python
     src = tmp_path / "rhs.c"
     src.write_text(source)
     command = cg._build_compile_cmd(src, tmp_path / "new.dylib", "-O2", ["cc"])
@@ -536,12 +552,7 @@ def test_from_inside_rosetta_the_old_command_builds_arm64_and_the_new_one_x86_64
 
 
 @on_macos
-@pytest.mark.skipif(
-    _x86_64_python() is None,
-    reason="needs Rosetta 2 and Apple's universal /usr/bin/python3 for an x86_64 Python "
-    "to read sysctl.proc_translated in (issue #1759)",
-)
-def test_an_x86_64_python_under_rosetta_reads_as_translated():
+def test_an_x86_64_python_under_rosetta_reads_as_translated(x86_64_python):
     """The check that puts "under Rosetta 2" in the message, run in such a process
     (the function's own source, since that Python cannot import this bngsim)."""
     import inspect
@@ -550,6 +561,6 @@ def test_an_x86_64_python_under_rosetta_reads_as_translated():
     source = textwrap.dedent(inspect.getsource(tc._translated))
     script = f"import platform\n{source}\nprint(_translated())\n"
     out = subprocess.run(
-        [*_x86_64_python(), "-c", script], capture_output=True, text=True, timeout=60
+        [*x86_64_python, "-c", script], capture_output=True, text=True, timeout=60
     )
     assert (out.returncode, out.stdout.strip()) == (0, "True"), out.stderr
