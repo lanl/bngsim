@@ -36,7 +36,8 @@ What to watch out for:
   or `$CC`. Without one, `codegen=True` and forward sensitivities raise
   `bngsim.CodegenToolchainError`, and large models fall back to the interpreter.
   On macOS and Linux `CC` is a command line, split as the shell splits it, so it
-  can carry arguments (`CC="ccache cc"`); on Windows it is one path.
+  can carry arguments (`CC="ccache cc"`): quote a path with a space in it,
+  unless `CC` is that path and nothing else. On Windows it is one path.
 - **On a cluster, compute nodes often have no compiler on `PATH`,** even when
   the login node does. Load one in the batch job (`module load gcc`), or turn
   codegen off with `BNGSIM_NO_CODEGEN=1`.

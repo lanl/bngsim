@@ -160,6 +160,17 @@ def cc_is_set() -> bool:
     return bool(os.environ.get("CC", "").strip())
 
 
+def _from_cc(compiler: list[str]) -> str:
+    """What a "compiler not found" message says of ``CC``: nothing when it is not
+    set, and when it was split into words, that a path with a space in it is
+    quoted (issue #1759)."""
+    if not cc_is_set():
+        return ""
+    if len(compiler) > 1:
+        return " (from CC, which is read as a command line: quote a path that has a space in it)"
+    return " (from CC)"
+
+
 def toolchain_key(compiler: list[str] | None) -> tuple:
     """The key a verdict is kept under: the compiler command (``None`` when none
     can be named) and the environment variables in :data:`_TOOLCHAIN_ENV`."""
@@ -257,7 +268,7 @@ def peek() -> tuple[list[str] | None, str | None]:
     if shutil.which(compiler[0]) is None:
         return compiler, (
             f"C compiler not found: {compiler[0]!r} is not an executable on PATH"
-            f"{' (from CC)' if cc_is_set() else ''}."
+            f"{_from_cc(compiler)}."
         )
     entry = _verdicts.get(toolchain_key(compiler))
     return compiler, (None if entry is None else entry[0])
@@ -271,7 +282,7 @@ def record_missing(compiler: list[str]) -> str | None:
         return None
     message = no_compiler(
         f"C compiler not found: {compiler[0]!r} is not an executable on PATH"
-        f"{' (from CC)' if cc_is_set() else ''}. Install Xcode Command Line "
+        f"{_from_cc(compiler)}. Install Xcode Command Line "
         "Tools (macOS), gcc (Linux), or Visual Studio Build Tools (Windows), or set CC. "
         f"{_FALLBACK}"
     )
@@ -398,6 +409,8 @@ def foreign_library(path: str | os.PathLike) -> frozenset[str] | None:
 def _translated() -> bool:
     """Whether this process runs under Rosetta 2 (``sysctl.proc_translated``,
     which an Intel Mac does not have)."""
+    if platform.system() != "Darwin":
+        return False
     try:
         import ctypes
 
@@ -410,7 +423,7 @@ def _translated() -> bool:
             None,
             ctypes.c_size_t(0),
         )
-    except (OSError, AttributeError):
+    except (OSError, AttributeError, TypeError):
         return False
     return rc == 0 and value.value == 1
 

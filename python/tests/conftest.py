@@ -443,7 +443,8 @@ _DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
         _ANYWHERE,
         "issue #1759's builds for the other Mac architecture: -arch, a Mach-O "
         "library, and lipo and nm to read it are Apple's. The commands, the Mach-O "
-        "reader and the message are tested on every OS",
+        "reader and the message are tested on the Linux legs too, and the CC split "
+        "and the message on windows-tail",
     ),
     (
         "needs Rosetta 2",

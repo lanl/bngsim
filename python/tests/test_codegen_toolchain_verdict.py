@@ -23,6 +23,7 @@ import logging
 import os
 import platform
 import re
+import shlex
 import shutil
 import stat
 from pathlib import Path
@@ -763,7 +764,7 @@ def test_a_cc_that_cannot_be_split_says_so(clean, monkeypatch):
 def test_a_cc_with_arguments_is_found_on_path(clean, monkeypatch):
     """The refusal the issue quotes: ``'/usr/bin/cc -arch x86_64' is not an
     executable on PATH (from CC)``. The compiler is the first word."""
-    monkeypatch.setenv("CC", f"{REAL_CC} -O1")
+    monkeypatch.setenv("CC", f"{shlex.quote(REAL_CC)} -O1")
     assert tc.peek() == ([REAL_CC, "-O1"], None)
     assert tc.record_missing([REAL_CC, "-O1"]) is None
 
@@ -773,7 +774,35 @@ def test_a_missing_first_word_of_cc_is_named(clean, monkeypatch):
     monkeypatch.setenv("CC", "no-such-ccache-1759 cc")
     compiler, problem = tc.peek()
     assert compiler == ["no-such-ccache-1759", "cc"]
-    assert "'no-such-ccache-1759' is not an executable on PATH (from CC)" in problem
+    assert "'no-such-ccache-1759' is not an executable on PATH (from CC, which is " in problem
+    assert "quote a path that has a space in it" in problem
+    assert "quote a path" in tc.record_missing(compiler)
+
+
+@posix_only
+def test_a_cc_of_one_word_that_is_missing_says_from_cc_alone(clean, monkeypatch):
+    monkeypatch.setenv("CC", str(clean / "no-such-cc"))
+    assert tc.peek()[1].endswith("is not an executable on PATH (from CC).")
+
+
+@posix_only
+@requires_posix_cc
+def test_a_cc_that_names_a_path_with_a_space_is_that_path(clean, monkeypatch):
+    """As before CC was split: a value that as a whole names an executable is
+    that executable. One that does not is split, and a quoted one is the path."""
+    tools = clean / "my tools"
+    tools.mkdir()
+    cc = tools / "cc"
+    cc.write_text(f'#!/bin/sh\nexec "{REAL_CC}" "$@"\n')
+    cc.chmod(cc.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("CC", str(cc))
+    assert cg._find_c_compiler() == [str(cc)]
+    assert tc.peek() == ([str(cc)], None)
+    assert cg.compile_rhs(tc._PROBE_SOURCE, "1759space0000000").exists()
+    monkeypatch.setenv("CC", f"{shlex.quote(str(cc))} -O1")
+    assert cg._find_c_compiler() == [str(cc), "-O1"]
+    monkeypatch.setenv("CC", f"{cc} -O1")  # not one file: a command line, split on blanks
+    assert cg._find_c_compiler() == [*str(cc).split(), "-O1"]
 
 
 @posix_only
@@ -781,7 +810,7 @@ def test_a_missing_first_word_of_cc_is_named(clean, monkeypatch):
 def test_the_arguments_in_cc_reach_the_compiler(clean, monkeypatch):
     """A source that builds only when CC's arguments are on the command line:
     before the fix, CC was looked for as one file, which is not there."""
-    monkeypatch.setenv("CC", f"{REAL_CC} -DBNGSIM_CC_ARGUMENT=1759")
+    monkeypatch.setenv("CC", f"{shlex.quote(REAL_CC)} -DBNGSIM_CC_ARGUMENT=1759")
     source = (
         "#if BNGSIM_CC_ARGUMENT != 1759\n#error CC's arguments did not reach the compiler\n"
         "#endif\n" + tc._PROBE_SOURCE
@@ -807,8 +836,8 @@ exec "$REAL_CC" "$@"
 
 macos_only = pytest.mark.skipif(
     platform.system() != "Darwin",
-    reason="macOS only: a Mach-O library and -arch (issue #1759); the reader and "
-    "the message are tested on every OS in test_codegen_cache_architecture.py",
+    reason="macOS only: a Mach-O library and -arch (issue #1759); the reader is "
+    "tested on Linux too, in test_codegen_cache_architecture.py",
 )
 
 
@@ -821,7 +850,7 @@ def archless_cc(clean, monkeypatch):
     cc.chmod(cc.stat().st_mode | stat.S_IXUSR)
     log = clean / "archless.log"
     log.write_text("")
-    monkeypatch.setenv("CC", str(cc))
+    monkeypatch.setenv("CC", shlex.quote(str(cc)))
     monkeypatch.setenv("ARCHLESS_LOG", str(log))
     monkeypatch.setenv("REAL_CC", REAL_CC or "/nonexistent/cc")
     other = "x86_64" if platform.machine() == "arm64" else "arm64"
@@ -892,8 +921,8 @@ def test_the_probe_does_not_pass_a_library_for_another_machine(archless_cc):
     assert ok is False
     assert output.held == frozenset({platform.machine()})
     assert "archless-cc: warning: -arch ignored" in output
-    with_sdk = tc._broken_message(cg._find_c_compiler(), output)
-    assert f"-arch {machine}" in with_sdk
+    message = tc._broken_message(cg._find_c_compiler(), output)
+    assert f"-arch {machine}" in message and "holds" in message
 
 
 @posix_only

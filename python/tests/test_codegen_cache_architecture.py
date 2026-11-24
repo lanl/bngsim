@@ -274,10 +274,12 @@ X86_64, ARM64 = 0x01000007, 0x0100000C
         (_fat([]), None),
         (_fat([ARM64, X86_64])[:-1], None),
         (_fat([ARM64] * 65), None),
+        (_fat([X86_64] * 64), {"x86_64"}),
     ],
     ids=[
         "x86_64", "arm64", "i386", "ppc-big-endian", "universal", "universal-64",
         "unnamed-cpu", "elf", "pe", "short", "no-slices", "cut-table", "too-many-slices",
+        "most-slices",
     ],
 )  # fmt: skip
 def test_the_mach_o_reader(data, held, tmp_path):
@@ -310,6 +312,7 @@ def test_nothing_is_foreign_off_macos(system, monkeypatch, tmp_path):
         ("x86_64", b"not a library", None),
         ("ppc64", _thin(ARM64), None),
     ],
+    ids=["arm64-in-x86_64", "x86_64-in-arm64", "own", "universal", "not-mach-o", "unnamed"],
 )
 def test_a_library_is_foreign_when_it_holds_no_code_for_this_machine(
     machine, data, foreign, monkeypatch, tmp_path
@@ -471,15 +474,11 @@ def _call_in(python: list[str], so) -> dict:
     reason="needs Rosetta 2 and Apple's universal /usr/bin/python3 for an x86_64 Python "
     "to load the library in (issue #1759)",
 )
-def test_an_x86_64_python_under_rosetta_loads_and_calls_the_library(
-    built_for_the_other_machine, tmp_path
-):
+def test_an_x86_64_python_under_rosetta_loads_and_calls_the_library(built_for_the_other_machine):
     """End to end, the issue's case: a library ``compile_rhs`` built for x86_64
     on an Apple Silicon Mac loads into an x86_64 Python under Rosetta, and its
-    right-hand side is ``dA/dt = -k A`` at ``k = 0.5, A = 2``. A library built
-    the way it was before the fix (no ``-arch``, so the Mac's own arm64) does
-    not load there, which shows the process is the one the issue is about."""
-    machine, so, source = built_for_the_other_machine
+    right-hand side is ``dA/dt = -k A`` at ``k = 0.5, A = 2``."""
+    machine, so, _ = built_for_the_other_machine
     assert machine == "x86_64"
     python = _x86_64_python()
     assert python is not None
@@ -487,14 +486,46 @@ def test_an_x86_64_python_under_rosetta_loads_and_calls_the_library(
     called = _call_in(python, so)
     assert called == {"machine": "x86_64", "rc": 0, "ydot": [-1.0, 1.0]}
 
-    src = tmp_path / "native.c"
+
+_COMPILE_HERE = r"""
+import subprocess, sys
+subprocess.run(sys.argv[1:], check=True)
+"""
+
+
+@on_macos
+@requires_cc
+@pytest.mark.skipif(
+    _x86_64_python() is None,
+    reason="needs Rosetta 2 and Apple's universal /usr/bin/python3 for an x86_64 Python "
+    "to compile and load in (issue #1759)",
+)
+def test_from_inside_rosetta_the_old_command_builds_arm64_and_the_new_one_x86_64(
+    built_for_the_other_machine, tmp_path, monkeypatch
+):
+    """The issue's premise, from a translated process: the compile command
+    without ``-arch`` (main's), run by an x86_64 Python under Rosetta, builds
+    the Mac's arm64, which that Python cannot load; the command with it builds
+    x86_64, which it loads and calls."""
+    _, _, source = built_for_the_other_machine
+    python = _x86_64_python()
+    assert python is not None
+    src = tmp_path / "rhs.c"
     src.write_text(source)
-    native = tmp_path / "native.dylib"
-    subprocess.run(["cc", "-shared", "-fPIC", "-o", str(native), str(src), "-lm"], check=True)
-    assert _lipo(native) == {"arm64"}
-    refused = _call_in(python, native)
-    assert refused["machine"] == "x86_64"
-    assert "incompatible architecture" in refused["error"]
+    command = cg._build_compile_cmd(src, tmp_path / "new.dylib", "-O2", ["cc"])
+    assert command[1:3] == ["-arch", "x86_64"]
+    before = [word for i, word in enumerate(command) if i not in (1, 2)]
+    before[before.index("-o") + 1] = str(tmp_path / "old.dylib")
+
+    for cmd in (before, command):
+        out = subprocess.run(
+            [*python, "-c", _COMPILE_HERE, *cmd], capture_output=True, text=True, timeout=300
+        )
+        assert out.returncode == 0, out.stderr
+    assert _lipo(tmp_path / "old.dylib") == {"arm64"}
+    assert _lipo(tmp_path / "new.dylib") == {"x86_64"}
+    assert "incompatible architecture" in _call_in(python, tmp_path / "old.dylib")["error"]
+    assert _call_in(python, tmp_path / "new.dylib")["ydot"] == [-1.0, 1.0]
 
 
 @on_macos
@@ -509,7 +540,8 @@ def test_an_x86_64_python_under_rosetta_reads_as_translated():
     import inspect
     import textwrap
 
-    script = textwrap.dedent(inspect.getsource(tc._translated)) + "\nprint(_translated())\n"
+    source = textwrap.dedent(inspect.getsource(tc._translated))
+    script = f"import platform\n{source}\nprint(_translated())\n"
     out = subprocess.run(
         [*_x86_64_python(), "-c", script], capture_output=True, text=True, timeout=60
     )

@@ -336,7 +336,13 @@ _compile_counter = itertools.count()
 # (issue #1507). The key also names the architecture now (issue #1486). The
 # source digest already moves for all of it; the bump is for an install whose
 # digest is empty. Invalidate v42.
-_CODEGEN_VERSION = "43"
+# v44: lanl/bngsim #1759 — on macOS every compile and link asks for the
+# interpreter's architecture with -arch. Under Rosetta a v43 compile built arm64
+# for an x86_64 Python and cached it under the x86-64 key, where every later run
+# failed at dlopen. The source digest already moves; the bump is for an install
+# whose digest is empty, which would go on loading those libraries. Invalidate
+# v43.
+_CODEGEN_VERSION = "44"
 
 
 # Modules whose *source* determines the emitted C. ``_codegen`` holds the
@@ -5017,6 +5023,10 @@ def _shared_lib_suffix() -> str:
         return ".so"
 
 
+def _has_blank(text: str) -> bool:
+    return any(ch.isspace() for ch in text)
+
+
 def _find_c_compiler() -> list[str]:
     """Find the best available C compiler and return its base command.
 
@@ -5030,10 +5040,12 @@ def _find_c_compiler() -> list[str]:
 
     On Linux and macOS ``CC`` is a command line, split as the shell splits it,
     as make and CMake read it: ``CC="ccache cc"`` or ``CC="cc -arch x86_64"``
-    is a compiler and its arguments (issue #1759), and a path with a space in
-    it is quoted. On Windows it is one path, as it always was, since a path
-    there often has a space in it and a backslash, which the shell's rules
-    would take as an escape. A ``CC`` that is empty or only blanks is not set.
+    is a compiler and its arguments (issue #1759). A path with a space in it is
+    quoted, except that a ``CC`` which as a whole names an executable is that
+    executable, as it was before ``CC`` was split. On Windows it is one path,
+    as it always was, since a path there often has a space in it and a
+    backslash, which the shell's rules would take as an escape. A ``CC`` that
+    is empty or only blanks is not set.
 
     Raises ``RuntimeError`` when ``CC`` cannot be split (an unclosed quote), and
     on Windows when neither ``cl`` nor ``gcc`` is found.
@@ -5044,7 +5056,7 @@ def _find_c_compiler() -> list[str]:
     cc_env = os.environ.get("CC", "")
     system = platform.system()
     if cc_env.strip():
-        if system == "Windows":
+        if system == "Windows" or (_has_blank(cc_env) and shutil.which(cc_env)):
             return [cc_env]
         try:
             tokens = shlex.split(cc_env)
