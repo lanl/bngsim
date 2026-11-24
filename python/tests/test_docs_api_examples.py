@@ -786,7 +786,9 @@ def test_a_block_the_page_runs_pass_over_is_reported(page: str, name: str) -> No
     the summary counts it; where its need is met, the page run ran it."""
     need = _NOT_RUN[(page, name)]
     if not need.met():
-        pytest.skip(f"{page}, {name!r}: {need.reason}; {need.absent}")
+        pytest.skip(
+            f"{page}, {name!r} is passed over by the page run: {need.reason}; {need.absent}"
+        )
 
 
 def test_the_blocks_the_page_runs_pass_over_are_few_and_named() -> None:
