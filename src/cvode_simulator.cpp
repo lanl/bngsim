@@ -97,9 +97,19 @@ namespace bngsim {
 // step's order, which is how it finds that order: the CV_BAD_K that answers is
 // expected, and its message is dropped by both handlers below.
 thread_local bool g_probing_step_order = false;
+// Set where the run's wall-clock budget ran out inside a CVode call (issue
+// #1838; see read_budget_in_call). The right-hand side threw to end the call,
+// and what CVODE says of it, "the right-hand side routine failed in an
+// unrecoverable manner", is the timeout, which the run raises itself as
+// SimulationTimeout: both handlers drop what CVODE says from then until the
+// next run selects its handler.
+thread_local bool g_budget_spent = false;
 
 static void log_all_but_a_batch_spent(int line, const char *func, const char *file, const char *msg,
                                       SUNErrCode err_code, void *err_user_data, SUNContext sunctx) {
+    if (g_budget_spent) {
+        return;
+    }
     if (err_code == CV_TOO_MUCH_WORK && func != nullptr && std::strcmp(func, "CVode") == 0) {
         return;
     }
@@ -112,13 +122,14 @@ static void log_all_but_a_batch_spent(int line, const char *func, const char *fi
 static void log_all_but_an_order_probe(int line, const char *func, const char *file,
                                        const char *msg, SUNErrCode err_code, void *err_user_data,
                                        SUNContext sunctx) {
-    if (g_probing_step_order && err_code == CV_BAD_K) {
+    if (g_budget_spent || (g_probing_step_order && err_code == CV_BAD_K)) {
         return;
     }
     SUNLogErrHandlerFn(line, func, file, msg, err_code, err_user_data, sunctx);
 }
 
 static void select_spent_batch_handler(SUNContext ctx) {
+    g_budget_spent = false;
     const char *keep = std::getenv("BNGSIM_LOG_SPENT_BATCHES");
     const bool log_them = keep != nullptr && *keep != '\0' && std::strcmp(keep, "0") != 0;
     if (ctx != nullptr && SUNContext_ClearErrHandlers(ctx) == SUN_SUCCESS) {
@@ -2355,12 +2366,16 @@ static int held_slide_rhs(sunrealtype t, N_Vector y, N_Vector ydot, void *user_d
 // so it sees every such call. It is the hot path, so the clock is read once in
 // 256 calls: a read is ~40 ns, under 0.2 ns a call, and a run past its budget
 // stops within 256 more. The TimeoutError it throws is parked by
-// guard_cvode_callback and raised as SimulationTimeout when CVode returns.
+// guard_cvode_callback and raised as SimulationTimeout when CVode returns, and
+// the error line SUNDIALS writes of the failed call is dropped (g_budget_spent).
 constexpr unsigned int kRhsCallsPerBudgetRead = 256;
 static inline void read_budget_in_call(void *user_data) {
     auto *data = static_cast<CvodeUserData *>(user_data);
-    if (data->budget.active() && ++data->rhs_calls % kRhsCallsPerBudgetRead == 0)
+    if (data->budget.active() && ++data->rhs_calls % kRhsCallsPerBudgetRead == 0 &&
+        data->budget.elapsed() > data->budget.limit_seconds()) {
+        g_budget_spent = true; // what CVODE says of the call this ends is dropped
         data->budget.check();
+    }
 }
 
 static int cvode_rhs(sunrealtype t, N_Vector y, N_Vector ydot, void *user_data) {

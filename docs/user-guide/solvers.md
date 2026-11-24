@@ -688,4 +688,5 @@ BNGsim drops the warnings itself for runs whose rate laws switch on state, or
 on time in an SBML model, since they restart at each switch, and for KINSOL
 solves, unless `SUNLOGGER_WARNING_FILENAME` is set. A BNGL rate law that
 switches on time keeps its warnings. The `[ERROR]` lines of a solve BNGsim
-expects to fail and recovers from are always dropped.
+expects to fail and recovers from are always dropped, and so is the one of a
+solver call that `timeout=` ends, which raises `SimulationTimeout`.

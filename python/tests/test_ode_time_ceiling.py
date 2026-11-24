@@ -159,7 +159,7 @@ DECAY = "species A, B; A = 1; B = 0; k = 1\nJ1: A -> B; k*A\n"
         pytest.param({"sensitivity_params": ["k"]}, id="with sensitivities"),
     ],
 )
-def test_a_timeout_stops_a_run_inside_one_cvode_call(kw):
+def test_a_timeout_stops_a_run_inside_one_cvode_call(capfd, kw):
     # On main each of these ran to its end, 10 to 12 s, past a budget of
     # 0.5 s, and returned with no error.
     with warnings.catch_warnings():
@@ -169,8 +169,28 @@ def test_a_timeout_stops_a_run_inside_one_cvode_call(kw):
         sim.run((0.0, 1e3), timeout=0.5, **ONE_CALL)
     assert info.value.timeout == 0.5
     assert info.value.elapsed > 0.5
+    # SUNDIALS' own account of the call the budget ended, "the right-hand
+    # side routine failed in an unrecoverable manner", is not written to
+    # standard error beside it. (Captured at the file descriptor: SUNDIALS
+    # writes to the C stderr.)
+    assert "[ERROR]" not in capfd.readouterr().err
     # The next run on the same Simulator is the run it would have been.
     r = sim.run((0.0, 5.0), 6, start="initial")
     np.testing.assert_allclose(
         np.asarray(r.species)[:, 0], np.exp(-np.arange(6.0)), rtol=1e-5, atol=1e-7
     )
+
+
+@pytest.mark.filterwarnings("ignore")
+def test_a_failure_after_a_timeout_is_still_logged(capfd):
+    # S' = S^2 from 1 has no solution past t = 1: CVODE's account of that
+    # failure still reaches standard error, from a run on the thread whose
+    # last run spent its budget inside a call.
+    sim = bngsim.Simulator(bngsim.Model.from_antimony_string(DECAY), "ode")
+    with pytest.raises(bngsim.SimulationTimeout):
+        sim.run((0.0, 1e3), timeout=0.2, **ONE_CALL)
+    assert "[ERROR]" not in capfd.readouterr().err
+    blowup = bngsim.Model.from_antimony_string("species S = 1; J: -> S; S^2;")
+    with pytest.raises(bngsim.SimulationError):
+        bngsim.Simulator(blowup, "ode").run((0.0, 2.0), 3)
+    assert "[ERROR]" in capfd.readouterr().err
