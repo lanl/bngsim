@@ -94,8 +94,8 @@ EXIT_CODES: dict[int, str] = {
     EXIT_CHECK_FAILED: "check not ok: the run's answer moved, or could not be checked",
 }
 
-#: The error codes that are refusals of the model. A SensitivityUnsupportedError,
-#: SsaValidationError or ConversionError is a refusal whatever its code.
+#: The error codes that are refusals of the model. A SensitivityUnsupportedError
+#: or SsaValidationError is a refusal whatever its code.
 _REFUSAL_CODES = frozenset(
     {
         "model.unsupported_construct",
@@ -111,7 +111,6 @@ _REFUSAL_CODES = frozenset(
 def exit_code_for(error: BaseException) -> int:
     """The exit code for an error a command raised."""
     from bngsim._exceptions import (
-        ConversionError,
         SensitivityUnsupportedError,
         SimulationError,
         SimulationTimeout,
@@ -122,9 +121,9 @@ def exit_code_for(error: BaseException) -> int:
     code = getattr(error, "code", None)
     if isinstance(error, SimulationTimeout) or code == "run.timeout":
         return EXIT_TIMEOUT
-    # A ConversionError: a .bngl file's action BNGsim cannot run as BNG2.pl
-    # would (bngsim run-bngl), refused rather than run approximately.
-    if isinstance(error, SensitivityUnsupportedError | SsaValidationError | ConversionError):
+    if getattr(error, "_cli_refusal", False):  # see _run_bngl
+        return EXIT_REFUSED
+    if isinstance(error, SensitivityUnsupportedError | SsaValidationError):
         return EXIT_REFUSED
     if code in _REFUSAL_CODES:
         return EXIT_REFUSED
@@ -1137,6 +1136,16 @@ def _validate_out(args: argparse.Namespace) -> None:
 _STACK_SUFFIXES = (".npz", ".h5", ".hdf5")
 
 
+def _once(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """A JSON object, refused where it names a key twice (``json`` keeps the
+    last value without a word)."""
+    keys = [k for k, _ in pairs]
+    twice = sorted({k for k in keys if keys.count(k) > 1})
+    if twice:
+        raise ValueError(f"{', '.join(twice)} is given more than once in one row")
+    return dict(pairs)
+
+
 def _parse_params(text: str | None) -> list[dict[str, float]]:
     """``--params``: JSON text, or a .json, .csv or .tsv file, of parameter sets."""
     if text is None:
@@ -1145,7 +1154,7 @@ def _parse_params(text: str | None) -> list[dict[str, float]]:
     rows: Any
     if source.startswith(("[", "{")):
         try:
-            rows = json.loads(source)
+            rows = json.loads(source, object_pairs_hook=_once)
         except ValueError as error:
             _refuse(f"--params is not JSON: {error}", "--params")
     else:
@@ -1163,7 +1172,7 @@ def _parse_params(text: str | None) -> list[dict[str, float]]:
         with open(source, encoding="utf-8-sig", newline="") as f:
             if lower.endswith(".json"):
                 try:
-                    rows = json.load(f)
+                    rows = json.load(f, object_pairs_hook=_once)
                 except ValueError as error:
                     _refuse(f"--params {source!r} is not JSON: {error}", "--params")
             else:
@@ -1702,7 +1711,7 @@ def _run_bngl(args: argparse.Namespace) -> tuple[Any, str]:
     import warnings
 
     from bngsim import Model, Result, run_protocol
-    from bngsim._exceptions import ConversionWarning
+    from bngsim._exceptions import ConversionError, ConversionWarning
 
     _validate(args)
     with warnings.catch_warnings():
@@ -1710,6 +1719,17 @@ def _run_bngl(args: argparse.Namespace) -> tuple[Any, str]:
         # too (as bngsim.run_bngl has it).
         warnings.simplefilter("ignore", ConversionWarning)
         model, protocol = Model.from_bngl(args.model, protocol=True)
+    from bngsim._protocol_run import _check_runnable
+
+    try:
+        # What run_protocol refuses before anything runs: an action BNGsim
+        # cannot run as BNG2.pl would. A refusal of the file (exit 3), where an
+        # error the actions meet while they run (a species the model lacks)
+        # is an error of the file's (exit 1).
+        _check_runnable(protocol, allow_lossy=args.allow_lossy)
+    except ConversionError as error:
+        error._cli_refusal = True  # type: ignore[attr-defined]
+        raise
     kw = _given(args, "seed", "rtol", "atol")
     with _deadline(args.timeout, "run_protocol"):
         ran = run_protocol(model, protocol, allow_lossy=args.allow_lossy, **kw)

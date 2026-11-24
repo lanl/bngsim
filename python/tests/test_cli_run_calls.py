@@ -563,7 +563,20 @@ def test_an_action_bngsim_cannot_run_as_bng2pl_would_exits_3(tmp_path):
     run = _bngsim("run-bngl", str(bngl), "--json", script=_NO_BNG2.format(net=net))
     assert run.returncode == _cli.EXIT_REFUSED, run.stderr
     assert run.stdout == "" and json.loads(run.stderr)["type"] == "ConversionError"
-    assert _cli.exit_code_for(bngsim.ConversionError("x")) == _cli.EXIT_REFUSED
+
+
+def test_an_error_an_action_meets_while_it_runs_exits_1(tmp_path):
+    # Not a refusal: the file's action names a species the model does not have.
+    bngl = tmp_path / "chain.bngl"
+    bngl.write_text(
+        Path(examples.path("chain", "bngl")).read_text()
+        + 'setConcentration("Zed()", 3)\nsimulate({method=>"ode",t_end=>1,n_steps=>1})\n'
+    )
+    net = str(examples.path("chain", "net"))
+    run = _bngsim("run-bngl", str(bngl), "--json", script=_NO_BNG2.format(net=net))
+    assert run.returncode == _cli.EXIT_ERROR, run.stderr
+    assert json.loads(run.stderr)["type"] == "ConversionError"
+    assert _cli.exit_code_for(bngsim.ConversionError("x")) == _cli.EXIT_ERROR
 
 
 def test_run_bngl_with_no_runs_says_so(tmp_path):
@@ -736,6 +749,8 @@ _P = json.dumps([{"k1": 1.0}])
         (["run", CHAIN, "--t-end", "5", "--max-columns", "-1"], "--max-columns"),
         (["steady-states", CHAIN, "--seed", "-1"], "--seed"),
         (["run-batch", CHAIN, "--t-end", "5", "--params", "twice.csv"], "--params"),
+        (["run-batch", CHAIN, "--t-end", "5", "--params", '[{"k1": 1, "k1": 2}]'], "--params"),
+        (["steady-state-batch", CHAIN, "--params", "twice.json"], "--params"),
         (["steady-state", CHAIN, "--seed", "1"], "--seed"),
         (["steady-state", CHAIN, "--t-end", "5"], "--t-end"),
         (["steady-state", CHAIN, "--out", "x.h5"], "--out"),
@@ -756,6 +771,7 @@ _P = json.dumps([{"k1": 1.0}])
 def test_a_wrong_command_line_exits_2(args, argument, tmp_path):
     (tmp_path / "rows.txt").write_text("k1\n1\n")
     (tmp_path / "twice.csv").write_text("k1,k1\n1,2\n")
+    (tmp_path / "twice.json").write_text('[{"k2": 1, "k2": 2}]')
     run = _bngsim(*args, "--json", cwd=tmp_path)
     error = _error(run, _cli.EXIT_USAGE, "usage.invalid_argument")
     assert error["details"].get("argument") == argument, error
