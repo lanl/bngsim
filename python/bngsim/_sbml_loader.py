@@ -17,9 +17,9 @@ import logging
 import re
 import time
 from collections import Counter
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator
 from pathlib import Path
-from typing import IO
+from typing import IO, Any
 
 try:
     import libsbml
@@ -3259,8 +3259,12 @@ def _unhandled_required_packages(doc, raw_xml: IO | None = None) -> list[tuple[s
 
 
 def _check_required_packages(
-    doc, source: str, raw_xml: IO | None = None, via: str | None = None
-) -> None:
+    doc,
+    source: str,
+    raw_xml: IO | None = None,
+    via: str | None = None,
+    reported: Collection[tuple[str, str]] = (),
+) -> list[tuple[str, str]]:
     """Refuse a document whose declared ``required="true"`` package bngsim does
     not interpret, instead of silently building a model from the core layer
     (issue #592).
@@ -3280,13 +3284,17 @@ def _check_required_packages(
     *via* is given when *doc* is not the document being loaded but the file a
     comp submodel is read from (issue #1786), and says which
     ExternalModelDefinition names it. The refusal then names *source* too, since
-    it is not the file the caller passed.
+    it is not the file the caller passed. *reported* are the ``(name, URI)``
+    packages a check earlier in the same load has already warned of, which are
+    not warned of again; the ones this check warns of are returned.
     """
     import os
 
-    offenders = _unhandled_required_packages(doc, raw_xml=raw_xml)
+    offenders = [
+        o for o in _unhandled_required_packages(doc, raw_xml=raw_xml) if o not in reported
+    ]
     if not offenders:
-        return
+        return []
 
     from bngsim._exceptions import ModelError
 
@@ -3302,7 +3310,7 @@ def _check_required_packages(
                 _ALLOW_UNSUPPORTED_ENV,
                 named,
             )
-        return
+        return offenders
 
     bullets = "\n".join(f"  - {name} [{uri}]" for name, uri in offenders)
     subject, in_file = ("Model", "") if via is None else (f"{named},", f" in {source}")
@@ -3395,80 +3403,86 @@ def _comp_submodel_documents(doc, path: str | None, base_path: str | None):
     """Every other document a comp flattening of *doc* reads, as ``(document,
     name, file, via)`` (issue #1786).
 
-    The walk is the flattener's own (libSBML's ``Submodel::instantiate``). From
+    The walk is the flattener's own, libSBML's ``Submodel::instantiate``. From
     the main model, each submodel's ``modelRef`` is looked up in its document's
     comp plugin. A model or ModelDefinition is walked in turn; an
-    ExternalModelDefinition is followed to the document its ``source`` names,
-    then through any chain of them to the model at the end. Only what a
-    submodel reaches is read, so a document behind an ExternalModelDefinition
-    no submodel uses is no part of the model and is not yielded.
+    ExternalModelDefinition is followed, as ``getReferencedModel`` follows it,
+    to the document its ``source`` names and through any chain of them to the
+    model at the end. Only what a submodel reaches is read, so a document
+    behind an ExternalModelDefinition no submodel uses is no part of the model
+    and is not yielded. The walk stops where the flattener refuses: at a source
+    that resolves nowhere, at a model already among a submodel's ancestors, and
+    at a chain that comes round again.
 
     A source resolves as it does for the flattener: through the naming
-    document's comp plugin (``getSBMLDocumentFromURI``), against the location
-    that document was reached by (a string has none, and libSBML then looks in
-    the working directory), and at last in *base_path*, the directory
-    ``CompFlatteningConverter`` adds for the conversion. The plugin keeps each
-    document it reads, keyed by the URI it resolved, and the flattener's own
-    lookups get those documents back, so the model is built from the documents
-    checked here, not from a second read of their files. The one exception is a
-    last-resort file the plugin cannot be made to key as the flattener does
-    (see ``resolve``): that file is read here and the flattener reads it again.
-    A source that resolves nowhere is skipped: the flattener refuses it.
+    document's comp plugin (``getSBMLDocumentFromURI``), against that
+    document's location URI as libSBML reads it, and at last in *base_path*,
+    the directory ``CompFlatteningConverter`` adds for the conversion. A string
+    has no location, and libSBML then looks in the working directory. Two
+    copies of one file can carry different locations and resolve one source to
+    two files, so a model is walked once per location, not once per file. The
+    plugin keeps each document it reads, keyed by the URI it resolved, and the
+    flattener's lookups get those documents back, so the model is built from
+    the documents checked here. The exception is a last-resort file the plugin
+    cannot be made to key as the flattener does (see ``resolve``), which is
+    read here and read again by the flattener.
 
     *path* is the loaded file, or None for a string. *name* is a document's
-    path for messages, *file* the file it was read from (None if a resolver
-    registered elsewhere read it from something else), and *via* which
-    ExternalModelDefinition names it.
+    real path for messages, *file* the path its resolver read (None if a
+    resolver registered elsewhere read something other than a file), and *via*
+    which ExternalModelDefinition names it.
     """
     import os
     from collections import deque
 
+    registry = libsbml.SBMLResolverRegistry.getInstance()
     last_resort = None
     if base_path is not None and base_path != ".":  # the converter's own test
         last_resort = libsbml.SBMLFileResolver()
         last_resort.addAdditionalDir(base_path)
     held = []  # documents read here rather than by a plugin, and what theirs read
 
+    def taken(uri) -> tuple[str | None, str]:
+        # The file a resolver's URI names, the path its ``resolve`` reads, and
+        # the URI; the URI is the caller's to free.
+        file, key = (uri.getPath() if uri.getScheme() == "file" else None), uri.getUri()
+        destroy = getattr(libsbml.SBMLUri, "__swig_destroy__", None)
+        if destroy is not None and not uri.thisown:
+            destroy(uri)  # setting thisown instead breaks libsbml's SWIG types
+        return file, key
+
     def resolve(referrer, source: str):
-        plugin = referrer.getPlugin("comp")
+        # The document the flattener reads for *source* named in *referrer*,
+        # and the file it was read from.
+        base, plugin = referrer.getLocationURI(), referrer.getPlugin("comp")
         found = plugin.getSBMLDocumentFromURI(source)
-        if found is not None or last_resort is None:
-            return found
+        if found is not None:
+            uri = registry.resolveUri(source, base)  # the call the plugin keyed it by
+            return found, (taken(uri)[0] if uri is not None else None)
+        if last_resort is None:
+            return None, None
         # The converter adds its last resort to libSBML's process-wide registry
         # and takes it out within one call, which holds the GIL. Added from here,
         # between calls, another thread's load could find files through it. So
         # the resolver is only asked which file it reads, *file* as written
         # (relative to the working directory, and with any ``..`` left for the
         # OS, which follows a link before it applies one), and under what key.
-        uri = last_resort.resolveUri(source, referrer.getLocationURI())
+        uri = last_resort.resolveUri(source, base)
         if uri is None:
-            return None
-        file, key = uri.getPath(), uri.getUri()
-        destroy = getattr(libsbml.SBMLUri, "__swig_destroy__", None)
-        if destroy is not None and not uri.thisown:
-            destroy(uri)  # the caller's to free; setting thisown breaks libsbml's SWIG types
+            return None, None
+        file, key = taken(uri)
+        if file is None:
+            return None, None
         # Asked for *file*, the plugin's own resolver ends by reading it under
         # that key, which the flattener's lookup then finds. It tries *file*
         # below the naming document's directory first, though, and if that
         # exists it reads another file: then *file* is read here.
         found = plugin.getSBMLDocumentFromURI(file)
-        if found is not None and found.getLocationURI() == key:
-            return found
-        found = libsbml.readSBMLFromFile(file)
-        found.setLocationURI(key)
-        held.append(found)
-        return found
-
-    def file_of(found) -> str | None:
-        # The plugin sets a document's location to the URI it resolved.
-        uri = libsbml.SBMLUri(found.getLocationURI())
-        file = uri.getPath()
-        return file if uri.getScheme() == "file" and os.path.isfile(file) else None
-
-    def place(file: str) -> tuple[str, str]:
-        # Where a file was reached, and the file. Its own sources resolve against
-        # the directory it was reached in, which a link to it changes.
-        return os.path.realpath(os.path.dirname(file)), os.path.realpath(file)
+        if found is None or found.getLocationURI() != key:
+            found = libsbml.readSBMLFromFile(file)
+            found.setLocationURI(key)
+            held.append(found)
+        return found, file
 
     def model_named(document, model_ref: str | None):
         # ExternalModelDefinition::getReferencedModel's choice of model.
@@ -3480,49 +3494,70 @@ def _comp_submodel_documents(doc, path: str | None, base_path: str | None):
         main = document.getModel()
         return main if main is not None and main.getId() == model_ref else None
 
-    # A file is checked once, and walked once from each place it is reached in,
-    # so that a cycle of files, which the flattener refuses, ends here.
-    top = place(path) if path is not None else (None, None)
-    read = {top[1]}
-    walked = set()
-    pending = deque([(doc, top, path or "<string>", doc.getModel())])
+    read = {os.path.realpath(path) if path is not None else None}  # by file: checked once
+
+    def referenced(at, at_name: str, emd):
+        # getReferencedModel: *emd*'s model, as (document, name, model), or None
+        # where the flattener refuses; yields each document read on the way.
+        links = set()  # getReferencedModel's ``parents``: never the first link
+        while True:
+            found, file = resolve(at, emd.getSource())
+            if found is None:
+                return None
+            name = os.path.realpath(file) if file else found.getLocationURI()
+            if name not in read:
+                read.add(name)
+                via = f"the source of comp ExternalModelDefinition '{emd.getId()}'"
+                yield found, name, file, f"{via} in {at_name}"
+            target = model_named(found, emd.getModelRef() if emd.isSetModelRef() else None)
+            if not isinstance(target, libsbml.ExternalModelDefinition):
+                return (found, name, target) if isinstance(target, libsbml.Model) else None
+            link = (target.getSource(), target.getModelRef())
+            if link in links:
+                return None
+            links.add(link)
+            at, at_name, emd = found, name, target
+
+    # A model's submodels resolve against its document's location, so a model is
+    # walked once per (location, id). Each entry carries what instantiate keeps
+    # to refuse a model that is its own ancestor: the ancestors' keys, and the
+    # source the nearest of them was instantiated from.
+    walked: set[tuple[str, str]] = set()
+    pending: deque[tuple[Any, str, Any, frozenset[str], str]] = deque(
+        [(doc, path or "<string>", doc.getModel(), frozenset(), "")]
+    )
     while pending:
-        document, where, name, model = pending.popleft()
-        if model is None or (where, model.getId()) in walked:
+        document, name, model, ancestors, origin = pending.popleft()
+        if model is None or (document.getLocationURI(), model.getId()) in walked:
             continue
-        walked.add((where, model.getId()))
+        walked.add((document.getLocationURI(), model.getId()))
         doc_plugin, model_plugin = document.getPlugin("comp"), model.getPlugin("comp")
         if doc_plugin is None or model_plugin is None:
             continue
         for i in range(model_plugin.getNumSubmodels()):
-            target = doc_plugin.getModel(model_plugin.getSubmodel(i).getModelRef())
-            at, at_where, at_name = document, where, name
-            followed = set()
-            while (
-                isinstance(target, libsbml.ExternalModelDefinition)
-                and (at_where, target.getId()) not in followed
-            ):
-                followed.add((at_where, target.getId()))
-                found = resolve(at, target.getSource())
-                if found is None:
-                    break
-                file = file_of(found)
-                found_where = place(file) if file else (found.getLocationURI(),) * 2
-                found_name = os.path.realpath(file) if file else found.getLocationURI()
-                if found_where[1] not in read:
-                    read.add(found_where[1])
-                    via = f"the source of comp ExternalModelDefinition '{target.getId()}'"
-                    yield found, found_name, file, f"{via} in {at_name}"
-                ref = target.getModelRef() if target.isSetModelRef() else None
-                target = model_named(found, ref)
-                at, at_where, at_name = found, found_where, found_name
-            if isinstance(target, libsbml.Model):  # a ModelDefinition is one too
-                pending.append((at, at_where, at_name, target))
+            ref = model_plugin.getSubmodel(i).getModelRef()
+            target = doc_plugin.getModel(ref)
+            if isinstance(target, libsbml.ExternalModelDefinition):
+                source = target.getSource()
+                reached = yield from referenced(document, name, target)
+                if reached is None:
+                    continue
+                at, at_name, target = reached
+            elif isinstance(target, libsbml.Model):  # a ModelDefinition is one too
+                at, at_name, source = document, name, origin
+            else:
+                continue
+            key = f"{source}::{ref}"
+            if key not in ancestors:
+                pending.append((at, at_name, target, ancestors | {key}, source))
 
 
-def _check_submodel_required_packages(doc, path: Path | None, base_path: str | None) -> None:
+def _check_submodel_required_packages(
+    doc, path: Path | None, base_path: str | None
+) -> list[tuple[str, str]]:
     """:func:`_check_required_packages` for every other document a comp
-    flattening of *doc* reads a submodel from (issue #1786).
+    flattening of *doc* reads a submodel from (issue #1786); returns the
+    packages it warned of under the opt-out.
 
     The flattener strips each package it cannot flatten, so a
     ``required="true"`` ``multi`` in a submodel's file, which the check on the
@@ -3530,13 +3565,39 @@ def _check_submodel_required_packages(doc, path: Path | None, base_path: str | N
     core layer integrated. Called before :func:`_flatten_comp`, with the same
     *base_path*; *path* is the loaded file, or None for a string.
     """
+    reported: list[tuple[str, str]] = []
     walk = _comp_submodel_documents(doc, None if path is None else str(path), base_path)
     for found, name, file, via in walk:
         if file is None:
-            _check_required_packages(found, name, via=via)
+            reported += _check_required_packages(found, name, via=via, reported=reported)
             continue
         with open(file, "rb") as stream:
-            _check_required_packages(found, name, raw_xml=stream, via=via)
+            reported += _check_required_packages(
+                found, name, raw_xml=stream, via=via, reported=reported
+            )
+    return reported
+
+
+def _check_flattened_required_packages(
+    doc, source: str, reported: Collection[tuple[str, str]]
+) -> None:
+    """:func:`_check_required_packages` on the flattened document, a backstop
+    for :func:`_check_submodel_required_packages` (issue #1786).
+
+    For each submodel it instantiates, the flattener copies the packages of the
+    file the submodel came from onto the flattened document, a known package
+    with its ``required`` flag. A known package in a file the walk missed is
+    refused here. A package libSBML has no extension for, and a namespace
+    outside the L3 hierarchy, do not survive the copy, so this does not replace
+    the walk. *reported* are the packages earlier checks warned of.
+    """
+    _check_required_packages(
+        doc,
+        source,
+        via="as flattened, which carries the packages of the files its comp submodels "
+        "are read from",
+        reported=reported,
+    )
 
 
 def _apply_compartment_size_overrides(doc, compartment_sizes: dict, source: str) -> None:
@@ -3631,10 +3692,11 @@ def load_sbml(path: str | Path, compartment_sizes: dict | None = None):
     doc = libsbml.readSBMLFromFile(str(path))
     _check_sbml_errors(doc, str(path), lambda: _document_text(path))
     with open(path, "rb") as stream:  # read as bytes, so the XML declaration names the encoding
-        _check_required_packages(doc, str(path), raw_xml=stream)
+        reported = _check_required_packages(doc, str(path), raw_xml=stream)
     if _doc_uses_comp(doc):
-        _check_submodel_required_packages(doc, path, base_path=str(path.parent))
+        reported += _check_submodel_required_packages(doc, path, base_path=str(path.parent))
         _flatten_comp(doc, base_path=str(path.parent))
+        _check_flattened_required_packages(doc, str(path), reported)
     if compartment_sizes:
         _apply_compartment_size_overrides(doc, compartment_sizes, str(path))
     parse_sec = time.perf_counter() - t0
@@ -3652,12 +3714,13 @@ def load_sbml_string(text: str, compartment_sizes: dict | None = None):
     t0 = time.perf_counter()
     doc = libsbml.readSBMLFromString(text)
     _check_sbml_errors(doc, "<string>", lambda: text)
-    _check_required_packages(doc, "<string>", raw_xml=io.StringIO(text))
+    reported = _check_required_packages(doc, "<string>", raw_xml=io.StringIO(text))
     if _doc_uses_comp(doc):
         # A string has no location, so libSBML resolves an ExternalModel-
         # Definition's source against the working directory.
-        _check_submodel_required_packages(doc, None, base_path=None)
+        reported += _check_submodel_required_packages(doc, None, base_path=None)
         _flatten_comp(doc, base_path=None)
+        _check_flattened_required_packages(doc, "<string>", reported)
     if compartment_sizes:
         _apply_compartment_size_overrides(doc, compartment_sizes, "<string>")
     parse_sec = time.perf_counter() - t0

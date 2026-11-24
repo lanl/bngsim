@@ -764,3 +764,113 @@ def test_concurrent_loads_each_read_their_own_files(tmp_path, monkeypatch) -> No
         sys.setswitchinterval(interval)
     assert outcomes["clean"] == [0.3] * loads
     assert outcomes["multi"] == ["refused"] * loads
+
+
+_ARRAYS = ("arrays", _ARRAYS_URI)
+
+
+@pytest.mark.parametrize("package", [("multi", _MULTI_URI), _ARRAYS], ids=["multi", "arrays"])
+@pytest.mark.parametrize("load", ["relative", "absolute, mirrored under the working directory"])
+def test_two_copies_of_one_file_are_walked_from_each_location(
+    tmp_path, monkeypatch, package, load
+) -> None:
+    """libSBML resolves a document's sources against its location URI, read
+    as it reads one. Loaded as ``s1/top.xml``, the file is recorded as
+    ``file:s1/top.xml``, read as plain ``top.xml``, so its ``inner.xml`` is the
+    one in the working directory. Read again for the ExternalModelDefinition
+    ``self``, which names ``top.xml``, the copy is ``file:///s1/top.xml`` and its
+    ``inner.xml`` is ``s1/inner.xml``. Both copies' ModelDefinition ``d`` reads
+    ``inner.xml``, so the flattener reads both. An absolute load is read
+    without its leading ``/``, and a copy of the tree under the working
+    directory takes the place of the working directory's ``inner.xml``."""
+    cwd = tmp_path / "cwd"
+    project = cwd / "s1"
+    project.mkdir(parents=True)
+    monkeypatch.chdir(cwd)
+    if load == "relative":
+        top, clean = "s1/top.xml", cwd / "inner.xml"
+    else:
+        top = str(project / "top.xml")
+        clean = cwd / str(project).lstrip(os.sep) / "inner.xml"
+        clean.parent.mkdir(parents=True)
+    clean.write_text(_leaf(0.1))
+    (project / "inner.xml").write_text(_leaf(0.7, *package))
+    (project / "top.xml").write_text(
+        _comp(
+            external=[("x", "inner.xml", "m"), ("self", "top.xml", "d")],
+            submodels=[("a", "d"), ("b", "self")],
+            definitions=_holding("d", "x"),
+        )
+    )
+    with pytest.raises(ModelError) as excinfo:
+        bngsim.Model.from_sbml(top)
+    assert package[1] in str(excinfo.value)
+    assert os.path.realpath(project / "inner.xml") in str(excinfo.value)
+
+
+def test_a_chain_through_a_second_copy_of_the_loaded_file_is_followed(
+    tmp_path, monkeypatch
+) -> None:
+    """``s1/top.xml``'s ``E0`` names ``a.xml``'s model ``Y``; loaded as
+    ``s1/top.xml`` its ``a.xml`` is the working directory's, whose ``Y`` is an
+    ExternalModelDefinition naming ``s1/top.xml``'s ``E0`` again. That copy's
+    ``a.xml`` is ``s1/a.xml``, a ``multi`` file whose model is ``Y``. A chain's
+    first link is not among the links libSBML stops a chain on, so it reads
+    ``s1/a.xml``."""
+    cwd = tmp_path / "cwd"
+    (cwd / "s1").mkdir(parents=True)
+    monkeypatch.chdir(cwd)
+    (cwd / "a.xml").write_text(_comp(external=[("Y", "s1/top.xml", "E0")]))
+    (cwd / "s1" / "a.xml").write_text(_leaf(0.7, "multi", _MULTI_URI).replace('id="m"', 'id="Y"'))
+    (cwd / "s1" / "top.xml").write_text(
+        _comp(external=[("E0", "a.xml", "Y")], submodels=[("s", "E0")])
+    )
+    with pytest.raises(ModelError) as excinfo:
+        bngsim.Model.from_sbml("s1/top.xml")
+    assert os.path.realpath(cwd / "s1" / "a.xml") in str(excinfo.value)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-specific: Windows forbids '?' in a name"
+)
+def test_a_submodel_s_file_in_a_directory_named_with_a_question_mark_is_scanned(
+    tmp_path,
+) -> None:
+    """libSBML reads a URI's path only up to a ``?``. The file a resolver
+    read is the path it resolved, so the root-element scan reads that, not the
+    path of the document's location URI read back."""
+    folder = tmp_path / "q?d"
+    folder.mkdir()
+    (folder / "ext.xml").write_text(_leaf(0.7, "zzz", _ZZZ_URI))
+    (folder / "top.xml").write_text(_submodel_of("ext.xml"))
+    with pytest.raises(ModelError) as excinfo:
+        bngsim.Model.from_sbml(folder / "top.xml")
+    assert _ZZZ_URI in str(excinfo.value)
+    assert str(folder / "ext.xml") in str(excinfo.value)
+
+
+def test_the_flattened_model_is_checked_as_well(tmp_path, monkeypatch) -> None:
+    """A backstop for a file the walk misses: flattening copies each
+    instantiated file's packages, known ones with their ``required`` flags, onto
+    the flattened model, so a ``multi`` the walk never saw still refuses the
+    load. The walk is switched off here to show it."""
+    import bngsim._sbml_loader as loader
+
+    monkeypatch.setattr(loader, "_check_submodel_required_packages", lambda *a, **k: [])
+    (tmp_path / "ext.xml").write_text(_leaf(0.1, "multi", _MULTI_URI))
+    (tmp_path / "top.xml").write_text(_submodel_of("ext.xml"))
+    with pytest.raises(ModelError) as excinfo:
+        bngsim.Model.from_sbml(tmp_path / "top.xml")
+    assert "flattened" in str(excinfo.value) and _MULTI_URI in str(excinfo.value)
+
+
+def test_the_opt_out_warns_of_a_package_once(tmp_path, monkeypatch, caplog) -> None:
+    """The walk and the check of the flattened model both see the submodel's
+    ``multi``; the opt-out says so once."""
+    (tmp_path / "ext.xml").write_text(_leaf(0.1, "multi", _MULTI_URI))
+    (tmp_path / "top.xml").write_text(_submodel_of("ext.xml"))
+    monkeypatch.setenv(_ALLOW_UNSUPPORTED_ENV, "1")
+    with caplog.at_level(logging.WARNING, logger="bngsim"):
+        bngsim.Model.from_sbml(tmp_path / "top.xml")
+    warned = [r.getMessage() for r in caplog.records if _MULTI_URI in r.getMessage()]
+    assert len(warned) == 1, warned
