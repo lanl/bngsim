@@ -391,7 +391,18 @@ double expr_compat::rint(double x) { return std::floor(x + 0.5); }
 
 double expr_compat::mratio_dz(double a, double b, double z) {
     const double r = expr_compat::mratio(a, b, z);
-    const double shifted = expr_compat::mratio(a + 1.0, b + 1.0, z);
+    // The shifted call is refused for a above -1, and the generated copy reads
+    // its NaN there as the cue for the second expression below. This one throws
+    // instead, which used to escape from here and fail the derivative at the
+    // very arguments that expression exists for: mratio_dz(1e-30, 2e-12, -25)
+    // raised, where the compiled helper returns 1.389e-11, right to 1e-15. A
+    // throw is read as that NaN, so the two copies take the same branch. One
+    // from the call above, which refuses the value itself, still goes out.
+    double shifted = std::numeric_limits<double>::quiet_NaN();
+    try {
+        shifted = expr_compat::mratio(a + 1.0, b + 1.0, z);
+    } catch (const std::runtime_error &) {
+    }
     if (mratio_is_finite(shifted)) {
         return r * ((a + 1.0) / (b + 1.0) * shifted - (a / b) * r);
     }
@@ -717,12 +728,20 @@ static double mratio_a_zero_series(double b, double z) {
 // Past z = -20 the fraction's loss goes on, and grows, where 0 < b - a < 1 and
 // b < 1 (see mratio_cf_is_trustworthy). That corner is in the box out to
 // z = -700. There a < b, so alpha = b - a is positive and every term of both
-// series is positive: nothing cancels at all. The bounds above become e^x for
-// the numerator and b + alpha*x*e^x for the denominator, under the largest
-// double for x <= 700. Past that the asymptotic route answers. There the branch
-// it drops is about x*e^(-x)/(b - a) of the one it keeps, so it vouches for
-// every b - a above about 1e-290; below that, out to z = -775 at most, the call
-// is refused, where the fraction returned its Lentz floor. So is an a of either
+// series is positive: nothing cancels at all. It has to be a normal double as
+// well, at least 2.2e-308. A subnormal one makes alpha*x and the few terms
+// after it subnormal too, each rounded to a multiple of 4.9e-324, and every
+// later term is built from them: with b - a one ulp,
+// mratio(9.9999999999995e-311, 1e-310, -20.5) came out 9.6e-7 off, and at
+// b = 1e-315 2e-2 off. For a <= 0 that takes a subnormal b, where 993 of 3000
+// triples were off by more than 1e-8 (worst 7.5e-3). Those are refused now, by
+// the rule and then the asymptotic route, which cannot vouch for a b - a that
+// small either. The bounds above become e^x for the numerator and
+// b + alpha*x*e^x for the denominator, under the largest double for x <= 700.
+// Past that the asymptotic route answers. There the branch it drops is about
+// x*e^(-x)/(b - a) of the one it keeps, so it vouches for every b - a above
+// about 1e-290; below that, out to z = -775 at most, the call is refused, where
+// the fraction returned its Lentz floor. So is an a of either
 // sign so small, below about 1e-300, that a*(a-b+1)/(-z) underflows to zero:
 // that is the second term of the denominator's expansion, and the zero-term
 // rule reads it as a series that never decayed. Against mpmath, none of 60000
@@ -755,7 +774,7 @@ static bool mratio_series(double a, double b, double z, double *out) {
     if (!(alpha > -1.0 && alpha < 1.0)) {
         return false;
     }
-    if (!(x <= 20.0) && !(z < 0.0 && a < b && b < 1.0 && x <= 700.0)) {
+    if (!(x <= 20.0) && !(z < 0.0 && b - a >= 2.2250738585072014e-308 && b < 1.0 && x <= 700.0)) {
         return false;
     }
     double tn = 1.0; // a term of M(alpha + shift, b + 1, x)

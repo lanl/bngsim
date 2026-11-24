@@ -93,10 +93,13 @@ def test_the_engine_name_maps_to_the_helper():
 
 # Each case sweeps one argument through the species, so a single trajectory
 # covers a range rather than a point. The last two move a and b, which the
-# real models hold fixed, precisely because nothing else here would. The two
-# with a positive first argument carry a large b, which is what keeps them
-# inside the region the fraction is trusted in (issue #453); a positive a with a
-# small b and a large z is refused now, and has its own test below.
+# real models hold fixed, precisely because nothing else here would. "positive
+# a" and "non-integer a and b" carry a large b, which is what keeps a positive
+# first argument inside the region the fraction is trusted in (issue #453).
+# With a small b and a large |z| the fraction is refused it, and another route
+# answers or nothing does: the asymptotic route at a = 10 below, the summed
+# corner at a tiny a below a b under 1 (issue #1793), and a refusal at
+# mratio(50, 2.5, -1000), which has its own test below.
 CASES = [
     ("z rides the species", -3.0, 5.0, "k*mratio(a,b,-A)", 50.0),
     ("small z", -10.0, 21.0, "k*mratio(a,b,-A/10)", 20.0),
@@ -333,6 +336,31 @@ def test_past_z_minus_20_both_engines_match_the_reference(tmp_path, codegen, a, 
         result = sim.run(t_span=(0.0, 1.0), n_points=3)
     assert sim.codegen_backend in (("cc", "mir") if codegen else ("exprtk",))
     assert float(result.species[-1][0]) == pytest.approx(1.0, rel=1e-11, abs=0.0)
+
+
+@pytest.mark.parametrize("codegen", [False, True], ids=["interpreted", "compiled"])
+@pytest.mark.parametrize(
+    "a, b, z",
+    [(9.9999999999995e-311, 1e-310, -20.5), (-5e-324, 1e-322, -21.0)],
+    ids=["a positive a one ulp below b", "a <= 0 with a subnormal b"],
+)
+def test_past_z_minus_20_a_subnormal_b_minus_a_is_refused_on_both_engines(
+    tmp_path, codegen, a, b, z
+):
+    """The series past z = -20 takes b - a only from the smallest normal double
+    up, since a subnormal one rounds the terms every later one is built from:
+    the first was summed 9.6e-7 off and the second 1.1e-4. Both copies of the
+    gate say so, and both engines refuse."""
+    p = tmp_path / "m1793s.net"
+    p.write_text(CONSTANT_RATE_NET.format(a=a, b=b, z=z, scale=1.0))
+    with contextlib.redirect_stderr(io.StringIO()):
+        model = bngsim.Model.from_net(str(p))
+        sim = bngsim.Simulator(model, method="ode", codegen=codegen)
+        with pytest.raises(
+            bngsim.SimulationError, match=r"not reliable.*The fraction is reliable for b > 0"
+        ):
+            sim.run(t_span=(0.0, 1.0), n_points=3)
+    assert sim.codegen_backend in (("cc", "mir") if codegen else ("exprtk",))
 
 
 @pytest.mark.parametrize("codegen", [False, True], ids=["interpreted", "compiled"])

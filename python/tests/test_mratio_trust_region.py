@@ -570,6 +570,31 @@ def test_past_z_minus_700_an_a_too_small_for_the_expansion_is_refused_either_sid
         )
 
 
+# a, b, z, with b - a subnormal in each. The first three are a positive a one
+# ulp below b. Summed, they came out 2.0e-6, 9.6e-7 and 2e-2 off (mpmath at 120
+# digits) until the corner was held to a normal b - a; before issue #1793 they
+# were refused. The last is the old corner, a <= 0 with a subnormal b, which
+# was summed 1.1e-4 off before issue #1793 and is refused now with the rest.
+SUBNORMAL_ALPHA = [
+    (2.225073858507201e-308, 2.2250738585072014e-308, -100.0),
+    (9.9999999999995e-311, 1e-310, -20.5),
+    (9.99999994e-316, 1e-315, -20.5),
+    (-5e-324, 1e-322, -21.0),
+]
+
+
+@pytest.mark.parametrize("a, b, z", SUBNORMAL_ALPHA)
+def test_past_z_minus_20_a_subnormal_b_minus_a_is_refused(tmp_path, a, b, z):
+    """The series takes b - a only from the smallest normal double up. A
+    subnormal alpha makes alpha*x and the terms just after it subnormal, each
+    rounded to a multiple of 4.9e-324, and every later term is built from them.
+    The rule refuses the fraction there, and the asymptotic route cannot vouch
+    for a b - a that small either."""
+    assert 0.0 < b - a < 2.2250738585072014e-308
+    with pytest.raises(Exception, match=r"not reliable.*The fraction is reliable for b > 0"):
+        _value(tmp_path, a, b, z)
+
+
 # ── Issue #1080: a b below about 1e-22, wherever the fraction is trusted ─────
 
 # a, b, z, what the fraction returned, and the ratio (mpmath at 80 digits and

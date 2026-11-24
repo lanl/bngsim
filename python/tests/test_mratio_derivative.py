@@ -376,3 +376,68 @@ def test_the_derivative_matches_the_reference_where_issue_1080_moved_the_value(
     t = np.asarray(r.time)
     expected = -0.05 * t * rho * 10.0 * np.exp(-0.05 * t)
     np.testing.assert_allclose(np.asarray(r.sensitivities)[:, 0, 0], expected, rtol=1e-8, atol=0.0)
+
+
+# ── Both engines take the fallback where the shifted call is refused ────────
+
+# One species whose production reads mratio through X, so the Jacobian's entry
+# dG'/dX is -k*R'(z) at z = -X: the interpreter computes it by dual numbers,
+# which call expr_compat::mratio_dz, the C++ twin of bngsim_mratio_dz.
+JACOBIAN_NET = """begin parameters
+    1 k  0.05  # Constant
+end parameters
+begin species
+    1 X() {x!r}
+    2 G() 0
+end species
+begin groups
+    1 Xo 1
+end groups
+begin functions
+    1 law() k*mratio({a!r},{b!r},-Xo)
+end functions
+begin reactions
+    1 0 2 law
+    2 2 0 k
+end reactions
+"""
+
+
+@pytest.mark.parametrize(
+    "a, b, z, ratio, slope",
+    [
+        # R and R'(z), from mpmath at 80 digits. mratio refuses R(a+1, b+1, z) at
+        # both, so the derivative is the contiguous relation's.
+        (1e-30, 2e-12, -25.0, 1.3971436819759903e-11, 1.389143681976102e-11),
+        (-0.5, 2.5, -1000.0, 0.0024950074912606122, 2.4900224650530482e-06),
+    ],
+    ids=["a tiny positive a", "a above -1"],
+)
+def test_both_engines_take_the_fallback_where_the_shifted_call_is_refused(
+    tmp_path, a, b, z, ratio, slope
+):
+    """The interpreter's mratio_dz used to let the shifted call's refusal escape,
+    so model.jacobian raised here, where the generated helper reads the NaN its
+    own copy returns as the cue for the contiguous relation and answers. The C++
+    now reads the throw the same way. Each engine is held to the reference: the
+    interpreter through the Jacobian, the generated C through a sensitivity run
+    as in the test above."""
+    p = tmp_path / "jac.net"
+    p.write_text(JACOBIAN_NET.format(a=a, b=b, x=-z))
+    with contextlib.redirect_stderr(io.StringIO()):
+        model = bngsim.Model.from_net(str(p))
+        jac = model.jacobian([-z, 0.0])
+    assert jac.source == "automatic-differentiation"
+    assert jac[1, 0] == pytest.approx(-0.05 * slope, rel=1e-11, abs=0.0)
+
+    q = tmp_path / "sens.net"
+    q.write_text(SCALED_NET.format(a=a, b=b, z=z, scale=1.0 / ratio))
+    with contextlib.redirect_stderr(io.StringIO()):
+        sim = bngsim.Simulator(
+            bngsim.Model.from_net(str(q)), method="ode", sensitivity_params=["zz"]
+        )
+        r = sim.run(t_span=(0.0, 5.0), n_points=6, rtol=1e-12, atol=1e-14)
+    assert sim.has_analytic_sens_rhs
+    t = np.asarray(r.time)
+    expected = -0.05 * t * (slope / ratio) * 10.0 * np.exp(-0.05 * t)
+    np.testing.assert_allclose(np.asarray(r.sensitivities)[:, 0, 0], expected, rtol=1e-8, atol=0.0)

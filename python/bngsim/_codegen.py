@@ -345,9 +345,10 @@ _compile_counter = itertools.count()
 # v45: lanl/bngsim #1793 — bngsim_mratio_trusted and bngsim_mratio_series take
 # the corner past z = -20 as 0 < b - a < 1 with b < 1 rather than a <= 0 with
 # b - a < 1, so a tiny positive a below a b under 1 no longer reaches the
-# fraction there, which was 5.7% off at mratio(1e-30, 2e-12, -3e4). The source
-# digest already moves; the bump is for an install whose digest is empty.
-# Invalidate v44.
+# fraction there, which was 5.7% off at mratio(1e-30, 2e-12, -3e4). The series
+# takes it only for a b - a no smaller than the smallest normal double. The
+# source digest already moves; the bump is for an install whose digest is
+# empty. Invalidate v44.
 _CODEGEN_VERSION = "45"
 
 
@@ -941,7 +942,9 @@ _SPECIAL_FUNCTION_C_LINES = (
     "   its last term. Past |z| = 20 it takes one more corner, 0 < b - a < 1 with",
     "   b < 1 out to z = -700, where the fraction's loss goes on and grows",
     "   (issues #1080 and #1793): there a < b, so every term of both series is",
-    "   positive, and none overflows. Kept",
+    "   positive, and none overflows. b - a is held to a normal double as well:",
+    "   a subnormal one rounds alpha*x and the terms just after it, which every",
+    "   later term is built from, and was 2e-2 off at b = 1e-315. Kept",
     "   identical to mratio_series in src/expression.cpp,",
     "   which carries the full note and the measurements; the NaN test is a",
     "   comparison for the reason at bngsim_mratio_is_finite. */",
@@ -963,7 +966,8 @@ _SPECIAL_FUNCTION_C_LINES = (
     "    if (!(alpha > -1.0 && alpha < 1.0)) {",
     "        return 0;",
     "    }",
-    "    if (!(x <= 20.0) && !(z < 0.0 && a < b && b < 1.0 && x <= 700.0)) {",
+    "    if (!(x <= 20.0) && "
+    "!(z < 0.0 && b - a >= 2.2250738585072014e-308 && b < 1.0 && x <= 700.0)) {",
     "        return 0;",
     "    }",
     "    for (k = 0; k < 3000; ++k) {",
