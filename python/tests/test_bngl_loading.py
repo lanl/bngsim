@@ -223,6 +223,55 @@ def test_generate_network_call_forwards_the_source_options(source, expected):
     assert generate_network_call(text) == expected
 
 
+@pytest.mark.parametrize(
+    "actions",
+    [
+        "simulate({t_end=>1})\ngenerate_network({max_iter=>3,overwrite=>1})\n",
+        "begin actions\n"
+        '  parameter_scan({parameter=>"k",par_min=>1,par_max=>2,n_scan_pts=>2,t_end=>1})\n'
+        "  generate_network({max_iter=>3})\n"
+        '  simulate({method=>"ode",t_end=>1})\n'
+        "end actions\n",
+    ],
+    ids=["simulate", "parameter_scan-in-an-actions-block"],
+)
+def test_a_run_before_generate_network_takes_none_of_its_options(actions):
+    """A file whose first run comes before its ``generate_network`` is cut at that
+    run (issue #1480), and BNG2.pl generates that run's network with its defaults:
+    ``simulate`` calls ``generate_network()`` with no arguments. Forwarding the
+    later call's ``max_iter=>3`` truncated the loaded network where the one BNG2.pl
+    ran first was not."""
+    text = "begin model\nbegin parameters\n k 1\nend parameters\nend model\n" + actions
+    assert generate_network_call(text) == "generate_network({overwrite=>1})"
+
+
+def test_a_generate_network_after_the_first_run_does_not_replace_the_one_before_it():
+    """The network the first run starts from is the first ``generate_network``'s, so
+    its ``max_iter`` is the one that applies. The source's last call was forwarded,
+    and a later phase's bound replaced it."""
+    text = (
+        "begin model\nend model\n"
+        "generate_network({max_iter=>3})\n"
+        "simulate({t_end=>1})\n"
+        "generate_network({max_iter=>5,overwrite=>1})\n"
+        "simulate({t_end=>1})\n"
+    )
+    assert generate_network_call(text) == "generate_network({max_iter=>3,overwrite=>1})"
+
+
+def test_a_generate_network_after_generate_hybrid_model_still_sets_the_bound():
+    """``generate_hybrid_model`` writes a separate model and generates no network for
+    the one being loaded, so the ``generate_network`` after it still builds the
+    network the first run starts from."""
+    text = (
+        "begin model\nend model\n"
+        'generate_hybrid_model({suffix=>"hpp",overwrite=>1})\n'
+        "generate_network({max_iter=>3})\n"
+        "simulate({t_end=>1})\n"
+    )
+    assert generate_network_call(text) == "generate_network({max_iter=>3,overwrite=>1})"
+
+
 def test_commented_out_generate_network_is_not_read(tmp_path: Path):
     """``#generate_network({max_iter=>1})`` is a comment, not a directive.
 

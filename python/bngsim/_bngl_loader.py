@@ -442,18 +442,29 @@ def dropped_state_changes(model, text: str) -> list[str]:
 def generate_network_call(text: str) -> str:
     """The ``generate_network`` action to run, honoring the source's own options.
 
-    Returns the source's last ``generate_network(...)`` with ``overwrite=>1``
+    Returns the source's first ``generate_network(...)`` with ``overwrite=>1``
     appended (appended, not prepended, so it wins a duplicate key under Perl's
-    last-one-wins hash semantics). When the file has none — a network-free model
-    that only ever calls ``simulate_nf``, say — the bare default is used, and the
-    caller's timeout is what bounds an unbounded rule set.
+    last-one-wins hash semantics). When none comes before the file's first run,
+    :func:`generation_source` cuts at that run, and the bare default is used, as
+    BNG2.pl generates the network the run needs with its defaults (issue #1480):
+    a later call's ``max_iter`` bounds a later phase, not the loaded network.
+    For a file with none at all — a network-free model that only ever calls
+    ``simulate_nf``, say — the caller's timeout is what bounds an unbounded rule
+    set.
     """
     from bngsim.convert._protocol import _iter_action_calls
 
     args = ""
     for verb, argstr in _iter_action_calls(text):
-        if verb.lower() == "generate_network":
+        low = verb.lower()
+        # generate_hybrid_model does not end the search, though generation_source
+        # cuts there: it writes a separate model, and generates no network for
+        # this one.
+        if low == "generate_network":
             args = argstr.strip()
+            break
+        if low in _EXPERIMENT_VERBS:
+            break
 
     if args.startswith("{") and args.endswith("}"):
         inner = args[1:-1].strip().rstrip(",")
@@ -681,9 +692,9 @@ def _run_bng2(
         raise ModelError(
             f"BNG2.pl generate_network timed out after {timeout}s on {source_name} — "
             "the rule set may generate an unbounded network. Bound it in the "
-            "source (max_iter/max_agg/max_stoich on generate_network, which "
-            "from_bngl forwards), raise timeout=, or simulate it network-free "
-            "with NFsim instead."
+            "source (max_iter/max_agg/max_stoich on a generate_network before its "
+            "first run, which from_bngl forwards), raise timeout=, or simulate it "
+            "network-free with NFsim instead."
         ) from e
 
     # `--outdir` puts the network beside the scratch file, but the source's own
