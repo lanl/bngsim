@@ -773,7 +773,19 @@ _ARRAYS = ("arrays", _ARRAYS_URI)
 
 
 @pytest.mark.parametrize("package", [("multi", _MULTI_URI), _ARRAYS], ids=["multi", "arrays"])
-@pytest.mark.parametrize("load", ["relative", "absolute, mirrored under the working directory"])
+@pytest.mark.parametrize(
+    "load",
+    [
+        "relative",
+        pytest.param(
+            "absolute, mirrored under the working directory",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32",
+                reason="POSIX-specific: the mirror is built from a POSIX absolute path",
+            ),
+        ),
+    ],
+)
 def test_two_copies_of_one_file_are_walked_from_each_location(
     tmp_path, monkeypatch, package, load
 ) -> None:
@@ -877,3 +889,159 @@ def test_the_opt_out_warns_of_a_package_once(tmp_path, monkeypatch, caplog) -> N
         bngsim.Model.from_sbml(tmp_path / "top.xml")
     warned = [r.getMessage() for r in caplog.records if _MULTI_URI in r.getMessage()]
     assert len(warned) == 1, warned
+
+
+_POSIX_NAMES = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-specific: Windows forbids ':' and '\\' in a file name"
+)
+
+
+def _tainted(package) -> str:
+    """The decaying species at k = 0.33 in a document declaring *package*."""
+    return _leaf(0.33, *package)
+
+
+@_POSIX_NAMES
+@pytest.mark.parametrize("package", [_ARRAYS, ("zzz", _ZZZ_URI)], ids=["arrays", "zzz"])
+@pytest.mark.parametrize(
+    ("source", "found_at", "load"),
+    [
+        ("ab:c/ext.xml", "ext.xml", "relative"),
+        ("sub\\ext.xml", "sub/ext.xml", "relative"),
+        ("ab:c/ext.xml", "ext.xml", "absolute, one level down"),
+    ],
+)
+def test_a_source_libsbml_finds_but_cannot_read_is_keyed_as_it_keys_it(
+    tmp_path, monkeypatch, package, source, found_at, load
+) -> None:
+    """libSBML's file resolver finds *source* as written in the working
+    directory, then reads the path of the URI it builds from it, which for a
+    name with a ``:`` or a ``\\`` is another path, here one that does not exist.
+    The flattener's last resort then reads the file beside the loaded one, and
+    libSBML files it under the URI the first resolver found, so its own source
+    ``inner.xml`` resolves where that URI says: in the working directory, at
+    the file declaring *package*, not at the clean one beside it."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / source).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / source).write_text("x")  # found as written, never read
+    (tmp_path / "inner.xml").write_text(_tainted(package))
+    if load == "relative":
+        project, top = tmp_path / "s1", "s1/top.xml"
+        (project / found_at).parent.mkdir(parents=True)
+        (project / "top.xml").write_text(_submodel_of(source))
+    else:
+        project = tmp_path / "proj"
+        (project / "models").mkdir(parents=True)
+        top = str(project / "top.xml")
+        (project / "top.xml").write_text(
+            _comp(external=[("mid", "models/mid.xml", "m")], submodels=[("sub", "mid")])
+        )
+        (project / "models" / "mid.xml").write_text(
+            _comp(external=[("e", source, "m")], submodels=[("s", "e")]).replace(
+                '<model id="top">', '<model id="m">'
+            )
+        )
+    found = project / found_at
+    (found.parent / "inner.xml").write_text(_leaf(0.22))
+    found.write_text(
+        _comp(external=[("inn", "inner.xml", "m")], submodels=[("sub2", "inn")]).replace(
+            '<model id="top">', '<model id="m">'
+        )
+    )
+    with pytest.raises(ModelError) as excinfo:
+        bngsim.Model.from_sbml(top)
+    assert package[1] in str(excinfo.value)
+    assert os.path.realpath(tmp_path / "inner.xml") in str(excinfo.value)
+
+
+@_POSIX_NAMES
+@pytest.mark.parametrize("package", [_ARRAYS, ("zzz", _ZZZ_URI)], ids=["arrays", "zzz"])
+@pytest.mark.parametrize("load", ["file", "string"])
+@pytest.mark.parametrize("source", ["{root}/run_10:00/ext.xml", "ab:c/ext.xml"])
+def test_the_file_libsbml_reads_for_a_colon_name_is_the_one_checked(
+    tmp_path, monkeypatch, package, load, source
+) -> None:
+    """For a path with a ``:`` libSBML's file resolver builds a URI whose
+    scheme is not ``file``, and its ``resolve`` still reads that URI's path:
+    ``ext.xml`` in the working directory, not the clean file the source names.
+    That file is scanned and named."""
+    source = source.format(root=tmp_path)
+    (tmp_path / "run_10:00").mkdir()
+    (tmp_path / "run_10:00" / "ext.xml").write_text(_leaf(0.5))
+    cwd = tmp_path / "cwd"
+    (cwd / "ab:c").mkdir(parents=True)
+    (cwd / "ab:c" / "ext.xml").write_text("x")
+    (cwd / "ext.xml").write_text(_leaf(1.49, *package))
+    (tmp_path / "proj").mkdir()
+    (tmp_path / "proj" / "top.xml").write_text(_submodel_of(source))
+    monkeypatch.chdir(cwd)
+    with pytest.raises(ModelError) as excinfo:
+        if load == "file":
+            bngsim.Model.from_sbml(tmp_path / "proj" / "top.xml")
+        else:
+            bngsim.Model.from_sbml_string(_submodel_of(source))
+    assert package[1] in str(excinfo.value)
+    assert os.path.realpath(cwd / "ext.xml") in str(excinfo.value)
+
+
+def _compressed(name: str, text: str) -> bytes:
+    """*text* as libSBML reads a file named *name*: gzip, bzip2, or a zip
+    archive whose first entry it is."""
+    import bz2
+    import gzip
+    import io
+    import zipfile
+
+    if name.endswith(".gz"):
+        return gzip.compress(text.encode())
+    if name.endswith(".bz2"):
+        return bz2.compress(text.encode())
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("model.xml", text)
+        archive.writestr("other.xml", _leaf(0.1))
+    return buffer.getvalue()
+
+
+@pytest.mark.parametrize("where", ["loaded", "a submodel's file"])
+@pytest.mark.parametrize("name", ["ext.xml.gz", "ext.xml.bz2", "ext.xml.zip"])
+def test_a_compressed_file_is_scanned_as_libsbml_reads_it(tmp_path, where, name) -> None:
+    """libSBML reads a ``.gz``, ``.bz2`` or ``.zip`` file decompressed, a zip
+    archive's first entry, and the root-element scan reads it the same way
+    rather than parse the compressed bytes and find nothing."""
+    (tmp_path / name).write_bytes(_compressed(name, _leaf(0.87, "zzz", _ZZZ_URI)))
+    (tmp_path / "top.xml").write_text(_submodel_of(name))
+    with pytest.raises(ModelError, match=_ZZZ_URI):
+        bngsim.Model.from_sbml(tmp_path / (name if where == "loaded" else "top.xml"))
+
+
+def test_an_uncompressed_file_named_gz_is_scanned_as_it_is(tmp_path) -> None:
+    """zlib reads a file with no gzip header as plain text, and so does libSBML."""
+    (tmp_path / "ext.xml.gz").write_text(_leaf(0.87, "zzz", _ZZZ_URI))
+    with pytest.raises(ModelError, match=_ZZZ_URI):
+        bngsim.Model.from_sbml(tmp_path / "ext.xml.gz")
+
+
+@pytest.mark.parametrize("where", ["loaded", "a submodel's file"])
+@pytest.mark.parametrize(
+    ("uri", "required"),
+    [
+        (_ZZZ_URI, " 1 "),
+        ("http://www.sbml.org/sbml/level3/version1/foo/comp/version1", "true"),
+        ("http://www.sbml.org/sbml/level3/version1/comp/version2", "true"),
+    ],
+    ids=["required 1", "a comp segment", "a comp version libSBML does not know"],
+)
+def test_the_scan_reads_required_and_package_names_as_libsbml_does(
+    tmp_path, where, uri, required
+) -> None:
+    """``required`` is an xs:boolean, so ``1`` is true, with the whitespace
+    XML trims. ``comp`` is the namespace libSBML registers for it, not any
+    namespace with a ``comp`` segment."""
+    ext = _with_package("pkg", uri, "true").replace(
+        'pkg:required="true"', f'pkg:required="{required}"'
+    )
+    (tmp_path / "ext.xml").write_text(ext)
+    (tmp_path / "top.xml").write_text(_submodel_of("ext.xml"))
+    with pytest.raises(ModelError, match=uri):
+        bngsim.Model.from_sbml(tmp_path / ("ext.xml" if where == "loaded" else "top.xml"))
