@@ -8,23 +8,25 @@ blamed steps too small to move the clock.
 
 CVODE is given no largest step, and grows its step up to tenfold a step (ten
 thousandfold after its first). Near the largest double the step overflows to
-inf before the run reaches its end, and the clock with it. With h = inf, the
-test that asks the Newton iteration for a fresh Jacobian reads inf / inf, a
-NaN, and never asks, so the iteration retries for ever inside one step: 16.7
-million calls of the right-hand side in 8 s, the step count fixed at 171.
-``max_steps`` counts steps and could not see it, and the wall-clock budget was
-read only between CVode calls. Where the clock passed the end at inf instead,
-CVODE interpolated the rows there, and they were NaN.
+inf before the run reaches its end. With h = inf, the test that asks the Newton
+iteration for a fresh Jacobian reads inf / inf, a NaN, and never asks, so the
+iteration retries for ever inside one step: 16.7 million calls of the
+right-hand side in 8 s, the step count fixed at 171. ``max_steps`` counts steps
+and could not see it, and the wall-clock budget was read only between CVode
+calls. Where the step stayed finite and t + h passed the end at inf, CVODE kept
+the step and interpolated the rows from it, and they were NaN.
 
 Where it happens turns on the model as much as on the span: ``A -> B`` returns
 over ``(-7e307, 0)``, and at k = 0, whose steps CVODE grows the fastest, it
 never returned there, nor over ``(0, 1e306)``. So no ceiling on the span tells
-the two apart. The right-hand side ends the run, as ``UsageError``, at the
-first call after CVODE's own clock is no longer finite; a run whose length is
-itself past the largest double is refused before it starts. Every run that
-returned before returns the rows it did. And the wall-clock budget is read from
-the right-hand side, so a run that spends it inside one CVode call stops there
-as ``SimulationTimeout``.
+the two apart. A run is ended, as ``UsageError``, where CVODE's step is no
+longer finite, or as a CVode call returns with its clock at inf; a step
+attempt whose t + h is inf that CVODE throws away and retries shorter is let
+be, as is a run whose first-step routine tries a time of inf. A run whose
+length is itself past the largest double is refused before it starts. Every
+run that returned before returns the rows it did. And the wall-clock budget is
+read from the right-hand side, so a run that spends it inside one CVode call
+stops there as ``SimulationTimeout``.
 """
 
 from __future__ import annotations
@@ -98,7 +100,7 @@ def test_a_run_whose_step_overflows_ends_there(tmp_path, capfd, law, k, span):
         with pytest.raises(bngsim.UsageError, match="largest double") as info:
             sim.run(span, 5, timeout=30)
     assert isinstance(info.value, ValueError)
-    assert info.value.code == "usage.invalid_argument"
+    assert info.value.code == "usage.span_out_of_reach"
     assert "larger unit" in str(info.value)
     # (1e308, 1.7e308) of the model that reads the clock warned of 155 steps
     # where t + h == t beside its nan rows: the far span's doing, which the
@@ -127,15 +129,33 @@ def test_a_run_whose_length_overflows_is_refused_before_it_runs(tmp_path, times)
     sim = _sim(tmp_path, _net())
     with pytest.raises(bngsim.UsageError, match="too long") as info:
         sim.run(**times, timeout=30)
+    assert info.value.code == "usage.span_out_of_reach"
     assert "larger unit" in str(info.value)
+    # The output times a t_span grid would space across it are not finite;
+    # sample times are, and the message does not say otherwise.
+    assert ("output times" in str(info.value)) == ("t_span" in times)
     assert sim.current_time == 0.0
     _decays_from_1(sim.run((0.0, 5.0), 6))
 
 
-def test_run_batch_ends_it_too(tmp_path):
+@pytest.mark.parametrize("num_processors", [1, 2], ids=["sequential", "threads"])
+def test_a_batch_row_or_scan_point_that_overflows_is_named(tmp_path, num_processors):
+    # Over (0, 3e306) A -> B at k = 1 returns, and at k = 1e-300 its step
+    # passes the largest double: whether a row gets there turns on its values,
+    # so the error names the row, as a refusal partway does.
     sim = _sim(tmp_path, _net())
-    with pytest.raises(bngsim.UsageError, match="largest double"):
-        sim.run_batch(t_span=(0.0, 7e307), n_points=5, params=[{"k": 1.0}, {"k": 2.0}], timeout=30)
+    with pytest.raises(bngsim.UsageError, match=r"^run_batch row 1: .*largest double") as info:
+        sim.run_batch(
+            t_span=(0.0, 3e306),
+            n_points=5,
+            params=[{"k": 1.0}, {"k": 1e-300}],
+            num_processors=num_processors,
+            timeout=30,
+        )
+    assert info.value.code == "usage.span_out_of_reach"
+    with pytest.raises(bngsim.UsageError, match=r"^scan point 1 \(k = 1e-300\): ") as info:
+        sim.parameter_scan("k", par_scan_vals=[1.0, 1e-300], t_span=(0.0, 3e306), n_points=5)
+    assert info.value.code == "usage.span_out_of_reach"
 
 
 def test_compute_all_sensitivities_ends_it_as_it_is():
@@ -170,6 +190,23 @@ def test_far_runs_that_returned_still_return(tmp_path):
     with pytest.warns(bngsim.RoundoffStepWarning):
         r = _sim(tmp_path, _net()).run((-7e307, 0.0), 5)
     np.testing.assert_allclose(np.asarray(r.species)[:, 0], exp_rows, atol=1e-12)
+    # A' = 1/(1 + t/1e308): CVODE tries two steps whose t + h is inf, throws
+    # them away on its error test and goes on from its own finite clock. The
+    # rows are 1e308 ln(1 + t/1e308), to 3e-8.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        log = bngsim.Model.from_antimony_string(
+            "species A = 0; k = 1; J1: -> A; k/(1+time/1e308);"
+        )
+    for times in [
+        {"t_span": (0.0, 1.79e308), "n_points": 5},
+        {"sample_times": [0.0, 1.0, 1.79e308]},
+    ]:
+        r = bngsim.Simulator(log, "ode").run(**times, start="initial")
+        t = np.asarray(r.time)
+        np.testing.assert_allclose(
+            np.asarray(r.species)[:, 0], 1e308 * np.log1p(t / 1e308), rtol=1e-6, atol=1e-6
+        )
     # Far from 0 and short, A' = 1 is moved onto its own clock, as from 0.
     far = _sim(tmp_path, CLOCK_NET).run((2.0**520, 2.0**520 + 2.0**470), 5)
     near = _sim(tmp_path, CLOCK_NET).run((0.0, 2.0**470), 5)

@@ -17,11 +17,12 @@ class SparseJacobianUnavailable : public std::runtime_error {
 
 // An ODE run over a span CVODE cannot step through (issue #1838): one whose
 // length is past the largest double, refused before it starts, or one where
-// CVODE's step takes its clock past the largest double, ended there. Only the
-// ODE engine refuses it, so the engine does, not the checks of a span that
-// Python makes for every method. A std::invalid_argument, which the pybind11
-// layer maps to `bngsim.UsageError`: a ValueError, as before it had a type, and
-// a BngsimError with a code, as the refusals of a span Python raises are.
+// CVODE's step, or its clock (t + h), passes the largest double, ended there.
+// Only the ODE engine refuses it, so the engine does, not the checks of a span
+// that Python makes for every method. A std::invalid_argument, which the
+// pybind11 layer maps to `bngsim.UsageError` with the code
+// usage.span_out_of_reach: a ValueError, as before it had a type, and a
+// BngsimError with a code, as the refusals of a span Python raises are.
 class TimeSpanOutOfReach : public std::invalid_argument {
   public:
     explicit TimeSpanOutOfReach(const std::string &what) : std::invalid_argument(what) {}

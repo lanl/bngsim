@@ -201,6 +201,13 @@ Raised as `NotSupportedError` or `UsageError`. A call or option this object does
 
 Read the message for what does.
 
+(code-usage-span-out-of-reach)=
+### `usage.span_out_of_reach`
+
+Raised as `UsageError`. An ODE run CVODE cannot step through: its length is past the largest double, or CVODE's step, or its clock (t + h), passed it before the run ended. Whether a run gets there can turn on the model and its values.
+
+Measure time in a larger unit, so that the run's times are smaller.
+
 (code-env-feature-not-built)=
 ### `env.feature_not_built`
 

@@ -906,8 +906,11 @@ PYBIND11_MODULE(_bngsim_core, m) {
         } catch (const bngsim::TimeSpanOutOfReach &e) {
             // Issue #1838: a span an ODE run cannot step through, an argument
             // the run cannot take, typed as Python's own refusals of a span are.
+            // Its own code, since whether a run reaches it can turn on the
+            // model's values, which a batch row and a scan point name.
             py::object cls = py::module_::import("bngsim._exceptions").attr("UsageError");
-            PyErr_SetObject(cls.ptr(), cls(py::str(e.what())).ptr());
+            py::object exc = cls(py::str(e.what()), py::arg("code") = "usage.span_out_of_reach");
+            PyErr_SetObject(cls.ptr(), exc.ptr());
         } catch (const bngsim::SensitivityRefusedForParameters &e) {
             // Issue #1435: a refusal mid-run whose condition turns on the
             // requested columns. Caught before its base, which would take it.
