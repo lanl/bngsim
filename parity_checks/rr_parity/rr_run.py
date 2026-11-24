@@ -181,6 +181,16 @@ NO_GROUND_TRUTH_LABEL = "no ground truth"
 NO_GROUND_TRUTH_APPLIED = re.compile(re.escape(NO_GROUND_TRUTH_LABEL) + r"( \([^)]*\))?: ")
 
 
+def _no_ground_truth_applies(outcome, value) -> bool:
+    """Does a NO_GROUND_TRUTH entry dispose of a row with this natural outcome and
+    metric? A PASS, or a DIFF whose metric is finite (``_apply_no_ground_truth``
+    says why). The progress line asks too, so it tags only the rows the report
+    reclassifies."""
+    return outcome == Outcome.PASS or (
+        outcome == Outcome.DIFF and (value is None or math.isfinite(value))
+    )
+
+
 def _apply_no_ground_truth(
     outcome, value, reason: str, issue, comment: str
 ) -> tuple[Outcome, str, bool]:
@@ -202,8 +212,7 @@ def _apply_no_ground_truth(
         timeout falsifies nothing, so the entry is inapplicable, not stale.
     """
     tag = f" ({issue})" if issue else ""
-    finite = value is None or math.isfinite(value)
-    if outcome in (Outcome.DIFF, Outcome.PASS) and (outcome == Outcome.PASS or finite):
+    if _no_ground_truth_applies(outcome, value):
         note = f"{NO_GROUND_TRUTH_LABEL}{tag}: {reason} | was {outcome}"
         if value is not None:
             note += f" at max_rel={value:.4g}"
@@ -805,6 +814,9 @@ def _make_progress(
     allow-list); the parent reclassifies a known-artifact DIFF to PASS. So the
     live line shows ``DIFF→PASS*`` for those, matching the final report instead
     of misleadingly printing a bare DIFF that the summary then counts as PASS.
+    A row a NO_GROUND_TRUTH entry will make a BAD_TEST shows ``→BADTEST*`` the
+    same way, asked of ``_no_ground_truth_applies``, so a non-finite DIFF it
+    does not apply to reads as the scoring DIFF it stays.
     """
 
     def _progress(finished: int, total: int, res: dict) -> None:
@@ -821,7 +833,9 @@ def _make_progress(
         }.get(st, st)
         if st == "diff" and res.get("key") in artifacts:
             tag = "DIFF→PASS*"  # known artifact; reclassified in the report
-        elif st in ("pass", "diff") and res.get("key") in no_truth:
+        elif res.get("key") in no_truth and _no_ground_truth_applies(
+            _OUTCOME.get(st), res.get("value")
+        ):
             tag = f"{tag}→BADTEST*"  # no ground truth; reclassified in the report
         extra = ""
         if st in ("pass", "diff") and res.get("value") is not None:
