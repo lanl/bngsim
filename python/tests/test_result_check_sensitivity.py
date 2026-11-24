@@ -568,6 +568,54 @@ def test_a_long_oscillation_is_judged_as_far_as_the_quotient_resolves_it(
         assert 0.0 < v["allowance"] < 0.02
 
 
+def test_a_column_every_solve_gives_as_zero_is_found(monkeypatch):
+    # A dropped seed or a lost right-hand side term reads as 0: the quotient's
+    # masks follow the quotient's scale, not the run's own.
+    r = _decay()
+    _every_solve_off(monkeypatch, 0, 0.0)
+    v = _by_name(_scaled(r, 0, 0.0).check(["sensitivity_fd"]))["sensitivity_fd"]
+    assert v["status"] == "diff" and v["worst_column"] == "dA()/dk", v
+
+
+def test_a_series_whose_only_values_sit_on_a_switch_is_not_judged_and_says_so(monkeypatch):
+    # dA/dt_dose is [0, 0, 50] at [0, 2.5, 5]: its one value is on the event
+    # time, where the quotient is masked. Three times too large is then no
+    # pass: nothing was compared.
+    ant = """
+    model bol
+      J1: A -> ; k*A
+      E1: at (time >= t_dose): A = A + dose
+      k = 0.5; dose = 100; t_dose = 5
+      A = 100
+    end
+    """
+    sim = Simulator(Model.from_antimony_string(ant), method="ode", sensitivity_params=["t_dose"])
+    r = sim.run(sample_times=[0.0, 2.5, 5.0])
+    _every_solve_off(monkeypatch, 0, 3.0)
+    v = _by_name(_scaled(r, 0, 3.0).check(["sensitivity_fd"]))["sensitivity_fd"]
+    assert v["status"] == "skip" and v["n_judged"] == 0, v
+    assert "t_dose" in v["not_judged"]
+
+
+def test_a_value_every_solve_gives_as_nan_fails_the_tolerance_tier(monkeypatch):
+    real = Simulator.run
+
+    def run(self, *a, **kw):
+        out = real(self, *a, **kw)
+        if len(out._sensitivity_params):
+            out = copy.copy(out)
+            s = np.asarray(out._sensitivities, dtype=float).copy()
+            s[5:, 0, 0] = np.nan
+            out._sensitivities = s
+        return out
+
+    monkeypatch.setattr(Simulator, "run", run)
+    r = _decay()
+    rep = r.check()
+    assert _by_name(rep)["sensitivity"]["status"] == "diff" and rep["ok"] is False
+    assert _by_name(rep)["sensitivity"]["worst_column"] == "dA()/dk"
+
+
 def test_a_quotient_diff_on_unconverged_series_says_to_tighten():
     r = Simulator(examples.load("chain"), method="ode", sensitivity_params=["k1", "k2"]).run(
         t_span=(0, 20), n_points=21, rtol=3e-2, atol=1e-4

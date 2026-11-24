@@ -9,7 +9,8 @@ time) on its own scale, as :mod:`bngsim._check` judges each species: a raw
 columns share no scale, and a small series beside a large one is judged as
 carefully as the large one.
 
-A series' absolute floor is the one the solver gave it. CVODES holds a
+A series' absolute floor is the base one the solver gave it (the issue #177
+floor can raise it during the run). CVODES holds a
 sensitivity to ``rtol·|s| + atolS``, and bngsim sets
 ``atolS_ij = atol_i·max(|x_i(0)|, 1)/pbar_j`` (``src/cvode_simulator.cpp``,
 issues #196 and #214), with ``atol_i`` the species' own atol as applied and
@@ -63,7 +64,11 @@ the two.
 
 Neither check judges a row that is not finite in the run by design (an
 assignment-rule species whose sensitivity is refused,
-``Result.ar_sensitivity_refused``); the verdict counts them.
+``Result.ar_sensitivity_refused``); the verdict counts them. Any other value
+the run gives as not finite is a finding. The quotient judges a series on the
+larger of its peak in the run and in the quotient, so a column the run gives
+as 0 is judged; a column none of whose cells that carry it is clear of a
+switch or of a step too wide for it is not judged, and says why.
 """
 
 from __future__ import annotations
@@ -270,6 +275,14 @@ def _moves(
             scale > 0, over / np.where(scale > 0, scale, 1.0), np.where(over > 0, np.inf, 0.0)
         )
     move = np.where(keep, moves(d, peak, atol), np.where(np.isinf(d), np.inf, trace))
+    # A value the run gives as not finite is a finding, wherever the rerun
+    # agrees with it, unless the run refuses the row by design.
+    nonfinite = (
+        ~np.isfinite(cols.flat(cols.S)).all(axis=0)
+        if cols.S.size
+        else np.zeros(d.shape, dtype=bool)
+    )
+    move = np.where(nonfinite, np.inf, move)
     move = np.where(cols.refused.reshape(-1), 0.0, move)
     return move, keep, d
 
@@ -596,13 +609,18 @@ def check_sensitivity_fd(ctx: _Context) -> dict[str, Any]:
         kink = np.abs(d2 - d1 * ((a2 + b2) / (a1 + b1)))
         noise = FD_NOISE * 2.0 * err_run / (a1 + b1)
         s = cols.S[:, :, j]
-        pk = peak[:, j]
         fin_s = np.isfinite(s)
         fin_q = np.isfinite(q1) & np.isfinite(rich) & np.isfinite(kink)
         bad = (fin_s != fin_q).any(axis=0) if s.size else np.zeros(n_sp, dtype=bool)
+        # A series' scale is the larger of the run's and the quotient's peak,
+        # so a column the run gives as 0 where the quotient does not is judged
+        # on the quotient's scale, not masked by its own.
+        q_peak = np.where(fin_q, np.abs(q1), 0.0).max(axis=0) if s.size else np.zeros(n_sp)
+        pk = np.maximum(peak[:, j], q_peak)
         cut = FD_RESOLVED * pk[None, :]
         # Within reach of a switch or event time the value moves: that cell.
-        near = FD_SPREAD * kink >= cut
+        # (A series 0 in the run and the quotient alike has nothing to mask.)
+        near = (FD_SPREAD * kink >= cut) & (cut > 0)
         # Once the Richardson difference reaches FD_RESOLVED of a series'
         # peak away from a switch, the step is too wide for it, and stays so
         # until both terms are back under FD_CLEAR of that share: as they are
@@ -610,7 +628,8 @@ def check_sensitivity_fd(ctx: _Context) -> dict[str, Any]:
         # window, and never are in an oscillation whose phase the step moves,
         # where one term or the other is near its largest at every phase.
         wide = _too_wide(
-            (FD_SPREAD * rich >= cut) & ~near, FD_SPREAD * (rich + kink) < FD_CLEAR * cut
+            (FD_SPREAD * rich >= cut) & ~near & (cut > 0),
+            FD_SPREAD * (rich + kink) < FD_CLEAR * cut,
         )
         use = fin_s & fin_q & ~near & ~wide
         base_allow = np.maximum(own[:, j], noise)
@@ -635,7 +654,22 @@ def check_sensitivity_fd(ctx: _Context) -> dict[str, Any]:
         rel[:, j] = np.where(cols.refused[:, j], 0.0, np.where(bad, np.inf, rel_j))
         share[:, j] = np.where(use, share_t, 0.0).max(axis=0) if s.size else np.zeros(n_sp)
         wide_any = wide.any(axis=0) if s.size else np.zeros(n_sp, dtype=bool)
-        fd_trace[:, j] = ((base_allow >= FD_RESOLVED * pk) | wide_any) & ~cols.refused[:, j]
+        # A series none of whose cells that carry it (a value of FD_RESOLVED of
+        # its scale, in the run or the quotient) is judged was not compared.
+        carries = np.maximum(np.where(fin_s, np.abs(s), 0.0), np.where(fin_q, np.abs(q1), 0.0))
+        compared = (
+            (use & ((carries >= cut) | (cut == 0))).any(axis=0)
+            if s.size
+            else np.zeros(n_sp, dtype=bool)
+        )
+        unresolved = (base_allow >= FD_RESOLVED * pk) | wide_any | ~compared
+        fd_trace[:, j] = unresolved & ~cols.refused[:, j]
+        if not (compared & ~cols.refused[:, j]).any() and not bad.any():
+            not_judged[label] = (
+                "no cell that carries it is clear of a switch or event time it moves, or of "
+                "a step too wide for it"
+            )
+            continue
         judged[j] = True
 
     flat = ratio.reshape(-1)

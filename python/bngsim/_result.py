@@ -3498,8 +3498,9 @@ class Result:
             - ``"sensitivity"``: the forward sensitivities of the tolerance
               check's run, against this run's (issue #1893). Each series
               (one species, one parameter or initial amount, over time) is
-              judged on its own peak, past the absolute tolerance the solver
-              held it to (``atol_i·max(|x_i(0)|, 1)/|θ_j|``), and passes when
+              judged on its own peak, past the base absolute tolerance the
+              solver set for it (``atol_i·max(|x_i(0)|, 1)/|θ_j|``; the
+              solver's own roundoff floor can raise it during the run), and passes when
               it moves by at most 1e-3 of that peak. A series within 100 of
               those tolerances of zero is not resolved by the run, named in
               the verdict's ``not_resolved``, and judged on its column's
