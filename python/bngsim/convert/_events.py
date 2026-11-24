@@ -251,17 +251,40 @@ def sbml_events_to_protocol(
     faithfully (state-triggered, non-constant trigger/delay/value, unresolvable
     target), ``protocol`` is ``None`` and ``lossy`` holds one plain-English note
     per offending event — the caller refuses (strict) or warns (best-effort).
+    A comp document is flattened first, as :meth:`Model.from_sbml` flattens it,
+    and a model that runs an event the document does not declare is refused.
 
     The horizon for the trailing ``simulate`` phase comes from ``t_span``; if an
     event fires past it the horizon is extended so no scheduled change is dropped.
     """
     import libsbml
 
-    sbml_model = libsbml.readSBMLFromFile(str(sbml_path)).getModel()
+    from bngsim._sbml_loader import _doc_uses_comp, _flatten_comp
+
+    sbml_path = Path(sbml_path)
+    doc = libsbml.readSBMLFromFile(str(sbml_path))
+    # Model.from_sbml flattens a comp document before it reads it, so a
+    # submodel's events are the model's (``sub__E1``, setting ``sub__A``).
+    # Unflattened, the top model has none of them to translate.
+    if _doc_uses_comp(doc):
+        _flatten_comp(doc, base_path=str(sbml_path.parent))
+    sbml_model = doc.getModel()
     if sbml_model is None:  # pragma: no cover — Model.from_sbml already parsed it
         return None, ["could not re-read the source SBML to translate events"]
 
     n_events = sbml_model.getNumEvents()
+    # Every event the model runs must be one read here, or it would be dropped
+    # from the actions without a word. The loader adds an event of its own
+    # where a piecewise compartment size jumps (``_size_jump_*``), which the
+    # document does not declare; the rest are the document's. It skips an
+    # event with no trigger or nothing to assign, so it can have fewer.
+    n_model = sum(1 for comp in model._core.event_size_jump_compartments if not comp)
+    if n_model > n_events:
+        return None, [
+            f"the source SBML read to translate the events declares {n_events}, but "
+            f"the loaded model has {n_model}; an event not read cannot be carried "
+            "into actions"
+        ]
     if n_events == 0:
         return None, []
 
