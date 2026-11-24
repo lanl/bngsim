@@ -1814,14 +1814,26 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
             // (a resize among them included) apply (issue #741). In a
             // compartment an assignment rule sizes, V_live is the rule's value
             // there; left out, S = 50 at t = 2 in c := 1 + time was stored over
-            // the load-time size 1, [S](3) 12.5 for 37.5 (issue #1659).
+            // the load-time size 1, [S](3) 12.5 for 37.5 (issue #1659). The rule
+            // reads concentrations, so it is evaluated on them, as a row reads
+            // it: read on the counts, c2 := V0 + Y with Y = 20 molecules at
+            // c1 = 4 was 13 for 8, and S = 20 was stored as 260 molecules for
+            // 160 (issue #1754).
+            std::vector<double> rule_sizes;
             for (size_t a = 0; a < assigns.size(); ++a) {
                 const int sp = assigns[a].first;
                 if (sp < 0 || sp >= ns)
                     continue;
-                const double v = live_size(sp, conc.data());
+                const Species &sv = model.species()[static_cast<size_t>(sp)];
+                double v = live_size(sp, conc.data());
+                if (sv.ssa_live_volume_idx0 < 0 && sv.ssa_live_volume_param_idx0 >= 0) {
+                    if (rule_sizes.empty())
+                        rule_sizes = model.ssa_rule_values(origin + t_now, conc.data(), true);
+                    if (sv.ssa_live_volume_param_idx0 < static_cast<int>(rule_sizes.size()))
+                        v = rule_sizes[static_cast<size_t>(sv.ssa_live_volume_param_idx0)];
+                }
                 if (!std::isnan(v))
-                    nv[a] *= v / model.species()[static_cast<size_t>(sp)].volume_factor;
+                    nv[a] *= v / sv.volume_factor;
             }
             auto is_ode_only = [&](size_t a) {
                 return a < ev.assignment_ode_only.size() && ev.assignment_ode_only[a];

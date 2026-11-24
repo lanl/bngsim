@@ -459,6 +459,46 @@ def test_a_rule_sized_state_is_read_at_the_size_the_next_run_reads(method, betwe
         np.testing.assert_allclose(_sel(r, "S")[:, 0], 10.0 * size, rtol=1e-6)
 
 
+# c2's rule reads Y, a concentration in c1, which an event resizes: at t = 3
+# Y's 20 molecules are [Y] = 5 at c1 = 4, so c2 = 3 + 5 = 8, and S's 130
+# molecules (10 at c2(0) = 13) are [S] = 16.25.
+CROSS_SIZED = (
+    "compartment c1 = 2; species Y in c1; Y = 10;\nE1: at time > 1: c1 = 4;\n"
+    "V0 = 3; compartment c2; c2 := V0 + Y;\nspecies S in c2; S = 10;\n"
+)
+
+
+@pytest.mark.parametrize("method", STOCHASTIC)
+def test_a_rule_reading_a_resized_compartment_is_read_on_concentrations(method):
+    """The size c2 := V0 + Y is read on [Y], as the SSA run's rows and the ODE
+    run read it, not on Y's stored count over c1's load-time size (10 for 5),
+    which made c2 13 for 8: get_concentration read 10 for 16.25, an ODE run
+    went on from 80 molecules for 130, and set_concentration("S", 1) stored 13
+    molecules for 8."""
+    m = bngsim.Model.from_antimony_string(CROSS_SIZED)
+    r = _run(m, method, t_span=(0, 3), n_points=4)
+    assert _sel(r, "S", "[S]")[-1] == pytest.approx([130.0, 16.25], rel=1e-9)
+    assert m.get_concentration("S") == pytest.approx(16.25, rel=1e-12)
+    ode = _run(m.clone(), "ode", t_span=(3, 4), n_points=2)
+    np.testing.assert_allclose(_sel(ode, "S")[:, 0], 130.0, rtol=1e-6)
+    m.set_concentration("S", 1.0)
+    for then in (method, "ode"):
+        r = _run(m.clone(), then, t_span=(3, 4), n_points=2)
+        np.testing.assert_allclose(_sel(r, "S")[:, 0], 8.0, rtol=1e-6)
+
+
+@pytest.mark.parametrize("method", ["ode", *STOCHASTIC])
+def test_an_event_assigns_a_concentration_at_a_rule_size_read_on_concentrations(method):
+    """S = 20 at t = 2, where c2 = 3 + [Y] = 8: 160 molecules from there. The SSA
+    run sized c2 on Y's stored count, 13, and stored 260."""
+    m = bngsim.Model.from_antimony_string(CROSS_SIZED + "E2: at time > 2: S = 20;\n")
+    r = _run(m, method, t_span=(0, 3), n_points=4)
+    np.testing.assert_allclose(
+        _sel(r, "S")[:, 0], [130.0, 130.0, 130.0, 160.0], rtol=_rtol(method)
+    )
+    assert _sel(r, "[S]")[-1, 0] == pytest.approx(20.0, rel=_rtol(method))
+
+
 def _replicates(sim, m):
     sim.run_replicates(3, t_span=(4, 8), n_points=3, seed=1)
 
