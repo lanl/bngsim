@@ -10,13 +10,16 @@ off, stopped on a root of f with two species near -1.5e-14 (the steady state
 has them at 1.3e-14 and 0) and the accumulator at 3.9e-9, and came back
 ``converged=True``: a run at an atol of 1e-9 does not see a state at 1e-14
 move. A run from it, as :meth:`Simulator.run` integrates one, fails at
-t = 2.1 with the RHS non-finite. The run test is now integrated at an atol no
-coarser than ``rtol`` times the largest species the solve starts with.
+t = 2.1 with the RHS non-finite. The run test now holds each species to an
+atol no coarser than ``rtol`` of its own scale at the start. One cap for all,
+``rtol`` times the start's largest species, was blinded again by an
+accumulator that had already run, or by any species at 1 beside the rest.
 
-The models below are the issue's, transcribed to ``.net``, and a three-species
-reduction of it. Their steady state has a closed form: ``S = bS/dS``,
-``G = bG/dG``, ``N = P = 0``. The oracles are that closed form and a run of
-the time course from the returned state; neither is the run test.
+The models below are the issue's, transcribed to ``.net``, the same beside a
+large species, and a three-species reduction of it. Their steady state has a
+closed form: ``S = bS/dS``, ``G = bG/dG``, ``N = P = 0``. The oracles are that
+closed form and a run of the time course from the returned state that holds
+each species to ``rtol`` of its own scale; neither is the run test.
 """
 
 from __future__ import annotations
@@ -93,13 +96,24 @@ end reactions
 # horizon, and the accumulator out of the test.
 RTOL, ATOL, HORIZON = 1e-6, 1e-9, 1e6
 
-MODELS = {"apap": APAP_NET, "spa": SPA_NET}
+MODELS = {
+    "apap": APAP_NET,
+    "spa": SPA_NET,
+    # The issue's model with the accumulator started where the issue's solve
+    # left it, as a model that had already run would be.
+    "apap_ran": APAP_NET.replace("    5 A() 0\n", "    5 A() 3.9e-9\n"),
+    # The issue's model beside a species at 1 that nothing reads or moves.
+    "apap_beside": APAP_NET.replace("    5 A() 0\n", "    5 A() 0\n    6 Z() 1.0\n"),
+}
 
 # The closed-form steady state of each species that has one; the accumulator
 # has none (it ends at what the run drained into it).
+APAP_ROOT = {"S()": 2.65e-14 / 2.0, "G()": 1.374e-14 / 2.0, "N()": 0.0, "P()": 0.0}
 ROOTS = {
-    "apap": {"S()": 2.65e-14 / 2.0, "G()": 1.374e-14 / 2.0, "N()": 0.0, "P()": 0.0},
+    "apap": APAP_ROOT,
     "spa": {"S()": 2.65e-14 / 2.0, "P()": 0.0},
+    "apap_ran": APAP_ROOT,
+    "apap_beside": {**APAP_ROOT, "Z()": 1.0},
 }
 
 
@@ -136,26 +150,28 @@ def _tolerance(start, x, atol=ATOL) -> np.ndarray:
     return RTOL * np.abs(x) + floor
 
 
-def _off_the_root(name: str, ss, start, atol=ATOL) -> list[str]:
+def _off_the_root(name: str, ss, start, atol=ATOL, root=None) -> list[str]:
     """The species of the closed form the solve's state is off by more than
     its tolerance."""
     x = np.asarray(ss.concentrations, dtype=float)
     tol = dict(zip(ss.species_names, _tolerance(start, x, atol), strict=True))
     at = dict(zip(ss.species_names, x, strict=True))
-    return [s for s, v in ROOTS[name].items() if abs(at[s] - v) > tol[s]]
+    return [s for s, v in (root or ROOTS[name]).items() if abs(at[s] - v) > tol[s]]
 
 
-def _run_rests_at(tmp_path, name, start, x) -> bool:
-    """Whether a run of the time course from ``x``, at the issue's rtol and
-    atol (each species held to rtol of its own scale under the scalar, issue
-    #1420), rests there: every species the solve measures within its
-    tolerance at the end. One the solver cannot carry on does not."""
-    model = _model(tmp_path, name)
-    model.set_state(x)
+def _run_rests_at(model: bngsim.Model, start, x) -> bool:
+    """Whether a run of the time course from ``x`` rests there: every species
+    the solve measures within its tolerance at the end. The run holds each
+    species to ``rtol`` of its own scale at the start (one at 0 to the
+    smallest any starts at), as a vector, which ``run()`` uses exactly as
+    given. One the solver cannot carry on does not rest."""
     keep = ~np.asarray(model.is_pure_sink(), dtype=bool)
+    scale = np.abs(np.asarray(start, dtype=float))
+    atol = RTOL * np.maximum(scale, scale[scale > 0].min())
+    model.set_state(x)
     try:
         r = bngsim.Simulator(model, method="ode").run(
-            t_span=(0.0, HORIZON), n_points=5, rtol=RTOL, atol=ATOL
+            t_span=(0.0, HORIZON), n_points=5, rtol=RTOL, atol=atol
         )
     except bngsim.SimulationError as e:
         assert e.code.startswith("solver."), e
@@ -167,32 +183,32 @@ def _run_rests_at(tmp_path, name, start, x) -> bool:
 @pytest.mark.parametrize("atol", [ATOL, "vector"], ids=["scalar", "vector"])
 @pytest.mark.parametrize("method", ["integration", "newton"])
 @pytest.mark.parametrize("name", sorted(MODELS))
-def test_converged_is_the_closed_form_steady_state(tmp_path, name, method, atol):
+def test_converged_is_a_rest_at_the_steady_state(tmp_path, name, method, atol):
     """At the issue's atol the march resolves nothing, and where it stops is
-    its error. Wherever that is off the steady state, the solve must not say
-    converged, and a run from it must not rest there. Main returned
-    converged=True on a spurious root for apap by integration (S at -1.46e-14
-    for 1.325e-14, the issue's state) and for spa by Newton (S at -1.54e-14);
-    a run of the time course from either fails on the RHS. The same with the
-    atol given per species."""
+    its error. A state the solve calls converged must be the closed form, to
+    its own tolerance, and a run that resolves every species must rest there.
+
+    Main returned converged=True on the spurious root, S at -1.46e-14 for
+    1.325e-14 (the issue's state), for apap by integration, for spa by Newton
+    (S at -1.54e-14), and for apap_ran and apap_beside by integration; a run
+    from each leaves it, or fails on the RHS. The same with the atol given
+    per species. Where it does not converge, the run test or the residual
+    test said so."""
     ss, start = _solve(tmp_path, name, method, atol=atol)
     x = np.asarray(ss.concentrations, dtype=float)
-    if _off_the_root(name, ss, start):
-        assert not ss.converged, (x, ss.continued_run_distance)
-        # Refused by the run test, which ran (the residual test passed), or
-        # by the residual test itself.
+    if ss.converged:
+        assert _off_the_root(name, ss, start) == [], (x, ss.continued_run_distance)
+        assert _run_rests_at(_model(tmp_path, name), start, x), x
+    else:
         assert ss.continued_run_distance > 1.0 or not ss.residual < 1e-9
-        assert not _run_rests_at(tmp_path, name, start, x)
-    elif ss.converged:
-        assert _run_rests_at(tmp_path, name, start, x)
 
 
 @pytest.mark.parametrize("method", ["integration", "newton"])
-@pytest.mark.parametrize("name", sorted(MODELS))
+@pytest.mark.parametrize("name", ["apap", "spa"])
 def test_the_default_atol_finds_the_steady_state(tmp_path, name, method):
     """No atol given, each species is marched at rtol of its own scale and the
-    solve reaches the closed form: the run test's atol is untouched there
-    (the default is never coarser than rtol times the start's largest)."""
+    solve reaches the closed form, to the model's scale. The run test's atol
+    is no coarser than that default, so the default's runs are unchanged."""
     ss, start = _solve(tmp_path, name, method, atol=None)
     assert ss.converged
     assert _off_the_root(name, ss, start, atol=0) == []
@@ -200,10 +216,11 @@ def test_the_default_atol_finds_the_steady_state(tmp_path, name, method):
 
 
 @pytest.mark.parametrize("method", ["integration", "newton"])
-@pytest.mark.parametrize("name", sorted(MODELS))
+@pytest.mark.parametrize("name", ["apap", "spa"])
 def test_the_steady_state_at_a_coarse_atol_stays_converged(tmp_path, name, method):
-    """A start at the steady state, at the issue's atol: the run held to the
-    start's scale does not refuse a state the system rests at."""
+    """A start at the steady state, at the issue's atol: the run that holds
+    each species to its own scale does not refuse a state the system rests
+    at."""
     model = _model(tmp_path, name)
     at = {s: ROOTS[name].get(s, 0.0) for s in model.species_names}
     ss, start = _solve(tmp_path, name, method, state=[at[s] for s in model.species_names])
@@ -213,18 +230,28 @@ def test_the_steady_state_at_a_coarse_atol_stays_converged(tmp_path, name, metho
 
 
 def test_steady_state_batch_takes_the_same_test(tmp_path):
-    """Each entry of a batch is solved by the same core call, and judged by
-    the same run test."""
+    """Each entry of a batch is solved by the same core call and judged by
+    the same run test: its first entry, at the model's own parameters, is
+    steady_state()'s solve to the bit, and no entry is converged off its
+    closed form. Main returned the first converged on the spurious root."""
     model = _model(tmp_path, "apap")
     start = np.asarray(model.get_state(), dtype=float).copy()
     sink = np.asarray(model.is_pure_sink(), dtype=bool)
     sim = bngsim.Simulator(model, method="ode")
+    points = [{}, {"bS": 5.3e-14}]
     results = sim.steady_state_batch(
-        params=[{}, {"bS": 2.65e-14}], rtol=RTOL, atol=ATOL, max_time=HORIZON, mask=~sink
+        params=points, rtol=RTOL, atol=ATOL, max_time=HORIZON, mask=~sink
     )
-    for ss in results:
+    single, _ = _solve(tmp_path, "apap", "integration")
+    assert results[0].converged == single.converged
+    assert np.array_equal(results[0].concentrations, single.concentrations)
+    assert results[0].continued_run_distance == single.continued_run_distance
+    for point, ss in zip(points, results, strict=True):
+        root = {**APAP_ROOT, "S()": point.get("bS", 2.65e-14) / 2.0}
         if ss.converged:
-            assert _off_the_root("apap", ss, start) == [], ss.concentrations
+            assert _off_the_root("apap", ss, start, root=root) == [], ss.concentrations
+        else:
+            assert ss.continued_run_distance > 1.0 or not ss.residual < 1e-9
 
 
 _CORPUS = Path(__file__).resolve().parents[2] / "parity_checks" / "rr_parity" / "models"
@@ -246,4 +273,4 @@ def test_the_issues_corpus_model(tmp_path):
         assert at["Sulphate__PAPS"] == pytest.approx(1.325e-14, rel=1e-3)
         assert abs(at["Paracetamol_APAP"]) < 1e-18
     else:
-        assert ss.continued_run_distance > 1.0
+        assert ss.continued_run_distance > 1.0 or not ss.residual < 1e-9

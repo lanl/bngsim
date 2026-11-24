@@ -6309,11 +6309,43 @@ static constexpr double kRunRtolLeast = 1e-13;
 // of the tolerances takes for a drift (ss_continued_run).
 static constexpr double kDriftAtLeast = 10.0;
 
+// Each species' scale at the state the solve starts from (issue #1895): its
+// own magnitude, and for one below it (at 0) the floor, the smallest
+// magnitude a species not $-fixed starts at, but no finer than double
+// precision resolves beside the largest of them. That is the scale the
+// default atol is derived from (Simulator._steady_state_atol, which is
+// _atol_from_scale's rule with a share of machine epsilon), so the default
+// atol is never coarser than rtol times it. Empty where no species not
+// $-fixed starts above 0: the start has no scale. A value that is not
+// finite counts as 0, as it does there.
+static std::vector<double> ss_start_scales(const NetworkModel &model) {
+    const int ns = model.n_species();
+    double largest = 0.0;
+    double least = std::numeric_limits<double>::infinity();
+    for (int i = 0; i < ns; ++i) {
+        const double v = std::abs(model.species()[i].concentration);
+        if (model.species()[i].fixed || !std::isfinite(v))
+            continue;
+        largest = std::max(largest, v);
+        if (v > 0.0)
+            least = std::min(least, v);
+    }
+    if (!std::isfinite(least))
+        return {};
+    const double floor = std::max(least, std::numeric_limits<double>::epsilon() * largest);
+    std::vector<double> scales(static_cast<size_t>(ns));
+    for (int i = 0; i < ns; ++i) {
+        const double v = std::abs(model.species()[i].concentration);
+        scales[static_cast<size_t>(i)] = std::isfinite(v) ? std::max(v, floor) : floor;
+    }
+    return scales;
+}
+
 // One run of the run test of the "scaled" criterion (issue #1001): from `y`,
 // taken on for max_time (at most kRunHorizonMost) and integrated at `tighter`
 // times the criterion's tolerances (at an rtol of kRunRtolLeast at least, and
-// an atol no coarser than the start's scale, issue #1895), in kRunSteps times
-// max_steps at most. Returns the largest move of a measured
+// each species' atol no coarser than rtol of its scale at the start, issue
+// #1895), in kRunSteps times max_steps at most. Returns the largest move of a measured
 // species from `y` over its tolerance (ss_scaled_tolerance), and +inf where
 // the run cannot be taken to its time (the integrator gives up past
 // kHoldRestarts restarts, or the steps run out, or a species overflows). The
@@ -6337,28 +6369,44 @@ static double ss_continued_run_once(NetworkModel &model, SteadyStateRhs &rhs,
     run_opts.max_time = std::min(opts.max_time, kRunHorizonMost);
     const double by = std::max(tighter, std::min(1.0, kRunRtolLeast / opts.rtol));
     run_opts.rtol = opts.rtol * by;
-    // A run that tests the state (`end` not given) is integrated at an atol no
-    // coarser than the criterion's rtol times the largest species the solve
-    // started with (issue #1895), and times the state's own largest only
-    // where the start has no size. The march takes the caller's atol as
-    // given, and where that is coarser than the model, the state it stops at
-    // is its error, and so is the state's scale: BIOMD0000000609, every
-    // species under 1.4e-13 at the start, marched at its SED-ML file's atol
-    // of 1e-9 with its accumulator masked, came back with that accumulator at
-    // 3.9e-9 and two species near -1.5e-14, on a root of f that is not the
-    // model's steady state (eigenvalues 337 and 4.6). A run at the march's
-    // atol, or at rtol times the state's largest (3.9e-15), stayed on it and
-    // passed it. Held to rtol times the start's largest (1.3e-19), the run
-    // leaves it, as run() from it does. Where the start has a size, the
-    // default atol (Simulator._steady_state_atol) is no coarser than that, and
-    // the run is the one it was; so is any atol no coarser.
-    const double start_scale =
-        opts.criterion_start_size > 0.0 ? opts.criterion_start_size : largest;
-    const double coarsest = std::max(opts.rtol, kCriterionRtolLeast) * start_scale;
-    const bool cap = end == nullptr && coarsest > 0.0;
-    run_opts.atol = (cap ? std::min(opts.atol, coarsest) : opts.atol) * by;
+    // A run that tests the state (`end` not given) is integrated with each
+    // species' atol no coarser than the criterion's rtol times that species'
+    // scale at the start (issue #1895, ss_start_scales). The march takes the
+    // caller's atol as given, and where that is coarser than the model, the
+    // state it stops at is its error, and so is the state's scale:
+    // BIOMD0000000609, every species under 1.4e-13 at the start, marched at
+    // its SED-ML file's atol of 1e-9 with its accumulator masked, came back
+    // with that accumulator at 3.9e-9 and two species near -1.5e-14, on a
+    // root of f that is not the model's steady state (eigenvalues 337 and
+    // 4.6). A run at the march's atol, or at rtol times the state's largest
+    // (3.9e-15), stayed on it and passed it. Each species held to rtol of its
+    // own scale at the start (1.3e-20 for the sulphate), the run leaves it, as
+    // run() from it does. One cap for every species, rtol times the start's
+    // largest, would not do: an accumulator that had already run, or a
+    // species at 1 beside the rest, set it, and the run passed the same root.
+    // The default atol is never coarser than this, and neither is any atol
+    // at the model's scale: such a run is the one it was, to the bit (a
+    // scalar stays a scalar where no species is capped). The start has no
+    // scale where every species not $-fixed starts at 0, and the run is then
+    // as it was too.
+    const auto un_scales = opts.criterion_start_scales.size();
+    const bool cap = end == nullptr && un_scales == un;
+    const double rtol_c = std::max(opts.rtol, kCriterionRtolLeast);
+    if (cap && run_opts.atol_vec.empty()) {
+        bool capped = false;
+        for (size_t i = 0; i < un && !capped; ++i)
+            capped = rtol_c * opts.criterion_start_scales[i] < opts.atol;
+        if (capped)
+            run_opts.atol_vec.assign(un, opts.atol);
+    }
+    if (cap && run_opts.atol_vec.size() == un) {
+        for (size_t i = 0; i < un; ++i)
+            run_opts.atol_vec[i] =
+                std::min(run_opts.atol_vec[i], rtol_c * opts.criterion_start_scales[i]);
+    }
+    run_opts.atol = opts.atol * by;
     for (double &a : run_opts.atol_vec)
-        a = (cap ? std::min(a, coarsest) : a) * by;
+        a *= by;
 
     std::vector<double> saved(un);
     for (size_t i = 0; i < un; ++i) {
@@ -6572,6 +6620,7 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
             opts.criterion_start_size =
                 std::max(opts.criterion_start_size, std::abs(model.species()[i].concentration));
     }
+    opts.criterion_start_scales = ss_start_scales(model);
 
     // Resolve the RHS backend once for the whole solve: the codegen artifact is
     // loaded (or JIT-compiled) a single time and shared by the march, the KINSOL

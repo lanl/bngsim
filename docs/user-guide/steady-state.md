@@ -152,17 +152,21 @@ the starting state that is not `$`-fixed, but no finer than double precision
 allows beside the largest. If every such species starts at 0, a `$`-fixed
 species sets it.
 
-The run test's run is integrated at the march's `atol`, but never coarser than
-`rtol` times the largest species the solve starts with (or, where every species
-starts at 0, the largest of the state). A scalar `atol=` is taken as given, so
-it can be coarser than the whole model. Then the march controls no species'
-error and stops where that error leaves it, and a run at the same `atol` does
-not see the state move. BIOMD0000000609's species are all below 1.4e-13. At its
-SED-ML file's `atol=1e-9` the march stopped on a root of `f` with two species
-near -1.5e-14, which a run from it leaves at once, and the solve said
-`converged=True` (issue #1895). The run held to the start's scale refuses it.
-With no `atol`, the default is never that coarse and the run is unchanged. To
-solve such a model, leave `atol` unset or pass one at its scale.
+The run test's run is integrated at the march's `atol`, but no species' is
+coarser than `rtol` times its own scale at the start: its starting value, or,
+for a species that starts at 0, the smallest value a species not `$`-fixed
+starts at (no finer than double precision allows beside the largest). That is
+the scale the default `atol` is derived from, so with no `atol` given the run
+is unchanged. A scalar `atol=` is taken as given, so it can be coarser than
+the whole model. Then the march controls no species' error and stops where
+that error leaves it, and a run at the same `atol` does not see the state
+move. BIOMD0000000609's species are all below 1.4e-13. At its SED-ML file's
+`atol=1e-9` the march stopped on a root of `f` with two species near -1.5e-14,
+which a run from it leaves at once, and the solve said `converged=True`
+(issue #1895). The run that resolves each species refuses it. If every species
+not `$`-fixed starts at 0, the start has no scale and the run takes the
+march's `atol`. To solve such a model, leave `atol` unset or pass one at its
+scale.
 
 If a run moves the state, it is taken again at a tenth of the tolerances, a
 hundredth, and (up to 512 unknowns) a thousandth. A move of more than 10

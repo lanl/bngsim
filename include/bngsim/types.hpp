@@ -1316,11 +1316,14 @@ struct SteadyStateOptions {
     std::string criterion = "scaled";
     // Set by find_steady_state, for "scaled": whether the step is taken; the
     // largest species the solve starts with, which caps the absolute part of
-    // the criterion's tolerances; and, for a burst-free Newton solve, that
-    // its root is accepted by the residual test, at whatever iterate KINSOL
-    // ends.
+    // the criterion's tolerances; each species' scale at the start, which
+    // caps the atol the run test integrates at (issue #1895; empty where no
+    // species not $-fixed starts above 0); and, for a burst-free Newton
+    // solve, that its root is accepted by the residual test, at whatever
+    // iterate KINSOL ends.
     bool criterion_by_distance = false;
     double criterion_start_size = 0.0;
+    std::vector<double> criterion_start_scales;
     bool criterion_by_residual = false;
     double max_time = 1e6; // max integration time for the integration path
     double rtol = 1e-8;    // CVODE relative tolerance
