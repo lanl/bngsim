@@ -121,8 +121,9 @@ for arguments the fraction cannot be trusted with. `a = 0` with `b > 0` and
 (issue #768). Inside `|z| <= 20`, for `b > 0` and `|alpha| < 1` with
 `alpha = a` when `z > 0` and `alpha = b - a` when `z < 0`, both Kummer functions
 are summed as power series, because there the fraction loses digits when `a` or
-`b` is tiny (issue #1080). The same goes on past `z = -20` where `a <= 0` and
-`b - a < 1`: the series out to `z = -700`, the asymptotic expansion beyond.
+`b` is tiny (issue #1080). The same goes on past `z = -20` where `0 < b - a < 1`
+and `b < 1`, a positive `a` below `b` as well as a non-positive one
+(issue #1793): the series out to `z = -700`, the asymptotic expansion beyond.
 Arguments none of these can vouch for are refused
 rather than answered, because the fraction is silently wrong there. That
 includes every `b <= 0` the asymptotic expansion cannot answer. See

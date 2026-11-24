@@ -342,7 +342,13 @@ _compile_counter = itertools.count()
 # failed at dlopen. The source digest already moves; the bump is for an install
 # whose digest is empty, which would go on loading those libraries. Invalidate
 # v43.
-_CODEGEN_VERSION = "44"
+# v45: lanl/bngsim #1793 — bngsim_mratio_trusted and bngsim_mratio_series take
+# the corner past z = -20 as 0 < b - a < 1 with b < 1 rather than a <= 0 with
+# b - a < 1, so a tiny positive a below a b under 1 no longer reaches the
+# fraction there, which was 5.7% off at mratio(1e-30, 2e-12, -3e4). The source
+# digest already moves; the bump is for an install whose digest is empty.
+# Invalidate v44.
+_CODEGEN_VERSION = "45"
 
 
 # Modules whose *source* determines the emitted C. ``_codegen`` holds the
@@ -727,10 +733,14 @@ _SPECIAL_FUNCTION_C_LINES = (
     "   clause (issue #768). `a` a negative integer terminates the fraction",
     "   exactly (not a = 0, whose odd numerators start at k = 1 and never",
     "   vanish); `a <= 0` with `z <= 0` measured clean over 487 argument triples and is",
-    "   where BNG models live, except past z = -20 with b - a < 1, where it loses",
-    "   about 10*eps*sqrt(-z)/(b - a) of the ratio and is refused here (issue",
-    "   #1080; the series below takes it to z = -700, the asymptotic route",
-    "   beyond); b*b >= 64*|z*a| means the odd partial numerators",
+    "   where BNG models live, except past z = -20 with 0 < b - a < 1 and b < 1,",
+    "   where it loses about 10*eps*sqrt(-z)/(b - a) of the ratio and is refused",
+    "   here (issue #1080; the series below takes it to z = -700, the asymptotic",
+    "   route beyond). For a <= 0 the b < 1 follows. With it the corner also takes",
+    "   a positive a below b, which the b*b test let through when a was tiny",
+    "   enough, to the same loss (issue #1793); a b of 1 or more stays with the",
+    "   fraction, clean wherever that test admits one past z = -20.",
+    "   b*b >= 64*|z*a| means the odd partial numerators",
     "   are a contraction from the first step; |z| <= 20 was clean over 3400",
     "   hostile triples where the first failure anywhere is at 60. The 2*z <= b",
     "   companion for a positive z bounds the EVEN partial numerators, which the",
@@ -747,7 +757,7 @@ _SPECIAL_FUNCTION_C_LINES = (
     "    if (a < 0.0 && a == floor(a)) {",
     "        return 1;",
     "    }",
-    "    if (a <= 0.0 && z < -20.0 && b - a < 1.0) {",
+    "    if (a < b && b < 1.0 && z < -20.0 && b - a < 1.0) {",
     "        return 0;",
     "    }",
     "    if (a <= 0.0 && z <= 0.0) {",
@@ -928,9 +938,10 @@ _SPECIAL_FUNCTION_C_LINES = (
     "   zero of the ratio, where it is ill-conditioned anyway. The denominator is",
     "   summed times b so a tiny b cannot overflow it. Each term ratio is below",
     "   2*x/(k+1), so from k + 1 >= 4*x on the rest of a series is no larger than",
-    "   its last term. Past |z| = 20 it takes one more corner, a <= 0 and",
-    "   b - a < 1 out to z = -700, where the fraction's loss goes on and grows:",
-    "   there every term of both series is positive and none overflows. Kept",
+    "   its last term. Past |z| = 20 it takes one more corner, 0 < b - a < 1 with",
+    "   b < 1 out to z = -700, where the fraction's loss goes on and grows",
+    "   (issues #1080 and #1793): there a < b, so every term of both series is",
+    "   positive, and none overflows. Kept",
     "   identical to mratio_series in src/expression.cpp,",
     "   which carries the full note and the measurements; the NaN test is a",
     "   comparison for the reason at bngsim_mratio_is_finite. */",
@@ -952,7 +963,7 @@ _SPECIAL_FUNCTION_C_LINES = (
     "    if (!(alpha > -1.0 && alpha < 1.0)) {",
     "        return 0;",
     "    }",
-    "    if (!(x <= 20.0) && !(z < 0.0 && a <= 0.0 && x <= 700.0)) {",
+    "    if (!(x <= 20.0) && !(z < 0.0 && a < b && b < 1.0 && x <= 700.0)) {",
     "        return 0;",
     "    }",
     "    for (k = 0; k < 3000; ++k) {",

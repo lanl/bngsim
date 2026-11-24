@@ -42,7 +42,10 @@ The region it is trusted in, measured against a 40 digit reference, is all for
   about the even ones. That second half is issue #456: without it this
   clause admitted a corner where the fraction was wrong 60 times, since
   the even numerators carry ``z*(a-b-k)`` and so are about ``z/b`` for a
-  large ``b`` however small ``z*a`` is.
+  large ``b`` however small ``z*a`` is. Nor does it admit, past ``z = -20``,
+  a positive ``a`` below a ``b`` under 1 (issue #1793): a tiny enough ``a``
+  passed the bound, and the fraction lost there what it loses in the corner of
+  the ``a <= 0`` clause, so that corner now takes it.
 
 Everything else is refused by the fraction. That gives up answers it would have
 got right, because in the uncertain region it is right most of the time and
@@ -391,9 +394,10 @@ def test_near_a_pole_the_error_is_what_an_ulp_of_a_does(tmp_path):
         (1.0, 0.026664156824421394, 19.310533421401022, 0.028008147640145812),  # alpha = 1
         (-1.0, 0.5, 10.0, -1.0 / 19.0),  # a negative integer: the fraction terminates
         (-1e-12, 1.0, -19.5, 0.051282051107778356),  # z < 0 with b - a just above 1
-        # |z| past 20, where the box goes on only for a <= 0 and b - a < 1 (the
-        # last section below): a positive a, then b - a just above 1, near and far.
-        (1e-6, 0.5, -20.5, 0.02503515280316255),
+        # |z| past 20, where the box goes on only for 0 < b - a < 1 with b < 1
+        # (the last sections below): a positive a with b = 1, then b - a just
+        # above 1, near and far.
+        (1e-6, 1.0, -20.5, 0.04878049025292664),
         (-1e-12, 1.0, -25.0, 0.039999999999442815),
         (-0.5, 1.5, -1000.0, 0.0014985007496251875),
     ],
@@ -483,6 +487,87 @@ def test_past_z_minus_700_with_b_minus_a_near_the_smallest_double_is_refused(tmp
     only for b - a below about 1e-290."""
     with pytest.raises(Exception, match=r"not reliable.*The fraction is reliable for b > 0"):
         _value(tmp_path, 0.0, 1e-300, -710.0)
+
+
+# ── Issue #1793: the same corner, with a tiny positive a ─────────────────────
+
+# a, b, z, what the fraction returned, and the ratio (mpmath at 80 digits after
+# Kummer's transformation, and at 150 without it, which agree). The corner
+# above was written for a <= 0. A positive a reached the fraction past z = -20
+# through the b*b >= 64*|z*a| clause instead, which a tiny enough a passes, and
+# there the fraction lost what it loses in the corner, about
+# 10*eps*sqrt(-z)/b. The first row is just past z = -20, where at z = -20
+# itself the series already answered; the next four are the issue's, the last
+# of them 5.7% off. The last is the worst of 20000 random triples with b below
+# 1, off by a factor of 7000 and with the wrong sign. The series takes the
+# first three, and the asymptotic route the rest, past z = -700.
+WAS_OFF_1793 = [
+    (1e-30, 2e-12, -20.000001, 2.0612571457511304e-09, 2.061257156856199e-09),
+    (1e-30, 2e-12, -25.0, 1.3971417420721947e-11, 1.3971436819759902e-11),
+    (1e-30, 2e-12, -100.0, 2.0204345020266157e-14, 2.0204125055496302e-14),
+    (1e-30, 2e-12, -1000.0, 1.992426431996472e-15, 2.0020040120482374e-15),
+    (1e-30, 2e-12, -30000.0, 7.046624128694702e-17, 6.666888903705185e-17),
+    (
+        1.6746677479385269e-143,
+        1.0464791789235133e-15,
+        -6549120.474099903,
+        -1.1238198263826546e-18,
+        1.5978929428026101e-22,
+    ),
+]
+
+
+@pytest.mark.parametrize("a, b, z, old, true_value", WAS_OFF_1793)
+def test_past_z_minus_20_a_tiny_positive_a_is_not_answered_wrongly(
+    tmp_path, a, b, z, old, true_value
+):
+    """The corner is now 0 < b - a < 1 with b < 1. For a <= 0 that is the old
+    one, since there b - a < 1 already puts b below 1, and it adds every a
+    between 0 and b for a b below 1. a < b keeps alpha = b - a positive, so
+    every term of both series is still positive and nothing cancels."""
+    assert abs(old - true_value) / true_value > 1e-9
+    assert _value(tmp_path, a, b, z) == pytest.approx(true_value, rel=1e-13, abs=0.0)
+
+
+@pytest.mark.parametrize(
+    "a, b, z, true_value",
+    [
+        # In the corner, where the fraction was right because b is not small, or
+        # where nothing answered: both are summed now. mpmath at 80 digits.
+        (1e-6, 0.5, -20.5, 0.02503515280316255),
+        (0.4999999999, 0.5, -25.0, 0.29234219600186745),  # refused before
+        # A b of 1 or more stays with the fraction where it was trusted. With
+        # b - a < 1 the b*b clause admits there only a tiny a beside a b just
+        # over 1, or a b past about 64*|z|, and both measured clean, worst
+        # 2.3e-14 and 4.4e-16 over 5000 triples each. Past z = -700 nothing
+        # else answers the second kind, which is why the corner stops at b = 1
+        # rather than taking every a < b.
+        (1999.5, 2000.0, -25.0, 0.9999968370848997),
+        (99999.5, 100000.0, -1000.0, 0.9999999494954699),
+        # And an a above b, which the corner never takes: alpha is negative.
+        (1500.5, 1500.0, -20.5, 1.0000046155575413),
+    ],
+)
+def test_past_z_minus_20_with_a_positive_a_what_was_right_still_answers(
+    tmp_path, a, b, z, true_value
+):
+    assert _value(tmp_path, a, b, z) == pytest.approx(true_value, rel=1e-13, abs=0.0)
+
+
+def test_past_z_minus_700_an_a_too_small_for_the_expansion_is_refused_either_side(tmp_path):
+    """mratio(5e-324, 0.5, -701) is 7.14e-4, and the fraction got it right,
+    since b is not small; with a tiny b it was as wrong at this a as at 1e-30.
+    Past z = -700 the corner has only the asymptotic route, and in its
+    denominator the second term, a*(a-b+1)/(-z), underflows to zero, which its
+    zero-term rule reads as a series that never decayed. So it refuses, as it
+    already did for the same a below zero. That takes an a below about 1e-300.
+    Short of -700 the series answers both."""
+    for a in (5e-324, -5e-324):
+        with pytest.raises(Exception, match=r"not reliable.*The fraction is reliable for b > 0"):
+            _value(tmp_path, a, 0.5, -701.0)
+        assert _value(tmp_path, a, 0.5, -699.0) == pytest.approx(
+            0.0007158203491378445, rel=1e-13, abs=0.0
+        )
 
 
 # ── Issue #1080: a b below about 1e-22, wherever the fraction is trusted ─────

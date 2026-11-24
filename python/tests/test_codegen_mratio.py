@@ -125,9 +125,12 @@ CASES = [
     # to z = -700, the asymptotic route past it (issue #1080). A decays from 1500
     # to 334, so each of these crosses from one to the other halfway. The ratio
     # is about b/A, which the A/b undoes. The a = 0 one runs the asymptotic
-    # route's exact M(0, b, z) = 1, which nothing else in the file reaches.
+    # route's exact M(0, b, z) = 1, which nothing else in the file reaches. The
+    # positive a is issue #1793's, which the fraction answered on both sides of
+    # z = -700 until the corner was widened to 0 < b - a < 1 with b < 1.
     ("tiny b - a, past z = -20", -1e-12, 1e-9, "k*mratio(a,b,-A)*A/b", 1500.0),
     ("a = 0, tiny b, past z = -20", 0.0, 1e-9, "k*mratio(a,b,-A)*A/b", 1500.0),
+    ("tiny positive a, past z = -20", 1e-30, 1e-9, "k*mratio(a,b,-A)*A/b", 1500.0),
     ("a rides the species", -3.0, 9.0, "k*mratio(-A,b,-20)", 12.0),
     ("b rides the species", -4.0, 0.0, "k*mratio(a,A+2,-8)", 10.0),
 ]
@@ -303,14 +306,25 @@ def test_the_series_route_matches_the_reference_on_both_engines(
             -786022.5708171733,
             1.7255395630598238e-18,
         ),
+        # Issue #1793's, a tiny positive a: the fraction was 1.4e-6 off at the
+        # first and 5.7e-2 at the second.
+        (1e-30, 2e-12, -25.0, 1.3971436819759902e-11),
+        (1e-30, 2e-12, -30000.0, 6.666888903705185e-17),
     ],
-    ids=["the series past z = -20", "a = 0 past z = -700", "a factor of two off"],
+    ids=[
+        "the series past z = -20",
+        "a = 0 past z = -700",
+        "a factor of two off",
+        "a tiny positive a, the series",
+        "a tiny positive a past z = -700",
+    ],
 )
 def test_past_z_minus_20_both_engines_match_the_reference(tmp_path, codegen, a, b, z, true_value):
     """The same constant-rate check as above, for the corner of the a <= 0,
-    z <= 0 clause where b - a < 1 (issue #1080): the series to z = -700 and the
-    asymptotic route past it, which in the generated C are what the trust rule's
-    new clause hands these to."""
+    z <= 0 clause where b - a < 1 (issue #1080), and for the tiny positive a the
+    b*b clause used to let into the fraction there (issue #1793): the series to
+    z = -700 and the asymptotic route past it, which in the generated C are what
+    the trust rule's corner hands these to."""
     p = tmp_path / "m1080b.net"
     p.write_text(CONSTANT_RATE_NET.format(a=a, b=b, z=z, scale=1.0 / true_value))
     with contextlib.redirect_stderr(io.StringIO()):
