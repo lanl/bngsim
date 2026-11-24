@@ -12616,10 +12616,13 @@ class Simulator:
         """
         self._require_interactive_backend_support()
 
-        # Save model state: all species concentrations + params
-        species_state = {
-            name: self._model.get_concentration(name) for name in self._model.species_names
-        }
+        # Save model state: all species concentrations + params. The values as
+        # stored, which the SSA counts mark in "events" says how to read: after
+        # an SSA run, get_concentration reads a species in a compartment whose
+        # size moves at the size it has now (issue #1754).
+        species_state = dict(
+            zip(self._model.species_names, self._model._core.get_state().tolist(), strict=True)
+        )
         param_state = {name: self._model.get_param(name) for name in self._model.param_names}
         snap = {
             "current_time": self._current_time,
@@ -12678,7 +12681,10 @@ class Simulator:
             with contextlib.suppress(Exception):
                 self._model.set_param(name, value)
 
-        # Restore species concentrations
+        # Restore species concentrations, as they were stored: written with the
+        # SSA counts mark clear, so that none is read at a compartment's size,
+        # and the mark goes back with the events below (issue #1754).
+        self._model._core.ssa_counts_stored = False
         for name, value in snapshot["species"].items():
             with contextlib.suppress(Exception):
                 self._model.set_concentration(name, value)

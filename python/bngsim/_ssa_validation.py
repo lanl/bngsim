@@ -77,17 +77,18 @@ def validate_for_ssa(model: Model) -> list[SsaIssue]:
         if rxn.get("is_rate_rule_ode"):
             continuous.update(int(i) for i in rxn.get("products", ()))
 
+    # The values as stored, which the SSA counts: after an SSA run, a species
+    # in a compartment whose size moves holds its count over the load-time
+    # size, which get_concentration reads at the size it has now (issue #1754).
+    stored = model.get_state()
     for idx, sp in enumerate(species_meta):
-        if idx in continuous:
+        if idx in continuous or idx >= len(stored):
             continue
         name = str(sp.get("name", ""))
         volume_factor = float(sp.get("volume_factor", 1.0))
         if not name or not math.isfinite(volume_factor) or volume_factor <= 0.0:
             continue
-        try:
-            storage_value = float(model.get_concentration(name))
-        except Exception:
-            continue
+        storage_value = float(stored[idx])
         amount = storage_value * volume_factor
         if not math.isfinite(amount):
             continue
