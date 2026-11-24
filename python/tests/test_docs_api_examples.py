@@ -8,7 +8,7 @@ subscriptable) and ``result.to_dataframe()`` (``Result.dataframe`` is a
 property). Nothing in the suite read the prose, so five wrong lines sat on the
 project's front page through a release.
 
-Two guards, cheap and complementary:
+Three guards, cheap and complementary:
 
 * :func:`test_front_door_example_runs` EXECUTES the first Python block of each
   front-door page as a reader would paste it: in an empty directory, with the
@@ -23,9 +23,11 @@ Two guards, cheap and complementary:
   page, in page order and in one namespace, in an empty directory, as a reader
   would paste the page from the top (issue #1693). Each page builds the model
   its blocks use, so the blocks are examples a reader can run and not fragments.
-  A block that needs what a test cannot have here, BNG2.pl or the network, is
-  passed over by name in :data:`_NOT_RUN`, with the reason; a block whose need
-  is met here, jax say, runs.
+  A line whose comment states a value must have it, and a block may not warn
+  unless its prose says it does. A block that needs what a test run may not
+  have (BNG2.pl, the network, an optional extra) is passed over by name in
+  :data:`_NOT_RUN`, with the reason, and reported as a skip; where the need is
+  met, as jax's is on the Python legs, it runs.
 * :func:`test_documented_api_names_exist` STATICALLY resolves every ``bngsim.…``
   attribute chain, method name and keyword argument in every Python block under
   ``docs/``, the blocks :data:`_NOT_RUN` passes over among them. It cannot prove
@@ -51,6 +53,7 @@ import logging
 import math
 import re
 import sys
+import tokenize
 import traceback
 import warnings
 from collections.abc import Callable, Iterator
@@ -58,6 +61,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 import bngsim
+import numpy as np
 import pytest
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -374,15 +378,41 @@ class _Need(NamedTuple):
     #: What a block with this need calls, so an entry cannot drift onto a block
     #: that needs nothing: a block's name is its place on the page.
     calls: re.Pattern[str]
+    #: The skip reason where the need is not met, in words the skip audit knows.
+    absent: str
+    #: Met by the dev extra, which python-tests.yml installs, so every Python leg
+    #: of a pull request runs the block. Only the other needs count against the
+    #: one-block-in-ten limit.
+    dev: bool
 
 
 def _importable(module: str) -> Callable[[], bool]:
     return lambda: importlib.util.find_spec(module) is not None
 
 
-#: The page's example needs the jax extra: run it where jax is installed, as it is
-#: in the dev environment every CI leg provisions.
-_JAX = _Need("needs jax, the jax extra", _importable("jax"), re.compile(r"\bjax\b"))
+# The dev extra brings jax, pandas and h5py; the nightly sanitizer job installs
+# only the test extra, so these blocks pass over there.
+_JAX = _Need(
+    "needs jax, the jax extra",
+    _importable("jax"),
+    re.compile(r"\bjax\b"),
+    "JAX not installed",
+    True,
+)
+_PANDAS = _Need(
+    "needs pandas, the pandas extra",
+    _importable("pandas"),
+    re.compile(r"\.dataframe\b"),
+    "could not import 'pandas'",
+    True,
+)
+_HDF5 = _Need(
+    "needs h5py, the hdf5 extra",
+    _importable("h5py"),
+    re.compile(r"\.save\(\s*\"[^\"]*\.h5\""),
+    "could not import 'h5py'",
+    True,
+)
 #: A BNGL load runs BNG2.pl to turn the rules into a network. No CI leg installs
 #: it; a checkout whose $BNGPATH finds one runs these blocks. (The probe may
 #: import PyBioNetGen, so it runs once.)
@@ -390,12 +420,16 @@ _BNG2 = _Need(
     "needs BNG2.pl, which turns BNGL rules into a network",
     functools.cache(lambda: bool(bngsim.HAS_BNGL)),
     re.compile(r"\b(?:from_bngl|run_bngl)\(|Model\.load\([^)]*\.bngl|validate=\"bng2\""),
+    "no BNG2.pl found",
+    False,
 )
 #: Never run: a test must not reach the internet.
 _NETWORK = _Need(
     "needs the network: it downloads a BioModels entry",
     lambda: False,
     re.compile(r"\bfrom_biomodels\("),
+    "a BioModels download, which no test makes",
+    False,
 )
 
 #: The blocks the page runs pass over, by page and by name, each with its reason.
@@ -412,7 +446,20 @@ _NOT_RUN: dict[tuple[str, str], _Need] = {
     ("docs/user-guide/loading-models.md", "Run the file's own experiment"): _BNG2,
     ("docs/user-guide/loading-models.md", "The network cache"): _BNG2,
     ("docs/user-guide/loading-models.md", "Models from BioModels"): _NETWORK,
+    ("docs/user-guide/pybnf.md", "Checkpoint and restart"): _HDF5,
+    ("docs/user-guide/results.md", "Read a result by name"): _PANDAS,
+    ("docs/user-guide/results.md", "Save and load results (HDF5)"): _HDF5,
+    ("docs/user-guide/results.md", "Export to text files"): _PANDAS,
     ("docs/user-guide/sensitivities.md", "Differentiable solving with JAX"): _JAX,
+}
+
+#: Blocks whose prose says they warn, and so may: the page run fails on any
+#: other warning a block raises, other than a deprecation from a library a
+#: block does not call itself.
+_WARNS_ON_PURPOSE: dict[tuple[str, str], str] = {
+    ("docs/user-guide/sensitivities.md", "Species set by an `<assignmentRule>`"): (
+        "the run warns naming the assignment-rule species it has no row for"
+    ),
 }
 
 # A fenced block of any language, so a "# comment" inside a ```bash block is not
@@ -461,39 +508,137 @@ def _named_blocks(path: Path) -> list[_Block]:
     return blocks
 
 
-# A top-level `print(...)  # value` line: what its comment starts with, if that
-# is a Python literal, is what the line prints. "# (3, 2): (n_species,
-# n_params)" states (3, 2); "# 0.6738, which is ..." states 0.6738; "# True
-# when ..." states True. A comment of words ("# number of laws") states none.
-_PRINT_LINE = re.compile(r"^print\((?P<args>.+)\)\s+#\s*(?P<comment>.+?)\s*$")
+# ─── What a line's comment says it shows ──────────────────────────────────────
+#
+# A statement line (an expression, or an assignment to one name, whose value
+# is then the name's) whose comment starts with a Python literal states its value:
+# "# (3, 2): (n_species, n_params)" states (3, 2), "# 0.6738, which is ..."
+# 0.6738, "# True when ..." True, "# 'param.not_found'" that string. A comment of
+# words ("# number of laws", "# e.g. [...]") states none. A print line states
+# what it prints, as text; a bare expression states its value, as a REPL shows
+# it, and a tuple stated for an array is its shape. A print line whose comment
+# starts or ends with "..." quotes part of a message: each part between the
+# ellipses is in what it prints.
+
+
+# A literal followed by one of these words states a case, not this run's value:
+# "# False if any check failed", "# "stable" or "unstable" for each root".
+_CONDITIONAL = frozenset({"if", "when", "where", "unless", "while", "or", "and", "for"})
+
+
+def _has_ellipsis(node: ast.AST) -> bool:
+    return any(isinstance(n, ast.Constant) and n.value is Ellipsis for n in ast.walk(node))
 
 
 def _stated_value(comment: str) -> str | None:
-    """The literal a print line's comment starts with, as written, or None."""
-    for head in (comment, comment.split(":")[0], comment.split(", ")[0], comment.split()[0]):
+    """The longest Python literal *comment* starts with, as written, or None.
+
+    None for a literal with "..." in it (``{"commit": ..., "stale": ...}``
+    shows the keys, not the values) and for one that states a case.
+    """
+    cuts = {len(comment)} | {i for i, c in enumerate(comment) if c in " :,;"}
+    for end in sorted(cuts, reverse=True):
+        head = comment[:end].strip().rstrip(",;:").rstrip()
         try:
-            ast.literal_eval(head.strip())
-        except (ValueError, SyntaxError):
+            ast.literal_eval(head)
+            tree = ast.parse(head, mode="eval")
+        except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
             continue
-        return head.strip()
+        if _has_ellipsis(tree):
+            return None
+        rest = comment[len(head) :].split()
+        if rest and rest[0].lower() in _CONDITIONAL:
+            return None
+        return head
     return None
 
 
+def _is_excerpt(comment: str) -> bool:
+    return comment.startswith("... ") or comment.endswith(" ...")
+
+
 def _with_stated_checks(code: str) -> str:
-    """*code* with each top-level print line whose comment states a value turned
-    into a check of what it prints, on the same line."""
-    out = []
-    for n, line in enumerate(code.splitlines()):
-        m = _PRINT_LINE.match(line)
-        value = _stated_value(m["comment"]) if m else None
-        if m and value is not None:
-            line = f"__stated__({m['args']}, __value__={value!r}, __line__={n})"
-        out.append(line)
-    return "\n".join(out) + "\n"
+    """*code* with each statement line whose comment states a value turned into a
+    check of that value, on the same line, at the same indent."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return code  # test_documented_python_blocks_parse reports it
+    comments = {
+        tok.start[0]: tok.string[1:].strip()
+        for tok in tokenize.generate_tokens(io.StringIO(code).readline)
+        if tok.type == tokenize.COMMENT
+    }
+    lines = code.splitlines()
+    for node in ast.walk(tree):
+        assigned = (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        )
+        if not (isinstance(node, ast.Expr) or assigned) or node.lineno != node.end_lineno:
+            continue
+        n, comment = node.lineno, comments.get(node.lineno)
+        line = lines[n - 1]
+        # The statement is the line, before its comment: not after a `;` or an `if x:`.
+        rest = line[node.end_col_offset :].lstrip()
+        if comment is None or line[: node.col_offset].strip() or not rest.startswith("#"):
+            continue
+        value, indent = node.value, line[: node.col_offset]
+        if assigned:  # `x = f(...)  # value`: the value is x's
+            stated = _stated_value(comment)
+            if stated is not None:
+                name = node.targets[0].id  # type: ignore[attr-defined]
+                statement = ast.get_source_segment(code, node)
+                lines[n - 1] = f"{indent}{statement}; __stated__('value', {stated!r}, {n}, {name})"
+            continue
+        printed = (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "print"
+            and not value.keywords
+        )
+        stated = _stated_value(comment)
+        if printed and _is_excerpt(comment):
+            kind, claim = "excerpt", comment
+        elif stated is not None:
+            kind, claim = ("printed" if printed else "value"), stated
+        else:
+            continue
+        args = value.args if printed else [value]  # type: ignore[union-attr]
+        sources = ", ".join(ast.get_source_segment(code, arg) or "" for arg in args)
+        lines[n - 1] = f"{indent}__stated__({kind!r}, {claim!r}, {n}, {sources})"
+    return "\n".join(lines) + "\n"
+
+
+def _says(kind: str, claim: str, args: tuple[object, ...]) -> bool:
+    """Whether what the line shows is what its comment says (see above)."""
+    if kind != "value":
+        shown = " ".join(str(arg) for arg in args)
+        if kind == "printed":
+            return shown == claim
+        return all(part.strip() in shown for part in claim.split("...") if part.strip())
+    (got,), expected = args, ast.literal_eval(claim)
+    if isinstance(expected, tuple) and hasattr(got, "shape"):
+        return tuple(got.shape) == expected
+    if hasattr(got, "shape"):
+        try:
+            return bool(np.array_equal(np.asarray(got), np.asarray(expected)))
+        except (ValueError, TypeError):
+            return False
+    try:
+        return bool(got == expected)
+    except (ValueError, TypeError):
+        return False
 
 
 # A call that empties or prunes the compiled-code cache.
 _CACHE_SWEEP = re.compile(r"\b(?:prune|clear|clean)_codegen_cache\(")
+
+# Deprecations from the libraries the examples use (numpy, pandas, xarray, jax)
+# come and go with their versions. One raised at a page's own line is the
+# example's; one raised inside a library is that library's.
+_ECOSYSTEM_WARNINGS = (DeprecationWarning, PendingDeprecationWarning, FutureWarning, ImportWarning)
 
 
 def _documented_pages() -> list[str]:
@@ -505,17 +650,14 @@ def _documented_pages() -> list[str]:
     ]
 
 
-def _page_params() -> list[object]:
-    # An empty parameter set would skip in pytest's own words, which the skip
-    # audit does not know; with no docs/, skip in the words _docs_present uses.
-    return _documented_pages() or [
-        pytest.param(
-            "",
-            marks=pytest.mark.skip(
-                reason="docs/ lives in the source root and is not present in an installed wheel"
-            ),
-        )
-    ]
+# An empty parameter set would skip in pytest's own words, which the skip audit
+# does not know: with no docs/, skip in the words _docs_present uses.
+_NO_DOCS = pytest.param(
+    "",
+    marks=pytest.mark.skip(
+        reason="docs/ lives in the source root and is not present in an installed wheel"
+    ),
+)
 
 
 @pytest.fixture
@@ -531,7 +673,7 @@ def bngsim_logger_as_found() -> Iterator[None]:
     logger.propagate = propagate
 
 
-@pytest.mark.parametrize("page", _page_params())
+@pytest.mark.parametrize("page", _documented_pages() or [_NO_DOCS])
 @pytest.mark.usefixtures("bngsim_logger_as_found")
 def test_each_page_runs_top_to_bottom(
     page: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -541,7 +683,9 @@ def test_each_page_runs_top_to_bottom(
     As a reader pastes the page from its top into one session: in an empty
     directory, so a block may read only a file an earlier block wrote or a model
     bngsim.examples ships, and with each block seeing the names the blocks above
-    it bound. A failure names the page, the block and the page line that raised.
+    it bound. A block may not warn unless its prose says it does, and a line
+    whose comment states a value must have it. A failure names the page, the
+    block and the page line.
     """
     _docs_present()
     path = _ROOT / page
@@ -557,63 +701,87 @@ def test_each_page_runs_top_to_bottom(
         monkeypatch.setattr(codegen, "CACHE_DIR", tmp_path / "cache")
     wrong: list[str] = []
 
-    def stated(*args: object, __value__: str, __line__: int) -> None:
-        shown = " ".join(str(arg) for arg in args)
-        if shown != __value__:
-            at = block.offset + 1 + __line__  # the code starts on its fence's line
-            wrong.append(
-                f"line {at}: {lines[at - 1].strip()}\n    prints {shown!r}, not {__value__!r}"
-            )
+    def stated(kind: str, claim: str, n: int, *args: object) -> None:
+        if not _says(kind, claim, args):
+            at = block.offset + n  # the code's first line is its fence's
+            shown = " ".join(map(str, args)) if kind != "value" else repr(args[0])
+            wrong.append(f"line {at}: {lines[at - 1].strip()}\n    shows {shown[:300]!r}")
 
     namespace: dict[str, object] = {"__name__": "__docs_page__", "__stated__": stated}
     ran = 0
     for block in _named_blocks(path):
         need = _NOT_RUN.get((page, block.name))
         if need is not None and not need.met():
-            continue
+            continue  # reported by test_a_block_the_page_runs_pass_over_is_reported
         failure = None
-        try:
-            with contextlib.redirect_stdout(io.StringIO()), warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                source = "\n" * block.offset + _with_stated_checks(block.code)
-                exec(compile(source, str(path), "exec"), namespace)  # noqa: S102
-        except Exception as exc:  # noqa: BLE001 - any exception is the finding
-            frames = traceback.extract_tb(exc.__traceback__)
-            on_page = [f.lineno for f in frames if f.filename == str(path) and f.lineno]
-            at = on_page[-1] if on_page else block.line
-            failure = (
-                f"{page}: the block at line {block.line}, under {block.name!r}, raised at "
-                f"line {at}:\n    {lines[at - 1].strip()}\n"
-                + "".join(traceback.format_exception_only(type(exc), exc))
-            )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    source = "\n" * block.offset + _with_stated_checks(block.code)
+                    exec(compile(source, str(path), "exec"), namespace)  # noqa: S102
+            except Exception as exc:  # noqa: BLE001 - any exception is the finding
+                frames = traceback.extract_tb(exc.__traceback__)
+                on_page = [f.lineno for f in frames if f.filename == str(path) and f.lineno]
+                at = on_page[-1] if on_page else block.line
+                failure = (
+                    f"{page}: the block at line {block.line}, under {block.name!r}, raised at "
+                    f"line {at}:\n    {lines[at - 1].strip()}\n"
+                    + "".join(traceback.format_exception_only(type(exc), exc))
+                )
         if failure is not None:
             pytest.fail(failure, pytrace=False)
+        warned = [
+            w
+            for w in caught
+            if w.filename == str(path) or not issubclass(w.category, _ECOSYSTEM_WARNINGS)
+        ]
+        if (page, block.name) in _WARNS_ON_PURPOSE:
+            assert warned, f"{page}: the block under {block.name!r} no longer warns, as it says"
+        elif warned:
+            w = warned[0]
+            pytest.fail(
+                f"{page}: the block at line {block.line}, under {block.name!r}, warned "
+                f"({w.filename}:{w.lineno}):\n{w.category.__name__}: {str(w.message)[:400]}",
+                pytrace=False,
+            )
         ran += 1
     assert ran, f"{page}: no block ran"
-    assert not wrong, f"{page}: a print line prints what its comment does not say:\n" + "\n".join(
-        wrong
-    )
+    assert not wrong, f"{page}: a line shows what its comment does not say:\n" + "\n".join(wrong)
+
+
+@pytest.mark.parametrize(
+    "page, name", sorted(_NOT_RUN), ids=[f"{page}: {name}" for page, name in sorted(_NOT_RUN)]
+)
+def test_a_block_the_page_runs_pass_over_is_reported(page: str, name: str) -> None:
+    """A block the page run passes over here shows as a skip that says why, so
+    the summary counts it; where its need is met, the page run ran it."""
+    need = _NOT_RUN[(page, name)]
+    if not need.met():
+        pytest.skip(f"{page}, {name!r}: {need.reason}; {need.absent}")
 
 
 def test_the_blocks_the_page_runs_pass_over_are_few_and_named() -> None:
-    """Each :data:`_NOT_RUN` entry names a block a page has, and says why; the
-    list stays short."""
+    """Each :data:`_NOT_RUN` and :data:`_WARNS_ON_PURPOSE` entry names a block a
+    page has; a passed-over block makes the call its need names; and no more
+    than one block in ten is passed over on a pull request's Python legs."""
     _docs_present()
     blocks = {
         (page, b.name): b.code for page in _documented_pages() for b in _named_blocks(_ROOT / page)
     }
     names = set(blocks)
     assert len(names) > 90, f"only {len(names)} documented Python blocks: did the fence regex rot?"
-    stale = sorted(set(_NOT_RUN) - names)
-    assert not stale, f"_NOT_RUN names blocks no page has (renamed or moved?): {stale}"
+    stale = sorted((set(_NOT_RUN) | set(_WARNS_ON_PURPOSE)) - names)
+    assert not stale, f"entries name blocks no page has (renamed or moved?): {stale}"
     for key, need in _NOT_RUN.items():
         assert need.reason.startswith("needs "), key
         assert need.calls.search(blocks[key]), (
             f"{key} is passed over because it {need.reason}, but it makes no such call: "
             "has a block been added or moved under its heading?"
         )
-    assert len(_NOT_RUN) * 10 <= len(names), (
-        f"{len(_NOT_RUN)} of {len(names)} blocks are passed over: give their pages a model instead"
+    off_ci = sum(not need.dev for need in _NOT_RUN.values())
+    assert off_ci * 10 <= len(names), (
+        f"{off_ci} of {len(names)} blocks never run on CI: give their pages a model instead"
     )
 
 

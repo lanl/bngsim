@@ -102,7 +102,7 @@
 "python/tests/test_derived_parameter_on_the_quotient.py": 1.0,
 "python/tests/test_diffrax_switch_times.py": 272.8,
 "python/tests/test_discontinuity_stall_bound.py": 6.6,
-"python/tests/test_docs_api_examples.py": 0.1,
+"python/tests/test_docs_api_examples.py": 15.0,
 "python/tests/test_dq_sensitivity_restores_params.py": 0.5,
 "python/tests/test_duplicate_sensitivity_params.py": 0.7,
 "python/tests/test_emitted_source_hash_seed.py": 71.5,

@@ -35,10 +35,10 @@ from pathlib import Path
 
 import bngsim
 
-Path("case_data.tfun").write_text("# time  cumNcases\n0 0\n1 0\n2 1\n3 1\n4 2\n5 5\n")
-Path("dose.tfun").write_text("# drug_conc  response\n0 0\n1 0.5\n10 0.9\n")
-Path("schedule.tfun").write_text("# time  drive\n0 0\n24 5\n48 0\n")
-Path("signal.tfun").write_text("# time  scaled\n0 1\n10 2\n")
+Path("case_data.tfun").write_text("# time  cumNcases\n0 0\n1 0\n2 1\n3 1\n4 2\n5 5\n", encoding="utf-8")
+Path("dose.tfun").write_text("# drug_conc  response\n0 0\n1 0.5\n10 0.9\n", encoding="utf-8")
+Path("schedule.tfun").write_text("# time  drive\n0 0\n24 5\n48 0\n", encoding="utf-8")
+Path("signal.tfun").write_text("# time  scaled\n0 1\n10 2\n", encoding="utf-8")
 Path("model.net").write_text("""\
 begin parameters
     1 drug_conc  1.0
@@ -65,7 +65,7 @@ end reactions
 begin groups
     1 A 1
 end groups
-""")
+""", encoding="utf-8")
 model = bngsim.Model.from_net("model.net")
 ```
 
@@ -84,7 +84,7 @@ table's data in place:
 
 ```python
 # From a .tfun file of the same form as the model's own
-Path("case_data_2021.tfun").write_text("# time  cumNcases\n0 0\n1 2\n2 3\n3 7\n")
+Path("case_data_2021.tfun").write_text("# time  cumNcases\n0 0\n1 2\n2 3\n3 7\n", encoding="utf-8")
 model.add_table_function("cumNcases", file="case_data_2021.tfun")
 
 # From arrays, read as a step from now on
@@ -93,7 +93,7 @@ model.add_table_function(
 )
 
 # A parameter-indexed table names its index again
-Path("dose_response_v2.tfun").write_text("# drug_conc  response\n0 0\n1 0.6\n10 0.95\n")
+Path("dose_response_v2.tfun").write_text("# drug_conc  response\n0 0\n1 0.6\n10 0.95\n", encoding="utf-8")
 model.add_table_function("response", file="dose_response_v2.tfun", index="drug_conc")
 
 # A table inside a function, by its own name

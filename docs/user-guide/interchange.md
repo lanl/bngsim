@@ -17,17 +17,11 @@ directly on `Model.from_sbml(...)`; see
 
 ```python
 import shutil
-from pathlib import Path
 
 import bngsim
 
-# The bundled binding model, A + B <-> C: the .net BNG2.pl generated, and its
-# .bngl with one simulate action, the protocol the archive below carries.
+# The bundled binding model, A + B <-> C: the .net BNG2.pl generated from it.
 shutil.copy(bngsim.examples.path("binding", "net"), "model.net")
-bngl = bngsim.examples.path("binding", "bngl").read_text(encoding="utf-8")
-Path("model.bngl").write_text(
-    bngl + 'simulate({method=>"ode", t_end=>100, n_steps=>100})\n', encoding="utf-8"
-)
 
 report = bngsim.convert.net_to_sbml("model.net", "model.xml")
 print(report.ok)         # True when every check passed
@@ -156,9 +150,17 @@ python -c "import bngsim; bngsim.Model.from_bngl('model.bngl', net_out='model.ne
 bngsim-omex pack model.net --bngl model.bngl --gate full   # writes model.omex
 ```
 
-The same from Python:
+The same from Python, with the bundled binding model's `.bngl` given one
+`simulate` action, the protocol the archive carries:
 
 ```python
+from pathlib import Path
+
+bngl = bngsim.examples.path("binding", "bngl").read_text(encoding="utf-8")
+Path("model.bngl").write_text(
+    bngl + 'simulate({method=>"ode", t_end=>100, n_steps=>100})\n', encoding="utf-8"
+)
+
 report = bngsim.convert.net_to_omex(
     "model.net", "model.omex", bngl="model.bngl", gate="full",
 )

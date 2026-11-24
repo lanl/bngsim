@@ -304,6 +304,10 @@ shorter than the rest. `Result.squeeze(rows)` stacks the list when no row was
 cut.
 
 ```python
+# Each row starts from the state reset() returns to, the one save_concentrations()
+# set above, with hot ligand bound. Binding is still knocked out (kf = 0), so the
+# complex only comes apart: fast at kr = 0.1, hardly at all at kr = 1e-4.
+model.reset()
 rows = sim.run_batch(params=[{"kr": 0.1}, {"kr": 1e-4}], t_span=(0, 100))
 [r.stop_condition for r in rows]   # ['low_hot', None]
 ```

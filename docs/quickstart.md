@@ -54,9 +54,9 @@ print(round(float(result.observables["A"][-1]), 4))  # 0.6738, which is 100 * ex
 
 ## Other model formats
 
-SBML, Antimony and BNGL load through the same `Model` class. The small models
-in `bngsim.examples` come in each format, so these lines run as written; pass
-your own file's path instead:
+SBML, Antimony and BNGL load through the same `Model` class. The `binding`
+model in `bngsim.examples` comes in every format, so these lines run as
+written; pass your own file's path instead:
 
 ```python
 sbml_model = bngsim.Model.from_sbml(bngsim.examples.path("binding", "sbml"))

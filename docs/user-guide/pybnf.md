@@ -59,8 +59,6 @@ A `Simulator` built with `sensitivity_params` gives each row's
 output-sensitivity tensor from `run_batch`:
 
 ```python
-import json
-
 import bngsim
 import numpy as np
 
@@ -164,6 +162,9 @@ Pair a spec with `Result.summary()` for a small index entry, without reading
 back the full HDF5 file:
 
 ```python
+import json
+from pathlib import Path
+
 spec = bngsim.EvaluationSpec(
     model_source=str(bngsim.examples.path("binding", "net")), model_format="net",
     t_span=(0, 100), n_points=101,
@@ -172,7 +173,7 @@ spec = bngsim.EvaluationSpec(
 )
 blob = spec.to_json()                              # checkpoint, or send to a worker
 result = bngsim.EvaluationSpec.from_json(blob).evaluate()
-json.dump(result.summary(), open("eval_0001.json", "w"))   # small index entry
+Path("eval_0001.json").write_text(json.dumps(result.summary()))   # small index entry
 result.save("eval_0001.h5")                        # full arrays (HDF5)
 ```
 
@@ -208,7 +209,7 @@ wrong answer with no sign of trouble.
 
 ```python
 caps["build"]["commit"]   # what the compiled extension was built from
-caps["build"]["stale"]    # True: that extension is behind the C++ beside it
+caps["build"]["stale"]    # True where that extension is behind the C++ beside it
 ```
 
 Log the commit when a job starts. It is the only thing that tells apart two

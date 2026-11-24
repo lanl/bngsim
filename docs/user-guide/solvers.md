@@ -146,7 +146,7 @@ that `bngsim.convert.read_sedml` reads.
 To hold every species to exactly the number you give, say so:
 
 ```python
-result = sim.run(t_span=(0, 100), rtol=1e-6, atol=bngsim.ExactAtol(1e-9))
+result = sim.run(t_span=(0, 100), rtol=1e-6, atol=bngsim.ExactAtol(1e-9), start="initial")
 sim.set_tolerances(rtol=1e-8, atol=bngsim.ExactAtol(1e-8))
 
 # A SED-ML file, here one BNGsim writes, read back with its atol held exactly
@@ -296,7 +296,7 @@ was built.
 Choose how the Jacobian ∂f/∂y is computed with `jacobian=`:
 
 ```python
-sim = bngsim.Simulator(model, method="ode")                         # "auto"
+sim = bngsim.Simulator(model, method="ode")                         # jacobian="auto"
 sim = bngsim.Simulator(model, method="ode", jacobian="analytical")  # exact
 sim = bngsim.Simulator(model, method="ode", jacobian="fd")          # finite differences
 ```

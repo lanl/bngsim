@@ -86,7 +86,7 @@ model.reset()                       # a fresh start again
 dose = 2.5                          # a dose of A, in units of A0
 v = dose * model.get_param("A0")
 model.set_concentration("A(b)", v)
-model.declare_ic_sensitivity({"A(b)": {"A0": v / model.get_param("A0")}})
+model.declare_ic_sensitivity({"A(b)": {"A0": dose}})   # dv/dA0, since v = dose * A0
 ```
 
 A declaration wins over both the derived row and the zero. Declaring `{}` sets

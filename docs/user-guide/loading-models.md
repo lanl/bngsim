@@ -13,6 +13,7 @@ each format needs.
 
 ```python
 import shutil
+from pathlib import Path
 
 import bngsim
 
@@ -53,7 +54,7 @@ model = bngsim.Model.from_antimony_string("""
     J2: S2 -> S1; k2 * S2;
 """)
 
-sbml_xml_text = open("model.xml", encoding="utf-8").read()
+sbml_xml_text = Path("model.xml").read_text(encoding="utf-8")
 model = bngsim.Model.from_sbml_string(sbml_xml_text)
 ```
 
