@@ -322,15 +322,30 @@ class _Fire(NamedTuple):
     # events at t = 1, and `time > 0.5` with delay 0.5 runs after them.
     loose: bool
     priority: float | None  # None: not a constant
+    # No priority as the loader writes it: none, or a plain number that is 0.
+    # Where every event of a tie has none, the run executes the delayed ones
+    # after the rest.
+    unprioritised: bool
+    # Where it triggered, before its delay: delayed executions of one priority
+    # run in the order they were triggered. None where it has no delay.
+    triggered: float | None
     order: int  # document order, which breaks the remaining ties
     eid: str
     assigns: list[tuple[int, float, str]]  # (species index, value, SBML id)
 
-    def sort_key(self) -> tuple[float, bool, float, int]:
-        # Higher priority first. Within a tie, beside a priority that is not a
-        # constant, or beside a loose execution, the order changes nothing:
-        # _unordered_writes refuses wherever it would.
-        return (self.time, self.past, -(self.priority or 0.0), self.order)
+    def sort_key(self) -> tuple[float, bool, float, bool, float, int]:
+        # Higher priority first; among equal ones, those not delayed, then the
+        # delayed ones in the order they were triggered, one order the run can
+        # take. Where it can take another that leaves a different value,
+        # _unordered_writes refuses.
+        return (
+            self.time,
+            self.past,
+            -(self.priority or 0.0),
+            self.triggered is not None,
+            self.triggered or 0.0,
+            self.order,
+        )
 
 
 def _unordered_writes(fires: list[_Fire]) -> list[str]:
@@ -350,63 +365,121 @@ def _unordered_writes(fires: list[_Fire]) -> list[str]:
                 writes.setdefault(idx, []).append((f, val))
                 var[idx] = sid
         for idx, ws in writes.items():
-            note = _order_note(t, var[idx], ws)
+            note = _order_note(t, var[idx], ws, group)
             if note:
                 notes.append(note)
     return notes
 
 
-def _order_note(t: float, var: str, ws: list[tuple[_Fire, float]]) -> str | None:
+def _order_note(
+    t: float, var: str, ws: list[tuple[_Fire, float]], group: list[_Fire]
+) -> str | None:
     """Why the value the executions ``ws`` at instant ``t`` leave in ``var``
-    is not known ahead, or None where it is.
+    is not known ahead, or None where it is. ``group`` is every execution at
+    ``t``.
 
-    The last of them to execute sets it: of those in the last part of the
-    instant, one of the lowest priority. The run draws among equal priorities
-    at random, so where those set different values the species has none an
-    action can set. A priority that is not a constant, or a loose execution
-    (see :class:`_Fire`), leaves the order unknown wherever the values differ.
+    The last of them to execute sets it. That is one of those in the last part
+    of the instant, of the lowest priority there; of the ones among those that
+    may execute last (:func:`_may_execute_last`), the run picks at random. Where
+    those set different values, the species has none an action can set. A
+    priority that is not a constant, or a loose execution (see :class:`_Fire`),
+    leaves the order unknown wherever the values differ, unless a loose one
+    executes after all the rest wherever it lands.
     """
     if len({val for _, val in ws}) < 2:
         return None
 
-    def which(f: _Fire, val: float) -> str:
-        other = next(g for g, v in ws if v != val)
+    def apart(f: _Fire, val: float, among: list[tuple[_Fire, float]]) -> str:
+        other = next(g for g, v in among if v != val)
         return f"events {f.eid!r} and {other.eid!r} set {var!r} to different values at t = {t:g}"
 
-    finals: set[float] = set()
+    last: list[tuple[_Fire, float]] = []
+    tied = ""
     fixed = [(f, val) for f, val in ws if not f.loose]
+    loose = [(f, val) for f, val in ws if f.loose]
     if fixed:
         past = max(f.past for f, _ in fixed)
         part = [(f, val) for f, val in fixed if f.past == past]
         unknown = [(f, val) for f, val in part if f.priority is None]
         if unknown:
-            last = part
-        else:
-            low = min(f.priority for f, _ in part if f.priority is not None)
-            last = [(f, val) for f, val in part if f.priority == low]
-        if len({val for _, val in last}) > 1:
-            if unknown:
+            if len({val for _, val in part}) > 1:
                 f, val = unknown[0]
                 return (
-                    f"{which(f, val)}, and {f.eid!r} has a non-constant priority — "
+                    f"{apart(f, val, part)}, and {f.eid!r} has a non-constant priority — "
                     "which executes last cannot be scheduled"
                 )
-            f, val = last[0]
-            return (
-                f"{which(f, val)} with equal priority, and the run executes such "
-                "events in a random order — the value they leave has no actions form"
-            )
-        finals.add(last[0][1])
-    for f, val in ws:
-        if f.loose:
-            finals.add(val)
-            if len(finals) > 1:
-                return (
-                    f"{which(f, val)}, and {f.eid!r}, delayed from a strict trigger, "
-                    "executes before or after the other as the run's rounding falls — "
-                    "the value they leave has no actions form"
+            last = part[:1]
+        else:
+            low = min(f.priority for f, _ in part if f.priority is not None)
+            lowest = [(f, val) for f, val in part if f.priority == low]
+            # The run's tie: what has that priority there, and may: a priority
+            # that is not a constant, or a loose execution, which can land there.
+            tie = [
+                f
+                for f in group
+                if (f.past == past or f.loose) and (f.priority is None or f.priority == low)
+            ]
+            last = _may_execute_last(lowest, tie)
+            if len({val for _, val in last}) > 1:
+                f, val = last[0]
+                tied = (
+                    f"{apart(f, val, last)} with equal priority, and the run executes "
+                    "them in a random order — the value they leave has no actions form"
                 )
+
+            def overwrites(f: _Fire) -> bool:
+                # Whether loose f executes after the writers here wherever it
+                # lands. Past the instant it does. In the instant it is in the
+                # first part, so before the strict triggers' part, and after
+                # the writers of the first part where its priority is lower, or
+                # equal with no event of the tie having one and no delayed
+                # writer triggered after it (past its threshold, f triggered
+                # after any non-strict trigger at the same time).
+                if past or f.priority is None or f.priority > low:
+                    return False
+                return f.priority < low or (
+                    all(g.unprioritised for g in tie)
+                    and all(
+                        g.triggered is None or (f.triggered or 0.0) >= g.triggered
+                        for g, _ in lowest
+                    )
+                )
+
+            if any(overwrites(f) for f, _ in loose):
+                last, tied = [], ""
+    if tied:
+        return tied
+    for f, val in loose:
+        if any(v != val for _, v in last):
+            return (
+                f"{apart(f, val, last)}, and {f.eid!r}, delayed from a strict "
+                "trigger, executes before or after the other as the run's rounding "
+                "falls — the value they leave has no actions form"
+            )
+        last.append((f, val))
     return None
+
+
+def _may_execute_last(
+    ws: list[tuple[_Fire, float]], tie: list[_Fire]
+) -> list[tuple[_Fire, float]]:
+    """Of the executions ``ws``, all of one priority in one part of an instant,
+    those the run may execute last. ``tie`` is every execution there of that
+    priority, ``ws`` among them.
+
+    The run draws among a tie at random, with two exceptions
+    (src/cvode_simulator.cpp). Delayed executions keep the order they were
+    triggered in, so only the last triggered may be last; two triggered at one
+    instant were ordered by a random draw there. And where no event of the tie
+    has a priority, the delayed ones execute after the rest.
+    """
+    delayed = [(f, val) for f, val in ws if f.triggered is not None]
+    if delayed:
+        latest = max(f.triggered for f, _ in delayed if f.triggered is not None)
+        delayed = [(f, val) for f, val in delayed if f.triggered == latest]
+        if all(f.unprioritised for f in tie):
+            return delayed
+    return [(f, val) for f, val in ws if f.triggered is None] + delayed
 
 
 # ─── public entry ────────────────────────────────────────────────────────────
@@ -493,6 +566,7 @@ def sbml_events_to_protocol(
         # as the loader reads it). Otherwise it never turns true, as time only
         # moves on, and the event never fires.
         fire_t, past, loose = threshold, strict, False
+        triggered: float | None = None
         if threshold < t_start or (threshold == t_start and not strict):
             trigger = ev.getTrigger()
             if not trigger.isSetInitialValue() or trigger.getInitialValue():
@@ -505,13 +579,18 @@ def sbml_events_to_protocol(
             if d is None:
                 lossy.append(f"event {eid!r} has a non-constant delay (cannot be scheduled)")
                 continue
+            if d > 0:
+                triggered = fire_t
             fire_t += d
             loose = past and d > 0
 
-        # An unset priority is 0, as the loader writes it.
+        # An unset priority is 0, as the loader writes it, and so is one that
+        # is a plain number 0: the run tells neither from no priority at all.
         priority: float | None = 0.0
+        unprioritised = True
         if ev.isSetPriority() and ev.getPriority().getMath() is not None:
             priority = _eval_const(ev.getPriority().getMath(), env)
+            unprioritised = _eval_const(ev.getPriority().getMath(), {}) == 0.0
 
         assigns: list[tuple[int, float, str]] = []
         ok = True
@@ -537,7 +616,9 @@ def sbml_events_to_protocol(
                 break
             assigns.append((idx, val, var))
         if ok:
-            fires.append(_Fire(fire_t, past, loose, priority, i, eid, assigns))
+            fires.append(
+                _Fire(fire_t, past, loose, priority, unprioritised, triggered, i, eid, assigns)
+            )
 
     lossy.extend(_unordered_writes(fires))
     if lossy:

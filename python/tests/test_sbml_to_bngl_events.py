@@ -171,26 +171,27 @@ def _assert_runs_as_the_model(
 ):
     """The schedule, replayed, gives A and B (named ``prefix`` + id) as
     bngsim's run of ``xml`` gives them, at every sample but the fire times
-    (where a sample is read before or after the dose as the run lands)."""
+    (where a sample is read before or after the dose as the run lands). For
+    several seeds, as the run draws among events of equal priority with one."""
     schedule = _schedule(report)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        model = bngsim.Model.from_sbml_string(xml)
-        res = bngsim.Simulator(model, method="ode").run(
-            t_span=t_span, n_points=25, rtol=1e-10, atol=1e-12
-        )
-    times = np.asarray(res.time)
-    columns = np.asarray(res.species)
-    names = list(res.species_names)
     fire_times = {ft for ft, _, _ in schedule}
-    for sid, x0 in _X0.items():
-        name = prefix + sid
-        for i, t in enumerate(times):
-            if any(abs(t - ft) < 1e-9 for ft in fire_times):
-                continue
-            want = columns[i, names.index(name)]
-            got = _replay(schedule, name, x0, t_span[0], float(t))
-            assert got == pytest.approx(want, rel=1e-6), (name, float(t), schedule)
+    for seed in range(6):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            res = bngsim.Simulator(bngsim.Model.from_sbml_string(xml), method="ode").run(
+                t_span=t_span, n_points=25, rtol=1e-10, atol=1e-12, seed=seed
+            )
+        times = np.asarray(res.time)
+        columns = np.asarray(res.species)
+        names = list(res.species_names)
+        for sid, x0 in _X0.items():
+            name = prefix + sid
+            for i, t in enumerate(times):
+                if any(abs(t - ft) < 1e-9 for ft in fire_times):
+                    continue
+                want = columns[i, names.index(name)]
+                got = _replay(schedule, name, x0, t_span[0], float(t))
+                assert got == pytest.approx(want, rel=1e-6), (seed, name, float(t), schedule)
 
 
 # ─── a comp submodel's events (issue #1787) ────────────────────────────────
@@ -492,7 +493,9 @@ def test_a_name_a_rule_or_event_moves_is_not_folded(tmp_path, events, body, note
 # already true there fires only where it is false. Events at one instant
 # execute as the run executes them: those whose strict trigger turns true just
 # past the instant after the rest, and each part in priority order, higher
-# first, an unset priority counting as 0.
+# first, an unset priority counting as 0. Of equal priority, delayed executions
+# keep the order they were triggered in, and where no event has a priority,
+# they follow the rest; the run draws among what is left.
 
 
 def _gt(threshold: str) -> str:
@@ -627,6 +630,56 @@ def test_a_trigger_true_at_the_start_fires_only_where_initial_value_is_false(
         ),
         pytest.param(
             [
+                _a("E2", _at(_cn(0.5)), 10, delay=_cn(0.5)),
+                _a("E1", _at(_cn(1)), 5),
+            ],
+            [5.0, 10.0],
+            id="with no priorities, a delayed execution after one not delayed",
+        ),
+        pytest.param(
+            [
+                _a("E2", _at(_cn(0.5)), 10, delay=_cn(0.5), priority=_cn(0)),
+                _a("E1", _at(_cn(1)), 5, priority=_cn(0)),
+            ],
+            [5.0, 10.0],
+            id="with priorities a plain 0, a delayed execution after one not delayed",
+        ),
+        pytest.param(
+            [
+                _a("E2", _at(_cn(0.5)), 10, delay=_cn(0.5)),
+                _a("E1", _at(_cn(0.25)), 5, delay=_cn(0.75)),
+            ],
+            [5.0, 10.0],
+            id="delayed executions in the order they were triggered",
+        ),
+        pytest.param(
+            [
+                _a("E2", _at(_cn(0.5)), 10, delay=_cn(0.5), priority=_cn(1)),
+                _a("E1", _at(_cn(0.25)), 5, delay=_cn(0.75), priority=_cn(1)),
+            ],
+            [5.0, 10.0],
+            id="delayed executions of one priority in the order they were triggered",
+        ),
+        pytest.param(
+            [
+                _a("E0", _gt(_cn(0.5)), 10, delay=_cn(0.5), priority=_cn(-1)),
+                _a("E1", _at(_cn(1)), 5),
+                _a("E2", _at(_cn(1)), 7),
+            ],
+            [5.0, 7.0, 10.0],
+            id="a tie that a strict trigger's delayed execution of lower priority overwrites",
+        ),
+        pytest.param(
+            [
+                _a("E0", _gt(_cn(0)), 10, delay=_cn(1)),
+                _a("E1", _at(_cn(1)), 5),
+                _a("E2", _at(_cn(1)), 7, priority=_cn(0)),
+            ],
+            [5.0, 7.0, 10.0],
+            id="a tie with no priorities that a strict trigger's delayed execution overwrites",
+        ),
+        pytest.param(
+            [
                 _a("E1", _at(_cn(1)), 5, priority=_ci("B")),
                 _a("E2", _at(_cn(2)), 10, priority=_cn(1)),
             ],
@@ -691,10 +744,62 @@ def test_equal_priorities_that_set_different_species_are_carried(tmp_path):
             "'E2', delayed from a strict trigger, executes before or after the other",
             id="a strict trigger's delayed execution, which the run's rounding places",
         ),
+        pytest.param(
+            [
+                _a("E1", _at(_cn(1)), 5, priority=_cn(1)),
+                _a("E2", _at(_cn(0.5)), 10, delay=_cn(0.5), priority=_cn(1)),
+            ],
+            "events 'E1' and 'E2' set 'A' to different values at t = 1 with equal priority",
+            id="a delayed execution beside one not delayed, of one priority",
+        ),
+        pytest.param(
+            [
+                _a("E1", _at(_cn(1)), 5),
+                _event(
+                    "E3",
+                    _at(_cn(1)),
+                    {"B": _cn(7)},
+                    priority=f"<apply><minus/>{_ci('k')}{_ci('k')}</apply>",
+                ),
+                _a("E2", _at(_cn(0.5)), 10, delay=_cn(0.5)),
+            ],
+            "events 'E1' and 'E2' set 'A' to different values at t = 1 with equal priority",
+            id="a delayed execution beside one not delayed, in a tie with a priority",
+        ),
+        pytest.param(
+            [
+                _a("E1", _at(_cn(0.5)), 5, delay=_cn(0.5)),
+                _a("E2", _at(_cn(0.5)), 10, delay=_cn(0.5)),
+            ],
+            "events 'E1' and 'E2' set 'A' to different values at t = 1 with equal priority",
+            id="delayed executions triggered at one instant",
+        ),
+        pytest.param(
+            [
+                _a("E3", _at(_cn(1)), 7, priority=_cn(1)),
+                _a("E1", _at(_cn(1)), 5),
+                _a("E2", _at(_cn(1)), 10),
+            ],
+            "events 'E1' and 'E2' set 'A' to different values at t = 1 with equal priority",
+            id="the note names the tie, not an event before it",
+        ),
     ],
 )
 def test_events_whose_order_is_not_known_ahead_are_refused(tmp_path, events, note):
     """Where the run leaves a species at a value its random draw between
-    events decides, or its rounding, the actions have no one value to set."""
+    events decides, or its rounding, the actions have no one value to set.
+    Where the note says the run's order is random, it is: A after the
+    instant varies with the seed."""
+    xml = _sbml(*events)
     with pytest.raises(ConversionError, match=note):
-        _convert(tmp_path, _sbml(*events))
+        _convert(tmp_path, xml)
+    if "equal priority" in note:
+        after = set()
+        for seed in range(12):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                res = bngsim.Simulator(bngsim.Model.from_sbml_string(xml), method="ode").run(
+                    t_span=(0.0, 3.0), n_points=7, seed=seed
+                )
+            after.add(round(float(np.asarray(res.species)[3, res.species_names.index("A")]), 6))
+        assert len(after) > 1, after

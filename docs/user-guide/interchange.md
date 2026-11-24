@@ -102,10 +102,13 @@ A trigger that is already true at the start of `t_span` fires there only if
 its `initialValue` is false; otherwise the event never fires. Events at one
 time apply in the order BNGsim executes them: a strict trigger such as
 `time > 1` after the rest, then each in priority order, highest first, with no
-priority counting as 0. Where that order doesn't settle what a species is
-left at, the conversion is refused: two events of equal priority that set it
-to different values, which BNGsim executes in a random order, or a delayed
-event with a strict trigger, which rounding places before or after the others.
+priority counting as 0. Of equal priority, delayed events execute in the order
+they were triggered, and where none of the events has a priority (a plain 0
+counts as none), after the ones that aren't delayed. BNGsim draws among the
+rest at random, and where that draw decides what a species is left at, the
+conversion is refused. So is a delayed event with a strict trigger that sets a
+species another event at its time sets differently, since rounding places it
+before or after the others.
 
 A species set by an assignment rule is handled as in `.net`. Its molecule is
 named after the rule, `@comp1:$__ar_B()`, next to the function `B()`. BNGsim
