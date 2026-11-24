@@ -473,6 +473,13 @@ _DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
         "that would fuse; an x86-64 core without FMA (before Haswell, or under "
         "Rosetta) cannot fuse, so there is nothing to show. Every CI runner has one",
     ),
+    (
+        "no clang on PATH",
+        _ANYWHERE,
+        "issue #1814's builds under clang, whose limit of 256 nested brackets GCC "
+        "does not have; a GCC-only machine is a choice, not a broken toolchain. "
+        "The bracket depth of the generated C is measured on every leg",
+    ),
     # Source-tree vs installed-wheel context.
     ("installed wheel", _ANYWHERE, "source-tree-only guard, correctly inert against a wheel"),
     ("source root", _ANYWHERE, "version-consistency check needs the source tree"),

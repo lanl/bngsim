@@ -342,7 +342,14 @@ _compile_counter = itertools.count()
 # failed at dlopen. The source digest already moves; the bump is for an install
 # whose digest is empty, which would go on loading those libraries. Invalidate
 # v43.
-_CODEGEN_VERSION = "44"
+# v45: lanl/bngsim #1814 — an if() that is all of another's false branch, and
+# each piece of a Piecewise, are written as the next link of one ?: chain rather
+# than nested two brackets deeper, so a chain of 128 no longer passes clang's
+# limit of 256; and the sympy parse reads such a chain as one Piecewise, so one
+# of 99 or more gets the analytic sensitivity RHS a v44 build declined. The
+# source digest already moves; the bump is for an install whose digest is
+# empty. Invalidate v44.
+_CODEGEN_VERSION = "45"
 
 
 # Modules whose *source* determines the emitted C. ``_codegen`` holds the
@@ -1600,7 +1607,12 @@ def _translate_bngl_if_to_piecewise(expr: str) -> str:
     """Rewrite every BNGL ``if(c, t, f)`` substring to sympy
     ``Piecewise((t, c), (f, True))``, recursively, with balanced-paren and
     top-level-comma parsing. Whole-word match on ``if`` so identifiers like
-    ``stiff`` are left alone."""
+    ``stiff`` are left alone.
+
+    An ``if()`` that is all of another's false branch adds a pair to its
+    ``Piecewise`` (:func:`_if_call_args`): ``if(c1, t1, if(c2, t2, f))`` is
+    ``Piecewise((t1, c1), (t2, c2), (f, True))``, which takes the branch the
+    nested form takes."""
     pattern = re.compile(r"(?<![A-Za-z0-9_])if\s*\(")
     out_parts: list[str] = []
     cursor = 0
@@ -1623,12 +1635,20 @@ def _translate_bngl_if_to_piecewise(expr: str) -> str:
             out_parts.append(expr[m.start() : close_paren + 1])
             cursor = close_paren + 1
             continue
-        c_raw, t_raw, f_raw = (a.strip() for a in args)
-        # Recurse so nested ifs are translated too.
-        c = _translate_bngl_if_to_piecewise(c_raw)
-        t = _translate_bngl_if_to_piecewise(t_raw)
+        # Recurse so nested ifs are translated too, following the chain of
+        # false branches that are if()s of their own.
+        pairs = []
+        while True:
+            c_raw, t_raw, f_raw = (a.strip() for a in args)
+            c = _translate_bngl_if_to_piecewise(c_raw)
+            t = _translate_bngl_if_to_piecewise(t_raw)
+            pairs.append(f"({t}, {c}), ")
+            link = _if_call_args(f_raw)
+            if link is None:
+                break
+            args = link
         f = _translate_bngl_if_to_piecewise(f_raw)
-        out_parts.append(f"Piecewise(({t}, {c}), ({f}, True))")
+        out_parts.append(f"Piecewise({''.join(pairs)}({f}, True))")
         cursor = close_paren + 1
     return "".join(out_parts)
 
@@ -6872,13 +6892,44 @@ def _double_valued_logic(c: str) -> str:
     return "".join(out)
 
 
+_IF_HEAD_RE = re.compile(r"if\s*\(")
+
+
+def _if_call_args(expr: str) -> list[str] | None:
+    """``[cond, t, f]`` where ``expr`` is one ``if(cond, t, f)`` call and nothing
+    else, else ``None``.
+
+    Both ``if()`` emitters ask it of a false branch, and write an ``if()`` that
+    is all of one as the next link of the same chain rather than nested inside
+    it (issue #1814). A table of values over time is such a chain, one link a
+    day. Nested, each link cost two levels of brackets: the C passed clang's
+    limit of 256 at 128 links, and the ``Piecewise`` text sympy parses passed
+    Python's limit of 200 at 99.
+    """
+    m = _IF_HEAD_RE.match(expr)
+    if m is None:
+        return None
+    close = _find_close_paren_strict(expr, m.end() - 1)
+    if close != len(expr) - 1:
+        return None
+    args = _split_top_level_commas(expr[m.end() : close])
+    return args if len(args) == 3 else None
+
+
 def _replace_if_calls(expr: str) -> str:
     """Replace ExprTk if(cond, true_val, false_val) with C ternary.
 
     ExprTk: if(cond, t, f)
     C:      ((cond) ? (t) : (f))
 
-    Handles nested if() calls correctly by matching parentheses.
+    Handles nested if() calls correctly by matching parentheses. An if() that is
+    all of another's false branch continues its chain (:func:`_if_call_args`):
+
+    ExprTk: if(c1, t1, if(c2, t2, f))
+    C:      ((c1) ? (t1) : (c2) ? (t2) : (f))
+
+    which C reads as it reads the nested form, since ``?:`` groups from the
+    right, at the same bracket depth however long the chain.
     """
     result = []
     i = 0
@@ -6893,12 +6944,19 @@ def _replace_if_calls(expr: str) -> str:
             paren_start = i + m.end() - 1  # position of '('
             args = _split_if_args(expr, paren_start)
             if args and len(args) == 3:
-                cond, true_val, false_val = args
-                # Recursively process each argument
-                cond = _replace_if_calls(cond.strip())
-                true_val = _replace_if_calls(true_val.strip())
+                # Recursively process each argument, following the chain of
+                # false branches that are if()s of their own.
+                links = []
+                while True:
+                    cond, true_val, false_val = args
+                    cond = _replace_if_calls(cond.strip())
+                    true_val = _replace_if_calls(true_val.strip())
+                    links.append(f"({cond}) ? ({true_val}) : ")
+                    args = _if_call_args(false_val.strip())
+                    if args is None:
+                        break
                 false_val = _replace_if_calls(false_val.strip())
-                result.append(f"(({cond}) ? ({true_val}) : ({false_val}))")
+                result.append(f"({''.join(links)}({false_val}))")
                 # Find end of the if(...) expression
                 end = _find_matching_paren(expr, paren_start)
                 i = end + 1
