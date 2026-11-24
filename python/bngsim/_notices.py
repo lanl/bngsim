@@ -132,6 +132,10 @@ CODES: dict[str, str] = {
         "A smooth bump on a variable an event assigns is placed from the variable's "
         "start and rate."
     ),
+    "solver.roundoff_steps": (
+        "The ODE solver took steps too small to move its clock (t + h == t); the rows "
+        "after them can be wrong."
+    ),
     "ssa.negative_count": "A species count went negative in a stochastic run.",
     "ssa.reverse_fire": "A reaction fired in reverse because its rate law evaluated negative.",
     "ssa.rounded_counts": "Molecule counts that were not whole numbers were rounded at the start.",
@@ -249,6 +253,12 @@ ACTIONS: dict[str, str] = {
     ),
     "smooth_pulse.event_reset": (
         "Check the pulse's placement where the event assigns the variable."
+    ),
+    "solver.roundoff_steps": (
+        "Call `result.check()`, which runs again at a tenth of the tolerance and says "
+        "whether the answer moved, and read the rows from the time the message names on "
+        "as suspect until it passes. Where the model allows it, run nearer t = 0, where "
+        "the doubles are finer; tighter tolerances take smaller steps and make it worse."
     ),
     "ssa.negative_count": (
         "Fix the rate laws that let a count go negative; the trajectory past it is not "

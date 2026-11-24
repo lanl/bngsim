@@ -72,6 +72,7 @@ from bngsim._exceptions import (
     ModelError,
     NotFoundError,
     NotSupportedError,
+    RoundoffStepWarning,
     ScanDoseWarning,
     SensitivityRefusedDuringRunError,
     SensitivityRefusedForParametersError,
@@ -96,6 +97,7 @@ from bngsim._result import (
     _resolve_output_selector,
     _state_digest,
     _warn_one_sided,
+    _warnings_held,
 )
 from bngsim._sample_times import (
     normalize_sample_times,
@@ -322,6 +324,124 @@ _SKIP_WARN_NAME_LIMIT = 8
 # (`retry_while_advancing`), the second being the parked-on-a-discontinuity case
 # the FD Jacobian most often rescues. The jacobian="auto" retry is for these only.
 _CVODE_FAILURES = ("CVODE integration failed at t=", "CVODE made no progress ")
+
+
+def _grid(times: Any) -> np.ndarray:
+    """The rows a core ``TimeSpec`` asks for, as ``TimeSpec::output_times``
+    makes them."""
+    if times.sample_times:
+        return np.asarray(times.sample_times, dtype=np.float64)
+    n = int(times.n_points)
+    dt = (times.t_end - times.t_start) / (n - 1) if n > 1 else 0.0
+    grid = times.t_start + np.arange(n, dtype=np.float64) * dt
+    if n > 1:
+        grid[-1] = times.t_end
+    return grid
+
+
+def _roundoff_steps_message(
+    steps: int, first_row: int, spacing: float, rows: np.ndarray, *, raised: bool = False
+) -> str:
+    """What a run's steps where t + h == t were (issue #1837): *steps* of
+    them, the first row recorded after one at *first_row* of *rows* (-1 for
+    none), and *spacing*, the spacing of the doubles on the clock the run was
+    integrated on between that row and the one before."""
+    text = (
+        f"CVODE took {steps} step{'' if steps == 1 else 's'} too small to move its clock "
+        "(t + h == t in double precision)"
+    )
+    where = ""
+    own_clock = False
+    if 0 <= first_row < len(rows):
+        at = [float(rows[first_row])]
+        after = ""
+        if first_row > 0:
+            at.append(float(rows[first_row - 1]))
+            after = f"after t = {at[1]!r} and "
+        where = f"t = {at[0]!r}"
+        # A run moved onto a clock counted from its start (a far run of a model
+        # that reads no clock) has finer doubles there than its rows' times.
+        own_clock = spacing < max(float(np.spacing(abs(t))) for t in at)
+        clock = "on the run's own clock, counted from its start, " if own_clock else ""
+        text += (
+            f", the first {after}by {where}, where {clock}the doubles are {spacing:.3g} "
+            f"apart, so that such a step is at most {spacing / 2:.3g}"
+        )
+    if raised:
+        text += "; the run then failed." if where else " before the run failed."
+    else:
+        rows_on = f"the rows from {where} on" if where else "the rows after them"
+        text += (
+            ". Such a step moves the state and not the time, so "
+            f"{rows_on} can be wrong, with no solver error. Result.check() runs it "
+            "again at a tenth of the tolerance and says whether the answer moved."
+        )
+    text += " Tighter tolerances take smaller steps and make it worse"
+    if own_clock:
+        return text + "."
+    return text + "; where the model allows it, run nearer t = 0, where the doubles are finer."
+
+
+def _roundoff_steps_of(core: Any) -> str | None:
+    """The message for a returned core result's steps where t + h == t, or
+    None where it took none."""
+    stats = core.solver_stats
+    if stats.n_roundoff_steps <= 0:
+        return None
+    return _roundoff_steps_message(
+        stats.n_roundoff_steps,
+        stats.roundoff_first_row,
+        stats.roundoff_spacing,
+        np.asarray(core.time),
+    )
+
+
+def _say_roundoff_steps(core: Any) -> None:
+    """Warn of a returned run's steps where t + h == t, and record them with
+    the call (issue #1837). In a worker thread whose warnings are held, record
+    them only: the caller warns once the results are back on its thread
+    (:func:`_warn_held_roundoff_steps`)."""
+    message = _roundoff_steps_of(core)
+    if message is None:
+        return
+    if _warnings_held():
+        _notices.note(RoundoffStepWarning.__name__, "solver.roundoff_steps", message)
+        return
+    _notices.warn(
+        message, RoundoffStepWarning, code="solver.roundoff_steps", stacklevel=_notices.OUTSIDE
+    )
+
+
+def _note_roundoff_steps_raised(sim: Any, times: Any) -> None:
+    """Record the steps where t + h == t of the run *sim* last made, which
+    raised, with the call, so that they go on its error, as issue #1857 made a
+    failed run's notices do. Not
+    warned: under -W error a warning raised here would replace the run's own
+    error."""
+    steps, first_row, spacing = sim.last_run_roundoff_steps()
+    if steps > 0:
+        _notices.note(
+            RoundoffStepWarning.__name__,
+            "solver.roundoff_steps",
+            _roundoff_steps_message(steps, first_row, spacing, _grid(times), raised=True),
+        )
+
+
+def _warn_held_roundoff_steps(results: Iterable[Result], *, record: bool = False) -> None:
+    """Warn, on the caller's thread, of the steps where t + h == t that runs
+    made in worker threads recorded there (issue #1837), as the threads would
+    have warned of them; with *record*, record them with the call too."""
+    for r in results:
+        core = getattr(r, "_core", None)
+        message = None if core is None else _roundoff_steps_of(core)
+        if message is not None:
+            _notices.warn(
+                message,
+                RoundoffStepWarning,
+                code="solver.roundoff_steps",
+                stacklevel=_notices.OUTSIDE,
+                record=record,
+            )
 
 
 def _abbreviate(names: list[str], limit: int = _SKIP_WARN_NAME_LIMIT) -> str:
@@ -5785,7 +5905,7 @@ class Simulator:
             self._restore_carryover_state(start_carry)
 
         try:
-            return self._ode_attempts(times, opts, restore)
+            return self._ode_run(times, opts, restore)
         except BaseException:
             # A run that raises leaves the model as it found it, whatever raised:
             # a retry that failed too, a refusal, a timeout, an explicit jacobian
@@ -5794,6 +5914,23 @@ class Simulator:
             # still clear, so nothing refused or warned.
             restore()
             raise
+
+    def _ode_run(self, times, opts, restore, sim=None, core=None):
+        """:meth:`_ode_attempts`, and what the run's steps were.
+
+        Every ODE run passes through here, so this is where the steps CVODE
+        took where t + h == t are said (issue #1837), of the attempt whose
+        result is returned or whose error is raised: an analytical-Jacobian
+        attempt the FD retry replaced is not the run.
+        """
+        sim = self._sim if sim is None else sim
+        try:
+            out = self._ode_attempts(times, opts, restore, sim, core)
+        except BaseException:
+            _note_roundoff_steps_raised(sim, times)
+            raise
+        _say_roundoff_steps(out)
+        return out
 
     def _ode_attempts(self, times, opts, restore, sim=None, core=None):
         """The attempts :meth:`_run_ode_with_jacobian_fallback` makes, with
@@ -7074,6 +7211,7 @@ class Simulator:
         if in_workers:
             for r in results:
                 _warn_one_sided(r._one_sided_sensitivities, note=False)
+            _warn_held_roundoff_steps(results)
         if self._atol_is_default(atol):
             self._warn_atol_above_scale(results, "ODE batch", per_result=row_atols)
 
@@ -8685,7 +8823,7 @@ class Simulator:
                     row_core.set_state(start_state)
                     self._restore_carryover_state(start_carry, row_core)
 
-                core_result = self._ode_attempts(times, opts, restore, sim=sim, core=row_core)
+                core_result = self._ode_run(times, opts, restore, sim=sim, core=row_core)
                 row_jacobian = self._jacobian_used(opts, row_core)
 
             elif self._method in ("ssa", "psa"):
@@ -9293,13 +9431,26 @@ class Simulator:
 
         # Stitch sensitivity tensors along param axis
         stitched = self._stitch_sensitivity_results(chunk_results, target_params)
-        # The chunks' notices, but for their one-sided switches, each said of a
-        # chunk's columns: the stitched result says them once, of all of them.
+        # The chunks' notices, but for their one-sided switches and their
+        # steps where t + h == t, each said of a chunk's run: the stitched
+        # result says them once, of all of them.
         stitched._notices = _notices.unique(
-            n for r in chunk_results for n in r._notices if n.code != "sens.one_sided"
+            n
+            for r in chunk_results
+            for n in r._notices
+            if n.code not in ("sens.one_sided", "solver.roundoff_steps")
         )
         stitched._one_sided_sensitivities = _merge_one_sided(chunk_results)
         _warn_one_sided(stitched._one_sided_sensitivities)
+        # All the chunks integrate the one trajectory, so the call warns of the
+        # chunk that took the most steps where t + h == t, records that one, and
+        # reports its count (issue #1837).
+        taken = [r for r in chunk_results if r._solver_stats.get("n_roundoff_steps", 0) > 0]
+        if taken:
+            most = max(taken, key=lambda r: r._solver_stats["n_roundoff_steps"])
+            stitched._solver_stats = dict(stitched._solver_stats)
+            stitched._solver_stats["n_roundoff_steps"] = most._solver_stats["n_roundoff_steps"]
+            _warn_held_roundoff_steps([most], record=True)
         # Carry the #198 support map so an unsupported expression selector raises
         # the specific reason on the stitched result too.
         stitched._expression_sens_support = self._expression_sens_support()
@@ -9536,9 +9687,14 @@ class Simulator:
         except SensitivityUnsupportedError:
             # The solver's refusal of the model mid-run (issue #1279), typed as
             # one raised while the chunk sets up: no column runs alone either.
+            _note_roundoff_steps_raised(sim, ts)
             raise
         except RuntimeError as e:
+            _note_roundoff_steps_raised(sim, ts)
             raise SimulationError(f"Sensitivity chunk failed (params={sens_params}): {e}") from e
+        # Recorded with the chunk, which holds its warnings; the stitched
+        # result warns of them on the caller's thread (issue #1837).
+        _say_roundoff_steps(core_result)
 
         # Against the clone the chunk ran on: the stamp writes each rule target
         # back into the model it names (#1510), and this call never advances

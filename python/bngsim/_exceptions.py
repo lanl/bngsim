@@ -844,6 +844,39 @@ class AtolScaleWarning(UserWarning):
     """
 
 
+class RoundoffStepWarning(UserWarning):
+    """An ODE run took steps too small to move its clock (issue #1837).
+
+    Before each step CVODE checks whether ``t + h == t`` in double precision,
+    and where it is, it takes the step anyway: the state moves by ``h`` and the
+    clock does not, so the rows after it can be wrong with no solver error.
+    Far from ``t = 0`` the doubles are coarse, 0.125 apart at 1e15 and 2^-6
+    at 2^46: a decay whose rate reads ``time()``, run from 1e15, returned
+    ``A(+5) = 0.000587`` for ``exp(-5) = 0.00674``, and a switch 2.5 before
+    the end of a run from 0 over 2^46 came back with ``dX/dsigma`` at a third
+    of its value. CVODE says so on standard error ten times and then not again.
+
+    Emitted by every ODE run that took one (:meth:`Simulator.run`, and so
+    ``run_until``, ``run_batch``, ``parameter_scan`` and
+    ``compute_all_sensitivities``), naming how many, the first row recorded
+    after one, and the spacing of the doubles there. A run can take such steps
+    and be right at its rows: after a stop, an event or a fast transient CVODE
+    can take steps that short and be past them before the next row. The warning
+    cannot tell the two apart; :meth:`Result.check` runs the model again at a
+    tenth of the tolerance and says whether the answer moved. ``solver_stats["n_roundoff_steps"]``
+    holds the count, and :attr:`Result.notices` the warning, under the code
+    ``solver.roundoff_steps``; a run that fails keeps the notice on its error.
+    Tighter tolerances take smaller steps and make it worse. A model that reads
+    no clock is integrated on a clock counted from the run's start where a run
+    starts far out, and one that reads it is right only where the doubles are
+    fine enough. Filter or escalate it like any ``UserWarning``::
+
+        import warnings, bngsim
+        warnings.simplefilter("error", bngsim.RoundoffStepWarning)  # promote
+        warnings.simplefilter("ignore", bngsim.RoundoffStepWarning)  # silence
+    """
+
+
 class LiveStartWarning(UserWarning):
     """A run starts from an earlier run's end state with its clock set back (issue #1701).
 

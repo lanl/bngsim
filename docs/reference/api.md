@@ -370,6 +370,14 @@ Warnings (`UserWarning` subclasses; filter or escalate them with `warnings`):
   t_delta` at `t_delta = 0`). Names each parameter and the direction its column
   is for; `Result.one_sided_sensitivities` lists the same (GH #1822).
 
+- **`RoundoffStepWarning`** — an ODE run's solver took steps too small to move
+  its clock (`t + h == t` in double precision), which move the state and not
+  the time, so the rows after them can be wrong with no solver error. Names how
+  many, the first row after one and the spacing of the doubles there;
+  `solver_stats["n_roundoff_steps"]` holds the count. A run can take them and
+  be right: `Result.check()` says whether the answer moves at a tighter
+  tolerance (issue #1837).
+
 - **`RuleMonkeyWarning`** — `method="rm"` or a `RuleMonkeySession` loaded a model
   for which RuleMonkey reports a warning-level diagnostic: how it reads a rule
   or rate law, such as a rule whose products can never be what it writes, which

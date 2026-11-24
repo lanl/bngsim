@@ -46,6 +46,7 @@
 #include "bngsim/dynamic_library.hpp"
 #include "bngsim/mir_jit.hpp"
 #include "bngsim/sundials_guards.hpp"
+#include "cvodes_roundoff_steps.hpp" // CVODES' count of its t + h == t steps
 
 #include <algorithm>
 #include <array>
@@ -4161,6 +4162,10 @@ struct CvodeSimulator::Impl {
         // n_jac_evals counts the linear-solver setups, which can reuse one
         // (issue #1333).
         long int jac_formations = 0;
+        // The steps CVODE took where t + h == t (issue #1837): each moved the
+        // state by h and the clock not at all. CVODES' own count, which it
+        // warns of on standard error ten times and then not again.
+        long int roundoff_steps = 0;
 
         void operator+=(const SegmentCounters &o) {
             steps += o.steps;
@@ -4173,6 +4178,7 @@ struct CvodeSimulator::Impl {
             sens_err_test_fails += o.sens_err_test_fails;
             lin_rhs_evals += o.lin_rhs_evals;
             jac_formations += o.jac_formations;
+            roundoff_steps += o.roundoff_steps;
         }
     };
     SegmentCounters closed_segments;
@@ -4185,6 +4191,44 @@ struct CvodeSimulator::Impl {
     // succeeds, and cleared at the top of a run alongside `closed_segments`,
     // for the same reason: it describes this run alone.
     bool sens_active = false;
+
+    // Issue #1837: the first row of this run recorded after a step where
+    // t + h == t, -1 while there is none, and so the first row that can be
+    // wrong for it; and the spacing of the doubles on the integrator's clock
+    // between that row and the one before, the larger at either end, which
+    // such a step is under half of. Reset with `closed_segments`.
+    int roundoff_first_row = -1;
+    double roundoff_spacing = 0.0;
+    double roundoff_prev_clock = 0.0;
+    // Note row *row*, about to be recorded at *row_time* on the integrator's
+    // clock, as the first past such a step if the run has taken one by now.
+    void note_roundoff_row(void *cvode_mem, int row, double row_time) {
+        if (roundoff_first_row < 0 &&
+            closed_segments.roundoff_steps + cvodes_roundoff_steps(cvode_mem) > 0) {
+            const auto spacing = [](double t) {
+                const double a = std::fabs(t);
+                return std::nextafter(a, std::numeric_limits<double>::infinity()) - a;
+            };
+            roundoff_first_row = row;
+            roundoff_spacing = std::max(spacing(roundoff_prev_clock), spacing(row_time));
+        }
+        roundoff_prev_clock = row_time;
+    }
+    void reset_roundoff_rows(double t_start) {
+        roundoff_first_row = -1;
+        roundoff_spacing = 0.0;
+        roundoff_prev_clock = t_start;
+    }
+    // What the last run's steps where t + h == t were, for a run that raises,
+    // whose Result Python never sees. Set as its CVODE memory is let go.
+    long last_run_roundoff_steps = 0;
+    int last_run_roundoff_first_row = -1;
+    double last_run_roundoff_spacing = 0.0;
+    void keep_roundoff_steps(void *cvode_mem) {
+        last_run_roundoff_steps = closed_segments.roundoff_steps + cvodes_roundoff_steps(cvode_mem);
+        last_run_roundoff_first_row = roundoff_first_row;
+        last_run_roundoff_spacing = roundoff_spacing;
+    }
 
     // The counters CVODE has accumulated since its last (re-)initialization.
     SegmentCounters read_segment_counters(void *cvode_mem) const;
@@ -5863,6 +5907,13 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
     // (Nothing re-inits mid-run here — the warm path takes no events — so this
     // stays 0 through to record_solver_stats.)
     closed_segments = SegmentCounters{};
+    reset_roundoff_rows(times.t_start);
+    // Kept as the run lets its CVODE memory go, raised or returned (issue #1837).
+    struct KeepRoundoffSteps {
+        Impl &impl;
+        WarmCache &w;
+        ~KeepRoundoffSteps() { impl.keep_roundoff_steps(w.cvode_mem); }
+    } keep_roundoff_steps_on_exit{*this, w};
     jac_rhs_evals = 0;
     // This path never runs forward sensitivities (it is excluded from the warm
     // fast path in run()), so the counters read below must leave the two
@@ -6019,6 +6070,7 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
             }
         }
 
+        note_roundoff_row(w.cvode_mem, i, static_cast<double>(t_ret));
         result.record(i, static_cast<double>(t_ret), y_data, obs_buf.data());
         if (n_func > 0) {
             result.record_expressions(i, fvals);
@@ -6210,6 +6262,7 @@ void CvodeSimulator::Impl::create_cvode_core(const TimeSpec &times, const Solver
     // Fresh CVODE memory, so its own counters start at 0; the carried half of
     // the run's totals is an Impl member and has to be cleared (issue #182).
     closed_segments = SegmentCounters{};
+    reset_roundoff_rows(times.t_start);
     jac_rhs_evals = 0;
     blas_factor_base = 0; // a fresh solver: its count starts at 0
     // Fresh CVODE memory has no forward sensitivities on it either, whatever a
@@ -7422,6 +7475,7 @@ CvodeSimulator::Impl::read_segment_counters(void *cvode_mem) const {
     CVodeGetNumErrTestFails(cvode_mem, &c.err_test_fails);
     CVodeGetNumLinRhsEvals(cvode_mem, &c.lin_rhs_evals);
     CVodeGetNumJacEvals(cvode_mem, &c.jac_formations);
+    c.roundoff_steps = cvodes_roundoff_steps(cvode_mem);
     // The linear solver's counters restart at the first CVode call after a
     // (re-)init (cvLsInitialize, from cvInitialSetup), not at CVodeReInit, which
     // zeroes the rest. Until that call they still hold the segment before, which
@@ -7496,6 +7550,9 @@ void CvodeSimulator::Impl::record_solver_stats(void *cvode_mem, SUNLinearSolver 
     result.solver_stats().n_err_test_fails = static_cast<int>(total.err_test_fails);
     result.solver_stats().n_sens_nonlin_conv_fails = static_cast<int>(total.sens_conv_fails);
     result.solver_stats().n_sens_err_test_fails = static_cast<int>(total.sens_err_test_fails);
+    result.solver_stats().n_roundoff_steps = static_cast<int>(total.roundoff_steps);
+    result.solver_stats().roundoff_first_row = roundoff_first_row;
+    result.solver_stats().roundoff_spacing = roundoff_spacing;
     result.solver_stats().linear_solver = linear_solver_used;
     // GH #132: BLAS dgetrf factorization count for this run (0 unless LAPACK-dense
     // and the adaptive K gate was crossed). `ls` is the caller's linear solver —
@@ -17431,6 +17488,11 @@ void CvodeSimulator::set_tolerances(double rtol, const std::vector<double> &atol
 
 void CvodeSimulator::set_max_steps(int max_steps) { impl_->max_steps = max_steps; }
 
+std::tuple<long, int, double> CvodeSimulator::last_run_roundoff_steps() const {
+    return {impl_->last_run_roundoff_steps, impl_->last_run_roundoff_first_row,
+            impl_->last_run_roundoff_spacing};
+}
+
 // The message of a failed run moved onto its own clock (issue #1681), with a
 // note saying which time to add, where it names a time: a "t=" or "t = " before
 // a number. A message that names none (an unknown jacobian option) is the one
@@ -17472,6 +17534,10 @@ template <class Failure>
 
 Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     auto &model = impl_->model;
+    // A run that raises before it integrates took no step (issue #1837).
+    impl_->last_run_roundoff_steps = 0;
+    impl_->last_run_roundoff_first_row = -1;
+    impl_->last_run_roundoff_spacing = 0.0;
     const int ns = model.n_species();
     const int n_obs = model.n_observables();
 
@@ -17776,6 +17842,14 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // starts from too (issue #1025).
     const std::vector<double> y_start(y_data, y_data + ns);
     impl_->run_cvode_mem = cvode_mem;
+    // What the run's steps where t + h == t were, kept as it lets its CVODE
+    // memory go, raised or returned (issue #1837). Declared after cvode_mem, so
+    // destroyed before it.
+    struct KeepRoundoffSteps {
+        Impl &impl;
+        void *cvode_mem;
+        ~KeepRoundoffSteps() { impl.keep_roundoff_steps(cvode_mem); }
+    } keep_roundoff_steps_on_exit{*impl_, cvode_mem};
 
     // CVODE status flag, shared by the setup calls below and the stepping loop.
     int flag = CV_SUCCESS;
@@ -24222,6 +24296,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         // all came back labelled with the stop. (A run with sensitivity
         // columns keeps the time it stands at: its columns are read there,
         // and may hold a switch's jump the time asked for is still before.)
+        impl_->note_roundoff_row(cvode_mem, i, t_row);
         result.record(i, t_row, y_data, obs_buf.data());
 
         // Record function values

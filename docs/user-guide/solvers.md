@@ -87,6 +87,8 @@ integrator (events, rate-law switches).
   Jacobian. `n_jac_formations` counts the Jacobians the solver asked for.
 - `linear_solver` is `0` for the built-in dense LU, `1` for sparse KLU and `2`
   for the BLAS dense factor.
+- `n_roundoff_steps` counts the steps too small to move the clock; see
+  [Steps too small to move the clock](#steps-too-small-to-move-the-clock).
 
 ## The default tolerances, and models in small units
 
@@ -540,8 +542,9 @@ Exceptions:
 **A model that reads the clock** keeps it, far or not: a function of `time()`,
 a table function over time, a discontinuity trigger, or any event. Its steps are only as fine as the
 doubles there, with no error. A decay whose rate reads `time()` is 1.8e-3 off
-at `t = 1e12` and off by a factor of 11 at `1e15`. Run such a model from near 0,
-with the offset written into the model. SSA and PSA count their own clock from
+at `t = 1e12` and off by a factor of 11 at `1e15`. Both runs warn
+`RoundoffStepWarning` (below). Run such a model from near 0, with the offset
+written into the model. SSA and PSA count their own clock from
 a far start for every model.
 
 **A switch on a counter clock** (an `if()` on a species with `C' = 1`) is
@@ -549,10 +552,41 @@ placed from the counter, so a far start does not move it. Its stop still sits
 on the run's clock, so from `1e16` on a far run can differ slightly from the
 run from 0. Late switches in a very long run are taken where the clock is
 coarse, and their sensitivities can be badly wrong, or lost, with no error. A
+run whose steps there were too small to move the clock warns
+`RoundoffStepWarning`. A
 sensitivity run is refused with `SensitivityRefusedForParametersError` (a
 `SensitivityUnsupportedError`) if a counter crossing inside the run, which
 moves a requested column, rounds onto the start or past the run's end. A
 column the crossing does not move can still be run alone.
+
+### Steps too small to move the clock
+
+Before each step CVODE checks whether `t + h == t` in double precision. Where
+it is, it takes the step anyway: the state moves by `h` and the clock does not,
+so the rows after it can be wrong, with no solver error. An ODE run that takes
+such a step warns `bngsim.RoundoffStepWarning`, naming how many it took, the
+first row after one, and the spacing of the doubles there:
+
+```
+CVODE took 83 steps too small to move its clock (t + h == t in double
+precision), the first after t = 1000000000000000.0 and by t =
+1000000000000005.0, where the doubles are 0.125 apart, so that such a step is
+at most 0.0625. ...
+```
+
+`result.solver_stats["n_roundoff_steps"]` holds the count, and
+`result.notices` the warning, under the code `solver.roundoff_steps`. A run
+that fails keeps it on its error's `notices`.
+
+A run can take such steps and be right at its rows. After a stop, an event or a
+fast transient, CVODE can take steps that short and be past them before the
+next row: `A -> 0` at `k = 1e9` from `t = 1e6` takes dozens as A falls, in its
+first 1e-7, and with rows 0.1 apart every row is right, A being 0 by the first.
+With rows inside that 1e-7 they are not. The warning cannot tell the two apart.
+`result.check()` runs the model again at a tenth of the tolerance and says
+whether the answer moved, which it does for the decay from `1e15` and not for
+the decay at `k = 1e9` on rows 0.1 apart. Tighter tolerances take smaller steps
+and make it worse.
 
 ## When a solve fails on a rate law's domain
 
@@ -616,7 +650,10 @@ are such that t + h = t on the next step. The solver will continue anyway.
 ```
 
 Both `[ERROR]` and `[WARNING]` lines go to **standard error**. A warning can
-come from a run that is right; the one above is. Two SUNDIALS environment
+come from a run that is right; the one above is. The "t + h = t" lines, which
+SUNDIALS stops printing after ten, are counted and warned of as
+`RoundoffStepWarning` whether or not they are printed (see
+[Steps too small to move the clock](#steps-too-small-to-move-the-clock)). Two SUNDIALS environment
 variables redirect them, and BNGsim respects them when set:
 
 ```bash

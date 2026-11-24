@@ -145,13 +145,19 @@ def _one_sided_warnings_held() -> Iterator[None]:
     """Record one-sided entries on the results made in this thread, and warn of
     none of them: for runs made in worker threads, where no frame of the
     caller's is on the stack for a warning to name. Whoever holds them warns
-    once the results are back on the calling thread (issue #1822)."""
+    once the results are back on the calling thread (issue #1822). The steps
+    a run took where t + h == t are held the same way (issue #1837)."""
     was = getattr(_HELD, "on", False)
     _HELD.on = True
     try:
         yield
     finally:
         _HELD.on = was
+
+
+def _warnings_held() -> bool:
+    """Whether this thread is in :func:`_one_sided_warnings_held`."""
+    return bool(getattr(_HELD, "on", False))
 
 
 def _merge_one_sided(results: Iterable[Any]) -> list[tuple[float, dict[str, str]]]:
@@ -515,6 +521,10 @@ class Result:
                 # still report `n_err_test_fails == 0`. 0 with sensitivities off.
                 "n_sens_err_test_fails": stats.n_sens_err_test_fails,
                 "n_sens_nonlin_conv_fails": stats.n_sens_nonlin_conv_fails,
+                # Steps CVODE took where t + h == t, which moved the state and
+                # not the clock (issue #1837); a run that took one warns
+                # RoundoffStepWarning. 0 on every other backend.
+                "n_roundoff_steps": stats.n_roundoff_steps,
                 # Which direct linear solver the ODE engine actually used, as the
                 # ``LinearSolverKind`` enum (include/bngsim/result.hpp). Pinned
                 # mapping — DO NOT reinterpret as a SUNDIALS solver-id:
@@ -588,6 +598,7 @@ class Result:
                 "n_nonlin_conv_fails": 0,
                 "n_sens_err_test_fails": 0,
                 "n_sens_nonlin_conv_fails": 0,
+                "n_roundoff_steps": 0,
                 "linear_solver": 0,
                 "n_dense_blas_factorizations": 0,
                 "steady_state_reached": 0,
@@ -2675,11 +2686,14 @@ class Result:
         Keys: ``n_steps``, ``n_rhs_evals``, ``n_jac_evals``,
         ``n_jac_rhs_evals``, ``n_jac_formations``, ``n_err_test_fails``, ``n_nonlin_iters``,
         ``n_nonlin_conv_fails``, ``n_sens_err_test_fails``,
-        ``n_sens_nonlin_conv_fails``.
+        ``n_sens_nonlin_conv_fails``, ``n_roundoff_steps``.
 
         ``n_rhs_evals`` is CVODE's count of the integration's own evaluations.
         ``n_jac_rhs_evals`` counts those spent forming Jacobians by difference
         quotients (issue #1333); it is 0 where every Jacobian is closed-form.
+        ``n_roundoff_steps`` counts the steps CVODE took where ``t + h == t``,
+        which a run warns of as :class:`~bngsim.RoundoffStepWarning` (issue
+        #1837).
         ``n_jac_evals`` counts the linear solver's setups, which can reuse a
         Jacobian; ``n_jac_formations`` counts the Jacobians the solver asked
         for, one that a failed right-hand-side call cut short included.
