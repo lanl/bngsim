@@ -3410,8 +3410,10 @@ def _comp_submodel_documents(doc, path: str | None, base_path: str | None):
     ``CompFlatteningConverter`` adds for the conversion. The plugin keeps each
     document it reads, keyed by the URI it resolved, and the flattener's own
     lookups get those documents back, so the model is built from the documents
-    checked here, not from a second read of their files. A source that
-    resolves nowhere is skipped: the flattener refuses it.
+    checked here, not from a second read of their files. The one exception is a
+    last-resort file the plugin cannot be made to key as the flattener does
+    (see ``resolve``): that file is read here and the flattener reads it again.
+    A source that resolves nowhere is skipped: the flattener refuses it.
 
     *path* is the loaded file, or None for a string. *name* is a document's
     path for messages, *file* the file it was read from (None if a resolver
@@ -3425,6 +3427,7 @@ def _comp_submodel_documents(doc, path: str | None, base_path: str | None):
     if base_path is not None and base_path != ".":  # the converter's own test
         last_resort = libsbml.SBMLFileResolver()
         last_resort.addAdditionalDir(base_path)
+    held = []  # documents read here rather than by a plugin, and what theirs read
 
     def resolve(referrer, source: str):
         plugin = referrer.getPlugin("comp")
@@ -3434,19 +3437,27 @@ def _comp_submodel_documents(doc, path: str | None, base_path: str | None):
         # The converter adds its last resort to libSBML's process-wide registry
         # and takes it out within one call, which holds the GIL. Added from here,
         # between calls, another thread's load could find files through it. So
-        # the resolver is only asked where it finds *source*, and the plugin,
-        # which owns what it reads, reads that file: for an absolute *base_path*
-        # under the key the flattener's own lookup computes.
+        # the resolver is only asked which file it reads, *file* as written
+        # (relative to the working directory, and with any ``..`` left for the
+        # OS, which follows a link before it applies one), and under what key.
         uri = last_resort.resolveUri(source, referrer.getLocationURI())
         if uri is None:
             return None
-        file = uri.getPath()
+        file, key = uri.getPath(), uri.getUri()
         destroy = getattr(libsbml.SBMLUri, "__swig_destroy__", None)
         if destroy is not None and not uri.thisown:
             destroy(uri)  # the caller's to free; setting thisown breaks libsbml's SWIG types
-        if not os.path.isabs(file):
-            file = os.path.abspath(file)
-        return plugin.getSBMLDocumentFromURI(file)
+        # Asked for *file*, the plugin's own resolver ends by reading it under
+        # that key, which the flattener's lookup then finds. It tries *file*
+        # below the naming document's directory first, though, and if that
+        # exists it reads another file: then *file* is read here.
+        found = plugin.getSBMLDocumentFromURI(file)
+        if found is not None and found.getLocationURI() == key:
+            return found
+        found = libsbml.readSBMLFromFile(file)
+        found.setLocationURI(key)
+        held.append(found)
+        return found
 
     def file_of(found) -> str | None:
         # The plugin sets a document's location to the URI it resolved.
@@ -3497,7 +3508,7 @@ def _comp_submodel_documents(doc, path: str | None, base_path: str | None):
                     break
                 file = file_of(found)
                 found_where = place(file) if file else (found.getLocationURI(),) * 2
-                found_name = os.path.abspath(file) if file else found.getLocationURI()
+                found_name = os.path.realpath(file) if file else found.getLocationURI()
                 if found_where[1] not in read:
                     read.add(found_where[1])
                     via = f"the source of comp ExternalModelDefinition '{target.getId()}'"

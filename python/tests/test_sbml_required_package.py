@@ -23,6 +23,7 @@ import logging
 import os
 import sys
 import threading
+from pathlib import Path
 
 import bngsim
 import libsbml
@@ -626,23 +627,80 @@ def test_a_file_reached_two_ways_is_walked_from_each(tmp_path) -> None:
     assert str(tmp_path / "d2" / "inner.xml") in str(excinfo.value)
 
 
-@pytest.mark.parametrize("found", ["beside the file that names it", "by the last resort"])
+@symlinks_posix
+@pytest.mark.parametrize("load", ["relative", "absolute"])
+def test_a_source_through_a_linked_directory_is_the_file_the_os_opens(
+    tmp_path, monkeypatch, load
+) -> None:
+    """``cwd/lnk`` is a link to ``real/proj``, and ``top.xml`` there names
+    ``../shared/ext.xml``. The OS follows the link before it applies ``..``, so
+    the file is ``real/shared/ext.xml``; cancelling ``..`` against the path's
+    text gives ``cwd/shared/ext.xml``, which does not exist. Loaded as
+    ``lnk/top.xml`` the source is found only by the last resort, the loaded
+    file's directory, and the refusal names the file that was read."""
+    for d in ("real/proj", "real/shared", "cwd"):
+        (tmp_path / d).mkdir(parents=True)
+    (tmp_path / "real" / "shared" / "ext.xml").write_text(_leaf(0.7, "multi", _MULTI_URI))
+    (tmp_path / "real" / "proj" / "top.xml").write_text(_submodel_of("../shared/ext.xml"))
+    os.symlink(tmp_path / "real" / "proj", tmp_path / "cwd" / "lnk")
+    monkeypatch.chdir(tmp_path / "cwd")
+    top = "lnk/top.xml" if load == "relative" else str(tmp_path / "cwd" / "lnk" / "top.xml")
+    with pytest.raises(ModelError) as excinfo:
+        bngsim.Model.from_sbml(top)
+    assert os.path.realpath(tmp_path / "real" / "shared" / "ext.xml") in str(excinfo.value)
+
+
+@symlinks_posix
+def test_the_last_resort_s_file_is_read_even_where_the_plugin_finds_another(
+    tmp_path, monkeypatch
+) -> None:
+    """Asked for an absolute path, libSBML's file resolver first tries it below
+    the naming document's directory, joined with no separator: for
+    ``models/mid.xml`` naming ``ext.xml`` that only the last resort finds as
+    ``<root>/ext.xml``, the plugin would read ``models/<root>/ext.xml``. The
+    flattener reads ``<root>/ext.xml``, so that is the file checked."""
+    top = _found_by_the_last_resort(tmp_path, 0.7, "multi", _MULTI_URI)
+    decoy = tmp_path / "models" / str(tmp_path).lstrip("/") / "ext.xml"
+    decoy.parent.mkdir(parents=True)
+    decoy.write_text(_leaf(0.1))
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path / "elsewhere")
+    with pytest.raises(ModelError) as excinfo:
+        bngsim.Model.from_sbml(top)
+    assert str(tmp_path / "ext.xml") in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "found",
+    [
+        "beside the file that names it",
+        "by the last resort",
+        "by the last resort, from a relative path",
+    ],
+)
 def test_the_flattener_builds_from_the_documents_checked(tmp_path, monkeypatch, found) -> None:
     """The comp plugin keeps each document it reads, and the flattener's own
     lookups get those same documents back. So the model is made of what was
     checked: a file rewritten between the check and the flattening, here to
-    declare ``multi``, is not read again."""
+    declare ``multi``, is not read again. A relative load path is the case
+    where the walk's lookup and the flattener's could key the same file
+    differently."""
     (tmp_path / "elsewhere").mkdir()
     monkeypatch.chdir(tmp_path / "elsewhere")
+    ext = tmp_path / "ext.xml"
     if found == "beside the file that names it":
-        (tmp_path / "ext.xml").write_text(_leaf(0.1))
+        ext.write_text(_leaf(0.1))
         top, k = tmp_path / "top.xml", "sub__k"
         top.write_text(_submodel_of("ext.xml"))
-    else:
+    elif found == "by the last resort":
         top, k = _found_by_the_last_resort(tmp_path, 0.1), "sub__sub__k"
+    else:
+        _found_by_the_last_resort(tmp_path / "proj", 0.1)
+        monkeypatch.chdir(tmp_path)
+        ext, top, k = tmp_path / "proj" / "ext.xml", Path("proj", "top.xml"), "sub__sub__k"
     doc = libsbml.readSBMLFromFile(str(top))
     _check_submodel_required_packages(doc, top, str(top.parent))
-    (tmp_path / "ext.xml").write_text(_leaf(0.9, "multi", _MULTI_URI))
+    ext.write_text(_leaf(0.9, "multi", _MULTI_URI))
     _flatten_comp(doc, base_path=str(top.parent))
     assert doc.getModel().getParameter(k).getValue() == 0.1
 
