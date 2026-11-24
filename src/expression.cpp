@@ -170,6 +170,14 @@ namespace bngsim {
 // (mratio(-20, -23.34, -10.87) returned 5.935 where the ratio is -2.073). BNG
 // builds b = |AT-BT| + 1, so no model it writes has b <= 0.
 //
+// Nor where b and alpha*|z| are both subnormal, below 2.2e-308 (issue #1793),
+// with alpha = a for a positive z and b - a for a negative one, as in
+// mratio_series. That is where the series is not tried either (see there), and
+// the fraction is no better: it was more than 1e-8 off at 208 of 847 such
+// triples with |z| <= 20 and a normal ratio, and right at the rest, with
+// nothing to tell them apart. z = 0 is left to the fraction, which returns the
+// ratio there, 1, to rounding.
+//
 // Everything else is refused, unless the asymptotic route below can vouch for
 // an answer of its own. That still gives up cases the fraction would have got
 // right, since it is right most of the time in the uncertain region, but there
@@ -198,6 +206,14 @@ static bool mratio_cf_is_trustworthy(double a, double b, double z) {
     }
     if (a < b && b < 1.0 && z < -20.0 && b - a < 1.0) {
         return false;
+    }
+    if (z != 0.0 && b < 2.2250738585072014e-308) {
+        const double alpha = z > 0.0 ? a : b - a;
+        const double x = z > 0.0 ? z : -z;
+        if (alpha != 0.0 && alpha * x > -2.2250738585072014e-308 &&
+            alpha * x < 2.2250738585072014e-308) {
+            return false;
+        }
     }
     if (a <= 0.0 && z <= 0.0) {
         return true;
@@ -733,27 +749,46 @@ static double mratio_a_zero_series(double b, double z) {
 // after it subnormal too, each rounded to a multiple of 4.9e-324, and every
 // later term is built from them: with b - a one ulp,
 // mratio(9.9999999999995e-311, 1e-310, -20.5) came out 9.6e-7 off, and at
-// b = 1e-315 2e-2 off. For a <= 0 that takes a subnormal b, where 993 of 3000
-// triples were off by more than 1e-8 (worst 7.5e-3). Those are refused now, by
-// the rule and then the asymptotic route, which cannot vouch for a b - a that
-// small either. The bounds above become e^x for the numerator and
-// b + alpha*x*e^x for the denominator, under the largest double for x <= 700.
-// Past that the asymptotic route answers. There the branch it drops is about
-// x*e^(-x)/(b - a) of the one it keeps, so it vouches for every b - a above
-// about 1e-290; below that, out to z = -775 at most, the call is refused, where
-// the fraction returned its Lentz floor. So is an a of either
-// sign so small, below about 1e-300, that a*(a-b+1)/(-z) underflows to zero:
-// that is the second term of the denominator's expansion, and the zero-term
-// rule reads it as a series that never decayed. Against mpmath, none of 60000
-// triples with b in [1e-12, 10], |a| in [1e-15, 10] and z in [-2000, 0] is off
-// by more than 1e-8 (worst 4.2e-14; the fraction was off by more than 1e-8 in
-// 2605 of 20000, by up to 1.2e-2), and none of 6000 with b down to 1e-300 and z
-// out to -1e9 (worst 1.2e-14). For a between 0 and b (issue #1793), none of
-// 60000 with b in [1e-15, 1), a from 1e-300 up to b and z in [-1e7, -20] is off
-// or refused (worst 2.7e-14), where before 11857 were off by more than 1e-8 and
-// 3291 refused. It is slower than the fraction was: about 7 us at z = -700 for
-// the series and just past it for the asymptotic route, against 2 us, and the
-// same 6 us by z = -5000.
+// b = 1e-315 2e-2 off. With a <= 0, b - a is at least b, so this takes b and
+// |a| both subnormal, where 993 of 3000 triples were off by more than 1e-8
+// (worst 7.5e-3). Those are refused now, by the rule and then the asymptotic
+// route, which cannot vouch for a b - a that small either. The bounds above
+// become e^x for the numerator and b + alpha*x*e^x for the denominator, under
+// the largest double for x <= 700. Past that the asymptotic route answers.
+// There the branch it drops is about x*e^(-x)/(b - a) of the one it keeps, so
+// it vouches for every b - a above about 1e-290; below that, out to z = -775 at
+// most, the call is refused, where the fraction returned its Lentz floor. So is
+// an a of either sign small enough that a*(a-b+1)/(-z) falls below 2.5e-324,
+// half the smallest subnormal, and rounds to zero: that is the second term of
+// the denominator's expansion, and the zero-term rule reads it as a series that
+// never decayed. That takes |a| below about 2.5e-324*|z|/(1 - b), a subnormal a
+// for any b not within 1e-8 of 1 out to |z| = 1e7: at b = 0.5, 3.5e-321 at
+// z = -701 and 5e-317 at z = -1e7. Against mpmath, none of 60000 triples with b
+// in [1e-12, 10], |a| in [1e-15, 10] and z in [-2000, 0] is off by more than
+// 1e-8 (worst 4.2e-14; the fraction was off by more than 1e-8 in 2605 of 20000,
+// by up to 1.2e-2), and none of 6000 with b down to 1e-300 and z out to -1e9
+// (worst 1.2e-14). For a between 0 and b (issue #1793), none of 60000 with b in
+// [1e-15, 1), a from 1e-300 up to b and z in [-1e7, -20] is off or refused
+// (worst 2.7e-14), where before 11857 were off by more than 1e-8 and 3291
+// refused. It is slower than the fraction was: about 7 us at z = -700 for the
+// series and just past it for the asymptotic route, against 2 us, and the same
+// 6 us by z = -5000.
+//
+// Inside the box a subnormal b goes wrong in two ways (issue #1793), for both
+// signs of z. With alpha*x subnormal as well, the denominator is summed out of
+// b and alpha*x, each a few multiples of 4.9e-324:
+// mratio(9.99999994e-316, 1e-315, -20) came out 1.7e-4 off and
+// mratio(5e-324, 1e-322, 10) 3.1e-3 off, where at z = -20.5 the floor above
+// already refused. Those are left to the rule, which refuses them too. With
+// alpha*x normal the sums are fine, but b * sn rounds on the subnormal grid, so
+// b is taken times 2^54 for that product, which is exact, and the quotient is
+// scaled back. Against mpmath, over 15000 triples with b below 1e-290, |a| from
+// 5e-324 up to 1e-3, either sign of z and |z| from 1e-14 to 1000, no answer
+// with a normal ratio is off by more than 1e-8 (worst 9.4e-11) and none with a
+// subnormal one by more than two ulps. Before, 2001 were more than 1e-8 off, by
+// up to 0.61. The price is 3422 that were right and are refused with them, most
+// at a small |z|, where the fraction is wrong at a quarter of these and nothing
+// tells which.
 //
 // The sum stops once a term is below 1e-17 of its series' absolute sum and the
 // ratio of successive terms is at most 1/2 for good. Each ratio is below
@@ -772,6 +807,10 @@ static bool mratio_series(double a, double b, double z, double *out) {
     const double alpha = z > 0.0 ? a : b - a;
     const double shift = z > 0.0 ? 1.0 : 0.0;
     if (!(alpha > -1.0 && alpha < 1.0)) {
+        return false;
+    }
+    if (b < 2.2250738585072014e-308 && alpha != 0.0 && alpha * x > -2.2250738585072014e-308 &&
+        alpha * x < 2.2250738585072014e-308) {
         return false;
     }
     if (!(x <= 20.0) && !(z < 0.0 && b - a >= 2.2250738585072014e-308 && b < 1.0 && x <= 700.0)) {
@@ -797,7 +836,20 @@ static bool mratio_series(double a, double b, double z, double *out) {
         if (k + 1.0 >= 4.0 * x && std::abs(tn) <= 1.0e-17 * an && std::abs(td) <= 1.0e-17 * ad) {
             // b * sn would overflow for a b near the largest double, and sd / b
             // for a tiny one, so the division is ordered by which side of 1 b is.
-            const double value = b < 1.0 ? b * sn / sd : sn / (sd / b);
+            // A subnormal b is taken times 2^54 first, which is exact, since
+            // otherwise b * sn rounds on the subnormal grid: at
+            // mratio(-6.29e-162, 5e-324, 0.52) it went from 8.4e-324 to 1e-323
+            // and the ratio came out 19% off. An overflow of that keeps the
+            // plain order.
+            double value;
+            if (b < 2.2250738585072014e-308) {
+                value = (b * 18014398509481984.0) * sn / sd;
+                value = value <= 1.7976931348623157e308 && value >= -1.7976931348623157e308
+                            ? value / 18014398509481984.0
+                            : b * sn / sd;
+            } else {
+                value = b < 1.0 ? b * sn / sd : sn / (sd / b);
+            }
             if (!(value == value)) { // NaN
                 return false;
             }

@@ -365,6 +365,50 @@ def test_past_z_minus_20_a_subnormal_b_minus_a_is_refused_on_both_engines(
 
 @pytest.mark.parametrize("codegen", [False, True], ids=["interpreted", "compiled"])
 @pytest.mark.parametrize(
+    "a, b, z",
+    [(9.99999994e-316, 1e-315, -20.0), (5e-324, 1e-322, 10.0)],
+    ids=["z < 0", "z > 0"],
+)
+def test_inside_the_box_a_subnormal_b_beside_a_subnormal_alpha_x_is_refused_on_both_engines(
+    tmp_path, codegen, a, b, z
+):
+    """The series summed these 1.7e-4 and 3.1e-3 off. Both copies of the gate
+    and of the trust rule turn them away, so both engines refuse."""
+    p = tmp_path / "m1793b.net"
+    p.write_text(CONSTANT_RATE_NET.format(a=a, b=b, z=z, scale=1.0))
+    with contextlib.redirect_stderr(io.StringIO()):
+        model = bngsim.Model.from_net(str(p))
+        sim = bngsim.Simulator(model, method="ode", codegen=codegen)
+        with pytest.raises(
+            bngsim.SimulationError, match=r"not reliable.*The fraction is reliable for b > 0"
+        ):
+            sim.run(t_span=(0.0, 1.0), n_points=3)
+    assert sim.codegen_backend in (("cc", "mir") if codegen else ("exprtk",))
+
+
+@pytest.mark.parametrize("codegen", [False, True], ids=["interpreted", "compiled"])
+def test_a_subnormal_b_no_longer_rounds_away_the_ratio_on_both_engines(tmp_path, codegen):
+    """mratio(-6.29e-162, 5e-324, 0.52): b * sn was a subnormal product, and its
+    rounding put the ratio 19% off in both engines. Both now take b times 2^54
+    for it. The ratio is mpmath's, summed directly at 60 and 100 digits."""
+    a, b, z, true_value = (
+        -6.291571905510377e-162,
+        5e-324,
+        0.5206014607652593,
+        -1.9349686515542184e-162,
+    )
+    p = tmp_path / "m1793c.net"
+    p.write_text(CONSTANT_RATE_NET.format(a=a, b=b, z=z, scale=1.0 / true_value))
+    with contextlib.redirect_stderr(io.StringIO()):
+        model = bngsim.Model.from_net(str(p))
+        sim = bngsim.Simulator(model, method="ode", codegen=codegen)
+        result = sim.run(t_span=(0.0, 1.0), n_points=3)
+    assert sim.codegen_backend in (("cc", "mir") if codegen else ("exprtk",))
+    assert float(result.species[-1][0]) == pytest.approx(1.0, rel=1e-11, abs=0.0)
+
+
+@pytest.mark.parametrize("codegen", [False, True], ids=["interpreted", "compiled"])
+@pytest.mark.parametrize(
     "a, b, z, true_value",
     [
         # mpmath at 80 digits and more. The fraction returned 1e-32 at the

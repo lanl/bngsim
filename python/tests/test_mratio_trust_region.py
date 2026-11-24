@@ -560,7 +560,9 @@ def test_past_z_minus_700_an_a_too_small_for_the_expansion_is_refused_either_sid
     Past z = -700 the corner has only the asymptotic route, and in its
     denominator the second term, a*(a-b+1)/(-z), underflows to zero, which its
     zero-term rule reads as a series that never decayed. So it refuses, as it
-    already did for the same a below zero. That takes an a below about 1e-300.
+    already did for the same a below zero. That takes a*(a-b+1)/(-z) below
+    2.5e-324, so |a| below about 2.5e-324*|z|/(1 - b): here 3.5e-321, and a
+    subnormal a for any b not within 1e-8 of 1 out to |z| = 1e7.
     Short of -700 the series answers both."""
     for a in (5e-324, -5e-324):
         with pytest.raises(Exception, match=r"not reliable.*The fraction is reliable for b > 0"):
@@ -593,6 +595,112 @@ def test_past_z_minus_20_a_subnormal_b_minus_a_is_refused(tmp_path, a, b, z):
     assert 0.0 < b - a < 2.2250738585072014e-308
     with pytest.raises(Exception, match=r"not reliable.*The fraction is reliable for b > 0"):
         _value(tmp_path, a, b, z)
+
+
+# ── Issue #1793: a subnormal b inside |z| <= 20 ─────────────────────────────
+
+# a, b, z, with b subnormal and alpha*|z| too (alpha = a for z > 0, b - a for
+# z < 0). The series summed its denominator out of b and alpha*x, each a few
+# multiples of 4.9e-324, and every one of these came out wrong, on main as well:
+# 1.7e-4, 1.5e-4, 1.3e-4, 7.6e-4, 2.1e-2, 3.1e-3 and 3.9e-7 off (mpmath, summed
+# directly at 60 digits). The first is the corner's own row past z = -20 above,
+# brought to z = -20, which the floor there did not reach.
+SUBNORMAL_B_IN_THE_BOX = [
+    (9.99999994e-316, 1e-315, -20.0),
+    (-5e-324, 1e-322, -19.0),
+    (5e-324, 1e-322, -19.0),
+    (1e-323, 3e-323, -10.0),
+    (-2.5e-323, 5e-324, -4.027930015045433),
+    (5e-324, 1e-322, 10.0),
+    (2.3e-308, 1e-322, 1e-10),  # alpha normal, alpha*x not
+]
+
+
+@pytest.mark.parametrize("a, b, z", SUBNORMAL_B_IN_THE_BOX)
+def test_inside_the_box_a_subnormal_b_beside_a_subnormal_alpha_x_is_refused(tmp_path, a, b, z):
+    """Neither method is trusted where b and alpha*|z| are both subnormal: the
+    series is not tried, and the fraction, which was more than 1e-8 off at a
+    quarter of such triples with nothing to tell which, is refused too."""
+    assert b < 2.2250738585072014e-308
+    with pytest.raises(Exception, match=r"not reliable.*The fraction is reliable for b > 0"):
+        _value(tmp_path, a, b, z)
+
+
+@pytest.mark.parametrize(
+    "a, b, z, old, true_value",
+    [
+        # mpmath summed directly at 60 and 100 digits, which agree.
+        (
+            -6.291571905510377e-162,
+            5e-324,
+            0.5206014607652593,
+            -2.299373846912294e-162,
+            -1.9349686515542184e-162,
+        ),
+        (
+            9.472470316353253e-122,
+            1e-323,
+            0.12873501579820726,
+            7.592772784664567e-202,
+            8.635933922870071e-202,
+        ),
+    ],
+)
+def test_inside_the_box_a_subnormal_b_no_longer_rounds_away_the_ratio(
+    tmp_path, a, b, z, old, true_value
+):
+    """With alpha*x normal the sums are right, but b * sn is a subnormal product
+    and rounds on that grid: 8.4e-324 went to 1e-323 at the first row, 19% of the
+    ratio. b is taken times 2^54 for the product, which is exact, and the
+    quotient scaled back."""
+    assert abs(old - true_value) / abs(true_value) > 0.1
+    assert _value(tmp_path, a, b, z) == pytest.approx(true_value, rel=1e-13, abs=0.0)
+
+
+def _summed_ratio(mpmath, a, b, z):
+    """mratio by both Kummer series summed directly, terms all of one sign after
+    the first: mpmath's hyp1f1 itself goes wrong at a tiny b beside a large
+    alpha/b, which is exactly what this sweeps."""
+    with mpmath.workdps(80):
+        a, b, z = mpmath.mpf(a), mpmath.mpf(b), mpmath.mpf(z)
+        if z == 0:
+            return 1.0
+        p, x, shift = (a, z, 1) if z > 0 else (b - a, -z, 0)
+
+        def m(q, c):
+            t = s = mpmath.mpf(1)
+            k = 0
+            while True:
+                t = t * (q + k) / (c + k) * x / (k + 1)
+                s += t
+                k += 1
+                if t == 0 or (k > 2 * x + 20 and abs(t) < abs(s) * mpmath.mpf(10) ** -70):
+                    return s
+
+        return float(m(p + shift, b + 1) / m(p, b))
+
+
+@pytest.mark.parametrize("b", [5e-324, 1e-322, 1e-318, 2e-308, 1e-300])
+def test_every_answer_near_the_subnormals_is_right_or_refused(tmp_path, b):
+    """A sweep of a, both signs of z and |z| on both sides of 20, beside a b
+    that is subnormal or close to it. Every answer is right to 1e-8, or to two
+    ulps where the ratio is itself subnormal, or else the call is refused. On
+    main 209 of the 740 answers among these 825 calls were wrong, some by the
+    whole of the ratio."""
+    mpmath = pytest.importorskip("mpmath")
+    tiny = (5e-324, 1e-322, 1e-318, 3e-308, 1e-300, 1e-160, 1e-3)
+    wrong = []
+    for a in (0.0, *tiny, *(-t for t in tiny)):
+        for z in (-25.0, -20.0, -19.0, -4.03, -0.5, -1e-6, 1e-6, 0.5, 10.0, 19.5, 25.0):
+            try:
+                got = _value(tmp_path, a, b, z)
+            except Exception as excinfo:
+                assert "not reliable" in str(excinfo)
+                continue
+            want = _summed_ratio(mpmath, a, b, z)
+            if not abs(got - want) <= max(1e-8 * abs(want), 1e-323):
+                wrong.append((a, b, z, got, want))
+    assert not wrong
 
 
 # ── Issue #1080: a b below about 1e-22, wherever the fraction is trusted ─────

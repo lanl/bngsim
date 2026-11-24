@@ -346,9 +346,10 @@ _compile_counter = itertools.count()
 # the corner past z = -20 as 0 < b - a < 1 with b < 1 rather than a <= 0 with
 # b - a < 1, so a tiny positive a below a b under 1 no longer reaches the
 # fraction there, which was 5.7% off at mratio(1e-30, 2e-12, -3e4). The series
-# takes it only for a b - a no smaller than the smallest normal double. The
-# source digest already moves; the bump is for an install whose digest is
-# empty. Invalidate v44.
+# takes it only for a b - a no smaller than the smallest normal double; neither
+# method runs where b and alpha*|z| are both subnormal, and a subnormal b is
+# scaled for the series' final product. The source digest already moves; the
+# bump is for an install whose digest is empty. Invalidate v44.
 _CODEGEN_VERSION = "45"
 
 
@@ -748,7 +749,10 @@ _SPECIAL_FUNCTION_C_LINES = (
     "   b*b test does not reach: they carry z*(a-b-k), so for a large b they are",
     "   about z/b however small z*a is. Where that turns is sharp and it is at",
     "   z = b (clean through z/b = 1.02, 12 of 47 wrong at 1.05), so half of b",
-    "   leaves a factor of two -- issue #456. Anything else is refused unless the",
+    "   leaves a factor of two -- issue #456. None of it where b and alpha*|z|",
+    "   are both subnormal (alpha = a for z > 0, b - a for z < 0), z = 0 aside:",
+    "   the series is not tried there and the fraction was wrong at a quarter of",
+    "   them (issue #1793). Anything else is refused unless the",
     "   asymptotic route below can vouch for an answer. Kept",
     "   identical to mratio_cf_is_trustworthy in src/expression.cpp. */",
     "static int bngsim_mratio_trusted(double a, double b, double z) {",
@@ -760,6 +764,14 @@ _SPECIAL_FUNCTION_C_LINES = (
     "    }",
     "    if (a < b && b < 1.0 && z < -20.0 && b - a < 1.0) {",
     "        return 0;",
+    "    }",
+    "    if (z != 0.0 && b < 2.2250738585072014e-308) {",
+    "        const double alpha = z > 0.0 ? a : b - a;",
+    "        const double x = z > 0.0 ? z : -z;",
+    "        if (alpha != 0.0 && alpha * x > -2.2250738585072014e-308 &&",
+    "            alpha * x < 2.2250738585072014e-308) {",
+    "            return 0;",
+    "        }",
     "    }",
     "    if (a <= 0.0 && z <= 0.0) {",
     "        return 1;",
@@ -944,7 +956,10 @@ _SPECIAL_FUNCTION_C_LINES = (
     "   (issues #1080 and #1793): there a < b, so every term of both series is",
     "   positive, and none overflows. b - a is held to a normal double as well:",
     "   a subnormal one rounds alpha*x and the terms just after it, which every",
-    "   later term is built from, and was 2e-2 off at b = 1e-315. Kept",
+    "   later term is built from, and was 2e-2 off at b = 1e-315. Inside the box",
+    "   the same goes for alpha*x subnormal beside a subnormal b, which is not",
+    "   summed either, and with alpha*x normal a subnormal b is scaled for the",
+    "   final product (issue #1793). Kept",
     "   identical to mratio_series in src/expression.cpp,",
     "   which carries the full note and the measurements; the NaN test is a",
     "   comparison for the reason at bngsim_mratio_is_finite. */",
@@ -966,6 +981,11 @@ _SPECIAL_FUNCTION_C_LINES = (
     "    if (!(alpha > -1.0 && alpha < 1.0)) {",
     "        return 0;",
     "    }",
+    "    if (b < 2.2250738585072014e-308 && alpha != 0.0 && "
+    "alpha * x > -2.2250738585072014e-308 &&",
+    "        alpha * x < 2.2250738585072014e-308) {",
+    "        return 0;",
+    "    }",
     "    if (!(x <= 20.0) && "
     "!(z < 0.0 && b - a >= 2.2250738585072014e-308 && b < 1.0 && x <= 700.0)) {",
     "        return 0;",
@@ -983,8 +1003,17 @@ _SPECIAL_FUNCTION_C_LINES = (
     "        ad += fabs(td);",
     "        if (k + 1.0 >= 4.0 * x && fabs(tn) <= 1.0e-17 * an && fabs(td) <= 1.0e-17 * ad) {",
     "            /* b * sn overflows for a b near the largest double, sd / b for a",
-    "               tiny one. */",
-    "            value = b < 1.0 ? b * sn / sd : sn / (sd / b);",
+    "               tiny one. A subnormal b is taken times 2^54 first, which is",
+    "               exact, or b * sn rounds on the subnormal grid; an overflow of",
+    "               that keeps the plain order. */",
+    "            if (b < 2.2250738585072014e-308) {",
+    "                value = (b * 18014398509481984.0) * sn / sd;",
+    "                value = value <= 1.7976931348623157e308 && value >= -1.7976931348623157e308",
+    "                            ? value / 18014398509481984.0",
+    "                            : b * sn / sd;",
+    "            } else {",
+    "                value = b < 1.0 ? b * sn / sd : sn / (sd / b);",
+    "            }",
     "            if (!(value == value)) { /* NaN */",
     "                return 0;",
     "            }",
