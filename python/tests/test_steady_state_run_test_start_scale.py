@@ -110,7 +110,8 @@ def _model(tmp_path: Path, name: str) -> bngsim.Model:
 
 
 def _solve(tmp_path, name, method, atol=ATOL, state=None):
-    """The solve, and the state it started from."""
+    """The solve, and the state it started from. ``atol="vector"`` is the
+    issue's atol as one entry per species, the per-species path."""
     model = _model(tmp_path, name)
     if state is not None:
         model.set_state(np.asarray(state, dtype=float))
@@ -118,6 +119,8 @@ def _solve(tmp_path, name, method, atol=ATOL, state=None):
     sink = np.asarray(model.is_pure_sink(), dtype=bool)
     assert sink.tolist() == [n == "A()" for n in model.species_names]
     sim = bngsim.Simulator(model, method="ode")
+    if isinstance(atol, str):
+        atol = [ATOL] * len(model.species_names)
     kw = {} if atol is None else {"atol": atol}
     ss = sim.steady_state(method=method, rtol=RTOL, max_time=HORIZON, mask=~sink, **kw)
     return ss, start
@@ -161,16 +164,18 @@ def _run_rests_at(tmp_path, name, start, x) -> bool:
     return bool((np.abs(end - x) <= _tolerance(start, x))[keep].all())
 
 
+@pytest.mark.parametrize("atol", [ATOL, "vector"], ids=["scalar", "vector"])
 @pytest.mark.parametrize("method", ["integration", "newton"])
 @pytest.mark.parametrize("name", sorted(MODELS))
-def test_converged_is_the_closed_form_steady_state(tmp_path, name, method):
+def test_converged_is_the_closed_form_steady_state(tmp_path, name, method, atol):
     """At the issue's atol the march resolves nothing, and where it stops is
     its error. Wherever that is off the steady state, the solve must not say
     converged, and a run from it must not rest there. Main returned
     converged=True on a spurious root for apap by integration (S at -1.46e-14
     for 1.325e-14, the issue's state) and for spa by Newton (S at -1.54e-14);
-    a run of the time course from either fails on the RHS."""
-    ss, start = _solve(tmp_path, name, method)
+    a run of the time course from either fails on the RHS. The same with the
+    atol given per species."""
+    ss, start = _solve(tmp_path, name, method, atol=atol)
     x = np.asarray(ss.concentrations, dtype=float)
     if _off_the_root(name, ss, start):
         assert not ss.converged, (x, ss.continued_run_distance)
