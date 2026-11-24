@@ -172,14 +172,18 @@ def _assert_runs_as_the_model(
     """The schedule, replayed, gives A and B (named ``prefix`` + id) as
     bngsim's run of ``xml`` gives them, at every sample but the fire times
     (where a sample is read before or after the dose as the run lands). For
-    several seeds, as the run draws among events of equal priority with one."""
+    several seeds, grids and tolerances."""
     schedule = _schedule(report)
     fire_times = {ft for ft, _, _ in schedule}
-    for seed in range(6):
+    # The grid and the tolerance move the run's stops and steps; the seed, its
+    # draws among equal priorities.
+    for seed, (n_points, rtol) in enumerate(
+        [(25, 1e-10), (7, 1e-10), (101, 1e-9), (2, 1e-10), (31, 1e-8), (13, 1e-10)]
+    ):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             res = bngsim.Simulator(bngsim.Model.from_sbml_string(xml), method="ode").run(
-                t_span=t_span, n_points=25, rtol=1e-10, atol=1e-12, seed=seed
+                t_span=t_span, n_points=n_points, rtol=rtol, atol=rtol * 1e-2, seed=seed
             )
         times = np.asarray(res.time)
         columns = np.asarray(res.species)
@@ -468,6 +472,12 @@ def test_a_name_folds_to_the_value_the_run_gives_it(tmp_path, events, body, want
             id="a value that is 0 to a negative power",
         ),
         pytest.param(
+            [_event("E1", _at(_cn(1)), {"A": _cn(5)}, delay=_ci("d"))],
+            {"parameters": _param("d", 1), "extra": _initial(d=_cn(-0.5))},
+            "'E1' has a delay of -0.5, which the run refuses",
+            id="a delay an initialAssignment makes negative",
+        ),
+        pytest.param(
             [_event("E1", _at(_cn(1)), {"A": _ci("D")})],
             {
                 "compartment": _C_AND_D.format(constant="false"),
@@ -725,6 +735,14 @@ def test_a_trigger_true_at_the_start_fires_only_where_initial_value_is_false(
         ),
         pytest.param(
             [
+                _a("E1", _at(_cn(0.7)), 5, delay=_cn(0.5), priority=_cn(2)),
+                _a("E2", _at(_cn(1.2)), 10, priority=_cn(1)),
+            ],
+            [5.0, 10.0],
+            id="a delayed execution due on an instant, with no stop near its trigger",
+        ),
+        pytest.param(
+            [
                 _a("E1", _at(_cn(1)), 5, priority=_ci("B")),
                 _a("E2", _at(_cn(2)), 10, priority=_cn(1)),
             ],
@@ -842,7 +860,7 @@ def test_equal_priorities_that_set_different_species_are_carried(tmp_path):
                 _event("E2", _at(_cn(0.1)), {"B": _cn(5)}, delay=_cn(0.8)),
             ],
             "events 'E1' and 'E2' set 'B' to different values at t = 0.8999999999999999 and "
-            "t = 0.9, and 'E1', a strict trigger, executes a little past its time",
+            "t = 0.9, which the run can execute as one instant or apart, in either order",
             id="a strict trigger's delayed execution a double before another",
         ),
         pytest.param(
@@ -850,7 +868,8 @@ def test_equal_priorities_that_set_different_species_are_carried(tmp_path):
                 _a("E1", _gt(_cn(0.3)), 10, priority=_cn(-1)),
                 _a("E2", _at(_cn(0.1)), 5, delay=_cn(0.2), priority=_cn(0)),
             ],
-            "'E1', a strict trigger, executes a little past its time",
+            "events 'E1' and 'E2' set 'A' to different values at t = 0.3 and "
+            "t = 0.30000000000000004, which the run can execute as one instant or apart",
             id="an execution due a double past a strict trigger's time, of higher priority",
         ),
         pytest.param(
@@ -858,7 +877,8 @@ def test_equal_priorities_that_set_different_species_are_carried(tmp_path):
                 _a("E1", _gt(_cn(0.3)), 10, priority=_cn(1)),
                 _a("E2", _at(_cn(0.1)), 5, delay=_cn(0.2), priority=_cn(1)),
             ],
-            "'E1', a strict trigger, executes a little past its time",
+            "events 'E1' and 'E2' set 'A' to different values at t = 0.3 and "
+            "t = 0.30000000000000004, which the run can execute as one instant or apart",
             id="an execution due a double past a strict trigger's time, of its priority",
         ),
     ],
@@ -881,3 +901,69 @@ def test_events_whose_order_is_not_known_ahead_are_refused(tmp_path, events, not
                 )
             after.add(round(float(np.asarray(res.species)[3, res.species_names.index("A")]), 6))
         assert len(after) > 1, after
+
+
+# ─── executions the run can take as one instant or apart ───────────────────
+# The run merges two stops on literal time closer than (64 + 4)·ε·max(|a|, |b|)
+# into the later one, reads a strict trigger a little past its threshold, and
+# counts a delay from where it read the trigger. So executions due within that
+# reach of each other, or whose trigger has a stop that close after it, run as
+# one instant by priority or apart in time, as the rounding and the run's other
+# stops fall: the grid and the seed can decide.
+
+_SEVEN_TENTHS = {"parameters": _param("T3", 0), "extra": _initial(T3=_times(_cn(7), _cn(0.1)))}
+
+
+@pytest.mark.parametrize(
+    ("events", "body", "note"),
+    [
+        pytest.param(
+            [
+                _a("E1", _at(_cn(0.7)), 5, delay=_cn(0.5), priority=_cn(2)),
+                _a("E2", _at(_cn(1.2)), 10, priority=_cn(1)),
+                _event("E3", _at(_ci("T3")), {"B": _cn(7)}),
+            ],
+            _SEVEN_TENTHS,
+            "events 'E1' and 'E2' set 'A' to different values at t = 1.2, which the run",
+            id="a delay counted from a trigger read on a stop a double after it",
+        ),
+        pytest.param(
+            [
+                _a("S", _gt(_cn(0.7)), 10, priority=_cn(2)),
+                _a("N", _at(_ci("T")), 5, priority=_cn(1)),
+                _event("E3", _at(_ci("T3")), {"B": _cn(7)}),
+            ],
+            {
+                "parameters": _param("T3", 0) + _param("T", 0.7),
+                "extra": _initial(T3=_times(_cn(7), _cn(0.1))),
+            },
+            "set 'A' to different values at t = 0.7, which the run can execute",
+            id="a strict trigger read with the rest on a stop a double after them",
+        ),
+        pytest.param(
+            [_a("E1", _at(_cn(0.3)), 5), _a("E2", _at(_ci("T")), 10)],
+            {"parameters": _param("T", 0), "extra": _initial(T=_times(_cn(3), _cn(0.1)))},
+            "events 'E1' and 'E2' set 'A' to different values at t = 0.3 and "
+            "t = 0.30000000000000004",
+            id="two triggers a double apart",
+        ),
+        pytest.param(
+            [
+                _a("I", _at(_cn(1)), 5),
+                _a("D1", _at(_cn(0.5)), 10, delay=_cn(0.5)),
+                _event(
+                    "S2",
+                    _gt(_cn(repr(math.nextafter(1.0, 0.0)))),
+                    {"B": _cn(7)},
+                    priority=_ci("p0"),
+                ),
+            ],
+            {"parameters": _param("p0", 0)},
+            "events 'I' and 'D1' set 'A' to different values at t = 1.0",
+            id="a strict trigger a double before a tie, with a priority it brings",
+        ),
+    ],
+)
+def test_events_the_run_can_take_as_one_instant_or_apart_are_refused(tmp_path, events, body, note):
+    with pytest.raises(ConversionError, match=note):
+        _convert(tmp_path, _sbml(*events, **body))

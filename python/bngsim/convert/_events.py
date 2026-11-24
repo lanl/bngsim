@@ -17,7 +17,8 @@ actions channel carries only scheduled, pre-known changes). A trigger already
 true at the start fires there only if its ``initialValue`` is false, and the
 events at one instant apply in the order the run executes them (see
 :class:`_Fire`); where the run's random draw among equal priorities, or its
-rounding, decides what a species is left at, they are refused.
+rounding and its stops, can decide what a species is left at, they are
+refused (:func:`_unordered_writes`).
 
 The translation is intentionally conservative: anything it cannot represent
 *faithfully* it refuses (returns a plain-English note) rather than emit a
@@ -318,8 +319,7 @@ class _Fire(NamedTuple):
     # A strict trigger is true only past its threshold, so the run executes the
     # event after every other event of that instant, whatever the priorities:
     # `time > 1` after `time >= 1`. It executes where it reads the trigger true,
-    # a little past the threshold (_strict_reach), so its order against an
-    # execution due in that reach after it is not known.
+    # a little past the threshold (see _landing).
     past: bool
     # Delayed from a strict trigger, it executes the delay after the point
     # past the threshold where the run read the trigger true, which can round
@@ -337,6 +337,10 @@ class _Fire(NamedTuple):
     order: int  # document order, which breaks the remaining ties
     eid: str
     assigns: list[tuple[int, float, str]]  # (species index, value, SBML id)
+    read: float = 0.0  # where the trigger turns true: its threshold, or the start
+    delay: float = 0.0
+    # Read at the start of the run, where it was true already: there exactly.
+    pinned: bool = False
 
     def sort_key(self) -> tuple[float, bool, float, bool, float, int]:
         # Higher priority first; among equal ones, those not delayed, then the
@@ -353,34 +357,122 @@ class _Fire(NamedTuple):
         )
 
 
-def _strict_reach(t: float, span: float) -> float:
-    """How far past ``t`` the run can execute a strict trigger's event due at
-    ``t``.
+def _instant_reach(t: float, span: float) -> float:
+    """How far apart two times near ``t`` can be and still be read by the run
+    as one instant, or in either order: the widest of the tolerances it lands
+    on a time with, on a run of length ``span``.
 
-    The run reads ``time > T`` true at the root CVODE places past ``T``, which
-    is within 100·ε·(|t| + |h|) of it (h the step, here at most the whole run,
-    ``span``), or at a stop that close after it, as it takes a root within
-    256·ε·max(|t|, 1) after a stop for one on it. Measured, ``time > T``
-    executed 1 to 24 doubles past T, for T from 0.001 to 37, beside a delayed
-    execution due a few doubles past it, which ran before, with or after it as
-    it fell. A delayed execution from a strict trigger keeps that offset.
+    * Two stops on literal time closer than (64 + 4)·ε·max(|a|, |b|) are
+      merged into the later one (``merge_crossing_stops`` and
+      ``_same_instant``, in ``_switch_sensitivity.py``), so a trigger on the
+      earlier is read on the later, with what turns true there, and a delay
+      counts from there.
+    * A root within 256·ε·max(|t|, 1) after a stop is taken as on it
+      (``event_root_reach``, ``cvode_simulator.cpp``).
+    * CVODE places a root within 100·ε·(|t| + |h|) of where it is, h the step,
+      at most the run's length. That is where the run reads ``time > T``
+      true: measured, 1 to 27,417 doubles past T (51 to 27,417 at T = 0.001,
+      80 to 508 at 0.1, 1 to 167 at 0.3, 58 to 108 at 37), never past 0.39
+      of this bound in some 1,350 runs.
     """
     eps = sys.float_info.epsilon
     return max(256.0 * eps * max(abs(t), 1.0), 100.0 * eps * (abs(t) + span))
 
 
-def _unordered_writes(fires: list[_Fire], span: float) -> list[str]:
-    """A note for each species that events at one instant leave at a value the
-    run's order among them decides, when that order is not known ahead, and
-    for each a strict trigger's execution and one due a little after it set
-    differently (see :func:`_strict_reach`)."""
-    by_time: dict[float, list[_Fire]] = {}
-    for f in fires:
-        by_time.setdefault(f.time, []).append(f)
+def _chain_end(points: list[float], t: float, span: float) -> float:
+    """The latest of the run's stops that ``t`` can be merged into: one within
+    reach after it, or within reach after that one, and so on."""
+    while True:
+        j = bisect.bisect_right(points, t + _instant_reach(t, span)) - 1
+        if j < 0 or points[j] <= t:
+            return t
+        t = points[j]
+
+
+def _landing(f: _Fire, points: list[float], span: float) -> tuple[float, float]:
+    """The earliest and latest times the run can execute ``f`` at. Its trigger
+    is read on its own time, or on a stop it is merged into, and a strict one
+    up to a root's reach past it; a delay counts from where it is read. Read
+    at the start, it is read there exactly."""
+    if f.pinned:
+        lo = hi = f.read
+    else:
+        lo = f.read
+        hi = _chain_end(points, f.read, span)
+        if f.past:
+            hi = max(hi, f.read + _instant_reach(f.read, span))
+    if f.triggered is not None:
+        lo, hi = lo + f.delay, hi + f.delay
+    return lo, hi
+
+
+def _run_stops(model: Model, t_start: float, t_end: float) -> list[float]:
+    """The times on literal time the run of ``model`` stops on, before they
+    are merged, as ``Simulator._apply_crossing_stops`` finds them: every time
+    discontinuity a condition, an event trigger, a table function or a smooth
+    pulse of the clock has. Best effort, as there: none where it cannot tell."""
+    from bngsim._smooth_pulses import smooth_pulse_stops
+    from bngsim._switch_sensitivity import crossings_with_periodic, table_function_stops
+
+    times: list[float] = []
+    try:
+        conditions = model.time_discontinuity_conditions()
+        if conditions:
+            crossings, periodic, _ = crossings_with_periodic(
+                model._core,
+                t_start,
+                t_end,
+                conditions,
+                touches=getattr(model, "_event_disc_conditions", frozenset()),
+                over_budget=[],
+            )
+            times += [stop.time for stop in (*crossings, *periodic)]
+        breaks = model.table_function_breaks()
+        if breaks:
+            times += [
+                stop.time for stop in table_function_stops(model._core, t_start, t_end, breaks)
+            ]
+        times += [stop.time for stop in smooth_pulse_stops(model._core, t_start, t_end)]
+    except Exception:  # the run steps on without them where it cannot place them
+        pass
+    return [float(t) for t in times]
+
+
+def _unordered_writes(fires: list[_Fire], span: float, stops: list[float]) -> list[str]:
+    """A note for each species that events the run can execute together leave
+    at a value their order decides, when that order is not known ahead.
+
+    Executions whose landings (:func:`_landing`) come within reach of each
+    other (:func:`_instant_reach`) are one cluster: the run can execute them as
+    one instant, by priority, or apart, as its rounding and its stops fall. A
+    cluster that is one instant for certain, every execution on one double, is
+    ordered as the run orders an instant (:func:`_order_note`). In any other,
+    a species two of them set to different values has no value an action can
+    set.
+    """
+    points = sorted({*stops, *(f.read for f in fires), *(f.time for f in fires)})
+    landed = sorted(((*_landing(f, points, span), f) for f in fires), key=lambda x: x[0])
+    clusters: list[list[tuple[float, float, _Fire]]] = []
+    reach_to = -math.inf
+    for lo, hi, f in landed:
+        if not clusters or lo > reach_to:
+            clusters.append([])
+            reach_to = -math.inf
+        clusters[-1].append((lo, hi, f))
+        reach_to = max(reach_to, hi + _instant_reach(hi, span))
     notes: list[str] = []
-    for t, group in by_time.items():
-        if len(group) < 2:
+    for members in clusters:
+        if len(members) < 2:
             continue
+        group = [f for _, _, f in members]
+        t = group[0].time
+        # One instant for certain: every execution due on one double, and
+        # each one not strict read there exactly, or all of them triggered on
+        # it together, with nothing delayed or strict beside them.
+        exact = all(f.time == t for f in group) and (
+            all(f.past or lo == hi == t for lo, hi, f in members)
+            or all(not f.past and f.triggered is None and f.read == t for f in group)
+        )
         writes: dict[int, list[tuple[_Fire, float]]] = {}
         var: dict[int, str] = {}
         for f in group:
@@ -388,30 +480,25 @@ def _unordered_writes(fires: list[_Fire], span: float) -> list[str]:
                 writes.setdefault(idx, []).append((f, val))
                 var[idx] = sid
         for idx, ws in writes.items():
-            note = _order_note(t, var[idx], ws, group)
+            note = _order_note(t, var[idx], ws, group) if exact else _apart_note(var[idx], ws)
             if note:
                 notes.append(note)
-
-    times = sorted(by_time)
-    for i, t in enumerate(times):
-        strict = [f for f in by_time[t] if f.past]
-        if not strict:
-            continue
-        end = bisect.bisect_right(times, t + _strict_reach(t, span))
-        after = [g for u in times[i + 1 : end] for g in by_time[u]]
-        for f in strict:
-            sets = {idx: val for idx, val, _ in f.assigns}
-            for g in after:
-                hit = next((sid for idx, v, sid in g.assigns if sets.get(idx, v) != v), None)
-                if hit is not None:
-                    notes.append(
-                        f"events {f.eid!r} and {g.eid!r} set {hit!r} to different values at "
-                        f"t = {f.time!r} and t = {g.time!r}, and {f.eid!r}, a strict trigger, "
-                        "executes a little past its time, before or after the other as the "
-                        "run's rounding falls — the value they leave has no actions form"
-                    )
-                    break
     return notes
+
+
+def _apart_note(var: str, ws: list[tuple[_Fire, float]]) -> str | None:
+    """Why the value executions near one instant, but not on it for certain,
+    leave in ``var`` is not known ahead, or None where they agree."""
+    f, val = ws[0]
+    other = next((g for g, v in ws if v != val), None)
+    if other is None:
+        return None
+    when = f"t = {f.time!r}" if f.time == other.time else f"t = {f.time!r} and t = {other.time!r}"
+    return (
+        f"events {f.eid!r} and {other.eid!r} set {var!r} to different values at {when}, "
+        "which the run can execute as one instant or apart, in either order, as its "
+        "rounding and its stops fall — the value they leave has no actions form"
+    )
 
 
 def _order_note(
@@ -612,13 +699,14 @@ def sbml_events_to_protocol(
         # just before, which is what its initialValue says (true where unset,
         # as the loader reads it). Otherwise it never turns true, as time only
         # moves on, and the event never fires.
-        fire_t, past, loose = threshold, strict, False
+        fire_t, past, loose, pinned = threshold, strict, False, False
         triggered: float | None = None
         if threshold < t_start or (threshold == t_start and not strict):
             trigger = ev.getTrigger()
             if not trigger.isSetInitialValue() or trigger.getInitialValue():
                 continue
-            fire_t, past = t_start, False
+            fire_t, past, pinned = t_start, False, True
+        read, delay = fire_t, 0.0
 
         # A constant delay shifts the fire time; a non-constant one is unschedulable.
         if ev.isSetDelay() and ev.getDelay() is not None and ev.getDelay().getMath() is not None:
@@ -626,9 +714,19 @@ def sbml_events_to_protocol(
             if d is None:
                 lossy.append(f"event {eid!r} has a non-constant delay (cannot be scheduled)")
                 continue
+            # The run reads a delay within rounding of 0 below it as 0, and
+            # refuses one further below, or not finite, where it fires.
+            if not math.isfinite(d) or d < -1e-9 * max(1.0, abs(fire_t)):
+                lossy.append(
+                    f"event {eid!r} has a delay of {d:g}, which the run refuses: an event "
+                    "delay must be a finite, non-negative number"
+                )
+                continue
+            d = max(d, 0.0)
             if d > 0:
                 triggered = fire_t
             fire_t += d
+            delay = d
             loose = past and d > 0
 
         # An unset priority is 0, as the loader writes it, and so is one that
@@ -664,11 +762,25 @@ def sbml_events_to_protocol(
             assigns.append((idx, val, var))
         if ok:
             fires.append(
-                _Fire(fire_t, past, loose, priority, unprioritised, triggered, i, eid, assigns)
+                _Fire(
+                    fire_t,
+                    past,
+                    loose,
+                    priority,
+                    unprioritised,
+                    triggered,
+                    i,
+                    eid,
+                    assigns,
+                    read,
+                    delay,
+                    pinned,
+                )
             )
 
-    span = max([float(t_span[1]), *(f.time for f in fires)]) - t_start
-    lossy.extend(_unordered_writes(fires, span))
+    t_end = max([float(t_span[1]), *(f.time for f in fires)])
+    stops = _run_stops(model, t_start, t_end) if len(fires) > 1 else []
+    lossy.extend(_unordered_writes(fires, t_end - t_start, stops))
     if lossy:
         return None, lossy
     if not fires:
