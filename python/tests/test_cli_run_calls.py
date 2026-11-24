@@ -527,6 +527,53 @@ def test_a_call_inside_its_limit_is_not_stopped():
     assert d["result"]["converged"] is True
 
 
+class _Timer:
+    """threading.Timer, fired by hand: at start(), or after cancel() as a timer
+    that had already begun to fire when it was cancelled."""
+
+    fire_at = "start"
+
+    def __init__(self, seconds, fn):
+        self.fn = fn
+        self.daemon = False
+
+    def start(self):
+        if self.fire_at == "start":
+            self.fn()
+
+    def cancel(self):
+        if self.fire_at == "cancel":
+            self.fn()
+
+
+@pytest.mark.parametrize("fire_at, expired", [("start", True), ("cancel", False)])
+def test_a_deadline_fires_only_while_the_call_runs(monkeypatch, fire_at, expired):
+    import threading
+
+    fired = []
+    monkeypatch.setattr(_cli, "_expire", lambda *a: fired.append(a))
+    monkeypatch.setattr(threading, "Timer", type("T", (_Timer,), {"fire_at": fire_at}))
+    with _cli._deadline(5.0, "steady_state"):
+        pass
+    # Fired while the call ran, it reports; fired as the call returned (the
+    # watchdog woke as it was cancelled), it does not.
+    assert [a[:2] for a in fired] == ([("steady_state", 5.0)] if expired else [])
+
+
+def test_a_deadline_left_in_time_does_not_end_the_process_later():
+    script = """
+import time
+from bngsim import _cli
+with _cli._deadline(0.2, "steady_state"):
+    pass
+time.sleep(0.8)
+print("still here")
+"""
+    run = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                         timeout=120)  # fmt: skip
+    assert run.returncode == 0 and run.stdout == "still here\n", run.stderr
+
+
 def test_run_bngl_is_bounded_too(tmp_path):
     bngl = tmp_path / "long.bngl"
     bngl.write_text(
