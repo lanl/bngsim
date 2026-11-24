@@ -54,11 +54,14 @@ struct SolverStats {
     // The steps CVODE took where t + h == t in double precision (issue #1837),
     // CVODES' own count: each moved the state by h and the clock not at all, so
     // a row after one can be wrong with no solver error. roundoff_first_row is
-    // the first row recorded after one, -1 where none was taken. 0 and -1 on
-    // every other backend, and in a build against a system SUNDIALS, which
-    // counts none.
+    // the first row recorded after one, -1 where none was taken, and
+    // roundoff_spacing the spacing of the doubles on the integrator's clock
+    // between it and the row before (the larger at either end), which such a
+    // step is under half of. 0, -1 and 0 on every other backend, and in a build
+    // against a system SUNDIALS, which counts none.
     int n_roundoff_steps = 0;
     int roundoff_first_row = -1;
+    double roundoff_spacing = 0.0;
 
     int linear_solver = LINEAR_SOLVER_DENSE; // LinearSolverKind actually used
 

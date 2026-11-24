@@ -72,6 +72,7 @@ from bngsim._exceptions import (
     ModelError,
     NotFoundError,
     NotSupportedError,
+    RoundoffStepWarning,
     ScanDoseWarning,
     SensitivityRefusedDuringRunError,
     SensitivityRefusedForParametersError,
@@ -322,6 +323,55 @@ _SKIP_WARN_NAME_LIMIT = 8
 # (`retry_while_advancing`), the second being the parked-on-a-discontinuity case
 # the FD Jacobian most often rescues. The jacobian="auto" retry is for these only.
 _CVODE_FAILURES = ("CVODE integration failed at t=", "CVODE made no progress ")
+
+
+def _grid(times: Any) -> np.ndarray:
+    """The rows a core ``TimeSpec`` asks for, as ``TimeSpec::output_times``
+    makes them."""
+    if times.sample_times:
+        return np.asarray(times.sample_times, dtype=np.float64)
+    n = int(times.n_points)
+    dt = (times.t_end - times.t_start) / (n - 1) if n > 1 else 0.0
+    grid = times.t_start + np.arange(n, dtype=np.float64) * dt
+    if n > 1:
+        grid[-1] = times.t_end
+    return grid
+
+
+def _roundoff_steps_message(
+    steps: int, first_row: int, spacing: float, rows: np.ndarray, *, raised: bool = False
+) -> str:
+    """What a run's steps where t + h == t were (issue #1837): *steps* of
+    them, the first row recorded after one at *first_row* of *rows* (-1 for
+    none) and the spacing of the doubles there."""
+    text = (
+        f"CVODE took {steps} step{'' if steps == 1 else 's'} too small to move its clock "
+        "(t + h == t in double precision)"
+    )
+    where = ""
+    if 0 <= first_row < len(rows):
+        after = f"after t = {float(rows[first_row - 1])!r}, " if first_row > 0 else ""
+        where = f"t = {float(rows[first_row])!r}"
+        text += (
+            f", {after}by {where}: the doubles there are {spacing:.3g} apart, and each "
+            f"such step was at most {spacing / 2:.3g}"
+        )
+    if raised:
+        text += "; the run then failed." if where else " before the run failed."
+    else:
+        rows_on = f"the rows from {where} on" if where else "the rows after them"
+        text += (
+            ". Such a step moves the state and not the time, so "
+            f"{rows_on} can be wrong, with no solver error."
+        )
+        text += (
+            " Result.check() runs it again at a tenth of the tolerance and says whether "
+            "the answer moved."
+        )
+    return text + (
+        " Tighter tolerances take smaller steps and make it worse; where the model "
+        "allows it, run nearer t = 0, where the doubles are finer."
+    )
 
 
 def _abbreviate(names: list[str], limit: int = _SKIP_WARN_NAME_LIMIT) -> str:
@@ -5785,7 +5835,7 @@ class Simulator:
             self._restore_carryover_state(start_carry)
 
         try:
-            return self._ode_attempts(times, opts, restore)
+            return self._ode_run(times, opts, restore)
         except BaseException:
             # A run that raises leaves the model as it found it, whatever raised:
             # a retry that failed too, a refusal, a timeout, an explicit jacobian
@@ -5794,6 +5844,43 @@ class Simulator:
             # still clear, so nothing refused or warned.
             restore()
             raise
+
+    def _ode_run(self, times, opts, restore, sim=None, core=None):
+        """:meth:`_ode_attempts`, and what the run's steps were.
+
+        Every ODE run passes through here, so this is where the steps CVODE
+        took where t + h == t are said (issue #1837), of the attempt whose
+        result is returned or whose error is raised: an analytical-Jacobian
+        attempt the FD retry replaced is not the run.
+        """
+        sim = self._sim if sim is None else sim
+        try:
+            out = self._ode_attempts(times, opts, restore, sim, core)
+        except BaseException:
+            steps, first_row, spacing = sim.last_run_roundoff_steps()
+            if steps > 0:
+                # Recorded on the error, and not warned: under -W error a
+                # warning raised here would replace the run's own error.
+                _notices.note(
+                    RoundoffStepWarning.__name__,
+                    "solver.roundoff_steps",
+                    _roundoff_steps_message(steps, first_row, spacing, _grid(times), raised=True),
+                )
+            raise
+        stats = out.solver_stats
+        if stats.n_roundoff_steps > 0:
+            _notices.warn(
+                _roundoff_steps_message(
+                    stats.n_roundoff_steps,
+                    stats.roundoff_first_row,
+                    stats.roundoff_spacing,
+                    np.asarray(out.time),
+                ),
+                RoundoffStepWarning,
+                code="solver.roundoff_steps",
+                stacklevel=_notices.OUTSIDE,
+            )
+        return out
 
     def _ode_attempts(self, times, opts, restore, sim=None, core=None):
         """The attempts :meth:`_run_ode_with_jacobian_fallback` makes, with
@@ -8685,7 +8772,7 @@ class Simulator:
                     row_core.set_state(start_state)
                     self._restore_carryover_state(start_carry, row_core)
 
-                core_result = self._ode_attempts(times, opts, restore, sim=sim, core=row_core)
+                core_result = self._ode_run(times, opts, restore, sim=sim, core=row_core)
                 row_jacobian = self._jacobian_used(opts, row_core)
 
             elif self._method in ("ssa", "psa"):

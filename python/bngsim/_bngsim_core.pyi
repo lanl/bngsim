@@ -12,9 +12,9 @@ class CvodeSimulator:
         """
         Create an ODE (CVODE) simulator for the given model
         """
-    def last_run_roundoff_steps(self) -> tuple[int, int]:
+    def last_run_roundoff_steps(self) -> tuple[int, int, float]:
         """
-        The steps the last run() took where t + h == t, and the first row it recorded after one (-1 for none).
+        The steps the last run() took where t + h == t, the first row it recorded after one (-1 for none), and the spacing of the doubles there.
         """
     def run(self, times: TimeSpec, opts: SolverOptions = ...) -> ResultCore:
         """
@@ -1193,6 +1193,12 @@ class SolverStats:
         ...
     @roundoff_first_row.setter
     def roundoff_first_row(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def roundoff_spacing(self) -> float:
+        ...
+    @roundoff_spacing.setter
+    def roundoff_spacing(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
         ...
     @property
     def steady_state_residual(self) -> float:
