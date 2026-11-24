@@ -3517,9 +3517,10 @@ class Result:
               backward, which widens it near a switch or event time the
               parameter moves; a cell where that is 5% of a series' peak is
               not judged. A series it resolves to no better than 5% of its
-              peak, everywhere or from the time its Richardson difference
-              reaches that share on (a long oscillation whose phase the step
-              moves), is named in ``not_resolved`` and not judged past it;
+              peak, everywhere or over a stretch where its Richardson
+              difference reaches that share (a long oscillation whose phase
+              the step moves), is named in ``not_resolved`` and not judged
+              there;
               ``allowance`` is the largest share of a peak it allows where
               it judges. A value at 0, and a derived
               parameter, are not judged (``not_judged``). It costs four runs

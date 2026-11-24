@@ -46,10 +46,11 @@ the two.
   event time ``θ`` moves, where a central quotient is half the jump (issue
   #368). So the check widens there by itself, and needs no list of switch
   times: a cell where that term alone is :data:`FD_RESOLVED` of a series'
-  peak is not judged. Where the Richardson term reaches that share, the step
-  is too wide for the series (an oscillation whose phase the step moves, by
-  more as time goes on), and from that cell on the series is not judged, and
-  is named. On top of that, the quotient may be off by :data:`FD_NOISE`
+  peak is not judged. Where the Richardson term reaches that share away from
+  such a cell, the step is too wide for the series (an oscillation whose
+  phase the step moves, by more as time goes on), and the series is not
+  judged from there until both terms are back under :data:`FD_CLEAR` of the
+  share, and is named. On top of that, the quotient may be off by :data:`FD_NOISE`
   times its runs' error over its step, each run erring by about the run's own drift
   scaled to the quotient's tolerance (and by no less than that tolerance), and
   the run's own sensitivities by what a path may differ by
@@ -117,6 +118,9 @@ FD_SPREAD = 2.0
 #: A series whose allowance in the quotient check is this share of its peak
 #: or more is named as one the quotient does not resolve.
 FD_RESOLVED = 0.05
+#: A stretch the quotient's step is too wide for ends where its Richardson
+#: and kink terms are both back under this share of :data:`FD_RESOLVED`.
+FD_CLEAR = 0.01
 #: A series past the bound whose move between the hundredfold and the tenfold
 #: tighter runs is at least this share of its move at the tenfold one is held
 #: by a floor, not the tolerance (:func:`_floor_held`).
@@ -448,6 +452,17 @@ def _floor_held(
     return over & np.isfinite(d) & (d >= FLOOR_SHARE * d10)
 
 
+def _too_wide(start: NDArray[np.bool_], clear: NDArray[np.bool_]) -> NDArray[np.bool_]:
+    """Per cell, ``(n_times, n_series)``: on from a cell in *start* until the
+    next cell in *clear*."""
+    out = np.zeros(start.shape, dtype=bool)
+    on = np.zeros(start.shape[1:], dtype=bool)
+    for k in range(start.shape[0]):
+        on = (on & ~clear[k]) | start[k]
+        out[k] = on
+    return out
+
+
 def _fd_tolerance(ctx: _Context) -> float:
     """How many times tighter than the run's its quotient's runs are made: a
     hundredfold, to an rtol of no more than :data:`FD_RTOL_MOST` and no less
@@ -480,8 +495,9 @@ def check_sensitivity_fd(ctx: _Context) -> dict[str, Any]:
     # with its move at the tighter tolerance (and the looser one) as its drift.
     # A series not converged at the run's tolerance gets no drift, which would
     # forgive its own error (the tolerance check reports it).
-    move, _, d_tight, held = _tier1(ctx, cols)
-    converged = ((move <= TOLERANCE_MOVE) | held).reshape(n_sp, n_cols)
+    # (A series a floor holds has its move read on its column's peak already.)
+    move, _, d_tight, _ = _tier1(ctx, cols)
+    converged = (move <= TOLERANCE_MOVE).reshape(n_sp, n_cols)
     peak = (
         np.where(np.isfinite(cols.S), np.abs(cols.S), 0.0).max(axis=0)
         if cols.S.size
@@ -589,8 +605,13 @@ def check_sensitivity_fd(ctx: _Context) -> dict[str, Any]:
         near = FD_SPREAD * kink >= cut
         # Once the Richardson difference reaches FD_RESOLVED of a series'
         # peak away from a switch, the step is too wide for it, and stays so
-        # (a phase the step moves grows with time): that cell and every later.
-        wide = np.logical_or.accumulate((FD_SPREAD * rich >= cut) & ~near, axis=0)
+        # until both terms are back under FD_CLEAR of that share: as they are
+        # just past a switch, where the kink term crosses zero inside the
+        # window, and never are in an oscillation whose phase the step moves,
+        # where one term or the other is near its largest at every phase.
+        wide = _too_wide(
+            (FD_SPREAD * rich >= cut) & ~near, FD_SPREAD * (rich + kink) < FD_CLEAR * cut
+        )
         use = fin_s & fin_q & ~near & ~wide
         base_allow = np.maximum(own[:, j], noise)
         allow_t = base_allow[None, :] + FD_SPREAD * (rich + kink)
@@ -656,8 +677,8 @@ def check_sensitivity_fd(ctx: _Context) -> dict[str, Any]:
     if n_fd_trace:
         note += (
             f"; {n_fd_trace} series the quotient resolves to no better than "
-            f"{FD_RESOLVED:g} of the series' peak, everywhere or from some time on, and judges "
-            "no further"
+            f"{FD_RESOLVED:g} of the series' peak, everywhere or over a stretch of time it "
+            "does not judge"
         )
     if not_judged:
         first = next(iter(not_judged.items()))

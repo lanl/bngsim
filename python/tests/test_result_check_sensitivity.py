@@ -369,6 +369,30 @@ def test_a_wrong_jump_at_a_switch_time_is_still_found_past_it(monkeypatch):
     assert v["status"] == "diff" and v["worst_column"] == "dA/dton"
 
 
+def test_a_switch_sampled_densely_is_widened_there_and_judged_past_it(monkeypatch):
+    # 201 output points within 0.01 of ton: the quotient's Richardson term is
+    # large there as well as its kink term, and the cells past the switch are
+    # still judged, so a wrong dA/dton is still found.
+    ant = """
+    model sw
+      J1: -> A; k1*(1 - step)
+      J2: A -> ; k2*A
+      step := piecewise(1, time >= ton, 0)
+      k1 = 2; k2 = 0.3; ton = 4
+      A = 0
+    end
+    """
+    times = sorted({*np.linspace(0, 10, 11).tolist(), *np.linspace(3.99, 4.01, 201).tolist()})
+    sim = Simulator(
+        Model.from_antimony_string(ant), method="ode", sensitivity_params=["k1", "k2", "ton"]
+    )
+    r = sim.run(sample_times=times)
+    assert _by_name(r.check(["sensitivity_fd"]))["sensitivity_fd"]["status"] == "pass"
+    _every_solve_off(monkeypatch, 2, 1.05)
+    v = _by_name(_scaled(r, 2, 1.05).check(["sensitivity_fd"]))["sensitivity_fd"]
+    assert v["status"] == "diff" and v["worst_column"] == "dA/dton", v
+
+
 @pytest.mark.parametrize(
     "event", ["at (time >= t_dose): A = A + dose", "at (A < thr): B = B + dose"]
 )
