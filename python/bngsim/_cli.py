@@ -63,6 +63,8 @@ import sys
 from collections.abc import Callable, Iterator
 from typing import Any, NoReturn
 
+from bngsim._simulator import _NETWORK_FREE_METHODS
+
 # ─── Exit codes ──────────────────────────────────────────────────────────────
 
 EXIT_OK = 0
@@ -927,9 +929,10 @@ def _inspect(args: argparse.Namespace) -> tuple[Any, str]:
     return dict(description), str(description) + "\n"
 
 
-#: The methods each method-bound option is for, by the names --method takes.
-_STOCHASTIC_METHODS = frozenset({"ssa", "psa", "nf", "nfsim", "rm", "rulemonkey"})
-_NETWORK_FREE = frozenset({"nf", "nfsim", "rm", "rulemonkey"})
+#: The methods each method-bound option is for, by the names --method takes:
+#: every network-free name Simulator takes, nf_reject and nf_exact included.
+_NETWORK_FREE = _NETWORK_FREE_METHODS
+_STOCHASTIC_METHODS = frozenset({"ssa", "psa"}) | _NETWORK_FREE
 _OUT_SUFFIXES = (".npz", ".h5", ".hdf5", ".csv", ".tsv")
 
 
