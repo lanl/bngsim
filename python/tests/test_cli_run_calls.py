@@ -73,6 +73,9 @@ def test_run_until_a_condition_met_exits_0_with_the_result_it_cut():
     assert d["stop_condition"] == met.value.condition == "C > 50"
     assert d["digest"] == _plain(met.value.result.digest())
     assert d["digest"]["t_end"] == float(met.value.result.time[-1]) < 50.0
+    # Cut at the first output point where the condition holds: on the default
+    # grid of one point per unit of time, C passes 50 between t = 2 and t = 3.
+    assert d["digest"]["t_end"] == 3.0
     assert d["record"]["run"]["timeout"] is None  # run_until takes none: the command's own
 
 
@@ -276,6 +279,21 @@ def test_a_species_set_is_where_each_value_starts_and_a_dose_still_doses(tmp_pat
     assert d["digest"] == _plain(Result.squeeze(rows).digest(species=True))
     first = {c["name"]: c for c in d["digest"]["species"]["columns"]}
     assert first["A"]["max"] == pytest.approx(10.0)  # the dose reached A
+
+
+def test_a_scan_of_a_parameter_that_seeds_a_species_set_is_refused(tmp_path):
+    # A0 seeds A, and --set holds A: every value would start A at 5.
+    model = tmp_path / "dose.ant"
+    model.write_text(_DOSE)
+    error = _error(_bngsim("parameter-scan", str(model), "--parameter", "A0", "--par-scan-vals",
+                           "1,10", "--set", "A=5", "--t-end", "1", "--json"), _cli.EXIT_USAGE,
+                   "usage.invalid_argument")  # fmt: skip
+    assert error["details"] == {"argument": "--set", "species": ["A"]}
+    for vals in (["--par-scan-vals", "1,10"], ["--par-min", "1", "--par-max", "10",
+                                               "--n-scan-pts", "2"]):  # fmt: skip
+        run = _bngsim("parameter-scan", str(model), "--parameter", "k", *vals, "--set", "A=5",
+                      "--t-end", "1", "--json")  # fmt: skip
+        assert run.returncode == 0, run.stderr  # k seeds no species: allowed
 
 
 # ─── steady-state ────────────────────────────────────────────────────────────
@@ -579,6 +597,21 @@ def test_an_error_an_action_meets_while_it_runs_exits_1(tmp_path):
     assert _cli.exit_code_for(bngsim.ConversionError("x")) == _cli.EXIT_ERROR
 
 
+@pytest.mark.parametrize(
+    "action, option",
+    [('simulate({method=>"ode",t_end=>1,n_steps=>1})', ["--seed", "3"]),
+     ('simulate({method=>"ssa",t_end=>1,n_steps=>1})', ["--rtol", "1e-9"]),
+     ('simulate({method=>"ssa",t_end=>1,n_steps=>1})', ["--atol", "1e-9"])],
+)  # fmt: skip
+def test_run_bngl_refuses_a_tolerance_or_seed_no_run_of_the_file_uses(tmp_path, action, option):
+    bngl = tmp_path / "chain.bngl"
+    bngl.write_text(Path(examples.path("chain", "bngl")).read_text() + action + "\n")
+    net = str(examples.path("chain", "net"))
+    run = _bngsim("run-bngl", str(bngl), *option, "--json", script=_NO_BNG2.format(net=net))
+    error = _error(run, _cli.EXIT_USAGE, "usage.invalid_argument")
+    assert error["details"]["argument"] == option[0]
+
+
 def test_run_bngl_with_no_runs_says_so(tmp_path):
     bngl = tmp_path / "chain.bngl"
     bngl.write_text(Path(examples.path("chain", "bngl")).read_text())
@@ -606,10 +639,32 @@ def test_a_call_past_the_commands_limit_exits_5_and_stops(command, tmp_path):
     assert error["details"]["timeout"] == 0.5
     assert error["details"]["elapsed"] >= 0.5
     assert "--timeout" in error["message"]
-    assert elapsed < 60  # the process ended, the call still running
+    assert elapsed < 20  # the process ended, the call still running
     text = _bngsim(*args, "--timeout", "0.5")
     assert text.returncode == _cli.EXIT_TIMEOUT and text.stdout == ""
     assert "bngsim: error [run.timeout]" in text.stderr
+
+
+_SLOW_STEADY_STATE = """
+import time, bngsim
+def steady_state(self, **kw):
+    time.sleep(60)
+bngsim.Simulator.steady_state = steady_state
+"""
+
+
+def test_run_until_and_steady_state_are_bounded_too():
+    # run_until integrates the whole span before a condition cuts it, so a
+    # condition met early does not shorten it: the span counts.
+    start = time.monotonic()
+    run = _bngsim("run-until", BIRTH_DEATH, "--method", "ssa", "--set", "ksyn=1e6", "--t-end",
+                  "1000", "--stop-when", "A > 1", "--timeout", "0.5", "--json")  # fmt: skip
+    error = _error(run, _cli.EXIT_TIMEOUT, "run.timeout")
+    assert error["message"].startswith("run_until took longer than 0.5 s")
+    run = _bngsim("steady-state", CHAIN, "--timeout", "0.5", "--json", script=_SLOW_STEADY_STATE)
+    error = _error(run, _cli.EXIT_TIMEOUT, "run.timeout")
+    assert error["message"].startswith("steady_state took longer than 0.5 s")
+    assert time.monotonic() - start < 40
 
 
 def test_what_stderr_held_goes_into_the_timeout_error(tmp_path):

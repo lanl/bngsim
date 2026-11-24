@@ -476,11 +476,12 @@ def _add_run_calls(sub: Any, common: argparse.ArgumentParser) -> None:
         "run-until",
         parents=[common],
         help="run a model to a time or until a condition holds (Simulator.run_until)",
-        description="Run a model from its initial state to --t-end, or until a "
-        "--stop-when condition holds (Simulator.add_stop_condition, then "
-        "Simulator.run_until(T)), and print the run's record and a digest of its "
-        "values. A condition met is an answer, not an error: exit 0, with the "
-        "run cut where it first held and `stop_condition` naming it.",
+        description="Run a model from its initial state to --t-end "
+        "(Simulator.add_stop_condition, then Simulator.run_until(T)), and print the "
+        "run's record and a digest of its values. The run goes to --t-end, and is then "
+        "cut at the first output point where a --stop-when condition holds: a "
+        "condition met is an answer, not an error, exit 0, with `stop_condition` "
+        "naming it. The whole span counts against --timeout.",
     )
     _model_arguments(until)
     _engine_arguments(until, xml=False)
@@ -496,8 +497,9 @@ def _add_run_calls(sub: Any, common: argparse.ArgumentParser) -> None:
         action="append",
         default=[],
         metavar="EXPR",
-        help="stop where EXPR holds: a Python expression of the observables, the species "
-        "(A() written A__) and t, such as 'A_tot < 10'; repeatable, checked in order",
+        help="cut the run at the first output point where EXPR holds: a Python expression "
+        "of the observables, the species (A() written A__) and t, such as 'A_tot < 10'; "
+        "repeatable, checked in order",
     )
     _set_argument(until)
     _solver_arguments(until)
@@ -724,7 +726,12 @@ def _steady_arguments(p: argparse.ArgumentParser, *, params: bool = False) -> No
         default=None,
         help="the march's absolute tolerance: a number, 'auto' or 'tracking'",
     )
-    p.add_argument("--max-steps", type=_positive_int, default=None, help="the march's most steps")
+    p.add_argument(
+        "--max-steps",
+        type=_positive_int,
+        default=None,
+        help="the most CVODE steps per output point of the march",
+    )
 
 
 def _floats(text: str) -> list[float]:
@@ -1227,7 +1234,11 @@ def _parse_params(text: str | None) -> list[dict[str, float]]:
 
 
 def _load_for_run(
-    args: argparse.Namespace, *, save: bool = True, rows: list[dict[str, float]] | None = None
+    args: argparse.Namespace,
+    *,
+    save: bool = True,
+    rows: list[dict[str, float]] | None = None,
+    scanned: str | None = None,
 ) -> tuple[Any, dict[str, float]]:
     """The model a command runs, with the ``--set`` values, and those values. A
     species set this way becomes the model's initial state
@@ -1239,7 +1250,7 @@ def _load_for_run(
 
     model = Model.load(args.model)
     # Before any --set: what a batch's rows would start from without one.
-    probe = model.clone() if rows is not None else None
+    probe = model.clone() if rows is not None or scanned is not None else None
     done: dict[str, float] = {}
     species = False
     for name, number in _parse_sets(args.set):
@@ -1260,21 +1271,38 @@ def _load_for_run(
                 remedies=list(getattr(error, "remedies", None) or []),
             ) from error
         done[name] = number
+    if species and probe is not None:
+        if rows is None and scanned is not None:
+            # A scan's values each write the parameter, and a species --set
+            # holds where it was set: a value that seeds it would not move it.
+            values = args.par_scan_vals or [
+                v for v in (args.par_min, args.par_max) if v is not None
+            ]
+            rows = [{scanned: v} for v in values]
+        if rows:
+            _refuse_lost_doses(probe, rows, args, done, held_only=scanned is not None)
     if species and save:
-        if probe is not None and rows is not None:
-            _refuse_lost_doses(probe, rows, args, done)
         model.save_concentrations()
     return model, done
 
 
 def _refuse_lost_doses(
-    probe: Any, rows: list[dict[str, float]], args: argparse.Namespace, done: dict[str, float]
+    probe: Any,
+    rows: list[dict[str, float]],
+    args: argparse.Namespace,
+    done: dict[str, float],
+    *,
+    held_only: bool = False,
 ) -> None:
     """Refuse a species ``--set`` beside batch rows whose parameters seed a
     species' starting value. The rows start from the model's initial state,
     which the species ``--set`` has to become (``save_concentrations``), and
     that holds every species at the value saved: a row's dose would be dropped.
-    Not saving drops the ``--set`` instead. Neither is the batch asked for."""
+    Not saving drops the ``--set`` instead. Neither is the batch asked for.
+
+    ``held_only``: a scan, which starts from the state the ``--set`` gives
+    without saving it, so only a species the ``--set`` itself holds loses its
+    dose."""
     import numpy as np
 
     from bngsim._exceptions import BngsimError, UsageError
@@ -1291,10 +1319,20 @@ def _refuse_lost_doses(
         except (BngsimError, ValueError):
             continue  # a name the call refuses, it refuses itself
         moved = np.asarray(row_model.get_state(), dtype=float) != start
+        set_species = [n for n in done if n in names]
+        if held_only:
+            moved &= np.isin(np.asarray(names, dtype=object), set_species)
         if moved.any():
             dosed = [names[j] for j in np.flatnonzero(moved)]
-            set_species = [n for n in done if n in names]
             call = args.command.replace("-", "_")
+            if held_only:
+                raise UsageError(
+                    f"--set {', '.join(dosed)} with --parameter {args.parameter}: "
+                    f"{args.parameter} sets the start of {', '.join(dosed)}, which --set "
+                    "holds where it was set, so every value would start it there and the "
+                    "scan would not dose it. Leave it out of --set.",
+                    details={"argument": "--set", "species": dosed},
+                )
             raise UsageError(
                 f"--set {', '.join(set_species)} with --params: {call} starts every row "
                 "from the model's initial state, so a species --set has to become that "
@@ -1531,7 +1569,7 @@ def _parameter_scan(args: argparse.Namespace) -> tuple[Any, str]:
     # Each value starts from the state at the scan's start, which a species
     # --set gives; saved as the initial state, a value of a parameter that
     # seeds another species would not dose it.
-    model, done = _load_for_run(args, save=False)
+    model, done = _load_for_run(args, save=False, scanned=args.parameter)
     sim = _simulator(args, model)
     t_span, n_points = _span(args)
     if args.par_scan_vals is not None:
@@ -1719,8 +1757,24 @@ def _run_bngl(args: argparse.Namespace) -> tuple[Any, str]:
         # too (as bngsim.run_bngl has it).
         warnings.simplefilter("ignore", ConversionWarning)
         model, protocol = Model.from_bngl(args.model, protocol=True)
-    from bngsim._protocol_run import _check_runnable
+    from bngsim._protocol_run import _check_runnable, _method_of
+    from bngsim.convert._protocol import Experiment
 
+    steps = protocol.steps[protocol.generation_step or 0 :]
+    methods = {_method_of(step) for step in steps if isinstance(step, Experiment)}
+    if args.seed is not None and not methods & {"ssa", "psa"}:
+        _refuse(
+            "--seed seeds the file's stochastic runs, and it has none: "
+            f"its runs are {', '.join(sorted(methods)) or 'none'}",
+            "--seed",
+        )
+    for flag, value in (("--rtol", args.rtol), ("--atol", args.atol)):
+        if value is not None and "ode" not in methods:
+            _refuse(
+                f"{flag} is the file's ODE runs', and it has none: "
+                f"its runs are {', '.join(sorted(methods)) or 'none'}",
+                flag,
+            )
     try:
         # What run_protocol refuses before anything runs: an action BNGsim
         # cannot run as BNG2.pl would. A refusal of the file (exit 3), where an
