@@ -30,11 +30,13 @@ result = sim.run(t_span=(0, 100), n_points=201)
 print(model.n_events)  # 2
 ```
 
-An SBML file's `<listOfEvents>` is read the same way:
+An SBML file's `<listOfEvents>` is read the same way. The bundled `bolus`
+model, A -> 0 with a dose of 100 at t = 5, is one:
 
 ```python
-model = bngsim.Model.from_sbml("model_with_events.xml")
+model = bngsim.Model.from_sbml(bngsim.examples.path("bolus", "sbml"))
 result = bngsim.Simulator(model, method="ode").run(t_span=(0, 100), n_points=201)
+print(model.n_events)  # 1
 ```
 
 An event fires when its trigger goes from false to true. Its assignments are

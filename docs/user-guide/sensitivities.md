@@ -14,10 +14,15 @@ BNGsim does when a rate law switches during the run.
 Name the parameters when you build the Simulator, then run:
 
 ```python
+import numpy as np
+import bngsim
+
+model = bngsim.examples.load("binding")  # A + B <-> C, at rates kf and kr
+
 sim = bngsim.Simulator(model, method="ode", sensitivity_params=["kf", "kr"])
 result = sim.run(t_span=(0, 10), n_points=11)
 
-print(result.sensitivities.shape)  # (n_times, n_species, n_params)
+print(result.sensitivities.shape)  # (11, 3, 2): (n_times, n_species, n_params)
 print(result.sensitivity_params)   # ['kf', 'kr']
 print(result.has_sensitivities)    # True
 
@@ -53,7 +58,8 @@ What to watch out for:
 To differentiate with respect to a species' starting value, name the species:
 
 ```python
-sim = bngsim.Simulator(model, sensitivity_ic=["A()"])
+model.reset()  # sensitivities need a fresh start, and the run above moved the state
+sim = bngsim.Simulator(model, sensitivity_ic=["A(b)"])
 result = sim.run(t_span=(0, 10), n_points=11)
 result.sensitivities_ic  # (n_times, n_species, n_ic): ∂x_i(t)/∂x_k(0)
 ```
@@ -76,9 +82,11 @@ longer sets it, and that part of the column is 0.
 If the value you assign does depend on a fitted parameter, say so:
 
 ```python
-v = dose_nM * 1e-9 * NA * model.get_param("Vecf")
-model.set_concentration("L(r)", v)
-model.declare_ic_sensitivity({"L(r)": {"Vecf": v / model.get_param("Vecf")}})
+model.reset()                       # a fresh start again
+dose = 2.5                          # a dose of A, in units of A0
+v = dose * model.get_param("A0")
+model.set_concentration("A(b)", v)
+model.declare_ic_sensitivity({"A(b)": {"A0": dose}})   # dv/dA0, since v = dose * A0
 ```
 
 A declaration wins over both the derived row and the zero. Declaring `{}` sets
@@ -93,6 +101,7 @@ declaration. See
 in parallel threads. Each chunk runs on its own clone of the model.
 
 ```python
+model.reset()  # a fresh start, from the initial conditions
 sim = bngsim.Simulator(model, method="ode")
 result = sim.compute_all_sensitivities(
     t_span=(0, 100),
@@ -140,6 +149,7 @@ not derived from anything. It is an ordinary parameter and keeps its column.
 
 ```python
 fim = result.fisher_information(sigma=0.1)   # one noise level
+sigma_per_species = np.array([0.1, 0.1, 0.5])
 fim = result.fisher_information(sigma=sigma_per_species)
 print(fim.shape)  # (n_params, n_params)
 
@@ -161,6 +171,13 @@ The built-in objectives return `(loss, gradient)`, which is what
 
 ```python
 result = sim.compute_all_sensitivities(t_span=(0, 100), n_points=101)
+
+# Data to fit, one row per time point. Here it is the run itself with noise
+# added; yours would be measured.
+rng = np.random.default_rng(1)
+data = result.species + rng.normal(0, 0.1, result.species.shape)
+data_subset = data[:, [0, 2]]          # species 0 and 2 only
+obs_data = result.observables + rng.normal(0, 0.1, result.observables.shape)
 
 loss, grad = result.sse_gradient(data)                       # sum of squares
 loss, grad = result.chi2_gradient(data, sigma=0.1)           # weighted by noise
@@ -197,7 +214,8 @@ def objective(p_vec):
     return loss, grad
 
 opt = minimize(objective, x0=[model.get_param(n) for n in names],
-               method="L-BFGS-B", jac=True)
+               method="L-BFGS-B", jac=True,
+               bounds=[(0, None)] * len(names))  # rate constants and amounts stay >= 0
 ```
 
 `gradient()` sums over time and species, not over parameters. An optimizer
@@ -221,7 +239,7 @@ import jax
 import jax.numpy as jnp
 from bngsim.jax import differentiable_solve
 
-model = bngsim.Model.from_net("model.net")
+model = bngsim.examples.load("binding")  # a fresh copy, at its initial conditions
 
 # The vector is ordered as model.primary_param_names. Derived parameters
 # follow their primaries, so the gradient includes the chain rule through them.
@@ -229,7 +247,7 @@ p0 = jnp.array([model.get_param(n) for n in model.primary_param_names])
 
 Y = differentiable_solve(model, p0, (0, 100), 101)  # (n_times, n_species)
 
-data = jnp.load("experimental_data.npy")
+data = jnp.asarray(data)  # the data fitted above, (n_times, n_species)
 
 def loss(p):
     Y = differentiable_solve(model, p, (0, 100), 101)
@@ -282,9 +300,72 @@ would look like a real answer. The run warns naming the species, and
 `result.ar_sensitivity_refused` lists them:
 
 ```python
-result.ar_sensitivity_refused          # frozenset({"stimulus"})
-result.output_sensitivities("species:stimulus")
-# ValueError: ... has no output sensitivity — uses unsupported construct: if() conditional
+from pathlib import Path
+
+# pulse.xml: the species stimulus is set by an assignment rule that holds a
+# piecewise, a step from 0 to 1 at t_on, and X is made at rate k*stimulus.
+Path("pulse.xml").write_text(
+    """\
+<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version2/core" level="3" version="2">
+<model id="pulse">
+  <listOfCompartments>
+    <compartment id="cell" size="1" constant="true"/>
+  </listOfCompartments>
+  <listOfSpecies>
+    <species id="stimulus" compartment="cell" initialConcentration="0"
+             hasOnlySubstanceUnits="false" boundaryCondition="true" constant="false"/>
+    <species id="X" compartment="cell" initialConcentration="0"
+             hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+  </listOfSpecies>
+  <listOfParameters>
+    <parameter id="k" value="1" constant="true"/>
+    <parameter id="t_on" value="5" constant="true"/>
+  </listOfParameters>
+  <listOfRules>
+    <assignmentRule variable="stimulus">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <piecewise>
+          <piece>
+            <cn> 1 </cn>
+            <apply> <geq/>
+              <csymbol definitionURL="http://www.sbml.org/sbml/symbols/time"> t </csymbol>
+              <ci> t_on </ci>
+            </apply>
+          </piece>
+          <otherwise> <cn> 0 </cn> </otherwise>
+        </piecewise>
+      </math>
+    </assignmentRule>
+  </listOfRules>
+  <listOfReactions>
+    <reaction id="make_X" reversible="false">
+      <listOfProducts>
+        <speciesReference species="X" stoichiometry="1" constant="true"/>
+      </listOfProducts>
+      <listOfModifiers>
+        <modifierSpeciesReference species="stimulus"/>
+      </listOfModifiers>
+      <kineticLaw>
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply> <times/> <ci> k </ci> <ci> stimulus </ci> </apply>
+        </math>
+      </kineticLaw>
+    </reaction>
+  </listOfReactions>
+</model>
+</sbml>
+""",
+    encoding="utf-8",
+)
+m = bngsim.Model.from_sbml("pulse.xml")
+result = bngsim.Simulator(m, sensitivity_params=["k"]).run(t_span=(0, 10), n_points=11)
+
+result.ar_sensitivity_refused          # frozenset({'stimulus'})
+try:
+    result.output_sensitivities("species:stimulus")
+except ValueError as e:
+    print(e)  # ... has no output sensitivity — uses unsupported construct: if() conditional.
 ```
 
 Two things cause this. The rule holds a `piecewise` (which becomes an `if()`,
@@ -335,13 +416,57 @@ lists them, and the error gives the reason for each.
 one in `sensitivity_params` raises. Reload at the size instead:
 
 ```python
+# pbpk.xml: blood and liver, both of size 1, and uptake from one to the
+# other at a mass-action rate. A reaction between two compartments of the
+# same size is one of the cases where a size cannot be written.
+Path("pbpk.xml").write_text(
+    """\
+<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version2/core" level="3" version="2">
+<model id="pbpk">
+  <listOfCompartments>
+    <compartment id="Blood" size="1" constant="true"/>
+    <compartment id="Liver" size="1" constant="true"/>
+  </listOfCompartments>
+  <listOfSpecies>
+    <species id="D_blood" compartment="Blood" initialConcentration="10"
+             hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+    <species id="D_liver" compartment="Liver" initialConcentration="0"
+             hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+  </listOfSpecies>
+  <listOfParameters>
+    <parameter id="k_in" value="0.3" constant="true"/>
+  </listOfParameters>
+  <listOfReactions>
+    <reaction id="uptake" reversible="false">
+      <listOfReactants>
+        <speciesReference species="D_blood" stoichiometry="1" constant="true"/>
+      </listOfReactants>
+      <listOfProducts>
+        <speciesReference species="D_liver" stoichiometry="1" constant="true"/>
+      </listOfProducts>
+      <kineticLaw>
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply> <times/> <ci> Blood </ci> <ci> k_in </ci> <ci> D_blood </ci> </apply>
+        </math>
+      </kineticLaw>
+    </reaction>
+  </listOfReactions>
+</model>
+</sbml>
+""",
+    encoding="utf-8",
+)
+bngsim.Model.from_sbml("pbpk.xml").unwritable_compartment_size_params  # ['Blood', 'Liver']
+
+v = 0.5
 m = bngsim.Model.from_sbml("pbpk.xml", compartment_sizes={"Liver": v})
 ```
 
 or take a central difference over reloads, which is exact:
 
 ```python
-def dloss_dV(v, h):
+def dloss_dV(v, h):  # loss is your objective, a function of a Model
     up = bngsim.Model.from_sbml("pbpk.xml", compartment_sizes={"Liver": v + h})
     dn = bngsim.Model.from_sbml("pbpk.xml", compartment_sizes={"Liver": v - h})
     return (loss(up) - loss(dn)) / (2 * h)
@@ -375,10 +500,45 @@ Changing such a parameter would not change what it was folded into, so BNGsim
 refuses, by name:
 
 ```python
+# model.xml: compartment c holds a species, and an initialAssignment sets
+# its size to 2*p.
+Path("model.xml").write_text(
+    """\
+<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version2/core" level="3" version="2">
+<model id="folded">
+  <listOfCompartments>
+    <compartment id="c" size="2" constant="true"/>
+  </listOfCompartments>
+  <listOfSpecies>
+    <species id="S" compartment="c" initialConcentration="5"
+             hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+  </listOfSpecies>
+  <listOfParameters>
+    <parameter id="p" value="1" constant="true"/>
+  </listOfParameters>
+  <listOfInitialAssignments>
+    <initialAssignment symbol="c">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply> <times/> <cn> 2 </cn> <ci> p </ci> </apply>
+      </math>
+    </initialAssignment>
+  </listOfInitialAssignments>
+</model>
+</sbml>
+""",
+    encoding="utf-8",
+)
 m = bngsim.Model.from_sbml("model.xml")
 m.frozen_params                     # ['p']
-m.set_param("p", 2.0)               # ParameterError: ... the size of compartment 'c' ...
-bngsim.Simulator(m, sensitivity_params=["p"])   # SensitivityUnsupportedError
+try:
+    m.set_param("p", 2.0)
+except bngsim.ParameterError as e:
+    print(e)                        # ... for the size of compartment 'c', which an initialAssignment sets ...
+try:
+    bngsim.Simulator(m, sensitivity_params=["p"])
+except bngsim.SensitivityUnsupportedError as e:
+    print(e)                        # Forward sensitivity is not supported for 'p', ...
 ```
 
 Writing exactly the value it already holds is allowed, so a whole parameter
@@ -457,9 +617,38 @@ BNGsim finds the crossings, computes `∂t*/∂p`, stops the integration exactly
 at `t*`, and applies the jump. You don't need to declare anything.
 
 ```python
+# The rate law above in a .net file: a clock T made at rate 1, so that
+# dT/dt = 1, read as the observable t, and X made at rate rate_X().
+Path("switch.net").write_text(
+    """\
+begin parameters
+    1 sigma  4
+    2 k      2
+    3 one    1
+end parameters
+begin functions
+    1 rate_X() if((t>=sigma),k,0)
+end functions
+begin species
+    1 T() 0
+    2 X() 0
+end species
+begin reactions
+    1 0 1 one
+    2 0 2 rate_X
+end reactions
+begin groups
+    1 t 1
+end groups
+""",
+    encoding="utf-8",
+)
+model = bngsim.Model.from_net("switch.net")
+x_idx = model.species_names.index("X()")
+
 sim = bngsim.Simulator(model, sensitivity_params=["sigma", "k"])
 res = sim.run(t_span=(0, 10), n_points=101)
-res.sensitivities[:, x_idx, 0]   # ∂X/∂sigma: exactly 0 before t*, −k after
+res.sensitivities[:, x_idx, 0]   # ∂X/∂sigma: exactly 0 before t* = 4, −k = −2 after
 ```
 
 A model with `if()` conditions but no fitted switch time is not affected: it

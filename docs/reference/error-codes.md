@@ -9,6 +9,10 @@ summary: "The code every BNGsim error and run notice carries, what each means an
 Every BNGsim error carries a `code`, a string that stays the same across releases where the message may change. A program should branch on the code, not on the message.
 
 ```python
+import bngsim
+
+model = bngsim.examples.load("binding")  # parameters kf, kr, A0 and B0
+
 try:
     model.set_param("kff", 1.0)
 except bngsim.BngsimError as e:

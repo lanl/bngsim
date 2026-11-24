@@ -16,18 +16,23 @@ directly on `Model.from_sbml(...)`; see
 ## Convert a network
 
 ```python
+import shutil
+
 import bngsim
+
+# The bundled binding model, A + B <-> C: the .net BNG2.pl generated from it.
+shutil.copy(bngsim.examples.path("binding", "net"), "model.net")
 
 report = bngsim.convert.net_to_sbml("model.net", "model.xml")
 print(report.ok)         # True when every check passed
 print(report.summary())  # counts and the result of each check
 
-bngsim.convert.sbml_to_net("model.xml", "model.net")  # also bngsim.sbml_to_net
+bngsim.convert.sbml_to_net("model.xml", "roundtrip.net")  # also bngsim.sbml_to_net
 ```
 
 ```bash
 bngsim-net2sbml model.net -o model.xml
-bngsim-sbml2net model.xml -o model.net
+bngsim-sbml2net model.xml -o roundtrip.net
 ```
 
 Each conversion returns a report. Check `report.ok`. The checks compare the
@@ -61,17 +66,21 @@ fixed compartment volumes, transport between compartments, and SBML events at
 fixed times, which become a BNGL actions block.
 
 ```python
-report = bngsim.convert.sbml_to_bngl("model.xml", "model.bngl")
+report = bngsim.convert.sbml_to_bngl("model.xml", "model_cbngl.bngl")
+```
 
-# Check it with BNG2.pl: generate the network from the .bngl, reload it, and
-# compare the right-hand side and each rule-set species to the source.
-report = bngsim.convert.sbml_to_bngl("model.xml", "model.bngl", validate="bng2")
+To check it with BNG2.pl, pass `validate="bng2"`. It generates the network
+from the `.bngl`, reloads it, and compares the right-hand side and each
+rule-set species to the source:
+
+```python
+report = bngsim.convert.sbml_to_bngl("model.xml", "model_cbngl.bngl", validate="bng2")
 print(report.rhs_faithful)   # True when the round trip matches the source
 ```
 
 ```bash
-bngsim-sbml2bngl model.xml -o model.bngl
-bngsim-sbml2bngl model.xml -o model.bngl --gate     # with the BNG2.pl check
+bngsim-sbml2bngl model.xml -o model_cbngl.bngl
+bngsim-sbml2bngl model.xml -o model_cbngl.bngl --gate     # with the BNG2.pl check
 ```
 
 `validate="bng2"` needs BNG2.pl on `$BNGPATH` or `PATH`. It uses BNG2.pl so the
@@ -141,9 +150,17 @@ python -c "import bngsim; bngsim.Model.from_bngl('model.bngl', net_out='model.ne
 bngsim-omex pack model.net --bngl model.bngl --gate full   # writes model.omex
 ```
 
-The same from Python:
+The same from Python, with the bundled binding model's `.bngl` given one
+`simulate` action, the protocol the archive carries:
 
 ```python
+from pathlib import Path
+
+bngl = bngsim.examples.path("binding", "bngl").read_text(encoding="utf-8")
+Path("model.bngl").write_text(
+    bngl + 'simulate({method=>"ode", t_end=>100, n_steps=>100})\n', encoding="utf-8"
+)
+
 report = bngsim.convert.net_to_omex(
     "model.net", "model.omex", bngl="model.bngl", gate="full",
 )
