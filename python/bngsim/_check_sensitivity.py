@@ -27,10 +27,13 @@ the two.
   the floor and not ``rtol`` holds it, is not resolved by the run, and is
   named: its move past that many floors is read on the largest peak of its
   column, so its noise near zero is no finding and a departure as large as the
-  column's own values is one. So is a series past the bound that moves as far
-  again at a hundredth of the tolerance (:data:`FLOOR_SHARE`): a floor the
-  solver's arithmetic sets (issue #177), not the tolerance, holds it, and its
-  move is read on its column's largest peak.
+  column's own values is one. A series past the bound whose move from rtol/10
+  to rtol/100 is at least :data:`FLOOR_SHARE` of its move at rtol/10 is taken
+  to be held by a floor (issue #177) and not the tolerance. It is named
+  (``n_floor_held``), not failed: its move is read on its column's largest
+  peak, and the quotient check allows it that move. An error in such a series
+  that does not shrink with the tolerance, and is small beside its column's
+  peak, therefore passes both checks; the name is the only sign of it.
 - ``"sensitivity_fd"``: a central difference quotient. Each ``θ`` is moved by
   :data:`FD_STEP` of its value, and by twice that, both ways (an initial
   amount through the start state, a parameter through
@@ -411,8 +414,8 @@ def check_sensitivity(ctx: _Context) -> dict[str, Any]:
     n_held = int(held.sum())
     if n_held:
         note += (
-            f"; {n_held} series moving as far at rtol/100 as at rtol/10, held by the "
-            "arithmetic's floor and not the tolerance, judged on their column's largest peak"
+            f"; {n_held} series moving at least half as far at rtol/100 as at rtol/10, taken "
+            "to be held by a floor and not the tolerance, judged on their column's largest peak"
         )
     n_refused = int((~live).sum())
     if n_refused:
@@ -615,7 +618,10 @@ def check_sensitivity_fd(ctx: _Context) -> dict[str, Any]:
         # A series' scale is the larger of the run's and the quotient's peak,
         # so a column the run gives as 0 where the quotient does not is judged
         # on the quotient's scale, not masked by its own.
-        q_peak = np.where(fin_q, np.abs(q1), 0.0).max(axis=0) if s.size else np.zeros(n_sp)
+        # (Not at a cell its kink term dominates: on an event time the value
+        # moves, the quotient of the jump is the jump over 2h, no derivative.)
+        smooth_q = fin_q & (FD_SPREAD * kink < FD_RESOLVED * np.abs(q1))
+        q_peak = np.where(smooth_q, np.abs(q1), 0.0).max(axis=0) if s.size else np.zeros(n_sp)
         pk = np.maximum(peak[:, j], q_peak)
         cut = FD_RESOLVED * pk[None, :]
         # Within reach of a switch or event time the value moves: that cell.
@@ -669,6 +675,8 @@ def check_sensitivity_fd(ctx: _Context) -> dict[str, Any]:
                 "no cell that carries it is clear of a switch or event time it moves, or of "
                 "a step too wide for it"
             )
+            ratio[:, j] = 0.0
+            rel[:, j] = 0.0
             continue
         judged[j] = True
 

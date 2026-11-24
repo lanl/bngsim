@@ -598,6 +598,30 @@ def test_a_series_whose_only_values_sit_on_a_switch_is_not_judged_and_says_so(mo
     assert "t_dose" in v["not_judged"]
 
 
+@pytest.mark.parametrize(("factor", "status"), [(1.0, "pass"), (1.05, "diff")])
+def test_an_event_sampled_on_its_time_is_judged_on_the_cells_past_it(monkeypatch, factor, status):
+    # On t_dose the quotient of the dose's jump is about dose/(2h), no
+    # derivative: it must not set the series' scale, or the five clean cells
+    # past the event go unjudged.
+    ant = """
+    model bol
+      J1: A -> ; k*A
+      E1: at (time >= t_dose): A = A + dose
+      k = 0.5; dose = 100; t_dose = 5
+      A = 100
+    end
+    """
+    sim = Simulator(Model.from_antimony_string(ant), method="ode", sensitivity_params=["t_dose"])
+    r = sim.run(t_span=(0, 10), n_points=11)
+    _every_solve_off(monkeypatch, 0, factor)
+    v = _by_name(_scaled(r, 0, factor).check(["sensitivity_fd"]))["sensitivity_fd"]
+    assert v["status"] == status and v["n_judged"] == 1, v
+    if status == "diff":
+        assert v["worst_column"] == "dA/dt_dose"
+    else:
+        assert v["not_resolved"] == []
+
+
 def test_a_value_every_solve_gives_as_nan_fails_the_tolerance_tier(monkeypatch):
     real = Simulator.run
 
