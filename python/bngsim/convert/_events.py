@@ -38,20 +38,90 @@ if TYPE_CHECKING:
 # ─── numeric MathML folding ──────────────────────────────────────────────────
 
 
-def _const_env(sbml_model) -> dict[str, float]:
+def _const_env(sbml_model) -> tuple[dict[str, float], dict[int, dict[str, float]]]:
     """The names that fold to a constant in a trigger/delay/assignment: global
     parameters and compartment sizes (species are *not* constants — a reference
-    to one makes the expression state-dependent, i.e. non-fixed-time)."""
-    env: dict[str, float] = {}
+    to one makes the expression state-dependent, i.e. non-fixed-time).
+
+    Returns ``(env, own)``. ``env`` holds each name that keeps one value through
+    the run, at that value: the declared one, or what its initialAssignment
+    folds to (the assignment overrides the declared value), or what its
+    assignment rule folds to over the others. A name a rate rule or an event
+    changes is left out, as is one whose math does not fold (it reads a species
+    or the time): a reference to it is refused.
+
+    ``own[i]`` holds the targets event ``i`` alone writes, at their start values,
+    for its assigned values to read: nothing changes such a target before the
+    event executes, and a time-threshold trigger executes it once, so
+    ``vDiet = vDiet*fDiet`` reads ``vDiet``'s start value. A trigger never reads
+    them, as the event re-arms on what it writes.
+    """
+
+    def kept(sid: str) -> bool:
+        return (
+            sbml_model.getParameter(sid) is not None or sbml_model.getCompartment(sid) is not None
+        )
+
+    assigned: dict[str, Any] = {}
+    rated: set[str] = set()
+    for i in range(sbml_model.getNumRules()):
+        rule = sbml_model.getRule(i)
+        if rule.isAssignment() and kept(rule.getVariable()):
+            assigned[rule.getVariable()] = rule.getMath()
+        elif rule.isRate():
+            rated.add(rule.getVariable())
+    writers: dict[str, set[int]] = {}
+    for i in range(sbml_model.getNumEvents()):
+        ev = sbml_model.getEvent(i)
+        for j in range(ev.getNumEventAssignments()):
+            writers.setdefault(ev.getEventAssignment(j).getVariable(), set()).add(i)
+    initial: dict[str, Any] = {}
+    for i in range(sbml_model.getNumInitialAssignments()):
+        ia = sbml_model.getInitialAssignment(i)
+        if kept(ia.getSymbol()):
+            initial[ia.getSymbol()] = ia.getMath()
+
+    # What each holds at the start. An initialAssignment reads the others
+    # there, those a rule or an event changes later included (COPASI writes
+    # ``X_0 = X`` for X's start value).
+    start: dict[str, float] = {}
     for i in range(sbml_model.getNumParameters()):
         p = sbml_model.getParameter(i)
         if p.isSetValue():
-            env[p.getId()] = p.getValue()
+            start[p.getId()] = p.getValue()
     for i in range(sbml_model.getNumCompartments()):
         c = sbml_model.getCompartment(i)
         if c.isSetSize():
-            env[c.getId()] = c.getSize()
-    return env
+            start[c.getId()] = c.getSize()
+    for sid in (*initial, *assigned):
+        start.pop(sid, None)
+    _fold_all(start, {**initial, **assigned})
+
+    # What keeps it. An assignment rule keeps one value only where it folds
+    # over those that keep theirs.
+    moving = rated | set(writers) | set(assigned)
+    env = {sid: v for sid, v in start.items() if sid not in moving}
+    _fold_all(env, assigned)
+
+    own: dict[int, dict[str, float]] = {}
+    for sid, events in writers.items():
+        if len(events) == 1 and sid in start and sid not in rated and sid not in assigned:
+            own.setdefault(next(iter(events)), {})[sid] = start[sid]
+    return env, own
+
+
+def _fold_all(env: dict[str, float], pending: dict[str, Any]) -> None:
+    """Add each name of ``pending`` to ``env`` at what its math folds to over
+    ``env``, again and again until no more fold: one may read another, in any
+    document order. One that never folds is left out."""
+    pending = dict(pending)
+    while pending:
+        folded = {s: v for s, m in pending.items() if (v := _eval_const(m, env)) is not None}
+        if not folded:
+            return
+        env.update(folded)
+        for s in folded:
+            del pending[s]
 
 
 def _eval_const(node, env: dict[str, float]) -> float | None:
@@ -118,7 +188,7 @@ def _eval_const(node, env: dict[str, float]) -> float | None:
             return None
         try:
             return float(a**b)
-        except (ValueError, OverflowError):
+        except (ValueError, OverflowError, TypeError):  # TypeError: a complex root
             return None
     return None
 
@@ -288,7 +358,7 @@ def sbml_events_to_protocol(
     if n_events == 0:
         return None, []
 
-    env = _const_env(sbml_model)
+    env, own = _const_env(sbml_model)
     species_ids = {sbml_model.getSpecies(i).getId() for i in range(sbml_model.getNumSpecies())}
     name_to_idx = _codegen_species_names(model)
 
@@ -315,10 +385,11 @@ def sbml_events_to_protocol(
 
         assigns: list[tuple[int, float]] = []
         ok = True
+        value_env = {**env, **own[i]} if i in own else env
         for j in range(ev.getNumEventAssignments()):
             ea = ev.getEventAssignment(j)
             var = ea.getVariable()
-            val = _eval_const(ea.getMath(), env) if ea.isSetMath() else None
+            val = _eval_const(ea.getMath(), value_env) if ea.isSetMath() else None
             if val is None:
                 lossy.append(
                     f"event {eid!r} assigns {var!r} a non-constant value — the "

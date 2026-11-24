@@ -91,6 +91,13 @@ with no reactions (BNG2.pl's `generate_network` stops on one), and what BNGL
 can't express, such as `!=` and non-finite parameters. `strict=False` turns
 these into warnings, as above.
 
+An event at a fixed time becomes a `simulate` up to that time, then a
+`setConcentration` for each assignment. Its trigger time, delay and assigned
+values are read at the start of the run, so a parameter that an
+initialAssignment sets, or an assignment rule over constants, has the value
+the run gives it. An event that reads a parameter a rate rule or another
+event changes is refused, since its time or value isn't known before the run.
+
 A species set by an assignment rule is handled as in `.net`. Its molecule is
 named after the rule, `@comp1:$__ar_B()`, next to the function `B()`. BNGsim
 reads the pair as the rule when it loads the `.net` BNG2.pl generates, but

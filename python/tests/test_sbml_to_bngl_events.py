@@ -243,3 +243,243 @@ def test_the_loaders_size_jump_events_are_not_counted_as_the_models(tmp_path):
     protocol, lossy = sbml_events_to_protocol(_write(tmp_path, xml), model)
     assert lossy == []
     assert protocol is not None
+
+
+# ─── what a trigger time, delay or value folds from (issue #1784) ──────────
+# Each parameter and compartment folded at its declared value. One an
+# initialAssignment sets starts at that value instead; one a rule or an event
+# changes has no one value to fold.
+
+
+def _param(pid: str, value: object, constant: bool = True) -> str:
+    return f'<parameter id="{pid}" value="{value}" constant="{str(constant).lower()}"/>'
+
+
+def _initial(**symbols: str) -> str:
+    return (
+        "<listOfInitialAssignments>"
+        + "".join(
+            f'<initialAssignment symbol="{s}">{_M}{m}</math></initialAssignment>'
+            for s, m in symbols.items()
+        )
+        + "</listOfInitialAssignments>"
+    )
+
+
+def _rules(**rules: tuple[str, str]) -> str:
+    """``var=(kind, math)``, kind ``assignmentRule`` or ``rateRule``."""
+    return (
+        "<listOfRules>"
+        + "".join(f'<{k} variable="{v}">{_M}{m}</math></{k}>' for v, (k, m) in rules.items())
+        + "</listOfRules>"
+    )
+
+
+def _times(*factors: str) -> str:
+    return f"<apply><times/>{''.join(factors)}</apply>"
+
+
+def _plus(*terms: str) -> str:
+    return f"<apply><plus/>{''.join(terms)}</apply>"
+
+
+_C_AND_D = (
+    '<compartment id="C" size="1" spatialDimensions="3" constant="true"/>'
+    '<compartment id="D" size="1" spatialDimensions="3" constant="{constant}"/>'
+)
+_AT_HALF = "E0", _at(_cn(0.5))
+
+
+@pytest.mark.parametrize(
+    ("events", "body", "want"),
+    [
+        pytest.param(
+            [_event("E1", _at(_cn(1)), {"A": _cn(5)}, delay=_ci("d"))],
+            {"parameters": _param("d", 0), "extra": _initial(d=_cn(1))},
+            [(2.0, "A", 5.0)],
+            id="a delay an initialAssignment sets",
+        ),
+        pytest.param(
+            [_event("E1", _at(_ci("T")), {"A": _cn(5)})],
+            {"parameters": _param("T", 1), "extra": _initial(T=_cn(2))},
+            [(2.0, "A", 5.0)],
+            id="a trigger time an initialAssignment sets",
+        ),
+        pytest.param(
+            [_event("E1", _at(_cn(1)), {"A": _ci("v")})],
+            {"parameters": _param("v", 1), "extra": _initial(v=_cn(5))},
+            [(1.0, "A", 5.0)],
+            id="a value an initialAssignment sets",
+        ),
+        pytest.param(
+            [_event("E1", _at(_ci("T")), {"A": _cn(5)})],
+            {
+                "parameters": _param("T", 0) + _param("h", 0),
+                "extra": _initial(T=_times(_cn(2), _ci("h")), h=_cn(1)),
+            },
+            [(2.0, "A", 5.0)],
+            id="an initialAssignment that reads a later one",
+        ),
+        pytest.param(
+            [_event("E1", _at(_cn(1)), {"A": _cn(5)}, delay=_ci("d"))],
+            {
+                "parameters": _param("d", 0, constant=False) + _param("h", 0.5),
+                "extra": _rules(d=("assignmentRule", _times(_cn(2), _ci("h")))),
+            },
+            [(2.0, "A", 5.0)],
+            id="a delay an assignment rule over constants sets",
+        ),
+        pytest.param(
+            [
+                _event("E1", _at(_cn(1)), {"A": _ci("v0")}),
+                _event("E2", _at(_cn(2)), {"v": _cn(7)}),
+            ],
+            {
+                "parameters": _param("v", 4, constant=False) + _param("v0", 0),
+                "extra": _initial(v0=_ci("v")),
+            },
+            [(1.0, "A", 4.0), (2.0, "v", 7.0)],
+            id="an initialAssignment that reads the start of what an event changes",
+        ),
+        pytest.param(
+            [_event("E1", _at(_cn(1)), {"v": _plus(_ci("v"), _cn(4)), "A": _ci("v")})],
+            {"parameters": _param("v", 1, constant=False)},
+            [(1.0, "v", 5.0), (1.0, "A", 1.0)],
+            id="a value that reads the target only its own event changes",
+        ),
+        pytest.param(
+            [_event("E1", _at(_cn(1)), {"A": _ci("D")})],
+            {"compartment": _C_AND_D.format(constant="true"), "extra": _initial(D=_cn(3))},
+            [(1.0, "A", 3.0)],
+            id="a compartment size an initialAssignment sets",
+        ),
+        pytest.param(
+            [_event("E1", _at(_cn(1)), {"A": _ci("D")})],
+            {
+                "compartment": _C_AND_D.format(constant="false"),
+                "extra": _rules(D=("assignmentRule", _cn(3))),
+            },
+            [(1.0, "A", 3.0)],
+            id="a compartment size an assignment rule over constants sets",
+        ),
+    ],
+)
+def test_a_name_folds_to_the_value_the_run_gives_it(tmp_path, events, body, want):
+    xml = _sbml(*events, **body)
+    rep = _convert(tmp_path, xml)
+    assert rep.ok, rep.lossy
+    assert _schedule(rep) == want
+    _assert_runs_as_the_model(xml, rep)
+
+
+@pytest.mark.parametrize(
+    ("events", "body", "note"),
+    [
+        pytest.param(
+            [_event("E1", _at(_cn(1)), {"A": _cn(5)}, delay=_ci("d"))],
+            {
+                "parameters": _param("d", 0, constant=False),
+                "extra": _rules(d=("assignmentRule", _ci("B"))),
+            },
+            "'E1' has a non-constant delay",
+            id="a delay an assignment rule over a species sets",
+        ),
+        pytest.param(
+            [_event("E1", _at(_times(_cn(2), _ci("T"))), {"A": _cn(5)})],
+            {
+                "parameters": _param("T", 1, constant=False),
+                "extra": _rules(T=("rateRule", _cn(1))),
+            },
+            "'E1' is state-triggered",
+            id="a trigger time a rate rule moves",
+        ),
+        pytest.param(
+            [
+                _event(*_AT_HALF, {"T": _cn(3)}),
+                _event("E1", _at(_ci("T")), {"A": _cn(5)}),
+            ],
+            {"parameters": _param("T", 1, constant=False)},
+            "'E1' is state-triggered",
+            id="a trigger time another event resets",
+        ),
+        pytest.param(
+            [_event("E1", _at(_ci("T")), {"T": _plus(_ci("T"), _cn(1)), "A": _cn(5)})],
+            {"parameters": _param("T", 1, constant=False)},
+            "'E1' is state-triggered",
+            id="a trigger time its own event moves on",
+        ),
+        pytest.param(
+            [
+                _event(*_AT_HALF, {"d": _cn(2)}),
+                _event("E1", _at(_cn(1)), {"A": _cn(5)}, delay=_ci("d")),
+            ],
+            {"parameters": _param("d", 0, constant=False)},
+            "'E1' has a non-constant delay",
+            id="a delay another event resets",
+        ),
+        pytest.param(
+            [
+                _event(*_AT_HALF, {"v": _cn(7)}),
+                _event("E1", _at(_cn(1)), {"A": _ci("v")}),
+            ],
+            {"parameters": _param("v", 1, constant=False)},
+            "'E1' assigns 'A' a non-constant value",
+            id="a value another event resets",
+        ),
+        pytest.param(
+            [
+                _event(*_AT_HALF, {"v": _plus(_ci("v"), _cn(1))}),
+                _event("E1", _at(_cn(1)), {"v": _plus(_ci("v"), _cn(1))}),
+            ],
+            {"parameters": _param("v", 1, constant=False)},
+            "'E0' assigns 'v' a non-constant value",
+            id="a target two events step",
+        ),
+        pytest.param(
+            [_event("E1", _at(_cn(1)), {"A": _ci("v")})],
+            {"parameters": _param("v", 1), "extra": _initial(v=_ci("B"))},
+            "'E1' assigns 'A' a non-constant value",
+            id="a value whose initialAssignment reads a species",
+        ),
+        pytest.param(
+            [_event("E1", _at(_cn(1)), {"A": _ci("v")})],
+            {
+                "parameters": _param("v", 1),
+                "extra": _initial(
+                    v=f"<apply><power/>{_cn(-8)}<apply><divide/>{_cn(1)}{_cn(3)}</apply></apply>"
+                ),
+            },
+            "'E1' assigns 'A' a non-constant value",
+            id="a value whose initialAssignment has no real value",
+        ),
+        pytest.param(
+            [_event("E1", _at(_cn(1)), {"A": _ci("D")})],
+            {
+                "compartment": _C_AND_D.format(constant="false"),
+                "extra": _rules(D=("assignmentRule", _plus(_cn(1), _TIME))),
+            },
+            "'E1' assigns 'A' a non-constant value",
+            id="a compartment size an assignment rule over the time sets",
+        ),
+        pytest.param(
+            [
+                _event(*_AT_HALF, {"D": _cn(3)}),
+                _event("E1", _at(_cn(1)), {"A": _ci("D")}),
+            ],
+            {"compartment": _C_AND_D.format(constant="false")},
+            "'E1' assigns 'A' a non-constant value",
+            id="a compartment size another event resets",
+        ),
+    ],
+)
+def test_a_name_a_rule_or_event_moves_is_not_folded(tmp_path, events, body, note):
+    """Refused, naming the event: its time or value moves with the run."""
+    xml = _sbml(*events, **body)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        model = bngsim.Model.from_sbml_string(xml)
+    protocol, lossy = sbml_events_to_protocol(_write(tmp_path, xml), model)
+    assert protocol is None
+    assert any(note in n for n in lossy), lossy
+    with pytest.raises(ConversionError, match=note):
+        _convert(tmp_path, xml)
