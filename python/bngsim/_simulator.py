@@ -12718,7 +12718,11 @@ class Simulator:
         a stateful ``run_until``/``run`` the model holds the final state (the
         ODE/SSA backends write it back), so this returns the post-step state.
         It is the per-step ``get`` half of driving bngsim as a reaction kernel
-        from an external orchestrator; pair with :meth:`set_state`.
+        from an external orchestrator; pair with :meth:`set_state`. The values
+        are as stored: after an SSA or PSA run, a concentration species in a
+        compartment whose size moves holds its count over the compartment's
+        load-time size, which ``Model.get_concentration`` reads at the size the
+        compartment has (issue #1754).
         """
         return self._model.get_state()
 
@@ -12729,7 +12733,8 @@ class Simulator:
         model's current concentrations as the initial condition at the start of
         the next ``run_until``/``run``, so a bulk ``set_state`` between steps is
         the per-step ``set`` half of the kernel exchange (e.g. injecting the
-        SSA-subset coupling species before advancing the ODE subset).
+        SSA-subset coupling species before advancing the ODE subset). The
+        values are taken as stored, as :meth:`get_state` returns them.
 
         ``time``, when given, also sets :attr:`current_time` (see
         :meth:`set_time`), so the state and the clock it belongs to move

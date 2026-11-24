@@ -418,12 +418,45 @@ def test_set_concentration_over_an_ssa_state_is_a_concentration(
 ):
     """[X] = 10 at c = 4 is 40 molecules. Written over an SSA run's state, the
     10 was stored as the count over the load-time size, and the next SSA run
-    started from 20."""
+    started from 20. The ODE rows held before too, the raw write and the ODE
+    run's raw read cancelling; they keep a fix of one without the other out."""
     m = after(method)
     m.set_concentration(name, 10.0)
     assert m.get_concentration(name) == pytest.approx(10.0, rel=1e-12)
     r = _run(m, method if then == "same" else "ode", t_span=(t_end, t_end + 2), n_points=3)
     np.testing.assert_allclose(_sel(r, name)[:, 0], 10.0 * amount / conc, rtol=1e-6)
+
+
+@pytest.mark.parametrize("method", STOCHASTIC)
+@pytest.mark.parametrize("between", ["ODE Simulator", "V0 written"])
+def test_a_rule_sized_state_is_read_at_the_size_the_next_run_reads(method, between):
+    """``c := V0 + time`` after a run to t = 4: 30 molecules at c = 7. Building
+    an ODE Simulator evaluates the rule at t = 0, which left its parameter at
+    3, and writing V0 = 5 makes c = 9 without evaluating it, which left the
+    parameter at 7. get_concentration and set_concentration read the size the
+    next run reads, not the parameter: they read [S] = 10 for 30/7 after the
+    Simulator and 30/7 for 30/9 after the write, and stored [S] = 10 as 30 and
+    70 molecules for 70 and 90. The read leaves the model as it was."""
+    m = _rule_sized_after_a_run(method)
+    if between == "ODE Simulator":
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            bngsim.Simulator(m, method="ode")
+        size = 7.0
+    else:
+        m.set_param("V0", 5.0)
+        size = 9.0
+    held, state = m.get_param("c"), m.get_state()
+    assert m.get_concentration("S") == pytest.approx(30.0 / size, rel=1e-12)
+    assert m.get_param("c") == held
+    np.testing.assert_array_equal(m.get_state(), state)
+    for then in (method, "ode"):
+        r = _run(m.clone(), then, t_span=(4, 5), n_points=2)
+        assert _sel(r, "[S]")[0, 0] == pytest.approx(30.0 / size, rel=1e-9)
+    m.set_concentration("S", 10.0)
+    for then in (method, "ode"):
+        r = _run(m.clone(), then, t_span=(4, 5), n_points=2)
+        np.testing.assert_allclose(_sel(r, "S")[:, 0], 10.0 * size, rtol=1e-6)
 
 
 @pytest.mark.parametrize("method", STOCHASTIC)

@@ -149,7 +149,7 @@ class NetworkModel {
     void set_species_continuous(int species_idx0);
 
     // Get a single species concentration by name; over an SSA run's state, at
-    // the size its compartment has now (see ssa_counts_stored).
+    // the size its compartment has at the model's time (see ssa_counts_stored).
     double get_concentration(const std::string &name) const;
 
     // ─── Bulk state-vector access (GH #102) ──────────────────────────────────
@@ -911,13 +911,15 @@ class NetworkModel {
     //
     // What reads such a state as concentrations reads it at the size each
     // compartment has, V_live (issue #1754; before, each read the count over
-    // the load-time size as the concentration, X = 300 for 150):
+    // the load-time size as the concentration, X = 300 for 150): the
+    // compartment's state slot, or for one an assignment rule sets, the rule's
+    // value evaluated on the state as stored, as the SSA run evaluates it, not
+    // the parameter the rule writes, which holds whatever evaluated it last.
     // get_concentration() reports stored·volume_factor/V_live and
-    // set_concentration() stores value·V_live/volume_factor, V_live the size
-    // as it stands (for a compartment an assignment rule sets, the parameter
-    // the rule writes, as the SSA run or whatever evaluated the rules since
-    // left it); an ODE run turns the state into concentrations at its
-    // start (ssa_counts_to_concentrations, which clears the flag), and
+    // set_concentration() stores value·V_live/volume_factor, V_live at the
+    // model's time, current_time(), and both leave the model as it was; an ODE
+    // run turns the state into concentrations at its start, V_live at t_start
+    // (ssa_counts_to_concentrations, which clears the flag); and
     // find_steady_state() solves from them and puts the state back as it was
     // stored. get_state_into()/set_state_from() take the values as stored and
     // leave the flag, so a get_state/set_state round trip is exact. A size
@@ -927,9 +929,8 @@ class NetworkModel {
 
     // Turn an SSA run's state into concentrations and clear ssa_counts_stored
     // (issue #1754); nothing changes when the flag is clear. Each is read at its
-    // compartment's size, that of one an assignment rule sets being the rule's
-    // value at time t, evaluated on the state as stored, as the SSA run
-    // evaluates it (which leaves the observables and functions there).
+    // compartment's size at time t, as get_concentration() reads it at
+    // current_time().
     void ssa_counts_to_concentrations(double t);
 
     // True iff a run() has advanced the species state since it was last at the

@@ -764,21 +764,56 @@ void NetworkModel::save_concentrations() {
     impl_->ic_baseline_saved = true;
 }
 
-// What an SSA run's write-back stores species sp as, over its concentration:
-// V_live/volume_factor for a concentration species in a compartment whose size
-// moves, which it stores as its count over the load-time size (issue #741), and
-// 1 for every other species. V_live is read where the SSA run reads it: the
-// compartment's state slot, or the parameter an assignment rule writes the size
-// into, as it stands. A size that is not finite and above 0 has no
-// concentration to read at it, and the value is taken as stored.
-static double ssa_storage_scale(const NetworkModel::Impl &impl, const Species &sp) {
+// The parameter values with every assignment rule evaluated at time t on the
+// state as stored, as an SSA run evaluates them for its rows and its start: the
+// size of a compartment a rule sets is its rule's value there. The parameter
+// the rule writes holds whatever evaluated it last, the rule's inputs as they
+// were then, so it is not read as the size: after a run to t = 4 in
+// c := V0 + time, building an ODE Simulator left it at 3 for 7, and a write of
+// V0 left it at 7. The model is left as it was: the clock, the observables, the
+// functions and the parameters are put back.
+static std::vector<double> ssa_rule_values(NetworkModel &model, NetworkModel::Impl &impl,
+                                           double t) {
+    const double clock = impl.current_time;
+    std::vector<double> params(impl.parameters.size()), totals(impl.observables.size());
+    for (std::size_t i = 0; i < params.size(); ++i)
+        params[i] = impl.parameters[i].value;
+    for (std::size_t i = 0; i < totals.size(); ++i)
+        totals[i] = impl.observables[i].total;
+    const std::vector<double> functions = impl.function_value_cache;
+    std::vector<double> stored(impl.species.size());
+    model.get_state_into(stored.data());
+    model.update_observables(stored.data());
+    model.evaluate_functions(t);
+    std::vector<double> values(params.size());
+    for (std::size_t i = 0; i < params.size(); ++i) {
+        values[i] = impl.parameters[i].value;
+        impl.parameters[i].value = params[i];
+    }
+    for (std::size_t i = 0; i < totals.size(); ++i)
+        impl.observables[i].total = totals[i];
+    impl.function_value_cache = functions;
+    impl.current_time = clock;
+    return values;
+}
+
+// What an SSA run's write-back stores species sp as, over its concentration
+// (issue #1754): V_live/volume_factor for a concentration species in a
+// compartment whose size moves, which it stores as its count over the
+// load-time size (issue #741), and 1 for every other species. V_live is the
+// compartment's state slot, or for a compartment an assignment rule sets, the
+// parameter the rule writes, from `rules` (ssa_rule_values). A size that is
+// not finite and above 0 has no concentration to read at it, and the value is
+// taken as stored.
+static double ssa_storage_scale(const NetworkModel::Impl &impl, const Species &sp,
+                                const std::vector<double> &rules) {
     double v;
     if (sp.ssa_live_volume_idx0 >= 0 &&
         sp.ssa_live_volume_idx0 < static_cast<int>(impl.species.size()))
         v = impl.species[static_cast<std::size_t>(sp.ssa_live_volume_idx0)].concentration;
     else if (sp.ssa_live_volume_param_idx0 >= 0 &&
-             sp.ssa_live_volume_param_idx0 < static_cast<int>(impl.parameters.size()))
-        v = impl.parameters[static_cast<std::size_t>(sp.ssa_live_volume_param_idx0)].value;
+             sp.ssa_live_volume_param_idx0 < static_cast<int>(rules.size()))
+        v = rules[static_cast<std::size_t>(sp.ssa_live_volume_param_idx0)];
     else
         return 1.0;
     return std::isfinite(v) && v > 0.0 && sp.volume_factor > 0.0 ? v / sp.volume_factor : 1.0;
@@ -790,10 +825,17 @@ void NetworkModel::set_concentration(const std::string &name, double value) {
         throw std::runtime_error("Species not found: " + name);
     }
     auto &sp = impl_->species[it->second];
-    // Over an SSA run's state the value is stored as that run stores it, so
-    // the next run reads it as the concentration it is (issue #1754): [X] = 10
-    // at c = 4 from a load-time 2 was read as 20 molecules for 40.
-    sp.concentration = impl_->ssa_counts_stored ? value * ssa_storage_scale(*impl_, sp) : value;
+    // Over an SSA run's state the value is stored as that run stores it, at the
+    // size the compartment has at the model's time, so the next run reads it as
+    // the concentration it is (issue #1754): [X] = 10 at c = 4 from a load-time
+    // 2 was read as 20 molecules for 40.
+    if (impl_->ssa_counts_stored) {
+        const std::vector<double> rules = sp.ssa_live_volume_param_idx0 >= 0
+                                              ? ssa_rule_values(*this, *impl_, impl_->current_time)
+                                              : std::vector<double>{};
+        value *= ssa_storage_scale(*impl_, sp, rules);
+    }
+    sp.concentration = value;
     // GH #210 — setting a species to a literal value is a fresh initial-condition
     // assignment (its θ-derivative is 0), NOT a carried-over dynamics state, so
     // it does NOT mark the state dirty: a reset()+set_concentration() IC setup
@@ -814,11 +856,18 @@ double NetworkModel::get_concentration(const std::string &name) const {
     if (it == impl_->shared->species_name_to_idx.end()) {
         throw std::runtime_error("Species not found: " + name);
     }
-    // An SSA run's state is read at the size the compartment has now (issue
-    // #1754): 150 molecules at c = 4 were reported as the 75 stored for them.
+    // An SSA run's state is read at the size the compartment has at the model's
+    // time (issue #1754): 150 molecules at c = 4 were reported as the 75 stored
+    // for them. Reading a rule's size evaluates the rules, and puts back what
+    // that moves, so the read changes nothing.
     const auto &sp = impl_->species[it->second];
-    return impl_->ssa_counts_stored ? sp.concentration / ssa_storage_scale(*impl_, sp)
-                                    : sp.concentration;
+    if (!impl_->ssa_counts_stored)
+        return sp.concentration;
+    const std::vector<double> rules =
+        sp.ssa_live_volume_param_idx0 >= 0
+            ? ssa_rule_values(const_cast<NetworkModel &>(*this), *impl_, impl_->current_time)
+            : std::vector<double>{};
+    return sp.concentration / ssa_storage_scale(*impl_, sp, rules);
 }
 
 void NetworkModel::get_state_into(double *out) const {
@@ -857,23 +906,16 @@ void NetworkModel::set_ssa_counts_stored(bool stored) { impl_->ssa_counts_stored
 void NetworkModel::ssa_counts_to_concentrations(double t) {
     if (!impl_->ssa_counts_stored)
         return;
-    // The size of a compartment an assignment rule sets is the rule's value at
-    // t, evaluated on the state as stored, as the SSA run evaluates it for its
-    // rows and its start. The parameter the rule writes holds whatever last
-    // evaluated it: building an ODE Simulator evaluates the rules at t = 0, so
-    // c := V0 + time read 3 for 7 after a run to t = 4.
     const auto &species = impl_->species;
-    if (std::any_of(species.begin(), species.end(),
-                    [](const Species &sp) { return sp.ssa_live_volume_param_idx0 >= 0; })) {
-        std::vector<double> stored(species.size());
-        get_state_into(stored.data());
-        update_observables(stored.data());
-        evaluate_functions(t);
-    }
+    const std::vector<double> rules =
+        std::any_of(species.begin(), species.end(),
+                    [](const Species &sp) { return sp.ssa_live_volume_param_idx0 >= 0; })
+            ? ssa_rule_values(*this, *impl_, t)
+            : std::vector<double>{};
     // A compartment's state slot holds its size and is no such species itself,
     // so every size is read as stored, whatever the order.
     for (auto &sp : impl_->species)
-        sp.concentration /= ssa_storage_scale(*impl_, sp);
+        sp.concentration /= ssa_storage_scale(*impl_, sp, rules);
     impl_->ssa_counts_stored = false;
 }
 
@@ -3178,6 +3220,16 @@ FunctionalJacobianContext NetworkModel::functional_jacobian_context() const {
 bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianInput> &terms) {
     const auto &sd = *impl_->shared;
     const auto &sp = sd.jac_sparsity;
+
+    // The self-check below evaluates the right-hand side at t = 0, which moves
+    // the model's clock there; it is put back on every exit. Left at 0, building
+    // an ODE Simulator after a run to t = 4 read a compartment an assignment
+    // rule sizes, c := V0 + time, at 3 for 7 (issue #1754).
+    struct KeepClock {
+        NetworkModel &model;
+        double t;
+        ~KeepClock() { model.set_current_time(t); }
+    } keep_clock{*this, impl_->current_time};
 
     // Issue #534: every `return false` below first records its verdict on the
     // instance, for last_functional_jacobian_decline() — which term or entry,

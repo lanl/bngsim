@@ -2445,6 +2445,11 @@ class Model:
         call marshals the entire state, so per-step exchange cost stays
         negligible next to the ODE solve even at ~100K species.
 
+        The values are as stored. After an SSA or PSA run, a concentration
+        species in a compartment whose size moves holds its count over the
+        compartment's load-time size, where :meth:`get_concentration` reads it
+        at the size the compartment has (issue #1754).
+
         See Also
         --------
         set_state : the inverse bulk assignment.
@@ -2461,7 +2466,10 @@ class Model:
             1-D array of length :attr:`n_species`, ordered like
             :attr:`species_names`. Copied into the model's live concentrations;
             observables and other derived state are recomputed on the next RHS
-            or observable evaluation.
+            or observable evaluation. The values are taken as stored, as
+            :meth:`get_state` returns them: after an SSA or PSA run, a count
+            over the load-time size for a concentration species in a
+            compartment whose size moves (issue #1754).
 
         Raises
         ------
