@@ -41,6 +41,11 @@ The constants are the developer-side differential harness's
 trajectory at once, against the largest value of any species, which a column
 far smaller than the largest cannot fail; this one is per column.
 
+A run that computed forward sensitivities gets checks of them too
+(:data:`SENSITIVITY`, in :mod:`bngsim._check_sensitivity`, issue #1893), each
+judged series by series on the same rules: the tolerance check's run's
+sensitivities, and a difference quotient.
+
 Verdicts: ``pass``, ``diff``, ``skip`` (with the reason), ``unsupported`` (the
 check does not apply to this run), ``exception`` (the changed run raised),
 ``no_base`` (no column is converged enough to judge a path against) and
@@ -110,9 +115,15 @@ DEFAULT_REPLICATES = 10
 #: judged against its drift.
 DETERMINISTIC = ("tolerance", "grid", "jacobian", "linear_solver", "backend", "second_engine")
 STOCHASTIC = ("replicates",)
-#: What ``checks=None`` runs: the cheap checks that catch the common case.
+#: The checks of a run's forward sensitivities (issue #1893): what ``"all"``
+#: adds for a run that computed them. ``sensitivity`` judges the tolerance
+#: check's run; ``sensitivity_fd`` makes a difference quotient.
+SENSITIVITY = ("sensitivity", "sensitivity_fd")
+#: What ``checks=None`` runs: the cheap checks that catch the common case, and
+#: of a run that computed sensitivities, :data:`DEFAULT_SENSITIVITY` too.
 DEFAULT_DETERMINISTIC = ("tolerance", "grid")
 DEFAULT_STOCHASTIC = ("replicates",)
+DEFAULT_SENSITIVITY = ("sensitivity",)
 
 _STATUSES = ("pass", "diff", "skip", "unsupported", "exception", "no_base", "timeout")
 _NOT_OK = ("diff", "exception", "timeout")
@@ -315,11 +326,16 @@ def check(
     run = rec.get("run")
     method = None if run is None else run.get("method")
     stochastic = None if method is None else method in _record.STOCHASTIC
-    known = DETERMINISTIC + STOCHASTIC
+    known = DETERMINISTIC + SENSITIVITY + STOCHASTIC
+    from bngsim import _check_sensitivity
+
+    sens = not stochastic and _check_sensitivity.present(result)
     if checks is None:
         names = list(DEFAULT_STOCHASTIC if stochastic else DEFAULT_DETERMINISTIC)
+        names += list(DEFAULT_SENSITIVITY) if sens else []
     elif checks == "all":
         names = list(STOCHASTIC if stochastic else DETERMINISTIC)
+        names += list(SENSITIVITY) if sens else []
     else:
         names = [checks] if isinstance(checks, str) else list(checks)
         bad = [n for n in names if n not in known]
@@ -406,6 +422,25 @@ def _next(out: Report, roundoff: bool = False) -> str:
         return (
             "The answer moves when the tolerance is tightened: rerun at a tighter rtol and "
             "atol (result.rerun(rtol=..., atol=...)) until it does not, and report that run."
+        )
+    if diffs and diffs[0]["name"] == "sensitivity":
+        return (
+            "The sensitivities move when the tolerance is tightened: rerun at a tighter rtol "
+            "and atol (result.rerun(rtol=..., atol=...)) until they do not, and report that "
+            "run's sensitivities."
+        )
+    if diffs and diffs[0]["name"] == "sensitivity_fd" and diffs[0].get("diff_not_converged"):
+        return (
+            "The sensitivities that disagree with a difference quotient are not converged at "
+            "the run's tolerance: rerun at a tighter rtol and atol (result.rerun(rtol=..., "
+            "atol=...)) and check that run's sensitivities."
+        )
+    if diffs and diffs[0]["name"] == "sensitivity_fd":
+        return (
+            "The forward sensitivities disagree with a difference quotient of the trajectories "
+            "(sensitivity_fd): on a model bngsim accepts, that is a bug worth reporting at "
+            "https://github.com/lanl/bngsim/issues, with json.dumps(report), result.record and "
+            "the model file. Do not report those sensitivities."
         )
     if diffs and diffs[0]["name"] == "second_engine":
         return (
@@ -510,6 +545,14 @@ class _Context:
         self.moved: NDArray[np.float64] | None = None
         self.relevant: NDArray[np.bool_] = np.ones(n, dtype=bool)
         self.tol_error = ""
+        # The tighter and looser runs, kept for the sensitivity checks, which
+        # judge their sensitivities (issue #1893).
+        self.tight: Result | None = None
+        self.tight100: Result | None = None
+        self.loose: Result | None = None
+        # The sensitivity checks' columns and their drift, made once.
+        self.sens_columns: Any = None
+        self.sens_drift: Any = None
 
     def _view(self, result: Result) -> NDArray[np.float64]:
         """What is compared of *result*: its species, or of a run that stopped
@@ -539,6 +582,21 @@ class _Context:
                 # rerun takes more (issue #1837). They stay on its notices.
                 warnings.simplefilter("ignore", RoundoffStepWarning)
                 return self.result.rerun(**changes)
+        except Exception as e:
+            if self.deadline is not None and _timed_out(e):
+                raise _Out from e
+            raise
+
+    def perturbed(self, **changes: Any) -> Result:
+        """:func:`bngsim._rerun.perturbed`, within the budget as :meth:`rerun`."""
+        from bngsim import _rerun
+
+        left = self._left()
+        if left is not None:
+            own = self.run.get("timeout")
+            changes["timeout"] = left if own is None else min(left, float(own))
+        try:
+            return _rerun.perturbed(self.result, **changes)
         except Exception as e:
             if self.deadline is not None and _timed_out(e):
                 raise _Out from e
@@ -590,6 +648,7 @@ class _Context:
             except Exception as e:  # noqa: BLE001 - recorded on every check's note
                 self.tol_error = f"{type(e).__name__}: {_first_line(e)}"
                 return self.tol_error
+            self.tight = tight
             d, peak = differences(self._view(tight), self.x)
             self.drift_abs = d
             # Not resolved: within TRACE_ATOLS atol of zero, where the atol,
@@ -612,6 +671,7 @@ class _Context:
             except Exception:  # noqa: BLE001 - the tighter run's drift stands
                 self.spread_abs = self.drift_abs
             else:
+                self.loose = loose
                 d, peak = differences(self._view(loose), self.x)
                 self.spread_abs = spread(self.drift_abs, d, peak)
         return self.spread_abs
@@ -714,6 +774,7 @@ class _Context:
         # answer keeps moving, or has stopped.
         try:
             tighter = self.rerun(**self._tighter(100.0))
+            self.tight100 = tighter
             d, peak = differences(self._view(tighter), self.x)
             m100 = np.where(self.relevant, moves(d, peak, self.atols), 0.0)
             extra["value_100"] = _num(m100.max()) if m100.size else 0.0
@@ -819,6 +880,17 @@ class _Context:
         if skip:
             return skip
         rhs = (self.rec.get("backend") or {}).get("rhs")
+        from bngsim import _check_sensitivity
+
+        if rhs != "interpreted" and _check_sensitivity.present(self.result):
+            # A rerun repeats the run's sensitivities, which only compiled
+            # code computes: codegen=False is refused, not a finding.
+            return _verdict(
+                "backend",
+                "skip",
+                note="a sensitivity run has only the compiled path: forward sensitivities "
+                "need compiled code",
+            )
         if rhs == "interpreted":
             from bngsim._exceptions import CodegenToolchainError
 
@@ -844,6 +916,16 @@ class _Context:
         if skip:
             return skip
         return _second_engine(self)
+
+    def check_sensitivity(self) -> dict[str, Any]:
+        from bngsim import _check_sensitivity
+
+        return _check_sensitivity.check_sensitivity(self)
+
+    def check_sensitivity_fd(self) -> dict[str, Any]:
+        from bngsim import _check_sensitivity
+
+        return _check_sensitivity.check_sensitivity_fd(self)
 
     def check_replicates(self, n: int) -> dict[str, Any]:
         if not self.stochastic:

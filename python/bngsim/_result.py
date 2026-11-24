@@ -3485,8 +3485,9 @@ class Result:
         checks : None, "all", str or list of str
             Which checks to run. ``None`` (default) runs the cheap ones that
             catch the common case: ``"tolerance"`` and ``"grid"`` of an ODE
-            run, ``"replicates"`` of a stochastic one. ``"all"`` runs every
-            check that applies. The checks:
+            run (and ``"sensitivity"`` of one that computed forward
+            sensitivities), ``"replicates"`` of a stochastic one. ``"all"``
+            runs every check that applies. The checks:
 
             - ``"tolerance"``: the run at ``rtol/10`` and ``atol/10`` (and at
               ``/100``, where the budget allows); passes when no species moves
@@ -3508,6 +3509,43 @@ class Result:
               installed, for an SBML or Antimony model run from its initial
               state at the file's parameters. The other checks all read the
               model as bngsim loaded it; only this one does not.
+            - ``"sensitivity"``: the forward sensitivities of the tolerance
+              check's run, against this run's (issue #1893). Each series
+              (one species, one parameter or initial amount, over time) is
+              judged on its own peak, past the base absolute tolerance the
+              solver set for it (``atol_i·max(|x_i(0)|, 1)/|θ_j|``; the
+              solver's own roundoff floor can raise it during the run), and passes when
+              it moves by at most 1e-3 of that peak. A series within 100 of
+              those tolerances of zero is not resolved by the run, named in
+              the verdict's ``not_resolved``, and judged on its column's
+              largest peak. A series past the bound whose move from
+              ``rtol/10`` to ``rtol/100`` is at least half its move at
+              ``rtol/10`` is taken to be held by a floor and not the
+              tolerance: it is named (``n_floor_held``), not failed, its move
+              is read on its column's largest peak, and the quotient check
+              allows it ten times that move. An error in such a series that does not
+              shrink with the tolerance, and is small beside its column's
+              peak, passes both checks; the name is the only sign of it.
+            - ``"sensitivity_fd"``: the forward sensitivities against central
+              difference quotients, each parameter (through ``set_param``, so
+              an initial amount it sets follows) and initial amount moved by
+              1e-3 and 2e-3 of itself, of runs at ``rtol/100`` clamped to
+              1e-14 to 1e-8 (never looser than the run), atol scaled alike,
+              with the sensitivities off. The quotient's own error is read
+              cell by cell from its two steps: their Richardson difference,
+              and what doubling the step leaves of its forward half less its
+              backward, which widens it near a switch or event time the
+              parameter moves; a cell where that is 5% of a series' peak is
+              not judged. A series it resolves to no better than 5% of its
+              peak, everywhere or over a stretch where its Richardson
+              difference reaches that share (a long oscillation whose phase
+              the step moves), is named in ``not_resolved`` and not judged
+              there;
+              ``allowance`` is the largest share of a peak it allows where
+              it judges. A value at 0, and a derived
+              parameter, are not judged (``not_judged``). It costs four runs
+              per column and one more, within ``budget``; the columns the
+              budget does not reach are named in ``timed_out``.
             - ``"replicates"``: a stochastic run made again at ``replicates``
               other seeds; for each observable at the last time, the mean
               over them, its standard error, and how many standard errors this
@@ -3546,6 +3584,18 @@ class Result:
             tolerance, so no path is judged) or ``"timeout"``. A path's
             verdict also gives ``margin`` (its largest difference over the
             allowance; at most 1 passes), ``n_not_judged`` and ``n_trace``.
+            A sensitivity check's verdict names its worst series as
+            ``"dA/dk"`` and also gives ``columns`` (each column's worst
+            species and value, the worst columns first, at most 20),
+            ``n_columns``, ``n_not_resolved``, ``not_resolved`` (series
+            names) and ``n_refused`` (series the run reports as not finite
+            by design, which are not judged); ``"sensitivity"`` also gives
+            ``n_series`` and ``n_floor_held``, and ``"sensitivity_fd"``
+            ``margin``, ``n_judged``, ``not_judged`` (columns, with the
+            reason), ``timed_out``, ``allowance``, ``n_not_converged``
+            (series the tolerance check finds not converged, judged on the
+            tolerance alone) and ``diff_not_converged`` (a diff in those
+            series alone, which ``next`` reads as the tolerance's).
 
         Raises
         ------
