@@ -209,9 +209,12 @@ def test_no_generate_network_leaves_network_gen_none() -> None:
     assert p.network_gen is None
 
 
-def test_last_generate_network_wins() -> None:
-    # BNG2.pl lets a later generate_network supersede an earlier one; the captured cap
-    # mirrors that (the max_agg cap here, not the earlier bare call).
+def test_network_gen_is_the_first_generate_network_not_a_later_one() -> None:
+    """BNG2.pl builds the network at the first call. A later one does not start it
+    again: with ``overwrite=>1`` it continues it (``continue=>1`` is the default),
+    and a ``max_agg`` there takes no species out of what the first call made. The
+    last call was captured, so a re-emitted block built the network under a cap
+    its source never applied to it (issue #1480)."""
     text = (
         "begin model\nend model\n"
         "generate_network({overwrite=>1})\n"
@@ -219,7 +222,44 @@ def test_last_generate_network_wins() -> None:
         'simulate({method=>"ode",t_end=>1,n_steps=>1})\n'
     )
     p = parse_bngl_protocol(text)
-    assert p.network_gen == "generate_network({overwrite=>1,max_agg=>5})"
+    assert p.network_gen == "generate_network({overwrite=>1})"
+
+
+def test_a_network_run_before_generate_network_leaves_network_gen_none() -> None:
+    """The first ODE run generates the network with BNG2.pl's defaults, so the
+    round trip writes the bare call before it, not the later call's cap."""
+    text = (
+        "begin model\nbegin parameters\n k 1\nend parameters\nend model\n"
+        'setParameter("k",2)\n'
+        'simulate({method=>"ode",t_end=>1,n_steps=>1})\n'
+        "generate_network({max_iter=>3})\n"
+        'simulate({method=>"ode",t_end=>1,n_steps=>1})\n'
+    )
+    p = parse_bngl_protocol(text)
+    assert p.network_gen is None
+    block = write_bngl_protocol(p)
+    assert "max_iter" not in block
+    lines = [line.strip() for line in block.splitlines() if line.strip()]
+    first_run = next(i for i, line in enumerate(lines) if line.startswith("simulate"))
+    assert lines[first_run - 1] == "generate_network({overwrite=>1})"
+    assert parse_bngl_protocol(block).generation_step == p.generation_step
+
+
+@pytest.mark.parametrize(
+    "nf_run",
+    ['simulate({method=>"nf",t_end=>1,n_steps=>1})', "simulate_nf({t_end=>1,n_steps=>1})"],
+    ids=["method-nf", "simulate_nf"],
+)
+def test_a_network_free_run_before_generate_network_keeps_its_cap(nf_run) -> None:
+    """A network-free run generates no network, so the call after it builds the one
+    the ODE run starts from."""
+    text = (
+        "begin model\nend model\n"
+        f"{nf_run}\n"
+        "generate_network({max_stoich=>{R=>5}})\n"
+        'simulate({method=>"ode",t_end=>1,n_steps=>1})\n'
+    )
+    assert parse_bngl_protocol(text).network_gen == "generate_network({max_stoich=>{R=>5}})"
 
 
 def test_network_gen_survives_json_round_trip() -> None:
@@ -594,6 +634,21 @@ def test_poplevel_makes_a_run_psa() -> None:
     )
     assert p.steps[0].method == "psa"
     assert parse_bngl_protocol(_REPLAYED).steps[4].method == "psa"
+
+
+def test_poplevel_makes_a_method_nf_run_psa_but_not_simulate_nf() -> None:
+    """``BNGAction.pm``'s simulate sets the method to psa for a poplevel before it
+    looks at the one given, so ``method=>"nf"`` runs PSA; ``simulate_nf`` is its own
+    action and never reads a poplevel."""
+    head = "begin model\nend model\n"
+    nf_method = parse_bngl_protocol(
+        head + 'simulate({method=>"nf",t_end=>1,n_steps=>1,poplevel=>100})\n', strict=False
+    )
+    assert nf_method.steps[0].method == "psa"
+    nf_action = parse_bngl_protocol(
+        head + "simulate_nf({t_end=>1,n_steps=>1,poplevel=>100})\n", strict=False
+    )
+    assert nf_action.steps[0].method == "nf"
 
 
 def test_the_new_steps_round_trip_through_bngl_and_json() -> None:

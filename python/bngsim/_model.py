@@ -1010,9 +1010,10 @@ class Model:
         since those are what make an
         unbounded rule set finite. Everything after it is dropped. A file with no
         ``generate_network`` before its first run stops at that run, the state
-        the run starts from, and its network is generated with BNG2.pl's
-        defaults, as that run's is: a later ``generate_network``'s options do
-        not apply. Pass
+        the run starts from. A run with a network method (ode, ssa, pla, psa)
+        before the first ``generate_network`` generates the network with
+        BNG2.pl's defaults, and so does the load; a network-free run generates
+        none, so the call after it still sets the limits. Pass
         ``protocol=True`` to get the actions back as a
         :class:`~bngsim.convert.ProtocolSpec` rather than lose them, and
         :func:`bngsim.run_protocol` to run them as BNG2.pl does

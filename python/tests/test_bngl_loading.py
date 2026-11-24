@@ -226,23 +226,76 @@ def test_generate_network_call_forwards_the_source_options(source, expected):
 @pytest.mark.parametrize(
     "actions",
     [
-        "simulate({t_end=>1})\ngenerate_network({max_iter=>3,overwrite=>1})\n",
+        'simulate({method=>"ode",t_end=>1})\ngenerate_network({max_iter=>3,overwrite=>1})\n',
+        "simulate_ssa({t_end=>1})\ngenerate_network({max_iter=>3})\n",
         "begin actions\n"
-        '  parameter_scan({parameter=>"k",par_min=>1,par_max=>2,n_scan_pts=>2,t_end=>1})\n'
+        '  parameter_scan({method=>"ode",parameter=>"k",par_min=>1,par_max=>2,'
+        "n_scan_pts=>2,t_end=>1})\n"
         "  generate_network({max_iter=>3})\n"
         '  simulate({method=>"ode",t_end=>1})\n'
         "end actions\n",
+        # A poplevel makes BNG2.pl's simulate run PSA, whatever method it names.
+        'simulate({method=>"nf",poplevel=>100,t_end=>1})\ngenerate_network({max_iter=>3})\n',
     ],
-    ids=["simulate", "parameter_scan-in-an-actions-block"],
+    ids=[
+        "simulate-ode",
+        "simulate_ssa",
+        "parameter_scan-in-an-actions-block",
+        "method-nf-with-a-poplevel",
+    ],
 )
-def test_a_run_before_generate_network_takes_none_of_its_options(actions):
-    """A file whose first run comes before its ``generate_network`` is cut at that
-    run (issue #1480), and BNG2.pl generates that run's network with its defaults:
-    ``simulate`` calls ``generate_network()`` with no arguments. Forwarding the
-    later call's ``max_iter=>3`` truncated the loaded network where the one BNG2.pl
-    ran first was not."""
+def test_a_network_run_before_generate_network_takes_none_of_its_options(actions):
+    """BNG2.pl generates the network at a run with a network method when it has none
+    yet, with its defaults: ``simulate`` calls ``generate_network()`` with no
+    arguments (issue #1480). Forwarding the later call's ``max_iter=>3`` truncated
+    the loaded network where the one BNG2.pl ran first was not."""
     text = "begin model\nbegin parameters\n k 1\nend parameters\nend model\n" + actions
     assert generate_network_call(text) == "generate_network({overwrite=>1})"
+
+
+# Receptor-ligand chains, with no finite network unless max_stoich bounds R.
+_RL_CHAINS = """\
+begin model
+begin parameters
+  kp 1
+end parameters
+begin molecule types
+  R(l,l)
+  L(r,r)
+end molecule types
+begin seed species
+  R(l,l) 100
+  L(r,r) 100
+end seed species
+begin reaction rules
+  R(l) + L(r) -> R(l!1).L(r!1) kp
+end reaction rules
+end model
+"""
+
+
+@pytest.mark.parametrize(
+    "nf_run",
+    [
+        'simulate({method=>"nf",t_end=>1,n_steps=>1})',
+        "simulate_nf({t_end=>1,n_steps=>1})",
+        'parameter_scan({method=>"nf",parameter=>"kp",par_min=>1,par_max=>2,'
+        "n_scan_pts=>2,t_end=>1,n_steps=>1})",
+    ],
+    ids=["method-nf", "simulate_nf", "parameter_scan-method-nf"],
+)
+def test_a_network_free_run_before_generate_network_keeps_its_options(nf_run):
+    """A network-free run generates no network (``simulate`` hands ``nf`` to
+    ``simulate_nf``), so the ``generate_network`` after it builds the one the ODE run
+    simulates, and its ``max_stoich`` is what makes this rule set finite. Without
+    it, the load ran to its timeout."""
+    text = (
+        _RL_CHAINS
+        + nf_run
+        + "\ngenerate_network({max_stoich=>{R=>5}})\n"
+        + 'simulate({method=>"ode",t_end=>1,n_steps=>1})\n'
+    )
+    assert generate_network_call(text) == "generate_network({max_stoich=>{R=>5},overwrite=>1})"
 
 
 def test_a_generate_network_after_the_first_run_does_not_replace_the_one_before_it():
@@ -252,11 +305,25 @@ def test_a_generate_network_after_the_first_run_does_not_replace_the_one_before_
     text = (
         "begin model\nend model\n"
         "generate_network({max_iter=>3})\n"
-        "simulate({t_end=>1})\n"
+        'simulate({method=>"ode",t_end=>1})\n'
         "generate_network({max_iter=>5,overwrite=>1})\n"
-        "simulate({t_end=>1})\n"
+        'simulate({method=>"ode",t_end=>1})\n'
     )
     assert generate_network_call(text) == "generate_network({max_iter=>3,overwrite=>1})"
+
+
+def test_only_the_first_of_two_generate_network_calls_is_forwarded():
+    """Pinned, and not what BNG2.pl does: it continues the first call's network at
+    the second (``continue=>1`` is its default, and ``overwrite=>1`` lets the call
+    run), so its run has up to 11 iterations. The load generates once, with the
+    first call's options, where its actions stop."""
+    text = (
+        "begin model\nend model\n"
+        "generate_network({max_iter=>1})\n"
+        "generate_network({max_iter=>10,overwrite=>1})\n"
+        'simulate({method=>"ode",t_end=>1})\n'
+    )
+    assert generate_network_call(text) == "generate_network({max_iter=>1,overwrite=>1})"
 
 
 def test_a_generate_network_after_generate_hybrid_model_still_sets_the_bound():
@@ -267,9 +334,15 @@ def test_a_generate_network_after_generate_hybrid_model_still_sets_the_bound():
         "begin model\nend model\n"
         'generate_hybrid_model({suffix=>"hpp",overwrite=>1})\n'
         "generate_network({max_iter=>3})\n"
-        "simulate({t_end=>1})\n"
+        'simulate({method=>"ode",t_end=>1})\n'
     )
     assert generate_network_call(text) == "generate_network({max_iter=>3,overwrite=>1})"
+
+
+def test_a_generate_network_after_quit_is_not_read():
+    """BNG2.pl stops reading actions at ``quit()``, so a call after it never runs."""
+    text = "begin model\nend model\nquit()\ngenerate_network({max_iter=>3})\n"
+    assert generate_network_call(text) == "generate_network({overwrite=>1})"
 
 
 def test_commented_out_generate_network_is_not_read(tmp_path: Path):

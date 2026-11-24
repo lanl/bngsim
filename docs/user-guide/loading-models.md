@@ -219,9 +219,15 @@ if not bngsim.HAS_BNGL:
 `Model.from_bngl` doesn't run the file's experiment. It runs the actions up to
 the first `generate_network`, with that action's own `max_iter`, `max_agg` and
 `max_stoich`, and stops. If there is no `generate_network` before the first
-run, it stops at that run and generates the network with BNG2.pl's defaults,
-as BNG2.pl does for that run. A `generate_network` later in the file doesn't
-set the limits.
+run, it stops at that run.
+
+If a run with a network method (ODE, SSA, PLA or PSA) comes before the first
+`generate_network`, BNG2.pl generates the network at that run with its
+defaults, and so does `from_bngl`. A network-free run (`simulate_nf`, or
+`method=>"nf"`) generates no network, so the `generate_network` after it still
+sets the limits. Only one `generate_network` runs. BNG2.pl continues the
+network at a later one that has `overwrite=>1`, and the network you get
+doesn't include what that adds.
 
 - Actions before that point are applied, as BNG2.pl applies them. A
   `setParameter` or `setConcentration` there changes the network you get. File
