@@ -152,6 +152,18 @@ the starting state that is not `$`-fixed, but no finer than double precision
 allows beside the largest. If every such species starts at 0, a `$`-fixed
 species sets it.
 
+The run test's run is integrated at the march's `atol`, but never coarser than
+`rtol` times the largest species the solve starts with (or, where every species
+starts at 0, the largest of the state). A scalar `atol=` is taken as given, so
+it can be coarser than the whole model. Then the march controls no species'
+error and stops where that error leaves it, and a run at the same `atol` does
+not see the state move. BIOMD0000000609's species are all below 1.4e-13. At its
+SED-ML file's `atol=1e-9` the march stopped on a root of `f` with two species
+near -1.5e-14, which a run from it leaves at once, and the solve said
+`converged=True` (issue #1895). The run held to the start's scale refuses it.
+With no `atol`, the default is never that coarse and the run is unchanged. To
+solve such a model, leave `atol` unset or pass one at its scale.
+
 If a run moves the state, it is taken again at a tenth of the tolerances, a
 hundredth, and (up to 512 unknowns) a thousandth. A move of more than 10
 tolerances that does not halve at a tenth of them is a real drift, and the
@@ -161,6 +173,9 @@ state is refused.
 
 - **A drift too slow to move a species by its tolerance** within `max_time`
   (or 1e6) passes.
+- **A species below zero** is not refused for being there. Some models' rate
+  laws take a species below zero, and a run rests there too. A state the march
+  reached only through its own error, which a run leaves, fails the run test.
 - **An unstable root that a run from it does not leave** passes, as it passes
   the residual test. A state exactly on the middle root of a switch is one.
   A march started near such a root, or near the boundary between two basins,

@@ -118,7 +118,9 @@ spec = bngsim.convert.read_sedml("simulation.sedml", exact_atol=True)
   `read_sedml(..., exact_atol=True)` reads it back as exact.
 - A vector of `n_species` values is always used exactly as given.
 - `steady_state(atol=...)` uses a scalar as given. Under `criterion="scaled"`
-  it is also the steady-state convergence test's tolerance.
+  it is also the steady-state convergence test's tolerance. The run that test
+  takes is never integrated coarser than `rtol` times the largest species the
+  solve starts with (issue #1895).
 
 Use `ExactAtol` to compare with a tool that holds one absolute tolerance for
 every species.

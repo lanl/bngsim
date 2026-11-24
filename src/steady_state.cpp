@@ -6311,8 +6311,9 @@ static constexpr double kDriftAtLeast = 10.0;
 
 // One run of the run test of the "scaled" criterion (issue #1001): from `y`,
 // taken on for max_time (at most kRunHorizonMost) and integrated at `tighter`
-// times the criterion's tolerances (at an rtol of kRunRtolLeast at least), in
-// kRunSteps times max_steps at most. Returns the largest move of a measured
+// times the criterion's tolerances (at an rtol of kRunRtolLeast at least, and
+// an atol no coarser than the start's scale, issue #1895), in kRunSteps times
+// max_steps at most. Returns the largest move of a measured
 // species from `y` over its tolerance (ss_scaled_tolerance), and +inf where
 // the run cannot be taken to its time (the integrator gives up past
 // kHoldRestarts restarts, or the steps run out, or a species overflows). The
@@ -6336,9 +6337,28 @@ static double ss_continued_run_once(NetworkModel &model, SteadyStateRhs &rhs,
     run_opts.max_time = std::min(opts.max_time, kRunHorizonMost);
     const double by = std::max(tighter, std::min(1.0, kRunRtolLeast / opts.rtol));
     run_opts.rtol = opts.rtol * by;
-    run_opts.atol = opts.atol * by;
+    // A run that tests the state (`end` not given) is integrated at an atol no
+    // coarser than the criterion's rtol times the largest species the solve
+    // started with (issue #1895), and times the state's own largest only
+    // where the start has no size. The march takes the caller's atol as
+    // given, and where that is coarser than the model, the state it stops at
+    // is its error, and so is the state's scale: BIOMD0000000609, every
+    // species under 1.4e-13 at the start, marched at its SED-ML file's atol
+    // of 1e-9 with its accumulator masked, came back with that accumulator at
+    // 3.9e-9 and two species near -1.5e-14, on a root of f that is not the
+    // model's steady state (eigenvalues 337 and 4.6). A run at the march's
+    // atol, or at rtol times the state's largest (3.9e-15), stayed on it and
+    // passed it. Held to rtol times the start's largest (1.3e-19), the run
+    // leaves it, as run() from it does. Where the start has a size, the
+    // default atol (Simulator._steady_state_atol) is no coarser than that, and
+    // the run is the one it was; so is any atol no coarser.
+    const double start_scale =
+        opts.criterion_start_size > 0.0 ? opts.criterion_start_size : largest;
+    const double coarsest = std::max(opts.rtol, kCriterionRtolLeast) * start_scale;
+    const bool cap = end == nullptr && coarsest > 0.0;
+    run_opts.atol = (cap ? std::min(opts.atol, coarsest) : opts.atol) * by;
     for (double &a : run_opts.atol_vec)
-        a *= by;
+        a = (cap ? std::min(a, coarsest) : a) * by;
 
     std::vector<double> saved(un);
     for (size_t i = 0; i < un; ++i) {

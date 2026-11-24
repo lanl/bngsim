@@ -9796,7 +9796,15 @@ class Simulator:
               :attr:`SteadyStateResult.root_stability` says so. ``atol_i`` is
               the march's own, never more than
               ``rtol`` times the largest species the solve starts with or
-              reaches. The Newton step ``δ = −J⁻¹f`` from the state to the
+              reaches. The run is integrated at the march's ``atol`` too, but
+              never coarser than ``rtol`` times the largest species the solve
+              starts with (issue #1895): a scalar ``atol`` is taken as given,
+              and where it is coarser than the model the march resolves
+              nothing and stops where its error leaves it, which a run at that
+              ``atol`` does not see move. BIOMD0000000609, every species under
+              1.4e-13, asked at ``atol=1e-9``, came back converged on a root
+              of ``f`` with two species near -1.5e-14 that a run from it
+              leaves at once. The Newton step ``δ = −J⁻¹f`` from the state to the
               root, within the same tolerances, decides where the solve stops
               (up to 512 unknowns), which takes the issue's cubic at a scale
               of 1e-9 on from 0.894 to its root at 1, and the state it stops at
@@ -13842,7 +13850,9 @@ class SteadyStateResult:
     continued_run_distance : float
         The run test of ``criterion="scaled"``: the largest move of a
         measured species, over its tolerance, across the run taken on from
-        the state returned; at most 1 passes (issue #1001). ``inf`` where the
+        the state returned; at most 1 passes (issue #1001). The run is held
+        to an ``atol`` no coarser than ``rtol`` times the largest species
+        the solve started with (issue #1895). ``inf`` where the
         run could not be taken to its time; NaN where none was taken (under ``"residual"``,
         where the parity test already refused, and for a burst-free Newton
         solve).
