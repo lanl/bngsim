@@ -505,6 +505,19 @@ def _documented_pages() -> list[str]:
     ]
 
 
+def _page_params() -> list[object]:
+    # An empty parameter set would skip in pytest's own words, which the skip
+    # audit does not know; with no docs/, skip in the words _docs_present uses.
+    return _documented_pages() or [
+        pytest.param(
+            "",
+            marks=pytest.mark.skip(
+                reason="docs/ lives in the source root and is not present in an installed wheel"
+            ),
+        )
+    ]
+
+
 @pytest.fixture
 def bngsim_logger_as_found() -> Iterator[None]:
     """Put the ``bngsim`` logger back as the test found it. A page may turn
@@ -518,7 +531,7 @@ def bngsim_logger_as_found() -> Iterator[None]:
     logger.propagate = propagate
 
 
-@pytest.mark.parametrize("page", _documented_pages())
+@pytest.mark.parametrize("page", _page_params())
 @pytest.mark.usefixtures("bngsim_logger_as_found")
 def test_each_page_runs_top_to_bottom(
     page: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
