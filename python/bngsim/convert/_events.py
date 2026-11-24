@@ -13,7 +13,11 @@ assigns constants — becomes ``simulate(→T)`` → ``setConcentration(target, 
 ``simulate(→…)``. A **state-triggered** event (the trigger depends on a species
 / state crossing) has no actions equivalent and is refused fail-loud, as is any
 event whose trigger time, delay, or assignment value is not a constant (the
-actions channel carries only scheduled, pre-known changes).
+actions channel carries only scheduled, pre-known changes). A trigger already
+true at the start fires there only if its ``initialValue`` is false, and the
+events at one instant apply in the order the run executes them (see
+:class:`_Fire`); where the run's random draw among equal priorities, or its
+rounding, decides what a species is left at, they are refused.
 
 The translation is intentionally conservative: anything it cannot represent
 *faithfully* it refuses (returns a plain-English note) rather than emit a
@@ -27,7 +31,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from bngsim.convert._protocol import Experiment, ProtocolSpec, StateChange
 
@@ -301,6 +305,110 @@ def _resolve_target(var: str, name_to_idx: dict[str, int]) -> int | None:
     return name_to_idx.get(alt)
 
 
+# ─── what executes when ──────────────────────────────────────────────────────
+
+
+class _Fire(NamedTuple):
+    """One event's execution: when, in what order, and what it sets."""
+
+    time: float
+    # A strict trigger is true only past its threshold, so the run executes the
+    # event after every other event of that instant, whatever the priorities:
+    # `time > 1` after `time >= 1`.
+    past: bool
+    # Delayed from a strict trigger, it executes the delay after the point
+    # past the threshold where the run read the trigger true, which can round
+    # to the instant itself or land past it: `time > 0` with delay 1 joins the
+    # events at t = 1, and `time > 0.5` with delay 0.5 runs after them.
+    loose: bool
+    priority: float | None  # None: not a constant
+    order: int  # document order, which breaks the remaining ties
+    eid: str
+    assigns: list[tuple[int, float, str]]  # (species index, value, SBML id)
+
+    def sort_key(self) -> tuple[float, bool, float, int]:
+        # Higher priority first. Within a tie, beside a priority that is not a
+        # constant, or beside a loose execution, the order changes nothing:
+        # _unordered_writes refuses wherever it would.
+        return (self.time, self.past, -(self.priority or 0.0), self.order)
+
+
+def _unordered_writes(fires: list[_Fire]) -> list[str]:
+    """A note for each species that events at one instant leave at a value the
+    run's order among them decides, when that order is not known ahead."""
+    by_time: dict[float, list[_Fire]] = {}
+    for f in fires:
+        by_time.setdefault(f.time, []).append(f)
+    notes: list[str] = []
+    for t, group in by_time.items():
+        if len(group) < 2:
+            continue
+        writes: dict[int, list[tuple[_Fire, float]]] = {}
+        var: dict[int, str] = {}
+        for f in group:
+            for idx, val, sid in f.assigns:
+                writes.setdefault(idx, []).append((f, val))
+                var[idx] = sid
+        for idx, ws in writes.items():
+            note = _order_note(t, var[idx], ws)
+            if note:
+                notes.append(note)
+    return notes
+
+
+def _order_note(t: float, var: str, ws: list[tuple[_Fire, float]]) -> str | None:
+    """Why the value the executions ``ws`` at instant ``t`` leave in ``var``
+    is not known ahead, or None where it is.
+
+    The last of them to execute sets it: of those in the last part of the
+    instant, one of the lowest priority. The run draws among equal priorities
+    at random, so where those set different values the species has none an
+    action can set. A priority that is not a constant, or a loose execution
+    (see :class:`_Fire`), leaves the order unknown wherever the values differ.
+    """
+    if len({val for _, val in ws}) < 2:
+        return None
+
+    def which(f: _Fire, val: float) -> str:
+        other = next(g for g, v in ws if v != val)
+        return f"events {f.eid!r} and {other.eid!r} set {var!r} to different values at t = {t:g}"
+
+    finals: set[float] = set()
+    fixed = [(f, val) for f, val in ws if not f.loose]
+    if fixed:
+        past = max(f.past for f, _ in fixed)
+        part = [(f, val) for f, val in fixed if f.past == past]
+        unknown = [(f, val) for f, val in part if f.priority is None]
+        if unknown:
+            last = part
+        else:
+            low = min(f.priority for f, _ in part if f.priority is not None)
+            last = [(f, val) for f, val in part if f.priority == low]
+        if len({val for _, val in last}) > 1:
+            if unknown:
+                f, val = unknown[0]
+                return (
+                    f"{which(f, val)}, and {f.eid!r} has a non-constant priority — "
+                    "which executes last cannot be scheduled"
+                )
+            f, val = last[0]
+            return (
+                f"{which(f, val)} with equal priority, and the run executes such "
+                "events in a random order — the value they leave has no actions form"
+            )
+        finals.add(last[0][1])
+    for f, val in ws:
+        if f.loose:
+            finals.add(val)
+            if len(finals) > 1:
+                return (
+                    f"{which(f, val)}, and {f.eid!r}, delayed from a strict trigger, "
+                    "executes before or after the other as the run's rounding falls — "
+                    "the value they leave has no actions form"
+                )
+    return None
+
+
 # ─── public entry ────────────────────────────────────────────────────────────
 
 
@@ -362,18 +470,34 @@ def sbml_events_to_protocol(
     species_ids = {sbml_model.getSpecies(i).getId() for i in range(sbml_model.getNumSpecies())}
     name_to_idx = _codegen_species_names(model)
 
+    t_start = float(t_span[0])
     lossy: list[str] = []
-    # (fire_time, event_order, [(species_idx, value), …])
-    fires: list[tuple[float, int, list[tuple[int, float]]]] = []
+    fires: list[_Fire] = []
 
     for i in range(n_events):
         ev = sbml_model.getEvent(i)
         eid = ev.getId() or f"event #{i + 1}"
         trig = ev.getTrigger().getMath() if ev.isSetTrigger() else None
-        fire_t, reason = _trigger_fire_time(trig, env, species_ids)
-        if fire_t is None:
+        threshold, reason = _trigger_fire_time(trig, env, species_ids)
+        if threshold is None:
             lossy.append(f"event {eid!r} {reason}")
             continue
+        # `time > T` (or `T < time`) is true only past T, not at it.
+        strict = trig is not None and trig.getType() in (
+            libsbml.AST_RELATIONAL_GT,
+            libsbml.AST_RELATIONAL_LT,
+        )
+
+        # A trigger already true at the start fires there only if it was false
+        # just before, which is what its initialValue says (true where unset,
+        # as the loader reads it). Otherwise it never turns true, as time only
+        # moves on, and the event never fires.
+        fire_t, past, loose = threshold, strict, False
+        if threshold < t_start or (threshold == t_start and not strict):
+            trigger = ev.getTrigger()
+            if not trigger.isSetInitialValue() or trigger.getInitialValue():
+                continue
+            fire_t, past = t_start, False
 
         # A constant delay shifts the fire time; a non-constant one is unschedulable.
         if ev.isSetDelay() and ev.getDelay() is not None and ev.getDelay().getMath() is not None:
@@ -382,8 +506,14 @@ def sbml_events_to_protocol(
                 lossy.append(f"event {eid!r} has a non-constant delay (cannot be scheduled)")
                 continue
             fire_t += d
+            loose = past and d > 0
 
-        assigns: list[tuple[int, float]] = []
+        # An unset priority is 0, as the loader writes it.
+        priority: float | None = 0.0
+        if ev.isSetPriority() and ev.getPriority().getMath() is not None:
+            priority = _eval_const(ev.getPriority().getMath(), env)
+
+        assigns: list[tuple[int, float, str]] = []
         ok = True
         value_env = {**env, **own[i]} if i in own else env
         for j in range(ev.getNumEventAssignments()):
@@ -405,10 +535,11 @@ def sbml_events_to_protocol(
                 )
                 ok = False
                 break
-            assigns.append((idx, val))
+            assigns.append((idx, val, var))
         if ok:
-            fires.append((fire_t, i, assigns))
+            fires.append(_Fire(fire_t, past, loose, priority, i, eid, assigns))
 
+    lossy.extend(_unordered_writes(fires))
     if lossy:
         return None, lossy
     if not fires:
@@ -418,7 +549,7 @@ def sbml_events_to_protocol(
 
 
 def _build_protocol(
-    fires: list[tuple[float, int, list[tuple[int, float]]]],
+    fires: list[_Fire],
     model: Model,
     t_span: tuple[float, float],
     n_points: int,
@@ -426,22 +557,23 @@ def _build_protocol(
     """Assemble ``simulate`` phases + ``setConcentration`` state changes.
 
     Phases run from ``t_start`` through each distinct fire time (in order) to the
-    horizon; the events at a fire time apply their assignments (in SBML order)
-    after the phase that reaches it. ``continue=>1`` chains each phase onto the
-    prior end-state. Output steps per phase are apportioned by duration.
+    horizon; the events at a fire time apply their assignments (in the order
+    the run executes them: see :class:`_Fire`) after the phase that reaches it.
+    ``continue=>1`` chains each phase onto the prior end-state. Output steps per
+    phase are apportioned by duration.
     """
     species = model._core.codegen_data()["species"]
     t_start, t_end = float(t_span[0]), float(t_span[1])
-    max_fire = max(f[0] for f in fires)
+    max_fire = max(f.time for f in fires)
     if max_fire > t_end:
         t_end = max_fire
     total = max(t_end - t_start, 1.0)
     base_steps = max(n_points - 1, 1)
 
-    # group assignments by fire time, preserving event order within a time
-    by_time: dict[float, list[tuple[int, float]]] = {}
-    for ft, _order, assigns in sorted(fires, key=lambda x: (x[0], x[1])):
-        by_time.setdefault(ft, []).extend(assigns)
+    # group assignments by fire time, in execution order within a time
+    by_time: dict[float, list[tuple[int, float, str]]] = {}
+    for f in sorted(fires, key=_Fire.sort_key):
+        by_time.setdefault(f.time, []).extend(f.assigns)
 
     steps: list[object] = []
     prev = t_start
@@ -451,7 +583,7 @@ def _build_protocol(
             steps.append(_phase(prev, ft, total, base_steps, first))
             first = False
             prev = ft
-        for sp_idx, val in by_time[ft]:
+        for sp_idx, val, _var in by_time[ft]:
             steps.append(
                 StateChange(
                     kind="set_concentration",
