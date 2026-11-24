@@ -170,8 +170,8 @@ print(caps["version"], caps["features"])
 # Expected: {"libsbml": True, "nfsim": True, "rulemonkey": True, "klu": True, ...}
 assert bngsim.HAS_KLU  # sparse solver is bundled in every published wheel
 
-# Load + simulate a tiny model
-m = bngsim.Model.from_net("simple_decay.net")
+# Load + simulate a tiny model, A -> 0, one of the examples bngsim ships
+m = bngsim.Model.from_net(bngsim.examples.path("decay"))
 r = bngsim.Simulator(m, method="ode").run(t_span=(0, 10), n_points=11)
 assert r.n_times == 11
 ```

@@ -390,6 +390,12 @@ _DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
     # it reads as a fourth optional extra somebody decided about (#179).
     # External tools and corpora that are not vendored.
     ("BNG2.pl", _ANYWHERE, "external perl toolchain, not a bngsim dependency"),
+    (
+        "is passed over by the page run",
+        _ANYWHERE,
+        "a docs example whose need (BNG2.pl, the network, an optional extra) this run "
+        "lacks; test_docs_api_examples.py's _NOT_RUN names each block and its need",
+    ),
     ("biomodels", _ANYWHERE, "BioModels corpus is fetched, not vendored ($BIOMODELS_SBML_DIR)"),
     ("benchmark", _ANYWHERE, "benchmark corpus lives outside the packaged tree"),
     ("abc.xml not at", _ANYWHERE, "fixture in a sibling PyBNF checkout; dev-only"),

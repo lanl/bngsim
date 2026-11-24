@@ -54,12 +54,17 @@ print(round(float(result.observables["A"][-1]), 4))  # 0.6738, which is 100 * ex
 
 ## Other model formats
 
-SBML, Antimony and BNGL load through the same `Model` class:
+SBML, Antimony and BNGL load through the same `Model` class. The `binding`
+model in `bngsim.examples` comes in every format, so these lines run as
+written; pass your own file's path instead:
 
 ```python
-sbml_model = bngsim.Model.from_sbml("model.xml")
-ant_model  = bngsim.Model.from_antimony("model.ant")  # pip install bngsim[antimony]
-bngl_model = bngsim.Model.from_bngl("model.bngl")   # pip install bngsim[bngl]
+sbml_model = bngsim.Model.from_sbml(bngsim.examples.path("binding", "sbml"))
+ant_model = bngsim.Model.from_antimony(bngsim.examples.path("binding", "antimony"))  # pip install bngsim[antimony]
+```
+
+```python
+bngl_model = bngsim.Model.from_bngl(bngsim.examples.path("binding", "bngl"))  # pip install bngsim[bngl]
 ```
 
 BNGsim simulates reaction networks, and BNGL describes rules. So `from_bngl`
@@ -106,13 +111,13 @@ PSA takes the same models and checks as SSA, so the call is the same for
 ```python
 import bngsim
 
-# .net
-net_model = bngsim.Model.from_net("psa/tcr_signaling.net")
+# .net: birth and death, 0 -> A -> 0, which settles near 10,000 copies of A
+net_model = bngsim.Model.from_net(bngsim.examples.path("birth_death", "net"))
 psa = bngsim.Simulator(net_model, method="psa", poplevel=100.0)
 result = psa.run(t_span=(0, 300), n_points=301, seed=42)
 
-# SBML or Antimony
-sbml_model = bngsim.Model.from_sbml("ssa_sbml/tcr_signaling.xml")
+# SBML or Antimony: the same model
+sbml_model = bngsim.Model.from_sbml(bngsim.examples.path("birth_death", "sbml"))
 psa = bngsim.Simulator(sbml_model, method="psa", poplevel=100.0)
 result = psa.run(t_span=(0, 300), n_points=301, seed=42)
 ```
