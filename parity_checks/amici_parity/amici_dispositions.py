@@ -115,6 +115,7 @@ worse than none:
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -132,8 +133,12 @@ from _core import Outcome  # noqa: E402
 INVALID_RESULT_REFUSAL = "invalid_result"
 
 # How a NO_GROUND_TRUTH row's comment begins. Public because the ODE matrix reads
-# it to draw such a BAD_TEST as what it is, not as two engines that refused.
+# it to draw such a BAD_TEST as what it is, not as two engines that refused. The
+# note on an entry that did not apply begins with the label too ("no ground truth
+# entry ... did not apply"), so the matrix matches the applied note's whole
+# opening: the label, the entry's issue in parentheses if it has one, and a colon.
 NO_GROUND_TRUTH_LABEL = "no ground truth"
+NO_GROUND_TRUTH_APPLIED = re.compile(re.escape(NO_GROUND_TRUTH_LABEL) + r"( \([^)]*\))?: ")
 
 REGIMES = ("ode", "sens")
 
