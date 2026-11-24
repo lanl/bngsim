@@ -162,7 +162,8 @@ def test_run_batch_reads_the_rows_from_a_file(tmp_path, form):
         rows = ROWS
     else:
         sep = "," if form == "csv" else "\t"
-        path.write_text(f"k1{sep}k2\n0.5{sep}0.1\n\n2{sep}0.3\n")
+        # A spreadsheet's export: a byte-order mark, and a blank line.
+        path.write_text(f"\ufeffk1{sep}k2\n0.5{sep}0.1\n\n2{sep}0.3\n", encoding="utf-8")
         rows = [{"k1": 0.5, "k2": 0.1}, {"k1": 2.0, "k2": 0.3}]
     d = _json(_bngsim("run-batch", CHAIN, "--t-end", "20", "--n-points", "21",
                       "--params", str(path), "--species", "--json"))  # fmt: skip

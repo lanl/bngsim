@@ -614,10 +614,14 @@ def _add_run_calls(sub: Any, common: argparse.ArgumentParser) -> None:
         "--upper",
         type=_positive,
         default=None,
-        help="the largest value a start draws for a species not in a conservation law",
+        help="the bound starts draw a species in no conservation law below (default: ten "
+        "times the largest concentration the model's state and its steady state hold)",
     )
     sss.add_argument(
-        "--decades", type=_positive, default=None, help="decades the starts span (default 4)"
+        "--decades",
+        type=_positive,
+        default=None,
+        help="how many decades below its bound a start draws a species from (default 4)",
     )
     sss.add_argument(
         "--dedupe-rtol",
@@ -1112,7 +1116,8 @@ def _parse_params(text: str | None) -> list[dict[str, float]]:
             )
         if not os.path.isfile(source):
             _refuse(f"--params: no file {source!r}", "--params", value=text)
-        with open(source, encoding="utf-8", newline="") as f:
+        # utf-8-sig: a spreadsheet's CSV may start with a byte-order mark.
+        with open(source, encoding="utf-8-sig", newline="") as f:
             if lower.endswith(".json"):
                 try:
                     rows = json.load(f)
